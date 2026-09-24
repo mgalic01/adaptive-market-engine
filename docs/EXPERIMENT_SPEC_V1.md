@@ -9,7 +9,9 @@ variants yet.** This document fixes what will be built and how it will be judged
 The scope is paper trading and historical replay only. Nothing here authorises live
 trading, API keys or withdrawals. The default risk limits (3% daily pause, 8% soft and
 12% hard drawdown, latched halt), the 50/50 profit vault and the paper-only boundary
-are unchanged by every variant.
+are unchanged by every **grid** variant (V0, A, B, C, F). The benchmark D is the one
+labelled exception (§3 D): it is a replay-only calculation with its own sizing and no
+risk controls or vault, and it never touches persisted paper state.
 
 ## 1. Question
 
@@ -22,16 +24,27 @@ losses.
 
 ## 2. Prerequisites (implemented and reviewed before any variant run)
 
-These are measurement changes only. None changes a decision made by V0.
+These are measurement and data changes, with two qualified exceptions:
+- **P4 can change V0 decisions** on formerly invalid SOL runs. Those runs become a
+  newly labelled scenario, "SOL with sourced historical filters". Today's filters are
+  never backdated as historical ones.
+- **P5 changes how invalid CLI input is handled:** an empty fee value is rejected.
+
+**Equivalence requirement:** on every existing valid default run (`verify-2024h1` ADA and
+BTC, `practice-2022` BTC and XRP, both paths), V0's fills, returns and accounting must be
+identical before and after P1–P7. Valuation sampling (P2) must not change V0's engine
+risk logic or fills. It records marks from the same actual quote, after that quote's
+fills, for both the strategy and buy-and-hold.
 
 | # | Change | Why |
 | --- | --- | --- |
 | P1 | **Record the exit reason** on every `exit/` fill: `range_exit`, `drain`, `liquidation` (halt or emergency) and, for variant A, `trend_exit`. Report the realised P&L per reason. | Codex (PR #14): losses cannot be attributed to range exits without it. |
 | P2 | **Common drawdown sampling:** strategy total equity, strategy active equity (C1b) and buy-and-hold equity are all sampled on the same schedule (every quote of every bar). | Criterion C3 compares the two drawdowns; they must be measured the same way. |
-| P3 | **Daily history:** dataset specs gain `daily_warmup_start`. Binance `1d` archives are fetched from that month, checksummed and cross-checked against the aggregated `1h` archive over the overlap. | Variants A and D need at least 200 completed daily bars before the evaluation starts. |
+| P3 | **Daily history:** dataset specs gain `daily_warmup_start`. Binance `1d` archives are fetched from that month and checksummed. Over the overlap, every expected day must be present exactly once and contiguous, and must match the aggregation of its 24 unique contiguous `1h` bars, not just an aggregate OHLCV match. | Variants A and D need at least 200 completed daily bars before the evaluation starts. |
 | P4 | **Historical exchange filters for SOL:** use dated, sourced point-in-time tick and step sizes if available. If they cannot be sourced, SOL runs stay invalid for every variant (§5). No synthetic spread model in the primary comparison. | Codex §4.1 answer on PR #15. |
 | P5 | Carried nits: `--maker-fee`/`--taker-fee` use `is not None`, so an empty value is rejected; `replay()` asserts the order book is empty before wrapping it for request counting. | Automated reviews on PR #14. |
 | P6 | **P&L reconciliation:** realised P&L by sell type, plus unrealised P&L of the remaining inventory at the final mark, must equal the final total equity minus the initial capital. | Codex (PR #15): attribution must reconcile with the account. |
+| P7 | **Completed-cycle count (for C5):** a completed cycle is a grid sell (a child `…/sell` order placed when its buy filled completely) that itself fills completely. It is reported per run and per week. Resting-sell P&L does not count cycles. | Codex (PR #16): the metric must be defined before it is promised. |
 
 ## 3. Variants
 
@@ -40,11 +53,15 @@ flags that default to off, so V0 and existing paper accounts are unaffected. Tim
 common to all:
 - Signals use **completed** bars only.
 - A daily signal computed from the UTC day ending at 00:00 takes effect at the **first
-  replay observation at or after 00:00:00 UTC** of the next day, never within the bar
-  that produced it.
-- For every grid variant (V0, A, B, C, F), emergency, hard-drawdown and daily-loss
-  controls always act first. No variant can delay or override them. D is the one
-  exception: it is a benchmark without these controls (§3 D).
+  valid replay observation at or after 00:00:00 UTC** of the next day, never within the
+  bar that produced it. A rejected or stale frame never executes a signal; the next
+  valid observation does.
+- For every grid variant (V0, A, B, C, F), every existing V0 control keeps its trigger
+  and deadline: emergency exit, hard-drawdown halt, daily-loss pause, soft-drawdown
+  reduction, range exit (6 h), drain and eligibility pauses. **No variant delays,
+  suppresses or clears any of them.** A variant can only add restrictions (fewer buys)
+  or add an exit with its own later deadline. D is the one exception: it is a benchmark
+  without these controls (§3 D).
 
 ### V0: baseline (`price-only-v1`)
 - **Code:** the commit that merges the prerequisites; it is recorded in every
@@ -53,36 +70,54 @@ common to all:
   cadence (P2).
 
 ### A: trend/cycle switch (daily SMA50 and SMA200)
-Inputs are the completed daily close `C`, `SMA50` and `SMA200` of the traded pair.
+Inputs are the completed daily close `C`, `SMA50` and `SMA200` of the traded pair. The
+state machine runs over the whole daily history from the first day on which SMA200 is
+defined, including the warm-up. The state at the first evaluated minute is therefore
+already determined. The initial state, before the first classified day, is Middle.
 
-| State | Condition | Behaviour |
-| --- | --- | --- |
 The state is updated once per completed daily bar, from the previous state and `C`:
 
 | State | Entered when | Behaviour |
 | --- | --- | --- |
 | **Up** | From Up: `C > SMA200`. From Recovering: a second consecutive `C > SMA200`. | Grids allowed, as in V0. |
-| **Recovering** | From Middle or Down: the first `C > SMA200`. | Same as Middle: no new grid, and an existing grid keeps running. A `trend_exit` already started completes (see below). |
+| **Recovering** | From Middle, Down or Unavailable: the first `C > SMA200`. | Same as Middle. |
 | **Middle** | From any state: `C ≤ SMA200` and `C > SMA50`. | No new grid. An existing grid keeps running: its sells, reentries within the grid and range exit behave as in V0. Reentries are allowed deliberately: they only rebuy levels the grid already sold, inside its existing range, and B's cap bounds the exposure in C. |
-| **Down** | From any state: `C ≤ SMA200` and `C ≤ SMA50`. | No new grid. At the effective time, resting buys are cancelled and resting sells are kept for one day (24 h). After that, the remaining inventory is liquidated with a marketable exit (`trend_exit`). |
+| **Down** | From any state: `C ≤ SMA200` and `C ≤ SMA50`. | No new grid, and a **Down sequence** starts unless one is already running (see below). |
+| **Unavailable** | A daily bar is missing or SMA50/SMA200 is undefined. | Same as Middle: no new grid, and no fill is forced. The two-close count restarts. |
 
+**Down sequence:**
+- **Start:** it starts at the effective time of the first Down classification (`T0`).
+  Resting buys are cancelled at `T0`, and resting sells stay in place.
+- **Deadline:** the trend deadline is `T0 + 24 h`. Further Down days do **not** reset
+  it.
+- **Existing exits are not postponed:** the deadline is only an **additional upper
+  bound**. A range exit, drain, halt or emergency exit that falls due earlier happens on
+  its own V0 schedule; the sequence then ends early if the account is flat.
+- **At the deadline:** remaining sells are cancelled, then the remaining inventory is
+  liquidated with marketable `trend_exit` sells. These are bounded by the same bid-size
+  participation limit as V0's liquidation. Unfilled residuals are retried at each
+  following valid observation under the same limits until the account is flat.
+- **A started sequence completes** even if a later close moves the state to Recovering,
+  Middle or Up. A new grid requires both the Up state and no running Down sequence.
+
+**Other rules:**
 - **Hysteresis:** Up is reached only through Recovering, so it takes two consecutive
   completed closes above SMA200. Leaving Up takes one close at or below SMA200.
-- **Started exits finish:** once Down has begun (buys cancelled, 24-hour sell window
-  open), the sequence completes even if a later close moves the state to Recovering or
-  Middle. A new grid needs the Up state.
-- **Initial state:** Middle, until the first classified daily bar.
-- **Priority:** emergency/hard/daily-loss controls, then `trend_exit`, then range exit.
-- **Warm-up:** at least 200 completed daily bars before the first evaluated minute.
-  Missing daily data at a decision time counts as **Down**, so the variant fails closed.
+- **Same-step labelling:** if several exits are due at the same observation, the fills
+  take the label of the highest-ranked one: halt/emergency `liquidation` >
+  daily-loss/soft-drawdown actions (as in V0) > `range_exit` > `drain` > `trend_exit`.
+  The ranking changes labels only, never timing.
+- **Warm-up:** at least 200 completed daily bars before the first evaluated minute (P3).
 
 ### B: inventory cap
 - **Definitions:**
   - **Active equity** = cash − pending reserve + inventory × mark. The secured reserve is
     already outside cash, so both reserves are excluded.
   - **Mark** = bid × (1 − slippage) × (1 − taker).
-  - **Committed exposure** = (inventory + remaining quantity of **every** resting buy) ×
-    mark.
+  - **Committed exposure** = inventory × mark + Σ over **every** resting buy of
+    (limit price × remaining quantity × (1 + maker fee)) + the proposed buy, valued the
+    same way. Resting buys are valued at their cost, not their mark, which is
+    conservative.
 - **Cap:** committed exposure including a new buy may not exceed **40% of active
   equity**. Because resting buys are already counted, their later fills can never breach
   the cap. At most, price moves can lift the inventory's value above it.
@@ -97,7 +132,14 @@ The state is updated once per completed daily bar, from the previous state and `
 - **Price drift:** if rising prices push committed exposure above 40%, this is allowed.
   There is no forced sale, but no new buy is placed until exposure is below the cap
   again.
-- **What it does not do:** it never forces a sale and never delays a sell.
+- **What it does not do:** it never forces a sale and never delays a sell. The cap
+  constrains new buy commitments; it does not guarantee the ratio at all times.
+- **40% is an experiment parameter,** not a new default, and it gives no authority to
+  use protected funds.
+- **Required tests:** concurrent resting buys that each fit alone but not together;
+  reentry creation at the cap; a partial fill followed by a new buy; a price-driven
+  breach (no sale, no new buy, then resumption below the cap); lot flooring below the
+  minimum notional.
 - **Deferred:** quote skewing by inventory (Avellaneda–Stoikov style) is not in v1. It
   would need its own spec.
 
@@ -107,30 +149,60 @@ The state is updated once per completed daily bar, from the previous state and `
   mechanism.
 
 ### D: trend benchmark (not a grid)
-- **Signal:** each traded pair is held when its completed daily close is above its
-  SMA50, and cash is held otherwise.
-- **Execution:** entries and exits are marketable at the next observation, paying the
-  taker fee plus slippage. Capital, marks, warm-up, timing and fees are identical to A.
-- **Missing or undefined signal:** cash.
+- **Signal:** each traded pair is held while its completed daily close is above its
+  SMA50, and cash is held otherwise. Missing, undefined, zero or negative values mean
+  cash.
+- **Sizing:** at each entry, all of the run's cash goes into the pair. The quantity is
+  floored to the lot step, and a buy is skipped if it is below the minimum notional.
+  D keeps no profit vault or reserves: all equity is one pot.
+- **Execution:** entries and exits are marketable at the next valid observation, at
+  ask or bid ± slippage, paying the taker fee. Each observation fills at most the
+  bid- or ask-size participation limit (10%), as V0's liquidation does. Unfilled
+  residuals are retried at each following valid observation until complete, or until
+  the signal reverses.
+- **Unchanged from A:** capital, marks, warm-up, timing and fees.
 - **Risk controls:** D is **exempt** from the common rule in §3. It has no daily-loss
   pause, soft or hard drawdown halt or emergency exit; it only follows its signal. Its
-  return and drawdown are reported as they are, as a pure benchmark.
+  return and drawdown are reported as they are, clearly labelled as a benchmark with a
+  different risk policy.
+- **State:** D is a replay-only calculation and never writes shared or persisted paper
+  state.
 
 ### E: volume-confirmed exit (deferred)
 Not part of v1. Extending the 6-hour exit timer increases loss exposure, so it needs a
 separate risk review first (Codex, PR #15).
 
-### F: order-flow pause
+### F: order-flow entry block
+F blocks new buys only. It is **not** a V0 pause: it never sets `draining`, never
+market-sells inventory and never clears or delays any other pause, halt or exit.
 - **Signal:** `share` = taker-buy **base** volume ÷ base volume over the last 15
-  **completed** one-minute bars.
-- **Pause:** if `share < 0.40`, the grid pauses new buys. Resting buys are cancelled, and
-  no new grid or reentry buy is placed.
-- **Resume:** buys resume after `share ≥ 0.45`, a hysteresis gap between 0.40 and 0.45.
-- **Zero or missing volume** in the window counts as `share` unavailable, and buys pause.
-  This fails closed.
-- **Unaffected:** resting sells, range exits and every risk exit continue as normal.
+  **completed, consecutive** one-minute bars.
+  - `share` is **unavailable** if any of those 15 bars is missing, which is not the
+    same as a zero-volume bar, or if the aggregate base volume over the 15 bars is
+    zero.
+  - A single zero-volume minute inside an otherwise complete window is valid input.
+- **Block:** F's own flag `flow_block` turns on when `share < 0.40` (strict) or `share`
+  is unavailable.
+  - While it is on, resting buys are cancelled, and no new grid or reentry buy is placed.
+  - A buy cancelled after a partial fill leaves its filled quantity unpaired. That
+    quantity gets a resting grid sell at the cancelled buy's target, exactly as a
+    complete fill would, so it pays the maker fee and needs no drain.
+- **Unblock:** `flow_block` turns off when `share ≥ 0.45` (inclusive). Turning it off
+  only lifts F's own restriction. Any other active pause, halt, drain or eligibility
+  veto stays in force.
+- **Startup:** `flow_block` starts on, so it fails closed. A start inside the
+  0.40–0.45 band stays blocked until `share ≥ 0.45`.
+- **Unaffected:** resting sells, range exits, drain and every risk exit continue as in
+  V0.
 - **Request budget:** cancellations count against it. The per-day request maximum is
   reported for F specifically.
+- **Required tests:**
+  - cancellation counts;
+  - a partial fill then a block (the resting sell for the unpaired quantity);
+  - threshold equalities at exactly 0.40 and 0.45;
+  - a missing minute versus a zero-volume minute;
+  - an F unblock while a V0 eligibility pause is active (the pause must remain);
+  - overlapping F and range-exit states.
 
 ## 4. Matrix
 
@@ -146,19 +218,31 @@ separate risk review first (Codex, PR #15).
 - **Reporting:** every attempted run is reported, including invalid runs, halts and zero
   trades.
 
-## 5. Validity
+## 5. Validity and the comparison mask
 
-A run is valid when all hold:
-- the integrity gates pass;
-- there are zero accounting problems;
-- there are zero rejected frames;
-- the warm-up is sufficient.
+**Comparison mask, fixed before any variant runs.** For each pair-window, the following
+variant-independent checks are run first:
+- the manifest and checksums;
+- the hourly/minute and daily/hourly cross-checks;
+- warm-up sufficiency;
+- the availability of sourced exchange filters (P4).
 
-An invalid run counts as a **failure** for its variant in §6. The one exception is a
-pair that is invalid for **every** variant for the same data reason, such as SOL without
-sourced filters. That pair is reported and excluded from all variants alike. This is
-not hypothetical: every `practice-2022` SOL run is currently invalid
+A pair-window that fails any of them is **excluded for every variant alike** and listed
+with the reason. Exclusion is per pair-window: a pair can be excluded from one window
+and kept in another. The mask is written to the results before scoring and cannot
+change afterwards. Every current `practice-2022` SOL pair-window fails the filter check
+unless P4 sources historical filters
 ([fee-levels-2026-09.md](backtests/fee-levels-2026-09.md), tick-size mismatch).
+
+**Minimum evidence:** each development window must keep at least 2 included pairs.
+Otherwise the outcome is "insufficient evidence", not a winner.
+
+**Run validity:** a run in the mask is valid when:
+- there are zero accounting problems, including the P6 reconciliation;
+- there are zero rejected frames.
+
+An invalid run **fails its variant** (C4). A failure in one variant never removes the
+pair for the other variants.
 
 ## 6. Acceptance and selection (owner decisions, 2026-09-24)
 
@@ -167,17 +251,23 @@ following hold across its included runs, that is every pair, window and path:
 
 | # | Criterion | Owner choice |
 | --- | --- | --- |
-| C1 | **Worst drop,** on two bases in every run: (a) max drawdown of **total equity** (including both profit reserves) ≤ **10%** of its running peak; (b) max drawdown of **active equity** (excluding the reserves, the basis of the runtime's 8%/12% breakers) ≤ **10%** of its own high-water mark. By (b), a passing run can never have triggered the 12% hard-drawdown halt. Once profit has moved to the reserve, (a) alone would understate losses on the capital still trading. | 10% (€10 on €100) |
-| C2 | **Makes money:** the mean return across runs is > 0 after fees, and so is the median. | Beat cash |
-| C3 | **Safer than holding:** in every run, max drawdown < that run's buy-and-hold max drawdown (common sampling, P2). | Less drop than holding |
+| C1 | **Worst drop,** on two bases in every run: (a) max drawdown of **total equity** (including both profit reserves) ≤ **10%** of its running peak; (b) max drawdown of **active equity** (excluding the reserves, the basis of the runtime's 8%/12% breakers) ≤ **10%** of its own high-water mark. By (b), a passing run can never have triggered the 12% hard-drawdown halt. Once profit has moved to the reserve, (a) alone would understate losses on the capital still trading. Both are measured from the running peak, so after growth 10% can exceed 10 quote units. Total equity = cash − pending + inventory mark + pending reserve + secured reserve. | 10%; €10 is only the illustration at the starting €100 |
+| C2 | **Makes money:** the mean return across included runs is > 0 after fees, and so is the median. All runs have equal weight, and the median of an even count is the mean of the two middle values. | Beat cash |
+| C3 | **Safer than holding:** in every included run, max total-equity drawdown < that run's buy-and-hold max drawdown (common sampling, P2). This is strict, as recorded; it is not relaxed to the median because it is hard to pass. A run where buy-and-hold has zero drawdown fails C3 and is reported, not exempted. | Less drop than holding |
 | C4 | **Integrity:** every included run is valid (§5). | — |
-| C5 | **Activity:** no minimum. Completed buy→sell cycles per week are reported for information. | No minimum |
+| C5 | **Activity:** no minimum. Completed cycles (P7) per week are reported for information. | No minimum |
 
-**Selection:**
-1. Among passing variants, pick the highest **mean return**.
-2. If two are within 0.25 percentage points, pick the lower mean max drawdown.
-3. If those are also equal, pick the simpler variant, in the order V0, A, B, F, C.
-4. D is a benchmark and **cannot be selected**. C1–C5 are still computed and reported for D, for information only. It is reported next to the winner.
+**Selection (deterministic):**
+1. The **eligible set** is the passing variants among V0, A, B, C and F. D is excluded
+   before ranking.
+2. Let `M` be the highest mean return in the eligible set, in percentage points rounded
+   to 6 decimals. The **tie set** is every eligible variant with mean return ≥ `M − 0.25`
+   (inclusive).
+3. Within the tie set, pick the lowest mean total-equity max drawdown, rounded the same
+   way.
+4. If still tied, pick the first in the fixed simplicity order V0, A, B, F, C.
+5. D **cannot be selected.** C1–C5 are still computed and reported for D, for
+   information only, next to the winner.
 
 **No winner:** if no variant passes, v1 ends with "no winner". Nothing runs on the
 reserved window, and the report says so.
@@ -192,7 +282,39 @@ unseen regime:
 - The window is therefore a prospectively reserved replay window, and its result is
   weaker evidence than a truly unseen period.
 - Failures on it are recorded as they are. No variant is retuned and rerun on the same
-  window.
+  window, and a failed attempt is never replaced or reused as a fresh evaluation.
+
+**Prior exposure record (as of this draft):**
+- **Seen in chat:** Claude read public reports of the 2025–26 BTC regime (the peak on
+  2025-10-06, the roughly 50% decline and the June 2026 low).
+- **Not done:** no 2025–26 archive data has been downloaded, and no 2025–26 replay,
+  feature or statistic has been computed.
+- **Outside the window:** the live-stream and Revolut X order-book checks of September
+  2026 fall after it.
+
+Any later exposure before the run is added to this record.
+
+**Frozen before access:** the following are frozen and recorded before the window's data
+is fetched:
+- the code commit, config, spec version and dataset spec;
+- the universe (the pairs listed below);
+- the comparison-mask rules (§5);
+- the scoring (§6);
+- the execution conventions.
+
+Fetching and verifying the data are part of the run and happen only after the owner's
+go. The manifest hashes are recorded at that moment and are then fixed.
+
+**Technical reruns:**
+- **Allowed** only when a run is invalid because of a harness defect that does not
+  change strategy, parameters or data. The fix must be reviewed by Codex, and both the
+  failed and the rerun artifacts are kept.
+- **Not allowed** for data invalidity: that pair-window is excluded under §5.
+- **Not allowed** for a strategy result the owner dislikes.
+
+**Holdout mask:** the §5 rules apply. If fewer than 3 of the 5 pairs are included, the
+outcome is "insufficient evidence", not a pass. There is no silent averaging over the
+surviving pairs, and every exclusion is listed.
 
 **Owner gate:** this run starts only after the owner explicitly says go in the
 conversation. That go is recorded in the report with its date. Finishing §2–§6 does not
@@ -208,7 +330,8 @@ start it automatically. Before asking, Claude reports:
 - **Runs:** the winner, V0 and D, at the primary fees, on both paths.
 - **Data problems:** a pair that fails integrity is reported as invalid and is **not**
   replaced by another pair.
-- **Judging:** the result is judged against C1–C4 and reported whether it passes or not.
+- **Judging:** the result is judged against C1–C4 on the included runs and reported
+  whether it passes or not.
   A pass does not authorise live trading; it only justifies the next step, a proposal
   for paper trading on live Revolut X prices, which needs its own review.
 

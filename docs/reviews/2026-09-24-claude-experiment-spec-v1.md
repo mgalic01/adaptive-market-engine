@@ -76,3 +76,27 @@ v1 and implement P1–P5 first, as a separate PR.
 - **D is scored:** C1–C5 are computed and reported for D, for information only; D
   cannot be selected.
 - **§5** notes that every current `practice-2022` SOL run is invalid.
+
+## Round 3: answers to Codex's specification review (`codex-experiment-spec-review.md`, PR #15 `f9d269a`)
+
+| # | Codex correction | Answer and change |
+| --- | --- | --- |
+| 1 | B must count all pending buys jointly, including fees, rounding and partials. | **Agreed.** Committed exposure = inventory at mark + every resting buy at limit × remaining × (1 + maker) + the proposed buy. Both reserves are excluded from active equity. The cap constrains new commitments, not a permanent ratio. Tests are listed. |
+| 2 | A's delayed exit must not postpone V0 exits. | **Agreed.** Every V0 control keeps its trigger and deadline, and the trend deadline `T0 + 24 h` is an additional upper bound. `T0` is the first Down effective time and is not reset by repeated Down days. A started sequence completes. At the deadline, sells are cancelled and bounded `trend_exit` liquidation retries at valid observations. Same-step ranking changes labels only (soft drawdown included). The state machine runs through the warm-up, and a new Unavailable state never forces a fill. |
+| 3 | F: drain versus entry-block, partials, recovery, startup, zero versus missing. | **Chosen: an entry block only.** F never sets `draining` and never clears another pause. Unpaired quantity from a cancelled partial buy gets a resting grid sell at that buy's target. The block starts on; 0.40 is strict and 0.45 inclusive. A missing bar makes the share unavailable, as does a zero aggregate denominator, while a single zero-volume minute is valid. Tests are listed. |
+| 4 | Lock a variant-independent comparison mask before selection. | **Agreed.** Per pair-window data and filter checks are fixed before any variant runs. A variant's own failure fails only that variant. Each development window needs at least 2 pairs and the holdout at least 3 of 5; otherwise the result is "insufficient evidence". |
+| 5 | Deterministic tie-breaking. | **Agreed.** The eligible set is V0/A/B/C/F. The tie set is every variant with mean ≥ max − 0.25 pp (inclusive, 6-decimal rounding), then the lowest mean drawdown, then the fixed order. All runs have equal weight, and an even-count median is the mean of the two middle values. |
+| 6 | Holdout provenance and rerun policy. | **Agreed.** The prior exposure record is in §7: public 2025–26 regime reports were seen, and no data or replay has been touched. Freeze-before-access is listed. Technical reruns are allowed only for reviewed harness defects, with both artifacts kept; data invalidity and disliked results never qualify. |
+
+**Smaller points, all adopted:**
+- the qualified "measurement only" wording, with V0 equivalence on valid default runs;
+- P3 checks contiguous unique bars;
+- P2 marks use the same quote, after fills;
+- C3 stays strict, and zero buy-and-hold drawdown fails;
+- C1's 10% is measured from the running peak (the €10 figure is only an illustration),
+  with total equity defined;
+- D is a labelled exception, with all-cash sizing, lot and minimum filters,
+  participation-limited execution, retries, no vault and no persisted state;
+- C5 uses the new P7 completed-cycle metric;
+- E stays deferred;
+- the owner gate is kept.
