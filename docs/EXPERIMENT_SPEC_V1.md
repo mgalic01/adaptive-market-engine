@@ -39,7 +39,7 @@ fills, for both the strategy and buy-and-hold.
 | # | Change | Why |
 | --- | --- | --- |
 | P1 | **Record the exit reason** on every `exit/` fill: `range_exit`, `drain`, `liquidation` (halt or emergency) and, for variant A, `trend_exit`. Report the realised P&L per reason. | Codex (PR #14): losses cannot be attributed to range exits without it. |
-| P2 | **Common drawdown sampling:** strategy total equity, strategy active equity (C1b) and buy-and-hold equity are all sampled on the same schedule (every quote of every bar). | Criterion C3 compares the two drawdowns; they must be measured the same way. |
+| P2 | **Common drawdown sampling:** strategy total equity and buy-and-hold equity are sampled on the same schedule: every quote of every bar, after that quote's fills. For C1(b), active equity and the reserve-adjusted `risk_high` are also recorded at every pre-fill and post-fill risk evaluation the engine performs, together with any hard-drawdown halt. | Criterion C3 compares the two drawdowns; they must be measured the same way. |
 | P3 | **Daily history:** dataset specs gain `daily_warmup_start`. Binance `1d` archives are fetched from that month and checksummed. Over the overlap, every expected day must be present exactly once and contiguous, and must match the aggregation of its 24 unique contiguous `1h` bars, not just an aggregate OHLCV match. | Variants A and D need at least 200 completed daily bars before the evaluation starts. |
 | P4 | **Historical exchange filters for SOL:** use dated, sourced point-in-time tick and step sizes if available. If they cannot be sourced, SOL runs stay invalid for every variant (§5). No synthetic spread model in the primary comparison. | Codex §4.1 answer on PR #15. |
 | P5 | Carried nits: `--maker-fee`/`--taker-fee` use `is not None`, so an empty value is rejected; `replay()` asserts the order book is empty before wrapping it for request counting. | Automated reviews on PR #14. |
@@ -118,12 +118,23 @@ The state is updated once per completed daily bar, from the previous state and `
     (limit price × remaining quantity × (1 + maker fee)) + the proposed buy, valued the
     same way. Resting buys are valued at their cost, not their mark, which is
     conservative.
-- **Cap:** committed exposure including a new buy may not exceed **40% of active
-  equity**. Because resting buys are already counted, their later fills can never breach
-  the cap. At most, price moves can lift the inventory's value above it.
-- **Placement order:** a new grid places its buy levels from the highest price down. It
-  stops at the first level that would breach the cap, and the refused levels are
-  recorded in the report. Reentry buys pass the same check when they are created.
+  - **Prospective active equity** = active equity − Σ over every resting buy and the
+    proposed buy of limit × quantity × [(1 + maker) − (1 − slippage)(1 − taker)]. This
+    is the equity left if all of them filled at their limits and were immediately marked
+    at the limit price with the exit haircut, so it deducts their fees and haircuts.
+- **Cap:** committed exposure (including the proposed buy) ≤ **40% of prospective active
+  equity**.
+  - The rule bounds new commitments under this stated valuation.
+  - It is **not** a guarantee that the ratio holds afterwards: price moves after a
+    fill, or a fill at a better price, can still lift the measured ratio.
+- **Placement order:** a new grid places its buy levels from the highest price down.
+  - The first level that does not fit completely is **resized** to the largest quantity
+    that fits, floored to the lot step.
+  - If the resized quantity is below the minimum notional, that level is skipped.
+  - Either way, every **lower** level is skipped. Resized and skipped levels are recorded
+    in the report.
+  - Reentry buys pass the same check when they are created, with the same resize or skip
+    rule.
 - **Rounding and fills:**
   - A capped quantity is floored to the lot step. If it is then below the minimum
     notional, the buy is not placed.
@@ -136,7 +147,8 @@ The state is updated once per completed daily bar, from the previous state and `
   constrains new buy commitments; it does not guarantee the ratio at all times.
 - **40% is an experiment parameter,** not a new default, and it gives no authority to
   use protected funds.
-- **Required tests:** concurrent resting buys that each fit alone but not together;
+- **Required tests:** the prospective-equity arithmetic with fees; the resize-then-skip
+  boundary; concurrent resting buys that each fit alone but not together;
   reentry creation at the cap; a partial fill followed by a new buy; a price-driven
   breach (no sale, no new buy, then resumption below the cap); lot flooring below the
   minimum notional.
@@ -251,7 +263,7 @@ following hold across its included runs, that is every pair, window and path:
 
 | # | Criterion | Owner choice |
 | --- | --- | --- |
-| C1 | **Worst drop,** on two bases in every run: (a) max drawdown of **total equity** (including both profit reserves) ≤ **10%** of its running peak; (b) max drawdown of **active equity** (excluding the reserves, the basis of the runtime's 8%/12% breakers) ≤ **10%** of its own high-water mark. By (b), a passing run can never have triggered the 12% hard-drawdown halt. Once profit has moved to the reserve, (a) alone would understate losses on the capital still trading. Both are measured from the running peak, so after growth 10% can exceed 10 quote units. Total equity = cash − pending + inventory mark + pending reserve + secured reserve. | 10%; €10 is only the illustration at the starting €100 |
+| C1 | **Worst drop,** on two bases in every run. **(a)** The max drawdown of **total equity** (cash − pending + inventory mark + pending reserve + secured reserve) is ≤ **10%** of its running peak. **(b) Proposed, pending owner confirmation, because it is stricter than the earlier total-equity-only wording:** the drawdown of **active equity** against the runtime's **reserve-adjusted risk high-water mark** (`risk_high`, which `_settle` scales down after reserve allocations, so a reserve transfer is not a trading drawdown) is ≤ **10%**. It is sampled at every pre-fill and post-fill risk evaluation the engine performs. In addition, **any hard-drawdown halt in a run fails C1(b)** outright, whatever the samples show. Both drawdowns are measured from peaks, so after growth 10% can exceed 10 quote units. | 10%; €10 is only the illustration at the starting €100 |
 | C2 | **Makes money:** the mean return across included runs is > 0 after fees, and so is the median. All runs have equal weight, and the median of an even count is the mean of the two middle values. | Beat cash |
 | C3 | **Safer than holding:** in every included run, max total-equity drawdown < that run's buy-and-hold max drawdown (common sampling, P2). This is strict, as recorded; it is not relaxed to the median because it is hard to pass. A run where buy-and-hold has zero drawdown fails C3 and is reported, not exempted. | Less drop than holding |
 | C4 | **Integrity:** every included run is valid (§5). | — |

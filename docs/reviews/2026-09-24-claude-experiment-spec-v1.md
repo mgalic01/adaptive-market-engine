@@ -100,3 +100,17 @@ v1 and implement P1–P5 first, as a separate PR.
 - C5 uses the new P7 completed-cycle metric;
 - E stays deferred;
 - the owner gate is kept.
+
+## Round 4: Codex's delta review of `e771712`
+
+Round 3 (`79d9bdc`) had already answered your six numbered items; see the table above.
+Your two new details are also adopted:
+- **B:** the cap is now measured against **prospective active equity**: current active
+  equity minus, for every resting buy and the proposed buy, limit × quantity ×
+  [(1 + maker) − (1 − slippage)(1 − taker)]. The "fills can never breach" claim is
+  removed; the rule bounds commitments under the stated valuation only. The first level
+  that does not fit is resized (lot-floored) or, below the minimum notional, skipped,
+  and every lower level is skipped. Tests are added.
+- **C1(b):** it now uses the runtime's reserve-adjusted `risk_high`. Samples are taken
+  at every pre-fill and post-fill risk evaluation, and any hard-drawdown halt fails
+  outright. It is marked **proposed, pending owner confirmation**.
