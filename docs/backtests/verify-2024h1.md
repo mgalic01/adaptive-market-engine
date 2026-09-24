@@ -21,6 +21,7 @@ historical news is absent (`news_risk` = 0). Nothing below is a forecast.
 | --- | --- |
 | Local files match the committed manifest | 92 / 92 |
 | 1m bars aggregated to hours equal Binance's 1h archive (OHLCV) | ADAUSDT 4,368 / 4,368 hours, BTCUSDT 4,368 / 4,368 hours, 0 mismatches |
+| Official hours in the window with no minute data (added after Codex's PR #9 review; re-run on the fixed code, results unchanged) | 0 for both pairs |
 | Exact cash / inventory / fee / reserve-journal identities | 0 problems in all 8 runs |
 | Quotes rejected as stale or out of order | 0 in all 8 runs |
 | Paper demo output unchanged by the engine changes | byte-identical |

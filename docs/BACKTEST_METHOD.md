@@ -105,7 +105,7 @@ review 2: a perfectly healthy market would otherwise vote bullish and block RANG
 | downside_quality | `1 − clamp(max drawdown over 168 h / 20%)` |
 | data_quality | share of the last 168 hours present; 0 when stale |
 | spread_pct | the assumed spread |
-| depth_multiple | `(24h quote volume / 1440) / (initial capital × 0.8 / 8)` |
+| depth_multiple | `(24h quote volume / 1440) / (initial capital × 0.8 / 4)`. The engine spreads 80% of cash over the buy pairs below fair value, about half of the 8 levels (corrected after Codex's PR #9 review; it previously divided by 8 and overstated depth by ~2×) |
 | fair value | SMA20 of hourly closes |
 | ATR | simple ATR(14) of hourly candles |
 
@@ -141,7 +141,9 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
 ## Verification in every run
 
 - Every file matches the manifest before the run starts.
-- Aggregated 1m bars match Binance's 1h archive exactly (counts in `results.json`).
+- Aggregated 1m bars match Binance's 1h archive exactly, and no official hour inside the
+  evaluation window lacks minute data (`hours_absent_from_minutes`, added after Codex's
+  PR #9 review). Counts are in `results.json`.
 - Exact Decimal identities between the fill journal and the final account:
   - cash = initial − buys − buy fees + sells − sell fees − secured reserve;
   - inventory = bought − sold;

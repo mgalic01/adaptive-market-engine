@@ -219,3 +219,20 @@ class ReasonKeyTests(unittest.TestCase):
             "cash: grid spacing #% is below required #%",
             reason_key("cash", "grid spacing 0.7156% is below required 1.0806%"),
         )
+
+
+class CrossCheckTests(unittest.TestCase):
+    def test_hour_with_no_minute_data_is_reported(self):
+        from crypto_grid_bot.backtest.klines import aggregate
+        from crypto_grid_bot.backtest.replay import cross_check_hourly
+
+        minutes = [candle(START_MS + i * 60_000, 1.0, 1.0, 1.0, 1.0) for i in range(60)]
+        official = list(aggregate(minutes))
+        official.append(candle(START_MS + HOUR_MS, 1.0, 1.0, 1.0, 1.0))  # no 1m data
+        result = cross_check_hourly(minutes, official, (START_MS, START_MS + 2 * HOUR_MS))
+        self.assertEqual(1, result["hours_compared"])
+        self.assertEqual(0, result["hours_mismatched"])
+        self.assertEqual(1, result["hours_absent_from_minutes"])
+        # Official hours outside the minute window (warm-up) are not counted.
+        outside = cross_check_hourly(minutes, official, (START_MS, START_MS + HOUR_MS))
+        self.assertEqual(0, outside["hours_absent_from_minutes"])
