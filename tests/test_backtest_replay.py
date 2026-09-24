@@ -18,6 +18,7 @@ from crypto_grid_bot.backtest.replay import (
     candidate_for,
     check_accounting,
     cross_check_daily,
+    cross_check_hourly,
     order_requests,
     replay,
     signals_for,
@@ -658,11 +659,18 @@ class DailyCrossCheckTests(unittest.TestCase):
         self.assertEqual(3, result["daily_warmup_days"])
         self.assertEqual(1, result["daily_warmup_short"])  # fewer than 200 days
 
-    def test_volume_only_drift_is_a_mismatch(self):
+    def test_volume_drift_is_counted_separately_up_to_the_tolerance(self):
         hours = self.hours(3)
         daily = self.daily_from(hours)
-        daily[1] = replace(daily[1], volume=daily[1].volume + D("1"))
-        self.assertEqual(1, self.check(daily, hours)["daily_days_mismatched"])
+        volume = daily[1].volume
+        within = replace(daily[1], volume=volume * D("1.001"))  # exactly 0.1%
+        beyond = replace(daily[1], volume=volume * D("1.0011"))
+        moved = replace(daily[1], close=daily[1].close + D("0.0001"))
+        for bar, drift, mismatched in ((within, 1, 0), (beyond, 0, 1), (moved, 0, 1)):
+            with self.subTest(bar=bar):
+                result = self.check([daily[0], bar, daily[2]], hours)
+                self.assertEqual(drift, result["daily_days_volume_drift"])
+                self.assertEqual(mismatched, result["daily_days_mismatched"])
 
     def test_missing_day_duplicate_day_and_missing_hour_are_counted(self):
         hours = self.hours(3)
@@ -671,3 +679,28 @@ class DailyCrossCheckTests(unittest.TestCase):
         self.assertEqual(1, self.check([*daily, daily[2]], hours)["daily_days_duplicated"])
         gap = hours[:30] + hours[31:]  # one hour of day 2 absent
         self.assertEqual(1, self.check(daily, gap)["daily_days_hours_incomplete"])
+
+
+class VolumeDriftTests(unittest.TestCase):
+    """Owner decision 2026-09-24: volume-only drift up to 0.1% is counted, not fatal."""
+
+    def test_compare_bars(self):
+        from crypto_grid_bot.backtest.replay import compare_bars
+
+        base = candle(START_MS, 1.0, 1.1, 0.9, 1.05, volume="1000")
+        self.assertEqual("match", compare_bars(base, base))
+        self.assertEqual("drift", compare_bars(replace(base, volume=D("1000.9")), base))
+        self.assertEqual("drift", compare_bars(replace(base, volume=D("999")), base))
+        self.assertEqual("mismatch", compare_bars(replace(base, volume=D("1001.01")), base))
+        self.assertEqual("mismatch", compare_bars(replace(base, high=base.high + 1), base))
+        zero = replace(base, volume=D("0"))
+        self.assertEqual("mismatch", compare_bars(base, zero))  # no relative tolerance on 0
+
+    def test_hourly_drift_is_reported_and_not_a_mismatch(self):
+        from crypto_grid_bot.backtest.klines import aggregate
+
+        minutes = [candle(START_MS + i * 60_000, 1.0, 1.001, 0.999, 1.0) for i in range(60)]
+        (hour,) = aggregate(minutes)
+        drifted = replace(hour, volume=hour.volume * D("1.0005"))
+        result = cross_check_hourly(minutes, [drifted], (START_MS, START_MS + HOUR_MS))
+        self.assertEqual((0, 1), (result["hours_mismatched"], result["hours_volume_drift"]))

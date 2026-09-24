@@ -520,7 +520,7 @@ def cross_check_daily(
         if hourly_window[0] <= kline.open_ms < hourly_window[1]:
             by_day.setdefault(kline.open_ms // DAY_MS * DAY_MS, []).append(kline)
     official = {k.open_ms: k for k in daily}
-    compared = mismatched = incomplete = 0
+    compared = mismatched = incomplete = drift = 0
     for day in range(hourly_window[0], hourly_window[1], DAY_MS):
         hours = by_day.get(day, [])
         if len({h.open_ms for h in hours}) != 24 or len(hours) != 24:
@@ -531,13 +531,14 @@ def cross_check_daily(
             continue  # counted as missing below
         compared += 1
         (merged,) = aggregate(sorted(hours, key=lambda h: h.open_ms), DAY_MS)
-        ours = (merged.open, merged.high, merged.low, merged.close, merged.volume)
-        theirs = (reference.open, reference.high, reference.low, reference.close, reference.volume)
-        mismatched += int(ours != theirs)
+        outcome = compare_bars(merged, reference)
+        mismatched += int(outcome == "mismatch")
+        drift += int(outcome == "drift")
     warmup = sum(1 for o in opens if o + DAY_MS <= evaluation_start_ms)
     return {
         "daily_days_compared": compared,
         "daily_days_mismatched": mismatched,
+        "daily_days_volume_drift": drift,
         "daily_days_missing": sum(1 for d in days if d not in present),
         "daily_days_duplicated": len(opens) - len(present),
         "daily_days_hours_incomplete": incomplete,
@@ -557,6 +558,26 @@ def load_minutes(data_dir: Path, manifest: dict[str, Any], symbol: str) -> Itera
         yield from rows
 
 
+# Owner decision (2026-09-24): Binance archives sometimes disagree on volume only. With
+# OHLC identical, a relative volume difference up to 0.1% is counted as drift, not as a
+# failure. Larger differences, any price difference and any missing bar stay fatal.
+VOLUME_DRIFT_TOLERANCE = Decimal("0.001")
+
+
+def compare_bars(ours: Kline, theirs: Kline) -> str:
+    """'match', 'drift' (OHLC identical, volume within tolerance) or 'mismatch'."""
+    prices = (ours.open, ours.high, ours.low, ours.close)
+    if prices != (theirs.open, theirs.high, theirs.low, theirs.close):
+        return "mismatch"
+    if ours.volume == theirs.volume:
+        return "match"
+    if theirs.volume > ZERO and abs(ours.volume - theirs.volume) <= (
+        theirs.volume * VOLUME_DRIFT_TOLERANCE
+    ):
+        return "drift"
+    return "mismatch"
+
+
 def cross_check_hourly(
     minutes: Iterable[Kline], hourly: Sequence[Kline], window: tuple[int, int]
 ) -> dict[str, int]:
@@ -567,7 +588,7 @@ def cross_check_hourly(
     pass the check silently.
     """
     official = {k.open_ms: k for k in hourly}
-    compared = mismatched = missing = 0
+    compared = mismatched = missing = drift = 0
     per_hour: dict[int, int] = {}
 
     def counted(source: Iterable[Kline]) -> Iterator[Kline]:
@@ -584,9 +605,9 @@ def cross_check_hourly(
             missing += 1
             continue
         compared += 1
-        ours = (candle.open, candle.high, candle.low, candle.close, candle.volume)
-        theirs = (reference.open, reference.high, reference.low, reference.close, reference.volume)
-        mismatched += int(ours != theirs)
+        outcome = compare_bars(candle, reference)
+        mismatched += int(outcome == "mismatch")
+        drift += int(outcome == "drift")
     in_window = range(window[0], window[1], HOUR_MS)
     absent = sum(1 for o in official if window[0] <= o < window[1] and o not in seen)
     absent_both = sum(1 for o in in_window if o not in official and o not in seen)
@@ -597,6 +618,7 @@ def cross_check_hourly(
     return {
         "hours_compared": compared,
         "hours_mismatched": mismatched,
+        "hours_volume_drift": drift,
         "hours_missing": missing,
         "hours_absent_from_minutes": absent,
         "hours_absent_from_both": absent_both,
