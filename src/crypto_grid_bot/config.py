@@ -130,9 +130,11 @@ def _validate(config: BotConfig) -> None:
         raise ConfigurationError("maximum_active_grids must be between 1 and 5")
     if not -1 <= config.bear_threshold < 0 < config.bull_threshold <= 1:
         raise ConfigurationError("invalid bull/bear thresholds")
-    if not 0 <= config.range_score_limit < min(config.bull_threshold, -config.bear_threshold):
-        raise ConfigurationError("range threshold must not overlap bull/bear thresholds")
-    if not 0 < config.range_adx_limit <= 100:
+    if not 0 < config.range_score_limit < min(config.bull_threshold, -config.bear_threshold):
+        raise ConfigurationError(
+            "range threshold must be positive and not overlap bull/bear thresholds"
+        )
+    if not 0 < config.range_adx_limit < 100:
         raise ConfigurationError("invalid range ADX threshold")
     if not 0 < config.minimum_opportunity_score <= 1 or not 0 <= config.maximum_news_risk <= 1:
         raise ConfigurationError("invalid opportunity thresholds")
