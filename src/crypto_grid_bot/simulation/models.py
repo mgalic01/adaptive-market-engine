@@ -35,6 +35,12 @@ def timestamp(value: str) -> datetime:
     return result.astimezone(UTC)
 
 
+def seconds_between(start: str, end: str) -> Decimal:
+    """Exact elapsed seconds between two ISO timestamps (negative if reversed)."""
+    delta = timestamp(end) - timestamp(start)
+    return D(delta.days * 86400 + delta.seconds) + D(delta.microseconds) / D(1_000_000)
+
+
 @dataclass(frozen=True)
 class MarketRules:
     symbol: str = "DEMOUSDT"
@@ -124,7 +130,9 @@ class Account:
     recovery_count: int = 0
     draining: bool = False
     range_exit: bool = False
-    outside_since: str = ""
+    range_exit_since: str = ""
+    outside_seconds: Decimal = ZERO
+    outside_last: str = ""
     grid_lower: Decimal = ZERO
     grid_upper: Decimal = ZERO
     settlement_count: int = 0
@@ -178,6 +186,7 @@ class Account:
             "last_equity",
             "grid_lower",
             "grid_upper",
+            "outside_seconds",
         ):
             nonnegative(getattr(self, name))
         if min(self.initial_cash, self.reserve_high, self.risk_high, self.day_start) <= ZERO:
@@ -188,6 +197,10 @@ class Account:
             type(flag) is not bool for flag in (self.liquidating, self.draining, self.range_exit)
         ):
             raise ValueError("invalid saved lifecycle flag")
+        if self.range_exit != bool(self.range_exit_since):
+            raise ValueError("range-exit timestamp does not match the lifecycle flag")
+        if self.outside_seconds and not self.outside_last:
+            raise ValueError("outside-range time has no last observation")
         for counter in (self.recovery_count, self.settlement_count, self.cycles, self.fill_count):
             if type(counter) is not int or counter < 0:
                 raise ValueError("invalid saved counter")
@@ -199,7 +212,12 @@ class Account:
             context.prec = 80
             if sum(self.confirmed_transfers.values(), ZERO) != self.secured:
                 raise ValueError("simulated transfer journal does not reconcile to secured reserve")
-        for when in (self.outside_since, self.last_observed, self.last_received):
+        for when in (
+            self.outside_last,
+            self.range_exit_since,
+            self.last_observed,
+            self.last_received,
+        ):
             if when:
                 timestamp(when)
         for key, order in self.orders.items():
@@ -251,6 +269,7 @@ class Account:
             "last_equity",
             "grid_lower",
             "grid_upper",
+            "outside_seconds",
         ):
             data[key] = decimal(data[key])
         orders: dict[str, LimitOrder] = {}

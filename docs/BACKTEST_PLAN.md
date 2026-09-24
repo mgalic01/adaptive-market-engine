@@ -44,6 +44,17 @@ quotes without an explicit tested adapter and its limitations.
 - Include range, trend and crash periods, unavailable markets, gaps and missed
   fills. Report negative results and the effect of selection/survivorship bias.
 
+## Lifecycle and regime parameters to measure
+
+Report results for these as explicit, pre-registered variants rather than tuning
+them on the test window:
+
+- `recenter_after_exit` on/off and `recenter_cooldown_seconds` (e.g. 6 h, 24 h, 72 h);
+  record time in cash after exits and losses realised by out-of-range exits.
+- `outside_range_seconds` (e.g. 2 h, 6 h, 24 h).
+- `minimum_input_quality`, `range_dispersion_limit` and the range score/ADX box;
+  report how often each regime and each veto occurs per market and period.
+
 Agree on acceptance criteria before tuning. An exploratory replay is a go/no-go
 screen, not evidence sufficient for live deployment. No production development,
 capital increase or removal of risk controls is justified by one profitable window.

@@ -22,14 +22,16 @@ from crypto_grid_bot.simulation.models import (
     Quote,
     floor_step,
     nonnegative,
+    seconds_between,
     timestamp,
 )
 from crypto_grid_bot.simulation.store import StateStore, encode
 from crypto_grid_bot.strategy.grid import GridBuilder, GridNotViable
 from crypto_grid_bot.strategy.opportunity import OpportunityScorer
-from crypto_grid_bot.strategy.regime import RegimeClassifier, RegimeThresholds
+from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
 
 DEFAULT_CAPITAL = D("100")
+SCHEMA = 3
 
 
 class TransientFrame(ValueError):
@@ -39,13 +41,23 @@ class TransientFrame(ValueError):
 @dataclass(frozen=True)
 class SimulationPolicy:
     recovery_frames: int = 2
+    # Observed outside-range time (valid frames only) before exiting a grid to cash.
     outside_range_seconds: int = 21600
+    # After a range exit, allow a new grid centred on current fair value once this
+    # cooldown has passed and eligibility is reconfirmed. False = wait in cash until
+    # price re-enters the old band (an explicit, documented terminal-until-return state).
+    recenter_after_exit: bool = True
+    recenter_cooldown_seconds: int = 86400
 
     def __post_init__(self) -> None:
         if type(self.recovery_frames) is not int or not 2 <= self.recovery_frames <= 100:
             raise ValueError("recovery requires 2-100 distinct eligible frames")
         if type(self.outside_range_seconds) is not int or self.outside_range_seconds <= 0:
             raise ValueError("outside-range timeout must be a positive integer")
+        if type(self.recenter_after_exit) is not bool:
+            raise ValueError("recenter_after_exit must be a boolean")
+        if type(self.recenter_cooldown_seconds) is not int or self.recenter_cooldown_seconds <= 0:
+            raise ValueError("recentering cooldown must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -78,7 +90,7 @@ class PaperSimulator:
         self.policy = policy or SimulationPolicy()
         identity = encode(
             {
-                "schema": 2,
+                "schema": SCHEMA,
                 "policy": asdict(self.policy),
                 "config": asdict(config),
                 "rules": asdict(rules),
@@ -92,15 +104,7 @@ class PaperSimulator:
             hard_drawdown_pct=config.hard_drawdown_pct,
             maximum_data_age_seconds=config.maximum_data_age_seconds,
         )
-        self.classifier = RegimeClassifier(
-            RegimeThresholds(
-                bull=config.bull_threshold,
-                bear=config.bear_threshold,
-                range_score_limit=config.range_score_limit,
-                range_adx_limit=config.range_adx_limit,
-                minimum_confidence=config.minimum_confidence,
-            )
-        )
+        self.classifier = RegimeClassifier(thresholds_from_config(config))
         self.scorer = OpportunityScorer(
             minimum_score=config.minimum_opportunity_score,
             maximum_news_risk=config.maximum_news_risk,
@@ -189,26 +193,26 @@ class PaperSimulator:
             raise ValueError("candidate does not match configured market")
 
     def _track_range(self, account: Account, quote: Quote) -> None:
+        """Accumulate observed outside-range time; call before updating last_observed."""
         if not account.grid_lower or account.range_exit:
             return
-        observed = timestamp(quote.observed_at)
-        inside = account.grid_lower <= quote.bid <= account.grid_upper
-        if inside:
-            account.outside_since = ""
+        observed = quote.observed_at
+        if account.grid_lower <= quote.bid <= account.grid_upper:
+            account.outside_seconds, account.outside_last = ZERO, ""
             return
-        # Gaps do not prove continuous time outside the range.
-        gap = (
-            (observed - timestamp(account.last_observed)).total_seconds()
-            if account.last_observed
-            else 0
-        )
-        if not account.outside_since or gap > self.config.maximum_data_age_seconds:
-            account.outside_since = quote.observed_at
-        if (
-            observed - timestamp(account.outside_since)
-        ).total_seconds() >= self.policy.outside_range_seconds:
+        # Count only intervals bracketed by two consecutive valid outside observations
+        # within the freshness limit. Gaps do not prove time outside the range, but they
+        # do not erase time already observed; only a valid inside frame resets the clock.
+        if account.outside_last and account.outside_last == account.last_observed:
+            elapsed = seconds_between(account.outside_last, observed)
+            if elapsed <= self.config.maximum_data_age_seconds:
+                account.outside_seconds += elapsed
+        account.outside_last = observed
+        if account.outside_seconds >= self.policy.outside_range_seconds:
             account.orders.clear()
             account.range_exit = True
+            account.range_exit_since = observed
+            account.outside_seconds, account.outside_last = ZERO, ""
             self._pause(account, "outside-range timeout: exit to cash")
 
     @staticmethod
@@ -232,7 +236,8 @@ class PaperSimulator:
             regime = self.classifier.classify(frame.signals)
             score = self.scorer.score(frame.candidate, regime)
         except TransientFrame as exc:
-            account.outside_since = ""
+            # Unusable data pauses the outside-range clock but never erases time already
+            # observed outside; otherwise a flapping feed could postpone the exit forever.
             if not account.halt:
                 self._pause(account, str(exc))
             report.update(
@@ -268,15 +273,32 @@ class PaperSimulator:
             report.update(decision="halt", reason=account.halt)
         elif account.range_exit:
             report["fills"] = [asdict(fill) for fill in liquidate(account, quote, self.rules)]
-            self._pause(account, "outside-range timeout: waiting in cash for range recovery")
+            back_inside = account.grid_lower <= quote.bid <= account.grid_upper
+            cooled = (
+                self.policy.recenter_after_exit
+                and seconds_between(account.range_exit_since, quote.observed_at)
+                >= self.policy.recenter_cooldown_seconds
+            )
+            self._pause(
+                account,
+                "outside-range timeout: waiting in cash for range recovery"
+                + (
+                    " or recentering after cooldown"
+                    if self.policy.recenter_after_exit
+                    else " (recentering disabled)"
+                ),
+            )
             if (
                 account.inventory == ZERO
                 and action == RiskAction.ALLOW
                 and score.eligible
-                and account.grid_lower <= quote.bid <= account.grid_upper
+                and (back_inside or cooled)
             ):
-                # Range recovery starts after liquidation and requires fresh confirmations.
-                account.range_exit = False
+                # Leave the exit only after liquidation; the normal recovery confirmations
+                # still apply and the next grid is built around the current fair value.
+                account.range_exit, account.range_exit_since = False, ""
+                account.grid_lower = account.grid_upper = ZERO
+                report["range_exit_cleared"] = "returned inside" if back_inside else "recenter"
         else:
             if not score.eligible:
                 self._pause(account, "; ".join(score.reasons))
@@ -351,6 +373,7 @@ class PaperSimulator:
             recovery_count=account.recovery_count,
             draining=account.draining,
             range_exit=account.range_exit,
+            outside_seconds=account.outside_seconds,
             unreserved_inventory=account.inventory - account.reserved_base(),
         )
         return report
@@ -376,7 +399,10 @@ class PaperSimulator:
             previous_halt = account.halt
             account.halt = ""
             account.liquidating = False
-            account.range_exit = False
+            # Flat with no orders: no grid remains, so clear its bounds and range timers.
+            account.range_exit, account.range_exit_since = False, ""
+            account.grid_lower = account.grid_upper = ZERO
+            account.outside_seconds, account.outside_last = ZERO, ""
             self._pause(account, "operator resume: awaiting confirmed eligible data")
             account.last_observed = frame.quote.observed_at
             account.last_received = frame.quote.received_at
@@ -462,6 +488,6 @@ class PaperSimulator:
         for order in orders:
             place(account, order, rules)
         account.grid_lower, account.grid_upper = levels[0], levels[-1]
-        account.outside_since = ""
+        account.outside_seconds, account.outside_last = ZERO, ""
         account.cycles += 1
         return [order.order_id for order in orders]

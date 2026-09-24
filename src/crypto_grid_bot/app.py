@@ -11,7 +11,7 @@ from crypto_grid_bot.market_data.command import run_capture
 from crypto_grid_bot.simulation.control import resume_paper
 from crypto_grid_bot.simulation.demo import run_demo
 from crypto_grid_bot.simulation.store import encode
-from crypto_grid_bot.strategy.regime import RegimeClassifier, RegimeThresholds
+from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -62,15 +62,7 @@ def main() -> int:
         print(encode(run_demo(args.database, config)))
         return 0
 
-    classifier = RegimeClassifier(
-        RegimeThresholds(
-            bull=config.bull_threshold,
-            bear=config.bear_threshold,
-            range_score_limit=config.range_score_limit,
-            range_adx_limit=config.range_adx_limit,
-            minimum_confidence=config.minimum_confidence,
-        )
-    )
+    classifier = RegimeClassifier(thresholds_from_config(config))
     assessment = classifier.classify(
         MarketSignals(
             trend=0.05,

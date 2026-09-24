@@ -24,6 +24,8 @@ class BotConfig:
     bear_threshold: float
     range_score_limit: float
     range_adx_limit: float
+    minimum_input_quality: float
+    range_dispersion_limit: float
     minimum_opportunity_score: float
     maximum_news_risk: float
     maximum_spread_pct: float
@@ -80,6 +82,8 @@ def load_config(path: str | Path) -> BotConfig:
         bear_threshold=float(regime["bear_threshold"]),
         range_score_limit=float(regime["range_score_limit"]),
         range_adx_limit=float(regime["range_adx_limit"]),
+        minimum_input_quality=float(regime["minimum_input_quality"]),
+        range_dispersion_limit=float(regime["range_dispersion_limit"]),
         minimum_opportunity_score=float(opportunity["minimum_score"]),
         maximum_news_risk=float(opportunity["maximum_news_risk"]),
         maximum_spread_pct=float(opportunity["maximum_spread_pct"]),
@@ -108,8 +112,12 @@ def _validate(config: BotConfig) -> None:
         raise ConfigurationError("This version supports paper mode only")
     if config.top_n != 100 or "NIGHT" not in config.include_assets:
         raise ConfigurationError("Universe must contain the top 100 plus NIGHT")
-    if not 0.5 <= config.minimum_confidence <= 1.0:
-        raise ConfigurationError("minimum_confidence must be between 0.5 and 1.0")
+    if not 0.5 <= config.minimum_confidence < 1.0:
+        raise ConfigurationError("minimum_confidence must be at least 0.5 and below 1.0")
+    if not 0.0 < config.minimum_input_quality <= 1.0:
+        raise ConfigurationError("minimum_input_quality must be above 0 and at most 1")
+    if not 0.0 < config.range_dispersion_limit <= 1.0:
+        raise ConfigurationError("range_dispersion_limit must be above 0 and at most 1")
     if config.reserve_fraction != 0.5:
         raise ConfigurationError("reserve_fraction must remain exactly 0.5")
     if not 0.0 < config.daily_loss_pause_pct < config.soft_drawdown_pct:
@@ -155,6 +163,8 @@ def _validate_schema(raw: dict[str, Any]) -> None:
             "range_score_limit": float,
             "range_adx_limit": float,
             "minimum_confidence": float,
+            "minimum_input_quality": float,
+            "range_dispersion_limit": float,
         },
         "opportunity": {
             "minimum_score": float,

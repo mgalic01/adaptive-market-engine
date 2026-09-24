@@ -12,6 +12,10 @@ bear_threshold = -0.35
 range_score_limit = 0.25
 range_adx_limit = 22.0
 minimum_confidence = 0.70
+# Veto (not a multiplier): data_quality * (1 - news_risk) must reach this floor.
+minimum_input_quality = 0.70
+# Mean absolute signal; strong votes that cancel out are not a quiet range.
+range_dispersion_limit = 0.50
 
 [opportunity]
 minimum_score = 0.70
