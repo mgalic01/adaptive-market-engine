@@ -1,4 +1,4 @@
-# Paper simulation contract (schema 3)
+# Paper simulation contract (schema 4)
 
 ## Scope and order lifecycle
 
@@ -59,8 +59,8 @@ new net portfolio profit if other holdings have depreciated.
 
 `SimulationPolicy.recovery_frames` defaults to 2 and is persisted in account
 identity. Duplicate events return their recorded result without advancing the
-counter. A new ineligible frame or a gap greater than the configured maximum data
-age resets confirmation. Emergency/hard-drawdown halts never clear automatically.
+counter. A new ineligible frame, or a gap between valid frames greater than
+`SimulationPolicy.maximum_frame_gap_seconds` (default 180 s), resets confirmation. Emergency/hard-drawdown halts never clear automatically.
 Risk baselines are preserved through recovery; a realised loss is not erased by
 issuing resume. UTC daily baselines still carry overnight gaps into the risk check.
 
@@ -73,12 +73,18 @@ A dust-resolution policy is still required for production operation.
 
 A stored grid accumulates observed outside-range time (`outside_seconds`). Only an
 interval bracketed by two consecutive valid outside-range frames no more than
-`maximum_data_age_seconds` apart is counted. Gaps and unusable frames pause the
+`maximum_frame_gap_seconds` apart is counted. Gaps and unusable frames pause the
 clock without erasing time already observed; only a valid frame inside the range
 resets it. (Schema 2 reset the clock on every unusable frame, so a flapping feed
 could postpone the exit indefinitely.) After six hours of accumulated time
 (`SimulationPolicy.outside_range_seconds`), orders are cancelled and inventory
 exits to cash with bounded liquidity.
+
+`maximum_frame_gap_seconds` is a cadence limit (how far apart observations may be),
+separate from `maximum_data_age_seconds` (how old one observation may be). Schema 3
+used the 30 s freshness limit for both, so at the collector's 60 s minimum polling
+interval pauses never cleared and the out-of-range exit never fired. The gap limit
+must exceed the polling interval used in a run.
 
 After the exit the account waits in cash. It leaves that state once flat, risk
 limits pass and the candidate is eligible, and either price is back inside the old
@@ -137,9 +143,9 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Schema 1 and 2 databases are rejected by version 0.5; no implicit
+initial cash. **Schema 1-3 databases are rejected by version 0.6; no implicit
 migration or reset occurs.** Preserve old experiments with the old code, or start a
-clearly separate schema 3 experiment. Never edit identity/state to bypass risk history.
+clearly separate schema 4 experiment. Never edit identity/state to bypass risk history.
 
 ## Verification
 
@@ -149,6 +155,8 @@ isolation, invalid-frame pauses, recovery confirmation and replay, out-of-range
 exit/timer gaps, audited resume, persistent transfer IDs and guarded settlement.
 Version 0.5 adds a flapping-feed exit regression (it never exits on schema 2 code),
 gap/inside-reset accounting and recentering with and without the cooldown.
+Version 0.6 adds 60 s-cadence regressions for pause recovery, out-of-range exit and
+recentering; both fail on schema 3 code.
 The shallow fixture produced 2 fills on the reviewed code and 100 on the corrected
 code. This is a behavioural regression result, not a return forecast or backtest.
 

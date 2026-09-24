@@ -4,7 +4,8 @@ Development prototype for a planned automated **spot** grid-trading system.
 Version 0.4 added repeating grid levels, automatic recovery from temporary pauses
 and audited paper resume. Version 0.5 makes the configured regime limits the real
 decision boundaries, stops a flapping feed from postponing the outside-range exit
-and adds optional recentering after that exit. Historical strategy validation is
+and adds optional recentering after that exit. Version 0.6 separates frame cadence
+from data freshness, so pauses clear and range exits fire at 60 s polling. Historical strategy validation is
 the next gate; profitable operation is not established.
 It cannot submit live Binance orders, access an account, or move real funds.
 
@@ -97,8 +98,8 @@ test, not a backtest, EUR conversion, forecast or evidence of profitability.**
 It reads no credentials and needs no network. Running the same command again
 reuses recorded results without duplicating trades or savings. A different
 database path starts a separate simulation; changed account settings are
-rejected against an existing database. Version 0.5 uses schema 3 and rejects old
-schema 1/2 experiments; no implicit migration or resetting of losses occurs.
+rejected against an existing database. Version 0.6 uses schema 4 and rejects old
+schema 1-3 experiments; no implicit migration or resetting of losses occurs.
 
 See [Paper simulation](docs/PAPER_SIMULATION.md) for accounting, fill assumptions,
 recovery behaviour and remaining limits.

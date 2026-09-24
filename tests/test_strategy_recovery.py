@@ -62,7 +62,8 @@ class StrategyRecoveryTests(TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "paper.db"
         self.config = replace(load_config(ROOT / "config/default.toml"), minimum_transfer_quote=0.1)
-        self.policy = SimulationPolicy(outside_range_seconds=3)
+        # These fixtures step 1 s per frame and use 45-98 s jumps as continuity gaps.
+        self.policy = SimulationPolicy(outside_range_seconds=3, maximum_frame_gap_seconds=30)
         self.sim = self.open()
         self.addCleanup(lambda: self.sim.close())
 
@@ -236,6 +237,46 @@ class StrategyRecoveryTests(TestCase):
         self.assertTrue(state.grid_lower <= D("0.02500") <= state.grid_upper)
         self.assertFalse(state.range_exit)
 
+    def test_sixty_second_cadence_clears_pause(self):
+        # Review #3: 60 s frames (the collector's fastest polling) once reset the recovery
+        # streak on every frame because continuity reused the 30 s freshness limit.
+        self.reopen(SimulationPolicy(), "cadence-pause.db")
+        self.sim.process(frame(0))
+        self.assertEqual("pause", self.sim.process(frame(60, eligible=False))["decision"])
+        self.sim.process(frame(120))
+        self.assertEqual(1, self.sim.store.read().recovery_count)
+        self.assertTrue(self.sim.process(frame(180))["opened"])
+        self.assertFalse(self.sim.store.read().pause)
+
+    def test_sixty_second_cadence_exits_range_and_recenters(self):
+        self.reopen(
+            SimulationPolicy(outside_range_seconds=600, recenter_cooldown_seconds=1800),
+            "cadence-range.db",
+        )
+        self.sim.process(frame(0))
+        exited_at = None
+        for t in range(60, 1200, 60):
+            self.sim.process(frame(t, "0.02196"))
+            if self.sim.store.read().range_exit:
+                exited_at = t
+                break
+        self.assertEqual(660, exited_at)  # 600 s of valid 60 s outside observations
+        self.assertEqual(0, self.sim.store.read().inventory)
+        opened_at = None
+        for t in range(exited_at + 60, exited_at + 3600, 60):
+            if self.sim.process(at_fair_value(t, "0.02196"))["opened"]:
+                opened_at = t
+                break
+        self.assertIsNotNone(opened_at)
+        self.assertGreaterEqual(opened_at, exited_at + 1800)
+        state = self.sim.store.read()
+        self.assertTrue(state.grid_lower <= D("0.02196") <= state.grid_upper)
+
+    def test_frame_gap_policy_is_validated(self):
+        for bad in (0, 3601, 60.0):
+            with self.subTest(gap=bad), self.assertRaises(ValueError):
+                SimulationPolicy(maximum_frame_gap_seconds=bad)
+
     def test_range_exit_waits_for_old_band_when_recentering_disabled(self):
         self.reopen(
             SimulationPolicy(
@@ -344,8 +385,8 @@ class StrategyRecoveryTests(TestCase):
     def test_older_schema_databases_are_not_silently_reinterpreted(self):
         row = self.sim.store.connection.execute("SELECT identity FROM state").fetchone()[0]
         identity = json.loads(row)
-        self.assertEqual(3, identity["schema"])
-        for old in (1, 2):
+        self.assertEqual(4, identity["schema"])
+        for old in (1, 2, 3):
             identity["schema"] = old
             self.sim.store.connection.execute("UPDATE state SET identity=?", (encode(identity),))
             with self.subTest(schema=old), self.assertRaisesRegex(ValueError, "settings differ"):

@@ -31,7 +31,7 @@ from crypto_grid_bot.strategy.opportunity import OpportunityScorer
 from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
 
 DEFAULT_CAPITAL = D("100")
-SCHEMA = 3
+SCHEMA = 4
 
 
 class TransientFrame(ValueError):
@@ -48,6 +48,11 @@ class SimulationPolicy:
     # price re-enters the old band (an explicit, documented terminal-until-return state).
     recenter_after_exit: bool = True
     recenter_cooldown_seconds: int = 86400
+    # Largest spacing between consecutive valid frames that still counts as continuous
+    # observation (recovery streaks, outside-range time). This is a cadence limit and is
+    # separate from maximum_data_age_seconds, the per-frame freshness limit; it must
+    # exceed the collector's polling interval (60 s minimum) or both mechanisms stall.
+    maximum_frame_gap_seconds: int = 180
 
     def __post_init__(self) -> None:
         if type(self.recovery_frames) is not int or not 2 <= self.recovery_frames <= 100:
@@ -58,6 +63,11 @@ class SimulationPolicy:
             raise ValueError("recenter_after_exit must be a boolean")
         if type(self.recenter_cooldown_seconds) is not int or self.recenter_cooldown_seconds <= 0:
             raise ValueError("recentering cooldown must be a positive integer")
+        if (
+            type(self.maximum_frame_gap_seconds) is not int
+            or not 1 <= self.maximum_frame_gap_seconds <= 3600
+        ):
+            raise ValueError("maximum frame gap must be 1-3600 seconds")
 
 
 @dataclass(frozen=True)
@@ -201,11 +211,11 @@ class PaperSimulator:
             account.outside_seconds, account.outside_last = ZERO, ""
             return
         # Count only intervals bracketed by two consecutive valid outside observations
-        # within the freshness limit. Gaps do not prove time outside the range, but they
+        # within the frame-gap limit. Gaps do not prove time outside the range, but they
         # do not erase time already observed; only a valid inside frame resets the clock.
         if account.outside_last and account.outside_last == account.last_observed:
             elapsed = seconds_between(account.outside_last, observed)
-            if elapsed <= self.config.maximum_data_age_seconds:
+            if elapsed <= self.policy.maximum_frame_gap_seconds:
                 account.outside_seconds += elapsed
         account.outside_last = observed
         if account.outside_seconds >= self.policy.outside_range_seconds:
@@ -260,7 +270,7 @@ class PaperSimulator:
         if (
             account.last_observed
             and (observed - timestamp(account.last_observed)).total_seconds()
-            > self.config.maximum_data_age_seconds
+            > self.policy.maximum_frame_gap_seconds
         ):
             account.recovery_count = 0
         account.last_observed, account.last_received = quote.observed_at, quote.received_at
