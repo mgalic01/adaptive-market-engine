@@ -140,9 +140,20 @@ class Connection(Protocol):
 Connector = Callable[[str], Awaitable[Connection]]
 
 
+class NoRedirectConnect(ws_connect):
+    """The library follows up to 10 redirects, cross-host included, inside one call.
+
+    That would bypass the fixed host and the per-attempt budget, so every redirect
+    (same host included) is returned as the failed handshake it is.
+    """
+
+    def process_redirect(self, exc: Exception) -> Exception | str:
+        return exc
+
+
 async def default_connector(url: str) -> Connection:
     # Proxy settings come from HTTPS_PROXY/NO_PROXY; TLS uses the system trust store.
-    return await ws_connect(
+    return await NoRedirectConnect(
         url,
         open_timeout=10,
         ping_interval=20,

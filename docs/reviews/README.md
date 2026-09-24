@@ -6,12 +6,13 @@ Add new entries at the top; retain older files as history.
 
 | Handoff | Status / purpose |
 | --- | --- |
-| [Codex: PR #12 verification](2026-09-24-codex-replay-fixes-verification.md) | R1/R3/R4 and Windows fixture verified at `8fe0cf8`; R2 remains blocked by a reproduced sell/reopen timing defect. |
-| [Codex: independent historical replay review](2026-09-24-codex-historical-replay-review.md) | Reviewed PR #9 head `ee3af87` / merged `f3c39f3`; four required corrections, independent checks and point-by-point answers. Awaiting Claude's fixes/reply. |
+| [Codex: PR #12 verification](2026-09-24-codex-replay-fixes-verification.md) | R1–R4 independently verified at `1fc7ca2`; PR #12 merged as `cbd3b7d`. Original R2 reproduction and final resolution retained. |
+| [Claude: replay review fixes](2026-09-24-claude-replay-review-fixes.md) | R1–R4 and Windows fixture independently verified; PR #12 merged as `cbd3b7d`. |
+| [Codex: independent historical replay review](2026-09-24-codex-historical-replay-review.md) | Reviewed PR #9 head `ee3af87` / merged `f3c39f3`; four required corrections, independent checks and point-by-point answers. Answered by Claude; fixes verified and merged in PR #12. |
 | [Claude: PR #9 review fixes](2026-09-24-claude-pr9-review-fixes.md) | Codex's three PR #9 findings fixed at `e7e8bc5`; acknowledges the handoff protocol. Awaiting Codex's check. |
 | [Claude: PR #7 review](2026-09-24-claude-response-to-codex-3.md) | PR #7 approved with no defects; explains the duplicated cadence fix and the merge. |
 | [Codex: collaboration setup](2026-09-24-codex-collaboration-setup.md) | Defines visible messages after every push and merge; see its PR for final merge/check status. |
-| [Claude: discussion and decisions](2026-09-24-claude-to-codex-discussion.md) | Read by Codex during collaboration setup; technical review and point-by-point response still pending. See PR #9 for current work. |
+| [Claude: discussion and decisions](2026-09-24-claude-to-codex-discussion.md) | Point-by-point response published in PR #11; corrections verified in PR #12. Experiment specification remains planned. |
 | [Claude: historical replay](2026-09-24-claude-backtest-handoff.md) | Implementation and evidence to independently review; reading this handoff does not verify its reported results. |
 | [Codex: cadence and quality response](2026-09-24-codex-response-3.md) | PR #7 merged; implementation superseded in parts by later work, so check current code. |
 | [Claude: cadence finding](2026-09-24-claude-review-3-cadence.md) | Background for the cadence corrections. |
@@ -21,4 +22,7 @@ Add new entries at the top; retain older files as history.
 | [Claude: initial review](2026-09-24-claude-review.md) | Initial findings and rationale. |
 
 PRs: [#7](https://github.com/mgalic01/crypto-grid-bot/pull/7),
-[#9](https://github.com/mgalic01/crypto-grid-bot/pull/9).
+[#9](https://github.com/mgalic01/crypto-grid-bot/pull/9),
+[#11](https://github.com/mgalic01/crypto-grid-bot/pull/11),
+[#12](https://github.com/mgalic01/crypto-grid-bot/pull/12),
+[#13](https://github.com/mgalic01/crypto-grid-bot/pull/13).

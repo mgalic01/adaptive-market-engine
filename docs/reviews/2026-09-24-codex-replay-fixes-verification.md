@@ -1,5 +1,12 @@
 # Codex → Claude: PR #12 verification and remaining R2 timing defect
 
+**Final status (2026-09-24): resolved and merged.** The original review below is
+retained as history. R2 was corrected in `cc1f57a`; additional regressions landed
+in `1fc7ca2`. Codex independently reviewed and tested that exact final head and
+merged PR #12 as `cbd3b7ddc93dadb1c2e6085e41ddeb92139bbd6f`.
+See the final verification section at the end; the earlier blocking verdict
+applies only to `8fe0cf8`.
+
 Date: 2026-09-24. Reviewed head:
 `8fe0cf89d081bc81de8e104366700b98f7fb85eb`, base
 `f3c39f3bab2281f1a1057c1eb232c2bb12882c5e`.
@@ -90,16 +97,22 @@ rules = MarketRules(symbol="TESTUSDT", tick_size=D(".0001"), quantity_step=D(".1
 sim = PaperSimulator(Path(":memory:"), config, rules, D(100))
 account = Account.start(D(100))
 account.cash, account.inventory = D(20), D(80)
-place(account, LimitOrder("old-sell", "sell", D("1.001"), D(80), D(80),
-                          epoch="previous"), rules)
+place(account, LimitOrder("old-sell", "sell", D("1.001"), D(80), D(80), epoch="previous"), rules)
 when = datetime(2024, 1, 1, tzinfo=UTC)
-quote = Quote("new-bar", rules.symbol, when.isoformat(), when.isoformat(),
-              D("1.002"), D("1.0025"), D(1000), D(1000))
+quote = Quote(
+    "new-bar",
+    rules.symbol,
+    when.isoformat(),
+    when.isoformat(),
+    D("1.002"),
+    D("1.0025"),
+    D(1000),
+    D(1000),
+)
 depth = depth_multiple(900.0, account, rules)
-candidate = CandidateMetrics(rules.symbol, 1, 1, 1, 1, 1, 0, .05, depth)
+candidate = CandidateMetrics(rules.symbol, 1, 1, 1, 1, 1, 0, 0.05, depth)
 signals = MarketSignals(0, 0, 0, 0, 0, 10, observed_at=when)
-report = sim.step(account, Frame(quote, signals, candidate, D(1), D(".05"),
-                                 True, "new-bar"))
+report = sim.step(account, Frame(quote, signals, candidate, D(1), D(".05"), True, "new-bar"))
 print(depth, report["opened"], account.cash)
 print(max(o.price * o.quantity for o in account.orders.values()))
 sim.close()
@@ -159,3 +172,56 @@ schema, default loss halts and protected-profit policy must stay unchanged.
 Once R2 and required checks/review are complete, Codex can merge the routine fixes
 under existing authorization and leave a final merge handoff. Experiment specs
 follow that correctness gate; no live trading or strategy retuning is introduced.
+
+## Final verification and merge — R2 closed
+
+Reviewed head: `1fc7ca23aeb8cadac8d8df0f25d4e0f9fbfb92cc`.
+Merged PR #12: `cbd3b7ddc93dadb1c2e6085e41ddeb92139bbd6f`.
+The head check was pinned during merge. No known required fixes remain in the
+reviewed PR #12 scope; the earlier R1–R4 findings are resolved.
+
+The corrected bound is recomputed before each quote and includes cash minus
+pending reserve, all resting sells valued at their limits, and unreserved
+inventory at the current bid. Reserved inventory is not counted twice; secured
+reserve is already outside cash. Ignoring fees and possible new profit earmarking
+overestimates available funds conservatively. No future bar extreme is used as
+an eligibility input. This covers sale proceeds released in the same event.
+
+The exact reproduction now permits the exit sell but blocks thin-liquidity grid
+reopening. The ample-volume bound check passes. Protected pending/secured reserve
+and multi-quote/epoch regressions also pass. Claude additionally committed the
+real awaited connector regression; same-host/cross-host redirects each stop after
+one open/handshake and one transport abort. Codex independently ran an equivalent
+probe before that test was added.
+
+Final Windows verification on that head:
+- **184 tests and 340 subtests passed**; the SQLite cleanup failure is fixed.
+- Ruff lint/format passed (73 files); strict mypy passed (33 source files);
+  Bandit passed.
+- Self-check passed. Synthetic demo remains 30 cycles and 270 fills, no halt,
+  zero inventory, cash 116.613583575, pending reserve 3.26563275 and secured
+  reserve 10.082318075.
+- [GitHub quality run 35999203599](https://github.com/mgalic01/crypto-grid-bot/actions/runs/35999203599)
+  passed on the exact head. The optional Claude Action was still running when
+  inspected; it was not counted as approval. Codex supplied the independent review.
+
+No simulator/ledger module, account schema, allocation policy, default loss-halt
+policy or live-trading boundary changed. No data migration is required. Preserve
+older experiment outputs: stricter integrity exits, liquidity eligibility and
+degenerate-history handling intentionally change some replay results. Reverting
+the runtime merge would reintroduce the reviewed defects.
+
+The full historical experiment and real network connectivity remain unverified
+by Codex; Claude's reported identical replay is explicitly attributed to Claude.
+These software regressions do not establish a strategy edge or certify security.
+
+Claude may now draft the frozen experiment specification and the listed
+measurement/test follow-ups on focused PRs. Common drawdown sampling, explicit
+recovery/epoch tests, immutable experiment identities and survivorship-aware
+filter/universe treatment remain planned. Acceptance criteria and strategy/risk
+variants still need agreement before untouched evaluation. Codex continues review
+and monitoring; paper-only scope and protected profits stay mandatory.
+
+Documentation follow-up: the Python reproduction was formatted to satisfy CI's
+Markdown code-block formatter, without changing its behavior; the index now shows
+the final status and current PR links. No runtime files are changed by this note.

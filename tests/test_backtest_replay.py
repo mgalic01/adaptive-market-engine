@@ -18,7 +18,8 @@ from crypto_grid_bot.backtest.replay import (
     signals_for,
 )
 from crypto_grid_bot.config import load_config
-from crypto_grid_bot.simulation.models import MarketRules
+from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
+from crypto_grid_bot.simulation.models import MarketRules, Quote, timestamp
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +51,6 @@ def engine_for(candles, **overrides):
         "levels": 8,
         "minimum_cost_multiple": 3.0,
         "round_trip_cost": 0.0035,
-        "order_notional": 10.0,
         **overrides,
     }
     return FeatureEngine(series, series, basket, **options)
@@ -132,7 +132,7 @@ class ReplayTests(unittest.TestCase):
         def frames(bar):
             when = datetime.fromtimestamp(bar.open_ms / 1000, UTC)
             signals = signals_for(inputs, when, gated=False)
-            metrics = candidate_for(inputs, "TESTUSDT", 0.05, gated=False)
+            metrics = candidate_for(inputs, "TESTUSDT", 0.05, 1e9, gated=False)
             epoch = f"TESTUSDT/{bar.open_ms}"
             quotes = bar_quotes(bar, "TESTUSDT", "low_first", D("0.0005"), RULES.tick_size)
             return [
@@ -236,3 +236,191 @@ class CrossCheckTests(unittest.TestCase):
         # Official hours outside the minute window (warm-up) are not counted.
         outside = cross_check_hourly(minutes, official, (START_MS, START_MS + HOUR_MS))
         self.assertEqual(0, outside["hours_absent_from_minutes"])
+
+
+class DepthBoundTests(unittest.TestCase):
+    """R2: depth is sized against the largest order the engine could place."""
+
+    def test_one_pair_case_is_ineligible_at_the_boundary(self):
+        from crypto_grid_bot.backtest.replay import depth_multiple
+        from crypto_grid_bot.domain import MarketRegime, RegimeAssessment
+        from crypto_grid_bot.simulation.models import Account
+        from crypto_grid_bot.strategy.opportunity import OpportunityScorer
+
+        account = Account.start(D(100))
+        # Codex's reproduction: one pair takes 80% of cash = 80 per order.
+        depth = depth_multiple(1200.0, account, RULES, D(1))
+        self.assertAlmostEqual(15.0, depth)
+        scorer = OpportunityScorer(
+            minimum_score=0.1,
+            maximum_news_risk=0.3,
+            maximum_spread_pct=0.15,
+            minimum_depth_multiple=50.0,
+        )
+        regime = RegimeAssessment(MarketRegime.RANGE, 0.0, 1.0, ())
+        metrics = CandidateMetrics("TESTUSDT", 1, 1, 1, 1, 1, 0, 0.05, depth)
+        self.assertFalse(scorer.score(metrics, regime).eligible)
+        enough = CandidateMetrics("TESTUSDT", 1, 1, 1, 1, 1, 0, 0.05, 50.0)
+        self.assertTrue(scorer.score(enough, regime).eligible)
+
+    def test_bound_tracks_capital_and_excludes_pending_reserve(self):
+        from crypto_grid_bot.backtest.replay import depth_multiple
+        from crypto_grid_bot.simulation.models import Account
+
+        grown = Account.start(D(100))
+        grown.cash = D(200)
+        self.assertAlmostEqual(1200 / 160, depth_multiple(1200.0, grown, RULES, D(1)))
+        grown.pending = D(50)  # protected reserve never funds an order
+        self.assertAlmostEqual(1200 / 120, depth_multiple(1200.0, grown, RULES, D(1)))
+        empty = Account.start(D(100))
+        empty.cash = D(0)
+        self.assertAlmostEqual(1200 / 5, depth_multiple(1200.0, empty, RULES, D(1)))  # min notional
+
+
+class SellSettleReopenTests(unittest.TestCase):
+    """R2 follow-up: a step can sell, settle and reopen with the proceeds."""
+
+    def setUp(self):
+        from crypto_grid_bot.simulation.models import LimitOrder
+
+        self.config = load_config(ROOT / "config/default.toml")
+        simulator = PaperSimulator(Path(":memory:"), self.config, RULES, D(100))
+        self.simulator = simulator
+        self.account = simulator.store.read()
+        simulator.close()
+        # Codex's reproduction: 20 cash, 80 inventory under one older resting sell.
+        self.account.cash, self.account.inventory = D(20), D(80)
+        self.account.orders["old/sell"] = LimitOrder(
+            "old/sell", "sell", D("1.001"), D(80), D(80), epoch="old"
+        )
+        self.account.validate(RULES)
+        when = datetime(2024, 1, 2, tzinfo=UTC)
+        self.quote = Quote(
+            "q",
+            "TESTUSDT",
+            when.isoformat(),
+            when.isoformat(),
+            D("1.002"),
+            D("1.0025"),
+            D(1000),
+            D(1000),
+        )
+        self.signals = MarketSignals(0.0, 0.0, 0.0, 0.0, 0.0, 10.0, observed_at=when)
+
+    def step(self, minute_volume):
+        from crypto_grid_bot.backtest.replay import depth_multiple
+
+        depth = depth_multiple(minute_volume, self.account, RULES, self.quote.bid)
+        candidate = CandidateMetrics("TESTUSDT", 1, 1, 1, 1, 1, 0, 0.05, depth)
+        frame = Frame(self.quote, self.signals, candidate, D(1), D("0.05"), True, "new")
+        return depth, self.simulator.step(self.account, frame)
+
+    def test_codex_reproduction_is_now_ineligible(self):
+        depth, report = self.step(900.0)
+        self.assertLess(depth, 50)  # bound covers the 80 of sell proceeds (was 56.25)
+        self.assertTrue(any(f["side"] == "sell" for f in report["fills"]))
+        self.assertFalse(report["opened"])  # no grid reopened on thin liquidity
+
+    def test_bound_never_overstates_depth_of_orders_actually_opened(self):
+        depth, report = self.step(9000.0)
+        self.assertTrue(report["opened"])
+        largest = max(o.price * o.quantity for o in self.account.orders.values() if o.side == "buy")
+        self.assertLessEqual(depth, 9000.0 / float(largest))
+
+    def test_multi_quote_bar_with_protected_reserves_never_bypasses_liquidity(self):
+        from crypto_grid_bot.backtest.replay import depth_multiple
+
+        # Protected money: 5 pending and 10 already secured (journal must reconcile).
+        bar = candle(START_MS, 1.0, 1.003, 0.999, 1.002, volume="4000", taker="2000")
+        for volume in (900.0, 9000.0):  # thin, then ample liquidity
+            with self.subTest(volume=volume):
+                self.setUp()
+                account = self.account
+                account.cash, account.pending, account.secured = D(35), D(5), D(10)
+                account.confirmed_transfers = {"earlier": D(10)}
+                account.validate(RULES)
+                sold = False
+                for quote in bar_quotes(
+                    bar, "TESTUSDT", "high_first", D("0.0005"), RULES.tick_size
+                ):
+                    depth = depth_multiple(volume, account, RULES, quote.bid)
+                    when = timestamp(quote.observed_at)
+                    signals = MarketSignals(0.0, 0.0, 0.0, 0.0, 0.0, 10.0, observed_at=when)
+                    metrics = CandidateMetrics("TESTUSDT", 1, 1, 1, 1, 1, 0, 0.05, depth)
+                    frame = Frame(quote, signals, metrics, D(1), D("0.05"), True, "bar")
+                    report = self.simulator.step(account, frame)
+                    sold |= any(f["side"] == "sell" for f in report["fills"])
+                    new_buys = [
+                        o for o in account.orders.values() if o.side == "buy" and o.epoch == "bar"
+                    ]
+                    for order in new_buys:  # every order placed passed the liquidity test
+                        self.assertGreaterEqual(volume / float(order.price * order.quantity), 50)
+                self.assertTrue(sold)  # the exit still happens when entries are vetoed
+                self.assertGreaterEqual(account.pending, D(5))  # reserve never spent
+                self.assertEqual(D(10), account.secured)
+                account.validate(RULES)
+
+    def test_pending_reserve_is_excluded_from_the_bound(self):
+        from crypto_grid_bot.backtest.replay import depth_multiple
+
+        before = depth_multiple(900.0, self.account, RULES, self.quote.bid)
+        self.account.pending = D(10)
+        self.assertGreater(depth_multiple(900.0, self.account, RULES, self.quote.bid), before)
+
+
+class DegenerateHistoryTests(unittest.TestCase):
+    """R3: flat or zero-volume history vetoes entries instead of crashing."""
+
+    def test_flat_prices_and_zero_volume_do_not_crash(self):
+        flat = [candle(START_MS + i * HOUR_MS, 1, 1, 1, 1) for i in range(WARMUP)]
+        quiet = [
+            candle(START_MS + i * HOUR_MS, 1, 1.01, 0.99, 1, volume="0", taker="0")
+            for i in range(WARMUP)
+        ]
+        for name, history in (("flat", flat), ("zero volume", quiet)):
+            with self.subTest(history=name):
+                inputs = engine_for(history).at(START_MS + WARMUP * HOUR_MS)
+                self.assertTrue(inputs.degenerate)
+                self.assertEqual(0.0, inputs.market_quality)
+
+    def test_degenerate_bars_keep_marking_inventory_and_block_entries(self):
+        config = load_config(ROOT / "config/default.toml")
+        history = hourly(WARMUP)
+        # The last 20 completed hours are perfectly flat: ATR over them is zero.
+        last = history[-1].open_ms
+        history = history[:-20] + [
+            candle(last - k * HOUR_MS, 1, 1, 1, 1) for k in range(19, -1, -1)
+        ]
+        engine = engine_for(history)
+        t = START_MS + WARMUP * HOUR_MS
+        self.assertTrue(engine.at(t).degenerate)
+        for gated in (True, False):
+            run = RunConfig("TESTUSDT", "high_first", gated, RULES, D(100), D("0.0005"))
+            minutes = [candle(t + i * 60_000, 1.0, 1.001, 0.999, 1.0) for i in range(30)]
+            metrics, account = replay(config, run, minutes, engine)
+            with self.subTest(gated=gated):
+                self.assertEqual(30, metrics.bars)  # no bar skipped
+                self.assertEqual(0, metrics.grids_opened)  # entries vetoed
+                self.assertFalse(account.halt)
+                self.assertEqual([], check_accounting(run, metrics, account))
+
+    def test_already_invested_account_crosses_into_degenerate_history(self):
+        config = load_config(ROOT / "config/default.toml")
+        normal = hourly(WARMUP)
+        flat_start = START_MS + WARMUP * HOUR_MS
+        history = normal + [candle(flat_start + k * HOUR_MS, 1, 1, 1, 1) for k in range(16)]
+        engine = engine_for(history)
+        fair = float(engine.at(flat_start).fair_value)
+        minutes = []
+        for i in range(16 * 60):
+            # Ten hours of swings open and fill grid buys, then price holds below the
+            # grid while the hourly history goes flat.
+            swing = fair * (1 + 0.03 * math.sin(2 * math.pi * i / 90))
+            mid = swing if i < 600 else fair * 0.95
+            minutes.append(candle(flat_start + i * 60_000, mid, mid * 1.003, mid * 0.997, mid))
+        self.assertTrue(engine.at(minutes[-1].open_ms).degenerate)
+        run = RunConfig("TESTUSDT", "low_first", False, RULES, D(100), D("0.0005"))
+        metrics, account = replay(config, run, minutes, engine)
+        self.assertEqual(len(minutes), metrics.bars)  # every bar still marked
+        self.assertGreater(metrics.bars_with_inventory, 0)
+        self.assertEqual([], check_accounting(run, metrics, account))
