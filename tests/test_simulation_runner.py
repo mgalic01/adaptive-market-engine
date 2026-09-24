@@ -58,7 +58,7 @@ class SimulatorTests(TestCase):
         self.sim.process(self.frames[0])
         before = encode(self.sim.store.read().to_dict())
 
-        def crash(account, quote, rules):
+        def crash(account, quote, rules, **kwargs):
             account.cash = D("1")
             account.inventory = D("999")
             raise RuntimeError("simulated failure before commit")
@@ -95,19 +95,19 @@ class SimulatorTests(TestCase):
         self.assertEqual(report, self.sim.process(self.frames[3]))
         self.assertEqual(state.secured, self.sim.store.read().secured)
 
-    def test_stale_quote_cancels_orders_and_halt_survives_restart(self):
+    def test_stale_quote_cancels_entries_and_pause_survives_restart(self):
         self.sim.process(self.frames[0])
         bad = replace(
             self.frames[1],
             quote=replace(self.frames[1].quote, received_at="2026-01-01T00:02:00+00:00"),
         )
         report = self.sim.process(bad)
-        self.assertEqual("halt", report["decision"])
+        self.assertEqual("pause", report["decision"])
         state = self.sim.store.read()
         self.assertEqual({}, state.orders)
         self.assertEqual(D("100"), state.cash)
         self.restart()
-        self.assertEqual("halt", self.sim.process(self.frames[2])["decision"])
+        self.assertEqual("pause", self.sim.process(self.frames[2])["decision"])
         self.assertEqual(0, self.sim.store.read().fill_count)
 
     def test_out_of_order_future_quote_and_old_signals_fail_closed(self):
@@ -132,7 +132,7 @@ class SimulatorTests(TestCase):
             simulator = self.open(Path(self.directory.name) / f"bad-{index}.db")
             self.addCleanup(simulator.close)
             simulator.process(self.frames[0])
-            self.assertEqual("halt", simulator.process(frame)["decision"])
+            self.assertEqual("pause", simulator.process(frame)["decision"])
             self.assertEqual(0, simulator.store.read().inventory)
 
     def test_crash_drawdown_exits_with_limited_liquidity(self):
@@ -202,7 +202,7 @@ class SimulatorTests(TestCase):
             ),
         )
         report = self.sim.process(tomorrow)
-        self.assertEqual("halt", report["decision"])
+        self.assertEqual("pause", report["decision"])
         self.assertIn("daily loss", report["reason"])
 
     def test_cash_and_fees_reconcile_to_journal_and_profit_split(self):
@@ -239,7 +239,7 @@ class SimulatorTests(TestCase):
         self.sim.process(self.frames[0])
         frame = replace(self.frames[1], candidate=replace(self.frames[1].candidate, news_risk=0.9))
         report = self.sim.process(frame)
-        self.assertEqual("halt", report["decision"])
+        self.assertEqual("pause", report["decision"])
         self.assertFalse(report["fills"])
         self.assertTrue(report["cancelled"])
         self.assertEqual(0, self.sim.store.read().inventory)
@@ -259,7 +259,7 @@ class SimulatorTests(TestCase):
             self.frames[1], quote=replace(self.frames[1].quote, bid=D("0.02"), ask=D("0.022"))
         )
         report = self.sim.process(frame)
-        self.assertEqual("halt", report["decision"])
+        self.assertEqual("pause", report["decision"])
         self.assertFalse(report["fills"])
         self.assertIn("spread", report["reason"])
 

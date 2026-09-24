@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 
 from crypto_grid_bot.domain import MarketRegime, MarketSignals, RegimeAssessment
 
@@ -29,6 +30,24 @@ class RegimeClassifier:
 
     def __init__(self, thresholds: RegimeThresholds | None = None) -> None:
         self._thresholds = thresholds or RegimeThresholds()
+        t = self._thresholds
+        if (
+            not all(
+                isfinite(x)
+                for x in (
+                    t.bull,
+                    t.bear,
+                    t.range_score_limit,
+                    t.range_adx_limit,
+                    t.minimum_confidence,
+                )
+            )
+            or not -1 <= t.bear < -t.range_score_limit < 0
+            or not 0 < t.range_score_limit < t.bull <= 1
+            or not 0 < t.range_adx_limit < 100
+            or not 0 < t.minimum_confidence <= 1
+        ):
+            raise ValueError("invalid regime thresholds")
 
     def classify(self, signals: MarketSignals) -> RegimeAssessment:
         self._validate(signals)
@@ -42,36 +61,52 @@ class RegimeClassifier:
 
         values = {name: getattr(signals, name) for name in self._WEIGHTS}
         score = sum(values[name] * weight for name, weight in self._WEIGHTS.items())
-        directional_confidence = self._directional_confidence(values, score)
-        confidence = min(signals.data_quality, directional_confidence) * (1.0 - signals.news_risk)
-        reasons = self._reasons(values, score, signals)
-
-        if confidence < self._thresholds.minimum_confidence:
-            return RegimeAssessment(MarketRegime.TRANSITION, score, confidence, reasons)
+        directional = self._directional_confidence(values, score)
+        dispersion = sum(abs(value) for value in values.values()) / len(values)
+        range_evidence = max(
+            0.0,
+            min(
+                1.0,
+                1.0
+                - 0.5 * abs(score) / self._thresholds.range_score_limit
+                - 0.25 * (signals.adx / self._thresholds.range_adx_limit) ** 2
+                - 0.1 * dispersion,
+            ),
+        )
+        quality = signals.data_quality * (1.0 - signals.news_risk)
+        range_confidence = range_evidence * quality
+        directional_confidence = directional * quality
+        # The maximum of continuous evidence functions remains continuous, even when
+        # the discrete regime label changes. This is evidence strength, not probability.
+        confidence = max(range_confidence, directional_confidence)
+        reasons = self._reasons(values, score, signals) + (
+            f"range evidence {range_confidence:.3f}; "
+            f"directional evidence {directional_confidence:.3f}",
+        )
         if (
             signals.adx <= self._thresholds.range_adx_limit
             and abs(score) <= self._thresholds.range_score_limit
+            and range_confidence >= self._thresholds.minimum_confidence
         ):
             return RegimeAssessment(MarketRegime.RANGE, score, confidence, reasons)
-        if score >= self._thresholds.bull and signals.adx > self._thresholds.range_adx_limit:
-            return RegimeAssessment(MarketRegime.BULL, score, confidence, reasons)
-        if score <= self._thresholds.bear and signals.adx > self._thresholds.range_adx_limit:
-            return RegimeAssessment(MarketRegime.BEAR, score, confidence, reasons)
+        if (
+            directional_confidence >= self._thresholds.minimum_confidence
+            and signals.adx > self._thresholds.range_adx_limit
+        ):
+            if score >= self._thresholds.bull:
+                return RegimeAssessment(MarketRegime.BULL, score, confidence, reasons)
+            if score <= self._thresholds.bear:
+                return RegimeAssessment(MarketRegime.BEAR, score, confidence, reasons)
         return RegimeAssessment(MarketRegime.TRANSITION, score, confidence, reasons)
 
     @staticmethod
     def _directional_confidence(values: dict[str, float], score: float) -> float:
-        if abs(score) < 0.05:
-            dispersion = sum(abs(value) for value in values.values()) / len(values)
-            return max(0.0, 1.0 - dispersion)
-        direction = 1 if score > 0 else -1
-        agreeing_weight = sum(
-            RegimeClassifier._WEIGHTS[name]
-            for name, value in values.items()
-            if value == 0 or (value > 0) == (direction > 0)
+        magnitude = sum(
+            abs(values[name]) * weight for name, weight in RegimeClassifier._WEIGHTS.items()
         )
+        coherence = abs(score) / magnitude if magnitude else 0.0
         strength = min(1.0, abs(score) / 0.50)
-        return min(1.0, 0.65 * agreeing_weight + 0.35 * strength)
+        return strength * (0.65 + 0.35 * coherence)
 
     @staticmethod
     def _reasons(values: dict[str, float], score: float, signals: MarketSignals) -> tuple[str, ...]:

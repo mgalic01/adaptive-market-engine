@@ -37,6 +37,14 @@ def place(account: Account, order: LimitOrder, rules: MarketRules) -> None:
         nonnegative(order.target)
         if order.side != "buy" or order.target <= order.price or order.target % rules.tick_size:
             raise ValueError("invalid grid sell target")
+    if order.reentry is not None:
+        nonnegative(order.reentry)
+        if (
+            order.side != "sell"
+            or not ZERO < order.reentry < order.price
+            or order.reentry % rules.tick_size
+        ):
+            raise ValueError("invalid grid reentry level")
     if order.side == "buy":
         required = order.price * order.quantity * (ONE + rules.fee_rate)
         if required > account.available_quote(rules):
@@ -69,7 +77,13 @@ def _apply_fill(
     return Fill(order.order_id, order.side, price, quantity, fee)
 
 
-def match(account: Account, quote: Quote, rules: MarketRules) -> list[Fill]:
+def match(
+    account: Account,
+    quote: Quote,
+    rules: MarketRules,
+    *,
+    recycle: bool = True,
+) -> list[Fill]:
     """Orders present before this quote only; child orders wait for a later event.
 
     Price/time priority approximates an exchange queue. Crossing quotes are
@@ -109,19 +123,43 @@ def match(account: Account, quote: Quote, rules: MarketRules) -> list[Fill]:
                         order.target,
                         order.quantity,
                         order.quantity,
+                        reentry=order.price,
                     ),
                     rules,
                 )
+            elif order.side == "sell" and order.reentry is not None and recycle:
+                reentry = LimitOrder(
+                    f"{quote.event_id}/reentry/{account.fill_count}",
+                    "buy",
+                    order.reentry,
+                    order.quantity,
+                    order.quantity,
+                    target=order.price,
+                )
+                cost = reentry.price * reentry.quantity * (ONE + rules.fee_rate)
+                if (
+                    cost <= account.available_quote(rules)
+                    and reentry.price * reentry.quantity >= rules.minimum_notional
+                ):
+                    place(account, reentry, rules)
     account.validate(rules)
     return fills
 
 
-def liquidate(account: Account, quote: Quote, rules: MarketRules) -> list[Fill]:
-    """Bounded simulated emergency sell, after existing orders are cancelled."""
-    if account.orders:
-        raise ValueError("cancel resting orders before liquidation")
+def reduce_unreserved(
+    account: Account,
+    quote: Quote,
+    rules: MarketRules,
+    *,
+    consumed: Decimal = ZERO,
+) -> list[Fill]:
+    """Exit residual inventory without spending liquidity used by existing sells."""
+    quote.validate(rules)
+    account.validate(rules)
+    nonnegative(consumed)
+    capacity = max(ZERO, quote.bid_size * rules.participation - consumed)
     quantity = floor_step(
-        min(account.inventory, quote.bid_size * rules.participation), rules.quantity_step
+        min(account.inventory - account.reserved_base(), capacity), rules.quantity_step
     )
     price = floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
     if quantity == ZERO or price * quantity < rules.minimum_notional:
@@ -130,3 +168,10 @@ def liquidate(account: Account, quote: Quote, rules: MarketRules) -> list[Fill]:
     fill = _apply_fill(account, order, quantity, price, rules)
     account.validate(rules)
     return [fill]
+
+
+def liquidate(account: Account, quote: Quote, rules: MarketRules) -> list[Fill]:
+    """Bounded simulated emergency sell, after existing orders are cancelled."""
+    if account.orders:
+        raise ValueError("cancel resting orders before liquidation")
+    return reduce_unreserved(account, quote, rules)

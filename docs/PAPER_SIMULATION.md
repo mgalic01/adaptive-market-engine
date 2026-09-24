@@ -1,112 +1,143 @@
-# Paper simulation contract
+# Paper simulation contract (schema 2)
 
-## What runs
+## Scope and order lifecycle
 
-`PaperSimulator.process(Frame)` processes one timestamped quote plus supplied
-market signals and candidate metrics. It validates freshness and symbol, checks
-the regime and eligibility, evaluates portfolio risk, matches pre-existing orders,
-checks risk again, settles profits if flat, and optionally opens a new grid.
-The CLI demo uses a fictitious symbol and entirely synthetic prices. No network
-endpoint, API key, scheduler, hosting or real money is involved.
+`PaperSimulator.process(Frame)` processes one timestamped quote with supplied
+market signals and candidate metrics. It is a single-symbol, single-quote-currency
+experiment, without exchange accounts, credentials or real transfers. The CLI
+demo remains a constructed batch test; it does not establish profitability.
 
-The simulation starts in cash. Only passive buy levels below the current bid
-are funded; each fully filled buy creates a sell at the next higher grid level.
-The new sell waits for a later quote. Partially filled buys retain inventory
-and reserve the unfilled cash remainder. It opens another batch only after
-every order and position is closed. A batch can stay open indefinitely in an
-unfavourable market; there is no promise to "finish" a trade at a profit.
+The simulator starts in cash, budgeting up to 80% of unprotected cash including
+buy fees. Passive initial buys are below both the current bid and the supplied
+fair value. The fair-value ceiling prevents a profitable checkpoint from adding
+higher buy levels merely because the latest sell quote is higher.
 
-One database represents one symbol and one quote currency. The top-100-plus-NIGHT
-configuration is a future universe requirement, not a live feed in this version.
+A fully filled buy creates a paired sell. A fully filled paired sell recreates
+the buy at the original lower price, subject to funds, fees, precision and minimum
+notional checks. A partial sell does not create a full replacement buy. Every
+child order waits for a later event; IDs do not grow into an unbounded nested
+chain. Other inventory may remain held while a completed level recycles.
+`Frame.allow_new_grid=False` disables both new grids and replacement buys, but
+allows existing orders to finish. This is how the original synthetic batch demo
+continues to close each batch deliberately.
 
-## Fill assumptions
+Whenever inventory becomes flat after sales, unused/recreated buys are cancelled
+and net portfolio profit is settled before rebuilding. Thus shallow oscillations
+do not leave deeper unfilled buys blocking the 50/50 checkpoint forever. Harvesting
+remains deferred while inventory is held: profitable legs are not automatically
+new net portfolio profit if other holdings have depreciated.
 
-- Prices, quantities, balances and fees use Decimal. Synthetic market filters
-  define price tick, quantity step and minimum notional. They are not Binance data.
-- Up to 80% of unprotected cash funds a grid, including buy fees. The rest stays
-  available; there is no borrowing or short inventory.
-- Quote ask must cross strictly below a buy limit after the slippage allowance;
-  bid must cross strictly above a sell limit. Touching a limit is insufficient.
-- Limit fills occur at the order limit without favourable price improvement.
-  Emergency sales use bid minus slippage, rounded down to the tick.
-- Only a configured fraction of each quote's available bid/ask size can fill.
-  All orders on that side share the budget. Partial fills are supported.
-- Fees are charged in quote currency on both sides. Base-asset fees, fee-token
-  discounts and actual exchange queue position are not modelled.
-- This is a conservative approximation, not a calibrated fill model. Each
-  distinct quote assumes fresh usable liquidity; real replay feeds will need
-  incremental trade/depth accounting to avoid reusing static order-book size.
-- Supplied candidate metrics and signals are test inputs. Only quote freshness,
-  spread, execution liquidity and numerical validation are independently checked.
-  Production indicators, news provenance and liquidity scoring are later work.
+## Execution assumptions
 
-## Accounting invariants
+- Prices, quantities, balances, reservations and fees use Decimal. The unused
+  float-based exchange stub was removed; it is not a future live adapter contract.
+- A buy requires ask strictly below its limit after slippage; a sell requires bid
+  strictly above its limit after slippage. Touching a limit is insufficient.
+- Limit fills receive the order limit without favourable price improvement.
+  Reducing unpaired inventory and forced exits use bid minus slippage, tick-rounded.
+- All fills on one side share that event's participation-limited liquidity. A
+  later residual sale deducts liquidity already consumed by matched sells.
+- Fees are modelled in quote currency on both sides. Actual commission assets,
+  base-fee deductions and fee-token discounts require fill-level reconciliation
+  before any live adapter; this model is not an exchange commission guarantee.
+- Each distinct quote assumes new usable liquidity. Repeated REST snapshots and
+  candle volume are not interchangeable with incremental depth/trade events.
+- Signals and candidate metrics are supplied fixtures. Quote validity, freshness,
+  spread and execution liquidity are checked independently. There is still no
+  production news or broad-market signal pipeline.
 
-`cash` includes pending savings but excludes savings already transferred in the
-simulation. `available_quote = cash - pending - buy_reservations`, where each buy
-reservation includes the maximum fee at its limit. Sell reservations cannot
-exceed actual inventory. Negative balances and oversubscription abort a transaction.
+## Pauses, halts and recovery
 
-Active equity is cash minus pending savings plus inventory marked at bid less
-slippage and estimated sell fee. Total equity adds pending and secured savings
-back to active equity. Reporting only grid sales without unrealized inventory
-losses is deliberately avoided.
+| Condition | Response | Recovery |
+| --- | --- | --- |
+| Stale/future/out-of-order quote or signal, backward receive clock, excessive spread | Cancel buys; retain sells; no fills or marking from this frame | Two distinct, consecutive fresh eligible observations |
+| Fresh frame with news/candidate veto | Cancel buys, stop replenishment, allow reduce-only sells | Same confirmation rule after eligibility returns |
+| Daily-loss limit or soft drawdown | Cancel buys, manage sells, block new exposure | Risk limits must pass, then confirmed recovery |
+| Invalid numeric/model/symbol input | Cancel all orders; latch halt | Explicit audited resume with fresh checks |
+| Emergency or hard drawdown | Cancel orders; latch halt and liquidate using valid event liquidity | Explicit resume; current risk limits must still pass |
+| Saved accounting invariant failure | Abort the transaction / refuse opening the account | Investigate; resume cannot bypass corruption |
 
-When flat with no orders, the existing high-water-mark vault splits new net
-profit 50/50. Pending savings are never rebudgeted, even below the transfer
-threshold. At the threshold, a simulated transfer reduces cash and pending
-savings and increases secured savings in the same transaction. This does not
-represent a request to an exchange or provide real custody protection.
+`SimulationPolicy.recovery_frames` defaults to 2 and is persisted in account
+identity. Duplicate events return their recorded result without advancing the
+counter. A new ineligible frame or a gap greater than the configured maximum data
+age resets confirmation. Emergency/hard-drawdown halts never clear automatically.
+Risk baselines are preserved through recovery; a realised loss is not erased by
+issuing resume. UTC daily baselines still carry overnight gaps into the risk check.
 
-Earmarking scales daily and risk-high baselines by the remaining-active-capital
-fraction. It does not create an artificial drawdown or a negative baseline after
-large gains. A new UTC day uses the last recorded active equity as its opening
-baseline, so an overnight gap is included in the next risk check. Deposits and
-withdrawals are unsupported; no external balance mutation endpoint is exposed.
+Pausing cancels the remainder of a partially filled buy. Its unpaired inventory
+is sold conservatively on a usable frame, sharing remaining bid capacity with
+other sells. Existing paired sell orders are retained, but replenishment stays
+disabled until the interrupted grid has drained. Sub-minimum dust remains visible
+in `unreserved_inventory`; it is not rounded away or funded using protected money.
+A dust-resolution policy is still required for production operation.
 
-## Risk and failure handling
+A stored grid has an outside-range timer. After six hours of observed continuous
+outside-range conditions (configurable via `SimulationPolicy`), cancel orders and
+exit to cash with bounded liquidity. Invalid frames or large gaps reset the timer;
+a stopped feed is not evidence of continuous market conditions. After the exit,
+wait for price to return inside the old range and confirm eligibility before
+starting another grid. This deliberately does not chase price by automatically
+recentering. Broader rotation/recentering policy awaits validation.
 
-Invalid, stale, future-dated or out-of-order inputs cancel simulated resting
-orders and latch a halt. Candidate/news vetoes do the same. The actual quote
-spread is checked even if supplied candidate metrics claim a tighter spread.
-Daily-loss and soft-drawdown actions pause completely; soft partial resizing
-and automatic resume are not implemented. Existing inventory remains marked.
+If risk triggers after normal matching, liquidation waits for a later usable
+frame. Stale data never authorizes an exit. An offline runner has no independent
+watchdog: feed-loss handling for real resting orders remains separate work.
 
-A fresh hard-drawdown or emergency event cancels orders and starts liquidity-
-limited simulated liquidation. If risk trips after normal matching, liquidation
-starts on the next valid event, avoiding double use of that quote's liquidity.
-Sub-minimum inventory remains visible as dust. Stale input cannot authorize an
-exit. A stopped feed produces no events; this offline runner is not a watchdog.
+## Explicit paper resume
 
-Halts persist across restarts. Do not restart with a fresh database to conceal
-losses; a fresh database is a distinct experiment. Human incident review and a
-tested automatic recovery policy are required before unattended live use.
+The public engine method is `PaperSimulator.resume(frame, event_id=..., reason=...)`.
+It requires a halted, flat account with no orders, fresh valid observations,
+eligible signals and passing risk limits. It logs the prior halt and operator
+reason in the same transactional journal, places no order, and waits for the
+normal recovery confirmations. Repeating the same command ID/payload is idempotent;
+changing its payload is rejected. Inventory or outstanding liquidation must be
+resolved before resume; it cannot override loss limits or restore reserve funds.
 
-## Persistence and replay
+The operator CLI reopens the saved rules/policy and additionally checks freshness
+against the real UTC clock. `fresh-frame.json` must contain `Frame.payload()` with
+Decimal values encoded as strings and full quote/signal/candidate inputs:
 
-SQLite uses WAL, full synchronous writes and `BEGIN IMMEDIATE`. State changes,
-fills in the event result, reserve changes and the event record commit together.
-An exception rolls the entire event back. Event IDs are unique; an exact retry
-returns the saved result, while the same ID with different content fails.
-Separate simulator instances serialize through SQLite's writer lock.
+```bash
+PYTHONPATH=src python -m crypto_grid_bot.app --config config/default.toml \
+  --resume-paper --database data/paper-v2.db --resume-frame fresh-frame.json \
+  --event-id incident-001 --reason "Verified incident resolved"
+```
 
-The saved identity includes schema version, all bot config, market assumptions
-and initial cash. Reopening with different settings fails. A saved account is
-validated on reads and restarts. This detects invalid balances/order reservations,
-not malicious tampering with an otherwise internally consistent database.
+This is a paper control for exceptional incidents, not a normal per-trade approval
+step. The project still lacks a production source for the complete input frame.
 
-SQLite atomicity models a local simulated transfer only. A real exchange call
-cannot share the transaction: it will require pending/confirmed/failed states,
-exchange transfer IDs, reconciliation and retry recovery before live operation.
+## Accounting and persistence
+
+`available_quote = cash - pending_reserve - fee_inclusive_buy_reservations`.
+Sell reservations never exceed inventory. Active equity marks inventory at bid
+less slippage/sell fees and excludes pending savings; total equity includes both
+pending and secured savings. Neither reserve category can fund new orders.
+
+At a flat checkpoint, the high-water-mark ledger allocates only new net profit
+50/50 and batches simulated transfers. Recovering a loss does not create new
+profit. Earmarks adjust risk/daily baselines proportionally. An exhausted active
+account is guarded before division; no settlement can divide by zero.
+
+Each simulated transfer has a unique checkpoint ID. The confirmation map persists
+in account state and must sum to secured reserve. Events, orders, fills, allocations,
+confirmation IDs and account state commit atomically using SQLite WAL/FULL and
+`BEGIN IMMEDIATE`. Failures roll back the complete event. This does not solve real
+asynchronous transfer reconciliation: live transfers will need durable intents,
+exchange IDs, statuses and recovery after uncertain responses.
+
+Saved identity includes schema, policy, configuration, market assumptions and
+initial cash. **Schema 1 databases are rejected by version 0.4; no implicit migration
+or reset occurs.** Preserve old experiments with the old code, or start a clearly
+separate schema 2 experiment. Never edit identity/state to bypass risk history.
 
 ## Verification
 
-Tests exercise exact fee and cash conservation, partial fills, shared liquidity,
-minimums and precision, no same-event child fills, reserved-profit isolation,
-news/spread/freshness vetoes, bounded emergency exits, overnight gaps, duplicate
-IDs, changed settings, invalid saved balances, restarts during partial orders,
-and injected failure during execution and reserve confirmation. Full replay
-and interrupted replay produce the same account and event outcomes.
+The original batch demo still works. New regressions exercise 50 shallow price
+oscillations, recycling while other inventory remains, partial sells, reserve
+isolation, invalid-frame pauses, recovery confirmation and replay, out-of-range
+exit/timer gaps, audited resume, persistent transfer IDs and guarded settlement.
+The shallow fixture produced 2 fills on the reviewed code and 100 on the corrected
+code. This is a behavioural regression result, not a return forecast or backtest.
 
-Passing these tests verifies the stated software model. Historical walk-forward
-performance, live market suitability and profitability remain untested.
+Historical strategy validation is now the next gate, ahead of universe/news
+integration. See [the plan](BACKTEST_PLAN.md) and [the Claude handoff](reviews/2026-09-24-codex-response.md).

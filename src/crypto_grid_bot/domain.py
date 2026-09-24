@@ -22,11 +22,6 @@ class RiskAction(StrEnum):
     EXIT = "exit"
 
 
-class OrderSide(StrEnum):
-    BUY = "buy"
-    SELL = "sell"
-
-
 @dataclass(frozen=True, slots=True)
 class MarketSignals:
     """Normalized broad-market inputs.
@@ -102,13 +97,3 @@ class GridPlan:
     levels: tuple[float, ...]
     capital: float
     estimated_spacing_pct: float
-
-
-@dataclass(frozen=True, slots=True)
-class PaperOrder:
-    order_id: str
-    symbol: str
-    side: OrderSide
-    price: float
-    quantity: float
-    created_at: datetime
