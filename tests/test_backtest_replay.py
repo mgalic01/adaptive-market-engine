@@ -204,3 +204,18 @@ class CompatibilityTests(unittest.TestCase):
     def test_coverage_counts_whole_hours_mid_hour(self):
         engine = engine_for(hourly(WARMUP))
         self.assertEqual(1.0, engine.at(START_MS + WARMUP * HOUR_MS + 30 * 60_000).pair_quality)
+
+
+class ReasonKeyTests(unittest.TestCase):
+    def test_scorer_context_is_dropped_and_numbers_masked(self):
+        from crypto_grid_bot.backtest.replay import reason_key
+
+        reason = (
+            "base quality 0.675; regime fit 0.35; news multiplier 1.00; "
+            "opportunity score 0.236 is below minimum"
+        )
+        self.assertEqual("pause: opportunity score # is below minimum", reason_key("pause", reason))
+        self.assertEqual(
+            "cash: grid spacing #% is below required #%",
+            reason_key("cash", "grid spacing 0.7156% is below required 1.0806%"),
+        )

@@ -17,6 +17,7 @@ Kline-to-quote adapter (the explicit, tested adapter BACKTEST_PLAN.md requires):
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
@@ -34,6 +35,8 @@ from crypto_grid_bot.simulation.models import ONE, ZERO, Account, MarketRules, Q
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
 
 PATH_MODES = ("high_first", "low_first")
+# Scorer context lines that precede its actual failure reasons.
+_CONTEXT = ("base quality", "regime fit", "news multiplier")
 POINT_OFFSETS_S = (0, 9, 19, 29)
 QUARTER = Decimal("0.25")
 
@@ -82,6 +85,13 @@ def bar_quotes(
         event_id = f"{symbol}/{kline.open_ms}/{index}"
         quotes.append(Quote(event_id, symbol, when, when, bid, ask, taker_buy, taker_sell))
     return quotes
+
+
+def reason_key(decision: str, reason: str) -> str:
+    """Group decision reasons by cause: drop scorer context, mask numbers."""
+    clauses = [c.strip() for c in reason.split(";") if c.strip()]
+    causes = [c for c in clauses if not c.startswith(_CONTEXT)] or clauses[:1]
+    return decision + ": " + re.sub(r"\d+(\.\d+)?", "#", "; ".join(causes))[:120]
 
 
 def signals_for(inputs: Inputs, observed_at: datetime, *, gated: bool) -> MarketSignals:
@@ -150,8 +160,9 @@ class Metrics:
     hold_max_drawdown: Decimal = ZERO
     regimes: Counter[str] = field(default_factory=Counter)
     decisions: Counter[str] = field(default_factory=Counter)
-    pause_reasons: Counter[str] = field(default_factory=Counter)
-    hourly_equity: list[tuple[int, str]] = field(default_factory=list)
+    reasons: Counter[str] = field(default_factory=Counter)
+    # (hour open ms, strategy total equity, buy-and-hold value) at each hour's first bar.
+    hourly_equity: list[tuple[int, str, str]] = field(default_factory=list)
 
 
 def _record_fills(metrics: Metrics, fills: Sequence[dict[str, Any]]) -> None:
@@ -247,8 +258,8 @@ def replay(
         # Bar-level bookkeeping from the bar's closing quote.
         metrics.regimes[str(report.get("regime", "unavailable"))] += 1
         metrics.decisions[str(report["decision"])] += 1
-        if report["decision"] == "pause":
-            metrics.pause_reasons[str(report.get("reason", "")).split(";")[0][:80]] += 1
+        if report.get("reason"):
+            metrics.reasons[reason_key(str(report["decision"]), str(report["reason"]))] += 1
         total = metrics.final_equity
         if account.inventory > ZERO:
             metrics.bars_with_inventory += 1
@@ -257,7 +268,7 @@ def replay(
         metrics.bars_with_orders += int(bool(account.orders))
         hour = kline.open_ms // 3_600_000
         if hour != last_hour:
-            metrics.hourly_equity.append((kline.open_ms, str(total)))
+            metrics.hourly_equity.append((kline.open_ms, str(total), str(hold.value)))
             last_hour = hour
     if hold is not None:
         metrics.hold_final, metrics.hold_max_drawdown = hold.value, hold.max_drawdown
@@ -369,7 +380,7 @@ def summarise(
         "transient_pauses": metrics.transient_pauses,
         "regimes_by_bar": dict(metrics.regimes),
         "decisions_by_bar": dict(metrics.decisions),
-        "top_pause_reasons": dict(metrics.pause_reasons.most_common(6)),
+        "top_reasons_by_bar": dict(metrics.reasons.most_common(8)),
         "accounting_problems": problems,
         "rules": {key: str(value) for key, value in asdict(run.rules).items()},
         "assumed_spread_pct": str(run.spread * 100),
