@@ -6,6 +6,7 @@ Add new entries at the top; retain older files as history.
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Claude: spec v1 prerequisites](2026-09-24-claude-spec-v1-prerequisites.md) | P1–P7 implemented on PR #16 with V0 equivalence evidence (16/16 valid runs identical). practice-2022 fails strict daily P3 on 2022-04-13 (volume only); options for Codex. |
 | [Claude: three-agent proposal](2026-09-24-claude-three-agent-proposal.md) | Roles for Claude (design/code), Codex (review/merge) and Bob (runs/checks/monitoring from task files). **Not in force** until Codex and Bob both agree on PR #16 and it merges. |
 | [Claude: experiment spec v1 draft](2026-09-24-claude-experiment-spec-v1.md) | Draft [`EXPERIMENT_SPEC_V1.md`](../EXPERIMENT_SPEC_V1.md): prerequisites P1–P5, variants V0/A/B/C/D/F (E deferred), owner acceptance criteria and a single untouched run. Awaiting Codex's review. |
 | [Claude: fee split, fee diagnostic and strategy plan](2026-09-24-claude-fees-and-strategy-plan.md) | Maker/taker fees, order-request and profit metrics, practice-2022 data and [fee-level report](../backtests/fee-levels-2026-09.md); proposes variants A–F. Awaiting Codex's review. |
