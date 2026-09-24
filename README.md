@@ -137,8 +137,10 @@ test, not a backtest, EUR conversion, forecast or evidence of profitability.**
 It reads no credentials and needs no network. Running the same command again
 reuses recorded results without duplicating trades or savings. A different
 database path starts a separate simulation; changed account settings are
-rejected against an existing database. Version 0.6 uses schema 4 and rejects old
-schema 1-3 experiments; no implicit migration or resetting of losses occurs.
+rejected against an existing database. Version 0.8 uses schema 4 and rejects old
+schema 1-3 experiments; no implicit migration or resetting of losses occurs. The
+frame-gap policy is part of account identity; start a new database instead of
+reopening an experiment under changed timing rules.
 
 See [Paper simulation](docs/PAPER_SIMULATION.md) for accounting, fill assumptions,
 recovery behaviour and remaining limits.

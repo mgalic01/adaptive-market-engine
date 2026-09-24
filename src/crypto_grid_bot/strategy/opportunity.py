@@ -48,6 +48,8 @@ class OpportunityScorer:
     def score(self, candidate: CandidateMetrics, regime: RegimeAssessment) -> CandidateScore:
         self._validate(candidate)
         failures: list[str] = []
+        if not regime.input_quality_ok:
+            failures.append("broad-market input quality is below the eligibility floor")
         if candidate.news_risk > self._maximum_news_risk:
             failures.append("news risk exceeds the eligibility limit")
         if candidate.spread_pct > self._maximum_spread_pct:

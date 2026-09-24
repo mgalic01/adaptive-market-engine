@@ -27,6 +27,8 @@ class ConfigTests(TestCase):
             ("maximum_spread_pct = 0.15", "maximum_spread_pct = inf"),
             ("bull_threshold = 0.35", "bull_threshold = -0.2"),
             ("range_score_limit = 0.25", "range_score_limit = 0.9"),
+            ("range_score_limit = 0.25", "range_score_limit = 0"),
+            ("range_adx_limit = 22.0", "range_adx_limit = 100"),
             ("maximum_news_risk = 0.30", "maximum_news_risk = 2"),
             ("minimum_levels = 6", "minimum_levels = 9"),
             ("confirmation_cycles = 2", "confirmation_cycles = 0"),

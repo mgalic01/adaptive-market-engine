@@ -41,6 +41,8 @@ class TransientFrame(ValueError):
 @dataclass(frozen=True)
 class SimulationPolicy:
     recovery_frames: int = 2
+    # Continuity between fresh observations, independent of per-frame delivery age.
+    maximum_frame_gap_seconds: int = 180
     # Observed outside-range time (valid frames only) before exiting a grid to cash.
     outside_range_seconds: int = 21600
     # After a range exit, allow a new grid centred on current fair value once this
@@ -48,11 +50,6 @@ class SimulationPolicy:
     # price re-enters the old band (an explicit, documented terminal-until-return state).
     recenter_after_exit: bool = True
     recenter_cooldown_seconds: int = 86400
-    # Largest spacing between consecutive valid frames that still counts as continuous
-    # observation (recovery streaks, outside-range time). This is a cadence limit and is
-    # separate from maximum_data_age_seconds, the per-frame freshness limit; it must
-    # exceed the collector's polling interval (60 s minimum) or both mechanisms stall.
-    maximum_frame_gap_seconds: int = 180
 
     def __post_init__(self) -> None:
         if type(self.recovery_frames) is not int or not 2 <= self.recovery_frames <= 100:
@@ -227,7 +224,7 @@ class PaperSimulator:
             account.outside_seconds, account.outside_last = ZERO, ""
             return
         # Count only intervals bracketed by two consecutive valid outside observations
-        # within the frame-gap limit. Gaps do not prove time outside the range, but they
+        # within the continuity limit. Gaps do not prove time outside the range, but they
         # do not erase time already observed; only a valid inside frame resets the clock.
         if account.outside_last and account.outside_last == account.last_observed:
             elapsed = seconds_between(account.outside_last, observed)

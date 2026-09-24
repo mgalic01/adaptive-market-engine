@@ -102,6 +102,82 @@ class StrategyRecoveryTests(TestCase):
         self.assertGreater(len(state.confirmed_transfers), 1)
         self.assertEqual(len(state.confirmed_transfers), len(set(state.confirmed_transfers)))
 
+    def test_minute_cadence_recovers_without_relaxing_stale_frame_checks(self):
+        self.reopen(SimulationPolicy(), "minute-recovery.db")
+        self.sim.process(frame(0))
+        report = self.sim.process(stale(frame(60)))
+        self.assertEqual("pause", report["decision"])
+        self.assertFalse(report["fills"])
+        self.assertEqual(frame(0).quote.observed_at, self.sim.store.read().last_observed)
+        self.assertFalse(self.sim.process(frame(120))["opened"])
+        self.restart()
+        self.assertTrue(self.sim.process(frame(180))["opened"])
+
+    def test_minute_cadence_exits_after_six_hours_and_recenters_after_a_day(self):
+        self.reopen(SimulationPolicy(), "minute-exit.db")
+        self.sim.process(frame(0))
+        # The first outside observation starts the clock; subsequent intervals count.
+        exit_at = 60 + self.policy.outside_range_seconds
+        recenter_at = exit_at + self.policy.recenter_cooldown_seconds
+        for t in range(60, exit_at, 60):
+            self.sim.process(at_fair_value(t, "0.02196"))
+            self.assertFalse(self.sim.store.read().range_exit)
+        self.assertGreater(self.sim.store.read().inventory, 0)
+        self.restart()
+        report = self.sim.process(at_fair_value(exit_at, "0.02196"))
+        self.assertTrue(report["range_exit"])
+        self.assertEqual(0, self.sim.store.read().inventory)
+        for t in range(exit_at + 60, recenter_at, 60):
+            report = self.sim.process(at_fair_value(t, "0.02196"))
+            self.assertTrue(report["range_exit"])
+            self.assertFalse(report["opened"])
+        report = self.sim.process(at_fair_value(recenter_at, "0.02196"))
+        self.assertEqual("recenter", report["range_exit_cleared"])
+        self.assertFalse(report["opened"])
+        self.assertFalse(self.sim.process(at_fair_value(recenter_at + 60, "0.02196"))["opened"])
+        self.assertTrue(self.sim.process(at_fair_value(recenter_at + 120, "0.02196"))["opened"])
+        state = self.sim.store.read()
+        self.assertTrue(state.grid_lower <= D("0.02196") <= state.grid_upper)
+
+    def test_frame_gap_boundary_counts_but_larger_gaps_preserve_only_prior_time(self):
+        self.reopen(SimulationPolicy(outside_range_seconds=1000), "gap-boundary.db")
+        self.sim.process(frame(0))
+        self.sim.process(frame(60, "0.02500"))
+        self.sim.process(frame(240, "0.02500"))  # Exactly 180 seconds counts.
+        self.assertEqual(180, self.sim.store.read().outside_seconds)
+        self.sim.process(frame(421, "0.02500"))  # 181 seconds does not count.
+        self.assertEqual(180, self.sim.store.read().outside_seconds)
+        self.sim.process(frame(481, "0.02500"))
+        self.assertEqual(240, self.sim.store.read().outside_seconds)
+
+    def test_frame_gap_policy_requires_positive_integer(self):
+        for value in (0, -1, True, 60.0):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "frame gap"):
+                SimulationPolicy(maximum_frame_gap_seconds=value)
+
+    def test_old_policy_identity_cannot_silently_adopt_new_timing(self):
+        row = self.sim.store.connection.execute("SELECT identity FROM state").fetchone()[0]
+        identity = json.loads(row)
+        del identity["policy"]["maximum_frame_gap_seconds"]
+        self.sim.store.connection.execute("UPDATE state SET identity=?", (encode(identity),))
+        with self.assertRaisesRegex(ValueError, "settings differ"):
+            self.open()
+
+    def test_broad_quality_veto_blocks_entries_at_low_opportunity_threshold(self):
+        self.config = replace(self.config, minimum_opportunity_score=0.01)
+        self.reopen(SimulationPolicy(), "quality-veto.db")
+        for i, changes in enumerate(({"data_quality": 0.1}, {"news_risk": 0.99})):
+            current = frame(i)
+            current = replace(current, signals=replace(current.signals, **changes))
+            report = self.sim.process(current)
+            self.assertEqual("pause", report["decision"])
+            self.assertIn("broad-market input quality", report["reason"])
+            self.assertFalse(report["opened"])
+            self.assertFalse(self.sim.store.read().orders)
+        self.restart()
+        self.assertFalse(self.sim.process(frame(2))["opened"])
+        self.assertTrue(self.sim.process(frame(3))["opened"])
+
     def test_stale_frame_cannot_fill_existing_sells_or_clear_pause(self):
         self.sim.process(frame(0))
         self.sim.process(frame(1, "0.02196"))
