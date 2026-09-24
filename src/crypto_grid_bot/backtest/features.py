@@ -190,9 +190,12 @@ class Inputs:
     liquidity_quality: float
     downside_quality: float
     pair_quality: float
-    depth_multiple: float
+    minute_quote_volume: float  # 24h quote volume / 1440; depth is sized in replay
     fair_value: Decimal
     atr: Decimal
+    # Flat or zero-volume history: ratios are undefined, so new entries are vetoed
+    # (quality 0) while existing inventory keeps being marked and risk-managed.
+    degenerate: bool = False
 
 
 class FeatureEngine:
@@ -206,16 +209,14 @@ class FeatureEngine:
         levels: int,
         minimum_cost_multiple: float,
         round_trip_cost: float,
-        order_notional: float,
     ) -> None:
-        if levels < 2 or round_trip_cost <= 0 or order_notional <= 0:
+        if levels < 2 or round_trip_cost <= 0:
             raise ValueError("invalid feature engine parameters")
         self.pair, self.market, self.basket = pair, market, tuple(basket)
         self._multiple = range_atr_multiple
         self._levels = levels
         self._edge_scale = 2 * minimum_cost_multiple - 1
         self._cost = round_trip_cost
-        self._order_notional = order_notional
 
     def at(self, minute_ms: int) -> Inputs | None:
         """Inputs for a decision in the minute starting at ``minute_ms``; None in warm-up."""
@@ -235,9 +236,14 @@ class FeatureEngine:
         pair_quality = pair.coverage(minute_ms)
         market_quality = min(market.coverage(minute_ms), pair_quality) if breadth_ok else 0.0
 
-        atr_ratio = _at(market.atr_pct, m) / _at(market.atr_pct_median, m)
-        volume_ratio = _at(market.qv24, m) / _at(market.qv24_median, m)
+        atr_median, volume_median = _at(market.atr_pct_median, m), _at(market.qv24_median, m)
         fair, atr = _dec(pair.sma20, p), _dec(pair.atr14, p)
+        degenerate = atr_median <= 0 or volume_median <= 0 or atr <= 0
+        # Undefined ratios are reported neutral; the zero quality below is the veto.
+        atr_ratio = _at(market.atr_pct, m) / atr_median if atr_median > 0 else 1.0
+        volume_ratio = _at(market.qv24, m) / volume_median if volume_median > 0 else 1.0
+        if degenerate:
+            market_quality = 0.0
         half = float(atr) * self._multiple
         lower, upper = float(fair) - half, float(fair) + half
         spacing = (upper / lower) ** (1 / (self._levels - 1)) - 1 if lower > 0 else 0.0
@@ -256,7 +262,8 @@ class FeatureEngine:
             liquidity_quality=_clamp(math.log10(max(pair_volume, 1.0) / 1e5) / 2),
             downside_quality=_clamp(1 - _at(pair.dd168, p) / 0.20),
             pair_quality=pair_quality,
-            depth_multiple=pair_volume / 1440 / self._order_notional,
+            minute_quote_volume=pair_volume / 1440,
             fair_value=fair,
             atr=atr,
+            degenerate=degenerate,
         )

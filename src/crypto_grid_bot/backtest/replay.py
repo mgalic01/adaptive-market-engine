@@ -6,13 +6,18 @@ Kline-to-quote adapter (the explicit, tested adapter BACKTEST_PLAN.md requires):
   +0/+9/+19/+29 s, all under one epoch, so an order created inside a bar cannot fill
   until a later bar. ``high_first`` visits the high before the low; ``low_first`` the
   reverse. The true order is unknown, so both are reported.
-* Klines have no bid/ask. At the high a trade lifted the ask (ask = high, bid one
-  assumed spread lower); at the low a trade hit the bid (bid = low, ask one spread
-  higher); open and close are mid prices. Prices round outward to the tick. The engine
-  still requires a limit to be crossed by slippage, so touching a level never fills.
+* Klines have no bid/ask, and OHLC does not reveal whether an extreme was buyer- or
+  seller-initiated. The adapter *assumes* the high lifted the ask (ask = high, bid one
+  assumed spread lower) and the low hit the bid (bid = low, ask one spread higher);
+  open and close are mid prices. Every price rounds outward to today's tick. The
+  engine still requires a limit to be crossed by slippage, so touching never fills.
 * Liquidity: taker-sell volume can fill resting buys and taker-buy volume resting
   sells. Each side's bar volume is split evenly over the four quotes and the engine's
   participation cap applies to each share, so a bar's volume is never spent twice.
+  An even split is an assumption, not observed volume at those prices.
+* These are scenarios, not proven bounds: the two paths are not a worst case, and
+  the +0/9/19/29 s stamps compress a minute into 29 s, which can affect recovery and
+  range timers. They are simulation times, not observations.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ PATH_MODES = ("high_first", "low_first")
 _CONTEXT = ("base quality", "regime fit", "news multiplier")
 POINT_OFFSETS_S = (0, 9, 19, 29)
 QUARTER = Decimal("0.25")
+HOUR_MS = 3_600_000
 
 
 @dataclass(frozen=True)
@@ -65,10 +71,10 @@ def bar_quotes(
     points: list[tuple[Decimal, Decimal]] = []
     for kind in ("open", *extremes, "close"):
         if kind == "high":
-            ask = kline.high
+            ask = _round(kline.high, tick, ROUND_CEILING)
             bid = _round(kline.high * (ONE - spread), tick, ROUND_FLOOR)
         elif kind == "low":
-            bid = kline.low
+            bid = _round(kline.low, tick, ROUND_FLOOR)
             ask = _round(kline.low * (ONE + spread), tick, ROUND_CEILING)
         else:
             price = kline.open if kind == "open" else kline.close
@@ -94,10 +100,43 @@ def reason_key(decision: str, reason: str) -> str:
     return decision + ": " + re.sub(r"\d+(\.\d+)?", "#", "; ".join(causes))[:120]
 
 
+def depth_multiple(
+    minute_quote_volume: float, account: Account, rules: MarketRules, bid: Decimal
+) -> float:
+    """Per-minute quote volume over the largest buy the engine could place in this step.
+
+    ``_open_grid`` spreads 80% of unprotected cash over the passive buy pairs below
+    price; with a single pair that one order takes it all. Within one step the engine
+    can first sell, settle and then reopen, so the bound counts every cash source that
+    step could release: all resting sells filled at their limits and all unreserved
+    inventory sold at the current ``bid`` (no fee deducted, so it stays an upper
+    bound). Pending reserve is excluded; secured reserve has already left cash.
+    Only the current quote is used, never later prices in the bar. Traded volume is
+    a liquidity proxy, not observed book depth.
+    """
+    resting_sells = sum(
+        (o.price * o.remaining for o in account.orders.values() if o.side == "sell"), ZERO
+    )
+    unreserved = max(ZERO, account.inventory - account.reserved_base())
+    releasable = account.cash - account.pending + resting_sells + unreserved * bid
+    largest_order = max(Decimal("0.8") * releasable, rules.minimum_notional)
+    return minute_quote_volume / float(largest_order)
+
+
 def signals_for(inputs: Inputs, observed_at: datetime, *, gated: bool) -> MarketSignals:
     if not gated:
         # Ungated baseline: a quiet, fully trusted range, so only risk limits intervene.
-        return MarketSignals(0.0, 0.0, 0.0, 0.0, 0.0, 10.0, observed_at=observed_at)
+        # Degenerate history still vetoes entries through zero data quality.
+        return MarketSignals(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            data_quality=0.0 if inputs.degenerate else 1.0,
+            observed_at=observed_at,
+        )
     return MarketSignals(
         inputs.trend,
         inputs.breadth,
@@ -113,7 +152,7 @@ def signals_for(inputs: Inputs, observed_at: datetime, *, gated: bool) -> Market
 
 
 def candidate_for(
-    inputs: Inputs, symbol: str, spread_pct: float, *, gated: bool
+    inputs: Inputs, symbol: str, spread_pct: float, depth: float, *, gated: bool
 ) -> CandidateMetrics:
     if not gated:
         return CandidateMetrics(symbol, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, spread_pct, 1e9)
@@ -126,7 +165,7 @@ def candidate_for(
         inputs.pair_quality,
         0.0,  # ABSENT news component
         spread_pct,
-        inputs.depth_multiple,
+        depth,
     )
 
 
@@ -233,11 +272,16 @@ def replay(
         metrics.last_bar_ms = kline.open_ms
         bar_time = datetime.fromtimestamp(kline.open_ms / 1000, UTC)
         signals = signals_for(inputs, bar_time, gated=run.gated)
-        candidate = candidate_for(inputs, run.symbol, spread_pct, gated=run.gated)
+        # A flat history has zero ATR, which the engine rejects as corrupt input. The
+        # entry veto above means this tick-sized placeholder can never size a grid.
+        atr = inputs.atr if inputs.atr > ZERO else run.rules.tick_size
         epoch = f"{run.symbol}/{kline.open_ms}"
         report: dict[str, Any] = {}
         for quote in bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size):
-            frame = Frame(quote, signals, candidate, inputs.fair_value, inputs.atr, True, epoch)
+            # Depth is re-bounded before every quote from the account at that moment.
+            depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
+            candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
+            frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch)
             report = simulator.step(account, frame)
             metrics.frames += 1
             _record_fills(metrics, report["fills"])
@@ -332,8 +376,16 @@ def cross_check_hourly(
     """
     official = {k.open_ms: k for k in hourly}
     compared = mismatched = missing = 0
+    per_hour: dict[int, int] = {}
+
+    def counted(source: Iterable[Kline]) -> Iterator[Kline]:
+        for kline in source:
+            hour = kline.open_ms // HOUR_MS * HOUR_MS
+            per_hour[hour] = per_hour.get(hour, 0) + 1
+            yield kline
+
     seen: set[int] = set()
-    for candle in aggregate(minutes):
+    for candle in aggregate(counted(minutes)):
         seen.add(candle.open_ms)
         reference = official.get(candle.open_ms)
         if reference is None:
@@ -343,12 +395,21 @@ def cross_check_hourly(
         ours = (candle.open, candle.high, candle.low, candle.close, candle.volume)
         theirs = (reference.open, reference.high, reference.low, reference.close, reference.volume)
         mismatched += int(ours != theirs)
+    in_window = range(window[0], window[1], HOUR_MS)
     absent = sum(1 for o in official if window[0] <= o < window[1] and o not in seen)
+    absent_both = sum(1 for o in in_window if o not in official and o not in seen)
+    # An exact OHLCV match cannot reveal missing zero-volume minutes, so count them.
+    incomplete = [
+        60 - n for hour, n in per_hour.items() if window[0] <= hour < window[1] and n < 60
+    ]
     return {
         "hours_compared": compared,
         "hours_mismatched": mismatched,
         "hours_missing": missing,
         "hours_absent_from_minutes": absent,
+        "hours_absent_from_both": absent_both,
+        "hours_incomplete": len(incomplete),
+        "minutes_missing": sum(incomplete),
     }
 
 
