@@ -41,6 +41,8 @@ class TransientFrame(ValueError):
 @dataclass(frozen=True)
 class SimulationPolicy:
     recovery_frames: int = 2
+    # Continuity between fresh observations, independent of per-frame delivery age.
+    maximum_frame_gap_seconds: int = 180
     # Observed outside-range time (valid frames only) before exiting a grid to cash.
     outside_range_seconds: int = 21600
     # After a range exit, allow a new grid centred on current fair value once this
@@ -52,6 +54,8 @@ class SimulationPolicy:
     def __post_init__(self) -> None:
         if type(self.recovery_frames) is not int or not 2 <= self.recovery_frames <= 100:
             raise ValueError("recovery requires 2-100 distinct eligible frames")
+        if type(self.maximum_frame_gap_seconds) is not int or self.maximum_frame_gap_seconds <= 0:
+            raise ValueError("maximum frame gap must be a positive integer")
         if type(self.outside_range_seconds) is not int or self.outside_range_seconds <= 0:
             raise ValueError("outside-range timeout must be a positive integer")
         if type(self.recenter_after_exit) is not bool:
@@ -201,11 +205,11 @@ class PaperSimulator:
             account.outside_seconds, account.outside_last = ZERO, ""
             return
         # Count only intervals bracketed by two consecutive valid outside observations
-        # within the freshness limit. Gaps do not prove time outside the range, but they
+        # within the continuity limit. Gaps do not prove time outside the range, but they
         # do not erase time already observed; only a valid inside frame resets the clock.
         if account.outside_last and account.outside_last == account.last_observed:
             elapsed = seconds_between(account.outside_last, observed)
-            if elapsed <= self.config.maximum_data_age_seconds:
+            if elapsed <= self.policy.maximum_frame_gap_seconds:
                 account.outside_seconds += elapsed
         account.outside_last = observed
         if account.outside_seconds >= self.policy.outside_range_seconds:
@@ -260,7 +264,7 @@ class PaperSimulator:
         if (
             account.last_observed
             and (observed - timestamp(account.last_observed)).total_seconds()
-            > self.config.maximum_data_age_seconds
+            > self.policy.maximum_frame_gap_seconds
         ):
             account.recovery_count = 0
         account.last_observed, account.last_received = quote.observed_at, quote.received_at

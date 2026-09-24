@@ -99,6 +99,8 @@ reuses recorded results without duplicating trades or savings. A different
 database path starts a separate simulation; changed account settings are
 rejected against an existing database. Version 0.5 uses schema 3 and rejects old
 schema 1/2 experiments; no implicit migration or resetting of losses occurs.
+Version 0.5.1 also adds an explicit frame-gap policy to account identity; start a
+new database instead of reopening a 0.5.0 experiment under changed timing rules.
 
 See [Paper simulation](docs/PAPER_SIMULATION.md) for accounting, fill assumptions,
 recovery behaviour and remaining limits.

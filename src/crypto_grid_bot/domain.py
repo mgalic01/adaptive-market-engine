@@ -48,6 +48,7 @@ class RegimeAssessment:
     score: float
     confidence: float
     reasons: tuple[str, ...]
+    input_quality_ok: bool = True
 
 
 @dataclass(frozen=True, slots=True)

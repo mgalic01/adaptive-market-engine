@@ -133,7 +133,9 @@ class RegimeClassifier:
         )
         if not quality_ok:
             reasons += ("input quality is below the floor; regime vetoed",)
-            return RegimeAssessment(MarketRegime.TRANSITION, score, confidence, reasons)
+            return RegimeAssessment(
+                MarketRegime.TRANSITION, score, confidence, reasons, input_quality_ok=False
+            )
         if range_load <= 1.0:
             return RegimeAssessment(MarketRegime.RANGE, score, confidence, reasons)
         if signals.adx > t.range_adx_limit and directional_evidence >= t.minimum_confidence:

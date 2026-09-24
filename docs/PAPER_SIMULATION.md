@@ -59,8 +59,14 @@ new net portfolio profit if other holdings have depreciated.
 
 `SimulationPolicy.recovery_frames` defaults to 2 and is persisted in account
 identity. Duplicate events return their recorded result without advancing the
-counter. A new ineligible frame or a gap greater than the configured maximum data
-age resets confirmation. Emergency/hard-drawdown halts never clear automatically.
+counter. A new ineligible frame or a gap greater than
+`SimulationPolicy.maximum_frame_gap_seconds` resets confirmation. The gap defaults
+to 180 seconds, allowing fresh one-minute observations. This is separate from
+`risk.maximum_data_age_seconds` (30 seconds), which still limits delivery age for
+each quote and its strategy inputs. Slower replays must explicitly set a gap at
+least as large as their observation interval; the future replay adapter must
+validate that relationship. The read-only collector remains separate from this
+simulator. Emergency/hard-drawdown halts never clear automatically.
 Risk baselines are preserved through recovery; a realised loss is not erased by
 issuing resume. UTC daily baselines still carry overnight gaps into the risk check.
 
@@ -73,9 +79,11 @@ A dust-resolution policy is still required for production operation.
 
 A stored grid accumulates observed outside-range time (`outside_seconds`). Only an
 interval bracketed by two consecutive valid outside-range frames no more than
-`maximum_data_age_seconds` apart is counted. Gaps and unusable frames pause the
-clock without erasing time already observed; only a valid frame inside the range
-resets it. (Schema 2 reset the clock on every unusable frame, so a flapping feed
+`maximum_frame_gap_seconds` apart is counted. Larger gaps do not count and do not
+erase time already observed. An unusable frame itself advances nothing; the
+interval between valid observations on either side still counts if within the gap
+limit. Only a valid frame inside the range resets the clock.
+(Schema 2 reset the clock on every unusable frame, so a flapping feed
 could postpone the exit indefinitely.) After six hours of accumulated time
 (`SimulationPolicy.outside_range_seconds`), orders are cancelled and inventory
 exits to cash with bounded liquidity.
@@ -140,6 +148,14 @@ Saved identity includes schema, policy, configuration, market assumptions and
 initial cash. **Schema 1 and 2 databases are rejected by version 0.5; no implicit
 migration or reset occurs.** Preserve old experiments with the old code, or start a
 clearly separate schema 3 experiment. Never edit identity/state to bypass risk history.
+Version 0.5.1 adds the frame-gap policy to saved identity, so it also rejects 0.5.0
+experiments without that setting. Use a new database for the new policy; retain
+the original database and matching code for reviewing the old experiment.
+
+Broad-market input quality has a separate eligibility veto. Low-quality inputs
+remain reported as `TRANSITION`, but `RegimeAssessment.input_quality_ok=False`
+blocks entries regardless of the configured opportunity score threshold. Healthy
+transition markets retain their existing score-based eligibility.
 
 ## Verification
 
@@ -149,6 +165,9 @@ isolation, invalid-frame pauses, recovery confirmation and replay, out-of-range
 exit/timer gaps, audited resume, persistent transfer IDs and guarded settlement.
 Version 0.5 adds a flapping-feed exit regression (it never exits on schema 2 code),
 gap/inside-reset accounting and recentering with and without the cooldown.
+Version 0.5.1 covers one-minute recovery, six-hour exits and 24-hour recentering,
+frame-gap boundaries, persisted-policy compatibility, low-score quality vetoes,
+and invalid regime configuration endpoints.
 The shallow fixture produced 2 fills on the reviewed code and 100 on the corrected
 code. This is a behavioural regression result, not a return forecast or backtest.
 
