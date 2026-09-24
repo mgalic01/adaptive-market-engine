@@ -155,6 +155,13 @@ untouched window, and the report says so.
 
 ## 7. Untouched evaluation (run exactly once)
 
+**Owner gate:** this run starts only after the owner explicitly says go in the
+conversation. That go is recorded in the report with its date. Finishing §2–§6 does not
+start it automatically. Before asking, Claude reports:
+- the practice-matrix results;
+- the winner, or that there is none;
+- the exact code commit, config, dataset specs and manifests to be used, all frozen.
+
 - **Window:** 2025-01 to 2026-08. This is the latest complete month before this spec. It
   includes the October 2025 peak and the decline that followed.
 - **Pairs:** BTCUSDT, ETHUSDT, XRPUSDT, SOLUSDT and ADAUSDT as Binance proxies for the
