@@ -100,16 +100,26 @@ def reason_key(decision: str, reason: str) -> str:
     return decision + ": " + re.sub(r"\d+(\.\d+)?", "#", "; ".join(causes))[:120]
 
 
-def depth_multiple(minute_quote_volume: float, account: Account, rules: MarketRules) -> float:
-    """Per-minute quote volume over the largest buy order the engine could place now.
+def depth_multiple(
+    minute_quote_volume: float, account: Account, rules: MarketRules, bid: Decimal
+) -> float:
+    """Per-minute quote volume over the largest buy the engine could place in this step.
 
     ``_open_grid`` spreads 80% of unprotected cash over the passive buy pairs below
-    price; with a single pair that one order takes it all. Using that upper bound
-    (current cash minus pending reserve, so reinvestment and reserve exclusion are
-    reflected) never overstates depth. Traded volume is a liquidity proxy, not
-    observed book depth.
+    price; with a single pair that one order takes it all. Within one step the engine
+    can first sell, settle and then reopen, so the bound counts every cash source that
+    step could release: all resting sells filled at their limits and all unreserved
+    inventory sold at the current ``bid`` (no fee deducted, so it stays an upper
+    bound). Pending reserve is excluded; secured reserve has already left cash.
+    Only the current quote is used, never later prices in the bar. Traded volume is
+    a liquidity proxy, not observed book depth.
     """
-    largest_order = max(Decimal("0.8") * (account.cash - account.pending), rules.minimum_notional)
+    resting_sells = sum(
+        (o.price * o.remaining for o in account.orders.values() if o.side == "sell"), ZERO
+    )
+    unreserved = max(ZERO, account.inventory - account.reserved_base())
+    releasable = account.cash - account.pending + resting_sells + unreserved * bid
+    largest_order = max(Decimal("0.8") * releasable, rules.minimum_notional)
     return minute_quote_volume / float(largest_order)
 
 
@@ -262,14 +272,15 @@ def replay(
         metrics.last_bar_ms = kline.open_ms
         bar_time = datetime.fromtimestamp(kline.open_ms / 1000, UTC)
         signals = signals_for(inputs, bar_time, gated=run.gated)
-        depth = depth_multiple(inputs.minute_quote_volume, account, run.rules)
-        candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
         # A flat history has zero ATR, which the engine rejects as corrupt input. The
         # entry veto above means this tick-sized placeholder can never size a grid.
         atr = inputs.atr if inputs.atr > ZERO else run.rules.tick_size
         epoch = f"{run.symbol}/{kline.open_ms}"
         report: dict[str, Any] = {}
         for quote in bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size):
+            # Depth is re-bounded before every quote from the account at that moment.
+            depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
+            candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
             frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch)
             report = simulator.step(account, frame)
             metrics.frames += 1

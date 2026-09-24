@@ -52,6 +52,20 @@
 - The engine rejects a zero ATR as corrupt input, so a tick-sized placeholder is passed.
   The veto means it can never size a grid.
 
+## Update after Codex's R2 follow-up (PR #12)
+
+- Codex showed that one step can sell, settle and immediately reopen a grid with the proceeds. The bound computed before the bar missed that: in its example depth came out as 56.25 and passed, when the true ratio was 45.
+- **Fixed:** depth is now recomputed before every quote. It is taken against 0.8 × releasable cash:
+  - cash minus pending reserve;
+  - plus every resting sell filled at its limit;
+  - plus unreserved inventory at the current bid.
+- Only the current quote is used, never a later price in the bar. The allocation policy is unchanged.
+- **Regressions (`SellSettleReopenTests`):**
+  - Your exact reproduction now gives depth about 11.25, and no grid reopens.
+  - When a grid does open, the depth used never exceeds volume ÷ the largest buy actually placed.
+  - Pending reserve is excluded.
+  - Both of the first two fail under the previous bound.
+
 ## Section 2 items handled here
 
 - **Outward tick rounding.** The extremes are now rounded outward as well (ask at the

@@ -18,8 +18,8 @@ from crypto_grid_bot.backtest.replay import (
     signals_for,
 )
 from crypto_grid_bot.config import load_config
-from crypto_grid_bot.domain import CandidateMetrics
-from crypto_grid_bot.simulation.models import MarketRules
+from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
+from crypto_grid_bot.simulation.models import MarketRules, Quote
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -249,7 +249,7 @@ class DepthBoundTests(unittest.TestCase):
 
         account = Account.start(D(100))
         # Codex's reproduction: one pair takes 80% of cash = 80 per order.
-        depth = depth_multiple(1200.0, account, RULES)
+        depth = depth_multiple(1200.0, account, RULES, D(1))
         self.assertAlmostEqual(15.0, depth)
         scorer = OpportunityScorer(
             minimum_score=0.1,
@@ -269,12 +269,70 @@ class DepthBoundTests(unittest.TestCase):
 
         grown = Account.start(D(100))
         grown.cash = D(200)
-        self.assertAlmostEqual(1200 / 160, depth_multiple(1200.0, grown, RULES))
+        self.assertAlmostEqual(1200 / 160, depth_multiple(1200.0, grown, RULES, D(1)))
         grown.pending = D(50)  # protected reserve never funds an order
-        self.assertAlmostEqual(1200 / 120, depth_multiple(1200.0, grown, RULES))
+        self.assertAlmostEqual(1200 / 120, depth_multiple(1200.0, grown, RULES, D(1)))
         empty = Account.start(D(100))
         empty.cash = D(0)
-        self.assertAlmostEqual(1200 / 5, depth_multiple(1200.0, empty, RULES))  # min notional
+        self.assertAlmostEqual(1200 / 5, depth_multiple(1200.0, empty, RULES, D(1)))  # min notional
+
+
+class SellSettleReopenTests(unittest.TestCase):
+    """R2 follow-up: a step can sell, settle and reopen with the proceeds."""
+
+    def setUp(self):
+        from crypto_grid_bot.simulation.models import LimitOrder
+
+        self.config = load_config(ROOT / "config/default.toml")
+        simulator = PaperSimulator(Path(":memory:"), self.config, RULES, D(100))
+        self.simulator = simulator
+        self.account = simulator.store.read()
+        simulator.close()
+        # Codex's reproduction: 20 cash, 80 inventory under one older resting sell.
+        self.account.cash, self.account.inventory = D(20), D(80)
+        self.account.orders["old/sell"] = LimitOrder(
+            "old/sell", "sell", D("1.001"), D(80), D(80), epoch="old"
+        )
+        self.account.validate(RULES)
+        when = datetime(2024, 1, 2, tzinfo=UTC)
+        self.quote = Quote(
+            "q",
+            "TESTUSDT",
+            when.isoformat(),
+            when.isoformat(),
+            D("1.002"),
+            D("1.0025"),
+            D(1000),
+            D(1000),
+        )
+        self.signals = MarketSignals(0.0, 0.0, 0.0, 0.0, 0.0, 10.0, observed_at=when)
+
+    def step(self, minute_volume):
+        from crypto_grid_bot.backtest.replay import depth_multiple
+
+        depth = depth_multiple(minute_volume, self.account, RULES, self.quote.bid)
+        candidate = CandidateMetrics("TESTUSDT", 1, 1, 1, 1, 1, 0, 0.05, depth)
+        frame = Frame(self.quote, self.signals, candidate, D(1), D("0.05"), True, "new")
+        return depth, self.simulator.step(self.account, frame)
+
+    def test_codex_reproduction_is_now_ineligible(self):
+        depth, report = self.step(900.0)
+        self.assertLess(depth, 50)  # bound covers the 80 of sell proceeds (was 56.25)
+        self.assertTrue(any(f["side"] == "sell" for f in report["fills"]))
+        self.assertFalse(report["opened"])  # no grid reopened on thin liquidity
+
+    def test_bound_never_overstates_depth_of_orders_actually_opened(self):
+        depth, report = self.step(9000.0)
+        self.assertTrue(report["opened"])
+        largest = max(o.price * o.quantity for o in self.account.orders.values() if o.side == "buy")
+        self.assertLessEqual(depth, 9000.0 / float(largest))
+
+    def test_pending_reserve_is_excluded_from_the_bound(self):
+        from crypto_grid_bot.backtest.replay import depth_multiple
+
+        before = depth_multiple(900.0, self.account, RULES, self.quote.bid)
+        self.account.pending = D(10)
+        self.assertGreater(depth_multiple(900.0, self.account, RULES, self.quote.bid), before)
 
 
 class DegenerateHistoryTests(unittest.TestCase):

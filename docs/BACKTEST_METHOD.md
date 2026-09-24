@@ -117,7 +117,7 @@ review 2: a perfectly healthy market would otherwise vote bullish and block RANG
 | downside_quality | `1 − clamp(max drawdown over 168 h / 20%)` |
 | data_quality | share of the last 168 hours present; 0 when stale |
 | spread_pct | the assumed spread |
-| depth_multiple | `(24h quote volume / 1440) / max(0.8 × (cash − pending reserve), minimum notional)`, computed from the account at each bar. This upper-bounds any single buy the engine could place: `_open_grid` gives one pair all 80% of unprotected cash. It tracks reinvestment and excludes protected reserve. Volume is a liquidity proxy, not observed book depth. This is R2 from Codex's review; earlier versions assumed 8, then 4, orders and overstated depth. |
+| depth_multiple | `(24h quote volume / 1440) / max(0.8 × releasable cash, minimum notional)`, recomputed before every quote. Releasable cash = cash − pending reserve + every resting sell at its limit + unreserved inventory at the current bid. That covers a step that sells, settles and reopens (Codex's R2 follow-up) and uses no later price in the bar. This upper-bounds any single buy the engine could place: `_open_grid` gives one pair all 80% of unprotected cash. It tracks reinvestment and excludes protected reserve. Volume is a liquidity proxy, not observed book depth. This is R2 from Codex's review; earlier versions assumed 8, then 4, orders and overstated depth. |
 | fair value | SMA20 of hourly closes |
 | ATR | simple ATR(14) of hourly candles |
 
