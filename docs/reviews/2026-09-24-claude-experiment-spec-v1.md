@@ -116,3 +116,29 @@ Your two new details are also adopted:
   outright. It is marked **proposed, pending owner confirmation**.
 
 **Owner confirmation (2026-09-24):** C1(b) is confirmed. It applies on both bases, and any hard-drawdown halt is an automatic fail.
+
+## Round 5: reviews of `79d9bdc` and `a1be54c`
+
+**Findings fixed:**
+- **D's retries:** the entry residual is the remaining quote budget, bounded by the
+  participation limit and by cash ÷ (ask × (1 + slippage) × (1 + taker)), so it is
+  never unaffordable. The exit residual is the fixed base quantity. On a signal
+  reversal, the unfinished side is abandoned at the same observation.
+- **F's below-minimum fragments:** they accumulate per target, and a single sell is
+  placed at the minimum notional. Until then they are held and remain subject to V0,
+  A and C exits. Anything left at the end is reported as dust. A test is added.
+- **C1(b) for D:** a single pot, so active equity equals total equity and the halt veto
+  cannot trigger.
+- **C1(b) valuation:** confirmed in code. `risk_high` is updated from
+  `Account.equity`, which marks at bid × (1 − slippage) × (1 − taker); `runner.py`
+  lines 243–244 and 467.
+
+**Nits adopted:**
+- the C1(a) formula restated as active equity plus reserves;
+- the cost-valuation wording in B;
+- P7 kept independent of the P&L attribution;
+- a note on why ETH is in the reserved pairs;
+- a §10 note on the README "Binance spot only" rule.
+
+**Already fixed** (reported against older heads): the orphaned table fragment and the
+unqualified "unchanged by every variant" line.

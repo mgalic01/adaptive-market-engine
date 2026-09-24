@@ -44,7 +44,7 @@ fills, for both the strategy and buy-and-hold.
 | P4 | **Historical exchange filters for SOL:** use dated, sourced point-in-time tick and step sizes if available. If they cannot be sourced, SOL runs stay invalid for every variant (§5). No synthetic spread model in the primary comparison. | Codex §4.1 answer on PR #15. |
 | P5 | Carried nits: `--maker-fee`/`--taker-fee` use `is not None`, so an empty value is rejected; `replay()` asserts the order book is empty before wrapping it for request counting. | Automated reviews on PR #14. |
 | P6 | **P&L reconciliation:** realised P&L by sell type, plus unrealised P&L of the remaining inventory at the final mark, must equal the final total equity minus the initial capital. | Codex (PR #15): attribution must reconcile with the account. |
-| P7 | **Completed-cycle count (for C5):** a completed cycle is a grid sell (a child `…/sell` order placed when its buy filled completely) that itself fills completely. It is reported per run and per week. Resting-sell P&L does not count cycles. | Codex (PR #16): the metric must be defined before it is promised. |
+| P7 | **Completed-cycle count (for C5):** a completed cycle is a grid sell (a child `…/sell` order placed when its buy filled completely) that itself fills completely. It is reported per run and per week. It is a count only, independent of the P1 P&L-by-exit-reason and the average-cost resting-sell attribution, and neither of those counts cycles. | Codex (PR #16): the metric must be defined before it is promised. |
 
 ## 3. Variants
 
@@ -116,8 +116,9 @@ The state is updated once per completed daily bar, from the previous state and `
   - **Mark** = bid × (1 − slippage) × (1 − taker).
   - **Committed exposure** = inventory × mark + Σ over **every** resting buy of
     (limit price × remaining quantity × (1 + maker fee)) + the proposed buy, valued the
-    same way. Resting buys are valued at their cost, not their mark, which is
-    conservative.
+    same way. Resting buys are valued at their cost including the maker fee. This is
+    conservative relative to ignoring pending commitments; together with the
+    prospective-equity deduction below, it charges each pending buy its full cash cost.
   - **Prospective active equity** = active equity − Σ over every resting buy and the
     proposed buy of limit × quantity × [(1 + maker) − (1 − slippage)(1 − taker)]. This
     is the equity left if all of them filled at their limits and were immediately marked
@@ -168,10 +169,21 @@ The state is updated once per completed daily bar, from the previous state and `
   floored to the lot step, and a buy is skipped if it is below the minimum notional.
   D keeps no profit vault or reserves: all equity is one pot.
 - **Execution:** entries and exits are marketable at the next valid observation, at
-  ask or bid ± slippage, paying the taker fee. Each observation fills at most the
-  bid- or ask-size participation limit (10%), as V0's liquidation does. Unfilled
-  residuals are retried at each following valid observation until complete, or until
-  the signal reverses.
+  ask × (1 + slippage) for buys and bid × (1 − slippage) for sells, paying the taker
+  fee. Each observation fills at most the ask- or bid-size participation limit (10%),
+  as V0's liquidation does.
+  - **Entry residual = the remaining quote budget, not a fixed base quantity.** At each
+    observation, D buys the smallest of (1) the participation limit and (2) the
+    remaining cash ÷ (ask × (1 + slippage) × (1 + taker)), floored to the lot step. The
+    entry ends when that quantity is below the minimum notional. So a retry can never
+    spend more cash than is left.
+  - **Exit residual = the fixed base quantity held.** Each observation sells up to the
+    participation limit. An unsold remainder below the minimum notional stays as
+    reported dust.
+  - **Signal reversal while filling:** at the effective observation of a reversal, the
+    unfinished side is abandoned and the new side starts at that same observation. An
+    entry in progress stops, and the quantity already bought is exited. An exit in
+    progress stops, and a new entry uses the cash on hand.
 - **Unchanged from A:** capital, marks, warm-up, timing and fees.
 - **Risk controls:** D is **exempt** from the common rule in §3. It has no daily-loss
   pause, soft or hard drawdown halt or emergency exit; it only follows its signal. Its
@@ -179,6 +191,9 @@ The state is updated once per completed daily bar, from the previous state and `
   different risk policy.
 - **State:** D is a replay-only calculation and never writes shared or persisted paper
   state.
+- **C1 for D:** D has one pot with no reserves, so its active equity equals its total
+  equity, and C1(b) reduces to C1(a) measured against its own peak. D has no halts, so
+  the hard-halt veto cannot trigger.
 
 ### E: volume-confirmed exit (deferred)
 Not part of v1. Extending the 6-hour exit timer increases loss exposure, so it needs a
@@ -199,6 +214,14 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - A buy cancelled after a partial fill leaves its filled quantity unpaired. That
     quantity gets a resting grid sell at the cancelled buy's target, exactly as a
     complete fill would, so it pays the maker fee and needs no drain.
+  - **Fragments below the minimum notional** at their target cannot be placed as a
+    sell. They are **accumulated per target price**. When the accumulated quantity at a
+    target reaches the minimum notional, one resting sell is placed for it.
+  - Until then, the fragments are held unreserved and marked in equity like any other
+    inventory. They remain subject to V0's range exit, liquidation and, in variants
+    combining A, `trend_exit`.
+  - Anything still below the minimum at the end of a run is reported as dust, as V0
+    already does.
 - **Unblock:** `flow_block` turns off when `share ≥ 0.45` (inclusive). Turning it off
   only lifts F's own restriction. Any other active pause, halt, drain or eligibility
   veto stays in force.
@@ -211,6 +234,7 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
 - **Required tests:**
   - cancellation counts;
   - a partial fill then a block (the resting sell for the unpaired quantity);
+  - a below-minimum fragment, then accumulation to the minimum, then a single sell;
   - threshold equalities at exactly 0.40 and 0.45;
   - a missing minute versus a zero-volume minute;
   - an F unblock while a V0 eligibility pause is active (the pause must remain);
@@ -263,7 +287,7 @@ following hold across its included runs, that is every pair, window and path:
 
 | # | Criterion | Owner choice |
 | --- | --- | --- |
-| C1 | **Worst drop,** on two bases in every run. **(a)** The max drawdown of **total equity** (cash − pending + inventory mark + pending reserve + secured reserve) is ≤ **10%** of its running peak. **(b) Confirmed by the owner on 2026-09-24, as a deliberate tightening of the earlier total-equity-only wording:** the drawdown of **active equity** against the runtime's **reserve-adjusted risk high-water mark** (`risk_high`, which `_settle` scales down after reserve allocations, so a reserve transfer is not a trading drawdown) is ≤ **10%**. It is sampled at every pre-fill and post-fill risk evaluation the engine performs. In addition, **any hard-drawdown halt in a run fails C1(b)** outright, whatever the samples show. Both drawdowns are measured from peaks, so after growth 10% can exceed 10 quote units. | 10%; €10 is only the illustration at the starting €100 |
+| C1 | **Worst drop,** on two bases in every run. **(a)** The max drawdown of **total equity**: active equity (§3 B, the engine's `Account.equity`, which marks inventory at bid × (1 − slippage) × (1 − taker)) plus the pending reserve plus the secured reserve, is ≤ **10%** of its running peak. **(b) Confirmed by the owner on 2026-09-24, as a deliberate tightening of the earlier total-equity-only wording:** the drawdown of **active equity** against the runtime's **reserve-adjusted risk high-water mark** (`risk_high`, which `_settle` scales down after reserve allocations, so a reserve transfer is not a trading drawdown) is ≤ **10%**. It is sampled at every pre-fill and post-fill risk evaluation the engine performs. The engine updates `risk_high` from the same `Account.equity` valuation, so C1(b) compares like with like. In addition, **any hard-drawdown halt in a run fails C1(b)** outright, whatever the samples show. Both drawdowns are measured from peaks, so after growth 10% can exceed 10 quote units. | 10%; €10 is only the illustration at the starting €100 |
 | C2 | **Makes money:** the mean return across included runs is > 0 after fees, and so is the median. All runs have equal weight, and the median of an even count is the mean of the two middle values. | Beat cash |
 | C3 | **Safer than holding:** in every included run, max total-equity drawdown < that run's buy-and-hold max drawdown (common sampling, P2). This is strict, as recorded; it is not relaxed to the median because it is hard to pass. A run where buy-and-hold has zero drawdown fails C3 and is reported, not exempted. | Less drop than holding |
 | C4 | **Integrity:** every included run is valid (§5). | — |
@@ -339,6 +363,10 @@ start it automatically. Before asking, Claude reports:
   includes the October 2025 peak and the decline that followed.
 - **Pairs:** BTCUSDT, ETHUSDT, XRPUSDT, SOLUSDT and ADAUSDT as Binance proxies for the
   Revolut X EUR pairs, fixed now. The daily warm-up starts in 2024-04.
+  - The set is wider than the development windows on purpose: it is the five
+    EUR-quoted coins the owner is likely to trade on Revolut X.
+  - ETH is absent from the development windows only because of archive defects in
+    `practice-2022` (see that spec).
 - **Runs:** the winner, V0 and D, at the primary fees, on both paths.
 - **Data problems:** a pair that fails integrity is reported as invalid and is **not**
   replaced by another pair.
@@ -379,4 +407,7 @@ These stay open; each needs its own specification:
 - quote skewing;
 - variant E;
 - a Revolut X price feed;
-- any live-trading work.
+- any live-trading work;
+- a README change to the "Binance spot only" operating rule. Revolut X is named here
+  only as the fee scenario and as the venue for a possible later paper-trading
+  proposal, which needs its own review.
