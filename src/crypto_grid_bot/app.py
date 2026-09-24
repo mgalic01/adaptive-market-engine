@@ -7,6 +7,7 @@ from pathlib import Path
 
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import MarketSignals
+from crypto_grid_bot.market_data.command import run_capture
 from crypto_grid_bot.simulation.demo import run_demo
 from crypto_grid_bot.simulation.store import encode
 from crypto_grid_bot.strategy.regime import RegimeClassifier, RegimeThresholds
@@ -18,6 +19,10 @@ def _parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--self-check", action="store_true")
     mode.add_argument("--paper-demo", action="store_true")
+    mode.add_argument("--capture-market", action="store_true")
+    parser.add_argument("--symbol", help="explicit Binance spot symbol, e.g. ADAUSDC")
+    parser.add_argument("--samples", type=int, default=1)
+    parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--database", type=Path)
     return parser
 
@@ -25,6 +30,10 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     config = load_config(args.config)
+    if args.capture_market:
+        if args.database is None or args.symbol is None:
+            raise SystemExit("--capture-market requires --database PATH and --symbol SYMBOL")
+        return run_capture(args.database, args.symbol, args.samples, args.poll_seconds)
     if args.paper_demo:
         if args.database is None:
             raise SystemExit("--paper-demo requires --database PATH; no live execution exists")
