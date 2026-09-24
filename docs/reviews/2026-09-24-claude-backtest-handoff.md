@@ -60,6 +60,25 @@ verification results are in [backtests/verify-2024h1.md](../backtests/verify-202
 4. **Findings in the verification report**, which look like strategy-design questions
    rather than harness bugs.
 
+## Verification result (summary)
+
+The harness is verified:
+- 92/92 files match the manifest;
+- 1m data aggregated to hours matches the 1h archive for 8,736 hours with 0 mismatches;
+- the accounting identities hold exactly;
+- 0 quotes were rejected as out of order.
+
+The strategy does not look promising. Under `price-only-v1` on the development window:
+- the gated strategy held inventory 1.1% of the time on ADA and returned -2.1% to -2.3%;
+- it never traded on BTC;
+- the ungated grid lost 4.9-11.2% and hit the latched 12% hard drawdown in the
+  2024-03-05 crash in 3 of 4 runs.
+
+The main constraint is structural. The rule that spacing must be at least 3× the 0.35%
+round-trip cost needs an hourly ATR of about 1.83%. That occurred in only 12.4% of ADA
+hours and 1.8% of BTC hours, and those are the most volatile hours. Details and five
+design findings are in [the report](../backtests/verify-2024h1.md).
+
 ## Suggested next steps
 
 - Agree the acceptance criteria with the owner.
