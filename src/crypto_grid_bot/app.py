@@ -7,21 +7,29 @@ from pathlib import Path
 
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import MarketSignals
+from crypto_grid_bot.simulation.demo import run_demo
+from crypto_grid_bot.simulation.store import encode
 from crypto_grid_bot.strategy.regime import RegimeClassifier, RegimeThresholds
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Adaptive crypto grid bot")
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--self-check", action="store_true")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--self-check", action="store_true")
+    mode.add_argument("--paper-demo", action="store_true")
+    parser.add_argument("--database", type=Path)
     return parser
 
 
 def main() -> int:
     args = _parser().parse_args()
     config = load_config(args.config)
-    if not args.self_check:
-        raise SystemExit("Milestone 1 only supports --self-check; live execution is unavailable")
+    if args.paper_demo:
+        if args.database is None:
+            raise SystemExit("--paper-demo requires --database PATH; no live execution exists")
+        print(encode(run_demo(args.database, config)))
+        return 0
 
     classifier = RegimeClassifier(
         RegimeThresholds(

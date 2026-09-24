@@ -1,9 +1,9 @@
 # Adaptive Crypto Grid Bot
 
-Prototype decision core for a planned automated **spot** grid-trading system.
-Milestone 1 contains deterministic strategy components and an in-memory order
-stub. It is not a running trading bot or a realistic paper-trading simulator.
-It cannot submit live Binance orders, access an account, or move funds.
+Offline prototype for a planned automated **spot** grid-trading system.
+Milestone 2 adds a deterministic single-market paper simulator with fee-aware
+partial fills, reserved balances, a persistent journal, and restart recovery.
+It cannot submit live Binance orders, access an account, or move real funds.
 
 ## Agreed operating rules
 
@@ -37,7 +37,12 @@ Implemented:
 - rotation hysteresis;
 - drawdown and daily-loss circuit breakers;
 - high-water-mark profit-vault ledger;
-- in-memory order placement/cancellation stub (no fills or balances);
+- single-market cash-start grid replay with paired buy/sell orders;
+- Decimal balances, fee reservations, tick/quantity/minimum-notional checks;
+- conservative spread/slippage-aware fills with shared liquidity limits;
+- automatic settled-profit allocation and simulated reserve transfers;
+- SQLite atomic state/event persistence, duplicate protection and recovery;
+- persistent risk halts and liquidity-limited simulated emergency exits;
 - automated unit tests and a GitHub Actions security/quality workflow.
 
 Not yet implemented:
@@ -45,18 +50,37 @@ Not yet implemented:
 - Binance live adapter or API-key handling;
 - CoinMarketCap universe refresh;
 - market-data ingestion and indicator calculation;
-- orchestration connecting risk, scoring, sizing, and order placement;
-- realistic paper fills, fees, slippage, and reserved order balances;
-- exchange tick/quantity filters and initial inventory funding;
+- live queue/latency modelling and exchange filter discovery;
+- multi-market orchestration and automatic rotation execution;
 - regime confirmation across distinct observations and persistent cooldowns;
 - verified news/event ingestion;
-- persistent database and recovery;
+- external deposits/withdrawals and live account reconciliation;
 - backtesting and walk-forward validation;
 - protected subaccount transfer adapter;
 - monitoring dashboard and alerts.
 
 See [ROADMAP.md](ROADMAP.md) for the next delivery gates and
 [SECURITY.md](SECURITY.md) for operational boundaries.
+
+## Run the offline paper demo
+
+```bash
+PYTHONPATH=src python -m crypto_grid_bot.app \
+  --config config/default.toml \
+  --paper-demo --database data/paper-demo.db
+```
+
+This replays 30 deliberately constructed price cycles for a fictitious
+`DEMOUSDT` market, starting with 100 simulated quote units. It exercises partial
+fills, fee accounting, compounding and reserve batching. **It is a software
+test, not a backtest, EUR conversion, forecast or evidence of profitability.**
+It reads no credentials and needs no network. Running the same command again
+reuses recorded results without duplicating trades or savings. A different
+database path starts a separate simulation; changed account settings are
+rejected against an existing database.
+
+See [Paper simulation](docs/PAPER_SIMULATION.md) for accounting, fill assumptions,
+recovery behaviour and remaining limits.
 
 ## Run the self-check
 
@@ -108,8 +132,9 @@ Example in quote-currency units (not an assumed EUR/USD exchange rate):
 This implements the latest 50/50 compounding rule, not the earlier fixed-100
 capital proposal. A transfer threshold batches small amounts; earmarked funds
 are unavailable for trading even below that threshold. `confirm_transfer` is
-only a ledger operation, not an exchange API call. A future executor must serialize
-allocation and confirmation, use fresh post-transfer balances, and persist state.
+only a ledger operation, not an exchange API call. The offline simulator performs
+allocation, simulated transfer, order updates and event recording in one SQLite
+transaction. A real transfer requires a separate asynchronous reconciliation design.
 External deposits/withdrawals are not supported by this ledger yet. Production
 allocation with open positions requires additional realized-P&L accounting.
 
@@ -119,15 +144,17 @@ allocation with open positions requires additional realized-P&L accounting.
 rejects any other mode. No secret belongs in source control; `.env.example`
 contains names only.
 
-Risk results are recommendations, not executing orders. Invalid/stale data or
-unknown balances/orders cause PAUSE, including during emergencies: no blind
-liquidation is attempted against an unknown account state. With valid state,
-hard drawdown takes precedence over daily pause, which takes precedence over
-soft drawdown. Daily and high-water baselines must exclude protected reserve
-and be adjusted for transfers by the future accounting layer.
+The simulator applies risk results to simulated orders. Invalid/stale inputs
+cancel resting paper orders and latch a halt. Fresh hard-drawdown or emergency
+inputs can trigger simulated liquidation, bounded by available liquidity;
+unfilled inventory or dust remains visible. Daily pause and soft drawdown
+cancel orders and stop trading; soft drawdown uses a conservative full pause
+instead of partial resizing. Halts survive restart and have no automatic resume
+yet. Savings earmarks adjust risk baselines proportionally and cannot fund orders.
 
-Float-based strategy prices are indicative, not exchange-ready orders. The
-future execution adapter must use exact asset precision and exchange filters.
+The strategy suggests float-based levels; the simulator converts and rounds
+them to Decimal ticks and rechecks costs, quantities and affordability. Actual
+exchange rules and fee-asset handling still require a separately tested adapter.
 Regime confidence is a heuristic score, not a probability of making money.
 There is no background process, deployment, or real fund protection in this version.
 

@@ -25,5 +25,7 @@ jobs:
       - run: ruff format --check .
       - run: mypy src
       - run: pytest
+      - run: python -m crypto_grid_bot.app --config config/default.toml --self-check
+      - run: python -m crypto_grid_bot.app --config config/default.toml --paper-demo --database /tmp/grid-paper-ci.db
       - run: bandit -q -r src
       - run: pip-audit

@@ -9,13 +9,19 @@ It has no networked exchange implementation and does not read API credentials.
   and explicit live-deployment approval are required.
 - Treat news and external feeds as untrusted data, never as executable commands.
 - Never use protected reserve to fund a grid, an exit, or loss recovery.
-- The reserve is currently a simulated ledger entry, not isolated exchange funds.
+- The reserve is a persisted simulated ledger entry, not isolated exchange funds.
 - Do not put credentials into GitHub issues or pull requests.
 
-Before live deployment: add persistent transactional accounting, restart/order
-reconciliation, duplicate-event protection, exact exchange filters, fee-aware
-execution, bounded retries, stale-data protection, alerts, a manual kill switch,
-and tested failure recovery. Scope trading credentials to the intended account,
+The offline simulator uses SQLite transactions and event IDs to recover paper
+orders, fills and reserve accounting after restart. Back up the database with a
+SQLite-aware backup method; do not copy only the main file while its WAL is active.
+Do not manually edit balances or delete event rows to bypass a halt. SQLite is
+local storage, not a tamper-proof exchange ledger. Halts do not auto-resume.
+
+Before live deployment: add live order/balance reconciliation, real exchange
+filters and fee-asset handling, bounded retries, a wall-clock stale-feed watchdog,
+alerts, a manual kill switch, and tested exchange failure recovery.
+Scope trading credentials to the intended account,
 restrict network access where supported, and separate reserve custody from
 trading access. An automated transfer design needs its own permissions review.
 
