@@ -105,7 +105,7 @@ def load_config(path: str | Path) -> BotConfig:
 
 def _validate(config: BotConfig) -> None:
     if config.mode != "paper":
-        raise ConfigurationError("Milestone 1 supports paper mode only")
+        raise ConfigurationError("This version supports paper mode only")
     if config.top_n != 100 or "NIGHT" not in config.include_assets:
         raise ConfigurationError("Universe must contain the top 100 plus NIGHT")
     if not 0.5 <= config.minimum_confidence <= 1.0:

@@ -1,23 +1,27 @@
 # Delivery gates
 
-## 1. Decision-core foundation (this change)
+## 1. Decision-core foundation (merged)
 
 Paper-only configuration, heuristic regime classification, candidate scoring,
 indicative grid sizing, rotation policy, risk recommendations, settled 50/50
 reserve accounting, order stub, tests, and CI. No claim of strategy profitability.
 
-## 2. Reproducible end-to-end paper simulator
+## 2. Reproducible end-to-end paper simulator (this change)
 
-- Feed recorded, timestamped fixtures through one risk-gated decision loop.
+- Feed deterministic, timestamped synthetic quotes through one risk-gated decision loop.
 - Model cash and inventory reservations, fees, spread, conservative fills,
   partial fills, cancellations, and exchange quantity/price/notional filters.
 - Persist orders, fills, equity, and reserve events transactionally in SQLite.
-- Verify replay determinism, restart recovery, duplicate events, and balance
-  invariants. Test deposits/withdrawals and baseline adjustment separately.
+- Verify replay determinism, restart recovery, duplicate events, balance
+  invariants and reserve-adjusted baselines. External deposits/withdrawals
+  remain unsupported and have no public mutation API.
 - Ensure protected reserve cannot be submitted as order capital.
 - Simulate the 50/50 profit loop, losses, interrupted transfers, and recovery.
 
-Gate: deterministic replay passes; no network trading endpoint exists.
+Gate: replay/restart/failure tests pass; no network trading endpoint exists.
+Scope is one simulated symbol per account, cash-start grids, quote-asset fees,
+and flat-account reserve checkpoints. Rotation execution, automated halt recovery,
+live order reconciliation and real transfers remain separate work.
 
 ## 3. Read-only market-data shadow mode
 
