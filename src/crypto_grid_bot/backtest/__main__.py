@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from crypto_grid_bot.backtest.dataset import (
+    fee_rate,
     fetch_dataset,
     load_manifest,
     load_spec,
@@ -45,16 +46,25 @@ def manifest_path(spec_path: Path) -> Path:
 
 
 def run_job(
-    spec_path: Path, config_path: Path, data_dir: Path, symbol: str, path_mode: str, gated: bool
+    spec_path: Path,
+    config_path: Path,
+    data_dir: Path,
+    symbol: str,
+    path_mode: str,
+    gated: bool,
+    fees: tuple[Decimal, Decimal | None] | None = None,
 ) -> dict[str, Any]:
+    """``fees`` is (maker, taker) overriding the spec; taker None means maker."""
     spec, config = load_spec(spec_path), load_config(config_path)
     manifest = load_manifest(manifest_path(spec_path))
+    maker, taker = fees or (spec.fee_rate, None)
     rules = rules_for(
         symbol,
         manifest["instruments"][symbol],
-        spec.fee_rate,
+        maker,
         spec.slippage_rate,
         spec.participation,
+        taker,
     )
     spread = spec.assumed_spread_pct / 100
     pair = SeriesFeatures(symbol, load_hourly(data_dir, manifest, symbol))
@@ -74,7 +84,8 @@ def run_job(
         range_atr_multiple=config.range_atr_multiple,
         levels=config.maximum_levels,
         minimum_cost_multiple=config.minimum_grid_cost_multiple,
-        round_trip_cost=float(2 * (spec.fee_rate + spec.slippage_rate) + spread),
+        # A grid cycle is two resting fills, so it pays the maker fee twice.
+        round_trip_cost=float(2 * (maker + spec.slippage_rate) + spread),
     )
     run = RunConfig(symbol, path_mode, gated, rules, spec.initial_quote, spread)
     metrics, account = replay(config, run, load_minutes(data_dir, manifest, symbol), features)
@@ -136,8 +147,9 @@ def _identity(spec_path: Path, config_path: Path) -> dict[str, str]:
 def _table(results: list[dict[str, Any]]) -> str:
     lines = [
         "| Pair | Path | Strategy | Return % | Max DD % | Buy&hold % | B&H DD % | Fees | "
-        "Buys/Sells | Grids | Range exits | Invested % | Halted |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "Buys/Sells | Grids | Range exits | Invested % | Max req/day | Halted |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: "
+        "| --- |",
     ]
     for r in results:
         lines.append(
@@ -145,7 +157,8 @@ def _table(results: list[dict[str, Any]]) -> str:
             f"{r['max_drawdown_pct']:.2f} | {r['buy_and_hold_return_pct']:.2f} | "
             f"{r['buy_and_hold_max_drawdown_pct']:.2f} | {Decimal(r['fees']):.2f} | "
             f"{r['buys']}/{r['sells']} | {r['grids_opened']} | {r['range_exits']} | "
-            f"{r['time_with_inventory_pct']:.1f} | {r['halted_at'] or 'no'} |"
+            f"{r['time_with_inventory_pct']:.1f} | {r['max_order_requests_per_day']} | "
+            f"{r['halted_at'] or 'no'} |"
         )
     return "\n".join(lines)
 
@@ -158,8 +171,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--out", type=Path, default=Path("data/backtests"))
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--maker-fee", help="override the spec fee for resting fills")
+    parser.add_argument("--taker-fee", help="fee for marketable exits (default: maker)")
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
+    maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee else spec.fee_rate
+    taker = fee_rate(args.taker_fee, "taker fee") if args.taker_fee else None
     if args.command == "fetch":
         manifest = fetch_dataset(spec, args.data_dir)
         write_manifest(manifest_path(args.spec), manifest)
@@ -185,14 +202,19 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2 if failures else 0
         futures = [
-            pool.submit(run_job, args.spec, args.config, args.data_dir, s, mode, gated)
+            pool.submit(
+                run_job, args.spec, args.config, args.data_dir, s, mode, gated, (maker, taker)
+            )
             for s in spec.traded
             for mode in PATH_MODES
             for gated in (True, False)
         ]
         results = [f.result() for f in futures]
     failures = result_failures(results)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stamp = (
+        datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        + f"-m{maker}-t{maker if taker is None else taker}"
+    )
     out = args.out / spec.name / stamp
     out.mkdir(parents=True, exist_ok=True)
     document = {
@@ -201,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         "feature_version": FEATURE_VERSION,
         "manifest_created_at": manifest["created_at"],
         **_identity(args.spec, args.config),
+        "fees": {"maker": str(maker), "taker": str(taker if taker is not None else maker)},
         # Invalid results are kept for diagnosis but are never performance evidence.
         "valid": not failures,
         "failures": failures,

@@ -47,9 +47,12 @@ class MarketRules:
     tick_size: Decimal = D("0.00001")
     quantity_step: Decimal = D("1")
     minimum_notional: Decimal = D("5")
+    # Maker fee: charged when a resting limit order fills.
     fee_rate: Decimal = D("0.001")
     slippage_rate: Decimal = D("0.0005")
     participation: Decimal = D("0.10")
+    # Taker fee for marketable exits and liquidation; None means equal to fee_rate.
+    taker_fee_rate: Decimal | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol or self.symbol != self.symbol.upper():
@@ -58,13 +61,24 @@ class MarketRules:
             nonnegative(value)
             if value == ZERO:
                 raise ValueError("market filters must be positive")
-        for value in (self.fee_rate, self.slippage_rate):
+        for value in (self.fee_rate, self.slippage_rate, self.taker_fee):
             nonnegative(value)
             if value >= D("0.1"):
                 raise ValueError("fee and slippage rates must be below 10%")
         nonnegative(self.participation)
         if not ZERO < self.participation <= ONE:
             raise ValueError("participation must be between zero and one")
+
+    @property
+    def taker_fee(self) -> Decimal:
+        return self.fee_rate if self.taker_fee_rate is None else self.taker_fee_rate
+
+    def identity(self) -> dict[str, Any]:
+        """Persisted form; omits an unset taker fee so older identities still match."""
+        value = asdict(self)
+        if self.taker_fee_rate is None:
+            del value["taker_fee_rate"]
+        return value
 
 
 @dataclass(frozen=True)
@@ -171,7 +185,7 @@ class Account:
     def equity(self, quote: Quote, rules: MarketRules) -> Decimal:
         liquidation_price = quote.bid * (ONE - rules.slippage_rate)
         return (
-            self.cash - self.pending + self.inventory * liquidation_price * (ONE - rules.fee_rate)
+            self.cash - self.pending + self.inventory * liquidation_price * (ONE - rules.taker_fee)
         )
 
     def validate(self, rules: MarketRules) -> None:

@@ -91,14 +91,25 @@ _SPEC_FIELDS: dict[str, type] = {
 }
 
 
-def _positive(raw: str, name: str, *, below: Decimal | None = None) -> Decimal:
+def _positive(
+    raw: str, name: str, *, below: Decimal | None = None, allow_zero: bool = False
+) -> Decimal:
     try:
         value = Decimal(raw)
     except InvalidOperation as exc:
         raise DataError(f"{name} must be a decimal string") from exc
-    if not value.is_finite() or value <= 0 or (below is not None and value >= below):
+    # NaN cannot be ordered (sNaN even raises), so reject non-finite values first.
+    if not value.is_finite():
+        raise DataError(f"{name} is out of range")
+    too_low = value < 0 if allow_zero else value <= 0
+    if too_low or (below is not None and value >= below):
         raise DataError(f"{name} is out of range")
     return value
+
+
+def fee_rate(raw: str, name: str) -> Decimal:
+    """A fee fraction in [0, 0.1); zero is valid (e.g. a 0% maker fee)."""
+    return _positive(raw, name, below=Decimal("0.1"), allow_zero=True)
 
 
 def load_spec(path: Path) -> DatasetSpec:
@@ -132,7 +143,7 @@ def load_spec(path: Path) -> DatasetSpec:
         start=raw["start"],
         end=raw["end"],
         initial_quote=_positive(raw["initial_quote"], "initial_quote"),
-        fee_rate=_positive(raw["fee_rate"], "fee_rate", below=Decimal("0.1")),
+        fee_rate=fee_rate(raw["fee_rate"], "fee_rate"),
         slippage_rate=_positive(raw["slippage_rate"], "slippage_rate", below=Decimal("0.1")),
         participation=_positive(raw["participation"], "participation", below=Decimal("1.01")),
         assumed_spread_pct=_positive(raw["assumed_spread_pct"], "assumed_spread_pct"),

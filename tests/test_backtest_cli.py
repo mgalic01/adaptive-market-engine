@@ -5,10 +5,12 @@ import io
 import json
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
 from crypto_grid_bot.backtest import __main__ as cli
+from crypto_grid_bot.market_data.parsing import DataError
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = str(ROOT / "config/datasets/verify-2024h1.toml")
@@ -62,6 +64,7 @@ def good_result(symbol, mode, gated):
         "grids_opened": 0,
         "range_exits": 0,
         "time_with_inventory_pct": 0.0,
+        "max_order_requests_per_day": 0,
         "halted_at": None,
         "accounting_problems": [],
         "transient_pauses": 0,
@@ -77,6 +80,7 @@ class CliIntegrityTests(unittest.TestCase):
         self.checks = dict(CLEAN)
         self.result_patch = {}
         self.replays = []
+        self.fees = []
         patches = [
             patch.object(cli, "ProcessPoolExecutor", Inline),
             patch.object(cli, "load_manifest", lambda path: {"created_at": "t"}),
@@ -92,13 +96,14 @@ class CliIntegrityTests(unittest.TestCase):
     def fake_check(self, spec, data_dir, symbol):
         return {"symbol": symbol, **self.checks}
 
-    def fake_run(self, spec, config, data_dir, symbol, mode, gated):
+    def fake_run(self, spec, config, data_dir, symbol, mode, gated, fees=None):
         self.replays.append(symbol)
+        self.fees.append(fees)
         return {**good_result(symbol, mode, gated), **self.result_patch}
 
-    def main(self, command):
+    def main(self, command, *extra):
         with contextlib.redirect_stdout(io.StringIO()):
-            return cli.main([command, "--spec", SPEC, "--out", self.temp.name])
+            return cli.main([command, "--spec", SPEC, "--out", self.temp.name, *extra])
 
     def test_clean_data_verifies_and_runs(self):
         self.assertEqual(0, self.main("verify"))
@@ -106,6 +111,21 @@ class CliIntegrityTests(unittest.TestCase):
         self.assertTrue(self.replays)
         (written,) = Path(self.temp.name).rglob("results.json")
         self.assertTrue(json.loads(written.read_text())["valid"])
+
+    def test_fee_overrides_reach_every_replay_and_the_results(self):
+        self.assertEqual(0, self.main("run"))
+        self.assertEqual({(Decimal("0.001"), None)}, set(self.fees))  # spec fee, taker = maker
+        self.fees.clear()
+        self.assertEqual(0, self.main("run", "--maker-fee", "0", "--taker-fee", "0.0009"))
+        self.assertEqual({(Decimal("0"), Decimal("0.0009"))}, set(self.fees))
+        (latest,) = Path(self.temp.name).rglob("*-m0-t0.0009/results.json")
+        fees = json.loads(latest.read_text())["fees"]
+        self.assertEqual({"maker": "0", "taker": "0.0009"}, fees)
+
+    def test_out_of_range_fee_override_is_rejected(self):
+        for value in ("-0.001", "0.1", "abc"):
+            with self.subTest(value=value), self.assertRaises(DataError):
+                self.main("run", "--maker-fee", value)
 
     def test_each_chronology_failure_fails_and_prevents_replay(self):
         failing = {field: 1 for field in cli.INTEGRITY_FIELDS} | {"hours_compared": 0}

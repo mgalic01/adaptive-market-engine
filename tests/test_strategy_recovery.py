@@ -67,8 +67,8 @@ class StrategyRecoveryTests(TestCase):
         self.sim = self.open()
         self.addCleanup(lambda: self.sim.close())
 
-    def open(self):
-        return PaperSimulator(self.path, self.config, MarketRules(), policy=self.policy)
+    def open(self, rules=None):
+        return PaperSimulator(self.path, self.config, rules or MarketRules(), policy=self.policy)
 
     def reopen(self, policy, name):
         self.sim.close()
@@ -469,6 +469,15 @@ class StrategyRecoveryTests(TestCase):
                 self.open()
 
     def test_resume_cli_loads_saved_rules_and_requires_current_frame(self):
+        self.check_resume_cli()
+
+    def test_resume_cli_restores_a_separate_taker_fee(self):
+        self.sim.close()
+        self.path = Path(self.temp.name) / "taker.db"
+        self.sim = self.open(MarketRules(fee_rate=D("0"), taker_fee_rate=D("0.0009")))
+        self.check_resume_cli()  # a mis-decoded taker fee would fail as "settings differ"
+
+    def check_resume_cli(self):
         emergency = replace(frame(0), signals=replace(frame(0).signals, emergency=True))
         self.sim.process(emergency)
         recent = frame(1)
