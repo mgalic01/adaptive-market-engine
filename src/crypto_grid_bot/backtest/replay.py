@@ -36,7 +36,15 @@ from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, In
 from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
-from crypto_grid_bot.simulation.models import ONE, ZERO, Account, MarketRules, Quote, floor_step
+from crypto_grid_bot.simulation.models import (
+    ONE,
+    ZERO,
+    Account,
+    LimitOrder,
+    MarketRules,
+    Quote,
+    floor_step,
+)
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
 
 PATH_MODES = ("high_first", "low_first")
@@ -214,29 +222,44 @@ class Metrics:
     exit_sells: int = 0
 
 
-def order_requests(
-    before: set[str], after: set[str], fills: Sequence[dict[str, Any]], remaining: set[str]
-) -> int:
-    """Placements plus cancellations one step would send to an exchange.
+class RequestCountingOrders(dict[str, LimitOrder]):
+    """An account's order book that counts what an exchange would be sent.
 
-    ``before``/``after`` are resting order IDs around the step; ``remaining`` holds
-    IDs of orders that fully filled in it. An order placed and filled within the step
-    (a marketable exit) still costs one placement. Fills themselves cost nothing.
+    Every new order is one placement. Removing an order that still has quantity left
+    is one cancellation; removing a fully filled order costs nothing. Counting at the
+    operation catches orders placed and cancelled within one step, which before/after
+    snapshots cannot see (for example a reentry buy cancelled when the account goes
+    flat).
     """
-    filled = {str(fill["order_id"]) for fill in fills}
-    placed = (after - before) | (filled - before - after)
-    cancelled = before - after - remaining
-    return len(placed) + len(cancelled)
+
+    requests: int = 0
+
+    def __setitem__(self, key: str, order: LimitOrder) -> None:
+        self.requests += int(key not in self)
+        super().__setitem__(key, order)
+
+    def __delitem__(self, key: str) -> None:
+        self.requests += int(self[key].remaining > ZERO)
+        super().__delitem__(key)
+
+    def clear(self) -> None:
+        self.requests += sum(1 for order in self.values() if order.remaining > ZERO)
+        super().clear()
+
+    def pop(self, *args: Any) -> Any:
+        raise NotImplementedError("remove orders with del so cancellations are counted")
+
+    def popitem(self) -> tuple[str, LimitOrder]:
+        raise NotImplementedError("remove orders with del so cancellations are counted")
 
 
-def _completed(before: dict[str, Decimal], fills: Sequence[dict[str, Any]]) -> set[str]:
-    """Resting orders whose remaining quantity this step's fills exhausted."""
-    left = dict(before)
-    for fill in fills:
-        order_id = str(fill["order_id"])
-        if order_id in left:
-            left[order_id] -= Decimal(fill["quantity"])
-    return {order_id for order_id, quantity in left.items() if quantity <= ZERO}
+def order_requests(
+    orders: RequestCountingOrders, since: int, fills: Sequence[dict[str, Any]]
+) -> int:
+    """Requests sent during one step: book operations since ``since`` plus marketable
+    exits, which are placed and filled at once without entering the book."""
+    exits = sum(1 for fill in fills if str(fill["order_id"]).startswith("exit/"))
+    return orders.requests - since + exits
 
 
 def _record_fills(metrics: Metrics, fills: Sequence[dict[str, Any]]) -> None:
@@ -300,6 +323,7 @@ def replay(
     simulator = PaperSimulator(Path(":memory:"), config, run.rules, run.initial_quote, policy)
     account = simulator.store.read()
     simulator.close()  # step() below uses no store
+    orders = account.orders = RequestCountingOrders(account.orders)
     metrics = Metrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
     spread_pct = float(run.spread * 100)
     hold: _BuyAndHold | None = None
@@ -327,11 +351,10 @@ def replay(
             depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
             candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
             frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch)
-            before = {order.order_id: order.remaining for order in account.orders.values()}
+            since = orders.requests
             report = simulator.step(account, frame)
-            filled_out = _completed(before, report["fills"])
             metrics.requests_by_day[quote.observed_at[:10]] += order_requests(
-                set(before), set(account.orders), report["fills"], filled_out
+                orders, since, report["fills"]
             )
             metrics.frames += 1
             _record_fills(metrics, report["fills"])

@@ -204,6 +204,9 @@ class FetchTests(unittest.TestCase):
             source + 'surprise = "x"\n',
             source.replace('fee_rate = "0.001"', 'fee_rate = "0.5"'),
             source.replace('fee_rate = "0.001"', 'fee_rate = "-0.001"'),
+            source.replace('fee_rate = "0.001"', 'fee_rate = "NaN"'),
+            source.replace('fee_rate = "0.001"', 'fee_rate = "sNaN"'),
+            source.replace('initial_quote = "100"', 'initial_quote = "Infinity"'),
             source.replace('start = "2024-01"', 'start = "2023-11"'),
         ):
             with (

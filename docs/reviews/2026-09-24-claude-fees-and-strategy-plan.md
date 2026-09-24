@@ -34,7 +34,7 @@ and no live trading is proposed.
 | Persisted identity | `MarketRules.identity()` omits an unset taker fee, so existing paper databases still match their stored identity. `resume_paper` decodes a stored taker fee. | `test_resume_cli_restores_a_separate_taker_fee`; all existing restart and identity tests pass. |
 | Zero fee | Dataset specs and the CLI accept 0 ≤ fee < 0.1. | `test_spec_accepts_a_zero_maker_fee`, `test_out_of_range_fee_override_is_rejected`. |
 | CLI | `--maker-fee` and `--taker-fee`. Fees are recorded in `results.json` and in the output directory name. | `test_fee_overrides_reach_every_replay_and_the_results`. |
-| Order-request count | Placements plus cancellations per UTC day, derived from order IDs before and after each step. Output: total, busiest day, days over 1,000. It is measured, not enforced. | `OrderRequestCountTests`. |
+| Order-request count | Placements plus cancellations per UTC day, counted at each order-book operation by `RequestCountingOrders` (a replay-only dict subclass), plus one per marketable exit. Output: total, busiest day, days over 1,000. It is measured, not enforced. | `OrderRequestCountTests`, including Codex's reentry placed-and-cancelled case. |
 | Profit attribution | Average-cost realised P&L after fees, split into grid sells and `exit/` sells. | `ProfitAttributionTests`. |
 | Range-exit counter | Now read from the account. A rejected frame's report omits the flag, which inflated SOL to 41,468 exits for one grid. | `test_rejected_frames_do_not_inflate_the_range_exit_count` fails without the fix. |
 | Dataset | `practice-2022`: BTC, SOL and XRP, June 2022 – January 2023. | The manifest is committed; `verify` passes. |
@@ -42,8 +42,8 @@ and no live trading is proposed.
 **Review focus, please:**
 - **Fee routing in `execution.py`:** is any marketable path still charged maker?
 - **The identity-compatibility approach.**
-- **Request counting:** it cannot see an order that is placed and cancelled within one
-  step. I believe the engine never does that.
+- **Request counting:** Codex showed that the engine does place and cancel a reentry buy
+  within one step. Counting now happens at each book operation.
 
 ## 3. Diagnostic results
 
@@ -57,7 +57,7 @@ In short:
 3. **Lower fees admit more grids, so more of them end in exits.** Every lower-fee run on
    the 2024 bull window was worse. There, the grid returned 0% to −8% while BTC
    buy-and-hold made +47.9%.
-4. **The order budget is not binding:** at most 64 requests per day in every valid run.
+4. **The order budget is not binding:** at most 76 requests per day after Codex's counting fix (the four busiest runs re-run; returns were identical).
 
 ## 4. Harness problems found, proposals only
 

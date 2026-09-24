@@ -98,8 +98,11 @@ def _positive(
         value = Decimal(raw)
     except InvalidOperation as exc:
         raise DataError(f"{name} must be a decimal string") from exc
+    # NaN cannot be ordered (sNaN even raises), so reject non-finite values first.
+    if not value.is_finite():
+        raise DataError(f"{name} is out of range")
     too_low = value < 0 if allow_zero else value <= 0
-    if not value.is_finite() or too_low or (below is not None and value >= below):
+    if too_low or (below is not None and value >= below):
         raise DataError(f"{name} is out of range")
     return value
 

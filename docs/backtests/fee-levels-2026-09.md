@@ -63,8 +63,12 @@
    a range exit. On the 2024 bull window, every lower-fee run was worse.
 4. **In a bull market the grid loses to holding.** BTC 2024: +47.9% buy-and-hold versus
    0% to −8% for every grid variant.
-5. **The order budget is not binding.** The busiest day in every valid run had
-   64 placements plus cancellations or fewer, against Revolut X's 1,000.
+5. **The order budget is not binding.** The counts in these runs' `results.json`
+   undercount: Codex found (PR #14) that a reentry buy placed and cancelled within
+   one step was invisible to the before/after count. After the fix, counting at each
+   book operation, the four busiest runs (0%/0.09%) were re-run with identical returns:
+   the busiest day was 76, 50, 48 and 52 requests (previously reported 64, 44, 42 and
+   46), against Revolut X's 1,000.
 6. **Harness issues found:** today's tick size applied to much lower historical prices
    (SOL) and a range-exit counter that counted rejected frames (fixed in `f136773`).
 

@@ -11,6 +11,7 @@ from crypto_grid_bot.backtest.features import HOUR_MS, FeatureEngine, SeriesFeat
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import (
     Metrics,
+    RequestCountingOrders,
     RunConfig,
     _record_fills,
     bar_quotes,
@@ -22,7 +23,8 @@ from crypto_grid_bot.backtest.replay import (
 )
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
-from crypto_grid_bot.simulation.models import MarketRules, Quote, timestamp
+from crypto_grid_bot.simulation.execution import match, place
+from crypto_grid_bot.simulation.models import Account, LimitOrder, MarketRules, Quote, timestamp
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -462,19 +464,56 @@ class DegenerateHistoryTests(unittest.TestCase):
 class OrderRequestCountTests(unittest.TestCase):
     """Placements plus cancellations, as counted against an exchange's daily budget."""
 
-    def test_counts_placements_cancellations_and_marketable_exits(self):
-        fill = {"order_id": "b1", "quantity": "1"}
-        # b1 filled out and spawned its child sell: one placement, no cancellation.
-        self.assertEqual(1, order_requests({"b1", "b2"}, {"b2", "b1/sell"}, [fill], {"b1"}))
-        # A partial fill that is then cancelled still costs one cancellation.
-        self.assertEqual(1, order_requests({"b1"}, set(), [fill], set()))
-        # A grid of three buys placed in one step.
-        self.assertEqual(3, order_requests(set(), {"a", "b", "c"}, [], set()))
-        # An exit order placed and filled in the same step costs one placement.
-        exit_fill = {"order_id": "exit/q", "quantity": "2"}
-        self.assertEqual(1, order_requests(set(), set(), [exit_fill], set()))
-        # Nothing changed, nothing sent.
-        self.assertEqual(0, order_requests({"a"}, {"a"}, [], set()))
+    def order(self, order_id, side="buy", quantity="1", target=None, reentry=None):
+        q = D(quantity)
+        return LimitOrder(order_id, side, D("1"), q, q, target, reentry)
+
+    def test_book_operations_are_counted_at_the_operation(self):
+        orders = RequestCountingOrders()
+        for name in ("a", "b", "c"):
+            orders[name] = self.order(name)
+        orders["a"] = orders["a"]  # replacing an existing order is not a new placement
+        self.assertEqual(3, orders.requests)
+        orders["b"].remaining = D("0")
+        del orders["b"]  # fully filled: no request
+        del orders["c"]  # cancelled with quantity left
+        self.assertEqual(4, orders.requests)
+        orders["d"] = self.order("d")
+        orders.clear()  # cancels a and d
+        self.assertEqual(7, orders.requests)
+        with self.assertRaises(NotImplementedError):
+            orders.pop("x", None)
+
+    def test_marketable_exits_count_one_placement_each(self):
+        orders = RequestCountingOrders()
+        fills = [{"order_id": "exit/q1"}, {"order_id": "b1"}]
+        self.assertEqual(1, order_requests(orders, 0, fills))
+
+    def test_reentry_placed_and_cancelled_in_one_step_is_counted(self):
+        # Codex's PR #14 case: the last grid sell fills, match() places its reentry buy,
+        # and the flat account then cancels that buy before the step returns.
+        account = Account.start(D(100))
+        orders = account.orders = RequestCountingOrders()
+        account.inventory = D("10")
+        place(account, self.order("s", "sell", "10", reentry=D("0.9")), RULES)
+        since = orders.requests
+        quote = Quote(
+            "q",
+            "TESTUSDT",
+            "2024-01-01T00:00:00+00:00",
+            "2024-01-01T00:00:00+00:00",
+            D("1.01"),
+            D("1.0101"),
+            D("1000"),
+            D("1000"),
+        )
+        fills = [vars(fill) for fill in match(account, quote, RULES)]
+        self.assertEqual(["sell"], [fill["side"] for fill in fills])
+        self.assertTrue(any(o.side == "buy" for o in account.orders.values()))
+        PaperSimulator._cancel_buys(account)
+        self.assertEqual({}, dict(account.orders))
+        # One reentry placement and one cancellation; the filled sell costs nothing.
+        self.assertEqual(2, order_requests(orders, since, fills))
 
 
 class ProfitAttributionTests(unittest.TestCase):
