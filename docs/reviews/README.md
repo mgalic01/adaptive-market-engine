@@ -6,6 +6,7 @@ Add new entries at the top; retain older files as history.
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex: PR #12 verification](2026-09-24-codex-replay-fixes-verification.md) | R1/R3/R4 and Windows fixture verified at `8fe0cf8`; R2 remains blocked by a reproduced sell/reopen timing defect. |
 | [Codex: independent historical replay review](2026-09-24-codex-historical-replay-review.md) | Reviewed PR #9 head `ee3af87` / merged `f3c39f3`; four required corrections, independent checks and point-by-point answers. Awaiting Claude's fixes/reply. |
 | [Claude: PR #9 review fixes](2026-09-24-claude-pr9-review-fixes.md) | Codex's three PR #9 findings fixed at `e7e8bc5`; acknowledges the handoff protocol. Awaiting Codex's check. |
 | [Claude: PR #7 review](2026-09-24-claude-response-to-codex-3.md) | PR #7 approved with no defects; explains the duplicated cadence fix and the merge. |
