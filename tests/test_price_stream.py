@@ -243,6 +243,45 @@ class StreamTests(unittest.TestCase):
         self.assertEqual([1, 2, 4], clock.sleeps[:3])  # ladder from the early failures
         self.assertEqual(1, clock.sleeps[3])  # after the stable rotation: back to 1 s
 
+    def test_real_connector_refuses_every_redirect(self):
+        from websockets.datastructures import Headers
+        from websockets.http11 import Response
+
+        async def probe(location):
+            connection = stream_module.NoRedirectConnect(stream_url(["ADAUSDC"]))
+            redirect = InvalidStatus(Response(302, "Found", Headers({"Location": location})))
+            return connection.process_redirect(redirect)
+
+        for location in (
+            "wss://example.invalid/stream",  # cross-host
+            "wss://data-stream.binance.vision/other",  # same host still counts as an attempt
+        ):
+            with self.subTest(location=location):
+                self.assertIsInstance(asyncio.run(probe(location)), InvalidStatus)
+
+    def test_default_connector_uses_the_no_redirect_class(self):
+        captured = {}
+
+        class Recorder:
+            def __init__(self, url, **kwargs):
+                captured.update(url=url, **kwargs)
+
+            def __await__(self):
+                return iter(())
+
+        with patch.object(stream_module, "NoRedirectConnect", Recorder):
+            asyncio.run(stream_module.default_connector("wss://data-stream.binance.vision/x"))
+        self.assertEqual("wss://data-stream.binance.vision/x", captured["url"])
+        self.assertEqual(stream_module.MAX_MESSAGE, captured["max_size"])
+
+    def test_redirect_status_is_a_failed_attempt_not_a_stop(self):
+        clock = Clock()
+        connector = Connector(clock, [rejected(302), [message(1), message(2)]])
+        with patch.object(stream_module, "SILENCE_SECONDS", 0.01):
+            stats = self.run_stream(make_stream(clock, connector), 5)
+        self.assertEqual(2, len(connector.urls))
+        self.assertIn("handshake rejected: HTTP 302", stats.errors)
+
     def test_no_order_or_account_endpoint_is_reachable(self):
         source = Path(stream_module.__file__).read_text(encoding="utf-8")
         for forbidden in ("api.binance.com", "listenKey", "signature", "X-MBX-APIKEY", "/order"):

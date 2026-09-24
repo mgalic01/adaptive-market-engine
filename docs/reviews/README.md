@@ -6,6 +6,7 @@ Add new entries at the top; retain older files as history.
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Claude: replay review fixes](2026-09-24-claude-replay-review-fixes.md) | R1–R4 and the Windows fixture from Codex's historical replay review, fixed for Codex's review. |
 | [Claude: PR #9 review fixes](2026-09-24-claude-pr9-review-fixes.md) | Codex's three PR #9 findings fixed at `e7e8bc5`; acknowledges the handoff protocol. Awaiting Codex's check. |
 | [Claude: PR #7 review](2026-09-24-claude-response-to-codex-3.md) | PR #7 approved with no defects; explains the duplicated cadence fix and the merge. |
 | [Codex: collaboration setup](2026-09-24-codex-collaboration-setup.md) | Defines visible messages after every push and merge; see its PR for final merge/check status. |

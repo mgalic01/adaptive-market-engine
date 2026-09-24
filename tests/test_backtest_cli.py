@@ -1,0 +1,151 @@
+"""R1: integrity failures must invalidate verify/run and never reach replay."""
+
+import contextlib
+import io
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from crypto_grid_bot.backtest import __main__ as cli
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = str(ROOT / "config/datasets/verify-2024h1.toml")
+CLEAN = {
+    "hours_compared": 10,
+    "hours_mismatched": 0,
+    "hours_missing": 0,
+    "hours_absent_from_minutes": 0,
+    "hours_absent_from_both": 0,
+    "hours_incomplete": 0,
+    "minutes_missing": 0,
+}
+
+
+class Done:
+    def __init__(self, value):
+        self.value = value
+
+    def result(self):
+        return self.value
+
+
+class Inline:
+    """Synchronous stand-in for ProcessPoolExecutor."""
+
+    def __init__(self, max_workers):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, fn, *args):
+        return Done(fn(*args))
+
+
+def good_result(symbol, mode, gated):
+    return {
+        "symbol": symbol,
+        "path_mode": mode,
+        "strategy": "gated" if gated else "ungated",
+        "return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "buy_and_hold_return_pct": 0.0,
+        "buy_and_hold_max_drawdown_pct": 0.0,
+        "fees": "0",
+        "buys": 0,
+        "sells": 0,
+        "grids_opened": 0,
+        "range_exits": 0,
+        "time_with_inventory_pct": 0.0,
+        "halted_at": None,
+        "accounting_problems": [],
+        "transient_pauses": 0,
+        "bars": 100,
+        "hourly_equity": [],
+    }
+
+
+class CliIntegrityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.checks = dict(CLEAN)
+        self.result_patch = {}
+        self.replays = []
+        patches = [
+            patch.object(cli, "ProcessPoolExecutor", Inline),
+            patch.object(cli, "load_manifest", lambda path: {"created_at": "t"}),
+            patch.object(cli, "verify_dataset", lambda *a: None),
+            patch.object(cli, "_identity", lambda *a: {}),
+            patch.object(cli, "cross_check_job", self.fake_check),
+            patch.object(cli, "run_job", self.fake_run),
+        ]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def fake_check(self, spec, data_dir, symbol):
+        return {"symbol": symbol, **self.checks}
+
+    def fake_run(self, spec, config, data_dir, symbol, mode, gated):
+        self.replays.append(symbol)
+        return {**good_result(symbol, mode, gated), **self.result_patch}
+
+    def main(self, command):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return cli.main([command, "--spec", SPEC, "--out", self.temp.name])
+
+    def test_clean_data_verifies_and_runs(self):
+        self.assertEqual(0, self.main("verify"))
+        self.assertEqual(0, self.main("run"))
+        self.assertTrue(self.replays)
+        (written,) = Path(self.temp.name).rglob("results.json")
+        self.assertTrue(json.loads(written.read_text())["valid"])
+
+    def test_each_chronology_failure_fails_and_prevents_replay(self):
+        failing = {field: 1 for field in cli.INTEGRITY_FIELDS} | {"hours_compared": 0}
+        for field, value in failing.items():
+            with self.subTest(field=field):
+                self.checks = {**CLEAN, field: value}
+                self.replays.clear()
+                self.assertEqual(2, self.main("verify"))
+                self.assertEqual(2, self.main("run"))
+                self.assertEqual([], self.replays)  # replay never invoked
+
+    def test_invalid_replay_results_fail_but_are_kept_for_diagnosis(self):
+        for patch_value in (
+            {"accounting_problems": ["cash identity failed"]},
+            {"transient_pauses": 3},
+            {"bars": 0},
+        ):
+            with self.subTest(patch=patch_value):
+                self.result_patch = patch_value
+                self.assertEqual(2, self.main("run"))
+        written = sorted(Path(self.temp.name).rglob("results.json"))
+        self.assertTrue(written)
+        document = json.loads(written[-1].read_text())
+        self.assertFalse(document["valid"])
+        self.assertTrue(document["failures"])
+
+
+class CompletenessTests(unittest.TestCase):
+    def test_incomplete_hours_and_hours_absent_everywhere_are_counted(self):
+        from test_backtest_replay import HOUR_MS, START_MS, candle
+
+        from crypto_grid_bot.backtest.klines import aggregate
+        from crypto_grid_bot.backtest.replay import cross_check_hourly
+
+        # Hour 0 has 59 flat minutes (one zero-volume minute missing); the exact OHLCV
+        # aggregate still matches. Hour 1 exists nowhere.
+        minutes = [candle(START_MS + i * 60_000, 1, 1, 1, 1) for i in range(59)]
+        official = list(aggregate(minutes))
+        result = cross_check_hourly(minutes, official, (START_MS, START_MS + 2 * HOUR_MS))
+        self.assertEqual(0, result["hours_mismatched"])
+        self.assertEqual(1, result["hours_incomplete"])
+        self.assertEqual(1, result["minutes_missing"])
+        self.assertEqual(1, result["hours_absent_from_both"])

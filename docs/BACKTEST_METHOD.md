@@ -52,11 +52,11 @@ Klines contain trades, not quotes. The adapter in `backtest/replay.py` is explic
   - `high_first` visits the high before the low; `low_first` the reverse. The true order
     is unknown, so both are run and reported.
 - **Bid and ask:**
-  - At the high a trade lifted the ask, so ask = high and bid is one assumed spread
-    lower.
-  - At the low a trade hit the bid, so bid = low and ask is one assumed spread higher.
+  - OHLC does not say whether an extreme was buyer- or seller-initiated. The adapter
+    *assumes* a trade at the high lifted the ask (ask = high, bid one assumed spread
+    lower) and a trade at the low hit the bid (bid = low, ask one spread higher).
   - Open and close are mid prices.
-  - Prices round outward to the tick.
+  - Every price, the extremes included, rounds outward to today's tick.
   - The assumed spread is a dataset parameter (`assumed_spread_pct`; 0.05% in
     `verify-2024h1`).
 - **Crossing:** the unchanged engine still requires a limit to be crossed by the slippage
@@ -65,12 +65,24 @@ Klines contain trades, not quotes. The adapter in `backtest/replay.py` is explic
   - Taker-sell volume can fill resting buys; taker-buy volume can fill resting sells.
   - Each side's bar volume is split evenly over the four quotes, and the engine's
     participation cap (10%) applies to each share. A bar's volume is never spent twice.
+  - The even split is an assumption, not volume observed at those prices.
+- **Scenarios, not bounds** (clarified after Codex's review of PR #9):
+  - The two paths are plausible scenarios, and the worse of them is not a worst case.
+  - The adapter is not proven conservative.
+  - The +0/9/19/29 s stamps are simulation times that compress a minute into 29 s. That
+    can shift recovery and range timers.
+  - Spread, participation, path, missed-fill and timing sensitivity must be reported
+    before any result counts as acceptance evidence.
 - **No invented round trips:** all four quotes share one *epoch*. An order created inside
   a bar (a grid buy, a child sell or a re-entry buy) cannot fill until a later bar, so
   a buy and its child sell never both fill on an assumed favourable path inside one
   minute. A regression test fails without this rule.
-- **Costs:** the fee is 0.1% per fill, charged in quote currency (Binance base rate
-  without the BNB discount), plus the engine's 0.05% slippage per fill.
+- **Costs:**
+  - The fee is 0.1% per fill, charged in quote currency (Binance base rate without the
+    BNB discount).
+  - Resting limit fills are booked at the limit price plus the fee. The engine's 0.05%
+    slippage is a crossing buffer, not an extra cash debit.
+  - Forced exits and the buy-and-hold baseline do apply price haircuts.
 
 ## Strategy inputs: hypothesis `price-only-v1`
 
@@ -105,9 +117,22 @@ review 2: a perfectly healthy market would otherwise vote bullish and block RANG
 | downside_quality | `1 − clamp(max drawdown over 168 h / 20%)` |
 | data_quality | share of the last 168 hours present; 0 when stale |
 | spread_pct | the assumed spread |
-| depth_multiple | `(24h quote volume / 1440) / (initial capital × 0.8 / 4)`. The engine spreads 80% of cash over the buy pairs below fair value, about half of the 8 levels (corrected after Codex's PR #9 review; it previously divided by 8 and overstated depth by ~2×) |
+| depth_multiple | `(24h quote volume / 1440) / max(0.8 × (cash − pending reserve), minimum notional)`, computed from the account at each bar. This upper-bounds any single buy the engine could place: `_open_grid` gives one pair all 80% of unprotected cash. It tracks reinvestment and excludes protected reserve. Volume is a liquidity proxy, not observed book depth. This is R2 from Codex's review; earlier versions assumed 8, then 4, orders and overstated depth. |
 | fair value | SMA20 of hourly closes |
 | ATR | simple ATR(14) of hourly candles |
+
+**Degenerate history:**
+- A zero 30-day ATR or volume median, or a zero pair ATR (a flat or zero-volume
+  history), makes the ratios undefined.
+- The inputs are then marked `degenerate`: data quality 0, which the quality veto turns
+  into no new entries, in the gated and ungated runs alike.
+- Bars are not skipped, so existing inventory is still marked, drained and
+  risk-managed.
+- The engine rejects a zero ATR, so a tick-sized placeholder is passed. The veto means
+  it can never size a grid.
+
+**Window semantics:** gaps are skipped, not filled. "24h", "168h" and "30 d" therefore
+mean *observation counts*, which can span a longer elapsed time when hours are missing.
 
 Warm-up: the 30-day medians need 742 completed hours, so every dataset includes at
 least two hourly warm-up months before `start`.
@@ -141,9 +166,20 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
 ## Verification in every run
 
 - Every file matches the manifest before the run starts.
-- Aggregated 1m bars match Binance's 1h archive exactly, and no official hour inside the
-  evaluation window lacks minute data (`hours_absent_from_minutes`, added after Codex's
-  PR #9 review). Counts are in `results.json`.
+- **Chronology gate** (R1 of Codex's review), resolved *before* any replay starts:
+  - aggregated 1m bars match Binance's 1h archive exactly;
+  - no official hour in the window lacks minute data;
+  - no hour is missing from both sources;
+  - no hour is missing individual minutes. Exact OHLCV equality cannot reveal a missing
+    zero-volume minute, so these are counted directly.
+  - Any non-zero count makes `verify` and `run` exit with code 2, and nothing replays.
+  - Gaps from a genuine listing or delisting are not exempted yet; such a dataset must
+    first declare them explicitly.
+- **Run validity:** accounting problems, rejected frames or zero evaluation bars mark the
+  run `"valid": false`, and `run` exits 2. The results are kept for diagnosis but are
+  not performance evidence.
+- **Identity:** `results.json` records the SHA-256 of the dataset spec, the manifest and
+  the config.
 - Exact Decimal identities between the fill journal and the final account:
   - cash = initial − buys − buy fees + sells − sell fees − secured reserve;
   - inventory = bought − sold;
@@ -167,6 +203,8 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
   multi-grid portfolio.
 - **Currency:** results are in quote-currency units (USDT). There is no EUR
   conversion and no hosting cost.
+- **Sampling:** strategy drawdown is measured at all four quotes of each bar, but
+  buy-and-hold only at minute closes. A common sampling schedule is planned.
 - **Performance:** about 200 µs per engine step, or roughly 3.5 minutes per pair,
   path and variant for six months on one core.
 

@@ -20,6 +20,7 @@ from crypto_grid_bot.backtest.dataset import (
     fetch_dataset,
     load_manifest,
     load_spec,
+    sha256_file,
     verify_dataset,
     write_manifest,
 )
@@ -74,11 +75,6 @@ def run_job(
         levels=config.maximum_levels,
         minimum_cost_multiple=config.minimum_grid_cost_multiple,
         round_trip_cost=float(2 * (spec.fee_rate + spec.slippage_rate) + spread),
-        # _open_grid spreads 80% of cash over the buy pairs below fair value: about
-        # half the levels when price sits at fair value (fewer pairs = larger orders).
-        order_notional=float(
-            spec.initial_quote * Decimal("0.8") / max(1, config.maximum_levels // 2)
-        ),
     )
     run = RunConfig(symbol, path_mode, gated, rules, spec.initial_quote, spread)
     metrics, account = replay(config, run, load_minutes(data_dir, manifest, symbol), features)
@@ -91,6 +87,50 @@ def cross_check_job(spec_path: Path, data_dir: Path, symbol: str) -> dict[str, A
     window = (month_bounds_ms(spec.start)[0], month_bounds_ms(spec.end)[1])
     minutes = load_minutes(data_dir, manifest, symbol)
     return {"symbol": symbol, **cross_check_hourly(minutes, hourly, window)}
+
+
+# Any non-zero value means the minute data cannot be trusted for this window.
+INTEGRITY_FIELDS = (
+    "hours_mismatched",
+    "hours_missing",
+    "hours_absent_from_minutes",
+    "hours_absent_from_both",
+    "hours_incomplete",
+    "minutes_missing",
+)
+
+
+def integrity_failures(checks: list[dict[str, Any]]) -> list[str]:
+    """Chronology/completeness failures. Genuine listing gaps are not exempted yet:
+    a dataset spanning a listing or delisting must be declared explicitly first."""
+    failures = [
+        f"{check['symbol']}: {field}={check[field]}"
+        for check in checks
+        for field in INTEGRITY_FIELDS
+        if check[field]
+    ]
+    failures += [f"{c['symbol']}: no hours compared" for c in checks if not c["hours_compared"]]
+    return failures
+
+
+def result_failures(results: list[dict[str, Any]]) -> list[str]:
+    failures = []
+    for r in results:
+        name = f"{r['symbol']}/{r['path_mode']}/{r['strategy']}"
+        failures += [f"{name}: {problem}" for problem in r["accounting_problems"]]
+        if r["transient_pauses"]:
+            failures.append(f"{name}: {r['transient_pauses']} rejected frames")
+        if not r["bars"]:
+            failures.append(f"{name}: no evaluation bars")
+    return failures
+
+
+def _identity(spec_path: Path, config_path: Path) -> dict[str, str]:
+    return {
+        "spec_sha256": sha256_file(spec_path),
+        "manifest_sha256": sha256_file(manifest_path(spec_path)),
+        "config_sha256": sha256_file(config_path),
+    }
 
 
 def _table(results: list[dict[str, Any]]) -> str:
@@ -130,20 +170,28 @@ def main(argv: list[str] | None = None) -> int:
     verify_dataset(spec, manifest, args.data_dir)
     jobs = max(1, min(args.jobs, 8))
     with ProcessPoolExecutor(max_workers=jobs) as pool:
-        checks = [
-            pool.submit(cross_check_job, args.spec, args.data_dir, symbol) for symbol in spec.traded
+        # Chronology is settled before any replay starts; invalid data never replays.
+        cross_checks = [
+            pool.submit(cross_check_job, args.spec, args.data_dir, symbol).result()
+            for symbol in spec.traded
         ]
-        if args.command == "verify":
-            print(json.dumps([c.result() for c in checks], indent=1))
-            return 0
+        failures = integrity_failures(cross_checks)
+        if args.command == "verify" or failures:
+            status = "invalid" if failures else "valid"
+            print(
+                json.dumps(
+                    {"status": status, "failures": failures, "checks": cross_checks}, indent=1
+                )
+            )
+            return 2 if failures else 0
         futures = [
             pool.submit(run_job, args.spec, args.config, args.data_dir, s, mode, gated)
             for s in spec.traded
             for mode in PATH_MODES
             for gated in (True, False)
         ]
-        cross_checks = [c.result() for c in checks]
         results = [f.result() for f in futures]
+    failures = result_failures(results)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = args.out / spec.name / stamp
     out.mkdir(parents=True, exist_ok=True)
@@ -152,6 +200,10 @@ def main(argv: list[str] | None = None) -> int:
         "purpose": spec.purpose,
         "feature_version": FEATURE_VERSION,
         "manifest_created_at": manifest["created_at"],
+        **_identity(args.spec, args.config),
+        # Invalid results are kept for diagnosis but are never performance evidence.
+        "valid": not failures,
+        "failures": failures,
         "hourly_cross_checks": cross_checks,
         "results": results,
     }
@@ -162,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({"out": str(out), "hourly_cross_checks": cross_checks}, indent=1))
     print(table)
     print(json.dumps(brief, indent=1, default=str))
+    if failures:
+        print(json.dumps({"status": "invalid", "failures": failures}, indent=1))
+        return 2
     return 0
 
 

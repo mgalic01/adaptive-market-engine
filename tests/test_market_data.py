@@ -438,8 +438,10 @@ class CaptureTests(unittest.TestCase):
 
     def test_existing_paper_database_is_not_modified(self):
         path = Path(self.temp.name) / "paper.db"
-        with sqlite3.connect(path) as connection:
+        connection = sqlite3.connect(path)
+        with connection:
             connection.execute("CREATE TABLE account (body TEXT)")
+        connection.close()  # Windows cannot delete an open database file
         before = path.read_bytes()
         with self.assertRaisesRegex(DataError, "separate"):
             ObservationStore(path)
