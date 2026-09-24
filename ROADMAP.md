@@ -6,7 +6,7 @@ Paper-only configuration, heuristic regime classification, candidate scoring,
 indicative grid sizing, rotation policy, risk recommendations, settled 50/50
 reserve accounting, order stub, tests, and CI. No claim of strategy profitability.
 
-## 2. Reproducible end-to-end paper simulator (this change)
+## 2. Reproducible end-to-end paper simulator (merged)
 
 - Feed deterministic, timestamped synthetic quotes through one risk-gated decision loop.
 - Model cash and inventory reservations, fees, spread, conservative fills,
@@ -23,7 +23,13 @@ Scope is one simulated symbol per account, cash-start grids, quote-asset fees,
 and flat-account reserve checkpoints. Rotation execution, automated halt recovery,
 live order reconciliation and real transfers remain separate work.
 
-## 3. Read-only market-data shadow mode
+## 3. Read-only market-data shadow mode (in progress)
+
+Milestone 3a adds a GET-only public-data collector, validated closed hourly candles,
+book/filter snapshots, descriptive indicators, and atomic observation storage.
+No execution occurs in capture mode. Fixture tests pass; a successful live capture
+is still unverified because the workspace connectivity probe timed out. See
+[MARKET_DATA.md](docs/MARKET_DATA.md). The following full-stage gates remain:
 
 - Refresh CoinMarketCap top 100 plus NIGHT using stable identifiers, then map
   to actually available eligible Binance spot pairs. Membership is not an order.

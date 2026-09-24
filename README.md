@@ -43,14 +43,16 @@ Implemented:
 - automatic settled-profit allocation and simulated reserve transfers;
 - SQLite atomic state/event persistence, duplicate protection and recovery;
 - persistent risk halts and liquidity-limited simulated emergency exits;
+- public Binance candle/book/filter capture with strict validation;
+- descriptive closed-candle indicators and isolated SQLite observation storage;
 - automated unit tests and a GitHub Actions security/quality workflow.
 
 Not yet implemented:
 
 - Binance live adapter or API-key handling;
 - CoinMarketCap universe refresh;
-- market-data ingestion and indicator calculation;
-- live queue/latency modelling and exchange filter discovery;
+- streamed market-data ingestion and full market-regime inputs;
+- live queue/latency modelling and complete order-filter enforcement;
 - multi-market orchestration and automatic rotation execution;
 - regime confirmation across distinct observations and persistent cooldowns;
 - verified news/event ingestion;
@@ -61,6 +63,20 @@ Not yet implemented:
 
 See [ROADMAP.md](ROADMAP.md) for the next delivery gates and
 [SECURITY.md](SECURITY.md) for operational boundaries.
+
+## Capture public market data
+
+```bash
+PYTHONPATH=src python -m crypto_grid_bot.app \
+  --config config/default.toml --capture-market --symbol ADAUSDC \
+  --database data/market-observations.db
+```
+
+This finite, read-only collector needs no API key and reports observations only.
+It does not place paper/live orders or interpret missing news as safe. The live
+connectivity probe from this workspace timed out; successful real capture remains
+unverified. See [Market data](docs/MARKET_DATA.md) for validation, repeat collection,
+source contracts and remaining Milestone 3 gates.
 
 ## Run the offline paper demo
 
