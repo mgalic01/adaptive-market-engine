@@ -50,6 +50,9 @@ Implemented:
 - flat-inventory profit checkpoints and persistent simulated transfer IDs;
 - public Binance candle/book/filter capture with strict validation;
 - descriptive closed-candle indicators and isolated SQLite observation storage;
+- read-only live best-price stream (public `bookTicker`) with bounded reconnects;
+- historical replay harness on checksummed Binance archives with point-in-time
+  price-only features, buy-and-hold and ungated-grid baselines (see below);
 - automated unit tests and a GitHub Actions security/quality workflow.
 
 Not yet implemented:
@@ -62,7 +65,7 @@ Not yet implemented:
 - regime confirmation across distinct observations and persistent cooldowns;
 - verified news/event ingestion;
 - external deposits/withdrawals and live account reconciliation;
-- backtesting and walk-forward validation;
+- multi-market walk-forward validation on untouched windows (harness v1 exists);
 - protected subaccount transfer adapter;
 - monitoring dashboard and alerts.
 
@@ -101,6 +104,23 @@ limit, drops a connection that is silent for 30 s or sends invalid or out-of-ord
 data, clears all prices on any disconnect, and stops without retrying on HTTP 418/429.
 A 15 s live run on 2026-09-24 received 591 validated updates for two symbols.
 The stream is not yet wired into the paper simulator.
+
+## Replay history (backtest harness)
+
+```bash
+PYTHONPATH=src python -m crypto_grid_bot.backtest fetch  --spec config/datasets/verify-2024h1.toml
+PYTHONPATH=src python -m crypto_grid_bot.backtest verify --spec config/datasets/verify-2024h1.toml
+PYTHONPATH=src python -m crypto_grid_bot.backtest run    --spec config/datasets/verify-2024h1.toml
+```
+
+Replays the unchanged paper engine over Binance's public 1m/1h spot archives
+(`data.binance.vision`). Every file is checked against Binance's SHA-256 and a
+committed manifest. Decisions use only candles that closed earlier, and news is
+reported as an absent component. Fills follow an explicit, tested kline-to-quote
+adapter, reported for both intrabar orders. See
+[Backtest method](docs/BACKTEST_METHOD.md) for every assumption and the *proposed*
+acceptance criteria, and [the first verification report](docs/backtests/verify-2024h1.md).
+A development-window replay is a software verification, not a forecast.
 
 ## Run the offline paper demo
 

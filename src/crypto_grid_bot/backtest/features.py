@@ -150,7 +150,8 @@ class SeriesFeatures:
         index = self.last_completed(minute_ms)
         if index is None or minute_ms - (self.opens[index] + HOUR_MS) > STALE_AFTER_MS:
             return 0.0
-        first_open = minute_ms - COVERAGE_HOURS * HOUR_MS
+        # The 168 whole hours before the current hour, whatever the minute within it.
+        first_open = (minute_ms // HOUR_MS - COVERAGE_HOURS) * HOUR_MS
         present = index + 1 - bisect_right(self.opens, first_open - 1)
         return min(1.0, present / COVERAGE_HOURS)
 

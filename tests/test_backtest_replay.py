@@ -187,3 +187,20 @@ class ReplayTests(unittest.TestCase):
         metrics, account = replay(self.config, run, minutes, engine)
         self.assertEqual([], check_accounting(run, metrics, account))
         self.assertEqual(30, sum(metrics.regimes.values()))
+
+
+class CompatibilityTests(unittest.TestCase):
+    def test_unused_epoch_is_not_persisted(self):
+        from crypto_grid_bot.simulation.models import Account, LimitOrder
+
+        account = Account.start(D(100))
+        account.orders["a"] = LimitOrder("a", "buy", D("1"), D("6"), D("6"))
+        account.orders["b"] = LimitOrder("b", "buy", D("1"), D("6"), D("6"), epoch="bar")
+        saved = account.to_dict()["orders"]
+        self.assertNotIn("epoch", saved["a"])
+        self.assertEqual("bar", saved["b"]["epoch"])
+        self.assertEqual(account.orders, Account.from_dict(account.to_dict()).orders)
+
+    def test_coverage_counts_whole_hours_mid_hour(self):
+        engine = engine_for(hourly(WARMUP))
+        self.assertEqual(1.0, engine.at(START_MS + WARMUP * HOUR_MS + 30 * 60_000).pair_quality)

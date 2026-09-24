@@ -255,7 +255,13 @@ class Account:
             raise ValueError("account is oversubscribed or reserve is being spent")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        for order in data["orders"].values():
+            if order["epoch"] is None:
+                # Replay-only field: omitted when unused so saved paper state keeps the
+                # schema 4 layout that earlier versions read.
+                del order["epoch"]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Account:

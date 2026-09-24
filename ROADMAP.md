@@ -39,6 +39,11 @@ remaining section 3 work. Start with a small verified replay harness, then expan
 across regimes/pairs and held-out windows. See [BACKTEST_PLAN.md](docs/BACKTEST_PLAN.md).
 Continue broader infrastructure only if the results justify it.
 
+Status (v0.8): harness v1 is implemented and verified on two pairs over a development
+window ([method](docs/BACKTEST_METHOD.md), [report](docs/backtests/verify-2024h1.md)).
+Next: owner agreement on the proposed acceptance criteria, then the multi-market,
+survivorship-aware run on an untouched window.
+
 ## 3. Read-only market-data shadow mode (partly implemented; expansion deferred)
 
 Milestone 3a adds a GET-only public-data collector, validated closed hourly candles,
