@@ -10,7 +10,9 @@ from pathlib import Path
 from crypto_grid_bot.backtest.features import HOUR_MS, FeatureEngine, SeriesFeatures
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import (
+    Metrics,
     RunConfig,
+    _record_fills,
     bar_quotes,
     candidate_for,
     check_accounting,
@@ -443,3 +445,27 @@ class OrderRequestCountTests(unittest.TestCase):
         self.assertEqual(1, order_requests(set(), set(), [exit_fill], set()))
         # Nothing changed, nothing sent.
         self.assertEqual(0, order_requests({"a"}, {"a"}, [], set()))
+
+
+class ProfitAttributionTests(unittest.TestCase):
+    def fill(self, order_id, side, price, quantity, fee="0"):
+        return {
+            "order_id": order_id,
+            "side": side,
+            "price": price,
+            "quantity": quantity,
+            "fee": fee,
+        }
+
+    def test_grid_and_exit_sells_are_attributed_at_average_cost(self):
+        metrics = Metrics()
+        _record_fills(
+            metrics,
+            [self.fill("b1", "buy", "10", "2", "0.02"), self.fill("b2", "buy", "8", "2", "0.02")],
+        )
+        self.assertEqual(D("36.04"), metrics.cost_basis)  # average cost 9.01 incl. fees
+        _record_fills(metrics, [self.fill("b1/sell", "sell", "11", "1", "0.011")])
+        self.assertEqual(D("11") - D("0.011") - D("9.01"), metrics.grid_sell_pnl)
+        _record_fills(metrics, [self.fill("exit/q9", "sell", "7", "3", "0.021")])
+        self.assertEqual(D("21") - D("0.021") - D("27.03"), metrics.exit_pnl)
+        self.assertEqual((1, D("0")), (metrics.exit_sells, metrics.cost_basis))

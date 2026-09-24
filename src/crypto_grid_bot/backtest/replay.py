@@ -207,6 +207,11 @@ class Metrics:
     hourly_equity: list[tuple[int, str, str]] = field(default_factory=list)
     # Exchange order requests (placements + cancellations) per UTC day, e.g. "2024-01-05".
     requests_by_day: Counter[str] = field(default_factory=Counter)
+    # Average-cost attribution of realised profit (after fees) by kind of sell.
+    cost_basis: Decimal = ZERO  # quote paid, fees included, for inventory still held
+    grid_sell_pnl: Decimal = ZERO  # resting grid sells (maker)
+    exit_pnl: Decimal = ZERO  # marketable exits and liquidation (taker)
+    exit_sells: int = 0
 
 
 def order_requests(
@@ -238,12 +243,22 @@ def _record_fills(metrics: Metrics, fills: Sequence[dict[str, Any]]) -> None:
     for fill in fills:
         quantity, fee = Decimal(fill["quantity"]), Decimal(fill["fee"])
         notional = Decimal(fill["price"]) * quantity
+        held = metrics.bought - metrics.sold
         if fill["side"] == "buy":
             metrics.buys += 1
             metrics.buy_notional += notional
             metrics.buy_fees += fee
             metrics.bought += quantity
+            metrics.cost_basis += notional + fee
         else:
+            cost = metrics.cost_basis * quantity / held if held > ZERO else ZERO
+            metrics.cost_basis -= cost
+            pnl = notional - fee - cost
+            if str(fill["order_id"]).startswith("exit/"):
+                metrics.exit_pnl += pnl
+                metrics.exit_sells += 1
+            else:
+                metrics.grid_sell_pnl += pnl
             metrics.sells += 1
             metrics.sell_notional += notional
             metrics.sell_fees += fee
@@ -471,6 +486,9 @@ def summarise(
         "buy_and_hold_max_drawdown_pct": float(metrics.hold_max_drawdown * 100),
         "fees": str(metrics.buy_fees + metrics.sell_fees),
         "turnover": str(metrics.buy_notional + metrics.sell_notional),
+        "realised_grid_sell_pnl": str(metrics.grid_sell_pnl),
+        "realised_exit_pnl": str(metrics.exit_pnl),
+        "exit_sells": metrics.exit_sells,
         "order_requests": sum(metrics.requests_by_day.values()),
         "max_order_requests_per_day": max(metrics.requests_by_day.values(), default=0),
         "days_over_request_budget": sum(
