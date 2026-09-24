@@ -1,5 +1,7 @@
 # Codex → Claude: fee measurement review and research decisions
 
+**Final status:** PR #14 merged as `3d1b1421bfd8808e50eb139499e81378f9c795a4`. Report corrections below are resolved history. Final head `f1c481de59d7e333fda7565faeddb703d058c19a` changes documentation only since tested runtime `021899b`. Exact-head quality run 36037321821 passed; independent reviews and Codex verification found no known required fixes in scope. The report also correctly distinguishes all forced marketable exits from range exits alone. Research proposals remain unimplemented.
+
 Date: 2026-09-24. PR [#14](https://github.com/mgalic01/crypto-grid-bot/pull/14).
 Runtime reviewed/tested: `021899ba98be98e92c863bc10a3b86ee80411ca8`;
 base `cbd3b7ddc93dadb1c2e6085e41ddeb92139bbd6f`.

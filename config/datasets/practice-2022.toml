@@ -1,0 +1,30 @@
+# Practice (diagnostic) window for fee-level comparisons: the June 2022 crash, the
+# November 2022 FTX collapse, a flat winter and the January 2023 rally.
+# Window edges avoid Binance archive defects that the integrity gate rightly rejects
+# (there is no exemption policy yet):
+# - 2022-05-01 08:00 UTC: BTC/ETH/SOL/ADA 1h volume differs from the summed minutes;
+# - 2023-02-14 16:00 UTC: one SOLUSDT minute is missing;
+# - 2023-03-24: the matching-engine outage leaves a truncated candle and a gap.
+# ETHUSDT (2022-06-30 01:00) and ADAUSDT (2022-07-22 09:00) also have 1h volumes
+# 0.01-0.05% off their minutes with identical prices, so they are not traded here.
+# A tolerance for volume-only archive drift is proposed for review, not applied.
+# Not the untouched test window; results here may guide design, never prove it.
+# Traded pairs are Binance USDT proxies for pairs Revolut X lists against EUR.
+# Survivorship: all five are still listed today; delisted pairs are not included.
+name = "practice-2022"
+purpose = "fee-level and order-budget diagnostics on a volatile year; not a performance claim"
+traded = ["BTCUSDT", "SOLUSDT", "XRPUSDT"]
+market_proxy = "BTCUSDT"
+breadth_basket = [
+  "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+  "ADAUSDT", "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
+]
+warmup_start = "2022-04"
+start = "2022-06"
+end = "2023-01"
+initial_quote = "100"
+# Default fee (Binance base rate); fee scenarios override it with --maker-fee/--taker-fee.
+fee_rate = "0.001"
+slippage_rate = "0.0005"
+participation = "0.10"
+assumed_spread_pct = "0.05"

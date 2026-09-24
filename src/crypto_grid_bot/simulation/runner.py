@@ -104,7 +104,7 @@ class PaperSimulator:
                 "schema": SCHEMA,
                 "policy": asdict(self.policy),
                 "config": asdict(config),
-                "rules": asdict(rules),
+                "rules": rules.identity(),
                 "initial_cash": initial_cash,
             }
         )

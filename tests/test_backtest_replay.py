@@ -10,16 +10,21 @@ from pathlib import Path
 from crypto_grid_bot.backtest.features import HOUR_MS, FeatureEngine, SeriesFeatures
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import (
+    Metrics,
+    RequestCountingOrders,
     RunConfig,
+    _record_fills,
     bar_quotes,
     candidate_for,
     check_accounting,
+    order_requests,
     replay,
     signals_for,
 )
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
-from crypto_grid_bot.simulation.models import MarketRules, Quote, timestamp
+from crypto_grid_bot.simulation.execution import match, place
+from crypto_grid_bot.simulation.models import Account, LimitOrder, MarketRules, Quote, timestamp
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,6 +183,36 @@ class ReplayTests(unittest.TestCase):
                 self.assertEqual(0, metrics.transient_pauses)
                 self.assertEqual(600, metrics.bars)
                 self.assertGreater(metrics.hold_final, 0)
+
+    def test_rejected_frames_do_not_inflate_the_range_exit_count(self):
+        from unittest.mock import patch
+
+        candles = hourly(WARMUP)
+        engine = engine_for(candles)
+        t = START_MS + WARMUP * HOUR_MS
+        fair = float(engine.at(t).fair_value)
+        minutes = [
+            candle(t + i * 60_000, fair, fair * 1.003, fair * 0.997, fair) for i in range(60)
+        ]
+        # Then eight hours far below the grid: one range exit, with every other frame
+        # rejected as a transient (its report carries no range_exit flag).
+        low = fair * 0.8
+        minutes += [
+            candle(t + i * 60_000, low, low * 1.001, low * 0.999, low) for i in range(60, 540)
+        ]
+        real_step, calls = PaperSimulator.step, []
+
+        def flaky(simulator, account, frame):
+            calls.append(1)
+            if len(calls) > 600 and len(calls) % 2:
+                return {"fills": [], "opened": [], "decision": "pause", "reason": "rejected"}
+            return real_step(simulator, account, frame)
+
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        with patch.object(PaperSimulator, "step", flaky):
+            metrics, account = replay(self.config, run, minutes, engine)
+        self.assertTrue(account.range_exit)
+        self.assertEqual(1, metrics.range_exits)
 
     def test_gated_replay_marks_news_absent_and_can_stay_in_cash(self):
         engine = engine_for(hourly(WARMUP))
@@ -424,3 +459,82 @@ class DegenerateHistoryTests(unittest.TestCase):
         self.assertEqual(len(minutes), metrics.bars)  # every bar still marked
         self.assertGreater(metrics.bars_with_inventory, 0)
         self.assertEqual([], check_accounting(run, metrics, account))
+
+
+class OrderRequestCountTests(unittest.TestCase):
+    """Placements plus cancellations, as counted against an exchange's daily budget."""
+
+    def order(self, order_id, side="buy", quantity="1", target=None, reentry=None):
+        q = D(quantity)
+        return LimitOrder(order_id, side, D("1"), q, q, target, reentry)
+
+    def test_book_operations_are_counted_at_the_operation(self):
+        orders = RequestCountingOrders()
+        for name in ("a", "b", "c"):
+            orders[name] = self.order(name)
+        orders["a"] = orders["a"]  # replacing an existing order is not a new placement
+        self.assertEqual(3, orders.requests)
+        orders["b"].remaining = D("0")
+        del orders["b"]  # fully filled: no request
+        del orders["c"]  # cancelled with quantity left
+        self.assertEqual(4, orders.requests)
+        orders["d"] = self.order("d")
+        orders.clear()  # cancels a and d
+        self.assertEqual(7, orders.requests)
+        with self.assertRaises(NotImplementedError):
+            orders.pop("x", None)
+
+    def test_marketable_exits_count_one_placement_each(self):
+        orders = RequestCountingOrders()
+        fills = [{"order_id": "exit/q1"}, {"order_id": "b1"}]
+        self.assertEqual(1, order_requests(orders, 0, fills))
+
+    def test_reentry_placed_and_cancelled_in_one_step_is_counted(self):
+        # Codex's PR #14 case: the last grid sell fills, match() places its reentry buy,
+        # and the flat account then cancels that buy before the step returns.
+        account = Account.start(D(100))
+        orders = account.orders = RequestCountingOrders()
+        account.inventory = D("10")
+        place(account, self.order("s", "sell", "10", reentry=D("0.9")), RULES)
+        since = orders.requests
+        quote = Quote(
+            "q",
+            "TESTUSDT",
+            "2024-01-01T00:00:00+00:00",
+            "2024-01-01T00:00:00+00:00",
+            D("1.01"),
+            D("1.0101"),
+            D("1000"),
+            D("1000"),
+        )
+        fills = [vars(fill) for fill in match(account, quote, RULES)]
+        self.assertEqual(["sell"], [fill["side"] for fill in fills])
+        self.assertTrue(any(o.side == "buy" for o in account.orders.values()))
+        PaperSimulator._cancel_buys(account)
+        self.assertEqual({}, dict(account.orders))
+        # One reentry placement and one cancellation; the filled sell costs nothing.
+        self.assertEqual(2, order_requests(orders, since, fills))
+
+
+class ProfitAttributionTests(unittest.TestCase):
+    def fill(self, order_id, side, price, quantity, fee="0"):
+        return {
+            "order_id": order_id,
+            "side": side,
+            "price": price,
+            "quantity": quantity,
+            "fee": fee,
+        }
+
+    def test_grid_and_exit_sells_are_attributed_at_average_cost(self):
+        metrics = Metrics()
+        _record_fills(
+            metrics,
+            [self.fill("b1", "buy", "10", "2", "0.02"), self.fill("b2", "buy", "8", "2", "0.02")],
+        )
+        self.assertEqual(D("36.04"), metrics.cost_basis)  # average cost 9.01 incl. fees
+        _record_fills(metrics, [self.fill("b1/sell", "sell", "11", "1", "0.011")])
+        self.assertEqual(D("11") - D("0.011") - D("9.01"), metrics.grid_sell_pnl)
+        _record_fills(metrics, [self.fill("exit/q9", "sell", "7", "3", "0.021")])
+        self.assertEqual(D("21") - D("0.021") - D("27.03"), metrics.exit_pnl)
+        self.assertEqual((1, D("0")), (metrics.exit_sells, metrics.cost_basis))

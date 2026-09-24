@@ -1,4 +1,7 @@
-"""Conservative limit fills with shared volume budgets and quote-denominated fees."""
+"""Conservative limit fills with shared volume budgets and quote-denominated fees.
+
+Resting limit fills pay the maker fee; marketable exits pay the taker fee.
+"""
 
 from __future__ import annotations
 
@@ -61,10 +64,10 @@ def cancel(account: Account, order_id: str) -> None:
 
 
 def _apply_fill(
-    account: Account, order: LimitOrder, quantity: Decimal, price: Decimal, rules: MarketRules
+    account: Account, order: LimitOrder, quantity: Decimal, price: Decimal, fee_rate: Decimal
 ) -> Fill:
     notional = price * quantity
-    fee = notional * rules.fee_rate
+    fee = notional * fee_rate
     if order.side == "buy":
         account.cash -= notional + fee
         account.inventory += quantity
@@ -117,7 +120,7 @@ def match(
         quantity = min(order.remaining, capacities[order.side])
         if not crossed or quantity <= ZERO:
             continue
-        fills.append(_apply_fill(account, order, quantity, order.price, rules))
+        fills.append(_apply_fill(account, order, quantity, order.price, rules.fee_rate))
         capacities[order.side] -= quantity
         if order.remaining == ZERO:
             del account.orders[order.order_id]
@@ -162,7 +165,10 @@ def reduce_unreserved(
     *,
     consumed: Decimal = ZERO,
 ) -> list[Fill]:
-    """Exit residual inventory without spending liquidity used by existing sells."""
+    """Exit residual inventory without spending liquidity used by existing sells.
+
+    The exit crosses the bid, so it pays the taker fee.
+    """
     quote.validate(rules)
     account.validate(rules)
     nonnegative(consumed)
@@ -174,7 +180,7 @@ def reduce_unreserved(
     if quantity == ZERO or price * quantity < rules.minimum_notional:
         return []
     order = LimitOrder("exit/" + quote.event_id, "sell", price, quantity, quantity)
-    fill = _apply_fill(account, order, quantity, price, rules)
+    fill = _apply_fill(account, order, quantity, price, rules.taker_fee)
     account.validate(rules)
     return [fill]
 

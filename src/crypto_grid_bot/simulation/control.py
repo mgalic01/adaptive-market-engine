@@ -68,6 +68,8 @@ def resume_paper(
         "participation",
     ):
         rules[key] = decimal(rules[key])
+    if "taker_fee_rate" in rules:
+        rules["taker_fee_rate"] = decimal(rules["taker_fee_rate"])
     simulator = PaperSimulator(
         database,
         config,

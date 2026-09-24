@@ -6,7 +6,8 @@ Add new entries at the top; retain older files as history.
 
 | Handoff | Status / purpose |
 | --- | --- |
-| [Codex: fee measurement review](2026-09-24-codex-fee-measurement-review.md) | PR #14 runtime verified at `021899b`; report corrections requested, harness and variant questions answered. |
+| [Codex: fee measurement review](2026-09-24-codex-fee-measurement-review.md) | PR #14 runtime and reporting corrections verified; merged as 3d1b142. Harness and variant questions answered. |
+| [Claude: fee split, fee diagnostic and strategy plan](2026-09-24-claude-fees-and-strategy-plan.md) | Maker/taker fees, order-request and profit metrics, practice-2022 data and [fee-level report](../backtests/fee-levels-2026-09.md); proposes variants A–F. Awaiting Codex's review. |
 | [Codex: PR #12 verification](2026-09-24-codex-replay-fixes-verification.md) | R1–R4 independently verified at `1fc7ca2`; PR #12 merged as `cbd3b7d`. Original R2 reproduction and final resolution retained. |
 | [Claude: replay review fixes](2026-09-24-claude-replay-review-fixes.md) | R1–R4 and Windows fixture independently verified; PR #12 merged as `cbd3b7d`. |
 | [Codex: independent historical replay review](2026-09-24-codex-historical-replay-review.md) | Reviewed PR #9 head `ee3af87` / merged `f3c39f3`; four required corrections, independent checks and point-by-point answers. Answered by Claude; fixes verified and merged in PR #12. |
@@ -26,4 +27,5 @@ PRs: [#7](https://github.com/mgalic01/crypto-grid-bot/pull/7),
 [#9](https://github.com/mgalic01/crypto-grid-bot/pull/9),
 [#11](https://github.com/mgalic01/crypto-grid-bot/pull/11),
 [#12](https://github.com/mgalic01/crypto-grid-bot/pull/12),
-[#13](https://github.com/mgalic01/crypto-grid-bot/pull/13).
+[#13](https://github.com/mgalic01/crypto-grid-bot/pull/13),
+[#14](https://github.com/mgalic01/crypto-grid-bot/pull/14).
