@@ -123,7 +123,7 @@ class CliIntegrityTests(unittest.TestCase):
         self.assertEqual({"maker": "0", "taker": "0.0009"}, fees)
 
     def test_out_of_range_fee_override_is_rejected(self):
-        for value in ("-0.001", "0.1", "abc"):
+        for value in ("-0.001", "0.1", "abc", ""):
             with self.subTest(value=value), self.assertRaises(DataError):
                 self.main("run", "--maker-fee", value)
 

@@ -175,8 +175,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--taker-fee", help="fee for marketable exits (default: maker)")
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
-    maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee else spec.fee_rate
-    taker = fee_rate(args.taker_fee, "taker fee") if args.taker_fee else None
+    maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
+    taker = fee_rate(args.taker_fee, "taker fee") if args.taker_fee is not None else None
     if args.command == "fetch":
         manifest = fetch_dataset(spec, args.data_dir)
         write_manifest(manifest_path(args.spec), manifest)

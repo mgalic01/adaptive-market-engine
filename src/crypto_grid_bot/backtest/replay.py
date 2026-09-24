@@ -35,7 +35,7 @@ from crypto_grid_bot.backtest.dataset import local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
 from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
 from crypto_grid_bot.config import BotConfig
-from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
+from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskAction, RiskDecision
 from crypto_grid_bot.simulation.models import (
     ONE,
     ZERO,
@@ -44,6 +44,7 @@ from crypto_grid_bot.simulation.models import (
     MarketRules,
     Quote,
     floor_step,
+    timestamp,
 )
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
 
@@ -220,6 +221,16 @@ class Metrics:
     grid_sell_pnl: Decimal = ZERO  # resting grid sells (maker)
     exit_pnl: Decimal = ZERO  # marketable exits and liquidation (taker)
     exit_sells: int = 0
+    # Realised P&L of exit/ sells by the engine's exit reason (range_exit, drain, liquidation).
+    exit_pnl_by_reason: dict[str, Decimal] = field(default_factory=dict)
+    # Completed cycles: grid sells (child ".../sell" orders) that filled completely.
+    completed_cycles: int = 0
+    cycles_by_week: Counter[str] = field(default_factory=Counter)
+    # Active equity against the engine's reserve-adjusted risk high-water mark, sampled at
+    # every risk evaluation (the basis of the runtime's soft/hard drawdown breakers).
+    active_max_drawdown: Decimal = ZERO
+    risk_evaluations: int = 0
+    hard_drawdown_halts: int = 0
 
 
 class RequestCountingOrders(dict[str, LimitOrder]):
@@ -234,12 +245,21 @@ class RequestCountingOrders(dict[str, LimitOrder]):
 
     requests: int = 0
 
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args)
+        self.requests = 0
+        # IDs of orders removed because they filled completely, in removal order.
+        self.completed: list[str] = []
+
     def __setitem__(self, key: str, order: LimitOrder) -> None:
         self.requests += int(key not in self)
         super().__setitem__(key, order)
 
     def __delitem__(self, key: str) -> None:
-        self.requests += int(self[key].remaining > ZERO)
+        if self[key].remaining > ZERO:
+            self.requests += 1
+        else:
+            self.completed.append(key)
         super().__delitem__(key)
 
     def clear(self) -> None:
@@ -262,7 +282,9 @@ def order_requests(
     return orders.requests - since + exits
 
 
-def _record_fills(metrics: Metrics, fills: Sequence[dict[str, Any]]) -> None:
+def _record_fills(
+    metrics: Metrics, fills: Sequence[dict[str, Any]], exit_reason: str | None = None
+) -> None:
     for fill in fills:
         quantity, fee = Decimal(fill["quantity"]), Decimal(fill["fee"])
         notional = Decimal(fill["price"]) * quantity
@@ -280,6 +302,10 @@ def _record_fills(metrics: Metrics, fills: Sequence[dict[str, Any]]) -> None:
             if str(fill["order_id"]).startswith("exit/"):
                 metrics.exit_pnl += pnl
                 metrics.exit_sells += 1
+                reason = exit_reason or "unlabelled"
+                metrics.exit_pnl_by_reason[reason] = (
+                    metrics.exit_pnl_by_reason.get(reason, ZERO) + pnl
+                )
             else:
                 metrics.grid_sell_pnl += pnl
             metrics.sells += 1
@@ -303,9 +329,9 @@ class _BuyAndHold:
         self.peak = self.value = run.initial_quote
         self.max_drawdown = ZERO
 
-    def mark(self, kline: Kline) -> None:
+    def mark(self, bid: Decimal) -> None:
+        """Mark at a quote's bid, sampled at the same quotes as the strategy (P2)."""
         rules = self.run.rules
-        bid = _round(kline.close * (ONE - self.run.spread / 2), rules.tick_size, ROUND_FLOOR)
         exit_value = bid * (ONE - rules.slippage_rate) * (ONE - rules.taker_fee)
         self.value = self.cash + self.quantity * exit_value
         self.peak = max(self.peak, self.value)
@@ -323,8 +349,23 @@ def replay(
     simulator = PaperSimulator(Path(":memory:"), config, run.rules, run.initial_quote, policy)
     account = simulator.store.read()
     simulator.close()  # step() below uses no store
-    orders = account.orders = RequestCountingOrders(account.orders)
+    if account.orders:
+        raise ValueError("replay must start from an empty order book")
+    orders = account.orders = RequestCountingOrders()
     metrics = Metrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
+
+    def observe_risk(equity: Decimal, high: Decimal, decision: RiskDecision) -> None:
+        metrics.risk_evaluations += 1
+        if high > ZERO:
+            metrics.active_max_drawdown = max(
+                metrics.active_max_drawdown, max(ZERO, (high - equity) / high)
+            )
+        if decision.action == RiskAction.EXIT and any(
+            reason.startswith("hard drawdown") for reason in decision.reasons
+        ):
+            metrics.hard_drawdown_halts += 1
+
+    simulator.risk_observer = observe_risk
     spread_pct = float(run.spread * 100)
     hold: _BuyAndHold | None = None
     was_range_exit = False
@@ -351,13 +392,18 @@ def replay(
             depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
             candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
             frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch)
-            since = orders.requests
+            since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
             metrics.requests_by_day[quote.observed_at[:10]] += order_requests(
                 orders, since, report["fills"]
             )
+            cycles = sum(1 for key in orders.completed[done:] if key.endswith("/sell"))
+            if cycles:
+                metrics.completed_cycles += cycles
+                year, week, _ = timestamp(quote.observed_at).isocalendar()
+                metrics.cycles_by_week[f"{year}-W{week:02d}"] += cycles
             metrics.frames += 1
-            _record_fills(metrics, report["fills"])
+            _record_fills(metrics, report["fills"], report.get("exit_reason"))
             metrics.grids_opened += int(bool(report["opened"]))
             # From the account, not the report: a rejected frame's report omits the flag.
             exiting = account.range_exit
@@ -372,7 +418,7 @@ def replay(
                 metrics.peak_equity = max(metrics.peak_equity, total)
                 drawdown = (metrics.peak_equity - total) / metrics.peak_equity
                 metrics.max_drawdown = max(metrics.max_drawdown, drawdown)
-        hold.mark(kline)
+            hold.mark(quote.bid)
         # Bar-level bookkeeping from the bar's closing quote.
         metrics.regimes[str(report.get("regime", "unavailable"))] += 1
         metrics.decisions[str(report["decision"])] += 1
@@ -414,6 +460,16 @@ def check_accounting(run: RunConfig, metrics: Metrics, account: Account) -> list
             problems.append("fee identity failed")
         if sum(account.confirmed_transfers.values(), ZERO) != account.secured:
             problems.append("reserve transfer journal does not reconcile")
+        # P6: realised (by sell type) + unrealised on held inventory = total equity change.
+        if metrics.frames:
+            inventory_mark = account.last_equity - account.cash + account.pending
+            unrealised = inventory_mark - metrics.cost_basis
+            realised = metrics.grid_sell_pnl + metrics.exit_pnl
+            change = metrics.final_equity - run.initial_quote
+            if abs(realised + unrealised - change) > Decimal("1e-18"):
+                problems.append(f"P&L reconciliation failed: {realised} + {unrealised} != {change}")
+            if sum(metrics.exit_pnl_by_reason.values(), ZERO) != metrics.exit_pnl:
+                problems.append("exit P&L by reason does not sum to the exit total")
     return problems
 
 
@@ -513,6 +569,12 @@ def summarise(
         "realised_grid_sell_pnl": str(metrics.grid_sell_pnl),
         "realised_exit_pnl": str(metrics.exit_pnl),
         "exit_sells": metrics.exit_sells,
+        "realised_exit_pnl_by_reason": {k: str(v) for k, v in metrics.exit_pnl_by_reason.items()},
+        "completed_cycles": metrics.completed_cycles,
+        "completed_cycles_by_week": dict(metrics.cycles_by_week),
+        "active_max_drawdown_pct": float(metrics.active_max_drawdown * 100),
+        "risk_evaluations": metrics.risk_evaluations,
+        "hard_drawdown_halts": metrics.hard_drawdown_halts,
         "order_requests": sum(metrics.requests_by_day.values()),
         "max_order_requests_per_day": max(metrics.requests_by_day.values(), default=0),
         "days_over_request_budget": sum(

@@ -538,3 +538,93 @@ class ProfitAttributionTests(unittest.TestCase):
         _record_fills(metrics, [self.fill("exit/q9", "sell", "7", "3", "0.021")])
         self.assertEqual(D("21") - D("0.021") - D("27.03"), metrics.exit_pnl)
         self.assertEqual((1, D("0")), (metrics.exit_sells, metrics.cost_basis))
+
+
+class MeasurementTests(unittest.TestCase):
+    """Spec v1 prerequisites P1, P2, P6 and P7: measurement only, no decision changes."""
+
+    def setUp(self):
+        self.config = load_config(ROOT / "config/default.toml")
+        self.engine = engine_for(hourly(WARMUP))
+        self.t = START_MS + WARMUP * HOUR_MS
+        self.fair = float(self.engine.at(self.t).fair_value)
+
+    def flat(self, start, stop, price):
+        return [
+            candle(self.t + i * 60_000, price, price * 1.001, price * 0.999, price)
+            for i in range(start, stop)
+        ]
+
+    def run_replay(self, minutes):
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        metrics, account = replay(self.config, run, minutes, self.engine)
+        self.assertEqual([], check_accounting(run, metrics, account))  # includes P6
+        return metrics, account
+
+    def test_range_exit_losses_are_labelled_and_reconcile(self):
+        minutes = self.flat(0, 60, self.fair) + self.flat(60, 540, self.fair * 0.95)
+        metrics, _ = self.run_replay(minutes)
+        self.assertEqual({"range_exit"}, set(metrics.exit_pnl_by_reason))
+        self.assertLess(metrics.exit_pnl_by_reason["range_exit"], 0)
+        self.assertEqual(0, metrics.hard_drawdown_halts)
+
+    def test_hard_drawdown_liquidation_is_labelled_and_fails_the_halt_veto(self):
+        minutes = self.flat(0, 30, self.fair)
+        price = self.fair
+        for i in range(30, 200):
+            price *= 0.997
+            minutes.append(candle(self.t + i * 60_000, price, price * 1.001, price * 0.999, price))
+        metrics, account = self.run_replay(minutes)
+        self.assertTrue(account.halt.startswith("hard drawdown"))
+        self.assertEqual({"liquidation"}, set(metrics.exit_pnl_by_reason))
+        self.assertGreater(metrics.hard_drawdown_halts, 0)
+        # C1(b) basis: active equity against the engine's risk high-water mark.
+        self.assertGreaterEqual(metrics.active_max_drawdown, D("0.12"))
+
+    def test_drain_exit_is_labelled(self):
+        simulator = PaperSimulator(Path(":memory:"), self.config, RULES, D(100))
+        account = simulator.store.read()
+        simulator.close()
+        inputs = self.engine.at(self.t)
+        account.inventory, account.cash = D("20"), D("80")
+        account.pause, account.draining = "test pause", True
+        bar = candle(self.t, self.fair, self.fair, self.fair, self.fair)
+        when = datetime.fromtimestamp(bar.open_ms / 1000, UTC)
+        signals = signals_for(inputs, when, gated=False)
+        candidate = candidate_for(inputs, "TESTUSDT", 0.05, 1e9, gated=False)
+        (quote, *_) = bar_quotes(bar, "TESTUSDT", "high_first", D("0.0005"), RULES.tick_size)
+        frame = Frame(quote, signals, candidate, inputs.fair_value, inputs.atr, True, "e")
+        report = simulator.step(account, frame)
+        self.assertTrue(any(f["order_id"].startswith("exit/") for f in report["fills"]))
+        self.assertEqual("drain", report["exit_reason"])
+
+    def test_completed_cycles_count_fully_filled_grid_sells(self):
+        minutes = []
+        for i in range(600):
+            mid = self.fair * (1 + 0.03 * math.sin(2 * math.pi * i / 90))
+            minutes.append(candle(self.t + i * 60_000, mid, mid * 1.003, mid * 0.997, mid))
+        metrics, _ = self.run_replay(minutes)
+        self.assertGreater(metrics.completed_cycles, 0)
+        self.assertLessEqual(metrics.completed_cycles, metrics.sells)
+        self.assertEqual(metrics.completed_cycles, sum(metrics.cycles_by_week.values()))
+        self.assertEqual({}, metrics.exit_pnl_by_reason)
+
+    def test_buy_and_hold_is_marked_at_every_quote_not_only_the_close(self):
+        # One bar dips 5% intrabar and closes unchanged: a close-only mark misses it.
+        minutes = self.flat(0, 3, self.fair)
+        minutes.append(
+            candle(self.t + 3 * 60_000, self.fair, self.fair, self.fair * 0.95, self.fair)
+        )
+        minutes += self.flat(4, 6, self.fair)
+        metrics, _ = self.run_replay(minutes)
+        self.assertGreater(metrics.hold_max_drawdown, D("0.045"))
+
+    def test_counting_book_records_completed_orders_separately_from_cancellations(self):
+        orders = RequestCountingOrders()
+        orders["a/sell"] = LimitOrder("a/sell", "sell", D("1"), D("1"), D("1"))
+        orders["b"] = LimitOrder("b", "buy", D("1"), D("1"), D("1"))
+        orders["a/sell"].remaining = D("0")
+        del orders["a/sell"]
+        del orders["b"]
+        self.assertEqual(["a/sell"], orders.completed)
+        self.assertEqual(3, orders.requests)  # two placements, one cancellation
