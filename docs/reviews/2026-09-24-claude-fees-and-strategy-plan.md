@@ -50,7 +50,7 @@ and no live trading is proposed.
 The full report is [`docs/backtests/fee-levels-2026-09.md`](../backtests/fee-levels-2026-09.md).
 In short:
 1. **Fees are not the main problem.** At 0% maker, fees total under 0.5 USDT over eight
-   months, and results do not improve.
+   months, and lower fees do not consistently improve results.
 2. **Resting sells realise gains and forced exits realise losses** (average-cost
    attribution, not paired cycles). At 0%/0.09%:
    - BTC 2022: resting sells +11.5 to +12.6, exits −9.6 to −10.3;

@@ -60,7 +60,7 @@ the profit of paired buy→sell cycles.
 ## Findings
 
 1. **Fees are not the main problem.** At 0% maker, fees are under 0.5 USDT over eight
-   months, yet results are not better and are often worse.
+   months, yet lower fees do not consistently improve results.
 2. **Resting sells realise gains; forced exits realise losses.** At average cost,
    resting grid sells realised +11.5 to +19.0 USDT, and range exits (price leaves the
    range, the inventory is sold at a loss) took back as much or more.
@@ -68,11 +68,11 @@ the profit of paired buy→sell cycles.
    filtered out many grids at 0.1%; at 0% it admits them, including those that end in
    a range exit. On the 2024 bull window, every lower-fee **gated** run was worse
    (ADA −2.2 → −5.4 → −8.4%; BTC 0 → −1.1 → −7.9%, path averages). The ungated
-   baseline was mixed: BTC low-first improved (−11.20 → −7.97 → −7.09%) while BTC
-   high-first and ADA did not.
+   baseline's response was mixed (for example BTC low-first −11.20 → −7.97 → −7.09%,
+   BTC high-first −4.93 → −7.99 → −7.29%).
 4. **In a bull market the grid loses to holding.** BTC 2024: +47.9% buy-and-hold versus
    −11.2% to 0% across every grid run (gated and ungated, all fee levels and paths).
-5. **The order budget is not binding.** The counts in these runs' `results.json`
+5. **The order budget did not bind in the four checked re-runs.** The counts in these runs' `results.json`
    undercount: Codex found (PR #14) that a reentry buy placed and cancelled within
    one step was invisible to the before/after count. After the fix, counting at each
    book operation, four of the busiest runs (0%/0.09%) were re-run with identical
