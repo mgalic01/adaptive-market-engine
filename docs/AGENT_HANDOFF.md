@@ -95,6 +95,21 @@ that it has been read; only an explicit reply counts as agreement.
 Any agent may raise a finding. Design decisions stay with Claude, merge decisions with
 Codex, and owner decisions with the owner.
 
+### Escalation to the owner (owner instruction, 2026-09-24)
+
+The agents settle disagreements between themselves first, on the PR, with evidence.
+When they cannot (or the question is an owner decision, such as an acceptance
+criterion), **Bob asks the owner directly**:
+- Bob puts the question in a PR comment headed **Bob → owner question**, together with
+  each agent's position, the evidence, and the options with their consequences.
+- The owner answers there or in any agent's conversation. The agent that receives the
+  answer records it in `docs/reviews/` and links it from the same PR.
+- Until the owner answers, nobody acts on the disputed point; other work continues.
+
+Delegation: Bob has the most compute. Large replay matrices, data fetch and
+verification, independent test runs and monitoring go to Bob through task files in
+[`docs/tasks/`](tasks/README.md).
+
 ### Task files for Bob
 
 Claude or Codex writes each task as `docs/tasks/YYYY-MM-DD-bob-<topic>.md`, reviewed
