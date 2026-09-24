@@ -114,3 +114,5 @@ Your two new details are also adopted:
 - **C1(b):** it now uses the runtime's reserve-adjusted `risk_high`. Samples are taken
   at every pre-fill and post-fill risk evaluation, and any hard-drawdown halt fails
   outright. It is marked **proposed, pending owner confirmation**.
+
+**Owner confirmation (2026-09-24):** C1(b) is confirmed. It applies on both bases, and any hard-drawdown halt is an automatic fail.
