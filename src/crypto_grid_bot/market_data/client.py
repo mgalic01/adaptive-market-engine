@@ -42,13 +42,13 @@ class Transport(Protocol):
     def __call__(self, path: str, params: dict[str, str]) -> Response: ...
 
 
-def https_proxy() -> tuple[str, int] | None:
+def https_proxy(host: str = HOST) -> tuple[str, int] | None:
     """Standard HTTPS_PROXY/NO_PROXY support; only a plain http:// CONNECT proxy is used.
 
-    The target stays fixed: the proxy only tunnels TLS that is still verified for HOST.
+    The target stays fixed: the proxy only tunnels TLS that is still verified for host.
     """
     raw = getproxies_environment().get("https")
-    if not raw or proxy_bypass(HOST):
+    if not raw or proxy_bypass(host):
         return None
     parts = urlsplit(raw)
     if parts.scheme != "http" or not parts.hostname or parts.username or parts.password:
@@ -60,18 +60,23 @@ def https_proxy() -> tuple[str, int] | None:
     return parts.hostname, port
 
 
+def https_connection(host: str, *, timeout: float) -> http.client.HTTPSConnection:
+    """TLS connection to a fixed host, tunnelled through HTTPS_PROXY when configured."""
+    proxy = https_proxy(host)
+    if proxy is None:
+        return http.client.HTTPSConnection(host, timeout=timeout)
+    connection = http.client.HTTPSConnection(proxy[0], proxy[1], timeout=timeout)
+    connection.set_tunnel(host, 443)
+    return connection
+
+
 def public_get(path: str, params: dict[str, str]) -> Response:
     """No configurable host, redirects, authentication headers or write method."""
     if path not in PATHS or set(params) != PATHS[path]:
         raise DataError("endpoint or parameters are outside the public-data allowlist")
     if "symbol" in params:
         symbol_name(params["symbol"])
-    proxy = https_proxy()
-    if proxy is None:
-        connection = http.client.HTTPSConnection(HOST, timeout=10)
-    else:
-        connection = http.client.HTTPSConnection(proxy[0], proxy[1], timeout=10)
-        connection.set_tunnel(HOST, 443)
+    connection = https_connection(HOST, timeout=10)
     try:
         query = "?" + urlencode(params) if params else ""
         connection.request("GET", path + query, headers={"Accept": "application/json"})

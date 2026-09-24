@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -78,10 +78,14 @@ class Frame:
     fair_value: Decimal
     atr: Decimal
     allow_new_grid: bool = True
+    # Historical replay only: frames sharing an epoch replay one bar (see match()).
+    epoch: str | None = None
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
         value["signals"]["observed_at"] = self.signals.observed_at.isoformat()
+        if value["epoch"] is None:
+            del value["epoch"]  # Keeps journals written before this field byte-identical.
         return value
 
 
@@ -139,6 +143,18 @@ class PaperSimulator:
         return self.store.transact(
             frame.quote.event_id, frame.payload(), lambda account: self._step(account, frame)
         )
+
+    def step(self, account: Account, frame: Frame) -> dict[str, Any]:
+        """Advance an in-memory account by one frame, without the event journal.
+
+        Historical replay only: the same decision logic, Decimal context and final
+        invariant check as ``process``, but nothing is persisted or deduplicated.
+        """
+        with localcontext() as context:
+            context.prec = 50
+            report = self._step(account, frame)
+            account.validate(self.rules)
+        return report
 
     @staticmethod
     def _cancel_buys(account: Account) -> list[str]:
@@ -324,6 +340,7 @@ class PaperSimulator:
                     quote,
                     self.rules,
                     recycle=not account.pause and not account.draining and frame.allow_new_grid,
+                    epoch=frame.epoch,
                 )
             ]
             # Cancelled partial buys can leave unpaired inventory. Exit it using only
@@ -492,7 +509,13 @@ class PaperSimulator:
                 raise GridNotViable("rounded spacing cannot cover conservative costs")
             orders.append(
                 LimitOrder(
-                    f"{quote.event_id}/buy/{index}", "buy", low, quantity, quantity, target=high
+                    f"{quote.event_id}/buy/{index}",
+                    "buy",
+                    low,
+                    quantity,
+                    quantity,
+                    target=high,
+                    epoch=frame.epoch,
                 )
             )
         for order in orders:

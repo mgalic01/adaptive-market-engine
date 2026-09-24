@@ -83,6 +83,7 @@ def match(
     rules: MarketRules,
     *,
     recycle: bool = True,
+    epoch: str | None = None,
 ) -> list[Fill]:
     """Orders present before this quote only; child orders wait for a later event.
 
@@ -90,6 +91,10 @@ def match(
     required; touching limits and candle extrema are not enough. Executions are
     charged at the limit (no optimistic price improvement). Slippage must fit
     inside that limit, and per-side liquidity is shared across all orders.
+
+    ``epoch`` groups several quotes that replay one historical bar. Orders created
+    under an epoch cannot fill until a later epoch, so a buy and its child sell never
+    both fill on an invented favourable path inside a single bar.
     """
     quote.validate(rules)
     account.validate(rules)
@@ -102,6 +107,8 @@ def match(
     )
     fills: list[Fill] = []
     for order in orders:
+        if epoch is not None and order.epoch == epoch:
+            continue
         crossed = (
             quote.ask * (ONE + rules.slippage_rate) < order.price
             if order.side == "buy"
@@ -124,6 +131,7 @@ def match(
                         order.quantity,
                         order.quantity,
                         reentry=order.price,
+                        epoch=epoch,
                     ),
                     rules,
                 )
@@ -135,6 +143,7 @@ def match(
                     order.quantity,
                     order.quantity,
                     target=order.price,
+                    epoch=epoch,
                 )
                 cost = reentry.price * reentry.quantity * (ONE + rules.fee_rate)
                 if (
