@@ -38,10 +38,10 @@ fills, for both the strategy and buy-and-hold.
 
 | # | Change | Why |
 | --- | --- | --- |
-| P1 | **Record the exit reason** on every `exit/` fill: `range_exit`, `drain`, `liquidation` (halt or emergency) and, for variant A, `trend_exit`. Report the realised P&L per reason. | Codex (PR #14): losses cannot be attributed to range exits without it. |
+| P1 | **Record the exit reason** on every `exit/` fill: `range_exit`, `drain` (the engine's `draining` state), `liquidation` (halt or emergency) and, for variant A, `trend_exit`. Report the realised P&L per reason. | Codex (PR #14): losses cannot be attributed to range exits without it. |
 | P2 | **Common drawdown sampling:** strategy total equity and buy-and-hold equity are sampled on the same schedule: every quote of every bar, after that quote's fills. For C1(b), active equity and the reserve-adjusted `risk_high` are also recorded at every pre-fill and post-fill risk evaluation the engine performs, together with any hard-drawdown halt. | Criterion C3 compares the two drawdowns; they must be measured the same way. |
 | P3 | **Daily history:** dataset specs gain `daily_warmup_start`. Binance `1d` archives are fetched from that month and checksummed. Over the overlap, every expected day must be present exactly once and contiguous, and must match the aggregation of its 24 unique contiguous `1h` bars, not just an aggregate OHLCV match. | Variants A and D need at least 200 completed daily bars before the evaluation starts. |
-| P4 | **Historical exchange filters for SOL:** use dated, sourced point-in-time tick and step sizes if available. If they cannot be sourced, SOL runs stay invalid for every variant (§5). No synthetic spread model in the primary comparison. | Codex §4.1 answer on PR #15. |
+| P4 | **Historical exchange filters for SOL:** use dated, sourced point-in-time tick and step sizes if available. If they cannot be sourced, SOL runs stay invalid for every variant (§5). No synthetic spread model in the primary comparison. **Result (2026-09-24):** no dated official spot filter history was found. The archives themselves show that every SOLUSDT open, high, low and close from 2022-06 to 2023-01 has at most 2 decimals (lowest price 8.00), which is consistent with today's 0.01 tick. The invalidity therefore comes from the adapter's assumed spread with outward rounding at low prices (2 ticks ≈ 0.25% > 0.15%), not from a wrong filter. **SOL stays invalid in the primary comparison.** A one-tick spread model may only ever be a separately labelled sensitivity scenario; it is not part of v1. | Codex §4.1 answer on PR #15. |
 | P5 | Carried nits: `--maker-fee`/`--taker-fee` use `is not None`, so an empty value is rejected; `replay()` asserts the order book is empty before wrapping it for request counting. | Automated reviews on PR #14. |
 | P6 | **P&L reconciliation:** realised P&L by sell type, plus unrealised P&L of the remaining inventory at the final mark, must equal the final total equity minus the initial capital. | Codex (PR #15): attribution must reconcile with the account. |
 | P7 | **Completed-cycle count (for C5):** a completed cycle is a grid sell (a child `…/sell` order placed when its buy filled completely) that itself fills completely. It is reported per run and per week. It is a count only, independent of the P1 P&L-by-exit-reason and the average-cost resting-sell attribution, and neither of those counts cycles. | Codex (PR #16): the metric must be defined before it is promised. |
@@ -183,7 +183,8 @@ The state is updated once per completed daily bar, from the previous state and `
   - **Signal reversal while filling:** at the effective observation of a reversal, the
     unfinished side is abandoned and the new side starts at that same observation. An
     entry in progress stops, and the quantity already bought is exited. An exit in
-    progress stops, and a new entry uses the cash on hand.
+    progress stops; the unsold inventory stays held and marked, and the new entry adds
+    to it using the cash on hand.
 - **Unchanged from A:** capital, marks, warm-up, timing and fees.
 - **Risk controls:** D is **exempt** from the common rule in §3. It has no daily-loss
   pause, soft or hard drawdown halt or emergency exit; it only follows its signal. Its
@@ -222,6 +223,9 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
     combining A, `trend_exit`.
   - Anything still below the minimum at the end of a run is reported as dust, as V0
     already does.
+  - When the originating grid ends (range exit or re-centre), its buckets are handled
+    like other unreserved inventory: they go through that exit, and only a remainder
+    below the minimum becomes dust.
 - **Unblock:** `flow_block` turns off when `share ≥ 0.45` (inclusive). Turning it off
   only lifts F's own restriction. Any other active pause, halt, drain or eligibility
   veto stays in force.
