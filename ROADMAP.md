@@ -20,10 +20,23 @@ reserve accounting, order stub, tests, and CI. No claim of strategy profitabilit
 
 Gate: replay/restart/failure tests pass; no network trading endpoint exists.
 Scope is one simulated symbol per account, cash-start grids, quote-asset fees,
-and flat-account reserve checkpoints. Rotation execution, automated halt recovery,
+and flat-account reserve checkpoints. Version 0.4 adds grid recycling and confirmed
+recovery of temporary pauses; hard halts require reviewed resume. Rotation execution,
 live order reconciliation and real transfers remain separate work.
 
-## 3. Read-only market-data shadow mode (in progress)
+## Next gate: strategy feasibility before expanding integrations
+
+The external review found that the original grid did not recycle and transient
+conditions permanently halted it. Version 0.4 fixes recycling/flat checkpoints,
+recovery controls and regime-confidence discontinuities. These are software fixes,
+not evidence of a trading edge. See [the handoff](docs/reviews/2026-09-24-codex-response.md).
+
+**Do the historical feasibility spike described in section 4 next**, ahead of the
+remaining section 3 work. Start with a small verified replay harness, then expand
+across regimes/pairs and held-out windows. See [BACKTEST_PLAN.md](docs/BACKTEST_PLAN.md).
+Continue broader infrastructure only if the results justify it.
+
+## 3. Read-only market-data shadow mode (partly implemented; expansion deferred)
 
 Milestone 3a adds a GET-only public-data collector, validated closed hourly candles,
 book/filter snapshots, descriptive indicators, and atomic observation storage.

@@ -1,8 +1,9 @@
 # Adaptive Crypto Grid Bot
 
-Offline prototype for a planned automated **spot** grid-trading system.
-Milestone 2 adds a deterministic single-market paper simulator with fee-aware
-partial fills, reserved balances, a persistent journal, and restart recovery.
+Development prototype for a planned automated **spot** grid-trading system.
+Version 0.4 adds repeating grid levels, automatic recovery from temporary pauses,
+and audited paper resume after the external strategy review. Historical strategy
+validation is the next gate; profitable operation is not established.
 It cannot submit live Binance orders, access an account, or move real funds.
 
 ## Agreed operating rules
@@ -37,12 +38,13 @@ Implemented:
 - rotation hysteresis;
 - drawdown and daily-loss circuit breakers;
 - high-water-mark profit-vault ledger;
-- single-market cash-start grid replay with paired buy/sell orders;
+- single-market cash-start grid replay with recycling buy/sell levels;
 - Decimal balances, fee reservations, tick/quantity/minimum-notional checks;
 - conservative spread/slippage-aware fills with shared liquidity limits;
 - automatic settled-profit allocation and simulated reserve transfers;
 - SQLite atomic state/event persistence, duplicate protection and recovery;
-- persistent risk halts and liquidity-limited simulated emergency exits;
+- recoverable pauses, persistent hard halts, audited paper resume and bounded exits;
+- flat-inventory profit checkpoints and persistent simulated transfer IDs;
 - public Binance candle/book/filter capture with strict validation;
 - descriptive closed-candle indicators and isolated SQLite observation storage;
 - automated unit tests and a GitHub Actions security/quality workflow.
@@ -83,7 +85,7 @@ source contracts and remaining Milestone 3 gates.
 ```bash
 PYTHONPATH=src python -m crypto_grid_bot.app \
   --config config/default.toml \
-  --paper-demo --database data/paper-demo.db
+  --paper-demo --database data/paper-demo-v2.db
 ```
 
 This replays 30 deliberately constructed price cycles for a fictitious
@@ -93,7 +95,8 @@ test, not a backtest, EUR conversion, forecast or evidence of profitability.**
 It reads no credentials and needs no network. Running the same command again
 reuses recorded results without duplicating trades or savings. A different
 database path starts a separate simulation; changed account settings are
-rejected against an existing database.
+rejected against an existing database. Version 0.4 uses schema 2 and rejects old
+schema 1 experiments; no implicit migration or resetting of losses occurs.
 
 See [Paper simulation](docs/PAPER_SIMULATION.md) for accounting, fill assumptions,
 recovery behaviour and remaining limits.
@@ -160,13 +163,14 @@ allocation with open positions requires additional realized-P&L accounting.
 rejects any other mode. No secret belongs in source control; `.env.example`
 contains names only.
 
-The simulator applies risk results to simulated orders. Invalid/stale inputs
-cancel resting paper orders and latch a halt. Fresh hard-drawdown or emergency
+The simulator applies risk results to simulated orders. Invalid numeric/model
+inputs latch a halt. Stale/spread/order-of-arrival issues cancel buys and pause
+without fills. Fresh hard-drawdown or emergency
 inputs can trigger simulated liquidation, bounded by available liquidity;
-unfilled inventory or dust remains visible. Daily pause and soft drawdown
-cancel orders and stop trading; soft drawdown uses a conservative full pause
-instead of partial resizing. Halts survive restart and have no automatic resume
-yet. Savings earmarks adjust risk baselines proportionally and cannot fund orders.
+unfilled inventory or dust remains visible. Daily-loss and soft-drawdown pauses cancel buy entries and manage exits. Temporary
+pauses recover after consecutive eligible observations; hard halts require the
+audited paper resume checks. Resume cannot erase losses. Savings earmarks adjust
+risk baselines proportionally and cannot fund orders.
 
 The strategy suggests float-based levels; the simulator converts and rounds
 them to Decimal ticks and rechecks costs, quantities and affordability. Actual
@@ -176,3 +180,16 @@ There is no background process, deployment, or real fund protection in this vers
 
 This software is experimental and does not guarantee profit. Backtests and
 paper results do not predict future performance.
+
+## Validation priority and small-capital economics
+
+The [Claude review response](docs/reviews/2026-09-24-codex-response.md) records the
+behavioural defects and fixes. The [historical feasibility plan](docs/BACKTEST_PLAN.md)
+now comes before further universe/news infrastructure.
+
+For illustration only: a 20-quote-unit purchase with 1% price spacing and a 0.1%
+fee on each side yields about 0.16 quote units before slippage. A hypothetical
+5-quote-unit monthly hosting cost alone would require roughly 32 such completed
+round trips. Inventory losses, unsuccessful trades and other costs are additional.
+These are assumed inputs, not observed fees, returns or hosting prices. A €100
+budget is not automatically 100 USDC/USDT; FX and conversion costs matter.

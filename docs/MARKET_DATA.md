@@ -28,7 +28,9 @@ Each successful sample prints one JSON record with `decision: observe_only`,
 `orders_authorized: false`, measurements, and outstanding eligibility blockers.
 Collection stops on the first feed/validation/database error; it never substitutes
 old observations, synthetic data, another host, or an authenticated API.
-HTTP 418/429 cooldowns are saved in the database and checked before another request,
+HTTP 418 cooldowns have a conservative 48-hour minimum; HTTP 429 cooldowns have
+a 60-second minimum. A longer server Retry-After extends either minimum. These
+cooldowns are saved in the database and checked before another request,
 including after restart. Keep the same database; do not restart against a new one
 to evade exchange limits. These cooldowns are local, not a shared IP-wide limiter.
 Run only one collector process per IP until coordinated rate limiting exists.

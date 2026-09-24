@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, Decimal, localcontext
 from typing import Any
 
 D = Decimal
@@ -91,6 +91,7 @@ class LimitOrder:
     quantity: Decimal
     remaining: Decimal
     target: Decimal | None = None
+    reentry: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,15 @@ class Account:
     last_received: str = ""
     halt: str = ""
     liquidating: bool = False
+    pause: str = ""
+    recovery_count: int = 0
+    draining: bool = False
+    range_exit: bool = False
+    outside_since: str = ""
+    grid_lower: Decimal = ZERO
+    grid_upper: Decimal = ZERO
+    settlement_count: int = 0
+    confirmed_transfers: dict[str, Decimal] = field(default_factory=dict)
     cycles: int = 0
     fill_count: int = 0
     orders: dict[str, LimitOrder] = field(default_factory=dict)
@@ -166,10 +176,32 @@ class Account:
             "risk_high",
             "day_start",
             "last_equity",
+            "grid_lower",
+            "grid_upper",
         ):
             nonnegative(getattr(self, name))
         if min(self.initial_cash, self.reserve_high, self.risk_high, self.day_start) <= ZERO:
             raise ValueError("account baselines must be positive")
+        if self.grid_lower > self.grid_upper:
+            raise ValueError("saved grid bounds are inverted")
+        if any(
+            type(flag) is not bool for flag in (self.liquidating, self.draining, self.range_exit)
+        ):
+            raise ValueError("invalid saved lifecycle flag")
+        for counter in (self.recovery_count, self.settlement_count, self.cycles, self.fill_count):
+            if type(counter) is not int or counter < 0:
+                raise ValueError("invalid saved counter")
+        for transfer_id, amount in self.confirmed_transfers.items():
+            nonnegative(amount)
+            if not transfer_id.strip() or amount == ZERO:
+                raise ValueError("invalid simulated transfer journal")
+        with localcontext() as context:
+            context.prec = 80
+            if sum(self.confirmed_transfers.values(), ZERO) != self.secured:
+                raise ValueError("simulated transfer journal does not reconcile to secured reserve")
+        for when in (self.outside_since, self.last_observed, self.last_received):
+            if when:
+                timestamp(when)
         for key, order in self.orders.items():
             if key != order.order_id or order.side not in ("buy", "sell"):
                 raise ValueError("invalid saved order identity")
@@ -181,6 +213,22 @@ class Account:
                 raise ValueError("order violates market precision")
             if order.remaining % rules.quantity_step:
                 raise ValueError("remaining quantity violates precision")
+            if order.target is not None:
+                nonnegative(order.target)
+                if (
+                    order.side != "buy"
+                    or order.target <= order.price
+                    or order.target % rules.tick_size
+                ):
+                    raise ValueError("invalid saved sell target")
+            if order.reentry is not None:
+                nonnegative(order.reentry)
+                if (
+                    order.side != "sell"
+                    or not ZERO < order.reentry < order.price
+                    or order.reentry % rules.tick_size
+                ):
+                    raise ValueError("invalid saved reentry level")
         if self.available_quote(rules) < ZERO or self.inventory < self.reserved_base():
             raise ValueError("account is oversubscribed or reserve is being spent")
 
@@ -201,6 +249,8 @@ class Account:
             "secured",
             "fees",
             "last_equity",
+            "grid_lower",
+            "grid_upper",
         ):
             data[key] = decimal(data[key])
         orders: dict[str, LimitOrder] = {}
@@ -210,6 +260,11 @@ class Account:
                 raw[name] = decimal(raw[name])
             if raw["target"] is not None:
                 raw["target"] = decimal(raw["target"])
+            if raw["reentry"] is not None:
+                raw["reentry"] = decimal(raw["reentry"])
             orders[key] = LimitOrder(**raw)
+        data["confirmed_transfers"] = {
+            key: decimal(value) for key, value in data["confirmed_transfers"].items()
+        }
         data["orders"] = orders
         return cls(**data)
