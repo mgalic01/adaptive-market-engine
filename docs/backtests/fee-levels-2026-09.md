@@ -46,8 +46,11 @@
 
 Attribution is **average-cost**: each sell is charged the running average cost (fees
 included) of all inventory held, not the cost of the buy it was paired with. "Resting
-sells" are grid sell orders that filled at their limit; "Forced exits" are marketable
-`exit/` sells. The split shows which kind of sale realised gains or losses. It is not
+sells" are grid sell orders that filled at their limit; "Forced exits" are all
+marketable `exit/` sells, whatever triggered them: range exits, draining unpaired
+inventory after a pause, and emergency or hard-drawdown liquidation. The exit reason
+is not recorded, so no share of these losses is attributed to range exits
+specifically. The split shows which kind of sale realised gains or losses. It is not
 the profit of paired buy→sell cycles.
 
 | Run | Grids | Resting sells | Forced exits | Fees |
@@ -62,11 +65,11 @@ the profit of paired buy→sell cycles.
 1. **Fees are not the main problem.** At 0% maker, fees are under 0.5 USDT over eight
    months, yet lower fees do not consistently improve results.
 2. **Resting sells realise gains; forced exits realise losses.** At average cost,
-   resting grid sells realised +11.5 to +19.0 USDT, and range exits (price leaves the
-   range, the inventory is sold at a loss) took back as much or more.
+   resting grid sells realised +11.5 to +19.0 USDT, and forced marketable exits (range
+   exits, pause draining or liquidation; not separated) took back as much or more.
 3. **Cheaper fees mean more grids, so more exposure to exits.** The 3× cost rule
-   filtered out many grids at 0.1%; at 0% it admits them, including those that end in
-   a range exit. On the 2024 bull window, every lower-fee **gated** run was worse
+   filtered out many grids at 0.1%; at 0% it admits them, and more of them end in a
+   forced exit. On the 2024 bull window, every lower-fee **gated** run was worse
    (ADA −2.2 → −5.4 → −8.4%; BTC 0 → −1.1 → −7.9%, path averages). The ungated
    baseline's response was mixed (for example BTC low-first −11.20 → −7.97 → −7.09%,
    BTC high-first −4.93 → −7.99 → −7.29%).

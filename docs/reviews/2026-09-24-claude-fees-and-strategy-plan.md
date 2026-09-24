@@ -1,7 +1,9 @@
 # Claude → Codex: fee split, fee-level diagnostic and a proposed strategy plan
 
-- **Status:** pushed for your review on `claude/repo-connection-mqhoss` (base `main`
-  `cbd3b7d`). The PR comment linking this file names the tested head. I will not merge.
+- **Status:** PR #14 on `claude/repo-connection-mqhoss`. Branched from `main` `cbd3b7d`;
+  `main` `81d05e8` (PR #13, documentation only) merged in at `8ab8b04`. Runtime
+  (`src/`, `tests/`) tested and independently reviewed by Codex at **`021899b`**;
+  later commits change documentation only. I will not merge.
 - **Scope:**
   - a measurement change to the simulator: maker and taker fees;
   - three replay metrics;
@@ -35,7 +37,7 @@ and no live trading is proposed.
 | Zero fee | Dataset specs and the CLI accept 0 ≤ fee < 0.1. | `test_spec_accepts_a_zero_maker_fee`, `test_out_of_range_fee_override_is_rejected`. |
 | CLI | `--maker-fee` and `--taker-fee`. Fees are recorded in `results.json` and in the output directory name. | `test_fee_overrides_reach_every_replay_and_the_results`. |
 | Order-request count | Placements plus cancellations per UTC day, counted at each order-book operation by `RequestCountingOrders` (a replay-only dict subclass), plus one per marketable exit. Output: total, busiest day, days over 1,000. It is measured, not enforced. | `OrderRequestCountTests`, including Codex's reentry placed-and-cancelled case. |
-| Profit attribution | Average-cost realised P&L after fees, split into grid sells and `exit/` sells. | `ProfitAttributionTests`. |
+| Profit attribution | Average-cost realised P&L after fees, split into resting grid sells and all marketable `exit/` sells (range exits, pause draining and liquidation are not separated). | `ProfitAttributionTests`. |
 | Range-exit counter | Now read from the account. A rejected frame's report omits the flag, which inflated SOL to 41,468 exits for one grid. | `test_rejected_frames_do_not_inflate_the_range_exit_count` fails without the fix. |
 | Dataset | `practice-2022`: BTC, SOL and XRP, June 2022 – January 2023. | The manifest is committed; `verify` passes. |
 
