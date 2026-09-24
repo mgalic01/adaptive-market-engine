@@ -45,6 +45,7 @@ fills, for both the strategy and buy-and-hold.
 | P5 | Carried nits: `--maker-fee`/`--taker-fee` use `is not None`, so an empty value is rejected; `replay()` asserts the order book is empty before wrapping it for request counting. | Automated reviews on PR #14. |
 | P6 | **P&L reconciliation:** realised P&L by sell type, plus unrealised P&L of the remaining inventory at the final mark, must equal the final total equity minus the initial capital. | Codex (PR #15): attribution must reconcile with the account. |
 | P7 | **Completed-cycle count (for C5):** a completed cycle is a grid sell (a child `…/sell` order placed when its buy filled completely) that itself fills completely. It is reported per run and per week. It is a count only, independent of the P1 P&L-by-exit-reason and the average-cost resting-sell attribution, and neither of those counts cycles. | Codex (PR #16): the metric must be defined before it is promised. |
+| P8 | **Data for G and H:** BTCUSDT funding-rate archives (checksummed, in the manifest), and daily history from the month of the most recent halving before each window (P3 extended: 2020-05 for both development windows, 2024-04 for the reserved window). The halving timestamps are fixed constants in §3 H. | Needed by G and H. |
 
 ## 3. Variants
 
@@ -196,9 +197,23 @@ The state is updated once per completed daily bar, from the previous state and `
   equity, and C1(b) reduces to C1(a) measured against its own peak. D has no halts, so
   the hard-halt veto cannot trigger.
 
-### E: volume-confirmed exit (deferred)
-Not part of v1. Extending the 6-hour exit timer increases loss exposure, so it needs a
-separate risk review first (Codex, PR #15).
+### E: volume-confirmed exit (included by the owner, 2026-09-24; needs Codex's risk review)
+- **Mechanism:** when V0's 6-hour outside-range timer expires, E compares the base
+  volume of the **completed** minutes since the first outside observation with
+  2 × (the median completed 1h base volume over the previous 720 hours) × (elapsed
+  hours).
+  - At or above that level, the range exit happens exactly as in V0.
+  - Below it, the timer is extended **once** to 12 hours in total. At 12 hours the
+    range exit happens unconditionally.
+- **Never delayed:** emergency exits, hard-drawdown halts, the daily-loss pause, the
+  soft-drawdown reduction and drain are never delayed; the §3 common rule still applies.
+- **Extension ends early:** if price returns inside the range during the extension, V0's
+  normal reset applies.
+- **Reported:** the number of extensions, the extra hours outside the range, and the P&L
+  of extended exits compared with the P&L of the price at the 6-hour mark.
+- **Risk review required:** E increases exposure time by up to 6 hours per exit. Codex's
+  separate risk review is required before E's results count. Without it, E is run and
+  reported but is **not eligible for selection**.
 
 ### F: order-flow entry block
 F blocks new buys only. It is **not** a V0 pause: it never sets `draining`, never
@@ -244,11 +259,56 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - an F unblock while a V0 eligibility pause is active (the pause must remain);
   - overlapping F and range-exit states.
 
+### G: funding-rate gate (owner proposal via Bob, included 2026-09-24)
+- **Data:** BTCUSDT USDⓈ-M perpetual funding rates from the public archive
+  `data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/`. These are monthly
+  zips with published checksums, fetched and verified like the klines (manifest,
+  SHA-256).
+  - The replay never calls a futures API.
+  - The live-host rule (public data hosts only) is unchanged.
+- **Timing:** a settlement's rate is known from its `calc_time`, which is truncated to
+  the second. It applies from the next valid observation after that time.
+- **Rule:** no new grid while the **last three completed settlements** (normally 24
+  hours) were all **> +0.0005** (+0.05% per 8 h).
+  - Negative or low funding never blocks.
+  - Existing grids, sells and exits are unaffected.
+- **Missing data:** fewer than three settlements in the last 32 hours means no new grid,
+  so G fails closed.
+- **Runs:** G on its own (V0 + G), and **C + G** as a declared interaction.
+- **Reported:** the number of grids blocked, the hours blocked, and the lag between
+  settlement and effect.
+
+### H: Bitcoin cycle context (owner proposal via Bob, included 2026-09-24)
+- **Halving constants:** the dates are historical facts, so they are fixed in the spec:
+  - block 420,000 at 2016-07-09 16:46:13 UTC;
+  - block 630,000 at 2020-05-11 19:23:43 UTC;
+  - block 840,000 at 2024-04-20 00:09:27 UTC.
+
+  The phase is the number of whole months since the most recent halving at or before
+  the observation.
+- **Data:** each traded pair's own completed **daily closes** (P3), with its SMA200.
+  **ATH** is the highest completed daily close since the most recent halving, which
+  requires daily data from that halving onward (P3 extended accordingly).
+- **H2, overextension guard:** in months **18–30**, if `C > 1.60 × SMA200`:
+  - no new grid;
+  - existing grids use a **2-hour** outside-range timer instead of 6 hours.
+
+  This is stricter, so it is allowed under the §3 rule.
+- **H3, deep-discount relaxation:** in months **30–48**, if `C < 0.50 × ATH`, the
+  opportunity score minimum is lowered by 0.10 (0.70 → 0.60) for **new grids only**.
+  - Every other regime, eligibility, liquidity, spread and risk check still applies.
+  - H3 never changes a risk limit.
+  - It is the only mechanism in v1 that loosens an entry gate, and it is reported
+    separately (grids opened only because of H3, and their P&L).
+- **Months 0–18 and above 48:** no change from V0.
+- **Runs:** H on its own (V0 + H), and **C + H** as a declared interaction.
+- **Reported:** the phase of every evaluated bar, and the H2 and H3 activations.
+
 ## 4. Matrix
 
 | Axis | Values |
 | --- | --- |
-| Variants | V0, A, B, C, D, F |
+| Variants | V0, A, B, C, D, E, F, G, C+G, H, C+H |
 | Fees | **Primary:** Revolut X, maker 0 / taker 0.0009. **Sensitivity** (reported, not used for acceptance): 0.001 / 0.001. |
 | Windows and pairs | `verify-2024h1` (ADA, BTC) and `practice-2022` (BTC, XRP, SOL), each extended with daily warm-up (P3). |
 | Intrabar paths | `high_first` and `low_first`, both always reported. No path is chosen after seeing results. |
@@ -286,27 +346,33 @@ pair for the other variants.
 
 ## 6. Acceptance and selection (owner decisions, 2026-09-24)
 
-Acceptance is judged at the primary fees. A variant passes when **all** of the
-following hold across its included runs, that is every pair, window and path:
+The owner compared his criteria from this conversation with Bob's proposal
+(`2025-09-25-owner-acceptance-criteria.md`) and chose this combined set. Acceptance is
+judged at the primary fees. A variant passes when **all** of C1–C6 hold across its
+included runs (every included pair, window and path):
 
-| # | Criterion | Owner choice |
+| # | Criterion | Source |
 | --- | --- | --- |
-| C1 | **Worst drop,** on two bases in every run. **(a)** The max drawdown of **total equity**: active equity (§3 B, the engine's `Account.equity`, which marks inventory at bid × (1 − slippage) × (1 − taker)) plus the pending reserve plus the secured reserve, is ≤ **10%** of its running peak. **(b) Confirmed by the owner on 2026-09-24, as a deliberate tightening of the earlier total-equity-only wording:** the drawdown of **active equity** against the runtime's **reserve-adjusted risk high-water mark** (`risk_high`, which `_settle` scales down after reserve allocations, so a reserve transfer is not a trading drawdown) is ≤ **10%**. It is sampled at every pre-fill and post-fill risk evaluation the engine performs. The engine updates `risk_high` from the same `Account.equity` valuation, so C1(b) compares like with like. In addition, **any hard-drawdown halt in a run fails C1(b)** outright, whatever the samples show. Both drawdowns are measured from peaks, so after growth 10% can exceed 10 quote units. | 10%; €10 is only the illustration at the starting €100 |
-| C2 | **Makes money:** the mean return across included runs is > 0 after fees, and so is the median. All runs have equal weight, and the median of an even count is the mean of the two middle values. | Beat cash |
-| C3 | **Safer than holding:** in every included run, max total-equity drawdown < that run's buy-and-hold max drawdown (common sampling, P2). This is strict, as recorded; it is not relaxed to the median because it is hard to pass. A run where buy-and-hold has zero drawdown fails C3 and is reported, not exempted. | Less drop than holding |
-| C4 | **Integrity:** every included run is valid (§5). | — |
-| C5 | **Activity:** no minimum. Completed cycles (P7) per week are reported for information. | No minimum |
+| C1 | **Worst drop,** on two bases in every run. **(a)** The max drawdown of **total equity** (active equity per `Account.equity` plus both reserves) is ≤ **10%** of its running peak. **(b)** The drawdown of **active equity** against the runtime's reserve-adjusted `risk_high` is ≤ **10%**. It is sampled at every pre-fill and post-fill risk evaluation, and **any hard-drawdown halt fails**. Both are measured from peaks, so after growth 10% can exceed 10 quote units. | Owner |
+| C2 | **Makes money on the worse path:** for **each** intrabar path separately, the median return across included runs is > 0 after fees; **and** the mean return across all included runs is > 0. All runs have equal weight, and the median of an even count is the mean of the two middle values. | Owner, with Bob's worse-path rule |
+| C3 | **Safer than holding:** in every included run, max total-equity drawdown < that run's buy-and-hold max drawdown (common sampling, P2). A run where buy-and-hold has zero drawdown fails. | Owner (strict) |
+| C4 | **Integrity:** every included run is valid (§5). | Both |
+| C5 | **Minimum activity:** the mean number of completed cycles (P7) per week across included runs is **≥ 1**. The share of bars holding inventory is reported. | Owner's compromise on Bob's 10%-invested rule |
+| C6 | **The gate earns its place:** in at least **60%** of included runs, the variant's return ÷ max(max drawdown, 0.1 percentage points) exceeds that of the **ungated V0 baseline** in the same pair, window and path. | Bob |
+| R1 | **Economics, reported only:** the capital at which the mean monthly return would cover €5/month of hosting (5 ÷ mean monthly return fraction), or "not reachable" if the mean return is ≤ 0. Running on the owner's own PC costs €0 in hosting. | Bob, as information |
 
 **Selection (deterministic):**
-1. The **eligible set** is the passing variants among V0, A, B, C and F. D is excluded
+1. The **eligible set** is the passing variants among V0, A, B, C, E (only with Codex's
+   risk review), F, G, C+G, H and C+H. D is excluded
    before ranking.
 2. Let `M` be the highest mean return in the eligible set, in percentage points rounded
    to 6 decimals. The **tie set** is every eligible variant with mean return ≥ `M − 0.25`
    (inclusive).
 3. Within the tie set, pick the lowest mean total-equity max drawdown, rounded the same
    way.
-4. If still tied, pick the first in the fixed simplicity order V0, A, B, F, C.
-5. D **cannot be selected.** C1–C5 are still computed and reported for D, for
+4. If still tied, pick the first in the fixed simplicity order V0, A, B, F, G, H, E, C,
+   C+G, C+H.
+5. D **cannot be selected.** C1–C6 are still computed and reported for D, for
    information only, next to the winner.
 
 **No winner:** if no variant passes, v1 ends with "no winner". Nothing runs on the
@@ -371,11 +437,18 @@ start it automatically. Before asking, Claude reports:
     EUR-quoted coins the owner is likely to trade on Revolut X.
   - ETH is absent from the development windows only because of archive defects in
     `practice-2022` (see that spec).
+  - **Robustness set (reported, not deciding):** DOGEUSDT, LTCUSDT, LINKUSDT, AVAXUSDT
+    and DOTUSDT, plus every pair that was in Binance's top 30 USDT spot pairs by quote
+    volume in 2024-12 and was delisted before 2026-09. That list is determined from the
+    2024-12 archives and Binance's delisting announcements, and frozen before the window
+    is fetched.
+  - This answers Bob's survivorship concern without letting coins that cannot be traded
+    on Revolut X decide the result.
 - **Runs:** the winner, V0 and D, at the primary fees, on both paths.
 - **Data problems:** a pair that fails integrity is reported as invalid and is **not**
   replaced by another pair.
-- **Judging:** the result is judged against C1–C4 on the included runs and reported
-  whether it passes or not.
+- **Judging:** the result is judged against C1–C6 on the five deciding pairs and
+  reported whether it passes or not. R1 and the robustness set are reported alongside.
   A pass does not authorise live trading; it only justifies the next step, a proposal
   for paper trading on live Revolut X prices, which needs its own review.
 
@@ -409,7 +482,6 @@ Venue terms and research claims that motivated this spec. They were checked on
 These stay open; each needs its own specification:
 - the policy after a large loss (cool-off or permanent stop);
 - quote skewing;
-- variant E;
 - a Revolut X price feed;
 - any live-trading work;
 - a README change to the "Binance spot only" operating rule. Revolut X is named here
