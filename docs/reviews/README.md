@@ -6,6 +6,8 @@ Add new entries at the top; retain older files as history.
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Owner decision: Variant H — Bitcoin cycle context layer](2025-09-25-owner-variant-h-cycle-context.md) | Cycle awareness via halving phase tracker (H1), overextension guard (H2, >60% above SMA200 in peak window), and deep discount signal (H3, >50% below ATH in bear window). Price-based, no hard-coded calendar dates. |
+| [Owner decision: Variant G — Binance funding rate confirmation](2025-09-25-owner-variant-g-funding-rate.md) | No new grid when BTC perpetual funding rate persistently >+0.05% across last 3 periods (24h). Free, independent of spot price/volume. |
 | [Owner decision: acceptance criteria for untouched window](2025-09-25-owner-acceptance-criteria.md) | Six criteria agreed and locked: integrity, beats cash (median >0%), risk, gate earns its place (≥60%), economics (€100 budget), minimum activity (≥10% bars invested). All must pass. |
 | [Owner decision: archive volume drift tolerance](2025-09-25-owner-volume-drift-decision.md) | Tolerate Binance volume drift ≤0.1% when OHLC matches exactly; count separately as `hours_volume_drift`. All other chronology gates remain fatal. |
 | [Owner decision: tick-size fix method](2025-09-25-owner-tick-size-decision.md) | Historical filters per month (Option A) as primary; single-tick rounding (Option B) as documented fallback where historical data unavailable. Unlocks practice-2022 SOL runs. |
