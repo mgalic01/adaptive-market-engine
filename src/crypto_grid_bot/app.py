@@ -8,6 +8,7 @@ from pathlib import Path
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import MarketSignals
 from crypto_grid_bot.market_data.command import run_capture
+from crypto_grid_bot.simulation.control import resume_paper
 from crypto_grid_bot.simulation.demo import run_demo
 from crypto_grid_bot.simulation.store import encode
 from crypto_grid_bot.strategy.regime import RegimeClassifier, RegimeThresholds
@@ -19,6 +20,10 @@ def _parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--self-check", action="store_true")
     mode.add_argument("--paper-demo", action="store_true")
+    mode.add_argument("--resume-paper", action="store_true")
+    parser.add_argument("--resume-frame", type=Path)
+    parser.add_argument("--event-id")
+    parser.add_argument("--reason")
     mode.add_argument("--capture-market", action="store_true")
     parser.add_argument("--symbol", help="explicit Binance spot symbol, e.g. ADAUSDC")
     parser.add_argument("--samples", type=int, default=1)
@@ -30,6 +35,23 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     config = load_config(args.config)
+    if args.resume_paper:
+        if not all((args.database, args.resume_frame, args.event_id, args.reason)):
+            raise SystemExit(
+                "--resume-paper requires --database, --resume-frame, --event-id, --reason"
+            )
+        print(
+            encode(
+                resume_paper(
+                    args.database,
+                    config,
+                    args.resume_frame,
+                    event_id=args.event_id,
+                    reason=args.reason,
+                )
+            )
+        )
+        return 0
     if args.capture_market:
         if args.database is None or args.symbol is None:
             raise SystemExit("--capture-market requires --database PATH and --symbol SYMBOL")
