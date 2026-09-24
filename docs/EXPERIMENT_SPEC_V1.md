@@ -200,17 +200,29 @@ The state is updated once per completed daily bar, from the previous state and `
 ### E: volume-confirmed exit (included by the owner, 2026-09-24; needs Codex's risk review)
 - **Mechanism:** when V0's 6-hour outside-range timer expires, E compares the base
   volume of the **completed** minutes since the first outside observation with
-  2 × (the median completed 1h base volume over the previous 720 hours) × (elapsed
-  hours).
+  2 × (the median completed 1h base volume over the previous 720 hours) × 6.
   - At or above that level, the range exit happens exactly as in V0.
   - Below it, the timer is extended **once** to 12 hours in total. At 12 hours the
     range exit happens unconditionally.
+- **Reference, frozen at the timer start:** the 720 hours are the completed 1h bars
+  whose open times are the 720 hours ending at the last hour that closed at or before
+  the first outside observation `t0`. The median is computed once, at `t0`, and is not
+  updated during the timer.
+- **Measured volume:** the 1m bars with open time in `[floor_minute(t0), floor_minute(t0
+  + 6 h))`, i.e. the completed minutes of the 6-hour span. A zero-volume minute is valid
+  input.
+- **Unavailable means V0:** if any of the 720 reference hours or any of the measured
+  minutes is missing, or the reference median is zero, the comparison is
+  **unavailable** and the range exit happens at 6 hours exactly as in V0. E never
+  extends on missing data. Unavailable checks are counted and reported.
 - **Never delayed:** emergency exits, hard-drawdown halts, the daily-loss pause, the
   soft-drawdown reduction and drain are never delayed; the §3 common rule still applies.
 - **Extension ends early:** if price returns inside the range during the extension, V0's
   normal reset applies.
-- **Reported:** the number of extensions, the extra hours outside the range, and the P&L
-  of extended exits compared with the P&L of the price at the 6-hour mark.
+- **Reported:** the number of extensions and unavailable checks, the extra hours outside
+  the range, and the P&L of extended exits next to the bid at the 6-hour mark. That
+  6-hour comparison is a **diagnostic only**: it is not an executable counterfactual
+  (it ignores fees, liquidity and residual inventory) and is never used for selection.
 - **Risk review required:** E increases exposure time by up to 6 hours per exit. Codex's
   separate risk review is required before E's results count. Without it, E is run and
   reported but is **not eligible for selection**.
@@ -284,23 +296,31 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - block 630,000 at 2020-05-11 19:23:43 UTC;
   - block 840,000 at 2024-04-20 00:09:27 UTC.
 
-  The phase is the number of whole months since the most recent halving at or before
-  the observation.
+  The phase `m` is the number of **whole calendar months** since the most recent halving
+  at or before the observation: `(year − year_h) × 12 + (month − month_h)`, minus 1 if
+  the observation's day-of-month and time of day are earlier than the halving's. All
+  three halving days are ≤ 20, so every month contains the anniversary instant. Phase
+  bands are half-open: `[0, 18)`, `[18, 30)`, `[30, 48)` and `≥ 48`.
 - **Data:** each traded pair's own completed **daily closes** (P3), with its SMA200.
   **ATH** is the highest completed daily close since the most recent halving, which
   requires daily data from that halving onward (P3 extended accordingly).
-- **H2, overextension guard:** in months **18–30**, if `C > 1.60 × SMA200`:
+- **H2, overextension guard:** for `m` in **[18, 30)**, if `C > 1.60 × SMA200`:
   - no new grid;
-  - existing grids use a **2-hour** outside-range timer instead of 6 hours.
+  - existing grids use a **2-hour** outside-range threshold instead of 6 hours.
 
   This is stricter, so it is allowed under the §3 rule.
-- **H3, deep-discount relaxation:** in months **30–48**, if `C < 0.50 × ATH`, the
+  - **Running timers:** H2 changes only the *threshold* a running outside-range timer
+    is compared with, never its start time `t0`. If H2 turns on while a timer runs,
+    the exit happens at the first valid observation with elapsed time ≥ 2 h (at once
+    if already past it). If H2 turns off, the threshold returns to 6 h from the same
+    `t0`. A timer is never reset, restarted or extended beyond V0's 6 h by H2.
+- **H3, deep-discount relaxation:** for `m` in **[30, 48)**, if `C < 0.50 × ATH`, the
   opportunity score minimum is lowered by 0.10 (0.70 → 0.60) for **new grids only**.
   - Every other regime, eligibility, liquidity, spread and risk check still applies.
   - H3 never changes a risk limit.
   - It is the only mechanism in v1 that loosens an entry gate, and it is reported
     separately (grids opened only because of H3, and their P&L).
-- **Months 0–18 and above 48:** no change from V0.
+- **`m` in [0, 18) or ≥ 48:** no change from V0.
 - **Runs:** H on its own (V0 + H), and **C + H** as a declared interaction.
 - **Reported:** the phase of every evaluated bar, and the H2 and H3 activations.
 
@@ -309,6 +329,7 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
 | Axis | Values |
 | --- | --- |
 | Variants | V0, A, B, C, D, E, F, G, C+G, H, C+H |
+| Baselines | **Ungated V0** (the replay's `strategy: "ungated"`: V0 without the opportunity gate), for C6 only. It is run everywhere V0 runs and is never eligible for selection. |
 | Fees | **Primary:** Revolut X, maker 0 / taker 0.0009. **Sensitivity** (reported, not used for acceptance): 0.001 / 0.001. |
 | Windows and pairs | `verify-2024h1` (ADA, BTC) and `practice-2022` (BTC, XRP, SOL), each extended with daily warm-up (P3). |
 | Intrabar paths | `high_first` and `low_first`, both always reported. No path is chosen after seeing results. |
@@ -323,7 +344,20 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
 **Comparison mask, fixed before any variant runs.** For each pair-window, the following
 variant-independent checks are run first:
 - the manifest and checksums;
-- the hourly/minute and daily/hourly cross-checks;
+- the hourly/minute and daily/hourly cross-checks, and, when the market proxy is not a
+  traded pair, the completeness of its hourly bars over warm-up and evaluation (every
+  hour exactly once) plus its daily/hourly cross-check;
+- **integrity rules `drift-tolerance-v1`** (owner decision via Bob, 2026-09-24): a bar
+  whose open, high, low and close match exactly and whose volume differs by at most
+  0.1% of Binance's figure is counted as volume drift, not as a failure. Every other
+  difference, and every missing or duplicated bar, stays fatal. The rules' name and
+  tolerance are written to every `results.json`; `--strict-volume` (`strict-v0`, exact
+  volume) stays available as a check. Features read Binance's 1h archive as published,
+  so a drifted hour feeds its archive volume (within 0.1% of the minute sum) to the
+  volume features; prices are identical, and fills use the minutes. Evidence
+  (2026-09-24): `verify-2024h1` is valid in both modes; `practice-2022` is valid under
+  `drift-tolerance-v1` and invalid under `strict-v0` because of one drifted daily bar
+  per pair in its warm-up;
 - warm-up sufficiency;
 - the availability of sourced exchange filters (P4).
 
@@ -444,7 +478,8 @@ start it automatically. Before asking, Claude reports:
     is fetched.
   - This answers Bob's survivorship concern without letting coins that cannot be traded
     on Revolut X decide the result.
-- **Runs:** the winner, V0 and D, at the primary fees, on both paths.
+- **Runs:** the winner, V0, ungated V0 (the C6 baseline) and D, at the primary fees, on
+  both paths.
 - **Data problems:** a pair that fails integrity is reported as invalid and is **not**
   replaced by another pair.
 - **Judging:** the result is judged against C1–C6 on the five deciding pairs and

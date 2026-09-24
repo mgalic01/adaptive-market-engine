@@ -695,6 +695,10 @@ class VolumeDriftTests(unittest.TestCase):
         self.assertEqual("mismatch", compare_bars(replace(base, high=base.high + 1), base))
         zero = replace(base, volume=D("0"))
         self.assertEqual("mismatch", compare_bars(base, zero))  # no relative tolerance on 0
+        # Strict mode (tolerance 0): any volume difference is a mismatch.
+        strict = D(0)
+        self.assertEqual("match", compare_bars(base, base, strict))
+        self.assertEqual("mismatch", compare_bars(replace(base, volume=D("999")), base, strict))
 
     def test_hourly_drift_is_reported_and_not_a_mismatch(self):
         from crypto_grid_bot.backtest.klines import aggregate
@@ -704,3 +708,5 @@ class VolumeDriftTests(unittest.TestCase):
         drifted = replace(hour, volume=hour.volume * D("1.0005"))
         result = cross_check_hourly(minutes, [drifted], (START_MS, START_MS + HOUR_MS))
         self.assertEqual((0, 1), (result["hours_mismatched"], result["hours_volume_drift"]))
+        strict = cross_check_hourly(minutes, [drifted], (START_MS, START_MS + HOUR_MS), D(0))
+        self.assertEqual((1, 0), (strict["hours_mismatched"], strict["hours_volume_drift"]))

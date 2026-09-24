@@ -504,6 +504,7 @@ def cross_check_daily(
     daily_window: tuple[int, int],
     hourly_window: tuple[int, int],
     evaluation_start_ms: int,
+    volume_tolerance: Decimal | None = None,
 ) -> dict[str, int]:
     """Spec v1 P3: daily bars must be complete, unique and agree with their hours.
 
@@ -531,7 +532,7 @@ def cross_check_daily(
             continue  # counted as missing below
         compared += 1
         (merged,) = aggregate(sorted(hours, key=lambda h: h.open_ms), DAY_MS)
-        outcome = compare_bars(merged, reference)
+        outcome = compare_bars(merged, reference, volume_tolerance)
         mismatched += int(outcome == "mismatch")
         drift += int(outcome == "drift")
     warmup = sum(1 for o in opens if o + DAY_MS <= evaluation_start_ms)
@@ -561,25 +562,33 @@ def load_minutes(data_dir: Path, manifest: dict[str, Any], symbol: str) -> Itera
 # Owner decision (2026-09-24): Binance archives sometimes disagree on volume only. With
 # OHLC identical, a relative volume difference up to 0.1% is counted as drift, not as a
 # failure. Larger differences, any price difference and any missing bar stay fatal.
+# Results record INTEGRITY_RULES; ``--strict-volume`` restores exact matching (tolerance 0).
 VOLUME_DRIFT_TOLERANCE = Decimal("0.001")
+INTEGRITY_RULES = "drift-tolerance-v1"
+STRICT_INTEGRITY_RULES = "strict-v0"
 
 
-def compare_bars(ours: Kline, theirs: Kline) -> str:
-    """'match', 'drift' (OHLC identical, volume within tolerance) or 'mismatch'."""
+def compare_bars(ours: Kline, theirs: Kline, tolerance: Decimal | None = None) -> str:
+    """'match', 'drift' (OHLC identical, volume within tolerance) or 'mismatch'.
+
+    ``tolerance`` defaults to VOLUME_DRIFT_TOLERANCE; zero means volume must match exactly.
+    """
+    tolerance = VOLUME_DRIFT_TOLERANCE if tolerance is None else tolerance
     prices = (ours.open, ours.high, ours.low, ours.close)
     if prices != (theirs.open, theirs.high, theirs.low, theirs.close):
         return "mismatch"
     if ours.volume == theirs.volume:
         return "match"
-    if theirs.volume > ZERO and abs(ours.volume - theirs.volume) <= (
-        theirs.volume * VOLUME_DRIFT_TOLERANCE
-    ):
+    if theirs.volume > ZERO and abs(ours.volume - theirs.volume) <= (theirs.volume * tolerance):
         return "drift"
     return "mismatch"
 
 
 def cross_check_hourly(
-    minutes: Iterable[Kline], hourly: Sequence[Kline], window: tuple[int, int]
+    minutes: Iterable[Kline],
+    hourly: Sequence[Kline],
+    window: tuple[int, int],
+    volume_tolerance: Decimal | None = None,
 ) -> dict[str, int]:
     """Compare 1m bars aggregated to hours against Binance's own 1h archive.
 
@@ -605,7 +614,7 @@ def cross_check_hourly(
             missing += 1
             continue
         compared += 1
-        outcome = compare_bars(candle, reference)
+        outcome = compare_bars(candle, reference, volume_tolerance)
         mismatched += int(outcome == "mismatch")
         drift += int(outcome == "drift")
     in_window = range(window[0], window[1], HOUR_MS)
@@ -624,6 +633,20 @@ def cross_check_hourly(
         "hours_absent_from_both": absent_both,
         "hours_incomplete": len(incomplete),
         "minutes_missing": sum(incomplete),
+    }
+
+
+def check_hourly_series(hourly: Sequence[Kline], window: tuple[int, int]) -> dict[str, int]:
+    """Completeness of an hourly series with no minute data behind it (a market proxy
+    that is not traded): every hour in the [start, end) ``window`` exactly once."""
+    opens = [k.open_ms for k in hourly if window[0] <= k.open_ms < window[1]]
+    present = set(opens)
+    return {
+        "proxy_hours_present": len(present),
+        "proxy_hours_missing": sum(
+            1 for hour in range(window[0], window[1], HOUR_MS) if hour not in present
+        ),
+        "proxy_hours_duplicated": len(opens) - len(present),
     }
 
 
