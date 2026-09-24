@@ -11,7 +11,13 @@ real run.
 PYTHONPATH=src python -m crypto_grid_bot.backtest fetch  --spec config/datasets/verify-2024h1.toml
 PYTHONPATH=src python -m crypto_grid_bot.backtest verify --spec config/datasets/verify-2024h1.toml
 PYTHONPATH=src python -m crypto_grid_bot.backtest run    --spec config/datasets/verify-2024h1.toml
+# Fee scenario, e.g. Revolut X: 0% maker (resting fills), 0.09% taker (exits).
+PYTHONPATH=src python -m crypto_grid_bot.backtest run    --spec config/datasets/verify-2024h1.toml \
+    --maker-fee 0 --taker-fee 0.0009
 ```
+
+Without `--taker-fee` the taker fee equals the maker fee. The fees used are recorded in
+`results.json` and in the output directory name.
 
 `fetch` is the only command that uses the network: it reads public archive files from
 `https://data.binance.vision` and the current exchange filters from the public data
@@ -78,11 +84,19 @@ Klines contain trades, not quotes. The adapter in `backtest/replay.py` is explic
   a buy and its child sell never both fill on an assumed favourable path inside one
   minute. A regression test fails without this rule.
 - **Costs:**
-  - The fee is 0.1% per fill, charged in quote currency (Binance base rate without the
-    BNB discount).
-  - Resting limit fills are booked at the limit price plus the fee. The engine's 0.05%
-    slippage is a crossing buffer, not an extra cash debit.
-  - Forced exits and the buy-and-hold baseline do apply price haircuts.
+  - Fees are charged in quote currency. The spec's fee (default 0.1%, the Binance base
+    rate without the BNB discount) is the **maker** fee; `--maker-fee` overrides it.
+  - Resting limit fills (grid buys and sells) pay the maker fee and are booked at the
+    limit price. The engine's 0.05% slippage is a crossing buffer, not an extra cash
+    debit.
+  - Marketable exits (range exits, liquidation), the buy-and-hold baseline and every
+    equity mark pay the **taker** fee and do apply price haircuts.
+  - The grid cost rule uses two maker fees: `2 × (maker + slippage) + spread`.
+- **Order-request budget:** each step's placements plus cancellations are counted per
+  UTC day. Results report the total, the busiest day and the days above 1,000 requests,
+  which is Revolut X's documented daily limit for placing orders. Counting
+  cancellations too is conservative if the exchange meters them separately. The budget
+  is measured, not enforced.
 
 ## Strategy inputs: hypothesis `price-only-v1`
 
@@ -196,9 +210,10 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
 - **Market microstructure:** 1m OHLCV hides the intrabar path, queue position and the
   real spread. Results are only as good as the stated assumptions; spread and path
   sensitivity must be reported.
-- **Exchange filters and fees:** today's filters are applied historically. There is no
-  BNB fee discount, and buy fees are charged in quote currency rather than in the
-  asset received.
+- **Exchange filters and fees:** today's Binance filters are applied historically, also
+  in fee scenarios for other exchanges. Buy fees are charged in quote currency rather
+  than in the asset received. A 0% maker fee makes the fill model matter more: fills
+  still require the quote to cross the limit, but queue position is not modelled.
 - **Single market per run:** there is no rotation between markets and no
   multi-grid portfolio.
 - **Currency:** results are in quote-currency units (USDT). There is no EUR

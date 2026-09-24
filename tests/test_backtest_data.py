@@ -203,6 +203,7 @@ class FetchTests(unittest.TestCase):
         for bad in (
             source + 'surprise = "x"\n',
             source.replace('fee_rate = "0.001"', 'fee_rate = "0.5"'),
+            source.replace('fee_rate = "0.001"', 'fee_rate = "-0.001"'),
             source.replace('start = "2024-01"', 'start = "2023-11"'),
         ):
             with (
@@ -213,3 +214,10 @@ class FetchTests(unittest.TestCase):
             with self.assertRaises(DataError):
                 load_spec(Path(handle.name))
             Path(handle.name).unlink()
+
+    def test_spec_accepts_a_zero_maker_fee(self):
+        source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
+            handle.write(source.replace('fee_rate = "0.001"', 'fee_rate = "0"'))
+        self.addCleanup(Path(handle.name).unlink)
+        self.assertEqual(0, load_spec(Path(handle.name)).fee_rate)

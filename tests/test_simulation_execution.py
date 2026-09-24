@@ -1,7 +1,7 @@
 from dataclasses import replace
 from unittest import TestCase
 
-from crypto_grid_bot.simulation.execution import cancel, liquidate, match, place
+from crypto_grid_bot.simulation.execution import cancel, liquidate, match, place, reduce_unreserved
 from crypto_grid_bot.simulation.models import Account, D, LimitOrder, MarketRules, Quote
 
 
@@ -103,3 +103,52 @@ class ExecutionTests(TestCase):
         self.assertEqual(D("8"), self.account.inventory)
         self.assertEqual([], liquidate(self.account, quote("0.01", "0.02"), self.rules))
         self.assertEqual(D("8"), self.account.inventory)
+
+
+class MakerTakerFeeTests(TestCase):
+    """Resting fills pay the maker fee; marketable exits and liquidation marks pay taker."""
+
+    def rules(self, maker="0", taker="0.0009"):
+        return MarketRules(
+            "TESTUSDT",
+            D("0.01"),
+            D("1"),
+            D("5"),
+            D(maker),
+            D("0.0005"),
+            D("0.1"),
+            None if taker is None else D(taker),
+        )
+
+    def test_taker_defaults_to_maker_and_identity_is_unchanged(self):
+        rules = self.rules("0.001", None)
+        self.assertEqual(D("0.001"), rules.taker_fee)
+        self.assertNotIn("taker_fee_rate", rules.identity())
+        self.assertEqual(D("0.0009"), self.rules().identity()["taker_fee_rate"])
+
+    def test_invalid_taker_fee_is_rejected(self):
+        for value in ("-0.001", "0.1"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.rules(taker=value)
+
+    def test_resting_grid_fills_pay_maker_fee(self):
+        rules, account = self.rules(), Account.start(D("100"))
+        place(account, LimitOrder("a", "buy", D("10"), D("5"), D("5"), D("11")), rules)
+        self.assertEqual(D("50"), account.reserved_quote(rules))  # zero maker fee reserved
+        (buy,) = match(account, quote(), rules)
+        self.assertEqual(D("0"), buy.fee)
+        self.assertEqual(D("50"), account.cash)
+        (sell,) = match(account, replace(quote("11.2", "11.3"), event_id="q2"), rules)
+        self.assertEqual(("sell", D("0")), (sell.side, sell.fee))
+        self.assertEqual(D("105"), account.cash)
+        self.assertEqual(D("0"), account.fees)
+
+    def test_exit_pays_taker_fee_and_equity_marks_at_taker(self):
+        rules, account = self.rules(), Account.start(D("100"))
+        account.inventory = D("5")
+        mark = D("5") * D("9.8") * (1 - D("0.0005")) * (1 - D("0.0009"))
+        self.assertEqual(D("100") + mark, account.equity(quote(), rules))
+        (fill,) = reduce_unreserved(account, quote(), rules)
+        self.assertEqual(D("9.79"), fill.price)
+        self.assertEqual(D("9.79") * 5 * D("0.0009"), fill.fee)
+        self.assertEqual(fill.fee, account.fees)

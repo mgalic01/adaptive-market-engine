@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from pathlib import Path
@@ -45,6 +45,9 @@ _CONTEXT = ("base quality", "regime fit", "news multiplier")
 POINT_OFFSETS_S = (0, 9, 19, 29)
 QUARTER = Decimal("0.25")
 HOUR_MS = 3_600_000
+# Revolut X allows 1,000 order-placement requests per day. Cancellations are counted
+# too, which is conservative if the exchange meters them separately.
+DAILY_REQUEST_BUDGET = 1000
 
 
 @dataclass(frozen=True)
@@ -202,6 +205,33 @@ class Metrics:
     reasons: Counter[str] = field(default_factory=Counter)
     # (hour open ms, strategy total equity, buy-and-hold value) at each hour's first bar.
     hourly_equity: list[tuple[int, str, str]] = field(default_factory=list)
+    # Exchange order requests (placements + cancellations) per UTC day, e.g. "2024-01-05".
+    requests_by_day: Counter[str] = field(default_factory=Counter)
+
+
+def order_requests(
+    before: set[str], after: set[str], fills: Sequence[dict[str, Any]], remaining: set[str]
+) -> int:
+    """Placements plus cancellations one step would send to an exchange.
+
+    ``before``/``after`` are resting order IDs around the step; ``remaining`` holds
+    IDs of orders that fully filled in it. An order placed and filled within the step
+    (a marketable exit) still costs one placement. Fills themselves cost nothing.
+    """
+    filled = {str(fill["order_id"]) for fill in fills}
+    placed = (after - before) | (filled - before - after)
+    cancelled = before - after - remaining
+    return len(placed) + len(cancelled)
+
+
+def _completed(before: dict[str, Decimal], fills: Sequence[dict[str, Any]]) -> set[str]:
+    """Resting orders whose remaining quantity this step's fills exhausted."""
+    left = dict(before)
+    for fill in fills:
+        order_id = str(fill["order_id"])
+        if order_id in left:
+            left[order_id] -= Decimal(fill["quantity"])
+    return {order_id for order_id, quantity in left.items() if quantity <= ZERO}
 
 
 def _record_fills(metrics: Metrics, fills: Sequence[dict[str, Any]]) -> None:
@@ -221,16 +251,16 @@ def _record_fills(metrics: Metrics, fills: Sequence[dict[str, Any]]) -> None:
 
 
 class _BuyAndHold:
-    """Buy once at the first evaluated bar (ask + slippage + fee); conservative marks."""
+    """Buy once at the first evaluated bar (ask + slippage + taker fee); conservative marks."""
 
     def __init__(self, run: RunConfig, first: Kline) -> None:
         rules = run.rules
         ask = _round(first.open * (ONE + run.spread / 2), rules.tick_size, ROUND_CEILING)
         price = ask * (ONE + rules.slippage_rate)
         self.quantity = floor_step(
-            run.initial_quote / (price * (ONE + rules.fee_rate)), rules.quantity_step
+            run.initial_quote / (price * (ONE + rules.taker_fee)), rules.quantity_step
         )
-        self.cash = run.initial_quote - self.quantity * price * (ONE + rules.fee_rate)
+        self.cash = run.initial_quote - self.quantity * price * (ONE + rules.taker_fee)
         self.run = run
         self.peak = self.value = run.initial_quote
         self.max_drawdown = ZERO
@@ -238,7 +268,7 @@ class _BuyAndHold:
     def mark(self, kline: Kline) -> None:
         rules = self.run.rules
         bid = _round(kline.close * (ONE - self.run.spread / 2), rules.tick_size, ROUND_FLOOR)
-        exit_value = bid * (ONE - rules.slippage_rate) * (ONE - rules.fee_rate)
+        exit_value = bid * (ONE - rules.slippage_rate) * (ONE - rules.taker_fee)
         self.value = self.cash + self.quantity * exit_value
         self.peak = max(self.peak, self.value)
         self.max_drawdown = max(self.max_drawdown, (self.peak - self.value) / self.peak)
@@ -282,7 +312,12 @@ def replay(
             depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
             candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
             frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch)
+            before = {order.order_id: order.remaining for order in account.orders.values()}
             report = simulator.step(account, frame)
+            filled_out = _completed(before, report["fills"])
+            metrics.requests_by_day[quote.observed_at[:10]] += order_requests(
+                set(before), set(account.orders), report["fills"], filled_out
+            )
             metrics.frames += 1
             _record_fills(metrics, report["fills"])
             metrics.grids_opened += int(bool(report["opened"]))
@@ -436,6 +471,11 @@ def summarise(
         "buy_and_hold_max_drawdown_pct": float(metrics.hold_max_drawdown * 100),
         "fees": str(metrics.buy_fees + metrics.sell_fees),
         "turnover": str(metrics.buy_notional + metrics.sell_notional),
+        "order_requests": sum(metrics.requests_by_day.values()),
+        "max_order_requests_per_day": max(metrics.requests_by_day.values(), default=0),
+        "days_over_request_budget": sum(
+            1 for n in metrics.requests_by_day.values() if n > DAILY_REQUEST_BUDGET
+        ),
         "buys": metrics.buys,
         "sells": metrics.sells,
         "grids_opened": metrics.grids_opened,
@@ -458,7 +498,7 @@ def summarise(
         "decisions_by_bar": dict(metrics.decisions),
         "top_reasons_by_bar": dict(metrics.reasons.most_common(8)),
         "accounting_problems": problems,
-        "rules": {key: str(value) for key, value in asdict(run.rules).items()},
+        "rules": {key: str(value) for key, value in run.rules.identity().items()},
         "assumed_spread_pct": str(run.spread * 100),
         "hourly_equity": metrics.hourly_equity,
     }
@@ -470,6 +510,7 @@ def rules_for(
     spec_fee: Decimal,
     spec_slippage: Decimal,
     participation: Decimal,
+    taker_fee: Decimal | None = None,
 ) -> MarketRules:
     return MarketRules(
         symbol=symbol,
@@ -479,4 +520,5 @@ def rules_for(
         fee_rate=spec_fee,
         slippage_rate=spec_slippage,
         participation=participation,
+        taker_fee_rate=taker_fee,
     )

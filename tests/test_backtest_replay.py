@@ -14,6 +14,7 @@ from crypto_grid_bot.backtest.replay import (
     bar_quotes,
     candidate_for,
     check_accounting,
+    order_requests,
     replay,
     signals_for,
 )
@@ -424,3 +425,21 @@ class DegenerateHistoryTests(unittest.TestCase):
         self.assertEqual(len(minutes), metrics.bars)  # every bar still marked
         self.assertGreater(metrics.bars_with_inventory, 0)
         self.assertEqual([], check_accounting(run, metrics, account))
+
+
+class OrderRequestCountTests(unittest.TestCase):
+    """Placements plus cancellations, as counted against an exchange's daily budget."""
+
+    def test_counts_placements_cancellations_and_marketable_exits(self):
+        fill = {"order_id": "b1", "quantity": "1"}
+        # b1 filled out and spawned its child sell: one placement, no cancellation.
+        self.assertEqual(1, order_requests({"b1", "b2"}, {"b2", "b1/sell"}, [fill], {"b1"}))
+        # A partial fill that is then cancelled still costs one cancellation.
+        self.assertEqual(1, order_requests({"b1"}, set(), [fill], set()))
+        # A grid of three buys placed in one step.
+        self.assertEqual(3, order_requests(set(), {"a", "b", "c"}, [], set()))
+        # An exit order placed and filled in the same step costs one placement.
+        exit_fill = {"order_id": "exit/q", "quantity": "2"}
+        self.assertEqual(1, order_requests(set(), set(), [exit_fill], set()))
+        # Nothing changed, nothing sent.
+        self.assertEqual(0, order_requests({"a"}, {"a"}, [], set()))
