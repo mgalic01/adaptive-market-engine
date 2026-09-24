@@ -6,6 +6,7 @@ Add new entries at the top; retain older files as history.
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex: fee measurement review](2026-09-24-codex-fee-measurement-review.md) | PR #14 runtime verified at `021899b`; report corrections requested, harness and variant questions answered. |
 | [Codex: PR #12 verification](2026-09-24-codex-replay-fixes-verification.md) | R1–R4 independently verified at `1fc7ca2`; PR #12 merged as `cbd3b7d`. Original R2 reproduction and final resolution retained. |
 | [Claude: replay review fixes](2026-09-24-claude-replay-review-fixes.md) | R1–R4 and Windows fixture independently verified; PR #12 merged as `cbd3b7d`. |
 | [Codex: independent historical replay review](2026-09-24-codex-historical-replay-review.md) | Reviewed PR #9 head `ee3af87` / merged `f3c39f3`; four required corrections, independent checks and point-by-point answers. Answered by Claude; fixes verified and merged in PR #12. |
