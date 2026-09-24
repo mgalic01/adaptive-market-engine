@@ -19,6 +19,9 @@ breadth_basket = [
   "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
   "ADAUSDT", "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
 ]
+# Daily bars for daily signals (experiment spec v1, P3): at least 200 completed days
+# before the evaluation start; cross-checked against the 1h archive where both exist.
+daily_warmup_start = "2021-09"
 warmup_start = "2022-04"
 start = "2022-06"
 end = "2023-01"

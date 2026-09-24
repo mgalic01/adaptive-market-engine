@@ -17,6 +17,7 @@ from crypto_grid_bot.backtest.replay import (
     bar_quotes,
     candidate_for,
     check_accounting,
+    cross_check_daily,
     order_requests,
     replay,
     signals_for,
@@ -628,3 +629,45 @@ class MeasurementTests(unittest.TestCase):
         del orders["b"]
         self.assertEqual(["a/sell"], orders.completed)
         self.assertEqual(3, orders.requests)  # two placements, one cancellation
+
+
+class DailyCrossCheckTests(unittest.TestCase):
+    """Spec v1 P3: complete, unique daily bars that agree with their 24 hours."""
+
+    DAY = 86_400_000
+
+    def hours(self, days):
+        return hourly(24 * days)
+
+    def daily_from(self, hours):
+        from crypto_grid_bot.backtest.klines import aggregate
+
+        return list(aggregate(hours, self.DAY))
+
+    def check(self, daily, hours, days=3, warmup_days=3):
+        window = (START_MS, START_MS + days * self.DAY)
+        return cross_check_daily(daily, hours, window, window, START_MS + warmup_days * self.DAY)
+
+    def test_consistent_days_pass(self):
+        hours = self.hours(3)
+        result = self.check(self.daily_from(hours), hours)
+        self.assertEqual(3, result["daily_days_compared"])
+        for key in ("daily_days_mismatched", "daily_days_missing", "daily_days_duplicated"):
+            self.assertEqual(0, result[key])
+        self.assertEqual(0, result["daily_days_hours_incomplete"])
+        self.assertEqual(3, result["daily_warmup_days"])
+        self.assertEqual(1, result["daily_warmup_short"])  # fewer than 200 days
+
+    def test_volume_only_drift_is_a_mismatch(self):
+        hours = self.hours(3)
+        daily = self.daily_from(hours)
+        daily[1] = replace(daily[1], volume=daily[1].volume + D("1"))
+        self.assertEqual(1, self.check(daily, hours)["daily_days_mismatched"])
+
+    def test_missing_day_duplicate_day_and_missing_hour_are_counted(self):
+        hours = self.hours(3)
+        daily = self.daily_from(hours)
+        self.assertEqual(1, self.check(daily[:2], hours)["daily_days_missing"])
+        self.assertEqual(1, self.check([*daily, daily[2]], hours)["daily_days_duplicated"])
+        gap = hours[:30] + hours[31:]  # one hour of day 2 absent
+        self.assertEqual(1, self.check(daily, gap)["daily_days_hours_incomplete"])

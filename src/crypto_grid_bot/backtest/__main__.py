@@ -31,7 +31,9 @@ from crypto_grid_bot.backtest.replay import (
     PATH_MODES,
     RunConfig,
     check_accounting,
+    cross_check_daily,
     cross_check_hourly,
+    load_daily,
     load_hourly,
     load_minutes,
     replay,
@@ -97,7 +99,17 @@ def cross_check_job(spec_path: Path, data_dir: Path, symbol: str) -> dict[str, A
     hourly = load_hourly(data_dir, manifest, symbol)
     window = (month_bounds_ms(spec.start)[0], month_bounds_ms(spec.end)[1])
     minutes = load_minutes(data_dir, manifest, symbol)
-    return {"symbol": symbol, **cross_check_hourly(minutes, hourly, window)}
+    result = {"symbol": symbol, **cross_check_hourly(minutes, hourly, window)}
+    if spec.daily_warmup_start:
+        daily = load_daily(data_dir, manifest, symbol)
+        result |= cross_check_daily(
+            daily,
+            hourly,
+            (month_bounds_ms(spec.daily_warmup_start)[0], window[1]),
+            (month_bounds_ms(spec.warmup_start)[0], window[1]),
+            window[0],
+        )
+    return result
 
 
 # Any non-zero value means the minute data cannot be trusted for this window.
@@ -111,6 +123,16 @@ INTEGRITY_FIELDS = (
 )
 
 
+# Present only when the spec declares daily_warmup_start (spec v1 P3).
+DAILY_INTEGRITY_FIELDS = (
+    "daily_days_mismatched",
+    "daily_days_missing",
+    "daily_days_duplicated",
+    "daily_days_hours_incomplete",
+    "daily_warmup_short",
+)
+
+
 def integrity_failures(checks: list[dict[str, Any]]) -> list[str]:
     """Chronology/completeness failures. Genuine listing gaps are not exempted yet:
     a dataset spanning a listing or delisting must be declared explicitly first."""
@@ -121,6 +143,16 @@ def integrity_failures(checks: list[dict[str, Any]]) -> list[str]:
         if check[field]
     ]
     failures += [f"{c['symbol']}: no hours compared" for c in checks if not c["hours_compared"]]
+    for check in checks:
+        if "daily_days_compared" not in check:
+            continue
+        failures += [
+            f"{check['symbol']}: {field}={check[field]}"
+            for field in DAILY_INTEGRITY_FIELDS
+            if check[field]
+        ]
+        if not check["daily_days_compared"]:
+            failures.append(f"{check['symbol']}: no daily bars compared")
     return failures
 
 

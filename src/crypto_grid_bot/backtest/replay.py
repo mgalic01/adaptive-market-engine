@@ -483,6 +483,69 @@ def load_hourly(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[K
     return candles
 
 
+def load_daily(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kline]:
+    candles: list[Kline] = []
+    for entry in manifest["files"]:
+        if entry["symbol"] == symbol and entry["interval"] == "1d" and entry["status"] == "ok":
+            month = entry["month"]
+            rows, _ = read_archive(local_path(data_dir, symbol, "1d", month), symbol, "1d", month)
+            candles.extend(rows)
+    candles.sort(key=lambda k: k.open_ms)
+    return candles
+
+
+DAY_MS = 86_400_000
+MINIMUM_DAILY_WARMUP = 200
+
+
+def cross_check_daily(
+    daily: Sequence[Kline],
+    hourly: Sequence[Kline],
+    daily_window: tuple[int, int],
+    hourly_window: tuple[int, int],
+    evaluation_start_ms: int,
+) -> dict[str, int]:
+    """Spec v1 P3: daily bars must be complete, unique and agree with their hours.
+
+    ``daily_window`` is the [start, end) span the 1d archives cover; every UTC day in it
+    must appear exactly once. Over ``hourly_window`` each day must also equal the
+    aggregation of its 24 unique contiguous 1h bars (an OHLCV match alone cannot show
+    missing hours). The warm-up count is completed days before the evaluation start.
+    """
+    opens = [k.open_ms for k in daily]
+    present = set(opens)
+    days = range(daily_window[0], daily_window[1], DAY_MS)
+    by_day: dict[int, list[Kline]] = {}
+    for kline in hourly:
+        if hourly_window[0] <= kline.open_ms < hourly_window[1]:
+            by_day.setdefault(kline.open_ms // DAY_MS * DAY_MS, []).append(kline)
+    official = {k.open_ms: k for k in daily}
+    compared = mismatched = incomplete = 0
+    for day in range(hourly_window[0], hourly_window[1], DAY_MS):
+        hours = by_day.get(day, [])
+        if len({h.open_ms for h in hours}) != 24 or len(hours) != 24:
+            incomplete += 1
+            continue
+        reference = official.get(day)
+        if reference is None:
+            continue  # counted as missing below
+        compared += 1
+        (merged,) = aggregate(sorted(hours, key=lambda h: h.open_ms), DAY_MS)
+        ours = (merged.open, merged.high, merged.low, merged.close, merged.volume)
+        theirs = (reference.open, reference.high, reference.low, reference.close, reference.volume)
+        mismatched += int(ours != theirs)
+    warmup = sum(1 for o in opens if o + DAY_MS <= evaluation_start_ms)
+    return {
+        "daily_days_compared": compared,
+        "daily_days_mismatched": mismatched,
+        "daily_days_missing": sum(1 for d in days if d not in present),
+        "daily_days_duplicated": len(opens) - len(present),
+        "daily_days_hours_incomplete": incomplete,
+        "daily_warmup_days": warmup,
+        "daily_warmup_short": int(warmup < MINIMUM_DAILY_WARMUP),
+    }
+
+
 def load_minutes(data_dir: Path, manifest: dict[str, Any], symbol: str) -> Iterator[Kline]:
     months = sorted(
         e["month"]

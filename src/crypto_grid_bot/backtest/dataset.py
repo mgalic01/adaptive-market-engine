@@ -30,7 +30,7 @@ from crypto_grid_bot.market_data.parsing import DataError, parse_instrument, sym
 ARCHIVE_HOST = "data.binance.vision"
 MAX_ZIP_BYTES = 64 * 1024 * 1024
 MANIFEST_SCHEMA = 1
-_CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Z0-9]{2,24}-(?:1m|1h)-\d{4}-\d{2}\.zip)\n?")
+_CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Z0-9]{2,24}-(?:1m|1h|1d)-\d{4}-\d{2}\.zip)\n?")
 
 Fetcher = Callable[[str], bytes | None]
 InstrumentSource = Callable[[str], dict[str, str]]
@@ -51,6 +51,8 @@ class DatasetSpec:
     slippage_rate: Decimal
     participation: Decimal
     assumed_spread_pct: Decimal
+    # Optional daily history for daily-bar signals (spec v1 P3); None means no 1d files.
+    daily_warmup_start: str | None = None
 
     def months(self, first: str | None = None) -> list[str]:
         """Inclusive YYYY-MM list from ``first`` (default warm-up start) to end."""
@@ -71,6 +73,9 @@ class DatasetSpec:
         hourly = sorted({*self.traded, self.market_proxy, *self.breadth_basket})
         files = [(s, "1m", m) for s in self.traded for m in self.months(self.start)]
         files += [(s, "1h", m) for s in hourly for m in self.months()]
+        if self.daily_warmup_start:
+            daily = sorted({*self.traded, self.market_proxy})
+            files += [(s, "1d", m) for s in daily for m in self.months(self.daily_warmup_start)]
         return files
 
 
@@ -118,8 +123,15 @@ def load_spec(path: Path) -> DatasetSpec:
             raw = tomllib.load(source)
         except tomllib.TOMLDecodeError as exc:
             raise DataError(f"invalid dataset TOML: {exc}") from exc
+    daily_start = raw.pop("daily_warmup_start", None)
     if set(raw) != set(_SPEC_FIELDS):
         raise DataError("dataset spec contains missing or unknown fields")
+    if daily_start is not None:
+        if type(daily_start) is not str:
+            raise DataError("dataset field daily_warmup_start has an invalid type")
+        month_bounds_ms(daily_start)
+        if not daily_start <= raw["warmup_start"]:
+            raise DataError("daily_warmup_start must not be after warmup_start")
     for key, expected in _SPEC_FIELDS.items():
         if type(raw[key]) is not expected:
             raise DataError(f"dataset field {key} has an invalid type")
@@ -147,6 +159,7 @@ def load_spec(path: Path) -> DatasetSpec:
         slippage_rate=_positive(raw["slippage_rate"], "slippage_rate", below=Decimal("0.1")),
         participation=_positive(raw["participation"], "participation", below=Decimal("1.01")),
         assumed_spread_pct=_positive(raw["assumed_spread_pct"], "assumed_spread_pct"),
+        daily_warmup_start=daily_start,
     )
 
 

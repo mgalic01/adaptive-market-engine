@@ -218,6 +218,34 @@ class FetchTests(unittest.TestCase):
                 load_spec(Path(handle.name))
             Path(handle.name).unlink()
 
+    def test_daily_warmup_start_is_optional_and_validated(self):
+        source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
+        spec = load_spec(ROOT / "config/datasets/verify-2024h1.toml")
+        self.assertEqual("2023-05", spec.daily_warmup_start)
+        self.assertIn(("BTCUSDT", "1d", "2023-05"), spec.required())
+        without = "\n".join(
+            line for line in source.splitlines() if not line.startswith("daily_warmup_start")
+        )
+        for text, ok in (
+            (without, True),
+            (
+                source.replace('daily_warmup_start = "2023-05"', 'daily_warmup_start = "2024-02"'),
+                False,
+            ),
+            (source.replace('daily_warmup_start = "2023-05"', "daily_warmup_start = 5"), False),
+        ):
+            with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
+                handle.write(text)
+            self.addCleanup(Path(handle.name).unlink)
+            with self.subTest(ok=ok):
+                if ok:
+                    parsed = load_spec(Path(handle.name))
+                    self.assertIsNone(parsed.daily_warmup_start)
+                    self.assertFalse(any(i == "1d" for _, i, _ in parsed.required()))
+                else:
+                    with self.assertRaises(DataError):
+                        load_spec(Path(handle.name))
+
     def test_spec_accepts_a_zero_maker_fee(self):
         source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
