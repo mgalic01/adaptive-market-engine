@@ -31,6 +31,7 @@ These are measurement changes only. None changes a decision made by V0.
 | P3 | **Daily history:** dataset specs gain `daily_warmup_start`. Binance `1d` archives are fetched from that month, checksummed and cross-checked against the aggregated `1h` archive over the overlap. | Variants A and D need at least 200 completed daily bars before the evaluation starts. |
 | P4 | **Historical exchange filters for SOL:** use dated, sourced point-in-time tick and step sizes if available. If they cannot be sourced, SOL runs stay invalid for every variant (§5). No synthetic spread model in the primary comparison. | Codex §4.1 answer on PR #15. |
 | P5 | Carried nits: `--maker-fee`/`--taker-fee` use `is not None`, so an empty value is rejected; `replay()` asserts the order book is empty before wrapping it for request counting. | Automated reviews on PR #14. |
+| P6 | **P&L reconciliation:** realised P&L by sell type, plus unrealised P&L of the remaining inventory at the final mark, must equal the final total equity minus the initial capital. | Codex (PR #15): attribution must reconcile with the account. |
 
 ## 3. Variants
 
@@ -41,8 +42,9 @@ common to all:
 - A daily signal computed from the UTC day ending at 00:00 takes effect at the **first
   replay observation at or after 00:00:00 UTC** of the next day, never within the bar
   that produced it.
-- Emergency, hard-drawdown and daily-loss controls always act first. No variant can
-  delay or override them.
+- For every grid variant (V0, A, B, C, F), emergency, hard-drawdown and daily-loss
+  controls always act first. No variant can delay or override them. D is the one
+  exception: it is a benchmark without these controls (§3 D).
 
 ### V0: baseline (`price-only-v1`)
 - **Code:** the commit that merges the prerequisites; it is recorded in every
@@ -55,22 +57,46 @@ Inputs are the completed daily close `C`, `SMA50` and `SMA200` of the traded pai
 
 | State | Condition | Behaviour |
 | --- | --- | --- |
-| **Up** | `C > SMA200` | Grids allowed, as in V0. |
-| **Middle** | `C ≤ SMA200` and `C > SMA50` | No new grid. An existing grid keeps running: its sells, reentries within the grid and range exit behave as in V0. |
-| **Down** | `C ≤ SMA200` and `C ≤ SMA50` | No new grid. At the effective time: cancel resting buys, keep resting sells for one day, then liquidate the remaining inventory with a marketable exit (`trend_exit`). |
+The state is updated once per completed daily bar, from the previous state and `C`:
 
-- **Hysteresis:** entering Up from Middle or Down requires **two consecutive** completed
-  daily closes above SMA200. Leaving Up needs only one close at or below it.
+| State | Entered when | Behaviour |
+| --- | --- | --- |
+| **Up** | From Up: `C > SMA200`. From Recovering: a second consecutive `C > SMA200`. | Grids allowed, as in V0. |
+| **Recovering** | From Middle or Down: the first `C > SMA200`. | Same as Middle: no new grid, and an existing grid keeps running. A `trend_exit` already started completes (see below). |
+| **Middle** | From any state: `C ≤ SMA200` and `C > SMA50`. | No new grid. An existing grid keeps running: its sells, reentries within the grid and range exit behave as in V0. |
+| **Down** | From any state: `C ≤ SMA200` and `C ≤ SMA50`. | No new grid. At the effective time, resting buys are cancelled and resting sells are kept for one day (24 h). After that, the remaining inventory is liquidated with a marketable exit (`trend_exit`). |
+
+- **Hysteresis:** Up is reached only through Recovering, so it takes two consecutive
+  completed closes above SMA200. Leaving Up takes one close at or below SMA200.
+- **Started exits finish:** once Down has begun (buys cancelled, 24-hour sell window
+  open), the sequence completes even if a later close moves the state to Recovering or
+  Middle. A new grid needs the Up state.
+- **Initial state:** Middle, until the first classified daily bar.
 - **Priority:** emergency/hard/daily-loss controls, then `trend_exit`, then range exit.
 - **Warm-up:** at least 200 completed daily bars before the first evaluated minute.
   Missing daily data at a decision time counts as **Down**, so the variant fails closed.
 
 ### B: inventory cap
-- **Mechanism:** unreserved plus reserved inventory, marked at bid × (1 − slippage) ×
-  (1 − taker), may not exceed **40% of active equity**.
-- **Enforcement:** a buy (a new grid level or a reentry) is placed only if its full fill
-  would keep the account within the cap. Otherwise it is not placed, and a report reason
-  records the refusal.
+- **Definitions:**
+  - **Active equity** = cash − pending reserve + inventory × mark. The secured reserve is
+    already outside cash, so both reserves are excluded.
+  - **Mark** = bid × (1 − slippage) × (1 − taker).
+  - **Committed exposure** = (inventory + remaining quantity of **every** resting buy) ×
+    mark.
+- **Cap:** committed exposure including a new buy may not exceed **40% of active
+  equity**. Because resting buys are already counted, their later fills can never breach
+  the cap. At most, price moves can lift the inventory's value above it.
+- **Placement order:** a new grid places its buy levels from the highest price down. It
+  stops at the first level that would breach the cap, and the refused levels are
+  recorded in the report. Reentry buys pass the same check when they are created.
+- **Rounding and fills:**
+  - A capped quantity is floored to the lot step. If it is then below the minimum
+    notional, the buy is not placed.
+  - Partial fills do not change the check: the unfilled remainder is still counted.
+  - Sell targets are unchanged, and no reserve is ever spent.
+- **Price drift:** if rising prices push committed exposure above 40%, this is allowed.
+  There is no forced sale, but no new buy is placed until exposure is below the cap
+  again.
 - **What it does not do:** it never forces a sale and never delays a sell.
 - **Deferred:** quote skewing by inventory (Avellaneda–Stoikov style) is not in v1. It
   would need its own spec.
@@ -86,8 +112,9 @@ Inputs are the completed daily close `C`, `SMA50` and `SMA200` of the traded pai
 - **Execution:** entries and exits are marketable at the next observation, paying the
   taker fee plus slippage. Capital, marks, warm-up, timing and fees are identical to A.
 - **Missing or undefined signal:** cash.
-- **Risk controls:** none, deliberately, as a pure benchmark. Its drawdown is reported
-  as is.
+- **Risk controls:** D is **exempt** from the common rule in §3. It has no daily-loss
+  pause, soft or hard drawdown halt or emergency exit; it only follows its signal. Its
+  return and drawdown are reported as they are, as a pure benchmark.
 
 ### E: volume-confirmed exit (deferred)
 Not part of v1. Extending the 6-hour exit timer increases loss exposure, so it needs a
@@ -151,9 +178,19 @@ following hold across its included runs, that is every pair, window and path:
 4. D is a benchmark and **cannot be selected**. It is reported next to the winner.
 
 **No winner:** if no variant passes, v1 ends with "no winner". Nothing runs on the
-untouched window, and the report says so.
+reserved window, and the report says so.
 
-## 7. Untouched evaluation (run exactly once)
+## 7. Reserved evaluation (run exactly once)
+
+**What "untouched" means here:** no replay has been run on this window. It is **not** an
+unseen regime:
+- While researching the Bitcoin cycle with the owner (2026-09-24), Claude read reports
+  of the peak on 2025-10-06, the roughly 50% decline and the June 2026 low. That
+  knowledge motivated variant A.
+- The window is therefore a prospectively reserved replay window, and its result is
+  weaker evidence than a truly unseen period.
+- Failures on it are recorded as they are. No variant is retuned and rerun on the same
+  window.
 
 **Owner gate:** this run starts only after the owner explicitly says go in the
 conversation. That go is recorded in the report with its date. Finishing §2–§6 does not
@@ -173,7 +210,32 @@ start it automatically. Before asking, Claude reports:
   A pass does not authorise live trading; it only justifies the next step, a proposal
   for paper trading on live Revolut X prices, which needs its own review.
 
-## 8. Not decided in v1
+## 8. Scope of the evidence
+
+- The simulation replays **Binance USDT** market data with **Revolut X fees**. It is a
+  cost-sensitivity experiment, not a backtest of Revolut X EUR execution: Revolut X
+  prices, spreads, queue positions, depth and post-only behaviour are not simulated.
+- A pass justifies at most a proposal for paper trading against live Revolut X prices.
+
+## 9. Sources
+
+Venue terms and research claims that motivated this spec. They were checked on
+2026-09-24 and may change.
+- Revolut X fees: <https://www.revolut.com/legal/crypto-exchange-fees/>
+- Revolut X API, including post-only orders and rate limits:
+  <https://developer.revolut.com/docs/x-api/revolut-x-crypto-exchange-rest-api>,
+  <https://developer.revolut.com/docs/x-api/place-order>
+- Inventory-aware market making (Avellaneda–Stoikov):
+  <https://hummingbot.org/blog/guide-to-the-avellaneda--stoikov-strategy/>
+- Short-horizon crypto mean reversion (about 1.3 bp gross per trade):
+  <https://arxiv.org/abs/2608.21888>
+- Trend following in crypto: <https://arxiv.org/pdf/2009.12155>,
+  <https://research.grayscale.com/reports/the-trend-is-your-friend-managing-bitcoins-volatility-with-momentum-signals>
+- Bitcoin four-year cycle, 2025 peak and 2026 status:
+  <https://www.fidelity.com/learning-center/trading-investing/four-year-bitcoin-and-crypto-cycles>,
+  <https://coinmarketcap.com/academy/article/%20bitcoin-4-year-cycle-october-2026>
+
+## 10. Not decided in v1
 
 These stay open; each needs its own specification:
 - the policy after a large loss (cool-off or permanent stop);

@@ -46,3 +46,21 @@ Review the draft, especially the timing rules, A's states, F's cancellation beha
 C3 strictness and the selection rule. Reply on the PR; anything substantial goes in a
 new `codex-<topic>` file. After your review and the owner's confirmation, I will freeze
 v1 and implement P1–P5 first, as a separate PR.
+
+## Update after review round 1 (automated Codex findings on `a87984a`, plus the PR #15 points)
+
+- **D and the risk rule:** D is now explicitly exempt from the common risk-control rule.
+  It is a pure benchmark.
+- **A's hysteresis:** a **Recovering** state now covers the day after the first close
+  above SMA200. It behaves like Middle. A started Down sequence completes, and the
+  initial state is Middle.
+- **B's cap:** committed exposure counts every resting buy, so later fills cannot
+  breach the cap. Levels are placed from the highest price down until the cap is
+  reached. The spec now defines active equity (both reserves excluded), lot rounding,
+  partial fills and price drift, and states that no reserve is spent.
+- **P6:** a P&L reconciliation (realised plus unrealised equals the change in total
+  equity).
+- **§7:** the evaluation window is renamed "reserved" and discloses the prior
+  inspection: the cycle research on 2025–26 motivated variant A.
+- **§8 and §9:** a scope note (Binance USDT data with Revolut X fees is a cost
+  sensitivity, not a Revolut X execution backtest) and primary sources.
