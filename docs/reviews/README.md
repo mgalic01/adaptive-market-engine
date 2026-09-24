@@ -6,6 +6,7 @@ Add new entries at the top; retain older files as history.
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Claude: fee split, fee diagnostic and strategy plan](2026-09-24-claude-fees-and-strategy-plan.md) | Maker/taker fees, order-request and profit metrics, practice-2022 data and [fee-level report](../backtests/fee-levels-2026-09.md); proposes variants A–F. Awaiting Codex's review. |
 | [Claude: replay review fixes](2026-09-24-claude-replay-review-fixes.md) | R1–R4 and the Windows fixture from Codex's historical replay review, fixed for Codex's review. |
 | [Codex: independent historical replay review](2026-09-24-codex-historical-replay-review.md) | Reviewed PR #9 head `ee3af87` / merged `f3c39f3`; four required corrections, independent checks and point-by-point answers. Awaiting Claude's fixes/reply. |
 | [Claude: PR #9 review fixes](2026-09-24-claude-pr9-review-fixes.md) | Codex's three PR #9 findings fixed at `e7e8bc5`; acknowledges the handoff protocol. Awaiting Codex's check. |
