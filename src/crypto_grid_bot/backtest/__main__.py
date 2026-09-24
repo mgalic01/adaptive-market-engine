@@ -24,6 +24,7 @@ from crypto_grid_bot.backtest.dataset import (
     write_manifest,
 )
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, SeriesFeatures
+from crypto_grid_bot.backtest.klines import month_bounds_ms
 from crypto_grid_bot.backtest.replay import (
     PATH_MODES,
     RunConfig,
@@ -73,7 +74,11 @@ def run_job(
         levels=config.maximum_levels,
         minimum_cost_multiple=config.minimum_grid_cost_multiple,
         round_trip_cost=float(2 * (spec.fee_rate + spec.slippage_rate) + spread),
-        order_notional=float(spec.initial_quote * Decimal("0.8") / config.maximum_levels),
+        # _open_grid spreads 80% of cash over the buy pairs below fair value: about
+        # half the levels when price sits at fair value (fewer pairs = larger orders).
+        order_notional=float(
+            spec.initial_quote * Decimal("0.8") / max(1, config.maximum_levels // 2)
+        ),
     )
     run = RunConfig(symbol, path_mode, gated, rules, spec.initial_quote, spread)
     metrics, account = replay(config, run, load_minutes(data_dir, manifest, symbol), features)
@@ -81,12 +86,11 @@ def run_job(
 
 
 def cross_check_job(spec_path: Path, data_dir: Path, symbol: str) -> dict[str, Any]:
-    manifest = load_manifest(manifest_path(spec_path))
+    spec, manifest = load_spec(spec_path), load_manifest(manifest_path(spec_path))
     hourly = load_hourly(data_dir, manifest, symbol)
-    return {
-        "symbol": symbol,
-        **cross_check_hourly(load_minutes(data_dir, manifest, symbol), hourly),
-    }
+    window = (month_bounds_ms(spec.start)[0], month_bounds_ms(spec.end)[1])
+    minutes = load_minutes(data_dir, manifest, symbol)
+    return {"symbol": symbol, **cross_check_hourly(minutes, hourly, window)}
 
 
 def _table(results: list[dict[str, Any]]) -> str:

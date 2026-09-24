@@ -321,11 +321,20 @@ def load_minutes(data_dir: Path, manifest: dict[str, Any], symbol: str) -> Itera
         yield from rows
 
 
-def cross_check_hourly(minutes: Iterable[Kline], hourly: Sequence[Kline]) -> dict[str, int]:
-    """Compare 1m bars aggregated to hours against Binance's own 1h archive."""
+def cross_check_hourly(
+    minutes: Iterable[Kline], hourly: Sequence[Kline], window: tuple[int, int]
+) -> dict[str, int]:
+    """Compare 1m bars aggregated to hours against Binance's own 1h archive.
+
+    ``window`` is the [start, end) span the minute archives cover. Official hours in
+    it with no minute data at all are counted too, so a wholly missing hour cannot
+    pass the check silently.
+    """
     official = {k.open_ms: k for k in hourly}
     compared = mismatched = missing = 0
+    seen: set[int] = set()
     for candle in aggregate(minutes):
+        seen.add(candle.open_ms)
         reference = official.get(candle.open_ms)
         if reference is None:
             missing += 1
@@ -334,7 +343,13 @@ def cross_check_hourly(minutes: Iterable[Kline], hourly: Sequence[Kline]) -> dic
         ours = (candle.open, candle.high, candle.low, candle.close, candle.volume)
         theirs = (reference.open, reference.high, reference.low, reference.close, reference.volume)
         mismatched += int(ours != theirs)
-    return {"hours_compared": compared, "hours_mismatched": mismatched, "hours_missing": missing}
+    absent = sum(1 for o in official if window[0] <= o < window[1] and o not in seen)
+    return {
+        "hours_compared": compared,
+        "hours_mismatched": mismatched,
+        "hours_missing": missing,
+        "hours_absent_from_minutes": absent,
+    }
 
 
 def _utc(ms: int) -> str | None:

@@ -222,7 +222,10 @@ class PriceStream:
                     self.book.clear()
                     await connection.close()
                 if rotated:
+                    # A planned rotation ends a healthy connection: forget earlier failures.
                     self.stats.rotations += 1
+                    if self._monotonic() - opened >= STABLE_SECONDS:
+                        failures = 0
                     continue
                 if self._monotonic() >= deadline:
                     break

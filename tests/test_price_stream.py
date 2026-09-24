@@ -227,6 +227,22 @@ class StreamTests(unittest.TestCase):
         self.assertEqual([], clock.sleeps)  # rotation reconnects without backoff
         self.assertTrue(connector.connections[0].closed)
 
+    def test_stable_planned_rotation_resets_backoff(self):
+        clock = Clock()
+        refused = OSError("refused")
+        scripts = [refused, refused, refused, [message(i) for i in range(1, 6)], refused]
+        connector = Connector(clock, scripts)
+        stream = make_stream(clock, connector)
+        with (
+            patch.object(stream_module, "CONNECTION_LIFETIME_SECONDS", 3),
+            patch.object(stream_module, "STABLE_SECONDS", 2),
+            patch.object(stream_module, "SILENCE_SECONDS", 0.01),
+        ):
+            stats = self.run_stream(stream, 20)
+        self.assertEqual(1, stats.rotations)
+        self.assertEqual([1, 2, 4], clock.sleeps[:3])  # ladder from the early failures
+        self.assertEqual(1, clock.sleeps[3])  # after the stable rotation: back to 1 s
+
     def test_no_order_or_account_endpoint_is_reachable(self):
         source = Path(stream_module.__file__).read_text(encoding="utf-8")
         for forbidden in ("api.binance.com", "listenKey", "signature", "X-MBX-APIKEY", "/order"):
