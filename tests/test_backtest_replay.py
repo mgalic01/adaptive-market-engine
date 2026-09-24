@@ -182,6 +182,36 @@ class ReplayTests(unittest.TestCase):
                 self.assertEqual(600, metrics.bars)
                 self.assertGreater(metrics.hold_final, 0)
 
+    def test_rejected_frames_do_not_inflate_the_range_exit_count(self):
+        from unittest.mock import patch
+
+        candles = hourly(WARMUP)
+        engine = engine_for(candles)
+        t = START_MS + WARMUP * HOUR_MS
+        fair = float(engine.at(t).fair_value)
+        minutes = [
+            candle(t + i * 60_000, fair, fair * 1.003, fair * 0.997, fair) for i in range(60)
+        ]
+        # Then eight hours far below the grid: one range exit, with every other frame
+        # rejected as a transient (its report carries no range_exit flag).
+        low = fair * 0.8
+        minutes += [
+            candle(t + i * 60_000, low, low * 1.001, low * 0.999, low) for i in range(60, 540)
+        ]
+        real_step, calls = PaperSimulator.step, []
+
+        def flaky(simulator, account, frame):
+            calls.append(1)
+            if len(calls) > 600 and len(calls) % 2:
+                return {"fills": [], "opened": [], "decision": "pause", "reason": "rejected"}
+            return real_step(simulator, account, frame)
+
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        with patch.object(PaperSimulator, "step", flaky):
+            metrics, account = replay(self.config, run, minutes, engine)
+        self.assertTrue(account.range_exit)
+        self.assertEqual(1, metrics.range_exits)
+
     def test_gated_replay_marks_news_absent_and_can_stay_in_cash(self):
         engine = engine_for(hourly(WARMUP))
         t = START_MS + WARMUP * HOUR_MS

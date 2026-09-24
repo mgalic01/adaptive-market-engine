@@ -336,7 +336,8 @@ def replay(
             metrics.frames += 1
             _record_fills(metrics, report["fills"])
             metrics.grids_opened += int(bool(report["opened"]))
-            exiting = bool(report.get("range_exit"))
+            # From the account, not the report: a rejected frame's report omits the flag.
+            exiting = account.range_exit
             metrics.range_exits += int(exiting and not was_range_exit)
             was_range_exit = exiting
             metrics.transient_pauses += int("regime" not in report)
