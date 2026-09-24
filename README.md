@@ -81,8 +81,26 @@ This finite, read-only collector needs no API key and reports observations only.
 It does not place paper/live orders or interpret missing news as safe. A real
 ADAUSDC capture succeeded on 2026-09-24 (250 closed hourly candles plus book and
 filters, all validations passing). The collector honours a standard `HTTPS_PROXY`
-(plain `http://` CONNECT proxy) and `NO_PROXY`. See [Market data](docs/MARKET_DATA.md) for validation, repeat collection,
-source contracts and remaining Milestone 3 gates.
+(plain `http://` CONNECT proxy) and `NO_PROXY`. See [Market data](docs/MARKET_DATA.md)
+for validation, repeat collection, source contracts and remaining Milestone 3 gates.
+
+## Stream live best prices
+
+```bash
+PYTHONPATH=src python -m crypto_grid_bot.app \
+  --config config/default.toml --stream-prices \
+  --symbol ADAUSDC --symbol BTCUSDC --seconds 60
+```
+
+Subscribes to Binance's public, market-data-only `bookTicker` stream on
+`data-stream.binance.vision` for a finite time (1-3600 s, up to 10 symbols) and
+prints a JSON summary. It needs no API key and cannot reach an account or order
+endpoint. It reconnects with capped, jittered backoff, allows at most 10
+connection attempts per 5 minutes, rotates before Binance's 24-hour connection
+limit, drops a connection that is silent for 30 s or sends invalid or out-of-order
+data, clears all prices on any disconnect, and stops without retrying on HTTP 418/429.
+A 15 s live run on 2026-09-24 received 591 validated updates for two symbols.
+The stream is not yet wired into the paper simulator.
 
 ## Run the offline paper demo
 
@@ -107,7 +125,8 @@ recovery behaviour and remaining limits.
 
 ## Run the self-check
 
-Requires Python 3.12 or newer and no runtime dependencies.
+Requires Python 3.12 or newer and one pinned runtime dependency (`websockets`,
+used only by the read-only price stream): `python -m pip install -e .`
 
 ```bash
 PYTHONPATH=src python -m crypto_grid_bot.app \

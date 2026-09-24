@@ -103,6 +103,31 @@ Storage has no retention/compaction policy yet. Source revisions and clock/book
 regressions require investigation; the collector does not silently rewrite history.
 Schema version changes require an explicit migration rather than implicit reuse.
 
+## Live best-price stream
+
+`market_data/stream.py` reads the combined public stream
+`wss://data-stream.binance.vision/stream?streams=<symbol>@bookTicker/...` (fixed
+host, 1-10 validated symbols, one connection). Each message must name an expected
+symbol and stream, carry a non-negative integer update ID and positive bounded
+decimal prices/sizes, and have bid strictly below ask. A regressing update ID drops
+the connection; an exact repeat is ignored.
+
+Spot `bookTicker` messages carry no exchange event time. Freshness is therefore
+measured from local receipt (`PriceBook.latest` refuses prices older than 5 s by
+default), and 30 s without any message is treated as a dead connection. Every
+disconnect clears all prices, so readers get fresh data or an error, never a stale
+fallback.
+
+Connection policy: 10 s open timeout, 20 s ping/pong, 16 KiB message limit,
+capped jittered backoff (1 s up to 300 s, reset after a connection stays up 60 s),
+at most 10 attempts per 5 minutes (Binance allows 300 per IP), planned rotation
+after 23 h (Binance closes connections at 24 h), and no retry after HTTP 418/429 on
+the handshake. The client uses `HTTPS_PROXY`/`NO_PROXY` and the system trust store.
+
+Not yet done: converting stream prices into simulator frames (signals, fair value
+and ATR still come from hourly candles), persisting the stream, and depth or trade
+streams for fill-liquidity estimates.
+
 ## Validation status and next gate
 
 Offline tests cover the public transport boundary, malformed and incomplete data,
