@@ -43,8 +43,8 @@ Continue broader infrastructure only if the results justify it.
 
 Milestone 3a adds a GET-only public-data collector, validated closed hourly candles,
 book/filter snapshots, descriptive indicators, and atomic observation storage.
-No execution occurs in capture mode. Fixture tests pass; a successful live capture
-is still unverified because the workspace connectivity probe timed out. See
+No execution occurs in capture mode. Fixture tests pass, and a real ADAUSDC
+capture succeeded on 2026-09-24. See
 [MARKET_DATA.md](docs/MARKET_DATA.md). The following full-stage gates remain:
 
 - Refresh CoinMarketCap top 100 plus NIGHT using stable identifiers, then map

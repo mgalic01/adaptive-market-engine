@@ -107,12 +107,15 @@ Schema version changes require an explicit migration rather than implicit reuse.
 
 Offline tests cover the public transport boundary, malformed and incomplete data,
 known indicator values, hour rollover, bans/cooldowns, restart, exact retries,
-source revisions, injected write failures and paper-database isolation. The live
-endpoint connectivity probe from the development workspace timed out. **A successful
-real Binance capture has not been demonstrated.** Tests use explicitly synthetic
+source revisions, injected write failures and paper-database isolation. A real
+ADAUSDC capture through the development workspace's HTTPS proxy succeeded on
+2026-09-24: 250 closed hourly candles, book and filters passed every validation.
+Earlier probes failed only because the workspace blocked the host and the client
+ignored `HTTPS_PROXY`; it now tunnels through a plain `http://` CONNECT proxy while
+still verifying TLS for the fixed data host. Tests use explicitly synthetic
 API-format fixtures and establish software behaviour, not market performance.
 
-Remaining work: live capture verification from a permitted host; CoinMarketCap
+Remaining work: CoinMarketCap
 stable-ID universe ingestion/mapping; broad-market measurements and confirmed
 regimes; news freshness/vetoes; account-specific fees/eligibility; incremental
 trade/depth streams with reconnect gap handling; conservative paper execution

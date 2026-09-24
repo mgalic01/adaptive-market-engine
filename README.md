@@ -78,9 +78,10 @@ PYTHONPATH=src python -m crypto_grid_bot.app \
 ```
 
 This finite, read-only collector needs no API key and reports observations only.
-It does not place paper/live orders or interpret missing news as safe. The live
-connectivity probe from this workspace timed out; successful real capture remains
-unverified. See [Market data](docs/MARKET_DATA.md) for validation, repeat collection,
+It does not place paper/live orders or interpret missing news as safe. A real
+ADAUSDC capture succeeded on 2026-09-24 (250 closed hourly candles plus book and
+filters, all validations passing). The collector honours a standard `HTTPS_PROXY`
+(plain `http://` CONNECT proxy) and `NO_PROXY`. See [Market data](docs/MARKET_DATA.md) for validation, repeat collection,
 source contracts and remaining Milestone 3 gates.
 
 ## Run the offline paper demo

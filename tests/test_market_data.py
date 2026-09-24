@@ -14,6 +14,7 @@ from crypto_grid_bot.market_data.client import (
     FeedError,
     PublicClient,
     Response,
+    https_proxy,
     public_get,
 )
 from crypto_grid_bot.market_data.collector import Collector, encode
@@ -209,6 +210,12 @@ class ParsingTests(unittest.TestCase):
 
 
 class ClientTests(unittest.TestCase):
+    def setUp(self):
+        # Transport tests must not depend on the developer's or CI's proxy settings.
+        env = patch.dict("os.environ", {}, clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_transport_is_fixed_host_get_only_and_rejects_signed_parameters(self):
         with patch("crypto_grid_bot.market_data.client.http.client.HTTPSConnection") as factory:
             response = factory.return_value.getresponse.return_value
@@ -257,6 +264,35 @@ class ClientTests(unittest.TestCase):
             with self.assertRaises(FeedError):
                 client.get("/api/v3/time", {})
             self.assertEqual(transport.call_count, 1)
+
+    def test_https_proxy_tunnels_to_the_fixed_host_only(self):
+        with (
+            patch.dict("os.environ", {"HTTPS_PROXY": "http://127.0.0.1:3128"}),
+            patch("crypto_grid_bot.market_data.client.http.client.HTTPSConnection") as factory,
+        ):
+            response = factory.return_value.getresponse.return_value
+            response.status = 200
+            response.read.return_value = b"{}"
+            response.getheaders.return_value = []
+            public_get("/api/v3/time", {})
+            factory.assert_called_once_with("127.0.0.1", 3128, timeout=10)
+            factory.return_value.set_tunnel.assert_called_once_with(HOST, 443)
+            factory.return_value.request.assert_called_once_with(
+                "GET", "/api/v3/time", headers={"Accept": "application/json"}
+            )
+
+    def test_https_proxy_honours_no_proxy_and_rejects_unsafe_forms(self):
+        with patch.dict("os.environ", {"HTTPS_PROXY": "http://proxy:8080", "NO_PROXY": HOST}):
+            self.assertIsNone(https_proxy())
+        with patch.dict("os.environ", {"HTTPS_PROXY": "http://proxy:8080"}):
+            self.assertEqual(("proxy", 8080), https_proxy())
+        for raw in ("socks5://proxy:1080", "http://user:secret@proxy:8080", "http://proxy:99999"):
+            with (
+                self.subTest(proxy=raw),
+                patch.dict("os.environ", {"HTTPS_PROXY": raw}),
+                self.assertRaises(FeedError),
+            ):
+                https_proxy()
 
     def test_socket_failure_closes_connection(self):
         with patch("crypto_grid_bot.market_data.client.http.client.HTTPSConnection") as factory:
