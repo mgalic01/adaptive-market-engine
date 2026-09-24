@@ -56,19 +56,39 @@ Then compare every `results.json` pair (same dataset, same fees) with this scrip
 
 ```python
 import json, sys
-FIELDS = ["final_total_equity", "return_pct", "buys", "sells", "fees", "turnover",
-          "grids_opened", "range_exits", "reserve_pending", "reserve_secured",
-          "final_inventory", "halted_at", "halt_reason", "accounting_problems",
-          "buy_and_hold_return_pct", "realised_grid_sell_pnl", "realised_exit_pnl",
-          "exit_sells", "order_requests", "max_order_requests_per_day", "transient_pauses"]
+
+FIELDS = [
+    "final_total_equity",
+    "return_pct",
+    "buys",
+    "sells",
+    "fees",
+    "turnover",
+    "grids_opened",
+    "range_exits",
+    "reserve_pending",
+    "reserve_secured",
+    "final_inventory",
+    "halted_at",
+    "halt_reason",
+    "accounting_problems",
+    "buy_and_hold_return_pct",
+    "realised_grid_sell_pnl",
+    "realised_exit_pnl",
+    "exit_sells",
+    "order_requests",
+    "max_order_requests_per_day",
+    "transient_pauses",
+]
 base, cand = (json.load(open(p)) for p in sys.argv[1:3])
 key = lambda r: (r["symbol"], r["path_mode"], r["strategy"])
 b = {key(r): r for r in base["results"]}
 c = {key(r): r for r in cand["results"]}
-assert b.keys() == c.keys(), (b.keys() ^ c.keys())
+assert b.keys() == c.keys(), b.keys() ^ c.keys()
 diffs = [(k, f, b[k][f], c[k][f]) for k in sorted(b) for f in FIELDS if b[k][f] != c[k][f]]
 print(f"{len(b)} runs, {len(diffs)} differing fields")
-for d in diffs: print(d)
+for d in diffs:
+    print(d)
 ```
 
 ## Validity checks
