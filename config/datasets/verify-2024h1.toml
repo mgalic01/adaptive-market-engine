@@ -1,0 +1,23 @@
+# Verification dataset for the historical replay harness (first deliverable).
+# Development window only: used to prove chronology, accounting and fill handling.
+# It is NOT a performance test window, and BTC/ADA are today's survivors.
+name = "verify-2024h1"
+purpose = "chronology/accounting verification on two pairs; not a performance claim"
+traded = ["ADAUSDT", "BTCUSDT"]
+# Broad-market regime inputs come from the proxy; breadth from the basket.
+market_proxy = "BTCUSDT"
+breadth_basket = [
+  "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+  "ADAUSDT", "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
+]
+# Hourly warm-up months precede the evaluation window [start, end] (inclusive).
+warmup_start = "2023-11"
+start = "2024-01"
+end = "2024-06"
+initial_quote = "100"
+# Binance spot base fee without BNB discount; simulator slippage and volume share.
+fee_rate = "0.001"
+slippage_rate = "0.0005"
+participation = "0.10"
+# Klines carry no bid/ask; this spread (percent) is an explicit assumption.
+assumed_spread_pct = "0.05"

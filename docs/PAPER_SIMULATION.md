@@ -1,4 +1,4 @@
-# Paper simulation contract (schema 3)
+# Paper simulation contract (schema 4)
 
 ## Scope and order lifecycle
 
@@ -88,6 +88,12 @@ could postpone the exit indefinitely.) After six hours of accumulated time
 (`SimulationPolicy.outside_range_seconds`), orders are cancelled and inventory
 exits to cash with bounded liquidity.
 
+`maximum_frame_gap_seconds` is a cadence limit (how far apart observations may be),
+separate from `maximum_data_age_seconds` (how old one observation may be). Schema 3
+used the 30 s freshness limit for both, so at the collector's 60 s minimum polling
+interval pauses never cleared and the out-of-range exit never fired. The gap limit
+must exceed the polling interval used in a run.
+
 After the exit the account waits in cash. It leaves that state once flat, risk
 limits pass and the candidate is eligible, and either price is back inside the old
 band or, with `recenter_after_exit=True` (default), `recenter_cooldown_seconds`
@@ -145,11 +151,11 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Schema 1 and 2 databases are rejected by version 0.5; no implicit
+initial cash. **Schema 1-3 databases are rejected by version 0.6; no implicit
 migration or reset occurs.** Preserve old experiments with the old code, or start a
-clearly separate schema 3 experiment. Never edit identity/state to bypass risk history.
-Version 0.5.1 adds the frame-gap policy to saved identity, so it also rejects 0.5.0
-experiments without that setting. Use a new database for the new policy; retain
+clearly separate schema 4 experiment. Never edit identity/state to bypass risk history.
+The frame-gap policy (added in 0.5.1/0.6) is part of saved identity, so experiments
+without that setting are rejected. Use a new database for the new policy; retain
 the original database and matching code for reviewing the old experiment.
 
 Broad-market input quality has a separate eligibility veto. Low-quality inputs
@@ -165,6 +171,8 @@ isolation, invalid-frame pauses, recovery confirmation and replay, out-of-range
 exit/timer gaps, audited resume, persistent transfer IDs and guarded settlement.
 Version 0.5 adds a flapping-feed exit regression (it never exits on schema 2 code),
 gap/inside-reset accounting and recentering with and without the cooldown.
+Version 0.6 adds 60 s-cadence regressions for pause recovery, out-of-range exit and
+recentering; both fail on schema 3 code.
 Version 0.5.1 covers one-minute recovery, six-hour exits and 24-hour recentering,
 frame-gap boundaries, persisted-policy compatibility, low-score quality vetoes,
 and invalid regime configuration endpoints.

@@ -98,6 +98,8 @@ class LimitOrder:
     remaining: Decimal
     target: Decimal | None = None
     reentry: Decimal | None = None
+    # Replay bar label: an order cannot fill during the bar (epoch) that created it.
+    epoch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +233,8 @@ class Account:
                 raise ValueError("order violates market precision")
             if order.remaining % rules.quantity_step:
                 raise ValueError("remaining quantity violates precision")
+            if order.epoch is not None and (type(order.epoch) is not str or not order.epoch):
+                raise ValueError("invalid order epoch")
             if order.target is not None:
                 nonnegative(order.target)
                 if (
@@ -251,7 +255,13 @@ class Account:
             raise ValueError("account is oversubscribed or reserve is being spent")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        for order in data["orders"].values():
+            if order["epoch"] is None:
+                # Replay-only field: omitted when unused so saved paper state keeps the
+                # schema 4 layout that earlier versions read.
+                del order["epoch"]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Account:

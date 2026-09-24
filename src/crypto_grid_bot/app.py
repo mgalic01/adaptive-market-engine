@@ -7,7 +7,10 @@ from pathlib import Path
 
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import MarketSignals
+from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.market_data.command import run_capture
+from crypto_grid_bot.market_data.parsing import DataError
+from crypto_grid_bot.market_data.stream import run_stream
 from crypto_grid_bot.simulation.control import resume_paper
 from crypto_grid_bot.simulation.demo import run_demo
 from crypto_grid_bot.simulation.store import encode
@@ -25,7 +28,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--event-id")
     parser.add_argument("--reason")
     mode.add_argument("--capture-market", action="store_true")
-    parser.add_argument("--symbol", help="explicit Binance spot symbol, e.g. ADAUSDC")
+    mode.add_argument("--stream-prices", action="store_true")
+    parser.add_argument(
+        "--symbol",
+        action="append",
+        help="explicit Binance spot symbol, e.g. ADAUSDC; repeat for --stream-prices",
+    )
+    parser.add_argument("--seconds", type=int, default=60, help="--stream-prices duration")
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--database", type=Path)
@@ -53,9 +62,18 @@ def main() -> int:
         )
         return 0
     if args.capture_market:
-        if args.database is None or args.symbol is None:
-            raise SystemExit("--capture-market requires --database PATH and --symbol SYMBOL")
-        return run_capture(args.database, args.symbol, args.samples, args.poll_seconds)
+        if args.database is None or not args.symbol or len(args.symbol) != 1:
+            raise SystemExit("--capture-market requires --database PATH and one --symbol SYMBOL")
+        return run_capture(args.database, args.symbol[0], args.samples, args.poll_seconds)
+    if args.stream_prices:
+        if not args.symbol:
+            raise SystemExit("--stream-prices requires at least one --symbol SYMBOL")
+        try:
+            print(encode(run_stream(args.symbol, args.seconds)))
+        except (DataError, FeedError) as exc:
+            print(encode({"status": "stopped", "reason": str(exc), "orders_authorized": False}))
+            return 2
+        return 0
     if args.paper_demo:
         if args.database is None:
             raise SystemExit("--paper-demo requires --database PATH; no live execution exists")

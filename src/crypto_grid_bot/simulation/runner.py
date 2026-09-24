@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +31,7 @@ from crypto_grid_bot.strategy.opportunity import OpportunityScorer
 from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
 
 DEFAULT_CAPITAL = D("100")
-SCHEMA = 3
+SCHEMA = 4
 
 
 class TransientFrame(ValueError):
@@ -54,14 +54,17 @@ class SimulationPolicy:
     def __post_init__(self) -> None:
         if type(self.recovery_frames) is not int or not 2 <= self.recovery_frames <= 100:
             raise ValueError("recovery requires 2-100 distinct eligible frames")
-        if type(self.maximum_frame_gap_seconds) is not int or self.maximum_frame_gap_seconds <= 0:
-            raise ValueError("maximum frame gap must be a positive integer")
         if type(self.outside_range_seconds) is not int or self.outside_range_seconds <= 0:
             raise ValueError("outside-range timeout must be a positive integer")
         if type(self.recenter_after_exit) is not bool:
             raise ValueError("recenter_after_exit must be a boolean")
         if type(self.recenter_cooldown_seconds) is not int or self.recenter_cooldown_seconds <= 0:
             raise ValueError("recentering cooldown must be a positive integer")
+        if (
+            type(self.maximum_frame_gap_seconds) is not int
+            or not 1 <= self.maximum_frame_gap_seconds <= 3600
+        ):
+            raise ValueError("maximum frame gap must be 1-3600 seconds")
 
 
 @dataclass(frozen=True)
@@ -72,10 +75,14 @@ class Frame:
     fair_value: Decimal
     atr: Decimal
     allow_new_grid: bool = True
+    # Historical replay only: frames sharing an epoch replay one bar (see match()).
+    epoch: str | None = None
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
         value["signals"]["observed_at"] = self.signals.observed_at.isoformat()
+        if value["epoch"] is None:
+            del value["epoch"]  # Keeps journals written before this field byte-identical.
         return value
 
 
@@ -133,6 +140,18 @@ class PaperSimulator:
         return self.store.transact(
             frame.quote.event_id, frame.payload(), lambda account: self._step(account, frame)
         )
+
+    def step(self, account: Account, frame: Frame) -> dict[str, Any]:
+        """Advance an in-memory account by one frame, without the event journal.
+
+        Historical replay only: the same decision logic, Decimal context and final
+        invariant check as ``process``, but nothing is persisted or deduplicated.
+        """
+        with localcontext() as context:
+            context.prec = 50
+            report = self._step(account, frame)
+            account.validate(self.rules)
+        return report
 
     @staticmethod
     def _cancel_buys(account: Account) -> list[str]:
@@ -318,6 +337,7 @@ class PaperSimulator:
                     quote,
                     self.rules,
                     recycle=not account.pause and not account.draining and frame.allow_new_grid,
+                    epoch=frame.epoch,
                 )
             ]
             # Cancelled partial buys can leave unpaired inventory. Exit it using only
@@ -486,7 +506,13 @@ class PaperSimulator:
                 raise GridNotViable("rounded spacing cannot cover conservative costs")
             orders.append(
                 LimitOrder(
-                    f"{quote.event_id}/buy/{index}", "buy", low, quantity, quantity, target=high
+                    f"{quote.event_id}/buy/{index}",
+                    "buy",
+                    low,
+                    quantity,
+                    quantity,
+                    target=high,
+                    epoch=frame.epoch,
                 )
             )
         for order in orders:

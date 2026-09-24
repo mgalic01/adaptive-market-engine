@@ -51,7 +51,8 @@ them on the test window:
 
 - `recenter_after_exit` on/off and `recenter_cooldown_seconds` (e.g. 6 h, 24 h, 72 h);
   record time in cash after exits and losses realised by out-of-range exits.
-- `outside_range_seconds` (e.g. 2 h, 6 h, 24 h).
+- `outside_range_seconds` (e.g. 2 h, 6 h, 24 h), with `maximum_frame_gap_seconds`
+  set above the replay's frame spacing.
 - `minimum_input_quality`, `range_dispersion_limit` and the range score/ADX box;
   report how often each regime and each veto occurs per market and period.
 

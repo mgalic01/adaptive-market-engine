@@ -4,7 +4,8 @@ Development prototype for a planned automated **spot** grid-trading system.
 Version 0.4 added repeating grid levels, automatic recovery from temporary pauses
 and audited paper resume. Version 0.5 makes the configured regime limits the real
 decision boundaries, stops a flapping feed from postponing the outside-range exit
-and adds optional recentering after that exit. Historical strategy validation is
+and adds optional recentering after that exit. Version 0.6 separates frame cadence
+from data freshness, so pauses clear and range exits fire at 60 s polling. Historical strategy validation is
 the next gate; profitable operation is not established.
 It cannot submit live Binance orders, access an account, or move real funds.
 
@@ -49,6 +50,9 @@ Implemented:
 - flat-inventory profit checkpoints and persistent simulated transfer IDs;
 - public Binance candle/book/filter capture with strict validation;
 - descriptive closed-candle indicators and isolated SQLite observation storage;
+- read-only live best-price stream (public `bookTicker`) with bounded reconnects;
+- historical replay harness on checksummed Binance archives with point-in-time
+  price-only features, buy-and-hold and ungated-grid baselines (see below);
 - automated unit tests and a GitHub Actions security/quality workflow.
 
 Not yet implemented:
@@ -61,7 +65,7 @@ Not yet implemented:
 - regime confirmation across distinct observations and persistent cooldowns;
 - verified news/event ingestion;
 - external deposits/withdrawals and live account reconciliation;
-- backtesting and walk-forward validation;
+- multi-market walk-forward validation on untouched windows (harness v1 exists);
 - protected subaccount transfer adapter;
 - monitoring dashboard and alerts.
 
@@ -77,10 +81,46 @@ PYTHONPATH=src python -m crypto_grid_bot.app \
 ```
 
 This finite, read-only collector needs no API key and reports observations only.
-It does not place paper/live orders or interpret missing news as safe. The live
-connectivity probe from this workspace timed out; successful real capture remains
-unverified. See [Market data](docs/MARKET_DATA.md) for validation, repeat collection,
-source contracts and remaining Milestone 3 gates.
+It does not place paper/live orders or interpret missing news as safe. A real
+ADAUSDC capture succeeded on 2026-09-24 (250 closed hourly candles plus book and
+filters, all validations passing). The collector honours a standard `HTTPS_PROXY`
+(plain `http://` CONNECT proxy) and `NO_PROXY`. See [Market data](docs/MARKET_DATA.md)
+for validation, repeat collection, source contracts and remaining Milestone 3 gates.
+
+## Stream live best prices
+
+```bash
+PYTHONPATH=src python -m crypto_grid_bot.app \
+  --config config/default.toml --stream-prices \
+  --symbol ADAUSDC --symbol BTCUSDC --seconds 60
+```
+
+Subscribes to Binance's public, market-data-only `bookTicker` stream on
+`data-stream.binance.vision` for a finite time (1-3600 s, up to 10 symbols) and
+prints a JSON summary. It needs no API key and cannot reach an account or order
+endpoint. It reconnects with capped, jittered backoff, allows at most 10
+connection attempts per 5 minutes, rotates before Binance's 24-hour connection
+limit, drops a connection that is silent for 30 s or sends invalid or out-of-order
+data, clears all prices on any disconnect, and stops without retrying on HTTP 418/429.
+A 15 s live run on 2026-09-24 received 591 validated updates for two symbols.
+The stream is not yet wired into the paper simulator.
+
+## Replay history (backtest harness)
+
+```bash
+PYTHONPATH=src python -m crypto_grid_bot.backtest fetch  --spec config/datasets/verify-2024h1.toml
+PYTHONPATH=src python -m crypto_grid_bot.backtest verify --spec config/datasets/verify-2024h1.toml
+PYTHONPATH=src python -m crypto_grid_bot.backtest run    --spec config/datasets/verify-2024h1.toml
+```
+
+Replays the unchanged paper engine over Binance's public 1m/1h spot archives
+(`data.binance.vision`). Every file is checked against Binance's SHA-256 and a
+committed manifest. Decisions use only candles that closed earlier, and news is
+reported as an absent component. Fills follow an explicit, tested kline-to-quote
+adapter, reported for both intrabar orders. See
+[Backtest method](docs/BACKTEST_METHOD.md) for every assumption and the *proposed*
+acceptance criteria, and [the first verification report](docs/backtests/verify-2024h1.md).
+A development-window replay is a software verification, not a forecast.
 
 ## Run the offline paper demo
 
@@ -97,17 +137,18 @@ test, not a backtest, EUR conversion, forecast or evidence of profitability.**
 It reads no credentials and needs no network. Running the same command again
 reuses recorded results without duplicating trades or savings. A different
 database path starts a separate simulation; changed account settings are
-rejected against an existing database. Version 0.5 uses schema 3 and rejects old
-schema 1/2 experiments; no implicit migration or resetting of losses occurs.
-Version 0.5.1 also adds an explicit frame-gap policy to account identity; start a
-new database instead of reopening a 0.5.0 experiment under changed timing rules.
+rejected against an existing database. Version 0.8 uses schema 4 and rejects old
+schema 1-3 experiments; no implicit migration or resetting of losses occurs. The
+frame-gap policy is part of account identity; start a new database instead of
+reopening an experiment under changed timing rules.
 
 See [Paper simulation](docs/PAPER_SIMULATION.md) for accounting, fill assumptions,
 recovery behaviour and remaining limits.
 
 ## Run the self-check
 
-Requires Python 3.12 or newer and no runtime dependencies.
+Requires Python 3.12 or newer and one pinned runtime dependency (`websockets`,
+used only by the read-only price stream): `python -m pip install -e .`
 
 ```bash
 PYTHONPATH=src python -m crypto_grid_bot.app \
