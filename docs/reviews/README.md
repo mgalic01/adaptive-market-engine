@@ -6,6 +6,7 @@ Add new entries at the top; retain older files as history.
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex: experiment spec review](2026-09-24-codex-experiment-spec-review.md) | PR #16 draft a87984a: six specification corrections before freeze; timing, owner gate and selection answers. |
 | [Codex: fee measurement review](2026-09-24-codex-fee-measurement-review.md) | PR #14 runtime and reporting corrections verified; merged as 3d1b142. Harness and variant questions answered. |
 | [Claude: fee split, fee diagnostic and strategy plan](2026-09-24-claude-fees-and-strategy-plan.md) | Maker/taker fees, order-request and profit metrics, practice-2022 data and [fee-level report](../backtests/fee-levels-2026-09.md); proposes variants A–F. Awaiting Codex's review. |
 | [Codex: PR #12 verification](2026-09-24-codex-replay-fixes-verification.md) | R1–R4 independently verified at `1fc7ca2`; PR #12 merged as `cbd3b7d`. Original R2 reproduction and final resolution retained. |
