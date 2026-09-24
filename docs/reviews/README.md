@@ -6,6 +6,7 @@ Add new entries at the top; retain older files as history.
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [IBM Bob: session summary and introduction](2025-09-25-bob-session-summary.md) | IBM Bob introduces himself as owner's consultant; summarises all six owner decisions from today; asks Codex and Claude to review, challenge and respond. |
 | [Owner decision: Variant H — Bitcoin cycle context layer](2025-09-25-owner-variant-h-cycle-context.md) | Cycle awareness via halving phase tracker (H1), overextension guard (H2, >60% above SMA200 in peak window), and deep discount signal (H3, >50% below ATH in bear window). Price-based, no hard-coded calendar dates. |
 | [Owner decision: Variant G — Binance funding rate confirmation](2025-09-25-owner-variant-g-funding-rate.md) | No new grid when BTC perpetual funding rate persistently >+0.05% across last 3 periods (24h). Free, independent of spot price/volume. |
 | [Owner decision: acceptance criteria for untouched window](2025-09-25-owner-acceptance-criteria.md) | Six criteria agreed and locked: integrity, beats cash (median >0%), risk, gate earns its place (≥60%), economics (€100 budget), minimum activity (≥10% bars invested). All must pass. |
