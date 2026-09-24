@@ -27,7 +27,7 @@ These are measurement changes only. None changes a decision made by V0.
 | # | Change | Why |
 | --- | --- | --- |
 | P1 | **Record the exit reason** on every `exit/` fill: `range_exit`, `drain`, `liquidation` (halt or emergency) and, for variant A, `trend_exit`. Report the realised P&L per reason. | Codex (PR #14): losses cannot be attributed to range exits without it. |
-| P2 | **Common drawdown sampling:** strategy and buy-and-hold equity sampled on the same schedule (every quote of every bar). | Criterion C3 compares the two drawdowns; they must be measured the same way. |
+| P2 | **Common drawdown sampling:** strategy total equity, strategy active equity (C1b) and buy-and-hold equity are all sampled on the same schedule (every quote of every bar). | Criterion C3 compares the two drawdowns; they must be measured the same way. |
 | P3 | **Daily history:** dataset specs gain `daily_warmup_start`. Binance `1d` archives are fetched from that month, checksummed and cross-checked against the aggregated `1h` archive over the overlap. | Variants A and D need at least 200 completed daily bars before the evaluation starts. |
 | P4 | **Historical exchange filters for SOL:** use dated, sourced point-in-time tick and step sizes if available. If they cannot be sourced, SOL runs stay invalid for every variant (§5). No synthetic spread model in the primary comparison. | Codex §4.1 answer on PR #15. |
 | P5 | Carried nits: `--maker-fee`/`--taker-fee` use `is not None`, so an empty value is rejected; `replay()` asserts the order book is empty before wrapping it for request counting. | Automated reviews on PR #14. |
@@ -63,7 +63,7 @@ The state is updated once per completed daily bar, from the previous state and `
 | --- | --- | --- |
 | **Up** | From Up: `C > SMA200`. From Recovering: a second consecutive `C > SMA200`. | Grids allowed, as in V0. |
 | **Recovering** | From Middle or Down: the first `C > SMA200`. | Same as Middle: no new grid, and an existing grid keeps running. A `trend_exit` already started completes (see below). |
-| **Middle** | From any state: `C ≤ SMA200` and `C > SMA50`. | No new grid. An existing grid keeps running: its sells, reentries within the grid and range exit behave as in V0. |
+| **Middle** | From any state: `C ≤ SMA200` and `C > SMA50`. | No new grid. An existing grid keeps running: its sells, reentries within the grid and range exit behave as in V0. Reentries are allowed deliberately: they only rebuy levels the grid already sold, inside its existing range, and B's cap bounds the exposure in C. |
 | **Down** | From any state: `C ≤ SMA200` and `C ≤ SMA50`. | No new grid. At the effective time, resting buys are cancelled and resting sells are kept for one day (24 h). After that, the remaining inventory is liquidated with a marketable exit (`trend_exit`). |
 
 - **Hysteresis:** Up is reached only through Recovering, so it takes two consecutive
@@ -156,7 +156,9 @@ A run is valid when all hold:
 
 An invalid run counts as a **failure** for its variant in §6. The one exception is a
 pair that is invalid for **every** variant for the same data reason, such as SOL without
-sourced filters. That pair is reported and excluded from all variants alike.
+sourced filters. That pair is reported and excluded from all variants alike. This is
+not hypothetical: every `practice-2022` SOL run is currently invalid
+([fee-levels-2026-09.md](backtests/fee-levels-2026-09.md), tick-size mismatch).
 
 ## 6. Acceptance and selection (owner decisions, 2026-09-24)
 
@@ -165,7 +167,7 @@ following hold across its included runs, that is every pair, window and path:
 
 | # | Criterion | Owner choice |
 | --- | --- | --- |
-| C1 | **Worst drop:** no run's max drawdown, measured on total equity including the profit reserves, exceeds **10%** of its running peak. | 10% (€10 on €100) |
+| C1 | **Worst drop,** on two bases in every run: (a) max drawdown of **total equity** (including both profit reserves) ≤ **10%** of its running peak; (b) max drawdown of **active equity** (excluding the reserves, the basis of the runtime's 8%/12% breakers) ≤ **10%** of its own high-water mark. By (b), a passing run can never have triggered the 12% hard-drawdown halt. Once profit has moved to the reserve, (a) alone would understate losses on the capital still trading. | 10% (€10 on €100) |
 | C2 | **Makes money:** the mean return across runs is > 0 after fees, and so is the median. | Beat cash |
 | C3 | **Safer than holding:** in every run, max drawdown < that run's buy-and-hold max drawdown (common sampling, P2). | Less drop than holding |
 | C4 | **Integrity:** every included run is valid (§5). | — |
@@ -175,7 +177,7 @@ following hold across its included runs, that is every pair, window and path:
 1. Among passing variants, pick the highest **mean return**.
 2. If two are within 0.25 percentage points, pick the lower mean max drawdown.
 3. If those are also equal, pick the simpler variant, in the order V0, A, B, F, C.
-4. D is a benchmark and **cannot be selected**. It is reported next to the winner.
+4. D is a benchmark and **cannot be selected**. C1–C5 are still computed and reported for D, for information only. It is reported next to the winner.
 
 **No winner:** if no variant passes, v1 ends with "no winner". Nothing runs on the
 reserved window, and the report says so.

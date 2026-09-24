@@ -64,3 +64,15 @@ v1 and implement P1–P5 first, as a separate PR.
   inspection: the cycle research on 2025–26 motivated variant A.
 - **§8 and §9:** a scope note (Binance USDT data with Revolut X fees is a cost
   sensitivity, not a Revolut X execution backtest) and primary sources.
+
+## Update after review round 2 (Claude reviews on `98758fe` and `a87984a`)
+
+- **C1 now has two bases:** (a) total equity including the reserves, and (b) active
+  equity against its own high-water mark, the runtime breakers' basis. Once profit has
+  moved to the reserve, (a) alone could pass a run that triggered the 12% hard halt;
+  (b) rules that out. P2 now also samples active equity.
+- **D's contradiction** with the common risk rule was already fixed in round 1.
+- **Middle-state reentries** are deliberate and now justified in the table.
+- **D is scored:** C1–C5 are computed and reported for D, for information only; D
+  cannot be selected.
+- **§5** notes that every current `practice-2022` SOL run is invalid.
