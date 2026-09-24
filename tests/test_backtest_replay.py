@@ -19,7 +19,7 @@ from crypto_grid_bot.backtest.replay import (
 )
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
-from crypto_grid_bot.simulation.models import MarketRules, Quote
+from crypto_grid_bot.simulation.models import MarketRules, Quote, timestamp
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -326,6 +326,39 @@ class SellSettleReopenTests(unittest.TestCase):
         self.assertTrue(report["opened"])
         largest = max(o.price * o.quantity for o in self.account.orders.values() if o.side == "buy")
         self.assertLessEqual(depth, 9000.0 / float(largest))
+
+    def test_multi_quote_bar_with_protected_reserves_never_bypasses_liquidity(self):
+        from crypto_grid_bot.backtest.replay import depth_multiple
+
+        # Protected money: 5 pending and 10 already secured (journal must reconcile).
+        bar = candle(START_MS, 1.0, 1.003, 0.999, 1.002, volume="4000", taker="2000")
+        for volume in (900.0, 9000.0):  # thin, then ample liquidity
+            with self.subTest(volume=volume):
+                self.setUp()
+                account = self.account
+                account.cash, account.pending, account.secured = D(35), D(5), D(10)
+                account.confirmed_transfers = {"earlier": D(10)}
+                account.validate(RULES)
+                sold = False
+                for quote in bar_quotes(
+                    bar, "TESTUSDT", "high_first", D("0.0005"), RULES.tick_size
+                ):
+                    depth = depth_multiple(volume, account, RULES, quote.bid)
+                    when = timestamp(quote.observed_at)
+                    signals = MarketSignals(0.0, 0.0, 0.0, 0.0, 0.0, 10.0, observed_at=when)
+                    metrics = CandidateMetrics("TESTUSDT", 1, 1, 1, 1, 1, 0, 0.05, depth)
+                    frame = Frame(quote, signals, metrics, D(1), D("0.05"), True, "bar")
+                    report = self.simulator.step(account, frame)
+                    sold |= any(f["side"] == "sell" for f in report["fills"])
+                    new_buys = [
+                        o for o in account.orders.values() if o.side == "buy" and o.epoch == "bar"
+                    ]
+                    for order in new_buys:  # every order placed passed the liquidity test
+                        self.assertGreaterEqual(volume / float(order.price * order.quantity), 50)
+                self.assertTrue(sold)  # the exit still happens when entries are vetoed
+                self.assertGreaterEqual(account.pending, D(5))  # reserve never spent
+                self.assertEqual(D(10), account.secured)
+                account.validate(RULES)
 
     def test_pending_reserve_is_excluded_from_the_bound(self):
         from crypto_grid_bot.backtest.replay import depth_multiple

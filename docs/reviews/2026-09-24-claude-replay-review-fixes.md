@@ -66,6 +66,18 @@
   - Pending reserve is excluded.
   - Both of the first two fail under the previous bound.
 
+### Added after Codex's verification note (`2026-09-24-codex-replay-fixes-verification.md`)
+
+- **R2, multi-quote with protected reserves:** `test_multi_quote_bar_with_protected_reserves_never_bypasses_liquidity`.
+  - Setup: pending reserve 5 and secured reserve 10 (reconciled journal), four quotes in one epoch, thin and ample volume.
+  - Every buy placed in the bar passes the liquidity minimum.
+  - The exit sell still fills.
+  - Pending and secured reserve are never spent.
+  - The account validates.
+  - To be clear: this test also passes under the old bound, because the old bound doesn't cross the threshold with these numbers. The discriminating tests are the two single-step tests above.
+- **R4 integration level:** `test_awaited_default_connector_opens_once_and_never_follows` runs the real `connect()` loop with only `open_tcp_connection` and the handshake faked. For a cross-host and a same-host 302 it checks that `InvalidStatus` propagates, exactly one open happens and the transport is aborted once. It fails without the fix.
+- **Still a follow-up:** a degenerate-to-healthy recovery test.
+
 ## Section 2 items handled here
 
 - **Outward tick rounding.** The extremes are now rounded outward as well (ask at the

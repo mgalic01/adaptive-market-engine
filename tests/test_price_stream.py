@@ -274,6 +274,43 @@ class StreamTests(unittest.TestCase):
         self.assertEqual("wss://data-stream.binance.vision/x", captured["url"])
         self.assertEqual(stream_module.MAX_MESSAGE, captured["max_size"])
 
+    @staticmethod
+    def _await_redirecting_handshake(location):
+        """Run the real connect() loop with only the TCP/handshake faked."""
+        from websockets.datastructures import Headers
+        from websockets.http11 import Response
+
+        opened, aborted = [], []
+
+        class FakeTransport:
+            def abort(self):
+                aborted.append(1)
+
+        class FakeConnection:
+            transport = FakeTransport()
+
+            async def handshake(self, *args):
+                raise InvalidStatus(Response(302, "Found", Headers({"Location": location})))
+
+        async def fake_open(self):
+            opened.append(self.uri)
+            return FakeConnection()
+
+        with patch.object(stream_module.NoRedirectConnect, "open_tcp_connection", fake_open):
+            try:
+                asyncio.run(stream_module.default_connector(stream_url(["ADAUSDC"])))
+            except InvalidStatus:
+                return opened, aborted, True
+        return opened, aborted, False
+
+    def test_awaited_default_connector_opens_once_and_never_follows(self):
+        for location in ("wss://example.invalid/stream", "wss://data-stream.binance.vision/x"):
+            with self.subTest(location=location):
+                opened, aborted, refused = self._await_redirecting_handshake(location)
+                self.assertTrue(refused)
+                self.assertEqual([stream_url(["ADAUSDC"])], opened)  # redirect never opened
+                self.assertEqual(1, len(aborted))
+
     def test_redirect_status_is_a_failed_attempt_not_a_stop(self):
         clock = Clock()
         connector = Connector(clock, [rejected(302), [message(1), message(2)]])
