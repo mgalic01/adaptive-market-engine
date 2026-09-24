@@ -1,9 +1,11 @@
 # Adaptive Crypto Grid Bot
 
 Development prototype for a planned automated **spot** grid-trading system.
-Version 0.4 adds repeating grid levels, automatic recovery from temporary pauses,
-and audited paper resume after the external strategy review. Historical strategy
-validation is the next gate; profitable operation is not established.
+Version 0.4 added repeating grid levels, automatic recovery from temporary pauses
+and audited paper resume. Version 0.5 makes the configured regime limits the real
+decision boundaries, stops a flapping feed from postponing the outside-range exit
+and adds optional recentering after that exit. Historical strategy validation is
+the next gate; profitable operation is not established.
 It cannot submit live Binance orders, access an account, or move real funds.
 
 ## Agreed operating rules
@@ -95,8 +97,8 @@ test, not a backtest, EUR conversion, forecast or evidence of profitability.**
 It reads no credentials and needs no network. Running the same command again
 reuses recorded results without duplicating trades or savings. A different
 database path starts a separate simulation; changed account settings are
-rejected against an existing database. Version 0.4 uses schema 2 and rejects old
-schema 1 experiments; no implicit migration or resetting of losses occurs.
+rejected against an existing database. Version 0.5 uses schema 3 and rejects old
+schema 1/2 experiments; no implicit migration or resetting of losses occurs.
 
 See [Paper simulation](docs/PAPER_SIMULATION.md) for accounting, fill assumptions,
 recovery behaviour and remaining limits.
@@ -178,13 +180,32 @@ exchange rules and fee-asset handling still require a separately tested adapter.
 Regime confidence is a heuristic score, not a probability of making money.
 There is no background process, deployment, or real fund protection in this version.
 
+### Regime decision boundaries
+
+The `[regime]` limits in `config/default.toml` are the actual boundaries, and
+input quality (`data_quality * (1 - news_risk)`) is a veto rather than a
+multiplier on the confidence gate:
+
+| Regime | Requires (defaults) |
+| --- | --- |
+| range | quality >= 0.70, \|score\| <= 0.25, ADX <= 22, mean \|signal\| <= 0.50 |
+| bull / bear | quality >= 0.70, ADX > 22, score >= 0.35 / <= -0.35 with fully coherent votes; conflicting votes need a larger score |
+| stress | emergency flag |
+| transition | everything else, including any quality veto |
+
+Evidence equals `minimum_confidence` exactly on each boundary and is continuous.
+Only range (and exceptional bull candidates) can pass the opportunity score, so
+a quality veto means no new grid. These limits are untested hypotheses.
+
 This software is experimental and does not guarantee profit. Backtests and
 paper results do not predict future performance.
 
 ## Validation priority and small-capital economics
 
-The [Claude review response](docs/reviews/2026-09-24-codex-response.md) records the
-behavioural defects and fixes. The [historical feasibility plan](docs/BACKTEST_PLAN.md)
+The [Codex response](docs/reviews/2026-09-24-codex-response.md),
+[Claude review #2](docs/reviews/2026-09-24-claude-review-2.md) and
+[Claude fixes](docs/reviews/2026-09-24-claude-fixes.md) record the behavioural
+defects and fixes. The [historical feasibility plan](docs/BACKTEST_PLAN.md)
 now comes before further universe/news infrastructure.
 
 For illustration only: a 20-quote-unit purchase with 1% price spacing and a 0.1%

@@ -11,7 +11,14 @@ from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.control import decode_frame, resume_paper
 from crypto_grid_bot.simulation.demo import demo_frames
 from crypto_grid_bot.simulation.execution import match, place, reduce_unreserved
-from crypto_grid_bot.simulation.models import Account, D, LimitOrder, MarketRules, Quote
+from crypto_grid_bot.simulation.models import (
+    Account,
+    D,
+    LimitOrder,
+    MarketRules,
+    Quote,
+    timestamp,
+)
 from crypto_grid_bot.simulation.runner import PaperSimulator, SimulationPolicy
 from crypto_grid_bot.simulation.store import encode
 
@@ -40,6 +47,15 @@ def frame(index, bid="0.02300", *, ask=None, size="100000", eligible=True):
     )
 
 
+def stale(current):
+    received = timestamp(current.quote.observed_at) + timedelta(seconds=99)
+    return replace(current, quote=replace(current.quote, received_at=received.isoformat()))
+
+
+def at_fair_value(index, bid):
+    return replace(frame(index, bid), fair_value=D(bid))
+
+
 class StrategyRecoveryTests(TestCase):
     def setUp(self):
         self.temp = TemporaryDirectory()
@@ -52,6 +68,11 @@ class StrategyRecoveryTests(TestCase):
 
     def open(self):
         return PaperSimulator(self.path, self.config, MarketRules(), policy=self.policy)
+
+    def reopen(self, policy, name):
+        self.sim.close()
+        self.policy, self.path = policy, Path(self.temp.name) / name
+        self.sim = self.open()
 
     def restart(self):
         self.sim.close()
@@ -147,26 +168,98 @@ class StrategyRecoveryTests(TestCase):
         self.assertGreater(self.sim.store.read().inventory, 0)
         self.assertFalse(self.sim.store.read().orders)
 
-    def test_invalid_frame_breaks_outside_range_confirmation(self):
+    def test_invalid_frame_pauses_but_does_not_erase_outside_range_time(self):
         self.sim.process(frame(0))
         self.sim.process(frame(1, "0.02500"))
-        invalid = replace(
-            frame(2, "0.02500"),
-            quote=replace(
-                frame(2, "0.02500").quote, received_at=(START + timedelta(seconds=99)).isoformat()
-            ),
-        )
-        self.sim.process(invalid)
+        self.assertEqual("pause", self.sim.process(stale(frame(2, "0.02500")))["decision"])
+        self.assertEqual(frame(1).quote.observed_at, self.sim.store.read().outside_last)
+        # Two valid outside observations 3 s apart bracket the unusable frame.
         self.sim.process(frame(4, "0.02500"))
-        self.assertFalse(self.sim.store.read().range_exit)
-        self.assertEqual(frame(4).quote.observed_at, self.sim.store.read().outside_since)
+        self.assertTrue(self.sim.store.read().range_exit)
 
-    def test_gap_does_not_count_as_sustained_outside_range_time(self):
+    def test_gap_neither_counts_nor_erases_outside_range_time(self):
         self.sim.process(frame(0))
         self.sim.process(frame(1, "0.02500"))
+        self.sim.process(frame(2, "0.02500"))
         self.sim.process(frame(100, "0.02500"))
+        state = self.sim.store.read()
+        self.assertFalse(state.range_exit)
+        self.assertEqual(1, state.outside_seconds)
+        self.assertEqual(frame(100).quote.observed_at, state.outside_last)
+        self.sim.process(frame(101, "0.02500"))
         self.assertFalse(self.sim.store.read().range_exit)
-        self.assertEqual(frame(100).quote.observed_at, self.sim.store.read().outside_since)
+        self.sim.process(frame(102, "0.02500"))
+        self.assertTrue(self.sim.store.read().range_exit)
+
+    def test_valid_inside_frame_resets_outside_range_time(self):
+        self.sim.process(frame(0))
+        self.sim.process(frame(1, "0.02500"))
+        self.sim.process(frame(2, "0.02500"))
+        self.sim.process(frame(3))
+        state = self.sim.store.read()
+        self.assertEqual((0, ""), (state.outside_seconds, state.outside_last))
+
+    def test_flapping_feed_cannot_postpone_outside_range_exit(self):
+        # Review #2 regression: one unusable frame every 50 s used to reset a 100 s timer
+        # forever while inventory was held below the range (the 5 h / 6 h analogue).
+        self.reopen(SimulationPolicy(outside_range_seconds=100), "flapping.db")
+        self.sim.process(frame(0))
+        exited_at = None
+        for t in range(10, 400, 10):
+            current = frame(t, "0.02196")
+            report = self.sim.process(stale(current) if t % 50 == 0 else current)
+            if self.sim.store.read().range_exit:
+                exited_at = t
+                break
+            if t % 50:
+                self.assertNotEqual("halt", report["decision"])
+        self.assertEqual(110, exited_at)  # 100 s of valid outside observations
+
+    def test_range_exit_recenters_only_after_cooldown_and_confirmation(self):
+        self.reopen(
+            SimulationPolicy(outside_range_seconds=3, recenter_cooldown_seconds=20), "recenter.db"
+        )
+        self.sim.process(frame(0))
+        for t in (1, 2, 4):
+            self.sim.process(frame(t, "0.02500"))
+        self.assertTrue(self.sim.store.read().range_exit)
+        for t in range(5, 24):
+            report = self.sim.process(at_fair_value(t, "0.02500"))
+            self.assertFalse(report["opened"])
+            self.assertTrue(self.sim.store.read().range_exit)
+        report = self.sim.process(at_fair_value(24, "0.02500"))
+        self.assertEqual("recenter", report["range_exit_cleared"])
+        self.assertFalse(report["opened"])
+        self.assertFalse(self.sim.process(at_fair_value(25, "0.02500"))["opened"])
+        self.assertTrue(self.sim.process(at_fair_value(26, "0.02500"))["opened"])
+        state = self.sim.store.read()
+        self.assertTrue(state.grid_lower <= D("0.02500") <= state.grid_upper)
+        self.assertFalse(state.range_exit)
+
+    def test_range_exit_waits_for_old_band_when_recentering_disabled(self):
+        self.reopen(
+            SimulationPolicy(
+                outside_range_seconds=3, recenter_after_exit=False, recenter_cooldown_seconds=1
+            ),
+            "no-recenter.db",
+        )
+        self.sim.process(frame(0))
+        for t in (1, 2, 4):
+            self.sim.process(frame(t, "0.02500"))
+        for t in range(5, 60):
+            report = self.sim.process(at_fair_value(t, "0.02500"))
+            self.assertFalse(report["opened"])
+        self.assertTrue(self.sim.store.read().range_exit)
+        self.assertIn("recentering disabled", report["reason"])
+        self.assertEqual("returned inside", self.sim.process(frame(60))["range_exit_cleared"])
+        self.assertFalse(self.sim.process(frame(61))["opened"])
+        self.assertTrue(self.sim.process(frame(62))["opened"])
+
+    def test_range_exit_flag_requires_its_timestamp(self):
+        state = Account.start(D(100))
+        state.range_exit = True
+        with self.assertRaisesRegex(ValueError, "range-exit timestamp"):
+            state.validate(MarketRules())
 
     def test_daily_loss_pause_preserves_sell_management_and_blocks_reentry(self):
         self.sim.process(frame(0))
@@ -248,13 +341,15 @@ class StrategyRecoveryTests(TestCase):
             self.sim._settle(state)
         self.assertEqual(before, encode(state.to_dict()))
 
-    def test_schema_one_database_is_not_silently_reinterpreted(self):
+    def test_older_schema_databases_are_not_silently_reinterpreted(self):
         row = self.sim.store.connection.execute("SELECT identity FROM state").fetchone()[0]
         identity = json.loads(row)
-        identity["schema"] = 1
-        self.sim.store.connection.execute("UPDATE state SET identity=?", (encode(identity),))
-        with self.assertRaisesRegex(ValueError, "settings differ"):
-            self.open()
+        self.assertEqual(3, identity["schema"])
+        for old in (1, 2):
+            identity["schema"] = old
+            self.sim.store.connection.execute("UPDATE state SET identity=?", (encode(identity),))
+            with self.subTest(schema=old), self.assertRaisesRegex(ValueError, "settings differ"):
+                self.open()
 
     def test_resume_cli_loads_saved_rules_and_requires_current_frame(self):
         emergency = replace(frame(0), signals=replace(frame(0).signals, emergency=True))

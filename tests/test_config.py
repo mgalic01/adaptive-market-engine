@@ -34,6 +34,11 @@ class ConfigTests(TestCase):
             ("top_n = 100", "top_n = 10"),
             ("minimum_score = 0.70", "minimum_socre = 0.70"),
             ("minimum_score = 0.70", ""),
+            ("minimum_confidence = 0.70", "minimum_confidence = 1.0"),
+            ("minimum_input_quality = 0.70", "minimum_input_quality = 0"),
+            ("minimum_input_quality = 0.70", "minimum_input_quality = 1.5"),
+            ("range_dispersion_limit = 0.50", "range_dispersion_limit = 0"),
+            ("range_dispersion_limit = 0.50", ""),
         ]
         source = DEFAULT.read_text()
         with TemporaryDirectory() as directory:
@@ -52,3 +57,8 @@ class ConfigTests(TestCase):
                 DEFAULT.read_text().replace("bull_threshold = 0.35", "bull_threshold = 0.45")
             )
             self.assertEqual(0.45, load_config(path).bull_threshold)
+
+    def test_regime_quality_floor_and_dispersion_limit_are_loaded(self) -> None:
+        config = load_config(DEFAULT)
+        self.assertEqual(0.70, config.minimum_input_quality)
+        self.assertEqual(0.50, config.range_dispersion_limit)

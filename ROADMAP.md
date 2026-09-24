@@ -30,6 +30,9 @@ The external review found that the original grid did not recycle and transient
 conditions permanently halted it. Version 0.4 fixes recycling/flat checkpoints,
 recovery controls and regime-confidence discontinuities. These are software fixes,
 not evidence of a trading edge. See [the handoff](docs/reviews/2026-09-24-codex-response.md).
+Version 0.5 aligns regime decisions with the configured limits, makes the
+outside-range exit robust to a flapping feed and adds optional recentering; see
+[Claude fixes](docs/reviews/2026-09-24-claude-fixes.md).
 
 **Do the historical feasibility spike described in section 4 next**, ahead of the
 remaining section 3 work. Start with a small verified replay harness, then expand

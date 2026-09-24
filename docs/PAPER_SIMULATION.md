@@ -1,4 +1,4 @@
-# Paper simulation contract (schema 2)
+# Paper simulation contract (schema 3)
 
 ## Scope and order lifecycle
 
@@ -71,13 +71,24 @@ disabled until the interrupted grid has drained. Sub-minimum dust remains visibl
 in `unreserved_inventory`; it is not rounded away or funded using protected money.
 A dust-resolution policy is still required for production operation.
 
-A stored grid has an outside-range timer. After six hours of observed continuous
-outside-range conditions (configurable via `SimulationPolicy`), cancel orders and
-exit to cash with bounded liquidity. Invalid frames or large gaps reset the timer;
-a stopped feed is not evidence of continuous market conditions. After the exit,
-wait for price to return inside the old range and confirm eligibility before
-starting another grid. This deliberately does not chase price by automatically
-recentering. Broader rotation/recentering policy awaits validation.
+A stored grid accumulates observed outside-range time (`outside_seconds`). Only an
+interval bracketed by two consecutive valid outside-range frames no more than
+`maximum_data_age_seconds` apart is counted. Gaps and unusable frames pause the
+clock without erasing time already observed; only a valid frame inside the range
+resets it. (Schema 2 reset the clock on every unusable frame, so a flapping feed
+could postpone the exit indefinitely.) After six hours of accumulated time
+(`SimulationPolicy.outside_range_seconds`), orders are cancelled and inventory
+exits to cash with bounded liquidity.
+
+After the exit the account waits in cash. It leaves that state once flat, risk
+limits pass and the candidate is eligible, and either price is back inside the old
+band or, with `recenter_after_exit=True` (default), `recenter_cooldown_seconds`
+(default 24 h) have passed since the exit. The normal recovery confirmations then
+apply, and the next grid is built around the current fair value. With
+`recenter_after_exit=False` the account deliberately waits until price re-enters the
+old band. That can mean waiting indefinitely after a genuine breakout; the report
+reason says "recentering disabled". Both settings are hypotheses to measure in
+[BACKTEST_PLAN.md](BACKTEST_PLAN.md), not validated choices.
 
 If risk triggers after normal matching, liquidation waits for a later usable
 frame. Stale data never authorizes an exit. An offline runner has no independent
@@ -126,9 +137,9 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Schema 1 databases are rejected by version 0.4; no implicit migration
-or reset occurs.** Preserve old experiments with the old code, or start a clearly
-separate schema 2 experiment. Never edit identity/state to bypass risk history.
+initial cash. **Schema 1 and 2 databases are rejected by version 0.5; no implicit
+migration or reset occurs.** Preserve old experiments with the old code, or start a
+clearly separate schema 3 experiment. Never edit identity/state to bypass risk history.
 
 ## Verification
 
@@ -136,6 +147,8 @@ The original batch demo still works. New regressions exercise 50 shallow price
 oscillations, recycling while other inventory remains, partial sells, reserve
 isolation, invalid-frame pauses, recovery confirmation and replay, out-of-range
 exit/timer gaps, audited resume, persistent transfer IDs and guarded settlement.
+Version 0.5 adds a flapping-feed exit regression (it never exits on schema 2 code),
+gap/inside-reset accounting and recentering with and without the cooldown.
 The shallow fixture produced 2 fills on the reviewed code and 100 on the corrected
 code. This is a behavioural regression result, not a return forecast or backtest.
 

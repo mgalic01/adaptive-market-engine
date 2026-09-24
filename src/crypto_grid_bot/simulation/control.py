@@ -11,7 +11,7 @@ from typing import Any
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
 from crypto_grid_bot.simulation.models import MarketRules, Quote, decimal, timestamp
-from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
+from crypto_grid_bot.simulation.runner import SCHEMA, Frame, PaperSimulator, SimulationPolicy
 
 
 def decode_frame(payload: dict[str, Any]) -> Frame:
@@ -56,8 +56,8 @@ def resume_paper(
         identity = json.loads(row[0])
     finally:
         connection.close()
-    if identity["schema"] != 2:
-        raise ValueError("resume supports only paper schema 2; no implicit migration")
+    if identity["schema"] != SCHEMA:
+        raise ValueError(f"resume supports only paper schema {SCHEMA}; no implicit migration")
     rules = dict(identity["rules"])
     for key in (
         "tick_size",
