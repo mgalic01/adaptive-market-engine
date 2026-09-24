@@ -51,13 +51,17 @@ The full report is [`docs/backtests/fee-levels-2026-09.md`](../backtests/fee-lev
 In short:
 1. **Fees are not the main problem.** At 0% maker, fees total under 0.5 USDT over eight
    months, and results do not improve.
-2. **Completed grid cycles earn money and forced exits lose it.** At 0%/0.09%:
-   - BTC 2022: grid sells +11.5 to +12.6, exits −9.6 to −10.3;
+2. **Resting sells realise gains and forced exits realise losses** (average-cost
+   attribution, not paired cycles). At 0%/0.09%:
+   - BTC 2022: resting sells +11.5 to +12.6, exits −9.6 to −10.3;
    - XRP: +18.2 to +19.0 against −21.8 to −22.3.
-3. **Lower fees admit more grids, so more of them end in exits.** Every lower-fee run on
-   the 2024 bull window was worse. There, the grid returned 0% to −8% while BTC
-   buy-and-hold made +47.9%.
-4. **The order budget is not binding:** at most 76 requests per day after Codex's counting fix (the four busiest runs re-run; returns were identical).
+3. **Lower fees admit more grids, so more of them end in exits.** Every lower-fee
+   gated run on the 2024 bull window was worse; the ungated baseline was mixed (BTC
+   low-first improved from −11.20% to −7.09%). BTC grid runs returned −11.2% to 0%
+   while buy-and-hold made +47.9%.
+4. **The order budget did not bind in the runs checked:** after Codex's counting fix,
+   four re-run cases peaked at 76, 50, 48 and 52 requests per day (returns identical).
+   The other runs were not re-run; their stored counts are lower bounds.
 
 ## 4. Harness problems found, proposals only
 

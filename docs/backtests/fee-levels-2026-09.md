@@ -44,7 +44,13 @@
 
 ## Where the money goes (practice-2022, realised after fees, USDT)
 
-| Run | Grids | Grid sells | Forced exits | Fees |
+Attribution is **average-cost**: each sell is charged the running average cost (fees
+included) of all inventory held, not the cost of the buy it was paired with. "Resting
+sells" are grid sell orders that filled at their limit; "Forced exits" are marketable
+`exit/` sells. The split shows which kind of sale realised gains or losses. It is not
+the profit of paired buy→sell cycles.
+
+| Run | Grids | Resting sells | Forced exits | Fees |
 | --- | ---: | ---: | ---: | ---: |
 | BTC gated, 0%/0.09% | 98–101 | **+11.5 to +12.6** | **−9.6 to −10.3** | 0.44–0.46 |
 | XRP gated, 0%/0.09% | 119–120 | **+18.2 to +19.0** | **−21.8 to −22.3** | 0.45 |
@@ -55,20 +61,24 @@
 
 1. **Fees are not the main problem.** At 0% maker, fees are under 0.5 USDT over eight
    months, yet results are not better and are often worse.
-2. **Completed grid cycles make money; forced exits lose it.** The grid earns
-   11–19 USDT from completed cycles, and range exits (price leaves the range, the
-   inventory is sold at a loss) take back as much or more.
+2. **Resting sells realise gains; forced exits realise losses.** At average cost,
+   resting grid sells realised +11.5 to +19.0 USDT, and range exits (price leaves the
+   range, the inventory is sold at a loss) took back as much or more.
 3. **Cheaper fees mean more grids, so more exposure to exits.** The 3× cost rule
    filtered out many grids at 0.1%; at 0% it admits them, including those that end in
-   a range exit. On the 2024 bull window, every lower-fee run was worse.
+   a range exit. On the 2024 bull window, every lower-fee **gated** run was worse
+   (ADA −2.2 → −5.4 → −8.4%; BTC 0 → −1.1 → −7.9%, path averages). The ungated
+   baseline was mixed: BTC low-first improved (−11.20 → −7.97 → −7.09%) while BTC
+   high-first and ADA did not.
 4. **In a bull market the grid loses to holding.** BTC 2024: +47.9% buy-and-hold versus
-   0% to −8% for every grid variant.
+   −11.2% to 0% across every grid run (gated and ungated, all fee levels and paths).
 5. **The order budget is not binding.** The counts in these runs' `results.json`
    undercount: Codex found (PR #14) that a reentry buy placed and cancelled within
    one step was invisible to the before/after count. After the fix, counting at each
-   book operation, the four busiest runs (0%/0.09%) were re-run with identical returns:
-   the busiest day was 76, 50, 48 and 52 requests (previously reported 64, 44, 42 and
-   46), against Revolut X's 1,000.
+   book operation, four of the busiest runs (0%/0.09%) were re-run with identical
+   returns: their busiest day was 76, 50, 48 and 52 requests (previously reported 64, 44,
+   42 and 46), against Revolut X's 1,000. The other runs were not re-run, so no
+   corrected global maximum is claimed; their stored counts are lower bounds.
 6. **Harness issues found:** today's tick size applied to much lower historical prices
    (SOL) and a range-exit counter that counted rejected frames (fixed in `f136773`).
 
