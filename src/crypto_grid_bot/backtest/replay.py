@@ -35,7 +35,7 @@ from crypto_grid_bot.backtest.dataset import local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
 from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
 from crypto_grid_bot.config import BotConfig
-from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskAction, RiskDecision
+from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
 from crypto_grid_bot.simulation.models import (
     ONE,
     ZERO,
@@ -230,7 +230,7 @@ class Metrics:
     # every risk evaluation (the basis of the runtime's soft/hard drawdown breakers).
     active_max_drawdown: Decimal = ZERO
     risk_evaluations: int = 0
-    hard_drawdown_halts: int = 0
+    hard_drawdown_halts: int = 0  # halt events, not evaluations
 
 
 class RequestCountingOrders(dict[str, LimitOrder]):
@@ -360,10 +360,6 @@ def replay(
             metrics.active_max_drawdown = max(
                 metrics.active_max_drawdown, max(ZERO, (high - equity) / high)
             )
-        if decision.action == RiskAction.EXIT and any(
-            reason.startswith("hard drawdown") for reason in decision.reasons
-        ):
-            metrics.hard_drawdown_halts += 1
 
     simulator.risk_observer = observe_risk
     spread_pct = float(run.spread * 100)
@@ -412,6 +408,9 @@ def replay(
             metrics.transient_pauses += int("regime" not in report)
             if account.halt and not metrics.halted_at:
                 metrics.halted_at, metrics.halt_reason = quote.observed_at, account.halt
+                # The halt is latched, so a run has at most one; later evaluations that
+                # still see the drawdown are not new halts.
+                metrics.hard_drawdown_halts += int(account.halt.startswith("hard drawdown"))
             if "total_equity" in report:
                 total = Decimal(report["total_equity"])
                 metrics.final_equity = total

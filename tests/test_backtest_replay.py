@@ -577,7 +577,7 @@ class MeasurementTests(unittest.TestCase):
         metrics, account = self.run_replay(minutes)
         self.assertTrue(account.halt.startswith("hard drawdown"))
         self.assertEqual({"liquidation"}, set(metrics.exit_pnl_by_reason))
-        self.assertGreater(metrics.hard_drawdown_halts, 0)
+        self.assertEqual(1, metrics.hard_drawdown_halts)  # one latched halt, not evaluations
         # C1(b) basis: active equity against the engine's risk high-water mark.
         self.assertGreaterEqual(metrics.active_max_drawdown, D("0.12"))
 
