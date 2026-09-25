@@ -9,7 +9,7 @@ variants yet.** This document fixes what will be built and how it will be judged
 The scope is paper trading and historical replay only. Nothing here authorises live
 trading, API keys or withdrawals. The default risk limits (3% daily pause, 8% soft and
 12% hard drawdown, latched halt), the 50/50 profit vault and the paper-only boundary
-are unchanged by every **grid** variant (V0, A, B, C, F). The benchmark D is the one
+are unchanged by every **grid** variant (V0, A, B, C, E, F, G, H, C+G, C+H). The benchmark D is the one
 labelled exception (§3 D): it is a replay-only calculation with its own sizing and no
 risk controls or vault, and it never touches persisted paper state.
 
@@ -57,12 +57,21 @@ common to all:
   valid replay observation at or after 00:00:00 UTC** of the next day, never within the
   bar that produced it. A rejected or stale frame never executes a signal; the next
   valid observation does.
-- For every grid variant (V0, A, B, C, F), every existing V0 control keeps its trigger
+- For every grid variant (V0, A, B, C, E, F, G, H, C+G, C+H), every existing V0 control keeps its trigger
   and deadline: emergency exit, hard-drawdown halt, daily-loss pause, soft-drawdown
   reduction, range exit (6 h), drain and eligibility pauses. **No variant delays,
-  suppresses or clears any of them.** A variant can only add restrictions (fewer buys)
-  or add an exit with its own later deadline. D is the one exception: it is a benchmark
-  without these controls (§3 D).
+  suppresses or clears any of them**, and none changes a risk limit, the allocation
+  policy or the profit vault. A variant can only add restrictions (fewer buys, an
+  earlier exit) or add an exit with its own deadline. There are exactly **three named
+  exceptions**, each confined to the one control stated:
+  - **E** may delay the **range exit only**, from 6 h to at most 12 h after `t0`, under
+    the rules in §3 E. It never delays any other control.
+  - **H3** may lower the **opportunity-score minimum for new grids only**, from 0.70 to
+    0.60, under the rules in §3 H. Every other entry check still applies.
+  - **D** is a benchmark without these controls (§3 D).
+
+  A declared combination (C+G, C+H) inherits only the exceptions of its parts: C+H
+  inherits H3's, and no combination inherits E's.
 
 ### V0: baseline (`price-only-v1`)
 - **Code:** the commit that merges the prerequisites; it is recorded in every
@@ -197,7 +206,7 @@ The state is updated once per completed daily bar, from the previous state and `
   equity, and C1(b) reduces to C1(a) measured against its own peak. D has no halts, so
   the hard-halt veto cannot trigger.
 
-### E: volume-confirmed exit (included by the owner, 2026-09-24; needs Codex's risk review)
+### E: volume-confirmed exit (included by the owner, 2026-09-24)
 - **Mechanism:** when V0's 6-hour outside-range timer expires, E compares the base
   volume of the **completed** minutes since the first outside observation with
   2 × (the median completed 1h base volume over the previous 720 hours) × 6.
@@ -219,13 +228,42 @@ The state is updated once per completed daily bar, from the previous state and `
   soft-drawdown reduction and drain are never delayed; the §3 common rule still applies.
 - **Extension ends early:** if price returns inside the range during the extension, V0's
   normal reset applies.
+- **Boundary rules** (fixed before implementation; Codex, PR #16):
+  - **Threshold:** measured volume **≥** the threshold means exit as V0; strictly **<**
+    means extend. Equality exits.
+  - **One decision per episode:** the comparison is made once, at the first valid
+    observation at or after `t0 + 6 h`. A delayed observation still uses the fixed
+    interval `[floor_minute(t0), floor_minute(t0 + 6 h))`, never a later one. The
+    12-hour deadline is always `t0 + 12 h`, measured from the original `t0`; it is never
+    moved.
+  - **New episode:** after a return inside the range resets the timer, a later exit
+    from the range starts a new episode with a new `t0`, a newly frozen reference and
+    its own single extension.
+  - **Other risk actions win:** if a halt, emergency exit, daily-loss pause,
+    soft-drawdown reduction or drain acts during the extension, it acts exactly as in
+    V0. The extension never delays or blocks it.
+  - **An exit, once started, stays started:** when the range exit begins (at 6 h, or at
+    12 h), it is latched. Remaining quantity keeps being sold under the existing
+    participation limits until done, even if price returns inside the range or the
+    volume changes. No extension decision can cancel, pause or restart an exit that
+    has already begun.
+  - **Required tests:** volume below, equal to and above the threshold; a missing
+    reference hour, a missing measured minute and a zero-median reference (each exits at
+    6 h); a delayed first observation after 6 h (same interval, same deadline); return
+    inside the range then a new episode; a halt, emergency exit and drain during the
+    extension; a partial range exit at 12 h that stays latched across a return inside
+    the range.
 - **Reported:** the number of extensions and unavailable checks, the extra hours outside
   the range, and the P&L of extended exits next to the bid at the 6-hour mark. That
   6-hour comparison is a **diagnostic only**: it is not an executable counterfactual
   (it ignores fees, liquidity and residual inventory) and is never used for selection.
-- **Risk review required:** E increases exposure time by up to 6 hours per exit. Codex's
-  separate risk review is required before E's results count. Without it, E is run and
-  reported but is **not eligible for selection**.
+- **Risk review:** E increases exposure time by up to 6 hours per exit. The unchanged
+  halt, emergency, daily-loss, soft-drawdown and drain controls bound it but do not
+  guarantee a realised-loss ceiling. **Codex (2026-09-25, PR #16):** acceptable as a
+  paper/replay hypothesis in principle. It is not yet approved for implementation or
+  selection. E becomes eligible for selection only after Codex has reviewed its
+  implementation and the boundary tests above; until then it is run and reported but
+  **not eligible**.
 
 ### F: order-flow entry block
 F blocks new buys only. It is **not** a V0 pause: it never sets `draining`, never
@@ -398,13 +436,13 @@ included runs (every included pair, window and path):
 | C2 | **Makes money on the worse path:** for **each** intrabar path separately, the median return across included runs is > 0 after fees; **and** the mean return across all included runs is > 0. All runs have equal weight, and the median of an even count is the mean of the two middle values. | Owner, with Bob's worse-path rule |
 | C3 | **Safer than holding:** in every included run, max total-equity drawdown < that run's buy-and-hold max drawdown (common sampling, P2). A run where buy-and-hold has zero drawdown fails. | Owner (strict) |
 | C4 | **Integrity:** every included run is valid (§5). | Both |
-| C5 | **Minimum activity:** the mean number of completed cycles (P7) per week across included runs is **≥ 1**. The share of bars holding inventory is reported. | Owner's compromise on Bob's 10%-invested rule |
+| C5 | **Minimum activity:** for each included run, its rate = completed cycles (P7) ÷ (evaluation window length in days ÷ 7). The window is `[start of the start month, end of the end month)` in UTC, the same for every run in a dataset, whether or not the run halted. C5 = the arithmetic mean of the per-run rates over all included runs (equal weight), computed exactly (no rounding), and must be **≥ 1**. The ISO-week counter is reported, not scored. The share of bars holding inventory is reported. | Owner's compromise on Bob's 10%-invested rule |
 | C6 | **The gate earns its place:** in at least **60%** of included runs, the variant's return ÷ max(max drawdown, 0.1 percentage points) exceeds that of the **ungated V0 baseline** in the same pair, window and path. | Bob |
 | R1 | **Economics, reported only:** the capital at which the mean monthly return would cover €5/month of hosting (5 ÷ mean monthly return fraction), or "not reachable" if the mean return is ≤ 0. Running on the owner's own PC costs €0 in hosting. | Bob, as information |
 
 **Selection (deterministic):**
-1. The **eligible set** is the passing variants among V0, A, B, C, E (only with Codex's
-   risk review), F, G, C+G, H and C+H. D is excluded
+1. The **eligible set** is the passing variants among V0, A, B, C, E (only after Codex's
+   implementation review, §3 E), F, G, C+G, H and C+H. D is excluded
    before ranking.
 2. Let `M` be the highest mean return in the eligible set, in percentage points rounded
    to 6 decimals. The **tie set** is every eligible variant with mean return ≥ `M − 0.25`
