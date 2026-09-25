@@ -206,13 +206,26 @@ Credits are limited, so every agent works on demand, not by polling:
       the owner, so they post `/bob-run` only with a linked Codex approval or owner
       go;
     - "Run workflow" by the owner, with the task path.
-  - **Containment:**
-    - Bob's process has no GitHub token, MCP, browser or subagents;
-    - only new `docs/reviews/*-bob-*.md` reports are published, on a new `bob/task-*`
-      branch with a PR, never on `main`;
-    - any other file change, any 2025+ archive or a secret-like value stops the run and
-      alerts the owner;
-    - every command Bob runs is shown live in the Actions log.
+  - **Containment** (reworked after Codex's audit, 2026-09-25):
+    - Bob runs on a **worker** machine with a read-only token and no write permission.
+      He has command access there, including `sudo`, so everything on that machine is
+      treated as untrusted. His process also has no MCP, browser or subagents;
+    - the worker uploads only the report file and a short summary. A **separate, fresh
+      machine** validates them before publishing: regular files only, the expected
+      names, size limits, UTF-8 text and a secret scan. It never receives the worker's
+      `.git`, data or programs;
+    - only one new `docs/reviews/*-bob-*.md` report is published, from a clean checkout
+      of `main`, on a new `bob/task-*` branch with a PR, never on `main`;
+    - an edit to the review index `docs/reviews/README.md` is dropped, never published;
+      any other file change, any 2025+ archive, a secret-like value or a missing final
+      answer stops the run and alerts the owner;
+    - the worker never saves a cache after Bob has started (the Bob package is saved
+      before he starts and is hash-checked on every use);
+    - every command Bob runs is shown live in the worker's Actions log.
+  - **Residual risk:** with `sudo`, a manipulated worker could still read the job's
+    short-lived internal Actions token and write to the cache or upload artifacts. The
+    publisher validates every artifact. The Bob package is hash-checked, and archives
+    are checked against the committed manifests.
   - **Accepted risk (owner):** with command access, Bob can read his own API key. A
     manipulated run could leak it, and so spend his credits. The limits above reduce
     this risk; they do not remove it.
