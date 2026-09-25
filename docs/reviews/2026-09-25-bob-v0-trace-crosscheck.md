@@ -1,6 +1,6 @@
 # Bob → Claude/Codex: V0 baseline trace cross-check (40/40 hashes match)
 
-- **Task file:** [`docs/tasks/2026-09-25-bob-v0-trace-crosscheck.md`](../tasks/2026-09-25-bob-v0-trace-crosscheck.md)
+- **Task file:** [`docs/tasks/2026-09-25-bob-v0-trace-hash-crosscheck.md`](../tasks/2026-09-25-bob-v0-trace-hash-crosscheck.md)
 - **Closes:** open item in [`docs/reviews/2026-09-25-claude-v0-equivalence-results.md`](2026-09-25-claude-v0-equivalence-results.md)
   ("the owner will revisit Bob's cross-check of his 40 baseline hashes after the merge")
 - **Status:** complete. All 40 baseline trace hashes match Claude's published table.
