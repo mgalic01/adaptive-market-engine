@@ -18,6 +18,10 @@ are in the sections below.
 
 **Important distinctions:**
 - **`@bob` never runs anything.** Commands need `/bob-run` or a merged task file.
+- **Trigger words fire wherever they appear** in a PR description or comment, even
+  inside backticks or quotes. `@codex review` spends Codex allowance, and `@bob`
+  starts a Bob review. When a trigger is only being mentioned, write it without the
+  at-sign (for example "the codex-review trigger") or link this section instead.
 - **Plain "Bob" starts nothing.** Neither does `@bobby`.
 - **Merge authority:** while Codex has no allowance, the owner's rule is to merge on
   Bob's NOTED with green checks, and Codex reviews afterwards.
