@@ -136,7 +136,11 @@ def read_archive(
 ) -> tuple[list[Kline], FileStats]:
     """Parse the single expected CSV member of a verified archive zip."""
     symbol_name(symbol)
-    expected_member = f"{symbol}-{interval}-{month}.csv"
+    return parse_rows(read_member(path, f"{symbol}-{interval}-{month}.csv"), interval, month)
+
+
+def read_member(path: Path, expected_member: str) -> str:
+    """Return the ASCII text of the archive's only member, which must be named as given."""
     try:
         with zipfile.ZipFile(path) as archive:
             members = archive.infolist()
@@ -154,7 +158,7 @@ def read_archive(
         text = raw.decode("ascii")
     except UnicodeDecodeError as exc:
         raise DataError("archive CSV must be ASCII") from exc
-    return parse_rows(text, interval, month)
+    return text
 
 
 def aggregate(minutes: Iterable[Kline], step_ms: int = INTERVAL_MS["1h"]) -> Iterator[Kline]:
