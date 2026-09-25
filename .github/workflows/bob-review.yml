@@ -133,11 +133,25 @@ jobs:
           # env -i: Bob's process gets only PATH, HOME and its own key, so runner
           # credentials such as ACTIONS_RUNTIME_TOKEN are not in its environment.
           # --max-turns bounds cost and time; a short answer needs far fewer turns.
-          status=0
+          # stream-json: one event per line as Bob works. The raw events go to
+          # bob-output.jsonl; a one-line summary of each file read, tool result, error
+          # and the finish is printed live, so the owner can follow the run in the
+          # Actions log (owner request, 2026-09-25).
+          set +e
           env -i PATH="$PATH" HOME="$HOME" BOBSHELL_API_KEY="$BOBSHELL_API_KEY" \
             bob run --accept-license --trust --disable-mcp --disable-subagents \
             --disable-tool-groups edit,execute,browser,mcp,skill,todo,subagent,subtask,artifact,mode \
-            --max-turns 40 -f json "$PROMPT" > bob-output.jsonl || status=$?
+            --max-turns 40 -f stream-json "$PROMPT" \
+            | tee bob-output.jsonl \
+            | jq -rR --unbuffered 'fromjson? |
+                if .type == "tool_use" then
+                  "Bob -> \(.tool_name) \(.parameters | tostring | .[0:200])"
+                elif .type == "tool_result" then "     <- \(.status)"
+                elif .type == "error" then "Bob error: \(.message)"
+                elif .type == "result" then "Bob finished: \(.status)"
+                else empty end'
+          status=${PIPESTATUS[0]}
+          set -e
           if [ "$status" -ne 0 ]; then
             echo "Bob exited with status $status. First 3000 bytes of its output:"
             head -c 3000 bob-output.jsonl
@@ -153,8 +167,17 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
-          jq -rR 'fromjson? | select(.type == "result" and .status == "success")
-            | .last_message // empty' bob-output.jsonl | tail -c 60000 > bob-comment.md
+          # Bob's answer is the assistant text streamed after his last tool call, and
+          # only if the run ended with a successful result event.
+          jq -rRs '[split("\n")[] | fromjson?] as $events
+            | if any($events[]; .type == "result" and .status == "success") then
+                reduce $events[] as $e ("";
+                  if $e.type == "tool_use" or $e.type == "tool_result" then ""
+                  elif $e.type == "message" and $e.role == "assistant"
+                    and ($e.isReasoning | not) then . + ($e.content | strings)
+                  else . end)
+              else "" end
+            | select(test("\\S"))' bob-output.jsonl | tail -c 60000 > bob-comment.md
           if [ ! -s bob-comment.md ]; then
             echo "Bob returned no answer; nothing posted. First 3000 bytes of its output:"
             head -c 3000 bob-output.jsonl
