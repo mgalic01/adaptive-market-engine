@@ -249,7 +249,7 @@ jobs:
             # Keep only the answer: the prompt makes it start with "IBM Bob" and end
             # with his signature, so drop any reasoning written before it.
             | . as $t
-            | ($t | sub("(?s)\\s*—\\s*IBM Bob \\([a-z ]+\\)\\s*$"; "")) as $body
+            | ($t | sub("(?s)\\s*—\\s*IBM Bob \\([^()]*\\)\\s*$"; "")) as $body
             | ($body | split("IBM Bob")) as $parts
             | if ($parts | length) < 2 then $t
               else "IBM Bob" + ($parts | last) + $t[($body | length):] end
