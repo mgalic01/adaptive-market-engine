@@ -130,9 +130,10 @@ class FundingSignal:
         if not (r1.valid and r2.valid):
             return FundingState(False, True, "invalid_older")
         interval = r3.interval_hours
+        if interval is None:  # unreachable: r3.valid implies an accepted interval
+            return FundingState(False, True, "invalid_newest")
         if not r1.interval_hours == r2.interval_hours == interval:
             return FundingState(False, True, "mixed_interval")
-        assert interval is not None  # r3.valid
         step = interval * HOUR_MS
         if r2.scheduled_ms - r1.scheduled_ms != step or r3.scheduled_ms - r2.scheduled_ms != step:
             return FundingState(False, True, "step_mismatch")
