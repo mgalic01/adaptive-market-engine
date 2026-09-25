@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from crypto_grid_bot.backtest.dataset import (
+    DatasetSpec,
     fee_rate,
     fetch_dataset,
     load_manifest,
@@ -28,10 +29,16 @@ from crypto_grid_bot.backtest.dataset import (
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, SeriesFeatures
 from crypto_grid_bot.backtest.klines import month_bounds_ms
 from crypto_grid_bot.backtest.replay import (
+    INTEGRITY_RULES,
     PATH_MODES,
+    STRICT_INTEGRITY_RULES,
+    VOLUME_DRIFT_TOLERANCE,
     RunConfig,
     check_accounting,
+    check_hourly_series,
+    cross_check_daily,
     cross_check_hourly,
+    load_daily,
     load_hourly,
     load_minutes,
     replay,
@@ -92,12 +99,45 @@ def run_job(
     return summarise(run, metrics, account, check_accounting(run, metrics, account))
 
 
-def cross_check_job(spec_path: Path, data_dir: Path, symbol: str) -> dict[str, Any]:
+def checked_symbols(spec: DatasetSpec) -> list[str]:
+    """Every symbol whose data reaches a decision: traded pairs, the market proxy (its
+    hourly bars feed every pair's regime signals) and the breadth basket (its votes gate
+    eligibility). Each is checked once."""
+    return list(dict.fromkeys([*spec.traded, spec.market_proxy, *spec.breadth_basket]))
+
+
+def cross_check_job(
+    spec_path: Path, data_dir: Path, symbol: str, strict_volume: bool = False
+) -> dict[str, Any]:
+    tolerance = Decimal(0) if strict_volume else VOLUME_DRIFT_TOLERANCE
     spec, manifest = load_spec(spec_path), load_manifest(manifest_path(spec_path))
     hourly = load_hourly(data_dir, manifest, symbol)
     window = (month_bounds_ms(spec.start)[0], month_bounds_ms(spec.end)[1])
-    minutes = load_minutes(data_dir, manifest, symbol)
-    return {"symbol": symbol, **cross_check_hourly(minutes, hourly, window)}
+    if symbol in spec.traded:
+        minutes = load_minutes(data_dir, manifest, symbol)
+        result = {"symbol": symbol, **cross_check_hourly(minutes, hourly, window, tolerance)}
+    else:
+        # No minute data: check the hours over warm-up and evaluation. Only a basket
+        # symbol may have documented absences; the proxy must be complete.
+        proxy = symbol == spec.market_proxy
+        excluded = [(e.start_ms, e.end_ms) for e in spec.basket_exclusions if e.symbol == symbol]
+        hourly_window = (month_bounds_ms(spec.warmup_start)[0], window[1])
+        result = {
+            "symbol": symbol,
+            "role": "market_proxy" if proxy else "breadth_basket",
+            **check_hourly_series(hourly, hourly_window, excluded),
+        }
+    if spec.daily_warmup_start and symbol in {*spec.traded, spec.market_proxy}:
+        daily = load_daily(data_dir, manifest, symbol)
+        result |= cross_check_daily(
+            daily,
+            hourly,
+            (month_bounds_ms(spec.daily_warmup_start)[0], window[1]),
+            (month_bounds_ms(spec.warmup_start)[0], window[1]),
+            window[0],
+            tolerance,
+        )
+    return result
 
 
 # Any non-zero value means the minute data cannot be trusted for this window.
@@ -111,16 +151,48 @@ INTEGRITY_FIELDS = (
 )
 
 
+# Checks on an untraded market proxy or basket symbol (hourly data only).
+SERIES_INTEGRITY_FIELDS = ("series_hours_missing", "series_hours_duplicated")
+
+
+# Present only when the spec declares daily_warmup_start (spec v1 P3).
+DAILY_INTEGRITY_FIELDS = (
+    "daily_days_mismatched",
+    "daily_days_missing",
+    "daily_days_duplicated",
+    "daily_days_hours_incomplete",
+    "daily_warmup_short",
+)
+
+
 def integrity_failures(checks: list[dict[str, Any]]) -> list[str]:
-    """Chronology/completeness failures. Genuine listing gaps are not exempted yet:
-    a dataset spanning a listing or delisting must be declared explicitly first."""
-    failures = [
-        f"{check['symbol']}: {field}={check[field]}"
-        for check in checks
-        for field in INTEGRITY_FIELDS
-        if check[field]
-    ]
-    failures += [f"{c['symbol']}: no hours compared" for c in checks if not c["hours_compared"]]
+    """Chronology/completeness failures. A basket symbol's listing or delisting gap is
+    exempt only where the spec documents it in ``basket_exclusions``."""
+    failures = []
+    for check in checks:
+        series = "role" in check
+        fields = SERIES_INTEGRITY_FIELDS if series else INTEGRITY_FIELDS
+        failures += [
+            f"{check['symbol']}: {field}={check[field]}" for field in fields if check[field]
+        ]
+        # A basket symbol documented as absent for the whole window has no hours.
+        wholly_excluded = (
+            series and check["series_hours_excluded"] and not check["series_hours_missing"]
+        )
+        if not check["series_hours_present" if series else "hours_compared"] and not (
+            wholly_excluded
+        ):
+            failures.append(f"{check['symbol']}: no hours compared")
+    for check in checks:
+        if "daily_days_compared" not in check:
+            continue
+        failures += [
+            f"{check['symbol']}: {field}={check[field]}"
+            for field in DAILY_INTEGRITY_FIELDS
+            if check[field]
+        ]
+        if not check["daily_days_compared"]:
+            failures.append(f"{check['symbol']}: no daily bars compared")
     return failures
 
 
@@ -173,10 +245,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--maker-fee", help="override the spec fee for resting fills")
     parser.add_argument("--taker-fee", help="fee for marketable exits (default: maker)")
+    parser.add_argument(
+        "--strict-volume",
+        action="store_true",
+        help="fail on any volume difference (no drift tolerance)",
+    )
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
-    maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee else spec.fee_rate
-    taker = fee_rate(args.taker_fee, "taker fee") if args.taker_fee else None
+    maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
+    taker = fee_rate(args.taker_fee, "taker fee") if args.taker_fee is not None else None
     if args.command == "fetch":
         manifest = fetch_dataset(spec, args.data_dir)
         write_manifest(manifest_path(args.spec), manifest)
@@ -185,19 +262,31 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     manifest = load_manifest(manifest_path(args.spec))
     verify_dataset(spec, manifest, args.data_dir)
+    integrity = {
+        "version": STRICT_INTEGRITY_RULES if args.strict_volume else INTEGRITY_RULES,
+        "volume_drift_tolerance": "0" if args.strict_volume else str(VOLUME_DRIFT_TOLERANCE),
+    }
     jobs = max(1, min(args.jobs, 8))
     with ProcessPoolExecutor(max_workers=jobs) as pool:
         # Chronology is settled before any replay starts; invalid data never replays.
         cross_checks = [
-            pool.submit(cross_check_job, args.spec, args.data_dir, symbol).result()
-            for symbol in spec.traded
+            pool.submit(
+                cross_check_job, args.spec, args.data_dir, symbol, args.strict_volume
+            ).result()
+            for symbol in checked_symbols(spec)
         ]
         failures = integrity_failures(cross_checks)
         if args.command == "verify" or failures:
             status = "invalid" if failures else "valid"
             print(
                 json.dumps(
-                    {"status": status, "failures": failures, "checks": cross_checks}, indent=1
+                    {
+                        "status": status,
+                        "integrity_rules": integrity,
+                        "failures": failures,
+                        "checks": cross_checks,
+                    },
+                    indent=1,
                 )
             )
             return 2 if failures else 0
@@ -223,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         "feature_version": FEATURE_VERSION,
         "manifest_created_at": manifest["created_at"],
         **_identity(args.spec, args.config),
+        "integrity_rules": integrity,
         "fees": {"maker": str(maker), "taker": str(taker if taker is not None else maker)},
         # Invalid results are kept for diagnosis but are never performance evidence.
         "valid": not failures,
