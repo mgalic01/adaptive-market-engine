@@ -161,11 +161,19 @@ Credits are limited, so every agent works on demand, not by polling:
   commands on GitHub with his key because bob can then work other tasks as well").**
   `bob-task.yml` lets Bob run a reviewed task file on a GitHub Linux machine with
   command access:
-  - **Start:** a comment `/bob-run docs/tasks/<date>-bob-<topic>.md` from the
-    repository owner's account, or "Run workflow" with the task path. Claude and Codex
-    also post as the owner, so they post `/bob-run` only after the task file is on
-    `main` **and** Codex has approved it or the owner has said go, and they link that
-    approval in the same comment.
+  - **Start:**
+    - **automatically, when a merge to `main` adds a new task file**
+      `docs/tasks/<date>-bob-<topic>.md` (owner approval, 2026-09-25: "yes, I approve
+      Bob starting automatically when a task file is merged, without asking me per
+      run"). The merge is the go, including merges by Claude or Codex. Editing an
+      existing task file never starts a run. So **a task PR is merged only after the
+      same review as code**: Codex's approval, or, while Codex is unavailable, Bob's
+      NOTED with green checks;
+    - a comment `/bob-run docs/tasks/<date>-bob-<topic>.md` from the repository
+      owner's account, for example to re-run a task. Claude and Codex also post as
+      the owner, so they post `/bob-run` only with a linked Codex approval or owner
+      go;
+    - "Run workflow" by the owner, with the task path.
   - **Containment:**
     - Bob's process has no GitHub token, MCP, browser or subagents;
     - only new `docs/reviews/*-bob-*.md` reports are published, on a new `bob/task-*`
