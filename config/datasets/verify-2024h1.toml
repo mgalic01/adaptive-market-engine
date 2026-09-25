@@ -11,6 +11,9 @@ breadth_basket = [
   "ADAUSDT", "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
 ]
 # Hourly warm-up months precede the evaluation window [start, end] (inclusive).
+# Daily bars for daily signals (experiment spec v1, P3): at least 200 completed days
+# before the evaluation start; cross-checked against the 1h archive where both exist.
+daily_warmup_start = "2023-05"
 warmup_start = "2023-11"
 start = "2024-01"
 end = "2024-06"

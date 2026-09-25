@@ -20,7 +20,7 @@ from pathlib import Path
 
 from crypto_grid_bot.market_data.parsing import DataError, amount, symbol_name
 
-INTERVAL_MS = {"1m": 60_000, "1h": 3_600_000}
+INTERVAL_MS = {"1m": 60_000, "1h": 3_600_000, "1d": 86_400_000}
 MAX_CSV_BYTES = 256 * 1024 * 1024
 # Microsecond epoch values are >= 1e15 for any date after 2001; milliseconds stay below.
 MICROSECOND_FLOOR = 10**15

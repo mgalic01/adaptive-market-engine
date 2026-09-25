@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
 from crypto_grid_bot.config import BotConfig
-from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, PortfolioSnapshot, RiskAction
+from crypto_grid_bot.domain import (
+    CandidateMetrics,
+    MarketSignals,
+    PortfolioSnapshot,
+    RiskAction,
+    RiskDecision,
+)
 from crypto_grid_bot.portfolio.profit_vault import ProfitVault, ProfitVaultState
 from crypto_grid_bot.risk.engine import RiskEngine
 from crypto_grid_bot.simulation.execution import liquidate, match, place, reduce_unreserved
@@ -99,6 +106,9 @@ class PaperSimulator:
             raise ValueError("only paper mode is supported")
         self.config, self.rules = config, rules
         self.policy = policy or SimulationPolicy()
+        # Replay measurement hook: sees (active equity, risk high-water mark, decision) at
+        # every risk evaluation. It observes only and must not change the account.
+        self.risk_observer: Callable[[Decimal, Decimal, RiskDecision], None] | None = None
         identity = encode(
             {
                 "schema": SCHEMA,
@@ -185,6 +195,8 @@ class PaperSimulator:
                 emergency=emergency,
             )
         )
+        if self.risk_observer is not None:
+            self.risk_observer(equity, account.risk_high, result)
         if result.action == RiskAction.EXIT:
             self._halt(account, "; ".join(result.reasons), exit_requested=True)
         elif result.action != RiskAction.ALLOW and not account.halt:
@@ -293,9 +305,13 @@ class PaperSimulator:
         if account.halt:
             if account.liquidating:
                 report["fills"] = [asdict(fill) for fill in liquidate(account, quote, self.rules)]
+                if report["fills"]:
+                    report["exit_reason"] = "liquidation"
             report.update(decision="halt", reason=account.halt)
         elif account.range_exit:
             report["fills"] = [asdict(fill) for fill in liquidate(account, quote, self.rules)]
+            if report["fills"]:
+                report["exit_reason"] = "range_exit"
             back_inside = account.grid_lower <= quote.bid <= account.grid_upper
             cooled = (
                 self.policy.recenter_after_exit
@@ -347,7 +363,7 @@ class PaperSimulator:
                     (D(fill["quantity"]) for fill in report["fills"] if fill["side"] == "sell"),
                     ZERO,
                 )
-                report["fills"].extend(
+                drained = [
                     asdict(fill)
                     for fill in reduce_unreserved(
                         account,
@@ -355,7 +371,10 @@ class PaperSimulator:
                         self.rules,
                         consumed=consumed,
                     )
-                )
+                ]
+                if drained:
+                    report["fills"].extend(drained)
+                    report["exit_reason"] = "drain"
 
         # Recheck risk after any fills, but never reuse this event's liquidity for an exit.
         if report["fills"]:

@@ -1,5 +1,5 @@
 {
- "created_at": "2026-09-24T10:21:23+00:00",
+ "created_at": "2026-09-24T21:05:33+00:00",
  "dataset": "verify-2024h1",
  "files": [
   {
@@ -1657,12 +1657,516 @@
     "ms"
    ],
    "url": "https://data.binance.vision/data/spot/monthly/klines/XRPUSDT/1h/XRPUSDT-1h-2024-06.zip"
+  },
+  {
+   "bytes": 1840,
+   "expected_rows": 31,
+   "first_open_ms": 1682899200000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1685491200000,
+   "missing_rows": 0,
+   "month": "2023-05",
+   "rows": 31,
+   "sha256": "06ff99c6f0f75dd5919adae093a482d8ce8ec1ce2f9996ef1acde3fb5d1c7890",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2023-05.zip"
+  },
+  {
+   "bytes": 1817,
+   "expected_rows": 30,
+   "first_open_ms": 1685577600000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1688083200000,
+   "missing_rows": 0,
+   "month": "2023-06",
+   "rows": 30,
+   "sha256": "0c0d38ddc046dea07632d28cc75c82123769d68e3456c751077ed525e00d47fe",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2023-06.zip"
+  },
+  {
+   "bytes": 1842,
+   "expected_rows": 31,
+   "first_open_ms": 1688169600000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1690761600000,
+   "missing_rows": 0,
+   "month": "2023-07",
+   "rows": 31,
+   "sha256": "cc1bd6e2125518ff2c31b3f64426f31f221a626acc18007b1de5b7fc7150f746",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2023-07.zip"
+  },
+  {
+   "bytes": 1827,
+   "expected_rows": 31,
+   "first_open_ms": 1690848000000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1693440000000,
+   "missing_rows": 0,
+   "month": "2023-08",
+   "rows": 31,
+   "sha256": "d2b700700108836ea6f3379ca74684b82a4b570985f13ff675b107c49f56cc11",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2023-08.zip"
+  },
+  {
+   "bytes": 1719,
+   "expected_rows": 30,
+   "first_open_ms": 1693526400000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1696032000000,
+   "missing_rows": 0,
+   "month": "2023-09",
+   "rows": 30,
+   "sha256": "31c340be055e2d922957565218b06db7cc3be5eaadb90016296c6c8f68526350",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2023-09.zip"
+  },
+  {
+   "bytes": 1798,
+   "expected_rows": 31,
+   "first_open_ms": 1696118400000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1698710400000,
+   "missing_rows": 0,
+   "month": "2023-10",
+   "rows": 31,
+   "sha256": "53c9a6f992f2880f805991ac8a7cce4470774cdea450f9ce334736776c66305e",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2023-10.zip"
+  },
+  {
+   "bytes": 1822,
+   "expected_rows": 30,
+   "first_open_ms": 1698796800000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1701302400000,
+   "missing_rows": 0,
+   "month": "2023-11",
+   "rows": 30,
+   "sha256": "8059c70dacbe89adda2300384c0740f2fec27ecab9c970999febcce631cb9523",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2023-11.zip"
+  },
+  {
+   "bytes": 1938,
+   "expected_rows": 31,
+   "first_open_ms": 1701388800000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1703980800000,
+   "missing_rows": 0,
+   "month": "2023-12",
+   "rows": 31,
+   "sha256": "858760581bad3ecd173a5daaff999c9681b174a87686b5df5efda39b76fa4517",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2023-12.zip"
+  },
+  {
+   "bytes": 1895,
+   "expected_rows": 31,
+   "first_open_ms": 1704067200000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1706659200000,
+   "missing_rows": 0,
+   "month": "2024-01",
+   "rows": 31,
+   "sha256": "70adfedbca42b3c5397a5c798897c72e0ca9f448c4cbf8299dbb5f8fcc983290",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2024-01.zip"
+  },
+  {
+   "bytes": 1796,
+   "expected_rows": 29,
+   "first_open_ms": 1706745600000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1709164800000,
+   "missing_rows": 0,
+   "month": "2024-02",
+   "rows": 29,
+   "sha256": "4f90e3c4b6f1897aa8b5a7cc96b8d1b8a38a8815a58d8e5869a01fd9a5023efa",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2024-02.zip"
+  },
+  {
+   "bytes": 1921,
+   "expected_rows": 31,
+   "first_open_ms": 1709251200000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1711843200000,
+   "missing_rows": 0,
+   "month": "2024-03",
+   "rows": 31,
+   "sha256": "f334945e0d063036bb16c36b1c15dbd6e87ef6077b34482f0e00a82581247049",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2024-03.zip"
+  },
+  {
+   "bytes": 1855,
+   "expected_rows": 30,
+   "first_open_ms": 1711929600000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1714435200000,
+   "missing_rows": 0,
+   "month": "2024-04",
+   "rows": 30,
+   "sha256": "95ca090a9aaa794021a901cd5e38d08e51ac160e2a1fd9beb5e775f93f3bb503",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2024-04.zip"
+  },
+  {
+   "bytes": 1865,
+   "expected_rows": 31,
+   "first_open_ms": 1714521600000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1717113600000,
+   "missing_rows": 0,
+   "month": "2024-05",
+   "rows": 31,
+   "sha256": "119df30ada8864e09a294d41aab0da7f27e973b9c080c081cb94dcf584e9b3d0",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2024-05.zip"
+  },
+  {
+   "bytes": 1799,
+   "expected_rows": 30,
+   "first_open_ms": 1717200000000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1719705600000,
+   "missing_rows": 0,
+   "month": "2024-06",
+   "rows": 30,
+   "sha256": "0248ead8f68ca9e00cac0fa23c3e7528612ef1b7b4580d122c8ff42902f76d44",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1d/ADAUSDT-1d-2024-06.zip"
+  },
+  {
+   "bytes": 2168,
+   "expected_rows": 31,
+   "first_open_ms": 1682899200000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1685491200000,
+   "missing_rows": 0,
+   "month": "2023-05",
+   "rows": 31,
+   "sha256": "c343e4689784c29f83d25147a096dd44b6ae5c1063c909f8adda82b56414469d",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2023-05.zip"
+  },
+  {
+   "bytes": 2099,
+   "expected_rows": 30,
+   "first_open_ms": 1685577600000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1688083200000,
+   "missing_rows": 0,
+   "month": "2023-06",
+   "rows": 30,
+   "sha256": "634919565c55a29729543d730927ca4b547c0e52d118a38de730f37fdd7617ef",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2023-06.zip"
+  },
+  {
+   "bytes": 2132,
+   "expected_rows": 31,
+   "first_open_ms": 1688169600000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1690761600000,
+   "missing_rows": 0,
+   "month": "2023-07",
+   "rows": 31,
+   "sha256": "32363d37de02e6ad8d334ac332c685f8cdf5684733a9f2cfbca40e15e591396b",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2023-07.zip"
+  },
+  {
+   "bytes": 2160,
+   "expected_rows": 31,
+   "first_open_ms": 1690848000000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1693440000000,
+   "missing_rows": 0,
+   "month": "2023-08",
+   "rows": 31,
+   "sha256": "8c5e47bfe3f0b0273534379e8ba5c93e69c84d67e8b9a03f293d6621bead2a5f",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2023-08.zip"
+  },
+  {
+   "bytes": 2080,
+   "expected_rows": 30,
+   "first_open_ms": 1693526400000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1696032000000,
+   "missing_rows": 0,
+   "month": "2023-09",
+   "rows": 30,
+   "sha256": "2fe68ecad48d6927a9280d89700e991cb6481dc2767698c785f2b2d1c0b14744",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2023-09.zip"
+  },
+  {
+   "bytes": 2154,
+   "expected_rows": 31,
+   "first_open_ms": 1696118400000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1698710400000,
+   "missing_rows": 0,
+   "month": "2023-10",
+   "rows": 31,
+   "sha256": "358b83bf0c2a5d5390a4bc4d4ae14fa9df0f56139642ad996c0df0f7bc712400",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2023-10.zip"
+  },
+  {
+   "bytes": 2102,
+   "expected_rows": 30,
+   "first_open_ms": 1698796800000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1701302400000,
+   "missing_rows": 0,
+   "month": "2023-11",
+   "rows": 30,
+   "sha256": "fac9823cac7bf56a3a6038c3b79417e949b00c172939e62000451c8c25edd7c1",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2023-11.zip"
+  },
+  {
+   "bytes": 2177,
+   "expected_rows": 31,
+   "first_open_ms": 1701388800000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1703980800000,
+   "missing_rows": 0,
+   "month": "2023-12",
+   "rows": 31,
+   "sha256": "056dad65795c9264ef90ee668a4c245e8fec73ebcbb272d28f5596c389913979",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2023-12.zip"
+  },
+  {
+   "bytes": 2190,
+   "expected_rows": 31,
+   "first_open_ms": 1704067200000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1706659200000,
+   "missing_rows": 0,
+   "month": "2024-01",
+   "rows": 31,
+   "sha256": "474c1ce6fbb09e42cfc7231fee249aecc58af2fb5918570ffeba37998926b4a4",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2024-01.zip"
+  },
+  {
+   "bytes": 2053,
+   "expected_rows": 29,
+   "first_open_ms": 1706745600000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1709164800000,
+   "missing_rows": 0,
+   "month": "2024-02",
+   "rows": 29,
+   "sha256": "4dae0b3d6b8ea59e39e6493b7964040c52459ea7b0a50b9c2793dcbfae53800d",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2024-02.zip"
+  },
+  {
+   "bytes": 2224,
+   "expected_rows": 31,
+   "first_open_ms": 1709251200000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1711843200000,
+   "missing_rows": 0,
+   "month": "2024-03",
+   "rows": 31,
+   "sha256": "f7cd4fcafe79d1fac0c830d5fe152f7b3b9100e7c97e40352188766388af0ae0",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2024-03.zip"
+  },
+  {
+   "bytes": 2141,
+   "expected_rows": 30,
+   "first_open_ms": 1711929600000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1714435200000,
+   "missing_rows": 0,
+   "month": "2024-04",
+   "rows": 30,
+   "sha256": "b4a8542c33e5251fb53f8a3352dd4e6f3cde4ac25f2c24935db8089aa1a2c3a0",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2024-04.zip"
+  },
+  {
+   "bytes": 2185,
+   "expected_rows": 31,
+   "first_open_ms": 1714521600000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1717113600000,
+   "missing_rows": 0,
+   "month": "2024-05",
+   "rows": 31,
+   "sha256": "0175f696039b9e30f06c6398d218c99e577661ac30424869c648fe9770507248",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2024-05.zip"
+  },
+  {
+   "bytes": 2095,
+   "expected_rows": 30,
+   "first_open_ms": 1717200000000,
+   "gaps": 0,
+   "interval": "1d",
+   "last_open_ms": 1719705600000,
+   "missing_rows": 0,
+   "month": "2024-06",
+   "rows": 30,
+   "sha256": "8a0f6416c2a83cfa15ba26c688d716fdafe35bb1748dd244f0550e8b2f7e38f7",
+   "status": "ok",
+   "symbol": "BTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2024-06.zip"
   }
  ],
  "instruments": {
   "ADAUSDT": {
    "base": "ADA",
-   "fetched_at": "2026-09-24T10:21:23+00:00",
+   "fetched_at": "2026-09-24T21:05:33+00:00",
    "min_notional": "5.00000000",
    "note": "current exchange filters applied to historical replay (approximation)",
    "quantity_step": "0.10000000",
@@ -1671,7 +2175,7 @@
   },
   "BTCUSDT": {
    "base": "BTC",
-   "fetched_at": "2026-09-24T10:21:23+00:00",
+   "fetched_at": "2026-09-24T21:05:33+00:00",
    "min_notional": "5.00000000",
    "note": "current exchange filters applied to historical replay (approximation)",
    "quantity_step": "0.00001000",

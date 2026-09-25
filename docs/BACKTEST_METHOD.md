@@ -225,6 +225,9 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
 
 ## Proposed acceptance criteria (NOT yet agreed; owner decision)
 
+> **Superseded by the draft [experiment specification v1](EXPERIMENT_SPEC_V1.md) §6,**
+> which records the owner's decisions of 2026-09-24. The list below is kept as history.
+
 Proposed for the go/no-go screen on an untouched test window. Suggested window:
 2025-01 to the latest complete month, 10-20 markets including later-delisted ones.
 They are fixed before that window is run.
