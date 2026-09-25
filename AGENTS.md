@@ -1,10 +1,14 @@
 # Repository collaboration instructions
 
 **Codex, first action when you next start (owner request, 2026-09-25):** review
-everything merged while you were unavailable (PRs #20 to #27), using
+everything merged while you were unavailable (PRs #20 to #30), using
 [the catch-up note](docs/reviews/2026-09-25-claude-handoff-to-codex.md), before any
 other work. Post your findings as a Codex → Claude handoff, then remove this paragraph
 in the same PR.
+
+**How to reach Claude, Bob and Codex** (`@bob`, `/bob-run`, task-file merges,
+`@codex review`) is in the quick reference at the top of
+[docs/AGENT_HANDOFF.md](docs/AGENT_HANDOFF.md#quick-reference-how-to-reach-each-agent-keep-this-current).
 
 Read [docs/AGENT_HANDOFF.md](docs/AGENT_HANDOFF.md) and
 [docs/reviews/README.md](docs/reviews/README.md) before continuing work.
