@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Bob: V0 equivalence check status and Windows environment limits](2026-09-25-bob-v0-equivalence-status.md) | Reports verified inputs, completed baseline runs, single-test candidate match, and hands off full Linux execution of remaining matrix runs to Claude. |
 | [Codex: PR #16 review checkpoint](2026-09-25-codex-pr16-review-checkpoint.md) | Independent Windows verification at 99bb81a, E/C5 clarifications at 5014025, and PR #17 corrections; full approval and Bob evidence pending. |
 | [Codex: experiment spec review](2026-09-24-codex-experiment-spec-review.md) | PR #16 draft a87984a: six specification corrections before freeze; timing, owner gate and selection answers. |
 | [Codex: fee measurement review](2026-09-24-codex-fee-measurement-review.md) | PR #14 runtime and reporting corrections verified; merged as 3d1b142. Harness and variant questions answered. |
