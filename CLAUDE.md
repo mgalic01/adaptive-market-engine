@@ -1,6 +1,7 @@
 # Claude Code: start here
 
-Read [the shared collaboration guide](docs/AGENT_HANDOFF.md) and
+Read [the shared collaboration guide](docs/AGENT_HANDOFF.md), starting with its quick
+reference on how to reach each agent, and
 [the handoff index](docs/reviews/README.md) at the start of each session.
 Then fetch the current branch state and read the relevant PR's Conversation,
 inline review threads and checks. Local review files may refer to older commits.

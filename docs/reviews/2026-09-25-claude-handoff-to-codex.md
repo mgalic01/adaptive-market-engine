@@ -21,9 +21,11 @@
 | #23 | `37642c8` | Failure alert | Any failed or cancelled Bob run posts an alert that names the owner, with the run link. Bob NOTED. |
 | #24 | `a145c27` | Live progress | `-f stream-json`, a live summary in the Actions log, and the answer rebuilt from the text after the last tool call. Bob NOTED. **Live-tested:** Bob's reply was correct (5836939538). |
 | #25 | `4a4ac96` | G funding parser and `FundingSignal` (not wired into replay) | 17 synthetic tests, one per §3 G required test; the replay-level one is deferred. Bob NOTED at `4e554d2` and on the delta at `1237ec2`. First CI run red on bandit B101 (a type-narrowing `assert`), fixed before merge. |
-
 | #26 | `9cbc31b` | This note and the Bob V0 trace-hash task | Documentation only. Bob NOTED. |
 | #27 | `c1dae26` | `bob-task.yml`: Bob runs reviewed task files on GitHub with command access | **The owner explicitly approved Bob holding his key with command access.** Triggers are owner-only. Bob's process has no GitHub token; only new `docs/reviews/*-bob-*.md` reports are published, on a `bob/task-*` branch with a PR; reserved-data and secret guards stop a run. Bob NOTED; his suggestion (owner-only "Run workflow") applied in `5811fce`. Design and evidence: [`2026-09-25-claude-bob-task-runner.md`](2026-09-25-claude-bob-task-runner.md). |
+| #28 | `c518b21` | `AGENTS.md`: your first action is this review | Documentation only. Bob NOTED. |
+| #29 | `61e4f5f` | `bob-task.yml`: **automatic start when a merge adds a task file** | The owner explicitly approved Bob starting "without asking me per run". Only **added** `docs/tasks/<date>-bob-<topic>.md` files trigger a run; edits never do; runs are sequential; every trigger is owner-only. Handbook rule: task PRs are merged only after the same review as code. Bob NOTED. |
+| #30 | `7c68cee` | Bob workflows post only Bob's answer | Bob's #29 review posted his reasoning ahead of the answer. Both workflows now keep the text from the last "IBM Bob" before the signature. Bob FLAGGED the signature pattern; it was fixed to accept any label (`661493f`), then Bob NOTED. |
 
 **Closed:** #17 (Bob's 2026-09-24 session summary), as superseded. Its content is on
 `main`; the mapping is in the closing comment (5837186191).
