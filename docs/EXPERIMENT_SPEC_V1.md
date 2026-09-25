@@ -326,10 +326,11 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   record's successor unknown, so G is unavailable (below) until three consecutive
   valid records exist again.
 - **Pending P8 evidence (G cannot be frozen until resolved):**
-  - **Interval meaning:** the rules below treat a record's interval as the interval
-    to its **next** settlement. If the survey shows the field describes the interval
-    **ending** at that record, or cannot tell, the successor schedule is redefined by a
-    documented rule before freeze, with a cadence transition as the key test case.
+  - **Interval meaning: resolved by convention (2026-09-25, PR #19 discussion).** The
+    archives cannot tell whether a record's interval is the interval **to its next**
+    settlement or the interval **ending at** it. G therefore uses the
+    **uniform-cadence rule** below. It gives the same decision under both readings
+    whenever the latest three records agree, and it is unavailable otherwise.
   - **Missing field:** if some archive months have no interval field, the spec is
     amended before freeze; nothing is assumed.
   - **Modelling conventions, not verified facts:** flooring `calc_time` to the hour
@@ -347,7 +348,9 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
         `calc_time,funding_interval_hours,last_funding_rate`.
       - All 5,481 records have interval 8.
       - Every step is exactly 8 hours, with no missing and no duplicate settlements.
-      - The largest offset past the hour is 47 ms, so flooring to the hour is exact.
+      - The largest offset past the hour is 47 ms. Flooring to the hour reconstructs
+        the scheduled slots in this sample, but it discards the raw offsets, which are
+        kept for provenance. It says nothing about publication time.
       - **Consequence:** in both development windows, the meaning of the interval field
         (next or ending) cannot change any G decision, so these rules apply as written.
         A cadence change, if one ever occurs, needs a documented rule and its test
@@ -358,27 +361,92 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
 - **Timing:** a record becomes usable at `calc_time + 60 s` (a fixed publication
   allowance, an **assumption** pending P8), at the first valid observation at or after
   that instant.
-- **Latest three, complete and consecutive:** at an observation at time `t`, take the
-  newest usable record `r3`. The signal is **available** only if all of these hold:
-  - `r3`'s successor is not overdue: `t < scheduled(r3) + interval(r3) + 60 s`. An
-    expected settlement that is due and absent makes the signal unavailable; an older
-    record is never substituted for it;
-  - the two records before it exist, and each step is exact:
-    `scheduled(r2) = scheduled(r1) + interval(r1)` and
-    `scheduled(r3) = scheduled(r2) + interval(r2)`. A gap inside the three is
-    unavailable.
+- **Uniform-cadence rule (latest three):** at an observation at time `t`, take the
+  newest usable record `r3` and the two usable records before it, `r1` and `r2`.
+  - **Insufficient history:** if fewer than three usable records exist, including at
+    replay start before enough funding history has accumulated, the signal is
+    unavailable. G fails closed by default.
+  - **Invalid newest record:** `r3` is the newest usable record whatever its content.
+    If it is invalid (missing or unaccepted interval, non-finite rate), the signal is
+    unavailable. It is never filtered out in favour of three older valid records.
+  - **Available** only if all of these hold:
+    - **Finite rates:** all three records carry finite rates. An invalid rate on
+      `r1` or `r2` makes the signal unavailable just as it does on `r3`; invalid
+      records are never skipped to substitute older valid records.
+    - **Uniform interval:** `r1`, `r2` and `r3` all carry the **same** accepted
+      interval `I`.
+    - **Exact steps:** `scheduled(r2) − scheduled(r1) = I` and
+      `scheduled(r3) − scheduled(r2) = I`.
+    - **Not overdue:** `t < scheduled(r3) + I + 60 s`. A settlement that is due and
+      absent makes the signal unavailable, and an older record is never substituted
+      for it.
+  - **Why uniform:** with a constant cadence, the "next" and "ending" readings agree
+    on every step, so the decision does not depend on which one is true. Mixed
+    intervals make the signal unavailable. This also rejects a hidden gap such as
+    (4 h record, missing record, 8 h record), whose 8-hour step the "ending" reading
+    would otherwise accept.
+  - **Successor = `I` is a modelling convention, not a guaranteed fact.** Uniform past
+    records cannot show that the *next* interval has not already changed before its
+    first record becomes usable. Until then, the overdue deadline uses `I`:
+    - the signal becomes unavailable as soon as either the first record carrying
+      the new interval becomes usable (the three are then mixed), or the old
+      deadline `scheduled(r3) + I + 60 s` passes without a newer usable record,
+      whichever comes first;
+    - under the "next" reading the first case happens at the last old-cadence
+      settlement; under the "ending" reading it happens at the first new-cadence
+      settlement, or the old deadline passes first when the cadence lengthens.
+
+    G blocks on detected disagreement or the convention's overdue deadline.
+    It cannot detect an unseen shorter cadence before either condition occurs:
+    if the first changed record is absent, three old uniform records can remain
+    available until the old deadline. This is a limitation of the convention,
+    not a guarantee against every missing settlement under an unknown cadence.
+  - **Recovery condition:** after a cadence change, a gap or an invalid record, the
+    signal becomes available again at the first observation at which the three newest
+    usable records again satisfy all of the conditions above, including the same
+    overdue deadline `scheduled(r3) + I + 60 s`; no separate boundary is defined. How long that takes
+    depends on the new cadence and on when observations occur; it is not a fixed
+    time.
 - **Rule:** no new grid while the signal is **unavailable**, or while it is available
   and all three rates are **> +0.0005** (+0.05% per settlement; strict). Otherwise G
   does not block.
   - Negative or low funding never blocks.
   - Existing grids, sells and exits are unaffected, whatever G's state.
-- **Required tests:** the newest expected record missing while three older records are
-  still within 32 hours (must block); a gap inside the three; duplicate scheduled
-  times (integrity failure); a rate exactly +0.0005 (does not count as above); the
-  observation exactly at `calc_time + 60 s` and one second before it; the overdue
-  boundary exactly at `scheduled(r3) + interval(r3) + 60 s`; an interval change within
-  the three (for example 8 h then 4 h); a missing or invalid interval field; existing
-  grids and exits unchanged while G blocks.
+- **Required tests** (synthetic series; no reserved-window data):
+  - **Constant cadence:** 8 h, available.
+  - **Cadence change 8 → 4 h:** the windows (8, 8, 4) and (8, 4, 4) are unavailable,
+    and the first (4, 4, 4) with 4-hour steps is available.
+  - **Cadence change 4 → 8 h:** the same checks.
+  - **Observations between the old and new deadlines, in both directions:**
+    - **8 → 4 h:** before the first 4-hour record becomes usable, available until the
+      old overdue deadline `scheduled(r3) + 8 h + 60 s`; after it becomes usable,
+      unavailable because the window is mixed.
+    - **4 → 8 h:** unavailable once the old overdue deadline
+      `scheduled(r3) + 4 h + 60 s` passes, until uniform 8-hour records exist.
+  - **The first changed record's publication boundary:** exactly at its
+    `calc_time + 60 s`, and one second before it.
+  - **Hidden gap:** (4 h, missing, 8 h) is unavailable.
+  - **Missing newest record:** while three older records are still within 32 hours,
+    unavailable.
+  - **Invalid newest record** (interval 0, 3, 12 or empty; non-finite rate): unavailable,
+    never falling back to three older valid records.
+  - **Insufficient history:** zero, one and two usable records, including at replay
+    start, are all unavailable.
+  - **Invalid older record:** an unaccepted interval on `r1` or `r2` makes the signal
+    unavailable through the uniform-interval check. A non-finite rate on either
+    older record also makes it unavailable, without substituting another record.
+  - **Unseen shortening with missing changed record:** three valid 8-hour records
+    remain available after the unknown 4-hour deadline and before the old
+    `scheduled(r3) + 8 h + 60 s` deadline; at the old deadline they are unavailable.
+    This explicitly tests the convention's detection limitation.
+  - **Duplicate scheduled times:** an integrity failure.
+  - **Rate boundary:** exactly +0.0005 does not count as above.
+  - **Usability boundary:** exactly at `calc_time + 60 s`, and one second before it.
+  - **Overdue boundary:** exactly at `scheduled(r3) + I + 60 s` (unavailable), and one
+    second before it (available).
+  - **Recovery:** after a gap and after a transition, the exact first observation at
+    which the signal is available again.
+  - **Existing grids and exits:** unchanged in every unavailable state.
 - **Runs:** G on its own (V0 + G), and **C + G** as a declared interaction.
 - **Reported:** the number of grids blocked, the hours blocked, and the lag between
   settlement and effect.

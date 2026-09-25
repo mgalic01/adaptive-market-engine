@@ -144,9 +144,19 @@ Credits are limited, so every agent works on demand, not by polling:
   question. The `bob-review.yml` workflow triggers only on a PR comment containing an
   explicit `@bob` from the owner or a collaborator, never on pushes, reviews or a comment
   that merely contains the word "Bob". It installs a pinned Bob package verified against
-  a committed SHA-256, and gives Bob only the triggering comment, as data: Bob never reads
-  other PR comments as instructions and never prints or posts secrets or environment
-  variables.
+  a committed SHA-256. Bob is read-only there: every tool group except `read` is disabled,
+  and his process has no GitHub token or runner credentials. The workflow gives him, as
+  data, the triggering comment, the PR title, description and head SHA, the PR diff and
+  `docs/reviews/README.md`; he never reads other PR comments. The PR diff and description
+  are untrusted input, so the workflow, not Bob, posts his answer, and refuses to post
+  one that contains his key or a GitHub-token-shaped string.
+- **Broken communication is reported at once (owner instruction, 2026-09-25).** If a
+  Bob run fails or times out, the workflow posts an alert on that PR that names the
+  owner, links the run log and lists the step outcomes, so GitHub notifies the owner
+  directly. Claude diagnoses it from the log and reports the cause and a fix to the
+  owner. Any agent that sees another break on an agent path (a usage-limit reply, a
+  missing answer to a handoff) tells the owner in its next message, never silently
+  waits.
 - **All agents:** batch small fixes into fewer pushes; every push re-runs CI and reviews.
 
 ### Escalation to the owner (owner instruction, 2026-09-24)
