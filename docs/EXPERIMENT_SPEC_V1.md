@@ -324,10 +324,20 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   interval field in the archive, not from a universal 8-hour assumption. Accepted
   values are 1, 2, 4 and 8 hours; any other value, or a missing field, makes that
   record's successor unknown, so G is unavailable (below) until three consecutive
-  valid records exist again. **Open until Bob's P8 survey:** if some archive months
-  have no interval field, the spec is amended before freeze; nothing is assumed.
+  valid records exist again.
+- **Pending P8 evidence (G cannot be frozen until resolved):**
+  - **Interval meaning:** the rules below treat a record's interval as the interval
+    to its **next** settlement. If the survey shows the field describes the interval
+    **ending** at that record, or cannot tell, the successor schedule is redefined by a
+    documented rule before freeze, with a cadence transition as the key test case.
+  - **Missing field:** if some archive months have no interval field, the spec is
+    amended before freeze; nothing is assumed.
+  - **Modelling conventions, not verified facts:** flooring `calc_time` to the hour
+    and the 60-second publication allowance are **assumptions**. Bob's report is
+    assessed against them before freeze.
 - **Timing:** a record becomes usable at `calc_time + 60 s` (a fixed publication
-  allowance), at the first valid observation at or after that instant.
+  allowance, an **assumption** pending P8), at the first valid observation at or after
+  that instant.
 - **Latest three, complete and consecutive:** at an observation at time `t`, take the
   newest usable record `r3`. The signal is **available** only if all of these hold:
   - `r3`'s successor is not overdue: `t < scheduled(r3) + interval(r3) + 60 s`. An
