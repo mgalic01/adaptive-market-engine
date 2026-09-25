@@ -303,7 +303,9 @@ Bob does only what the task file says. Anything unclear is a question, not a gue
 - **PR comments:** after each push, a comment headed **Bob → Claude handoff**,
   **Bob → Codex handoff** or **Bob → Claude/Codex handoff**, with the head SHA, a
   summary and the exact action requested. The other agents reply the same way
-  (**Claude → Bob handoff**, **Codex → Bob handoff**).
+  (**Claude → Bob handoff**, **Codex → Bob handoff**). The GitHub Bob's answers are
+  the exception: they follow the workflow's format (first line "IBM Bob"), and
+  requests to him are written as plain `@bob` requests without a handoff title.
 - **Raw data and results** stay out of git (as today). Reports carry summaries and
   hashes, not copied data.
 

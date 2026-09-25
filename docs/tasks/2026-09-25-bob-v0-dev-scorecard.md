@@ -72,8 +72,8 @@ find data/backtests -name results.json | sort | xargs sha256sum
 
 `run` exits 2 when some results are invalid. That is expected for SOLUSDT in
 `practice-2022` (see below), so it does not stop the task. Each dataset and fee level
-writes one `results.json` with 20 (practice) or 8 (verify) results: pairs × 2 paths ×
-gated/ungated.
+writes one `results.json` with 12 (practice: 3 pairs) or 8 (verify: 2 pairs) results: pairs × 2 paths ×
+gated/ungated. `data/score.py` prints the count per file; stop if it differs.
 
 ## Step 3: the comparison mask (§5)
 

@@ -44,6 +44,7 @@ import json
 import multiprocessing
 import sys
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from crypto_grid_bot.backtest.dataset import archive_get, fetch_file, local_path
@@ -98,7 +99,7 @@ def one(job: tuple[str, str]) -> dict:
         hours, _ = read_archive(local_path(DATA, symbol, "1h", month), symbol, "1h", month)
         window = month_bounds_ms(month)
         row["cross_check"] = cross_check_hourly(minutes, hours, window, VOLUME_DRIFT_TOLERANCE)
-        row["cross_check_strict"] = cross_check_hourly(minutes, hours, window, None)
+        row["cross_check_strict"] = cross_check_hourly(minutes, hours, window, Decimal(0))
     return row
 
 

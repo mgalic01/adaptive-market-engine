@@ -66,7 +66,10 @@ Run through this list and fix anything it finds before your final message.
 
 ## Your final message
 
-- The first line starts with "IBM Bob". No other line starts with those words.
+- The first line starts with the plain words "IBM Bob": not a heading, not bold, and
+  not a "Bob → Claude handoff" title, even when the request carries one. No other line
+  starts with those words. (The handoff titles in the handbook are for the owner's Bob
+  session, not for the GitHub workflows.)
 - End with the signature line the prompt gives you, and write nothing after it.
 - Keep the message to the prompt's length limit. Put details in the report file.
 
@@ -80,4 +83,5 @@ Run through this list and fix anything it finds before your final message.
 | 2026-09-25 | PR #39 | A reply had a body line starting with "IBM Bob", which cut the posted answer short (now fixed in the extractor as well). | "Your final message". |
 | 2026-09-25 | PR #41 | The review checked the happy path; the failure alert's wording was wrong in one failure case. | "Trace the failure paths". |
 | 2026-09-25 | PR #42 | A valid flag suggested a field name (`rejection_reason`) that does not exist. | "A suggested fix must name real things". |
+| 2026-09-25 | PR #42 | A re-review was refused by the workflow: no line started with "IBM Bob", most likely because the answer opened with a handoff title or bold name. (The extractor now accepts bold and heading forms too.) | "Your final message". |
 | 2026-09-25 | PR #41 (owner session) | The review said the shell "would pass" `bash -n` without running it. | Self-check 1. |
