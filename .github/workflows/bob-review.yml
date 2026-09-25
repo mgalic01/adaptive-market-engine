@@ -177,6 +177,13 @@ jobs:
                     and ($e.isReasoning | not) then . + ($e.content | strings)
                   else . end)
               else "" end
+            # Keep only the answer: the prompt makes it start with "IBM Bob" and end
+            # with his signature, so drop any reasoning written before it.
+            | . as $t
+            | ($t | sub("(?s)\\s*—\\s*IBM Bob \\([^()]*\\)\\s*$"; "")) as $body
+            | ($body | split("IBM Bob")) as $parts
+            | if ($parts | length) < 2 then $t
+              else "IBM Bob" + ($parts | last) + $t[($body | length):] end
             | select(test("\\S"))' bob-output.jsonl | tail -c 60000 > bob-comment.md
           if [ ! -s bob-comment.md ]; then
             echo "Bob returned no answer; nothing posted. First 3000 bytes of its output:"
