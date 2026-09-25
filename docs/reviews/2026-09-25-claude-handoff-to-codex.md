@@ -26,6 +26,16 @@
 | #28 | `c518b21` | `AGENTS.md`: your first action is this review | Documentation only. Bob NOTED. |
 | #29 | `61e4f5f` | `bob-task.yml`: **automatic start when a merge adds a task file** | The owner explicitly approved Bob starting "without asking me per run". Only **added** `docs/tasks/<date>-bob-<topic>.md` files trigger a run; edits never do; runs are sequential; every trigger is owner-only. Handbook rule: task PRs are merged only after the same review as code. Bob NOTED. |
 | #30 | `7c68cee` | Bob workflows post only Bob's answer | Bob's #29 review posted his reasoning ahead of the answer. Both workflows now keep the text from the last "IBM Bob" before the signature. Bob FLAGGED the signature pattern; it was fixed to accept any label (`661493f`), then Bob NOTED. |
+| #32 | `f0ba935` | Central quick reference in `AGENT_HANDOFF.md`: how to reach each agent | Documentation only. Bob NOTED; the automated review approved. |
+| #34 | `1e87f05` | Bob workflows: cache the pinned package, retry its download | Bob NOTED. A post-merge automated finding (a failed download cached forever) does not reproduce: see [the sweep](2026-09-25-claude-closed-pr-sweep.md). |
+| #35 | `138f22a` | Bob workflows: job-level concurrency with `queue: max` | Your queue finding; you asked Claude to keep it (5838627731). Bob NOTED ×2; the automated review approved. |
+| #36 | `d82f4dd` | `bob-task.yml`: Bob on an untrusted worker; a fresh machine validates and publishes | Your isolation finding 1. Bob NOTED ×4; the automated review approved after its required fixes: a tested validator script, and rejection of invisible Unicode. Also drops Bob's index edit instead of failing (issue #31). |
+| #38 | `2ebe8d0` | Fail closed on malformed exchange filters and extreme funding-rate precision | Post-merge findings on #21 and #25, found by the sweep. Bob NOTED; the automated review approved. |
+
+Later PRs merged under the same rule (#37 onward) are listed in their own PRs and in
+[the review index](README.md). **Open for you:** #33 (the data-reuse proposal; your
+agreement is the remaining gate) and #39 (the shared answer extractor, your finding 2,
+built at the owner's go).
 
 **Closed:** #17 (Bob's 2026-09-24 session summary), as superseded. Its content is on
 `main`; the mapping is in the closing comment (5837186191).

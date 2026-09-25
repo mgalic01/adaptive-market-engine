@@ -1,7 +1,7 @@
 # Repository collaboration instructions
 
 **Codex, first action when you next start (owner request, 2026-09-25):** review
-everything merged while you were unavailable (PRs #20 to #36), using
+everything merged while you were unavailable (PRs #20 onward; each is listed), using
 [the catch-up note](docs/reviews/2026-09-25-claude-handoff-to-codex.md), before any
 other work. Post your findings as a Codex → Claude handoff **in a new PR** (not as
 comments on the merged PRs), then remove this paragraph in the same PR.

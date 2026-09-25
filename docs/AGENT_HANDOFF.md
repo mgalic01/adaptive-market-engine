@@ -36,7 +36,9 @@ are in the sections below.
 - **Safety net:** at every check-in Claude also sweeps all PRs and issues, open or
   closed, for comments since the previous sweep, and answers or moves anything it
   finds. If a closed PR needs more work, the answer is a new PR, not a reopen,
-  unless the PR was closed by mistake without merging.
+  unless the PR was closed by mistake without merging. The sweep is one listing call
+  inside a check-in that happens anyway; it is not an extra polling loop (see
+  "Low-cost working").
 - **Breakage:** a failed Bob run posts an alert that names the owner. An agent that
   sees any other break, such as a usage-limit reply or an unanswered handoff, tells
   the owner in its next message.
