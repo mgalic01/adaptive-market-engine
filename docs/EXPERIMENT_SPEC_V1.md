@@ -335,6 +335,22 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - **Modelling conventions, not verified facts:** flooring `calc_time` to the hour
     and the 60-second publication allowance are **assumptions**. Bob's report is
     assessed against them before freeze.
+  - **Bob's P8 survey (2026-09-25, `bob/p8-data-survey` `761b2ee`):**
+    - Funding archives exist for all 60 months, 2020-01 to 2024-12, with no errors.
+    - One sampled month (2022-06) has the header
+      `calc_time,funding_interval_hours,last_funding_rate`, millisecond times, interval
+      8 and three settlements per day.
+    - Some times are a few milliseconds past the hour (for example `+11 ms`), which
+      supports flooring to the hour.
+    - **Not yet established:** whether every month has the interval field, whether the
+      interval is ever not 8 or a settlement is ever missing in 2020–2024, and what the
+      field means. These are the subject of the follow-up task
+      `docs/tasks/2026-09-25-bob-funding-cadence.md`. If every development-window
+      month has the field, only the value 8 and exact 8-hour steps, then the meaning of
+      the field cannot change any decision in those windows. A cadence transition then
+      still needs a documented rule before the reserved run.
+    - The 60-second publication allowance cannot be verified from archives. It stays a
+      labelled assumption.
 - **Timing:** a record becomes usable at `calc_time + 60 s` (a fixed publication
   allowance, an **assumption** pending P8), at the first valid observation at or after
   that instant.
@@ -377,6 +393,15 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
 - **Data:** each traded pair's own completed **daily closes** (P3), with its SMA200.
   **ATH** is the highest completed daily close since the most recent halving, which
   requires daily data from that halving onward (P3 extended accordingly).
+  - **Incomplete history:** if a pair's daily data does not reach back to the halving,
+    for example because it was listed after it, its ATH is **unavailable** and H3 never
+    relaxes entry for that pair. H2 does not use ATH and applies as normal. An ATH
+    counted from the listing date is never substituted. Unavailability is reported.
+  - **P8 evidence (Bob, 2026-09-25):** SOLUSDT daily data starts on 2020-08-11, three
+    months after the 2020-05-11 halving, so SOL's H3 is unavailable until the 2024
+    halving. This affects only `practice-2022` SOL, which is already outside the
+    primary comparison (P4). BTC, ETH, XRP and ADA daily data is complete from 2020-01,
+    and all five pairs have it for 2024-04 to 2024-12 (the surveyed range; 2025 onward was not examined).
 - **H2, overextension guard:** for `m` in **[18, 30)**, if `C > 1.60 × SMA200`:
   - no new grid;
   - existing grids use a **2-hour** outside-range threshold instead of 6 hours.
