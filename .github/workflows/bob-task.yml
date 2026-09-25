@@ -31,8 +31,11 @@ concurrency:
 
 jobs:
   bob-task:
+    # Only the owner, on both triggers (Bob's review of PR #27: "Run workflow" is otherwise
+    # open to anyone with write access).
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.actor == github.repository_owner) ||
       (github.event.comment.author_association == 'OWNER' &&
        contains(github.event.comment.body, '/bob-run'))
     runs-on: ubuntu-latest
