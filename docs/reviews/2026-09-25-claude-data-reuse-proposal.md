@@ -172,7 +172,7 @@ with the same status.
 1. P8 funding integration, already planned.
 2. The 2017-08 to 2024-12 data: a Bob task to list, fetch and check it, and to confirm
    the first complete months.
-3. The spec change, after Codex's review: the new windows, the four items above
+3. The spec change, after Codex's review: the new windows, the three conditions above
    (fold rule, register format and gate, DSR) and Bob's additional requirement (a
    frozen regime labeller) and H's halving
    per fold.
