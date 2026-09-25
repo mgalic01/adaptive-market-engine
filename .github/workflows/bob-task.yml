@@ -316,11 +316,6 @@ jobs:
               exit 1
             fi
           done
-          if [ -s "$RUNNER_TEMP/changes.txt" ]; then
-            echo "has_report=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_report=false" >> "$GITHUB_OUTPUT"
-          fi
 
       # Only the report file and the summary leave this machine; the publish job
       # validates both again on a fresh runner.

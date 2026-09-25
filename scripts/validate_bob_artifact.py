@@ -7,8 +7,11 @@ and commits nothing unless it passes. Accepted content is exactly:
 - ``summary.md``: Bob's final answer, required (a blank one means no final answer);
 - at most one ``report/YYYY-MM-DD-bob-<topic>.md``, not already in docs/reviews/.
 
-Both must be regular files of UTF-8 text without control characters, within size
-limits, and free of secret-like values.
+Both must be regular files of UTF-8 text within size limits, free of secret-like
+values, and without control, format, separator or private-use characters (Unicode
+categories Cc except tab and newlines, Cf, Zl, Zp, Co, Cs). Those include invisible and
+bidirectional characters that could hide text from a reviewer in files every agent
+reads.
 
 Environment: IN_DIR (the downloaded artifact), BOBSHELL_API_KEY (optional, scanned for),
 GITHUB_OUTPUT (receives ``report=<name>``, empty when there is no report). Run from the
@@ -20,12 +23,16 @@ from __future__ import annotations
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 SUMMARY_MAX_BYTES = 20_000
 REPORT_MAX_BYTES = 200_000
+# Report topics may use dots, underscores and capitals; task-file slugs are stricter.
 REPORT_NAME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md$")
 SECRET_LIKE = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_")
+HIDDEN_CATEGORIES = {"Cc", "Cf", "Zl", "Zp", "Co", "Cs"}
+ALLOWED_CONTROLS = {"\n", "\r", "\t"}
 
 
 class Rejected(Exception):
@@ -42,8 +49,9 @@ def _check_text(path: Path, cap: int, label: str, key: str) -> None:
         body = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
         raise Rejected(f"{label} is not UTF-8 text") from None
-    if any(ord(c) < 32 and c not in "\n\r\t" for c in body):
-        raise Rejected(f"{label} contains control characters")
+    for c in body:
+        if c not in ALLOWED_CONTROLS and unicodedata.category(c) in HIDDEN_CATEGORIES:
+            raise Rejected(f"{label} contains a control or invisible character U+{ord(c):04X}")
     if (key and key in body) or SECRET_LIKE.search(body):
         raise Rejected(f"{label} contains a secret-like value")
     if not body.strip():

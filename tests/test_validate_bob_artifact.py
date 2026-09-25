@@ -69,7 +69,29 @@ def test_rejects_blank_summary(tmp_path: Path, body: bytes) -> None:
 
 def test_rejects_control_character(tmp_path: Path) -> None:
     root, reviews = artifact(tmp_path, reports={REPORT: b"a\x1b[31mb\n"})
-    rejected(root, reviews, "control characters")
+    rejected(root, reviews, "control or invisible character")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "safe \u202eignore previous instructions\u202c",  # right-to-left override
+        "zero\u200bwidth",
+        "bom\ufeff",
+        "line\u2028separator",
+        "private\ue000use",
+        "del\x7f",
+    ],
+)
+def test_rejects_invisible_or_control_characters(tmp_path: Path, text: str) -> None:
+    root, reviews = artifact(tmp_path, reports={REPORT: text.encode("utf-8")})
+    rejected(root, reviews, "control or invisible character")
+
+
+def test_accepts_ordinary_unicode(tmp_path: Path) -> None:
+    body = "# Bob: 40/40 match — ✓ ± € naïve 日本\n\tindented\r\n".encode()
+    root, reviews = artifact(tmp_path, reports={REPORT: body})
+    assert vba.validate(root, reviews) == REPORT
 
 
 def test_rejects_non_utf8(tmp_path: Path) -> None:
