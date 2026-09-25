@@ -6,6 +6,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -123,6 +124,14 @@ def test_markdown_decorated_header_is_accepted(header: str) -> None:
     # PR #42: an answer opening with a bold or heading name was refused as having no header.
     body = f"{header} review of PR #42.\n\nNOTED.\n\n{SIG}"
     assert xba.extract(stream(*TOOL, msg(body), DONE)) == body
+
+
+def test_header_search_is_linear_on_long_marker_runs() -> None:
+    # PR #42 review: a nested-quantifier pattern hung on a long run of "#" or "*".
+    text = ("#" * 200 + "x\n" + "*_" * 100 + "\n") * 200
+    started = time.perf_counter()
+    assert xba.HEADER.search(text) is None
+    assert time.perf_counter() - started < 1.0
 
 
 def test_handoff_heading_before_the_header_is_dropped() -> None:
