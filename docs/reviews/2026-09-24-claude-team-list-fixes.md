@@ -32,6 +32,11 @@ only. No evaluation hour drifts.
 Codex's five conditions, in the
 [proposal's agreement record](2026-09-24-claude-three-agent-proposal.md#agreement-record).
 
+**Later change (`99bb81a`):** the same completeness check now also covers every
+untraded breadth-basket symbol, and its output fields are named `series_hours_*`
+(`series_hours_present`, `_missing`, `_duplicated`, `_excluded`) instead of the
+`proxy_hours_*` names used above. Those names existed only on this unmerged branch.
+
 ## Verification
 
 - `pytest`: all tests pass, including the new ones. `ruff check`, `ruff format --check`

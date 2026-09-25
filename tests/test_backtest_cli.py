@@ -279,7 +279,7 @@ class BasketCheckTests(MarketProxyCheckTests):
 
 
 class HourlySeriesTests(unittest.TestCase):
-    def test_missing_and_duplicated_proxy_hours_are_counted(self):
+    def test_missing_and_duplicated_series_hours_are_counted(self):
         from test_backtest_replay import HOUR_MS, START_MS, candle
 
         from crypto_grid_bot.backtest.replay import check_hourly_series

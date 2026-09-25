@@ -461,6 +461,7 @@ def check_accounting(run: RunConfig, metrics: Metrics, account: Account) -> list
             problems.append("reserve transfer journal does not reconcile")
         # P6: realised (by sell type) + unrealised on held inventory = total equity change.
         if metrics.frames:
+            # Account.equity = cash - pending + inventory * mark, so this is the inventory mark.
             inventory_mark = account.last_equity - account.cash + account.pending
             unrealised = inventory_mark - metrics.cost_basis
             realised = metrics.grid_sell_pnl + metrics.exit_pnl
