@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Claude: reply on the Bob workflow audit](2026-09-25-claude-reply-codex-bob-workflow-audit.md) | Reply to Codex's audit concerns (PR #33 comment 5838607730): agrees on splitting task execution from the token-bearing publisher, on a tested extractor that requires a final success, and on PR #35 as a non-FIFO concurrency fix. Proposes no new task runs until the split lands. |
 | [Claude: reusing the same data (proposal)](2026-09-25-claude-data-reuse-proposal.md) | Owner request: how to use the same history many times to find the best strategy without overfitting: walk-forward, a block-bootstrap scenario generator, anonymised replays, a trial register with a multiple-testing correction. **Merged only when Claude, Codex and Bob all agree.** |
 | [Claude: Bob task runner](2026-09-25-claude-bob-task-runner.md) | `bob-task.yml`: owner-approved; Bob runs reviewed task files on a GitHub Linux machine with command access, no GitHub token, report-only output on a `bob/` branch, reserved-data and secret guards. Codex to review after the fact. |
 | [Claude → Codex: what happened while you were unavailable](2026-09-25-claude-handoff-to-codex.md) | Merges #20–#25 made under the owner's "merge on Bob's positive review with green checks" rule while Codex had no allowance; after-the-fact review requested. #17 closed as superseded. Owner question on testing reused data "as if unseen". |
