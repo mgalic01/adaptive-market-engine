@@ -87,8 +87,8 @@ have already seen. Price history is also partly in every model's training data, 
    - **Use the whole span 2017-08 to 2024-12** from Binance's checksummed archives,
      through the same manifest and integrity checks as today. This fills the gaps
      around and between today's two windows (`practice-2022` and `verify-2024h1`):
-     2020–21 before them, 2023 between them and 2024 H2 after them, and adds a second cycle
-     before them: the 2017 bull, the 2018 bear (about −80%) and the 2019 recovery.
+     2020–21 before them, 2023 between them and 2024 H2 after them. It also adds an
+     earlier cycle: the 2017 bull, the 2018 bear (about −80%) and the 2019 recovery.
    - **Pairs available:** BTC and ETH from 2017; ADA and XRP from their Binance
      listings in 2018; SOL only from 2020-08. Bob's estimates of the first complete
      months, **from memory and still to be checked against the archive listings in a
@@ -108,6 +108,29 @@ have already seen. Price history is also partly in every model's training data, 
 6. **Extra out-of-sample checks**
    - **Pairs:** pairs and periods not used in development.
    - **Forward trading:** later, forward paper trading, the only truly new data.
+
+## Conditions for the spec change (Bob, 2026-09-25; Claude agrees)
+
+Bob's substantive review at `4dda598` (PR #33 comment 5839383911) agrees subject to
+these being written into the spec change **before any code is written**, because none
+of them may be decided after seeing results:
+
+1. **Walk-forward folds roll, and short folds are excluded.** Tune windows roll (fixed
+   12 months); they never expand. A fold is **excluded, never padded**, when its warm-up
+   is not met: at least 200 completed daily bars (P3) and 720 completed hours (E) before
+   the first evaluated minute of both its tune and its test window. With BTC data from
+   2017-08, the first tune window cannot start before about 2018-04; the exact first
+   fold follows from the confirmed first complete months.
+2. **The trial register is a hard gate.** No result is accepted without a matching
+   register entry. The task file appends the entry before the report is written, and
+   Bob enforces it at task level. The register format is fixed in the spec change.
+3. **One multiple-testing correction, chosen now:** the **deflated Sharpe ratio**
+   (DSR), with the trial count taken from the register, on walk-forward test-window
+   results. Bob's reason: it is computable from what we already track and needs no
+   separate hold-out partition. The other options listed in layer 4 are dropped.
+4. **The regime labeller is defined and frozen** in a spec appendix before any
+   scenario path is generated. A labeller changed after seeing results contaminates
+   the synthetic paths.
 
 ## What the approach cannot do
 
@@ -145,11 +168,14 @@ have already seen. Price history is also partly in every model's training data, 
 ## Proposed order, after agreement
 
 1. P8 funding integration, already planned.
-2. The 2017-08 to 2024-12 data: a Bob task to list, fetch and check it, then the
-   manifest and spec change, after Codex's review.
-3. Walk-forward harness.
-4. Cycle-preserving scenario generator.
-5. Trial register.
+2. The 2017-08 to 2024-12 data: a Bob task to list, fetch and check it, and to confirm
+   the first complete months.
+3. The spec change, after Codex's review: the new windows, the four conditions above
+   (fold rule, register format and gate, DSR, frozen regime labeller) and H's halving
+   per fold.
+4. Trial register, before any sweep runs (condition 2).
+5. Walk-forward harness, with per-year task slices.
+6. Cycle-preserving scenario generator.
 
 Each step gets its own PR and review.
 
@@ -165,4 +191,5 @@ and a final summary task aggregates them.
 | Owner | Two decisions: keep the cycles; use data from 2017 onward | the header of this file |
 | Claude | Author; agrees, including Bob's changes and the owner's decisions | this file |
 | Bob | AGREE WITH CHANGES on the first version (split task execution; joint sampling of funding, both included). **Re-review at `608435b`** (when layer 5 added only 2017-08 to 2019-12): agrees with both owner decisions, no new changes, NOTED. **Re-review at `59ddc5b`: AGREE** with the whole-span wording (2017-08 to 2024-12) added in `ec91912`, NOTED | PR #33, comments 5838160477, 5838366836 and 5838442914 |
-| Codex | Pending, requested when Codex's allowance resets | PR #33 |
+| Bob (substantive review) | **AGREE subject to the four conditions** above (fold rule, register as a hard gate, DSR, frozen regime labeller), all included; Claude agrees with each | PR #33, comment 5839383911 at `4dda598` |
+| Codex | Pending; unavailable until 2026-10-01. Codex said the answer will cover development vs confirmatory evidence, register-before-trials, fold warm-up and synthetic provenance | PR #33, comment 5838607730 |
