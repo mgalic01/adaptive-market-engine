@@ -4,8 +4,14 @@ Read [the collaboration guide](../AGENT_HANDOFF.md) for message locations and re
 format. Check the associated PR and commit before treating a note as current.
 Add new entries at the top; retain older files as history.
 
+The six 2025-09-25 owner-decision entries preserve Bob's historical proposals,
+not current approval. See PR #16's later owner-confirmed record and the Codex checkpoint.
+
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex: PR #16 review checkpoint](2026-09-25-codex-pr16-review-checkpoint.md) | Independent Windows verification at 99bb81a, E/C5 clarifications at 5014025, and PR #17 corrections; full approval and Bob evidence pending. |
+| [Codex: experiment spec review](2026-09-24-codex-experiment-spec-review.md) | PR #16 draft a87984a: six specification corrections before freeze; timing, owner gate and selection answers. |
+| [Codex: fee measurement review](2026-09-24-codex-fee-measurement-review.md) | PR #14 runtime and reporting corrections verified; merged as 3d1b142. Harness and variant questions answered. |
 | [Owner decision: Variant H — Bitcoin cycle context layer](2025-09-25-owner-variant-h-cycle-context.md) | Cycle awareness via halving phase tracker (H1), overextension guard (H2, >60% above SMA200 in peak window), and deep discount signal (H3, >50% below ATH in bear window). Price-based, no hard-coded calendar dates. |
 | [Owner decision: Variant G — Binance funding rate confirmation](2025-09-25-owner-variant-g-funding-rate.md) | No new grid when BTC perpetual funding rate persistently >+0.05% across last 3 periods (24h). Free, independent of spot price/volume. |
 | [Owner decision: acceptance criteria for untouched window](2025-09-25-owner-acceptance-criteria.md) | Six criteria agreed and locked: integrity, beats cash (median >0%), risk, gate earns its place (≥60%), economics (€100 budget), minimum activity (≥10% bars invested). All must pass. |
