@@ -86,7 +86,8 @@ have already seen. Price history is also partly in every model's training data, 
 5. **More real history (owner decision)**
    - **Use the whole span 2017-08 to 2024-12** from Binance's checksummed archives,
      through the same manifest and integrity checks as today. This fills the gaps
-     between today's two windows (2020–21, 2023, 2024 H2) and adds a second cycle
+     around and between today's two windows (`practice-2022` and `verify-2024h1`):
+     2020–21 before them, 2023 between them and 2024 H2 after them, and adds a second cycle
      before them: the 2017 bull, the 2018 bear (about −80%) and the 2019 recovery.
    - **Pairs available:** BTC and ETH from 2017; ADA and XRP from their Binance
      listings in 2018; SOL only from 2020-08. Bob's estimates of the first complete
@@ -100,7 +101,10 @@ have already seen. Price history is also partly in every model's training data, 
    - **Older BTC daily prices (2013 onward, another exchange)** may be used only as
      background for H's cycle context, never for fills. Optional, needs its own review.
    - **Spec impact:** adding development windows is a spec v1 change and needs Codex's
-     review before it is written into `EXPERIMENT_SPEC_V1.md`.
+     review before it is written into `EXPERIMENT_SPEC_V1.md`. One specific item for
+     that change: spec P8 fixes the halving month for H at 2020-05 for both development
+     windows. Folds that start before 2020-05 need the 2016-07 halving instead, so the
+     halving month must follow each fold.
 6. **Extra out-of-sample checks**
    - **Pairs:** pairs and periods not used in development.
    - **Forward trading:** later, forward paper trading, the only truly new data.
@@ -160,5 +164,5 @@ and a final summary task aggregates them.
 | --- | --- | --- |
 | Owner | Two decisions: keep the cycles; use data from 2017 onward | the header of this file |
 | Claude | Author; agrees, including Bob's changes and the owner's decisions | this file |
-| Bob | AGREE WITH CHANGES on the first version (split task execution; joint sampling of funding, both included). **Re-review at `608435b`** (when layer 5 added only 2017-08 to 2019-12): agrees with both owner decisions, no new changes, NOTED. **Not yet reviewed:** the whole-span wording (2017-08 to 2024-12, filling the gaps between today's windows) added in `ec91912`; re-review requested | PR #33, comments 5838160477 and 5838366836 |
+| Bob | AGREE WITH CHANGES on the first version (split task execution; joint sampling of funding, both included). **Re-review at `608435b`** (when layer 5 added only 2017-08 to 2019-12): agrees with both owner decisions, no new changes, NOTED. **Re-review at `59ddc5b`: AGREE** with the whole-span wording (2017-08 to 2024-12) added in `ec91912`, NOTED | PR #33, comments 5838160477, 5838366836 and 5838442914 |
 | Codex | Pending, requested when Codex's allowance resets | PR #33 |
