@@ -370,6 +370,9 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
     If it is invalid (missing or unaccepted interval, non-finite rate), the signal is
     unavailable. It is never filtered out in favour of three older valid records.
   - **Available** only if all of these hold:
+    - **Finite rates:** all three records carry finite rates. An invalid rate on
+      `r1` or `r2` makes the signal unavailable just as it does on `r3`; invalid
+      records are never skipped to substitute older valid records.
     - **Uniform interval:** `r1`, `r2` and `r3` all carry the **same** accepted
       interval `I`.
     - **Exact steps:** `scheduled(r2) − scheduled(r1) = I` and
@@ -393,7 +396,11 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
       settlement; under the "ending" reading it happens at the first new-cadence
       settlement, or the old deadline passes first when the cadence lengthens.
 
-    Either way G fails closed, never open.
+    G blocks on detected disagreement or the convention's overdue deadline.
+    It cannot detect an unseen shorter cadence before either condition occurs:
+    if the first changed record is absent, three old uniform records can remain
+    available until the old deadline. This is a limitation of the convention,
+    not a guarantee against every missing settlement under an unknown cadence.
   - **Recovery condition:** after a cadence change, a gap or an invalid record, the
     signal becomes available again at the first observation at which the three newest
     usable records again satisfy all of the conditions above, including the same
@@ -426,7 +433,12 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - **Insufficient history:** zero, one and two usable records, including at replay
     start, are all unavailable.
   - **Invalid older record:** an unaccepted interval on `r1` or `r2` makes the signal
-    unavailable through the uniform-interval check.
+    unavailable through the uniform-interval check. A non-finite rate on either
+    older record also makes it unavailable, without substituting another record.
+  - **Unseen shortening with missing changed record:** three valid 8-hour records
+    remain available after the unknown 4-hour deadline and before the old
+    `scheduled(r3) + 8 h + 60 s` deadline; at the old deadline they are unavailable.
+    This explicitly tests the convention's detection limitation.
   - **Duplicate scheduled times:** an integrity failure.
   - **Rate boundary:** exactly +0.0005 does not count as above.
   - **Usability boundary:** exactly at `calc_time + 60 s`, and one second before it.
