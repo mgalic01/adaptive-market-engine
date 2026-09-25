@@ -33,6 +33,9 @@ Never put credentials in a review, source file or log.
 
 ## Event-driven Codex cloud reviews (owner instruction, 2026-09-25)
 
+Authorization provenance and observed trigger evidence are recorded in the
+[setup handoff](reviews/2026-09-25-codex-event-driven-reviews.md#authorization-and-delivery-evidence).
+
 The owner chose GitHub-triggered Codex cloud reviews for Claude and Bob's ready
 handoffs. This starts a separate cloud review; it does not wake or resume the
 owner's existing desktop conversation. Do not poll GitHub every five minutes.
@@ -60,7 +63,8 @@ Cloud review is additional evidence, not a substitute for required checks, the
 full independent review, explicit owner gates or repository protections. It never
 authorizes a merge by itself. Paper-only scope and protected-profit rules apply.
 
-Reference: [official Codex GitHub review documentation](https://learn.chatgpt.com/docs/third-party/github).
+Reference: [official Codex GitHub review documentation](https://developers.openai.com/codex/integrations/github)
+(verified on 2026-09-25; redirects to `learn.chatgpt.com/docs/third-party/github`).
 
 ## What every handoff contains
 

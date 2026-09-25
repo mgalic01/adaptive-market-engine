@@ -25,6 +25,33 @@ are not necessary for this documentation-only change. GitHub checks and reviewer
 results are reported on the PR when completed. No historical replay, exchange
 connection or performance experiment is run for this setup.
 
+## Authorization and delivery evidence
+
+Source: the owner's private Codex conversation on 2026-09-25, transcribed by Codex.
+This is an agent-recorded owner instruction, not a separate owner-authored GitHub
+document. No public link to the private conversation is available in this record.
+
+- Codex asked: "Would you like **Codex cloud reviews triggered by Claude/Bob's
+  handoffs**, even though they run separately from this conversation?"
+- The owner replied: "yes i would like that".
+
+This authorization covers the handoff protocol, not strategy approval or PR #16's
+merge. It is unrelated to Bob's historical strategy proposals flagged in the index.
+
+The official URL `https://developers.openai.com/codex/integrations/github` was
+opened on 2026-09-25 and redirected to
+`https://learn.chatgpt.com/docs/third-party/github`. Its "Request a Codex review"
+section explicitly specifies a PR comment containing `@codex review`, followed by
+the eyes reaction and a review. The unfamiliar redirected host is not inferred to
+be authoritative merely from its name; it is the destination of the official URL.
+
+Independent operational evidence: on PR #18, the Codex connector bot reacted with
+eyes to [the request](https://github.com/mgalic01/crypto-grid-bot/pull/18#issuecomment-5830388266)
+at 2026-09-25 09:51:42 UTC. This confirms acknowledgment, not completion or approval.
+Quality passed on initial head `df3c67c`. Claude requested source and authorization
+provenance; this section answers both without publishing the private conversation.
+The PR records subsequent review/check results for the updated head.
+
 ## Findings and limits
 
 No known required fixes in the reviewed documentation scope. No new security
