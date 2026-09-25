@@ -1,10 +1,12 @@
 name: IBM Bob task run
 
 # Owner instruction (2026-09-25): Bob, who has the largest credit pool, runs reviewed task
-# files on GitHub's machines with command access. Only the repository owner can start a
-# run: a comment "/bob-run docs/tasks/<date>-bob-<topic>.md", or "Run workflow" with the
-# task path. The comment keyword is not "@bob", so the read-only review workflow does not
-# also fire.
+# files on GitHub's machines with command access. A run starts in one of three ways:
+# - automatically, when a merge to main ADDS a task file docs/tasks/<date>-bob-<topic>.md
+#   (owner request: the merge is the go; edits to existing task files never start a run);
+# - a comment "/bob-run docs/tasks/<date>-bob-<topic>.md" from the repository owner;
+# - "Run workflow" by the repository owner, with the task path.
+# The comment keyword is not "@bob", so the read-only review workflow does not also fire.
 #
 # Containment: Bob's step has no GitHub token (env -i) and no MCP, browser or subagents.
 # The workflow, not Bob, commits: only new docs/reviews/*-bob-*.md reports are accepted,
@@ -12,6 +14,9 @@ name: IBM Bob task run
 # data (2025-01 onward) or a secret-like value in the report stops the run, and the
 # owner is alerted. Every command Bob runs is shown live in this log.
 on:
+  push:
+    branches: [main]
+    paths: ["docs/tasks/**"]
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -30,39 +35,79 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  bob-task:
-    # Only the owner, on both triggers (Bob's review of PR #27: "Run workflow" is otherwise
-    # open to anyone with write access).
+  resolve:
+    # Only the owner, on every trigger (Bob's review of PR #27: "Run workflow" is otherwise
+    # open to anyone with write access). Merges made with GITHUB_TOKEN start no runs.
     if: >-
-      (github.event_name == 'workflow_dispatch' &&
+      ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
        github.actor == github.repository_owner) ||
-      (github.event.comment.author_association == 'OWNER' &&
+      (github.event_name == 'issue_comment' &&
+       github.event.comment.author_association == 'OWNER' &&
        contains(github.event.comment.body, '/bob-run'))
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    outputs:
+      tasks: ${{ steps.list.outputs.tasks }}
     steps:
-      - name: Resolve the task file
-        id: gate
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: List the task files to run
+        id: list
         env:
+          EVENT: ${{ github.event_name }}
           BODY: ${{ github.event.comment.body }}
           INPUT_TASK: ${{ github.event.inputs.task }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
         run: |
-          if [ -n "$INPUT_TASK" ]; then
-            task="$INPUT_TASK"
-          else
-            task=$(printf '%s\n' "$BODY" \
-              | grep -oE '(^|[[:space:]])/bob-run[[:space:]]+docs/tasks/[A-Za-z0-9._-]+\.md' \
-              | head -1 | awk '{print $NF}' || true)
-          fi
-          if ! printf '%s' "$task" \
+          case "$EVENT" in
+            push)
+              # Only task files ADDED by this push; edits never start a run.
+              if printf '%s' "$BEFORE" | grep -qE '^0+$'; then
+                candidates=""
+              else
+                candidates=$(git diff --diff-filter=A --name-only "$BEFORE" "$AFTER" -- docs/tasks)
+              fi ;;
+            workflow_dispatch) candidates="$INPUT_TASK" ;;
+            *)
+              candidates=$(printf '%s\n' "$BODY" \
+                | grep -oE '(^|[[:space:]])/bob-run[[:space:]]+docs/tasks/[A-Za-z0-9._-]+\.md' \
+                | head -1 | awk '{print $NF}' || true) ;;
+          esac
+          tasks=$(printf '%s\n' "$candidates" \
+            | grep -E '^docs/tasks/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[a-z0-9-]+\.md$' \
+            | jq -R -s -c 'split("\n") | map(select(length > 0))' || echo '[]')
+          echo "Tasks to run: $tasks"
+          echo "tasks=$tasks" >> "$GITHUB_OUTPUT"
+
+  bob-task:
+    needs: resolve
+    if: needs.resolve.outputs.tasks != '' && needs.resolve.outputs.tasks != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        task: ${{ fromJSON(needs.resolve.outputs.tasks) }}
+    steps:
+      - name: Check the task path
+        id: gate
+        env:
+          TASK_IN: ${{ matrix.task }}
+        run: |
+          if ! printf '%s' "$TASK_IN" \
             | grep -qE '^docs/tasks/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[a-z0-9-]+\.md$'; then
-            echo "No valid '/bob-run docs/tasks/<date>-bob-<topic>.md'; skipping."
+            echo "Invalid task path; skipping."
             echo "ok=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "ok=true" >> "$GITHUB_OUTPUT"
-          echo "task=$task" >> "$GITHUB_OUTPUT"
-          echo "slug=$(basename "$task" .md)" >> "$GITHUB_OUTPUT"
+          echo "task=$TASK_IN" >> "$GITHUB_OUTPUT"
+          echo "slug=$(basename "$TASK_IN" .md)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
         if: steps.gate.outputs.ok == 'true'
