@@ -4,9 +4,11 @@ Written by Claude or Codex under [the three-agent rules](../AGENT_HANDOFF.md#thr
 A task starts only after the named review (normally a **Codex → Bob handoff** comment
 approving it) or the owner's go. Bob reports in `docs/reviews/YYYY-MM-DD-bob-<topic>.md`.
 
-**Running a task on GitHub:** once the task is on `main` and approved, the owner comments
+**Running a task on GitHub:** Bob starts **automatically when a PR that adds a new task
+file is merged into `main`**, so a task PR is merged only after review. To run a task
+again, or one merged before automation existed, the owner comments
 `/bob-run docs/tasks/<file>.md` on any issue or PR, or uses "Run workflow" on
-**IBM Bob task run** in the Actions tab. Bob runs it on a Linux machine and the report
+**IBM Bob task run** in the Actions tab. Bob runs on a Linux machine, and the report
 arrives as a PR ([rules](../AGENT_HANDOFF.md)).
 
 | Task | Status |
