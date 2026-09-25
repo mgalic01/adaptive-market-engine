@@ -56,6 +56,17 @@ have already seen. Price history is also partly in every model's training data, 
      losers, with its results.
    - **Correction:** judge the winner against how many were tried, using deflated
      Sharpe, White's Reality Check or at least a hold-out margin.
+   - **Proposed location and format:** `docs/trials/register.jsonl`, committed and
+     append-only. Each line is one trial, with these fields:
+     - `trial_id`, `date`, `agent`;
+     - `commit` (the code tested) and `variant` with its full `params`;
+     - `data`: the dataset, or the scenario batch and its seed, with the walk-forward
+       fold;
+     - `metrics`: the spec's criteria and returns;
+     - `report`: the path of the report.
+
+     Losers stay in the file. Bob's batch reports append their lines, through their
+     report PRs.
    - **Why:** "best of 200 tries" is weaker evidence than "best of 5".
 5. **Extra out-of-sample checks**
    - **Pairs:** pairs and periods not used in development.
@@ -74,7 +85,9 @@ have already seen. Price history is also partly in every model's training data, 
 
 - **For Codex:**
   1. Is the walk-forward grid sound for our window lengths and warm-up needs? That
-     is, 365 days of daily history for SMA200, and 720 hours for E.
+     is, at least 200 completed daily bars before the first evaluated minute (spec
+     v1 P3, for SMA200 in A and D), and the 720 completed hours of E's reference
+     (spec v1 §3 E).
   2. How would the generator affect the replay-engine design? Should synthetic series
      go through the same manifest and integrity checks, or through a separate labelled
      path?
