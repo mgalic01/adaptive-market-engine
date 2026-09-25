@@ -216,7 +216,8 @@ Credits are limited, so every agent works on demand, not by polling:
       `.git`, data or programs;
     - only one new `docs/reviews/*-bob-*.md` report is published, from a clean checkout
       of `main`, on a new `bob/task-*` branch with a PR, never on `main`;
-    - any other file change, any 2025+ archive, a secret-like value or a missing final
+    - an edit to the review index `docs/reviews/README.md` is dropped, never published;
+      any other file change, any 2025+ archive, a secret-like value or a missing final
       answer stops the run and alerts the owner;
     - the worker never saves a cache after Bob has started (the Bob package is saved
       before he starts and is hash-checked on every use);

@@ -226,7 +226,9 @@ jobs:
           - You may run commands: python, the installed project CLIs, pytest,
             sha256sum and read-only git commands. Network use is limited to the public
             data host data.binance.vision through the project's own fetch code.
-          - Do not modify any tracked file. Your only output is a new report file
+          - Do not modify any tracked file, including docs/reviews/README.md: the
+            index row is added when your report PR is reviewed. Your only output is a
+            new report file
             under docs/reviews/, named YYYY-MM-DD-bob-<topic>.md as the task says.
             Working files go under data/ (ignored by git). Do not run git commit or
             git push; the workflow commits your report to a new bob/ branch.
@@ -273,8 +275,16 @@ jobs:
             exit 1
           fi
           # Only new docs/reviews/*-bob-*.md files are accepted.
-          git status --porcelain --untracked-files=all > "$RUNNER_TEMP/changes.txt"
-          cat "$RUNNER_TEMP/changes.txt"
+          git status --porcelain --untracked-files=all > "$RUNNER_TEMP/status.txt"
+          cat "$RUNNER_TEMP/status.txt"
+          # Bob tends to follow the repo's convention and add an index row. That edit is
+          # dropped (never published) rather than failing the whole run (issue #31: 78
+          # minutes of work lost to it). Every other tracked change still stops the run.
+          grep -vxF ' M docs/reviews/README.md' "$RUNNER_TEMP/status.txt" \
+            > "$RUNNER_TEMP/changes.txt" || true
+          if ! cmp -s "$RUNNER_TEMP/status.txt" "$RUNNER_TEMP/changes.txt"; then
+            echo "Dropped Bob's edit to docs/reviews/README.md (not published)."
+          fi
           if grep -vE '^\?\? docs/reviews/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md$' \
             "$RUNNER_TEMP/changes.txt"; then
             echo "Changes outside new docs/reviews/*-bob-*.md reports; nothing is committed."
