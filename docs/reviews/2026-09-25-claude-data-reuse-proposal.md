@@ -88,9 +88,11 @@ have already seen. Price history is also partly in every model's training data, 
      through the same manifest and integrity checks as today. This fills the gaps
      between today's two windows (2020–21, 2023, 2024 H2) and adds a second cycle
      before them: the 2017 bull, the 2018 bear (about −80%) and the 2019 recovery.
-   - **Pairs available:** BTC and ETH from 2017-08; ADA and XRP from their Binance
-     listings in 2018; SOL only from 2020-08. Exact first months come from the archive
-     listings, checked by Bob, not from memory.
+   - **Pairs available:** BTC and ETH from 2017; ADA and XRP from their Binance
+     listings in 2018; SOL only from 2020-08. Bob's estimates of the first complete
+     months, **from memory and still to be checked against the archive listings in a
+     task run**: BTC 2017-09, ETH 2017-10, ADA 2018-05, XRP 2018-06, BTCUSDT funding
+     2019-10.
    - **Funding (G) is unavailable** before Binance's USDT-margined BTC perpetual
      (2019-09): G's state there is `insufficient_history`, reported, never filled in.
    - **Data quality:** early Binance had thinner trading and outages. The existing gap
@@ -158,5 +160,5 @@ and a final summary task aggregates them.
 | --- | --- | --- |
 | Owner | Two decisions: keep the cycles; use data from 2017 onward | the header of this file |
 | Claude | Author; agrees, including Bob's changes and the owner's decisions | this file |
-| Bob | AGREE WITH CHANGES on the earlier version: split task execution; joint sampling of funding. Both included above. **Re-review needed** for the owner's changes | PR #33, comment 5838160477 |
+| Bob | AGREE WITH CHANGES on the first version (split task execution; joint sampling of funding, both included). **Re-review at `608435b`: agrees with both owner decisions, no new changes, NOTED** | PR #33, comments 5838160477 and 5838366836 |
 | Codex | Pending, requested when Codex's allowance resets | PR #33 |
