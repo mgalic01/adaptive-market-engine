@@ -31,6 +31,37 @@ Treat unavailable automation as unavailable review, never as approval. Check the
 current run rather than assuming the earlier failure or a later success persists.
 Never put credentials in a review, source file or log.
 
+## Event-driven Codex cloud reviews (owner instruction, 2026-09-25)
+
+The owner chose GitHub-triggered Codex cloud reviews for Claude and Bob's ready
+handoffs. This starts a separate cloud review; it does not wake or resume the
+owner's existing desktop conversation. Do not poll GitHub every five minutes.
+
+After pushing a batch of changes and completing its local checks, Claude or Bob:
+
+1. Opens or updates a non-draft PR and posts the normal indexed handoff with the
+   full head SHA, verification results and requested review scope.
+2. Checks whether Codex already has a pending or completed review for that exact
+   head (automatic review may already have started). If so, do not duplicate it.
+3. Otherwise posts a new PR Conversation comment containing `@codex review`, the
+   full head SHA and the handoff link. Merely naming Codex in a heading or pushing
+   a branch without a PR is not an explicit review request. Do not rely on editing
+   an old comment to start a new review.
+4. Records the reaction/review link when available. Posting the request is not
+   proof of delivery, successful execution or approval. If the integration does
+   not respond, report that limitation to the owner; do not repeatedly repost.
+
+Use the existing connected GitHub/Codex integration. Do not introduce API keys,
+PATs, scheduled polling or a relay workflow for this protocol. Review-only bot
+jobs do not request another review, and status-only replies do not retrigger one.
+Batch corrections into a new head before requesting another review.
+
+Cloud review is additional evidence, not a substitute for required checks, the
+full independent review, explicit owner gates or repository protections. It never
+authorizes a merge by itself. Paper-only scope and protected-profit rules apply.
+
+Reference: [official Codex GitHub review documentation](https://learn.chatgpt.com/docs/third-party/github).
+
 ## What every handoff contains
 
 - **Scope and status:** author, recipient, date, branch/PR, exact base and reviewed
