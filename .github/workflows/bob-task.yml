@@ -428,27 +428,54 @@ jobs:
             echo "Created by bob-task.yml with GITHUB_TOKEN, so CI does not start on its"
             echo "own; re-run checks or ask Claude to review before merge."
           } > "$RUNNER_TEMP/pr-body.md"
-          url=$(gh pr create --repo "$REPO" --base main --head "$branch" \
-            --title "Bob task report: $SLUG" --body-file "$RUNNER_TEMP/pr-body.md")
-          echo "pr_url=$url" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          # The repository does not let workflows open PRs (owner decision, 2026-09-25:
+          # grant nothing new). The pushed branch is the result either way; if the PR
+          # cannot be opened here, the reply links the branch and Claude opens the PR.
+          if url=$(gh pr create --repo "$REPO" --base main --head "$branch" \
+            --title "Bob task report: $SLUG" --body-file "$RUNNER_TEMP/pr-body.md"); then
+            echo "pr_url=$url" >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not open the PR from this workflow; the branch is pushed."
+          fi
 
+      # On a /bob-run comment, reply on that issue. For a merged task file or "Run
+      # workflow" there is no issue, so one is opened only when a report branch has no
+      # PR yet, so the owner and Claude still learn where the report is.
       - name: Reply where the run was started
-        if: github.event_name == 'issue_comment'
+        if: >-
+          github.event_name == 'issue_comment' ||
+          (steps.publish.outputs.branch != '' && steps.publish.outputs.pr_url == '')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number }}
+          TASK: ${{ matrix.task }}
           PR_URL: ${{ steps.publish.outputs.pr_url }}
+          BRANCH: ${{ steps.publish.outputs.branch }}
           IN_DIR: ${{ runner.temp }}/in
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMPARE_URL: ${{ github.server_url }}/${{ github.repository }}/compare/main...
         run: |
           {
             echo "**Bob task run finished.** Run log: $RUN_URL"
-            if [ -n "$PR_URL" ]; then echo; echo "Report PR: $PR_URL"; fi
+            if [ -n "$PR_URL" ]; then
+              echo; echo "Report PR: $PR_URL"
+            elif [ -n "$BRANCH" ]; then
+              echo
+              echo "Report branch: \`$BRANCH\` (${COMPARE_URL}${BRANCH})."
+              echo "Workflows may not open PRs here, so Claude opens the PR at its next"
+              echo "check-in, after checking that the branch adds exactly one report."
+            fi
             echo
             cat "$IN_DIR/summary.md"
           } > "$RUNNER_TEMP/reply.md"
-          gh issue comment "$NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/reply.md"
+          if [ -n "$NUMBER" ]; then
+            gh issue comment "$NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/reply.md"
+          else
+            gh issue create --repo "$REPO" --title "Bob task report ready: $TASK" \
+              --body-file "$RUNNER_TEMP/reply.md"
+          fi
 
       - name: Alert the owner that the Bob task failed
         if: failure() || cancelled()
