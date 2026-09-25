@@ -80,15 +80,23 @@ gated/ungated.
 Before scoring, decide for each pair-window whether it is **included**, and give the
 reason from the evidence:
 - `verify` passed (Step 1), and the hourly cross-checks in `results.json` are clean;
-- the run validity inputs (`accounting_problems`, rejected frames: see
-  `src/crypto_grid_bot/backtest/replay.py` for how rejected frames are counted and
-  reported);
-- §5 says every `practice-2022` SOLUSDT pair-window fails the exchange-filter check
-  until P4 sources historical filters. Confirm this from the results rather than
-  taking it on trust.
+- the run validity inputs, per result: `accounting_problems` (must be empty) and
+  `transient_pauses`, the count of rejected frames (must be 0). The top-level
+  `failures` list in `results.json` repeats them as "`<pair>/<path>/<strategy>`: N
+  rejected frames" (`result_failures` in `src/crypto_grid_bot/backtest/__main__.py`);
+- the exchange-filter check. **The project records no separate field for it.** §5
+  states that every `practice-2022` SOLUSDT pair-window fails it until P4 sources
+  historical filters: today's SOL tick (0.01) at 2022 prices makes the simulated
+  spread exceed its limit, so frames are rejected
+  ([fee-level report](../backtests/fee-levels-2026-09.md), "Validity"). Confirm the
+  cause from the evidence: non-zero `transient_pauses` on **every** SOLUSDT run, gated
+  and ungated, and on no other pair. Then **exclude SOLUSDT from the mask for
+  `practice-2022`** as §5 says. Do not count it as invalid V0 runs under C4: a mask
+  exclusion applies to every variant alike, while an invalid run fails its variant.
 
 If a mask rule cannot be decided from what the project records, say so. That is a
-finding for Claude. Do not guess.
+finding for Claude. Do not guess. Before you name a field in the report, find it in
+the code or in `results.json` (`grep -n`), and quote where.
 
 ## Step 4: score (write `data/score.py`; give its SHA-256)
 

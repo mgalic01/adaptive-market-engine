@@ -38,6 +38,12 @@ Run through this list and fix anything it finds before your final message.
 - **Compare against the stated goal and the handbook.** Check that the PR does what its
   description says. Check that it does nothing more. Check that it agrees with
   `docs/AGENT_HANDOFF.md`.
+- **A suggested fix must name real things.** Before you propose a field, function,
+  file or option, find it (`grep -n`, or read the file) and quote where it is. If it
+  does not exist, say so and describe what is missing instead of inventing a name.
+  *Example (PR #42):* the review rightly flagged that the scorecard task did not say
+  where the filter failure is recorded, but suggested a `rejection_reason` field that
+  does not exist; the count is `transient_pauses`.
 - **Say what you could not check.** The GitHub review cannot run commands. Say which
   claims you took from the diff alone.
 - **One verdict, at the head you read.** NOTED or FLAGGED, with the full head SHA.
@@ -73,4 +79,5 @@ Run through this list and fix anything it finds before your final message.
 | 2026-09-25 | PR #40 | Only the requested columns were compared. | "Verify beyond the minimum". |
 | 2026-09-25 | PR #39 | A reply had a body line starting with "IBM Bob", which cut the posted answer short (now fixed in the extractor as well). | "Your final message". |
 | 2026-09-25 | PR #41 | The review checked the happy path; the failure alert's wording was wrong in one failure case. | "Trace the failure paths". |
+| 2026-09-25 | PR #42 | A valid flag suggested a field name (`rejection_reason`) that does not exist. | "A suggested fix must name real things". |
 | 2026-09-25 | PR #41 (owner session) | The review said the shell "would pass" `bash -n` without running it. | Self-check 1. |
