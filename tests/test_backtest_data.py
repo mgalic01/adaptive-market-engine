@@ -14,6 +14,7 @@ from crypto_grid_bot.backtest.dataset import (
     archive_path,
     fetch_dataset,
     fetch_file,
+    load_manifest,
     load_spec,
     local_path,
     verify_dataset,
@@ -197,6 +198,33 @@ class FetchTests(unittest.TestCase):
             verify_dataset(spec, manifest, self.data)
         with self.assertRaisesRegex(DataError, "do not match"):
             verify_dataset(replace(spec, end="2024-02"), manifest, self.data)
+
+    def test_malformed_manifests_fail_with_data_errors(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as handle:
+            handle.write("{not json")
+        self.addCleanup(Path(handle.name).unlink)
+        with self.assertRaisesRegex(DataError, "invalid dataset manifest JSON"):
+            load_manifest(Path(handle.name))
+
+        spec = load_spec(ROOT / "config/datasets/verify-2024h1.toml")
+        for manifest in (
+            {"schema": 1, "dataset": spec.name, "instruments": {}, "files": [{}]},
+            {
+                "schema": 1,
+                "dataset": spec.name,
+                "instruments": {},
+                "files": [
+                    {
+                        "symbol": "ADAUSDT",
+                        "interval": "1m",
+                        "month": "2024-01",
+                        "status": "downloaded",
+                    }
+                ],
+            },
+        ):
+            with self.subTest(manifest=manifest), self.assertRaises(DataError):
+                verify_dataset(spec, manifest, self.data)
 
     def test_spec_rejects_unknown_fields_and_bad_values(self):
         source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
