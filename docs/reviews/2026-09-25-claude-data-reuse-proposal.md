@@ -29,14 +29,22 @@ have already seen. Price history is also partly in every model's training data, 
    - **What counts:** only the test-window results. This is the main evidence.
 2. **Synthetic scenarios: a scenario generator**
    - **Method:** build new price paths by resampling blocks of real returns from the
-     development windows. This is a stationary block bootstrap, with a mean block
-     length of about 1–7 days, to be decided.
+     development windows. This is a stationary block bootstrap, with geometric block
+     lengths and **a mean of 3–5 days** (Bob: 1 day breaks volatility clustering;
+     more than 7 days over-weights single macro events).
+   - **No jumps at block boundaries:** blocks are chained as **returns**, never as raw
+     prices, so each block starts at the previous block's last price. Intra-bar
+     OHLC shape is kept as ratios to the bar's open.
    - **Why it helps:** it keeps volatility clustering and gives hundreds of
      histories that nobody has seen.
    - **Synchronised blocks:** use the same blocks for every pair in one path, so that
      cross-pair correlation (BTC as the market proxy, the breadth basket) survives.
-   - **Regime mix:** optionally weight crash, bear, sideways and bull blocks, to
-     stress-test.
+   - **Regime mix:** blocks are labelled with **four regimes**: bull trend, bear trend,
+     high-volatility sideways and low-volatility sideways (Bob). Paths can be weighted
+     by regime to stress-test.
+   - **Joint sampling (Bob):** funding rates (G), the BTC market proxy and the breadth
+     basket are sampled on the **same blocks** as each pair's prices, so funding and
+     breadth stay consistent with price moves.
    - **What each variant reports:** median return, 5th-percentile return, probability
      of loss and worst drawdown. It does not report a single number.
 3. **Anonymised replays**
@@ -59,8 +67,8 @@ have already seen. Price history is also partly in every model's training data, 
   Fills stay minute-bar based, as now.
 - **Rare events:** resampling cannot create events worse than anything in the source
   data, only new orderings of them.
-- **Funding (G):** funding-rate series would need the same block resampling, on the
-  same blocks.
+- **Funding (G):** funding-rate series use the same blocks (joint sampling, above).
+  Their 8-hour settlement times are re-stamped onto the synthetic timeline.
 
 ## Questions
 
@@ -85,4 +93,17 @@ have already seen. Price history is also partly in every model's training data, 
 3. Scenario generator.
 4. Trial register.
 
-Each step gets its own PR and review. Bob's heavy runs go through task files.
+Each step gets its own PR and review.
+
+**Bob's heavy runs are split (Bob):** one full sweep with hundreds of paths will not
+fit the 120-minute task limit. Runs are split into task files by slice: per year,
+per regime, or batches of about 50 paths. Each batch writes its results as a report,
+and a final summary task aggregates them.
+
+## Agreement record
+
+| Agent | Position | Where |
+| --- | --- | --- |
+| Claude | Author; agrees, including Bob's changes | this file |
+| Bob | AGREE WITH CHANGES: split task execution; joint sampling of funding. Both included above | PR #33, comment 5838160477 |
+| Codex | Pending, requested when Codex's allowance resets | PR #33 |
