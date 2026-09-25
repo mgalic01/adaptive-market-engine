@@ -396,7 +396,8 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
     Either way G fails closed, never open.
   - **Recovery condition:** after a cadence change, a gap or an invalid record, the
     signal becomes available again at the first observation at which the three newest
-    usable records again satisfy all of the conditions above. How long that takes
+    usable records again satisfy all of the conditions above, including the same
+    overdue deadline `scheduled(r3) + I + 60 s`; no separate boundary is defined. How long that takes
     depends on the new cadence and on when observations occur; it is not a fixed
     time.
 - **Rule:** no new grid while the signal is **unavailable**, or while it is available
@@ -411,9 +412,10 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - **Cadence change 4 → 8 h:** the same checks.
   - **Observations between the old and new deadlines, in both directions:**
     - **8 → 4 h:** before the first 4-hour record becomes usable, available until the
-      old 8-hour deadline; after it, unavailable because the window is mixed.
-    - **4 → 8 h:** unavailable once the old 4-hour deadline plus 60 s passes, until
-      uniform 8-hour records exist.
+      old overdue deadline `scheduled(r3) + 8 h + 60 s`; after it becomes usable,
+      unavailable because the window is mixed.
+    - **4 → 8 h:** unavailable once the old overdue deadline
+      `scheduled(r3) + 4 h + 60 s` passes, until uniform 8-hour records exist.
   - **The first changed record's publication boundary:** exactly at its
     `calc_time + 60 s`, and one second before it.
   - **Hidden gap:** (4 h, missing, 8 h) is unavailable.
