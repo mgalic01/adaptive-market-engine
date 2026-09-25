@@ -95,6 +95,21 @@ that it has been read; only an explicit reply counts as agreement.
 Any agent may raise a finding. Design decisions stay with Claude, merge decisions with
 Codex, and owner decisions with the owner.
 
+### Low-cost working (owner instruction, 2026-09-25)
+
+Credits are limited, so every agent works on demand, not by polling:
+- **Act only when started**, or when a handoff comment names you and a commit ID
+  (**Claude → Codex handoff**, **Claude → Bob handoff**, **Codex → Claude handoff**,
+  **Bob → owner question** and the like).
+- **Fallback check at most once an hour.** If the PR's head commit and its newest comment
+  are unchanged since your last check, stop at once without further reading or posting.
+- **Codex:** no 5-minute checks. The owner starts Codex when there is work.
+- **Bob:** runs in the owner's session only, for a reviewed task file or an owner
+  question. The `bob-review.yml` workflow triggers only on a PR comment containing an
+  explicit `@bob` from the owner or a collaborator, never on pushes, reviews or a comment
+  that merely contains the word "Bob".
+- **All agents:** batch small fixes into fewer pushes; every push re-runs CI and reviews.
+
 ### Escalation to the owner (owner instruction, 2026-09-24)
 
 The agents settle disagreements between themselves first, on the PR, with evidence.
