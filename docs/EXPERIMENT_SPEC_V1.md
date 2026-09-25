@@ -316,14 +316,39 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   SHA-256).
   - The replay never calls a futures API.
   - The live-host rule (public data hosts only) is unchanged.
-- **Timing:** a settlement's rate is known from its `calc_time`, which is truncated to
-  the second. It applies from the next valid observation after that time.
-- **Rule:** no new grid while the **last three completed settlements** (normally 24
-  hours) were all **> +0.0005** (+0.05% per 8 h).
+- **Records and uniqueness:** each record is one settlement: `calc_time` (truncated to
+  the second), the funding interval in hours and the rate. Its **scheduled time** is
+  `calc_time` floored to the whole UTC hour. Two records with the same scheduled time
+  are a data-integrity failure for the window (§5), never collapsed or chosen between.
+- **Cadence from the source:** the expected interval comes from each record's own
+  interval field in the archive, not from a universal 8-hour assumption. Accepted
+  values are 1, 2, 4 and 8 hours; any other value, or a missing field, makes that
+  record's successor unknown, so G is unavailable (below) until three consecutive
+  valid records exist again. **Open until Bob's P8 survey:** if some archive months
+  have no interval field, the spec is amended before freeze; nothing is assumed.
+- **Timing:** a record becomes usable at `calc_time + 60 s` (a fixed publication
+  allowance), at the first valid observation at or after that instant.
+- **Latest three, complete and consecutive:** at an observation at time `t`, take the
+  newest usable record `r3`. The signal is **available** only if all of these hold:
+  - `r3`'s successor is not overdue: `t < scheduled(r3) + interval(r3) + 60 s`. An
+    expected settlement that is due and absent makes the signal unavailable; an older
+    record is never substituted for it;
+  - the two records before it exist, and each step is exact:
+    `scheduled(r2) = scheduled(r1) + interval(r1)` and
+    `scheduled(r3) = scheduled(r2) + interval(r2)`. A gap inside the three is
+    unavailable.
+- **Rule:** no new grid while the signal is **unavailable**, or while it is available
+  and all three rates are **> +0.0005** (+0.05% per settlement; strict). Otherwise G
+  does not block.
   - Negative or low funding never blocks.
-  - Existing grids, sells and exits are unaffected.
-- **Missing data:** fewer than three settlements in the last 32 hours means no new grid,
-  so G fails closed.
+  - Existing grids, sells and exits are unaffected, whatever G's state.
+- **Required tests:** the newest expected record missing while three older records are
+  still within 32 hours (must block); a gap inside the three; duplicate scheduled
+  times (integrity failure); a rate exactly +0.0005 (does not count as above); the
+  observation exactly at `calc_time + 60 s` and one second before it; the overdue
+  boundary exactly at `scheduled(r3) + interval(r3) + 60 s`; an interval change within
+  the three (for example 8 h then 4 h); a missing or invalid interval field; existing
+  grids and exits unchanged while G blocks.
 - **Runs:** G on its own (V0 + G), and **C + G** as a declared interaction.
 - **Reported:** the number of grids blocked, the hours blocked, and the lag between
   settlement and effect.
