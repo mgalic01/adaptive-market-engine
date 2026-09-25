@@ -44,8 +44,9 @@ After pushing a batch of changes and completing its local checks, Claude or Bob:
 
 1. Opens or updates a non-draft PR and posts the normal indexed handoff with the
    full head SHA, verification results and requested review scope.
-2. Checks whether Codex already has a pending or completed review for that exact
-   head (automatic review may already have started). If so, do not duplicate it.
+2. Checks for an existing explicit request comment naming that exact head, or a
+   pending/completed Codex review (automatic review may already have started).
+   Either is sufficient to skip a new request, even without acknowledgment.
 3. Otherwise posts a new PR Conversation comment containing `@codex review`, the
    full head SHA and the handoff link. Merely naming Codex in a heading or pushing
    a branch without a PR is not an explicit review request. Do not rely on editing

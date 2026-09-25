@@ -52,6 +52,11 @@ Quality passed on initial head `df3c67c`. Claude requested source and authorizat
 provenance; this section answers both without publishing the private conversation.
 The PR records subsequent review/check results for the updated head.
 
+Codex cloud completed its review of `df3c67c` and identified a duplicate-request
+edge case: an existing request without acknowledgment must also block reposting.
+The guide now explicitly checks request comments as well as reviews. This closes
+the gap while retaining the instruction to report an unresponsive integration.
+
 ## Findings and limits
 
 No known required fixes in the reviewed documentation scope. No new security
@@ -69,7 +74,8 @@ does not change account-level automatic-review settings.
 2. Claude reviews the protocol and preserves this section/index entry when bringing
    main into PR #16. Bob uses the same protocol for his report PRs.
 3. Claude/Bob include the request after their next ready push, unless the same head
-   already has a pending/completed Codex review. Reply on the setup PR for concerns.
+   already has a request or pending/completed Codex review. Reply on the setup PR
+   for concerns.
 
 No runtime or stored-data migration. Reverting the documentation change restores
 the previous instructions without changing balances or repository settings.
