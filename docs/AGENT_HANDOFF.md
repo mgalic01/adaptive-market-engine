@@ -238,6 +238,12 @@ Credits are limited, so every agent works on demand, not by polling:
   - **Accepted risk (owner):** with command access, Bob can read his own API key. A
     manipulated run could leak it, and so spend his credits. The limits above reduce
     this risk; they do not remove it.
+  - **Accepted risk (owner, 2026-09-25): Bob's network stays open.** The rule that
+    Bob never fetches or inspects the reserved 2025–26 window is enforced by his
+    prompt and the after-run archive-name check only; a run could still read that
+    data some other way. The owner decided not to restrict the task runner's internet
+    access ("no, don't cut his internet access"). A task that could touch the reserved
+    window needs the owner's explicit go, as before.
   - **Merge:** the report PR is merged like any other PR. It is created with
     `GITHUB_TOKEN`, so CI does not start on its own.
 - **All agents:** batch small fixes into fewer pushes; every push re-runs CI and reviews.

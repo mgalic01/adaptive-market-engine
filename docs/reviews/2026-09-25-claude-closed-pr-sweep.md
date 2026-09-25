@@ -41,8 +41,8 @@ Bob's NOTED. These findings were never answered:
 | #21 (5837081026) | `_validate_manifest` checks only that `instruments` is a dict. A missing or non-numeric `tick_size`, `quantity_step` or `min_notional` raises `KeyError` or `InvalidOperation` in `rules_for`, not `DataError`. It still aborts the run and never computes wrong numbers. | **Valid.** Fix in a new PR: validate each instrument entry, with tests. |
 | #25 (5837121505, optional) | The funding-rate parser does not cap the exponent, unlike `amount()` (`"1E-9999"` passes). Inert until G is wired into replay. | **Valid.** Fix in the same PR, before P8 wires G in. |
 | #34 (5838239671) | A failed download could be cached forever. | **Does not reproduce.** `actions/cache@v4` saves only when the job succeeds (`post-if: success()` in its `action.yml`), and the hash check fails the job first. `bob-task.yml` now saves only a hash-verified package, before Bob starts (#36). |
-| #30 (5837894534) and #24 (5836974880) | Text written **after** Bob's signature makes the extraction drop the real answer. The extraction also has no regression tests. The other #30 finding was withdrawn by its author. | **Valid.** This is Codex's point 2 (a shared, tested extractor), which Codex offered to own and which is still unassigned. |
-| #27 (5837619746) | The rule that Bob never touches the reserved 2025–26 window is enforced by the prompt and a filename check only. Egress is open, `data/` files with other extensions are not checked, and Bob's summary is not scanned for reserved dates. | **Valid.** Needs an **owner decision**: accept it as a documented risk, or restrict Bob's network to the data host technically. The filename check can also be widened to every file under `data/`. |
+| #30 (5837894534) and #24 (5836974880) | Text written **after** Bob's signature makes the extraction drop the real answer. The extraction also has no regression tests. The other #30 finding was withdrawn by its author. | **Valid. Owner go to fix now:** PR #39, a shared and tested extractor (Codex's point 2). |
+| #27 (5837619746) | The rule that Bob never touches the reserved 2025–26 window is enforced by the prompt and a filename check only. Egress is open, `data/` files with other extensions are not checked, and Bob's summary is not scanned for reserved dates. | **Valid. Owner decision (2026-09-25): accepted as a documented risk; Bob's internet access stays open.** Recorded in the handbook's Bob task-run rules. |
 | #22 (5836367347) | The claim that Bob's reads stay inside the workspace rests on the vendor default, not on a test in this repo. | Covered by Codex's audit: his read-only reviews see only what the workflow gathered. It stays on Codex's review list. |
 | #28 (5837622236) | A blank line broke the catch-up table. | Already fixed in #32. |
 | #9 (5813725083) | Integrity gates and the depth bound. | Fixed as R1–R4 in #12. |
@@ -55,11 +55,10 @@ run is in progress.
 
 ## Next
 
-1. New PR: instrument validation in manifests and the funding-rate exponent cap, with
-   tests.
-2. Claude: check C1 and C5 against the V0 development runs and report.
-3. Claude: implement H (§3 H) on its own PR.
-4. **Owner decisions:**
-   - the reserved-window guard for Bob's task runs;
-   - whether the shared tested extractor waits for Codex (Oct 1) or Claude writes
-     it now.
+1. PR #38: instrument validation in manifests and the funding-rate exponent cap,
+   with tests.
+2. PR #39: the shared, tested answer extractor (owner go).
+3. Claude: check C1 and C5 against the V0 development runs and report.
+4. Claude: implement H (§3 H) on its own PR.
+5. Owner decision recorded: Bob's internet access stays open; the reserved-window
+   risk is accepted and documented.
