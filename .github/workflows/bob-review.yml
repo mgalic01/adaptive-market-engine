@@ -127,21 +127,39 @@ jobs:
           Name the head SHA you reviewed. Keep it under 25 lines. Do not write the
           at-sign mention of your own name. End with: '— IBM Bob (automated review)'
           "
-          bob run --accept-license --trust --disable-mcp --disable-subagents \
-            --disable-tool-groups edit,execute,browser,mcp,skill,subagent,subtask,artifact,mode \
-            --max-turns 40 -f json "$PROMPT" > bob-output.jsonl
+          # env -i: Bob's process gets only PATH, HOME and its own key, so runner
+          # credentials such as ACTIONS_RUNTIME_TOKEN are not in its environment.
+          # --max-turns bounds cost and time; a short answer needs far fewer turns.
+          status=0
+          env -i PATH="$PATH" HOME="$HOME" BOBSHELL_API_KEY="$BOBSHELL_API_KEY" \
+            bob run --accept-license --trust --disable-mcp --disable-subagents \
+            --disable-tool-groups edit,execute,browser,mcp,skill,todo,subagent,subtask,artifact,mode \
+            --max-turns 40 -f json "$PROMPT" > bob-output.jsonl || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "Bob exited with status $status. First 3000 bytes of its output:"
+            head -c 3000 bob-output.jsonl
+            exit "$status"
+          fi
 
       - name: Post Bob's answer
         if: steps.gate.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
           jq -rR 'fromjson? | select(.type == "result" and .status == "success")
             | .last_message // empty' bob-output.jsonl | tail -c 60000 > bob-comment.md
           if [ ! -s bob-comment.md ]; then
-            echo "Bob returned no answer; nothing posted."
+            echo "Bob returned no answer; nothing posted. First 3000 bytes of its output:"
+            head -c 3000 bob-output.jsonl
+            exit 1
+          fi
+          # Never post a secret: refuse if the answer contains Bob's key or a GitHub token.
+          if { [ -n "$BOBSHELL_API_KEY" ] && grep -qF -- "$BOBSHELL_API_KEY" bob-comment.md; } \
+            || grep -qE 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_' bob-comment.md; then
+            echo "Bob's answer contains a secret-like value; nothing posted."
             exit 1
           fi
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file bob-comment.md
