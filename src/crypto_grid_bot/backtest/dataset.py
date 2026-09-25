@@ -385,7 +385,10 @@ def _validate_manifest(manifest: Any) -> None:
             raise DataError("dataset manifest file entry is incomplete") from exc
         if not all(isinstance(value, str) for value in (symbol, interval, month)):
             raise DataError("dataset manifest file identity is invalid")
-        archive_path(symbol, interval, month)
+        try:
+            archive_path(symbol, interval, month)
+        except (ValueError, OverflowError) as exc:
+            raise DataError("dataset manifest file identity is invalid") from exc
         if status not in ("ok", "missing"):
             raise DataError("dataset manifest file status is invalid")
         if status == "ok" and (

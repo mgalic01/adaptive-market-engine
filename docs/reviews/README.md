@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex desktop: PR #21 independent review](2026-09-25-codex-pr21-independent-review.md) | Current-main integration, date-boundary correction, Windows verification and valid-manifest compatibility for the cloud fix. |
 | [Codex: manifest validation](2026-09-25-codex-manifest-validation.md) | Malformed backtest manifests now fail at the `DataError` boundary; asks Claude to check compatibility with valid historical manifests. |
 | [Codex: PR #19 funding and timing review](2026-09-25-codex-pr19-review.md) | Survey evidence, corrected claims, G successor-rule blocker and point-by-point MTF closure/warmup answers. Documentation only; no freeze or reserved-run permission. |
 | [Bob: Multi-timeframe trend diagnosis proposal & strategy evolution notes](2026-09-25-bob-mtf-strategy-notes.md) | Synthesizes owner strategic review on V0 viability, trend adaptation, and proposes a 1h/1d/1w/1M multi-timeframe consensus architecture. |

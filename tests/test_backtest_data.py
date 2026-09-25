@@ -226,6 +226,49 @@ class FetchTests(unittest.TestCase):
             with self.subTest(manifest=manifest), self.assertRaises(DataError):
                 verify_dataset(spec, manifest, self.data)
 
+    def test_manifest_validation_rejects_bad_entries_before_file_access(self):
+        spec = load_spec(ROOT / "config/datasets/verify-2024h1.toml")
+        entry = {
+            "symbol": "ADAUSDT",
+            "interval": "1m",
+            "month": "2024-01",
+            "status": "ok",
+            "sha256": "a" * 64,
+        }
+        for update in (
+            {"month": "9999-12"},
+            {"month": "2024-13"},
+            {"symbol": "../ADAUSDT"},
+            {"interval": []},
+            {"status": []},
+            {"sha256": None},
+            {"sha256": "z" * 64},
+        ):
+            manifest = {
+                "schema": 1,
+                "dataset": spec.name,
+                "instruments": {},
+                "files": [entry | update],
+            }
+            path = self.data / "malformed.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.subTest(update=update):
+                with self.assertRaises(DataError):
+                    load_manifest(path)
+                with self.assertRaises(DataError):
+                    verify_dataset(spec, manifest, self.data)
+
+    def test_manifest_loading_rejects_invalid_utf8(self):
+        path = self.data / "bad-encoding.json"
+        path.write_bytes(b"\xff")
+        with self.assertRaisesRegex(DataError, "invalid dataset manifest JSON"):
+            load_manifest(path)
+
+    def test_committed_manifests_remain_loadable(self):
+        for path in (ROOT / "config/datasets").glob("*.manifest.json"):
+            with self.subTest(path=path.name):
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8")), load_manifest(path))
+
     def test_spec_rejects_unknown_fields_and_bad_values(self):
         source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
         for bad in (
