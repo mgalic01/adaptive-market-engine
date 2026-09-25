@@ -142,6 +142,13 @@ jobs:
           node-version: "22"
 
       # Same pinned, hash-checked package as bob-review.yml.
+      - name: Cache the pinned Bob package
+        if: steps.gate.outputs.ok == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bobshell-cache
+          key: bobshell-2.0.5-eff232eb1b69f34f984ddd295e6960470058ca922b1c751879c5a8d06199f566
+
       - name: Install Bob Shell (pinned)
         id: install
         if: steps.gate.outputs.ok == 'true'
@@ -149,11 +156,18 @@ jobs:
           BOB_VERSION: "2.0.5"
           BOB_SHA256: "eff232eb1b69f34f984ddd295e6960470058ca922b1c751879c5a8d06199f566"
         run: |
-          curl -fsSL -o bobshell.tgz \
-            "https://s3.us-south.cloud-object-storage.appdomain.cloud/bob-shell/bobshell-${BOB_VERSION}.tgz"
-          echo "${BOB_SHA256}  bobshell.tgz" | sha256sum -c -
-          npm install -g --ignore-scripts ./bobshell.tgz
-          rm bobshell.tgz
+          # The package is cached (step above) and verified against the committed
+          # hash on every run, cached or not. A download retries on network errors,
+          # so one slow response from IBM's host does not fail the run (issue #31).
+          pkg="$HOME/.bobshell-cache/bobshell.tgz"
+          mkdir -p "$(dirname "$pkg")"
+          if [ ! -f "$pkg" ]; then
+            curl -fsSL --connect-timeout 30 --max-time 300 \
+              --retry 4 --retry-delay 10 --retry-all-errors -o "$pkg" \
+              "https://s3.us-south.cloud-object-storage.appdomain.cloud/bob-shell/bobshell-${BOB_VERSION}.tgz"
+          fi
+          echo "${BOB_SHA256}  $pkg" | sha256sum -c -
+          npm install -g --ignore-scripts "$pkg"
 
       # Archive cache keyed on the committed dataset specs, so repeat runs skip downloads.
       - uses: actions/cache@v4
