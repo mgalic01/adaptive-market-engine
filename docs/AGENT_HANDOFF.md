@@ -157,6 +157,27 @@ Credits are limited, so every agent works on demand, not by polling:
   owner. Any agent that sees another break on an agent path (a usage-limit reply, a
   missing answer to a handoff) tells the owner in its next message, never silently
   waits.
+- **Bob task runs on GitHub (owner approval, 2026-09-25: "yes, I approve Bob running
+  commands on GitHub with his key because bob can then work other tasks as well").**
+  `bob-task.yml` lets Bob run a reviewed task file on a GitHub Linux machine with
+  command access:
+  - **Start:** a comment `/bob-run docs/tasks/<date>-bob-<topic>.md` from the
+    repository owner's account, or "Run workflow" with the task path. Claude and Codex
+    also post as the owner, so they post `/bob-run` only after the task file is on
+    `main` **and** Codex has approved it or the owner has said go, and they link that
+    approval in the same comment.
+  - **Containment:**
+    - Bob's process has no GitHub token, MCP, browser or subagents;
+    - only new `docs/reviews/*-bob-*.md` reports are published, on a new `bob/task-*`
+      branch with a PR, never on `main`;
+    - any other file change, any 2025+ archive or a secret-like value stops the run and
+      alerts the owner;
+    - every command Bob runs is shown live in the Actions log.
+  - **Accepted risk (owner):** with command access, Bob can read his own API key. A
+    manipulated run could leak it, and so spend his credits. The limits above reduce
+    this risk; they do not remove it.
+  - **Merge:** the report PR is merged like any other PR. It is created with
+    `GITHUB_TOKEN`, so CI does not start on its own.
 - **All agents:** batch small fixes into fewer pushes; every push re-runs CI and reviews.
 
 ### Escalation to the owner (owner instruction, 2026-09-24)

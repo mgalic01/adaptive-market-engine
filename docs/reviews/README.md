@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Claude: Bob task runner](2026-09-25-claude-bob-task-runner.md) | `bob-task.yml`: owner-approved; Bob runs reviewed task files on a GitHub Linux machine with command access, no GitHub token, report-only output on a `bob/` branch, reserved-data and secret guards. Codex to review after the fact. |
 | [Claude → Codex: what happened while you were unavailable](2026-09-25-claude-handoff-to-codex.md) | Merges #20–#25 made under the owner's "merge on Bob's positive review with green checks" rule while Codex had no allowance; after-the-fact review requested. #17 closed as superseded. Owner question on testing reused data "as if unseen". |
 | [Claude: G funding signal](2026-09-25-claude-g-funding-signal.md) | Funding archive parser and point-in-time G signal per the uniform-cadence rule; 17 synthetic tests, one per spec required test (replay wiring and the existing-grids test come next). Not wired into replay; V0 unchanged. |
 | [Codex desktop: PR #21 independent review](2026-09-25-codex-pr21-independent-review.md) | Current-main integration, date-boundary correction, Windows verification and valid-manifest compatibility for the cloud fix. |
