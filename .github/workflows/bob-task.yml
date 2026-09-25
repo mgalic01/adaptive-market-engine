@@ -83,13 +83,15 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.tasks != '' && needs.resolve.outputs.tasks != '[]'
     # Job-level, not workflow-level: every PR comment starts this workflow, and a
-    # workflow-level group admits only one pending run, so an ordinary comment posted
-    # during a task run would cancel a queued /bob-run. Skipped runs never join this
-    # group. GitHub still keeps at most one pending task run: a second trigger while
-    # one is queued replaces it, so wait for the queued run to start.
+    # workflow-level group would let an ordinary comment posted during a task run
+    # cancel a queued /bob-run. Skipped runs never join this group. `queue: max` keeps
+    # up to 100 real task runs pending instead of GitHub's default of one, so a second
+    # trigger no longer replaces the first. The group also serialises matrix entries,
+    # on top of max-parallel: 1.
     concurrency:
       group: bob-task
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
