@@ -239,9 +239,10 @@ jobs:
           - If the task cannot be completed as written, stop and explain why in your
             report, including the exact error. Do not work around the task's limits.
 
-          Your final message: 5 to 15 lines with the task, the outcome, the report path,
-          and anything the owner, Claude or Codex must act on. End with
-          '— IBM Bob (task run)'.
+          Your final message: start it with a line beginning 'IBM Bob', then 5 to 15
+          lines with the task, the outcome, the report path, and anything the owner,
+          Claude or Codex must act on. No other line may start with 'IBM Bob'. End with
+          '— IBM Bob (task run)' and write nothing after it.
           "
           # env -i: only PATH, HOME and Bob's key reach his process; no GitHub token.
           # Command, edit and read tools stay on; MCP, browser and subagents are off.
@@ -290,24 +291,13 @@ jobs:
             echo "Changes outside new docs/reviews/*-bob-*.md reports; nothing is committed."
             exit 1
           fi
-          # Bob's final message, rebuilt from the stream as in bob-review.yml.
-          jq -rRs '[split("\n")[] | fromjson?] as $events
-            | if any($events[]; .type == "result" and .status == "success") then
-                reduce $events[] as $e ("";
-                  if $e.type == "tool_use" or $e.type == "tool_result" then ""
-                  elif $e.type == "message" and $e.role == "assistant"
-                    and ($e.isReasoning | not) then . + ($e.content | strings)
-                  else . end)
-              else "" end
-            # Keep only the answer: the prompt makes it start with "IBM Bob" and end
-            # with his signature, so drop any reasoning written before it.
-            | . as $t
-            | ($t | sub("(?s)\\s*—\\s*IBM Bob \\([^()]*\\)\\s*$"; "")) as $body
-            | ($body | split("IBM Bob")) as $parts
-            | if ($parts | length) < 2 then $t
-              else "IBM Bob" + ($parts | last) + $t[($body | length):] end
-            | select(test("\\S"))' "$RUNNER_TEMP/bob-output.jsonl" \
-            | tail -c 20000 > "$RUNNER_TEMP/bob-summary.md"
+          # Bob's final message, by the same tested rule as bob-review.yml. No usable
+          # answer stops the run (the publisher also rejects a missing summary).
+          if ! python3 scripts/extract_bob_answer.py "$RUNNER_TEMP/bob-output.jsonl" \
+            > "$RUNNER_TEMP/bob-summary.md"; then
+            echo "Bob returned no usable final answer; nothing is committed."
+            exit 1
+          fi
           # Never publish a secret.
           for f in "$RUNNER_TEMP/bob-summary.md" $(cut -c4- "$RUNNER_TEMP/changes.txt"); do
             if { [ -n "$BOBSHELL_API_KEY" ] && grep -qF -- "$BOBSHELL_API_KEY" "$f"; } \
