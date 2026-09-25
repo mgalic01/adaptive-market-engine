@@ -233,7 +233,9 @@ Credits are limited, so every agent works on demand, not by polling:
       names, size limits, UTF-8 text and a secret scan. It never receives the worker's
       `.git`, data or programs;
     - only one new `docs/reviews/*-bob-*.md` report is published, from a clean checkout
-      of `main`, on a new `bob/task-*` branch with a PR, never on `main`;
+      of `main`, on a new `bob/task-*` branch, never on `main`. Workflows may not open
+      PRs in this repository (owner decision: grant nothing new), so the reply links the
+      branch and Claude opens the PR after checking it adds exactly one report;
     - an edit to the review index `docs/reviews/README.md` is dropped, never published;
       any other file change, any 2025+ archive, a secret-like value or a missing final
       answer stops the run and alerts the owner;

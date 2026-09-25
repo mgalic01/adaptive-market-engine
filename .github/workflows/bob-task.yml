@@ -418,27 +418,57 @@ jobs:
             echo "Created by bob-task.yml with GITHUB_TOKEN, so CI does not start on its"
             echo "own; re-run checks or ask Claude to review before merge."
           } > "$RUNNER_TEMP/pr-body.md"
-          url=$(gh pr create --repo "$REPO" --base main --head "$branch" \
-            --title "Bob task report: $SLUG" --body-file "$RUNNER_TEMP/pr-body.md")
-          echo "pr_url=$url" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          # The repository does not let workflows open PRs (owner decision, 2026-09-25:
+          # grant nothing new). The pushed branch is the result either way; if the PR
+          # cannot be opened here, the reply links the branch and Claude opens the PR.
+          if url=$(gh pr create --repo "$REPO" --base main --head "$branch" \
+            --title "Bob task report: $SLUG" --body-file "$RUNNER_TEMP/pr-body.md"); then
+            echo "pr_url=$url" >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not open the PR from this workflow (reason above); the branch is pushed."
+          fi
 
+      # On a /bob-run comment, reply on that issue. For a merged task file or "Run
+      # workflow" there is no issue, so one is opened only when a report branch has no
+      # PR yet, so the owner and Claude still learn where the report is.
       - name: Reply where the run was started
-        if: github.event_name == 'issue_comment'
+        id: reply
+        if: >-
+          github.event_name == 'issue_comment' ||
+          (steps.publish.outputs.branch != '' && steps.publish.outputs.pr_url == '')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number }}
+          TASK: ${{ matrix.task }}
           PR_URL: ${{ steps.publish.outputs.pr_url }}
+          BRANCH: ${{ steps.publish.outputs.branch }}
           IN_DIR: ${{ runner.temp }}/in
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMPARE_URL: ${{ github.server_url }}/${{ github.repository }}/compare/main...
         run: |
           {
             echo "**Bob task run finished.** Run log: $RUN_URL"
-            if [ -n "$PR_URL" ]; then echo; echo "Report PR: $PR_URL"; fi
+            if [ -n "$PR_URL" ]; then
+              echo; echo "Report PR: $PR_URL"
+            elif [ -n "$BRANCH" ]; then
+              echo
+              echo "Report branch: \`$BRANCH\` (${COMPARE_URL}${BRANCH})."
+              echo "The PR could not be opened from this workflow; the usual reason is that"
+              echo "workflows may not open PRs here, and the run log shows the actual error."
+              echo "Claude opens the PR at its next check-in, after checking that the branch"
+              echo "adds exactly one report."
+            fi
             echo
             cat "$IN_DIR/summary.md"
           } > "$RUNNER_TEMP/reply.md"
-          gh issue comment "$NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/reply.md"
+          if [ -n "$NUMBER" ]; then
+            gh issue comment "$NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/reply.md"
+          else
+            gh issue create --repo "$REPO" --title "Bob task report ready: $TASK" \
+              --body-file "$RUNNER_TEMP/reply.md"
+          fi
 
       - name: Alert the owner that the Bob task failed
         if: failure() || cancelled()
@@ -448,17 +478,26 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           NUMBER: ${{ github.event.issue.number }}
           TASK: ${{ matrix.task }}
+          BRANCH: ${{ steps.publish.outputs.branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           OUTCOMES: >-
             workers=${{ needs.bob-task.result }},
             artifact=${{ steps.download.outcome }},
             validate=${{ steps.validate.outcome }},
-            publish=${{ steps.publish.outcome }}
+            publish=${{ steps.publish.outcome }},
+            reply=${{ steps.reply.outcome }}
         run: |
+          # The branch output is set only after the push, so a failure after it (the PR
+          # or the reply) must not claim that nothing was committed.
+          if [ -n "$BRANCH" ]; then
+            committed="the report was pushed to branch \`$BRANCH\`; a later step failed."
+          else
+            committed="nothing was committed."
+          fi
           printf '%s\n' \
             "**Bob task run failed:** \`$TASK\`" \
             "" \
-            "@$OWNER: nothing was committed." \
+            "@$OWNER: $committed" \
             "" \
             "- Run log: $RUN_URL" \
             "- Outcomes: $OUTCOMES" \
