@@ -1,4 +1,4 @@
-# Adaptive Crypto Grid Bot
+# Adaptive market engine 
 
 Development prototype for a planned automated **spot** grid-trading system.
 Version 0.4 added repeating grid levels, automatic recovery from temporary pauses
