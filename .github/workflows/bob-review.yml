@@ -146,7 +146,8 @@ jobs:
           only that comment: start with 'IBM Bob', answer the request, and state NOTED
           (no issues) or FLAGGED (concerns found, each with the file/section it affects).
           Name the head SHA you reviewed. Keep it under 25 lines. Do not write the
-          at-sign mention of your own name. End with: '— IBM Bob (automated review)'
+          at-sign mention of your own name. No other line may start with 'IBM Bob',
+          and write nothing after the signature. End with: '— IBM Bob (automated review)'
           "
           # env -i: Bob's process gets only PATH, HOME and its own key, so runner
           # credentials such as ACTIONS_RUNTIME_TOKEN are not in its environment.
@@ -171,8 +172,9 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
-            echo "Bob exited with status $status. First 3000 bytes of its output:"
-            head -c 3000 bob-output.jsonl
+            # Event counts only: the raw stream can echo file contents into the log.
+            echo "Bob exited with status $status."
+            python3 scripts/extract_bob_answer.py --stats bob-output.jsonl
             exit "$status"
           fi
 
@@ -185,27 +187,12 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
-          # Bob's answer is the assistant text streamed after his last tool call, and
-          # only if the run ended with a successful result event.
-          jq -rRs '[split("\n")[] | fromjson?] as $events
-            | if any($events[]; .type == "result" and .status == "success") then
-                reduce $events[] as $e ("";
-                  if $e.type == "tool_use" or $e.type == "tool_result" then ""
-                  elif $e.type == "message" and $e.role == "assistant"
-                    and ($e.isReasoning | not) then . + ($e.content | strings)
-                  else . end)
-              else "" end
-            # Keep only the answer: the prompt makes it start with "IBM Bob" and end
-            # with his signature, so drop any reasoning written before it.
-            | . as $t
-            | ($t | sub("(?s)\\s*—\\s*IBM Bob \\([^()]*\\)\\s*$"; "")) as $body
-            | ($body | split("IBM Bob")) as $parts
-            | if ($parts | length) < 2 then $t
-              else "IBM Bob" + ($parts | last) + $t[($body | length):] end
-            | select(test("\\S"))' bob-output.jsonl | tail -c 60000 > bob-comment.md
-          if [ ! -s bob-comment.md ]; then
-            echo "Bob returned no answer; nothing posted. First 3000 bytes of its output:"
-            head -c 3000 bob-output.jsonl
+          # One tested rule for both Bob workflows: the last result must be a success,
+          # and the answer runs from the last line starting "IBM Bob" to the signature.
+          # Anything else posts nothing (scripts/extract_bob_answer.py).
+          if ! python3 scripts/extract_bob_answer.py --max-bytes 60000 bob-output.jsonl \
+            > bob-comment.md; then
+            echo "Bob returned no usable answer; nothing posted."
             exit 1
           fi
           # Never post a secret: refuse if the answer contains Bob's key or a GitHub token.
