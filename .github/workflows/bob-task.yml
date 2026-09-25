@@ -8,11 +8,19 @@ name: IBM Bob task run
 # - "Run workflow" by the repository owner, with the task path.
 # The comment keyword is not "@bob", so the read-only review workflow does not also fire.
 #
-# Containment: Bob's step has no GitHub token (env -i) and no MCP, browser or subagents.
-# The workflow, not Bob, commits: only new docs/reviews/*-bob-*.md reports are accepted,
-# on a new bob/task-* branch with a PR, never main. Any other file change, reserved-window
-# data (2025-01 onward) or a secret-like value in the report stops the run, and the
-# owner is alerted. Every command Bob runs is shown live in this log.
+# Containment (Codex's audit, 2026-09-25): Bob's commands and the repository-write token
+# never share a machine. Bob has command access and passwordless sudo on the worker, so
+# everything there is treated as untrusted:
+# - bob-task (worker): read-only token, no write permission, caches restore-only except
+#   the hash-verified Bob package, saved before Bob starts. Bob runs under env -i, with no
+#   MCP, browser or subagents. Its own checks are an early stop, not the control. It
+#   uploads only its report file and a short summary as an artifact, never .git, data
+#   or the raw stream.
+# - publish (a fresh machine): validates that artifact (regular files only, exactly the
+#   expected names, size caps, UTF-8 text, secret scan) and only then commits the one
+#   report to a new bob/task-* branch from a clean checkout of main, and opens a PR;
+#   never main. It also posts the reply, or the owner alert on any failure.
+# Every command Bob runs is shown live in the worker's log.
 on:
   push:
     branches: [main]
@@ -25,10 +33,9 @@ on:
         description: "Task file, e.g. docs/tasks/2026-09-25-bob-v0-trace-hash-crosscheck.md"
         required: true
 
+# Default for every job; only the publish job is granted write access.
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
 
 jobs:
   resolve:
@@ -82,6 +89,9 @@ jobs:
   bob-task:
     needs: resolve
     if: needs.resolve.outputs.tasks != '' && needs.resolve.outputs.tasks != '[]'
+    # Untrusted worker: no write permission of any kind.
+    permissions:
+      contents: read
     # Job-level, not workflow-level: every PR comment starts this workflow, and a
     # workflow-level group would let an ordinary comment posted during a task run
     # cancel a queued /bob-run. Skipped runs never join this group. `queue: max` keeps
@@ -147,10 +157,13 @@ jobs:
         with:
           node-version: "22"
 
-      # Same pinned, hash-checked package as bob-review.yml.
-      - name: Cache the pinned Bob package
+      # Same pinned, hash-checked package as bob-review.yml. Restored here and, on a
+      # miss, saved right after the hash check below, before Bob starts; never saved
+      # after Bob has run.
+      - name: Restore the pinned Bob package
+        id: bobcache
         if: steps.gate.outputs.ok == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.bobshell-cache
           key: bobshell-2.0.5-eff232eb1b69f34f984ddd295e6960470058ca922b1c751879c5a8d06199f566
@@ -175,8 +188,16 @@ jobs:
           echo "${BOB_SHA256}  $pkg" | sha256sum -c -
           npm install -g --ignore-scripts "$pkg"
 
-      # Archive cache keyed on the committed dataset specs, so repeat runs skip downloads.
-      - uses: actions/cache@v4
+      - name: Save the verified Bob package (before Bob starts)
+        if: steps.gate.outputs.ok == 'true' && steps.bobcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.bobshell-cache
+          key: bobshell-2.0.5-eff232eb1b69f34f984ddd295e6960470058ca922b1c751879c5a8d06199f566
+
+      # Archive cache, restore-only: a worker never writes a cache after Bob has run.
+      # Restored archives are still checked against the committed manifests.
+      - uses: actions/cache/restore@v4
         if: steps.gate.outputs.ok == 'true'
         with:
           path: data
@@ -289,21 +310,157 @@ jobs:
             echo "has_report=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Only the report file and the summary leave this machine; the publish job
+      # validates both again on a fresh runner.
+      - name: Stage the report and summary
+        if: steps.gate.outputs.ok == 'true'
+        run: |
+          out="$RUNNER_TEMP/out"
+          mkdir -p "$out/report"
+          cut -c4- "$RUNNER_TEMP/changes.txt" | while IFS= read -r f; do
+            [ -n "$f" ] && cp -- "$f" "$out/report/"
+          done
+          cp -- "$RUNNER_TEMP/bob-summary.md" "$out/summary.md"
+          ls -la "$out" "$out/report"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.ok == 'true'
+        with:
+          name: bob-report-${{ steps.gate.outputs.slug }}
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [resolve, bob-task]
+    # Runs after every worker, whatever its result, so a failure always alerts.
+    if: >-
+      always() && needs.resolve.result == 'success' &&
+      needs.resolve.outputs.tasks != '' && needs.resolve.outputs.tasks != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        task: ${{ fromJSON(needs.resolve.outputs.tasks) }}
+    steps:
+      - name: Name the task
+        id: task
+        env:
+          TASK_IN: ${{ matrix.task }}
+        run: |
+          printf '%s' "$TASK_IN" \
+            | grep -qE '^docs/tasks/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[a-z0-9-]+\.md$'
+          echo "task=$TASK_IN" >> "$GITHUB_OUTPUT"
+          echo "slug=$(basename "$TASK_IN" .md)" >> "$GITHUB_OUTPUT"
+
+      # A clean checkout on a machine Bob never touched.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Download the worker's artifact
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: bob-report-${{ steps.task.outputs.slug }}
+          path: ${{ runner.temp }}/in
+
+      - name: Validate the artifact
+        id: validate
+        env:
+          DOWNLOADED: ${{ steps.download.outcome }}
+          IN_DIR: ${{ runner.temp }}/in
+          BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
+        run: |
+          if [ "$DOWNLOADED" != "success" ]; then
+            echo "No artifact from the worker: Bob's run did not finish its checks."
+            exit 1
+          fi
+          python3 - <<'EOF'
+          import os, re, sys
+          root = os.environ["IN_DIR"]
+          key = os.environ.get("BOBSHELL_API_KEY", "")
+          name_re = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md$")
+          secret_re = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_")
+
+          def fail(msg):
+              print(f"Rejected: {msg}")
+              sys.exit(1)
+
+          def text(path, cap, label):
+              st = os.lstat(path)
+              if not os.path.isfile(path) or os.path.islink(path):
+                  fail(f"{label} is not a regular file")
+              if st.st_size == 0 or st.st_size > cap:
+                  fail(f"{label} size {st.st_size} is outside 1..{cap} bytes")
+              raw = open(path, "rb").read()
+              try:
+                  body = raw.decode("utf-8")
+              except UnicodeDecodeError:
+                  fail(f"{label} is not UTF-8 text")
+              if any(ord(c) < 32 and c not in "\n\r\t" for c in body):
+                  fail(f"{label} contains control characters")
+              if (key and key in body) or secret_re.search(body):
+                  fail(f"{label} contains a secret-like value")
+              if not body.strip():
+                  fail(f"{label} is blank")
+
+          found = []
+          for dirpath, dirnames, filenames in os.walk(root):
+              for d in dirnames:
+                  if os.path.islink(os.path.join(dirpath, d)):
+                      fail("a directory is a symlink")
+              for f in filenames:
+                  found.append(os.path.relpath(os.path.join(dirpath, f), root))
+          reports = [p for p in found if p.startswith("report/")]
+          others = [p for p in found if p not in reports and p != "summary.md"]
+          if others:
+              fail(f"unexpected files: {others}")
+          if "summary.md" not in found:
+              fail("summary.md is missing (no final answer from Bob)")
+          text(os.path.join(root, "summary.md"), 20_000, "summary.md")
+          if len(reports) > 1:
+              fail(f"more than one report: {reports}")
+          report = ""
+          if reports:
+              name = reports[0][len("report/"):]
+              if "/" in name or not name_re.match(name):
+                  fail(f"report name {name!r} does not match YYYY-MM-DD-bob-<topic>.md")
+              if os.path.lexists(os.path.join("docs", "reviews", name)):
+                  fail(f"docs/reviews/{name} already exists on main")
+              text(os.path.join(root, reports[0]), 200_000, name)
+              report = name
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"report={report}\n")
+          print(f"Accepted: summary.md{', ' + report if report else ''}")
+          EOF
+
       - name: Publish the report on a bob/ branch
         id: publish
-        if: steps.gate.outputs.ok == 'true' && steps.check.outputs.has_report == 'true'
+        if: steps.validate.outputs.report != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          SLUG: ${{ steps.gate.outputs.slug }}
-          TASK: ${{ steps.gate.outputs.task }}
+          IN_DIR: ${{ runner.temp }}/in
+          REPORT: ${{ steps.validate.outputs.report }}
+          SLUG: ${{ steps.task.outputs.slug }}
+          TASK: ${{ steps.task.outputs.task }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           branch="bob/task-${SLUG}-${GITHUB_RUN_ID}"
           git config user.name "IBM Bob (task run)"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          cut -c4- "$RUNNER_TEMP/changes.txt" | xargs git add --
+          cp -- "$IN_DIR/report/$REPORT" "docs/reviews/$REPORT"
+          git add -- "docs/reviews/$REPORT"
           git commit -m "Bob task report: $SLUG" -m "Task: $TASK" -m "Run: $RUN_URL"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$branch"
           {
@@ -314,7 +471,7 @@ jobs:
             echo
             echo "## Bob's summary"
             echo
-            cat "$RUNNER_TEMP/bob-summary.md"
+            cat "$IN_DIR/summary.md"
             echo
             echo "Created by bob-task.yml with GITHUB_TOKEN, so CI does not start on its"
             echo "own; re-run checks or ask Claude to review before merge."
@@ -324,37 +481,36 @@ jobs:
           echo "pr_url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Reply where the run was started
-        if: steps.gate.outputs.ok == 'true' && github.event_name == 'issue_comment'
+        if: github.event_name == 'issue_comment'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number }}
           PR_URL: ${{ steps.publish.outputs.pr_url }}
+          IN_DIR: ${{ runner.temp }}/in
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
             echo "**Bob task run finished.** Run log: $RUN_URL"
             if [ -n "$PR_URL" ]; then echo; echo "Report PR: $PR_URL"; fi
             echo
-            cat "$RUNNER_TEMP/bob-summary.md" 2>/dev/null || true
+            cat "$IN_DIR/summary.md"
           } > "$RUNNER_TEMP/reply.md"
           gh issue comment "$NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/reply.md"
 
       - name: Alert the owner that the Bob task failed
-        if: (failure() || cancelled()) && steps.gate.outputs.ok == 'true'
+        if: failure() || cancelled()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
           NUMBER: ${{ github.event.issue.number }}
-          TASK: ${{ steps.gate.outputs.task }}
+          TASK: ${{ matrix.task }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           OUTCOMES: >-
-            exists=${{ steps.exists.outcome }},
-            project=${{ steps.project.outcome }},
-            install=${{ steps.install.outcome }},
-            bob=${{ steps.bob.outcome }},
-            check=${{ steps.check.outcome }},
+            workers=${{ needs.bob-task.result }},
+            artifact=${{ steps.download.outcome }},
+            validate=${{ steps.validate.outcome }},
             publish=${{ steps.publish.outcome }}
         run: |
           printf '%s\n' \
@@ -363,7 +519,7 @@ jobs:
             "@$OWNER: nothing was committed." \
             "" \
             "- Run log: $RUN_URL" \
-            "- Step outcomes: $OUTCOMES" \
+            "- Outcomes: $OUTCOMES" \
             "" \
             "Claude: diagnose from the run log and report to the owner." \
             "" \
