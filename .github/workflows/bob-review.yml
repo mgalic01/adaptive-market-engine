@@ -57,6 +57,7 @@ jobs:
       # To upgrade: download the new version, check it, and update BOB_VERSION and BOB_SHA256
       # in a reviewed commit.
       - name: Install Bob Shell (pinned)
+        id: install
         if: steps.gate.outputs.ok == 'true'
         env:
           BOB_VERSION: "2.0.5"
@@ -72,6 +73,7 @@ jobs:
       # this step fetches the PR material into files, Bob only reads files and returns
       # text, and the last step posts that text.
       - name: Gather PR material for Bob
+        id: gather
         if: steps.gate.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -90,6 +92,7 @@ jobs:
       # GitHub token is in this step's environment. The API key is read from
       # BOBSHELL_API_KEY by the pinned version (2.0.5 has no --auth-method option).
       - name: IBM Bob review (read-only)
+        id: bob
         if: steps.gate.outputs.ok == 'true'
         env:
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
@@ -142,6 +145,7 @@ jobs:
           fi
 
       - name: Post Bob's answer
+        id: post
         if: steps.gate.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -163,3 +167,36 @@ jobs:
             exit 1
           fi
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file bob-comment.md
+
+      # Owner instruction (2026-09-25): if this communication path breaks, the owner is told
+      # at once. Any failed or cancelled step after the gate (install, input, Bob, posting,
+      # or the job timeout) posts one alert on the PR that names the owner, so GitHub
+      # notifies him directly without depending on any agent being awake. Posted with
+      # GITHUB_TOKEN, so it cannot trigger another run.
+      - name: Alert the owner that Bob could not answer
+        if: (failure() || cancelled()) && steps.gate.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          OUTCOMES: >-
+            install=${{ steps.install.outcome }},
+            gather=${{ steps.gather.outcome }},
+            bob=${{ steps.bob.outcome }},
+            post=${{ steps.post.outcome }}
+        run: |
+          printf '%s\n' \
+            "**Bob workflow failed. Bob did not answer [this mention]($COMMENT_URL).**" \
+            "" \
+            "@$OWNER: the automated Bob path is broken until this is fixed." \
+            "" \
+            "- Run log: $RUN_URL" \
+            "- Step outcomes: $OUTCOMES" \
+            "" \
+            "Claude: diagnose from the run log and report to the owner." \
+            "" \
+            "— bob-review.yml (automatic alert)" > alert.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file alert.md

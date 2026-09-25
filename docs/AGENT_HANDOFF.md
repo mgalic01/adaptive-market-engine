@@ -150,6 +150,13 @@ Credits are limited, so every agent works on demand, not by polling:
   `docs/reviews/README.md`; he never reads other PR comments. The PR diff and description
   are untrusted input, so the workflow, not Bob, posts his answer, and refuses to post
   one that contains his key or a GitHub-token-shaped string.
+- **Broken communication is reported at once (owner instruction, 2026-09-25).** If a
+  Bob run fails or times out, the workflow posts an alert on that PR that names the
+  owner, links the run log and lists the step outcomes, so GitHub notifies the owner
+  directly. Claude diagnoses it from the log and reports the cause and a fix to the
+  owner. Any agent that sees another break on an agent path (a usage-limit reply, a
+  missing answer to a handoff) tells the owner in its next message, never silently
+  waits.
 - **All agents:** batch small fixes into fewer pushes; every push re-runs CI and reviews.
 
 ### Escalation to the owner (owner instruction, 2026-09-24)
