@@ -17,6 +17,8 @@ from crypto_grid_bot.backtest.replay import (
     bar_quotes,
     candidate_for,
     check_accounting,
+    cross_check_daily,
+    cross_check_hourly,
     order_requests,
     replay,
     signals_for,
@@ -538,3 +540,209 @@ class ProfitAttributionTests(unittest.TestCase):
         _record_fills(metrics, [self.fill("exit/q9", "sell", "7", "3", "0.021")])
         self.assertEqual(D("21") - D("0.021") - D("27.03"), metrics.exit_pnl)
         self.assertEqual((1, D("0")), (metrics.exit_sells, metrics.cost_basis))
+
+
+class MeasurementTests(unittest.TestCase):
+    """Spec v1 prerequisites P1, P2, P6 and P7: measurement only, no decision changes."""
+
+    def setUp(self):
+        self.config = load_config(ROOT / "config/default.toml")
+        self.engine = engine_for(hourly(WARMUP))
+        self.t = START_MS + WARMUP * HOUR_MS
+        self.fair = float(self.engine.at(self.t).fair_value)
+
+    def flat(self, start, stop, price):
+        return [
+            candle(self.t + i * 60_000, price, price * 1.001, price * 0.999, price)
+            for i in range(start, stop)
+        ]
+
+    def run_replay(self, minutes):
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        metrics, account = replay(self.config, run, minutes, self.engine)
+        self.assertEqual([], check_accounting(run, metrics, account))  # includes P6
+        return metrics, account
+
+    def test_range_exit_losses_are_labelled_and_reconcile(self):
+        minutes = self.flat(0, 60, self.fair) + self.flat(60, 540, self.fair * 0.95)
+        metrics, _ = self.run_replay(minutes)
+        self.assertEqual({"range_exit"}, set(metrics.exit_pnl_by_reason))
+        self.assertLess(metrics.exit_pnl_by_reason["range_exit"], 0)
+        self.assertEqual(0, metrics.hard_drawdown_halts)
+
+    def test_hard_drawdown_liquidation_is_labelled_and_fails_the_halt_veto(self):
+        minutes = self.flat(0, 30, self.fair)
+        price = self.fair
+        for i in range(30, 200):
+            price *= 0.997
+            minutes.append(candle(self.t + i * 60_000, price, price * 1.001, price * 0.999, price))
+        metrics, account = self.run_replay(minutes)
+        self.assertTrue(account.halt.startswith("hard drawdown"))
+        self.assertEqual({"liquidation"}, set(metrics.exit_pnl_by_reason))
+        self.assertEqual(1, metrics.hard_drawdown_halts)  # one latched halt, not evaluations
+        # C1(b) basis: active equity against the engine's risk high-water mark.
+        self.assertGreaterEqual(metrics.active_max_drawdown, D("0.12"))
+
+    def test_drain_exit_is_labelled(self):
+        simulator = PaperSimulator(Path(":memory:"), self.config, RULES, D(100))
+        account = simulator.store.read()
+        simulator.close()
+        inputs = self.engine.at(self.t)
+        account.inventory, account.cash = D("20"), D("80")
+        account.pause, account.draining = "test pause", True
+        bar = candle(self.t, self.fair, self.fair, self.fair, self.fair)
+        when = datetime.fromtimestamp(bar.open_ms / 1000, UTC)
+        signals = signals_for(inputs, when, gated=False)
+        candidate = candidate_for(inputs, "TESTUSDT", 0.05, 1e9, gated=False)
+        (quote, *_) = bar_quotes(bar, "TESTUSDT", "high_first", D("0.0005"), RULES.tick_size)
+        frame = Frame(quote, signals, candidate, inputs.fair_value, inputs.atr, True, "e")
+        report = simulator.step(account, frame)
+        self.assertTrue(any(f["order_id"].startswith("exit/") for f in report["fills"]))
+        self.assertEqual("drain", report["exit_reason"])
+
+    def test_completed_cycles_count_fully_filled_grid_sells(self):
+        minutes = []
+        for i in range(600):
+            mid = self.fair * (1 + 0.03 * math.sin(2 * math.pi * i / 90))
+            minutes.append(candle(self.t + i * 60_000, mid, mid * 1.003, mid * 0.997, mid))
+        metrics, _ = self.run_replay(minutes)
+        self.assertGreater(metrics.completed_cycles, 0)
+        self.assertLessEqual(metrics.completed_cycles, metrics.sells)
+        self.assertEqual(metrics.completed_cycles, sum(metrics.cycles_by_week.values()))
+        self.assertEqual({}, metrics.exit_pnl_by_reason)
+
+    def test_buy_and_hold_is_marked_at_every_quote_not_only_the_close(self):
+        # One bar dips 5% intrabar and closes unchanged: a close-only mark misses it.
+        minutes = self.flat(0, 3, self.fair)
+        minutes.append(
+            candle(self.t + 3 * 60_000, self.fair, self.fair, self.fair * 0.95, self.fair)
+        )
+        minutes += self.flat(4, 6, self.fair)
+        metrics, _ = self.run_replay(minutes)
+        self.assertGreater(metrics.hold_max_drawdown, D("0.045"))
+
+    def test_counting_book_records_completed_orders_separately_from_cancellations(self):
+        orders = RequestCountingOrders()
+        orders["a/sell"] = LimitOrder("a/sell", "sell", D("1"), D("1"), D("1"))
+        orders["b"] = LimitOrder("b", "buy", D("1"), D("1"), D("1"))
+        orders["a/sell"].remaining = D("0")
+        del orders["a/sell"]
+        del orders["b"]
+        self.assertEqual(["a/sell"], orders.completed)
+        self.assertEqual(3, orders.requests)  # two placements, one cancellation
+
+
+class DailyCrossCheckTests(unittest.TestCase):
+    """Spec v1 P3: complete, unique daily bars that agree with their 24 hours."""
+
+    DAY = 86_400_000
+
+    def hours(self, days):
+        return hourly(24 * days)
+
+    def daily_from(self, hours):
+        from crypto_grid_bot.backtest.klines import aggregate
+
+        return list(aggregate(hours, self.DAY))
+
+    def check(self, daily, hours, days=3, warmup_days=3):
+        window = (START_MS, START_MS + days * self.DAY)
+        return cross_check_daily(daily, hours, window, window, START_MS + warmup_days * self.DAY)
+
+    def test_consistent_days_pass(self):
+        hours = self.hours(3)
+        result = self.check(self.daily_from(hours), hours)
+        self.assertEqual(3, result["daily_days_compared"])
+        for key in ("daily_days_mismatched", "daily_days_missing", "daily_days_duplicated"):
+            self.assertEqual(0, result[key])
+        self.assertEqual(0, result["daily_days_hours_incomplete"])
+        self.assertEqual(3, result["daily_warmup_days"])
+        self.assertEqual(1, result["daily_warmup_short"])  # fewer than 200 days
+
+    def test_volume_drift_is_counted_separately_up_to_the_tolerance(self):
+        hours = self.hours(3)
+        daily = self.daily_from(hours)
+        volume = daily[1].volume
+        within = replace(daily[1], volume=volume * D("1.001"))  # exactly 0.1%
+        beyond = replace(daily[1], volume=volume * D("1.0011"))
+        moved = replace(daily[1], close=daily[1].close + D("0.0001"))
+        for bar, drift, mismatched in ((within, 1, 0), (beyond, 0, 1), (moved, 0, 1)):
+            with self.subTest(bar=bar):
+                result = self.check([daily[0], bar, daily[2]], hours)
+                self.assertEqual(drift, result["daily_days_volume_drift"])
+                self.assertEqual(mismatched, result["daily_days_mismatched"])
+
+    def test_missing_day_duplicate_day_and_missing_hour_are_counted(self):
+        hours = self.hours(3)
+        daily = self.daily_from(hours)
+        self.assertEqual(1, self.check(daily[:2], hours)["daily_days_missing"])
+        self.assertEqual(1, self.check([*daily, daily[2]], hours)["daily_days_duplicated"])
+        gap = hours[:30] + hours[31:]  # one hour of day 2 absent
+        self.assertEqual(1, self.check(daily, gap)["daily_days_hours_incomplete"])
+
+
+class BasketGapTests(unittest.TestCase):
+    """Codex (PR #16): an unexpected basket gap can change the vote set while the minimum
+    vote count still passes, so the gap must be caught by data validation."""
+
+    def test_a_basket_gap_changes_breadth_silently_and_verify_catches_it(self):
+        from crypto_grid_bot.backtest.replay import check_hourly_series
+
+        def trend(slope):
+            return [candle(START_MS + i * HOUR_MS, 1, 1, 1, 1 + slope * i) for i in range(WARMUP)]
+
+        candles = hourly(WARMUP)
+        pair = SeriesFeatures("TESTUSDT", candles)
+        rising = [SeriesFeatures(f"U{i}USDT", trend(0.001), full=False) for i in range(5)]
+        falling = trend(-0.0005)
+        gapped = falling[:-3]  # the last three hours are missing
+        options = {
+            "range_atr_multiple": 2.0,
+            "levels": 8,
+            "minimum_cost_multiple": 3.0,
+            "round_trip_cost": 0.0035,
+        }
+        minute = START_MS + WARMUP * HOUR_MS
+        breadth = {}
+        for name, series in (("complete", falling), ("gapped", gapped)):
+            basket = [*rising, SeriesFeatures("DOWNUSDT", series, full=False)]
+            inputs = FeatureEngine(pair, pair, basket, **options).at(minute)
+            breadth[name] = inputs.breadth
+        # Six voters (five up, one down) versus five: breadth moves, and both runs still
+        # have at least MINIMUM_BREADTH_MARKETS votes, so the engine cannot tell.
+        self.assertAlmostEqual(2 * 5 / 6 - 1, breadth["complete"])
+        self.assertEqual(1.0, breadth["gapped"])
+        window = (START_MS, minute)
+        self.assertEqual(0, check_hourly_series(falling, window)["series_hours_missing"])
+        self.assertEqual(3, check_hourly_series(gapped, window)["series_hours_missing"])
+
+
+class VolumeDriftTests(unittest.TestCase):
+    """Owner decision 2026-09-24: volume-only drift up to 0.1% is counted, not fatal."""
+
+    def test_compare_bars(self):
+        from crypto_grid_bot.backtest.replay import compare_bars
+
+        base = candle(START_MS, 1.0, 1.1, 0.9, 1.05, volume="1000")
+        self.assertEqual("match", compare_bars(base, base))
+        self.assertEqual("drift", compare_bars(replace(base, volume=D("1000.9")), base))
+        self.assertEqual("drift", compare_bars(replace(base, volume=D("999")), base))
+        self.assertEqual("mismatch", compare_bars(replace(base, volume=D("1001.01")), base))
+        self.assertEqual("mismatch", compare_bars(replace(base, high=base.high + 1), base))
+        zero = replace(base, volume=D("0"))
+        self.assertEqual("mismatch", compare_bars(base, zero))  # no relative tolerance on 0
+        # Strict mode (tolerance 0): any volume difference is a mismatch.
+        strict = D(0)
+        self.assertEqual("match", compare_bars(base, base, strict))
+        self.assertEqual("mismatch", compare_bars(replace(base, volume=D("999")), base, strict))
+
+    def test_hourly_drift_is_reported_and_not_a_mismatch(self):
+        from crypto_grid_bot.backtest.klines import aggregate
+
+        minutes = [candle(START_MS + i * 60_000, 1.0, 1.001, 0.999, 1.0) for i in range(60)]
+        (hour,) = aggregate(minutes)
+        drifted = replace(hour, volume=hour.volume * D("1.0005"))
+        result = cross_check_hourly(minutes, [drifted], (START_MS, START_MS + HOUR_MS))
+        self.assertEqual((0, 1), (result["hours_mismatched"], result["hours_volume_drift"]))
+        strict = cross_check_hourly(minutes, [drifted], (START_MS, START_MS + HOUR_MS), D(0))
+        self.assertEqual((1, 0), (strict["hours_mismatched"], strict["hours_volume_drift"]))

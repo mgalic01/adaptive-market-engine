@@ -30,10 +30,21 @@ from crypto_grid_bot.market_data.parsing import DataError, parse_instrument, sym
 ARCHIVE_HOST = "data.binance.vision"
 MAX_ZIP_BYTES = 64 * 1024 * 1024
 MANIFEST_SCHEMA = 1
-_CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Z0-9]{2,24}-(?:1m|1h)-\d{4}-\d{2}\.zip)\n?")
+_CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Z0-9]{2,24}-(?:1m|1h|1d)-\d{4}-\d{2}\.zip)\n?")
 
 Fetcher = Callable[[str], bytes | None]
 InstrumentSource = Callable[[str], dict[str, str]]
+
+
+@dataclass(frozen=True)
+class BasketExclusion:
+    """A documented absence of a breadth-basket symbol's hourly data (for example before
+    its listing): hours in [start_ms, end_ms) may be missing without failing verify."""
+
+    symbol: str
+    start_ms: int
+    end_ms: int
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -51,6 +62,9 @@ class DatasetSpec:
     slippage_rate: Decimal
     participation: Decimal
     assumed_spread_pct: Decimal
+    # Optional daily history for daily-bar signals (spec v1 P3); None means no 1d files.
+    daily_warmup_start: str | None = None
+    basket_exclusions: tuple[BasketExclusion, ...] = ()
 
     def months(self, first: str | None = None) -> list[str]:
         """Inclusive YYYY-MM list from ``first`` (default warm-up start) to end."""
@@ -71,6 +85,9 @@ class DatasetSpec:
         hourly = sorted({*self.traded, self.market_proxy, *self.breadth_basket})
         files = [(s, "1m", m) for s in self.traded for m in self.months(self.start)]
         files += [(s, "1h", m) for s in hourly for m in self.months()]
+        if self.daily_warmup_start:
+            daily = sorted({*self.traded, self.market_proxy})
+            files += [(s, "1d", m) for s in daily for m in self.months(self.daily_warmup_start)]
         return files
 
 
@@ -112,17 +129,64 @@ def fee_rate(raw: str, name: str) -> Decimal:
     return _positive(raw, name, below=Decimal("0.1"), allow_zero=True)
 
 
+_HOUR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:00Z")
+
+
+def _hour_ms(raw: object, name: str) -> int:
+    if type(raw) is not str or not _HOUR.fullmatch(raw):
+        raise DataError(f"{name} must be an hour as YYYY-MM-DDTHH:00Z")
+    try:
+        moment = datetime.strptime(raw, "%Y-%m-%dT%H:%MZ").replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise DataError(f"{name} must be an hour as YYYY-MM-DDTHH:00Z") from exc
+    return int(moment.timestamp() * 1000)
+
+
+def _basket_exclusions(
+    raw: object, basket: tuple[str, ...], covered: set[str]
+) -> tuple[BasketExclusion, ...]:
+    """Parse ``[[basket_exclusions]]``: symbol, from (inclusive), to (exclusive), reason."""
+    if type(raw) is not list:
+        raise DataError("basket_exclusions must be a list of tables")
+    exclusions: list[BasketExclusion] = []
+    for entry in raw:
+        if type(entry) is not dict or set(entry) != {"symbol", "from", "to", "reason"}:
+            raise DataError("each basket exclusion needs exactly symbol, from, to and reason")
+        symbol = symbol_name(entry["symbol"]) if type(entry["symbol"]) is str else ""
+        if symbol not in basket or symbol in covered:
+            raise DataError("a basket exclusion must name an untraded, non-proxy basket symbol")
+        start, end = _hour_ms(entry["from"], "from"), _hour_ms(entry["to"], "to")
+        reason = entry["reason"]
+        if start >= end or type(reason) is not str or not reason.strip():
+            raise DataError("a basket exclusion needs from < to and a non-empty reason")
+        exclusions.append(BasketExclusion(symbol, start, end, reason))
+    for a in exclusions:
+        for b in exclusions:
+            overlap = a.start_ms < b.end_ms and b.start_ms < a.end_ms
+            if a is not b and a.symbol == b.symbol and overlap:
+                raise DataError("basket exclusions for one symbol must not overlap")
+    return tuple(exclusions)
+
+
 def load_spec(path: Path) -> DatasetSpec:
     with path.open("rb") as source:
         try:
             raw = tomllib.load(source)
         except tomllib.TOMLDecodeError as exc:
             raise DataError(f"invalid dataset TOML: {exc}") from exc
+    daily_start = raw.pop("daily_warmup_start", None)
+    raw_exclusions = raw.pop("basket_exclusions", [])
     if set(raw) != set(_SPEC_FIELDS):
         raise DataError("dataset spec contains missing or unknown fields")
     for key, expected in _SPEC_FIELDS.items():
         if type(raw[key]) is not expected:
             raise DataError(f"dataset field {key} has an invalid type")
+    if daily_start is not None:
+        if type(daily_start) is not str:
+            raise DataError("dataset field daily_warmup_start has an invalid type")
+        month_bounds_ms(daily_start)
+        if not daily_start <= raw["warmup_start"]:
+            raise DataError("daily_warmup_start must not be after warmup_start")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", raw["name"]):
         raise DataError("dataset name must be lowercase letters, digits and hyphens")
     traded = tuple(symbol_name(s) for s in raw["traded"])
@@ -133,11 +197,13 @@ def load_spec(path: Path) -> DatasetSpec:
         month_bounds_ms(month)
     if not raw["warmup_start"] < raw["start"] <= raw["end"]:
         raise DataError("months must satisfy warmup_start < start <= end")
+    proxy = symbol_name(raw["market_proxy"])
+    exclusions = _basket_exclusions(raw_exclusions, basket, {*traded, proxy})
     return DatasetSpec(
         name=raw["name"],
         purpose=raw["purpose"],
         traded=traded,
-        market_proxy=symbol_name(raw["market_proxy"]),
+        market_proxy=proxy,
         breadth_basket=basket,
         warmup_start=raw["warmup_start"],
         start=raw["start"],
@@ -147,6 +213,8 @@ def load_spec(path: Path) -> DatasetSpec:
         slippage_rate=_positive(raw["slippage_rate"], "slippage_rate", below=Decimal("0.1")),
         participation=_positive(raw["participation"], "participation", below=Decimal("1.01")),
         assumed_spread_pct=_positive(raw["assumed_spread_pct"], "assumed_spread_pct"),
+        daily_warmup_start=daily_start,
+        basket_exclusions=exclusions,
     )
 
 
