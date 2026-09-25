@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Claude: G funding signal](2026-09-25-claude-g-funding-signal.md) | Funding archive parser and point-in-time G signal per the uniform-cadence rule; 17 synthetic tests, one per spec required test (replay wiring and the existing-grids test come next). Not wired into replay; V0 unchanged. |
 | [Claude: bob-review.yml fix](2026-09-25-claude-bob-workflow-fix.md) | Pinned Bob 2.0.5 rejected `--auth-method`, so every "@bob" call failed. Now `bob run`, read-only tools, no GitHub token in Bob's step; the workflow posts his answer. Merged at the owner's instruction; Codex to review after the fact. |
 | [Codex: PR #20 uniform-cadence review](2026-09-25-codex-pr20-review.md) | Draft G convention, finite-rate symmetry, unseen-transition limitation and boundary review; no freeze or reserved-run permission. |
 | [Codex: PR #19 funding and timing review](2026-09-25-codex-pr19-review.md) | Survey evidence, corrected claims, G successor-rule blocker and point-by-point MTF closure/warmup answers. Documentation only; no freeze or reserved-run permission. |

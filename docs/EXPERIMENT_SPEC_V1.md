@@ -416,7 +416,8 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - **Constant cadence:** 8 h, available.
   - **Cadence change 8 → 4 h:** the windows (8, 8, 4) and (8, 4, 4) are unavailable,
     and the first (4, 4, 4) with 4-hour steps is available.
-  - **Cadence change 4 → 8 h:** the same checks.
+  - **Cadence change 4 → 8 h:** the windows (4, 4, 8) and (4, 8, 8) are unavailable,
+    and the first (8, 8, 8) with 8-hour steps is available.
   - **Observations between the old and new deadlines, in both directions:**
     - **8 → 4 h:** before the first 4-hour record becomes usable, available until the
       old overdue deadline `scheduled(r3) + 8 h + 60 s`; after it becomes usable,
@@ -426,8 +427,9 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - **The first changed record's publication boundary:** exactly at its
     `calc_time + 60 s`, and one second before it.
   - **Hidden gap:** (4 h, missing, 8 h) is unavailable.
-  - **Missing newest record:** while three older records are still within 32 hours,
-    unavailable.
+  - **Missing newest record:** unavailable from the overdue deadline
+    `scheduled(r3) + I + 60 s` on, while the three older records are still within
+    `4 × I` (32 hours for an 8-hour series).
   - **Invalid newest record** (interval 0, 3, 12 or empty; non-finite rate): unavailable,
     never falling back to three older valid records.
   - **Insufficient history:** zero, one and two usable records, including at replay
