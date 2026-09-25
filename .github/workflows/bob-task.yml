@@ -30,10 +30,6 @@ permissions:
   pull-requests: write
   issues: write
 
-concurrency:
-  group: bob-task
-  cancel-in-progress: false
-
 jobs:
   resolve:
     # Only the owner, on every trigger (Bob's review of PR #27: "Run workflow" is otherwise
@@ -86,6 +82,16 @@ jobs:
   bob-task:
     needs: resolve
     if: needs.resolve.outputs.tasks != '' && needs.resolve.outputs.tasks != '[]'
+    # Job-level, not workflow-level: every PR comment starts this workflow, and a
+    # workflow-level group would let an ordinary comment posted during a task run
+    # cancel a queued /bob-run. Skipped runs never join this group. `queue: max` keeps
+    # up to 100 real task runs pending instead of GitHub's default of one, so a second
+    # trigger no longer replaces the first. The group also serialises matrix entries,
+    # on top of max-parallel: 1.
+    concurrency:
+      group: bob-task
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
