@@ -26,12 +26,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # The job-level `contains` is only a prefilter: `@bobby` would pass it. Require a
+      # whole-word mention (no letter, digit, "_" or "-" right after "@bob") before any
+      # other step runs, so no install or API call happens for a non-match.
+      - name: Require an explicit @bob mention
+        id: gate
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          if printf '%s' "$BODY" | grep -Eqi '(^|[^[:alnum:]_-])@bob([^[:alnum:]_-]|$)'; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No whole-word @bob mention; skipping."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.ok == 'true'
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-node@v4
+        if: steps.gate.outputs.ok == 'true'
         with:
           node-version: "22"
 
@@ -40,6 +57,7 @@ jobs:
       # To upgrade: download the new version, check it, and update BOB_VERSION and BOB_SHA256
       # in a reviewed commit.
       - name: Install Bob Shell (pinned)
+        if: steps.gate.outputs.ok == 'true'
         env:
           BOB_VERSION: "2.0.5"
           BOB_SHA256: "eff232eb1b69f34f984ddd295e6960470058ca922b1c751879c5a8d06199f566"
@@ -51,6 +69,7 @@ jobs:
           rm bobshell.tgz
 
       - name: IBM Bob review
+        if: steps.gate.outputs.ok == 'true'
         env:
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

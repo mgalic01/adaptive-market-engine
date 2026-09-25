@@ -342,13 +342,17 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
       8 and three settlements per day.
     - Some times are a few milliseconds past the hour (for example `+11 ms`), which
       supports flooring to the hour.
-    - **Not yet established:** whether every month has the interval field, whether the
-      interval is ever not 8 or a settlement is ever missing in 2020–2024, and what the
-      field means. These are the subject of the follow-up task
-      `docs/tasks/2026-09-25-bob-funding-cadence.md`. If every development-window
-      month has the field, only the value 8 and exact 8-hour steps, then the meaning of
-      the field cannot change any decision in those windows. A cadence transition then
-      still needs a documented rule before the reserved run.
+    - **Cadence over all months (Bob, 2026-09-25, PR #19 `fe60ec4`):**
+      - All 60 months (2020-01 to 2024-12) have the header
+        `calc_time,funding_interval_hours,last_funding_rate`.
+      - All 5,481 records have interval 8.
+      - Every step is exactly 8 hours, with no missing and no duplicate settlements.
+      - The largest offset past the hour is 47 ms, so flooring to the hour is exact.
+      - **Consequence:** in both development windows, the meaning of the interval field
+        (next or ending) cannot change any G decision, so these rules apply as written.
+        A cadence change, if one ever occurs, needs a documented rule and its test
+        before the reserved run. The reserved window's data is not examined until the
+        owner's go.
     - The 60-second publication allowance cannot be verified from archives. It stays a
       labelled assumption.
 - **Timing:** a record becomes usable at `calc_time + 60 s` (a fixed publication
