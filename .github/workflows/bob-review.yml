@@ -13,16 +13,18 @@ permissions:
   pull-requests: write
   issues: write
 
-concurrency:
-  group: bob-review-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   bob-review:
     if: >-
       github.event.issue.pull_request != null &&
       contains(github.event.comment.body, '@bob') &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    # Job-level, not workflow-level: every PR comment starts this workflow, and a
+    # workflow-level group admits only one pending run, so a later ordinary comment on
+    # the same PR would cancel a queued @bob request. Skipped runs never join this group.
+    concurrency:
+      group: bob-review-${{ github.event.issue.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

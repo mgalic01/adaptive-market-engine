@@ -30,10 +30,6 @@ permissions:
   pull-requests: write
   issues: write
 
-concurrency:
-  group: bob-task
-  cancel-in-progress: false
-
 jobs:
   resolve:
     # Only the owner, on every trigger (Bob's review of PR #27: "Run workflow" is otherwise
@@ -86,6 +82,14 @@ jobs:
   bob-task:
     needs: resolve
     if: needs.resolve.outputs.tasks != '' && needs.resolve.outputs.tasks != '[]'
+    # Job-level, not workflow-level: every PR comment starts this workflow, and a
+    # workflow-level group admits only one pending run, so an ordinary comment posted
+    # during a task run would cancel a queued /bob-run. Skipped runs never join this
+    # group. GitHub still keeps at most one pending task run: a second trigger while
+    # one is queued replaces it, so wait for the queued run to start.
+    concurrency:
+      group: bob-task
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
