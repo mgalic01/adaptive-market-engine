@@ -196,6 +196,8 @@ jobs:
           key: bobshell-2.0.5-eff232eb1b69f34f984ddd295e6960470058ca922b1c751879c5a8d06199f566
 
       # Archive cache, restore-only: a worker never writes a cache after Bob has run.
+      # So nothing repopulates it and each run downloads its archives again; do not
+      # switch this back to a read-write cache, which a manipulated run could poison.
       # Restored archives are still checked against the committed manifests.
       - uses: actions/cache/restore@v4
         if: steps.gate.outputs.ok == 'true'
@@ -384,64 +386,9 @@ jobs:
             echo "No artifact from the worker: Bob's run did not finish its checks."
             exit 1
           fi
-          python3 - <<'EOF'
-          import os, re, sys
-          root = os.environ["IN_DIR"]
-          key = os.environ.get("BOBSHELL_API_KEY", "")
-          name_re = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md$")
-          secret_re = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_")
-
-          def fail(msg):
-              print(f"Rejected: {msg}")
-              sys.exit(1)
-
-          def text(path, cap, label):
-              st = os.lstat(path)
-              if not os.path.isfile(path) or os.path.islink(path):
-                  fail(f"{label} is not a regular file")
-              if st.st_size == 0 or st.st_size > cap:
-                  fail(f"{label} size {st.st_size} is outside 1..{cap} bytes")
-              raw = open(path, "rb").read()
-              try:
-                  body = raw.decode("utf-8")
-              except UnicodeDecodeError:
-                  fail(f"{label} is not UTF-8 text")
-              if any(ord(c) < 32 and c not in "\n\r\t" for c in body):
-                  fail(f"{label} contains control characters")
-              if (key and key in body) or secret_re.search(body):
-                  fail(f"{label} contains a secret-like value")
-              if not body.strip():
-                  fail(f"{label} is blank")
-
-          found = []
-          for dirpath, dirnames, filenames in os.walk(root):
-              for d in dirnames:
-                  if os.path.islink(os.path.join(dirpath, d)):
-                      fail("a directory is a symlink")
-              for f in filenames:
-                  found.append(os.path.relpath(os.path.join(dirpath, f), root))
-          reports = [p for p in found if p.startswith("report/")]
-          others = [p for p in found if p not in reports and p != "summary.md"]
-          if others:
-              fail(f"unexpected files: {others}")
-          if "summary.md" not in found:
-              fail("summary.md is missing (no final answer from Bob)")
-          text(os.path.join(root, "summary.md"), 20_000, "summary.md")
-          if len(reports) > 1:
-              fail(f"more than one report: {reports}")
-          report = ""
-          if reports:
-              name = reports[0][len("report/"):]
-              if "/" in name or not name_re.match(name):
-                  fail(f"report name {name!r} does not match YYYY-MM-DD-bob-<topic>.md")
-              if os.path.lexists(os.path.join("docs", "reviews", name)):
-                  fail(f"docs/reviews/{name} already exists on main")
-              text(os.path.join(root, reports[0]), 200_000, name)
-              report = name
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"report={report}\n")
-          print(f"Accepted: summary.md{', ' + report if report else ''}")
-          EOF
+          # The rules and their tests: scripts/validate_bob_artifact.py and
+          # tests/test_validate_bob_artifact.py, run from this clean checkout of main.
+          python3 scripts/validate_bob_artifact.py
 
       - name: Publish the report on a bob/ branch
         id: publish
