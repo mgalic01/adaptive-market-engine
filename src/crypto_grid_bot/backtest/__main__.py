@@ -100,9 +100,10 @@ def run_job(
 
 
 def checked_symbols(spec: DatasetSpec) -> list[str]:
-    """Traded pairs, plus the market proxy when it is not traded: its hourly bars feed
-    every pair's regime signals, so a broken proxy archive invalidates every run."""
-    return [*spec.traded, *([] if spec.market_proxy in spec.traded else [spec.market_proxy])]
+    """Every symbol whose data reaches a decision: traded pairs, the market proxy (its
+    hourly bars feed every pair's regime signals) and the breadth basket (its votes gate
+    eligibility). Each is checked once."""
+    return list(dict.fromkeys([*spec.traded, spec.market_proxy, *spec.breadth_basket]))
 
 
 def cross_check_job(
@@ -116,14 +117,17 @@ def cross_check_job(
         minutes = load_minutes(data_dir, manifest, symbol)
         result = {"symbol": symbol, **cross_check_hourly(minutes, hourly, window, tolerance)}
     else:
-        # A proxy has no minute data; check its hours over warm-up and evaluation.
+        # No minute data: check the hours over warm-up and evaluation. Only a basket
+        # symbol may have documented absences; the proxy must be complete.
+        proxy = symbol == spec.market_proxy
+        excluded = [(e.start_ms, e.end_ms) for e in spec.basket_exclusions if e.symbol == symbol]
         hourly_window = (month_bounds_ms(spec.warmup_start)[0], window[1])
         result = {
             "symbol": symbol,
-            "role": "market_proxy",
-            **check_hourly_series(hourly, hourly_window),
+            "role": "market_proxy" if proxy else "breadth_basket",
+            **check_hourly_series(hourly, hourly_window, excluded),
         }
-    if spec.daily_warmup_start:
+    if spec.daily_warmup_start and symbol in {*spec.traded, spec.market_proxy}:
         daily = load_daily(data_dir, manifest, symbol)
         result |= cross_check_daily(
             daily,
@@ -147,8 +151,8 @@ INTEGRITY_FIELDS = (
 )
 
 
-# Checks on a market proxy that is not traded (it has hourly data only).
-PROXY_INTEGRITY_FIELDS = ("proxy_hours_missing", "proxy_hours_duplicated")
+# Checks on an untraded market proxy or basket symbol (hourly data only).
+SERIES_INTEGRITY_FIELDS = ("series_hours_missing", "series_hours_duplicated")
 
 
 # Present only when the spec declares daily_warmup_start (spec v1 P3).
@@ -162,16 +166,22 @@ DAILY_INTEGRITY_FIELDS = (
 
 
 def integrity_failures(checks: list[dict[str, Any]]) -> list[str]:
-    """Chronology/completeness failures. Genuine listing gaps are not exempted yet:
-    a dataset spanning a listing or delisting must be declared explicitly first."""
+    """Chronology/completeness failures. A basket symbol's listing or delisting gap is
+    exempt only where the spec documents it in ``basket_exclusions``."""
     failures = []
     for check in checks:
-        proxy = check.get("role") == "market_proxy"
-        fields = PROXY_INTEGRITY_FIELDS if proxy else INTEGRITY_FIELDS
+        series = "role" in check
+        fields = SERIES_INTEGRITY_FIELDS if series else INTEGRITY_FIELDS
         failures += [
             f"{check['symbol']}: {field}={check[field]}" for field in fields if check[field]
         ]
-        if not check["proxy_hours_present" if proxy else "hours_compared"]:
+        # A basket symbol documented as absent for the whole window has no hours.
+        wholly_excluded = (
+            series and check["series_hours_excluded"] and not check["series_hours_missing"]
+        )
+        if not check["series_hours_present" if series else "hours_compared"] and not (
+            wholly_excluded
+        ):
             failures.append(f"{check['symbol']}: no hours compared")
     for check in checks:
         if "daily_days_compared" not in check:

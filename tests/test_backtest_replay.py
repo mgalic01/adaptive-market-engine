@@ -681,6 +681,42 @@ class DailyCrossCheckTests(unittest.TestCase):
         self.assertEqual(1, self.check(daily, gap)["daily_days_hours_incomplete"])
 
 
+class BasketGapTests(unittest.TestCase):
+    """Codex (PR #16): an unexpected basket gap can change the vote set while the minimum
+    vote count still passes, so the gap must be caught by data validation."""
+
+    def test_a_basket_gap_changes_breadth_silently_and_verify_catches_it(self):
+        from crypto_grid_bot.backtest.replay import check_hourly_series
+
+        def trend(slope):
+            return [candle(START_MS + i * HOUR_MS, 1, 1, 1, 1 + slope * i) for i in range(WARMUP)]
+
+        candles = hourly(WARMUP)
+        pair = SeriesFeatures("TESTUSDT", candles)
+        rising = [SeriesFeatures(f"U{i}USDT", trend(0.001), full=False) for i in range(5)]
+        falling = trend(-0.0005)
+        gapped = falling[:-3]  # the last three hours are missing
+        options = {
+            "range_atr_multiple": 2.0,
+            "levels": 8,
+            "minimum_cost_multiple": 3.0,
+            "round_trip_cost": 0.0035,
+        }
+        minute = START_MS + WARMUP * HOUR_MS
+        breadth = {}
+        for name, series in (("complete", falling), ("gapped", gapped)):
+            basket = [*rising, SeriesFeatures("DOWNUSDT", series, full=False)]
+            inputs = FeatureEngine(pair, pair, basket, **options).at(minute)
+            breadth[name] = inputs.breadth
+        # Six voters (five up, one down) versus five: breadth moves, and both runs still
+        # have at least MINIMUM_BREADTH_MARKETS votes, so the engine cannot tell.
+        self.assertAlmostEqual(2 * 5 / 6 - 1, breadth["complete"])
+        self.assertEqual(1.0, breadth["gapped"])
+        window = (START_MS, minute)
+        self.assertEqual(0, check_hourly_series(falling, window)["series_hours_missing"])
+        self.assertEqual(3, check_hourly_series(gapped, window)["series_hours_missing"])
+
+
 class VolumeDriftTests(unittest.TestCase):
     """Owner decision 2026-09-24: volume-only drift up to 0.1% is counted, not fatal."""
 

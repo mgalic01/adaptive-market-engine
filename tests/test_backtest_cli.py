@@ -174,8 +174,8 @@ class CliIntegrityTests(unittest.TestCase):
         self.assertTrue(document["failures"])
 
 
-PROXY_CLEAN = {"role": "market_proxy", "proxy_hours_present": 10}
-PROXY_CLEAN |= {field: 0 for field in cli.PROXY_INTEGRITY_FIELDS}
+PROXY_CLEAN = {"role": "market_proxy", "series_hours_present": 10, "series_hours_excluded": 0}
+PROXY_CLEAN |= {field: 0 for field in cli.SERIES_INTEGRITY_FIELDS}
 
 
 class MarketProxyCheckTests(CliIntegrityTests):
@@ -203,12 +203,26 @@ class MarketProxyCheckTests(CliIntegrityTests):
 
     def test_untraded_proxy_is_checked_but_not_replayed(self):
         self.assertEqual(0, self.main("run"))
-        self.assertEqual(["ADAUSDT", "BTCUSDT", "ETHUSDT"], self.checked)
+        self.assertEqual(
+            [
+                "ADAUSDT",
+                "BTCUSDT",
+                "ETHUSDT",
+                "BNBUSDT",
+                "SOLUSDT",
+                "XRPUSDT",
+                "DOGEUSDT",
+                "LTCUSDT",
+                "LINKUSDT",
+                "TRXUSDT",
+            ],
+            self.checked,
+        )
         self.assertNotIn("ETHUSDT", self.replays)
 
     def test_a_broken_proxy_archive_fails_and_prevents_replay(self):
-        failing = {field: 1 for field in cli.PROXY_INTEGRITY_FIELDS}
-        for field, value in (failing | {"proxy_hours_present": 0}).items():
+        failing = {field: 1 for field in cli.SERIES_INTEGRITY_FIELDS}
+        for field, value in (failing | {"series_hours_present": 0}).items():
             with self.subTest(field=field):
                 self.proxy_checks = {**PROXY_CLEAN, field: value}
                 self.replays.clear()
@@ -216,10 +230,52 @@ class MarketProxyCheckTests(CliIntegrityTests):
                 self.assertEqual(2, self.main("run"))
                 self.assertEqual([], self.replays)
 
-    def test_traded_proxy_is_checked_once(self):
+    def test_traded_proxy_and_basket_members_are_checked_once(self):
         self.spec.write_text(Path(SPEC).read_text())
         self.assertEqual(0, self.main("verify"))
-        self.assertEqual(["ADAUSDT", "BTCUSDT"], self.checked)
+        self.assertEqual(
+            [
+                "ADAUSDT",
+                "BTCUSDT",
+                "ETHUSDT",
+                "BNBUSDT",
+                "SOLUSDT",
+                "XRPUSDT",
+                "DOGEUSDT",
+                "LTCUSDT",
+                "LINKUSDT",
+                "TRXUSDT",
+            ],
+            self.checked,
+        )
+
+
+class BasketCheckTests(MarketProxyCheckTests):
+    """Breadth-basket inputs are validated; only documented absences are exempt."""
+
+    def fake_check(self, spec, data_dir, symbol, strict_volume=False):
+        if symbol == "DOGEUSDT":
+            self.checked.append(symbol)
+            return {"symbol": symbol, **self.basket_check}
+        return super().fake_check(spec, data_dir, symbol, strict_volume)
+
+    def setUp(self):
+        super().setUp()
+        self.basket_check = {**PROXY_CLEAN, "role": "breadth_basket", "series_hours_excluded": 0}
+
+    def test_an_unexplained_basket_gap_fails_and_prevents_replay(self):
+        for field in cli.SERIES_INTEGRITY_FIELDS:
+            with self.subTest(field=field):
+                self.basket_check[field] = 1
+                self.replays.clear()
+                self.assertEqual(2, self.main("verify"))
+                self.assertEqual(2, self.main("run"))
+                self.assertEqual([], self.replays)
+                self.basket_check[field] = 0
+
+    def test_a_basket_member_documented_absent_for_the_whole_window_passes(self):
+        self.basket_check |= {"series_hours_present": 0, "series_hours_excluded": 24}
+        self.assertEqual(0, self.main("verify"))
 
 
 class HourlySeriesTests(unittest.TestCase):
@@ -232,9 +288,25 @@ class HourlySeriesTests(unittest.TestCase):
         outside = candle(START_MS + 9 * HOUR_MS, 1, 1, 1, 1)
         result = check_hourly_series([*hours, outside], (START_MS, START_MS + 4 * HOUR_MS))
         self.assertEqual(
-            {"proxy_hours_present": 3, "proxy_hours_missing": 1, "proxy_hours_duplicated": 1},
+            {
+                "series_hours_present": 3,
+                "series_hours_missing": 1,
+                "series_hours_duplicated": 1,
+                "series_hours_excluded": 0,
+            },
             result,
         )
+
+    def test_documented_hours_are_excluded_but_other_gaps_still_count(self):
+        from test_backtest_replay import HOUR_MS, START_MS, candle
+
+        from crypto_grid_bot.backtest.replay import check_hourly_series
+
+        window = (START_MS, START_MS + 6 * HOUR_MS)
+        hours = [candle(START_MS + i * HOUR_MS, 1, 1, 1, 1) for i in (2, 3, 5)]
+        listing = [(START_MS, START_MS + 2 * HOUR_MS)]  # absent before listing
+        result = check_hourly_series(hours, window, listing)
+        self.assertEqual((2, 1), (result["series_hours_excluded"], result["series_hours_missing"]))
 
 
 class CompletenessTests(unittest.TestCase):

@@ -246,6 +246,53 @@ class FetchTests(unittest.TestCase):
                     with self.assertRaises(DataError):
                         load_spec(Path(handle.name))
 
+    def test_basket_exclusions_are_optional_documented_and_validated(self):
+        source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
+        self.assertEqual(
+            (), load_spec(ROOT / "config/datasets/verify-2024h1.toml").basket_exclusions
+        )
+
+        def table(symbol="DOGEUSDT", start="2023-11-01T00:00Z", end="2023-11-02T08:00Z", **extra):
+            fields = {"symbol": symbol, "from": start, "to": end, "reason": "not yet listed"}
+            fields |= extra
+            body = "\n".join(f"{k} = {v!r}".replace("'", '"') for k, v in fields.items())
+            return "\n[[basket_exclusions]]\n" + body + "\n"
+
+        good = source + table()
+        cases = (
+            (good, True),
+            (source + table(symbol="ADAUSDT"), False),  # traded
+            (source + table(symbol="BTCUSDT"), False),  # market proxy
+            (source + table(symbol="AVAXUSDT"), False),  # not in the basket
+            (source + table(start="2023-11-01T00:30Z"), False),  # not a whole hour
+            (source + table(start="2023-11-02T08:00Z"), False),  # from == to
+            (source + table(reason=" "), False),
+            (source + table(note="x"), False),  # unknown key
+            (good + table(start="2023-11-02T07:00Z", end="2023-11-03T00:00Z"), False),  # overlap
+            (good + table(start="2023-11-02T08:00Z", end="2023-11-03T00:00Z"), True),  # adjacent
+        )
+        for text, ok in cases:
+            with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
+                handle.write(text)
+            self.addCleanup(Path(handle.name).unlink)
+            with self.subTest(text=text[len(source) :]):
+                if ok:
+                    (first, *_) = load_spec(Path(handle.name)).basket_exclusions
+                    self.assertEqual(
+                        ("DOGEUSDT", 32 * 3_600_000), (first.symbol, first.end_ms - first.start_ms)
+                    )
+                else:
+                    with self.assertRaises(DataError):
+                        load_spec(Path(handle.name))
+
+    def test_a_malformed_warmup_start_is_a_data_error_with_daily_history(self):
+        source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
+            handle.write(source.replace('warmup_start = "2023-11"', "warmup_start = 202311"))
+        self.addCleanup(Path(handle.name).unlink)
+        with self.assertRaises(DataError):
+            load_spec(Path(handle.name))
+
     def test_spec_accepts_a_zero_maker_fee(self):
         source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:

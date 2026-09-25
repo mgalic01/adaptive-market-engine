@@ -636,17 +636,23 @@ def cross_check_hourly(
     }
 
 
-def check_hourly_series(hourly: Sequence[Kline], window: tuple[int, int]) -> dict[str, int]:
-    """Completeness of an hourly series with no minute data behind it (a market proxy
-    that is not traded): every hour in the [start, end) ``window`` exactly once."""
+def check_hourly_series(
+    hourly: Sequence[Kline],
+    window: tuple[int, int],
+    excluded: Sequence[tuple[int, int]] = (),
+) -> dict[str, int]:
+    """Completeness of an hourly series with no minute data behind it (an untraded market
+    proxy or breadth-basket symbol): every hour in the [start, end) ``window`` exactly
+    once, except hours inside a documented ``excluded`` [start, end) range."""
     opens = [k.open_ms for k in hourly if window[0] <= k.open_ms < window[1]]
     present = set(opens)
+    hours = range(window[0], window[1], HOUR_MS)
+    documented = {h for h in hours if any(a <= h < b for a, b in excluded)}
     return {
-        "proxy_hours_present": len(present),
-        "proxy_hours_missing": sum(
-            1 for hour in range(window[0], window[1], HOUR_MS) if hour not in present
-        ),
-        "proxy_hours_duplicated": len(opens) - len(present),
+        "series_hours_present": len(present),
+        "series_hours_missing": sum(1 for h in hours if h not in present and h not in documented),
+        "series_hours_duplicated": len(opens) - len(present),
+        "series_hours_excluded": len(documented),
     }
 
 

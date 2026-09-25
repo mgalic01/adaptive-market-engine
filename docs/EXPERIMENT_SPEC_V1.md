@@ -347,6 +347,13 @@ variant-independent checks are run first:
 - the hourly/minute and daily/hourly cross-checks, and, when the market proxy is not a
   traded pair, the completeness of its hourly bars over warm-up and evaluation (every
   hour exactly once) plus its daily/hourly cross-check;
+- the same hourly completeness for every untraded **breadth-basket** symbol. The feature
+  engine skips a stale basket member and still counts the remaining votes, so an
+  unexplained gap would silently change breadth. Only an absence documented in the
+  dataset spec's `[[basket_exclusions]]` (symbol, `from` inclusive, `to` exclusive, whole
+  UTC hours, a non-empty reason such as a listing date) is exempt. The proxy and traded
+  pairs cannot be exempted. Neither current dataset needs an exclusion: all basket
+  symbols are complete over warm-up and evaluation (checked 2026-09-25);
 - **integrity rules `drift-tolerance-v1`** (owner decision via Bob, 2026-09-24): a bar
   whose open, high, low and close match exactly and whose volume differs by at most
   0.1% of Binance's figure is counted as volume drift, not as a failure. Every other
