@@ -111,9 +111,11 @@ have already seen. Price history is also partly in every model's training data, 
 
 ## Conditions for the spec change (Bob, 2026-09-25; Claude agrees)
 
-Bob's substantive review at `4dda598` (PR #33 comment 5839383911) agrees subject to
-these being written into the spec change **before any code is written**, because none
-of them may be decided after seeing results:
+Bob's substantive review at `4dda598` (PR #33 comment 5839383911) agrees "subject to
+the three conditions" below (1 to 3) being written into the spec change **before any
+code is written**, because none of them may be decided after seeing results. Item 4 is
+an additional requirement Bob raised in his answer to question 2; it is recorded here
+with the same status.
 
 1. **Walk-forward folds roll, and short folds are excluded.** Tune windows roll (fixed
    12 months); they never expand. A fold is **excluded, never padded**, when its warm-up
@@ -171,7 +173,8 @@ of them may be decided after seeing results:
 2. The 2017-08 to 2024-12 data: a Bob task to list, fetch and check it, and to confirm
    the first complete months.
 3. The spec change, after Codex's review: the new windows, the four conditions above
-   (fold rule, register format and gate, DSR, frozen regime labeller) and H's halving
+   (fold rule, register format and gate, DSR) and Bob's additional requirement (a
+   frozen regime labeller) and H's halving
    per fold.
 4. Trial register, before any sweep runs (condition 2).
 5. Walk-forward harness, with per-year task slices.
@@ -191,5 +194,5 @@ and a final summary task aggregates them.
 | Owner | Two decisions: keep the cycles; use data from 2017 onward | the header of this file |
 | Claude | Author; agrees, including Bob's changes and the owner's decisions | this file |
 | Bob | AGREE WITH CHANGES on the first version (split task execution; joint sampling of funding, both included). **Re-review at `608435b`** (when layer 5 added only 2017-08 to 2019-12): agrees with both owner decisions, no new changes, NOTED. **Re-review at `59ddc5b`: AGREE** with the whole-span wording (2017-08 to 2024-12) added in `ec91912`, NOTED | PR #33, comments 5838160477, 5838366836 and 5838442914 |
-| Bob (substantive review) | **AGREE subject to the four conditions** above (fold rule, register as a hard gate, DSR, frozen regime labeller), all included; Claude agrees with each | PR #33, comment 5839383911 at `4dda598` |
+| Bob (substantive review) | **AGREE subject to three conditions** (fold rule, register as a hard gate, DSR), plus one additional requirement (a frozen regime labeller); all four included above, and Claude agrees with each | PR #33, comment 5839383911 at `4dda598` |
 | Codex | Pending; unavailable until 2026-10-01. Codex said the answer will cover development vs confirmatory evidence, register-before-trials, fold warm-up and synthetic provenance | PR #33, comment 5838607730 |
