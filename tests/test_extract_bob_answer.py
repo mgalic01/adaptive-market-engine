@@ -122,10 +122,28 @@ def test_answer_only_before_last_tool_call_is_rejected() -> None:
         xba.extract(stream(msg(ANSWER), *TOOL, msg("One more check."), DONE))
 
 
-def test_oversized_answer_is_rejected() -> None:
-    body = "IBM Bob\n" + "x" * 50 + f"\n{SIG}"
-    with pytest.raises(xba.Rejected, match="over 40"):
-        xba.extract(stream(msg(body), DONE), max_chars=40)
+def test_oversized_answer_is_rejected_in_utf8_bytes() -> None:
+    body = "IBM Bob\n" + "€" * 20 + f"\n{SIG}"  # the euro signs are 20 chars, 60 bytes
+    assert len(body) < 90 < len(body.encode())
+    with pytest.raises(xba.Rejected, match="bytes, over 90"):
+        xba.extract(stream(msg(body), DONE), max_bytes=90)
+
+
+def test_body_line_starting_with_the_name_does_not_truncate() -> None:
+    # Bob's review of this PR: a body line beginning with the name must not cut the answer.
+    body = (
+        "IBM Bob — review of PR #39.\n\n"
+        "IBM Bob's own format was checked against the tests.\n\n"
+        f"NOTED.\n\n{SIG}"
+    )
+    assert xba.extract(stream(*TOOL, msg(body), DONE)) == body
+
+
+def test_draft_without_its_own_signature_is_kept_not_truncated() -> None:
+    # With no draft signature there is no boundary: the extra text is kept, so the
+    # rule errs toward more text, never toward a cut answer.
+    text = "IBM Bob draft: thinking.\n\n" + ANSWER
+    assert xba.extract(stream(msg(text), DONE)) == text
 
 
 def test_cli_prints_the_answer_or_refuses_without_raw_output(tmp_path: Path) -> None:

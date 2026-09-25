@@ -10,15 +10,18 @@ closed: nothing is printed unless all of these hold.
   last tool call.
 - **Signature:** the text contains ``— IBM Bob (<label>)``. The last one ends the
   answer, and anything written after it is dropped.
-- **Header:** the answer starts at the last line that *begins* with ``IBM Bob`` before
-  that signature. Drafts and reasoning written earlier are dropped, and a mention of
-  the name inside a line is never mistaken for the start.
-- **Size:** the answer is not blank and at most ``--max-chars`` characters.
+- **Header:** the answer starts at the *first* line beginning with ``IBM Bob`` after
+  the previous signature (or after the last tool call if there is none). A draft
+  that ends with its own signature is dropped whole; a line inside the answer that
+  begins with the name does not cut the answer short, and a mention inside a line is
+  never taken as the start.
+- **Size:** the answer is not blank and at most ``--max-bytes`` bytes of UTF-8, the
+  same unit the task publisher's validator uses.
 
 On refusal it prints one ``Rejected:`` line and a count of event types, never the raw
 stream, which could echo file contents.
 
-Usage: ``extract_bob_answer.py [--max-chars N] STREAM`` (answer on stdout, exit 1 on
+Usage: ``extract_bob_answer.py [--max-bytes N] STREAM`` (answer on stdout, exit 1 on
 refusal) or ``extract_bob_answer.py --stats STREAM`` (event counts only).
 """
 
@@ -34,7 +37,8 @@ from typing import Any
 
 SIGNATURE = re.compile(r"—[ \t]*IBM Bob \([^()\n]*\)")
 HEADER = re.compile(r"(?m)^IBM Bob\b")
-DEFAULT_MAX_CHARS = 20_000
+DEFAULT_MAX_BYTES = 20_000
+DESCRIPTION = "Extract Bob's final answer from a bob run stream-json log, or refuse."
 
 
 class Rejected(Exception):
@@ -54,7 +58,7 @@ def events(text: str) -> list[dict[str, Any]]:
     return parsed
 
 
-def extract(stream: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
+def extract(stream: str, max_bytes: int = DEFAULT_MAX_BYTES) -> str:
     items = events(stream)
     results = [i for i, e in enumerate(items) if e.get("type") == "result"]
     if not results or items[results[-1]].get("status") != "success":
@@ -71,15 +75,17 @@ def extract(stream: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
     signatures = list(SIGNATURE.finditer(text))
     if not signatures:
         raise Rejected("the final answer has no '— IBM Bob (...)' signature")
-    end = signatures[-1].end()
-    headers = [m.start() for m in HEADER.finditer(text, 0, signatures[-1].start())]
-    if not headers:
+    final = signatures[-1]
+    start = signatures[-2].end() if len(signatures) > 1 else 0
+    header = HEADER.search(text, start, final.start())
+    if header is None:
         raise Rejected("the final answer has no line starting with 'IBM Bob'")
-    answer = text[headers[-1] : end].strip()
+    answer = text[header.start() : final.end()].strip()
     if not answer:
         raise Rejected("the final answer is blank")
-    if len(answer) > max_chars:
-        raise Rejected(f"the final answer is {len(answer)} characters, over {max_chars}")
+    size = len(answer.encode("utf-8"))
+    if size > max_bytes:
+        raise Rejected(f"the final answer is {size} bytes, over {max_bytes}")
     return answer
 
 
@@ -89,9 +95,9 @@ def stats(stream: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("stream", type=Path)
-    parser.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
+    parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     parser.add_argument("--stats", action="store_true")
     args = parser.parse_args(argv)
     stream = args.stream.read_text(encoding="utf-8", errors="replace")
@@ -99,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Bob's stream: {stats(stream)}")
         return 0
     try:
-        answer = extract(stream, args.max_chars)
+        answer = extract(stream, args.max_bytes)
     except Rejected as exc:
         print(f"Rejected: {exc}. Bob's stream: {stats(stream)}", file=sys.stderr)
         return 1

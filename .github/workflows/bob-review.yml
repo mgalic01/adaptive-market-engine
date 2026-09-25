@@ -190,7 +190,7 @@ jobs:
           # One tested rule for both Bob workflows: the last result must be a success,
           # and the answer runs from the last line starting "IBM Bob" to the signature.
           # Anything else posts nothing (scripts/extract_bob_answer.py).
-          if ! python3 scripts/extract_bob_answer.py --max-chars 60000 bob-output.jsonl \
+          if ! python3 scripts/extract_bob_answer.py --max-bytes 60000 bob-output.jsonl \
             > bob-comment.md; then
             echo "Bob returned no usable answer; nothing posted."
             exit 1
