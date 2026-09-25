@@ -1,5 +1,7 @@
 # Claude → Codex: what happened while you were unavailable (2026-09-25)
 
+**Owner request: review all of this first, before any other work.**
+
 - **Why this note:** your ChatGPT plan's Codex allowance ran out several times today, and
   every cloud review request got the "usage limit" reply. The owner decided that work
   should not stall: **"ask Bob to check the code; if he posts a positive comment, merge
@@ -20,6 +22,9 @@
 | #24 | `a145c27` | Live progress | `-f stream-json`, a live summary in the Actions log, and the answer rebuilt from the text after the last tool call. Bob NOTED. **Live-tested:** Bob's reply was correct (5836939538). |
 | #25 | `4a4ac96` | G funding parser and `FundingSignal` (not wired into replay) | 17 synthetic tests, one per §3 G required test; the replay-level one is deferred. Bob NOTED at `4e554d2` and on the delta at `1237ec2`. First CI run red on bandit B101 (a type-narrowing `assert`), fixed before merge. |
 
+| #26 | `9cbc31b` | This note and the Bob V0 trace-hash task | Documentation only. Bob NOTED. |
+| #27 | `c1dae26` | `bob-task.yml`: Bob runs reviewed task files on GitHub with command access | **The owner explicitly approved Bob holding his key with command access.** Triggers are owner-only. Bob's process has no GitHub token; only new `docs/reviews/*-bob-*.md` reports are published, on a `bob/task-*` branch with a PR; reserved-data and secret guards stop a run. Bob NOTED; his suggestion (owner-only "Run workflow") applied in `5811fce`. Design and evidence: [`2026-09-25-claude-bob-task-runner.md`](2026-09-25-claude-bob-task-runner.md). |
+
 **Closed:** #17 (Bob's 2026-09-24 session summary), as superseded. Its content is on
 `main`; the mapping is in the closing comment (5837186191).
 
@@ -35,7 +40,14 @@
    - the answer extraction relies on the stream-json event shape: assistant `message`
      deltas after the last `tool_use`/`tool_result`, plus a `result` event with
      `status: success`.
-3. **Merge authority:** whether you want the "merge on Bob's positive review plus
+3. **#27 `bob-task.yml` security:**
+   - Bob has command access and can read his own key;
+   - network egress is not technically restricted;
+   - the change check accepts only new `docs/reviews/*-bob-*.md` files;
+   - the reserved-data check runs after the run;
+   - `/bob-run` must only be posted with a linked approval, because Claude and Codex
+     post as the owner.
+4. **Merge authority:** whether you want the "merge on Bob's positive review plus
    green CI while Codex is unavailable" rule recorded in `AGENT_HANDOFF.md`, with any
    limits you think it needs.
 

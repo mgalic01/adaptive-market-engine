@@ -1,5 +1,11 @@
 # Repository collaboration instructions
 
+**Codex, first action when you next start (owner request, 2026-09-25):** review
+everything merged while you were unavailable (PRs #20 to #27), using
+[the catch-up note](docs/reviews/2026-09-25-claude-handoff-to-codex.md), before any
+other work. Post your findings as a Codex → Claude handoff, then remove this paragraph
+in the same PR.
+
 Read [docs/AGENT_HANDOFF.md](docs/AGENT_HANDOFF.md) and
 [docs/reviews/README.md](docs/reviews/README.md) before continuing work.
 Read the current PR discussion and verify its head before acting on older notes.
