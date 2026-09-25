@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from crypto_grid_bot.backtest.klines import INTERVAL_MS, month_bounds_ms, read_archive
 from crypto_grid_bot.market_data.client import FeedError, PublicClient, https_connection
@@ -355,14 +355,52 @@ def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
-    manifest = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise DataError("invalid dataset manifest JSON") from exc
+    _validate_manifest(manifest)
+    return cast(dict[str, Any], manifest)
+
+
+def _validate_manifest(manifest: Any) -> None:
+    """Validate the fields consumed during verification before indexing them."""
     if not isinstance(manifest, dict) or manifest.get("schema") != MANIFEST_SCHEMA:
         raise DataError("unsupported dataset manifest")
-    return manifest
+    if not isinstance(manifest.get("dataset"), str):
+        raise DataError("dataset manifest has an invalid dataset name")
+    instruments = manifest.get("instruments")
+    files = manifest.get("files")
+    if not isinstance(instruments, dict) or not isinstance(files, list):
+        raise DataError("dataset manifest has an invalid layout")
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise DataError("dataset manifest has an invalid file entry")
+        try:
+            symbol = entry["symbol"]
+            interval = entry["interval"]
+            month = entry["month"]
+            status = entry["status"]
+        except KeyError as exc:
+            raise DataError("dataset manifest file entry is incomplete") from exc
+        if not all(isinstance(value, str) for value in (symbol, interval, month)):
+            raise DataError("dataset manifest file identity is invalid")
+        try:
+            archive_path(symbol, interval, month)
+        except (ValueError, OverflowError) as exc:
+            raise DataError("dataset manifest file identity is invalid") from exc
+        if status not in ("ok", "missing"):
+            raise DataError("dataset manifest file status is invalid")
+        if status == "ok" and (
+            not isinstance(entry.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]) is None
+        ):
+            raise DataError("dataset manifest file checksum is invalid")
 
 
 def verify_dataset(spec: DatasetSpec, manifest: dict[str, Any], data_dir: Path) -> None:
     """Fail unless the manifest covers exactly the spec and every local file matches it."""
+    _validate_manifest(manifest)
     if manifest["dataset"] != spec.name:
         raise DataError("manifest belongs to a different dataset")
     listed = [(f["symbol"], f["interval"], f["month"]) for f in manifest["files"]]
