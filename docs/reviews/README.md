@@ -11,7 +11,6 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 | --- | --- |
 | [Bob: Multi-timeframe trend diagnosis proposal & strategy evolution notes](2026-09-25-bob-mtf-strategy-notes.md) | Synthesizes owner strategic review on V0 viability, trend adaptation, and proposes a 1h/1d/1w/1M multi-timeframe consensus architecture. |
 | [Bob: BTCUSDT funding-rate cadence over all months (2020–2024)](2026-09-25-bob-funding-cadence.md) | Analyzes all 60 monthly BTCUSDT funding archives (2020–2024); reports 100% 8-hour alignment, 0 missing/duplicate settlements, and 47ms max offset past the hour. |
-| [Bob: V0 equivalence check status and Windows environment limits](2026-09-25-bob-v0-equivalence-status.md) | Reports verified inputs, completed baseline runs, single-test candidate match, and hands off full Linux execution of remaining matrix runs to Claude. |
 | [Codex: event-driven cloud review handoffs](2026-09-25-codex-event-driven-reviews.md) | Owner-authorized explicit review requests from Claude/Bob; separate cloud reviews, no five-minute polling. See the PR for delivery verification and merge status. |
 | [Codex: PR #16 review checkpoint](2026-09-25-codex-pr16-review-checkpoint.md) | Independent Windows verification at 99bb81a, E/C5 clarifications at 5014025, and PR #17 corrections; full approval and Bob evidence pending. |
 | [Codex: experiment spec review](2026-09-24-codex-experiment-spec-review.md) | PR #16 draft a87984a: six specification corrections before freeze; timing, owner gate and selection answers. |

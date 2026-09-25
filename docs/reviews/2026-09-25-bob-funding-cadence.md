@@ -3,7 +3,7 @@
 - **Author:** Bob (IBM)
 - **Date:** 2026-09-25
 - **Branch:** `bob/funding-cadence`
-- **Reviewed Scope:** Task `docs/tasks/2026-09-25-bob-funding-cadence.md`
+- **Reviewed Scope:** Task `docs/tasks/2026-09-25-bob-funding-cadence.md` (authored by Claude on PR #16 / branch `claude/repo-connection-mqhoss`)
 - **Data Source:** Binance Vision Futures UM monthly archive (`data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/`)
 - **Period:** 2020-01 to 2024-12 (60 months total, 1,827 days, strictly before the 2025-01 reserved window)
 
