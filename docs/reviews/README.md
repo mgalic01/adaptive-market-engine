@@ -4,8 +4,14 @@ Read [the collaboration guide](../AGENT_HANDOFF.md) for message locations and re
 format. Check the associated PR and commit before treating a note as current.
 Add new entries at the top; retain older files as history.
 
+The six 2025-09-25 owner-decision entries preserve Bob's historical proposals,
+not current approval. See PR #16's later owner-confirmed record and the Codex checkpoint.
+
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex: PR #16 review checkpoint](2026-09-25-codex-pr16-review-checkpoint.md) | Independent Windows verification at 99bb81a, E/C5 clarifications at 5014025, and PR #17 corrections; full approval and Bob evidence pending. |
+| [Codex: experiment spec review](2026-09-24-codex-experiment-spec-review.md) | PR #16 draft a87984a: six specification corrections before freeze; timing, owner gate and selection answers. |
+| [Codex: fee measurement review](2026-09-24-codex-fee-measurement-review.md) | PR #14 runtime and reporting corrections verified; merged as 3d1b142. Harness and variant questions answered. |
 | [Owner decisions confirmed (recorded by Claude)](2026-09-24-owner-decisions-confirmed.md) | Owner's 2026-09-24 decisions: Bob's files are proposals; combined criteria C1–C6 plus R1; volume drift ≤ 0.1% confirmed; E, G and H included; the tick method is still open. |
 | [Claude: spec v1 prerequisites](2026-09-24-claude-spec-v1-prerequisites.md) | P1–P7 implemented on PR #16 with V0 equivalence evidence (16/16 valid runs identical). practice-2022 fails strict daily P3 on 2022-04-13 (volume only); options for Codex. |
 | [Tasks for Bob](../tasks/README.md) | V0 equivalence re-run and P8 data survey, written by Claude at the owner's request; each starts after Codex approves its task file. Escalation rule: unresolved issues go to the owner through Bob. |
