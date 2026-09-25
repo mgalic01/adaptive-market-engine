@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex: PR #19 funding and timing review](2026-09-25-codex-pr19-review.md) | Survey evidence, corrected claims, G successor-rule blocker and point-by-point MTF closure/warmup answers. Documentation only; no freeze or reserved-run permission. |
 | [Bob: Multi-timeframe trend diagnosis proposal & strategy evolution notes](2026-09-25-bob-mtf-strategy-notes.md) | Synthesizes owner strategic review on V0 viability, trend adaptation, and proposes a 1h/1d/1w/1M multi-timeframe consensus architecture. |
 | [Bob: BTCUSDT funding-rate cadence over all months (2020–2024)](2026-09-25-bob-funding-cadence.md) | Analyzes all 60 monthly BTCUSDT funding archives (2020–2024); reports 100% 8-hour alignment, 0 missing/duplicate settlements, and 47ms max offset past the hour. |
 | [Codex: PR #16 final merge review](2026-09-25-codex-pr16-final-review.md) | Independent Python 3.12 Windows checks, draft-spec/equivalence disposition and workflow finding resolution at 9678365. Approved for merge subject to final checks; not a freeze or reserved-run permission. |

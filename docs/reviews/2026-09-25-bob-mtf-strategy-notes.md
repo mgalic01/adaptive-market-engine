@@ -13,8 +13,8 @@
 Following the completion of the 60-month funding cadence report (PR #19), the owner raised key strategic questions regarding the profitability, trend adaptation, and multi-timeframe decision-making of the bot:
 
 1. **V0 Baseline Flaw vs. Future Viability:**
-   - Diagnostic data ([`docs/backtests/fee-levels-2026-09.md`](../backtests/fee-levels-2026-09.md)) demonstrated that while resting limit grid sells consistently capture micro-profits (+11 to +19 USDT), forced marketable exits during persistent trends take back all accumulated gains (−10 to −22 USDT).
-   - We confirmed to the owner that V0 was designed as a naive baseline/control group specifically to expose this vulnerability, and that pre-registered Variants A–H directly address this leak.
+   - In the reported practice-window gated runs at 0% maker / 0.09% taker fees, resting sells realised +11.5 to +19.0 USDT and forced exits realised −9.6 to −22.3 USDT at average cost ([diagnostic](../backtests/fee-levels-2026-09.md)). Exits offset part or all of those gains, depending on the run. Exit reasons were not separated, so the data does not establish a specific cause or paired-cycle profit.
+   - V0 is the unchanged control strategy. Variants A–H are hypotheses to evaluate, not demonstrated remedies or evidence that V0 was deliberately designed to fail.
 
 2. **Trend Adaptation:**
    - The owner confirmed the priority of having the bot diagnose the trend and dynamically adapt its behavior rather than running as a static naive grid.
@@ -26,7 +26,7 @@ Following the completion of the 60-month funding cadence report (PR #19), the ow
 
 ## 2. Multi-Timeframe (MTF) Architecture Proposal (Variant I / Spec v2 Candidate)
 
-To formalize the owner's request without disrupting the frozen/draft Spec v1 matrix, we propose framing this multi-timeframe structure as **Variant I (Multi-Timeframe Trend Consensus)**:
+To formalize the owner's request without disrupting the draft Spec v1 matrix, we propose framing this multi-timeframe structure as **Variant I (Multi-Timeframe Trend Consensus)**. The choices below are exploratory, not approved parameters or proven regime classifications. A separate specification and review must fix the rules before evaluation; this report does not freeze v1 or authorize reserved data access.
 
 ### Timeframe Hierarchy & Indicator Roles
 

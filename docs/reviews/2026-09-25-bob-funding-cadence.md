@@ -24,7 +24,7 @@
 4. **Timestamp Offsets:**
    - **Zero** records have `calc_time` more than 60 seconds past the whole UTC hour.
    - The **largest offset in the entire 5,481 record archive is 47 milliseconds (0.047 seconds)**, occurring at `calc_time = 1631865600047` (2021-09-17 08:00:00.047 UTC).
-   - Flooring `calc_time` to the whole UTC hour (`(calc_time // 3600000) * 3600000`) is 100% exact and lossless.
+   - Flooring `calc_time` to the whole UTC hour (`(calc_time // 3600000) * 3600000`) reconstructs the scheduled slots for this surveyed period. It discards the millisecond offsets and is not lossless for raw timestamps; preserve the source values. This does not establish publication time or future cadence.
 
 ---
 
