@@ -95,6 +95,8 @@ class FundingSignalTests(unittest.TestCase):
     def test_invalid_newest_record_never_falls_back(self):
         cases = [(0, "0.0001"), (3, "0.0001"), (12, "0.0001"), (None, "0.0001")]
         cases += [(8, "NaN"), (8, "Infinity"), (8, "-Infinity")]
+        # Unsupported precision (exponent outside -18..18) is invalid, never used.
+        cases += [(8, "1E-9999"), (8, "1E+19"), (8, "1E-19")]
         for interval, rate in cases:
             with self.subTest(interval=interval, rate=rate):
                 signal = FundingSignal([rec(0), rec(8), rec(16), rec(24, interval, rate)])
@@ -111,7 +113,7 @@ class FundingSignalTests(unittest.TestCase):
 
     def test_invalid_older_record(self):
         for position in (0, 1):
-            for interval, rate in ((3, "0.0001"), (None, "0.0001"), (8, "NaN")):
+            for interval, rate in ((3, "0.0001"), (None, "0.0001"), (8, "NaN"), (8, "1E-9999")):
                 with self.subTest(position=position, interval=interval, rate=rate):
                     records = [rec(0), rec(8), rec(16)]
                     records[position] = rec(8 * position, interval, rate)

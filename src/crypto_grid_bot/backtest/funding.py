@@ -35,7 +35,9 @@ BLOCK_RATE = Decimal("0.0005")
 @dataclass(frozen=True, slots=True)
 class FundingRecord:
     """One settlement. ``interval_hours`` is None when the field is empty or not an integer;
-    ``rate`` may be non-finite. Such records are kept, and make G unavailable."""
+    ``rate`` may be non-finite or of unsupported precision (a decimal exponent outside
+    -18..18, the bound ``parsing.amount`` uses). Such records are kept, and make G
+    unavailable."""
 
     calc_time_ms: int
     interval_hours: int | None
@@ -51,7 +53,11 @@ class FundingRecord:
 
     @property
     def valid(self) -> bool:
-        return self.interval_hours in ACCEPTED_INTERVAL_HOURS and self.rate.is_finite()
+        if self.interval_hours not in ACCEPTED_INTERVAL_HOURS or not self.rate.is_finite():
+            return False
+        # Extreme exponents (e.g. "1E-9999") can exhaust Decimal operations downstream.
+        exponent = self.rate.as_tuple().exponent
+        return isinstance(exponent, int) and -18 <= exponent <= 18
 
 
 @dataclass(frozen=True, slots=True)
