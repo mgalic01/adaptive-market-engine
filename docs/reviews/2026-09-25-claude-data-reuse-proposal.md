@@ -9,8 +9,9 @@
   - **Keep the market cycles.** On random 3–5 day chunks: "if you cut chunks of it then
     you lose the patterns, the bull runs, the bear runs, the flow of the cycles … there
     is always a flow." Layer 2 below is changed to keep the real order of cycle phases.
-  - **Use data from 2017 onward.** "ok then use the 2017 onward data." Development data
-    is extended back to Binance's first archives (August 2017), for more real cycles.
+  - **Use data from 2017 onward.** "ok then use the 2017 onward data", then "yea ok use
+    2017 to 2024". Development data becomes the **whole span 2017-08 to 2024-12**, from
+    Binance's first archives, for more real cycles.
     The reserved 2025–26 window stays untouched; the owner was told that using it for
     development would leave no clean final test.
 - **Fixed constraints:**
@@ -83,9 +84,10 @@ have already seen. Price history is also partly in every model's training data, 
      report PRs.
    - **Why:** "best of 200 tries" is weaker evidence than "best of 5".
 5. **More real history (owner decision)**
-   - **Add 2017-08 to 2019-12** from Binance's checksummed archives, through the same
-     manifest and integrity checks as today. It adds a second cycle: the 2017 bull, the
-     2018 bear (about −80%) and the 2019 recovery.
+   - **Use the whole span 2017-08 to 2024-12** from Binance's checksummed archives,
+     through the same manifest and integrity checks as today. This fills the gaps
+     between today's two windows (2020–21, 2023, 2024 H2) and adds a second cycle
+     before them: the 2017 bull, the 2018 bear (about −80%) and the 2019 recovery.
    - **Pairs available:** BTC and ETH from 2017-08; ADA and XRP from their Binance
      listings in 2018; SOL only from 2020-08. Exact first months come from the archive
      listings, checked by Bob, not from memory.
@@ -137,7 +139,7 @@ have already seen. Price history is also partly in every model's training data, 
 ## Proposed order, after agreement
 
 1. P8 funding integration, already planned.
-2. The 2017-08 to 2019-12 data: a Bob task to list, fetch and check it, then the
+2. The 2017-08 to 2024-12 data: a Bob task to list, fetch and check it, then the
    manifest and spec change, after Codex's review.
 3. Walk-forward harness.
 4. Cycle-preserving scenario generator.
