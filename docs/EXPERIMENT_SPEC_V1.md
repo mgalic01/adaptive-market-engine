@@ -363,6 +363,9 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   that instant.
 - **Uniform-cadence rule (latest three):** at an observation at time `t`, take the
   newest usable record `r3` and the two usable records before it, `r1` and `r2`.
+  - **Insufficient history:** if fewer than three usable records exist, including at
+    replay start before enough funding history has accumulated, the signal is
+    unavailable. G fails closed by default.
   - **Invalid newest record:** `r3` is the newest usable record whatever its content.
     If it is invalid (missing or unaccepted interval, non-finite rate), the signal is
     unavailable. It is never filtered out in favour of three older valid records.
@@ -418,6 +421,10 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
     unavailable.
   - **Invalid newest record** (interval 0, 3, 12 or empty; non-finite rate): unavailable,
     never falling back to three older valid records.
+  - **Insufficient history:** zero, one and two usable records, including at replay
+    start, are all unavailable.
+  - **Invalid older record:** an unaccepted interval on `r1` or `r2` makes the signal
+    unavailable through the uniform-interval check.
   - **Duplicate scheduled times:** an integrity failure.
   - **Rate boundary:** exactly +0.0005 does not count as above.
   - **Usability boundary:** exactly at `calc_time + 60 s`, and one second before it.
