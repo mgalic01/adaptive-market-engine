@@ -11,6 +11,8 @@ comments on the merged PRs), then remove this paragraph in the same PR.
 [docs/AGENT_HANDOFF.md](docs/AGENT_HANDOFF.md#quick-reference-how-to-reach-each-agent-keep-this-current).
 **Never post on a closed or merged PR or a closed issue: nobody is notified.** Use a
 new PR or the open PR concerned, and link back (same section).
+**At every start, list the open PRs and read what is new since your last visit before
+other work; do not rely on notifications** (same section).
 
 Read [docs/AGENT_HANDOFF.md](docs/AGENT_HANDOFF.md) and
 [docs/reviews/README.md](docs/reviews/README.md) before continuing work.

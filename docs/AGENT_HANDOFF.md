@@ -33,6 +33,13 @@ are in the sections below.
   and Bob do not watch closed threads. A finding about merged work, a question or a
   follow-up goes in a **new PR** (or on the open PR it concerns), with a link back to
   the closed one. A task run's alerts on its own issue are the only exception.
+- **Don't rely on notifications** (owner rule, 2026-09-25). They are missed or
+  never sent. Every time an agent starts a session or checks in anyway, it first lists
+  the **open PRs**, reads the comments and checks added since its last visit, and acts
+  on anything addressed to it before other work. This applies to Claude, Codex desktop
+  and the owner's Bob session. The GitHub Bob answers one mention and stops, so it is
+  exempt. This is a check at a start that happens anyway, never a separate polling
+  loop.
 - **Safety net:** at every check-in Claude also sweeps all PRs and issues, open or
   closed, for comments since the previous sweep, and answers or moves anything it
   finds. If a closed PR needs more work, the answer is a new PR, not a reopen,
