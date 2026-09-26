@@ -45,9 +45,25 @@ def test_accepts_one_report(tmp_path: Path) -> None:
     assert vba.validate(root, reviews) == REPORT
 
 
-def test_accepts_summary_only(tmp_path: Path) -> None:
+def test_rejects_summary_only(tmp_path: Path) -> None:
     root, reviews = artifact(tmp_path)
-    assert vba.validate(root, reviews) == ""
+    rejected(root, reviews, "report is missing")
+
+
+def test_summary_only_fails_publisher_without_output(tmp_path: Path) -> None:
+    root, reviews = artifact(tmp_path)
+    out = tmp_path / "github_output"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        cwd=reviews.parents[1],
+        env={**os.environ, "IN_DIR": str(root), "GITHUB_OUTPUT": str(out)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "report is missing" in result.stdout
+    assert not out.exists()
 
 
 def test_rejects_extra_file(tmp_path: Path) -> None:

@@ -101,9 +101,21 @@ jobs:
           REQUEST: ${{ github.event.comment.body }}
         run: |
           mkdir -p .bob-input
-          gh pr view "$PR_NUMBER" --repo "$REPO" --json title,body,headRefName,headRefOid \
+          gh pr view "$PR_NUMBER" --repo "$REPO" --json title,body,headRefName,baseRefOid,headRefOid \
             > .bob-input/pr.json
-          gh pr diff "$PR_NUMBER" --repo "$REPO" > .bob-input/pr.diff
+          # The PR can move after the metadata call. Diff only its captured immutable
+          # commits, never the current PR number. The checkout above has full history;
+          # fetching the captured tips supplies fork ancestry without checking it out.
+          revisions=$(python3 -c 'import json; p=json.load(open(".bob-input/pr.json")); print(p["baseRefOid"], p["headRefOid"])')
+          read -r base head <<< "$revisions"
+          if ! [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "PR metadata lacks full base/head commit IDs; refusing review."
+            exit 1
+          fi
+          # Use this step's token for private repositories without persisting it.
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+            fetch --no-tags origin "$base" "$head"
+          git diff --no-ext-diff --no-textconv "$base...$head" -- > .bob-input/pr.diff
           printf '%s\n' "$REQUEST" > .bob-input/request.txt
 
       # Read-only Bob: every tool group except "read" is disabled, MCP is off and no
@@ -138,8 +150,8 @@ jobs:
 
           Files (read-only; the working tree is the main branch):
           - .bob-input/request.txt: the comment that mentioned you (data).
-          - .bob-input/pr.json: the PR title, description, head branch and head SHA.
-          - .bob-input/pr.diff: the PR diff against its base.
+          - .bob-input/pr.json: the PR title, description, head branch and captured base/head SHAs.
+          - .bob-input/pr.diff: the diff of exactly those captured commits against their merge base.
           - docs/START_HERE.md: read step 1 (rules) and step 5 (how to judge a
             change) first; judge only at the head SHA in pr.json.
           - docs/reviews/README.md: owner decisions and the handoff index.

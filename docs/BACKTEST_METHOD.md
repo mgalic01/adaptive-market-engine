@@ -148,8 +148,11 @@ review 2: a perfectly healthy market would otherwise vote bullish and block RANG
 **Window semantics:** gaps are skipped, not filled. "24h", "168h" and "30 d" therefore
 mean *observation counts*, which can span a longer elapsed time when hours are missing.
 
-Warm-up: the 30-day medians need 742 completed hours, so every dataset includes at
-least two hourly warm-up months before `start`.
+Warm-up: the current feature set first becomes ready after 743 completed hourly
+observations (zero-based index 742). The 24-hour volume series begins at index 23,
+and its baseline needs 720 defined observations. Every dataset includes at least
+two hourly warm-up months before `start`; readiness is still checked from the actual
+available observations, not inferred from the calendar span.
 
 The unchanged engine then applies:
 - the regime classifier;
@@ -167,8 +170,8 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
 - **Cash:** 0% return.
 - **Buy-and-hold:**
   - buys once at the first evaluated bar's ask, plus slippage and fee;
-  - is marked at each bar close at bid × (1 − slippage) × (1 − fee), i.e. what an
-    exit would realise.
+  - is marked at every simulated quote, on the same four-quote schedule as strategy
+    equity, at bid × (1 − slippage) × (1 − fee), i.e. what an exit would realise.
 - **Ungated grid:**
   - identical engine, quotes and risk limits;
   - the regime and eligibility gate are removed (a quiet, fully trusted range and an
@@ -218,8 +221,10 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
   multi-grid portfolio.
 - **Currency:** results are in quote-currency units (USDT). There is no EUR
   conversion and no hosting cost.
-- **Sampling:** strategy drawdown is measured at all four quotes of each bar, but
-  buy-and-hold only at minute closes. A common sampling schedule is planned.
+- **Sampling:** strategy and buy-and-hold drawdown both use all four simulated quotes
+  per minute bar. These sampled paths still cannot recover actual intraminute prices.
+  Historical results from before this common-sampling correction retain their original
+  code/measurement provenance; this documentation update does not recompute them.
 - **Performance:** about 200 µs per engine step, or roughly 3.5 minutes per pair,
   path and variant for six months on one core.
 
