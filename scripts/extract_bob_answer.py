@@ -35,7 +35,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-SIGNATURE = re.compile(r"—[ \t]*IBM Bob \([^()\n]*\)")
+# A signature must end its line, so a signature quoted inside a sentence (Bob discussing
+# the format) is not mistaken for the end of a draft.
+SIGNATURE = re.compile(r"(?m)—[ \t]*IBM Bob \([^()\n]*\)[ \t*_]*$")
 # Markdown emphasis, heading or quote markers before the name are allowed: Bob sometimes
 # writes "**IBM Bob**" or "## IBM Bob", and a correct answer must not be refused for it.
 # One flat character class: a nested quantifier here backtracks exponentially on a long
@@ -67,23 +69,38 @@ def extract(stream: str, max_bytes: int = DEFAULT_MAX_BYTES) -> str:
     results = [i for i, e in enumerate(items) if e.get("type") == "result"]
     if not results or items[results[-1]].get("status") != "success":
         raise Rejected("the run did not end with a successful result")
-    text = ""
+    # All of Bob's own (non-reasoning) text; `tail` is where the text after his last
+    # tool call starts. Tool output never enters `text`.
+    text, tail = "", 0
     for event in items[: results[-1]]:
         kind = event.get("type")
         if kind in ("tool_use", "tool_result"):
-            text = ""
+            # A tool call ends a turn: the next text starts on a new line.
+            if text and not text.endswith("\n"):
+                text += "\n"
+            tail = len(text)
         elif kind == "message" and event.get("role") == "assistant":
             content = event.get("content")
             if not event.get("isReasoning") and isinstance(content, str):
                 text += content
-    signatures = list(SIGNATURE.finditer(text))
+    signatures = [s for s in SIGNATURE.finditer(text) if s.start() >= tail]
     if not signatures:
-        raise Rejected("the final answer has no '— IBM Bob (...)' signature")
+        raise Rejected(
+            "the final answer has no '— IBM Bob (...)' signature line after the last tool "
+            f"call ({shape(text, tail)})"
+        )
     final = signatures[-1]
-    start = signatures[-2].end() if len(signatures) > 1 else 0
+    start = signatures[-2].end() if len(signatures) > 1 else tail
     header = HEADER.search(text, start, final.start())
+    if header is None and len(signatures) == 1:
+        # Bob sometimes writes his header, checks one more file, then finishes. Take the
+        # last header before the last tool call, so no earlier draft is pulled in.
+        before = [h for h in HEADER.finditer(text, 0, tail) if not _signed_after(text, h, tail)]
+        header = before[-1] if before else None
     if header is None:
-        raise Rejected("the final answer has no line starting with 'IBM Bob'")
+        raise Rejected(
+            f"the final answer has no line starting with 'IBM Bob' ({shape(text, tail)})"
+        )
     answer = text[header.start() : final.end()].strip()
     if not answer:
         raise Rejected("the final answer is blank")
@@ -91,6 +108,22 @@ def extract(stream: str, max_bytes: int = DEFAULT_MAX_BYTES) -> str:
     if size > max_bytes:
         raise Rejected(f"the final answer is {size} bytes, over {max_bytes}")
     return answer
+
+
+def _signed_after(text: str, header: re.Match[str], end: int) -> bool:
+    """True if a signature closes this header's text before `end` (a finished draft)."""
+    return SIGNATURE.search(text, header.end(), end) is not None
+
+
+def shape(text: str, tail: int) -> str:
+    """Structure only, never content: where headers and signatures are."""
+    parts = (("before", 0, tail), ("after", tail, len(text)))
+    counts = [
+        f"{name} the last tool call: {len(text[a:b].splitlines())} lines, "
+        f"{len(HEADER.findall(text, a, b))} header, {len(SIGNATURE.findall(text, a, b))} signature"
+        for name, a, b in parts
+    ]
+    return "; ".join(counts)
 
 
 def stats(stream: str) -> str:
