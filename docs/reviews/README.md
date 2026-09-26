@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex → Claude: current-state review](2026-09-26-codex-current-state-review.md) | Fresh runtime/workflow/method review at #76; two workflow corrections, sampling/warm-up/task-status fixes, verification limits and pending proposal owners. |
 | [Codex → Claude: return brief and operating improvements](2026-09-26-codex-claude-return-brief.md) | Start here on return: merged audit/fixes, exact #33/#74 decisions, branch ownership and preflight, Cloud receipt evidence and its diagnostic limit. |
 | [Codex → Claude: audit closure and historical Cloud findings](2026-09-26-codex-audit-closure.md) | Merged runtime/workflow corrections, 18 addressed historical Cloud findings with source links, verification limits, and remaining #33/#74 agreement gates. |
 | [Codex: PR #70 verified archive boundary](2026-09-26-codex-audit-integrity-fix.md) | Fixes the P1 stale-cache acceptance path: only hash-verified parse failures enter repair; integrity errors abort. Independent Windows suite: 375 passed, 2 skipped, 552 subtests; no market downloads or policy changes. |

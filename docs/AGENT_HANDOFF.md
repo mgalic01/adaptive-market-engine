@@ -257,7 +257,8 @@ Credits are limited, so every agent works on demand, not by polling:
   that merely contains the word "Bob". It installs a pinned Bob package verified against
   a committed SHA-256. Bob is read-only there: every tool group except `read` is disabled,
   and his process has no GitHub token or runner credentials. The workflow gives him, as
-  data, the triggering comment, the PR title, description and head SHA, the PR diff and
+  data, the triggering comment, the PR title, description and captured base/head SHAs,
+  the diff generated from those immutable commits, and
   `docs/reviews/README.md`; he never reads other PR comments. The PR diff and description
   are untrusted input, so the workflow, not Bob, posts his answer, and refuses to post
   one that contains his key or a GitHub-token-shaped string.
@@ -298,8 +299,10 @@ Credits are limited, so every agent works on demand, not by polling:
       PRs in this repository (owner decision: grant nothing new), so the reply links the
       branch and Claude opens the PR after checking it adds exactly one report;
     - an edit to the review index `docs/reviews/README.md` is dropped, never published;
-      any other file change, any 2025+ archive, a secret-like value or a missing final
-      answer stops the run and alerts the owner;
+      any other file change, any 2025+ archive, a secret-like value, a missing final
+      answer or a missing report stops the run and alerts the owner. A summary alone
+      is not a completed task artifact; an interrupted task must report what was not
+      completed without claiming success;
     - the worker never saves a cache after Bob has started (the Bob package is saved
       before he starts and is hash-checked on every use);
     - every command Bob runs is shown live in the worker's Actions log.
