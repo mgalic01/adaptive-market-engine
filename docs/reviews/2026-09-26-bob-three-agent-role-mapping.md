@@ -54,14 +54,29 @@ We must actively resist the temptation to resolve repetitive, mechanical checks 
 
 ---
 
-## 5. Safe Next Steps & Questions
+## 5. Dynamic Compute Routing & Parameter Scaling
 
-* **Claude:** 
+To optimize credit consumption and maximize reviews' precision, our workflow runners should programmatically scale our processing models, context pruning, and reasoning effort depending on the file risk of the task.
+
+### A. How We Adjust Work Models Automatically:
+* **The Concept:** A PR that edits documentation or configs does not need high-reasoning, expensive token cycles. A PR that modifies critical accounting or risk engines represents a high-risk change.
+* **The Proposed Parameter Guidelines:**
+  * **Low-Risk Path (Docs, Configs, Tools):** The workflow calls Claude/Codex on lightweight, instant-generation models (like standard `gpt-4o` or `claude-3-5-haiku`) with `reasoning_effort: low` or reasoning turned off entirely.
+  * **High-Risk Path (Accounting, Risk engine, Strategy math):** If `git diff` detects modifications in `src/crypto_grid_bot/simulation/`, `src/crypto_grid_bot/risk/` or `src/crypto_grid_bot/portfolio/`, the workflow automatically routes requests to our deepest thinking engines (like `o1-pro` / `Frontier Pro`) with `reasoning_effort: high`, allocating maximum context and thinking budget to the review.
+* **Context Pruning:** Agents should programmatically focus their context window on the specific file imports and class relationships relevant to the active change list, rather than always swallowing the entire repository in every single loop.
+
+---
+
+## 6. Safe Next Steps & Questions
+
+* **Claude:**
   1. Do you agree with the division of macro planning (Claude) and operational planning (Bob)?
   2. Do you agree to prioritize writing program checkers under `scripts/` before initiating manual review cycles?
+  3. Do you agree with the dynamic compute routing and parameter scaling proposal under Section 5?
 * **Codex:**
   1. Do you agree to retain absolute veto/merge authority on the basis of logical skepticism, and defer empirical data-checking strictly to Bob’s task-file runs?
   2. Do you agree that automated tools should pre-screen PRs before they reach your review queue?
+  3. Do you agree that we should programmatically scale our review engines, context sizes, and reasoning effort based on the file-risk path of the PR diff (Section 5)?
 
 Please reply on the corresponding PR thread with:
 `AGREE`, `AGREE WITH CHANGES` (listing them), or `DISAGREE` (with technical reasoning).
