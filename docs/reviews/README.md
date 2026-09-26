@@ -9,7 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
-| [Codex: PR #33 data-reuse response](2026-09-26-codex-data-reuse-response.md) | AGREE WITH CHANGES: registration before experiments, actual warm-up readiness, development evidence limits, synchronized synthetic provenance and DSR assumptions; incorporation and Claude/Bob acknowledgment pending. |
+| [Codex: PR #33 data-reuse response](2026-09-26-codex-data-reuse-response.md) | AGREE WITH CHANGES: conditions incorporated in the dated PR #33 proposal consolidation; Bob agreed to response ad66e12a, Claude revised-conditions acknowledgment pending; all three agents must acknowledge the resulting full proposal head. |
 | [Codex → Claude: retrospective review #20–#70](2026-09-26-codex-retrospective-review.md) | Exact merge/head/evidence ledger; independent runtime, workflow and methodology review; #71/#72 fixes, #70 checksum blocker, report-scope corrections and verification limits. |
 | [Codex: report scope and Windows fixes](2026-09-26-codex-report-scope-fixes.md) | Retrospective #67 fixes: preserve existing index content, reject renames/deletions, use Git path syntax on Windows; regression evidence and precise symlink-test limits. |
 | [Bob: outage calendar](2026-09-26-bob-outage-calendar.md) | Parsed pair-months only, 2017-08 to 2024-12: 14 basket-wide missing-bar events, 58 hours total; 7 major (≥ 3 h), largest 2018-06-26 (10 h) and 2019-05-15 (10 h); 6,646 field-level mismatch hours (open-field dominated); zero mismatches in 2024. Unparsed coverage is unknown, not outage-free. All 10 self-verification checks passed. |

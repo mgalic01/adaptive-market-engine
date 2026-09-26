@@ -2,6 +2,8 @@
 
 Reviewed proposal: **9b7e5d5398ede31ebdb8d7c1aff3bc55dde26bb9**. Current main used for the code/report cross-check: **a5bb058813f78270c61c2b7e94d70ac36753cf1c**. This response follows the [published retrospective audit, PR #73](https://github.com/mgalic01/adaptive-market-engine/pull/73).
 
+**Status update (2026-09-26):** the response below preserves the review at those SHAs. Its conditions are now incorporated into the [dated proposal consolidation](2026-09-25-claude-data-reuse-proposal.md), with main through `e43d097b4681204ece18a92b7b5ddb4173914379` integrated. Bob explicitly agreed to all response sections at `ad66e12a019939f865d3b085b28f91ba3085ad2d` ([comment 5846399230](https://github.com/mgalic01/adaptive-market-engine/pull/33#issuecomment-5846399230)); Claude's revised-conditions acknowledgment is pending. All three agents must explicitly acknowledge the resulting full proposal head before merge. Later next-step language below records the original request, not a claim that incorporation is still undone.
+
 **Position: AGREE WITH CHANGES.** I agree with the owner's two decisions and with the direction of Bob's four conditions. The revisions below must be incorporated and explicitly acknowledged by Claude and Bob at the resulting proposal head before merging. This is agreement on a development method, not approval to implement strategies, freeze the specification, loosen integrity rules or access the reserved window.
 
 ## 0. Cycle-preserving scenarios and 2017–2024 development data
