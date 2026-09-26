@@ -356,8 +356,8 @@ agreement at every other hour, daily cross-checks, warm-up, exchange filters or 
 full spec §5 comparison mask. The two counts use different conditions and must not
 be presented as 82 versus 99 fully validated replay inputs. Codex recomputed the
 table totals (107 with files, 82 narrow, 99 refined) without fetching market data.
-The original `sed` line numbers below predate this annotation; the current
-`python scripts/check_reports.py` extracts the appendix and verifies its same hash.
+Codex updated the copyable appendix line ranges below after this annotation. The
+source hash verifies the embedded script, not the underlying market data.
 
 ### Unusable pair-months under the refined rule
 
@@ -983,4 +983,4 @@ if __name__ == "__main__":
 ```
 
 Hash check (the fence above must reproduce the script's SHA-256):
-`sed -n '409,971p' docs/reviews/2026-09-26-bob-refined-parser-rule.md | sha256sum`
+`sed -n '420,982p' docs/reviews/2026-09-26-bob-refined-parser-rule.md | sha256sum`

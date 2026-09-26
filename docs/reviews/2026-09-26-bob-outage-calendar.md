@@ -26,8 +26,8 @@ the available parsed coverage, not proof about every Binance market or the cause
 missing bars. The 6,646 mismatch count has the same parsed-coverage limitation.
 Codex recomputed these report-table totals without fetching market data; the table
 and appendix remain the historical record.
-The original `sed` line numbers below predate this annotation; the current
-`python scripts/check_reports.py` extracts the appendix and verifies its same hash.
+Codex updated the copyable appendix line ranges below after this annotation. The
+source hash verifies the embedded script, not the underlying market data.
 
 1. **Expected hours and status consistency (Step 1):**
    - For all 10 pairs across all 89 months (2017-08 to 2024-12), expected hours were generated from pair listing bounds (`range(max(first_hour_ms, month_start_ms), month_end_ms, 3_600_000)`).
@@ -844,4 +844,4 @@ if __name__ == "__main__":
 ```
 
 *[Added at review: the hash check the task asked for (Step 5).]*
-`sed -n '336,831p' docs/reviews/2026-09-26-bob-outage-calendar.md | sha256sum` gives `46e01e1980aed456e720f34e329cd0ef6fa816b735f1498572f7eb1fa468678c`, the stated SHA-256 of `data/outages.py`.
+`sed -n '348,843p' docs/reviews/2026-09-26-bob-outage-calendar.md | sha256sum` gives `46e01e1980aed456e720f34e329cd0ef6fa816b735f1498572f7eb1fa468678c`, the stated SHA-256 of `data/outages.py`.
