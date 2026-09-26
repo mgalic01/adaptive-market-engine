@@ -91,30 +91,83 @@ class IndexTests(unittest.TestCase):
 
 class ScopeTests(unittest.TestCase):
     NEW = "docs/reviews/2026-09-26-bob-x.md"
+    INDEX = "docs/reviews/README.md"
 
-    def test_one_report_and_its_row_pass(self):
-        changed = [("A", self.NEW), ("M", "docs/reviews/README.md")]
+    def setUp(self):
+        self.changed = [("A", self.NEW), ("M", self.INDEX)]
+        self.base = "Existing policy.\n" + index("old.md")
+        self.head = self.base + "| [New report](2026-09-26-bob-x.md) | new |\n"
+
+    def test_one_report_and_its_row_pass_on_every_host(self):
+        self.assertEqual([], check_scope(self.changed, self.base, self.head))
+
+    def test_report_name_matches_the_artifact_publishers_allowed_names(self):
+        name = "2026-09-26-bob-Topic_v1.2.md"
+        changed = [("A", "docs/reviews/" + name), ("M", self.INDEX)]
         self.assertEqual(
-            [], check_scope(changed, index("old.md"), index("2026-09-26-bob-x.md", "old.md"))
+            [], check_scope(changed, self.base, self.base + f"| [New]({name}) | x |\n")
         )
 
-    def test_rows_for_other_files_fail(self):
-        head = index("2026-09-26-bob-x.md", "claude-proposal.md", "old.md")
-        errors = check_scope([("A", self.NEW)], index("old.md"), head)
-        self.assertEqual(1, len(errors))
-        self.assertIn("gains ['2026-09-26-bob-x.md', 'claude-proposal.md']", errors[0])
+    def test_row_can_be_inserted_at_the_top_of_the_table(self):
+        head = self.base.replace("| [old.md]", "| [New](2026-09-26-bob-x.md) | new |\n| [old.md]")
+        self.assertEqual([], check_scope(self.changed, self.base, head))
 
-    def test_removed_row_extra_file_and_second_report_fail(self):
-        changed = [("A", self.NEW), ("A", "docs/reviews/2026-09-26-bob-y.md"), ("M", "src/x.py")]
-        errors = check_scope(changed, index("old.md"), index())
-        self.assertTrue(any("src/x.py" in e for e in errors))
-        self.assertTrue(any("exactly one Bob report, found 2" in e for e in errors))
-        errors = check_scope([("A", self.NEW)], index("old.md"), index("2026-09-26-bob-x.md"))
-        self.assertIn("the index must not lose rows; it loses ['old.md']", errors)
+    def test_existing_content_is_preserved_including_status_labels_and_prose(self):
+        for head in (
+            self.head.replace("Existing policy.", "New policy."),
+            self.head.replace("| summary |", "| APPROVED |"),
+            self.head.replace("[old.md]", "[Different label]"),
+            self.head.replace("| [old.md](old.md) | summary |\n", ""),
+            self.head + "| [Duplicate](old.md) | summary |\n",
+        ):
+            with self.subTest(head=head):
+                self.assertTrue(check_scope(self.changed, self.base, head))
 
-    def test_name_status_parsing_keeps_the_new_path_of_a_rename(self):
-        lines = ["A\tdocs/reviews/x.md", "R100\told.md\tnew.md", ""]
-        self.assertEqual([("A", "docs/reviews/x.md"), ("R100", "new.md")], parse_name_status(lines))
+    def test_missing_duplicate_and_unrelated_new_rows_fail(self):
+        row = "| [New](2026-09-26-bob-x.md) | new |\n"
+        for head in (self.base, self.head + row, self.head + "| [Other](other.md) | x |\n"):
+            with self.subTest(head=head):
+                self.assertTrue(check_scope(self.changed, self.base, head))
+
+    def test_existing_report_edits_deletions_type_changes_and_renames_fail(self):
+        for status in ("M", "D", "T", "R100", "C100"):
+            with self.subTest(status=status):
+                changed = [(status, self.NEW), ("M", self.INDEX)]
+                self.assertTrue(check_scope(changed, self.base, self.head))
+
+    def test_extra_files_second_report_and_duplicate_status_entries_fail(self):
+        for extra in (
+            ("M", "src/x.py"),
+            ("A", "docs/reviews/2026-09-26-bob-y.md"),
+            ("M", self.INDEX),
+        ):
+            with self.subTest(extra=extra):
+                self.assertTrue(check_scope(self.changed + [extra], self.base, self.head))
+
+    def test_deleted_or_missing_index_fails(self):
+        for changed in ([self.changed[0]], [self.changed[0], ("D", self.INDEX)]):
+            with self.subTest(changed=changed):
+                self.assertTrue(check_scope(changed, self.base, self.head))
+
+    def test_name_status_parsing(self):
+        lines = ["A\tdocs/reviews/x.md", "M\tdocs/reviews/README.md"]
+        self.assertEqual([("A", "docs/reviews/x.md"), ("M", self.INDEX)], parse_name_status(lines))
+        self.assertEqual([], parse_name_status([]))
+
+    def test_rename_copy_and_malformed_status_never_drop_the_source(self):
+        for line in (
+            "R100\tLICENSE\t" + self.NEW,
+            "C100\tLICENSE\t" + self.NEW,
+            "R100\t" + self.NEW,
+            "A",
+            "A\t",
+            "A\tx\textra",
+            "BOGUS\tx",
+            "",
+            "\tfile.md",
+        ):
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                parse_name_status([line])
 
 
 if __name__ == "__main__":
