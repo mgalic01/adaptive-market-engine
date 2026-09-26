@@ -6,6 +6,12 @@
 - **Python version:** `3.12.14` (Linux x86_64)
 - **Timing:** start `Sat Sep 26 08:35:17 UTC 2026`, end `Sat Sep 26 08:52:00 UTC 2026`
 - **Script:** `data/outages.py` (SHA-256: `46e01e1980aed456e720f34e329cd0ef6fa816b735f1498572f7eb1fa468678c`, full source in [Appendix](#appendix-dataoutagespy-source))
+- **Corrections at review (Claude, 2026-09-26):** Claude recomputed the events and the
+  field table with an independent script using the same library functions: all 14
+  events, 58 hours, 6,646 mismatches and every field combination match. The appendix
+  hashes to the stated SHA-256. Two statements are marked "Correction at review" in
+  place; the data and tables are Bob's and unchanged. Reasons are in the feedback on
+  this report's PR.
 
 ---
 
@@ -237,6 +243,8 @@ Sorted by start timestamp:
 
 ### Complete Outage Event Roster (All 14 Events)
 
+*[Correction at review: every end time in this report is exclusive, the hour after the last missing hour. For example, 2018-06-26 02:00 to 12:00 is the ten hours 02:00 to 11:00.]*
+
 1. `2018-06-26 02:00` to `2018-06-26 12:00` (10h), kind: `all-pairs`, affected: 7/7 listed pairs (ADAUSDT, BNBUSDT, BTCUSDT, ETHUSDT, LTCUSDT, TRXUSDT, XRPUSDT)
 2. `2018-06-27 13:00` to `2018-06-27 14:00` (1h), kind: `all-pairs`, affected: 7/7 listed pairs (ADAUSDT, BNBUSDT, BTCUSDT, ETHUSDT, LTCUSDT, TRXUSDT, XRPUSDT)
 3. `2018-10-19 06:00` to `2018-10-19 09:00` (3h), kind: `all-pairs`, affected: 7/7 listed pairs (ADAUSDT, BNBUSDT, BTCUSDT, ETHUSDT, LTCUSDT, TRXUSDT, XRPUSDT)
@@ -303,8 +311,8 @@ Every figure matches Claude's reference values computed during the review of PR 
 
 ### Breakdown of 2018-06 Outage Hours
 The 11 `absent_both` hours in 2018-06 span **two distinct events**:
-1. `2018-06-26 02:00 UTC` to `2018-06-26 12:00 UTC` (**10 consecutive hours**, exchange-wide system maintenance).
-2. `2018-06-27 13:00 UTC` to `2018-06-27 14:00 UTC` (**1 hour**, follow-up exchange-wide maintenance).
+1. `2018-06-26 02:00 UTC` to `2018-06-26 12:00 UTC` (**10 consecutive hours**, exchange-wide ~~system maintenance~~). *[Correction at review: the archives show bars missing for every listed pair, not why; "maintenance" is not in the data.]*
+2. `2018-06-27 13:00 UTC` to `2018-06-27 14:00 UTC` (**1 hour**, exchange-wide ~~follow-up maintenance~~).
 
 ---
 
