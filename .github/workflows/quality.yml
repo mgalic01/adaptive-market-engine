@@ -13,6 +13,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The PR merge commit and its first parent (the base), for the Bob branch scope check.
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -25,6 +28,13 @@ jobs:
       - run: ruff format --check .
       - run: mypy src scripts
       - run: pytest
+      - run: python scripts/check_reports.py
+      - name: Bob task branch scope
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'bob/task-')
+        run: |
+          git diff --name-status HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
+          git show HEAD^1:docs/reviews/README.md > "$RUNNER_TEMP/base-index.md"
+          python scripts/check_reports.py --changed "$RUNNER_TEMP/changed.txt" --base-index "$RUNNER_TEMP/base-index.md"
       - run: python -m crypto_grid_bot.app --config config/default.toml --self-check
       - run: python -m crypto_grid_bot.app --config config/default.toml --paper-demo --database /tmp/grid-paper-ci.db
       - run: bandit -q -r src scripts

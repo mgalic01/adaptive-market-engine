@@ -17,6 +17,9 @@ Run through this list and fix anything it finds before your final message.
 3. **Only your report changed.** `git status --porcelain --untracked-files=all`
    shows exactly one new file, your report under `docs/reviews/`. Working files go
    under `data/`.
+   Then run `python scripts/check_reports.py`: CI runs it on every PR (index links,
+   appendix hashes, `text` fences) and, on a `bob/task-` branch, also checks that
+   the branch changes only your report and adds exactly one index row.
 4. **Every number has its source.** For each count, hash or total, the report says
    which command or file produced it, so another agent can reproduce it.
 5. **Failures are in the report.** Errors, invalid runs, retries and anything skipped
