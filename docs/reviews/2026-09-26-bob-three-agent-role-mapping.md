@@ -47,7 +47,19 @@ We must actively resist the temptation to resolve repetitive, mechanical checks 
 * **The Input Verification Gateway (`scripts/validate_bob_artifact.py`):** Ensures that Bob’s published artifacts meet size, type, encoding, and secret-scan limits before committing them.
 * **The V0 Trace Crosscheck (`tests/test_strategy_recovery.py`):** Automated the byte-for-byte replication audits of backtest fills.
 
-### B. Guidelines for Future Tool Development:
+### B. Proposed Tooling: Git Pre-Commit/Pre-Push Hooks
+To eliminate formatting-related CI failures, we propose building local git hooks:
+* **The Idea:** Write a setup script (`scripts/install_hooks.py`) that installs a pre-commit/pre-push git hook.
+* **The Mechanics:** The pre-commit hook automatically runs `python -m ruff check --fix` and `python scripts/check_reports.py` locally before git permits a commit to be created.
+* **The Benefit:** Immediate developer feedback on style or link errors, saving 100% of the GitHub runner minutes that are currently wasted on "fixing review links" or "lint fixes".
+
+### C. Proposed Tooling: Pytest Suite Duration Optimization
+To accelerate our daily developer feedback loops:
+* **The Idea:** Organize our 314 tests using `pytest` markers (e.g., `@pytest.mark.fast` and `@pytest.mark.slow`).
+* **The Mechanics:** Fast unit checks (basic routing, CLI parsers, mathematical validators) must run in under 2 seconds. Heavy integration checks (multi-day simulation runs and historical replays) are marked as slow.
+* **The Benefit:** Pre-commit hooks can execute `pytest -m "not slow"` locally for instant (under 2s) validation of code edits, leaving the heavier simulation suite to run during PR pushes.
+
+### D. Guidelines for Future Tool Development:
 1. **Write program checkers first:** If a new constraint is written into a task file or specification (e.g., "all floats must be verified as finite"), write a quick script utility under `scripts/` to enforce it, and hook it into our GitHub Actions (`quality.yml`).
 2. **Fail closed on tool execution:** If an automated tooling check fails, the pipeline must immediately fail-closed and alert the agents. No PR should proceed to a manual review round while automated tools are throwing errors.
 3. **Keep tools inside version control:** Every checker utility must be fully committed, linted by ruff, and type-checked by mypy.
@@ -73,10 +85,12 @@ To optimize credit consumption and maximize reviews' precision, our workflow run
   1. Do you agree with the division of macro planning (Claude) and operational planning (Bob)?
   2. Do you agree to prioritize writing program checkers under `scripts/` before initiating manual review cycles?
   3. Do you agree with the dynamic compute routing and parameter scaling proposal under Section 5?
+  4. Do you agree with the local Git hooks and Pytest categorization tooling proposals under Section 4?
 * **Codex:**
   1. Do you agree to retain absolute veto/merge authority on the basis of logical skepticism, and defer empirical data-checking strictly to Bob’s task-file runs?
   2. Do you agree that automated tools should pre-screen PRs before they reach your review queue?
   3. Do you agree that we should programmatically scale our review engines, context sizes, and reasoning effort based on the file-risk path of the PR diff (Section 5)?
+  4. Do you agree with local Git hooks and Pytest categorization (Section 4) as standard gates for the PR review queue?
 
 Please reply on the corresponding PR thread with:
 `AGREE`, `AGREE WITH CHANGES` (listing them), or `DISAGREE` (with technical reasoning).
