@@ -2,9 +2,10 @@
 
 import math
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from decimal import Decimal as D
+from decimal import getcontext, localcontext
 from pathlib import Path
 
 from crypto_grid_bot.backtest.features import HOUR_MS, FeatureEngine, SeriesFeatures
@@ -26,7 +27,7 @@ from crypto_grid_bot.backtest.replay import (
 )
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
-from crypto_grid_bot.simulation.execution import match, place
+from crypto_grid_bot.simulation.execution import match, place, reduce_unreserved
 from crypto_grid_bot.simulation.models import Account, LimitOrder, MarketRules, Quote, timestamp
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator
 
@@ -623,6 +624,62 @@ class ProfitAttributionTests(unittest.TestCase):
         _record_fills(metrics, [self.fill("exit/q9", "sell", "7", "3", "0.021")])
         self.assertEqual(D("21") - D("0.021") - D("27.03"), metrics.exit_pnl)
         self.assertEqual((1, D("0")), (metrics.exit_sells, metrics.cost_basis))
+
+    def test_high_precision_fill_journal_reconciles_with_simulator_balances(self):
+        rules = MarketRules(
+            symbol="TESTUSDT",
+            tick_size=D("1e-18"),
+            quantity_step=D("1e-18"),
+            minimum_notional=D("1"),
+            fee_rate=D("0.001"),
+            taker_fee_rate=D("0.003"),
+            slippage_rate=D(0),
+            participation=D(1),
+        )
+        run = RunConfig("TESTUSDT", "low_first", True, rules, D(100), D("0.0005"))
+        account, metrics = Account.start(D(100)), Metrics()
+        orders = (
+            ("b", "buy", "1.234567890123456789", "2.345678901234567890", "1", "1.1"),
+            ("b/sell", "sell", "1.334567890123456789", "1.123456789012345678", "1.4", "1.5"),
+            (
+                "exit/q",
+                "sell",
+                "1.134567890123456789",
+                "1.222222112222222212",
+                "1.134567890123456789",
+                "1.3",
+            ),
+        )
+        # Like PaperSimulator.step: account operations use 50 digits, then the
+        # replay receives fills outside that context. Neither may round the other.
+        with localcontext() as caller:
+            caller.prec = 28
+            for index, (key, side, price, quantity, bid, ask) in enumerate(orders):
+                with self.subTest(side=side, order=key):
+                    when = f"2024-01-01T00:0{index}:00+00:00"
+                    quote = Quote(key, rules.symbol, when, when, D(bid), D(ask), D(100), D(100))
+                    with localcontext() as simulator:
+                        simulator.prec = 50
+                        if key.startswith("exit/"):
+                            fills = reduce_unreserved(account, quote, rules)
+                        else:
+                            place(
+                                account,
+                                LimitOrder(key, side, D(price), D(quantity), D(quantity)),
+                                rules,
+                            )
+                            fills = match(account, quote, rules)
+                        account.last_equity = account.equity(quote, rules)
+                        metrics.final_equity = account.last_equity
+                    self.assertEqual(1, len(fills))
+                    _record_fills(metrics, [asdict(fill) for fill in fills], "test_exit")
+                    self.assertEqual(28, getcontext().prec)
+                    metrics.frames += 1
+                    self.assertEqual([], check_accounting(run, metrics, account))
+            self.assertEqual(D(0), account.inventory)
+            self.assertEqual(D(0), metrics.cost_basis)
+            self.assertEqual(1, metrics.exit_sells)
+            self.assertEqual({"test_exit": metrics.exit_pnl}, metrics.exit_pnl_by_reason)
 
 
 class MeasurementTests(unittest.TestCase):
