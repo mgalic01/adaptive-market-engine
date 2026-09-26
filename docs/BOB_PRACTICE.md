@@ -131,3 +131,4 @@ Run through this list and fix anything it finds before your final message.
 | 2026-09-26 | PR #50 | A true statement was flagged as a mismatch; CI was proposed to run a script under the git-ignored `data/`; a link count had no stated rule. | Self-checks 7, 9; "Proposed paths must survive the machine". |
 | 2026-09-26 | PR #51 | A correction was appended below a table that still showed the old claim; lower-risk functions were ranked above untested data loaders. | Self-check 10. |
 | 2026-09-26 | PR #52 | Working ("Wait — …") left in the report; a reference-fee verdict without its table; a "likely" cause not checked against the recorded reasons. | Self-checks 10, 11; "Settle 'likely' with data". |
+| 2026-09-26 | PR #54 | A review said `SUMMARY_FIELDS` has 46 keys; it has 49. The claim was stated as verified ("I verified … exactly those 46 keys"). | Self-check 7: count with code (`len(...)`) before stating a number, in reviews too. |
