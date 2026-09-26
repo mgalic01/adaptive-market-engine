@@ -285,33 +285,38 @@ def order_requests(
 def _record_fills(
     metrics: Metrics, fills: Sequence[dict[str, Any]], exit_reason: str | None = None
 ) -> None:
-    for fill in fills:
-        quantity, fee = Decimal(fill["quantity"]), Decimal(fill["fee"])
-        notional = Decimal(fill["price"]) * quantity
-        held = metrics.bought - metrics.sold
-        if fill["side"] == "buy":
-            metrics.buys += 1
-            metrics.buy_notional += notional
-            metrics.buy_fees += fee
-            metrics.bought += quantity
-            metrics.cost_basis += notional + fee
-        else:
-            cost = metrics.cost_basis * quantity / held if held > ZERO else ZERO
-            metrics.cost_basis -= cost
-            pnl = notional - fee - cost
-            if str(fill["order_id"]).startswith("exit/"):
-                metrics.exit_pnl += pnl
-                metrics.exit_sells += 1
-                reason = exit_reason or "unlabelled"
-                metrics.exit_pnl_by_reason[reason] = (
-                    metrics.exit_pnl_by_reason.get(reason, ZERO) + pnl
-                )
+    # PaperSimulator.step updates balances at precision 50. Preserve the same fill
+    # amounts here: the caller's default precision (28) can round valid 18-place
+    # prices/quantities and make the independent cash/fee identities fail.
+    with localcontext() as context:
+        context.prec = 50
+        for fill in fills:
+            quantity, fee = Decimal(fill["quantity"]), Decimal(fill["fee"])
+            notional = Decimal(fill["price"]) * quantity
+            held = metrics.bought - metrics.sold
+            if fill["side"] == "buy":
+                metrics.buys += 1
+                metrics.buy_notional += notional
+                metrics.buy_fees += fee
+                metrics.bought += quantity
+                metrics.cost_basis += notional + fee
             else:
-                metrics.grid_sell_pnl += pnl
-            metrics.sells += 1
-            metrics.sell_notional += notional
-            metrics.sell_fees += fee
-            metrics.sold += quantity
+                cost = metrics.cost_basis * quantity / held if held > ZERO else ZERO
+                metrics.cost_basis -= cost
+                pnl = notional - fee - cost
+                if str(fill["order_id"]).startswith("exit/"):
+                    metrics.exit_pnl += pnl
+                    metrics.exit_sells += 1
+                    reason = exit_reason or "unlabelled"
+                    metrics.exit_pnl_by_reason[reason] = (
+                        metrics.exit_pnl_by_reason.get(reason, ZERO) + pnl
+                    )
+                else:
+                    metrics.grid_sell_pnl += pnl
+                metrics.sells += 1
+                metrics.sell_notional += notional
+                metrics.sell_fees += fee
+                metrics.sold += quantity
 
 
 class _BuyAndHold:
