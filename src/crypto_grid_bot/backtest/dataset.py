@@ -305,7 +305,13 @@ def fetch_file(
         if fetcher(path) is not None:
             raise DataError(f"{path} is published without a checksum")
         return {**entry, "status": "missing"}
-    match = _CHECKSUM.fullmatch(checksum.decode("ascii", errors="strict"))
+    try:
+        published = checksum.decode("ascii", errors="strict")
+    except UnicodeDecodeError as exc:
+        # A non-ASCII checksum body is a corrupt or hostile response, not a decode bug:
+        # it must fail at this module's DataError boundary like every other bad checksum.
+        raise DataError(f"unexpected checksum file for {path}") from exc
+    match = _CHECKSUM.fullmatch(published)
     if match is None or match.group(2) != path.rsplit("/", 1)[1]:
         raise DataError(f"unexpected checksum file for {path}")
     expected = match.group(1)
