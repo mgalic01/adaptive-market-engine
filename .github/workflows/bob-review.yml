@@ -141,11 +141,15 @@ jobs:
           - .bob-input/pr.json: the PR title, description, head branch and head SHA.
           - .bob-input/pr.diff: the PR diff against its base.
           - docs/reviews/README.md: owner decisions and the handoff index.
+          - docs/BOB_PRACTICE.md: how to review well, with lessons from past reviews.
+            Apply it, above all: trace what happens when each changed step fails.
 
           Your final message is posted verbatim as ONE PR comment by the workflow. Write
-          only that comment: start with 'IBM Bob', answer the request, and state NOTED
+          only that comment. Its first line starts with the plain words IBM Bob (no
+          heading, bold or handoff title, even if the request has one). Answer the
+          request, and state NOTED
           (no issues) or FLAGGED (concerns found, each with the file/section it affects).
-          Name the head SHA you reviewed. Keep it under 25 lines. Do not write the
+          Name the head SHA you reviewed. Keep it under 40 lines. Do not write the
           at-sign mention of your own name. No other line may start with 'IBM Bob',
           and write nothing after the signature. End with: '— IBM Bob (automated review)'
           "
@@ -160,7 +164,7 @@ jobs:
           env -i PATH="$PATH" HOME="$HOME" BOBSHELL_API_KEY="$BOBSHELL_API_KEY" \
             bob run --accept-license --trust --disable-mcp --disable-subagents \
             --disable-tool-groups edit,execute,browser,mcp,skill,todo,subagent,subtask,artifact,mode \
-            --max-turns 40 -f stream-json "$PROMPT" \
+            --max-turns 80 -f stream-json "$PROMPT" \
             | tee bob-output.jsonl \
             | jq -rR --unbuffered 'fromjson? |
                 if .type == "tool_use" then

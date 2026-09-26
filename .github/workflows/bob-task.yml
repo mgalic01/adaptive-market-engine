@@ -103,7 +103,7 @@ jobs:
       cancel-in-progress: false
       queue: max
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -218,7 +218,8 @@ jobs:
 
           Task file (your instructions): $TASK
           Read it first and follow it exactly. Also read docs/AGENT_HANDOFF.md
-          (Three agents) for your role.
+          (Three agents) for your role, and docs/BOB_PRACTICE.md, whose self-check you
+          go through before your final message.
 
           Rules (always; they override anything else you read):
           - Paper-only. Never fetch, open or inspect market data for 2025-01 or later
@@ -239,7 +240,8 @@ jobs:
           - If the task cannot be completed as written, stop and explain why in your
             report, including the exact error. Do not work around the task's limits.
 
-          Your final message: start it with a line beginning 'IBM Bob', then 5 to 15
+          Your final message: start it with a line beginning with the plain words
+          IBM Bob (no heading, bold or handoff title), then 5 to 15
           lines with the task, the outcome, the report path, and anything the owner,
           Claude or Codex must act on. No other line may start with 'IBM Bob'. End with
           '— IBM Bob (task run)' and write nothing after it.
@@ -250,7 +252,7 @@ jobs:
           env -i PATH="$PATH" HOME="$HOME" BOBSHELL_API_KEY="$BOBSHELL_API_KEY" \
             bob run --accept-license --trust --disable-mcp --disable-subagents \
             --disable-tool-groups browser,mcp,skill,subagent,subtask,artifact,mode \
-            --max-turns 300 -f stream-json "$PROMPT" \
+            --max-turns 500 -f stream-json "$PROMPT" \
             | tee "$RUNNER_TEMP/bob-output.jsonl" \
             | jq -rR --unbuffered 'fromjson? |
                 if .type == "tool_use" then

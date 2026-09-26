@@ -36,7 +36,11 @@ from pathlib import Path
 from typing import Any
 
 SIGNATURE = re.compile(r"—[ \t]*IBM Bob \([^()\n]*\)")
-HEADER = re.compile(r"(?m)^IBM Bob\b")
+# Markdown emphasis, heading or quote markers before the name are allowed: Bob sometimes
+# writes "**IBM Bob**" or "## IBM Bob", and a correct answer must not be refused for it.
+# One flat character class: a nested quantifier here backtracks exponentially on a long
+# run of markers (a 24-character run took over a second), and the text is untrusted.
+HEADER = re.compile(r"(?m)^[#>*_ \t]*IBM Bob(?![A-Za-z0-9])")
 DEFAULT_MAX_BYTES = 20_000
 DESCRIPTION = "Extract Bob's final answer from a bob run stream-json log, or refuse."
 
