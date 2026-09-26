@@ -57,8 +57,27 @@ is inferred from the offline fixtures.
   there were no duplicate index targets. Heading anchors and external URLs were not
   validated by that scan. The final report/index additions are checked again before push.
 
-The final correction head receives its own required Linux CI and independent review;
-the baseline results above are not substituted for changed-code verification.
+**Integrated correction verification:** at
+`b6a2c59d63e56f16368747bbc5b321f668e4497c`, the parent ran the actual full Windows
+preflight again: **386 tests and 563 subtests passed**, two symlink-privilege skips,
+32.20 seconds for pytest. Lint, format, five appendix hashes, mypy (40 source files),
+Bandit and diff checks passed. A local mixed-line-ending formatting failure after
+editing the test comment was normalized before this successful run; it produced no
+additional tracked-content change.
+
+The workflow implementer first observed five expected failing reproductions, then
+made them pass. The final fixtures run the production gather shell against real local
+Git history and a dummy GitHub command, advance the proposal A→B after metadata capture,
+and prohibit non-file Git protocols. They verify A's diff, an unchanged checkout,
+three-dot semantics with an advanced base, malformed/unavailable commits, API failure,
+and a summary-only publisher exit with no success output. Private GitHub authentication
+and actual notification delivery were not exercised; the credential helper is ephemeral
+and uses the existing gather-step token without persisting it.
+
+After adding this audit record, the parent checked **90 Markdown files, 214 relative
+file-link occurrences and 61 indexed review files**, with no missing or duplicate targets
+under the same scan rules. The final published head receives its own required Linux CI
+and independent review; their exact-head results are recorded in the PR discussion.
 
 ## Open proposals and communication
 
