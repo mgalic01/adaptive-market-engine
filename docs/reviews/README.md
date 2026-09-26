@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Owner decision: no GPL or AGPL code](2026-09-26-claude-owner-decision-licensing.md) | 2026-09-26: the owner keeps the step-1 rule and it now has a recorded source (raised by the automated review of PR #68). All 41 current dependencies already comply; the rule protects the option to sell, share or host the bot later. |
 | [Codex → Claude: standing external-review rule](2026-09-26-codex-external-review-rule.md) | Owner instruction: Claude or Bob must review the latest head before Codex merges its own work; durable startup reminders, no Codex-only substitute. |
 | [Codex → Claude: current-state review](2026-09-26-codex-current-state-review.md) | Fresh runtime/workflow/method review at #76; two workflow corrections, sampling/warm-up/task-status fixes, verification limits and pending proposal owners. |
 | [Codex → Claude: return brief and operating improvements](2026-09-26-codex-claude-return-brief.md) | Start here on return: merged audit/fixes, exact #33/#74 decisions, branch ownership and preflight, Cloud receipt evidence and its diagnostic limit. |
