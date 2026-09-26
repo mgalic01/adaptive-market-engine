@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from decimal import Decimal as D
 from pathlib import Path
+from unittest.mock import Mock, call, patch
 
 from test_backtest_loaders import FakeArchive, hour_rows, minute_rows
 
@@ -26,8 +27,15 @@ from crypto_grid_bot.backtest.audit import (
     outage_events,
     rule_outcome,
 )
-from crypto_grid_bot.backtest.audit_run import audit_outages, audit_rules, months
+from crypto_grid_bot.backtest.audit_run import _fetch, audit_outages, audit_rules, months
+from crypto_grid_bot.backtest.dataset import (
+    ArchiveParseError,
+    archive_path,
+    fetch_file,
+    local_path,
+)
 from crypto_grid_bot.backtest.klines import Kline
+from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.market_data.parsing import DataError
 
 JAN_2024 = 1704067200000  # 2024-01-01T00:00:00Z
@@ -187,6 +195,125 @@ class RuleOutcomeTests(unittest.TestCase):
     def test_reserved_month_is_refused(self):
         with self.assertRaises(DataError):
             rule_outcome([], [], "2025-01", "narrow")
+
+
+class FetchBoundaryTests(unittest.TestCase):
+    def archive(self):
+        archive = FakeArchive()
+        archive.add("BTCUSDT", "1m", "2024-01", minute_rows(JAN_2024, 60))
+        hourly = hour_rows(JAN_2024, 1).strip().split(",")
+        hourly[5] = "600"  # Matches the 60 minutes' base volume.
+        archive.add("BTCUSDT", "1h", "2024-01", ",".join(hourly) + "\n")
+        return archive
+
+    def test_integrity_failures_abort_before_raw_cache_reads_and_are_not_retried(self):
+        path = archive_path("BTCUSDT", "1m", "2024-01")
+        for cached in (False, True):
+            for defect in ("hash", "malformed_checksum", "missing_checksum", "missing_body"):
+                for runner in (audit_outages, audit_rules):
+                    with self.subTest(cached=cached, defect=defect, runner=runner.__name__):
+                        archive = self.archive()
+                        with tempfile.TemporaryDirectory() as tmp:
+                            data = Path(tmp)
+                            if cached:
+                                for interval in ("1m", "1h"):
+                                    fetch_file(data, "BTCUSDT", interval, "2024-01", archive)
+                            if defect in ("hash", "missing_body"):
+                                archive.objects[path + ".CHECKSUM"] = (
+                                    "0" * 64 + "  " + path.rsplit("/", 1)[1]
+                                ).encode()
+                            if defect == "malformed_checksum":
+                                archive.objects[path + ".CHECKSUM"] = b"invalid checksum"
+                            elif defect == "missing_checksum":
+                                del archive.objects[path + ".CHECKSUM"]
+                            elif defect == "missing_body":
+                                del archive.objects[path]
+                            get = Mock(side_effect=archive)
+                            with (
+                                patch("crypto_grid_bot.backtest.audit_run.BASKET", ["BTCUSDT"]),
+                                patch(
+                                    "crypto_grid_bot.backtest.audit_run.months",
+                                    return_value=["2024-01"],
+                                ),
+                                patch(
+                                    "crypto_grid_bot.backtest.audit_run.UNPARSED_MONTHS",
+                                    ["2024-01"],
+                                ),
+                                patch("crypto_grid_bot.backtest.audit_run._rows") as raw_rows,
+                                patch("crypto_grid_bot.backtest.audit_run.time.sleep") as sleep,
+                                self.assertRaises(DataError) as raised,
+                            ):
+                                runner(data, get)
+                            self.assertNotIsInstance(raised.exception, ArchiveParseError)
+                            raw_rows.assert_not_called()
+                            sleep.assert_not_called()
+                            self.assertEqual(
+                                1 if defect == "malformed_checksum" else 2, get.call_count
+                            )
+                            if not cached:
+                                self.assertFalse(
+                                    local_path(data, "BTCUSDT", "1m", "2024-01").exists()
+                                )
+
+    def test_verified_parse_failure_remains_repairable_for_fresh_and_cached_archives(self):
+        archive = self.archive()
+        text = minute_rows(JAN_2024, 60).splitlines()
+        last = text[-1].split(",")
+        last[6] = str(int(last[0]) + 30_000)
+        text[-1] = ",".join(last)
+        archive.add("BTCUSDT", "1m", "2024-01", "\n".join(text) + "\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            with self.assertRaises(ArchiveParseError) as raised:
+                fetch_file(data, "BTCUSDT", "1m", "2024-01", archive)
+            self.assertIsInstance(raised.exception, DataError)
+            self.assertIsInstance(raised.exception.__cause__, DataError)
+            for cached in (False, True):
+                if not cached:
+                    local_path(data, "BTCUSDT", "1m", "2024-01").unlink()
+                with self.subTest(cached=cached):
+                    self.assertEqual("unparsed", _fetch(data, "BTCUSDT", "1m", "2024-01", archive))
+                    with (
+                        patch("crypto_grid_bot.backtest.audit_run.BASKET", ["BTCUSDT"]),
+                        patch("crypto_grid_bot.backtest.audit_run.UNPARSED_MONTHS", ["2024-01"]),
+                    ):
+                        result = audit_rules(data, archive)
+                    self.assertEqual(
+                        {"pair_months": 1, "narrow": 1, "refined": 1}, result["summary"]
+                    )
+
+    def test_transport_failure_retries_are_bounded_and_can_recover(self):
+        archive = self.archive()
+        checksum = archive_path("BTCUSDT", "1m", "2024-01") + ".CHECKSUM"
+        for recover in (False, True):
+            replies = [FeedError("synthetic transport failure") for _ in range(3)]
+            replies += (
+                [archive(checksum), archive(checksum.removesuffix(".CHECKSUM"))]
+                if recover
+                else [FeedError("still unavailable")]
+            )
+            get = Mock(side_effect=replies)
+            with (
+                tempfile.TemporaryDirectory() as tmp,
+                patch("crypto_grid_bot.backtest.audit_run.time.sleep") as sleep,
+            ):
+                with self.subTest(recover=recover):
+                    if recover:
+                        self.assertEqual("ok", _fetch(Path(tmp), "BTCUSDT", "1m", "2024-01", get))
+                    else:
+                        with self.assertRaises(FeedError):
+                            _fetch(Path(tmp), "BTCUSDT", "1m", "2024-01", get)
+                    self.assertEqual([call(1), call(2), call(4)], sleep.call_args_list)
+                    self.assertEqual(5 if recover else 4, get.call_count)
+
+    def test_reserved_month_is_refused_before_fetch_or_cache_access(self):
+        get = Mock(side_effect=AssertionError("reserved network access"))
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("crypto_grid_bot.backtest.audit_run.fetch_file") as fetch:
+                with self.assertRaises(DataError):
+                    _fetch(Path(tmp), "BTCUSDT", "1m", "2025-01", get)
+                fetch.assert_not_called()
+                get.assert_not_called()
 
 
 class RunnerTests(unittest.TestCase):

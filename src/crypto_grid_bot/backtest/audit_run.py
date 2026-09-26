@@ -34,11 +34,10 @@ from crypto_grid_bot.backtest.audit import (
     outage_events,
     rule_outcome,
 )
-from crypto_grid_bot.backtest.dataset import archive_get, fetch_file, local_path
+from crypto_grid_bot.backtest.dataset import ArchiveParseError, archive_get, fetch_file, local_path
 from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive, read_member
 from crypto_grid_bot.backtest.replay import VOLUME_DRIFT_TOLERANCE
 from crypto_grid_bot.market_data.client import FeedError
-from crypto_grid_bot.market_data.parsing import DataError
 
 BASKET = [
     "BTCUSDT",
@@ -85,10 +84,11 @@ def months(first: str = FIRST_MONTH, last: str = DEVELOPMENT_END) -> list[str]:
 
 def _fetch(data: Path, symbol: str, interval: str, month: str, get: Fetcher) -> str:
     """'ok', 'missing' or 'unparsed'; retries transport failures, never hash failures."""
+    development_month(month)  # Refuse reserved data before any network or cache access.
     for attempt in range(4):
         try:
             entry = fetch_file(data, symbol, interval, month, get)
-        except DataError:
+        except ArchiveParseError:
             return "unparsed"
         except FeedError:
             if attempt == 3:
