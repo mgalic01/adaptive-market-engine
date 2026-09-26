@@ -10,6 +10,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 | Handoff | Status / purpose |
 | --- | --- |
 | [Bob: hour-level defect calendar](2026-09-26-bob-hourly-defect-calendar.md) | 2017-08 to 2024-12: 78 exchange-wide events (211 hours, 71 of them in 2017), 3,065 pair-specific events (5,891 hours), 14 unparsed months; Step 3 matches batch 1. Hours missing from both archives (the real outages) are not in the tables; marked at review. |
+| [Bob: parser anomaly classes](2026-09-26-bob-parser-anomaly-classes.md) | 14 unparsed months, rows classed as truncated, past-boundary or other. The narrow rule (accept a bad close only as the last bar before a gap) makes 82 pair-months usable (confirmed by Claude); 10 months fully, 2021-12 partly. Summary counts corrected at review. |
 | [Owner decision: hard stop 12%, C1 10%](2026-09-26-claude-owner-decision-drawdown.md) | 2026-09-26: the owner keeps the 12% emergency stop and the 10% C1 limit (option 1 of 3). Nothing changes; V0 keeps failing C1, and variants must drop less than V0. |
 | [Bob: test-suite audit](2026-09-25-bob-test-suite-audit.md) | 314 tests: no isolation, order, hash-seed, warning or flakiness failures. Seven public functions never called by any test (Claude confirmed by call counting) and six test proposals. |
 | [Bob: V0 development scorecard (C1–C6, R1)](2026-09-25-bob-v0-dev-scorecard.md) | Diagnostic, not a selection. V0 fails at primary fees on C1 (5 of 8 runs over 10%) and C2 (negative medians); passes C3–C6. Claude re-ran verify-2024h1: all 8 rows match. |
