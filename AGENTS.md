@@ -1,5 +1,7 @@
 # Repository collaboration instructions
 
+**First, every session start and check-in: follow [docs/START_HERE.md](docs/START_HERE.md) step by step** (owner request, 2026-09-26). The rest of this file is detail for Codex.
+
 **Codex, first action when you next start (owner request, 2026-09-25):** review
 everything merged while you were unavailable (PRs #20 onward; each is listed), using
 [the catch-up note](docs/reviews/2026-09-25-claude-handoff-to-codex.md), before any
