@@ -9,7 +9,7 @@
 - **End:** `Sat Sep 26 10:28:00 UTC 2026`
 - **Script:** `data/refined_rule.py`
   SHA-256: `084a2be0b884774aab6e68ed5e35a8f932ec3b8eefbbaafa37f59e302fca6c2e`
-  (source in [Appendix](#appendix-datarefined_rulepy-source); hash verified below)
+  (source in [Appendix](#appendix-datarefined_rulepy-source); hash verified below) *[Corrections at review (Claude, 2026-09-26): Claude's independent script reproduces narrow 82, refined 99 and the single DOGEUSDT failure; two statements are marked "Correction at review" in place; reasons in the feedback on PR #65.]*
 
 ---
 
@@ -316,7 +316,7 @@ For both rows the fixed 1m bar aggregated to the `2020-02-19 11:00 UTC` hour dis
 | close  | 0.00281300          | 0.00281300    | 0            |
 | volume | 3119255.00000000    | 3119255.00000000 | 0         |
 
-This is the same mismatch that PR #59 found. It is a 1-tick open discrepancy between the 1m and 1h Binance archives, not introduced by the rule fix. The 1h 1m row open at 11:35 is the anomalous row (truncated); the open of the 11:35 bar is 0.00281390 in the 1m archive and the official 1h bar open (which represents 11:00) is 0.00281380. The fixed 1m, aggregated over the hour, opens at 0.00281390 (the 11:00:00 1m bar), which differs from the 1h archive's 0.00281380 by one tick.
+This is the same mismatch that PR #59 found. It is a 1-tick open discrepancy between the 1m and 1h Binance archives, not introduced by the rule fix. ~~The 1h 1m row open at 11:35 is the anomalous row (truncated); the open of the 11:35 bar is 0.00281390 in the 1m archive and the official 1h bar open (which represents 11:00) is 0.00281380. The fixed 1m, aggregated over the hour, opens at 0.00281390 (the 11:00:00 1m bar), which differs from the 1h archive's 0.00281380 by one tick.~~ *[Correction at review (Claude): the fix rewrites only a close timestamp, which changes no price or volume, so it cannot cause a mismatch. The fixed 1h row at 11:00 opens at 0.00281380; the 1m archive's 11:00 minute opens at 0.00281390. The 11:35 1m row does not contribute to the hour's open. Condition (c) failed because the two archives disagree on the open by one tick.]*
 
 ---
 
@@ -397,7 +397,7 @@ These are checked against the tables above before being proposed.
 
 3. **The 2017-12 BTC/ETH/BNB and 2018-02 failure reason is the unaligned open, not the close.** The refined rule (like the narrow rule) fixes only the close timestamp. For these months to become usable, a separate rule would be needed to accept or reinterpret the rows with misaligned open timestamps. This is a different class of anomaly. There are 20,401 such rows per pair in 2017-12 1m and 1,201 per pair in 2018-02 1m. Any proposal for those months should be treated as a separate task and measured separately with its own integrity checks.
 
-4. **Condition (c) is an integrity gate that cost 1 pair-month and prevented no false acceptances.** In all other cases where (a+b) was met and the file parsed, condition (c) passed at strict zero tolerance. The only failure was the pre-existing Binance archive discrepancy in DOGEUSDT 2020-02. If this condition is adopted, the owner should document how the DOGEUSDT case is handled (either exclude it, or accept the 1-tick archive discrepancy policy-wide).
+4. **Condition (c) is an integrity gate that cost 1 pair-month and ~~prevented no false acceptances~~ failed no other fixed row.** *[Correction at review (Claude): whether it prevented a false acceptance cannot be known from these data; what was measured is that no other fixed row failed (c).]* In all other cases where (a+b) was met and the file parsed, condition (c) passed at strict zero tolerance. The only failure was the pre-existing Binance archive discrepancy in DOGEUSDT 2020-02. If this condition is adopted, the owner should document how the DOGEUSDT case is handled (either exclude it, or accept the 1-tick archive discrepancy policy-wide).
 
 ---
 
