@@ -189,7 +189,11 @@ class FetchTests(unittest.TestCase):
             spec,
             self.data,
             fetcher=self.archive,
-            instruments=lambda symbol: {"tick_size": "0.0001"},
+            instruments=lambda symbol: {
+                "tick_size": "0.0001",
+                "quantity_step": "0.1",
+                "min_notional": "5",
+            },
         )
         json.dumps(manifest)  # serialisable
         verify_dataset(spec, manifest, self.data)
@@ -256,6 +260,28 @@ class FetchTests(unittest.TestCase):
                 with self.assertRaises(DataError):
                     load_manifest(path)
                 with self.assertRaises(DataError):
+                    verify_dataset(spec, manifest, self.data)
+
+    def test_manifest_validation_rejects_bad_exchange_filters(self):
+        spec = load_spec(ROOT / "config/datasets/verify-2024h1.toml")
+        good = {"tick_size": "0.0001", "quantity_step": "0.1", "min_notional": "5"}
+        for instruments in (
+            {"ADAUSDT": []},
+            {"ADAUSDT": {k: v for k, v in good.items() if k != "tick_size"}},
+            {"ADAUSDT": good | {"min_notional": "five"}},
+            {"ADAUSDT": good | {"quantity_step": "0"}},
+            {"ADAUSDT": good | {"tick_size": "-0.0001"}},
+            {"ADAUSDT": good | {"tick_size": "1E-9999"}},
+            {"ADAUSDT": good | {"tick_size": 0.0001}},
+            {"../ADAUSDT": good},
+        ):
+            manifest = {"schema": 1, "dataset": spec.name, "instruments": instruments, "files": []}
+            path = self.data / "malformed.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.subTest(instruments=instruments):
+                with self.assertRaisesRegex(DataError, "exchange filters|instrument entry"):
+                    load_manifest(path)
+                with self.assertRaisesRegex(DataError, "exchange filters|instrument entry"):
                     verify_dataset(spec, manifest, self.data)
 
     def test_manifest_loading_rejects_invalid_utf8(self):

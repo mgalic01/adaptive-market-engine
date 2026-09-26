@@ -25,7 +25,7 @@ from typing import Any, cast
 
 from crypto_grid_bot.backtest.klines import INTERVAL_MS, month_bounds_ms, read_archive
 from crypto_grid_bot.market_data.client import FeedError, PublicClient, https_connection
-from crypto_grid_bot.market_data.parsing import DataError, parse_instrument, symbol_name
+from crypto_grid_bot.market_data.parsing import DataError, amount, parse_instrument, symbol_name
 
 ARCHIVE_HOST = "data.binance.vision"
 MAX_ZIP_BYTES = 64 * 1024 * 1024
@@ -373,6 +373,19 @@ def _validate_manifest(manifest: Any) -> None:
     files = manifest.get("files")
     if not isinstance(instruments, dict) or not isinstance(files, list):
         raise DataError("dataset manifest has an invalid layout")
+    # The replay reads these filters as Decimals (replay.rules_for), so a missing or
+    # malformed one must fail here as DataError, not later as KeyError/InvalidOperation.
+    for symbol, filters in instruments.items():
+        if not isinstance(filters, dict):
+            raise DataError("dataset manifest has an invalid instrument entry")
+        try:
+            symbol_name(symbol)
+            for field in ("tick_size", "quantity_step", "min_notional"):
+                amount(filters.get(field))
+        except DataError as exc:
+            raise DataError(
+                f"dataset manifest has invalid exchange filters for {symbol!r}"
+            ) from exc
     for entry in files:
         if not isinstance(entry, dict):
             raise DataError("dataset manifest has an invalid file entry")

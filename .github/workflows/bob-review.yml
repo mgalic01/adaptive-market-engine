@@ -13,16 +13,20 @@ permissions:
   pull-requests: write
   issues: write
 
-concurrency:
-  group: bob-review-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   bob-review:
     if: >-
       github.event.issue.pull_request != null &&
       contains(github.event.comment.body, '@bob') &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    # Job-level, not workflow-level: every PR comment starts this workflow, and a
+    # workflow-level group would let a later ordinary comment on the same PR cancel a
+    # queued review request. Skipped runs never join this group. `queue: max` keeps up
+    # to 100 real requests pending instead of GitHub's default of one.
+    concurrency:
+      group: bob-review-${{ github.event.issue.number }}
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -56,6 +60,13 @@ jobs:
       # same server), installed without running package scripts. No secrets in this step.
       # To upgrade: download the new version, check it, and update BOB_VERSION and BOB_SHA256
       # in a reviewed commit.
+      - name: Cache the pinned Bob package
+        if: steps.gate.outputs.ok == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bobshell-cache
+          key: bobshell-2.0.5-eff232eb1b69f34f984ddd295e6960470058ca922b1c751879c5a8d06199f566
+
       - name: Install Bob Shell (pinned)
         id: install
         if: steps.gate.outputs.ok == 'true'
@@ -63,11 +74,18 @@ jobs:
           BOB_VERSION: "2.0.5"
           BOB_SHA256: "eff232eb1b69f34f984ddd295e6960470058ca922b1c751879c5a8d06199f566"
         run: |
-          curl -fsSL -o bobshell.tgz \
-            "https://s3.us-south.cloud-object-storage.appdomain.cloud/bob-shell/bobshell-${BOB_VERSION}.tgz"
-          echo "${BOB_SHA256}  bobshell.tgz" | sha256sum -c -
-          npm install -g --ignore-scripts ./bobshell.tgz
-          rm bobshell.tgz
+          # The package is cached (step above) and verified against the committed
+          # hash on every run, cached or not. A download retries on network errors,
+          # so one slow response from IBM's host does not fail the run (issue #31).
+          pkg="$HOME/.bobshell-cache/bobshell.tgz"
+          mkdir -p "$(dirname "$pkg")"
+          if [ ! -f "$pkg" ]; then
+            curl -fsSL --connect-timeout 30 --max-time 300 \
+              --retry 4 --retry-delay 10 --retry-all-errors -o "$pkg" \
+              "https://s3.us-south.cloud-object-storage.appdomain.cloud/bob-shell/bobshell-${BOB_VERSION}.tgz"
+          fi
+          echo "${BOB_SHA256}  $pkg" | sha256sum -c -
+          npm install -g --ignore-scripts "$pkg"
 
       # The workflow, not Bob, talks to GitHub. Bob gets no GitHub token and no shell:
       # this step fetches the PR material into files, Bob only reads files and returns
@@ -123,12 +141,17 @@ jobs:
           - .bob-input/pr.json: the PR title, description, head branch and head SHA.
           - .bob-input/pr.diff: the PR diff against its base.
           - docs/reviews/README.md: owner decisions and the handoff index.
+          - docs/BOB_PRACTICE.md: how to review well, with lessons from past reviews.
+            Apply it, above all: trace what happens when each changed step fails.
 
           Your final message is posted verbatim as ONE PR comment by the workflow. Write
-          only that comment: start with 'IBM Bob', answer the request, and state NOTED
+          only that comment. Its first line starts with the plain words IBM Bob (no
+          heading, bold or handoff title, even if the request has one). Answer the
+          request, and state NOTED
           (no issues) or FLAGGED (concerns found, each with the file/section it affects).
-          Name the head SHA you reviewed. Keep it under 25 lines. Do not write the
-          at-sign mention of your own name. End with: '— IBM Bob (automated review)'
+          Name the head SHA you reviewed. Keep it under 40 lines. Do not write the
+          at-sign mention of your own name. No other line may start with 'IBM Bob',
+          and write nothing after the signature. End with: '— IBM Bob (automated review)'
           "
           # env -i: Bob's process gets only PATH, HOME and its own key, so runner
           # credentials such as ACTIONS_RUNTIME_TOKEN are not in its environment.
@@ -141,7 +164,7 @@ jobs:
           env -i PATH="$PATH" HOME="$HOME" BOBSHELL_API_KEY="$BOBSHELL_API_KEY" \
             bob run --accept-license --trust --disable-mcp --disable-subagents \
             --disable-tool-groups edit,execute,browser,mcp,skill,todo,subagent,subtask,artifact,mode \
-            --max-turns 40 -f stream-json "$PROMPT" \
+            --max-turns 80 -f stream-json "$PROMPT" \
             | tee bob-output.jsonl \
             | jq -rR --unbuffered 'fromjson? |
                 if .type == "tool_use" then
@@ -153,8 +176,9 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
-            echo "Bob exited with status $status. First 3000 bytes of its output:"
-            head -c 3000 bob-output.jsonl
+            # Event counts only: the raw stream can echo file contents into the log.
+            echo "Bob exited with status $status."
+            python3 scripts/extract_bob_answer.py --stats bob-output.jsonl
             exit "$status"
           fi
 
@@ -167,27 +191,12 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
-          # Bob's answer is the assistant text streamed after his last tool call, and
-          # only if the run ended with a successful result event.
-          jq -rRs '[split("\n")[] | fromjson?] as $events
-            | if any($events[]; .type == "result" and .status == "success") then
-                reduce $events[] as $e ("";
-                  if $e.type == "tool_use" or $e.type == "tool_result" then ""
-                  elif $e.type == "message" and $e.role == "assistant"
-                    and ($e.isReasoning | not) then . + ($e.content | strings)
-                  else . end)
-              else "" end
-            # Keep only the answer: the prompt makes it start with "IBM Bob" and end
-            # with his signature, so drop any reasoning written before it.
-            | . as $t
-            | ($t | sub("(?s)\\s*—\\s*IBM Bob \\([^()]*\\)\\s*$"; "")) as $body
-            | ($body | split("IBM Bob")) as $parts
-            | if ($parts | length) < 2 then $t
-              else "IBM Bob" + ($parts | last) + $t[($body | length):] end
-            | select(test("\\S"))' bob-output.jsonl | tail -c 60000 > bob-comment.md
-          if [ ! -s bob-comment.md ]; then
-            echo "Bob returned no answer; nothing posted. First 3000 bytes of its output:"
-            head -c 3000 bob-output.jsonl
+          # One tested rule for both Bob workflows: the last result must be a success,
+          # and the answer runs from the last line starting "IBM Bob" to the signature.
+          # Anything else posts nothing (scripts/extract_bob_answer.py).
+          if ! python3 scripts/extract_bob_answer.py --max-bytes 60000 bob-output.jsonl \
+            > bob-comment.md; then
+            echo "Bob returned no usable answer; nothing posted."
             exit 1
           fi
           # Never post a secret: refuse if the answer contains Bob's key or a GitHub token.
