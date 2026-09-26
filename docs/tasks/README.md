@@ -13,6 +13,8 @@ arrives as a PR ([rules](../AGENT_HANDOFF.md)).
 
 | Task | Status |
 | --- | --- |
+| [Hour-level defect calendar, 2017-08 to 2024-12](2026-09-26-bob-hourly-defect-calendar.md) | **Owner's go; runs when merged.** Every defect hour for the ten pairs, grouped into exchange-wide and pair-specific events; checked against the batch-1 inventory. |
+| [Parser anomaly classes](2026-09-26-bob-parser-anomaly-classes.md) | **Owner's go; runs when merged.** Every row the strict parser rejects in the 14 months, classified, and what a narrow "last bar before a gap" rule would give. |
 | [Development data inventory, 2017-08 to 2024-12](2026-09-25-bob-dev-data-inventory.md) | **Done:** run 36203721612; report PR #49, rechecked by Claude. |
 | [V0 development scorecard (C1–C6, R1)](2026-09-25-bob-v0-dev-scorecard.md) | **Done:** run 36203721612; report PR #52, rechecked by Claude. |
 | [Test-suite audit](2026-09-25-bob-test-suite-audit.md) | **Done:** run 36203721612; report PR #51, rechecked by Claude. |
