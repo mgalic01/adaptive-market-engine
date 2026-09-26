@@ -112,6 +112,16 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(load_hourly(self.data, self.manifest, "XRPUSDT"), [])
         self.assertEqual(load_daily(self.data, self.manifest, "XRPUSDT"), [])
 
+    def test_a_damaged_later_month_fails_after_earlier_rows_were_yielded(self):
+        # Bob's review of #54: load_minutes is a generator, so a bad second month is only
+        # read after the first month's rows are out. It must still raise, not stop early.
+        local_path(self.data, "BTCUSDT", "1m", "2024-02").write_bytes(b"not a zip")
+        minutes = load_minutes(self.data, self.manifest, "BTCUSDT")
+        first = [next(minutes) for _ in range(3)]
+        self.assertEqual([JAN_2024_MS + i * 60_000 for i in range(3)], [k.open_ms for k in first])
+        with self.assertRaises(DataError):
+            next(minutes)
+
     def test_a_damaged_archive_fails_closed(self):
         local_path(self.data, "BTCUSDT", "1h", "2024-02").write_bytes(b"not a zip")
         with self.assertRaises(DataError):
@@ -141,9 +151,10 @@ class RulesForTests(unittest.TestCase):
 
     def test_non_positive_filters_are_rejected(self):
         for field in self.FILTERS:
-            bad = {**self.FILTERS, field: "0"}
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                rules_for("BTCUSDT", bad, D("0.001"), D("0.0005"), D("0.10"))
+            for value in ("0", "-1"):
+                bad = {**self.FILTERS, field: value}
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    rules_for("BTCUSDT", bad, D("0.001"), D("0.0005"), D("0.10"))
 
 
 if __name__ == "__main__":

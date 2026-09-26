@@ -33,6 +33,58 @@ from crypto_grid_bot.simulation.runner import Frame, PaperSimulator
 ROOT = Path(__file__).resolve().parents[1]
 START_MS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
 WARMUP = 800  # hours; the feature engine needs 742
+# Every field of a replay summary (results.json rows); a change must be deliberate.
+SUMMARY_FIELDS = {
+    "symbol",
+    "path_mode",
+    "strategy",
+    "feature_version",
+    "news_component",
+    "window",
+    "initial_quote",
+    "final_total_equity",
+    "return_pct",
+    "max_drawdown_pct",
+    "buy_and_hold_return_pct",
+    "buy_and_hold_max_drawdown_pct",
+    "fees",
+    "turnover",
+    "realised_grid_sell_pnl",
+    "realised_exit_pnl",
+    "exit_sells",
+    "realised_exit_pnl_by_reason",
+    "completed_cycles",
+    "completed_cycles_by_week",
+    "active_max_drawdown_pct",
+    "risk_evaluations",
+    "hard_drawdown_halts",
+    "order_requests",
+    "max_order_requests_per_day",
+    "days_over_request_budget",
+    "buys",
+    "sells",
+    "grids_opened",
+    "range_exits",
+    "reserve_pending",
+    "reserve_secured",
+    "final_inventory",
+    "bars",
+    "warmup_bars_skipped",
+    "frames",
+    "time_with_inventory_pct",
+    "time_with_orders_pct",
+    "mean_exposure_when_invested_pct",
+    "halted_at",
+    "halt_reason",
+    "transient_pauses",
+    "regimes_by_bar",
+    "decisions_by_bar",
+    "top_reasons_by_bar",
+    "accounting_problems",
+    "rules",
+    "assumed_spread_pct",
+    "hourly_equity",
+}
 
 
 def candle(open_ms, o, h, low, c, volume="1000000", taker="500000"):
@@ -251,6 +303,10 @@ class ReplayTests(unittest.TestCase):
         self.assertNotIn("orders_authorized", summary)
         window = summary["window"]
         self.assertEqual(datetime.fromtimestamp(t / 1000, UTC).isoformat(), window[0])
+        last = t + 29 * 60_000
+        self.assertEqual(datetime.fromtimestamp(last / 1000, UTC).isoformat(), window[1])
+        # Bob's review of #54: pin the whole schema, so a dropped or renamed field fails.
+        self.assertEqual(SUMMARY_FIELDS, set(summary))
 
 
 class CompatibilityTests(unittest.TestCase):

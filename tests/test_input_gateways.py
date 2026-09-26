@@ -48,7 +48,9 @@ class ServerTimeTests(unittest.TestCase):
         self.assertEqual(1704067200000, server_time({"serverTime": 1704067200000}))
 
     def test_a_missing_or_malformed_clock_fails_closed(self):
-        for payload in ({}, None, [], "1704067200000", {"serverTime": "1704067200000"}):
+        # {"serverTime": True}: Bob's review of #54, the exact-type check at the gateway.
+        payloads = ({}, None, [], "1704067200000", {"serverTime": "1704067200000"})
+        for payload in (*payloads, {"serverTime": True}, {"serverTime": -1}):
             with self.subTest(payload=payload), self.assertRaises(DataError):
                 server_time(payload)
 
