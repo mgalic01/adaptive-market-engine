@@ -296,24 +296,26 @@ class FetchBoundaryTests(unittest.TestCase):
             with (
                 tempfile.TemporaryDirectory() as tmp,
                 patch("crypto_grid_bot.backtest.audit_run.time.sleep") as sleep,
+                self.subTest(recover=recover),
             ):
-                with self.subTest(recover=recover):
-                    if recover:
-                        self.assertEqual("ok", _fetch(Path(tmp), "BTCUSDT", "1m", "2024-01", get))
-                    else:
-                        with self.assertRaises(FeedError):
-                            _fetch(Path(tmp), "BTCUSDT", "1m", "2024-01", get)
-                    self.assertEqual([call(1), call(2), call(4)], sleep.call_args_list)
-                    self.assertEqual(5 if recover else 4, get.call_count)
+                if recover:
+                    self.assertEqual("ok", _fetch(Path(tmp), "BTCUSDT", "1m", "2024-01", get))
+                else:
+                    with self.assertRaises(FeedError):
+                        _fetch(Path(tmp), "BTCUSDT", "1m", "2024-01", get)
+                self.assertEqual([call(1), call(2), call(4)], sleep.call_args_list)
+                self.assertEqual(5 if recover else 4, get.call_count)
 
     def test_reserved_month_is_refused_before_fetch_or_cache_access(self):
         get = Mock(side_effect=AssertionError("reserved network access"))
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch("crypto_grid_bot.backtest.audit_run.fetch_file") as fetch:
-                with self.assertRaises(DataError):
-                    _fetch(Path(tmp), "BTCUSDT", "1m", "2025-01", get)
-                fetch.assert_not_called()
-                get.assert_not_called()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("crypto_grid_bot.backtest.audit_run.fetch_file") as fetch,
+        ):
+            with self.assertRaises(DataError):
+                _fetch(Path(tmp), "BTCUSDT", "1m", "2025-01", get)
+            fetch.assert_not_called()
+            get.assert_not_called()
 
 
 class RunnerTests(unittest.TestCase):
