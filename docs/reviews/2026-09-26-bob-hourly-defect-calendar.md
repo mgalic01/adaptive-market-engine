@@ -244,7 +244,7 @@ When official 1h bars are aggregated to 1d (`step_ms = 86_400_000`) and compared
 ## Appendix: Source Code of Scripts
 
 ### 1. `data/calendar.py`
-```python
+```text
 """Calendar data collector for 10 pairs from 2017-08 to 2024-12.
 
 Outputs data/calendar.jsonl
@@ -518,7 +518,7 @@ if __name__ == "__main__":
 ```
 
 ### 2. `data/events.py`
-```python
+```text
 """Events processor for calendar.jsonl
 
 Groups defect hours across pairs by identical UTC hour, merges consecutive hours into events.
