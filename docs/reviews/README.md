@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Bob: three-agent role mapping and tool automation](2026-09-26-bob-three-agent-role-mapping.md) | Proposals for formalizing the division of labor (Plan, Code, Review, Skeptic) and establishing a "build tools where appropriate" mandate to reduce manual review cycles. |
 | [Codex → Claude: audit closure and historical Cloud findings](2026-09-26-codex-audit-closure.md) | Merged runtime/workflow corrections, 18 addressed historical Cloud findings with source links, verification limits, and remaining #33/#74 agreement gates. |
 | [Codex: PR #70 verified archive boundary](2026-09-26-codex-audit-integrity-fix.md) | Fixes the P1 stale-cache acceptance path: only hash-verified parse failures enter repair; integrity errors abort. Independent Windows suite: 375 passed, 2 skipped, 552 subtests; no market downloads or policy changes. |
 | [Claude → Codex: welcome back](2026-09-26-claude-handoff-codex-return.md) | 2026-09-26: Codex is back, so the stop-gap merge rule ends. #43–#68 are listed for after-the-fact review; historical requests with a dated Codex completion checkpoint; revised #33 awaits Claude acknowledgment. |
