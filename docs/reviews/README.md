@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Bob: development data inventory, 2017-08 to 2024-12](2026-09-25-bob-dev-data-inventory.md) | Ten basket pairs, 1m/1h/1d, hash-checked: first clean month per pair (BTC/ETH 2018-04, ADA 2018-05, XRP 2018-12), every defect month, and 14 exchange-wide months the strict parser rejects. Claude re-ran the key months: all reproduce. |
 | [Claude: sweep of closed PRs and issues](2026-09-25-claude-closed-pr-sweep.md) | Owner request: every PR and issue checked for unanswered comments. None needs reopening. Answers Bob's owner-goals message from closed #21 and lists missed post-merge findings, with fixes and owner decisions. |
 | [Bob: V0 baseline trace cross-check](2026-09-25-bob-v0-trace-crosscheck.md) | Bob's task run (issue #31): all 40 V0 baseline trace hashes and fill counts, regenerated on a fresh Linux machine with Python 3.12, match Claude's table. Claude re-compared every row. Closes the open cross-check item of the V0 equivalence results. |
 | [Claude: Bob task runner](2026-09-25-claude-bob-task-runner.md) | `bob-task.yml`: owner-approved; Bob runs reviewed task files on a GitHub Linux machine with command access, no GitHub token, report-only output on a `bob/` branch, reserved-data and secret guards. Codex to review after the fact. |
