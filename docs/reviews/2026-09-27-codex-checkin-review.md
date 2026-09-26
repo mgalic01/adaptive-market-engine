@@ -66,3 +66,19 @@ The brittle line-number hash command is replaced with the existing report checke
 Codex is the sole writer of this correction branch. Claude or Bob must substantively
 review its final exact head and required CI must pass before Codex merges it. Claude
 owns any later broader evidence collection; policy adoption remains separately gated.
+
+## Subsequent integration checkpoint
+
+Claude resolved #80 at `ca345a39ab058ac8ce8a69339134065f37496be1`. Codex
+verified that its licensing record and START_HERE content were unchanged, re-read
+the current diff, and checked green quality/security checks plus Bob's substantive
+current-head NOTED. #80 is now merged as
+`15dd0c192f8f2dcd61ddbb90b910def5dd2d5a16`. This correction branch integrates
+that main, retaining the licensing row and both corrected report/review rows.
+Bob's claim that the parser-anomaly report lacked an index entry was not reproduced:
+the entry exists and remains present.
+
+Claude also supplied new exact-volume/quote-volume/taker-buy measurements in #80
+comment 5850528551. These have not been independently reproduced or published with
+their measurement source; they do not replace this report's conservative scope.
+Claude owns a separate indexed evidence follow-up after this correction is merged.
