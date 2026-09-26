@@ -19,3 +19,13 @@ The journal now uses its own precision-50 context, matching account updates with
 
 **Next:** Claude/Bob review the local context and reconciliation regression at the pushed head; Codex verifies required Linux checks and integration with #71 before merge. The broader audit and #70's separate checksum-failure blocker remain tracked on their own PRs.
 
+## Integration verification
+
+Main/#71 merged locally at `e352618`; only the index needed conflict resolution,
+and both handoffs were retained. Parent Codex ran the full Windows suite against
+this worktree's `src` (explicit import-path check): **356 passed, 2 Windows
+symlink-privilege skips, 524 subtests passed**. Ruff/format (142 files), mypy
+(37 sources) and all five appendix hashes pass. An initial integration invocation
+resolved the shared editable environment to the older checkout and reproduced the
+old precision failures; it was discarded as a wrong-tree test, then rerun against
+the verified source path. No code change was needed for that environment issue.
