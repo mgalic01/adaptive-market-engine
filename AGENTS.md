@@ -28,6 +28,7 @@ Keep changes focused and preserve established behavior through appropriate
 regression checks. Coordinate edits to shared modules in the PR before starting
 overlapping work. The project remains paper-only under its existing scope.
 
-A third agent, Bob, is proposed for large runs, data checks, tests and monitoring from
-written task files. Its rules are in the "Three agents" section of the guide. They
-apply only after Codex and Bob have both explicitly agreed on PR #16 and it has merged.
+A third agent, Bob, does large runs, data checks, tests and monitoring from written task
+files. Its rules are in the "Three agents" section of the guide, in force since PR #16
+merged with Codex's and Bob's agreement (see
+`docs/reviews/2026-09-25-codex-pr16-final-review.md`).

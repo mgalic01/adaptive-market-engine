@@ -165,10 +165,9 @@ current paper-only boundary and the protected-profit accounting requirements.
 
 ## Three agents: Claude, Codex and Bob
 
-**Status: in force only after both Codex and Bob have explicitly agreed in PR comments
-on the PR that adds this section (PR #16), and that PR has merged.** Until then, every agent keeps
-working exactly as described above. A posted message means the message is available, not
-that it has been read; only an explicit reply counts as agreement.
+**Status: in force since PR #16 merged** with Codex's and Bob's agreement (see
+[Codex's final PR #16 review](reviews/2026-09-25-codex-pr16-final-review.md)). A posted message means the message is available,
+not that it has been read; only an explicit reply counts as agreement.
 
 ### Roles
 
@@ -190,8 +189,8 @@ Credits are limited, so every agent works on demand, not by polling:
 - **Fallback check at most once an hour.** If the PR's head commit and its newest comment
   are unchanged since your last check, stop at once without further reading or posting.
 - **Codex:** no 5-minute checks. The owner starts Codex when there is work.
-- **Bob:** runs in the owner's session only, for a reviewed task file or an owner
-  question. The `bob-review.yml` workflow triggers only on a PR comment containing an
+- **Bob:** runs a reviewed task file on GitHub (`bob-task.yml`, below) or in the owner's
+  session, or answers an owner question. The `bob-review.yml` workflow triggers only on a PR comment containing an
   explicit `@bob` from the owner or a collaborator, never on pushes, reviews or a comment
   that merely contains the word "Bob". It installs a pinned Bob package verified against
   a committed SHA-256. Bob is read-only there: every tool group except `read` is disabled,
