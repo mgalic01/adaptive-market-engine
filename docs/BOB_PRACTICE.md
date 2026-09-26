@@ -87,6 +87,11 @@ Run through this list and fix anything it finds before your final message.
   and lets a reviewer rerun exactly what you ran. Put each script's SHA-256 in the
   report, and the source of every script under about 80 lines in an appendix: `data/`
   is git-ignored and disappears with the machine, so a hash alone cannot be rerun.
+  Fence the appendix as `text`, not `python`: CI's `ruff format --check` reformats
+  Python blocks in Markdown, which would change the source. Hash the file after its
+  last edit, and check that the appendix copy gives the same hash:
+  `sed -n '<first>,<last>p' <report> | sha256sum`. *Example (PR #60):* the
+  `events.py` in the appendix did not match its stated hash.
 - **Test an idea against your own evidence before proposing it.** *Example (PR #49):*
   the proposed parser rule `close_ms <= open_ms + step - 1` would still reject the
   2017-09 row the same report quoted (close one millisecond past the boundary).
@@ -96,6 +101,19 @@ Run through this list and fix anything it finds before your final message.
 - **Settle "likely" with data.** When you write "likely" or "appears", look for the
   field that confirms or refutes it (for example `decisions_by_bar` and
   `top_reasons_by_bar` in `results.json`) and report what it shows.
+- **Implement every definition in the task.** Before running, list each class, status
+  or rule the task defines and note the line of your script that implements it. A class
+  with zero or very few rows is a reason to check the test, not a finding.
+  *Example (PR #59):* the task counted an unaligned open as `other`; the script never
+  tested the open, and 66,199 rows were reported as 20.
+- **Enumerate what should exist, not what you found.** Build expected hours, days or
+  files from the listed span, then compare the data against it. Check one known event
+  end to end. *Example (PR #60):* hours missing from both the 1m and 1h archives were
+  in neither key set, so the real outages (2018-06-26, 2019-05-15) never reached the
+  event tables.
+- **Say which fields differ.** When a comparison reports a mismatch, print the fields
+  and the size of the difference. *Example (PR #60):* "price/volume mismatch" on
+  2021-01-21 was a volume-only difference of 2.4%.
 - **Proposed paths must survive the machine.** Nothing under `data/` can be used by
   CI or another agent (`git check-ignore -v <path>`).
 
@@ -132,3 +150,5 @@ Run through this list and fix anything it finds before your final message.
 | 2026-09-26 | PR #51 | A correction was appended below a table that still showed the old claim; lower-risk functions were ranked above untested data loaders. | Self-check 10. |
 | 2026-09-26 | PR #52 | Working ("Wait — …") left in the report; a reference-fee verdict without its table; a "likely" cause not checked against the recorded reasons. | Self-checks 10, 11; "Settle 'likely' with data". |
 | 2026-09-26 | PR #54 | A review said `SUMMARY_FIELDS` has 46 keys; it has 49. The claim was stated as verified ("I verified … exactly those 46 keys"). | Self-check 7: count with code (`len(...)`) before stating a number, in reviews too. |
+| 2026-09-26 | PR #59 | The summary gave 9 usable months, 280 files and 98 pair-months; the report's own sections give 10, 214 and 107. The task's unaligned-open class was not implemented. A rule was called safe without the test that was possible in the same run. | Self-checks 7, 9; "Implement every definition in the task"; "Test an idea against your own evidence". |
+| 2026-09-26 | PR #60 | Hours missing from both archives got no status, so the outages named in the ideas were in no table; an idea's "7 hours" was 14 by the year table; a volume-only mismatch was called price/volume; the appendix `events.py` did not match its stated hash; `python` fences failed CI's format check on both reports. | "Enumerate what should exist"; self-checks 9, 11; "Say which fields differ"; "Write scripts to files under `data/`". |
