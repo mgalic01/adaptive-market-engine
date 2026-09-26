@@ -36,6 +36,10 @@ Fetcher = Callable[[str], bytes | None]
 InstrumentSource = Callable[[str], dict[str, str]]
 
 
+class ArchiveParseError(DataError):
+    """A hash-verified archive failed parsing; download/integrity failures are distinct."""
+
+
 @dataclass(frozen=True)
 class BasketExclusion:
     """A documented absence of a breadth-basket symbol's hourly data (for example before
@@ -313,7 +317,12 @@ def fetch_file(
         if hashlib.sha256(body).hexdigest() != expected:
             raise DataError(f"{path} does not match Binance's published SHA-256")
         _write_atomic(target, body)
-    _, stats = read_archive(target, symbol, interval, month)
+    try:
+        _, stats = read_archive(target, symbol, interval, month)
+    except DataError as exc:
+        # Only this boundary is safe for an audit to inspect as unparsed content.
+        # Checksum, missing-body and hash failures above must never reach that path.
+        raise ArchiveParseError(str(exc)) from exc
     return {
         **entry,
         "status": "ok",

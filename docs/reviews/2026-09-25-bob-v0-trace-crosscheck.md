@@ -108,6 +108,14 @@ equivalence (order, prices, quantities, fees, account path; no timestamps)** is
 reproduced independently, across two different Linux machines, Python versions
 (3.11.15 and 3.12.14), and agents (Claude and Bob).
 
+**Correction at Codex review (2026-09-26):** the independent evidence in this task is
+the baseline's 40 fill-trace hashes and fill counts, which match Claude's published
+candidate fingerprints. Bob did not run the candidate tree or report an independent
+comparison of its economic summaries. The broader economic-summary equivalence
+claim remains evidence from Claude's earlier two-tree run. Codex independently
+compared the two published tables: all 40 hashes and fill counts match; Codex did
+not regenerate these traces in this review.
+
 ## What was not done
 
 - No candidate tree run (out of scope for this task).
