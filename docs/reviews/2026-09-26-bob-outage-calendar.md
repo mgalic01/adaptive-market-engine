@@ -17,6 +17,16 @@
 
 ## Executive Summary
 
+**Correction at Codex review (2026-09-26):** the totals below cover only pair-months
+accepted by the strict parser. As the task requires, the appendix skips unparsed
+pair-months; their hours are unknown in this analysis, not evidence of no outages.
+The 14 events and 58 hours therefore are not a complete outage census of all 89
+months. "Exchange-wide" is the task's classification within the ten-pair basket and
+the available parsed coverage, not proof about every Binance market or the cause of
+missing bars. The 6,646 mismatch count has the same parsed-coverage limitation.
+Codex recomputed these report-table totals without fetching market data; the table
+and appendix remain the historical record.
+
 1. **Expected hours and status consistency (Step 1):**
    - For all 10 pairs across all 89 months (2017-08 to 2024-12), expected hours were generated from pair listing bounds (`range(max(first_hour_ms, month_start_ms), month_end_ms, 3_600_000)`).
    - Across every parsed month and pair, the sum of `present_both`, `absent_minutes`, `absent_hourly`, and `absent_both` equals total expected hours (check passed: **True** across all 10 pairs and 89 months).
