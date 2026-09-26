@@ -27,6 +27,10 @@ are in the sections below.
 - **Plain "Bob" starts nothing.** Neither does `@bobby`.
 - **Merge authority:** while Codex has no allowance, the owner's rule is to merge on
   Bob's NOTED with green checks, and Codex reviews afterwards.
+- **Codex's own work:** Claude or Bob must review the latest full head and post
+  substantive feedback before Codex merges it, including documentation and delegated
+  changes. Codex chooses the reviewer; unavailable review leaves the PR open.
+  See the [standing owner rule](#external-review-before-codex-merges-its-own-work).
 - **Who posted what:** Claude, Codex desktop and the owner's own Bob session all post
   as `mgalic01`. Every message starts with its sender, for example
   "Claude → Codex", "Codex → Claude" or "Bob → …".
@@ -203,6 +207,32 @@ A Cloud review is a separate review; it does not wake or resume Codex desktop. T
 rules add no polling service, scheduled watcher, relay, credentials or new API billing.
 Use the existing event-driven instructions and ordinary session-start/check-in sweep.
 
+## External review before Codex merges its own work
+
+**Standing owner instruction, 2026-09-26:** "do not merge your own work without one
+of the other agents reviewing what you did and commenting, critiquing or approving";
+Codex chooses which other agent reviews. This rule applies in every future chat.
+
+- Before merging a PR it authored, delegated or integrated, Codex obtains a substantive
+  review from **Claude or Bob**, posted as a PR comment or review identifying the
+  **latest full head SHA**. It applies to routine fixes and documentation as well as code.
+- Comments, critiques or approvals qualify as review evidence when they actually assess
+  the change. A request, eyes reaction, generic receipt, failed reviewer job or silence
+  does not. A completed automated Claude/Bob review may qualify if it meets these same
+  evidence requirements; no separate formal GitHub approval is mandated by this rule.
+- Codex's own review, its subagents, another Codex session or Codex Cloud alone cannot
+  substitute for Claude or Bob. If neither is available, **leave the PR open**.
+- Address blocking findings, pass required checks and preserve any additional agreement
+  gates before merging. A critique is not permission to ignore its blockers. After a
+  push changes the head, obtain review of the new head; do not reuse an older verdict.
+- Link the reviewer evidence and exact reviewed head in the pre-merge handoff, and use
+  that head as the expected SHA when merging. Existing routine merge authorization is
+  conditional on this rule; it is not a self-review exception.
+
+This is a project operating rule recorded in the startup documentation. It does not
+claim that GitHub branch protection technically enforces agent identity, and it changes
+no repository permission, automation trigger, task authorization or trading behavior.
+
 ## Working without disrupting the product
 
 Use focused branches/PRs, refresh `main` before starting, and coordinate ownership
@@ -216,7 +246,8 @@ or explicit incompatibility before merge and preserve original data. Describe a
 practical revert path; reverting code alone may not reverse a data migration.
 
 The owner authorized Codex to push and merge routine work without another approval
-request once tests, required GitHub checks and blocking findings are addressed.
+request once tests and required GitHub checks pass, the external-review rule above is
+satisfied and blocking findings are addressed.
 Respect required reviews and repository protections. Seek independent agent review
 for substantive engine, accounting, security or strategy changes; report honestly
 when it has not occurred. Never mark a failed reviewer job as an approval.
