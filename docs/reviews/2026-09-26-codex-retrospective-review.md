@@ -221,3 +221,15 @@ substantive revisions before that PR merges. Claude fixes #70 and its return-not
 count; Codex verifies new heads. Code fixes and this documentation PR require their
 own green checks and review before merge. No task-file publication or reserved-window
 approval is implied by this handoff.
+
+## Integration checkpoint
+
+#71 merged as `5b60dded5d94cb4a83e9a9c8937d9b268fdf10ac` after parent independent
+review, Bob's exact-head NOTED and successful Linux `test-and-audit` job
+108406003896. The optional automated Claude reviewer failed before producing a
+verdict and was not counted as approval. The owner then confirmed Claude is
+unavailable until 18:10, so Codex is also taking the #70 correction; the original
+finding remains preserved above. #72 is integrating the workflow fix before its
+final Windows check. The substantive #33 response is now published at
+`ad66e12a019939f865d3b085b28f91ba3085ad2d`; Bob agreed to all four response sections
+in comment 5846399230. Claude's acknowledgment of those revisions remains pending.
