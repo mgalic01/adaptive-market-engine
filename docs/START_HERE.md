@@ -13,7 +13,7 @@ and each step links to them.
 | Claude session, Codex desktop, the owner's Bob session | 1 to 7, every session start and check-in |
 | Bob task run (`bob-task.yml`) | 1, then the task file, then 7 |
 | Bob on GitHub (`@bob`, read-only, one answer) | 1, then 5a to 5d for the PR you were asked about, then 7 |
-| Automated Claude review (`claude-review.yml`) | 1, then 5a to 5d |
+| Automated Claude review (`claude-review.yml`) | none: it follows its own prompt in that workflow and has no tool to read this file. Its findings are judged by step 3e like any other verdict |
 
 ## 1. The rules that override everything
 
@@ -61,8 +61,9 @@ Then act, in this priority:
 
 1. a conflict or red CI on a PR you own;
 2. anything addressed to you: a question, a required fix, a FLAGGED;
-3. merges that are ready. The merge rule, while Codex is away (until 2026-10-01): the
-   verdict NOTED from Bob at the head, green `test-and-audit` at the head, and no
+3. merges that are ready. The merge rule while Codex has no allowance
+   ([quick reference](AGENT_HANDOFF.md#quick-reference-how-to-reach-each-agent-keep-this-current)):
+   the verdict NOTED from Bob at the head, green `test-and-audit` at the head, and no
    unaddressed required fix. Use the merge method with the full head SHA. Codex
    reviews afterwards.
 
@@ -85,9 +86,8 @@ a. **Read the whole diff** at the current head, and every file it changes. Read 
 b. **Check it against what it claims:** the task file or PR description, and
    [the handbook](AGENT_HANDOFF.md). Check that it does nothing more.
 c. **Recompute, don't trust.** Rerun counts, hashes and headline numbers with code:
-   the project's tools first (`scripts/check_reports.py`,
-   `crypto_grid_bot.backtest.audit_run` once merged), and an independent script where
-   none exists.
+   the project's tools first (such as `scripts/check_reports.py`), and an
+   independent script where none exists.
 d. **Trace the failure paths:** what happens when a step fails, an input is empty or
    missing, or it runs twice.
 e. **One verdict, at the full head SHA,** with what you checked, what you could not
