@@ -30,10 +30,17 @@
     found and rewritten cleanly, and the problem is usually noticed too late.
 - **What it means:**
   - the step-1 rule in `START_HERE.md` stands, and now has this record as its source;
-  - a new dependency or any reused code must be under a permissive licence (MIT,
-    Apache-2.0, BSD, PSF) or a weak file-level copyleft such as MPL-2.0;
+  - a new dependency or any reused code must not be under the GPL or the AGPL. That
+    is the whole of what was decided. The licences already in the tree (MIT,
+    Apache-2.0, BSD, PSF, and MPL-2.0 for two development tools) all satisfy it;
   - no change to code, configuration, the spec or the reserved window follows from
     this decision.
+- **Not decided here.** Licences that are neither permissive nor GPL/AGPL — the LGPL
+  and the EPL are the ones likely to come up — are **not** covered by this decision.
+  An earlier draft of this record listed an allowed set of licences, which would have
+  excluded them by implication; the automated review of PR #80 caught that it stated a
+  stricter rule than the owner gave. If such a dependency is ever proposed, it is a new
+  question for the owner, not something this record settles.
 - **Not decided here.** The project itself still has no `LICENSE` file, so it is
   private and all rights stay with the owner. Choosing a licence to publish under is a
   separate decision, and this record does not pre-empt it.
