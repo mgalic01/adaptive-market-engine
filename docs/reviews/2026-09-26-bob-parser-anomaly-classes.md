@@ -8,15 +8,21 @@
 - **Timing:** start `Sat Sep 26 06:33:51 UTC 2026`, end `Sat Sep 26 06:44:18 UTC 2026`
 - **Script:** `data/anomalies.py` (SHA-256: `d8ad32402043adc6df18f018da0447ce7744fa471b55668d1befd2958b6749f2`, full source in [Appendix](#appendix-dataanomaliespy-source))
 
+- **Corrections at review (Claude, 2026-09-26):** the headline counts were rechecked
+  with an independent script using the same library functions. Three statements in the
+  executive summary are marked (they also apply to the class table) "Correction at review" in place.
+  The class definitions, hashes, per-month sections and the hourly cross-check are
+  Bob's and unchanged. The reasons are in the feedback on this report's PR.
+
 ---
 
 ## Executive summary
 
-- **One-line answer:** Under the candidate narrow rule, **9 of the 14 months become fully usable across all 10 basket pairs (82 usable (month, pair) datasets out of 98 with published archives)**. The remaining 5 months fail because anomalies occur mid-trading with non-gap continuity or unaligned 1h bucket intervals.
-- **Totals across all 280 inspected files (14 months × 10 pairs × 2 intervals):**
+- **One-line answer:** Under the candidate narrow rule, **9 of the 14 months become fully usable across all 10 basket pairs (82 usable (month, pair) datasets out of 98 with published archives)**. The remaining 5 months fail because anomalies occur mid-trading with non-gap continuity or unaligned 1h bucket intervals. *[Correction at review: the per-month sections below give 10 fully usable months (2017-09, 2018-01, 2018-07, 2020-02, 2020-03, 2020-12, 2021-02, 2021-04, 2021-08, 2023-03), 3 with no usable pair (2017-12, 2018-02, 2019-06) and 1 partly usable (2021-12, 1 of 10). The 82 usable pair-months are confirmed; 107 pair-months have at least one archive, not 98.]*
+- **Totals across all 280 inspected files (14 months × 10 pairs × 2 intervals):** *[Correction at review: 280 files were requested; 214 exist, because not every pair was listed in every month.]*
   - **`truncated`**: 199 rows (166 last-before-gap, 33 mid-stream)
   - **`past_boundary`**: 12 rows (8 last-before-gap, 4 mid-stream)
-  - **`other`**: 20 rows (all 20 last-before-gap in 2020-12, where `close < open` due to an exchange clock reset during an outage)
+  - **`other`**: 20 rows (all 20 last-before-gap in 2020-12, where `close < open` due to an exchange clock reset during an outage) *[Correction at review: the task defines `other` to include an open that is not on a boundary, and the script did not test the open. Counted that way, `other` has 66,199 rows: 61,203 in 2017-12 1m, 4,804 in 2018-02 1m and 172 in 2018-02 1h (for example BTCUSDT 2018-02 from open 1518170354789, 14.789 s off the minute). `truncated` then has 188 rows, because 11 of the 199 also have an unaligned open. The month verdicts do not change: 2017-12 and 2018-02 already fail.]*
 - **Step 2 hourly cross-check:** Of the 81 accepted hourly bars compared between aggregated 1m klines and Binance's official 1h archives, **80 match exactly (both at volume tolerance `0.001` and `0`)**. Exactly 1 bar (`2020-02` `DOGEUSDT` `2020-02-19 11:00 UTC`) has an open price mismatch of 1 tick (`0.00281390` in 1m vs `0.00281380` in 1h; volume and H/L/C match identically).
 
 ---
