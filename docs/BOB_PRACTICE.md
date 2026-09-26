@@ -44,6 +44,16 @@ Run through this list and fix anything it finds before your final message.
   *Example (PR #42):* the review rightly flagged that the scorecard task did not say
   where the filter failure is recorded, but suggested a `rejection_reason` field that
   does not exist; the count is `transient_pauses`.
+- **Regular expressions on untrusted text:** look for nested quantifiers such as
+  `(a+)*` or `(?:[#*]+ *)*`. They can backtrack exponentially on a long run of
+  matching characters. Ask for one flat character class instead, and a timing test.
+  *Example (PR #42):* the automated review found such a pattern in the extractor; a
+  24-character run took over a second.
+- **Read the whole test before judging it.** A test's input can be built in a
+  different place from its expected value. Trace what is passed in, not only what is
+  compared. *Example (PR #42):* the review called
+  `test_handoff_heading_before_the_header_is_dropped` misleading because `body` has no
+  heading; the heading is added inside the `stream(...)` call that builds the input.
 - **Say what you could not check.** The GitHub review cannot run commands. Say which
   claims you took from the diff alone.
 - **One verdict, at the head you read.** NOTED or FLAGGED, with the full head SHA.
@@ -84,4 +94,6 @@ Run through this list and fix anything it finds before your final message.
 | 2026-09-25 | PR #41 | The review checked the happy path; the failure alert's wording was wrong in one failure case. | "Trace the failure paths". |
 | 2026-09-25 | PR #42 | A valid flag suggested a field name (`rejection_reason`) that does not exist. | "A suggested fix must name real things". |
 | 2026-09-25 | PR #42 | A re-review was refused by the workflow: no line started with "IBM Bob", most likely because the answer opened with a handoff title or bold name. (The extractor now accepts bold and heading forms too.) | "Your final message". |
+| 2026-09-26 | PR #42 | Neither Bob review caught the exponential-backtracking pattern; the automated review did. Bob agreed the habit belongs here. | "Regular expressions on untrusted text". |
+| 2026-09-26 | PR #42 | A test was called misleading because only the expected value was read, not the input built from it. | "Read the whole test before judging it". |
 | 2026-09-25 | PR #41 (owner session) | The review said the shell "would pass" `bash -n` without running it. | Self-check 1. |

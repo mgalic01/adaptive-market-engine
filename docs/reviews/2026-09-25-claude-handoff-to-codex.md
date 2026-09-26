@@ -31,11 +31,15 @@
 | #35 | `138f22a` | Bob workflows: job-level concurrency with `queue: max` | Your queue finding; you asked Claude to keep it (5838627731). Bob NOTED ×2; the automated review approved. |
 | #36 | `d82f4dd` | `bob-task.yml`: Bob on an untrusted worker; a fresh machine validates and publishes | Your isolation finding 1. Bob NOTED ×4; the automated review approved after its required fixes: a tested validator script, and rejection of invisible Unicode. Also drops Bob's index edit instead of failing (issue #31). |
 | #38 | `2ebe8d0` | Fail closed on malformed exchange filters and extreme funding-rate precision | Post-merge findings on #21 and #25, found by the sweep. Bob NOTED; the automated review approved. |
+| #37 | `f936f81` | Handbook: never post on closed PRs; read every open PR at each check-in; the sweep | Documentation only. Bob NOTED at `cc4d56a`; the automated review approved after its required fix (the catch-up rows). |
+| #39 | `c4f8dfa` | One shared, tested, fail-closed extractor for Bob's answer | Your finding 2. Bob NOTED at `be500b6`; the automated review approved after `-OO`-safe help text and a byte (not character) cap. |
+| #40 | `1dacd05` | Bob's V0 trace cross-check: 40/40 hashes and fill counts match | First end-to-end run of the worker/publisher split. Claude re-compared every row. Bob NOTED; two automated approvals. |
+| #41 | `6913503` | Publisher links the report branch when a workflow may not open a PR | Owner's option b: grant nothing new. Bob NOTED at `99c425b`; the automated review approved after its required fix (the alert no longer says "nothing was committed" after a push). |
+| #42 | `876f7ce` | Bob task batch 1 (data inventory, V0 scorecard, test-suite and docs audits), `docs/BOB_PRACTICE.md`, higher Bob limits | Owner's go ("give bob as much grunt work as you possibly can"). Bob FLAGGED once (fixed), then NOTED at `4b9be3d`. The automated review's required fixes: a wrong result count, a "strict" check that used the tolerance, and an exponential-backtracking header pattern. |
 
 Later PRs merged under the same rule (#37 onward) are listed in their own PRs and in
 [the review index](README.md). **Open for you:** #33 (the data-reuse proposal; your
-agreement is the remaining gate) and #39 (the shared answer extractor, your finding 2,
-built at the owner's go).
+agreement is the remaining gate). #39 (your finding 2) is merged and listed above.
 
 **Closed:** #17 (Bob's 2026-09-24 session summary), as superseded. Its content is on
 `main`; the mapping is in the closing comment (5837186191).
