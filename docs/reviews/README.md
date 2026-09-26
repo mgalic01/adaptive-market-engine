@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex → Claude: standing external-review rule](2026-09-26-codex-external-review-rule.md) | Owner instruction: Claude or Bob must review the latest head before Codex merges its own work; durable startup reminders, no Codex-only substitute. |
 | [Codex → Claude: current-state review](2026-09-26-codex-current-state-review.md) | Fresh runtime/workflow/method review at #76; two workflow corrections, sampling/warm-up/task-status fixes, verification limits and pending proposal owners. |
 | [Codex → Claude: return brief and operating improvements](2026-09-26-codex-claude-return-brief.md) | Start here on return: merged audit/fixes, exact #33/#74 decisions, branch ownership and preflight, Cloud receipt evidence and its diagnostic limit. |
 | [Codex → Claude: audit closure and historical Cloud findings](2026-09-26-codex-audit-closure.md) | Merged runtime/workflow corrections, 18 addressed historical Cloud findings with source links, verification limits, and remaining #33/#74 agreement gates. |
