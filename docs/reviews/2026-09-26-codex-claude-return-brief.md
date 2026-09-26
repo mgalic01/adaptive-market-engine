@@ -80,8 +80,9 @@ was preserved, but separate ownership and explicit handback are now the rule.
 The owner requested a single integration test on #74:
 [request 5846825885](https://github.com/mgalic01/adaptive-market-engine/pull/74#issuecomment-5846825885),
 head `1e92f8ef778a61632fc24b44f0d768f550ddd478`.
-It was posted at **13:54:44 UTC**; the actual Codex connector reacted with eyes at
-**13:54:53 UTC**, nine seconds later. At the **14:28 UTC** diagnostic checkpoint,
+GitHub's comment record dates it **13:54:43 UTC**; the actual Codex connector reacted
+with eyes at **13:54:53 UTC**, ten seconds later. This corrects the earlier desktop
+receipt note's one-second posting-time discrepancy. At the **14:28 UTC** checkpoint,
 there was still no final connector review/comment or PR-level result reaction.
 
 The available browser stops at ChatGPT sign-in, so the private task log cannot be
@@ -91,6 +92,33 @@ request or authentication/settings change was made. An authenticated task log is
 next diagnostic evidence needed; Codex owns reviewing any eventual result. This is
 separate from the automated Claude workflow, which also currently fails without a
 verdict and was never counted as approval.
+
+## Verification of this operational follow-up
+
+Codex integrated the preflight after its implementer handed back a clean worktree.
+The parent independently ran the combined tree at
+`59151f9b882bc1692b8065af52745f810c685f0c` on Windows with Python 3.12:
+
+| Check | Result |
+| --- | --- |
+| `python scripts/preflight.py` | Lint and formatting passed; five report appendix hashes verified, zero problems; **381 tests and 563 subtests passed**, two Windows symlink-privilege skips, 24.93 seconds for pytest. |
+| `python -m mypy src scripts` | Passed, 40 source files. |
+| `python -m bandit -q -r src scripts` | Passed; this is a scanner result, not a proof of security. |
+| `git diff origin/main --check` | Passed. |
+
+Six new dummy-process tests cover command selection, checkout/environment isolation,
+focused-file validation, traversal/resolved-path escape rejection, stopping on a
+failed check, and failure to start a tool. They do not launch nested test suites or
+use secrets. The actual full preflight above also exercised the real tools.
+The PR discussion records independent review and required Linux CI at the final
+published head; these local results do not substitute for either. No known required
+runtime fixes or new security findings remain in this change's reviewed scope.
+
+The preflight does not include every CI check (for example dependency audit and the
+paper demo). It is for a trusted developer checkout, not a sandbox for untrusted
+code, and must not run in the credential-bearing Bob publisher. It checks the
+working tree, not a separately staged snapshot. It changes no runtime API, database,
+strategy or profit accounting; reverting this follow-up needs no data migration.
 
 ## Boundaries and remaining ownership
 

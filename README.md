@@ -193,9 +193,10 @@ During iteration, explicit test files can narrow only the test step:
 python scripts/preflight.py --tests tests/test_funding.py tests/test_backtest_data.py
 ```
 
-Focused mode is labeled clearly and does not replace the full suite or CI. File
-paths are relative to the repository root; directories, patterns and pytest node
-selectors are rejected before checks start.
+Focused mode is labeled clearly and does not replace the full suite or CI. Relative
+paths resolve from the repository root; absolute paths within this checkout's tests
+directory are also accepted. Directories, patterns and pytest node selectors are
+rejected before checks start.
 
 ## Profit reserve accounting
 
