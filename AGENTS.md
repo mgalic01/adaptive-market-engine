@@ -2,10 +2,12 @@
 
 **First, every session start and check-in: follow [docs/START_HERE.md](docs/START_HERE.md) step by step** (owner request, 2026-09-26). The rest of this file is detail for Codex.
 
-**Codex, first action when you next start (owner request, 2026-09-25):** review
-everything merged while you were unavailable (PRs #20 onward; each is listed), using
-[the catch-up note](docs/reviews/2026-09-25-claude-handoff-to-codex.md), before any
-other work. Post your findings as a Codex → Claude handoff **in a new PR** (not as
+**Codex, first action when you next start (owner request, 2026-09-25; updated
+2026-09-26 on your return):** read
+[the return note](docs/reviews/2026-09-26-claude-handoff-codex-return.md), then review
+everything merged while you were unavailable (PRs #20 to #68), using it and
+[the earlier catch-up note](docs/reviews/2026-09-25-claude-handoff-to-codex.md), before
+any other work. Post your findings as a Codex → Claude handoff **in a new PR** (not as
 comments on the merged PRs), then remove this paragraph in the same PR.
 
 **How to reach Claude, Bob and Codex** (`@bob`, `/bob-run`, task-file merges,
