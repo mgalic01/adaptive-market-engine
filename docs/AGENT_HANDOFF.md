@@ -64,12 +64,19 @@ are in the sections below.
    headed **Codex → Claude handoff** (or the reverse). Link the handoff at that
    branch/commit, name the new head SHA, summarize changes since the previous push,
    and state exactly which review or next action is requested.
-4. **Merge notification:** after merging, post a final comment on that PR with the
-   merge commit, link to the handoff on `main`, checks actually completed, remaining
-   work and any rollback or compatibility notes.
-5. **Replies:** respond on the same PR and, for substantial feedback, in a new review
-   file added to the index. Address each finding as fixed, agreed/planned, disputed
-   with evidence, or deferred with a reason. Link the implementing commit or PR.
+4. **Merge notification:** after merging, record the full merge SHA, handoff link on
+   `main`, checks actually completed, remaining work and rollback/compatibility notes
+   on the relevant **open follow-up PR**, linking the merged PR. If no relevant open PR
+   exists, open a focused follow-up issue linking the indexed handoff already on
+   `main`; do not create an endless sequence of merge-notification PRs. Never put this follow-up on a closed or merged
+   PR or a closed issue; preserve the existing exception for task-run alerts on their
+   own issue. Do not request another review of the already merged head merely to
+   deliver a status notice.
+5. **Replies:** reply on the same PR while it is open; if it has closed or merged,
+   reply on the relevant open follow-up PR or a new PR and link back. For substantial
+   feedback, add a new indexed review file. Address each finding as fixed,
+   agreed/planned, disputed with evidence, or deferred with a reason, and link the
+   implementing commit or PR.
 
 Claude should check both the repository files and GitHub PR comments/inline threads.
 Files on an unmerged branch are visible through the PR link but not yet on `main`.
@@ -142,6 +149,59 @@ Reference: [official Codex GitHub review documentation](https://developers.opena
   constraints unless a deliberate change is justified and documented.
 - **Question for the other agent:** specify the files/behavior to examine and the
   expected reply location.
+
+## Branch ownership, local checks and review batches
+
+**Owner-approved operating rules (2026-09-26).** The owner retains final authority.
+Branch ownership coordinates editing; it does not confer new approval or merge rights.
+Existing reviews, protections, paper-only scope, protected-profit accounting and
+reserved-data restrictions still apply. The other proposals in PR #74 remain pending.
+
+1. **One named writer per branch.** Record the writer, branch, worktree and scope in
+   the active handoff before editing. Parallel writers use separate branches and
+   isolated worktrees. Agree on interfaces and integration order where changes overlap.
+   Do not switch branches, overwrite files, commit or clean up another writer's tree.
+2. **Reviewers are read-only.** Review the identified full head. Run independent checks
+   in an isolated checkout or scratch area when they need generated files or fixtures.
+   Do not commit fixes into a shared dirty tree. Send findings to the branch writer;
+   taking over implementation requires an explicit ownership handoff first.
+3. **Transfer ownership explicitly.** The outgoing writer records the exact head,
+   worktree state, any uncommitted work, running processes, pending checks and next
+   action, then stops writing. The receiving writer acknowledges the transfer before
+   editing. Preserve existing work; silence, a review request or an agent's absence
+   is not an ownership transfer. The owner may explicitly reassign work.
+4. **Finish a coherent batch before pushing.** Group related corrections, inspect the
+   complete intended diff and run the local preflight plus checks appropriate to the
+   affected behavior. For reports, recompute relevant counts and hashes and check index
+   and local-link integrity. Record exact commands, environment, results and omissions.
+   Fix preflight failures before publishing a ready-for-review batch. A diagnostic
+   draft with a known failure must say so and cannot be presented as ready or passed.
+   Local checks do not replace required GitHub checks or independent review.
+5. **One push and review request per ready batch.** Push the completed batch, post its
+   visible handoff with the full new head, then inspect existing review requests and
+   results for that head before requesting review. Related findings normally form the
+   next batch rather than one push per small edit. A main integration also changes the
+   head and needs current-head checks/review; do not carry an old verdict forward.
+   Do not duplicate an existing exact-head request merely because it lacks a reply.
+
+### Review delivery states
+
+Record the observed state and link its evidence; these states are not interchangeable:
+
+| State | What it establishes |
+| --- | --- |
+| Request posted | The exact-head request comment exists. It does not prove receipt, execution or approval. |
+| Connector receipt | A connector reaction or acknowledgment identifies receipt. It does not establish completed review. |
+| Review complete | A substantive result identifies the reviewed full head and its findings/verdict. Required fixes and merge gates still apply. |
+| Failure / unavailable | An error, usage limit or failed job prevented review. Report the limitation and a named next action; never count it as approval. |
+
+No response remains unconfirmed, rather than proving success or failure. Report that
+limitation at the next ordinary handoff/check-in without repeatedly sending the trigger.
+A posted request is enough to avoid a duplicate, even without connector receipt. Results
+for a superseded head remain historical evidence, not the current head's acknowledgment.
+A Cloud review is a separate review; it does not wake or resume Codex desktop. These
+rules add no polling service, scheduled watcher, relay, credentials or new API billing.
+Use the existing event-driven instructions and ordinary session-start/check-in sweep.
 
 ## Working without disrupting the product
 
@@ -336,13 +396,18 @@ When something goes wrong or looks unexpected, Bob stops, keeps everything and r
 
 ## Copyable handoff outline
 
-- Status / PR / base / head:
-- Changes and reasons:
-- Checks passed / failed / not run:
-- Required fixes and proposed corrections:
-- Security findings, mitigations and review limits:
-- Optional improvements and compatibility risks:
-- Next steps and intended owner:
-- Claude/Codex: please check ... and reply on PR ...; longer reply goes in
-  `docs/reviews/YYYY-MM-DD-<agent>-<topic>.md`.
-- After merge: merge SHA / final checks / remaining items / revert or migration notes.
+- Author → recipient / date / status / open PR:
+- Named branch writer / branch / isolated worktree / scope:
+- Full base SHA / full pushed and reviewed head SHA / durable handoff link:
+- Changes, fixes and reasons; security findings or no known findings within scope:
+- Local preflight and other checks: actual commands, environment, tested SHA,
+  passed/failed/not run, evidence links and verification limits:
+- Compatibility, accounting/risk implications, safe improvements and revert notes:
+- Review state: request posted / connector receipt / review complete / unavailable;
+  exact-head evidence link, required fixes and acknowledgment still needed:
+- Each blocker: named owner / concrete next action / completion evidence:
+- Requested review scope and reply location on this open PR:
+- Ownership transfer, if any: outgoing writer stopped / worktree and pending-work
+  state / incoming writer's explicit acknowledgment:
+- After merge: full merge SHA / completed checks / remaining owners and actions /
+  notification location on the open follow-up PR, with a link to the merged PR:
