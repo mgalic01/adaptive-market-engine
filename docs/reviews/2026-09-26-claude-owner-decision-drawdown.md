@@ -2,7 +2,9 @@
 
 - **Date:** 2026-09-26. **Recorded by:** Claude. **Decided by:** the owner.
 - **Question.** Bob's V0 scorecard (PR #52) showed V0 failing C1 by small margins
-  (10.0008% to 10.9344% worst drop) with no hard-drawdown halt. `config/default.toml`
+  (total-equity drawdown, C1(a), 10.0008% to 10.9344%) with no hard-drawdown halt.
+  The same five runs also fail C1(b), the active-equity drawdown, by slightly larger
+  margins (10.0292% to 11.1611%); Bob's review of this record pointed that out. `config/default.toml`
   has `soft_drawdown_pct = 0.08` and `hard_drawdown_pct = 0.12`, while
   [experiment spec v1](../EXPERIMENT_SPEC_V1.md) §6 C1 requires a worst drop of at most
   10%. So the bot's own risk rules allow drops between 10% and 12% that C1 fails.
