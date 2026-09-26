@@ -13,8 +13,10 @@ arrives as a PR ([rules](../AGENT_HANDOFF.md)).
 
 | Task | Status |
 | --- | --- |
-| [Hour-level defect calendar, 2017-08 to 2024-12](2026-09-26-bob-hourly-defect-calendar.md) | **Owner's go; runs when merged.** Every defect hour for the ten pairs, grouped into exchange-wide and pair-specific events; checked against the batch-1 inventory. |
-| [Parser anomaly classes](2026-09-26-bob-parser-anomaly-classes.md) | **Owner's go; runs when merged.** Every row the strict parser rejects in the 14 months, classified, and what a narrow "last bar before a gap" rule would give. |
+| [Outage calendar and field-level mismatches](2026-09-26-bob-outage-calendar.md) | **Owner's go; runs when merged.** Hours missing from both archives (the real outages), grouped into events, and which fields differ in each mismatch. Follows PR #60. |
+| [Refined parser rule](2026-09-26-bob-refined-parser-rule.md) | **Owner's go; runs when merged.** Bob's refined rule from PR #59, with an aligned open, continuity and a strict hour check, measured on every file of the 14 months. |
+| [Hour-level defect calendar, 2017-08 to 2024-12](2026-09-26-bob-hourly-defect-calendar.md) | **Done:** run 36221539727; report merged in PR #60, rechecked by Claude. |
+| [Parser anomaly classes](2026-09-26-bob-parser-anomaly-classes.md) | **Done:** run 36221539727; report merged in PR #59, rechecked by Claude. |
 | [Development data inventory, 2017-08 to 2024-12](2026-09-25-bob-dev-data-inventory.md) | **Done:** run 36203721612; report merged in PR #49, rechecked by Claude. |
 | [V0 development scorecard (C1–C6, R1)](2026-09-25-bob-v0-dev-scorecard.md) | **Done:** run 36203721612; report merged in PR #52, rechecked by Claude. |
 | [Test-suite audit](2026-09-25-bob-test-suite-audit.md) | **Done:** run 36203721612; report merged in PR #51, rechecked by Claude. |

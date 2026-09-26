@@ -1,5 +1,7 @@
 # Claude Code: start here
 
+**First, every session start and check-in: follow [docs/START_HERE.md](docs/START_HERE.md) step by step.** The rest of this file is detail for Claude.
+
 Read [the shared collaboration guide](docs/AGENT_HANDOFF.md), starting with its quick
 reference on how to reach each agent, and
 [the handoff index](docs/reviews/README.md) at the start of each session.
