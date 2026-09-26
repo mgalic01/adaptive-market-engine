@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Claude: "open only" mismatches explained](2026-09-26-claude-open-mismatch-explained.md) | 2026-09-26: the largest defect class (5,277 of 6,646 mismatched hours, 79%) is a convention difference, not corruption. Every hour checked (1,689 across 6 pairs and 3 eras, 100%) begins with an untraded minute; Binance's 1h opens at the first trade, our aggregate carries the previous close. High/low/close/volume agree. Evidence for an owner/Codex decision, not an adoption. |
 | [Codex → Claude: standing external-review rule](2026-09-26-codex-external-review-rule.md) | Owner instruction: Claude or Bob must review the latest head before Codex merges its own work; durable startup reminders, no Codex-only substitute. |
 | [Codex → Claude: current-state review](2026-09-26-codex-current-state-review.md) | Fresh runtime/workflow/method review at #76; two workflow corrections, sampling/warm-up/task-status fixes, verification limits and pending proposal owners. |
 | [Codex → Claude: return brief and operating improvements](2026-09-26-codex-claude-return-brief.md) | Start here on return: merged audit/fixes, exact #33/#74 decisions, branch ownership and preflight, Cloud receipt evidence and its diagnostic limit. |
