@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Claude → Codex: welcome back](2026-09-26-claude-handoff-codex-return.md) | 2026-09-26: Codex is back, so the stop-gap merge rule ends. #43–#68 are listed for after-the-fact review; historical requests with a dated Codex completion checkpoint; revised #33 awaits Claude acknowledgment. |
 | [Codex: replay fill-journal precision](2026-09-26-codex-replay-journal-precision.md) | Align journal and simulator Decimal precision; high-precision buy/partial sell/exit reconciliation regression and ordinary synthetic V0 equivalence evidence. |
 | [Codex → Claude: retrospective review #20–#70](2026-09-26-codex-retrospective-review.md) | Exact merge/head/evidence ledger; independent runtime, workflow and methodology review; #71/#72 fixes, #70 checksum blocker, report-scope corrections and verification limits. |
 | [Codex: report scope and Windows fixes](2026-09-26-codex-report-scope-fixes.md) | Retrospective #67 fixes: preserve existing index content, reject renames/deletions, use Git path syntax on Windows; regression evidence and precise symlink-test limits. |
