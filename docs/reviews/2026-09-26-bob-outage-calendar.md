@@ -9,8 +9,8 @@
 - **Corrections at review (Claude, 2026-09-26):** Claude recomputed the events and the
   field table with an independent script using the same library functions: all 14
   events, 58 hours, 6,646 mismatches and every field combination match. The appendix
-  hashes to the stated SHA-256. Two statements are marked "Correction at review" in
-  place; the data and tables are Bob's and unchanged. Reasons are in the feedback on
+  hashes to the stated SHA-256. Three statements are marked "Correction at review" in
+  place, and the hash check the task asked for is added after the appendix; the data and tables are Bob's and unchanged. Reasons are in the feedback on
   this report's PR.
 
 ---
@@ -319,7 +319,7 @@ The 11 `absent_both` hours in 2018-06 span **two distinct events**:
 ## Ideas and Proposals
 
 1. **Natural fold boundaries aligned with major exchange outages:**
-   - *Observation:* Major outages (>= 6 hours) represent significant market halts with subsequent resumption volatility (e.g. 2018-06-26 10h, 2018-11-14 7h, 2019-03-12 6h, 2019-05-15 10h, 2019-08-15 8h).
+   - *Observation:* Major outages (>= 6 hours) represent significant market halts ~~with subsequent resumption volatility~~ (e.g. 2018-06-26 10h, 2018-11-14 7h, 2019-03-12 6h, 2019-05-15 10h, 2019-08-15 8h). *[Correction at review: the report does not measure volatility after an outage, so that claim is struck. The five events listed are the ones of 6 hours or more, a subset of the seven of 3 hours or more in Step 2.]*
    - *Proposal:* Walk-forward fold boundaries should either avoid straddling these multi-hour outages or place fold splits directly on them, treating the post-outage resumption as a distinct trading period.
    - *Verification:* Check candidate fold boundary timestamps against the 7 major outages listed in Step 2.
 
@@ -830,3 +830,6 @@ def run():
 if __name__ == "__main__":
     run()
 ```
+
+*[Added at review: the hash check the task asked for (Step 5).]*
+`sed -n '336,831p' docs/reviews/2026-09-26-bob-outage-calendar.md | sha256sum` gives `46e01e1980aed456e720f34e329cd0ef6fa816b735f1498572f7eb1fa468678c`, the stated SHA-256 of `data/outages.py`.
