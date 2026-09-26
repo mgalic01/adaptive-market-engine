@@ -20,7 +20,7 @@ import argparse
 import hashlib
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 REVIEWS = Path("docs/reviews")
 INDEX = REVIEWS / "README.md"
@@ -28,7 +28,7 @@ ROW_LINK = re.compile(r"^\| \[[^\]]*\]\(([^)#\s]+)\)", re.MULTILINE)
 SCRIPT_HEADING = re.compile(r"^#{2,4} .*?`(data/[\w.-]+\.py)`", re.MULTILINE)
 FENCE = re.compile(r"^```(\w*)[ \t]*$", re.MULTILINE)
 HEX64 = re.compile(r"\b[0-9a-f]{64}\b")
-BOB_REPORT = re.compile(r"^docs/reviews/\d{4}-\d{2}-\d{2}-bob-[\w-]+\.md$")
+BOB_REPORT = re.compile(r"docs/reviews/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md")
 CORRECTION = "Correction at review"
 
 
@@ -103,29 +103,44 @@ def check_report(path: Path, checked: list[str] | None = None) -> list[str]:
 
 
 def check_scope(changed: list[tuple[str, str]], base_index: str, head_index: str) -> list[str]:
-    """``changed`` is ``git diff --name-status`` as (status, path) pairs."""
-    reports = [path for status, path in changed if BOB_REPORT.match(path)]
-    others = [path for _, path in changed if path != str(INDEX) and not BOB_REPORT.match(path)]
-    errors = [f"a Bob task branch may change only its report and the index: {p}" for p in others]
+    """Allow one new report and exactly one inserted index row; preserve everything else.
+
+    Git paths use forward slashes on every host. Status matters: a rename into the
+    report directory would also delete its source, and an edit could rewrite history.
+    """
+    index_path = INDEX.as_posix()
+    reports = [path for status, path in changed if status == "A" and BOB_REPORT.fullmatch(path)]
+    errors = [
+        f"a Bob task branch may only add its report and modify the index: {status} {path}"
+        for status, path in changed
+        if not (
+            (status == "A" and BOB_REPORT.fullmatch(path)) or (status == "M" and path == index_path)
+        )
+    ]
     if len(reports) != 1:
-        return errors + [f"expected exactly one Bob report, found {len(reports)}: {reports}"]
-    report = Path(reports[0]).name
-    before, after = index_links(base_index), index_links(head_index)
-    added = [link for link in after if link not in before]
-    removed = [link for link in before if link not in after]
-    if added != [report]:
-        errors.append(f"the index must gain exactly one row, for {report}; it gains {added}")
-    if removed:
-        errors.append(f"the index must not lose rows; it loses {removed}")
+        errors.append(f"expected exactly one added Bob report, found {len(reports)}: {reports}")
+    if changed.count(("M", index_path)) != 1 or len(changed) != 2:
+        errors.append("expected exactly one report addition and one index modification")
+    if len(reports) != 1:
+        return errors
+    report = PurePosixPath(reports[0]).name
+    lines = head_index.splitlines(keepends=True)
+    rows = [i for i, line in enumerate(lines) if index_links(line) == [report]]
+    if len(rows) != 1:
+        errors.append(f"the index must gain exactly one row, for {report}; found {len(rows)}")
+    elif "".join(lines[: rows[0]] + lines[rows[0] + 1 :]) != base_index:
+        errors.append("the index must preserve all existing content and add only its report row")
     return errors
 
 
 def parse_name_status(lines: list[str]) -> list[tuple[str, str]]:
+    """Read ordinary one-path Git changes; never discard a rename or copy source."""
     pairs = []
     for line in lines:
         parts = line.rstrip("\n").split("\t")
-        if len(parts) >= 2:
-            pairs.append((parts[0], parts[-1]))
+        if len(parts) != 2 or parts[0] not in {"A", "M", "D", "T", "U", "X", "B"} or not parts[1]:
+            raise ValueError(f"unsupported or malformed name-status entry: {line!r}")
+        pairs.append((parts[0], parts[1]))
     return pairs
 
 
@@ -141,7 +156,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.changed is not None:
         if args.base_index is None:
             parser.error("--changed needs --base-index")
-        changed = parse_name_status(args.changed.read_text(encoding="utf-8").splitlines())
+        try:
+            changed = parse_name_status(args.changed.read_text(encoding="utf-8").splitlines())
+        except ValueError as exc:
+            parser.error(str(exc))
         errors += check_scope(
             changed,
             args.base_index.read_text(encoding="utf-8"),
