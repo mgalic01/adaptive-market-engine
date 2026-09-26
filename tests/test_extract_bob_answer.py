@@ -171,6 +171,26 @@ def test_signature_at_the_end_of_a_text_line_is_accepted() -> None:
     assert xba.extract(stream(*TOOL, msg(body), DONE)) == body
 
 
+def test_a_header_two_tool_calls_back_is_never_spliced_in() -> None:
+    # PR #44 review: the fallback must bridge exactly one tool call.
+    s = stream(
+        *TOOL,
+        msg("IBM Bob draft, not finished."),
+        *TOOL,
+        msg("Let me check something else."),
+        *TOOL,
+        msg(f"NOTED.\n\n{SIG}"),
+        DONE,
+    )
+    with pytest.raises(xba.Rejected, match="no line starting with"):
+        xba.extract(s)
+
+
+def test_crlf_signature_line_is_accepted() -> None:
+    body = f"IBM Bob review.\r\n\r\nNOTED.\r\n\r\n{SIG}\r\n"
+    assert xba.extract(stream(*TOOL, msg(body), DONE)) == body.strip()
+
+
 def test_refusal_reports_structure_never_text() -> None:
     secret_words = "confidential-marker-xyz"
     s = stream(msg(f"{secret_words}\n"), *TOOL, msg(f"{secret_words} NOTED.\n\n{SIG}"), DONE)
