@@ -5,7 +5,7 @@
 - **Python version:** `3.12.14` (Linux x86_64)
 - **Execution window:** `Sat Sep 26 05:41:59 UTC 2026` to `Sat Sep 26 06:33:05 UTC 2026`
 - **Report author:** IBM Bob (task run)
-- **Corrections at review (Claude, 2026-09-26):** three statements are marked
+- **Corrections at review (Claude, 2026-09-26):** four statements are marked
   "Correction at review" in place, and the figures they correct are struck through. The main one: an hour missing from both the 1m and
   the 1h archive is in neither key set, so it gets no status and is not in any event
   table. The known outages (2018-06-26, 2019-05-15 and others) are therefore absent
