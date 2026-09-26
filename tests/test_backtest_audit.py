@@ -214,6 +214,31 @@ class RunnerTests(unittest.TestCase):
         # both compared hours mismatch on volume alone, and the audit says so.
         self.assertEqual([["2024", "volume", 2]], result["mismatch_fields"])
 
+    def test_a_pair_in_an_unparsed_month_is_not_counted_as_listed(self):
+        # Bob's #70 question. The outage task (Step 2) defines "listed at h" as
+        # excluding the pair's unparsed months: its status there is unknown, so it
+        # neither confirms nor refutes an outage. ETHUSDT's month fails to parse
+        # (one close off the boundary mid-file), so hour 01 counts one listed pair.
+        archive = FakeArchive()
+        text = minute_rows(JAN_2024, 3 * 60)
+        btc = "\n".join(line for i, line in enumerate(text.splitlines()) if not 60 <= i < 120)
+        archive.add("BTCUSDT", "1m", "2024-01", btc + "\n")
+        hourly = hour_rows(JAN_2024, 3).splitlines()
+        archive.add("BTCUSDT", "1h", "2024-01", "\n".join([hourly[0], hourly[2]]) + "\n")
+        eth = text.splitlines()
+        fields = eth[5].split(",")
+        fields[6] = str(int(fields[0]) + 30_000)  # truncated close, next minute adjacent
+        eth[5] = ",".join(fields)
+        archive.add("ETHUSDT", "1m", "2024-01", "\n".join(eth) + "\n")
+        archive.add("ETHUSDT", "1h", "2024-01", hour_rows(JAN_2024, 3))
+        with tempfile.TemporaryDirectory() as tmp:
+            result = audit_outages(Path(tmp), archive)
+        self.assertEqual(["ETHUSDT 2024-01"], result["unparsed"])
+        first = result["events"][0]
+        self.assertEqual(
+            (1, "all_listed_few", ["BTCUSDT"]), (first["listed"], first["kind"], first["pairs"])
+        )
+
     def test_rules_audit_skips_pairs_without_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = audit_rules(Path(tmp), FakeArchive())
