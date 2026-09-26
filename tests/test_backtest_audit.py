@@ -9,6 +9,8 @@ import unittest
 from decimal import Decimal as D
 from pathlib import Path
 
+from test_backtest_loaders import FakeArchive, hour_rows, minute_rows
+
 from crypto_grid_bot.backtest.audit import (
     ABSENT_BOTH,
     ABSENT_HOURLY,
@@ -27,7 +29,6 @@ from crypto_grid_bot.backtest.audit import (
 from crypto_grid_bot.backtest.audit_run import audit_outages, audit_rules, months
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.market_data.parsing import DataError
-from tests.test_backtest_loaders import FakeArchive, hour_rows, minute_rows
 
 JAN_2024 = 1704067200000  # 2024-01-01T00:00:00Z
 MIN = 60_000
