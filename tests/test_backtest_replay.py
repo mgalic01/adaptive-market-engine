@@ -22,6 +22,7 @@ from crypto_grid_bot.backtest.replay import (
     order_requests,
     replay,
     signals_for,
+    summarise,
 )
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
@@ -224,6 +225,32 @@ class ReplayTests(unittest.TestCase):
         metrics, account = replay(self.config, run, minutes, engine)
         self.assertEqual([], check_accounting(run, metrics, account))
         self.assertEqual(30, sum(metrics.regimes.values()))
+
+    def test_summary_reports_the_run_it_was_given(self):
+        # Bob's test audit (PR #51, P5): summarise formats every replay result and was
+        # never called by a test.
+        engine = engine_for(hourly(WARMUP))
+        t = START_MS + WARMUP * HOUR_MS
+        minutes = [candle(t + i * 60_000, 1.0, 1.001, 0.999, 1.0) for i in range(30)]
+        run = RunConfig("TESTUSDT", "low_first", True, RULES, D(100), D("0.0005"))
+        metrics, account = replay(self.config, run, minutes, engine)
+        problems = check_accounting(run, metrics, account)
+        summary = summarise(run, metrics, account, problems)
+        self.assertEqual("TESTUSDT", summary["symbol"])
+        self.assertEqual("low_first", summary["path_mode"])
+        self.assertEqual("gated grid (price-only-v1)", summary["strategy"])
+        self.assertIn("ABSENT", summary["news_component"])
+        self.assertEqual(str(metrics.final_equity), summary["final_total_equity"])
+        self.assertEqual("100", summary["initial_quote"])
+        expected = float((metrics.final_equity / D(100) - 1) * 100)
+        self.assertEqual(expected, summary["return_pct"])
+        self.assertEqual(metrics.completed_cycles, summary["completed_cycles"])
+        self.assertEqual(metrics.bars, summary["bars"])
+        self.assertEqual(problems, summary["accounting_problems"])
+        self.assertIsNone(summary["halted_at"])
+        self.assertNotIn("orders_authorized", summary)
+        window = summary["window"]
+        self.assertEqual(datetime.fromtimestamp(t / 1000, UTC).isoformat(), window[0])
 
 
 class CompatibilityTests(unittest.TestCase):
