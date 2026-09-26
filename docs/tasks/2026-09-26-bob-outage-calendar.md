@@ -30,6 +30,11 @@ nothing; it measures.
   `crypto_grid_bot.backtest.dataset.fetch_file(Path("data"), symbol, interval, month,
   archive_get)`, and read with `crypto_grid_bot.backtest.klines.read_archive(path,
   symbol, interval, month)`.
+  The file's path on disk is `crypto_grid_bot.backtest.dataset.local_path(Path("data"),
+  symbol, interval, month)`; `fetch_file` returns a record, not the path. For a month
+  the strict parser rejects, `fetch_file` has already checked the hash and written the
+  zip before it raises `DataError`: catch it, record the month as unparsed, and
+  continue, as in PRs #59 and #60.
 - **Unparsed months:** the 14 months that raise `DataError` (listed in PR #60) are
   recorded as unparsed and skipped, as before.
 - **Out of scope:** code, spec or manifest changes; backtests; policy decisions.
@@ -98,7 +103,7 @@ you, equal?
 | fields differing | BTCUSDT 1h→1d, 2021-01-21 | volume only |
 
 The last row needs one extra step: aggregate that month's official 1h bars to days with
-`aggregate(hours, 86_400_000)` and compare with the 1d bar, fetched the same way.
+`crypto_grid_bot.backtest.klines.aggregate(hours, 86_400_000)` and compare with the 1d bar, fetched the same way.
 
 Also say whether 2018-06's 11 hours are one event or more, with their times. Any
 difference from Claude's figures must be explained before you go on. If you cannot

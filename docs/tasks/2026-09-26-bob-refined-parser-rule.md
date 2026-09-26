@@ -24,6 +24,11 @@ so the owner and Codex can decide with complete numbers. It changes no code.
 - **Pairs and intervals:** the ten basket pairs, 1m and 1h, every file that exists.
 - **Data:** `fetch_file(Path("data"), symbol, interval, month, archive_get)` and
   `read_member(path, f"{symbol}-{interval}-{month}.csv")`, as in PR #59.
+  The file's path on disk is `crypto_grid_bot.backtest.dataset.local_path(Path("data"),
+  symbol, interval, month)`; `fetch_file` returns a record, not the path. For a month
+  the strict parser rejects, `fetch_file` has already checked the hash and written the
+  zip before it raises `DataError`: catch it, record the month as unparsed, and
+  continue, as in PRs #59 and #60.
 - **Out of scope:** code changes; deciding a policy.
 
 ## Step 1: classify (write `data/refined_rule.py`; its source goes in the appendix)
@@ -36,7 +41,8 @@ Walk every row with the `csv` module. For each row whose close is not
 - **(c) strict hour check:** after the fix below, the 1h hour containing the row
   compares `match` with `crypto_grid_bot.backtest.replay.compare_bars(ours, theirs,
   Decimal(0))`, where ours is the
-  aggregated fixed minutes and theirs is the official 1h bar. For a 1h row, compare
+  aggregated fixed minutes (`crypto_grid_bot.backtest.klines.aggregate`) and theirs is
+  the official 1h bar. For a 1h row, compare
   it with the aggregated fixed 1m minutes of the same hour. If the other file does
   not parse, condition (c) is "not testable".
 
