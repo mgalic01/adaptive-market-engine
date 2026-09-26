@@ -43,7 +43,8 @@ For each pair:
    module. The span ends at 2024-12-31 23:00 UTC.
 2. Build the **expected** hours for every parsed month inside that span, one month at
    a time, with `range(max(first_hour_ms, month_start_ms), month_end_ms, 3_600_000)`,
-   where `month_start_ms` and `month_end_ms` are that month's bounds. Do not build them
+   where `month_start_ms, month_end_ms = crypto_grid_bot.backtest.klines.month_bounds_ms(month)`
+   (end exclusive). Do not build them
    from the bars you found.
 3. Give every expected hour one status:
    - `present_both`: minutes and an official 1h bar;
