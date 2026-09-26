@@ -55,7 +55,10 @@ d. **New since your last visit:** comments, review threads and checks. Read each
    in full, including truncated notifications.
 e. **Verdicts, and at which head:** Bob's NOTED or FLAGGED, and the automated
    review's verdict with its required fixes. **A verdict counts only at the current
-   head.** After any push, including a merge of `main`, ask again.
+   head.** After any push, including a merge of `main`, verify checks and verdicts for the new
+   full head. Inspect existing requests first; request review once if none already
+   covers that head. Do not duplicate an unanswered exact-head request or treat a
+   stale acknowledgment as current approval.
 
 Then act, in this priority:
 
@@ -80,6 +83,11 @@ closed, updated since your last sweep:
 ## 5. Before you judge any change
 
 For every review, and for every change of your own before you push:
+
+Follow the [branch ownership and batching rules](AGENT_HANDOFF.md#branch-ownership-local-checks-and-review-batches).
+Reviewers remain read-only; the named writer completes related fixes and local
+preflight before one ready-for-review push. Record actual commands and limits;
+failed or unavailable checks are not approvals.
 
 a. **Read the whole diff** at the current head, and every file it changes. Read a test
    together with the input it builds, not only its assertions.
@@ -110,4 +118,6 @@ Read only what the steps above did not already show:
 - Every open item has an owner. A PR you are waiting on has a check-in scheduled (if
   your agent can schedule one) or is listed in your message to the owner.
 - Anything the owner must decide is stated plainly, with the options.
-- Your working tree is committed and pushed, or deliberately discarded.
+- The named writer has committed and pushed the ready batch, or explicitly handed
+  off the preserved worktree state and next action. Preserve unfinished work with a
+  named owner; reviewers never commit or discard another writer's changes.

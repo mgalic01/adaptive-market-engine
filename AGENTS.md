@@ -22,7 +22,9 @@ verification evidence and compatibility risks; say explicitly when none are know
 
 Keep changes focused and preserve established behavior through appropriate
 regression checks. Coordinate edits to shared modules in the PR before starting
-overlapping work. The project remains paper-only under its existing scope.
+overlapping work. Follow the [named-writer and batching rules](docs/AGENT_HANDOFF.md#branch-ownership-local-checks-and-review-batches):
+parallel writers use separate branches/worktrees; reviewers do not commit to another
+writer's tree. The project remains paper-only under its existing scope.
 
 A third agent, Bob, does large runs, data checks, tests and monitoring from written task
 files. Its rules are in the "Three agents" section of the guide, in force since PR #16
