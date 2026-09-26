@@ -108,7 +108,8 @@ Run through this list and fix anything it finds before your final message.
   or rule the task defines and note the line of your script that implements it. A class
   with zero or very few rows is a reason to check the test, not a finding.
   *Example (PR #59):* the task counted an unaligned open as `other`; the script never
-  tested the open, and 66,199 rows were reported as 20.
+  tested the open, omitting 66,179 unaligned-open rows. The `other` total was therefore
+  reported as 20 instead of 66,199 (66,179 plus the 20 `close < open` rows).
 - **Enumerate what should exist, not what you found.** Build expected hours, days or
   files from the listed span, then compare the data against it. Check one known event
   end to end. *Example (PR #60):* hours missing from both the 1m and 1h archives were
