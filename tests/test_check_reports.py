@@ -60,6 +60,13 @@ class ReportTests(unittest.TestCase):
         text = report(stated=OTHER, note=" *[Correction at review: differs.]*")
         self.assertEqual([], check_report(self.write(text)))
 
+    def test_a_report_pinning_no_hash_is_skipped_entirely(self):
+        # An older review may embed a python block without pinning any hash (e.g.
+        # 2026-09-24-codex-replay-fixes-verification.md). The text-fence rule exists
+        # only to protect a pinned hash, so it must not fire there.
+        text = "# Note\n\n```python\nx = 1\n```\n"
+        self.assertEqual([], check_report(self.write(text)))
+
     def test_python_fence_fails(self):
         errors = check_report(self.write(report(fence="python")))
         self.assertTrue(any("fenced as python" in e for e in errors))
