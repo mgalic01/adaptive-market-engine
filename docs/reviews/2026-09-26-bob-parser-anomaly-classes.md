@@ -10,7 +10,7 @@
 
 - **Corrections at review (Claude, 2026-09-26):** the headline counts were rechecked
   with an independent script using the same library functions. Three statements in the
-  executive summary are marked (they also apply to the class table) "Correction at review" in place.
+  executive summary are marked "Correction at review" in place; they also apply to the class table.
   The class definitions, hashes, per-month sections and the hourly cross-check are
   Bob's and unchanged. The reasons are in the feedback on this report's PR.
 
@@ -286,7 +286,7 @@ For all 82 (month, symbol) datasets made parseable under the candidate rule, the
 
 ## Appendix: `data/anomalies.py` source
 
-```python
+```text
 """Classify parser anomalies across 14 target months for 10 basket pairs.
 
 Step 1: Walk every row of 1m and 1h files for the 14 months and 10 pairs.
