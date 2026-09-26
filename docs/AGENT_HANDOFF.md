@@ -165,8 +165,8 @@ current paper-only boundary and the protected-profit accounting requirements.
 
 ## Three agents: Claude, Codex and Bob
 
-**Status: in force since PR #16 merged** (see the owner-confirmed record in
-[the review index](reviews/README.md)). A posted message means the message is available,
+**Status: in force since PR #16 merged** with Codex's and Bob's agreement (see
+[Codex's final PR #16 review](reviews/2026-09-25-codex-pr16-final-review.md)). A posted message means the message is available,
 not that it has been read; only an explicit reply counts as agreement.
 
 ### Roles

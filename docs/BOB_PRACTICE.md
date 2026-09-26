@@ -27,8 +27,9 @@ Run through this list and fix anything it finds before your final message.
 7. **Counts come from code.** Every "N months", "N files" or "N of M" is printed by a
    script from the same list the report shows (`len(...)`), never typed. State what
    was counted (for example, whether links inside code are included).
-8. **Times come from the clock.** Run `date -u` at the start and the end and paste
-   the output. Never write a time from memory.
+8. **Times come from the clock** (task runs). Run `date -u` at the start and the end
+   and paste the output. Never write a time from memory. In a review, where you cannot
+   run commands, write no times.
 9. **Every sentence agrees with your own tables.** Reread each summary sentence
    ("clean throughout 2022", "a bull market") against the rows it summarises.
 10. **The report is final text.** Fix a table when you find an error in it; do not

@@ -46,9 +46,15 @@ For each pair and month where the pair has files:
    - with `Decimal(0)`, which is strict. Do not pass `None`: that selects the
      tolerant default.
 
-   Each hour's status is one of `match`, `drift` or `mismatch`; `absent_minutes`, an
-   official hour with no minutes; `absent_hourly`, minutes but no official hour; or
-   `incomplete`, fewer than 60 minutes. Also record the minute count per hour.
+   `compare_bars` returns only `match`, `drift` or `mismatch`, and it can only be
+   called for an hour that has both minutes and an official bar. Your script decides
+   the other three statuses itself, **before** calling it:
+   - `absent_minutes`: an official hour with no minutes;
+   - `absent_hourly`: minutes but no official hour;
+   - `incomplete`: fewer than 60 minutes. Record this, **and** still compare the hour
+     with `compare_bars`, keeping both results.
+
+   Also record the minute count per hour.
 4. **Day status:** aggregate the official 1h bars to days with `aggregate(hours,
    86_400_000)`, and compare each with the 1d bar in the same way.
 

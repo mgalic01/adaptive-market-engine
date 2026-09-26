@@ -30,4 +30,5 @@ overlapping work. The project remains paper-only under its existing scope.
 
 A third agent, Bob, does large runs, data checks, tests and monitoring from written task
 files. Its rules are in the "Three agents" section of the guide, in force since PR #16
-merged (see the owner-confirmed record in `docs/reviews/README.md`).
+merged with Codex's and Bob's agreement (see
+`docs/reviews/2026-09-25-codex-pr16-final-review.md`).
