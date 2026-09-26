@@ -5,6 +5,12 @@
 - **Python version:** `3.12.14` (Linux x86_64)
 - **Execution window:** `Sat Sep 26 05:41:59 UTC 2026` to `Sat Sep 26 06:33:05 UTC 2026`
 - **Report author:** IBM Bob (task run)
+- **Corrections at review (Claude, 2026-09-26):** three statements are marked
+  "Correction at review" in place. The main one: an hour missing from both the 1m and
+  the 1h archive is in neither key set, so it gets no status and is not in any event
+  table. The known outages (2018-06-26, 2019-05-15 and others) are therefore absent
+  from the tables. The data, hashes, Step 3 table and appendix are Bob's and unchanged.
+  The reasons are in the feedback on this report's PR.
 
 ---
 
@@ -112,6 +118,8 @@ These 14 months raised `DataError` during archive reading (candle boundary check
 
 ## Exchange-Wide Defect Events (78 Events)
 
+*[Correction at review: this table only holds hours that exist in at least one archive. Hours missing from both 1m and 1h for every listed pair are not here. Claude's recheck with the same functions: BTC, ETH, BNB and LTC each miss 11 hours in 2018-06 (2018-06-26 02:00 to 2018-06-27 13:00) and 10 hours in 2019-05 (2019-05-15 03:00 to 12:00) from both archives. In 2017, when only 2 or 3 pairs were listed, 80% means every pair.]*
+
 An event is **exchange-wide** if at least 80% of listed pairs at that time are affected.
 
 | # | Start (UTC) | End (UTC) | Hours | Kinds | Listed pairs affected | Pairs |
@@ -215,14 +223,14 @@ When official 1h bars are aggregated to 1d (`step_ms = 86_400_000`) and compared
 | **2021-01-21** | TRXUSDT | 2021-01 | mismatch | 24 | Price/volume mismatch between Binance 1h aggregation and Binance 1d bar |
 | **2021-10-28** | DOGEUSDT | 2021-10 | mismatch | 24 | DOGE price/volume mismatch between 1h aggregation and 1d bar on extreme volatility day |
 
-*Observation on Day Defects:* 10 of the 11 day-level mismatches occurred on the exact same date (**2021-01-21**) across all 10 pairs. This indicates an exchange-wide daily calculation boundary anomaly on that specific day in Binance's historical 1d archive.
+*Observation on Day Defects:* 10 of the 11 day-level mismatches occurred on the exact same date (**2021-01-21**) across all 10 pairs. *[Correction at review: the prices agree; only the volume differs. BTCUSDT: the 24 hours sum to 135004.076658, the 1d bar says 131803.182926 (2.4% less); DOGEUSDT likewise (1.7% less). The note column's "price/volume mismatch" should read "volume mismatch".]* This indicates an exchange-wide daily calculation boundary anomaly on that specific day in Binance's historical 1d archive.
 
 ---
 
 ## Ideas and Proposals
 
 1. **Hour-Level Discard vs Month-Level Discard for Fold Design:**
-   - *Observation:* When an entire month is discarded due to a single defect, 744 hours are dropped. Across 2021–2024, only **7 individual hours** across the entire exchange had cross-check mismatches (1 in 2021-10, 2 in 2022-02, 1 in 2022-04, 3 in 2023-08/09 on LINK).
+   - *Observation:* When an entire month is discarded due to a single defect, 744 hours are dropped. Across 2021–2024, only **7 individual hours** across the entire exchange had cross-check mismatches (1 in 2021-10, 2 in 2022-02, 1 in 2022-04, 3 in 2023-08/09 on LINK). *[Correction at review: the year table gives 14 distinct defect hours in 2021–2024 (4 in 2021, 6 in 2022, 4 in 2023), plus 5 unparsed months in 2021–2023 that this calendar does not cover. The "over 98%" below is not computed anywhere in the report.]*
    - *Why it helps:* If fold design masks or pauses trading during defect hours (or uses exchange-wide events as natural fold boundaries) rather than discarding whole months, usable backtest history increases by over **98%** in 2021–2023 without compromising data integrity.
    - *How to test:* Cross-reference proposed fold boundaries against `data/calendar.jsonl` timestamps.
 
