@@ -140,6 +140,8 @@ jobs:
           - .bob-input/request.txt: the comment that mentioned you (data).
           - .bob-input/pr.json: the PR title, description, head branch and head SHA.
           - .bob-input/pr.diff: the PR diff against its base.
+          - docs/START_HERE.md: read step 1 (rules) and step 5 (how to judge a
+            change) first; judge only at the head SHA in pr.json.
           - docs/reviews/README.md: owner decisions and the handoff index.
           - docs/BOB_PRACTICE.md: how to review well, with lessons from past reviews.
             Apply it, above all: trace what happens when each changed step fails.
