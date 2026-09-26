@@ -34,12 +34,16 @@ Walk every row with the `csv` module. For each row whose close is not
 - **(b) continuity:** the row is the last of the file, or the next row opens at
   `open + step` or later;
 - **(c) strict hour check:** after the fix below, the 1h hour containing the row
-  compares `match` with `compare_bars(ours, theirs, Decimal(0))`, where ours is the
+  compares `match` with `crypto_grid_bot.backtest.replay.compare_bars(ours, theirs,
+  Decimal(0))`, where ours is the
   aggregated fixed minutes and theirs is the official 1h bar. For a 1h row, compare
   it with the aggregated fixed 1m minutes of the same hour. If the other file does
   not parse, condition (c) is "not testable".
 
 **The fix:** a row that meets (a) and (b) gets close `open + step - 1`, in memory only.
+The **fixed text** of a file is its CSV text with the close column of every such row
+rewritten that way and every other row unchanged, written back with `csv.writer`, as
+your PR #59 script did for the narrow rule.
 
 Also count the rows with an unaligned open (not (a)) per file. PR #59 missed them:
 Claude counted 61,203 in 2017-12 1m, 4,804 in 2018-02 1m and 172 in 2018-02 1h.
@@ -47,8 +51,9 @@ Reproduce these three numbers first, as the check that your (a) is implemented.
 
 ## Step 2: what the rule gives
 
-For each file, after the fix, run `crypto_grid_bot.backtest.klines.parse_rows(text,
-interval, month)` and record the `FileStats` or the new `DataError`.
+For each file, run `crypto_grid_bot.backtest.klines.parse_rows(fixed_text, interval,
+month)` on the **fixed text** (never the original archive text, which the strict parser
+always rejects) and record the `FileStats` or the new `DataError`.
 
 A pair-month is **usable** when both its 1m and 1h files parse after the fix **and**
 every fixed row passes (c). A fixed row whose (c) is "not testable" counts as failing,
@@ -58,8 +63,9 @@ files, and for each unusable pair which condition failed first.
 Compare with the **narrow rule** of PR #59, exactly as it was defined there and not
 corrected since: a row whose close is off the boundary is accepted only if it is the
 last row before a gap or the last row of the file, and its close is set to
-`open + step - 1`. There is no alignment check and no hour check. A pair-month counts
-as usable under it when both its 1m and 1h files then parse. That gave **82** usable
+`open + step - 1`. There is no alignment check and no hour check. Build its own fixed
+text the same way, and a pair-month counts as usable under it when both its 1m and 1h
+fixed texts parse. That gave **82** usable
 pair-months. Claude confirmed that figure. Recompute it with
 your script and show both numbers side by side.
 

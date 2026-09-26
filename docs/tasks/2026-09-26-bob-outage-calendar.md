@@ -72,7 +72,8 @@ For each pair:
 
 ## Step 3: field-level mismatches (same script)
 
-For every `present_both` hour whose `compare_bars(ours, theirs, VOLUME_DRIFT_TOLERANCE)`
+For every `present_both` hour whose `crypto_grid_bot.backtest.replay.compare_bars(ours,
+theirs, VOLUME_DRIFT_TOLERANCE)`
 result is `mismatch`, record which of open, high, low, close and volume differ, and by
 how much (absolute and relative). Report counts per field combination (for example
 "volume only", "open only", "open+close") per year.
@@ -90,6 +91,8 @@ you, equal?
 | `absent_both` hours | BNBUSDT 2018-06 | 11 |
 | `absent_both` hours | LTCUSDT 2018-06 | 11 |
 | `absent_both` hours | BTCUSDT 2019-05 | 10 |
+| `absent_both` hours | ETHUSDT 2019-05 | 10 |
+| `absent_both` hours | BNBUSDT 2019-05 | 10 |
 | `absent_both` hours | LTCUSDT 2019-05 | 10 |
 | first `absent_both` hour | BTCUSDT 2019-05 | 2019-05-15 03:00 |
 | fields differing | BTCUSDT 1h→1d, 2021-01-21 | volume only |
