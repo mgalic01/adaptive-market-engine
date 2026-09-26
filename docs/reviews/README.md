@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Bob: three-agent role mapping and tool automation](2026-09-26-bob-three-agent-role-mapping.md) | Proposals for formalizing the division of labor (Plan, Code, Review, Skeptic) and establishing a "build tools where appropriate" mandate to reduce manual review cycles. |
 | [Bob: outage calendar](2026-09-26-bob-outage-calendar.md) | 2017-08 to 2024-12: 14 exchange-wide outage events, 58 hours total; 7 major (≥ 3 h), largest 2018-06-26 (10 h) and 2019-05-15 (10 h); 6,646 field-level mismatch hours (open-field dominated); zero mismatches in 2024. All 10 self-verification checks passed. |
 | [Bob: hour-level defect calendar](2026-09-26-bob-hourly-defect-calendar.md) | 2017-08 to 2024-12: 78 exchange-wide events (211 hours, 71 of them in 2017), 3,065 pair-specific events (5,891 hours), 14 unparsed months; Step 3 matches batch 1. Hours missing from both archives (the real outages) are not in the tables; marked at review. |
 | [Bob: parser anomaly classes](2026-09-26-bob-parser-anomaly-classes.md) | 14 unparsed months, rows classed as truncated, past-boundary or other. The narrow rule (accept a bad close only as the last bar before a gap) makes 82 pair-months usable (confirmed by Claude); 10 months fully, 2021-12 partly. Summary counts corrected at review. |
