@@ -25,7 +25,8 @@ nothing; it measures.
   LINKUSDT, TRXUSDT.
 - **Months:** 2017-08 to 2024-12 only. Never fetch or open 2025-01 or later; the script
   refuses any month after 2024-12.
-- **Data:** spot 1m and 1h archives, fetched and hash-checked only through
+- **Data:** spot 1m and 1h archives (and the one 1d archive in Step 4, interval
+  string `"1d"`), fetched and hash-checked only through
   `crypto_grid_bot.backtest.dataset.fetch_file(Path("data"), symbol, interval, month,
   archive_get)`, and read with `crypto_grid_bot.backtest.klines.read_archive(path,
   symbol, interval, month)`.
@@ -36,8 +37,10 @@ nothing; it measures.
 ## Step 1: expected hours (write `data/outages.py`; its source goes in the appendix)
 
 For each pair:
-1. The pair's **listed span** starts at the first hour of its first 1m bar in any
-   month, and ends at 2024-12-31 23:00 UTC.
+1. The pair's **listed span** starts at the UTC hour containing the first row of its
+   earliest 1m archive, whether or not that month parses. For an unparsed month, read
+   that first row with `read_member(path, f"{symbol}-1m-{month}.csv")` and the `csv`
+   module. The span ends at 2024-12-31 23:00 UTC.
 2. Build the **expected** hours for every parsed month inside that span with
    `range(first_hour_ms, month_end_ms, 3_600_000)`. Do not build them from the bars
    you found.
@@ -51,6 +54,9 @@ For each pair:
 
 ## Step 2: outage events (same script)
 
+- A pair is **listed at** hour h when h is one of its expected hours from Step 1: its
+  span has started, and h is not in one of its unparsed months. "Pairs listed" at h is
+  the count of such pairs.
 - Group `absent_both` hours by identical UTC hour across pairs, and merge consecutive
   hours into one **event**. For each event: start, end, hours, pairs affected, and the
   number of pairs listed at that time.

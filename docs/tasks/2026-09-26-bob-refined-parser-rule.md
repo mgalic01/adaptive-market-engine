@@ -51,11 +51,16 @@ For each file, after the fix, run `crypto_grid_bot.backtest.klines.parse_rows(te
 interval, month)` and record the `FileStats` or the new `DataError`.
 
 A pair-month is **usable** when both its 1m and 1h files parse after the fix **and**
-every fixed row passes (c). Report, per month: usable pairs out of the pairs with
+every fixed row passes (c). A fixed row whose (c) is "not testable" counts as failing,
+so its pair-month is not usable. Report, per month: usable pairs out of the pairs with
 files, and for each unusable pair which condition failed first.
 
-Compare with the narrow rule of PR #59 (last row before a gap or of the file only),
-which gave **82** usable pair-months. Claude confirmed that figure. Recompute it with
+Compare with the **narrow rule** of PR #59, exactly as it was defined there and not
+corrected since: a row whose close is off the boundary is accepted only if it is the
+last row before a gap or the last row of the file, and its close is set to
+`open + step - 1`. There is no alignment check and no hour check. A pair-month counts
+as usable under it when both its 1m and 1h files then parse. That gave **82** usable
+pair-months. Claude confirmed that figure. Recompute it with
 your script and show both numbers side by side.
 
 ## Step 3: report
