@@ -24,6 +24,18 @@ Run through this list and fix anything it finds before your final message.
 6. **Findings and ideas are separate.** Facts you measured go under the results; your
    suggestions go under "Ideas and proposals", each with why it would help and how to
    test it.
+7. **Counts come from code.** Every "N months", "N files" or "N of M" is printed by a
+   script from the same list the report shows (`len(...)`), never typed. State what
+   was counted (for example, whether links inside code are included).
+8. **Times come from the clock.** Run `date -u` at the start and the end and paste
+   the output. Never write a time from memory.
+9. **Every sentence agrees with your own tables.** Reread each summary sentence
+   ("clean throughout 2022", "a bull market") against the rows it summarises.
+10. **The report is final text.** Fix a table when you find an error in it; do not
+    append "correction" notes or leave working ("Wait — …") in the report. Reread it
+    once from the top, as the reader will.
+11. **Every verdict has its table.** A pass or fail must be recomputable from rows in
+    the report.
 
 ## Reviewing a change
 
@@ -72,7 +84,19 @@ Run through this list and fix anything it finds before your final message.
   review. *Example (issue #31):* an index edit failed a 78-minute run.
 - **Write scripts to files under `data/`, then run them.** This keeps the log readable
   and lets a reviewer rerun exactly what you ran. Put each script's SHA-256 in the
-  report.
+  report, and the source of every script under about 80 lines in an appendix: `data/`
+  is git-ignored and disappears with the machine, so a hash alone cannot be rerun.
+- **Test an idea against your own evidence before proposing it.** *Example (PR #49):*
+  the proposed parser rule `close_ms <= open_ms + step - 1` would still reject the
+  2017-09 row the same report quoted (close one millisecond past the boundary).
+- **Check that an idea does not already exist.** `grep -rn <keyword> src config docs`
+  first. *Example (PR #49):* daily warm-up from `1d` bars was proposed; it is P3
+  (`daily_warmup_start` in both dataset specs).
+- **Settle "likely" with data.** When you write "likely" or "appears", look for the
+  field that confirms or refutes it (for example `decisions_by_bar` and
+  `top_reasons_by_bar` in `results.json`) and report what it shows.
+- **Proposed paths must survive the machine.** Nothing under `data/` can be used by
+  CI or another agent (`git check-ignore -v <path>`).
 
 ## Your final message
 
@@ -80,6 +104,10 @@ Run through this list and fix anything it finds before your final message.
   not a "Bob → Claude handoff" title, even when the request carries one. No other line
   starts with those words. (The handoff titles in the handbook are for the owner's Bob
   session, not for the GitHub workflows.)
+- Read every file you need first, then write the whole answer in one go, with no file
+  reads after it starts.
+- Write the signature only as your last line. When you refer to it in the text, say
+  "the signature" rather than quoting it.
 - End with the signature line the prompt gives you, and write nothing after it.
 - Keep the message to the prompt's length limit. Put details in the report file.
 
@@ -94,6 +122,11 @@ Run through this list and fix anything it finds before your final message.
 | 2026-09-25 | PR #41 | The review checked the happy path; the failure alert's wording was wrong in one failure case. | "Trace the failure paths". |
 | 2026-09-25 | PR #42 | A valid flag suggested a field name (`rejection_reason`) that does not exist. | "A suggested fix must name real things". |
 | 2026-09-25 | PR #42 | A re-review was refused by the workflow: no line started with "IBM Bob", most likely because the answer opened with a handoff title or bold name. (The extractor now accepts bold and heading forms too.) | "Your final message". |
+| 2026-09-25 | PR #41 (owner session) | The review said the shell "would pass" `bash -n` without running it. | Self-check 1. |
 | 2026-09-26 | PR #42 | Neither Bob review caught the exponential-backtracking pattern; the automated review did. Bob agreed the habit belongs here. | "Regular expressions on untrusted text". |
 | 2026-09-26 | PR #42 | A test was called misleading because only the expected value was read, not the input built from it. | "Read the whole test before judging it". |
-| 2026-09-25 | PR #41 (owner session) | The review said the shell "would pass" `bash -n` without running it. | Self-check 1. |
+| 2026-09-26 | PRs #42–#44 | Review answers were refused by the workflow three times. With "read first, answer in one go", the #43 answer got through; the #44 cause is not visible until #44's structure-only diagnostics merge. | "Your final message". |
+| 2026-09-26 | PR #49 | A parser proposal contradicted the report's own example; a proposed feature already existed; two counts differed from their lists; the run times were wrong; "clean throughout 2022" contradicted the tables. | "Test an idea against your own evidence", "Check that an idea does not already exist", self-checks 7, 8, 9. |
+| 2026-09-26 | PR #50 | A true statement was flagged as a mismatch; CI was proposed to run a script under the git-ignored `data/`; a link count had no stated rule. | Self-checks 7, 9; "Proposed paths must survive the machine". |
+| 2026-09-26 | PR #51 | A correction was appended below a table that still showed the old claim; lower-risk functions were ranked above untested data loaders. | Self-check 10. |
+| 2026-09-26 | PR #52 | Working ("Wait — …") left in the report; a reference-fee verdict without its table; a "likely" cause not checked against the recorded reasons. | Self-checks 10, 11; "Settle 'likely' with data". |
