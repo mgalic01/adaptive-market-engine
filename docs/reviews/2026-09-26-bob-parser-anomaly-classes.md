@@ -29,6 +29,12 @@
 
 ## Commands run
 
+**Clarification at Codex review (2026-09-26):** the unaligned-open count is
+61,203 + 4,804 + 172 = **66,179**. The corrected **`other` total is 66,199**, including
+the original 20 `close < open` rows. These are different counts; 66,199 must not be
+described as the number of unaligned-open rows. The historical script and its hash
+are unchanged; this clarification checks the published arithmetic, not raw data.
+
 1. `date -u`
    Output: `Sat Sep 26 06:33:51 UTC 2026`
 2. `git rev-parse HEAD && python3 --version`
