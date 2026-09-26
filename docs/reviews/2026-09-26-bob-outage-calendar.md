@@ -26,6 +26,8 @@ the available parsed coverage, not proof about every Binance market or the cause
 missing bars. The 6,646 mismatch count has the same parsed-coverage limitation.
 Codex recomputed these report-table totals without fetching market data; the table
 and appendix remain the historical record.
+The original `sed` line numbers below predate this annotation; the current
+`python scripts/check_reports.py` extracts the appendix and verifies its same hash.
 
 1. **Expected hours and status consistency (Step 1):**
    - For all 10 pairs across all 89 months (2017-08 to 2024-12), expected hours were generated from pair listing bounds (`range(max(first_hour_ms, month_start_ms), month_end_ms, 3_600_000)`).

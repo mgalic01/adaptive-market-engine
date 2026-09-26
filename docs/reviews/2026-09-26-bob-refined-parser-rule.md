@@ -356,6 +356,8 @@ agreement at every other hour, daily cross-checks, warm-up, exchange filters or 
 full spec §5 comparison mask. The two counts use different conditions and must not
 be presented as 82 versus 99 fully validated replay inputs. Codex recomputed the
 table totals (107 with files, 82 narrow, 99 refined) without fetching market data.
+The original `sed` line numbers below predate this annotation; the current
+`python scripts/check_reports.py` extracts the appendix and verifies its same hash.
 
 ### Unusable pair-months under the refined rule
 
