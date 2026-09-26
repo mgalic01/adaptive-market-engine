@@ -41,14 +41,18 @@ For each pair:
    earliest 1m archive, whether or not that month parses. For an unparsed month, read
    that first row with `read_member(path, f"{symbol}-1m-{month}.csv")` and the `csv`
    module. The span ends at 2024-12-31 23:00 UTC.
-2. Build the **expected** hours for every parsed month inside that span with
-   `range(first_hour_ms, month_end_ms, 3_600_000)`. Do not build them from the bars
-   you found.
+2. Build the **expected** hours for every parsed month inside that span, one month at
+   a time, with `range(max(first_hour_ms, month_start_ms), month_end_ms, 3_600_000)`,
+   where `month_start_ms` and `month_end_ms` are that month's bounds. Do not build them
+   from the bars you found.
 3. Give every expected hour one status:
    - `present_both`: minutes and an official 1h bar;
    - `absent_minutes`: an official 1h bar, no minutes;
    - `absent_hourly`: minutes, no official 1h bar;
    - `absent_both`: neither. **This is the new status.**
+
+   "Minutes" means at least one 1m bar in the hour: an hour with 3 of 60 minutes is
+   `present_both` or `absent_hourly`. Record the minute count too, as in PR #60.
 4. Check that the counts add up for every pair and month: the four statuses sum to the
    expected hours. Print the check.
 
