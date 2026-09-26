@@ -175,6 +175,28 @@ bandit -q -r src
 pip-audit
 ```
 
+Before publishing changes, run the offline local preflight with the installed
+development environment:
+
+```bash
+python scripts/preflight.py
+```
+
+It checks lint, formatting and report integrity, then runs the full deterministic
+pytest suite. It uses the calling Python interpreter and this checkout's `src`,
+does not install dependencies or fix files, disables check caches where supported,
+and stops at the first failure. The full GitHub CI checks remain required.
+
+During iteration, explicit test files can narrow only the test step:
+
+```bash
+python scripts/preflight.py --tests tests/test_funding.py tests/test_backtest_data.py
+```
+
+Focused mode is labeled clearly and does not replace the full suite or CI. File
+paths are relative to the repository root; directories, patterns and pytest node
+selectors are rejected before checks start.
+
 ## Profit reserve accounting
 
 The prototype ledger uses `Decimal` and only accepts settled quote cash after
