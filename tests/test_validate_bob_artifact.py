@@ -133,18 +133,27 @@ def test_rejects_oversized_report(tmp_path: Path) -> None:
     rejected(root, reviews, "outside")
 
 
+def make_symlink(link: Path, target: Path, *, directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except OSError as exc:
+        if os.name == "nt" and exc.winerror == 1314:
+            pytest.skip("Windows account lacks symlink privilege; Linux CI still runs this check")
+        raise
+
+
 def test_rejects_file_symlink(tmp_path: Path) -> None:
     root, reviews = artifact(tmp_path)
     target = tmp_path / "outside.md"
     target.write_bytes(b"x\n")
-    (root / "report" / REPORT).symlink_to(target)
+    make_symlink(root / "report" / REPORT, target)
     rejected(root, reviews, "not a regular file")
 
 
 def test_rejects_directory_symlink(tmp_path: Path) -> None:
     root, reviews = artifact(tmp_path)
     (tmp_path / "elsewhere").mkdir()
-    (root / "linked").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    make_symlink(root / "linked", tmp_path / "elsewhere", directory=True)
     rejected(root, reviews, "directory is a symlink")
 
 
