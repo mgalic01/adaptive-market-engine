@@ -3,8 +3,14 @@
 - **Task file:** `docs/tasks/2026-09-25-bob-dev-data-inventory.md`
 - **Commit:** `876f7ce9d3a32b4a31bc558a0eb038a462c1472e`
 - **Python version:** `3.12.14` (Linux x86_64)
-- **Execution window:** 2026-09-25 15:47 UTC to 2026-09-25 16:07 UTC
+- **Execution window:** 2026-09-26 00:09 UTC to 2026-09-26 00:28 UTC *(corrected at review; see the note below)*
 - **Report author:** IBM Bob (task run)
+- **Corrections at review (Claude, 2026-09-26):** six statements were corrected in
+  place. The execution window is taken from the Actions log of run 36203721612 and
+  marked. Two counts in section 2 now match the months they list: SOL parser errors 5
+  (was 6) and ADA outages 12 (was 11). Three statements in section 6 are marked
+  "Correction at review". The data, hashes and tables are Bob's and unchanged. The
+  reasons are in the feedback on PR #49.
 
 ## Artifact SHA-256 hashes
 
@@ -96,7 +102,7 @@ A **clean** month is defined by the task specification as:
   - `2022-02`, `2022-04`: `cross_check hours_mismatched=2`
 
 ### SOLUSDT (11 unclean months after 2021-01)
-- **Parser boundary errors:** 6 months (`2021-02`, `2021-04`, `2021-08`, `2021-12`, `2023-03`).
+- **Parser boundary errors:** 5 months (`2021-02`, `2021-04`, `2021-08`, `2021-12`, `2023-03`).
 - **Exchange outages / gaps:**
   - `2021-03`: `1m missing_rows=90; 1h missing_rows=1; cross_check hours_incomplete=1`
   - `2021-09`: `1m missing_rows=120; 1h missing_rows=2`
@@ -115,7 +121,7 @@ A **clean** month is defined by the task specification as:
 
 ### ADAUSDT (36 unclean months after 2018-05)
 - **Parser boundary errors:** 10 months (`2018-07`, `2019-06`, `2020-02`, `2020-03`, `2020-12`, `2021-02`, `2021-04`, `2021-08`, `2021-12`, `2023-03`).
-- **Exchange outages / gaps:** 11 months (`2018-06`, `2018-10`, `2018-11`, `2019-03`, `2019-05`, `2019-08`, `2019-11`, `2020-04`, `2020-06`, `2020-11`, `2021-03`, `2021-09`).
+- **Exchange outages / gaps:** 12 months (`2018-06`, `2018-10`, `2018-11`, `2019-03`, `2019-05`, `2019-08`, `2019-11`, `2020-04`, `2020-06`, `2020-11`, `2021-03`, `2021-09`).
 - **Hourly cross-check mismatches only:**
   - `2018-09`, `2021-10`, `2022-02`: `cross_check hours_mismatched=1`
   - `2018-12`: `cross_check hours_mismatched=5`
@@ -264,14 +270,14 @@ Proposal estimates from PR #33 (`docs/reviews/2026-09-25-claude-data-reuse-propo
 
 1. **Handling boundary timestamp anomalies at maintenance cutoffs (Parser Enhancement):**
    - *Observation:* 14 distinct months across all pairs fail parsing solely because the final candle before an unscheduled maintenance window has a close timestamp ending in `000` (e.g. 2017-09) or a truncated millisecond (e.g. 2023-03).
-   - *Why it helps:* If the parser permitted the last bar preceding an internal gap to have a truncated close timestamp (or if close timestamp validation was normalized `close_ms <= open_ms + step - 1`), 106 pair-months could be parsed and utilized.
+   - *Why it helps:* If the parser permitted the last bar preceding an internal gap to have a truncated close timestamp (or if close timestamp validation was normalized `close_ms <= open_ms + step - 1`), 106 pair-months could be parsed and utilized. *[Correction at review: the `<=` rule would still reject the 2017-09 row quoted above, whose close is one millisecond past the boundary; only truncated rows would pass. The 106 is therefore unsupported. How many rows are of each kind is measured by the task `docs/tasks/2026-09-26-bob-parser-anomaly-classes.md`.]*
    - *How to test:* Write a test fixture in `tests/test_klines.py` using lines 8159-8161 from `BTCUSDT-1m-2017-09.csv` and verify that gap detection correctly flags the gap while preserving all valid preceding and succeeding bars.
 2. **Daily indicator warm-up from 2017-08:**
    - *Observation:* While 1m klines for 2017-09 to 2018-02 are rejected by the strict parser, `1d` klines are completely intact, gapless, and valid from 2017-09 onwards.
    - *Why it helps:* Indicator warm-up (e.g., SMA50 / SMA200 for market regimes and filters) requires 200 daily bars. Using `1d` archives allows warm-up to begin as early as 2017-08/09, enabling walk-forward trading windows to start in 2018 without requiring full 1m resolution during the warm-up phase.
-   - *How to test:* Verify `dataset.py` load routines to allow separate loading of `1d` history for warm-up before the fold's 1m replay window.
+   - *How to test:* Verify `dataset.py` load routines to allow separate loading of `1d` history for warm-up before the fold's 1m replay window. *[Correction at review: this already exists as prerequisite P3, `daily_warmup_start` in both dataset specs.]*
 3. **Walk-forward fold alignment with clean spans:**
-   - *Observation:* The historical data exhibits a clean, unbroken 21-month span from `2023-04` to `2024-12` across 9 pairs (and continuous clean blocks throughout 2022).
+   - *Observation:* The historical data exhibits a clean, unbroken 21-month span from `2023-04` to `2024-12` across 9 pairs *[Correction at review: the original "and continuous clean blocks throughout 2022" is removed; 2022-02 and 2022-04 are not clean for any of the ten pairs, per section 2.]*
    - *Why it helps:* Walk-forward fold design in Spec v1 can align test windows with known clean stretches or account for known exchange maintenance pauses (e.g., 2018-11, 2019-05, 2020-04) using the existing gap-handling semantics.
    - *How to test:* Cross-reference proposed walk-forward window boundaries against `data/inventory.json` clean month sets before freezing fold definitions.
 
