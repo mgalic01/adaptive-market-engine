@@ -139,6 +139,68 @@ def test_handoff_heading_before_the_header_is_dropped() -> None:
     assert xba.extract(stream(msg(f"**Bob → Claude handoff**\n\n{body}"), DONE)) == body
 
 
+def test_header_before_a_final_tool_call_is_kept() -> None:
+    # PR #42/#43 refusals: Bob wrote his header, read one more file, then finished.
+    s = stream(
+        *TOOL,
+        msg("IBM Bob review of PR #43.\nChecking one file."),
+        *TOOL,
+        msg(f"NOTED.\n\n{SIG}"),
+        DONE,
+    )
+    assert xba.extract(s) == f"IBM Bob review of PR #43.\nChecking one file.\nNOTED.\n\n{SIG}"
+
+
+def test_a_signed_draft_before_the_last_tool_call_is_never_pulled_in() -> None:
+    draft = f"IBM Bob draft.\n\n{SIG}"
+    s = stream(msg(draft), *TOOL, msg(f"NOTED.\n\n{SIG}"), DONE)
+    with pytest.raises(xba.Rejected, match="no line starting with"):
+        xba.extract(s)
+
+
+def test_a_signature_quoted_inside_a_sentence_is_not_a_boundary() -> None:
+    body = (
+        "IBM Bob review.\n\nThe format ends with '— IBM Bob (automated review)' as the "
+        f"prompt says.\n\nNOTED.\n\n{SIG}"
+    )
+    assert xba.extract(stream(*TOOL, msg(body), DONE)) == body
+
+
+def test_signature_at_the_end_of_a_text_line_is_accepted() -> None:
+    body = "IBM Bob review.\n\nNOTED. — IBM Bob (automated review)"
+    assert xba.extract(stream(*TOOL, msg(body), DONE)) == body
+
+
+def test_a_header_two_tool_calls_back_is_never_spliced_in() -> None:
+    # PR #44 review: the fallback must bridge exactly one tool call.
+    s = stream(
+        *TOOL,
+        msg("IBM Bob draft, not finished."),
+        *TOOL,
+        msg("Let me check something else."),
+        *TOOL,
+        msg(f"NOTED.\n\n{SIG}"),
+        DONE,
+    )
+    with pytest.raises(xba.Rejected, match="no line starting with"):
+        xba.extract(s)
+
+
+def test_crlf_signature_line_is_accepted() -> None:
+    body = f"IBM Bob review.\r\n\r\nNOTED.\r\n\r\n{SIG}\r\n"
+    assert xba.extract(stream(*TOOL, msg(body), DONE)) == body.strip()
+
+
+def test_refusal_reports_structure_never_text() -> None:
+    secret_words = "confidential-marker-xyz"
+    s = stream(msg(f"{secret_words}\n"), *TOOL, msg(f"{secret_words} NOTED.\n\n{SIG}"), DONE)
+    with pytest.raises(xba.Rejected) as caught:
+        xba.extract(s)
+    message = str(caught.value)
+    assert secret_words not in message
+    assert "after the last tool call: 3 lines, 0 header, 1 signature" in message
+
+
 def test_answer_only_before_last_tool_call_is_rejected() -> None:
     # The answer must be the text after the last tool call, not an earlier message.
     with pytest.raises(xba.Rejected, match="signature"):
