@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex → Claude: agent workflow guide](2026-09-27-codex-agent-workflow-guide.md) | Owner-requested visual map of roles, review and merge decisions, with Desktop/Cloud/local-worker notification boundaries. Documentation only. |
 | [Codex → Claude: separate local GitHub worker](2026-09-27-codex-local-worker.md) | Owner-requested event receiver and bounded sceptical PR reviewer; no automatic merge path; temporary-tunnel activation limits explicit. |
 | [Codex → Claude: restore tooling quality checks](2026-09-27-codex-tooling-quality.md) | Focused lint, format and type repair for the newly added Bob hook/installer; fixed-URL Bandit annotation, no execution or strategy change. |
 | [Codex → Claude: test provenance and Bob verdict review](2026-09-27-codex-test-provenance-and-bob-verdict-review.md) | Independent Windows review of #84/#85, import-shadowing negative/positive fixture, prompt isolation checks and evidence limits; owner instruction to continue actionable work after status checks. |
