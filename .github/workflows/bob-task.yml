@@ -217,8 +217,10 @@ jobs:
           file on a GitHub Actions machine at the owner's request.
 
           Task file (your instructions): $TASK
-          Read docs/START_HERE.md step 1 first (the rules that override everything),
-          then the task file, and follow the task exactly. Also read docs/AGENT_HANDOFF.md
+          Read docs/START_HERE.md step 0 (what the project is for) and step 1 (the rules
+          that override everything) first, then the task file, and follow the task
+          exactly. Step 0 is context for judging your results, not licence to widen the
+          task: do exactly what the task file asks. Also read docs/AGENT_HANDOFF.md
           (Three agents) for your role, and docs/BOB_PRACTICE.md, whose self-check you
           go through before your final message.
 

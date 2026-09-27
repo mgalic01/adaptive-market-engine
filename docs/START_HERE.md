@@ -14,9 +14,10 @@ purpose, and no entry point linked the goal or the roadmap. An agent that cannot
 the goal optimises the only thing it can see, which is the process.
 
 **The product is a crypto grid-trading bot that trades real capital on a real exchange
-and grows it.** Starting capital is about **€100**, and the bot must clear **€5/month**
-in hosting before it earns anything, so the economics are tight by design and a
-strategy that only works at larger size is not a strategy for this project.
+and grows it.** Starting capital is about **€100**. At that size the economics are tight:
+a strategy that only pays at a larger size is not a strategy for this project. How much
+capital a result would need to cover running costs is **reported for every result, not
+gated** — see R1 below.
 
 **The paper bot is not the product, and it is not merely a stepping stone to it. It is
 the experiment that decides whether the real one is worth building at all.** A no-go is
@@ -25,24 +26,51 @@ approach cannot clear its costs is a success of the method, not a failure of it.
 is why results are not tuned after the fact and why the criteria are fixed in advance —
 the whole point is an answer we can trust, including an unwelcome one.
 
-**The bridge between the two** is the untouched 2025–26 window judged against the
-[six owner acceptance criteria](reviews/2025-09-25-owner-acceptance-criteria.md):
-integrity, beating cash on the pessimistic intrabar path, drawdown within the 12%
-limit and below buy-and-hold, the gate earning its place over an ungated grid,
-economics that work at €100 against €5/month hosting, and genuine trading activity
-rather than sitting in cash. **All six must pass.** Passing authorises a *proposal* for
-a live pilot. It does not authorise live trading, which stays a separate owner decision
-with a separately tested adapter and a live-deployment review. The delivery gates and
-what is already built are in [`ROADMAP.md`](../ROADMAP.md).
+**The bridge between the two** is the untouched 2025–26 window, judged against the
+acceptance criteria the owner chose. **The binding set is C1–C6 in
+[`EXPERIMENT_SPEC_V1.md` §6](EXPERIMENT_SPEC_V1.md#6-acceptance-and-selection-owner-decisions-2026-09-24)**;
+read that table, not a summary of it. In short, across every included pair, window and
+intrabar path:
+
+| | Criterion (§6 is authoritative) |
+| --- | --- |
+| C1 | **Worst drop at most 10%**, on both total equity and active equity, measured from peaks — and **any hard-drawdown halt fails** |
+| C2 | Makes money on the **worse** intrabar path: each path's median return above 0 after fees, and the mean above 0 |
+| C3 | Safer than holding: every run's max drawdown below that run's buy-and-hold drawdown |
+| C4 | Integrity: every included run valid |
+| C5 | Minimum activity: on average at least one completed cycle per week |
+| C6 | The gate earns its place: beats the ungated V0 baseline on return ÷ drawdown in at least 60% of runs |
+| R1 | Economics — **reported only**: the capital at which mean monthly return would cover €5/month of hosting (€0 on the owner's own PC) |
+
+**All of C1–C6 must pass; R1 informs but does not gate.** Two traps:
+
+- **10% is not 12%.** The runtime risk rules in `config/default.toml` are a soft stop at
+  8% and a hard stop at **12%**. Those are the bot's safety net, not the acceptance bar.
+  The bar is C1's **10%**, so the bot can survive a 10–12% drop that still fails C1. The
+  owner kept both deliberately
+  ([2026-09-26 decision](reviews/2026-09-26-claude-owner-decision-drawdown.md)).
+- **The 2025-09-25 criteria record is history, not policy.**
+  [That record](reviews/2025-09-25-owner-acceptance-criteria.md) is the proposal §6 was
+  built from; where they differ — including its 12% risk limit and its economics gate —
+  **§6 governs**.
+
+Passing authorises a *proposal* for a live pilot. It does not authorise live trading,
+which stays a separate owner decision with a separately tested adapter and a
+live-deployment review. The delivery gates and what is already built are in
+[`ROADMAP.md`](../ROADMAP.md).
 
 **Before you build or propose anything, answer this in one line:** what does it do for
-that goal? Work that makes the bot more likely to pass those six criteria, or that
-makes the evidence trustworthy enough to stake €100 on, is the work. Everything else,
-**including improvements to this process**, is overhead and has to justify its ongoing
-cost before it is built — not after four reviewers have approved it. No review in the
-chain asks this question for you: CI, Bob, the automated review and Codex Cloud all
-take a change's premise as given and check its execution. If the premise is wrong, only
-you and the merge decision will catch it.
+that goal? Work that makes the bot more likely to pass C1–C6, or that makes the evidence
+trustworthy enough to stake €100 on, is the work. Everything else, **including
+improvements to this process**, is overhead and has to justify its ongoing cost before
+it is built — not after four reviewers have approved it.
+
+**Whether a change should exist is everyone's question, and the author's first.**
+Automated checks cannot ask it: CI verifies that code runs, and the automated review is
+prompted to find defects in the change in front of it. Bob and Codex are expected to
+challenge fit and premise, not only execution — this section exists so they can — and
+the merge decision is where it is finally settled. But a reviewer can only reject a
+premise after the work is done. The author is the one who can stop it before.
 
 **Who does which steps:**
 
