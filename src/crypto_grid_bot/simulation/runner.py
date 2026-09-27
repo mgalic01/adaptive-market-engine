@@ -19,6 +19,7 @@ from crypto_grid_bot.domain import (
 from crypto_grid_bot.portfolio.profit_vault import ProfitVault, ProfitVaultState
 from crypto_grid_bot.risk.engine import RiskEngine
 from crypto_grid_bot.simulation.execution import liquidate, match, place, reduce_unreserved
+from crypto_grid_bot.simulation.inventory_cap import capped_quantity
 from crypto_grid_bot.simulation.models import (
     ONE,
     ZERO,
@@ -57,6 +58,9 @@ class SimulationPolicy:
     # price re-enters the old band (an explicit, documented terminal-until-return state).
     recenter_after_exit: bool = True
     recenter_cooldown_seconds: int = 86400
+    # Experiment variant B (spec v1, section 3 B): committed exposure may not exceed this
+    # fraction of prospective active equity when a buy is created. None = off (V0).
+    inventory_cap: Decimal | None = None
 
     def __post_init__(self) -> None:
         if type(self.recovery_frames) is not int or not 2 <= self.recovery_frames <= 100:
@@ -72,6 +76,17 @@ class SimulationPolicy:
             or not 1 <= self.maximum_frame_gap_seconds <= 3600
         ):
             raise ValueError("maximum frame gap must be 1-3600 seconds")
+        if self.inventory_cap is not None:
+            nonnegative(self.inventory_cap)
+            if not ZERO < self.inventory_cap < ONE:
+                raise ValueError("inventory cap must be above zero and below one")
+
+    def identity(self) -> dict[str, Any]:
+        """Persisted form; omits an unset cap so existing paper identities still match."""
+        value = asdict(self)
+        if self.inventory_cap is None:
+            del value["inventory_cap"]
+        return value
 
 
 @dataclass(frozen=True)
@@ -112,7 +127,7 @@ class PaperSimulator:
         identity = encode(
             {
                 "schema": SCHEMA,
-                "policy": asdict(self.policy),
+                "policy": self.policy.identity(),
                 "config": asdict(config),
                 "rules": rules.identity(),
                 "initial_cash": initial_cash,
@@ -266,6 +281,7 @@ class PaperSimulator:
             "allocation": None,
         }
         previous_orders = set(account.orders)
+        capped: list[dict[str, Any]] = []
         try:
             self._validate_frame(account, frame)
             regime = self.classifier.classify(frame.signals)
@@ -354,6 +370,13 @@ class PaperSimulator:
                     self.rules,
                     recycle=not account.pause and not account.draining and frame.allow_new_grid,
                     epoch=frame.epoch,
+                    reentry_quantity=(
+                        None
+                        if self.policy.inventory_cap is None
+                        else lambda order_id, price, quantity: self._cap(
+                            account, quote, capped, order_id, price, quantity
+                        )
+                    ),
                 )
             ]
             # Cancelled partial buys can leave unpaired inventory. Exit it using only
@@ -392,7 +415,7 @@ class PaperSimulator:
                     account.draining = False
                     if not account.pause and not account.range_exit and frame.allow_new_grid:
                         try:
-                            report["opened"] = self._open_grid(account, frame)
+                            report["opened"] = self._open_grid(account, frame, capped)
                             report["decision"] = "open_grid"
                         except GridNotViable as exc:
                             report.update(decision="cash", reason=str(exc))
@@ -400,6 +423,8 @@ class PaperSimulator:
             report.update(decision="halt", reason=account.halt)
         elif account.pause:
             report.update(decision="pause", reason=account.pause)
+        if self.policy.inventory_cap is not None:
+            report["capped"] = capped
         report["cancelled"] = sorted(
             previous_orders - account.orders.keys() - {fill["order_id"] for fill in report["fills"]}
         )
@@ -493,7 +518,33 @@ class PaperSimulator:
         account.confirmed_transfers = state.confirmed_transfers
         return asdict(allocation)
 
-    def _open_grid(self, account: Account, frame: Frame) -> list[str]:
+    def _cap(
+        self,
+        account: Account,
+        quote: Quote,
+        capped: list[dict[str, Any]],
+        order_id: str,
+        price: Decimal,
+        quantity: Decimal,
+    ) -> Decimal:
+        """Variant B check for one new buy; records any resize or skip."""
+        cap = self.policy.inventory_cap
+        if cap is None:
+            return quantity
+        allowed = capped_quantity(account, quote, self.rules, cap, price, quantity)
+        if allowed != quantity:
+            capped.append(
+                {
+                    "order_id": order_id,
+                    "price": price,
+                    "requested": quantity,
+                    "placed": allowed,
+                    "action": "resized" if allowed else "skipped",
+                }
+            )
+        return allowed
+
+    def _open_grid(self, account: Account, frame: Frame, capped: list[dict[str, Any]]) -> list[str]:
         rules, quote = self.rules, frame.quote
         spread = (quote.ask - quote.bid) / quote.ask
         cost = 2 * (rules.fee_rate + rules.slippage_rate) + spread
@@ -534,9 +585,47 @@ class PaperSimulator:
                     epoch=frame.epoch,
                 )
             )
-        for order in orders:
-            place(account, order, rules)
+        if self.policy.inventory_cap is None:
+            for order in orders:
+                place(account, order, rules)
+        else:
+            orders = self._place_capped(account, quote, orders, capped)
         account.grid_lower, account.grid_upper = levels[0], levels[-1]
         account.outside_seconds, account.outside_last = ZERO, ""
         account.cycles += 1
         return [order.order_id for order in orders]
+
+    def _place_capped(
+        self,
+        account: Account,
+        quote: Quote,
+        orders: list[LimitOrder],
+        capped: list[dict[str, Any]],
+    ) -> list[LimitOrder]:
+        """Place buys from the highest price down. The first that does not fit whole is
+        resized (or skipped below the minimum notional), and every lower level is skipped.
+        """
+        placed: list[LimitOrder] = []
+        descending = sorted(orders, key=lambda order: order.price, reverse=True)
+        for index, order in enumerate(descending):
+            requested = order.quantity
+            quantity = self._cap(account, quote, capped, order.order_id, order.price, requested)
+            if quantity:
+                order.quantity = order.remaining = quantity
+                place(account, order, self.rules)
+                placed.append(order)
+            if quantity != requested:
+                capped.extend(
+                    {
+                        "order_id": lower.order_id,
+                        "price": lower.price,
+                        "requested": lower.quantity,
+                        "placed": ZERO,
+                        "action": "skipped",
+                    }
+                    for lower in descending[index + 1 :]
+                )
+                break
+        if not placed:
+            raise GridNotViable("inventory cap leaves room for no buy level")
+        return placed
