@@ -14,9 +14,13 @@ It has no networked exchange implementation and does not read API credentials.
   - `data.binance.vision` — historical archives and their `.CHECKSUM` files
     (`ARCHIVE_HOST`, `backtest/dataset.py`).
 
-  Each is a named constant, and `tests/test_documented_hosts.py` fails if the code
-  contacts a host this list does not name. Adding a host means editing this list in
-  the same change. Do not point collectors or streams at trading hosts
+  Each is a named constant. Adding a host means editing this list in the same change:
+  that is a rule for whoever writes the change, not something the system enforces.
+  `tests/test_documented_hosts.py` helps by failing when a hostname written as a
+  literal in `src/` is missing from this list — **a string scan, not an egress
+  filter.** It cannot see a host assembled at runtime, read from configuration, or
+  reached through a redirect, so a passing suite is not evidence that nothing else was
+  contacted. Do not point collectors or streams at trading hosts
   or add user-data (`listenKey`) streams before the live-adapter review.
 - Never use protected reserve to fund a grid, an exit, or loss recovery.
 - The reserve is a persisted simulated ledger entry, not isolated exchange funds.
