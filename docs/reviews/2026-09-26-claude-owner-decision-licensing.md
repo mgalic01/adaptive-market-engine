@@ -54,6 +54,25 @@
   excluded them by implication; the automated review of PR #80 caught that it stated a
   stricter rule than the owner gave. If such a dependency is ever proposed, it is a new
   question for the owner, not something this record settles.
+  - **Owner decision, 2026-09-27: the default is stop and ask, not assume allowed.** An
+    agent that wants an LGPL or EPL dependency puts the concrete proposal to the owner
+    and waits; it does not read "not decided" as permission. The owner keeps the
+    question open deliberately: the conditions these licences attach depend on the
+    specific library and on how it is combined, so the decision belongs against a real
+    candidate rather than a category. Nothing in the tree uses either: the same
+    declared-metadata screen, rerun on 2026-09-27, found no LGPL or EPL declaration
+    across 43 installed distributions, only the two MPL-2.0 development tools already
+    named above. So the question has no deadline.
+  - **Why this direction costs nothing and the other does not.** Deciding against, or
+    deferring, is reversible at the price of a PR. Having said yes, shipped code that
+    depends on it, and then reversing is not: the dependency's reach has to be found and
+    rewritten, and obligations may already attach to what was distributed. That
+    asymmetry — not a view about these licences — is the reason for the default.
+  - **This is a risk preference, not legal analysis**, exactly as the GPL/AGPL rule
+    above. Weak-copyleft licences are generally written so a proprietary product *can*
+    include them under conditions; whether those conditions are acceptable is a question
+    for a person, and the owner has recorded that a real licensing review belongs before
+    anything is sold or distributed, not in this file.
 - **Not decided here.** The project has **no `LICENSE` file**, so no publishing
   licence has been chosen for it. That is a separate matter from the repository's
   visibility setting, which this record does not describe, and it does not resolve the
