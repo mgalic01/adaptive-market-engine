@@ -6,6 +6,23 @@ instances. GitHub-hosted workers and two separately provisioned worker login ses
 in GitHub secrets are approved; active Desktop auth must not be copied. Failure
 incident PRs and GitHub/chat/private-email notification remain requested.
 
+## Evidence checkpoint
+
+- PR: [#120](https://github.com/mgalic01/adaptive-market-engine/pull/120),
+  branch `codex/worker-budget-alerts`.
+- Base: `5c79ad52f491ea1d0fc2f0344f1abc09de067744`.
+- Tested code head: `3a85b4a10d0b33c4200e6f38e7dbd17a68b9652b`.
+- The 41 Windows worker tests, Ruff/format and report checks below apply to that
+  code head. Subsequent documentation-only commits do not retroactively change it.
+  The push handoff records their full new head and fresh verification; external
+  review must cover that latest head, not this historical checkpoint.
+
+Cloud review at `0c6ed43a28ce094e0609aed25995b6056f481a6d` identified the missing
+checkpoint and missing explicit remote credential-containment requirements. Both
+are addressed in this revision. Its rolling-cap incident finding is superseded by
+removing those caps; provider failures still need a durable incident lifecycle.
+The unrelated SHA quoted in the first finding is not this PR's tested head.
+
 ## Implemented in this change
 
 The existing queue no longer has hourly or daily start-count checks. Persisted history,
@@ -43,6 +60,13 @@ duplicate-work avoidance, incident publication outside model budgets and deliver
 tests. The owner selected workers independent of the PC and asked whether GitHub can
 host them. The proposed answer is GitHub-hosted Actions with per-worker managed auth.
 This is not a claim that two workers, email or Desktop wake-up already exist.
+
+[Implementation plan](../superpowers/plans/2026-09-27-remote-review-workers.md)
+turns that design into containment, durable-state, credential and delivery gates.
+Public Codex CLI 0.157.1 on Windows accepted the existing isolation switches with
+`exec --help`; this only verifies option parsing, not Linux tool containment or a
+real authenticated review. It was installed in an isolated tooling directory with
+package scripts disabled. No Desktop login was read or copied.
 
 Claude/Bob: review this code patch at its full SHA, then critique the proposed design.
 Codex must not merge its own patch before that external review and passing checks.

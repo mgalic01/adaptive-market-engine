@@ -41,10 +41,13 @@ and end-to-end delivery tests. Nothing copies the current Desktop login automati
 - Each meaningful captured PR head/base/evidence revision is assigned once to an
   available worker. A fresh substantive discussion can justify another review, but
   the workers' own receipts and failure incidents must not trigger review loops.
-- A private-state or tightly controlled state branch holds only non-secret queue,
+- A dedicated `automation/codex-worker-state` branch holds only non-secret queue,
   claims, run and delivery metadata. Reserve work atomically before model execution;
   use compare-and-swap updates/retries, not a runner-local file or evictable cache as
   the authoritative state. Lost/corrupt state fails closed and raises an incident.
+  This repository is public: this branch is public too, not a secrets store.
+  Persist IDs, hashes, timestamps, states and public GitHub links only; never raw
+  payloads, model transcripts, environment variables, recipient addresses or auth.
 - Claims have owners and recoverable leases. Cancellation before/after reservation,
   crash recovery and publication uncertainty need explicit states. A failed start
   remains recorded; separately report model starts versus pre-model failures.
@@ -62,12 +65,37 @@ runner or serialized stream, and forbids sharing it concurrently across machines
 Use two separately provisioned sessions, isolated from Desktop and each other.
 Credentials stay in protected secrets storage, never Git, logs, caches or artifacts.
 
+Carry forward `local_worker.command()` and `child_environment()` as mandatory
+containment: neutral temporary working directory, no PR checkout, no inherited user
+configuration/rules, strict configuration, disabled shell, apps, browser, computer,
+plugins, skills, web, code execution and subagent tools, and an explicit child
+environment allowlist. Read-only filesystem mode alone is not credential isolation.
+Use an empty per-job HOME and a worker-specific CODEX_HOME; only the CLI auth runtime
+may use the restored session. No GitHub/storage/mail credential enters the model
+process environment. Never offer the model a file-read or outbound tool that could
+reach the session. Pin and validate the Linux CLI's actual supported controls before
+activation; a missing control is a deployment failure, not a reason to drop a flag.
+An adversarial test with dummy auth must attempt file reads, shell/browser/app calls,
+config/MCP loading and exfiltration, and show no such tool executes. Do not infer
+containment solely from a benign review's output or from source string assertions.
+
 The model sees only bounded evidence and no GitHub write credential. The trusted
 publisher retains comment-only operations. A separate non-model incident controller
 gets narrowly scoped permission to create an incident branch/file/PR; it cannot merge
 or edit workflows. Do not widen the reviewer's existing write allowlist for alerts.
 Credential refresh write-back needs separately reviewed storage permission; no provider
 OAuth endpoint is called directly and no OpenAI API key is required by this proposal.
+
+Use two GitHub environments, `codex-worker-1` and `codex-worker-2`, restricted to
+reviewed `main`. Each holds its own `CODEX_AUTH_JSON`; jobs for each identity are
+serialized before environment secrets are loaded. The latest rotated login must be
+saved back before releasing the worker. A narrowly scoped, separately provisioned
+GitHub credential is needed for this write-back; the job's normal `GITHUB_TOKEN`
+must not be assumed to have environment-secret administration permission. The owner
+has approved worker-login storage, not copying Desktop credentials or the existing
+local GitHub token. Codex specifies and Claude/Bob review the storage permission;
+the owner provisions it through secure setup. If rotation persistence is uncertain,
+disable that identity and raise an incident rather than reuse a stale login.
 
 ## Failure incident and notification contract
 
@@ -77,6 +105,12 @@ OAuth endpoint is called directly and no OpenAI API key is required by this prop
 - Open a documentation-only incident PR containing worker ID, usage, known reset time,
   pending work, failed/completed counts and recovery owner. Reconcile existing branch
   and PR after ambiguous publication; do not generate duplicate incident PRs.
+- Keep a durable incident ID and status per worker/failure class. The controller
+  atomically latches the first failure, creates a deterministic incident branch and
+  reconciles its PR before any retry. Repeated failures update that episode. Only a
+  confirmed successful recovery closes it; elapsed time, a guessed quota reset or
+  one new queued job does not re-arm notifications. Test simultaneous detection,
+  cancellation after PR creation and failure again before/after confirmed recovery.
 - A single incident links all delivery states. Notify Claude/Bob on that open PR and
   request they surface it in their active owner conversations. Trigger at most one
   authorized notification request per agent; do not create reciprocal mention loops.
@@ -103,7 +137,8 @@ OAuth endpoint is called directly and no OpenAI API key is required by this prop
 2. Concurrent jobs, duplicates and cancellations do not duplicate reviews, drop queued work
    or publish duplicate results. Worker-generated events cannot create a feedback loop.
 3. Dummy-auth tests prove secrets are absent from model input, logs and artifacts;
-   refresh state persists per worker. Never test with real tokens in fixtures.
+   refresh state persists per worker. Include the adversarial containment test above
+   on the pinned Linux CLI. Never test with real tokens in fixtures.
 4. Synthetic provider-quota failure creates exactly one real test incident PR, with the
    owner's authorization, even when no Codex call can run. Verify email receipt,
    agent request delivery and Desktop notification separately; receipt is not review.
@@ -131,3 +166,5 @@ Sources checked 2026-09-27:
 - [GitHub-hosted runners](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners)
 - [Codex account authentication in CI/CD](https://learn.chatgpt.com/docs/auth/ci-cd-auth)
 - [GitHub workflow notifications](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs)
+- [When GitHub reads secrets](https://docs.github.com/en/actions/reference/security/secrets#when-github-actions-reads-secrets)
+- [Environment secret permissions](https://docs.github.com/en/rest/actions/secrets#create-or-update-an-environment-secret)
