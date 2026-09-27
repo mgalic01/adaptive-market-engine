@@ -3,8 +3,13 @@
 The allowed-hosts line listed ``data-api.binance.vision`` and
 ``data-stream.binance.vision`` but not ``data.binance.vision``, the archive host
 ``backtest/dataset.py`` has always used. A security boundary that omits a host the code
-actually contacts is worse than no list, because it reads as an exhaustive one. This
-test fails when the two drift apart, in either direction.
+actually contacts is worse than no list, because it reads as an exhaustive one.
+
+This test checks **one direction only**: it fails when ``src/`` names a host that
+``SECURITY.md`` does not list. It does not detect the reverse, a host still listed in
+``SECURITY.md`` that the code no longer contacts. That is deliberate: a stale entry
+makes the list over-broad, a weaker failure than an under-broad one, and a reverse check
+would fail legitimately during any refactor that briefly drops a host.
 """
 
 import re
