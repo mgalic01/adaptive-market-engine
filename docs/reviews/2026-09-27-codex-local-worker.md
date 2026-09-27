@@ -1,0 +1,105 @@
+# Codex → Claude handoff: separate local sceptical reviewer
+
+2026-09-27. Writer Codex Desktop; branch codex/github-local-worker; isolated worktree
+work/github-local-worker. Base bb76659c1eb12348cde75d9aa42aef3c4afa5538. Exact revised
+head and check evidence are recorded in PR #94's Conversation. Activation is not
+claimed until explicitly recorded there.
+
+## Owner intent and correction
+
+Owner requested GitHub events to start a separate worker without OpenAI keys in
+GitHub, and chose a temporary tunnel. The role is a **critic and sceptic**: assess
+work, challenge assumptions, resolve discussion with Claude/Bob, then an agent makes
+an explicit merge decision. Owner rejected mechanical automatic merging. The first
+implementation over-interpreted an earlier selection: that merge controller, launch
+flag, verdict parser and protection proposal are now removed. No branch-protection
+setting was changed. The controller rejects merge API writes.
+
+See [operations](../LOCAL_WORKER.md). This is separate from Cloud reviews and does
+not resume Desktop. Current base rules, immutable diff/full files and discussion/CI
+are supplied to a bounded local reviewer. Model output alone is not merge authority.
+No strategy/runtime/accounting change, data download/replay or specification freeze.
+
+## Verification and security
+
+- Initial test-first authentication/queue/HTTP tests failed before implementation,
+  then passed. Tests use dummy secrets and no paid Bob jobs or real merges.
+- Windows full suite at initial c7c00852e011a1fc6521c38bbf6db47651e6f106:
+  417 passed, 2 skipped, 563 subtests. Linux CI found platform-specific mypy stubs;
+  corrected using platform-safe lookup/imports and linux/win32 mypy verification.
+- Queue regressions cover persistent dedup/budgets/capacity, interrupted runs,
+  explicit connection closure/rollback and exclusive service lock.
+- Review corrections: immutable comparison/full-file coverage, verified base ancestry
+  before content, data metadata screening, head/base/discussion freshness, open/head
+  recheck before comment, absolute HTTP deadline and credential environment allowlist.
+- Cloud findings reproduced before fixes: JSON content type, earlier marked-comment
+  freshness, directory collision and error-report write failure. All four regression
+  cases pass after corrections. Removed the unused fetch helper raised by Claude;
+  documented the actual process-only Windows credential assignment. Merge-gate
+  findings are superseded by removal, not treated as approval of the old design.
+- Independent review found indirect Bob task dispatch via quoted slash commands and
+  silent publication truncation. Commands are neutralized and oversized publication
+  rejected; local reports survive publication failure. No Bob task was launched.
+- Further Cloud findings: require the local controller token for review reads even
+  without publication; include checks/statuses in freshness; queue edited PRs and
+  edited/deleted comments or amended/dismissed reviews. These cases have fixture
+  regressions; JSON publication is tested through a real loopback HTTP server.
+- Real CLI diagnostic completed through ChatGPT login. Actual dummy file write was
+  blocked with code-mode host is disabled; file absent. Tool wrappers remain advertised,
+  so complete tool/OS isolation is not claimed.
+- Cloudflare2026.9.3 Windows binary checked against official release SHA256
+  f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2.
+- Webhook686574656 delivered actual PR/comment/check events with HTTP202. Comment
+  delivery3845074305488519168 was redelivered as3845074514941583360 with HTTP200
+  (dedup). An unsigned external request returned403.
+- One supervised queued event completed a critical review of PR #92 at
+  67a28f0348ad36a6491d91a8a00baf904acf0926, recommending BLOCKED with substantive
+  methodology findings. Publication and merge were disabled. That test preceded
+  adding the captured base's four startup/rule documents to the packet.
+- Corrected scope: 28 focused tests pass; full Windows suite 418 passed, 2 skipped, 563 subtests.
+  Worker-only ruff, linux/win32 mypy and Bandit pass; check_reports finds 0 problems.
+  Main's tooling failures at 0bb2857 were independently repaired/reviewed in #96,
+  merged as 7b3b297ba37db9f7d62dccd2a6bc25f14d9f03b9 and integrated here. The
+  index conflict retains both handoffs. Full revised-head verification is on #94.
+- Real end-to-end proof using deployed c4dc231ef25348b645c9604afdaed11b202b81b1:
+  a queued event produced a substantive BLOCKED review of PR #95 at
+  6484f32009ee0dd03f637a45f91f65bc6653faec and posted comment 5855006994. It
+  challenged unsupported claims and disagreed with other agents rather than accepting
+  their verdicts. Receiver/model/publication were paused back to queue-only when
+  Claude required regression coverage of the incomplete-evidence override. That
+  added case asserts both stored and posted BLOCKED despite model READY; removing
+  the override makes it fail. No production-code change was needed for this finding.
+- Later P1 review found directory-only screening missed market fixtures elsewhere.
+  A conservative source/document path-and-type allowlist now runs on changed tree
+  metadata before any blob or patch request. Regression fixtures cover CSV outside
+  data/, arbitrary Parquet/JSON and Python fixture containers. Data disguised inside
+  allowed source/prose cannot be semantically recognized from tree metadata; that
+  residual limitation is explicit. No actual reserved data was inspected in tests.
+- Failed-run recovery is documented as an inspected new PR Conversation request;
+  redelivery of the original accepted body stays deduplicated. A regression proves
+  the new event can queue after failure while the old event cannot.
+- Final local preflight after the allowlist correction: 425 passed, 2 skipped,
+  563 subtests; 35 worker-focused cases. Repository lint/format, linux/win32 mypy,
+  Bandit and report checks pass.
+- Final corrected-head CI belongs in the PR handoff. Bob's first-head review is
+  historical evidence, not approval of the corrected scope.
+
+Residual limits: same-user Windows processes are not a credential-isolation boundary;
+PR closing after its last check can race publication; GitHub has no atomic check/comment
+API. Temporary tunnels change URL after restart and stop delivering while the PC sleeps.
+No automatic redelivery, permanent service or production-availability claim.
+
+Claude independently checked the initial free-text approval parser against today's
+14 automated verdicts: only 2 verdict lines matched and none included its required
+full-head sentence (PR #94 comment 5854888091). This reinforces the removal: a free-
+text verdict parser must not substitute for reasoning about fit, evidence and risk.
+
+## Next owners
+
+Claude/Bob: review corrected scope, evidence quality, publication safety and resource
+bounds on PR #94. Codex: address blockers, pass checks, record actual activation.
+Reviewing agents: discuss worker findings; READY or green CI alone never decides a
+merge. Standing own-work external-review and paper-only rules remain.
+
+Rollback: stop receiver/tunnel and disable its one webhook, then revert code through
+review if needed. No trading process or another agent's branch is touched.
