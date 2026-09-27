@@ -11,7 +11,6 @@ from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.control import decode_frame, resume_paper
 from crypto_grid_bot.simulation.demo import demo_frames
 from crypto_grid_bot.simulation.execution import (
-    exit_price,
     match,
     place,
     reduce_unreserved,
@@ -471,9 +470,17 @@ class StrategyRecoveryTests(TestCase):
         state.cash, state.inventory = D("110"), D("100")
         state.day_start = state.risk_high = D("112")
         quote = frame(0).quote
+        # Exactly Account.equity's marking, which is what populated day_start and
+        # risk_high: the unrounded liquidation price, not the tick-floored exit price.
         marked = (
-            state.inventory * exit_price(quote, self.sim.rules) * (D(1) - self.sim.rules.taker_fee)
+            state.inventory
+            * quote.bid
+            * (D(1) - self.sim.rules.slippage_rate)
+            * (D(1) - self.sim.rules.taker_fee)
         )
+        flat = Account.start(D(100))
+        flat.cash, flat.inventory = state.cash, state.inventory
+        self.assertEqual(flat.equity(quote, self.sim.rules), state.cash + marked)
         self.assertGreater(marked, 0)
         allocation = self.sim._settle(state, quote)
         after = D(str(allocation["active_capital_after_allocation"]))

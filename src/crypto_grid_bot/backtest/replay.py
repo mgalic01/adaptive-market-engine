@@ -440,9 +440,7 @@ def replay(
             # frame attempted none, and must not reset the streak or count as cleared.
             if "exit_blocked" in report:
                 record_exit_block(
-                    metrics,
-                    str(report["exit_blocked"]),
-                    Decimal(report["exit_blocked_notional"]),
+                    metrics, str(report["exit_blocked"]), report["exit_blocked_notional"]
                 )
             metrics.grids_opened += int(bool(report["opened"]))
             # From the account, not the report: a rejected frame's report omits the flag.

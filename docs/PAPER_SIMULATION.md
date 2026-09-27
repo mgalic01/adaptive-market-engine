@@ -95,9 +95,19 @@ A dust-resolution policy is still required for production operation.
 
 Because that residue cannot be sold at all — no later frame at the same price can
 satisfy the exchange's step and minimum-notional filters — no lifecycle step waits for
-it. Profit settlement, opening the next grid, leaving a range exit and `resume()` all
-require instead that nothing *sellable* is held: flat, or holding only such a residue,
-with no resting sell reserving it. The residue is never written off and never invented:
+it. Profit settlement, opening the next grid and leaving a range exit require instead
+that nothing *sellable* is held: flat, or holding only such a residue, with no resting
+sell reserving it.
+
+**`resume()` is deliberately stricter and requires exact zero inventory.** A residue is
+marked to the current bid, so its value moves with price; admitting it would let a rally
+lift active equity back over the soft-drawdown line and clear a hard-drawdown halt that
+this document calls final. Continuing to trade with a residue is safe, because the
+baselines move with it; clearing a halt on the strength of it is not. A halted account
+holding only a residue therefore stays halted until a higher bid makes the residue
+sellable and the exit completes.
+
+The residue is never written off and never invented:
 it stays in `inventory`, in `unreserved_inventory` and in the equity mark, and it is
 excluded from the settlement base, which understates profit rather than overstating it.
 Waiting for exact zero instead made a healthy account stop trading for good after any
@@ -145,8 +155,10 @@ reason in the same transactional journal, places no order, and waits for the
 normal recovery confirmations. Repeating the same command ID/payload is idempotent;
 changing its payload is rejected. Inventory or outstanding liquidation must be
 resolved before resume; it cannot override loss limits or restore reserve funds. A
-refusal names which precondition failed, including how much inventory is still sellable
-when a liquidation is incomplete, and says plainly when a halt is final.
+refusal names which precondition failed, including the total inventory still held when
+any is left — resume makes no distinction between an incomplete liquidation and a
+residue below the minimum, because both fail the same exact-zero check — and says
+plainly when a halt is final.
 
 The operator CLI reopens the saved rules/policy and additionally checks freshness
 against the real UTC clock. `fresh-frame.json` must contain `Frame.payload()` with

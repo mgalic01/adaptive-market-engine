@@ -20,7 +20,6 @@ from crypto_grid_bot.portfolio.profit_vault import ProfitVault, ProfitVaultState
 from crypto_grid_bot.risk.engine import RiskEngine
 from crypto_grid_bot.simulation.execution import (
     Reduction,
-    exit_price,
     exitable,
     liquidate,
     match,
@@ -212,6 +211,14 @@ class PaperSimulator:
 
         Either flat, or holding only a residue the market filters forbid selling: the
         engine has no way to reduce that residue, so no recovery step may wait for it.
+
+        Deliberately scoped differently from ``unpaired_inventory``: this asks "is
+        anything sellable held", so it counts the filled part of a resting buy, while the
+        drain and the end-of-run verdict ask "what does this exit owe" and exclude it.
+        Every caller here is already gated on an empty order book or on ``liquidate``'s
+        no-resting-orders precondition, so the two never disagree in practice; keeping
+        them distinct is what stops a partly filled buy being drained out from under its
+        own child sell.
         """
         return not account.reserved_base() and not exitable(account, quote, self.rules)
 
@@ -554,9 +561,14 @@ class PaperSimulator:
         # A held residue is excluded from the allocation base but IS in day_start,
         # risk_high and every later active-equity reading, so it must sit on both sides
         # of the rescaling ratio. Leaving it out of both depresses the baselines and can
-        # move a later drawdown or daily-loss reading across its threshold.
+        # move a later drawdown or daily-loss reading across its threshold. Marked exactly
+        # as Account.equity marks it, since that is what populated those baselines: the
+        # unrounded liquidation price, not the tick-floored price an order would use.
         marked_residue = (
-            account.inventory * exit_price(quote, self.rules) * (ONE - self.rules.taker_fee)
+            account.inventory
+            * quote.bid
+            * (ONE - self.rules.slippage_rate)
+            * (ONE - self.rules.taker_fee)
         )
         account.settlement_count += 1
         state = ProfitVaultState(
