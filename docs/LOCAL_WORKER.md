@@ -28,7 +28,10 @@ lifetime and five-second inactivity timeout; this is not production DoS protecti
 
 The controller fetches startup/rule documents at the captured base, immutable changed
 files/diff, comments, reviews and checks from fixed GitHub endpoints. Tree metadata
-screens data changes before content. The current base must be a verified ancestor of
+screens all changed paths before content: only explicit source/test-code, workflow,
+configuration and Markdown-document paths/types are allowed; data/dataset/fixture
+components and unclassified paths are refused anywhere in the tree. This is a path/
+type boundary, not a semantic detector for data disguised inside source or prose. The current base must be a verified ancestor of
 the head within a 32-commit search, so the screened trees and three-dot diff agree.
 Outdated/complex branches go to Desktop rather than risking access to unscreened data.
 Truncated/oversized evidence fails closed; missing unchanged dependencies are a reason
@@ -100,7 +103,18 @@ record phase/class, not raw exceptions/stdout/stderr that might contain secrets.
 Stop the receiver/tunnel and disable only this integration's webhook. Temporary URL
 changes on restart; PC sleep/stopped processes mean no deliveries. GitHub does not
 automatically redeliver failed webhooks: explicitly redeliver after recovery or do the
-ordinary check-in sweep. Stable named tunnel/startup supervision are later deployment
+ordinary check-in sweep.
+
+For a failed/interrupted **review run** (different from a failed webhook delivery),
+inspect status, its local report/failure and the current PR comments first. If posting
+might have succeeded, identify that result before deciding whether another review is
+needed. Then create one new PR Conversation comment, for example: "Codex local
+reviewer: inspected run N and its publication outcome; please review this PR again."
+That new signed event deliberately queues a new review under the normal budgets.
+Redelivery of an already accepted body remains deduplicated, even after run failure;
+it is not a retry command. No automatic uncertain-publication retry is introduced.
+
+Stable named tunnel/startup supervision are later deployment
 work, not a claim about this temporary test.
 
 ## Evidence and owners

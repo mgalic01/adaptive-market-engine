@@ -69,6 +69,18 @@ No strategy/runtime/accounting change, data download/replay or specification fre
   Claude required regression coverage of the incomplete-evidence override. That
   added case asserts both stored and posted BLOCKED despite model READY; removing
   the override makes it fail. No production-code change was needed for this finding.
+- Later P1 review found directory-only screening missed market fixtures elsewhere.
+  A conservative source/document path-and-type allowlist now runs on changed tree
+  metadata before any blob or patch request. Regression fixtures cover CSV outside
+  data/, arbitrary Parquet/JSON and Python fixture containers. Data disguised inside
+  allowed source/prose cannot be semantically recognized from tree metadata; that
+  residual limitation is explicit. No actual reserved data was inspected in tests.
+- Failed-run recovery is documented as an inspected new PR Conversation request;
+  redelivery of the original accepted body stays deduplicated. A regression proves
+  the new event can queue after failure while the old event cannot.
+- Final local preflight after the allowlist correction: 425 passed, 2 skipped,
+  563 subtests; 35 worker-focused cases. Repository lint/format, linux/win32 mypy,
+  Bandit and report checks pass.
 - Final corrected-head CI belongs in the PR handoff. Bob's first-head review is
   historical evidence, not approval of the corrected scope.
 

@@ -6,6 +6,7 @@ import json
 import re
 import time
 import urllib.request
+from pathlib import PurePosixPath
 from typing import Any
 
 from local_worker_queue import REPO, REPO_ID
@@ -14,6 +15,32 @@ API = f"https://api.github.com/repos/{REPO}/"
 MARKER = "<!-- codex-local-worker -->"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 RULES = ("docs/START_HERE.md", "AGENTS.md", "docs/AGENT_HANDOFF.md", "docs/reviews/README.md")
+
+
+def reviewable_path(path: str) -> bool:
+    """Conservative source/docs allowlist; fixtures/data are never inferred safe."""
+    p = PurePosixPath(path)
+    if any(
+        part.lower() in {"data", "dataset", "datasets", "fixture", "fixtures"} for part in p.parts
+    ):
+        return False
+    if path in {
+        ".gitignore",
+        "LICENSE",
+        "pyproject.toml",
+        "requirements.lock",
+        "requirements-dev.lock",
+    }:
+        return True
+    if p.suffix == ".md" and (len(p.parts) == 1 or path.startswith(("docs/", ".bob/skills/"))):
+        return True
+    if p.suffix == ".py":
+        return path.startswith(("src/", "scripts/", ".bob/hooks/")) or (
+            path.startswith("tests/") and (p.name.startswith("test_") or p.name == "conftest.py")
+        )
+    if path.startswith(".github/workflows/") and p.suffix in {".yml", ".yaml"}:
+        return True
+    return path.startswith("config/") and p.suffix == ".toml"
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -89,10 +116,8 @@ class GitHub:
                 raise ValueError("tree metadata truncated")
             trees.append({e["path"]: e["sha"] for e in tree["tree"] if e["type"] == "blob"})
         for path in set(trees[0]) | set(trees[1]):
-            if path.startswith(("data/", "docs/datasets/")) and trees[0].get(path) != trees[1].get(
-                path
-            ):
-                raise ValueError("data changes require owner-directed review")
+            if trees[0].get(path) != trees[1].get(path) and not reviewable_path(path):
+                raise ValueError("data or unclassified changes require owner-directed review")
         # Three-dot patches must cover the same base as our content screening.
         # Reject outdated branches instead of inspecting an unknown merge-base diff.
         self.require_ancestor(pr["base"]["sha"], head)

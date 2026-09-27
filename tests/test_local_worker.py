@@ -231,7 +231,17 @@ def test_discussion_fingerprint_includes_earlier_worker_reports():
     assert discussion_digest(s) != original
 
 
-def test_partial_patch_and_data_tree_abort_before_content(monkeypatch):
+@pytest.mark.parametrize(
+    "restricted_path",
+    [
+        "data/2025-01.csv",
+        "tests/fixtures/2025-01.csv",
+        "prices.parquet",
+        "docs/raw-prices.json",
+        "tests/fixtures/observations.py",
+    ],
+)
+def test_partial_patch_and_data_tree_abort_before_content(monkeypatch, restricted_path):
     worker()
     from local_worker_github import GitHub, patch_complete
 
@@ -248,12 +258,12 @@ def test_partial_patch_and_data_tree_abort_before_content(monkeypatch):
             return s["pr"]
         return {
             "truncated": False,
-            "tree": [{"type": "blob", "path": "data/2025-01.csv", "sha": path[10]}],
+            "tree": [{"type": "blob", "path": restricted_path, "sha": path[10]}],
         }
 
     api = GitHub()
     monkeypatch.setattr(api, "request", request)
-    with pytest.raises(ValueError, match="data changes"):
+    with pytest.raises(ValueError, match="data or unclassified changes"):
         api.snapshot(1)
     assert len(calls) == 3
 
@@ -495,3 +505,42 @@ def test_edits_to_earlier_worker_comment_queue_review():
         comment={"body": "<!-- codex-local-worker --> amended finding"},
     )
     assert module().validate(body, signed(body), "issue_comment", SECRET) == 94
+
+
+def test_inspected_retry_uses_new_event_not_duplicate_delivery(tmp_path):
+    q = module().Queue(tmp_path / "queue.sqlite")
+    original = payload()
+    q.add(original, 91, 0)
+    run = q.claim(30)
+    q.finish(run[0], "failed", "failure.md")
+    assert not q.add(original, 91, 40)
+    assert q.claim(70) is None
+    fresh = payload(
+        action="created",
+        issue={"number": 91, "pull_request": {}},
+        comment={"id": 123, "body": "Inspected run 1; request another review"},
+    )
+    assert module().validate(fresh, signed(fresh), "issue_comment", SECRET) == 91
+    assert q.add(fresh, 91, 80)
+    assert q.claim(110)[1] == [91]
+
+
+def test_reviewable_path_allowlist():
+    from local_worker_github import reviewable_path
+
+    for path in [
+        "src/crypto_grid_bot/app.py",
+        "tests/test_app.py",
+        "docs/LOCAL_WORKER.md",
+        ".github/workflows/quality.yml",
+        "requirements-dev.lock",
+    ]:
+        assert reviewable_path(path)
+    for path in [
+        "tests/data_prices.py",
+        "config/market.json",
+        "src/fixtures/observations.py",
+        "prices.csv",
+        "data/README.md",
+    ]:
+        assert not reviewable_path(path)
