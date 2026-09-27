@@ -196,7 +196,10 @@ def run_batch(
             )
         body = (
             f"## Codex local worker → Claude/Bob handoff\n\n"
-            f"PR #{numbers[0]}, head **{review['head']}**.\n\n{review['review']}\n\n"
+            f"PR #{numbers[0]}, head **{review['head']}**, "
+            f"base **{snapshot['pr']['base']['sha']}**.\n\n"
+            "This recommendation is invalid if either the head or base changes.\n\n"
+            f"{review['review']}\n\n"
             f"Review recommendation: {'STALE' if blocks else review['verdict']}. "
             "This is evidence for discussion, not permission for an automatic merge. "
             "The reviewing agent must resolve disagreements and make an explicit merge decision. "
