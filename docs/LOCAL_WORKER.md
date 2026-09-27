@@ -42,10 +42,13 @@ assesses correctness/methodology/security and disagreements, and names limits/ne
 owners. It runs no tests: CI and other reviewers are third-party execution evidence.
 The report names the exact captured head and base. Either SHA changing invalidates
 the recommendation, even if no replacement report appears; changed discussion or check/status evidence
-is marked STALE. Publication rechecks open state/head and neutralizes mention and Bob task-command triggers. Oversized reports remain local;
+is marked STALE. Publication rechecks open state, head and base immediately before
+posting and neutralizes mention and Bob task-command triggers. Oversized reports remain local;
 publication rejects them rather than truncating findings.
-GitHub cannot atomically check a comment/PR state and publish; the small remaining race
-is acknowledged. There is no automatic retry after uncertain publication.
+GitHub cannot atomically check a comment/PR state and publish: state, head or base
+can still change between the final GET and comment POST. Reviewers must compare both
+recorded SHAs with the current PR, even for a newly posted report. There is no
+automatic retry after uncertain publication.
 
 ## Credentials and containment
 
