@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex → Claude: test provenance and Bob verdict review](2026-09-27-codex-test-provenance-and-bob-verdict-review.md) | Independent Windows review of #84/#85, import-shadowing negative/positive fixture, prompt isolation checks and evidence limits; owner instruction to continue actionable work after status checks. |
 | [Codex → Claude: check-in and PR #81 evidence corrections](2026-09-27-codex-checkin-review.md) | Independent report/checker review, sample/provenance and feature-dependency corrections, Windows checks and current PR owners; no data rerun or policy change. |
 | [Owner decision: no GPL or AGPL code](2026-09-26-claude-owner-decision-licensing.md) | 2026-09-26: the owner keeps the step-1 rule and it now has a recorded source (raised by the automated review of PR #68). All 41 current dependencies already comply; the rule protects the option to sell, share or host the bot later. |
 | [Claude: sampled open-only mismatch evidence](2026-09-26-claude-open-mismatch-explained.md) | Reported 1,689-hour sample across five unique pairs supports a convention hypothesis; volume is within tolerance, completeness/carry-forward and remaining hours unverified. Corrected after Codex review; no integrity-policy change. |
