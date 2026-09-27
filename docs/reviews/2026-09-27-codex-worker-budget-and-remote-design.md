@@ -11,11 +11,17 @@ incident PRs and GitHub/chat/private-email notification remain requested.
 - PR: [#120](https://github.com/mgalic01/adaptive-market-engine/pull/120),
   branch `codex/worker-budget-alerts`.
 - Base: `5c79ad52f491ea1d0fc2f0344f1abc09de067744`.
-- Tested code head: `3a85b4a10d0b33c4200e6f38e7dbd17a68b9652b`.
-- The 41 Windows worker tests, Ruff/format and report checks below apply to that
-  code head. Subsequent documentation-only commits do not retroactively change it.
-  The push handoff records their full new head and fresh verification; external
-  review must cover that latest head, not this historical checkpoint.
+- Initial cap-removal tested head: `3a85b4a10d0b33c4200e6f38e7dbd17a68b9652b`:
+  41 Windows worker tests, Ruff/format and report checks passed.
+- Final reviewed and tested head: `b60513c51167b3c71866917a557397b66816b4bb`.
+  This adds executable containment tests and their workflow, not just documentation.
+  Windows: 43 targeted tests. Linux: [2 CLI fixture tests passed](https://github.com/mgalic01/adaptive-market-engine/actions/runs/36346375070).
+  Both test-and-audit runs, CodeQL and automated review passed at this head.
+  [Bob's NO ISSUES](https://github.com/mgalic01/adaptive-market-engine/pull/120#issuecomment-5859343056)
+  and [Claude's APPROVE](https://github.com/mgalic01/adaptive-market-engine/pull/120#issuecomment-5859369245)
+  explicitly name this same full head. [Push handoff](https://github.com/mgalic01/adaptive-market-engine/pull/120#issuecomment-5859337528).
+- Merge: `8a45cb540ce9a75153e16f7e23bb57efa9ea5fa7`. The review-before-merge gate was
+  met for the final head; this post-merge correction makes the durable record explicit.
 
 Cloud review at `0c6ed43a28ce094e0609aed25995b6056f481a6d` identified the missing
 checkpoint and missing explicit remote credential-containment requirements. Both
@@ -68,7 +74,7 @@ Public Codex CLI 0.157.1 on Windows accepted the existing isolation switches wit
 real authenticated review. It was installed in an isolated tooling directory with
 package scripts disabled. No Desktop login was read or copied.
 
-The next batch adds `tests/test_remote_worker_containment.py` and a Linux-only
+The final `b60513c` batch added `tests/test_remote_worker_containment.py` and a Linux-only
 GitHub containment check using pinned public CLI 0.157.1, a locally simulated model
 endpoint and dummy auth. On Windows both tests passed: six hostile tool requests
 were rejected, the dummy auth did not appear in model traffic/output, configured MCP
