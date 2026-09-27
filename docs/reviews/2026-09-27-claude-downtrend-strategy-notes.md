@@ -8,6 +8,13 @@
 - **Status.** No code, no spec. The owner decided that the current experiment (spec v1)
   finishes first, and this becomes spec v2 afterwards (section 2). Nothing here authorises
   live trading, API keys, futures orders or access to the reserved 2025-01+ data.
+- **Revision 2 (2026-09-27, session `a05e63c8`).** Corrected after Codex's review and six
+  Codex Cloud findings. Each correction is marked "Corrected" where it applies. My
+  point-by-point reply is in
+  [2026-09-27-claude-downtrend-response.md](2026-09-27-claude-downtrend-response.md),
+  and Codex's position is in
+  [2026-09-27-codex-downtrend-research-plan.md](2026-09-27-codex-downtrend-research-plan.md).
+  This revision refers to the owner as "the owner" or "they".
 
 ## 1. How the topic came up
 
@@ -16,7 +23,7 @@ While discussing the 8% soft-drawdown lockout (PR #102), the owner said:
 > "I mean what's the point of trading if not trading ...what do we gain by holding money
 > in the account that just sits there"
 
-He then asked (via the brainstorming skill):
+The owner then asked (via the brainstorming skill):
 
 > "we need to see what our options are when we trade in a falling (bear market) , im not
 > really sure how to call it because even bull parts of the market have some downtrends...
@@ -39,15 +46,20 @@ After my first summary, which put shorting aside for now:
 | How should shorting fit into the bot? | **Option 1, one bot that switches mode** (grid when sideways or up, trend short in clear downtrends, cash otherwise), with: *"the boot really needs to have CLEAR and excellently defined rules on when to switch when to stay out if the rules are not met etc..."* |
 | How does this relate to the current experiment (spec v1)? | **"Finish v1, then design v2"** |
 
-**Assumptions I stated to the owner, not yet confirmed by him:**
-- paper-only until he explicitly approves going live;
+**Assumptions I stated to the owner, not yet confirmed by them:**
+- paper-only until the owner explicitly approves going live;
 - leverage near 1x;
 - trend rules fixed in advance on a stated timescale, with volatility-based sizing, a hard
   exit on a trend reversal and a per-trade loss limit;
-- building and testing on Binance data (including the funding archives already fetched
-  for variant G), then checking against Kraken's rules before any live use;
-- the normal process: a written spec, Codex and Bob review, registered trials, testing on
-  the 2018 and 2022 bear markets;
+- building and testing on Binance data, then checking against Kraken's rules before any
+  live use. **Corrected:** the funding archives for variant G have been surveyed, not
+  fetched. The P8 fetch and manifest are still pending
+  (`docs/reviews/2026-09-25-claude-g-funding-signal.md`, "Not yet done"). Checking
+  Kraken's rules is not enough either. Each venue needs its own historical data,
+  mechanics and paper verification before we can claim it is supported;
+- the normal process: a written spec, Codex and Bob review, and registered trials.
+  **Corrected:** testing only on the 2018 and 2022 bear markets would select on the
+  outcome (section 5, question 5);
 - **disclosing** that we already know the reserved 2025–26 window contains a roughly 50%
   decline (spec v1 §7), which biases any short strategy tested on it;
 - the protected profit (the 50/50 vault) is never traded, in either mode.
@@ -60,12 +72,15 @@ and search summaries, not the full papers, except where a claim is quoted with i
 figures. Treat the figures as leads to verify, not as settled facts.
 
 1. **Trend-following / time-series momentum — the strongest evidence.**
-   - Positive returns in every decade since 1880 across 67 markets, and good performance
+   - In **traditional diversified futures** (not crypto, and not a short-only rule):
+     positive returns in every decade since 1880 across 67 markets, and good performance
      in 8 of the 10 largest crises
      ([Hurst, Ooi & Pedersen](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2993026)).
    - Documented in all 58 liquid futures studied; performs best in extreme markets
      ([Moskowitz, Ooi & Pedersen](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2089463)).
-   - **The "crisis alpha" comes from strategies that can go short.**
+   - **Corrected (narrowed).** In those futures studies, the crisis performance comes
+     from long/short trend portfolios. That makes shorting worth investigating. It is not
+     evidence that a crypto short rule would earn it.
    - Crypto studies also find time-series momentum, including long-only
      ([Le & Ruthbah, Monash](https://www.monash.edu/__data/assets/pdf_file/0011/3744821/Trend-following-Strategies-for-Crypto-Investors.pdf);
      [arXiv 2602.11708](https://arxiv.org/html/2602.11708v1)).
@@ -73,7 +88,9 @@ figures. Treat the figures as leads to verify, not as settled facts.
      halved the maximum drawdown in one public backtest. That is a weak, non-reviewed
      source ([GitHub](https://github.com/IsaacDodds/crypto-momentum-backtest)), and it
      shows the rule controls drawdown rather than adding return.
-2. **Momentum crashes — the main danger for shorts.** Momentum strategies suffer rare,
+2. **Momentum crashes — the main danger for shorts.** These studies measure
+   cross-sectional momentum (winners minus losers, in equities), not the directional
+   rule discussed here, but they show the shape of the risk. Such strategies suffer rare,
    severe losses in panic states, *during market rebounds*: a winners-minus-losers
    portfolio lost about three-quarters of its value in a few months in 2009. Volatility
    scaling roughly halves the worst drawdowns
@@ -91,7 +108,12 @@ figures. Treat the figures as leads to verify, not as settled facts.
    mechanism of our V0: forced exits of inventory accumulated on the way down.
    Short-horizon mean reversion is real in crypto: at 15-minute horizons it is
    significant on 90% of 183 Binance pairs
-   ([arXiv 2608.21888](https://arxiv.org/abs/2608.21888)). The reversal literature also reports that
+   ([arXiv 2608.21888](https://arxiv.org/abs/2608.21888)). **Corrected: the cost caveat.**
+   The repository's earlier summary of this study puts the effect at about 1.3 bp gross
+   per trade, below realistic costs and adverse selection
+   (`docs/reviews/2026-09-24-claude-fees-and-strategy-plan.md`, line 97). Statistical
+   significance is not a net, tradable edge. It gives no economic support to the grid or
+   to the mirrored grid. The reversal literature also reports that
    daily reversal is mainly an illiquid-coin effect, while large coins show daily
    momentum. That is from search summaries only
    ([Fairfield](https://digitalcommons.fairfield.edu/cgi/viewcontent.cgi?article=1249&context=business-facultypubs),
@@ -101,9 +123,13 @@ figures. Treat the figures as leads to verify, not as settled facts.
    funding, mostly in bull markets
    ([BIS, *Crypto carry*](https://www.bis.org/publ/work1087.pdf)). **In bear markets
    funding is often negative, which means shorts pay longs.** It was sharply negative in
-   March 2020, so a trend short can bleed funding exactly when it is right. Extremely
-   negative funding has tended to precede relief rallies, which is the idea behind v1's
-   variant G.
+   March 2020, so a trend short can bleed funding exactly when it is right. Some sources
+   report that extremely negative funding tends to precede relief rallies; this is
+   unverified here. **Corrected:** that is *not* the idea behind v1's variant G. G is a
+   long-crowding gate. It blocks new grids only when the newest three funding rates are
+   all above +0.0005, and low or negative funding never blocks
+   (`docs/EXPERIMENT_SPEC_V1.md` §3 G). A negative-funding squeeze rule would be a
+   separate, unapproved hypothesis.
 6. **Dollar-cost averaging in bears.** It lowers drawdowns and the average entry price
    for a long-term accumulator, but lump-sum wins most of the time. The evidence is
    mostly industry analysis
@@ -114,7 +140,10 @@ figures. Treat the figures as leads to verify, not as settled facts.
 **Conclusion I gave the owner.**
 - Spot-only, the professional answer to a downtrend is to lose far less (step aside,
   size by volatility, cap inventory) and to be ready for the turn.
-- Profiting *from* the fall needs shorting.
+- Profiting *from* the fall needs negative exposure. **Corrected (Codex):** shorting is
+  not the only instrument. A fully paid long put cannot lose more than its premium, but
+  its cost, expiry and execution may make it unsuitable. Puts stay a comparison option;
+  they add no scope.
 - Shorting done right is where the best "crisis" evidence lives. It must survive relief
   rallies and negative funding.
 
@@ -129,7 +158,7 @@ The owner asked:
 > in a downtrend, we see some green candles on hourly or daily charts as well... how good
 > of an algorithm and what variables would be a good for this kind of downtrend trading?"
 
-He is right, and the answer shapes the whole design.
+The owner is right, and the answer shapes the whole design.
 
 ### 4.1 Two timescales, decided in advance
 
@@ -168,7 +197,7 @@ and another chance to fit noise.
 | **Mode: is it a downtrend?** | Daily close vs 50- and 200-day SMA (as in variant A); 3- or 12-month return sign; a structure of lower highs and lower lows | The strongest evidence is for the simple return sign or moving averages; structure rules are harder to define without ambiguity |
 | **Entry: is this a bounce worth selling?** | Distance above the 20-day SMA or VWAP; RSI or another short-horizon overbought measure; a rally of *k* × ATR from the last low | This is where the grid levels would sit; weak academic evidence, so test with few variants |
 | **Selling pressure** | Taker buy versus sell volume (in Binance klines); volume on up days vs down days | Rising taker-sell share into a rally supports the short; heavy buying warns of a reversal |
-| **Crowding and squeeze risk** | Funding rate (archives already fetched for G); open-interest changes | Deeply negative funding means crowded shorts that pay to hold, so no new shorts; positive funding during a bear rally is a better entry |
+| **Crowding and squeeze risk** | Funding rate (archives surveyed for G, fetch pending); open-interest changes | Deeply negative funding means crowded shorts that pay to hold, so no new shorts; positive funding during a bear rally is a better entry |
 | **Size and stops** | ATR or realised volatility | Volatility-scaled size (section 3, point 3); stops and trailing exits in ATR multiples |
 | **Exit: trend over?** | Close back above the 50-day SMA, or a positive 1-month return; a time stop | A hard, pre-written exit, per the owner's "CLEAR and excellently defined rules" |
 
@@ -179,12 +208,14 @@ are where overfitting would come from.
 
 ### 4.4 Data we would need, and what we already have
 
-- Binance **futures** klines and funding archives. Funding is already fetched for
-  variant G (spec v1 P8); futures klines would be new.
+- Binance **futures** klines and funding archives. **Corrected:** funding was surveyed
+  for variant G, but the P8 fetch and a checksum-pinned manifest are still pending.
+  Futures klines would be new.
 - Taker buy volume is already a field in Binance klines.
 - Open interest may be in Binance's public futures metrics files. **To verify**; not
   checked today.
-- Kraken's contract specifications, fees and minimums, before any live use.
+- For Kraken, verified separately: its own price, mark and funding history, fees,
+  minimums and liquidation rules. Binance evidence does not validate Kraken execution.
 
 ## 5. Open questions for Codex (and later Bob)
 
@@ -192,7 +223,9 @@ are where overfitting would come from.
    cash, or also "reduce"? What exactly happens at a mode change to open orders and
    inventory?
 2. **Short mechanics in the simulator.** Margin, 1x leverage, a liquidation model,
-   funding payments every 8 hours, and futures fees. Is the existing `Account` extendable,
+   funding payments, and futures fees. **Corrected:** the funding cadence is data, set
+   per venue, instrument and date, not a fixed 8 hours. Spec v1 G already accepts
+   intervals of 1, 2, 4 and 8 hours. Is the existing `Account` extendable,
    or does it need a separate engine?
 3. **Honesty.** How do we test a short strategy fairly when we know the reserved window
    contains a big decline? Options: count the knowledge as a disclosed bias; hold out
@@ -202,6 +235,9 @@ are where overfitting would come from.
    for a short; what replaces it?
 5. **Sequencing inside v2.** First a **paper research test** of trend-shorts on 2018 and
    2022 to see whether the idea has any edge, before designing the full multi-mode bot?
+   **Corrected:** a test limited to known bear years cannot show an edge, because even an
+   always-short rule looks good there. Such a run only checks the mechanics, given a
+   bear market. An edge test needs a preregistered, complete pre-reserved calendar.
    The owner chose the full bot as the target, but a cheap test first could save a lot
    of work.
 
@@ -212,12 +248,15 @@ are where overfitting would come from.
 - **PR #92** (fold eligibility, part 1), **PR #93** (trial count, part 2) and **PR #101**
   (DSR return series, part 3): under review.
 - **PR #102:** the 8% soft-drawdown lockout.
-  - The owner **leans to option C**: reset the peak after a 24-hour cool-off. He wants a
-    restart after his own review following a 12% stop, and said: *"100 is not a life
+  - The owner **leans to option C**: reset the peak after a 24-hour cool-off. They want
+    a restart after their own review following a 12% stop, and said: *"100 is not a life
     changing amount... 2000 can be but 100 is not"*.
-  - Whether to make an exception to his no-changes-after-results rule, he will
+  - Whether to make an exception to their no-changes-after-results rule, the owner will
     "decide after Codex/Bob".
-  - Bob's position is posted; Codex's is pending.
+  - **Corrected:** both positions are now posted. Bob gave NO ISSUES on C, with
+    clarifications.
+    [Codex](https://github.com/mgalic01/adaptive-market-engine/pull/102#issuecomment-5856718186)
+    agrees with changes to drafting C, which does not waive the no-tuning rule.
 - The owner's point that trading capital should trade, and that protected profit is never
   touched, carries into v2. I confirmed in `portfolio/profit_vault.py` that half of each
   new profit above the previous high is set aside, can never fund orders, and moves to
