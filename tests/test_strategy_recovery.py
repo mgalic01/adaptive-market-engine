@@ -558,6 +558,18 @@ class StrategyRecoveryTests(TestCase):
             self.sim.process(frame(index, "0.23300"))
         self.assertEqual(0, self.sim.store.read().inventory)
 
+    def test_a_residue_that_becomes_sellable_is_exited_while_buys_rest(self):
+        # The new grid's lower buys cannot pair the old residue: each buy's sell covers
+        # only its own fill. So the residue is sold once the market will take it.
+        self.dust()
+        for index in range(3, 10):
+            self.sim.process(frame(index, "0.02330"))
+        self.assertTrue(any(o.side == "buy" for o in self.sim.store.read().orders.values()))
+        self.sim.process(frame(10, "0.06000"))
+        state = self.sim.store.read()
+        self.assertEqual(0, state.inventory)
+        self.assertTrue(any(o.side == "buy" for o in state.orders.values()))
+
     def test_range_exit_clears_with_an_unsellable_residue(self):
         # Absorbing state 4: clearing the exit required inventory == ZERO, which
         # liquidation cannot deliver once the remainder is below the minimum notional.
@@ -577,7 +589,7 @@ class StrategyRecoveryTests(TestCase):
         self.sim.process(frame(1, "0.02196"))
         self.sim.process(frame(2, "0.01000"))
         self.assertTrue(self.sim.store.read().halt)
-        with self.assertRaisesRegex(ValueError, "frozen.*final"):
+        with self.assertRaisesRegex(ValueError, "frozen.*hard-drawdown.*final"):
             self.sim.resume(frame(3), event_id="drawdown", reason="try recovery")
 
     def test_resume_cli_loads_saved_rules_and_requires_current_frame(self):

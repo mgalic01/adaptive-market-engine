@@ -109,13 +109,14 @@ def result_failures(results: list[dict[str, Any]]) -> list[str]:
             failures.append(f"{name}: {r['transient_pauses']} rejected frames")
         if not r["bars"]:
             failures.append(f"{name}: no evaluation bars")
-        # A run that ends still unable to exit has not demonstrated an exit path, so its
-        # drawdown and return are not evidence. Terminal dust (a residual below one
-        # minimum notional, which no exchange will sell) is reported, not failed.
-        if r.get("final_exit_blocked") == "depth":
+        # A run that ends with an exit still owed (liquidation, range exit or drain)
+        # and inventory the market would accept still unsold has not shown an exit
+        # path, so its drawdown and return are not evidence. A remainder no exchange
+        # would buy (dust) is reported, not failed.
+        if r.get("final_exit_blocked") == "incomplete":
             failures.append(
-                f"{name}: exit blocked on depth at the end of the run; "
-                f"{r['final_unsellable_notional']} unsellable"
+                f"{name}: run ended with an exit still incomplete; "
+                f"{r['final_unsellable_notional']} unsold"
             )
     return failures
 

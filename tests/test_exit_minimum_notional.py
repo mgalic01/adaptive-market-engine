@@ -20,7 +20,12 @@ from crypto_grid_bot.backtest.__main__ import result_failures
 from crypto_grid_bot.backtest.replay import Metrics, record_exit_block, summarise
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.demo import demo_frames
-from crypto_grid_bot.simulation.execution import liquidate, place, reduce_unreserved
+from crypto_grid_bot.simulation.execution import (
+    exit_state,
+    liquidate,
+    place,
+    reduce_unreserved,
+)
 from crypto_grid_bot.simulation.models import Account, D, LimitOrder, MarketRules, Quote
 from crypto_grid_bot.simulation.runner import PaperSimulator
 
@@ -156,7 +161,7 @@ class StepReportTests(TestCase):
 
 
 class MeasurementTests(TestCase):
-    def test_blocked_exits_reach_metrics_and_the_published_summary(self):
+    def test_blocked_exits_reach_the_counters(self):
         metrics = Metrics()
         for _ in range(3):
             record_exit_block(metrics, "depth", D("114.90"))
@@ -166,11 +171,10 @@ class MeasurementTests(TestCase):
         self.assertEqual({"depth": 3, "dust": 1}, dict(metrics.exit_blocked_by_kind))
         self.assertEqual(3, metrics.max_exit_blocked_streak)
         self.assertEqual(D("114.90"), metrics.max_exit_blocked_notional)
-        self.assertEqual(
-            ("dust", D("4.596")), (metrics.final_exit_blocked, metrics.final_blocked_notional)
-        )
+        # The final state is not the last refusal: it comes from the account at the end.
+        self.assertEqual("", metrics.final_exit_blocked)
 
-    def test_a_run_that_ends_unable_to_exit_fails_acceptance(self):
+    def test_a_run_that_ends_with_an_exit_incomplete_fails_acceptance(self):
         result = {
             "symbol": "DEMOUSDT",
             "path_mode": "high_first",
@@ -178,23 +182,59 @@ class MeasurementTests(TestCase):
             "accounting_problems": [],
             "transient_pauses": 0,
             "bars": 10,
-            "final_exit_blocked": "depth",
-            "final_unsellable_notional": "114.90",
+            "final_exit_blocked": "incomplete",
+            "final_unsellable_notional": "91.92",
         }
         (failure,) = result_failures([result])
-        self.assertIn("exit blocked", failure)
-        self.assertIn("114.90", failure)
+        self.assertIn("exit still incomplete", failure)
+        self.assertIn("91.92", failure)
         # Terminal dust is an exchange fact, reported but not a validity failure.
         dust = dict(result, final_exit_blocked="dust", final_unsellable_notional="4.596")
         self.assertEqual([], result_failures([dust]))
 
-    def test_summary_publishes_the_unsellable_residual(self):
+    def test_summary_publishes_the_final_state(self):
         from crypto_grid_bot.backtest.replay import RunConfig
 
         metrics = Metrics(peak_equity=D("100"), final_equity=D("100"), frames=1, bars=1)
         record_exit_block(metrics, "dust", D("4.596"))
+        metrics.final_exit_blocked, metrics.final_blocked_notional = "dust", D("4.596")
         run = RunConfig("DEMOUSDT", "high_first", True, RULES, D("100"), D("0.0005"))
         summary = summarise(run, metrics, holding("200"), [])
         self.assertEqual("dust", summary["final_exit_blocked"])
         self.assertEqual("4.596", summary["final_unsellable_notional"])
         self.assertEqual({"dust": 1}, summary["exit_blocked_frames_by_kind"])
+
+
+class FinalExitStateTests(TestCase):
+    """``exit_state`` judges the end of a run from the account, not the last refusal."""
+
+    def test_a_partial_fill_on_the_last_frame_leaves_the_exit_incomplete(self):
+        account = holding("5000")
+        account.halt, account.liquidating = "hard drawdown", True
+        # 3000 * 0.10 = 300 units, 6.894 quote: one legal chunk sells, 4700 remain.
+        result = liquidate(account, quote(size="3000"), RULES)
+        self.assertEqual(("", D("300")), (result.blocked, result.fills[0].quantity))
+        state, value = exit_state(account, quote(size="3000"), RULES)
+        self.assertEqual("incomplete", state)
+        self.assertEqual(D("4700") * D("0.02298"), value)
+
+    def test_a_stalled_range_exit_is_incomplete(self):
+        account = holding("5000")
+        account.range_exit = True
+        self.assertEqual("incomplete", exit_state(account, quote(), RULES)[0])
+
+    def test_dust_stays_reported_while_a_new_grid_rests(self):
+        account = holding("200")
+        place(account, LimitOrder("grid/1", "buy", D("0.02200"), D("300"), D("300")), RULES)
+        # An idle grid frame attempts no exit; the remainder is still held and reported.
+        self.assertEqual(("dust", D("200") * D("0.02298")), exit_state(account, quote(), RULES))
+
+    def test_the_filled_part_of_a_resting_buy_is_not_an_unfinished_exit(self):
+        account = holding("0", cash="100")
+        order = LimitOrder("grid/1", "buy", D("0.02300"), D("400"), D("100"))
+        account.orders[order.order_id] = order
+        account.inventory = D("300")  # filled so far; its own sell is placed when it completes
+        self.assertEqual(("", D("0")), exit_state(account, quote(), RULES))
+
+    def test_a_flat_account_owes_nothing(self):
+        self.assertEqual(("", D("0")), exit_state(holding("0"), quote(), RULES))

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import zipfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -141,8 +142,20 @@ def read_archive(
     return parse_rows(read_member(path, f"{symbol}-{interval}-{month}.csv"), interval, month)
 
 
+_MEMBER_MONTH = re.compile(r"-(\d{4}-\d{2})\.csv$")
+
+
 def read_member(path: Path, expected_member: str) -> str:
-    """Return the ASCII text of the archive's only member, which must be named as given."""
+    """Return the ASCII text of the archive's only member, which must be named as given.
+
+    The member name must end in its month (``...-YYYY-MM.csv``), and that month must be
+    in the development window: this is the lowest reader, so the window is enforced
+    here and not only in the wrappers that call it.
+    """
+    month = _MEMBER_MONTH.search(expected_member)
+    if month is None:
+        raise DataError(f"archive member name carries no month: {expected_member}")
+    development_month(month.group(1))
     try:
         with zipfile.ZipFile(path) as archive:
             members = archive.infolist()

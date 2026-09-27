@@ -9,7 +9,9 @@ import zipfile
 from dataclasses import replace
 from decimal import Decimal as D
 from pathlib import Path
+from unittest.mock import patch
 
+from crypto_grid_bot.backtest import dataset
 from crypto_grid_bot.backtest.dataset import (
     archive_path,
     fetch_dataset,
@@ -20,7 +22,12 @@ from crypto_grid_bot.backtest.dataset import (
     verify_dataset,
 )
 from crypto_grid_bot.backtest.funding import read_funding_archive
-from crypto_grid_bot.backtest.klines import aggregate, parse_rows, read_archive
+from crypto_grid_bot.backtest.klines import (
+    aggregate,
+    parse_rows,
+    read_archive,
+    read_member,
+)
 from crypto_grid_bot.market_data.parsing import DataError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -515,6 +522,41 @@ class ReservedWindowTests(unittest.TestCase):
         path = self._archive("BTCUSDT-fundingRate-2025-01.csv")
         with self.assertRaisesRegex(DataError, "reserved window"):
             read_funding_archive(path, "BTCUSDT", "2025-01")
+
+    def test_the_raw_member_reader_refuses_a_reserved_month(self):
+        # read_member is imported directly by audit_run, so the wrappers' guards are not
+        # the only way in; a real zip proves the refusal precedes opening it.
+        path = self._archive("ADAUSDT-1m-2025-01.csv")
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            read_member(path, "ADAUSDT-1m-2025-01.csv")
+        self.assertIn(
+            "not,parsed",
+            read_member(self._archive("ADAUSDT-1m-2024-12.csv"), "ADAUSDT-1m-2024-12.csv"),
+        )
+
+    def test_the_raw_member_reader_refuses_a_name_carrying_no_month(self):
+        path = self._archive("ADAUSDT-1m-2024-12.csv")
+        with self.assertRaisesRegex(DataError, "carries no month"):
+            read_member(path, "anything.csv")
+
+    def test_the_archive_fetcher_refuses_a_reserved_month_before_connecting(self):
+        # archive_get is a reusable network API; fetch_file's guard is not the only way in.
+        calls: list[str] = []
+
+        def connection(host, timeout):
+            calls.append(host)
+            raise AssertionError("no connection may be opened for a reserved month")
+
+        with patch.object(dataset, "https_connection", connection):
+            for path in (
+                "/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2025-01.zip",
+                "/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2025-01.zip.CHECKSUM",
+            ):
+                with self.assertRaisesRegex(DataError, "reserved window"):
+                    dataset.archive_get(path)
+            with self.assertRaisesRegex(DataError, "carries no month"):
+                dataset.archive_get("/data/spot/monthly/klines/ADAUSDT/1m/index.html")
+        self.assertEqual([], calls)
 
     def test_the_readers_still_open_the_last_development_month(self):
         # The same archive contents in 2024-12 get past the guard to the parser.

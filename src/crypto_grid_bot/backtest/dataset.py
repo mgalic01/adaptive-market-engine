@@ -237,10 +237,22 @@ def local_path(data_dir: Path, symbol: str, interval: str, month: str) -> Path:
     return data_dir / "binance" / archive_path(symbol, interval, month).lstrip("/")
 
 
+_ARCHIVE_MONTH = re.compile(r"-(\d{4}-\d{2})\.zip(?:\.CHECKSUM)?$")
+
+
 def archive_get(path: str) -> bytes | None:
-    """GET one archive object from the fixed host; None only for HTTP 404."""
+    """GET one archive object from the fixed host; None only for HTTP 404.
+
+    The path must name a monthly archive or its checksum, and its month must be in the
+    development window. This is the lowest network call, so the window is enforced here
+    and not only in ``fetch_file``.
+    """
     if not path.startswith("/data/spot/monthly/klines/"):
         raise DataError("path is outside the spot kline archive")
+    month = _ARCHIVE_MONTH.search(path)
+    if month is None:
+        raise DataError(f"archive path carries no month: {path}")
+    development_month(month.group(1))
     connection = https_connection(ARCHIVE_HOST, timeout=60)
     try:
         connection.request("GET", path)

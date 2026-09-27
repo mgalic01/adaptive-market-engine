@@ -54,7 +54,8 @@ new net portfolio profit if other holdings have depreciated.
 | Fresh frame with news/candidate veto | Cancel buys, stop replenishment, allow reduce-only sells | Same confirmation rule after eligibility returns |
 | Daily-loss limit or soft drawdown | Cancel buys, manage sells, block new exposure | Risk limits must pass, then confirmed recovery |
 | Invalid numeric/model/symbol input | Cancel all orders; latch halt; if a position is held, arm the exit so it is sold on the next valid frame | Explicit audited resume with fresh checks, once the exit has completed |
-| Emergency or hard drawdown | Cancel orders; latch halt and liquidate using valid event liquidity | **Final.** Resume re-runs the risk check, and a flat account's equity cannot move, so its drawdown against `risk_high` stays at the trigger value and resume is always refused. See the note below. |
+| Hard drawdown | Cancel orders; latch halt and liquidate using valid event liquidity | **Final.** Resume re-runs the risk check, and a flat account's equity cannot move, so its drawdown against `risk_high` stays at the trigger value and resume is always refused. See the note below. |
+| Emergency signal | Cancel orders; latch halt and liquidate using valid event liquidity | Resumable **only while the drawdown itself is within limits**: the emergency flag is read from the resume frame, so once it clears and every other limit passes, resume succeeds. An emergency raised at or past the hard-drawdown level is final for the reason above. |
 | Active capital exhausted | Cancel orders; latch halt | **Final.** Active equity is zero, so the drawdown is 1.0. The reserve is protected and resume cannot return it to the active account. |
 | Saved accounting invariant failure | Abort the transaction / refuse opening the account | Investigate; resume cannot bypass corruption |
 
@@ -79,6 +80,11 @@ refused, however long the operator waits and however far the market recovers. Th
 holds for an "active capital exhausted" halt, whose drawdown is pinned at 1.0. Changing
 this needs a policy decision on rebasing the reference, which is what PR #102 is
 deciding; it is deliberately not a code default.
+
+An **emergency** halt is different, and the row above says so: the emergency flag comes
+from the frame passed to `resume()`, not from a frozen baseline, so a halt raised only
+by that flag clears once the flag does. It is final only when the account is also at or
+past the drawdown limit. Do not read "latched" as "unrecoverable" for this one case.
 
 Pausing cancels the remainder of a partially filled buy. Its unpaired inventory
 is sold conservatively on a usable frame, sharing remaining bid capacity with

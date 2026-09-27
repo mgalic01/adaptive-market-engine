@@ -36,6 +36,7 @@ from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, In
 from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
+from crypto_grid_bot.simulation.execution import exit_state
 from crypto_grid_bot.simulation.models import (
     ONE,
     ZERO,
@@ -235,7 +236,9 @@ class Metrics:
     # exchange minimum notional ("depth": this frame's participation chunk; "dust": the
     # whole unreserved position). A refusal sells nothing, so it is invisible in the
     # fill journal; without these counters a permanently stalled exit looks like a
-    # quiet account. ``final_*`` describe the last frame of the run.
+    # quiet account. ``final_*`` come from the account at the run's last quote
+    # (execution.exit_state), not from the last refusal, so a partial fill or an idle
+    # frame at the end cannot hide an unfinished exit or a held remainder.
     exit_blocked_frames: int = 0
     exit_blocked_by_kind: Counter[str] = field(default_factory=Counter)
     exit_blocked_streak: int = 0
@@ -247,8 +250,6 @@ class Metrics:
 
 def record_exit_block(metrics: Metrics, blocked: str, notional: Decimal) -> None:
     """Record one frame's exit refusal (``blocked`` empty means the exit was not refused)."""
-    metrics.final_exit_blocked = blocked
-    metrics.final_blocked_notional = notional if blocked else ZERO
     if not blocked:
         metrics.exit_blocked_streak = 0
         return
@@ -399,6 +400,7 @@ def replay(
     hold: _BuyAndHold | None = None
     was_range_exit = False
     last_hour = -1
+    last_quote: Quote | None = None
     for kline in minutes:
         inputs = features.at(kline.open_ms)
         if inputs is None:
@@ -423,6 +425,7 @@ def replay(
             frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch)
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
+            last_quote = quote
             metrics.requests_by_day[quote.observed_at[:10]] += order_requests(
                 orders, since, report["fills"]
             )
@@ -474,6 +477,10 @@ def replay(
             last_hour = hour
     if hold is not None:
         metrics.hold_final, metrics.hold_max_drawdown = hold.value, hold.max_drawdown
+    if last_quote is not None:
+        metrics.final_exit_blocked, metrics.final_blocked_notional = exit_state(
+            account, last_quote, run.rules
+        )
     return metrics, account
 
 

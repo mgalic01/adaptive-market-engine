@@ -217,6 +217,7 @@ def reduce_unreserved(
     rules: MarketRules,
     *,
     consumed: Decimal = ZERO,
+    maximum: Decimal | None = None,
 ) -> Reduction:
     """Exit residual inventory without spending liquidity used by existing sells.
 
@@ -229,16 +230,19 @@ def reduce_unreserved(
     nonnegative(consumed)
     price = floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
     unreserved = account.inventory - account.reserved_base()
-    sellable = floor_step(unreserved, rules.quantity_step)
+    # ``maximum`` limits the exit to one part of the unreserved inventory, such as a
+    # residue, when the rest belongs to a buy still resting on the book.
+    target = unreserved if maximum is None else min(unreserved, maximum)
+    sellable = floor_step(target, rules.quantity_step)
     capacity = max(ZERO, quote.bid_size * rules.participation - consumed)
-    quantity = floor_step(min(unreserved, capacity), rules.quantity_step)
+    quantity = floor_step(min(target, capacity), rules.quantity_step)
 
     def outcome(blocked: str, fills: list[Fill] | None = None) -> Reduction:
         return Reduction(
             fills or [], blocked, quantity, price * quantity, unreserved, price * unreserved
         )
 
-    if unreserved <= ZERO:
+    if target <= ZERO:
         return outcome("reserved" if account.inventory > ZERO else "")
     if quantity == ZERO or price * quantity < rules.minimum_notional:
         # Distinguish a position no exchange will ever let us sell at this price from
@@ -255,3 +259,23 @@ def liquidate(account: Account, quote: Quote, rules: MarketRules) -> Reduction:
     if account.orders:
         raise ValueError("cancel resting orders before liquidation")
     return reduce_unreserved(account, quote, rules)
+
+
+def exit_state(account: Account, quote: Quote, rules: MarketRules) -> tuple[str, Decimal]:
+    """Where the account's exits stand at this quote, from the account itself.
+
+    ``("incomplete", value)``: an exit is due (liquidation, range exit or drain) and
+    inventory the market would still accept remains unsold. ``("dust", value)``: only
+    a remainder no exchange would buy at this bid is left. ``("", 0)`` otherwise,
+    including unreserved inventory that belongs to a partly filled resting buy. The
+    value is the unreserved inventory at the exit price.
+    """
+    unreserved = account.inventory - account.reserved_base()
+    if unreserved <= ZERO:
+        return "", ZERO
+    price = floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
+    value = price * unreserved
+    if exitable(account, quote, rules) == ZERO:
+        return "dust", value
+    due = (bool(account.halt) and account.liquidating) or account.range_exit or account.draining
+    return ("incomplete", value) if due else ("", ZERO)

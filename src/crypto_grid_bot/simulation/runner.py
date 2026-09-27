@@ -412,21 +412,26 @@ class PaperSimulator:
                     ),
                 )
             ]
-            # Cancelled partial buys can leave unpaired inventory. Exit it using only
-            # remaining bid capacity, never inventory reserved by an existing sell.
-            # Unpaired inventory also has to go once no buy is left that could pair it;
-            # otherwise a residue the harvest tolerated would block the next harvest.
-            unpaired = account.inventory > account.reserved_base() and not any(
-                order.side == "buy" for order in account.orders.values()
+            # Unpaired inventory: neither reserved by a resting sell nor the filled part
+            # of a buy still resting, whose own sell will pair it once it fills. Cancelled
+            # partial buys leave it, and so does a residue a harvest tolerated. Exit it
+            # using only remaining bid capacity, never inventory reserved by a sell, and
+            # never the part of a resting buy that has already filled.
+            held_by_buys = sum(
+                (o.quantity - o.remaining for o in account.orders.values() if o.side == "buy"),
+                ZERO,
             )
-            if account.draining or unpaired:
+            unpaired = account.inventory - account.reserved_base() - held_by_buys
+            if unpaired > ZERO:
                 consumed = sum(
                     (D(fill["quantity"]) for fill in report["fills"] if fill["side"] == "sell"),
                     ZERO,
                 )
                 self._record_exit(
                     report,
-                    reduce_unreserved(account, quote, self.rules, consumed=consumed),
+                    reduce_unreserved(
+                        account, quote, self.rules, consumed=consumed, maximum=unpaired
+                    ),
                     "drain",
                 )
 
@@ -502,9 +507,10 @@ class PaperSimulator:
             if self._risk_action(account, frame.quote, frame.signals.emergency) != RiskAction.ALLOW:
                 raise ValueError(
                     "resume blocked by current risk limits; baselines are preserved. A flat "
-                    "account's equity cannot move, so the drawdown against risk_high is "
-                    "frozen: a hard-drawdown, emergency or capital-exhaustion halt is final "
-                    "for this account and no repeated resume can clear it"
+                    "account's equity cannot move, so its drawdown against risk_high is "
+                    "frozen: a hard-drawdown or capital-exhaustion halt is final for this "
+                    "account and no repeated resume can clear it. An emergency halt resumes "
+                    "once the emergency signal has cleared and every other limit passes"
                 )
             previous_halt = account.halt
             account.halt = ""
