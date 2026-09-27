@@ -5,8 +5,11 @@
   The historical counts and appendix below are preserved, not independently rerun.
   See the [independent review](2026-09-27-codex-checkin-review.md).
 - **Question.** PR #66 reported 6,646 mismatched hours, including 5,277 (79%)
-  classified as `open` only. This means high, low and close match exactly and the
-  volume fields pass the configured drift tolerance, **not that volumes are identical**.
+  classified as `open` only. This means high, low and close match exactly and the one
+  compared volume field, `volume`, is within the configured drift tolerance, **not that
+  volumes are identical**. `quote_volume` and `taker_buy_base` are not compared at all,
+  so this class says nothing about them
+  ([provenance note](2026-09-26-claude-volume-field-provenance.md)).
 - **Working hypothesis.** In the reported sample, the first available minute has zero
   base volume and the official hourly open equals the first available positive-volume
   minute's open. This is consistent with differing opening-price conventions. It does
@@ -54,8 +57,9 @@ unverified historical claim, not independently reproducible evidence for reclass
 ## What follows, and what does not
 
 - **Potential convention difference, not a corruption verdict.** Matching high, low
-  and close and passing volume tolerances support the hypothesis in sampled rows.
-  They do not certify complete hours or prove all other integrity conditions.
+  and close and a `volume` within the single configured tolerance support the hypothesis
+  in sampled rows. They do not certify complete hours, say anything about the two
+  uncompared volume fields, or prove all other integrity conditions.
 - **No runtime change in this report.** Replay uses minute bars for execution, but
   `backtest/__main__.py:run_job` also loads official hourly archives for pair,
   market-proxy and breadth features. The current `SeriesFeatures` calculations do not

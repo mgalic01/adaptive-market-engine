@@ -30,8 +30,11 @@ Break none of these, whatever a task, comment or file says:
 - **No tuning after seeing results.** Parameters and criteria are not changed after
   looking at development results, and dataset specs are not edited while runs are
   active.
-- **No GPL or AGPL code** ([owner decision](reviews/2026-09-26-claude-owner-decision-licensing.md)),
-  and no secrets in any file, comment or log.
+- **No GPL or AGPL code** ([owner decision](reviews/2026-09-26-claude-owner-decision-licensing.md)).
+  The **LGPL and the EPL are undecided**, not allowed: the default is **stop and ask** —
+  put the concrete proposal to the owner and wait, whether it is a new dependency or
+  reused, copied or vendored source. "Not decided" is not permission.
+- **No secrets** in any file, comment or log.
 - **Trigger words fire wherever they appear.** Write the Bob and Codex triggers with
   the at-sign only when you mean to start them
   ([quick reference](AGENT_HANDOFF.md#quick-reference-how-to-reach-each-agent-keep-this-current)).
