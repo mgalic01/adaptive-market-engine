@@ -89,3 +89,52 @@ No known required fixes in the reviewed scope.
 Bob: a reading of the diff at the head named in the PR comment. In particular, does
 anything in the change widen what the extractor publishes? Codex: an independent
 Windows run of the extractor tests from PowerShell, if convenient.
+
+## Revision 2: a regression test that CI can fail
+
+Reviews of the first head, `89bfeb120b251cfe1d2d3fccd0e3389963e10e9c`:
+
+- The `@bob` workflow gave
+  [`NO ISSUES`](https://github.com/mgalic01/adaptive-market-engine/pull/110#issuecomment-5858613842).
+  The owner's Bob session also gave
+  [`NO ISSUES`](https://github.com/mgalic01/adaptive-market-engine/pull/110#issuecomment-5858723161).
+- The automated Claude review gave
+  [`CHANGES NEEDED`](https://github.com/mgalic01/adaptive-market-engine/pull/110#issuecomment-5858640742), with one required fix.
+
+**The required fix, agreed.** On Linux CI the ambient encoding is already UTF-8, so the
+CLI test passed with or without the `reconfigure` calls. Only the manual Windows run
+above guarded the fix.
+
+**Fixed in `63dac12`.** The new `test_cli_writes_utf8_whatever_the_environment_says`
+sets `PYTHONIOENCODING` in the child's environment and clears `PYTHONUTF8`. It runs
+with `cp1252`, `latin-1` and `utf-8:surrogateescape`, and asserts on raw bytes:
+
+- the accepted answer's stdout is exactly `(ANSWER + "\n").encode("utf-8")`;
+- a refusal writes 0 bytes to stdout, and its stderr decodes as UTF-8 with the
+  `'— IBM Bob (...)'` em dash intact.
+
+The comparison normalises `\r\n` to `\n`, because Windows text mode writes `\r\n`. The
+existing text-mode test ignores line endings the same way, and newline handling is not
+part of this bug.
+
+**Negative control.** With the CLI restored from `cebf848`, the old code fails two of
+the three cases:
+
+| `PYTHONIOENCODING` | Result with the old CLI | Why |
+| --- | --- | --- |
+| `cp1252` | fails | stdout carries byte `0x97` |
+| `latin-1` | fails | exit 1: the em dash cannot be encoded |
+| `utf-8:surrogateescape` | passes | the old CLI already wrote UTF-8 here, and the original failure was on the test's decoding side |
+
+The third case stays as coverage that the fixed CLI still writes strict UTF-8 in that
+environment.
+
+**Nits from the same review.** The stdout/stderr asymmetry (`strict` against
+`backslashreplace`) is explained in "Change" above: the published answer
+fails closed, and diagnostics are best-effort. No other
+CLI in the repository reconfigures its streams, so there is no shared pattern to
+document yet.
+
+`main` was merged in at `c3c8e250bc5ec8837498d47bd0090cc4bd8c2edc`. The only conflict
+was the index, where all rows were kept. The PR comment for the push names the new head
+and records the preflight at that head.
