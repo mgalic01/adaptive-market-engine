@@ -285,9 +285,12 @@ Everything a result could otherwise steer is fixed here.
   - The denominator sums over all `T` observations.
   - There is no fold weighting and no divisor correction.
 - **`V` and `N`:** each trial's Sharpe is built by these same rules, and `N` comes from
-  part 2 (PR #93: proposed, not yet merged) and the trial register. With `N` = 2, the
-  central count proposed in part 2, `V` rests on two numbers and is very uncertain.
-  The report must say so, and must show the DSR at part 2's sensitivity count too.
+  part 2 (PR #93: merged as a proposal, not an adopted counting rule) and the trial
+  register. Part 2 proposes a raw count of **6** centrally and **9** for sensitivity;
+  these small counts do not establish a reliable cross-trial variance `V` or an
+  effective independent count. The report must disclose that uncertainty and show
+  the sensitivity result too. Any `N = 2` example here is illustrative only, not the
+  current central proposal. Final counts depend on the agreed rule and full register.
 - **A registered trial without a Sharpe on a path makes that path's DSR indeterminate.**
   This covers a trial that is invalid, has an indeterminate fold, or has zero variance.
   Dropping it, or lowering `N`, would quietly select out failed trials and change `SR0`.
