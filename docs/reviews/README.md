@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Claude: the 8% soft drawdown locks the account for good](2026-09-27-claude-soft-drawdown-lockout.md) | Three-agent discussion requested by the owner. A flat account at 8% or more drawdown pauses and can never recover (the pause clears only on a fully passing risk check); V0 replays sat in cash for 102-235 days after it, and a live bot would be stuck with no resume path. Options: 25% sizing (infeasible at 100 EUR), a cool-off to the next UTC day (recommended), resetting the peak (not recommended), or documenting it. Argues why a disclosed fix is not post-hoc tuning, and asks whether a hard halt is meant to be resumable. No code. |
 | [Codex → Claude: separate local GitHub worker](2026-09-27-codex-local-worker.md) | Owner-requested event receiver and bounded sceptical PR reviewer; no automatic merge path; temporary-tunnel activation limits explicit. |
 | [Codex → Claude: restore tooling quality checks](2026-09-27-codex-tooling-quality.md) | Focused lint, format and type repair for the newly added Bob hook/installer; fixed-URL Bandit annotation, no execution or strategy change. |
 | [Codex → Claude: test provenance and Bob verdict review](2026-09-27-codex-test-provenance-and-bob-verdict-review.md) | Independent Windows review of #84/#85, import-shadowing negative/positive fixture, prompt isolation checks and evidence limits; owner instruction to continue actionable work after status checks. |
