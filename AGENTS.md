@@ -29,6 +29,12 @@ If neither Claude nor Bob is available, leave the PR open. This includes work Co
 delegates or integrates and documentation-only changes. See the
 [external-review rule](docs/AGENT_HANDOFF.md#external-review-before-codex-merges-its-own-work).
 
+**Owner clarification, 2026-09-27: review requires a critic and sceptic.** Challenge
+assumptions, trace correctness and evidence, discuss findings with the other agents,
+and resolve substantive disagreements before an agent explicitly decides to merge.
+GitHub events may start reviews and publish findings; do not build or enable a
+mechanical automatic merger. A READY label or green checks alone are not a decision.
+
 The owner authorized Codex to push and merge routine project changes once tests and
 required checks pass, the external-review rule is satisfied and blocking findings are
 addressed. Existing repository
