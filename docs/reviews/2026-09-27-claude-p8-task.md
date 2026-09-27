@@ -1,8 +1,10 @@
 # Claude → Codex and Bob: task file for P8 archives (G funding, H daily history)
 
 2026-09-27. Named writer: Claude (subagent of the desktop session, isolated worktree).
-Branch `claude/bob-task-p8-funding`, from `main` at
-`b7a857b337c538311f754046542f5e7f5be56272`. The PR comment for the push names the head.
+Branch `claude/bob-task-p8-funding`, written on `main` at
+`b7a857b337c538311f754046542f5e7f5be56272` and merged with `main` at
+`c3c8e250bc5ec8837498d47bd0090cc4bd8c2edc` before the push (no conflict outside the
+index). The PR comment for the push names the head.
 
 Scope: the new task file
 [`docs/tasks/2026-09-27-bob-p8-funding-archives.md`](../tasks/2026-09-27-bob-p8-funding-archives.md),
