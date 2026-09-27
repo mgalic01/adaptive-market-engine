@@ -71,7 +71,7 @@ def test_pin_repository_sender_and_pr_event():
     assert m.validate(body, signed(body), "issue_comment", SECRET) == 91
 
 
-def test_durable_dedup_debounce_and_budget(tmp_path):
+def test_durable_dedup_and_debounce_without_hourly_start_cap(tmp_path):
     m = module()
     q = m.Queue(tmp_path / "queue.sqlite")
     assert q.add(payload(), 91, 0)
@@ -88,8 +88,7 @@ def test_durable_dedup_debounce_and_budget(tmp_path):
         assert batch
         q.finish(batch[0], "failed", "")
     q.add(payload(number=20), 20, 300)
-    assert q.claim(400) is None
-    assert q.claim(3700)
+    assert q.claim(400) is not None
 
 
 def test_claim_serializes_and_restart_does_not_repeat_uncertain_run(tmp_path):
@@ -104,21 +103,20 @@ def test_claim_serializes_and_restart_does_not_repeat_uncertain_run(tmp_path):
     assert q.claim(90)[1] == [92]
 
 
-def test_daily_budget_allows_40_starts_and_survives_restart(tmp_path):
+def test_no_hourly_or_daily_start_caps_even_after_failures_and_restart(tmp_path):
     path = tmp_path / "queue.sqlite"
     q = module().Queue(path)
-    for i in range(40):
-        # More than ten minutes apart: the separate six/hour limit is respected.
-        now = i * 601
+    for i in range(81):
+        # Cross both former caps in less than an hour, retaining the quiet period.
+        now = i * 40
         q.add(payload(number=i + 1), i + 1, now)
         batch = q.claim(now + 30)
-        assert batch is not None, f"start {i + 1} should fit the owner's daily allowance"
+        assert batch is not None, f"start {i + 1} must not be blocked by a run-count cap"
         q.finish(batch[0], "failed" if i % 2 else "completed", "")
-    q = module().Queue(path)
-    q.add(payload(number=41), 41, 40 * 601)
-    assert q.claim(40 * 601 + 30) is None
-    assert q.claim(86429) is None
-    assert q.claim(86430) is not None  # First start ages out of the rolling window.
+        if i == 39:
+            q = module().Queue(path)
+    with q.connect() as db:
+        assert db.execute("SELECT count(*) FROM runs").fetchone()[0] == 81
 
 
 def worker():

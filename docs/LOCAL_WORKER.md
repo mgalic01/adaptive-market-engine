@@ -20,9 +20,10 @@ PR can queue review. Other issues and arbitrary branch pushes do not. The receiv
 ignores newly created marked worker comments; edits to old reports still queue review. Only event hashes and PR numbers enter SQLite.
 There is no GitHub polling; the one-second loop checks the local queue.
 
-Thirty quiet seconds coalesce activity for one PR. Maximum six starts/hour, 40 per
-rolling 24 hours (owner instruction, 2026-09-27),
-1,000 pending events, 1 MiB/request. Failed starts consume budget. SQLite dedup survives
+Thirty quiet seconds coalesce activity for one PR. There is no hourly or daily
+review-start cap (owner instruction, 2026-09-27, superseding the proposed 40/day).
+One run executes at a time; 1,000 pending events and 1 MiB/request remain the queue
+and request-size bounds. Failed starts remain recorded. SQLite dedup survives
 restart; an interrupted in-flight run is not automatically retried. An exclusive OS
 lock prevents multiple service owners. HTTP connections have an absolute ten-second
 lifetime and five-second inactivity timeout; this is not production DoS protection.
@@ -119,7 +120,7 @@ inspect status, its local report/failure and the current PR comments first. If p
 might have succeeded, identify that result before deciding whether another review is
 needed. Then create one new PR Conversation comment, for example: "Codex local
 reviewer: inspected run N and its publication outcome; please review this PR again."
-That new signed event deliberately queues a new review under the normal budgets.
+That new signed event deliberately queues a new review under the normal queue rules.
 Redelivery of an already accepted body remains deduplicated, even after run failure;
 it is not a retry command. No automatic uncertain-publication retry is introduced.
 

@@ -1,19 +1,21 @@
-# Codex → Claude/Bob: worker limit and remote notification design
+# Codex → Claude/Bob: remove start caps and reuse two remote instances
 
-Owner instruction, 2026-09-27: increase the local worker's daily limit to 40 and
-prepare two remotely hosted workers with independent 40-start counters, incident PRs
-and notifications to GitHub, the owner chat and a private email destination.
+Latest owner instruction, 2026-09-27: remove hourly/daily start caps, superseding the
+earlier 40-start request, and reuse one reviewer implementation for two remote
+instances. GitHub-hosted workers and two separately provisioned worker login sessions
+in GitHub secrets are approved; active Desktop auth must not be copied. Failure
+incident PRs and GitHub/chat/private-email notification remain requested.
 
 ## Implemented in this change
 
-The existing queue now allows 40 starts per rolling 24 hours instead of 24. Six per
-hour, counting failed attempts, persisted history, deduplication and no automatic
-merge remain unchanged. Current operational docs match the new limit. The original
-local-worker design remains a historical record superseded on this number.
+The existing queue no longer has hourly or daily start-count checks. Persisted history,
+failed/completed outcomes, single active run, deduplication, quiet period, queue and
+request/evidence bounds and no automatic merge remain unchanged. Current operational
+docs match. The original local-worker design is historical, superseded on start caps.
 
-A regression first failed at start 25 on the old code. It now verifies all 40 starts,
-blocked start 41, failure accounting, restart persistence and the exact rolling-window
-release. All 41 worker tests pass on Windows Python 3.12.14; focused Ruff and diff
+A regression first failed at the old hourly boundary. It now verifies 81 starts in
+less than one synthetic hour, alternating failed/completed outcomes and a restart at
+start 40; all 81 remain recorded. All 41 worker tests pass on Windows Python 3.12.14; focused Ruff and diff
 checks pass. No real model call, market-data access or workflow dispatch was used.
 
 ## What the stopped deployment actually did
@@ -35,8 +37,8 @@ why those processes later stopped. No queue history was reset.
 
 ## Design requiring review, not implemented
 
-[Two GitHub-hosted workers and budget alerts](../superpowers/specs/2026-09-27-remote-review-workers-design.md)
-describes the requested deployment, independent counters, credential persistence,
+[Two GitHub-hosted workers and failure alerts](../superpowers/specs/2026-09-27-remote-review-workers-design.md)
+describes the requested deployment, separate worker state, credential persistence,
 duplicate-work avoidance, incident publication outside model budgets and delivery
 tests. The owner selected workers independent of the PC and asked whether GitHub can
 host them. The proposed answer is GitHub-hosted Actions with per-worker managed auth.
@@ -48,7 +50,7 @@ Remote activation additionally needs approved design, auth provisioning and veri
 notification delivery. No secrets or recipient address belong in the public design.
 
 No new trading/security permissions are introduced by the limit patch. It increases
-possible review spend by 16 starts in any rolling day; actual account quotas remain
-shared. Reverting the number/docs restores the prior ceiling without deleting state.
+possible review spend by removing both application start caps, as the owner requested;
+actual account quotas remain shared. Reverting the removal restores the ceilings without deleting state.
 The offline regression validates code only; the stopped immutable deployment has not
 been updated or restarted by this change.

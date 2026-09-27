@@ -109,12 +109,6 @@ class Queue:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM runs WHERE state='running'").fetchone():
                 return None
-            hourly = db.execute("SELECT count(*) FROM runs WHERE started>?", (now - 3600,))
-            if hourly.fetchone()[0] >= 6:
-                return None
-            daily = db.execute("SELECT count(*) FROM runs WHERE started>?", (now - 86400,))
-            if daily.fetchone()[0] >= 40:
-                return None
             rows = db.execute(
                 "SELECT pr FROM events WHERE run IS NULL GROUP BY pr "
                 "HAVING max(received)<=? ORDER BY min(received) LIMIT 1",
