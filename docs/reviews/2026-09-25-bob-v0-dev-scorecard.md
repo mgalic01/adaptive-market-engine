@@ -116,8 +116,10 @@ This matches the exchange-filter cause described in §5 and in
 `docs/backtests/fee-levels-2026-09.md` (Validity section): today's SOL tick (0.01)
 at 2022 prices of roughly $10–14 makes the simulated spread exceed the 0.15% limit.
 *Correction 2026-09-27:* *the archives give SOL a 2022-06 to 2023-01 range of $8.00 to $48.38; two ticks
-exceed 0.15% only below $13.33, which is why 23.5% of frames (82,792 of 352,800) were
-rejected rather than all of them.*
+exceed 0.15% only below $13.33, which is why 5.9% of frames (82,792 of 1,411,200) were
+rejected rather than all of them. The replay evaluates four quotes per minute bar, so
+this window's 352,800 bars are 1,411,200 frames; a first version of this note divided by
+the bar count and said 23.5%.*
 The `transient_pauses` field in `results.json` is produced by `result_failures()` in
 `__main__.py`.
 *Correction 2026-09-27:* *it is a `Metrics` field counted and written by `backtest/replay.py` (lines 413

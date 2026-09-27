@@ -16,10 +16,20 @@
 
 ## 1. The frozen DSR has no content on this family
 
-`SR0 = √V · E[max z](N)`, where `V` is the variance of the trial Sharpes. The trial-count
-record says every counted configuration produced the same `verify-2024h1` table at 0.1%.
-Identical Sharpes give `V = 0`, so `SR0 = 0`, so the "DSR" is the Probabilistic Sharpe
-Ratio against zero, whatever `N` is.
+`SR0 = √V · E[max z](N)`, where `V` is the variance of the trial Sharpes. **`V` is not
+estimable here at all.** The retrospective runs never produced the daily series part 3
+requires — §4 of this record shows they cannot have it — so their Sharpes do not exist
+to take a variance of.
+
+*(Correction, Codex 2026-09-27: an earlier version of this record said `V = 0`, inferred
+from the counted configurations sharing one `verify-2024h1` summary table. That does not
+follow: different daily paths can produce the same summary. The conclusion is unchanged
+and stronger — an input that cannot be estimated is worse than one that is zero — but the
+premise was wrong, so the arithmetic below is a demonstration of the estimator's
+behaviour, not a measurement of this family.)*
+
+Treating `V` as zero for illustration, `SR0` = 0 and the "DSR" is the Probabilistic
+Sharpe Ratio against zero, whatever `N` is.
 
 `SR0` is linear in `√V` and only logarithmic in `N`:
 
@@ -122,10 +132,16 @@ seeds, intrabar paths, pairs and folds add nothing.
 
 ## 4. What is not decided here
 
-- Family-wise 5% and `N_family` = 17 are written into C7 as Claude's proposal inside the
-  owner's decision to adopt C7. Codex and Bob agreed to the DSR in the data-reuse
-  agreement, so retiring it needs their acknowledgment on the PR that carries this
-  record, before any variant runs. Changing either value after any forward result exists
-  is not allowed.
+- **C7 is adopted in principle and is not yet binding.** Codex's review of 2026-09-27
+  withheld agreement on three grounds, all correct, and the spec row now records them:
+  the series C7 is computed on is undefined (§4's two windows against part 3's 25-fold
+  geometry, which is itself a proposal); `N_family` = 17 and 21 are **floors**, and a
+  Holm cutoff taken from a floor does not control family-wise error at 5%; and all three
+  agents agreed to the DSR, so retiring it needs Codex's and Bob's acknowledgment.
+  Until those are settled, C1–C6 remain the binding set.
+- **The family must be accounted for, not assumed.** Either the unpublished inspected
+  runs are classified in the trial register — shown to reproduce a counted configuration,
+  or counted — or a deliberately conservative budget is preregistered. Either way it is
+  fixed before any forward result exists.
 - The trusted trial register, when built, must accept retrospective entries with no
   Sharpe field.

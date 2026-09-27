@@ -43,8 +43,11 @@ Status (v0.8): harness v1 is implemented and verified on two pairs over a develo
 window ([method](docs/BACKTEST_METHOD.md), [report](docs/backtests/verify-2024h1.md)).
 The owner confirmed the acceptance criteria (C1–C6) on 2026-09-24
 ([record](docs/reviews/2026-09-24-owner-decisions-confirmed.md)); spec v1 is still a draft
-and is not yet frozen. Next: the multi-market, survivorship-aware run on an untouched
-window, once spec v1 is frozen.
+and is not yet frozen. The reserved window is the **last** step, not the next one. In
+order (spec v1 §§2-7): freeze spec v1, build and review the §2 prerequisites, implement
+the variants, run the development practice matrix, select a winner deterministically
+under C1-C7, and only then ask the owner for the one-use reserved run. If no variant
+passes, v1 ends with "no winner" and nothing runs on that window.
 
 ## 3. Read-only market-data shadow mode (partly implemented; expansion deferred)
 
@@ -73,10 +76,11 @@ mark-to-market losses, delistings, and point-in-time universes. Compare cash,
 buy-and-hold and static-grid baselines. Report total equity including reserve,
 drawdown, turnover, costs and uncertainty. Do not optimize solely for win rate
 or realized grid profit while ignoring inventory losses. News cannot create
-orders or override risk controls. Fix heuristic thresholds on development data before
-any held-out run; the held-out run tests them and never tunes them. Revisiting a
-threshold after seeing held-out results would spend the holdout (START_HERE step 1,
-"No tuning after seeing results").
+orders or override risk controls. Every heuristic threshold is **registered and frozen
+before the development results it would be chosen from are inspected**, not fixed
+afterwards on development data; the held-out run then tests them and never tunes them.
+Revisiting a threshold after seeing either development or held-out results is the tuning
+the startup rule forbids (START_HERE step 1, "No tuning after seeing results").
 
 Gate: documented results and failure tests; no guaranteed return assumptions.
 

@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | 1 | May the paper account settle profit and open new grids while it holds a remainder worth less than one minimum order, which no exchange would let it sell? | "yes that is acceptable" | PR #122: `execution.exitable`, `PaperSimulator._resolved`; `docs/PAPER_SIMULATION.md` |
 | 2 | That fix moves published V0 replay results. What happens to the old ones? | "keep the old results published and count the fixed version as an extra registered trial." | PR #122: `engine_version` `exit-residue-v1` in every summary and `results.json`; spec C7 counts it in `N_family` |
-| 3 | Replace the deflated Sharpe ratio with a Holm step-down and make it gate the reserved-window run (C7)? | "ok" | `EXPERIMENT_SPEC_V1.md` §6, C7; [coherence record](2026-09-27-claude-dsr-coherence.md) |
+| 3 | Replace the deflated Sharpe ratio with a Holm step-down and make it gate the reserved-window run (C7)? | "ok" | `EXPERIMENT_SPEC_V1.md` §6, C7 — recorded as **adopted in principle, not yet binding**: Codex's review of 2026-09-27 showed the series is undefined, the family size is only a floor, and the other two agents must acknowledge retiring the DSR. The owner's decision stands; the specification is open. [coherence record](2026-09-27-claude-dsr-coherence.md) |
 | 4 | Approve a paid Bob re-run for the defect calendar? | "i approve al paid bob reruns because bob has a huge pool of credits., dont save on bob, he has more credits then both Clode and Codex combined." | Standing approval for paid Bob runs. First uses: [combined defect census](../tasks/2026-09-27-bob-combined-defect-census.md), [rescued-month masking](../tasks/2026-09-27-bob-rescued-month-masking.md) |
 | 5 | Approve pinning Python 3.12 in the Bob workflows? | "I approve." | PR #122: `bob-task.yml` publish job, `bob-review.yml` |
 
@@ -18,9 +18,9 @@
 
 - A Bob task still starts only when its task file is merged after review; answer 4
   removes the cost question, not the review.
-- Answer 3 adopts C7. Family-wise 5% and `N_family` = 17 are Claude's proposal inside
-  it; Codex and Bob agreed to the DSR, so retiring it needs their acknowledgment before
-  any variant runs.
+- Answer 3 adopts C7 in principle. It does not gate anything yet: the family size, the
+  return series and the other agents' acknowledgment are all open (spec §6, C7). C1–C6
+  remain the binding set until they are settled.
 - Paper-only, no API keys, the reserved window, and the no-tuning rule are unchanged.
 
 ## Still open with the owner

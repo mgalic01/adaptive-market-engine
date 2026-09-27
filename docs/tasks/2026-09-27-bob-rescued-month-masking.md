@@ -31,7 +31,7 @@ task measures them. It changes nothing.
 
 Start from `data/masked_fraction.py` in the eligibility record's appendix. Copy it
 exactly and check that its SHA-256 is the one stated there before you change anything.
-Then change only these three things:
+Then change only these four things:
 
 1. **Repair before parsing.** For a month where `read_archive` raises `DataError`, read
    the raw rows of both files with `crypto_grid_bot.backtest.klines.read_member` and the
@@ -46,6 +46,13 @@ Then change only these three things:
    from the earliest month that parses, which is wrong for LTCUSDT.
 3. **No `ok` row without expected hours.** If a month has zero expected hours, record
    status `pre_listing` instead of `ok`.
+4. **Fetch what the cache lacks.** The appendix script reads `local_path` directly and
+   records `not_cached` when a file is absent, because it ran on a full cache. Your
+   machine will not have one. Before reading a pair-month, call
+   `crypto_grid_bot.backtest.dataset.fetch_file(Path("data"), symbol, interval, month,
+   archive_get)` for both the 1m and the 1h archive, so every file is hash-checked, and
+   catch `DataError` per file exactly as in PR #66. A month Binance does not publish
+   stays `not_cached`; it must not become `unusable`.
 
 Months that parse without repair are measured exactly as before.
 
@@ -67,6 +74,7 @@ Months that parse without repair are measured exactly as before.
 | Figure | Claude |
 | --- | --- |
 | pair-months that parse without repair | 674 |
+| pair-months with no archive upstream (pre-listing) | 110 |
 | `repaired` months | 98 |
 | `unusable` months | 8: BTC, ETH, BNB 2017-12; BTC, ETH, BNB, LTC 2018-02; DOGE 2020-02 |
 | BTCUSDT 2017-09, real defects | 4.31% |

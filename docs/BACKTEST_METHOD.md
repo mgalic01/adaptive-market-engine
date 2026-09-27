@@ -195,12 +195,20 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
   - no hour is missing from both sources;
   - no hour is missing individual minutes. Bar equality cannot reveal a missing
     zero-volume minute, so these are counted directly.
-  - when the spec declares daily history, every day in its window appears exactly once
-    and equals the aggregation of its 24 hourly bars, with enough completed days of
-    warm-up (`daily_days_mismatched`, `_missing`, `_duplicated`, `_hours_incomplete`,
-    `daily_warmup_short`).
+  - when the spec declares daily history, **two different checks** run, because the
+    daily window normally starts earlier than the hourly one (`verify-2024h1`: daily
+    from 2023-05, hourly from 2023-11):
+    - over the **whole daily window**, every UTC day appears exactly once
+      (`daily_days_missing`, `_duplicated`), with enough completed days of warm-up
+      (`daily_warmup_short`);
+    - over the **overlap with the hourly window only**, each day must also equal the
+      aggregation of its 24 unique hourly bars (`daily_days_mismatched`,
+      `_hours_incomplete`). Prices must match exactly; volume within the same 0.1%
+      tolerance, reported as `daily_days_volume_drift`. Days before the hourly window
+      are checked for presence, never for equality.
   - Any non-zero count of those fields makes `verify` and `run` exit with code 2, and
-    nothing replays. `hours_volume_drift` is reported but is not one of them.
+    nothing replays. `hours_volume_drift` and `daily_days_volume_drift` are reported but
+    are not among them.
   - Gaps from a genuine listing or delisting are not exempted yet; such a dataset must
     first declare them explicitly.
 - **Run validity:** accounting problems, rejected frames or zero evaluation bars mark the

@@ -10,8 +10,10 @@
   *Correction 2026-09-27, to the context only; the decision below is unchanged. The
   archives give SOL a 2022-06 to 2023-01 range of $8.00 to $48.38, not $10–14. Two
   ticks exceed 0.15% only below $13.33, so the rejection applied to part of the window —
-  82,792 of 352,800 frames (23.5%) — rather than to all of it. The mechanism described
-  here is right; only its price range was.* This decision resolves
+  82,792 of 1,411,200 replay frames, 5.9% — rather than to all of it. (The replay
+  evaluates four quotes per minute bar, so this window's 352,800 bars are 1,411,200
+  frames; a first version of this note divided by the bar count and said 23.5%.) The
+  mechanism described here is right; only its price range was.* This decision resolves
   harness problem 4.1 from
   [`2026-09-24-claude-fees-and-strategy-plan.md`](2026-09-24-claude-fees-and-strategy-plan.md).
 

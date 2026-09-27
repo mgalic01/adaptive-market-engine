@@ -22,9 +22,12 @@
   rounded outward on both sides, makes the simulated spread exceed the 0.15% limit.
   *Correction 2026-09-27: SOL's 2022-06 to 2023-01 range in the archives is $8.00 to
   $48.38, not $10–14. Two ticks exceed the 0.15% limit only below $13.33, so the
-  rejection bit for part of the window, not all of it: 82,792 of 352,800 frames (23.5%),
-  consistent with SOL trading below $13.33 for roughly a quarter of the window. The runs
-  are still invalid; the stated mechanism was right but its price range was not.*
+  rejection bit for part of the window, not all of it: **82,792 of 1,411,200 replay
+  frames, 5.9%** — the replay evaluates four quotes per minute bar, so this window's
+  352,800 minute bars are 1,411,200 frames. A first version of this note divided by the
+  bar count and said 23.5%. How that maps to time is not derived here: each of a bar's
+  four quotes is rounded separately, so a bar can be part-rejected. The runs are still
+  invalid; the stated mechanism was right but its price range was not.*
   The SOL numbers are excluded below. BTC and XRP runs have no rejected frames.
 
 ## Results (return %, both intrabar paths)
