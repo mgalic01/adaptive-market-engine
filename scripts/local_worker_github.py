@@ -183,14 +183,18 @@ class GitHub:
             raise ValueError("blob encoding/size outside review limit")
         return base64.b64decode(blob["content"]).decode("utf-8")
 
-    def comment(self, number: int, body: str, head: str) -> None:
+    def comment(self, number: int, body: str, head: str, base: str) -> None:
         if not self.token:
             raise ValueError("publication requires local GitHub token")
         if len(body) > 16000:
             raise ValueError("oversized review requires desktop publication")
         current = self.request(f"pulls/{number}")
-        if current["state"] != "open" or current["head"]["sha"] != head:
-            raise ValueError("PR closed or head changed before publication")
+        if (
+            current["state"] != "open"
+            or current["head"]["sha"] != head
+            or current["base"]["sha"] != base
+        ):
+            raise ValueError("PR closed or head/base changed before publication")
         # Never forward mention triggers returned by the model.
         safe = body.replace("@", "＠").replace("/bob-run", "／bob-run")
         self.request(f"issues/{number}/comments", "POST", {"body": MARKER + "\n" + safe})
