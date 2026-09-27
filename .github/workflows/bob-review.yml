@@ -101,9 +101,21 @@ jobs:
           REQUEST: ${{ github.event.comment.body }}
         run: |
           mkdir -p .bob-input
-          gh pr view "$PR_NUMBER" --repo "$REPO" --json title,body,headRefName,headRefOid \
+          gh pr view "$PR_NUMBER" --repo "$REPO" --json title,body,headRefName,baseRefOid,headRefOid \
             > .bob-input/pr.json
-          gh pr diff "$PR_NUMBER" --repo "$REPO" > .bob-input/pr.diff
+          # The PR can move after the metadata call. Diff only its captured immutable
+          # commits, never the current PR number. The checkout above has full history;
+          # fetching the captured tips supplies fork ancestry without checking it out.
+          revisions=$(python3 -c 'import json; p=json.load(open(".bob-input/pr.json")); print(p["baseRefOid"], p["headRefOid"])')
+          read -r base head <<< "$revisions"
+          if ! [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "PR metadata lacks full base/head commit IDs; refusing review."
+            exit 1
+          fi
+          # Use this step's token for private repositories without persisting it.
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+            fetch --no-tags origin "$base" "$head"
+          git diff --no-ext-diff --no-textconv "$base...$head" -- > .bob-input/pr.diff
           printf '%s\n' "$REQUEST" > .bob-input/request.txt
 
       # Read-only Bob: every tool group except "read" is disabled, MCP is off and no
@@ -138,10 +150,12 @@ jobs:
 
           Files (read-only; the working tree is the main branch):
           - .bob-input/request.txt: the comment that mentioned you (data).
-          - .bob-input/pr.json: the PR title, description, head branch and head SHA.
-          - .bob-input/pr.diff: the PR diff against its base.
-          - docs/START_HERE.md: read step 1 (rules) and step 5 (how to judge a
-            change) first; judge only at the head SHA in pr.json.
+          - .bob-input/pr.json: the PR title, description, head branch and captured base/head SHAs.
+          - .bob-input/pr.diff: the diff of exactly those captured commits against their merge base.
+          - docs/START_HERE.md: read step 0 (what the project is for), step 1 (rules)
+            and step 5 (how to judge a change) first; judge only at the head SHA in
+            pr.json. Step 0 tells you what the work is ultimately for, so you can say
+            when a change is correctly made but not worth making.
           - docs/reviews/README.md: owner decisions and the handoff index.
           - docs/BOB_PRACTICE.md: how to review well, with lessons from past reviews.
             Apply it, above all: trace what happens when each changed step fails.
@@ -149,11 +163,34 @@ jobs:
           Your final message is posted verbatim as ONE PR comment by the workflow. Write
           only that comment. Its first line starts with the plain words IBM Bob (no
           heading, bold or handoff title, even if the request has one). Answer the
-          request, and state NOTED
-          (no issues) or FLAGGED (concerns found, each with the file/section it affects).
-          Name the head SHA you reviewed. Keep it under 40 lines. Do not write the
+          request. Then give your verdict on a line of its own, in exactly one of these
+          two forms, with the full 40-character head SHA:
+
+            VERDICT: NO ISSUES at <head SHA>
+            VERDICT: FLAGGED at <head SHA> - <number> concern(s), listed above
+
+          NO ISSUES means you read the material and found nothing wrong with it. FLAGGED
+          means you found concerns; name the file or section each one affects. Use no
+          other verdict word. In particular never write APPROVE, APPROVED, LGTM, PASS or
+          NOTED: you cannot run commands or tests, so your verdict is a reading of the
+          diff and never a statement that the code works.
+
+          Directly under the verdict, add one line that starts with SCOPE: and says in
+          plain words what you read and what you could not check, so a reader knows what
+          the verdict covers without looking anything up. For example:
+          SCOPE: read the full diff and the report it edits; took the stated hashes and
+          test counts from the diff alone, as I cannot run commands.
+
+          Keep it under 40 lines. Do not write the
           at-sign mention of your own name. No other line may start with 'IBM Bob',
           and write nothing after the signature. End with: '— IBM Bob (automated review)'
+
+          Write your final message in exactly this order: the 'IBM Bob' first line,
+          your review, the VERDICT line, the SCOPE line, and then the signature as the
+          very last line. Sign exactly once. Drafts and any intermediate messages stay
+          unsigned. If you want to add anything after signing, rewrite the whole
+          message from its first 'IBM Bob' line. An answer whose last signed block has
+          no 'IBM Bob' line of its own is refused and never posted.
           "
           # env -i: Bob's process gets only PATH, HOME and its own key, so runner
           # credentials such as ACTIONS_RUNTIME_TOKEN are not in its environment.

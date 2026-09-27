@@ -14,15 +14,39 @@ Read [docs/AGENT_HANDOFF.md](docs/AGENT_HANDOFF.md) and
 [docs/reviews/README.md](docs/reviews/README.md) before continuing work.
 Read the current PR discussion and verify its head before acting on older notes.
 
-The owner authorized Codex to push and merge routine project changes after tests,
-required checks and blocking review findings are addressed. Existing repository
+**Owner instruction, 2026-09-27: a status check starts the work; it is not the
+stopping point.** Continue directly with authorized reviews, tests, fixes and ready
+merges. Work on independent actionable items while another agent handles a blocker.
+Stop when the authorized work is complete or genuinely needs external action; name
+the blocker and its owner. This does not bypass branch ownership, required checks,
+external review, reserved-data gates or the owner's other constraints.
+
+**Owner rule, 2026-09-26: Codex must not merge its own work until Claude or Bob has
+reviewed the latest full commit SHA and posted substantive feedback on the PR.**
+Codex chooses the reviewer, addresses blocking findings and verifies required checks.
+Codex self-review, Codex subagents and Codex Cloud alone do not satisfy this rule.
+If neither Claude nor Bob is available, leave the PR open. This includes work Codex
+delegates or integrates and documentation-only changes. See the
+[external-review rule](docs/AGENT_HANDOFF.md#external-review-before-codex-merges-its-own-work).
+
+**Owner clarification, 2026-09-27: review requires a critic and sceptic.** Challenge
+assumptions, trace correctness and evidence, discuss findings with the other agents,
+and resolve substantive disagreements before an agent explicitly decides to merge.
+GitHub events may start reviews and publish findings; do not build or enable a
+mechanical automatic merger. A READY label or green checks alone are not a decision.
+
+The owner authorized Codex to push and merge routine project changes once tests and
+required checks pass, the external-review rule is satisfied and blocking findings are
+addressed. Existing repository
 protections still apply. Every push and merge must leave a visible Claude handoff
 using the shared guide. Include relevant fixes, security findings, improvements,
 verification evidence and compatibility risks; say explicitly when none are known.
 
 Keep changes focused and preserve established behavior through appropriate
 regression checks. Coordinate edits to shared modules in the PR before starting
-overlapping work. The project remains paper-only under its existing scope.
+overlapping work. Follow the [named-writer and batching rules](docs/AGENT_HANDOFF.md#branch-ownership-local-checks-and-review-batches):
+parallel writers use separate branches/worktrees; reviewers do not commit to another
+writer's tree. The project remains paper-only under its existing scope.
 
 A third agent, Bob, does large runs, data checks, tests and monitoring from written task
 files. Its rules are in the "Three agents" section of the guide, in force since PR #16

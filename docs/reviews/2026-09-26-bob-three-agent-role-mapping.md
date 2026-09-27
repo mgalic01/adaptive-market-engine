@@ -4,7 +4,7 @@
 - **Date:** 2026-09-26
 - **Recipient:** Claude, Codex, and Owner
 - **Topic:** Optimizing the Collaboration Engine under the Three-Agent Rules (docs/AGENT_HANDOFF.md)
-- **Status:** Proposal for Agreement (Unanimous review and sign-off required)
+- **Status:** Revised 2026-09-27 to incorporate Codex Q1–Q4 conditions and Claude's review. Merged by owner while Codex is unavailable; Codex to review on return.
 
 ---
 
@@ -22,10 +22,10 @@ We propose formalizing the division of labor among Claude, Codex, and Bob as fol
 
 | Role | Primary Agent | Scope & Responsibilities | Key Deliverables |
 | :--- | :--- | :--- | :--- |
-| **Plan** | **Claude** (Macro)<br>**Bob** (Operational) | **Claude:** Designs strategies, indicators, and framework specifications.<br>**Bob:** Drafts granular, step-by-step task files, mathematical assertions, and verification criteria. | `docs/EXPERIMENT_SPEC_V1.md`<br>Checklists in `docs/tasks/` |
+| **Plan** | **Claude** (Macro)<br>**Bob** (Operational) | **Claude:** Designs strategies, indicators, and framework specifications; authors task file definitions.<br>**Bob:** Proposes verification criteria and mathematical assertions; does not author task file definitions (the definition and the implementation must have independent authors). | `docs/EXPERIMENT_SPEC_V1.md`<br>Checklists in `docs/tasks/` |
 | **Code** | **Claude** | Implements the framework, algorithms, strategy logic, and unit/integration tests with high structural and architectural cleanliness. | Files under `src/` and `tests/` |
-| **Review** | **Codex** | Independent code verification, variable/context scope inspection, dependency safety audits, and git branch merge validation. | Code reviews and branch merges |
-| **Logical Skeptic** | **Codex** | Identifies potential logical flaws, race conditions, security vulnerabilities (e.g., script injection vectors), and scope creep. | Security reviews, regression audits |
+| **Review** | **Codex** (primary) | Independent code verification, variable/context scope inspection, dependency safety audits, and git branch merge validation. Roles are primary, not exclusive: any agent may raise a finding. | Code reviews and branch merges |
+| **Logical Skeptic** | **Codex** (primary) | Identifies potential logical flaws, race conditions, security vulnerabilities (e.g., script injection vectors), and scope creep. Codex retains delegated merge authority; the owner retains final authority. | Security reviews, regression audits |
 | **Empirical Skeptic** | **Bob** | Automatically validates assertions and coding rules against millions of rows of historical exchange data. | Checksum audits, data surveys |
 
 ---
@@ -43,21 +43,18 @@ Under our proposed mapping, **Skepticism** is divided into a complementary dual 
 We must actively resist the temptation to resolve repetitive, mechanical checks through manual agent-review rounds. Manual reviews cost extensive credits, invite fatigue, and are prone to oversight. **Where a check can be written as a program, we must build a tool to run it.**
 
 ### A. Precedents of Successful Tooling in CGB:
-* **The Report Checker (`scripts/check_reports.py`):** Replaced manual review rounds by programmatically validating that no broken links exist in our review index and that the SHA-256 hashes of appendix scripts match the files on disk exactly.
-* **The Input Verification Gateway (`scripts/validate_bob_artifact.py`):** Ensures that Bob’s published artifacts meet size, type, encoding, and secret-scan limits before committing them.
-* **The V0 Trace Crosscheck (`tests/test_strategy_recovery.py`):** Automated the byte-for-byte replication audits of backtest fills.
+* **The Report Checker (`scripts/check_reports.py`):** Validates every index row links to an existing file, every review file is indexed, and any SHA-256 hash stated for an embedded appendix script matches the fenced source block in that report. It does not verify uncommitted external source files or raw datasets.
+* **The Input Verification Gateway (`scripts/validate_bob_artifact.py`):** Ensures that Bob's published artifacts meet size, type, encoding, and secret-scan limits before committing them.
+* **The Strategy Recovery Tests (`tests/test_strategy_recovery.py`):** Regression tests for simulator recovery, lifecycle and accounting behavior using synthetic price fixtures. These are not backtest fill audits and do not use historical exchange data.
 
 ### B. Proposed Tooling: Git Pre-Commit/Pre-Push Hooks
-To eliminate formatting-related CI failures, we propose building local git hooks:
-* **The Idea:** Write a setup script (`scripts/install_hooks.py`) that installs a pre-commit/pre-push git hook.
-* **The Mechanics:** The pre-commit hook automatically runs `python -m ruff check --fix` and `python scripts/check_reports.py` locally before git permits a commit to be created.
-* **The Benefit:** Immediate developer feedback on style or link errors, saving 100% of the GitHub runner minutes that are currently wasted on "fixing review links" or "lint fixes".
+To provide fast local feedback before pushing, we propose building local git hooks:
+* **The Idea:** Write a setup script (`scripts/install_hooks.py`) that installs a pre-commit hook as a local convenience.
+* **The Mechanics:** The hook runs `python -m ruff check` and `python scripts/check_reports.py` (checking, not auto-fixing). Developers inspect any output and stage results manually.
+* **Conditions (both Codex and Claude agreed):** Hooks are local developer convenience only — they can be bypassed with `--no-verify` and may not be installed on every machine. CI remains the authoritative gate; a passing hook result is never a substitute for green CI. Hooks must not auto-modify and stage files. Any installer must preserve existing hooks and be separately reviewed. The worker/publisher trust boundary must never install or execute worker-supplied hooks.
 
-### C. Proposed Tooling: Pytest Suite Duration Optimization
-To accelerate our daily developer feedback loops:
-* **The Idea:** Organize our 314 tests using `pytest` markers (e.g., `@pytest.mark.fast` and `@pytest.mark.slow`).
-* **The Mechanics:** Fast unit checks (basic routing, CLI parsers, mathematical validators) must run in under 2 seconds. Heavy integration checks (multi-day simulation runs and historical replays) are marked as slow.
-* **The Benefit:** Pre-commit hooks can execute `pytest -m "not slow"` locally for instant (under 2s) validation of code edits, leaving the heavier simulation suite to run during PR pushes.
+### C. Pytest Suite Markers — Deferred
+Deferred until the suite duration warrants it. As measured on current `main`, the full suite runs in approximately 9–10 seconds; the overhead of maintaining markers and the risk of accidentally excluding tests outweigh the benefit at this scale. Revisit when the suite consistently exceeds ~60 seconds.
 
 ### D. Guidelines for Future Tool Development:
 1. **Write program checkers first:** If a new constraint is written into a task file or specification (e.g., "all floats must be verified as finite"), write a quick script utility under `scripts/` to enforce it, and hook it into our GitHub Actions (`quality.yml`).
@@ -66,34 +63,26 @@ To accelerate our daily developer feedback loops:
 
 ---
 
-## 5. Dynamic Compute Routing & Parameter Scaling
+## 5. Proportionate Review Effort
 
-To optimize credit consumption and maximize reviews' precision, our workflow runners should programmatically scale our processing models, context pruning, and reasoning effort depending on the file risk of the task.
+To optimise credit consumption, review effort should be proportionate to the **consequence and blast radius** of a change, not its file path alone. A documentation change that alters a rule agents must follow, or a config change that shifts a risk limit, is high-consequence regardless of directory. A large refactor with no behavioral change may need less depth than a one-line change to accounting logic.
 
-### A. How We Adjust Work Models Automatically:
-* **The Concept:** A PR that edits documentation or configs does not need high-reasoning, expensive token cycles. A PR that modifies critical accounting or risk engines represents a high-risk change.
-* **The Proposed Parameter Guidelines:**
-  * **Low-Risk Path (Docs, Configs, Tools):** The workflow calls Claude/Codex on lightweight, instant-generation models (like standard `gpt-4o` or `claude-3-5-haiku`) with `reasoning_effort: low` or reasoning turned off entirely.
-  * **High-Risk Path (Accounting, Risk engine, Strategy math):** If `git diff` detects modifications in `src/crypto_grid_bot/simulation/`, `src/crypto_grid_bot/risk/` or `src/crypto_grid_bot/portfolio/`, the workflow automatically routes requests to our deepest thinking engines (like `o1-pro` / `Frontier Pro`) with `reasoning_effort: high`, allocating maximum context and thinking budget to the review.
-* **Context Pruning:** Agents should programmatically focus their context window on the specific file imports and class relationships relevant to the active change list, rather than always swallowing the entire repository in every single loop.
+### A. Principle:
+* **Higher-consequence changes** (strategy logic, accounting, risk controls, workflow permissions, experiment specs, any rule agents must follow) warrant deeper review with full diff context and all relevant callers, tests and trust boundaries retained.
+* **Lower-consequence changes** (prose corrections, index rows, wording tweaks with no behavioral effect) can use a proportionately lighter review pass — but never skip the full review if the change touches behavior, a workflow, or a rule.
+* **Context reduction** must retain the complete diff and all cross-file dependencies; pruning to imports alone misses workflow and configuration dependencies.
+* **Implementation note:** Specific model names, provider identifiers and `reasoning_effort` flag values belong in workflow configuration, not in this document. They change faster than the principle. Verify that any integration actually supports the chosen settings before implementing routing.
 
 ---
 
-## 6. Safe Next Steps & Questions
+## 6. Agreement Record
 
-* **Claude:**
-  1. Do you agree with the division of macro planning (Claude) and operational planning (Bob)?
-  2. Do you agree to prioritize writing program checkers under `scripts/` before initiating manual review cycles?
-  3. Do you agree with the dynamic compute routing and parameter scaling proposal under Section 5?
-  4. Do you agree with the local Git hooks and Pytest categorization tooling proposals under Section 4?
-* **Codex:**
-  1. Do you agree to retain absolute veto/merge authority on the basis of logical skepticism, and defer empirical data-checking strictly to Bob’s task-file runs?
-  2. Do you agree that automated tools should pre-screen PRs before they reach your review queue?
-  3. Do you agree that we should programmatically scale our review engines, context sizes, and reasoning effort based on the file-risk path of the PR diff (Section 5)?
-  4. Do you agree with local Git hooks and Pytest categorization (Section 4) as standard gates for the PR review queue?
+This document incorporates the Codex Q1–Q4 conditions (PR #74 comments 5846442108, 5846533263, 5846751060, 5846568033) and Claude's review (PR #74 comment 5847822520). The substantive positions of both agents were:
 
-Please reply on the corresponding PR thread with:
-`AGREE`, `AGREE WITH CHANGES` (listing them), or `DISAGREE` (with technical reasoning).
+* **Codex:** AGREE WITH CHANGES on all four questions. Key conditions: roles are primary not exclusive; owner retains final authority (no absolute veto); no automatic permission for large data runs from role descriptions; permit review during failing checks; proportionate tooling; correct tool descriptions; preserve worker/publisher trust boundary; hooks are local convenience only; measure before claiming performance gains.
+* **Claude:** Q1 AGREE WITH CHANGES (Bob must not author his own task file definitions), Q2 AGREE, Q3 AGREE WITH CHANGES (classify by consequence not file path; drop specific model names), Q4 hooks AGREE WITH CHANGES (convenience only, CI is gate), Q4 markers DISAGREE (suite is ~9s, premature).
+
+Merged by owner (Bob session) while Codex is unavailable (week of 2026-09-28). Codex to review on return.
 
 ---
 Made with IBM Bob

@@ -13,8 +13,8 @@ arrives as a PR ([rules](../AGENT_HANDOFF.md)).
 
 | Task | Status |
 | --- | --- |
-| [Outage calendar and field-level mismatches](2026-09-26-bob-outage-calendar.md) | **Owner's go; runs when merged.** Hours missing from both archives (the real outages), grouped into events, and which fields differ in each mismatch. Follows PR #60. |
-| [Refined parser rule](2026-09-26-bob-refined-parser-rule.md) | **Owner's go; runs when merged.** Bob's refined rule from PR #59, with an aligned open, continuity and a strict hour check, measured on every file of the 14 months. |
+| [Outage calendar and field-level mismatches](2026-09-26-bob-outage-calendar.md) | **Done:** [report](../reviews/2026-09-26-bob-outage-calendar.md) merged in PR #66, independently rechecked by Claude. Counts cover parsed pair-months; outage-policy adoption remains separate. |
+| [Refined parser rule](2026-09-26-bob-refined-parser-rule.md) | **Done:** [report](../reviews/2026-09-26-bob-refined-parser-rule.md) merged in PR #65, independently rechecked by Claude. Repair eligibility was measured; parser/tolerance adoption and full replay validity remain separate. |
 | [Hour-level defect calendar, 2017-08 to 2024-12](2026-09-26-bob-hourly-defect-calendar.md) | **Done:** run 36221539727; report merged in PR #60, rechecked by Claude. |
 | [Parser anomaly classes](2026-09-26-bob-parser-anomaly-classes.md) | **Done:** run 36221539727; report merged in PR #59, rechecked by Claude. |
 | [Development data inventory, 2017-08 to 2024-12](2026-09-25-bob-dev-data-inventory.md) | **Done:** run 36203721612; report merged in PR #49, rechecked by Claude. |

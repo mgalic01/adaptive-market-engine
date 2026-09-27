@@ -156,6 +156,16 @@ class FetchTests(unittest.TestCase):
             fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
         self.assertFalse(local_path(self.data, "ADAUSDT", "1m", "2024-01").exists())
 
+    def test_non_ascii_checksum_body_fails_at_the_data_error_boundary(self):
+        # A corrupt or hostile .CHECKSUM response used to raise UnicodeDecodeError, which
+        # escaped the DataError boundary every caller fails closed on.
+        self.archive.add("ADAUSDT", "1m", "2024-01", minute_rows(JAN_2024_MS, 5))
+        path = archive_path("ADAUSDT", "1m", "2024-01") + ".CHECKSUM"
+        self.archive.objects[path] = b"\xff\xfe not ascii"
+        with self.assertRaisesRegex(DataError, "unexpected checksum file"):
+            fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
+        self.assertFalse(local_path(self.data, "ADAUSDT", "1m", "2024-01").exists())
+
     def test_unpublished_month_is_recorded_missing(self):
         entry = fetch_file(self.data, "NEWUSDC", "1m", "2024-01", self.archive)
         self.assertEqual("missing", entry["status"])

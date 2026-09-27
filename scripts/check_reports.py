@@ -74,10 +74,19 @@ def stated_hash(text: str, script: str) -> tuple[str, bool] | None:
 
 
 def check_report(path: Path, checked: list[str] | None = None) -> list[str]:
-    """Problems in one Bob report; appends each hash-checked script to ``checked``."""
+    """Problems in one review; appends each hash-checked script to ``checked``.
+
+    A report with no appendix heading and no stated hash is a no-op: the ``text``
+    fence rule exists only to stop ``ruff format`` rewriting a block whose SHA-256
+    the report pins, so it is not imposed on prose that pins nothing.
+    """
     text = path.read_text(encoding="utf-8")
-    errors = []
+    errors: list[str] = []
     blocks = fenced_blocks(text)
+    if not SCRIPT_HEADING.search(text):
+        # Prose with an incidental python block pins nothing, so the text-fence rule
+        # has nothing to protect. An appendix heading *without* a hash still errors.
+        return errors
     errors += [
         f"{path}: script fenced as python at offset {start}; use text"
         for start, language, _ in blocks
@@ -151,8 +160,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     errors = check_index()
     checked: list[str] = []
-    for report in sorted(REVIEWS.glob("*-bob-*.md")):
-        errors += check_report(report, checked)
+    # Every review with an embedded appendix, not only Bob's: Claude publishes
+    # hashed appendices too (2026-09-26 open-mismatch note), and an unchecked hash
+    # is exactly the defect this script exists to catch. Reviews without an
+    # appendix heading are a no-op in check_report.
+    for report in sorted(REVIEWS.glob("*.md")):
+        if report.name != "README.md":
+            errors += check_report(report, checked)
     if args.changed is not None:
         if args.base_index is None:
             parser.error("--changed needs --base-index")

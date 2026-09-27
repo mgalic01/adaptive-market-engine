@@ -33,7 +33,7 @@ from crypto_grid_bot.simulation.runner import Frame, PaperSimulator
 
 ROOT = Path(__file__).resolve().parents[1]
 START_MS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
-WARMUP = 800  # hours; the feature engine needs 742
+WARMUP = 800  # hours; the feature engine needs 743 completed observations
 # Every field of a replay summary (results.json rows); a change must be deliberate.
 SUMMARY_FIELDS = {
     "symbol",

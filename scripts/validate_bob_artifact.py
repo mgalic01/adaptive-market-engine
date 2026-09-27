@@ -5,7 +5,10 @@ bob-task.yml's publish job runs this on a fresh machine, from a clean checkout o
 and commits nothing unless it passes. Accepted content is exactly:
 
 - ``summary.md``: Bob's final answer, required (a blank one means no final answer);
-- at most one ``report/YYYY-MM-DD-bob-<topic>.md``, not already in docs/reviews/.
+- exactly one ``report/YYYY-MM-DD-bob-<topic>.md``, not already in docs/reviews/.
+
+A summary alone is rejected, including when the task could not finish. The publisher
+then fails and alerts the owner rather than silently skipping publication and delivery.
 
 Both must be regular files of UTF-8 text within size limits, free of secret-like
 values, and without control, format, separator or private-use characters (Unicode
@@ -14,7 +17,7 @@ bidirectional characters that could hide text from a reviewer in files every age
 reads.
 
 Environment: IN_DIR (the downloaded artifact), BOBSHELL_API_KEY (optional, scanned for),
-GITHUB_OUTPUT (receives ``report=<name>``, empty when there is no report). Run from the
+GITHUB_OUTPUT (receives ``report=<name>`` only on success). Run from the
 repository root. Exit status 1 with a "Rejected:" line on any failure.
 """
 
@@ -59,7 +62,7 @@ def _check_text(path: Path, cap: int, label: str, key: str) -> None:
 
 
 def validate(root: Path, reviews_dir: Path, key: str = "") -> str:
-    """Return the accepted report's file name, or "" when there is only a summary."""
+    """Return the accepted report's file name; a summary alone is not a task report."""
     found: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
         for d in dirnames:
@@ -77,7 +80,7 @@ def validate(root: Path, reviews_dir: Path, key: str = "") -> str:
     if len(reports) > 1:
         raise Rejected(f"more than one report: {sorted(reports)}")
     if not reports:
-        return ""
+        raise Rejected("report is missing (a summary alone cannot complete a task run)")
     name = reports[0].removeprefix("report/")
     if "/" in name or not REPORT_NAME.match(name):
         raise Rejected(f"report name {name!r} does not match YYYY-MM-DD-bob-<topic>.md")
@@ -99,7 +102,7 @@ def main() -> int:
         return 1
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
         out.write(f"report={report}\n")
-    print(f"Accepted: summary.md{', ' + report if report else ''}")
+    print(f"Accepted: summary.md, {report}")
     return 0
 
 

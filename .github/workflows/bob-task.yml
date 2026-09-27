@@ -217,8 +217,10 @@ jobs:
           file on a GitHub Actions machine at the owner's request.
 
           Task file (your instructions): $TASK
-          Read docs/START_HERE.md step 1 first (the rules that override everything),
-          then the task file, and follow the task exactly. Also read docs/AGENT_HANDOFF.md
+          Read docs/START_HERE.md step 0 (what the project is for) and step 1 (the rules
+          that override everything) first, then the task file, and follow the task
+          exactly. Step 0 is context for judging your results, not licence to widen the
+          task: do exactly what the task file asks. Also read docs/AGENT_HANDOFF.md
           (Three agents) for your role, and docs/BOB_PRACTICE.md, whose self-check you
           go through before your final message.
 
@@ -246,6 +248,13 @@ jobs:
           lines with the task, the outcome, the report path, and anything the owner,
           Claude or Codex must act on. No other line may start with 'IBM Bob'. End with
           '— IBM Bob (task run)' and write nothing after it.
+
+          Write your final message in exactly this order: the 'IBM Bob' first line,
+          the 5 to 15 lines, and then the signature as the very last line. Sign exactly
+          once. Drafts and any intermediate messages stay unsigned. If you want to add
+          anything after signing, rewrite the whole message from its first 'IBM Bob'
+          line. A message whose last signed block has no 'IBM Bob' line of its own is
+          refused and never posted.
           "
           # env -i: only PATH, HOME and Bob's key reach his process; no GitHub token.
           # Command, edit and read tools stay on; MCP, browser and subagents are off.

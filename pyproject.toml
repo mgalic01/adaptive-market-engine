@@ -38,3 +38,8 @@ files = ["src"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+# Put this checkout's src/ ahead of any installed copy. Without it, pytest imports
+# whatever `crypto_grid_bot` the environment resolves, which on a machine carrying an
+# editable install of another checkout means this repository's tests silently exercise
+# that other tree's source. The failures then look like regressions here.
+pythonpath = ["src"]
