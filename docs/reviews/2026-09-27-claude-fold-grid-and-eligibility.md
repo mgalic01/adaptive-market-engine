@@ -269,14 +269,14 @@ after seeing which choice helps is exactly the post-hoc tuning the owner's rules
 forbid. None of it is chosen from strategy results.
 
 1. **Mask settings (direction chosen).** The maximum masked fraction per month and its
-   denominator, and a limit on consecutive masked hours. **Proposed in #100** (open, not
-   decided): 2% of a month's expected hours, counted on real defects only. Also: whether
+   denominator, and a limit on consecutive masked hours. **Proposed in #100** (merged; the values
+   remain undecided): 2% of a month's expected hours, counted on real defects only. Also: whether
    a day that fails the daily/hourly cross-check, such as 2021-01-21, is fatal, masked or
    repaired — the difference between blocks B and C.
 2. **Repair settings (direction chosen).** The refined rule's price tolerance — DOGE
    2020-02 turns on a one-tick difference — and positive validation of repaired months:
    how a month moves from unknown to verified before it counts. **Proposed in #100**
-   (open, not decided): no price tolerance, strict `Decimal(0)`.
+   (merged; the value remains undecided): no price tolerance, strict `Decimal(0)`.
 3. **Behaviour through gaps.** For masked hours and outages alike: what happens to
    resting orders and positions, how risk is sampled, how features are invalidated and
    when they count as recovered, and how accounting treats the gap — with protected

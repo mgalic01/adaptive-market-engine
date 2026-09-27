@@ -3,8 +3,8 @@
 - **Date:** 2026-09-27. **Author:** Claude (cloud session `session_012TnmLLUR1KhRL31nnfnujH`).
 - **Status: two values PROPOSED from measurement. Not yet an owner decision.** The owner
   confirmed the *approach* — adopt hour-level masking and Bob's refined repair rule
-  ([PR #92](https://github.com/mgalic01/adaptive-market-engine/pull/92), still open and
-  changing) — and asked for the two values it leaves open to be derived rather than picked.
+  ([PR #92](https://github.com/mgalic01/adaptive-market-engine/pull/92), which was open and
+  changing when this record merged and has since merged itself — see the post-merge note) — and asked for the two values it leaves open to be derived rather than picked.
   **The owner has not confirmed 2% or `Decimal(0)`; this record proposes them.** An earlier
   version of this document called them an owner decision, which overstated the
   confirmation given. Corrected after review.
@@ -55,8 +55,8 @@ Between 74% and 82% of the apparent rate in the worst pair-years is the conventi
 difference. DOGE 2019's 53% — which PR #92 cites among the reasons its usable-fold count is
 a ceiling — is **11.9%** of real defects.
 
-**This record deliberately quotes no headline count from PR #92.** That PR is open and its
-figure has already moved once while this document sat in review: a start-bound correction
+**This record deliberately quotes no headline count from PR #92.** That PR was open when this
+was written and its figure had already moved once while this document sat in review: a start-bound correction
 took it from 199 usable pair-folds to 185. Everything below rests on the measurement in
 this record's own appendix, so it does not go stale when #92 changes again. How the two fit
 together is for #92 to state once both are merged.
@@ -218,6 +218,29 @@ python data/masked_bands.py data/masked_fraction.jsonl
 **Every table above comes from the second script**, not from ad-hoc code. An earlier version
 published tables with no committed reducer, so they could not be regenerated from the
 appendix; Codex's review caught that.
+
+## Post-merge note (2026-09-27)
+
+This record merged as `b7a857b`. **PR #92 merged minutes later, as `c3c8e25`**, so the two
+statements above that described it as open were true when written and are no longer. Its
+record is now on `main` as
+[the fold grid and how little of it is usable](2026-09-27-claude-fold-grid-and-eligibility.md).
+
+Three things this does **not** change:
+
+- **The decision to quote no headline count from #92 stands**, and for the same reason: every
+  figure here comes from this record's own appendix, so nothing above depends on a number
+  that lives in the other document and can move again.
+- **The two proposed values are still undecided.** #92's merged record cites them correctly as
+  "proposed in #100, not decided". Merging either PR decided neither value; it published the
+  measurement and the proposal.
+- **The limits above are unchanged**, including the one that matters most: the cap is measured
+  on the raw-parseable months only, so the months the repair rule rescues are in no band.
+
+What is now actionable, and was deferred to "once both are merged": both are merged, so the
+two records can be reconciled — #92's fold counts read against this record's convention split,
+and the open-only reclassification stated once rather than in two places. Neither merged PR can
+carry that work, so it needs its own change.
 
 ## Appendix: `data/masked_fraction.py` source
 
