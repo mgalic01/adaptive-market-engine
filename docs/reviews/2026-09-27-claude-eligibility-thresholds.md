@@ -1,28 +1,34 @@
-# Owner decision: the eligibility rule for development folds
+# Proposed eligibility thresholds for development folds (from measurement)
 
 - **Date:** 2026-09-27. **Author:** Claude (cloud session `session_012TnmLLUR1KhRL31nnfnujH`).
-- **Status: owner decision, recorded before any variant result exists.** The owner
-  confirmed the mask and repair settings proposed in
-  [the fold-grid report, PR #92](https://github.com/mgalic01/adaptive-market-engine/pull/92)
-  — not yet merged, and still changing — and asked for the two values it leaves open to be
-  proposed from measurement rather than picked. Fixing the rule now
-  is what keeps the walk-forward honest: choosing it after seeing returns would be the
-  post-hoc tuning `START_HERE.md` step 1 forbids.
-- **Scope.** Sets the mask granularity, the maximum masked fraction and the repair rule's
-  price tolerance. It changes no code, no parser and no criterion, and says nothing about
-  any strategy's performance. Reads cached development archives only; no network, and
-  nothing touches the reserved window.
+- **Status: two values PROPOSED from measurement. Not yet an owner decision.** The owner
+  confirmed the *approach* — adopt hour-level masking and Bob's refined repair rule
+  ([PR #92](https://github.com/mgalic01/adaptive-market-engine/pull/92), still open and
+  changing) — and asked for the two values it leaves open to be derived rather than picked.
+  **The owner has not confirmed 2% or `Decimal(0)`; this record proposes them.** An earlier
+  version of this document called them an owner decision, which overstated the
+  confirmation given. Corrected after review.
+- **Why record it before results exist.** Whichever values are adopted must be fixed before
+  any variant runs, or choosing them becomes the post-hoc tuning `START_HERE.md` step 1
+  forbids. Proposing them now, with the measurement attached, is what makes that possible.
+- **Scope.** Proposes the maximum masked fraction and the repair rule's price tolerance. It
+  changes no code, parser or criterion, and says nothing about any strategy's performance.
+  Reads cached development archives only; no network, and nothing touches the reserved
+  window.
 
 ## The decisions
 
 1. **Mask defect hours; do not fail their month.** The mask setting of PR #92.
 2. **Adopt Bob's [refined parser rule](2026-09-26-bob-refined-parser-rule.md)** for
    off-boundary close times. The repair setting of PR #92.
-3. **Maximum masked fraction: 2% of a month's expected hours, counting real defects
-   only.** A pair-month carrying more is not eligible, masked or otherwise.
+3. **Proposed maximum masked fraction: 2% of a month's expected hours, counting real
+   defects only.** A pair-month carrying more would not be eligible, masked or otherwise.
+   **Measured on the raw-parseable population only** — see the population section below;
+   the cutoff is unmeasured for months the repair rule rescues, so the rule is proposed
+   for that population rather than validated on it.
 4. **The open-only convention class is excluded from that count by its own named rule**,
    not by a price tolerance.
-5. **Price tolerance on repaired hours: none — strict equality**, `Decimal(0)`.
+5. **Proposed price tolerance on repaired hours: none — strict equality**, `Decimal(0)`.
 
 ## Why 2%, and why counted on real defects
 
@@ -124,6 +130,23 @@ owner and Codex have not decided — and would do so in a form that also hides r
 disagreements of the same magnitude. Decision 4 handles the convention class by name,
 visibly, and leaves everything else strict.
 
+## The measurement's population is narrower than the rule's
+
+**The cap is measured on the 674 months that parse *without* repair. The 106 the refined
+repair rule would rescue are not in any band above.** The script classifies a month as
+`unparsed` and moves on; it does not apply the repair rule and then measure. So the
+distribution describes a population narrower than the eligible set the adopted rule
+creates, and a repaired month's real-defect share is unmeasured here.
+
+That matters in a specific direction: the ten exchange-wide unparseable months are the ones
+the repair rule exists for, and nothing here shows whether their defect shares sit below
+2% or above it. If they sit above, the cap would exclude the very months the repair rule was
+adopted to recover — and the two decisions would work against each other. Measuring that
+needs the repair rule applied before the parse split, which this script does not do.
+
+**This is the largest open limitation of the proposal**, raised by Codex's review, and it is
+a reason to treat 2% as provisional until the repaired months are measured too.
+
 ## What this does not decide
 
 - **Whether a masked month replays validly.** The cap bounds how much is masked; it does
@@ -141,11 +164,40 @@ visibly, and leaves everything else strict.
   month, so the reserved window cannot be read.
 - The convention class is identified exactly as the merged finding defines it —
   `differing_fields` returning `("open",)` alone — not by a heuristic.
-- **Corroboration.** This measurement gives DOGE 2019 a total of 2,287 masked hours; Bob
-  independently measured 2,275 for the same pair-year, with different code on a different
-  machine. Close but not identical, and the difference is definitional rather than a
-  discrepancy to reconcile: his calendar counts listed hours, this counts expected hours
-  from the pair's first listed hour, and his excludes unparsed months by construction.
+- **Corroboration, and a correction to how it was explained.** This measurement gives
+  DOGE 2019 **2,287** masked hours; Bob independently measured **2,275**. An earlier version
+  of this record attributed the 12-hour gap to a definitional difference (listed versus
+  expected hours, and his exclusion of unparsed months). **That explanation was wrong**, and
+  Codex Cloud's review identified the real cause. DOGE 2019 has exactly **12 absent-both
+  hours — 8 in 2019-08 and 4 in 2019-11** — which Bob's hourly calendar routes to the outage
+  calendar by construction while this script counts them as masked. 2,287 − 2,275 = 12. So
+  the two measurements agree **exactly**, which is a stronger result than the approximate
+  agreement previously claimed, and it was only visible once the cause was named correctly.
+- **The open-only deduction is by field signature, not per-instance verification.** An hour
+  is deducted from the real-defect count when `differing_fields` returns `("open",)` alone.
+  That assumes the mechanism established in
+  [the open-mismatch finding](2026-09-26-claude-open-mismatch-explained.md) — an untraded
+  first minute — holds for **every** such hour. It was verified on 1,689 of them, not on all
+  5,277. This script does not re-check the first minute's volume per instance, so the split
+  between convention and real defects inherits that inference.
+- **This is a defect count, not a validity proof.** The script compares aggregated 1m
+  against the official 1h bars hour by hour. It does **not** check that each hour holds a
+  full 60 minutes, and it does not run the daily or hourly validation the audit tooling
+  performs. So a month under the cap is a month whose *compared* hours mostly agree — not a
+  month shown to be replayable. Read the counts as structural, on the raw-parseable
+  population, and nothing more.
+- **Archive bytes are not re-verified here.** The script calls `read_archive` on the local
+  cache directly rather than going through `fetch_file`, so Binance's published SHA-256 is
+  not re-checked during this measurement. The cached files were checksum-verified when
+  fetched; this run trusts that, and a reader reproducing it on a tampered cache would get
+  tampered numbers without warning.
+- **Listing hour derived once per symbol, as `audit_run.audit_outages` does.** An earlier
+  version took `minutes[0]` per month, which shortens the expected-hours denominator for any
+  later month whose data starts late, understating the defect share. Measured on this cache:
+  nine months have a shortened denominator and **all nine are listing months**, where
+  shortening is correct — zero later months are affected, so the two derivations agree here.
+  The fix removes a fragility rather than changing a number, and the re-run confirms the
+  output is unchanged.
 - **Could not check:** whether any specific masked month is tradeable. That needs a
   replay, which would mean looking at returns before this rule is fixed — exactly what
   must not happen. The cap is therefore a data-coverage bound justified by the
@@ -153,12 +205,25 @@ visibly, and leaves everything else strict.
 
 ## Reproducing
 
-`data/` is git-ignored, so the source is reproduced below in full and the hash pins it.
-Run from the repository root with the archives cached; it reads nothing else.
+`data/` is git-ignored, so both sources are reproduced below in full and their hashes pin
+them. Run from the repository root with the archives cached.
+
+```
+PYTHONPATH=src python data/masked_fraction.py > data/masked_fraction.jsonl
+python data/masked_bands.py data/masked_fraction.jsonl
+```
+
+**Every table above comes from the second script**, not from ad-hoc code. An earlier version
+published tables with no committed reducer, so they could not be regenerated from the
+appendix; Codex's review caught that.
 
 ## Appendix: `data/masked_fraction.py` source
 
-SHA-256: `a3dfd49b2ac77b5c0058d68441a9c810e3df51b6ac8012592af51220212b9547`
+SHA-256: `f23e1c8bca7f2ead15ee3e2683776d31459e6fcdfc7d7c72223e04ead65fa1be`
+
+Produces one JSON line per pair-month. The hash changed from the version first pushed
+here (`a3dfd49b…`): that one derived the listing hour per month, and the fix derives it
+once per symbol. The re-run's output is byte-identical, for the reason given above.
 
 ```text
 """Per-pair-month share of hours a mask would have to cover, from the LOCAL cache only.
@@ -203,7 +268,7 @@ def months():
         y, m = (y + 1, 1) if m == 12 else (y, m + 1)
 
 
-def measure(symbol, month):
+def measure(symbol, month, listing_hour):
     development_month(month)
     paths = {iv: local_path(DATA, symbol, iv, month) for iv in ("1m", "1h")}
     if not all(p.exists() for p in paths.values()):
@@ -217,8 +282,13 @@ def measure(symbol, month):
         return {"status": "empty"}
     ours = {k.open_ms: k for k in aggregate(minutes)}
     theirs = {k.open_ms: k for k in hours}
-    first_hour = minutes[0].open_ms // HOUR_MS * HOUR_MS
-    statuses = hour_statuses(ours, theirs, expected_hours(first_hour, month))
+    # Derive the pair's listing hour ONCE, from its first cached month, and reuse it —
+    # the pattern audit_run.audit_outages uses. Taking minutes[0] per month would shorten
+    # the expected-hours denominator for any later month whose data starts late, which
+    # understates the defect share. Measured on this cache: nine months have a shortened
+    # denominator and all nine are listing months, where shortening is correct, so the two
+    # derivations agree here — but only by luck of the data, not by construction.
+    statuses = hour_statuses(ours, theirs, expected_hours(listing_hour, month))
     masked = open_only = 0
     for hour, status in statuses.items():
         if status != PRESENT_BOTH:
@@ -244,11 +314,115 @@ def measure(symbol, month):
             "absent_both": sum(1 for s in statuses.values() if s == ABSENT_BOTH)}
 
 
+def listing_hour_of(symbol):
+    """The pair's first cached hour, from the earliest month that parses."""
+    for month in months():
+        path = local_path(DATA, symbol, "1m", month)
+        if not path.exists():
+            continue
+        try:
+            minutes, _ = read_archive(path, symbol, "1m", month)
+        except DataError:
+            continue
+        if minutes:
+            return minutes[0].open_ms // HOUR_MS * HOUR_MS
+    return None
+
+
 if __name__ == "__main__":
     for symbol in PAIRS:
+        listing = listing_hour_of(symbol)
+        if listing is None:
+            print(json.dumps({"pair": symbol, "status": "no_cached_month"}), flush=True)
+            continue
         for month in months():
-            row = {"pair": symbol, "month": month, **measure(symbol, month)}
+            row = {"pair": symbol, "month": month, **measure(symbol, month, listing)}
             print(json.dumps(row), flush=True)
             if row["status"] == "ok":
                 print(f"{symbol} {month} all={row['fraction']:.4f} hard={row['hard_fraction']:.4f}", file=sys.stderr, flush=True)
+```
+
+## Appendix: `data/masked_bands.py` source
+
+SHA-256: `6bb4940179e76c45950cd4061a662054e7d1e1ae82beb4b4f6a184078c8eda40`
+
+Reduces that JSONL to every table this record publishes — the two band tables, the cap
+table, the pair-year comparison and the worst real-defect month. Added because the
+tables originally had no committed reducer.
+
+```text
+"""Reduce masked_fraction.jsonl to the tables the eligibility record publishes.
+
+Codex's review of PR #100 found the record's tables had no committed reducer: they were
+produced by ad-hoc code that was never published, so a reader could not regenerate them
+from the appendix. This is that reducer. Every table in the record comes from here.
+
+    PYTHONPATH=src python data/masked_fraction.py > data/masked_fraction.jsonl
+    python data/masked_bands.py data/masked_fraction.jsonl
+"""
+
+import json
+import sys
+from collections import Counter
+
+BANDS = [
+    (0.0, 0.001), (0.001, 0.005), (0.005, 0.01), (0.01, 0.02), (0.02, 0.03),
+    (0.03, 0.05), (0.05, 0.075), (0.075, 0.10), (0.10, 0.15), (0.15, 0.25),
+    (0.25, 0.50), (0.50, 1.01),
+]
+CAPS = [0.01, 0.02, 0.03, 0.05]
+PAIR_YEARS = [("DOGEUSDT", "2019"), ("DOGEUSDT", "2020"), ("LINKUSDT", "2019"), ("LINKUSDT", "2020")]
+
+
+def load(path):
+    return [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
+
+
+def main(path):
+    rows = load(path)
+    status = Counter(r["status"] for r in rows)
+    ok = [r for r in rows if r["status"] == "ok"]
+    n = len(ok)
+    print(f"rows {len(rows)}; statuses {dict(status)}")
+    print(f"parseable pair-months measured: {n}")
+    print("\nNOTE: the cap is measured on these raw-parseable months only. Months the")
+    print("refined repair rule would rescue are counted as 'unparsed' here and are NOT")
+    print("in any band below, so the distribution describes a population narrower than")
+    print("the adopted rule's eligible set.")
+
+    for key, label in (("hard_fraction", "HARD defects only"), ("fraction", "ALL masked hours")):
+        print(f"\n=== {label} ===")
+        for lo, hi in BANDS:
+            k = sum(1 for r in ok if lo <= r[key] < hi)
+            print(f"  [{lo:>5.3f},{hi:>5.3f})  {k:>4}")
+
+    print("\n=== months excluded by a cap ===")
+    print("  cap    on all masked        on hard only        wrongly excluded")
+    for cap in CAPS:
+        a = sum(1 for r in ok if r["fraction"] > cap)
+        h = sum(1 for r in ok if r["hard_fraction"] > cap)
+        wrong = sum(1 for r in ok if r["fraction"] > cap and r["hard_fraction"] <= cap)
+        print(f"  {cap:>5.2f}  {a:>4} ({100 * a / n:>4.1f}%)        {h:>4} ({100 * h / n:>4.1f}%)"
+              f"        {wrong:>3}")
+
+    print("\n=== pair-years: convention class versus real defects ===")
+    for pair, year in PAIR_YEARS:
+        sel = [r for r in ok if r["pair"] == pair and r["month"].startswith(year)]
+        if not sel:
+            continue
+        exp = sum(r["expected"] for r in sel)
+        allm = sum(r["masked"] for r in sel)
+        hard = sum(r["hard"] for r in sel)
+        absent = sum(r["absent_both"] for r in sel)
+        print(f"  {pair} {year}: {len(sel):>2} months, expected {exp:>5}, "
+              f"all {100 * allm / exp:>5.1f}%, real {100 * hard / exp:>5.2f}%, "
+              f"absent-both {absent}")
+
+    worst = max(ok, key=lambda r: r["hard_fraction"])
+    print(f"\nworst real-defect month: {worst['pair']} {worst['month']} "
+          f"{worst['hard_fraction']:.4f}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else "data/masked_fraction.jsonl")
 ```
