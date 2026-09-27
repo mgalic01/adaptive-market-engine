@@ -110,11 +110,16 @@ earlier numbers, and that it reproduces them exactly.
   does not compute it; no published source reproduces it. It remains an unverified
   historical claim, exactly as
   [the open-only report](2026-09-26-claude-open-mismatch-explained.md) records.
-- **Not offline by construction.** The script calls `development_month(month)` before any
-  fetch or cache access, so it refuses 2025-01 onward by construction rather than by
-  careful argument choice — a real improvement on the script behind PR #80 comment
-  5850528551. But `fetch_file` **can still reach the network** for an absent or
-  unverified archive, so this must not be described as guaranteed offline or cache-only.
+- **Not offline, and not conditionally so.** The script calls `development_month(month)`
+  before any fetch or cache access, so it refuses 2025-01 onward by construction rather
+  than by careful argument choice — a real improvement on the script behind PR #80 comment
+  5850528551. But `fetch_file` (`src/crypto_grid_bot/backtest/dataset.py:293-303`) calls
+  `fetcher(path + ".CHECKSUM")` **unconditionally**, before it ever looks at the cache: the
+  `target.exists()` test is at `dataset.py:319`. So **every invocation makes at least one
+  network request per archive, even when every archive is already cached and verifies.**
+  Only the archive body itself is conditional — it is downloaded when the local file is
+  missing or its SHA-256 does not match. This must never be described as offline,
+  cache-only, or as reaching the network merely for an absent or unverified archive.
 - **No reclassification.** Nothing here advances any integrity-rule relaxation or
   reclassification of the open-only class; that decision stays with Codex and the owner.
 
@@ -150,8 +155,13 @@ earlier numbers, and that it reproduces them exactly.
 ## Reproducing
 
 Save the exact appendix source as `data/volume_fields.py` before using these commands. They
-need the cached development-window archives; `development_month` refuses 2025-01 onward, and
-`fetch_file` may reach the network when an archive is absent or fails verification.
+need the development-window archives; `development_month` refuses 2025-01 onward.
+
+**These commands are not offline.** `fetch_file` requests each archive's `.CHECKSUM` over
+the network on every call, before any cache lookup, so running them reaches
+`data.binance.vision` even when every archive is already cached and verifies. Only the
+archive body is conditional, downloaded when the local copy is missing or its SHA-256 does
+not match. Do not run them expecting a cache-only operation.
 
 ```
 PYTHONPATH=src python data/volume_fields.py DOGEUSDT,LINKUSDT 2019-08,2019-09,2019-10
