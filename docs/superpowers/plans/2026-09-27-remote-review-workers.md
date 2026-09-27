@@ -46,6 +46,9 @@ permissions and delivery verification are prerequisites, not completed work.
   Test schema rejection, duplicate events, restart, one active lease per identity,
   concurrent reservations and damaged/missing state. Missing established state is an
   incident; only an explicit first-deployment bootstrap creates empty state.
+- [ ] Verify a state-only push starts no source CI/reviewer jobs, including configured
+  CodeQL. Keep the quality workflow's exact state-branch exclusion. Do not rely solely
+  on GITHUB_TOKEN event suppression: a future controller credential may emit events.
 - [ ] Git ref updates use a commit whose parent is the captured state tip, with
   `force=false`. Retry conflicts by re-reading and reapplying, never overwrite another
   claim. Test two controllers racing and cancellation at each persisted transition.

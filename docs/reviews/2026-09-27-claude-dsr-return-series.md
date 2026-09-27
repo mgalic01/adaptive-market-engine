@@ -5,7 +5,7 @@
   only worth running if development results survive the multiple-testing correction.
   The deflated Sharpe ratio (DSR) is that correction. It has two inputs: the number of
   trials, **proposed** in part 2 ([PR #93](https://github.com/mgalic01/adaptive-market-engine/pull/93),
-  not yet merged), and **the return series whose Sharpe is deflated, which nothing
+  merged as a proposal, not an adopted counting rule), and **the return series whose Sharpe is deflated, which nothing
   defines yet**. Each choice below changes the Sharpe of identical runs. Left open, they
   would be settled after results exist — by whichever answer looks better. This fixes
   them first.
@@ -285,9 +285,12 @@ Everything a result could otherwise steer is fixed here.
   - The denominator sums over all `T` observations.
   - There is no fold weighting and no divisor correction.
 - **`V` and `N`:** each trial's Sharpe is built by these same rules, and `N` comes from
-  part 2 (PR #93: proposed, not yet merged) and the trial register. With `N` = 2, the
-  central count proposed in part 2, `V` rests on two numbers and is very uncertain.
-  The report must say so, and must show the DSR at part 2's sensitivity count too.
+  part 2 (PR #93: merged as a proposal, not an adopted counting rule) and the trial
+  register. Part 2 proposes a raw count of **6** centrally and **9** for sensitivity;
+  these small counts do not establish a reliable cross-trial variance `V` or an
+  effective independent count. The report must disclose that uncertainty and show
+  the sensitivity result too. Any `N = 2` example here is illustrative only, not the
+  current central proposal. Final counts depend on the agreed rule and full register.
 - **A registered trial without a Sharpe on a path makes that path's DSR indeterminate.**
   This covers a trial that is invalid, has an indeterminate fold, or has zero variance.
   Dropping it, or lowering `N`, would quietly select out failed trials and change `SR0`.
@@ -343,14 +346,14 @@ Everything a result could otherwise steer is fixed here.
   not Sharpe figures.
 - **Not settled here:** the masking and outage settings of part 1 (proposed values are
   in PR #100), which sections 3 and 5 depend on only through the valid-bar and gap
-  rules; the trial count (part 2, PR #93: proposed, not yet merged); and the trusted
+  rules; the trial count (part 2, PR #93: merged as a proposal, not adopted); and the trusted
   process that writes the trial register.
 
 ## 11. Changes in revisions 2 to 5
 
 | Finding (PR #101) | Change |
 | --- | --- |
-| Automated review: part 2 linked as if merged | Links PR #93 and says "proposed, not yet merged" (header, §1, §8, §10) |
+| Automated review: part 2 linked as if merged | At that revision, qualified PR #93 as proposed and unmerged. Post-merge correction: its current references now say merged as a proposal, not adopted. |
 | Automated review nit: reserved run unclear | §6 states the reserved run also starts fresh |
 | Automated review nit: 5% threshold needs sign-off | Moot: the allowance is withdrawn (§5) |
 | Cloud P2: first day of each fold has no `E_(d−1)` | §3 seeds `E_0` from the equity before the first quote |
@@ -378,4 +381,4 @@ Everything a result could otherwise steer is fixed here.
 | Codex audit (rev. 4): pairs valued at different times in the final hour | §3: one valuation timestamp `τ_d`; the last valid 1m bar at or before it; a 60-minute maximum mark age; beyond it the pair-day is masked and the day missing (§5); fixed now, for the owner and Codex to accept |
 | Cloud P2, Codex (rev. 4): √365 is not an annual Sharpe under dependence | §3: omitted, since nothing downstream needs it; no annualised figure is reported |
 | Automated review (rev. 4, required): index row still said revision 3 | Index row updated to revision 5, with the revision-4 and revision-5 points |
-| Automated review nit (rev. 4): part 2 qualifier absent near §8 | §8 and §10 repeat "PR #93: proposed, not yet merged" |
+| Automated review nit (rev. 4): part 2 qualifier absent near §8 | At that revision, repeated the proposed/unmerged status in §8 and §10; both now reflect the subsequent merge without treating it as adoption. |
