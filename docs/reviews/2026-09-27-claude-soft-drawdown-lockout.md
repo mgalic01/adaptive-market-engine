@@ -2,7 +2,8 @@
 
 - **Date:** 2026-09-27. **Author:** Claude. **Run:** Claude Code desktop session, Windows.
 - **What this does for the goal.** When a V0 replay ended up flat at 8% or more below its
-  high-water mark, it sat in cash for the rest of the window: 102 to 235 days. A live bot
+  high-water mark, it sat in cash for the rest of the window: at least 102 to 235 days,
+  and in every case until the data ended (section 2). A live bot
   in the same state would stay stopped with no command that restarts it. This asks for a
   decision **before any variant runs**.
 - **Owner position.** The owner first chose "fix it, disclosed", meaning trade at the
@@ -17,6 +18,14 @@
   Section 4 now specifies C fully, with every clarification they asked for, and closes the
   open items from revision 2. **The owner has not decided yet.** Two decisions remain
   theirs, and section 7 states both.
+- **Revision 5 (same day, session `a05e63c8`): the owner has decided.** At about 20:00
+  UTC the owner chose **option C**, granted the no-tuning exception **on record**, chose a
+  **fully automatic restart after a 12% hard stop**, and declined a capital threshold
+  (section 7). This revision turns those answers into a precise specification (§4 C) and
+  the required content of the spec amendment (§5). It also closes Codex's five changes,
+  Bob's two concerns, Codex Cloud's four findings and the full audit's three findings on
+  revision 4 (section 9). **Next:** the scoped spec v1 amendment, as its own PR, then the
+  code with the tests in §4 C step 9. No code is in this PR.
 - **Revision 4 (same day, session `a05e63c8`)** answers Codex Cloud's four findings on
   revision 3. The most important one: B and C also need a **scoped amendment of spec v1**,
   not only a waiver of the no-tuning rule (§5, §7). Section 9 maps each finding to its
@@ -90,15 +99,33 @@ of this section. Results with the threshold at 7%:
 - **Every stretch whose equity later changed started below 8%:** 7.54% and 7.34% (verify, BTC
   high-first ungated), 7.02% (practice 0/0.09%, BTC low-first ungated), and 7.19% and
   7.10% (practice 0/0.09%, SOL gated — invalid runs).
-- **No stretch at 8% or more ever changed equity again.** Leaving aside runs that ended in a hard
-  halt (section 6), the not-halted stretches were:
+- **Every stretch at 8% or more lasted until the data ended (revision 5, full audit).**
+  Each one's last sample is 2023-01-31 23:00, the last bar of `practice-2022`, so every
+  one is **right-censored**: none was seen to change equity, but none could have been.
+  The appendix's "never resumed" only means "the series ended while still flat". The
+  lengths below are lower bounds from timestamps (samples minus one hour); I checked each
+  end time by arithmetic. Leaving aside runs that ended in a hard halt (section 6):
 
-  | Run | Starts | Drawdown at start (total equity) | Length |
+  | Run | Starts | Drawdown at start (total equity) | Flat for at least |
   | --- | --- | ---: | ---: |
-  | practice 0/0.09%, XRP gated, high-first / low-first | 2022-10-21 13:00 | 8.25% / 7.79% | 2,459 h (102 d) |
-  | practice 0/0.09%, XRP ungated, both paths | 2022-06-10 19:00 | 8.97% / 8.96% | 5,645 h (235 d) |
-  | practice 0/0.09%, BTC ungated, high-first / low-first | 2022-06-15 11:00 | 7.94% / 8.67% | 5,533 h (231 d) |
-  | practice 0.1%, BTC ungated, high-first / low-first | 2022-06-18 13:00 | 8.19% / 8.05% | 5,459 h (227 d) |
+  | practice 0/0.09%, XRP gated, high-first / low-first | 2022-10-21 13:00 | 8.25% / 7.79% | 2,458 h (102.4 d), censored at 2023-01-31 23:00 |
+  | practice 0/0.09%, XRP ungated, both paths | 2022-06-10 19:00 | 8.97% / 8.96% | 5,644 h (235.2 d), censored at 2023-01-31 23:00 |
+  | practice 0/0.09%, BTC ungated, high-first / low-first | 2022-06-15 11:00 | 7.94% / 8.67% | 5,532 h (230.5 d), censored at 2023-01-31 23:00 |
+  | practice 0.1%, BTC ungated, high-first / low-first | 2022-06-18 13:00 | 8.19% / 8.05% | 5,458 h (227.4 d), censored at 2023-01-31 23:00 |
+
+  No finite replay window can show how long such a stretch lasts. Section 1's code
+  argument is the real basis for acting; the replays only fail to contradict it.
+  **Withdrawn:** "No stretch at 8% or more ever changed equity again", which read
+  censoring as evidence. The owner was shown "235 days in cash" when deciding; read it
+  as "at least until the data ran out".
+- **A second cause is possible (revision 5, full audit).** An unsellable remainder below
+  the exchange's minimum order also froze accounts, with no halt and no pause. PR #122
+  fixes it (engine `exit-residue-v1`). Any frozen tail above could be that rather than the
+  8% lock. Comparing each run's `final_inventory` with `min_notional` settles it without a
+  rerun. **Not done:** the three `results.json` files are not in this checkout. Owner:
+  Claude, together with the timestamp rerun; the corrected script
+  (`scripts/flat_stretches.py`, which labels each stretch CHANGED or CENSORED and measures
+  span from timestamps) is in PR #122.
 
 **What this does and does not show.**
 - Constant hourly total equity is consistent with a flat account and no trades. It
@@ -188,26 +215,41 @@ excludes the protected profit. B does **not** keep or guarantee any loss bound:
 - "About 4 percentage points of peak equity before the trigger" is a distance to a
   trigger, not a remaining loss allowance.
 
-**C. Rebase the risk reference after a cool-off (the owner's current preference).**
-Revision 2 said "not recommended", and I withdraw that: the choice between B, C and D
-is the owner's. C is specified below with every clarification Codex and Bob asked for.
+**C. Rebase the risk reference after a cool-off — chosen by the owner, 2026-09-27.**
+Revision 2 said "not recommended", and I withdrew that; the owner has chosen C (section
+7). C is specified below with every clarification Codex and Bob asked for. It is the
+basis for the spec amendment (§5), not yet that amendment.
 
 1. **Episode start.** As in B: the first `REDUCE` outside an episode cancels resting
    buys, manages sells and pauses. The start time is the quote's `observed_at`, saved in
    the paper state (a schema change).
-2. **Rebase conditions, checked in this order in one step, before any change of state:**
+2. **Rebase conditions.** On each valid frame of an open episode, in this order, before
+   any state changes:
    1. at least 24 hours have passed since the episode start (`observed_at`, `>= 24 h`);
    2. the normal recovery confirmations (`recovery_frames`) have passed, counted over
-      frames on which **every risk condition other than the soft drawdown** passes: no
-      daily-loss `PAUSE`, no `EXIT`, no data-quality or range condition blocking;
-   3. the account is not halted.
+      consecutive valid frames on which every condition other than drawdown passes:
+      daily loss under 3%, no emergency flag, the frame and data checks, and the
+      eligibility check (`scorer.score(...).eligible`);
+   3. the account is not halted (a halted account follows step 7 instead).
 
-   Only then is the rebase applied, **atomically**: `risk_high` becomes the current
-   active equity. The drawdown becomes 0, the engine returns `ALLOW`, and trading resumes
-   at normal size. This answers Bob's ordering question: the confirmations are checked
-   *before* the rebase, against every condition except the one the rebase removes, so the
-   rebase cannot skip them. It also answers Codex: the rebase never clears a daily-loss
-   pause, a data-quality block or a hard halt, because any of them stops step 2.
+   A range exit that is waiting in cash does **not** block these checks (see below).
+   If all three hold, the rebase is computed **tentatively**: `risk_high` is set to the
+   current active equity and the risk engine evaluates again. The rebase is committed only
+   if that evaluation returns `ALLOW`; otherwise nothing changes and the check repeats on
+   the next frame. So the rebase replaces only the drawdown failure. It never clears a
+   daily-loss pause, an emergency, a data block or a halt (Codex Cloud P1 on revision 3).
+
+   **The range-exit deadlock (Codex Cloud P1 on revision 4).** Today a range exit clears
+   only when the account is flat, the risk result is `ALLOW`, the frame is eligible, and
+   the price is back inside the range or the recenter cooldown has passed (`runner.py`,
+   range-exit branch of `_step`). Revision 4 made the rebase wait for the range
+   condition, while the range exit waited for `ALLOW`, which only the rebase can produce.
+   Since most frozen tails were logged as range-exit waits, C would have left the main
+   lockout in place. Revision 5 breaks the cycle by order: the rebase check runs first in
+   the step and ignores the range-exit wait. After a committed rebase the risk result is
+   `ALLOW`, so the existing range-exit rule applies unchanged, in the same frame or a
+   later one. The pause then clears after the usual `recovery_frames`, as after any range
+   exit today.
 3. **One reference moves.** The 8% and the 12% triggers are both measured from the
    rebased `risk_high`. There is no separate hard-stop reference (Bob's structural note).
 4. **Losses are not bounded across episodes.** Each episode can lose about 12% of its own
@@ -219,46 +261,82 @@ is the owner's. C is specified below with every clarification Codex and Bob aske
    restored, and the cool-off continues from it rather than starting again. Evaluating
    the same frame twice cannot rebase twice, because the second evaluation finds no open
    episode.
-6. **Acceptance is untouched: a separate measurement peak.** C1(a) and C1(b) are
-   measured against a high-water mark that is **never rebased and never reset**. It
-   still rises with every new peak; it is not a frozen constant (Codex's correction of
-   Bob's wording). It starts from the same starting equity as `risk_high`. **Corrected
-   in revision 4 (Codex Cloud):** it still receives the same proportional settlement
-   adjustment as `risk_high` today (`_settle`, `account.risk_high *= factor`), so moving
-   profit into the reserve never appears as a drawdown. It is exempt **only** from the
-   new loss rebase. Without that adjustment, option C would create C1 failures after
-   every profit settlement. The two C1
-   bases stay separate, as today: active equity for C1(b) and reserve-inclusive total
-   equity for C1(a). Without this, a rebase would silently weaken C1(b), which today
-   reads the runtime `risk_high`.
-7. **Hard stop: restart only after the owner reviews.** No automatic restart, and no
-   general bypass of `resume()`'s risk check. There is one distinct, explicit command
-   with an audited authorisation. **Corrected in revision 4 (Codex Cloud):** it keeps
-   every precondition `resume()` has today except the risk check it replaces. The
-   account must be halted, flat (no inventory), free of orders, reconciled, and valid
-   for the current frame (`runner.py`, `resume`: "resume requires a halted, reconciled
-   flat paper account"). While a forced liquidation is still incomplete, the command is
-   refused. Test needed: a partially liquidated halted account is rejected. The operator states a reason; the command records the
-   reason, the time and the old and new references, then applies the same rebase as step
-   2. The automated runner never calls it. **Control boundary:** in paper mode the
-   operator is whoever runs the CLI on the owner's machine, and no stronger
-   authentication is claimed. A live deployment would need its own authorisation
-   design, which is out of scope here.
+6. **Acceptance is untouched: two measurement peaks, neither rebased (revision 5,
+   Codex).** C1 has two bases, and each keeps today's definition:
+   - **C1(b), active equity:** measured against a separate reference that follows
+     `risk_high` exactly as today, including the proportional settlement adjustment in
+     `_settle` (`account.risk_high *= factor`), and rises with every new active high. It
+     is exempt only from the loss rebase.
+   - **C1(a), reserve-inclusive total equity:** measured against the running peak
+     `max(old_peak, total_equity)` that `replay.py` tracks today. It is **never** scaled
+     at settlement, because moving profit into the protected reserve does not lower total
+     equity. Example: total peak 120; settlement moves 10 into the reserve, so active
+     capital falls to 110 while total equity stays 120, and the peak stays 120. Scaling it
+     to 110 would hide a later fall of total equity to 115.
+
+   Neither peak is ever reset by a rebase or by a restart after a hard stop. Revision 4
+   wrongly applied the settlement adjustment to both.
+7. **Hard stop: automatic restart after a cool-off (owner decision, 2026-09-27).** The
+   owner chose "fully automatic": no operator command and no overall loss floor. This
+   replaces revision 4's owner-audited command.
+   1. **Which halts.** Only a halt caused by the 12% hard drawdown. Every other halt
+      stays latched and manual, as today: the emergency flag; capital exhaustion, where
+      there is no active equity to rebase to (PR #122 makes it final); and, as a
+      **proposal** from session e0b16be3 not yet confirmed by Codex, Bob or the owner,
+      integrity halts (invalid data, an unexpected symbol, an accounting invariant
+      failure). The halt reason is recorded when the halt starts, so the restart can tell
+      them apart.
+   2. **Cool-off.** At least H hours of `observed_at` since the halt started. H is a new
+      parameter that the spec amendment must fix before any rerun. **Proposal: H = 24
+      hours**, the same number as the soft cool-off, so the fix adds one parameter, not
+      two.
+   3. **Liquidation finished, and every existing precondition kept.** Named explicitly
+      (Bob, Codex): the account is halted, flat (no inventory), has no open orders,
+      reconciles (`account.validate`), the frame is valid (`_validate_frame`), and the
+      **eligibility check** (`scorer.score(frame.candidate, regime).eligible`) passes.
+      While a forced liquidation is incomplete, nothing happens.
+   4. **Tentative rebase, then `ALLOW`.** As in step 2: `risk_high` is set to the current
+      active equity and the risk engine evaluates again. Only if the result is `ALLOW`
+      (daily loss under 3%, no emergency flag) is the halt cleared (Codex Cloud P1).
+      Otherwise nothing changes and the check repeats.
+   5. **On restart** the halt clears as `resume()` clears it today: grid bounds and range
+      timers are reset, and the normal recovery confirmations apply before a new grid.
+      The event is recorded: halt start, halt reason, restart time, old and new reference.
+      A halt restarts at most once; a new halt is a new event.
+   6. **What the owner accepted, knowingly.** Cumulative losses have no floor. The owner
+      saw a EUR 100 chain (peak 105, then 96, then 12% triggers near 84.50, 74.30, 65.40
+      and onwards) and declined a floor: "the bot will be able to pick a good strategy
+      and continue working on his own". C1's 10% limit still judges every run.
+
+   This contradicts two current rules, which the amendment must supersede for drawdown
+   halts only: spec v1 calls the hard-drawdown halt latched, and
+   `docs/PAPER_SIMULATION.md` says it never clears automatically. PR #122 (open) makes
+   the manual `resume()` state that drawdown halts are final. The automatic path is
+   separate from `resume()` and does not reopen that command.
 8. **The daily-loss interaction** follows B's corrected rule: inside a rebased episode
    the drawdown is measured from the new reference, so a later daily pause clears on
    `ALLOW` as today.
 9. **Tests needed:** a trigger just before midnight; no rebase before 24 hours; no rebase
-   while a daily pause, `EXIT` or data block is active; exactly one rebase per episode;
-   restart before and after a rebase; the owner-only resume, with and without a reason;
-   the C1 peak unchanged by a rebase and still rising with new highs.
+   while a daily pause, an emergency or a data block is active; a rebase whose
+   re-evaluation is not `ALLOW` is not committed; exactly one rebase per episode; a
+   process restart before and after a rebase; **a range exit waiting in cash is released
+   by the rebase** (the deadlock case); C1(b) scaled at settlement, C1(a) not, and neither
+   reset by a rebase or a hard-stop restart. For the automatic hard-stop restart: not
+   before H hours; not while partially liquidated; not on an ineligible frame; not while
+   the daily loss is 3% or more or the emergency flag is set; never after an emergency,
+   capital-exhaustion or integrity halt; at most once per halt.
 
 **What C costs, plainly.** C trades at normal size again after every episode. That is
 closer to the owner's "what's the point of trading if not trading", but the only loss
-limit left is per episode. Only a human decision after a hard stop ends the sequence.
+limit left is per episode. With the owner's automatic restart, nothing ends the
+sequence; only C1 judges the result.
 
-**D. Keep it and document it.** Leave V0 as it is and read every result as "trades until
-flat past 8%, then cash". Add only an audited operator resume for soft pauses, so a live
-bot cannot be stuck indefinitely without a human decision.
+**D. Keep it and document it (not chosen).** Leave V0 as it is and read every result as
+"trades until flat past 8%, then cash". **Corrected in revision 5 (Codex, Codex Cloud
+P1):** only "leave as is" changes no trading behaviour. The operator resume that earlier
+revisions attached to D was a separate change: clearing the pause alone re-pauses on the
+next `REDUCE`, and an effective resume would rebase, which is option C by hand. It would
+have needed its own decision, and D with it was not free of the rule question.
 
 ## 5. Is fixing it now post-hoc tuning? My answer, qualified
 
@@ -291,19 +369,35 @@ reduce the damage, but they do not make B or C comply with the rule as written. 
 requires the owner to **amend or waive the no-tuning rule for this one change,
 knowingly and in writing**. D requires nothing.
 
-**Revision 4: a spec amendment is also required (Codex Cloud P1).** Spec v1 §3 says every
-grid variant keeps every V0 control, including the soft-drawdown reduction, and that
-"No variant delays, suppresses or clears any of them" (`docs/EXPERIMENT_SPEC_V1.md`,
-under §3, before the named exceptions). B and C do exactly that. A waiver of the
-no-tuning rule does not change the registered spec. So B or C also needs a scoped
-amendment to spec v1, recorded before any rerun. The amendment must state:
-1. the changed soft-drawdown control, word for word;
-2. that it replaces V0's control **for every grid variant identically** (V0, A, B, C,
-   E, F, G, H, C+G, C+H), so no variant gains or loses from it relative to V0;
-3. that C6 then compares against the **amended** V0;
-4. that the pre-fix V0 results stay published, and that the pre-fix V0 is registered as
-   a trial in part 2's count (PR #93, now merged as a proposal). The owner's preference for C is not
-that waiver, and none of us will treat it as one.
+**The owner's decision (2026-09-27, about 20:00 UTC).** The owner granted the
+exception on record: "Yes, fix it (on record)". The no-tuning rule is waived for this one
+change, with the pre-change results kept side by side and the fixed V0 counted as an extra
+trial. Because the owner also chose a fully automatic restart after a hard stop (§4 C
+step 7), the exception covers **two** controls: the soft-drawdown control and the
+hard-drawdown halt. Session e0b16be3 told the owner so and asked them to say if they
+meant otherwise.
+
+**A spec amendment is also required (Codex Cloud P1 on revision 3; completed in revision
+5).** A waiver does not change the registered spec. Before any code or rerun, a scoped
+amendment to spec v1 must:
+1. state both changed controls word for word, the soft-drawdown rebase (§4 C steps 1–6
+   and 8) and the automatic restart after a drawdown halt (§4 C step 7), with every
+   parameter fixed: the 24-hour soft cool-off and the hard-stop cool-off H;
+2. apply them to **every grid variant identically** (V0, A, B, C, E, F, G, H, C+G, C+H).
+   That makes the defined control and the baseline the same for every comparison. It
+   does **not** make the effect equal: inventory paths and episode timing differ, so a
+   variant's result relative to V0 can change, and the amendment says so (Codex);
+3. make C6 compare against the **amended** V0;
+4. keep the pre-change V0 results published, and register **both** V0 versions as trials
+   in part 2's count (PR #93);
+5. **supersede**, for these two controls only, spec v1 §3's "No variant delays,
+   suppresses or clears any of them" and the statement that the hard-drawdown halt is
+   latched, and update `docs/PAPER_SIMULATION.md` to match (Bob, Codex);
+6. name the halts that stay latched and manual: emergency, capital exhaustion, and
+   integrity halts if that proposal is confirmed.
+
+The owner's decision sets the policy and grants the exception. The amendment is the
+precise text, and it needs Codex's and Bob's review like any spec change.
 
 ## 6. Resuming after a hard halt — the same trap, conditionally
 
@@ -326,28 +420,52 @@ with Bob's suggestion of a privileged risk-check bypass as a routine remedy:** i
 defeat the emergency protection. I agree with Codex. **Revision 3:** the owner chose
 "restart after I review". Section 4 C step 7 specifies that as an explicit, audited
 command, not a bypass. Codex and Bob both accept that form. It can be adopted with B or
-with D too; it does not depend on C.
+with D too; it does not depend on C. **Revision 5:** the owner then chose a fully
+automatic restart instead (§4 C step 7). That closes this trap for drawdown halts through
+the automatic path. The manual `resume()` stays as it is; PR #122 makes it state plainly
+that drawdown halts are final for that command.
 
-## 7. What the owner decides (revision 3)
+## 7. The owner's decisions (2026-09-27, about 20:00 UTC)
 
-1. **The rule and the spec.** Amend or waive the no-tuning rule for this one change,
-   knowingly, **and** approve the scoped spec v1 amendment described in §5? If either
-   answer is no, D is the only compliant option.
-2. **The option,** if the rule is waived: B (one cool-off, then trade on at the old
-   reference) or C (rebase the reference, as specified in section 4). The owner leans to
-   C.
-3. **The hard stop:** the owner chose "restart after I review", specified in section 4 C
-   step 7. It works with any option. Confirm it.
-4. **A capital threshold** (C below some amount, D above it)? Codex recommends against:
-   it adds another free parameter and does not change the percentage risk. Bob would
-   accept one only together with an explicit rule amendment. **I recommend against it**,
-   for Codex's reason. A loss budget decided in money terms would be the better tool, and
-   that is a separate decision (see PR #106, D6).
+The owner answered in session e0b16be3, which explained each question with worked
+examples and relayed the answers verbatim on this PR
+([comment](https://github.com/mgalic01/adaptive-market-engine/pull/102#issuecomment-5859397628)).
 
-No code is proposed in this PR. Code follows only after the owner decides, and it will
-come as a separate PR with the tests listed in section 4.
+| Question | Owner's answer |
+| --- | --- |
+| 1. Exception to the no-tuning rule, plus the spec amendment | **"Yes, fix it (on record)"**: fix the lockout, with the old and new results side by side and the fixed V0 as an extra trial |
+| 2. B or C | **"C: reset the peak"** |
+| 3. Restart after a 12% hard stop | **"B: fully automatic"**: restart on its own after a cool-off with a rebased peak; no overall floor, no owner involvement |
+| 4. Capital threshold | **"No, one rule for all"** |
+
+The owner's reasoning on the restart: "We are building this strategy with real data and
+testing it, i'm kind of leaning to a stance that the bot will be able to pick a good
+strategy and continue working on his own."
+
+**Still open, and not the owner's decisions yet:**
+1. The hard-stop cool-off H. Proposed: 24 hours (§4 C step 7.2). It is fixed in the
+   amendment.
+2. Whether integrity halts stay manual. Proposed by session e0b16be3, to be confirmed by
+   Codex and Bob, then put to the owner.
+3. The spec amendment text itself (§5). Owner: Claude, as a separate PR reviewed by
+   Codex and Bob.
+
+No code is proposed in this PR. The code follows the amendment, as its own PR with the
+tests in §4 C step 9.
 
 ## 8. Positions
+
+**On revision 4 (`15c5f37`, 19:00–21:40 UTC):**
+- **Bob:** FLAGGED at `15c5f37` with two concerns: the amendment must supersede spec §3's
+  prohibition, and the restart must name the eligibility check. Both are fixed (§5 item 5
+  and §4 C step 7.3).
+- **Codex desktop:** AGREE WITH CHANGES, with five changes, all taken (section 9).
+- **Codex Cloud:** three P1s (the restart must keep the non-drawdown checks, the D
+  resume, and the range-exit deadlock) and one P2 (the index duration). All are taken.
+- **Automated review:** APPROVE, with two nits. The script is now committed in PR #122.
+  Line citations: this revision cites code by function name instead of line number.
+- **Full audit (session e0b16be3, 21:40 UTC):** censoring, a second cause, and the
+  restart exclusions. All are taken (§2 and §4 C step 7).
 
 **On revision 2 and the owner's preference for C (2026-09-27, 13:51–14:28 UTC):**
 - **Bob** (FLAGGED at `339e25f`, one concern: name the clock for the 24 hours. This is
@@ -413,6 +531,24 @@ come as a separate PR with the tests listed in section 4.
 | Codex Cloud P2: USDT replay minimums, not EUR | §4 A |
 | Automated review nit: bars, not hours | Disclosed. The revision-3 wording ("a missing hour would shorten the reported length, never lengthen it") was incomplete. Revision 4 replaces it in §2 |
 | Codex: capital threshold | §7 question 4: not recommended |
+
+**Changes in revision 5**
+
+| Finding | Change |
+| --- | --- |
+| Owner decisions, 2026-09-27 | §7 rewritten as a record; §4 C marked chosen; step 7 made automatic; §5 records the exception for two controls |
+| Codex 1: two measurement peaks | §4 C step 6: C1(b) scaled at settlement, C1(a) never scaled; neither rebased |
+| Codex 2, Bob: name the eligibility check | §4 C step 7.3, and a test |
+| Codex 3, Bob: supersede spec §3's prohibition | §5 item 5, including the "latched" statement and `PAPER_SIMULATION.md` |
+| Codex 4: the same control does not mean the same effect | §5 item 2 |
+| Codex 5, Codex Cloud P1: D's resume changes behaviour | §4 D corrected |
+| Codex Cloud P1: keep the non-drawdown checks on restart | §4 C steps 2 and 7.4: tentative rebase, committed only on `ALLOW` |
+| Codex Cloud P1: range-exit deadlock | §4 C step 2: rebase first, range-exit wait does not block; test added |
+| Codex Cloud P2: durations in the index | Index row: "at least", "censored" |
+| Audit 1: every stretch is right-censored | §2 table: lower bounds from timestamps, censored at 2023-01-31 23:00; one sentence withdrawn |
+| Audit 2: the exit-residue freeze is a possible second cause | §2: disclosed; the check is owed |
+| Audit 3: the restart excludes capital exhaustion and integrity halts | §4 C step 7.1 |
+| Revision 4 text fault | The §5 sentence about the owner's preference was spliced into item 4; replaced by the decision record |
 
 **Changes in revision 4**
 
