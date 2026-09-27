@@ -15,8 +15,9 @@
   the spec must fix; this report takes that list item by item. A cloud Claude review on
   PR #93 found the gap; Codex had accepted the requirement earlier.
 - **Revisions (same day):** revision 2 answered nine Codex Cloud findings and the
-  automated review; revision 3 answers Bob, the automated review and seven further Cloud
-  findings. Section 11 lists each change.
+  automated review; revision 3 answered Bob, the automated review and seven further Cloud
+  findings; revision 4 answers Bob's eligibility point and four more Cloud findings.
+  Section 11 lists each change.
 
 ## 1. The list this must answer
 
@@ -191,8 +192,13 @@ intrabar paths.
 - **Per path and per fold, the headline series is the return of the combined pair
   accounts:** `B_d = Σ_i E_(i,d)` over the fold's eligible pairs, and the return is
   `B_d / B_(d−1) − 1`, with `B_0` = the number of eligible pairs × initial capital.
-- **Eligibility is fixed per fold.** A pair is eligible for a whole fold or not at all,
-  so the basket does not change within a window.
+- **Eligibility is fixed per fold, and fixed before any run.** A pair is eligible for a
+  whole fold or not at all, so the basket does not change within a window.
+  - Eligibility is decided **only from data coverage**: the fold-eligibility rule of part 1
+    (PR #92) with the masking values proposed in PR #100, once agreed.
+  - It never depends on anything a run produces — trades, returns, activity, or whether a
+    Sharpe is defined.
+  - The eligible pair set for every fold is published before the first variant run.
 - **Why not an equal-weight average of pair returns:** once the pair accounts diverge,
   that average assumes a daily rebalance back to equal weights, which no account does.
   My first version proposed it; Codex Cloud pointed out it is not the return of holding
@@ -203,7 +209,9 @@ intrabar paths.
   paths as extra trials.
 - **The variant's DSR is the lower of its two path DSRs,** matching C2's worse-path
   logic.
-- Per-pair series and DSRs are reported, never used for selection.
+- **Per pair, only return statistics are reported** (mean, standard deviation, Sharpe),
+  never a per-pair DSR, and never used for selection. A per-pair DSR would need its own
+  trial family and fold rules, and nothing depends on it.
 
 ## 8. The DSR, frozen: formula, moments, dependence and role
 
@@ -244,18 +252,24 @@ Everything a result could otherwise steer is fixed here.
     because they come from different accounts and parameter sets.
   - The denominator sums over all `T` observations.
   - There is no fold weighting and no divisor correction.
-- **Lo's adjusted annual Sharpe** is reported next to the naive one, for information
-  only; it does not enter the DSR.
 - **`V` and `N`:** each trial's Sharpe is built by these same rules, and `N` comes from
   part 2 and the trial register. With `N` = 2, the central count proposed in part 2,
   `V` rests on two numbers and is very uncertain. The report must say so, and must
   show the DSR at part 2's sensitivity count too.
+- **A registered trial without a Sharpe on a path makes that path's DSR indeterminate.**
+  This covers a trial that is invalid, has an indeterminate fold, or has zero variance.
+  Dropping it, or lowering `N`, would quietly select out failed trials and change `SR0`.
+- **Indeterminate versus conditional — an exhaustive list.**
+  - A path DSR is **indeterminate** (not computed, never a pass) exactly when: the series
+    has zero variance; `T_eff < 2`; any fold is indeterminate (section 5); `N < 2`; or a
+    registered trial has no Sharpe on that path.
+  - Otherwise it is **computed and labelled conditional**. Its known assumption
+    violations — correlated trials, residual serial dependence beyond lag 5, dependent
+    paths — are stated beside it and do not suppress it.
 - **Threshold and role — an owner question.** Spec §6 does not include the DSR in
   acceptance or selection. I propose it stays a **reported** diagnostic, with
-  "DSR ≥ 0.95" shown as a flag, unless the owner decides it should gate the go/no-go
-  run. It is **not** calibrated confidence: correlated trials and the remaining serial
-  dependence break its iid assumption. Unsupported assumptions give an
-  **indeterminate** DSR, never a pass.
+  "DSR ≥ 0.95" shown as a flag on a computed value, unless the owner decides it should
+  gate the go/no-go run. It is **not** calibrated confidence.
 
 ## 9. Decisions this asks for, before any variant runs
 
@@ -273,8 +287,9 @@ Everything a result could otherwise steer is fixed here.
    trial family; the lower path DSR (section 7).
 7. The frozen DSR: formula, Pearson kurtosis, population moments, raw Sharpe, sample
    variance for `V`, and `T_eff` from within-fold Bartlett lags 1–5 that only lowers
-   `T`, replaces `T` only in `√(T − 1)`, and makes the DSR indeterminate below 2. Lo is
-   reported only; a 0.95 flag.
+   `T`, replaces `T` only in `√(T − 1)`, and makes the DSR indeterminate below 2. An
+   exhaustive indeterminate list, otherwise a conditional value; a 0.95 flag; no Lo
+   figure and no per-pair DSR.
    Whether it gates the go/no-go run is the owner's call (section 8).
 8. Implementation: a new end-of-day equity measurement, V0 byte-identical, and the
    existing `hourly_equity` left as a diagnostic.
@@ -296,7 +311,7 @@ Everything a result could otherwise steer is fixed here.
   in PR #100), which section 5 depends on only through its gap rule; the trial count
   (part 2, PR #93); and the trusted process that writes the trial register.
 
-## 11. Changes in revisions 2 and 3
+## 11. Changes in revisions 2 to 4
 
 | Finding (PR #101) | Change |
 | --- | --- |
@@ -320,3 +335,8 @@ Everything a result could otherwise steer is fixed here.
 | Cloud P2: benchmark family per path | §7: `V_q` per path, never pooled |
 | Cloud P2: hourly sensitivity undefined | §3: removed |
 | Cloud P2: autocorrelation estimator | §8: stitched mean, within-fold lag products, fixed denominator |
+| Bob (rev. 3): pair eligibility undefined | §7: coverage only, part 1 and PR #100; never result-dependent; published before the first run |
+| Cloud P2: a trial with no Sharpe | §8: that path's DSR is indeterminate; `N` never lowered |
+| Cloud P2: Lo-adjusted Sharpe undefined | §8: removed |
+| Cloud P2: caveated versus indeterminate | §8: an exhaustive indeterminate list; otherwise computed and labelled conditional |
+| Cloud P2: per-pair DSR family undefined | §7: per-pair return statistics only; no per-pair DSR |
