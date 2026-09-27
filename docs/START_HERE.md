@@ -70,10 +70,10 @@ e. **Verdicts, and at which head:** Bob's `NO ISSUES` or `FLAGGED`
    covers that head. Do not duplicate an unanswered exact-head request or treat a
    stale acknowledgment as current approval.
    *Proposed 2026-09-27, pending three-agent agreement:* no verdict is carried across
-   a merge of the base, but earlier findings stay on record, and the reviewer may scope
-   the new head's verdict to the conflict resolution and to the base changes the
-   contribution depends on, stating that scope, instead of rereading the whole diff
-   (step 5a) — see
+   a merge of the base, but earlier findings stay on record, and a reviewer who gave
+   their own verdict at the old head may scope the new head's verdict to the conflict
+   resolution and to the base changes the contribution depends on, stating that scope,
+   instead of rereading the whole diff (step 5a) — see
    [verdicts and a base integration](AGENT_HANDOFF.md#verdicts-and-a-base-integration).
 
 Then act, in this priority:

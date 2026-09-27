@@ -11,9 +11,12 @@
 - **Scope.** Documentation only: `docs/AGENT_HANDOFF.md`, `docs/START_HERE.md`, this
   file and the index row. No runtime, checker, integrity rule, parser, spec, mask,
   config or strategy change. No archive was opened and no reserved-window access.
-- **Current revision: 3** (see [Revisions](#revisions)). Revision 3 reconciles Codex's
+- **Current revision: 4** (see [Revisions](#revisions)). Revision 3 reconciled Codex's
   audit checklist, Bob's `FLAGGED` and the narrowed agreement from a second Claude
-  session. It changes amendment B from carrying verdicts to carrying findings.
+  session, and changed amendment B from carrying verdicts to carrying findings.
+  Revision 4 answers the review of revision 3: a pending note at the Bob task-file
+  merge rule, the same-reviewer condition on a scoped verdict, a quiet `remerge-diff`
+  command, and sender tags bound to the owner login.
 
 ## Why: three gaps, all observed rather than theorised
 
@@ -119,22 +122,28 @@ the base:
 2. **A new verdict at the new full head is still required**, with `test-and-audit`
    green at that head. The reviewer may scope it, instead of rereading the whole diff,
    to:
-   1. **the conflict resolution**, shown by `git show --remerge-diff <new-head>`
-      (Git 2.36 or later): only where the recorded merge differs from Git's own
-      automatic merge, including any edit slipped into the merge commit;
+   1. **the conflict resolution**, shown by
+      `git show --format= --remerge-diff <new-head>` (Git 2.36 or later): only where
+      the recorded merge differs from Git's own automatic merge, including any edit
+      slipped into the merge commit. `--format=` hides the commit header, so a clean
+      merge prints nothing;
    2. **the base changes the contribution depends on**, from
       `git diff --stat $(git merge-base <new-head>^1 <new-head>^2) <new-head>^2`:
       every listed file the contribution imports, calls, configures, tests against or
       cites, plus any change to `pyproject.toml`, `.github/`, configuration, dataset
       specs or masks.
-3. **The verdict states its scope**: old and new heads, the old verdicts relied on,
+3. **The verdict states its scope**: old and new heads, the reviewer's own old verdict,
    both commands with output, the base files reviewed, and those judged unrelated with
    the reason.
 4. **Scoping is allowed only** for one merge of the base whose first parent is the
-   reviewed old head, with no other commit. Anything else, or a dependency set the
-   reviewer cannot bound with confidence, means a full review.
+   reviewed old head, with no other commit, and only to a reviewer who gave a
+   substantive verdict of their own at that old head. A reviewer leans only on their
+   own earlier reading: otherwise one reviewer's old verdict could stand in for another
+   reviewer's review of the contribution, and the external-review rule would be met by
+   nobody reading the authored change. Anything else, or a dependency set the reviewer
+   cannot bound with confidence, means a full review.
 
-On PR #83's integration both commands were run at this revision. `git show
+On PR #83's integration both commands were run at revision 3. `git show --format=
 --remerge-diff 96fb1d8` shows exactly the one resolved index row. The base delta from
 `94b07a8ca7bf7092f4e5a2c57a167218d2bbb60a` to `3f83cb46553faa41e2971346c70413f1f8af31e4`
 is nine files (`.github/workflows/bob-review.yml`, `AGENTS.md`, three handbook files,
@@ -148,9 +157,11 @@ without claiming the old verdict still holds.
 
 Claude sessions, Codex Desktop and the owner's Bob session all post as `mgalic01`, so
 the GitHub author identifies nothing. Each agent comment would open with a tag on its
-own first line — `[Claude Code <session-id>]`, `[Codex Desktop]`, `[Bob]` — and readers
-use the tag, never the login. The bot accounts need no tag; their logins already
-differ. **Until all three agree, the existing rule stands:** every message starts with
+own first line — `[Claude Code <session-id>]`, `[Codex Desktop]`, `[Bob]`. A tag is
+plain text that anyone who can comment could type, so it counts only on a comment
+authored by `mgalic01`; on any other login it is ignored, and that comment is never
+Claude, Codex or Bob review evidence. On a `mgalic01` comment, the tag says which agent
+wrote it. The bot accounts need no tag; their logins already differ. **Until all three agree, the existing rule stands:** every message starts with
 its sender ("Claude → Codex" and the like), and no tag is required.
 
 Added after a misattribution on 2026-09-27: a Claude session's review of this very PR
@@ -212,7 +223,8 @@ like this one and all three agreements.
 | --- | --- | --- |
 | 1 | `88c801e6804d8770d2d1eb72f3946bd4709209fa` | A: one "unavailable" state, 12-hour window, documentation-only lapse merge. B: carry verdicts when `git diff <old-head> <new-head>` outside the conflicted paths is empty. |
 | 2 | `f015f6a6e56c1b6450ee86a59393ba13aa424c60` | B's check replaced by a merge-base patch comparison, since the first could never pass. A: owner decision, a lapse never merges; per-channel windows; elapsed time carried with carried verdicts. C added. |
-| 3 | this revision | Reconciles the eight-item checklist below, Bob's `FLAGGED` and Cloud Claude's narrowed agreement. B carries findings, not verdicts. A names two states with separate consequences, and exhaustion expires. Merges `main` at `15ab9cf822501ea74a2bf7a614c180336cdfce3a`. |
+| 3 | `e6d321f8dddc8be63518530aa79617d00cb04839` | Reconciles the eight-item checklist below, Bob's `FLAGGED` and Cloud Claude's narrowed agreement. B carries findings, not verdicts. A names two states with separate consequences, and exhaustion expires. Merges `main` at `15ab9cf822501ea74a2bf7a614c180336cdfce3a`. |
+| 4 | this revision | Answers the review of revision 3 (table below). Merges `main` again, at `b7a857b337c538311f754046542f5e7f5be56272`. |
 
 **Revision 3, item by item.** The eight Codex Cloud inline threads that Codex's audit
 (14:28Z) named as the checklist, then the other findings open at revision 2:
@@ -232,12 +244,24 @@ like this one and all three agreements.
 | Automated review at revision 2: "Both amended sections" stale; C lacked a fallback | **Fixed.** Header says all three; C's banner now names the rule in force until agreement. |
 | Automated review nit, revision 1: non-pending bullets said "unavailable" | **Fixed** with the literal "has no allowance" restored. |
 
+**Revision 4, item by item.** The review of revision 3 at
+`e6d321f8dddc8be63518530aa79617d00cb04839`. Bob returned `NO ISSUES` there on the
+checklist question; that verdict is void at the new head.
+
+| Finding | Disposition |
+| --- | --- |
+| Automated review, CHANGES NEEDED: the section claims to cover the Bob task-file merge, but that rule had no pending note | **Fixed.** The task-file rule now carries the same pending note and link as the quick reference and START_HERE step 3. |
+| Cloud P2: `git show --remerge-diff` always prints the commit header, so "empty output" is unreachable | **Fixed.** The command is now `git show --format= --remerge-diff`. Checked on the synthetic clean merge: 6 lines without `--format=`, 0 with it. |
+| Cloud P1: a scoped verdict could lean on another reviewer's old verdict | **Fixed.** Only a reviewer who gave their own substantive verdict at the old head may scope; anyone else reviews in full. |
+| Cloud P1: sender tags are forgeable plain text | **Fixed.** A tag counts only on a comment authored by `mgalic01`; on any other login it is ignored and the comment is never agent review evidence. |
+
 ## A separate observation, not a proposal
 
 The review index, `docs/reviews/README.md`, is one append-only table with the newest
 rows at the top, and every PR adds a row there. So each merge to `main` conflicts every
 other open PR on the same lines. This PR is one example: its only conflict at revision
-3 was that table. Cloud Claude reported the same for PR #100, the third Claude PR in
+3 was that table, and after that push PR #100 merged and conflicted it
+again on the same table, so revision 4 carries a second index-only merge. Cloud Claude reported the same for PR #100, the third Claude PR in
 two days conflicted purely by the index. The cost is structural and paid by every PR,
 and it is independent of amendment B. Codex's view, recorded here: keep the one-topic
 PR workflow and the named-writer rule, and do not weaken review provenance to reduce

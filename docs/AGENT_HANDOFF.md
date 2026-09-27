@@ -59,10 +59,14 @@ are in the sections below.
   and `github-actions[bot]` carries Bob's GitHub answer. After the tag, keep naming the
   recipient as before — "Claude → Codex", "Codex → Claude", "Bob → …".
 
-  **Read the tag, never the login.** On 2026-09-27 a Claude session's review of PR #89
-  was attributed to Codex Desktop by another agent that keyed off `mgalic01`; the
-  comment had said which session wrote it, in its first line. Distinct GitHub accounts
-  would make this authoritative rather than declared, but two of Bob's triggers gate on
+  **Read the tag and the login together.** A tag is plain text, so anyone who can
+  comment can type one. A tag counts only on a comment whose GitHub author is
+  `mgalic01`. On any other login, ignore the tag and treat the comment as that login's:
+  it is never Claude, Codex or Bob review evidence. On a `mgalic01` comment, the tag,
+  not the login, says which agent wrote it. On 2026-09-27 a Claude session's review of
+  PR #89 was attributed to Codex Desktop by another agent that keyed off `mgalic01`
+  alone; the comment had said which session wrote it, in its first line. Distinct
+  GitHub accounts would make this authoritative rather than declared, but two of Bob's triggers gate on
   `author_association == 'OWNER'` and on `github.actor == github.repository_owner`
   (`bob-task.yml`), so moving an agent off the owner account would break `/bob-run` and
   the task-file-merge trigger. The tag is the cheap fix that breaks nothing.
@@ -114,10 +118,11 @@ was lost track of. So after a merge of the base:
 2. **A new verdict at the new full head is still required,** with `test-and-audit`
    green at that head. Instead of rereading the whole diff (START_HERE step 5a), the
    reviewer may scope that verdict to two things:
-   1. **The conflict resolution.** `git show --remerge-diff <new-head>` (Git 2.36 or
-      later) prints only where the recorded merge differs from Git's own automatic
-      merge: each resolved conflict, and any edit slipped into the merge commit. Empty
-      output means a clean merge.
+   1. **The conflict resolution.** `git show --format= --remerge-diff <new-head>`
+      (Git 2.36 or later) prints only where the recorded merge differs from Git's own
+      automatic merge: each resolved conflict, and any edit slipped into the merge
+      commit. `--format=` suppresses the commit header, so empty output means a clean
+      merge; without it the header always prints.
    2. **The base changes the contribution depends on.** List what the base brought in:
 
       ```
@@ -127,14 +132,16 @@ was lost track of. So after a merge of the base:
       Review every listed file that the contribution imports, calls, configures, tests
       against or cites in its prose. Review any change to `pyproject.toml`,
       `.github/`, configuration, dataset specs or masks whatever the contribution is.
-3. **The verdict states its scope:** the old and new heads, the old verdicts it relies
-   on, the two commands above with their output, which base files it reviewed, and
-   which it judged unrelated and why.
+3. **The verdict states its scope:** the old and new heads, the reviewer's own old
+   verdict it relies on, the two commands above with their output, which base files it
+   reviewed, and which it judged unrelated and why.
 4. **Scoping is allowed only** when the new head is one merge of the base whose first
-   parent is the reviewed old head, with no other commit. A rebase, a squash, an extra
-   commit, or any change to the contribution itself means a full review, as before. So
-   does a dependency set the reviewer cannot bound with confidence. When in doubt,
-   review in full.
+   parent is the reviewed old head, with no other commit, **and** the reviewer scoping
+   it gave a substantive verdict of their own at that old head. A reviewer may lean
+   only on their own earlier reading, never on another reviewer's: a different
+   reviewer reviews the full diff. A rebase, a squash, an extra commit, or any change
+   to the contribution itself means a full review, as before. So does a dependency set
+   the reviewer cannot bound with confidence. When in doubt, review in full.
 
 **Why no verdict is carried.** Two earlier drafts of this rule carried verdicts on a
 mechanical test, and review refuted both.
@@ -505,7 +512,10 @@ Credits are limited, so every agent works on demand, not by polling:
       run"). The merge is the go, including merges by Claude or Codex. Editing an
       existing task file never starts a run. So **a task PR is merged only after the
       same review as code**: Codex's approval, or, while Codex is unavailable, Bob's
-      `NO ISSUES` with green checks;
+      `NO ISSUES` with green checks. *Proposed 2026-09-27, pending three-agent
+      agreement:* "unavailable" here means **allowance exhausted** only; a lapsed
+      request escalates to the owner and never merges a task PR. See
+      [when a reviewer is unavailable](#when-a-reviewer-is-unavailable);
     - a comment `/bob-run docs/tasks/<date>-bob-<topic>.md` from the repository
       owner's account, for example to re-run a task. Claude and Codex also post as
       the owner, so they post `/bob-run` only with a linked Codex approval or owner
