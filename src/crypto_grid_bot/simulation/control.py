@@ -70,12 +70,15 @@ def resume_paper(
         rules[key] = decimal(rules[key])
     if "taker_fee_rate" in rules:
         rules["taker_fee_rate"] = decimal(rules["taker_fee_rate"])
+    policy = dict(identity["policy"])
+    if "inventory_cap" in policy:
+        policy["inventory_cap"] = decimal(policy["inventory_cap"])
     simulator = PaperSimulator(
         database,
         config,
         MarketRules(**rules),
         decimal(identity["initial_cash"]),
-        SimulationPolicy(**identity["policy"]),
+        SimulationPolicy(**policy),
     )
     try:
         return simulator.resume(frame, event_id=event_id, reason=reason)
