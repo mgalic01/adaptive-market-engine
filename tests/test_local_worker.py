@@ -269,9 +269,10 @@ def test_partial_patch_and_data_tree_abort_before_content(monkeypatch, restricte
 
 
 @pytest.mark.parametrize(
-    "changed,complete,expected", [(True, True, "STALE"), (False, False, "BLOCKED")]
+    "changed,complete,expected",
+    [(False, True, "READY"), (True, True, "STALE"), (False, False, "BLOCKED")],
 )
-def test_worker_report_rejects_stale_or_incomplete_evidence(
+def test_worker_report_binds_recommendation_to_reviewed_base_and_head(
     tmp_path, monkeypatch, changed, complete, expected
 ):
     import copy
@@ -315,11 +316,16 @@ def test_worker_report_rejects_stale_or_incomplete_evidence(
     m.run_batch(q, q.claim(30), tmp_path, "dummy.exe", True)
     assert q.status()["runs"][0][1] == "completed"
     assert len(posts) == 1
-    assert ("discussion changed" if changed else "Evidence incomplete") in posts[0][-2]
-    assert f"recommendation: {expected}" in posts[0][-2]
-    assert f"recommendation: {expected}" in (tmp_path / "run-1" / "report.md").read_text(
-        encoding="utf-8"
-    )
+    if changed:
+        assert "discussion changed" in posts[0][2]
+    elif not complete:
+        assert "Evidence incomplete" in posts[0][2]
+    assert f"recommendation: {expected}" in posts[0][2]
+    report = (tmp_path / "run-1" / "report.md").read_text(encoding="utf-8")
+    assert report == posts[0][2]
+    assert f"head **{'a' * 40}**" in report
+    assert f"base **{'b' * 40}**" in report
+    assert "invalid if either the head or base changes" in report
 
 
 def test_queue_closes_connections_and_rolls_back(tmp_path):
@@ -455,18 +461,77 @@ def test_publication_neutralizes_task_trigger_and_rejects_oversize(monkeypatch):
 
     def request(path, method="GET", body=None):
         calls.append((path, method, body))
-        return {"state": "open", "head": {"sha": "a" * 40}}
+        return {"state": "open", "head": {"sha": "a" * 40}, "base": {"sha": "b" * 40}}
 
     monkeypatch.setattr(api, "request", request)
     text = "Quoted trigger:\n/bob-run docs/tasks/2026-09-27-bob-example.md\n@bob @codex review"
-    api.comment(1, text, "a" * 40)
+    api.comment(1, text, "a" * 40, "b" * 40)
     body = calls[-1][2]["body"]
     assert not re.search(r"(^|\s)/bob-run\s+docs/tasks/[A-Za-z0-9._-]+\.md", body)
     assert "@" not in body
     calls.clear()
     with pytest.raises(ValueError, match="oversized"):
-        api.comment(1, "Finding. " * 3000, "a" * 40)
+        api.comment(1, "Finding. " * 3000, "a" * 40, "b" * 40)
     assert calls == []
+
+
+@pytest.mark.parametrize("last_change", [None, "base", "head", "state"])
+def test_worker_rechecks_identity_immediately_before_publication(
+    tmp_path, monkeypatch, last_change
+):
+    import copy
+    import subprocess
+
+    m = worker()
+    snapshot = ready_snapshot()
+    snapshot["pr"]["number"] = 91
+    monkeypatch.setenv("LOCAL_WORKER_GITHUB_TOKEN", "dummy")
+    monkeypatch.setattr(m, "evidence", lambda _: copy.deepcopy(snapshot))
+    monkeypatch.setattr(m.GitHub, "snapshot", lambda *_: copy.deepcopy(snapshot))
+    latest_pr = copy.deepcopy(snapshot["pr"])
+    if last_change == "state":
+        latest_pr["state"] = "closed"
+    elif last_change:
+        latest_pr[last_change]["sha"] = "c" * 40
+    calls = []
+
+    def request(self, path, method="GET", body=None):
+        calls.append((path, method, body))
+        if method == "GET":
+            assert path == "pulls/91"
+            return latest_pr
+        assert path == "issues/91/comments" and method == "POST"
+        return {}
+
+    monkeypatch.setattr(m.GitHub, "request", request)
+
+    def run(args, **kwargs):
+        out = Path(args[args.index("--output-last-message") + 1])
+        out.write_text(
+            json.dumps(
+                {
+                    "number": 91,
+                    "head": "a" * 40,
+                    "verdict": "READY",
+                    "review": "Synthetic review with no findings. " * 8,
+                }
+            )
+        )
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(m.subprocess, "run", run)
+    q = module().Queue(tmp_path / "queue.sqlite")
+    q.add(payload(), 91, 0)
+    m.run_batch(q, q.claim(30), tmp_path, "dummy.exe", True)
+    if last_change:
+        assert calls == [("pulls/91", "GET", None)]
+        assert q.status()["runs"][0][1] == "failed"
+        assert "publishing review comment" in (tmp_path / "run-1" / "failure.md").read_text()
+    else:
+        assert [method for _, method, _ in calls] == ["GET", "POST"]
+        assert q.status()["runs"][0][1] == "completed"
+        assert "recommendation: READY" in calls[-1][2]["body"]
+    assert (tmp_path / "run-1" / "report.md").is_file()
 
 
 def test_check_and_status_changes_invalidate_fingerprint():
