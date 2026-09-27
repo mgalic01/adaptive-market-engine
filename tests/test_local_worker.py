@@ -401,6 +401,38 @@ def test_ancestry_blocks_unreviewed_merge_base_before_patches(monkeypatch):
     api.require_ancestor("b" * 40, "a" * 40)
 
 
+def test_base_missing_a_rules_file_fails_closed_not_with_keyerror(monkeypatch):
+    # PR #94's review asked for this: a PR whose base predates one of the RULES files
+    # must be refused with a clear ValueError, like every other refusal in snapshot(),
+    # not escape as an unhandled KeyError from a bare index into the base tree.
+    worker()
+    from local_worker_github import RULES, GitHub
+
+    s = ready_snapshot()
+    s["pr"]["base"]["repo"] = {"id": 1384347674}
+    base, head = s["pr"]["base"]["sha"], s["pr"]["head"]["sha"]
+    # Identical trees, so the data-scope screen passes; neither holds a RULES file.
+    tree = {"truncated": False, "tree": [{"type": "blob", "path": "src/example.py", "sha": "x"}]}
+    blobs = []
+
+    def request(path):
+        if path == "pulls/1":
+            return s["pr"]
+        if path.startswith("git/trees/"):
+            return tree
+        if path == f"git/commits/{head}":
+            return {"parents": [{"sha": base}]}  # ancestry passes
+        raise AssertionError(f"unexpected request after the guard should have fired: {path}")
+
+    api = GitHub()
+    monkeypatch.setattr(api, "request", request)
+    monkeypatch.setattr(api, "blob", lambda sha: blobs.append(sha))
+    with pytest.raises(ValueError, match="base rules file missing at base commit") as caught:
+        api.snapshot(1)
+    assert RULES[0] in str(caught.value), "the error must name the missing file"
+    assert blobs == [], "a blob was fetched before the missing rules file was noticed"
+
+
 def test_json_publication_header(monkeypatch):
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer

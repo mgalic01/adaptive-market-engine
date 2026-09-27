@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from crypto_grid_bot.backtest.klines import INTERVAL_MS, month_bounds_ms, read_archive
+from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.client import FeedError, PublicClient, https_connection
 from crypto_grid_bot.market_data.parsing import DataError, amount, parse_instrument, symbol_name
 
@@ -188,7 +189,7 @@ def load_spec(path: Path) -> DatasetSpec:
     if daily_start is not None:
         if type(daily_start) is not str:
             raise DataError("dataset field daily_warmup_start has an invalid type")
-        month_bounds_ms(daily_start)
+        development_month(daily_start)
         if not daily_start <= raw["warmup_start"]:
             raise DataError("daily_warmup_start must not be after warmup_start")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", raw["name"]):
@@ -198,7 +199,9 @@ def load_spec(path: Path) -> DatasetSpec:
     if not traded or len(set(traded)) != len(traded) or len(set(basket)) != len(basket):
         raise DataError("traded and basket symbols must be non-empty and distinct")
     for month in (raw["warmup_start"], raw["start"], raw["end"]):
-        month_bounds_ms(month)
+        # development_month validates the YYYY-MM form and refuses the reserved window,
+        # so a spec reaching 2025-01 or later is rejected here rather than downloaded.
+        development_month(month)
     if not raw["warmup_start"] < raw["start"] <= raw["end"]:
         raise DataError("months must satisfy warmup_start < start <= end")
     proxy = symbol_name(raw["market_proxy"])
@@ -293,6 +296,7 @@ def _write_atomic(path: Path, data: bytes) -> None:
 def fetch_file(
     data_dir: Path, symbol: str, interval: str, month: str, fetcher: Fetcher
 ) -> dict[str, Any]:
+    development_month(month)  # refuse the reserved window before any network or cache access
     path = archive_path(symbol, interval, month)
     entry: dict[str, Any] = {
         "symbol": symbol,
@@ -417,6 +421,9 @@ def _validate_manifest(manifest: Any) -> None:
             archive_path(symbol, interval, month)
         except (ValueError, OverflowError) as exc:
             raise DataError("dataset manifest file identity is invalid") from exc
+        # The replay loaders read every file a manifest lists, so a hand-edited manifest
+        # would otherwise bypass load_spec's window check. Refuse it here too.
+        development_month(month)
         if status not in ("ok", "missing"):
             raise DataError("dataset manifest file status is invalid")
         if status == "ok" and (

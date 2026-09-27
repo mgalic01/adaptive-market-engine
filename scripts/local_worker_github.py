@@ -123,6 +123,10 @@ class GitHub:
         self.require_ancestor(pr["base"]["sha"], head)
         rules = {}
         for path in RULES:
+            # Fail closed like every other refusal here: a bare index would escape as an
+            # unhandled KeyError when a PR's base predates one of these files.
+            if path not in trees[0]:
+                raise ValueError(f"base rules file missing at base commit: {path}")
             rules[path] = self.blob(trees[0][path])
         comparison = self.request(f"compare/{pr['base']['sha']}...{head}?per_page=1")
         files = comparison["files"]

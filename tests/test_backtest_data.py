@@ -406,3 +406,93 @@ class FetchTests(unittest.TestCase):
             handle.write(source.replace('fee_rate = "0.001"', 'fee_rate = "0"'))
         self.addCleanup(Path(handle.name).unlink)
         self.assertEqual(0, load_spec(Path(handle.name)).fee_rate)
+
+
+class ReservedWindowTests(unittest.TestCase):
+    """The reserved window (2025-01 onward) is refused on every path to archive data.
+
+    Each test asserts the error names the reserved window, so it proves the window
+    guard fired rather than an unrelated check. That matters: the manifest test above
+    already rejects "9999-12", but only because that month overflows, not because of
+    any window rule; a realistic reserved month used to pass straight through.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.data = Path(self.temp.name)
+
+    def _spec_with(self, old: str, new: str) -> Path:
+        source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
+        assert old in source, old
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
+            handle.write(source.replace(old, new))
+        self.addCleanup(Path(handle.name).unlink)
+        return Path(handle.name)
+
+    def test_fetch_file_refuses_a_reserved_month_before_any_network_call(self):
+        calls: list[str] = []
+
+        def fetcher(path):
+            calls.append(path)
+            return None
+
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            fetch_file(self.data, "ADAUSDT", "1m", "2025-01", fetcher)
+        self.assertEqual([], calls, "the reserved month reached the fetcher")
+        self.assertFalse(any(self.data.rglob("*")), "something was written for a reserved month")
+
+    def test_fetch_file_still_accepts_the_last_development_month(self):
+        archive = FakeArchive()
+        archive.add("ADAUSDT", "1m", "2024-12", minute_rows(JAN_2024_MS, 1))
+        # The fake's rows are for January, so this is expected to fail on content --
+        # but only after the window guard has let 2024-12 through to the fetcher.
+        calls: list[str] = []
+
+        def fetcher(path):
+            calls.append(path)
+            return archive(path)
+
+        try:
+            fetch_file(self.data, "ADAUSDT", "1m", "2024-12", fetcher)
+        except DataError as exc:
+            self.assertNotIn("reserved window", str(exc))
+        self.assertTrue(calls, "2024-12 was refused, but it is a development month")
+
+    def test_a_spec_reaching_the_reserved_window_is_rejected(self):
+        for old, new in (
+            ('end = "2024-06"', 'end = "2025-01"'),
+            ('end = "2024-06"', 'end = "2026-08"'),
+            ('start = "2024-01"\nend = "2024-06"', 'start = "2025-01"\nend = "2025-06"'),
+            ('daily_warmup_start = "2023-05"', 'daily_warmup_start = "2025-01"'),
+        ):
+            with self.subTest(new=new), self.assertRaisesRegex(DataError, "reserved window"):
+                load_spec(self._spec_with(old, new))
+
+    def test_a_spec_ending_at_the_last_development_month_is_accepted(self):
+        spec = load_spec(self._spec_with('end = "2024-06"', 'end = "2024-12"'))
+        self.assertEqual("2024-12", spec.end)
+        self.assertEqual("2024-12", max(month for _, _, month in spec.required()))
+
+    def test_a_manifest_listing_a_reserved_month_is_rejected(self):
+        spec = load_spec(ROOT / "config/datasets/verify-2024h1.toml")
+        manifest = {
+            "schema": 1,
+            "dataset": spec.name,
+            "instruments": {},
+            "files": [
+                {
+                    "symbol": "ADAUSDT",
+                    "interval": "1m",
+                    "month": "2025-01",
+                    "status": "ok",
+                    "sha256": "a" * 64,
+                }
+            ],
+        }
+        path = self.data / "reserved.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            load_manifest(path)
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            verify_dataset(spec, manifest, self.data)
