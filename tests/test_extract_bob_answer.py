@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import time
@@ -235,7 +236,10 @@ def test_cli_prints_the_answer_or_refuses_without_raw_output(tmp_path: Path) -> 
     good = tmp_path / "good.jsonl"
     good.write_text(stream(*TOOL, msg(ANSWER), DONE), encoding="utf-8")
     ok = subprocess.run(
-        [sys.executable, str(SCRIPT), str(good)], capture_output=True, text=True, check=False
+        [sys.executable, str(SCRIPT), str(good)],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
     )
     assert ok.returncode == 0
     assert ok.stdout == ANSWER + "\n"
@@ -243,7 +247,10 @@ def test_cli_prints_the_answer_or_refuses_without_raw_output(tmp_path: Path) -> 
     bad = tmp_path / "bad.jsonl"
     bad.write_text(stream(msg("secret file contents"), DONE), encoding="utf-8")
     refused = subprocess.run(
-        [sys.executable, str(SCRIPT), str(bad)], capture_output=True, text=True, check=False
+        [sys.executable, str(SCRIPT), str(bad)],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
     )
     assert refused.returncode == 1
     assert refused.stdout == ""
@@ -254,7 +261,34 @@ def test_cli_prints_the_answer_or_refuses_without_raw_output(tmp_path: Path) -> 
     counted = subprocess.run(
         [sys.executable, str(SCRIPT), "--stats", str(bad)],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
     assert counted.stdout == "Bob's stream: message=1, result=1\n"
+
+
+@pytest.mark.parametrize("io_encoding", ["cp1252", "latin-1", "utf-8:surrogateescape"])
+def test_cli_writes_utf8_whatever_the_environment_says(tmp_path: Path, io_encoding: str) -> None:
+    # PR #110: the CLI wrote in the platform default or PYTHONIOENCODING, so on Windows
+    # its em dashes came out as cp1252 byte 0x97. Forcing a non-UTF-8 PYTHONIOENCODING
+    # reproduces that on any platform, including Linux CI.
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+    env["PYTHONIOENCODING"] = io_encoding
+    good = tmp_path / "good.jsonl"
+    good.write_text(stream(*TOOL, msg(ANSWER), DONE), encoding="utf-8")
+    ok = subprocess.run(
+        [sys.executable, str(SCRIPT), str(good)], capture_output=True, env=env, check=False
+    )
+    assert ok.returncode == 0
+    # Raw bytes, so the encoding is checked; Windows text mode writes "\r\n".
+    assert ok.stdout.replace(b"\r\n", b"\n") == (ANSWER + "\n").encode("utf-8")
+
+    unsigned = tmp_path / "unsigned.jsonl"
+    unsigned.write_text(stream(msg("IBM Bob\n\nno signature"), DONE), encoding="utf-8")
+    refused = subprocess.run(
+        [sys.executable, str(SCRIPT), str(unsigned)], capture_output=True, env=env, check=False
+    )
+    assert refused.returncode == 1
+    assert refused.stdout == b""
+    # The refusal names the signature format, em dash included.
+    assert "'— IBM Bob (...)'" in refused.stderr.decode("utf-8")

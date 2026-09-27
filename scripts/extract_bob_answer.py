@@ -28,12 +28,14 @@ headers and signatures before and after the last tool call) and a count of event
 types, never text: the raw stream could echo file contents.
 
 Usage: ``extract_bob_answer.py [--max-bytes N] STREAM`` (answer on stdout, exit 1 on
-refusal) or ``extract_bob_answer.py --stats STREAM`` (event counts only).
+refusal) or ``extract_bob_answer.py --stats STREAM`` (event counts only). Output is
+UTF-8 on every platform.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import re
 import sys
@@ -145,6 +147,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     parser.add_argument("--stats", action="store_true")
     args = parser.parse_args(argv)
+    # The answer is published as UTF-8, whatever the platform default or PYTHONIOENCODING
+    # says (Windows pipes default to cp1252). Strict on stdout: an answer that cannot be
+    # encoded is an error, never written with replaced or escaped characters.
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict")
+    if isinstance(sys.stderr, io.TextIOWrapper):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     stream = args.stream.read_text(encoding="utf-8", errors="replace")
     if args.stats:
         print(f"Bob's stream: {stats(stream)}")
