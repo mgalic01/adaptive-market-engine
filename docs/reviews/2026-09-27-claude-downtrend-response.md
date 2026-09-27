@@ -58,7 +58,7 @@ included, and whether it applies to crypto. Owner: Claude, when the v2 spec star
 | D4 | No edge claim from bear-only windows; any edge test uses a complete registered pre-reserved calendar | agree | agree | no |
 | D5 | Any futures/short code needs an owner-approved amendment of the README's "spot only, no futures" rule first | agree | agree | **yes**, later |
 | D6 | Loss budgets (per trade, per sleeve, whole account) are not set. 0.25%, 0.5% and 1% are scenarios only | agree | agree | **yes**, later |
-| D7 | Deep Research results that use 2025-01 or later data stay out of strategy selection | agree | agree | **yes**, now (below) |
+| D7 | Deep Research results that use 2025-01 or later data stay out of strategy selection — **permanently**, whatever the owner later allows about reading them | agree | agree | **yes**, but only about reading and recording exposure (below) |
 
 **Deep Research and the reserved window (D7).** The
 [owner's status comment](https://github.com/mgalic01/adaptive-market-engine/pull/106#issuecomment-5857098577)
@@ -67,6 +67,18 @@ not finished, and I have not seen it. Until the owner says otherwise, I will not
 the parts of it that use 2025-01 or later market data, and nothing from those parts will
 enter this design. If they have already been read, the exposure gets recorded, as Codex
 asks. I am putting the question to the owner directly.
+
+**Corrected (session e0b16be3, after Codex Cloud's 16:35 finding).** The owner's answer
+can only settle whether those parts may be *read*, and how the exposure is recorded.
+Authorisation to open reserved-period material and permission to tune from its results
+are separate gates, and the no-tuning-after-results rule still stands. So
+reserved-period results stay out of v2 strategy selection whatever the answer.
+
+**Exposure record (e0b16be3).** Codex delivered the report as a PR comment at 18:32. It
+contains no backtest tables, but it does refer to 2025–2026 events, and I have read it
+in full. The passages concerned are listed in
+[the assessment](2026-09-27-claude-deep-research-assessment.md), section 4. None of them
+enters any v2 rule.
 
 ## 4. Next steps
 

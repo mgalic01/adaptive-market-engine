@@ -97,11 +97,16 @@ figures. Treat the figures as leads to verify, not as settled facts.
    ([Daniel & Moskowitz](https://www.nber.org/system/files/working_papers/w20439/w20439.pdf)).
    Crypto bear markets are full of sharp relief rallies; BTC rose about 40% from its
    June 2022 low within weeks.
-3. **Volatility targeting.** Taking less risk when recent volatility is high raises
-   Sharpe ratios and reduces crisis drawdowns
+3. **Volatility targeting.** In the population Moreira and Muir studied — mainly US equity
+   factor portfolios (the market, value, momentum, profitability and others) plus a
+   currency carry factor, each rescaled monthly by the inverse of the previous month's
+   realised variance — taking less
+   risk after high volatility raised Sharpe ratios and reduced risk in crises
    ([Moreira & Muir, *Journal of Finance* 2017](https://onlinelibrary.wiley.com/doi/abs/10.1111/jofi.12513)).
-   Crypto downtrends are usually high-volatility, so this shrinks exposure when it matters
-   most. **Spec v1 has nothing like it**; B caps inventory, not risk.
+   **Corrected:** that is not evidence for crypto. Whether it carries over to a
+   single-coin crypto strategy, rebalanced daily, is a hypothesis to test, not a finding.
+   It remains attractive because crypto downtrends are usually high-volatility. **Spec
+   v1 has nothing like it**; B caps inventory, not risk.
 4. **Grid trading.** A classic grid has essentially zero expected return without
    directional insight, and in a downtrend it keeps buying into the decline
    ([arXiv 2506.11921](https://arxiv.org/abs/2506.11921)). That is exactly the loss
@@ -164,8 +169,10 @@ The owner is right, and the answer shapes the whole design.
 
 - **A slow timescale decides the mode.** Is this a downtrend at all? Only here may the
   bot be short.
-- **A fast timescale decides entries and exits inside that mode.** Short into bounces,
-  meaning the green candles and relief rallies; cover into dips; never chase the lows.
+- **A fast timescale decides entries and exits inside that mode.** One *hypothesis*:
+  short into bounces (the green candles and relief rallies) and cover into dips.
+  **Corrected:** "never chase the lows" was withdrawn as a requirement (response, Q5).
+  Entry timing is a separate, pre-registered hypothesis, not a rule.
 - The slow rule must be **fixed before testing**, including its lookback. A 12-month
   lookback ignores a two-week dip inside a bull market; a 1-month lookback catches it
   but switches more often and pays more fees. There is no free choice: each lookback is
@@ -260,4 +267,6 @@ are where overfitting would come from.
 - The owner's point that trading capital should trade, and that protected profit is never
   touched, carries into v2. I confirmed in `portfolio/profit_vault.py` that half of each
   new profit above the previous high is set aside, can never fund orders, and moves to
-  the secured reserve once it reaches 10.
+  the secured reserve once it reaches the configured `minimum_transfer_quote`.
+  **Corrected:** 10 is only the value in `config/default.toml`. Any positive value is
+  valid, and tests use 0.1 and 1, so a small-account v2 scenario must state its own.
