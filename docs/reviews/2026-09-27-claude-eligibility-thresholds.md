@@ -196,8 +196,10 @@ a reason to treat 2% as provisional until the repaired months are measured too.
   later month whose data starts late, understating the defect share. Measured on this cache:
   nine months have a shortened denominator and **all nine are listing months**, where
   shortening is correct — zero later months are affected, so the two derivations agree here.
-  The fix removes a fragility rather than changing a number, and the re-run confirms the
-  output is unchanged.
+  The fix therefore removes a fragility rather than changing a number. That claim rests on
+  the nine-month count above, measured directly; a full re-run under the fixed script was
+  still in progress when this was written, so the PR thread carries its result rather than
+  this record resting on it.
 - **Could not check:** whether any specific masked month is tradeable. That needs a
   replay, which would mean looking at returns before this rule is fixed — exactly what
   must not happen. The cap is therefore a data-coverage bound justified by the
@@ -223,7 +225,8 @@ SHA-256: `f23e1c8bca7f2ead15ee3e2683776d31459e6fcdfc7d7c72223e04ead65fa1be`
 
 Produces one JSON line per pair-month. The hash changed from the version first pushed
 here (`a3dfd49b…`): that one derived the listing hour per month, and the fix derives it
-once per symbol. The re-run's output is byte-identical, for the reason given above.
+once per symbol. Both derivations agree on this cache for the reason given above; the
+full re-run's result is reported on the PR rather than asserted here.
 
 ```text
 """Per-pair-month share of hours a mask would have to cover, from the LOCAL cache only.
