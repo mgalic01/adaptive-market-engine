@@ -61,6 +61,14 @@ No strategy/runtime/accounting change, data download/replay or specification fre
   Main's tooling failures at 0bb2857 were independently repaired/reviewed in #96,
   merged as 7b3b297ba37db9f7d62dccd2a6bc25f14d9f03b9 and integrated here. The
   index conflict retains both handoffs. Full revised-head verification is on #94.
+- Real end-to-end proof using deployed c4dc231ef25348b645c9604afdaed11b202b81b1:
+  a queued event produced a substantive BLOCKED review of PR #95 at
+  6484f32009ee0dd03f637a45f91f65bc6653faec and posted comment 5855006994. It
+  challenged unsupported claims and disagreed with other agents rather than accepting
+  their verdicts. Receiver/model/publication were paused back to queue-only when
+  Claude required regression coverage of the incomplete-evidence override. That
+  added case asserts both stored and posted BLOCKED despite model READY; removing
+  the override makes it fail. No production-code change was needed for this finding.
 - Final corrected-head CI belongs in the PR handoff. Bob's first-head review is
   historical evidence, not approval of the corrected scope.
 

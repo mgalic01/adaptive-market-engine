@@ -93,7 +93,7 @@ Use a reviewed immutable deployment copy; don't run unattended code from a branc
 another agent is editing. No startup service or scheduled task is installed.
 
 Local records: queue.sqlite and run-N/{result.json,report.md,failure.md}. Status shows pending
-count and latest 20 outcomes. CLI deadline180 seconds; each API client has a90-second
+count and latest 20 outcomes. CLI deadline 180 seconds; each API client has a 90-second
 request-start budget and bounded socket waits, not an overall wall-clock SLA. Errors
 record phase/class, not raw exceptions/stdout/stderr that might contain secrets.
 

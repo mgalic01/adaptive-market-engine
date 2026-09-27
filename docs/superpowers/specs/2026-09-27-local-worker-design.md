@@ -1,6 +1,6 @@
 # Separate local sceptical reviewer design
 
-Owner accepted a separate worker, GitHub events and a temporary tunnel on2026-09-27.
+Owner accepted a separate worker, GitHub events and a temporary tunnel on 2026-09-27.
 Owner clarified a critic and sceptic must examine/discuss work before an agent
 explicitly decides any merge. No automatic merge controller or branch-policy change.
 
@@ -8,8 +8,8 @@ Python3.12 standard library: signed loopback HTTP receiver, SQLite queue, bounde
 Codex CLI using local ChatGPT login. No OpenAI key in GitHub, no GitHub polling,
 no desktop resumption. Operational bounds: docs/LOCAL_WORKER.md.
 
-Authenticate raw bytes first; pin repo ID/name and sender allowlist; coalesce30 seconds,
-one PR/run, six starts/hour,24/day,1,000 pending events. Durable body-hash dedup and
+Authenticate raw bytes first; pin repo ID/name and sender allowlist; coalesce 30 seconds,
+one PR/run, six starts/hour, 24/day, 1,000 pending events. Durable body-hash dedup and
 exclusive service lock; uncertain runs interrupted, never automatically retried.
 
 Read immutable tree/commit metadata before content; verify base ancestry so screened

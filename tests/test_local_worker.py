@@ -258,22 +258,29 @@ def test_partial_patch_and_data_tree_abort_before_content(monkeypatch):
     assert len(calls) == 3
 
 
-def test_worker_report_marks_changed_discussion_stale(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "changed,complete,expected", [(True, True, "STALE"), (False, False, "BLOCKED")]
+)
+def test_worker_report_rejects_stale_or_incomplete_evidence(
+    tmp_path, monkeypatch, changed, complete, expected
+):
     import copy
     import subprocess
 
     m = worker()
     s = ready_snapshot()
     s["pr"]["number"] = 91
+    s["complete"] = complete
     monkeypatch.setattr(m, "evidence", lambda _: copy.deepcopy(s))
     current = copy.deepcopy(s)
-    current["comments"].append(
-        {
-            "created_at": "3",
-            "user": {"login": "mgalic01"},
-            "body": "New critical defect not reviewed",
-        }
-    )
+    if changed:
+        current["comments"].append(
+            {
+                "created_at": "3",
+                "user": {"login": "mgalic01"},
+                "body": "New critical defect not reviewed",
+            }
+        )
     monkeypatch.setattr(m.GitHub, "snapshot", lambda *_: current)
     posts = []
     monkeypatch.setattr(m.GitHub, "comment", lambda *args: posts.append(args))
@@ -298,8 +305,11 @@ def test_worker_report_marks_changed_discussion_stale(tmp_path, monkeypatch):
     m.run_batch(q, q.claim(30), tmp_path, "dummy.exe", True)
     assert q.status()["runs"][0][1] == "completed"
     assert len(posts) == 1
-    assert "discussion changed" in posts[0][-2]
-    assert "recommendation: STALE" in posts[0][-2]
+    assert ("discussion changed" if changed else "Evidence incomplete") in posts[0][-2]
+    assert f"recommendation: {expected}" in posts[0][-2]
+    assert f"recommendation: {expected}" in (tmp_path / "run-1" / "report.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_queue_closes_connections_and_rolls_back(tmp_path):
