@@ -10,8 +10,13 @@
   (section 4), the owner asked for this three-agent discussion before deciding. **The
   policy decision is the owner's.**
 - **Revision 2 (same day)** answers the Codex local worker's six required fixes and Codex
-  Cloud's five inline findings. Section 9 maps each finding to its change. Bob's and
-  Codex's current positions are in section 8, including where they disagree.
+  Cloud's five inline findings. Section 9 maps each finding to its change.
+- **Revision 3 (same day, session `a05e63c8`).** After revision 2, the owner saw a worked
+  EUR 100 example and **leaned to option C**. They chose "restart after I review" for the
+  hard stop, and asked for Codex's and Bob's views first. Both have answered (section 8).
+  Section 4 now specifies C fully, with every clarification they asked for, and closes the
+  open items from revision 2. **The owner has not decided yet.** Two decisions remain
+  theirs, and section 7 states both.
 
 ## 1. What the code does
 
@@ -62,12 +67,16 @@ the second. On Windows it currently needs the launcher described on PR #99, whic
 Run it from the directory holding the run folders as
 `python data/flat_stretches.py 7 <the three results.json paths>`. The script lists every stretch of **at least 24 hours of constant hourly total equity**
 at a drawdown of at least 7% from its running peak, and whether equity ever changed
-again. Results with the threshold at 7%:
+again. **Corrected in revision 3 (Codex Cloud):** the script's word "RESUMED" means only
+that a later hourly total equity differs. It does not inspect the pause state, orders,
+fills or new grids, so it shows that **equity changed**, not that trading resumed. Below,
+"equity changed" is used; a claim about trading needs the instrumented trace at the end
+of this section. Results with the threshold at 7%:
 
-- **Every stretch that later resumed started below 8%:** 7.54% and 7.34% (verify, BTC
+- **Every stretch whose equity later changed started below 8%:** 7.54% and 7.34% (verify, BTC
   high-first ungated), 7.02% (practice 0/0.09%, BTC low-first ungated), and 7.19% and
   7.10% (practice 0/0.09%, SOL gated — invalid runs).
-- **No stretch at 8% or more ever resumed.** Leaving aside runs that ended in a hard
+- **No stretch at 8% or more ever changed equity again.** Leaving aside runs that ended in a hard
   halt (section 6), the not-halted stretches were:
 
   | Run | Starts | Drawdown at start (total equity) | Length |
@@ -105,13 +114,16 @@ again. Results with the threshold at 7%:
 
 ## 4. The options
 
-**A. Trade at 25% size (the engine's multiplier). Infeasible at €100.** A prototype is on
-branch `claude/soft-drawdown-reduces` (`5dec062`, not proposed for merge). A grid needs
-at least 6 levels (`config/default.toml`, `minimum_levels = 6`), each at least the
-minimum notional plus the fee (about €5). A quarter of the normal 80% budget at €100 is
-€20, against about €30 needed, so the account sits in cash exactly as before. Three of
-the prototype's tests fail for that reason. It works only once equity is roughly €150
-or more.
+**A. Trade at 25% size (the engine's multiplier). Infeasible in the 100-unit replay.** A
+prototype is on branch `claude/soft-drawdown-reduces` (`5dec062`, not proposed for
+merge). A grid needs at least 6 levels (`config/default.toml`, `minimum_levels = 6`),
+each at least the minimum notional plus the fee (about 5 units). A quarter of the normal
+80% budget at 100 is 20, against about 30 needed, so the account sits in cash exactly as
+before. Three of the prototype's tests fail for that reason. It works only once equity is
+roughly 150 or more. **Corrected in revision 3 (Codex Cloud):** these are **USDT quote
+units** from the Binance instrument manifests used by the replay, which does no EUR
+conversion (`docs/BACKTEST_METHOD.md`). They show that A is infeasible for the current
+100-USDT replay. They do not establish a live EUR venue's minimums, which are unverified.
 
 **B. One cool-off per drawdown episode, then trade at normal size. This is a relaxation
 of the soft limit, not a restoration.** My first version called B a restoration of the
@@ -124,7 +136,9 @@ Fully specified, B would be:
 
 1. **Episode start.** The first `REDUCE` outside an episode starts an episode. Resting
    buys are cancelled, sells are managed, and the account pauses — as today. The start
-   time is saved in the paper state (a new field, so a schema change).
+   time is saved in the paper state (a new field, so a schema change). **The clock is the
+   quote's `observed_at`** (Bob). Elapsed time is `observed_at` of the current frame
+   minus the saved start, compared as `>= 24 h` with no rounding.
 2. **Cool-off.** The pause may clear only after **at least 24 hours** from the episode
    start, *and* after the normal recovery confirmations (`recovery_frames`), *and* only
    while the risk result is not `PAUSE` or `EXIT`. My first version said "the next UTC
@@ -138,8 +152,12 @@ Fully specified, B would be:
    An episode therefore gives exactly one cool-off, however long it lasts.
 5. **Interactions.**
    - A range exit may clear while released, on the same terms as step 3.
-   - A daily-loss pause during an episode recovers as it does today; it neither starts
-     nor ends an episode.
+   - **Corrected in revision 3 (Codex Cloud):** a daily-loss pause during an
+     **already-released** episode clears after the normal recovery confirmations when
+     the risk result is `REDUCE`, not only on `ALLOW`. At the next UTC day the result
+     goes from `PAUSE` to `REDUCE`, and requiring `ALLOW` would lock the account again.
+     The initial cool-off is unaffected. A daily-loss pause neither starts nor ends an
+     episode.
    - On restart, the saved episode start is restored with the rest of the paper state.
 6. **Tests needed:** a trigger just before midnight; release after 24 hours; no re-pause
    while released; re-arming after `ALLOW`; a daily-loss pause inside an episode; a range
@@ -156,9 +174,63 @@ excludes the protected profit. B does **not** keep or guarantee any loss bound:
 - "About 4 percentage points of peak equity before the trigger" is a distance to a
   trigger, not a remaining loss allowance.
 
-**C. Reset the peak after a cool-off.** Treat current equity as the new high-water mark.
-The 12% trigger then moves down with it, so cumulative losses can run far past 12% of
-the original peak. **Not recommended.**
+**C. Rebase the risk reference after a cool-off (the owner's current preference).**
+Revision 2 said "not recommended", and I withdraw that: the choice between B, C and D
+is the owner's. C is specified below with every clarification Codex and Bob asked for.
+
+1. **Episode start.** As in B: the first `REDUCE` outside an episode cancels resting
+   buys, manages sells and pauses. The start time is the quote's `observed_at`, saved in
+   the paper state (a schema change).
+2. **Rebase conditions, checked in this order in one step, before any change of state:**
+   1. at least 24 hours have passed since the episode start (`observed_at`, `>= 24 h`);
+   2. the normal recovery confirmations (`recovery_frames`) have passed, counted over
+      frames on which **every risk condition other than the soft drawdown** passes: no
+      daily-loss `PAUSE`, no `EXIT`, no data-quality or range condition blocking;
+   3. the account is not halted.
+
+   Only then is the rebase applied, **atomically**: `risk_high` becomes the current
+   active equity. The drawdown becomes 0, the engine returns `ALLOW`, and trading resumes
+   at normal size. This answers Bob's ordering question: the confirmations are checked
+   *before* the rebase, against every condition except the one the rebase removes, so the
+   rebase cannot skip them. It also answers Codex: the rebase never clears a daily-loss
+   pause, a data-quality block or a hard halt, because any of them stops step 2.
+3. **One reference moves.** The 8% and the 12% triggers are both measured from the
+   rebased `risk_high`. There is no separate hard-stop reference (Bob's structural note).
+4. **Losses are not bounded across episodes.** Each episode can lose about 12% of its own
+   starting equity before the trigger, and more through gaps, bid depth and slippage.
+   Example: EUR 105 peak, flat at EUR 96, rebase, next 12% trigger near EUR 84.50.
+5. **Recording, restart and repeats.** Each rebase is recorded in the paper state and the
+   report: time, old and new reference, and the episode start. The episode ends at the
+   rebase, so an episode has at most one rebase. On restart, the saved episode start is
+   restored, and the cool-off continues from it rather than starting again. Evaluating
+   the same frame twice cannot rebase twice, because the second evaluation finds no open
+   episode.
+6. **Acceptance is untouched: a separate measurement peak.** C1(a) and C1(b) are
+   measured against a high-water mark that is **never rebased and never reset**. It
+   still rises with every new peak; it is not a frozen constant (Codex's correction of
+   Bob's wording). It starts from the same starting equity as `risk_high`. The two C1
+   bases stay separate, as today: active equity for C1(b) and reserve-inclusive total
+   equity for C1(a). Without this, a rebase would silently weaken C1(b), which today
+   reads the runtime `risk_high`.
+7. **Hard stop: restart only after the owner reviews.** No automatic restart, and no
+   general bypass of `resume()`'s risk check. There is one distinct, explicit command
+   with an audited authorisation. The operator states a reason; the command records the
+   reason, the time and the old and new references, then applies the same rebase as step
+   2. The automated runner never calls it. **Control boundary:** in paper mode the
+   operator is whoever runs the CLI on the owner's machine, and no stronger
+   authentication is claimed. A live deployment would need its own authorisation
+   design, which is out of scope here.
+8. **The daily-loss interaction** follows B's corrected rule: inside a rebased episode
+   the drawdown is measured from the new reference, so a later daily pause clears on
+   `ALLOW` as today.
+9. **Tests needed:** a trigger just before midnight; no rebase before 24 hours; no rebase
+   while a daily pause, `EXIT` or data block is active; exactly one rebase per episode;
+   restart before and after a rebase; the owner-only resume, with and without a reason;
+   the C1 peak unchanged by a rebase and still rising with new highs.
+
+**What C costs, plainly.** C trades at normal size again after every episode. That is
+closer to the owner's "what's the point of trading if not trading", but the only loss
+limit left is per episode. Only a human decision after a hard stop ends the sequence.
 
 **D. Keep it and document it.** Leave V0 as it is and read every result as "trades until
 flat past 8%, then cash". Add only an audited operator resume for soft pauses, so a live
@@ -189,6 +261,13 @@ complies with the owner's rule. The honest position:
 Only D changes no trading behaviour. So D is the one option that is plainly not tuning,
 and it leaves the experiment measuring a bot that stops for good after one bad episode.
 
+**Revision 3, stated as a rule question (Codex Cloud P1).** B and C each contain a number
+chosen after seeing development results: the 24-hour cool-off. The safeguards above
+reduce the damage, but they do not make B or C comply with the rule as written. So B or C
+requires the owner to **amend or waive the no-tuning rule for this one change,
+knowingly and in writing**. D requires nothing. The owner's preference for C is not
+that waiver, and none of us will treat it as one.
+
 ## 6. Resuming after a hard halt — the same trap, conditionally
 
 `resume()` requires the current risk result to be `ALLOW` (`runner.py:440`). That needs
@@ -207,23 +286,54 @@ Whether a hard halt should be final is a policy question for the owner. If it sh
 final, the docs should say so and `resume()` should report it plainly. If an operator
 should be able to restart after review, that needs a designed rule. **Codex disagrees
 with Bob's suggestion of a privileged risk-check bypass as a routine remedy:** it could
-defeat the emergency protection. I agree with Codex.
+defeat the emergency protection. I agree with Codex. **Revision 3:** the owner chose
+"restart after I review". Section 4 C step 7 specifies that as an explicit, audited
+command, not a bypass. Codex and Bob both accept that form. It can be adopted with B or
+with D too; it does not depend on C.
 
-## 7. Questions for Codex, Bob and the owner
+## 7. What the owner decides (revision 3)
 
-1. Given sections 1–2, is the absorbing state a defect to fix, or intended behaviour to
-   document (D)?
-2. If fixed: is B, as specified in section 4, acceptable as an **explicit relaxation**,
-   and is 24 hours the right cool-off? Or is there a better option?
-3. Section 5: what else must the disclosure contain?
-4. Section 6: should a hard halt be final?
+1. **The rule.** Amend or waive the no-tuning rule for this one change, knowingly? If
+   not, D is the only compliant option.
+2. **The option,** if the rule is waived: B (one cool-off, then trade on at the old
+   reference) or C (rebase the reference, as specified in section 4). The owner leans to
+   C.
+3. **The hard stop:** the owner chose "restart after I review", specified in section 4 C
+   step 7. It works with any option. Confirm it.
+4. **A capital threshold** (C below some amount, D above it)? Codex recommends against:
+   it adds another free parameter and does not change the percentage risk. Bob would
+   accept one only together with an explicit rule amendment. **I recommend against it**,
+   for Codex's reason. A loss budget decided in money terms would be the better tool, and
+   that is a separate decision (see PR #106, D6).
 
-No code is proposed in this PR. Code follows only after the owner decides.
+No code is proposed in this PR. Code follows only after the owner decides, and it will
+come as a separate PR with the tests listed in section 4.
 
-## 8. Positions so far, at head `35231c9` (revision 1)
+## 8. Positions
 
-- **Bob:** a defect, and B. He considers the no-tuning argument sound provided the old
-  results stay published and the fixed V0 is registered as a trial. He also called the
+**On revision 2 and the owner's preference for C (2026-09-27, 13:51–14:28 UTC):**
+- **Bob** (FLAGGED at `339e25f`, one concern: name the clock for the 24 hours. This is
+  fixed in §4 B step 1). On C, Bob asked for three things, each fixed in §4 C: define the
+  rebase ordering (step 2); keep the C1 peak separate (step 6); make the owner-only
+  resume audited (step 7). On a capital threshold: acceptable only with an explicit rule
+  amendment.
+- **Codex** ([14:28 UTC](https://github.com/mgalic01/adaptive-market-engine/pull/102#issuecomment-5856718186)):
+  AGREE WITH CHANGES to drafting C as a paper-only proposal. This is not approval to
+  implement or to waive the rule. Codex asked for four things, each done in §4 C: an
+  explicit order before an atomic rebase that clears nothing else, plus restart and
+  repeat behaviour (steps 2 and 5); a measurement peak that never resets but keeps
+  rising (step 6); an audited owner-only resume with a clear control boundary (step 7);
+  and no capital threshold (§7 question 4).
+- **Codex Cloud** on revision 2: one P1 (the rule question, §5) and three P2s (the
+  daily-loss recovery, "equity changed" versus trading, and USDT versus EUR). All four are
+  in §9.
+- **Automated Claude review:** APPROVE at `339e25f`, with two nits. It counts bars, not
+  hours, which is disclosed in §9. The input hashes need re-hashing by whoever relies on
+  them.
+
+**On revision 1, at head `35231c9`:**
+- **Bob:** a defect, and B. Bob considered the no-tuning argument sound provided the old
+  results stay published and the fixed V0 is registered as a trial. Bob also called the
   hard-halt trap certain; section 6 now shows it is conditional.
 - **Codex local worker:** the flat-account conditions imply an absorbing state that
   warrants investigation. They do not prove indefinite stopping was unintended, or
@@ -247,6 +357,24 @@ No code is proposed in this PR. Code follows only after the owner decides.
 | Local worker 5, Cloud: benchmark D is exempt | §3 limits the claim to grid variants |
 | Local worker 6, Cloud: provenance for replay figures | §2 reproduced by me with the appendix script; input hashes and regeneration commands given; limits stated; `f937d67` and `de38fdb` shown identical in `src/` and `config/` |
 | Local worker: no-tuning conclusion too categorical | §5 rewritten: safeguards, not proof; only D changes no trading behaviour |
+
+**Changes in revision 3**
+
+| Finding | Change |
+| --- | --- |
+| Owner: leans to C; hard stop "restart after I review" | §4 C fully specified; §6 and §7 updated; C no longer "not recommended" |
+| Bob: name the clock for the 24 hours | §4 B step 1 and §4 C step 1: the quote's `observed_at`, `>= 24 h` |
+| Bob, Codex: rebase ordering; never clear other conditions | §4 C step 2: checked before an atomic rebase; any other block prevents it |
+| Codex: measurement peak never resets but keeps rising | §4 C step 6 |
+| Codex, Bob: audited owner-only resume, control boundary | §4 C step 7 |
+| Codex: restart and repeated calls | §4 C step 5 |
+| Bob: one reference for both 8% and 12% | §4 C step 3 |
+| Codex Cloud P1: 24 h chosen after results | §5: B and C need an explicit rule amendment or waiver; §7 question 1 |
+| Codex Cloud P2: daily-loss pause inside a released episode | §4 B step 5: clears on `REDUCE` after confirmations |
+| Codex Cloud P2: "resumed" means only equity changed | §2 relabelled; the script is unchanged, so its hash is unchanged |
+| Codex Cloud P2: USDT replay minimums, not EUR | §4 A |
+| Automated review nit: bars, not hours | Disclosed here: `hours` in the appendix counts hourly samples; a missing hour inside a stretch would shorten the reported length, never lengthen it |
+| Codex: capital threshold | §7 question 4: not recommended |
 
 ## Appendix: `data/flat_stretches.py` source
 
