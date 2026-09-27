@@ -26,7 +26,8 @@ are in the sections below.
   at-sign (for example "the codex-review trigger") or link this section instead.
 - **Plain "Bob" starts nothing.** Neither does `@bobby`.
 - **Merge authority:** while Codex has no allowance, the owner's rule is to merge on
-  Bob's NOTED with green checks, and Codex reviews afterwards.
+  Bob's `NO ISSUES` with green checks, and Codex reviews afterwards.
+  See [what Bob's verdicts mean](#what-bobs-verdicts-mean).
 - **Codex's own work:** Claude or Bob must review the latest full head and post
   substantive feedback before Codex merges it, including documentation and delegated
   changes. Codex chooses the reviewer; unavailable review leaves the PR open.
@@ -55,6 +56,36 @@ are in the sections below.
 - **Breakage:** a failed Bob run posts an alert that names the owner. An agent that
   sees any other break, such as a usage-limit reply or an unanswered handoff, tells
   the owner in its next message.
+
+## What Bob's verdicts mean
+
+Bob's GitHub review ends with one verdict line and one `SCOPE:` line. There are exactly
+two verdicts, and the difference is only whether he found something wrong:
+
+| Verdict | Means | Does **not** mean |
+| --- | --- | --- |
+| `VERDICT: NO ISSUES at <head SHA>` | He read the material and found nothing wrong. This is the clean verdict the merge rule wants. | That the code runs, that tests pass, or that he checked anything he could not read. |
+| `VERDICT: FLAGGED at <head SHA>` | He found concerns, each naming the file or section it affects. | That the change is rejected. Address or answer each concern, then ask again at the new head. |
+
+Two things to hold on to:
+
+- **It is a reading, not a test result.** The `@bob` review cannot run commands, so
+  `NO ISSUES` says the reasoning looked sound to him, never that the code works. Green
+  `test-and-audit` is the separate execution evidence. The merge rule requires **both**
+  because they answer different questions, and neither substitutes for the other. The
+  `SCOPE:` line under the verdict says which claims he took from the diff alone.
+- **It is per-head.** A verdict counts only at the full head SHA it names
+  ([START_HERE step 3e](START_HERE.md)). Any push, including a merge of `main`, voids
+  it, and the next verdict must name the new head.
+
+Bob never writes `APPROVE`, `APPROVED`, `LGTM` or `PASS`; the automated Claude review
+owns `APPROVE` and `CHANGES NEEDED`, and keeping the vocabularies apart keeps a
+read-only reading from being mistaken for a passing build.
+
+**Historical note.** Until 2026-09-27 the clean verdict was spelled `NOTED`, which read
+like "seen, doing nothing" and caused exactly that confusion. Verdicts in earlier PRs
+and review files still say `NOTED`; it means the same as `NO ISSUES` and those records
+are left as written.
 
 ## Where messages live
 
@@ -311,7 +342,7 @@ Credits are limited, so every agent works on demand, not by polling:
       run"). The merge is the go, including merges by Claude or Codex. Editing an
       existing task file never starts a run. So **a task PR is merged only after the
       same review as code**: Codex's approval, or, while Codex is unavailable, Bob's
-      NOTED with green checks;
+      `NO ISSUES` with green checks;
     - a comment `/bob-run docs/tasks/<date>-bob-<topic>.md` from the repository
       owner's account, for example to re-run a task. Claude and Codex also post as
       the owner, so they post `/bob-run` only with a linked Codex approval or owner
