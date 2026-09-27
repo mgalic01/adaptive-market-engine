@@ -13,6 +13,7 @@ arrives as a PR ([rules](../AGENT_HANDOFF.md)).
 
 | Task | Status |
 | --- | --- |
+| [P8 archives for G and H, development months only](2026-09-27-bob-p8-funding-archives.md) | **Awaiting Codex's review.** Merging the PR that adds it starts the run. BTCUSDT funding archives 2020-01 to 2024-12 and H's daily history from 2020-05, checksummed; proposed manifest entries only. Nothing after 2024-12, enforced in the script. |
 | [Outage calendar and field-level mismatches](2026-09-26-bob-outage-calendar.md) | **Done:** [report](../reviews/2026-09-26-bob-outage-calendar.md) merged in PR #66, independently rechecked by Claude. Counts cover parsed pair-months; outage-policy adoption remains separate. |
 | [Refined parser rule](2026-09-26-bob-refined-parser-rule.md) | **Done:** [report](../reviews/2026-09-26-bob-refined-parser-rule.md) merged in PR #65, independently rechecked by Claude. Repair eligibility was measured; parser/tolerance adoption and full replay validity remain separate. |
 | [Hour-level defect calendar, 2017-08 to 2024-12](2026-09-26-bob-hourly-defect-calendar.md) | **Done:** run 36221539727; report merged in PR #60, rechecked by Claude. |
