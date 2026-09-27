@@ -170,19 +170,40 @@ def match(
     return fills
 
 
-def exitable(account: Account, quote: Quote, rules: MarketRules) -> Decimal:
-    """Unreserved inventory the market filters would allow an exit to sell at this bid.
+def exit_price(quote: Quote, rules: MarketRules) -> Decimal:
+    """The price a marketable exit would get at this bid, after slippage and rounding."""
+    return floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
 
-    Deliberately liquidity-independent: it answers "can this remainder ever be sold
-    at this price", not "does this frame have the depth for it". ZERO therefore means
-    a residue below the quantity step or the minimum notional -- an exchange filter no
-    later frame at this price can satisfy -- and never merely a thin book.
+
+def marketable(quantity: Decimal, quote: Quote, rules: MarketRules) -> Decimal:
+    """``quantity`` if the market filters would accept selling it at this bid, else ZERO.
+
+    Deliberately liquidity-independent: it answers "can this ever be sold at this
+    price", not "does this frame have the depth for it". ZERO therefore means a residue
+    below the quantity step or the minimum notional -- an exchange filter no later frame
+    at this price can satisfy -- and never merely a thin book.
     """
-    quantity = floor_step(account.inventory - account.reserved_base(), rules.quantity_step)
-    price = floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
-    if quantity <= ZERO or price * quantity < rules.minimum_notional:
+    step = floor_step(quantity, rules.quantity_step)
+    if step <= ZERO or exit_price(quote, rules) * step < rules.minimum_notional:
         return ZERO
-    return quantity
+    return step
+
+
+def unpaired_inventory(account: Account) -> Decimal:
+    """Inventory with no sell to clear it: not reserved by a resting sell, and not the
+    part of a resting buy that has already filled, whose own child sell will pair it
+    when the buy completes. This is exactly what a drain has to exit, so the runner's
+    drain trigger and the end-of-run classifier must both use it.
+    """
+    held_by_buys = sum(
+        (o.quantity - o.remaining for o in account.orders.values() if o.side == "buy"), ZERO
+    )
+    return account.inventory - account.reserved_base() - held_by_buys
+
+
+def exitable(account: Account, quote: Quote, rules: MarketRules) -> Decimal:
+    """Unreserved inventory the market filters would allow an exit to sell at this bid."""
+    return marketable(account.inventory - account.reserved_base(), quote, rules)
 
 
 @dataclass(frozen=True)
@@ -264,18 +285,22 @@ def liquidate(account: Account, quote: Quote, rules: MarketRules) -> Reduction:
 def exit_state(account: Account, quote: Quote, rules: MarketRules) -> tuple[str, Decimal]:
     """Where the account's exits stand at this quote, from the account itself.
 
-    ``("incomplete", value)``: an exit is due (liquidation, range exit or drain) and
-    inventory the market would still accept remains unsold. ``("dust", value)``: only
-    a remainder no exchange would buy at this bid is left. ``("", 0)`` otherwise,
-    including unreserved inventory that belongs to a partly filled resting buy. The
-    value is the unreserved inventory at the exit price.
+    Judged on ``unpaired_inventory``, the same quantity the runner drains, and never on
+    a flag: a healthy account with resting buys still owes an exit for an old residue,
+    and the filled part of a resting buy must not make that residue look sellable.
+
+    * ``("incomplete", value)``: unpaired inventory the market would still accept is
+      unsold, so the run never showed it could exit.
+    * ``("dust", value)``: what is left is below an exchange filter at this bid; only a
+      higher price clears it. Reported, not a failure.
+    * ``("", 0)``: nothing is owed.
+
+    ``value`` is the unpaired inventory at the exit price.
     """
-    unreserved = account.inventory - account.reserved_base()
-    if unreserved <= ZERO:
+    unpaired = unpaired_inventory(account)
+    if unpaired <= ZERO:
         return "", ZERO
-    price = floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
-    value = price * unreserved
-    if exitable(account, quote, rules) == ZERO:
+    value = exit_price(quote, rules) * unpaired
+    if marketable(unpaired, quote, rules) == ZERO:
         return "dust", value
-    due = (bool(account.halt) and account.liquidating) or account.range_exit or account.draining
-    return ("incomplete", value) if due else ("", ZERO)
+    return "incomplete", value

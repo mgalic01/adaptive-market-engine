@@ -25,6 +25,7 @@ from crypto_grid_bot.simulation.execution import (
     match,
     place,
     reduce_unreserved,
+    unpaired_inventory,
 )
 from crypto_grid_bot.simulation.inventory_cap import capped_quantity
 from crypto_grid_bot.simulation.models import (
@@ -290,10 +291,11 @@ class PaperSimulator:
         report["fills"].extend(asdict(fill) for fill in result.fills)
         if result.fills:
             report["exit_reason"] = reason
-        if result.blocked in ("depth", "dust"):
-            report["exit_blocked"] = result.blocked
-            report["exit_blocked_notional"] = result.unreserved_notional
-            report["exit_blocked_reason"] = reason
+        # Always recorded, so a frame that attempted an exit and was not refused is
+        # distinguishable from one that attempted none: a rejected or halting frame
+        # returns before this and carries no key at all.
+        report["exit_blocked"] = result.blocked if result.blocked in ("depth", "dust") else ""
+        report["exit_blocked_notional"] = result.unreserved_notional
 
     @staticmethod
     def _mark(account: Account, quote: Quote, rules: MarketRules) -> None:
@@ -309,9 +311,6 @@ class PaperSimulator:
             "cancelled": [],
             "decision": "hold",
             "allocation": None,
-            # "" unless a marketable exit was refused: see execution.Reduction.
-            "exit_blocked": "",
-            "exit_blocked_notional": ZERO,
         }
         previous_orders = set(account.orders)
         capped: list[dict[str, Any]] = []
@@ -417,11 +416,7 @@ class PaperSimulator:
             # partial buys leave it, and so does a residue a harvest tolerated. Exit it
             # using only remaining bid capacity, never inventory reserved by a sell, and
             # never the part of a resting buy that has already filled.
-            held_by_buys = sum(
-                (o.quantity - o.remaining for o in account.orders.values() if o.side == "buy"),
-                ZERO,
-            )
-            unpaired = account.inventory - account.reserved_base() - held_by_buys
+            unpaired = unpaired_inventory(account)
             if unpaired > ZERO:
                 consumed = sum(
                     (D(fill["quantity"]) for fill in report["fills"] if fill["side"] == "sell"),

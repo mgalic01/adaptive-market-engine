@@ -22,6 +22,7 @@ from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.demo import demo_frames
 from crypto_grid_bot.simulation.execution import (
     exit_state,
+    exitable,
     liquidate,
     place,
     reduce_unreserved,
@@ -145,6 +146,60 @@ class StepReportTests(TestCase):
         self.assertEqual("", report["exit_blocked"])
         self.assertEqual("liquidation", report["exit_reason"])
 
+    def test_a_rejected_last_frame_does_not_clear_a_stalled_exit(self):
+        # A stale quote is rejected before any exit is attempted, so its report carries
+        # no exit key at all. Treating that as "attempted and not blocked" cleared the
+        # streak and, before the final state came from the account, the run's verdict.
+        account = self.halted()
+        blocked = self.sim.step(account, self.frame(0))
+        self.assertEqual("depth", blocked["exit_blocked"])
+        stale = replace(
+            self.frame(1),
+            quote=replace(
+                self.frame(1).quote,
+                received_at=(START + timedelta(seconds=600)).isoformat(),
+            ),
+        )
+        rejected = self.sim.step(account, stale)
+        self.assertNotIn("exit_blocked", rejected)
+        self.assertEqual(D("5000"), account.inventory)
+        # The run ends here: the verdict comes from the account, not the last frame.
+        self.assertEqual("incomplete", exit_state(account, stale.quote, RULES)[0])
+
+    def test_a_stalled_run_ending_on_a_rejected_frame_is_still_invalid(self):
+        account = self.halted()
+        metrics = Metrics()
+        for index in range(4):
+            report = self.sim.step(account, self.frame(index))
+            if "exit_blocked" in report:
+                record_exit_block(metrics, report["exit_blocked"], D("114.90"))
+        self.assertEqual(4, metrics.max_exit_blocked_streak)
+        stale = replace(
+            self.frame(4),
+            quote=replace(
+                self.frame(4).quote,
+                received_at=(START + timedelta(seconds=600)).isoformat(),
+            ),
+        )
+        report = self.sim.step(account, stale)
+        if "exit_blocked" in report:  # it does not; a rejected frame attempts nothing
+            record_exit_block(metrics, report["exit_blocked"], D("0"))
+        self.assertEqual(4, metrics.max_exit_blocked_streak)  # not reset mid-streak
+        metrics.final_exit_blocked, metrics.final_blocked_notional = exit_state(
+            account, stale.quote, RULES
+        )
+        result = {
+            "symbol": "DEMOUSDT",
+            "path_mode": "high_first",
+            "strategy": "gated grid (price-only-v1)",
+            "accounting_problems": [],
+            "transient_pauses": 1,
+            "bars": 5,
+            "final_exit_blocked": metrics.final_exit_blocked,
+            "final_unsellable_notional": str(metrics.final_blocked_notional),
+        }
+        self.assertIn("exit still incomplete", " ".join(result_failures([result])))
+
     def test_dust_does_not_keep_a_range_exit_open_forever(self):
         account = holding("200")
         account.range_exit, account.range_exit_since = True, START.isoformat()
@@ -227,6 +282,30 @@ class FinalExitStateTests(TestCase):
         account = holding("200")
         place(account, LimitOrder("grid/1", "buy", D("0.02200"), D("300"), D("300")), RULES)
         # An idle grid frame attempts no exit; the remainder is still held and reported.
+        self.assertEqual(("dust", D("200") * D("0.02298")), exit_state(account, quote(), RULES))
+
+    def test_an_old_residue_is_incomplete_although_no_exit_flag_is_set(self):
+        # Codex, 2026-09-27: the runner drains whenever unpaired inventory exists, so a
+        # healthy account with an old sellable residue and a resting buy owes an exit
+        # even though halt, range_exit and draining are all clear. Judging on those
+        # flags accepted the run; judging on the same quantity the drain uses does not.
+        account = holding("500")
+        place(account, LimitOrder("grid/1", "buy", D("0.02200"), D("300"), D("300")), RULES)
+        self.assertFalse(account.halt or account.range_exit or account.draining)
+        refused = reduce_unreserved(account, quote(), RULES, maximum=D("500"))
+        self.assertEqual(([], "depth"), (refused.fills, refused.blocked))
+        self.assertEqual(D("500"), account.inventory)
+        state, value = exit_state(account, quote(), RULES)
+        self.assertEqual("incomplete", state)
+        self.assertEqual(D("500") * D("0.02298"), value)
+
+    def test_an_old_dust_residue_stays_dust_behind_a_partly_filled_buy(self):
+        # The filled part of a resting buy must not make a sub-minimum residue look
+        # sellable: 200 + 300 clears the minimum notional, the 200 alone does not.
+        account = holding("500")
+        order = LimitOrder("grid/1", "buy", D("0.02200"), D("400"), D("100"))
+        account.orders[order.order_id] = order  # 300 of 400 filled
+        self.assertNotEqual(D("0"), exitable(account, quote(), RULES))
         self.assertEqual(("dust", D("200") * D("0.02298")), exit_state(account, quote(), RULES))
 
     def test_the_filled_part_of_a_resting_buy_is_not_an_unfinished_exit(self):

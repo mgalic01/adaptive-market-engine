@@ -436,12 +436,14 @@ def replay(
                 metrics.cycles_by_week[f"{year}-W{week:02d}"] += cycles
             metrics.frames += 1
             _record_fills(metrics, report["fills"], report.get("exit_reason"))
-            # A rejected frame's report omits the field; it attempted no exit.
-            record_exit_block(
-                metrics,
-                str(report.get("exit_blocked", "")),
-                Decimal(report.get("exit_blocked_notional", ZERO)),
-            )
+            # Only frames that attempted an exit carry the key. A rejected or halting
+            # frame attempted none, and must not reset the streak or count as cleared.
+            if "exit_blocked" in report:
+                record_exit_block(
+                    metrics,
+                    str(report["exit_blocked"]),
+                    Decimal(report["exit_blocked_notional"]),
+                )
             metrics.grids_opened += int(bool(report["opened"]))
             # From the account, not the report: a rejected frame's report omits the flag.
             exiting = account.range_exit
