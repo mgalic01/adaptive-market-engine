@@ -231,6 +231,34 @@ class Metrics:
     active_max_drawdown: Decimal = ZERO
     risk_evaluations: int = 0
     hard_drawdown_halts: int = 0  # halt events, not evaluations
+    # Frames whose marketable exit was refused because the order would be below the
+    # exchange minimum notional ("depth": this frame's participation chunk; "dust": the
+    # whole unreserved position). A refusal sells nothing, so it is invisible in the
+    # fill journal; without these counters a permanently stalled exit looks like a
+    # quiet account. ``final_*`` describe the last frame of the run.
+    exit_blocked_frames: int = 0
+    exit_blocked_by_kind: Counter[str] = field(default_factory=Counter)
+    exit_blocked_streak: int = 0
+    max_exit_blocked_streak: int = 0
+    max_exit_blocked_notional: Decimal = ZERO
+    final_exit_blocked: str = ""
+    final_blocked_notional: Decimal = ZERO
+
+
+def record_exit_block(metrics: Metrics, blocked: str, notional: Decimal) -> None:
+    """Record one frame's exit refusal (``blocked`` empty means the exit was not refused)."""
+    metrics.final_exit_blocked = blocked
+    metrics.final_blocked_notional = notional if blocked else ZERO
+    if not blocked:
+        metrics.exit_blocked_streak = 0
+        return
+    metrics.exit_blocked_frames += 1
+    metrics.exit_blocked_by_kind[blocked] += 1
+    metrics.exit_blocked_streak += 1
+    metrics.max_exit_blocked_streak = max(
+        metrics.max_exit_blocked_streak, metrics.exit_blocked_streak
+    )
+    metrics.max_exit_blocked_notional = max(metrics.max_exit_blocked_notional, notional)
 
 
 class RequestCountingOrders(dict[str, LimitOrder]):
@@ -405,6 +433,12 @@ def replay(
                 metrics.cycles_by_week[f"{year}-W{week:02d}"] += cycles
             metrics.frames += 1
             _record_fills(metrics, report["fills"], report.get("exit_reason"))
+            # A rejected frame's report omits the field; it attempted no exit.
+            record_exit_block(
+                metrics,
+                str(report.get("exit_blocked", "")),
+                Decimal(report.get("exit_blocked_notional", ZERO)),
+            )
             metrics.grids_opened += int(bool(report["opened"]))
             # From the account, not the report: a rejected frame's report omits the flag.
             exiting = account.range_exit
@@ -570,6 +604,12 @@ def load_minutes(data_dir: Path, manifest: dict[str, Any], symbol: str) -> Itera
 # failure. Larger differences, any price difference and any missing bar stay fatal.
 # Results record INTEGRITY_RULES; ``--strict-volume`` restores exact matching (tolerance 0).
 VOLUME_DRIFT_TOLERANCE = Decimal("0.001")
+# Which engine produced a result. Bump it whenever a change moves replay results, so
+# runs from before and after the change are never compared as one trial.
+#   exit-residue-v1 (2026-09-27): a residue the exchange filters forbid selling no
+#   longer blocks settlement or new grids; a validation halt holding inventory arms
+#   liquidation; refused exits are counted. Runs without this field predate it.
+ENGINE_VERSION = "exit-residue-v1"
 INTEGRITY_RULES = "drift-tolerance-v1"
 STRICT_INTEGRITY_RULES = "strict-v0"
 
@@ -675,6 +715,7 @@ def summarise(
         "path_mode": run.path_mode,
         "strategy": "gated grid (price-only-v1)" if run.gated else "ungated grid baseline",
         "feature_version": FEATURE_VERSION,
+        "engine_version": ENGINE_VERSION,
         "news_component": "ABSENT (news_risk fixed at 0; no historical source)",
         "window": [_utc(metrics.first_bar_ms), _utc(metrics.last_bar_ms)],
         "initial_quote": str(initial),
@@ -703,6 +744,14 @@ def summarise(
         "sells": metrics.sells,
         "grids_opened": metrics.grids_opened,
         "range_exits": metrics.range_exits,
+        "exit_blocked_frames": metrics.exit_blocked_frames,
+        "exit_blocked_frames_by_kind": dict(metrics.exit_blocked_by_kind),
+        "max_exit_blocked_streak": metrics.max_exit_blocked_streak,
+        "max_unsellable_notional": str(metrics.max_exit_blocked_notional),
+        # "depth" here means the run ended still unable to exit; "dust" means the
+        # residual is below one minimum notional and needs a higher price to sell.
+        "final_exit_blocked": metrics.final_exit_blocked or None,
+        "final_unsellable_notional": str(metrics.final_blocked_notional),
         "reserve_pending": str(account.pending),
         "reserve_secured": str(account.secured),
         "final_inventory": str(account.inventory),

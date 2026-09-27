@@ -455,7 +455,7 @@ class StrategyRecoveryTests(TestCase):
         state.cash = D(0)
         before = encode(state.to_dict())
         with self.assertRaisesRegex(ValueError, "exhausted"):
-            self.sim._settle(state)
+            self.sim._settle(state, frame(0).quote)
         self.assertEqual(before, encode(state.to_dict()))
 
     def test_older_schema_databases_are_not_silently_reinterpreted(self):
@@ -467,6 +467,118 @@ class StrategyRecoveryTests(TestCase):
             self.sim.store.connection.execute("UPDATE state SET identity=?", (encode(identity),))
             with self.subTest(schema=old), self.assertRaisesRegex(ValueError, "settings differ"):
                 self.open()
+
+    def crossed(self, index, bid="0.02330"):
+        """A frame whose quote is invalid (bid above ask): raises ValueError, not Transient."""
+        current = frame(index, bid)
+        return replace(current, quote=replace(current.quote, ask=D(bid) - D("0.00100")))
+
+    def test_data_halt_holding_inventory_exits_on_the_next_valid_frame(self):
+        # Absorbing state 1: the halt cancelled the resting sells that were the only exit,
+        # and resume() refuses a non-flat account, so the position was frozen for good.
+        self.sim.process(frame(0))
+        self.sim.process(frame(1, "0.02196"))
+        held = self.sim.store.read()
+        self.assertGreater(held.inventory, 0)
+        report = self.sim.process(self.crossed(2))
+        after_bad = self.sim.store.read()
+        self.assertEqual("halt", report["decision"])
+        self.assertIn("uncrossed", report["reason"])
+        # Nothing is traded on the invalid frame itself: it returns before liquidation.
+        self.assertFalse(report["fills"])
+        self.assertEqual(held.inventory, after_bad.inventory)
+        self.assertEqual(held.cash, after_bad.cash)
+        self.assertEqual(held.fees, after_bad.fees)
+        self.assertTrue(after_bad.liquidating)
+        self.assertFalse(after_bad.orders)
+        self.restart()
+        exit_report = self.sim.process(frame(3, "0.02330"))
+        self.assertEqual("halt", exit_report["decision"])
+        self.assertEqual("liquidation", exit_report["exit_reason"])
+        self.assertEqual(0, self.sim.store.read().inventory)
+        self.assertEqual(
+            "resume_pending",
+            self.sim.resume(frame(4), event_id="incident-1", reason="feed fixed")["decision"],
+        )
+        self.assertFalse(self.sim.store.read().liquidating)
+
+    def test_a_flat_data_halt_stays_resumable_without_arming_liquidation(self):
+        # The one genuinely recoverable halt must keep working, and a flat halt must not
+        # be marked as liquidating.
+        self.sim.process(frame(0))
+        report = self.sim.process(replace(frame(1), atr=D(0)))
+        self.assertEqual("halt", report["decision"])
+        state = self.sim.store.read()
+        self.assertEqual(0, state.inventory)
+        self.assertFalse(state.liquidating)
+        self.assertEqual(
+            "resume_pending",
+            self.sim.resume(frame(2), event_id="flat-1", reason="input fixed")["decision"],
+        )
+
+    def test_incomplete_liquidation_still_blocks_resume_and_says_why(self):
+        self.sim.process(frame(0))
+        self.sim.process(frame(1, "0.02196"))
+        self.sim.process(self.crossed(2))
+        # A thin book cannot absorb the position, so the exit is still outstanding.
+        self.sim.process(frame(3, "0.02330", size="1000"))
+        self.assertGreater(self.sim.store.read().inventory, 0)
+        with self.assertRaisesRegex(ValueError, "flat paper account.*still.*sellable"):
+            self.sim.resume(frame(4), event_id="too-early", reason="test")
+
+    def dust(self):
+        """Leave a residue below the minimum notional: 100 units are worth about 2.3."""
+        self.sim.process(frame(0))
+        self.sim.process(frame(1, "0.02196", size="1000"))
+        self.sim.process(frame(2, eligible=False))  # cancels the partial buy, arms the drain
+        state = self.sim.store.read()
+        self.assertEqual(D(100), state.inventory)
+        self.assertLess(state.inventory * D("0.02330"), self.sim.rules.minimum_notional)
+        self.assertFalse(state.orders)
+        return state
+
+    def test_unsellable_residue_does_not_freeze_a_healthy_account(self):
+        # Neither halted nor paused, eligible data, 2.3 of 100 units stuck as dust: the
+        # harvest gate required inventory == ZERO, so no grid was ever opened again.
+        self.dust()
+        for index in range(3, 10):
+            self.sim.process(frame(index, "0.02330"))
+        state = self.sim.store.read()
+        self.assertEqual(D(100), state.inventory)  # still unsellable, and not written off
+        self.assertGreaterEqual(state.cycles, 2)
+        self.assertTrue(any(order.side == "buy" for order in state.orders.values()))
+
+    def test_a_residue_that_becomes_sellable_is_exited_not_left_behind(self):
+        self.dust()
+        for index in range(3, 10):
+            self.sim.process(frame(index, "0.02330"))
+        self.assertEqual(D(100), self.sim.store.read().inventory)
+        # A tenfold price rise puts the residue above the minimum notional again.
+        for index in range(10, 14):
+            self.sim.process(frame(index, "0.23300"))
+        self.assertEqual(0, self.sim.store.read().inventory)
+
+    def test_range_exit_clears_with_an_unsellable_residue(self):
+        # Absorbing state 4: clearing the exit required inventory == ZERO, which
+        # liquidation cannot deliver once the remainder is below the minimum notional.
+        self.dust()
+        for index in (3, 4, 5, 7, 8):
+            self.sim.process(frame(index, "0.02500"))
+        self.assertTrue(self.sim.store.read().range_exit)
+        self.assertEqual(D(100), self.sim.store.read().inventory)
+        report = self.sim.process(frame(9, "0.02300"))
+        self.assertEqual("returned inside", report["range_exit_cleared"])
+        state = self.sim.store.read()
+        self.assertFalse(state.range_exit)
+        self.assertEqual(D(100), state.inventory)
+
+    def test_a_hard_drawdown_halt_reports_that_it_is_final(self):
+        self.sim.process(frame(0))
+        self.sim.process(frame(1, "0.02196"))
+        self.sim.process(frame(2, "0.01000"))
+        self.assertTrue(self.sim.store.read().halt)
+        with self.assertRaisesRegex(ValueError, "frozen.*final"):
+            self.sim.resume(frame(3), event_id="drawdown", reason="try recovery")
 
     def test_resume_cli_loads_saved_rules_and_requires_current_frame(self):
         self.check_resume_cli()
@@ -543,7 +655,7 @@ class ReentryTests(TestCase):
         fills = match(self.account, quote, self.rules, recycle=False)
         exits = reduce_unreserved(
             self.account, quote, self.rules, consumed=sum((f.quantity for f in fills), D(0))
-        )
+        ).fills
         self.assertEqual(D(4), fills[0].quantity)
         self.assertEqual(D(2), exits[0].quantity)
         self.assertEqual(D(2), self.account.inventory)

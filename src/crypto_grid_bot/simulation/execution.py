@@ -6,6 +6,7 @@ Resting limit fills pay the maker fee; marketable exits pay the taker fee.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from crypto_grid_bot.simulation.models import (
@@ -169,34 +170,87 @@ def match(
     return fills
 
 
+def exitable(account: Account, quote: Quote, rules: MarketRules) -> Decimal:
+    """Unreserved inventory the market filters would allow an exit to sell at this bid.
+
+    Deliberately liquidity-independent: it answers "can this remainder ever be sold
+    at this price", not "does this frame have the depth for it". ZERO therefore means
+    a residue below the quantity step or the minimum notional -- an exchange filter no
+    later frame at this price can satisfy -- and never merely a thin book.
+    """
+    quantity = floor_step(account.inventory - account.reserved_base(), rules.quantity_step)
+    price = floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
+    if quantity <= ZERO or price * quantity < rules.minimum_notional:
+        return ZERO
+    return quantity
+
+
+@dataclass(frozen=True)
+class Reduction:
+    """One marketable-exit attempt: what filled, and if nothing did, exactly why.
+
+    ``blocked`` is the refusal an exchange would have produced, or "" when the attempt
+    was not refused (it either traded, or there was nothing unreserved to sell):
+
+    * ``depth`` - the per-frame participation chunk is below the minimum notional
+      although the unreserved position is not. Waiting for a deeper bid is the only
+      lawful course; the wait may never end, so it is reported on every frame.
+    * ``dust`` - the whole unreserved position is below the minimum notional at this
+      bid. No later frame and no extra depth can clear it; only a higher price can.
+    * ``reserved`` - every unit of inventory is already reserved by a resting sell, so
+      there is nothing for this exit to do. Not a minimum-notional refusal.
+    """
+
+    fills: list[Fill] = field(default_factory=list)
+    blocked: str = ""
+    # The chunk this frame could have sold, and its value at the exit price.
+    quantity: Decimal = ZERO
+    notional: Decimal = ZERO
+    # Inventory not reserved by a resting sell, and its value at the exit price.
+    unreserved: Decimal = ZERO
+    unreserved_notional: Decimal = ZERO
+
+
 def reduce_unreserved(
     account: Account,
     quote: Quote,
     rules: MarketRules,
     *,
     consumed: Decimal = ZERO,
-) -> list[Fill]:
+) -> Reduction:
     """Exit residual inventory without spending liquidity used by existing sells.
 
-    The exit crosses the bid, so it pays the taker fee.
+    The exit crosses the bid, so it pays the taker fee. An exchange rejects an order
+    below the minimum notional, so such an exit is refused rather than forced; the
+    refusal is returned (see ``Reduction``) and never swallowed.
     """
     quote.validate(rules)
     account.validate(rules)
     nonnegative(consumed)
-    capacity = max(ZERO, quote.bid_size * rules.participation - consumed)
-    quantity = floor_step(
-        min(account.inventory - account.reserved_base(), capacity), rules.quantity_step
-    )
     price = floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
+    unreserved = account.inventory - account.reserved_base()
+    sellable = floor_step(unreserved, rules.quantity_step)
+    capacity = max(ZERO, quote.bid_size * rules.participation - consumed)
+    quantity = floor_step(min(unreserved, capacity), rules.quantity_step)
+
+    def outcome(blocked: str, fills: list[Fill] | None = None) -> Reduction:
+        return Reduction(
+            fills or [], blocked, quantity, price * quantity, unreserved, price * unreserved
+        )
+
+    if unreserved <= ZERO:
+        return outcome("reserved" if account.inventory > ZERO else "")
     if quantity == ZERO or price * quantity < rules.minimum_notional:
-        return []
+        # Distinguish a position no exchange will ever let us sell at this price from
+        # one that is merely too large for this frame's share of the displayed bid.
+        return outcome("dust" if price * sellable < rules.minimum_notional else "depth")
     order = LimitOrder("exit/" + quote.event_id, "sell", price, quantity, quantity)
     fill = _apply_fill(account, order, quantity, price, rules.taker_fee)
     account.validate(rules)
-    return [fill]
+    return outcome("", [fill])
 
 
-def liquidate(account: Account, quote: Quote, rules: MarketRules) -> list[Fill]:
+def liquidate(account: Account, quote: Quote, rules: MarketRules) -> Reduction:
     """Bounded simulated emergency sell, after existing orders are cancelled."""
     if account.orders:
         raise ValueError("cancel resting orders before liquidation")
