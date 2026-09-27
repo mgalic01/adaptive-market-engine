@@ -139,9 +139,9 @@ e. **Verdicts, and at which head:** Bob's `NO ISSUES` or `FLAGGED`
    stale acknowledgment as current approval.
    *Proposed 2026-09-27, pending three-agent agreement:* no verdict is carried across
    a merge of the base, but earlier findings stay on record, and a reviewer who gave
-   their own verdict at the old head may scope the new head's verdict to the conflict
-   resolution and to the base changes that depend on the contribution or that it
-   depends on, stating that scope, instead of rereading the whole diff (step 5a). Bob's
+   their own verdict at the old head may scope the new head's verdict to the whole
+   incoming base delta plus the conflict resolution, stating that scope, instead of
+   rereading the whole diff (step 5a). Bob's
    GitHub reviewer, which cannot see earlier comments, always reviews in full — see
    [verdicts and a base integration](AGENT_HANDOFF.md#verdicts-and-a-base-integration).
 
@@ -156,11 +156,12 @@ Then act, in this priority:
    Both verdicts are needed because they answer different questions. Use the merge method with the full head SHA. Codex
    reviews afterwards.
    *Proposed 2026-09-27, pending three-agent agreement:* two separate states.
-   **Allowance exhausted** — a Codex usage-limit reply, which stops counting at the
-   next Codex response that is not one, or once a new Codex request is posted — is the
-   only state this merge rule applies to. **Request lapsed** — an exact-head request
-   unanswered past its channel's window (1 hour for Codex Cloud, Bob and the automated
-   review; 12 hours for Codex Desktop) — **never authorizes a merge**, whatever the
+   **Allowance exhausted** — a usage-limit reply from the Codex channel whose review is
+   required, which stops counting at the next Codex response that is not one, or once
+   a new Codex request is posted — is the only state this merge rule applies to.
+   **Request lapsed** — an exact-head request unanswered past its channel's escalation
+   default (1 hour for Codex Cloud, Bob and the automated review; 12 hours for Codex
+   Desktop), which is not proof of failure — **never authorizes a merge**, whatever the
    diff touches: escalate to the owner, naming the PR, head, reviewer and elapsed
    time, and leave the PR open. See
    [when a reviewer is unavailable](AGENT_HANDOFF.md#when-a-reviewer-is-unavailable).

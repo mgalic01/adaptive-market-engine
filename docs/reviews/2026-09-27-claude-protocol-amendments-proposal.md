@@ -11,7 +11,7 @@
 - **Scope.** Documentation only: `docs/AGENT_HANDOFF.md`, `docs/START_HERE.md`, this
   file and the index row. No runtime, checker, integrity rule, parser, spec, mask,
   config or strategy change. No archive was opened and no reserved-window access.
-- **Current revision: 5** (see [Revisions](#revisions)). Revision 3 reconciled Codex's
+- **Current revision: 6** (see [Revisions](#revisions)). Revision 3 reconciled Codex's
   audit checklist, Bob's `FLAGGED` and the narrowed agreement from a second Claude
   session, and changed amendment B from carrying verdicts to carrying findings.
   Revision 4 answers the review of revision 3: a pending note at the Bob task-file
@@ -19,6 +19,11 @@
   command, and sender tags bound to the owner login. Revision 5 answers the review of
   revision 4: a reverse-dependency search, no scoped verdicts from Bob's GitHub
   reviewer, and a lapse clock that starts when an automatic review can actually run.
+  Revision 6 adopts Codex Desktop's minimal repair to B (a scoped review reads the whole
+  incoming base delta; the symbol search is dropped), ties usage-limit evidence to the
+  required channel, calls the windows escalation defaults, calls sender tags declared
+  attribution, and corrects the claim that no reviewer asks whether a change should
+  exist.
 
 ## Why: three gaps, all observed rather than theorised
 
@@ -72,7 +77,7 @@ states instead:
 
 | State | What establishes it | When it ends | What it allows |
 | --- | --- | --- | --- |
-| **Allowance exhausted** | a usage-limit reply from Codex | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it | the owner's existing stop-gap only: Bob's `NO ISSUES` at the full head, green `test-and-audit` at that head, no unaddressed required fix; Codex reviews afterwards |
+| **Allowance exhausted** | a usage-limit reply from the Codex channel whose review is required | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it | the owner's existing stop-gap only: Bob's `NO ISSUES` at the full head, green `test-and-audit` at that head, no unaddressed required fix; Codex reviews afterwards |
 | **Request lapsed** | an exact-head review unanswered past its channel's window | when the reviewer answers at that head, or the head changes | escalation to the owner only; **never a merge** |
 
 Every place the handbook uses Codex being unavailable as a reason to merge — the quick
@@ -80,6 +85,11 @@ reference's merge authority, START_HERE step 3's merge rule, and a Bob task-file
 means allowance exhausted, never lapsed. The two operative bullets that the first
 revision had changed to "unavailable" are restored to the literal "has no allowance",
 with the proposal in a pending note beside them.
+
+**Exhaustion belongs to one channel.** A Codex Cloud usage limit does not establish
+that Codex Desktop is unavailable, nor the reverse. The stop-gap needs a usage-limit
+reply from the channel whose review is actually required. Expiry stays broad: any later
+Codex response or request ends it, so the stop-gap is used less, never more.
 
 **Exhaustion expires.** A usage-limit reply is evidence about one moment. It stops
 counting at the next Codex response that is not a usage-limit reply, on any PR, and as
@@ -92,7 +102,9 @@ minutes twice on 2026-09-27: PR #83 at 23:31:12, PR #87 at 00:50:53); **12 hours
 Codex Desktop, which runs only when the owner opens it. No window is defined for other
 channels, including the opt-in local Codex reviewer added on `main` since revision 2;
 an unanswered request there is reported at the next check-in. Both figures are
-judgements rather than findings, and the owner's to set.
+judgements rather than findings, and the owner's to set. They are **escalation
+defaults**: when silence is worth telling the owner about. A lapsed window is not proof
+that a reviewer has failed, and never permission to merge.
 
 **The clock** starts at the exact-head request, or, for a review that starts on its own
 (the automated review, or a Codex Cloud review already pending, where the event-driven
@@ -110,11 +122,12 @@ to escalate to the owner, naming the PR, the full head, the reviewer being waite
 when the request was posted or the head pushed, and how long it has waited. The PR
 stays open.
 
-The owner's reason, which applies beyond this rule: every check in the chain — CI, Bob,
-the automated review, Codex Cloud — takes the PR's premise as given and verifies its
-execution. **None asks whether the change should exist at all, or what it costs the
-project to carry.** That judgement is made once, at the merge. Letting silence stand in
-for it would remove the only place it is made.
+The owner's reason, which applies beyond this rule: whether a change should exist, and
+what it costs the project to carry, is a judgement every reviewer is expected to
+challenge (START_HERE step 0), and the merge is where it is finally made, deliberately.
+**A green check, a clean verdict or an elapsed window does not replace that judgement.**
+Revisions 1 to 5 said instead that no reviewer asks the question; that contradicted
+START_HERE step 0, and Codex Desktop corrected it at revision 5.
 
 ### B. Findings, not verdicts, carry across a base integration
 
@@ -126,33 +139,24 @@ the base:
    discharges it. This is the part of gap 3 that cost the most.
 2. **A new verdict at the new full head is still required**, with `test-and-audit`
    green at that head. The reviewer may scope it, instead of rereading the whole diff,
-   to:
-   1. **the conflict resolution**, shown by
-      `git show --format= --remerge-diff <new-head>` (Git 2.36 or later): only where
-      the recorded merge differs from Git's own automatic merge, including any edit
-      slipped into the merge commit. `--format=` hides the commit header, so a clean
-      merge prints nothing;
-   2. **the base changes the contribution depends on**, from
-      `git diff --stat $(git merge-base <new-head>^1 <new-head>^2) <new-head>^2`:
-      every listed file the contribution imports, calls, configures, tests against or
-      cites, plus any change to `pyproject.toml`, `.github/`, configuration, dataset
-      specs or masks;
-   3. **the base changes that depend on the contribution**: every symbol the
-      contribution adds, removes or changes the meaning of, plus each contributed
-      module's name, searched in the base's files at the new head with
-      `git grep -n -w -e <symbol> ... <new-head> -- <files the base changed>`; every
-      reported file is reviewed, and behaviour no name captures means reviewing the
-      whole base delta.
+   to **the entire incoming base delta** and **the conflict resolution**, relying for
+   the unchanged contribution only on their own earlier reading of it. Two commands
+   enumerate what to read:
+   `git diff $(git merge-base <new-head>^1 <new-head>^2) <new-head>^2` (everything the
+   base brought in) and `git show --format= --remerge-diff <new-head>` (Git 2.36 or
+   later: where the recorded merge differs from Git's own automatic merge, including
+   any edit slipped into the merge commit; `--format=` hides the commit header, so a
+   clean merge prints nothing). **The commands enumerate evidence; they never certify
+   safety.** The reviewer judges how the base delta and the contribution behave
+   together; if that cannot be bounded with confidence, the verdict is a full review.
 3. **The verdict states its scope**: old and new heads, the reviewer's own old verdict,
-   the commands with output and the symbol list, the base files reviewed, and those
-   judged unrelated with the reason.
+   both commands, and that the whole base delta and the resolution were read.
 4. **Scoping is allowed only** for one merge of the base whose first parent is the
    reviewed old head, with no other commit, and only to a reviewer who gave a
    substantive verdict of their own at that old head. A reviewer leans only on their
    own earlier reading: otherwise one reviewer's old verdict could stand in for another
    reviewer's review of the contribution, and the external-review rule would be met by
-   nobody reading the authored change. Anything else, or a dependency set the reviewer
-   cannot bound with confidence, means a full review.
+   nobody reading the authored change. Anything else means a full review.
 5. **Bob's GitHub reviewer never scopes.** It reads only the triggering comment, the PR
    description, the diff and the index, never other comments, so it cannot see its own
    earlier verdict or the open findings. It always reviews in full. The owner's desktop
@@ -161,15 +165,23 @@ the base:
    of the two: a finding left out of the quote would vanish silently, which is the gap
    3 failure again.
 
+**Why the whole base delta.** Revisions 3 to 5 tried to select which base changes to
+read: first those the contribution depends on, then also base files naming a symbol the
+contribution changes. Each selection was refuted by the next counterexample (below),
+and a dependency analysis written in prose would keep inviting one. Reading the whole
+base delta covers forward, reverse and transitive dependencies and coupling through
+data, configuration or reflection, without a rule for each. It is still a bounded
+review: the base delta and the resolution, not the contribution again.
+
 On PR #83's integration both commands were run at revision 3. `git show --format=
 --remerge-diff 96fb1d8` shows exactly the one resolved index row. The base delta from
 `94b07a8ca7bf7092f4e5a2c57a167218d2bbb60a` to `3f83cb46553faa41e2971346c70413f1f8af31e4`
-is nine files (`.github/workflows/bob-review.yml`, `AGENTS.md`, three handbook files,
-one review file, the index, `pyproject.toml`, one test). The contribution was two
-review files about `compare_bars` and `dataset.py`, which the base did not touch; the
-`pyproject.toml` and workflow changes would still have been read under the "whatever
-the contribution" clause. That is a short, bounded review — the saving gap 3 wanted —
-without claiming the old verdict still holds.
+is nine files, 227 insertions and 11 deletions (`.github/workflows/bob-review.yml`,
+`AGENTS.md`, three handbook files, one review file, the index, `pyproject.toml`, one
+test). Under revision 6 the scoped review reads all of it plus the one resolved row,
+and relies on the reviewer's own earlier reading of the two contributed review files.
+That is a short, bounded review — the saving gap 3 wanted — without claiming the old
+verdict still holds.
 
 ### C. Every agent comment names its sender in a machine-readable tag
 
@@ -179,7 +191,9 @@ own first line — `[Claude Code <session-id>]`, `[Codex Desktop]`, `[Bob]`. A t
 plain text that anyone who can comment could type, so it counts only on a comment
 authored by `mgalic01`; on any other login it is ignored, and that comment is never
 Claude, Codex or Bob review evidence. On a `mgalic01` comment, the tag says which agent
-wrote it. The bot accounts need no tag; their logins already differ. **Until all three agree, the existing rule stands:** every message starts with
+claims to have written it. **A tag is declared attribution, not an authenticated
+identity**: anything that posts as `mgalic01` can write any tag. The bot accounts need
+no tag; their logins already differ. **Until all three agree, the existing rule stands:** every message starts with
 its sender ("Claude → Codex" and the like), and no tag is required.
 
 Added after a misattribution on 2026-09-27: a Claude session's review of this very PR
@@ -252,12 +266,31 @@ alert(80, 100) on base-new: True
 alert(80, 100) at merged head: False
 ```
 
-**Disposition (revision 5).** Revision 4 followed only the edges from the contribution
-to the base, so it would have judged `alerts.py` unrelated. Item 2.3 adds the reverse
-edge as a search, not a judgement: the reviewer lists what the contribution changes,
-and the command reports each base file that names it. A search by name misses behaviour
-reached without a name (reflection, string dispatch, data files); for that, the rule
-says review the whole base delta.
+**Disposition (revision 5, superseded).** Revision 4 followed only the edges from the
+contribution to the base, so it would have judged `alerts.py` unrelated. Revision 5
+added a search of the base's files for each symbol the contribution changes.
+
+**Transitive counterexample (Bob, 18:59Z, on revision 5).** The same feature; the base
+changes `alerts.py` to call `normalize()` and adds `router.py`, which imports `alert`
+and never names `normalize`. Reproduced here the same way:
+
+```
+remerge-diff lines: 0
+whole base delta:  alerts.py | 5 ++++-   router.py | 5 +++++
+revision 5 symbol grep (normalize, metrics) over the base's files:
+  alerts.py:1:from metrics import normalize
+  alerts.py:5:    return normalize(x, total) > 50
+route(80, 100) on base-new: page
+route(80, 100) at merged head: log
+```
+
+The grep reports `alerts.py` only; `router.py` changes behaviour and is not reported.
+
+**Disposition (revision 6).** Codex Desktop's minimal repair, adopted: the symbol search
+is dropped, and a scoped review reads the whole incoming base delta plus the conflict
+resolution. Both `alerts.py` and `router.py` are in the base delta, so both are read.
+The three counterexamples stay here as the evidence for why no selection rule is
+written down.
 
 ## Revisions
 
@@ -267,7 +300,8 @@ says review the whole base delta.
 | 2 | `f015f6a6e56c1b6450ee86a59393ba13aa424c60` | B's check replaced by a merge-base patch comparison, since the first could never pass. A: owner decision, a lapse never merges; per-channel windows; elapsed time carried with carried verdicts. C added. |
 | 3 | `e6d321f8dddc8be63518530aa79617d00cb04839` | Reconciles the eight-item checklist below, Bob's `FLAGGED` and Cloud Claude's narrowed agreement. B carries findings, not verdicts. A names two states with separate consequences, and exhaustion expires. Merges `main` at `15ab9cf822501ea74a2bf7a614c180336cdfce3a`. |
 | 4 | `353188a1baeed569d19b28c874d4ee762ae18ed6` | Answers the review of revision 3 (table below). Merges `main` again, at `b7a857b337c538311f754046542f5e7f5be56272`. |
-| 5 | this revision | Answers the review of revision 4 (table below). Merges `main` a third time, at `c3c8e250bc5ec8837498d47bd0090cc4bd8c2edc`. |
+| 5 | `2c01fd5346d0abc31a369e4ff3be10b64330e6a8` | Answers the review of revision 4 (table below). Merges `main` a third time, at `c3c8e250bc5ec8837498d47bd0090cc4bd8c2edc`. |
+| 6 | this revision | Answers the review of revision 5 (table below). Merges `main` a fourth time, at `58edafe82de5d2a675515df32b009c405b90a0d6`. |
 
 **Revision 3, item by item.** The eight Codex Cloud inline threads that Codex's audit
 (14:28Z) named as the checklist, then the other findings open at revision 2:
@@ -310,14 +344,29 @@ those are void at the new head.
 | Cloud P1: Bob's GitHub reviewer never reads other comments, so a scoped Bob verdict cannot see old findings | **Fixed.** Bob's GitHub reviewer never scopes; it always reviews in full. The desktop session may scope. Quoting findings in the request was rejected as less safe. |
 | Cloud P2: the automatic-review clock should start when the review can run, not at a push to a draft | **Fixed.** The clock starts at the latest of a non-draft push, opened as ready, marked ready for review, or reopened, following the triggers and draft condition in `claude-review.yml`. |
 
+**Revision 6, item by item.** The review of revision 5 at
+`2c01fd5346d0abc31a369e4ff3be10b64330e6a8`: Bob's GitHub reviewer `FLAGGED` (18:59Z),
+the automated review `APPROVE` (19:02Z), and Codex Desktop **AGREE WITH CHANGES**
+(19:04Z: A agree, B agree with changes, C agree). All are void at the new head.
+
+| Finding | Disposition |
+| --- | --- |
+| Bob, FLAGGED: the symbol search in B 2.3 finds direct callers, not transitive ones | **Fixed by Codex's repair.** Reproduced above; the search is dropped and the whole base delta is read. |
+| Codex Desktop, B: replace selective scoping with the minimal repair; commands enumerate, never certify | **Adopted** as written: whole base delta plus conflict resolution, same reviewer's earlier reading of the unchanged contribution, full review if combined behaviour cannot be bounded. |
+| Codex Desktop, A: usage-limit evidence applies only to the required channel | **Fixed.** A Cloud limit does not make Desktop unavailable, nor the reverse; expiry stays broad. |
+| Codex Desktop, A: 1h/12h are escalation defaults, not proof of failure or permission to merge | **Fixed**, in the handbook, START_HERE step 3 and here. |
+| Codex Desktop, C: tags are declared attribution, not authenticated identities | **Fixed**, in the handbook and here. |
+| Codex Desktop: "none of them asks whether the change should exist" contradicts START_HERE step 0 | **Fixed.** Now says every reviewer is expected to challenge that, the merge makes the decision deliberately, and automated success does not replace it. |
+| Automated review nit: add `SECURITY.md` to the always-reviewed list | **Superseded.** The whole base delta is read, so no list is needed. |
+
 ## A separate observation, not a proposal
 
 The review index, `docs/reviews/README.md`, is one append-only table with the newest
 rows at the top, and every PR adds a row there. So each merge to `main` conflicts every
 other open PR on the same lines. This PR is one example: its only conflict at revision
 3 was that table, and after that push PR #100 merged and conflicted it
-again on the same table, so revision 4 carries a second index-only merge and revision 5
-a third. Cloud Claude reported the same for PR #100, the third Claude PR in
+again on the same table, so revision 4 carries a second index-only merge, revision 5
+a third and revision 6 a fourth. Cloud Claude reported the same for PR #100, the third Claude PR in
 two days conflicted purely by the index. The cost is structural and paid by every PR,
 and it is independent of amendment B. Codex's view, recorded here: keep the one-topic
 PR workflow and the named-writer rule, and do not weaken review provenance to reduce
@@ -333,22 +382,26 @@ index contention. No change is proposed in this PR.
   under the old rules, the PR #83 worked example and the synthetic counterexample;
   whether the new rules behave well is a prediction. The first real lapse, exhaustion
   expiry and scoped review should be reported back here.
-- **The dependency judgement in B 2.2 is a reviewer's judgement**, not a command. The
-  commands bound what the reviewer must look at; they do not decide what depends on
-  what. That is why the verdict must state the files it judged unrelated.
+- **How the base delta and the contribution behave together is a reviewer's
+  judgement**, not a command. The commands enumerate what must be read; they certify
+  nothing. When the combined behaviour cannot be bounded, the review is full.
 
 ## Agreement
 
-- **Claude:** proposes. Agreed by authorship, at revision 3.
-- **Codex:** to agree, or to name what it would change. Amendment A no longer lets
-  anything bypass Codex's merge authority: it bounds the existing owner stop-gap to
-  a current usage-limit reply and adds an escalation-only lapse. Amendment B follows
-  Codex's own recommendation of 16:04Z. Codex's agreement is needed as one of the
-  three, not because either amendment widens a bypass.
-- **Bob:** to agree, or to flag. His verdict carries no new weight here: no lapse path
-  leans on it, and the stop-gap that uses his `NO ISSUES` is the owner's existing rule,
-  now with an end. The PR #83 evidence above concerns a verdict of his — included as
-  reasoning about the protocol, not as criticism of that review.
+- **Claude:** proposes. Agreed by authorship, at revision 6.
+- **Codex:** AGREE WITH CHANGES at revision 5 (Codex Desktop, 19:04Z): A agree, B agree
+  with changes, C agree. Revision 6 applies those changes; Codex's acknowledgment of
+  the resulting head is still needed. Amendment A lets nothing bypass Codex's merge
+  authority: it bounds the existing owner stop-gap to a current usage-limit reply from
+  the required channel and adds an escalation-only lapse. Amendment B follows Codex's
+  recommendation of 16:04Z and its minimal repair of 19:04Z.
+- **Bob:** the desktop session agreed at revision 4 (18:51Z); the GitHub reviewer
+  flagged revision 5 on transitive dependencies (18:59Z), which revision 6 answers.
+  Both are void at the new head, so his agreement is needed again. His verdict carries
+  no new weight here: no lapse path leans on it, and the stop-gap that uses his
+  `NO ISSUES` is the owner's existing rule, now with an end. The PR #83 evidence above
+  concerns a verdict of his — included as reasoning about the protocol, not as
+  criticism of that review.
 
 Nothing here advances the open-only reclassification, the spec freeze or any acceptance
 condition, and no owner decision recorded elsewhere is altered.

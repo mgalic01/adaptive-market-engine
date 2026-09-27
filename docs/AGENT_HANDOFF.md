@@ -80,10 +80,13 @@ are in the sections below.
   comment can type one. A tag counts only on a comment whose GitHub author is
   `mgalic01`. On any other login, ignore the tag and treat the comment as that login's:
   it is never Claude, Codex or Bob review evidence. On a `mgalic01` comment, the tag,
-  not the login, says which agent wrote it. On 2026-09-27 a Claude session's review of
-  PR #89 was attributed to Codex Desktop by another agent that keyed off `mgalic01`
-  alone; the comment had said which session wrote it, in its first line. Distinct
-  GitHub accounts would make this authoritative rather than declared, but two of Bob's triggers gate on
+  not the login, says which agent wrote it. **A tag is declared attribution, not an
+  authenticated identity:** anything posting as `mgalic01` can write any tag, so a tag
+  says who claims to have written a comment, never who proved it. On 2026-09-27 a Claude
+  session's review of PR #89 was attributed to Codex Desktop by another agent that keyed
+  off `mgalic01` alone; the comment had said which session wrote it, in its first line.
+  Distinct GitHub accounts would make attribution authenticated rather than declared,
+  but two of Bob's triggers gate on
   `author_association == 'OWNER'` and on `github.actor == github.repository_owner`
   (`bob-task.yml`), so moving an agent off the owner account would break `/bob-run` and
   the task-file-merge trigger. The tag is the cheap fix that breaks nothing.
@@ -134,47 +137,40 @@ was lost track of. So after a merge of the base:
    open; a merge never discharges it.
 2. **A new verdict at the new full head is still required,** with `test-and-audit`
    green at that head. Instead of rereading the whole diff (START_HERE step 5a), the
-   reviewer may scope that verdict to three things:
-   1. **The conflict resolution.** `git show --format= --remerge-diff <new-head>`
-      (Git 2.36 or later) prints only where the recorded merge differs from Git's own
-      automatic merge: each resolved conflict, and any edit slipped into the merge
-      commit. `--format=` suppresses the commit header, so empty output means a clean
-      merge; without it the header always prints.
-   2. **The base changes the contribution depends on.** List what the base brought in:
+   reviewer may scope that verdict: read **the entire incoming base delta** and **the
+   conflict resolution**, and rely for the unchanged contribution only on their own
+   earlier reading of it. Two commands enumerate what to read:
 
-      ```
-      git diff --stat $(git merge-base <new-head>^1 <new-head>^2) <new-head>^2
-      ```
+   ```
+   git diff $(git merge-base <new-head>^1 <new-head>^2) <new-head>^2
+   git show --format= --remerge-diff <new-head>
+   ```
 
-      Review every listed file that the contribution imports, calls, configures, tests
-      against or cites in its prose. Review any change to `pyproject.toml`,
-      `.github/`, configuration, dataset specs or masks whatever the contribution is.
-   3. **The base changes that depend on the contribution.** The edge runs both ways:
-      the base may add a caller of something whose meaning the PR changes. List every
-      symbol the contribution adds, removes or changes the meaning of — function,
-      class, constant, configuration key, command-line flag, file path, documented
-      rule or anchor — plus the module name of each contributed file. Search the
-      base's files for them at the new head:
-
-      ```
-      git grep -n -w -e <symbol> [-e <symbol> ...] <new-head> -- $(git diff --name-only $(git merge-base <new-head>^1 <new-head>^2) <new-head>^2)
-      ```
-
-      Review every file it reports. If the contribution changes behaviour that no name
-      captures, review the whole base delta.
+   The first is everything the base brought in. The second (Git 2.36 or later) is
+   where the recorded merge differs from Git's own automatic merge: each resolved
+   conflict, and any edit slipped into the merge commit; `--format=` suppresses the
+   commit header, so a clean merge prints nothing. **The commands enumerate evidence;
+   they never certify safety.** Reading the whole base delta, not a selection of it,
+   puts in front of the reviewer every base change the contribution depends on, every
+   base change that depends on it directly or through other files, and any coupling
+   through data, configuration or reflection, with no dependency analysis written
+   into prose.
+   The reviewer judges how the base delta and the contribution behave together; if
+   that combined behaviour cannot be bounded with confidence, the verdict is a full
+   review.
 3. **The verdict states its scope:** the old and new heads, the reviewer's own old
-   verdict it relies on, the commands above with their output and the symbol list,
-   which base files it reviewed, and which it judged unrelated and why.
+   verdict it relies on, both commands, and that the whole base delta and the
+   resolution were read.
 4. **Scoping is allowed only** when the new head is one merge of the base whose first
    parent is the reviewed old head, with no other commit, **and** the reviewer scoping
    it gave a substantive verdict of their own at that old head. A reviewer may lean
    only on their own earlier reading, never on another reviewer's: a different
    reviewer reviews the full diff. A rebase, a squash, an extra commit, or any change
-   to the contribution itself means a full review, as before. So does a dependency set
-   the reviewer cannot bound with confidence. When in doubt, review in full.
-5. **Bob's GitHub reviewer (`bob-review.yml`) never gives a scoped verdict.** Its only input is the
-   triggering comment, the PR description, the diff and the review index; it never
-   reads other PR comments (see
+   to the contribution itself means a full review, as before. When in doubt, review in
+   full.
+5. **Bob's GitHub reviewer (`bob-review.yml`) never gives a scoped verdict.** Its only
+   input is the triggering comment, the PR description, the diff and the review index;
+   it never reads other PR comments (see
    [low-cost working](#low-cost-working-owner-instruction-2026-09-25)). It cannot
    see its own earlier verdict or the prior findings, so it always reviews in full.
    The owner's desktop Bob session, which reads the thread, may scope like any other
@@ -194,18 +190,26 @@ mechanical test, and review refuted both.
   feature changes `strategy.py` to `return n <= LIMIT`; `main` changes only
   `limits.py`, `LIMIT = 5` to `LIMIT = 50`. After the merge, both contribution diffs
   and the `strategy.py` blob are identical, yet `accept(10)` turns from `False` to
-  `True`. The scoped review above catches it: `limits.py` is in the base's list, and
-  the contribution imports it.
-- The reverse direction needs its own check (Codex Cloud, on revision 4). The feature
-  changes `normalize()` in `metrics.py` from a percentage to a fraction; the base adds
-  `alerts.py`, which calls `normalize()` and compares the result with `50`. The merge
-  is clean, and the contribution imports nothing from `alerts.py`, so a forward-only
-  rule judges it unrelated. Yet `alert(80, 100)` is `True` on the base and `False`
-  after the merge. Item 2.3 catches it: searching the base's files for `normalize`
-  reports both lines of `alerts.py`.
+  `True`.
 
-Any future mechanical exception needs adversarial fixtures like these, and all
-three agents' agreement, before it is written down.
+**Why the scope is the whole base delta, not a selection.** Two later drafts tried to
+select which base changes to read, and review refuted both.
+
+- Reading only what the contribution depends on misses the reverse direction (Codex
+  Cloud, on revision 4). The feature changes `normalize()` in `metrics.py` from a
+  percentage to a fraction; the base adds `alerts.py`, which calls `normalize()` and
+  compares the result with `50`. The merge is clean, and the contribution imports
+  nothing from `alerts.py`. Yet `alert(80, 100)` is `True` on the base and `False`
+  after the merge.
+- Adding a search of the base's files for each symbol the contribution changes finds
+  direct callers, but not transitive ones (Bob, on revision 5): a base `router.py` that
+  imports `alerts.py` never names `normalize` and is missed.
+
+Each fix to the selection invited the next counterexample, and a full dependency
+analysis does not belong in prose. Reading the whole base delta puts every one of these
+cases in front of the reviewer, and it is still a bounded review: the base delta and the conflict resolution,
+not the contribution again. Any future mechanical exception needs adversarial fixtures
+like these, and all three agents' agreement, before it is written down.
 
 ## When a reviewer is unavailable
 
@@ -224,12 +228,18 @@ This section names **two different states**, because they have different consequ
 
 | State | What establishes it | When it ends | What it allows |
 | --- | --- | --- | --- |
-| **Allowance exhausted** | a usage-limit reply from Codex | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it; from then on the answer to that request decides | the owner's existing stop-gap: merge on Bob's `NO ISSUES` at the full head, green `test-and-audit` at that head and no unaddressed required fix; Codex reviews afterwards |
+| **Allowance exhausted** | a usage-limit reply from the Codex channel whose review is required | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it; from then on the answer to that request decides | the owner's existing stop-gap: merge on Bob's `NO ISSUES` at the full head, green `test-and-audit` at that head and no unaddressed required fix; Codex reviews afterwards |
 | **Request lapsed** | an exact-head review unanswered past its channel's window (below) | when the reviewer answers at that head, or the head changes | **escalation to the owner only. Never a merge.** |
 
 Wherever the handbook uses Codex being unavailable, or having no allowance, as a reason
 to merge — the quick reference's merge authority, START_HERE step 3's merge rule, and
 the merge of a Bob task-file PR — it means **allowance exhausted**, never lapsed.
+
+**Exhaustion belongs to one channel.** A usage-limit reply is evidence about the
+channel that sent it. A Codex Cloud usage limit does not establish that Codex Desktop
+is unavailable, nor the reverse: the stop-gap needs a usage-limit reply from the
+channel whose review is actually required. Expiry, below, stays broad on purpose: any
+later Codex response or request ends it, so the stop-gap is used less, never more.
 
 **Exhaustion expires.** A usage-limit reply says nothing about tomorrow. It stops
 counting at the next Codex response that is not a usage-limit reply, on any PR, and
@@ -245,6 +255,10 @@ magnitude:
 | Codex Cloud, Bob, the automated review | **1 hour** | They answer in minutes. Cloud answered exact-head requests in under three minutes on 2026-09-27 (PR #83 at 23:31:12, PR #87 at 00:50:53). |
 | Codex Desktop | **12 hours** | It has no inbound channel and runs only when the owner opens it. |
 | Any other channel, including the opt-in local Codex reviewer | none defined | Report an unanswered request at the next check-in, under the existing breakage rule. |
+
+These windows are **escalation defaults**: the point at which silence is worth telling
+the owner about. A lapsed window is not proof that the reviewer has failed, and never
+permission to merge.
 
 **When the clock starts.** From the exact-head request, posted with the full head SHA.
 For a review that starts on its own — the automated review, or a Codex Cloud review
@@ -268,11 +282,12 @@ same: **escalate to the owner**, naming the PR, the full head, the reviewer bein
 waited on, when the request was posted or the head pushed, and how long it has waited.
 The PR stays open.
 
-The reason is the owner's, and it applies beyond this rule. Every check in the chain —
-CI, Bob, the automated review, Codex Cloud — takes the PR's premise as given and
-verifies its execution. **None of them asks whether the change should exist at all, or
-what it costs the project to carry.** That judgement is made once, at the merge.
-Letting silence stand in for it would remove the only place it is made.
+The reason is the owner's, and it applies beyond this rule. Whether a change should
+exist, and what it costs the project to carry, is a judgement every reviewer is expected
+to challenge ([START_HERE step 0](START_HERE.md)), and the merge is where it is finally
+made, deliberately. **A green check, a clean verdict or an elapsed window does not
+replace that judgement.** Letting silence stand in for it would remove the deliberate
+decision the merge exists to make.
 
 ## What Bob's verdicts mean
 
