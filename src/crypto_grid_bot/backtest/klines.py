@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.parsing import DataError, amount, symbol_name
 
 INTERVAL_MS = {"1m": 60_000, "1h": 3_600_000, "1d": 86_400_000}
@@ -136,6 +137,7 @@ def read_archive(
 ) -> tuple[list[Kline], FileStats]:
     """Parse the single expected CSV member of a verified archive zip."""
     symbol_name(symbol)
+    development_month(month)
     return parse_rows(read_member(path, f"{symbol}-{interval}-{month}.csv"), interval, month)
 
 

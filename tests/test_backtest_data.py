@@ -19,6 +19,7 @@ from crypto_grid_bot.backtest.dataset import (
     local_path,
     verify_dataset,
 )
+from crypto_grid_bot.backtest.funding import read_funding_archive
 from crypto_grid_bot.backtest.klines import aggregate, parse_rows, read_archive
 from crypto_grid_bot.market_data.parsing import DataError
 
@@ -496,3 +497,33 @@ class ReservedWindowTests(unittest.TestCase):
             load_manifest(path)
         with self.assertRaisesRegex(DataError, "reserved window"):
             verify_dataset(spec, manifest, self.data)
+
+    def _archive(self, member: str) -> Path:
+        # A real zip holding exactly the expected member: if the guard were missing,
+        # the reader would open it and fail on its contents instead.
+        path = self.data / (member.removesuffix(".csv") + ".zip")
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(member, "not,parsed\n")
+        return path
+
+    def test_the_kline_reader_refuses_a_reserved_month_without_opening_it(self):
+        path = self._archive("ADAUSDT-1m-2025-01.csv")
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            read_archive(path, "ADAUSDT", "1m", "2025-01")
+
+    def test_the_funding_reader_refuses_a_reserved_month_without_opening_it(self):
+        path = self._archive("BTCUSDT-fundingRate-2025-01.csv")
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            read_funding_archive(path, "BTCUSDT", "2025-01")
+
+    def test_the_readers_still_open_the_last_development_month(self):
+        # The same archive contents in 2024-12 get past the guard to the parser.
+        kline = self._archive("ADAUSDT-1m-2024-12.csv")
+        funding = self._archive("BTCUSDT-fundingRate-2024-12.csv")
+        for call in (
+            lambda: read_archive(kline, "ADAUSDT", "1m", "2024-12"),
+            lambda: read_funding_archive(funding, "BTCUSDT", "2024-12"),
+        ):
+            with self.assertRaises(DataError) as caught:
+                call()
+            self.assertNotIn("reserved window", str(caught.exception))
