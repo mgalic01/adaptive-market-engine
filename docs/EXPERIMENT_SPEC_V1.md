@@ -111,6 +111,19 @@ accounting invariant failure). It is never inferred from the halt's text. If the
 emergency flag and the hard drawdown are true together, the category is `emergency`, as
 the risk engine already checks the flag first.
 
+**The C1(b) measurement reference, defined on its own.** It is a `Decimal` in the paper
+state, updated at exactly three points and nowhere else:
+1. **At account creation** it equals the initial active capital, the value `risk_high`
+   starts with (`Account.new`).
+2. **At every mark,** where `risk_high = max(risk_high, last_equity)` runs today
+   (`_mark`), it becomes `max(reference, last_equity)`.
+3. **At every settlement,** it is multiplied by the same factor as `risk_high`:
+   `factor = active capital after allocation / active capital before` (`_settle`).
+
+A rebase or an automatic restart never changes it. So in any run without a rebase or a
+restart it equals `risk_high` at every evaluation. That equality is a required test,
+and it catches any later change to `risk_high`'s formula that is not mirrored here.
+
 **Soft drawdown (option C).**
 1. The first `REDUCE` outside an episode starts an episode, with today's response:
    cancel resting buys, manage sells, pause.
@@ -140,8 +153,20 @@ today. A `drawdown` halt restarts when, on one valid frame:
 3. a tentative rebase of `risk_high` to the current active equity makes the risk
    result `ALLOW` (daily loss under 3%, no emergency flag).
 
-The halt is then cleared as `resume()` clears it today. The normal recovery confirmations
-apply before a new grid, and the event is recorded. A halt restarts at most once. There
+The restart then changes exactly these fields, the ones today's `resume()` changes, and
+no others:
+- `halt` is cleared and `liquidating` is set to false;
+- range-exit state (`range_exit`, `range_exit_since`), outside-range timers and the grid
+  bounds are reset, since the account is flat with no grid;
+- `risk_high` takes the committed rebase value;
+- the halt start and category are cleared;
+- the account enters a pause ("automatic restart after drawdown halt: awaiting confirmed
+  eligible data"), so the normal `recovery_frames` confirmations apply before a new grid.
+
+It does **not** touch the daily baseline (`day`, `day_start`), which changes only at the
+normal UTC day roll. It does not touch either C1 reference, the reserves or the vault.
+The emergency flag is a per-frame signal, not account state, so nothing can clear it.
+The event is recorded: halt start, category, restart time, and the old and new reference. A halt restarts at most once. There
 is **no overall loss floor**: cumulative losses across episodes are unbounded by the
 owner's choice, and C1 still judges every run. The manual `resume()` is unchanged.
 
@@ -161,7 +186,10 @@ config values, persisted in the account identity, and fixed for all v1 runs.
   does not yield `ALLOW` is not committed; one rebase per episode; a process restart
   before and after a rebase; a range exit waiting in cash is released after the rebase.
 - Measurement peaks: C1(b)'s reference is scaled at settlement and never rebased; C1(a)'s
-  peak is never scaled and never rebased.
+  peak is never scaled and never rebased; **in a run with no rebase or restart, C1(b)'s
+  reference equals `risk_high` at every evaluation.**
+- Restart side effects: an automatic restart changes only the fields listed above; the
+  daily baseline, both C1 references and the reserves are unchanged by it.
 - Hard drawdown: no restart before H; no restart while partially liquidated; no restart
   on an ineligible frame; no restart while the daily loss is 3% or more or the emergency
   flag is set; never for categories `emergency`, `exhaustion` or `integrity`; one restart

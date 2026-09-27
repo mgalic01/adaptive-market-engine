@@ -51,6 +51,19 @@ The six contents that PR #102 §5 requires, and where each one is:
 `docs/PAPER_SIMULATION.md` gets a pending-change note under its recovery table. The table
 keeps describing the code until the implementation PR changes both.
 
+## Revision 2: Bob's two concerns at `784f411`
+
+Bob FLAGGED the first head with two concerns, and both are fixed.
+
+| Bob's concern | Change |
+| --- | --- |
+| The automatic restart clears the halt "as `resume()` clears it today", so any other state `resume()` resets would be cleared too | The restart now lists exactly the fields it changes. These are the same ones `resume()` changes on `main`: `halt`, `liquidating`, the range-exit state and timers, the grid bounds, `risk_high` (the committed rebase), the halt start and category, and a recovery pause. It states what it does not touch: the daily baseline, both C1 references, the reserves and the vault. The emergency flag is a per-frame signal, not account state, so nothing can clear it. A test for the side effects was added |
+| The C1(b) reference is defined only by reference to `risk_high` | A standalone definition with three update points: creation (initial active capital, as `Account.new`), every mark (`max(reference, last_equity)`, as `_mark`), and every settlement (the same factor as `_settle`). An equivalence test was added: with no rebase or restart, the reference equals `risk_high` at every evaluation, which catches any later drift |
+
+#102 merged at `fd66a25` (Bob NO ISSUES, automated APPROVE, green), so its decision
+record is on `main`. This branch merges that `main`; only the index conflicted, and every
+row is kept.
+
 ## What this does not do
 
 - No code. The implementation follows as its own PR, with the tests listed under
