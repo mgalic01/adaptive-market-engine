@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Claude: trading in downtrends — research, owner decisions, and a starting point for Codex](2026-09-27-claude-downtrend-strategy-notes.md) | Owner-requested record for continuing with Codex. Research on falling markets (trend-following and its crisis performance, momentum crashes on relief rallies, volatility targeting, grid expectation, negative funding in bears), the owner's verbatim decisions (futures access on Binance and Kraken; one mode-switching bot with strictly defined rules; finish v1 first), a mirrored-grid idea for bounces inside downtrends, candidate variables, and open questions. No code, no spec, no live authority. |
 | [Codex → Claude/Bob: Cloud findings follow-up](2026-09-27-codex-cloud-findings-followup.md) | Captured-head audit dispositions, assigned corrections and evidence limits; workflow overview fix in this PR, worker provenance/setup fixes separate; no blanket merge or policy approval. |
 | [Codex → Claude: agent workflow guide](2026-09-27-codex-agent-workflow-guide.md) | Owner-requested visual map of roles, review and merge decisions, with Desktop/Cloud/local-worker notification boundaries. Documentation only. |
 | [Codex → Claude: worker review provenance](2026-09-27-codex-worker-review-provenance.md) | PR #94 follow-up: bind recommendations to captured base and head; document the mandatory webhook endpoint suffix. |
