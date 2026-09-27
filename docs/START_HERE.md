@@ -6,13 +6,51 @@ first, before any other file, at every session start and every check-in.** It ap
 to Claude, Codex and Bob. It gives the order; the detailed rules stay where they are,
 and each step links to them.
 
+## 0. What we are building, and how to tell if your work serves it
+
+Owner statement, 2026-09-27. This section exists because it was missing: until now the
+documents every agent reads at session start held the whole process and none of the
+purpose, and no entry point linked the goal or the roadmap. An agent that cannot see
+the goal optimises the only thing it can see, which is the process.
+
+**The product is a crypto grid-trading bot that trades real capital on a real exchange
+and grows it.** Starting capital is about **€100**, and the bot must clear **€5/month**
+in hosting before it earns anything, so the economics are tight by design and a
+strategy that only works at larger size is not a strategy for this project.
+
+**The paper bot is not the product, and it is not merely a stepping stone to it. It is
+the experiment that decides whether the real one is worth building at all.** A no-go is
+a legitimate and valuable outcome: finding out cheaply, in simulation, that this
+approach cannot clear its costs is a success of the method, not a failure of it. That
+is why results are not tuned after the fact and why the criteria are fixed in advance —
+the whole point is an answer we can trust, including an unwelcome one.
+
+**The bridge between the two** is the untouched 2025–26 window judged against the
+[six owner acceptance criteria](reviews/2025-09-25-owner-acceptance-criteria.md):
+integrity, beating cash on the pessimistic intrabar path, drawdown within the 12%
+limit and below buy-and-hold, the gate earning its place over an ungated grid,
+economics that work at €100 against €5/month hosting, and genuine trading activity
+rather than sitting in cash. **All six must pass.** Passing authorises a *proposal* for
+a live pilot. It does not authorise live trading, which stays a separate owner decision
+with a separately tested adapter and a live-deployment review. The delivery gates and
+what is already built are in [`ROADMAP.md`](../ROADMAP.md).
+
+**Before you build or propose anything, answer this in one line:** what does it do for
+that goal? Work that makes the bot more likely to pass those six criteria, or that
+makes the evidence trustworthy enough to stake €100 on, is the work. Everything else,
+**including improvements to this process**, is overhead and has to justify its ongoing
+cost before it is built — not after four reviewers have approved it. No review in the
+chain asks this question for you: CI, Bob, the automated review and Codex Cloud all
+take a change's premise as given and check its execution. If the premise is wrong, only
+you and the merge decision will catch it.
+
 **Who does which steps:**
 
 | Agent | Steps |
 | --- | --- |
-| Claude session, Codex desktop, the owner's Bob session | 1 to 7, every session start and check-in |
-| Bob task run (`bob-task.yml`) | 1, then the task file, then 7 |
-| Bob on GitHub (`@bob`, read-only, one answer) | 1, then 5a to 5d for the PR you were asked about, then 7 |
+| Claude session, Codex desktop, the owner's Bob session | **0**, then 1 to 7, every session start and check-in |
+| Bob task run (`bob-task.yml`) | **0**, 1, then the task file, then 7 |
+| Bob on GitHub (`@bob`, read-only, one answer) | **0**, 1, then 5a to 5d for the PR you were asked about, then 7 |
 | Automated Claude review (`claude-review.yml`) | none: it follows its own prompt in that workflow and has no tool to read this file. Its findings are judged by step 3e like any other verdict |
 
 ## 1. The rules that override everything
