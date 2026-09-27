@@ -55,8 +55,8 @@ intrabar path:
   **§6 governs**.
 
 Passing does not authorise live trading or a live-capital pilot. It justifies only the
-next step §6 names: a *proposal* for paper trading on live Revolut X prices (a
-live-price paper/shadow validation), which needs its own review. A live pilot comes
+next step the spec names in §7 and §8: a *proposal* for paper trading on live
+Revolut X prices (a live-price paper/shadow validation), which needs its own review. A live pilot comes
 later still, after the roadmap's read-only shadow gate, as a separate owner decision
 with a separately tested adapter and a live-deployment review. The delivery gates and
 what is already built are in [`ROADMAP.md`](../ROADMAP.md).
