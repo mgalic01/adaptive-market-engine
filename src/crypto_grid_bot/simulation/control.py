@@ -12,6 +12,7 @@ from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
 from crypto_grid_bot.simulation.models import MarketRules, Quote, decimal, timestamp
 from crypto_grid_bot.simulation.runner import SCHEMA, Frame, PaperSimulator, SimulationPolicy
+from crypto_grid_bot.simulation.trend_switch import TrendSignal
 
 
 def decode_frame(payload: dict[str, Any]) -> Frame:
@@ -26,6 +27,7 @@ def decode_frame(payload: dict[str, Any]) -> Frame:
         CandidateMetrics(**payload["candidate"]),
         decimal(payload["fair_value"]),
         decimal(payload["atr"]),
+        trend=TrendSignal(**payload["trend"]) if payload.get("trend") is not None else None,
     )
 
 

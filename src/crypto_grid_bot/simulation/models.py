@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_DOWN, Decimal, localcontext
 from typing import Any
 
@@ -156,6 +156,11 @@ class Account:
     cycles: int = 0
     fill_count: int = 0
     orders: dict[str, LimitOrder] = field(default_factory=dict)
+    # Variant A (spec v1, section 3 A) only; empty and omitted from saved state when off.
+    # The latest daily-bar day whose trend signal this account has applied.
+    trend_day: str = ""
+    # T0 of the running Down sequence (its effective observation); empty when none runs.
+    down_since: str = ""
 
     @classmethod
     def start(cls, cash: Decimal) -> Account:
@@ -233,9 +238,14 @@ class Account:
             self.range_exit_since,
             self.last_observed,
             self.last_received,
+            self.down_since,
         ):
             if when:
                 timestamp(when)
+        if type(self.trend_day) is not str or type(self.down_since) is not str:
+            raise ValueError("invalid saved trend-switch state")
+        if self.trend_day:
+            date.fromisoformat(self.trend_day)
         for key, order in self.orders.items():
             if key != order.order_id or order.side not in ("buy", "sell"):
                 raise ValueError("invalid saved order identity")
@@ -275,6 +285,9 @@ class Account:
                 # Replay-only field: omitted when unused so saved paper state keeps the
                 # schema 4 layout that earlier versions read.
                 del order["epoch"]
+        for key in ("trend_day", "down_since"):
+            if not data[key]:
+                del data[key]  # Variant A only: V0 saved state keeps its exact layout.
         return data
 
     @classmethod
