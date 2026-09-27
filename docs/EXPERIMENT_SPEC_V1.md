@@ -8,8 +8,8 @@ variants yet.** This document fixes what will be built and how it will be judged
 
 The scope is paper trading and historical replay only. Nothing here authorises live
 trading, API keys or withdrawals. The default risk limits (3% daily pause, 8% soft and
-12% hard drawdown, latched halt), the 50/50 profit vault and the paper-only boundary
-are unchanged by every **grid** variant (V0, A, B, C, E, F, G, H, C+G, C+H). The benchmark D is the one
+12% hard drawdown, with the drawdown recovery of **amendment 1**, §3), the 50/50 profit
+vault and the paper-only boundary are unchanged by every **grid** variant (V0, A, B, C, E, F, G, H, C+G, C+H). The benchmark D is the one
 labelled exception (§3 D): it is a replay-only calculation with its own sizing and no
 risk controls or vault, and it never touches persisted paper state.
 
@@ -39,7 +39,7 @@ fills, for both the strategy and buy-and-hold.
 | # | Change | Why |
 | --- | --- | --- |
 | P1 | **Record the exit reason** on every `exit/` fill: `range_exit`, `drain` (the engine's `draining` state), `liquidation` (halt or emergency) and, for variant A, `trend_exit`. Report the realised P&L per reason. | Codex (PR #14): losses cannot be attributed to range exits without it. |
-| P2 | **Common drawdown sampling:** strategy total equity and buy-and-hold equity are sampled on the same schedule: every quote of every bar, after that quote's fills. For C1(b), active equity and the reserve-adjusted `risk_high` are also recorded at every pre-fill and post-fill risk evaluation the engine performs, together with any hard-drawdown halt. | Criterion C3 compares the two drawdowns; they must be measured the same way. |
+| P2 | **Common drawdown sampling:** strategy total equity and buy-and-hold equity are sampled on the same schedule: every quote of every bar, after that quote's fills. For C1(b), active equity, the reserve-adjusted `risk_high` and the C1(b) measurement reference (amendment 1) are also recorded at every pre-fill and post-fill risk evaluation the engine performs, together with any hard-drawdown halt. | Criterion C3 compares the two drawdowns; they must be measured the same way. |
 | P3 | **Daily history:** dataset specs gain `daily_warmup_start`. Binance `1d` archives are fetched from that month and checksummed. Over the overlap, every expected day must be present exactly once and contiguous, and must match the aggregation of its 24 unique contiguous `1h` bars, not just an aggregate OHLCV match. | Variants A and D need at least 200 completed daily bars before the evaluation starts. |
 | P4 | **Historical exchange filters for SOL:** use dated, sourced point-in-time tick and step sizes if available. If they cannot be sourced, SOL runs stay invalid for every variant (§5). No synthetic spread model in the primary comparison. **Result (2026-09-24):** no dated official spot filter history was found. The archives themselves show that every SOLUSDT open, high, low and close from 2022-06 to 2023-01 has at most 2 decimals (lowest price 8.00), which is consistent with today's 0.01 tick. The invalidity therefore comes from the adapter's assumed spread with outward rounding at low prices (2 ticks ≈ 0.25% > 0.15%), not from a wrong filter. **SOL stays invalid in the primary comparison.** A one-tick spread model may only ever be a separately labelled sensitivity scenario; it is not part of v1. | Codex §4.1 answer on PR #15. |
 | P5 | Carried nits: `--maker-fee`/`--taker-fee` use `is not None`, so an empty value is rejected; `replay()` asserts the order book is empty before wrapping it for request counting. | Automated reviews on PR #14. |
@@ -73,11 +73,99 @@ common to all:
   A declared combination (C+G, C+H) inherits only the exceptions of its parts: C+H
   inherits H3's, and no combination inherits E's.
 
+  **Amendment 1 supersedes this rule for two controls only:** the soft-drawdown
+  reduction and the hard-drawdown halt. Their recovery is changed in **V0 itself**
+  ("Drawdown recovery", below), so every grid variant inherits the changed controls
+  identically, and the rule above applies to the controls as amended: no variant delays,
+  suppresses or clears them further. Every other control, including the latched halt for
+  emergency, capital exhaustion and integrity failures, is unchanged.
+
 ### V0: baseline (`price-only-v1`)
 - **Code:** the commit that merges the prerequisites; it is recorded in every
   `results.json`.
 - **Unchanged:** default config, fills, costs, data identities and the common mark
   cadence (P2).
+- **Two versions (amendment 1).** "V0" means the amended V0, with the drawdown recovery
+  below. The pre-amendment V0 (drawdown lockout) keeps its published results, labelled as
+  pre-amendment, and both versions are registered trials in part 2's trial count (PR #93).
+
+### Drawdown recovery (amendment 1, owner decision 2026-09-27)
+
+**Why and on what authority.** A flat account at 8% or more below its reference could
+never trade again: the soft-drawdown pause clears only on a passing risk check, which
+such an account cannot reach, and a hard-drawdown halt could never be resumed from 8% or
+more below it. The analysis, the replay evidence (all of it right-censored) and the
+review record are in `docs/reviews/2026-09-27-claude-soft-drawdown-lockout.md`
+(PR #102). On 2026-09-27 the owner chose option C, chose a fully automatic restart after
+a hard-drawdown halt, declined a loss floor and a capital threshold, and granted an
+exception to the no-tuning rule **on record** for these two controls. The 24-hour values
+below were chosen after development results had been seen; that is disclosed here, and
+the pre-amendment results stay published beside the amended ones.
+
+**State.** The paper state gains: the start of an open drawdown episode (`observed_at`);
+the start and the **category** of a halt; and the C1(b) measurement reference. The halt
+category is a structured field, set where the halt is raised, with exactly four values:
+`drawdown` (the 12% hard drawdown), `emergency` (the emergency flag), `exhaustion`
+(active capital exhausted) and `integrity` (any other halt: invalid data or symbol, an
+accounting invariant failure). It is never inferred from the halt's text. If the
+emergency flag and the hard drawdown are true together, the category is `emergency`, as
+the risk engine already checks the flag first.
+
+**Soft drawdown (option C).**
+1. The first `REDUCE` outside an episode starts an episode, with today's response:
+   cancel resting buys, manage sells, pause.
+2. On each valid frame of an open episode, before any state changes, the engine checks:
+   (a) at least **24 hours** of `observed_at` since the episode start; (b) the normal
+   `recovery_frames` confirmations, counted over consecutive valid frames on which every
+   condition other than drawdown passes (daily loss under 3%, no emergency flag, the frame
+   and data checks, and the eligibility check); (c) the account is not halted. A range
+   exit waiting in cash does not block this check.
+3. If all hold, it sets `risk_high` to the current active equity **tentatively** and
+   evaluates the risk engine again. The rebase is committed only if the result is
+   `ALLOW`; otherwise nothing changes and the check repeats on the next frame.
+4. The rebase check runs first in the step. After a committed rebase, the range-exit and
+   pause recovery rules apply unchanged.
+5. The episode ends at its rebase, so it has at most one. A restart of the process
+   restores the saved episode start. The 8% and 12% triggers are both measured from the
+   rebased `risk_high`. Each rebase is recorded: time, old and new reference, episode
+   start.
+
+**Hard drawdown (automatic restart).** Only a halt of category `drawdown` restarts
+automatically. Every other category stays latched until an explicit audited resume, as
+today. A `drawdown` halt restarts when, on one valid frame:
+1. at least **24 hours** (H) of `observed_at` have passed since the halt started;
+2. every precondition of today's `resume()` holds except its risk check: halted, flat,
+   no open orders, `account.validate` passes, the frame is valid, and the eligibility
+   check passes; while a forced liquidation is incomplete, nothing happens;
+3. a tentative rebase of `risk_high` to the current active equity makes the risk
+   result `ALLOW` (daily loss under 3%, no emergency flag).
+
+The halt is then cleared as `resume()` clears it today. The normal recovery confirmations
+apply before a new grid, and the event is recorded. A halt restarts at most once. There
+is **no overall loss floor**: cumulative losses across episodes are unbounded by the
+owner's choice, and C1 still judges every run. The manual `resume()` is unchanged.
+
+**Same control, not same effect.** Every grid variant runs these controls identically,
+so the defined control and the baseline are the same in every comparison. Inventory paths
+and episode timing still differ, so a variant's result relative to V0 can change because
+of the amendment, and results are read with that in mind. C6 compares against the
+amended ungated V0.
+
+**Parameters.** Soft cool-off 24 h; hard-stop cool-off H = 24 h (proposed in PR #102;
+Bob found it acceptable, and Codex could not review it before this amendment). Both are
+config values, persisted in the account identity, and fixed for all v1 runs.
+
+**Tests required before any rerun.**
+- Soft drawdown: a trigger just before midnight; no rebase before 24 hours; no rebase
+  while a daily pause, an emergency or a data block is active; a tentative rebase that
+  does not yield `ALLOW` is not committed; one rebase per episode; a process restart
+  before and after a rebase; a range exit waiting in cash is released after the rebase.
+- Measurement peaks: C1(b)'s reference is scaled at settlement and never rebased; C1(a)'s
+  peak is never scaled and never rebased.
+- Hard drawdown: no restart before H; no restart while partially liquidated; no restart
+  on an ineligible frame; no restart while the daily loss is 3% or more or the emergency
+  flag is set; never for categories `emergency`, `exhaustion` or `integrity`; one restart
+  per halt; the category is set at every halt call site.
 
 ### A: trend/cycle switch (daily SMA50 and SMA200)
 Inputs are the completed daily close `C`, `SMA50` and `SMA200` of the traded pair. The
@@ -566,7 +654,7 @@ included runs (every included pair, window and path):
 
 | # | Criterion | Source |
 | --- | --- | --- |
-| C1 | **Worst drop,** on two bases in every run. **(a)** The max drawdown of **total equity** (active equity per `Account.equity` plus both reserves) is ≤ **10%** of its running peak. **(b)** The drawdown of **active equity** against the runtime's reserve-adjusted `risk_high` is ≤ **10%**. It is sampled at every pre-fill and post-fill risk evaluation, and **any hard-drawdown halt fails**. Both are measured from peaks, so after growth 10% can exceed 10 quote units. | Owner |
+| C1 | **Worst drop,** on two bases in every run. **(a)** The max drawdown of **total equity** (active equity per `Account.equity` plus both reserves) is ≤ **10%** of its running peak. **(b)** The drawdown of **active equity** against the **C1(b) measurement reference** is ≤ **10%**. That reference follows the runtime's reserve-adjusted `risk_high` exactly, including the proportional settlement adjustment and every new active high, but it is never rebased (amendment 1, §3); before amendment 1 the two were the same value. C1(a)'s total-equity peak is a running maximum that is never scaled and never rebased. It is sampled at every pre-fill and post-fill risk evaluation, and **any hard-drawdown halt fails**. Both are measured from peaks, so after growth 10% can exceed 10 quote units. | Owner |
 | C2 | **Makes money on the worse path:** for **each** intrabar path separately, the median return across included runs is > 0 after fees; **and** the mean return across all included runs is > 0. All runs have equal weight, and the median of an even count is the mean of the two middle values. | Owner, with Bob's worse-path rule |
 | C3 | **Safer than holding:** in every included run, max total-equity drawdown < that run's buy-and-hold max drawdown (common sampling, P2). A run where buy-and-hold has zero drawdown fails. | Owner (strict) |
 | C4 | **Integrity:** every included run is valid (§5). | Both |

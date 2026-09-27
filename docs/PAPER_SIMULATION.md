@@ -67,6 +67,11 @@ each quote and its strategy inputs. Slower replays must explicitly set a gap at
 least as large as their observation interval; the future replay adapter must
 validate that relationship. The read-only collector remains separate from this
 simulator. Emergency/hard-drawdown halts never clear automatically.
+**Pending change (spec v1 amendment 1, `docs/EXPERIMENT_SPEC_V1.md` §3 "Drawdown
+recovery"):** once its implementation merges, a soft-drawdown episode rebases the risk
+reference after a 24-hour cool-off, and a hard-drawdown halt (category `drawdown` only)
+restarts automatically after 24 hours. Emergency, capital-exhaustion and integrity halts
+stay latched. This table describes the code until then.
 Risk baselines are preserved through recovery; a realised loss is not erased by
 issuing resume. UTC daily baselines still carry overnight gaps into the risk check.
 
