@@ -55,14 +55,26 @@
   stricter rule than the owner gave. If such a dependency is ever proposed, it is a new
   question for the owner, not something this record settles.
   - **Owner decision, 2026-09-27: the default is stop and ask, not assume allowed.** An
-    agent that wants an LGPL or EPL dependency puts the concrete proposal to the owner
-    and waits; it does not read "not decided" as permission. The owner keeps the
-    question open deliberately: the conditions these licences attach depend on the
-    specific library and on how it is combined, so the decision belongs against a real
-    candidate rather than a category. Nothing in the tree uses either: the same
-    declared-metadata screen, rerun on 2026-09-27, found no LGPL or EPL declaration
-    across 43 installed distributions, only the two MPL-2.0 development tools already
-    named above. So the question has no deadline.
+    agent that wants to add an LGPL or EPL **dependency, or to reuse, copy or vendor
+    source under either licence**, puts the concrete proposal to the owner and waits; it
+    does not read "not decided" as permission. The scope is deliberately the same as the
+    GPL/AGPL rule above, which covers "a new dependency or any reused code": copying a
+    file carries the same obligations as depending on the package it came from, so it
+    cannot sit outside the gate. The owner keeps the question open deliberately: the
+    conditions these licences attach depend on the specific library and on how it is
+    combined, so the decision belongs against a real candidate rather than a category.
+  - **What the screen shows, and what it does not.** The same declared-metadata screen,
+    rerun on 2026-09-27, found **no LGPL or EPL declaration across the 43 distributions
+    installed in that environment**, only the two MPL-2.0 development tools already
+    named above. That is the whole of the evidence. It does **not** establish that no
+    such code exists anywhere in the tree: like the 2026-09-26 run, it read declared
+    package metadata at one point in time and inspected no vendored or bundled code, no
+    transitive native component, and no file whose header differs from its package's
+    declaration. So the fair statement is that **nothing known to be installed declares
+    either licence**, and on that basis there is no deadline on the question — a weaker
+    claim than absence, and the one the evidence supports. (The 2026-09-26 figure of 41
+    was the project's own lockfile install set; 43 is this environment's distribution
+    count today. Different dated populations, not a corrected number.)
   - **Why this direction costs nothing and the other does not.** Deciding against, or
     deferring, is reversible at the price of a PR. Having said yes, shipped code that
     depends on it, and then reversing is not: the dependency's reach has to be found and
