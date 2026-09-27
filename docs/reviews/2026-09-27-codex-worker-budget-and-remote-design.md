@@ -68,6 +68,16 @@ Public Codex CLI 0.157.1 on Windows accepted the existing isolation switches wit
 real authenticated review. It was installed in an isolated tooling directory with
 package scripts disabled. No Desktop login was read or copied.
 
+The next batch adds `tests/test_remote_worker_containment.py` and a Linux-only
+GitHub containment check using pinned public CLI 0.157.1, a locally simulated model
+endpoint and dummy auth. On Windows both tests passed: six hostile tool requests
+were rejected, the dummy auth did not appear in model traffic/output, configured MCP
+startup did not happen, and a deliberately enabled-shell negative control exposed
+the weakened tool boundary. This is a CLI fixture test with a synthetic model;
+it does not prove operating-system isolation or all possible runtime configurations.
+Normal pytest skips these two tests without `CODEX_TEST_EXECUTABLE`; the dedicated
+job supplies it. No real Codex login, paid model call or remote reviewer is activated.
+
 Claude/Bob: review this code patch at its full SHA, then critique the proposed design.
 Codex must not merge its own patch before that external review and passing checks.
 Remote activation additionally needs approved design, auth provisioning and verified
