@@ -69,3 +69,40 @@ checks the hash instead of writing it.
   a reviewed code change after Bob's report.
 - **Funding months per dataset** follow the hourly span (`DatasetSpec.months()`); a
   different span is a decision for the follow-up code PR.
+
+## Revision 2: Codex's review of `32dd578`
+
+Codex Desktop blocked the merge
+([comment 5858830916](https://github.com/mgalic01/adaptive-market-engine/pull/113#issuecomment-5858830916)),
+and Codex Cloud left three inline findings. `main` was merged again at
+`58edafe82de5d2a675515df32b009c405b90a0d6` (PR #110; again, only the index conflicted).
+
+| Finding | Disposition |
+| --- | --- |
+| **Blocker:** Step 6 required `check_reports.py` to report 0 problems. But `check_index()` rejects every unindexed report, and the publisher drops README edits, so Bob could never meet both conditions. | **Fixed** the way Codex proposed. Step 6 now allows **only** the exact line `review file not in the index: 2026-09-27-bob-p8-funding-archives.md`, with `check_reports: 1 problem(s)`; any other problem line or count is a failure. The `hash-checked` line must name `data/p8_archives.py`. A separate `python -c` call runs `check_report()` on the report alone and must print `appendix problems: []`. The report PR must pass the full checker with 0 problems once its index row is added; that is checked at review. The index check is not disabled. |
+| Cloud P1: route funding downloads through a project fetcher | **Not changed; Codex decides.** This was doubt 1 above. The script's only network code for funding uses the project's `https_connection` with `ARCHIVE_HOST` and mirrors `archive_get`'s status handling. The strict alternative is a small `src/` PR that adds a funding fetcher to `dataset.py`, with tests; this task would then call it. Such a PR does not belong in this docs-only one. If Codex requires it, this PR stays open until it lands. |
+| Cloud P2: pin the run to the reviewed checkout | **Fixed.** Before any request, the script compares ten inputs with their SHA-256 at `58edafe`: both specs and manifests, the PR #19 report, and the five imported modules. Any difference prints `INPUT CHANGED` and ends the run with no request. The runner still checks out the then-current `main`, but a changed input now stops the run instead of silently producing evidence. |
+| Cloud P2: reject incomplete daily archives | **Fixed.** A daily file that is `unparsed`, or `ok` with nonzero `missing_rows` or `gaps`, is now an `INCOMPLETE` line and a `PROBLEM`. The only exceptions are SOLUSDT before its listing: 2020-05 to 2020-07 missing, and 2020-08 starting at 2020-08-11 with exactly 10 missing days and 1 leading gap. |
+
+**Alternative, not relied on:** PR #116 (open, not merged) proposes per-file `Index:`
+lines. They would remove the deferred-index conflict at its source. This task does
+not depend on it.
+
+**Withdrawn:** in my earlier report I doubted that `START_HERE.md` has a step 0. It
+does: PR #91 merged it, and `## 0. What we are building, and how to tell if your work
+serves it` is on `main`.
+
+**Verification of this revision** (offline, Windows, Python 3.14.7; no market data):
+- **Synthetic run:** complete and matching, it ended `RESULT 0 problem(s)` with 328
+  requests.
+- **Dropped days:** one day removed from XRPUSDT 2021-03 and from SOLUSDT 2020-08. The
+  run printed two `INCOMPLETE` lines and ended `RESULT 2 problem(s)`.
+- **Pinned inputs, unchanged:** written from the git blobs, all ten print `INPUT ok`.
+- **Pinned inputs, changed:** the run printed `INPUT CHANGED`, made 0 requests and
+  ended `RESULT 1 problem(s)`.
+- **`--self-test`:** 17 cases, 0 wrong.
+- **Step 6, simulated:** a synthetic report with a hashed appendix under the task's
+  report name, unindexed. `check_reports.py` gave the deferred-index line and listed
+  the appendix as hash-checked. The only other line came from the simulation's missing
+  `docs/tasks`. `check_report()` alone gave `[]`.
+- **Script hash:** the new line range reproduces the new pinned hash.

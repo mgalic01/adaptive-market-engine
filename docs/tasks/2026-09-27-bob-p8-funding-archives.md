@@ -3,6 +3,9 @@
 - **Written by:** Claude, 2026-09-27. Spec v1 prerequisite P8
   ([`EXPERIMENT_SPEC_V1.md`](../EXPERIMENT_SPEC_V1.md) §2, §3 G and §3 H) is still open:
   "Not yet done" in [the G signal handoff](../reviews/2026-09-25-claude-g-funding-signal.md).
+- **Revised** after Codex's review of PR #113 (Codex Desktop comment 5858830916 and
+  the Cloud findings): the Step 6 checker condition, pinned inputs, and daily
+  completeness.
 - **Review:** starts automatically when this file is merged, so **Codex reviews it
   first**. The merge is the go.
 - **Report:** `docs/reviews/2026-09-27-bob-p8-funding-archives.md`, nothing else.
@@ -74,6 +77,21 @@ The script in the last section of this file, copied unchanged:
 - After the run, a `find` over `data/` must show no file for 2025 or later. The
   workflow runs the same check and fails the run if one exists.
 
+## Pinned inputs
+
+The runner checks out whatever `main` is when the job starts, which may be later than
+the commit reviewed here. So the script's first action, before any request, compares
+the SHA-256 of ten inputs with the values reviewed in this task (`INPUTS`, git blobs at
+`main` `58edafe`):
+- the two dataset specs and their manifests;
+- your PR #19 cadence report, whose table the script compares against;
+- `backtest/dataset.py`, `backtest/funding.py`, `backtest/klines.py`,
+  `market_data/client.py` and `market_data/parsing.py`.
+
+It prints one `INPUT ok` or `INPUT CHANGED` line per file. If any input changed, it
+prints `RESULT 1 problem(s)` and exits 1 without a single request: stop and report.
+Record `git rev-parse HEAD` in Step 1 as well.
+
 ## Data access
 
 - Daily archives: `crypto_grid_bot.backtest.dataset.fetch_file(Path("data"), symbol,
@@ -82,6 +100,11 @@ The script in the last section of this file, copied unchanged:
   it with `read_archive`, as in PRs #59, #60, #65 and #66. A hash-verified month the
   strict parser rejects raises `ArchiveParseError`; the script records it as
   `unparsed` with the error and continues.
+- **Daily completeness (P3):** every expected day must be present once and contiguous.
+  A daily file that is `unparsed`, or `ok` with `missing_rows` or `gaps` other than 0,
+  is an `INCOMPLETE` line and a `PROBLEM`. The only exceptions are SOLUSDT before its
+  listing: 2020-05 to 2020-07 must be `missing`, and 2020-08 must start at 2020-08-11
+  00:00 UTC with exactly 10 missing days and 1 gap (the leading absence).
 - Funding archives: the project has no funding fetcher yet (`archive_get` accepts only
   spot kline paths). `funding_file` follows `fetch_file`'s conventions exactly:
   - the same host `data.binance.vision`, through the project's `https_connection`;
@@ -108,13 +131,13 @@ output into the report.
 
    ```text
    mkdir -p data
-   sed -n '228,676p' docs/tasks/2026-09-27-bob-p8-funding-archives.md > data/p8_archives.py
+   sed -n '277,795p' docs/tasks/2026-09-27-bob-p8-funding-archives.md > data/p8_archives.py
    sha256sum data/p8_archives.py
    ```
 
    The hash must be exactly:
 
-   `0cd92cfd4f3f8de606593cdcbd23dcfc22808af656aa128104cfd471ca58a3e5`
+   `579b701c4e25bc447829f83377b4878fbf066bb08eaad117417806981dd26fa9`
 
    Do not edit the script. If the hash differs, or the script fails in a way this task
    does not describe, stop and report; never patch it.
@@ -140,13 +163,32 @@ output into the report.
    ```
 
    The `grep -c` must print `0` (its exit status is then 1, which is expected).
-6. Write the report (below), then:
+6. Write the report (below). Do **not** edit `docs/reviews/README.md`: the publisher
+   drops that edit, and the index row is added when your report PR is reviewed. Then:
 
    ```text
    git status --porcelain --untracked-files=all
-   python scripts/check_reports.py
+   python scripts/check_reports.py; echo "exit $?"
+   python -c "import sys; sys.path.insert(0, 'scripts'); from pathlib import Path; import check_reports as c; checked = []; problems = c.check_report(Path('docs/reviews/2026-09-27-bob-p8-funding-archives.md'), checked); print('appendix problems:', problems); print('appendix checked:', checked)"
    date -u
    ```
+
+   Because your report is not in the index yet, `check_reports.py` reports exactly one
+   problem, and **only this one is allowed**:
+
+   ```text
+   review file not in the index: 2026-09-27-bob-p8-funding-archives.md
+   ```
+
+   Its output must be that line, the `hash-checked` line (which must include
+   `2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py`), and
+   `check_reports: 1 problem(s)`, with exit 1. Any other problem line, or any other
+   count, is a real problem: fix your report and rerun. The `python -c` line checks your
+   report's appendix on its own, without the index: it must print
+   `appendix problems: []` and
+   `appendix checked: ['2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py']`.
+   After the index row is added, the report PR must pass the full checker with
+   `0 problem(s)`; that is checked at review, not by you.
 
 ## Validity checks (all must hold for a valid run)
 
@@ -156,6 +198,7 @@ output into the report.
    `SELFTEST wrong outcomes: 0`.
 3. Step 4: `exit 0` and the last line `RESULT 0 problem(s)`, which the script prints
    only when all of these hold:
+   - all ten pinned inputs print `INPUT ok`;
    - all 60 funding archives match their published checksums (a mismatch is already a
      traceback);
    - every month's record count, first and last `calc_time` equal your PR #19 table
@@ -165,16 +208,17 @@ output into the report.
      47 ms at `calc_time` 1631865600047 (PR #19); SOLUSDT daily 2020-05 to 2020-07
      missing and 2020-08 first open 1597104000000 (2020-08-11 00:00 UTC, your P8
      survey); no other daily file missing; the latest daily month 2023-04;
+   - every daily file is complete (`DAILY incomplete or unparsed ...: 0`), with the
+     SOLUSDT listing exceptions above;
    - `FundingSignal` builds over all 5,481 records without a duplicate scheduled time;
    - no planned daily file is already in a committed manifest;
    - `REQUESTS ...; latest month 2024-12; after 2024-12: 0`;
    - `CONFIG config/datasets unchanged: True`.
 4. Step 5: the `find | grep -c` count is `0`.
-5. Step 6: `git status` shows only your report; `check_reports.py` prints
-   `0 problem(s)`.
-
-A daily file recorded as `unparsed` is a finding, not a failure: report it with its
-error line.
+5. Step 6: `git status` shows only your report as new and nothing modified;
+   `check_reports.py` prints exactly the one allowed deferred-index line and
+   `check_reports: 1 problem(s)`; the `python -c` appendix check prints
+   `appendix problems: []` and names `data/p8_archives.py`.
 
 ## What to report
 
@@ -191,7 +235,9 @@ error line.
   `calc_time`, `funding_interval_hours` distribution, invalid records, largest offset,
   bytes, SHA-256), the `FUNDING` summary lines, and the PR #19 comparison table;
 - **Daily, per file:** the script's table (status, rows, expected, missing, gaps, first
-  and last open, bytes, SHA-256), the `DAILY` line and every `UNPARSED` line;
+  and last open, bytes, SHA-256), the `DAILY` lines and every `UNPARSED` and
+  `INCOMPLETE` line;
+- the `INPUT` lines;
 - the known-values table;
 - **Manifest diff:** the script's "Proposed manifest additions" table, the SHA-256 of
   each `data/p8/<dataset>.additions.json`, and the `CONFIG` lines showing that the
@@ -199,6 +245,8 @@ error line.
   a proposal: funding entries have no `interval` and a new `kind`, and an `unparsed`
   status is not in the manifest schema, so `load_manifest` would reject them today;
 - the `REQUESTS` line and the `find` count;
+- the Step 6 output: the `check_reports.py` lines, including the one allowed
+  deferred-index line, and the appendix check;
 - **Ideas and proposals** (separate), each checked against your own tables first, for
   example the manifest schema the funding entries need, or what an `unparsed` daily
   month means for H. Report facts in the results; questions for Claude and Codex go
@@ -207,7 +255,8 @@ error line.
 ## Stop conditions
 
 Stop, keep everything, and report what you have, with the full error, if:
-- the script's hash differs from Step 2, or any `OutOfScope` is raised in the real run;
+- the script's hash differs from Step 2, any `INPUT CHANGED` line appears, or any
+  `OutOfScope` is raised in the real run;
 - any request, file or read would touch 2025-01 or later, or anything lists a
   directory;
 - a checksum is missing or mismatches, or a funding archive fails to parse (a
@@ -222,7 +271,7 @@ Stop, keep everything, and report what you have, with the full error, if:
 [`docs/BOB_PRACTICE.md`](../BOB_PRACTICE.md), "Before you finish", all eleven items.
 Every count in the report is printed by the script or by a command you ran.
 
-## The script (`data/p8_archives.py`, lines 228 to 676 of this file)
+## The script (`data/p8_archives.py`, lines 277 to 795 of this file)
 
 ```text
 """P8 archives for G and H, development months only.
@@ -276,6 +325,42 @@ FUNDING_SUM = re.compile(r"([0-9a-f]{64})  (BTCUSDT-fundingRate-\d{4}-\d{2}\.zip
 PR19 = Path("docs/reviews/2026-09-25-bob-funding-cadence.md")
 PR19_ROW = re.compile(r"^\| (\d{4}-\d{2}) \| [^|]+ \| (\d+) \| (\d+) \| (\d+) \| (\S+) \|$", re.M)
 REQUESTED: list[str] = []
+# The reviewed inputs (git blobs at main 58edafe). Any other content stops the run before
+# any request, so the evidence cannot come from specs, manifests or code nobody reviewed.
+INPUTS = {
+    "config/datasets/practice-2022.toml": (
+        "f259445fd78d840a5c758026c6ee6bd717ea47656cee228111a397d9fa1d7bdd"
+    ),
+    "config/datasets/practice-2022.manifest.json": (
+        "e8665c9a9e2b3117f4e825989b81a0bfe98dfa42eca84ae81fd236d8092ae288"
+    ),
+    "config/datasets/verify-2024h1.toml": (
+        "a5fda6c8a8c2a78fce986634279890314c94f46523ac8dd1356d0e991df653e4"
+    ),
+    "config/datasets/verify-2024h1.manifest.json": (
+        "48a239f4dfbe923b5a3c9c29336c884c40435617206d5c75b76b8461b0aaa9cf"
+    ),
+    "docs/reviews/2026-09-25-bob-funding-cadence.md": (
+        "b9d3ec73f3f2f7ac39ff1dc4ee85098388dea19659d9e881b91e40844b919d21"
+    ),
+    "src/crypto_grid_bot/backtest/dataset.py": (
+        "cf75842c7cc893fe1925cb8dc33fa5a40952d658e8cca1bcd134a273f26b7b6f"
+    ),
+    "src/crypto_grid_bot/backtest/funding.py": (
+        "92451d9a4ce7eeb1146eef74a069490537f65f38fb51967bb2b753b33073c442"
+    ),
+    "src/crypto_grid_bot/backtest/klines.py": (
+        "16caab1e1b882b53bca1e993de4d2a7d2de4579f206f709d6b79f9b388e2f9a0"
+    ),
+    "src/crypto_grid_bot/market_data/client.py": (
+        "c6ee5a25a1572957c1115bb56cdab2c5ba714d56d26036b59b6246e1dd8c97a7"
+    ),
+    "src/crypto_grid_bot/market_data/parsing.py": (
+        "5dfb8e837b24e38a95beefccc4efddcc10571f786ee5b563e8f3a60e0bd587c9"
+    ),
+}
+# SOLUSDT was listed on 2020-08-11 (P8 survey): its first daily month is partial.
+SOL_FIRST_OPEN_MS = 1597104000000
 
 
 class OutOfScope(BaseException):
@@ -437,7 +522,20 @@ def config_hashes() -> dict:
     return {p.as_posix(): sha256_file(p) for p in sorted(Path("config/datasets").glob("*.*"))}
 
 
+def inputs_match() -> bool:
+    ok = True
+    for path, expected in INPUTS.items():
+        actual = sha256_file(Path(path)) if Path(path).is_file() else "absent"
+        print(f"INPUT {'ok' if actual == expected else 'CHANGED'} {actual}  {path}")
+        ok = ok and actual == expected
+    return ok
+
+
 def main() -> int:
+    if not inputs_match():
+        print("PROBLEM an input differs from the reviewed one; nothing was requested")
+        print("RESULT 1 problem(s)")
+        return 1
     problems: list[str] = []
     hashes_before = config_hashes()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -595,6 +693,27 @@ def main() -> int:
             print(f"UNPARSED {symbol} {month}: {e['error']}")
     statuses = collections.Counter(e["status"] for e in daily.values())
     print(f"\nDAILY files {len(daily)}; by status {dict(statuses)}")
+    # P3: every expected day present once and contiguous. The only allowed exceptions are
+    # SOLUSDT before its listing: 2020-05..07 missing, 2020-08 starting on 2020-08-11.
+    incomplete = []
+    for (symbol, month), e in daily.items():
+        if symbol == "SOLUSDT" and month in ("2020-05", "2020-06", "2020-07"):
+            continue  # checked as known values below
+        if symbol == "SOLUSDT" and month == "2020-08" and e["status"] == "ok":
+            listing = e["first_open_ms"] == SOL_FIRST_OPEN_MS
+            start_ms = month_bounds_ms(month)[0]
+            if listing and e["missing_rows"] == (SOL_FIRST_OPEN_MS - start_ms) // 86_400_000:
+                if e["gaps"] == 1:  # the leading absence before the listing only
+                    continue
+        if e["status"] != "ok" or e["missing_rows"] != 0 or e["gaps"] != 0:
+            incomplete.append(
+                f"{symbol} {month} {e['status']} "
+                f"missing {e.get('missing_rows')} gaps {e.get('gaps')}"
+            )
+    for line in incomplete:
+        print(f"INCOMPLETE {line}")
+        problems.append(f"daily file incomplete or unparsed: {line}")
+    print(f"DAILY incomplete or unparsed (SOLUSDT's listing month excepted): {len(incomplete)}")
 
     print("\n## Known values\n")
     sol_missing = [daily["SOLUSDT", m]["status"] for m in ("2020-05", "2020-06", "2020-07")]
