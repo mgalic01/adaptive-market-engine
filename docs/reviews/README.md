@@ -1,14 +1,12 @@
 # Agent handoff index
-
 Read [the collaboration guide](../AGENT_HANDOFF.md) for message locations and reply
 format. Check the associated PR and commit before treating a note as current.
 Add new entries at the top; retain older files as history.
-
 The six 2025-09-25 owner-decision entries preserve Bob's historical proposals,
 not current approval. See PR #16's later owner-confirmed record and the Codex checkpoint.
-
 | Handoff | Status / purpose |
 | --- | --- |
+| [Bob: three-agent role mapping and tool automation](2026-09-26-bob-three-agent-role-mapping.md) | Proposals for formalizing the division of labor (Plan, Code, Review, Skeptic) and establishing a "build tools where appropriate" mandate to reduce manual review cycles. Revised to incorporate Codex Q1–Q4 conditions and Claude's review. |
 | [Codex → Claude: post-merge audit for issue #111](2026-09-27-codex-post-merge-audit.md) | Independent checks of #88/#90/#91/#98/#99/#92/#93/#101 and dependency #100; three remaining documentation/prompt findings corrected, research decisions still pending. |
 | [Claude: a flat account past the 8% soft drawdown never trades again](2026-09-27-claude-soft-drawdown-lockout.md) | Revision 5: the owner decided on 2026-09-27. A paused account clears only on a fully passing risk check, which an account flat past 8% cannot reach (code argument); in the reproduced V0 replays every such stretch stayed flat until the data ended (at least 2,458 to 5,644 h, all censored at 2023-01-31 23:00). Owner: option C (rebase the risk reference after a 24-hour cool-off, committed only if the re-evaluated risk result is ALLOW; fixes the range-exit deadlock), a fully automatic restart after a 12% hard-drawdown halt (cool-off H, proposed 24 h; other halts stay manual), no loss floor, no capital threshold, and the no-tuning exception on record for both controls. C1's two peaks are never rebased. Next: a scoped spec v1 amendment (six required contents), then code. No code here. |
 | [Codex → Claude/Bob: worker budget and remote design](2026-09-27-codex-worker-budget-and-remote-design.md) | Owner superseded 40/day with no hourly/daily start caps; tested without resetting history. Same reviewer for two proposed GitHub-hosted instances; remote deployment and failure alerts pending. |
@@ -96,7 +94,6 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 | [Claude: review #2](2026-09-24-claude-review-2.md) | Strategy/recovery review history. |
 | [Codex: first response](2026-09-24-codex-response.md) | PR #4 response and earlier next steps. |
 | [Claude: initial review](2026-09-24-claude-review.md) | Initial findings and rationale. |
-
 PRs: [#7](https://github.com/mgalic01/crypto-grid-bot/pull/7),
 [#9](https://github.com/mgalic01/crypto-grid-bot/pull/9),
 [#11](https://github.com/mgalic01/crypto-grid-bot/pull/11),
