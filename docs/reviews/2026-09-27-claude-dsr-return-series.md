@@ -19,9 +19,10 @@
   findings; revision 4 answered Bob's eligibility point and four more Cloud findings;
   revision 5 answers Codex's audit, one more Cloud finding and the automated review.
   Section 11 lists each change.
-- **Revision 6 (2026-09-27, after merge):** the DSR cannot be estimated on this family:
-  identical trial Sharpes make `V` = 0 and `SR0` = 0, and the estimator's hurdle falls as
-  more trials are disclosed. The owner adopted a Holm step-down instead, as C7 in the spec.
+- **Revision 6 (2026-09-27, after merge):** the DSR cannot be estimated on this family.
+  `V` is unestimable — the counted runs never produced the daily series, so their Sharpes
+  do not exist to take a variance of — and the estimator's hurdle falls as more trials
+  are disclosed. The owner adopted a Holm step-down instead, as C7 in the spec.
   In section 8, the `SR0`/`V` definition, the `N` = 2 sentence, the missing-Sharpe rule,
   `N < 2`, and the open "owner question" are superseded; the PSR formula, moment
   conventions and `T_eff` stand. The daily series is required of forward runs only. See

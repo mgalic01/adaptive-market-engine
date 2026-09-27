@@ -45,9 +45,11 @@ The owner confirmed the acceptance criteria (C1–C6) on 2026-09-24
 ([record](docs/reviews/2026-09-24-owner-decisions-confirmed.md)); spec v1 is still a draft
 and is not yet frozen. The reserved window is the **last** step, not the next one. In
 order (spec v1 §§2-7): freeze spec v1, build and review the §2 prerequisites, implement
-the variants, run the development practice matrix, select a winner deterministically
-under C1-C7, and only then ask the owner for the one-use reserved run. If no variant
-passes, v1 ends with "no winner" and nothing runs on that window.
+the variants, run the development practice matrix, and select a winner deterministically
+under C1-C6. The one-use reserved run needs two more things: **C7 settled and passed, or
+explicitly waived by the owner** (its return series, its trial family and the other
+agents' agreement are all open), and the owner's go. If no variant passes, v1 ends with
+"no winner" and nothing runs on that window.
 
 ## 3. Read-only market-data shadow mode (partly implemented; expansion deferred)
 

@@ -18,9 +18,11 @@
 
 - A Bob task still starts only when its task file is merged after review; answer 4
   removes the cost question, not the review.
-- Answer 3 adopts C7 in principle. It does not gate anything yet: the family size, the
-  return series and the other agents' acknowledgment are all open (spec §6, C7). C1–C6
-  remain the binding set until they are settled.
+- Answer 3 adopts C7 in principle. Its family size, return series and the other agents'
+  acknowledgment are all open (spec §6, C7), so it cannot be computed yet. Because the
+  owner's decision was that a multiple-testing test gates the reserved run, an unresolved
+  C7 **holds that run closed** rather than letting it proceed under C1–C6; C1–C6 remain
+  the binding set for development selection.
 - Paper-only, no API keys, the reserved window, and the no-tuning rule are unchanged.
 
 ## Still open with the owner
