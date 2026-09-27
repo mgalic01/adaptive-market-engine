@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .bob/hooks/check_github_tasks.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
