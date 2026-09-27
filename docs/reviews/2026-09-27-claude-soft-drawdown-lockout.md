@@ -6,8 +6,8 @@
   in the same state would stay stopped with no command that restarts it. This asks for a
   decision **before any variant runs**.
 - **Owner position.** The owner first chose "fix it, disclosed", meaning trade at the
-  risk engine's intended 25% size. When I showed that 25% cannot place a grid at €100
-  (section 4), the owner asked for this three-agent discussion before deciding. **The
+  risk engine's intended 25% size. When I showed that 25% cannot place a grid in the
+  100-USDT replay (section 4; live EUR minimums are unverified), the owner asked for this three-agent discussion before deciding. **The
   policy decision is the owner's.**
 - **Revision 2 (same day)** answers the Codex local worker's six required fixes and Codex
   Cloud's five inline findings. Section 9 maps each finding to its change.
@@ -17,6 +17,10 @@
   Section 4 now specifies C fully, with every clarification they asked for, and closes the
   open items from revision 2. **The owner has not decided yet.** Two decisions remain
   theirs, and section 7 states both.
+- **Revision 4 (same day, session `a05e63c8`)** answers Codex Cloud's four findings on
+  revision 3. The most important one: B and C also need a **scoped amendment of spec v1**,
+  not only a waiver of the no-tuning rule (§5, §7). Section 9 maps each finding to its
+  change.
 
 ## 1. What the code does
 
@@ -67,7 +71,17 @@ the second. On Windows it currently needs the launcher described on PR #99, whic
 Run it from the directory holding the run folders as
 `python data/flat_stretches.py 7 <the three results.json paths>`. The script lists every stretch of **at least 24 hours of constant hourly total equity**
 at a drawdown of at least 7% from its running peak, and whether equity ever changed
-again. **Corrected in revision 3 (Codex Cloud):** the script's word "RESUMED" means only
+again. **Corrected in revision 4 (Codex Cloud):** the script counts consecutive **hourly
+samples**, not elapsed hours. "At least 24 hours" means at least 24 consecutive samples
+with equal equity, which is at least 23 hours between the first and last sample. The
+script does not check that the samples are one hour apart, so a stretch can span a
+missing hour. The reported lengths (for example "5,645 h (235 d)") are sample counts, and
+the day figures are those counts divided by 24. The real elapsed time can differ in
+either direction, by one hour at the ends and by any missing hours inside a stretch. The
+conclusion (months in cash) does not depend on that precision, but the exact figures do.
+A rerun that measures the time between the first and last timestamp is owed. Owner:
+Claude, when the three `results.json` inputs are next available; they are not in this
+checkout. **Corrected in revision 3 (Codex Cloud):** the script's word "RESUMED" means only
 that a later hourly total equity differs. It does not inspect the pause state, orders,
 fills or new grids, so it shows that **equity changed**, not that trading resumed. Below,
 "equity changed" is used; a claim about trading needs the instrumented trace at the end
@@ -208,13 +222,23 @@ is the owner's. C is specified below with every clarification Codex and Bob aske
 6. **Acceptance is untouched: a separate measurement peak.** C1(a) and C1(b) are
    measured against a high-water mark that is **never rebased and never reset**. It
    still rises with every new peak; it is not a frozen constant (Codex's correction of
-   Bob's wording). It starts from the same starting equity as `risk_high`. The two C1
+   Bob's wording). It starts from the same starting equity as `risk_high`. **Corrected
+   in revision 4 (Codex Cloud):** it still receives the same proportional settlement
+   adjustment as `risk_high` today (`_settle`, `account.risk_high *= factor`), so moving
+   profit into the reserve never appears as a drawdown. It is exempt **only** from the
+   new loss rebase. Without that adjustment, option C would create C1 failures after
+   every profit settlement. The two C1
    bases stay separate, as today: active equity for C1(b) and reserve-inclusive total
    equity for C1(a). Without this, a rebase would silently weaken C1(b), which today
    reads the runtime `risk_high`.
 7. **Hard stop: restart only after the owner reviews.** No automatic restart, and no
    general bypass of `resume()`'s risk check. There is one distinct, explicit command
-   with an audited authorisation. The operator states a reason; the command records the
+   with an audited authorisation. **Corrected in revision 4 (Codex Cloud):** it keeps
+   every precondition `resume()` has today except the risk check it replaces. The
+   account must be halted, flat (no inventory), free of orders, reconciled, and valid
+   for the current frame (`runner.py`, `resume`: "resume requires a halted, reconciled
+   flat paper account"). While a forced liquidation is still incomplete, the command is
+   refused. Test needed: a partially liquidated halted account is rejected. The operator states a reason; the command records the
    reason, the time and the old and new references, then applies the same rebase as step
    2. The automated runner never calls it. **Control boundary:** in paper mode the
    operator is whoever runs the CLI on the owner's machine, and no stronger
@@ -265,7 +289,20 @@ and it leaves the experiment measuring a bot that stops for good after one bad e
 chosen after seeing development results: the 24-hour cool-off. The safeguards above
 reduce the damage, but they do not make B or C comply with the rule as written. So B or C
 requires the owner to **amend or waive the no-tuning rule for this one change,
-knowingly and in writing**. D requires nothing. The owner's preference for C is not
+knowingly and in writing**. D requires nothing.
+
+**Revision 4: a spec amendment is also required (Codex Cloud P1).** Spec v1 §3 says every
+grid variant keeps every V0 control, including the soft-drawdown reduction, and that
+"No variant delays, suppresses or clears any of them" (`docs/EXPERIMENT_SPEC_V1.md`,
+under §3, before the named exceptions). B and C do exactly that. A waiver of the
+no-tuning rule does not change the registered spec. So B or C also needs a scoped
+amendment to spec v1, recorded before any rerun. The amendment must state:
+1. the changed soft-drawdown control, word for word;
+2. that it replaces V0's control **for every grid variant identically** (V0, A, B, C,
+   E, F, G, H, C+G, C+H), so no variant gains or loses from it relative to V0;
+3. that C6 then compares against the **amended** V0;
+4. that the pre-fix V0 results stay published, and that the pre-fix V0 is registered as
+   a trial in part 2's count (PR #93, now merged as a proposal). The owner's preference for C is not
 that waiver, and none of us will treat it as one.
 
 ## 6. Resuming after a hard halt — the same trap, conditionally
@@ -293,8 +330,9 @@ with D too; it does not depend on C.
 
 ## 7. What the owner decides (revision 3)
 
-1. **The rule.** Amend or waive the no-tuning rule for this one change, knowingly? If
-   not, D is the only compliant option.
+1. **The rule and the spec.** Amend or waive the no-tuning rule for this one change,
+   knowingly, **and** approve the scoped spec v1 amendment described in §5? If either
+   answer is no, D is the only compliant option.
 2. **The option,** if the rule is waived: B (one cool-off, then trade on at the old
    reference) or C (rebase the reference, as specified in section 4). The owner leans to
    C.
@@ -373,8 +411,18 @@ come as a separate PR with the tests listed in section 4.
 | Codex Cloud P2: daily-loss pause inside a released episode | §4 B step 5: clears on `REDUCE` after confirmations |
 | Codex Cloud P2: "resumed" means only equity changed | §2 relabelled; the script is unchanged, so its hash is unchanged |
 | Codex Cloud P2: USDT replay minimums, not EUR | §4 A |
-| Automated review nit: bars, not hours | Disclosed here: `hours` in the appendix counts hourly samples; a missing hour inside a stretch would shorten the reported length, never lengthen it |
+| Automated review nit: bars, not hours | Disclosed. The revision-3 wording ("a missing hour would shorten the reported length, never lengthen it") was incomplete. Revision 4 replaces it in §2 |
 | Codex: capital threshold | §7 question 4: not recommended |
+
+**Changes in revision 4**
+
+| Finding (Codex Cloud, on `36e1593`) | Change |
+| --- | --- |
+| P1: B and C violate spec v1 §3 ("No variant delays, suppresses or clears"); a waiver alone is not enough | §5: a scoped spec amendment with four required contents; §7 question 1 now asks for both |
+| P1: the owner restart must keep liquidation and reconciliation preconditions | §4 C step 7: every existing `resume()` precondition except the risk check; test for partial liquidation |
+| P2: the C1 watermark must stay reserve-adjusted | §4 C step 6: proportional settlement adjustment kept; exempt only from the loss rebase |
+| P2: EUR feasibility claim left in the summary | Header: the 100-USDT replay; live EUR minimums unverified |
+| P2: durations are sample counts, gaps not checked | §2: disclosed precisely; timestamp-based rerun owed; revision-3 claim corrected |
 
 ## Appendix: `data/flat_stretches.py` source
 
