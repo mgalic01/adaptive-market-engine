@@ -72,7 +72,12 @@ Run through this list and fix anything it finds before your final message.
   heading; the heading is added inside the `stream(...)` call that builds the input.
 - **Say what you could not check.** The GitHub review cannot run commands. Say which
   claims you took from the diff alone.
-- **One verdict, at the head you read.** NOTED or FLAGGED, with the full head SHA.
+- **One verdict, at the head you read.** `VERDICT: NO ISSUES at <head SHA>` when you
+  found nothing wrong, or `VERDICT: FLAGGED at <head SHA>` when you did, with the full
+  head SHA either way. Never APPROVE, LGTM or PASS: you cannot run commands, so the
+  verdict is a reading, not a test result. Put one `SCOPE:` line under it saying what
+  you read and what you could not check. See
+  [what Bob's verdicts mean](AGENT_HANDOFF.md#what-bobs-verdicts-mean).
 
 ## Running a task
 
