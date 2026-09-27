@@ -235,7 +235,10 @@ def test_cli_prints_the_answer_or_refuses_without_raw_output(tmp_path: Path) -> 
     good = tmp_path / "good.jsonl"
     good.write_text(stream(*TOOL, msg(ANSWER), DONE), encoding="utf-8")
     ok = subprocess.run(
-        [sys.executable, str(SCRIPT), str(good)], capture_output=True, text=True, check=False
+        [sys.executable, str(SCRIPT), str(good)],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
     )
     assert ok.returncode == 0
     assert ok.stdout == ANSWER + "\n"
@@ -243,7 +246,10 @@ def test_cli_prints_the_answer_or_refuses_without_raw_output(tmp_path: Path) -> 
     bad = tmp_path / "bad.jsonl"
     bad.write_text(stream(msg("secret file contents"), DONE), encoding="utf-8")
     refused = subprocess.run(
-        [sys.executable, str(SCRIPT), str(bad)], capture_output=True, text=True, check=False
+        [sys.executable, str(SCRIPT), str(bad)],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
     )
     assert refused.returncode == 1
     assert refused.stdout == ""
@@ -254,7 +260,7 @@ def test_cli_prints_the_answer_or_refuses_without_raw_output(tmp_path: Path) -> 
     counted = subprocess.run(
         [sys.executable, str(SCRIPT), "--stats", str(bad)],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
     assert counted.stdout == "Bob's stream: message=1, result=1\n"
