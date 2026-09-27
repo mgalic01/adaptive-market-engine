@@ -14,7 +14,7 @@ are in the sections below.
 
 | To get… | Write or do this | What starts | What it can do | Cost and limits |
 | --- | --- | --- | --- | --- |
-| **Bob's quick review or answer** | a PR comment with the whole word `@bob` (owner or collaborator) | `bob-review.yml`, the **read-only** Bob on GitHub | reads the comment, PR description and diff, and `docs/reviews/README.md`; answers once. No commands, no files, no token | Bob's credits, about one minute; the answer appears as `github-actions[bot]` |
+| **Bob's quick review or answer** | a PR comment with the whole word `@bob` (owner or collaborator) | `bob-review.yml`, the **read-only** Bob on GitHub | reads the comment, PR description and diff, and the generated handoff index; answers once. No commands, no files, no token | Bob's credits, about one minute; the answer appears as `github-actions[bot]` |
 | **Bob doing real work** (runs, data, hashes, tests) | **merge a PR that adds** `docs/tasks/<date>-bob-<topic>.md` to `main` (it starts **automatically**), or comment `/bob-run docs/tasks/<file>.md`, or Actions → **IBM Bob task run** → Run workflow | `bob-task.yml`, the **task runner** on a GitHub Linux machine | runs commands with the project installed; writes only a report `docs/reviews/*-bob-*.md`, which arrives as a PR from `bob/task-*` | Bob's credits, up to 240 minutes. Owner-only triggers. A task PR is merged only after review, because the merge is the go |
 | **Codex review (cloud)** | a PR comment `@codex review` with the full head SHA and a handoff link | the ChatGPT Codex connector (Codex cloud) | reviews the PR and posts as `chatgpt-codex-connector[bot]` | the owner's ChatGPT plan; replies "usage limit" when the allowance is used up |
 | **Codex desktop** (merges, larger reviews) | the owner starts Codex; it reads `AGENTS.md` first | Codex in the owner's app | pushes and merges as the owner (`mgalic01`) | the owner's ChatGPT plan |
@@ -115,7 +115,12 @@ are left as written.
 2. **Durable handoffs:** write a new file under `docs/reviews/`, named
    `YYYY-MM-DD-codex-<topic>.md` or `YYYY-MM-DD-claude-<topic>.md`.
    Use a distinct topic (and suffix when needed); preserve earlier reviews.
-   Add the file to the index in the same PR.
+   The file indexes itself: its first line is the `# Title` heading and one line
+   within its first 20 starts with `Index:` and gives its status or purpose in one
+   line. Do not add a row to `docs/reviews/README.md`: that table is frozen, and one
+   table every PR edited made each merge conflict with every other open PR.
+   `python scripts/check_reports.py --index` prints the whole index, newest first;
+   CI fails on a missing entry or an edited table.
 3. **Push notification:** after each push, post or update a PR Conversation comment
    headed **Codex → Claude handoff** (or the reverse). Link the handoff at that
    branch/commit, name the new head SHA, summarize changes since the previous push,
@@ -341,8 +346,9 @@ Credits are limited, so every agent works on demand, not by polling:
   a committed SHA-256. Bob is read-only there: every tool group except `read` is disabled,
   and his process has no GitHub token or runner credentials. The workflow gives him, as
   data, the triggering comment, the PR title, description and captured base/head SHAs,
-  the diff generated from those immutable commits, and
-  `docs/reviews/README.md`; he never reads other PR comments. The PR diff and description
+  the diff generated from those immutable commits, and the handoff index the workflow
+  generates from `main` with `scripts/check_reports.py --index`; he never reads other
+  PR comments. The PR diff and description
   are untrusted input, so the workflow, not Bob, posts his answer, and refuses to post
   one that contains his key or a GitHub-token-shaped string.
 - **Broken communication is reported at once (owner instruction, 2026-09-25).** If a
@@ -443,8 +449,8 @@ Bob does only what the task file says. Anything unclear is a question, not a gue
   the PR how he could have caught it himself.
 - **Branches:** `bob/<topic>`. Bob never pushes to `main`, `claude/...` or `codex/...`
   branches.
-- **Reports:** `docs/reviews/YYYY-MM-DD-bob-<topic>.md`, added to the index in the same
-  PR. A report names the task file, the exact commit, the commands run, every result
+- **Reports:** `docs/reviews/YYYY-MM-DD-bob-<topic>.md`, carrying its own `Index:`
+  line (see "Where messages live"). A report names the task file, the exact commit, the commands run, every result
   (including failed and invalid runs), where raw outputs are and their SHA-256, and
   anything not done.
 - **PR comments:** after each push, a comment headed **Bob → Claude handoff**,

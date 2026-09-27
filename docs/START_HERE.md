@@ -157,7 +157,8 @@ closed, updated since your last sweep:
 - a comment on a closed PR or issue is answered on the open PR concerned, or in a new
   PR, never in the closed thread;
 - a "Bob task report ready" issue means a report branch waits for its PR. Open the PR
-  with the index row, and let the merge close the issue.
+  (the report carries its own `Index:` line; add one on the branch if it is missing),
+  and let the merge close the issue.
 
 ## 5. Before you judge any change
 
@@ -184,8 +185,10 @@ e. **One verdict, at the full head SHA,** with what you checked, what you could 
 
 Read only what the steps above did not already show:
 
-- [the handoff index](reviews/README.md): the newest rows at the top, including owner
-  decisions;
+- the handoff index, including owner decisions: run
+  `python scripts/check_reports.py --index` for every entry, newest first. New entries
+  live in each review file's `Index:` line, not in
+  [the frozen table](reviews/README.md), so that PRs do not conflict over it;
 - [the task index](tasks/README.md): Bob's tasks and their status;
 - [`docs/BOB_PRACTICE.md`](BOB_PRACTICE.md): Bob's habits and the lessons log. Bob
   reads all of it; reviewers of Bob's work use it too;

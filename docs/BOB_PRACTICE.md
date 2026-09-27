@@ -19,7 +19,9 @@ Run through this list and fix anything it finds before your final message.
    under `data/`.
    Then run `python scripts/check_reports.py`: CI runs it on every PR (index links,
    appendix hashes, `text` fences) and, on a `bob/task-` branch, also checks that
-   the branch changes only your report and adds exactly one index row.
+   the branch adds only your report and leaves `docs/reviews/README.md` unchanged.
+   Your report indexes itself: its first line is the `# Title` heading, and one line
+   within its first 20 starts with `Index:` and gives the outcome in one line.
 4. **Every number has its source.** For each count, hash or total, the report says
    which command or file produced it, so another agent can reproduce it.
 5. **Failures are in the report.** Errors, invalid runs, retries and anything skipped
@@ -89,8 +91,8 @@ Run through this list and fix anything it finds before your final message.
   *Example (PR #40):* the trace cross-check compared hashes and fill counts. Return %
   and rejected frames were in the same table and were not compared.
 - **Keep to the task's paths.** The task names your report path. Do not edit
-  `docs/reviews/README.md` or any other tracked file; the index row is added at
-  review. *Example (issue #31):* an index edit failed a 78-minute run.
+  `docs/reviews/README.md` or any other tracked file; your report's own `Index:`
+  line is its index entry. *Example (issue #31):* an index edit failed a 78-minute run.
 - **Write scripts to files under `data/`, then run them.** This keeps the log readable
   and lets a reviewer rerun exactly what you ran. Put each script's SHA-256 in the
   report, and the source of every script under about 80 lines in an appendix: `data/`

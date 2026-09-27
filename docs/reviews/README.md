@@ -2,7 +2,26 @@
 
 Read [the collaboration guide](../AGENT_HANDOFF.md) for message locations and reply
 format. Check the associated PR and commit before treating a note as current.
-Add new entries at the top; retain older files as history.
+Retain older files as history.
+
+**Do not add rows to this file.** Since 2026-09-27 each new review file carries its own
+index entry: its first line is the `# Title` heading, and one line within its first 20
+starts with `Index:` followed by a one-line status or purpose. To read the whole index,
+newest first, run:
+
+```sh
+python scripts/check_reports.py --index
+```
+
+It prints the entries of the newer files, then the frozen table below. CI fails if a
+review file has no entry, or if the table below changes. The reason: one table that
+every PR edited at the top made each merge conflict with every other open PR, and each
+resolution was a new head that voided its verdicts
+([the proposal](2026-09-27-claude-review-index-no-conflicts.md)). Without a shell,
+this directory's file names sort by date (oldest first), and each file's `Index:` line
+is near its top.
+
+## Legacy index (frozen 2026-09-27; do not edit)
 
 The six 2025-09-25 owner-decision entries preserve Bob's historical proposals,
 not current approval. See PR #16's later owner-confirmed record and the Codex checkpoint.

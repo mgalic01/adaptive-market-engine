@@ -231,9 +231,11 @@ jobs:
             sha256sum and read-only git commands. Network use is limited to the public
             data host data.binance.vision through the project's own fetch code.
           - Do not modify any tracked file, including docs/reviews/README.md: the
-            index row is added when your report PR is reviewed. Your only output is a
-            new report file
+            index is not edited any more. Your only output is a new report file
             under docs/reviews/, named YYYY-MM-DD-bob-<topic>.md as the task says.
+            Its first line is the '# Title' heading, and one line within its first
+            20 starts with 'Index: ' and gives the outcome in one line: that line
+            is the report's index entry.
             Working files go under data/ (ignored by git). Do not run git commit or
             git push; the workflow commits your report to a new bob/ branch.
           - Never print, summarise or write environment variables, tokens, keys or
