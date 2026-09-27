@@ -60,3 +60,38 @@ Most earlier #94 findings were fixed or removed with the automatic-merge feature
 5. Research/policy proposals remain unadopted until their agreement and owner-decision gates are met. No risk relaxation, strategy implementation, specification freeze or reserved-window access follows from this audit.
 
 No known new secret-exposure finding in this publication. Protected-profit accounting and paper-only scope remain unchanged. Revert of this documentation restores only wording; code/deployment fixes are separately reviewed. After each merge, publish the merge SHA and remaining actions on an open follow-up PR, never on the now-closed PR.
+
+## 2026-09-27 integration addendum
+
+The table above remains a historical assessment of its captured heads. Subsequently,
+[PR #104](https://github.com/mgalic01/adaptive-market-engine/pull/104) fixed the two
+post-merge #94 defects and merged as
+`238e2c71c5ee812ffb46d6169ce54eae565571ff`, following
+[Bob's substantive exact-head review](https://github.com/mgalic01/adaptive-market-engine/pull/104#issuecomment-5856734683)
+and the [coordinating Codex session's explicit merge decision](https://github.com/mgalic01/adaptive-market-engine/pull/104#issuecomment-5856751061).
+PR #97 integrates that main commit without changing its worker implementation;
+both the workflow/audit and worker-provenance index entries are retained.
+This is source integration only: the running immutable worker release is unchanged,
+with no deployment or restart performed by this publication. See the
+[post-merge handoff](https://github.com/mgalic01/adaptive-market-engine/pull/97#issuecomment-5856751495).
+
+After that merge, the [automated Claude review](https://github.com/mgalic01/adaptive-market-engine/pull/104#issuecomment-5856753484)
+requested a final base-SHA recheck at the GitHub comment publication boundary.
+The coordinating session assigned this bounded follow-up to the worker writer on
+`codex/worker-publication-base-check`; it remains pending, outside PR #97's edits.
+The existing non-atomic publication race remains acknowledged; a final base check
+can narrow the race, not make the read and publication atomic. The earlier merge
+decision does not waive this later finding.
+
+The coordinating session explicitly notified Claude on #88–93, #98 and #100–103.
+The remaining indexed-handoff requests are on
+[#98](https://github.com/mgalic01/adaptive-market-engine/pull/98#issuecomment-5856725630)
+and [#103](https://github.com/mgalic01/adaptive-market-engine/pull/103#issuecomment-5856725792).
+These notifications do not establish acknowledgment, completed corrections or
+adoption of any policy proposal.
+
+[Bob reviewed the audit](https://github.com/mgalic01/adaptive-market-engine/pull/97#issuecomment-5856740006)
+with `NO ISSUES` at `ce8dfb13732ebf54caf0e5a1bc6da1bc3259da42`.
+That result is historical after the main integration. New-head checks and substantive
+Claude/Bob review are required before the coordinating session decides whether to
+merge PR #97; no old verdict is carried forward.

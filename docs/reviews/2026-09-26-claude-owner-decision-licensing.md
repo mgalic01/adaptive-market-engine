@@ -54,6 +54,37 @@
   excluded them by implication; the automated review of PR #80 caught that it stated a
   stricter rule than the owner gave. If such a dependency is ever proposed, it is a new
   question for the owner, not something this record settles.
+  - **Owner decision, 2026-09-27: the default is stop and ask, not assume allowed.** An
+    agent that wants to add an LGPL or EPL **dependency, or to reuse, copy or vendor
+    source under either licence**, puts the concrete proposal to the owner and waits; it
+    does not read "not decided" as permission. The scope is deliberately the same as the
+    GPL/AGPL rule above, which covers "a new dependency or any reused code": copying a
+    file carries the same obligations as depending on the package it came from, so it
+    cannot sit outside the gate. The owner keeps the question open deliberately: the
+    conditions these licences attach depend on the specific library and on how it is
+    combined, so the decision belongs against a real candidate rather than a category.
+  - **What the screen shows, and what it does not.** The same declared-metadata screen,
+    rerun on 2026-09-27, found **no LGPL or EPL declaration across the 43 distributions
+    installed in that environment**, only the two MPL-2.0 development tools already
+    named above. That is the whole of the evidence. It does **not** establish that no
+    such code exists anywhere in the tree: like the 2026-09-26 run, it read declared
+    package metadata at one point in time and inspected no vendored or bundled code, no
+    transitive native component, and no file whose header differs from its package's
+    declaration. So the fair statement is that **nothing known to be installed declares
+    either licence**, and on that basis there is no deadline on the question — a weaker
+    claim than absence, and the one the evidence supports. (The 2026-09-26 figure of 41
+    was the project's own lockfile install set; 43 is this environment's distribution
+    count today. Different dated populations, not a corrected number.)
+  - **Why this direction costs nothing and the other does not.** Deciding against, or
+    deferring, is reversible at the price of a PR. Having said yes, shipped code that
+    depends on it, and then reversing is not: the dependency's reach has to be found and
+    rewritten, and obligations may already attach to what was distributed. That
+    asymmetry — not a view about these licences — is the reason for the default.
+  - **This is a risk preference, not legal analysis**, exactly as the GPL/AGPL rule
+    above. Weak-copyleft licences are generally written so a proprietary product *can*
+    include them under conditions; whether those conditions are acceptable is a question
+    for a person, and the owner has recorded that a real licensing review belongs before
+    anything is sold or distributed, not in this file.
 - **Not decided here.** The project has **no `LICENSE` file**, so no publishing
   licence has been chosen for it. That is a separate matter from the repository's
   visibility setting, which this record does not describe, and it does not resolve the

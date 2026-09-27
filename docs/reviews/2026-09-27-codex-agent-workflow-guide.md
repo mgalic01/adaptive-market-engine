@@ -58,3 +58,24 @@
   must cover that new full head; the prior clean verdicts do not carry forward.
 - No known remaining required fixes or new security findings in this documentation
   correction. Compatibility and rollback remain a documentation-only revert.
+
+## 2026-09-27 main integration
+
+- Starting head: `ce8dfb13732ebf54caf0e5a1bc6da1bc3259da42`; merged main
+  `238e2c71c5ee812ffb46d6169ce54eae565571ff` without rebasing. The sole conflict
+  was the review index; both PR #97 entries and PR #104's worker-provenance entry
+  are retained. The worker source, tests and operations document match that main
+  commit; PR #97's change relative to main remains documentation only.
+- Codex Desktop explicitly transferred this clean worktree back to the documentation
+  writer and stopped editing before integration. The incoming writer acknowledged
+  ownership. The coordinating session retains the later merge decision.
+- On the combined tree, `python scripts/preflight.py` passed on Windows/Python 3.14:
+  lint, format (194 files), report/index checks (0 problems), **426 passed,
+  2 skipped, 563 subtests passed**. This is one full preflight after integration,
+  not a claim that the two skipped checks ran. Later edits only record these results
+  and the integration addendum; documentation checks are recorded in the push handoff.
+- The audit preserves captured-head history and adds the #104 merge, historical Bob
+  review, Claude notifications and separately assigned late worker finding. No
+  deployment or worker restart occurred. No new market-data or strategy check was
+  performed; full GitHub checks/security/type validation and substantive peer review
+  must cover the new full head. Older reviews are historical.

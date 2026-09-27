@@ -269,9 +269,10 @@ def test_partial_patch_and_data_tree_abort_before_content(monkeypatch, restricte
 
 
 @pytest.mark.parametrize(
-    "changed,complete,expected", [(True, True, "STALE"), (False, False, "BLOCKED")]
+    "changed,complete,expected",
+    [(False, True, "READY"), (True, True, "STALE"), (False, False, "BLOCKED")],
 )
-def test_worker_report_rejects_stale_or_incomplete_evidence(
+def test_worker_report_binds_recommendation_to_reviewed_base_and_head(
     tmp_path, monkeypatch, changed, complete, expected
 ):
     import copy
@@ -315,11 +316,16 @@ def test_worker_report_rejects_stale_or_incomplete_evidence(
     m.run_batch(q, q.claim(30), tmp_path, "dummy.exe", True)
     assert q.status()["runs"][0][1] == "completed"
     assert len(posts) == 1
-    assert ("discussion changed" if changed else "Evidence incomplete") in posts[0][-2]
+    if changed:
+        assert "discussion changed" in posts[0][-2]
+    elif not complete:
+        assert "Evidence incomplete" in posts[0][-2]
     assert f"recommendation: {expected}" in posts[0][-2]
-    assert f"recommendation: {expected}" in (tmp_path / "run-1" / "report.md").read_text(
-        encoding="utf-8"
-    )
+    report = (tmp_path / "run-1" / "report.md").read_text(encoding="utf-8")
+    assert report == posts[0][-2]
+    assert f"head **{'a' * 40}**" in report
+    assert f"base **{'b' * 40}**" in report
+    assert "invalid if either the head or base changes" in report
 
 
 def test_queue_closes_connections_and_rolls_back(tmp_path):
