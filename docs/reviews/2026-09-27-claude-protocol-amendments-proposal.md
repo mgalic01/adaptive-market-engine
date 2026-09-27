@@ -1,4 +1,4 @@
-# Claude: two protocol amendments (proposal)
+# Claude: three protocol amendments (proposal)
 
 - **Date:** 2026-09-27. **Author:** Claude. **Run:** Claude Code desktop session, Windows, Python 3.14.
 - **Status: proposal. Merged only when Claude, Codex and Bob all agree**, following the
@@ -51,43 +51,88 @@ meant to protect review integrity measurably cost it.**
 
 Both are written into the handbook by this PR, each under a pending banner.
 
-### A. "Unavailable" becomes a defined state, with a tiered consequence
+### A. "Unavailable" becomes a defined state, and a lapse escalates
 
 Unavailable means the reviewer said its allowance is exhausted, **or** an exact-head
-request has gone unanswered for **12 hours**. Reposting does not restart the clock; a
-new head does.
+request has gone unanswered past its channel's window: **1 hour** for Codex Cloud, Bob
+and the automated review, which answer in minutes; **12 hours** for Codex Desktop,
+which runs only when the owner opens it. A single threshold across both was the wrong
+shape — Cloud answered exact-head requests in under three minutes twice on 2026-09-27
+(PR #83 at 23:31:12, PR #87 at 00:50:53), while the stall that prompted this rule was
+Desktop. Both figures are still judgements rather than findings, and the owner's to set.
 
-On a lapse, the consequence depends on what the diff touches:
+Reposting does not restart the clock. A new head does, **except** where the verdicts
+were carried under amendment B, in which case the elapsed time carries with them.
+Without that exception A and B fight: a base integration creates a new head, so a PR
+that had waited eleven hours would restart at zero, rebuilding the loop B exists to
+break. Found in review by a second Claude cloud session.
 
-| The diff touches | On lapse |
-| --- | --- |
-| Documentation only | Stop-gap merge applies, requiring **both** Bob's `NO ISSUES` **and** the automated review's `APPROVE` at the full head, plus green `test-and-audit`. |
-| `src/`, `tests/`, `scripts/`, `.github/`, `pyproject.toml`, `SECURITY.md` | **Never** a merge. Escalate to the owner naming the PR, head, waiting reviewer and elapsed time. |
+**A lapse never authorizes a merge**, whatever the diff touches. The action is always
+to escalate to the owner, naming the PR, the full head, the reviewer being waited on,
+when the request was posted and how long it has waited. The PR stays open.
 
-The 12-hour figure is the one number here that is a judgement rather than a finding.
-It is proposed, not derived; the owner should set it.
+**This is narrower than my first draft, and deliberately so.** That draft let a
+documentation-only diff merge on Bob's `NO ISSUES` plus the automated review's
+`APPROVE`. The owner rejected it, and the reasoning is worth recording because it
+applies beyond this rule: every check in the chain — CI, Bob, the automated review,
+Codex Cloud — takes the PR's premise as given and verifies its execution. **None asks
+whether the change should exist at all, or what it costs the project to carry.** That
+judgement is made once, at the merge. Automating it away on the strength of checks that
+never ask the question would remove the only place it happens.
 
-**Why both verdicts, not just Bob's.** I first proposed letting documentation merge on
-Bob's verdict alone, then withdrew it the same day. At PR #83 Bob returned `NO ISSUES`
-on a documentation change that still contained an already-required, silently dropped
-correction. He was not careless — his three points were index integrity, ordering and
-the core `compare_bars` claim, and the dropped text was prose he had cleared at an
-earlier head. The automated review caught it by re-reading `dataset.py` against the
-prose at the current head. A reading-level verdict and a fresh source-versus-prose check
-answer different questions. For documentation whose purpose is describing code, one does
-not substitute for the other.
+So naming a lapse does not unblock a merge. It gives an agent waiting on a reviewer a
+defined action other than waiting silently or inventing its own licence to proceed —
+the two failures this rule was written after, both committed on 2026-09-27.
 
 ### B. A verdict may be carried across a base integration
 
 Verdicts recorded at the previous head stay valid when all four conditions hold: the new
-head is a merge of the base and nothing else; the diff between old and new heads outside
-the conflicted paths is **verifiably empty**, by a command whose output is quoted; each
-conflict resolution is reviewed at the new head; and the carrying agent states the old
-head, new head, conflicted paths, command and empty output.
+head is a merge of the base and nothing else; **the PR's own contribution is unchanged**,
+verified by the commands below; each conflict resolution is reviewed at the new head;
+and the carrying agent states the old and new heads, both bases, the conflicted paths
+and the commands with their output.
+
+```
+git diff $(git merge-base <base-old> <old-head>) <old-head> -- . ':!<conflicted paths>' > before.diff
+git diff $(git merge-base <base-new> <new-head>) <new-head> -- . ':!<conflicted paths>' > after.diff
+diff before.diff after.diff        # must be empty
+```
+
+**The first version of this condition could never pass, and review caught it.** It said
+`git diff <old-head> <new-head> -- . ':!<conflicted paths>'` must print nothing. After a
+base integration that diff shows everything the base brought in, so excluding the
+conflicted paths still leaves every commit that landed on the base meanwhile. Run
+verbatim on PR #83 it reports 8 changed files and 226 insertions, because `main` had
+advanced eight commits — the condition failed on the exact PR it was written to rescue,
+and would fail on nearly any PR whose base moved. A second Claude cloud session found it
+by running it rather than reasoning about it, and proposed the merge-base form; I
+confirmed both results here before changing the wording. On PR #83 the merge-base form
+produces two 264-line diffs that compare identical.
+
+A narrower form — restricting the diff to the PR's own paths — also works but needs a
+correct file list, and a wrong list silently widens the exclusion. The merge-base form
+needs no list, so it is the one written down.
 
 This shortens an accounting loop. It does not lower the bar for what gets read — the
 resolution itself is always reviewed, and any rebase, squash or extra commit voids
 everything exactly as before.
+
+### C. Every agent comment names its sender in a machine-readable tag
+
+Claude sessions, Codex Desktop and the owner's Bob session all post as `mgalic01`, so
+the GitHub author identifies nothing. Each agent comment now opens with a tag on its
+own first line — `[Claude Code <session-id>]`, `[Codex Desktop]`, `[Bob]` — and readers
+use the tag, never the login. The bot accounts need no tag; their logins already differ.
+
+Added after a misattribution on 2026-09-27: a Claude session's review of this very PR
+was reported to the owner as Codex Desktop's, by an agent that read `mgalic01` instead
+of the first line, which said exactly which session wrote it.
+
+Distinct GitHub accounts would make attribution authoritative rather than declared, and
+were considered. They are rejected here because two of Bob's triggers gate on
+`author_association == 'OWNER'` and `github.actor == github.repository_owner`
+(`bob-task.yml`), so moving an agent off the owner account would break `/bob-run` and
+the task-file-merge trigger. Widening those gates would reopen the hole they close.
 
 ## What I am not proposing, and what I could not check
 

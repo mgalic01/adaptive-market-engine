@@ -82,11 +82,11 @@ Then act, in this priority:
    Both verdicts are needed because they answer different questions. Use the merge method with the full head SHA. Codex
    reviews afterwards.
    *Proposed 2026-09-27, pending three-agent agreement:* "unavailable" becomes a
-   defined state — allowance exhausted, **or** an exact-head request unanswered for 12
-   hours — and on a lapse only a documentation-only diff may merge, needing the
-   automated review's `APPROVE` as well as Bob's `NO ISSUES`. Anything touching `src/`,
-   `tests/`, `scripts/`, `.github/`, `pyproject.toml` or `SECURITY.md` escalates to the
-   owner instead. See
+   defined state — allowance exhausted, **or** an exact-head request unanswered past
+   its channel's window (1 hour for Codex Cloud, Bob and the automated review; 12 hours
+   for Codex Desktop). **A lapse never authorizes a merge**, whatever the diff touches:
+   it means escalate to the owner, naming the PR, head, reviewer and elapsed time, and
+   leave the PR open. See
    [when a reviewer is unavailable](AGENT_HANDOFF.md#when-a-reviewer-is-unavailable).
 
 ## 4. Sweep closed PRs and issues
