@@ -104,6 +104,23 @@ def test_claim_serializes_and_restart_does_not_repeat_uncertain_run(tmp_path):
     assert q.claim(90)[1] == [92]
 
 
+def test_daily_budget_allows_40_starts_and_survives_restart(tmp_path):
+    path = tmp_path / "queue.sqlite"
+    q = module().Queue(path)
+    for i in range(40):
+        # More than ten minutes apart: the separate six/hour limit is respected.
+        now = i * 601
+        q.add(payload(number=i + 1), i + 1, now)
+        batch = q.claim(now + 30)
+        assert batch is not None, f"start {i + 1} should fit the owner's daily allowance"
+        q.finish(batch[0], "failed" if i % 2 else "completed", "")
+    q = module().Queue(path)
+    q.add(payload(number=41), 41, 40 * 601)
+    assert q.claim(40 * 601 + 30) is None
+    assert q.claim(86429) is None
+    assert q.claim(86430) is not None  # First start ages out of the rolling window.
+
+
 def worker():
     assert importlib.util.find_spec("local_worker"), "worker not implemented"
     import local_worker

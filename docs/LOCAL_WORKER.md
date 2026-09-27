@@ -20,7 +20,8 @@ PR can queue review. Other issues and arbitrary branch pushes do not. The receiv
 ignores newly created marked worker comments; edits to old reports still queue review. Only event hashes and PR numbers enter SQLite.
 There is no GitHub polling; the one-second loop checks the local queue.
 
-Thirty quiet seconds coalesce activity for one PR. Maximum six starts/hour, 24/day,
+Thirty quiet seconds coalesce activity for one PR. Maximum six starts/hour, 40 per
+rolling 24 hours (owner instruction, 2026-09-27),
 1,000 pending events, 1 MiB/request. Failed starts consume budget. SQLite dedup survives
 restart; an interrupted in-flight run is not automatically retried. An exclusive OS
 lock prevents multiple service owners. HTTP connections have an absolute ten-second

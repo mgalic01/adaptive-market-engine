@@ -83,7 +83,7 @@ session. A comment makes a handoff available; only a reply establishes that anot
 agent read it. Ordinary session-start/check-in sweeps remain necessary.
 
 The worker needs an awake PC, running processes and a reachable tunnel. The current
-limits are six starts/hour and 24/day, with bounded evidence; failed starts count.
+limits are six starts/hour and 40 per rolling 24 hours, with bounded evidence; failed starts count.
 Large or complex PRs may need Desktop review. It uses the local ChatGPT login;
 no OpenAI API key is supplied to GitHub for this integration. See
 [local reviewer operations and limitations](LOCAL_WORKER.md) for recovery and

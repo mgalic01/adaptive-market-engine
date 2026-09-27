@@ -113,7 +113,7 @@ class Queue:
             if hourly.fetchone()[0] >= 6:
                 return None
             daily = db.execute("SELECT count(*) FROM runs WHERE started>?", (now - 86400,))
-            if daily.fetchone()[0] >= 24:
+            if daily.fetchone()[0] >= 40:
                 return None
             rows = db.execute(
                 "SELECT pr FROM events WHERE run IS NULL GROUP BY pr "
