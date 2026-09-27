@@ -54,10 +54,12 @@ intrabar path:
   built from; where they differ — including its 12% risk limit and its economics gate —
   **§6 governs**.
 
-Passing authorises a *proposal* for a live pilot. It does not authorise live trading,
-which stays a separate owner decision with a separately tested adapter and a
-live-deployment review. The delivery gates and what is already built are in
-[`ROADMAP.md`](../ROADMAP.md).
+Passing does not authorise live trading or a live-capital pilot. It justifies only the
+next step §6 names: a *proposal* for paper trading on live Revolut X prices (a
+live-price paper/shadow validation), which needs its own review. A live pilot comes
+later still, after the roadmap's read-only shadow gate, as a separate owner decision
+with a separately tested adapter and a live-deployment review. The delivery gates and
+what is already built are in [`ROADMAP.md`](../ROADMAP.md).
 
 **Before you build or propose anything, answer this in one line:** what does it do for
 that goal? Work that makes the bot more likely to pass C1–C6, or that makes the evidence
@@ -66,9 +68,9 @@ improvements to this process**, is overhead and has to justify its ongoing cost 
 it is built — not after four reviewers have approved it.
 
 **Whether a change should exist is everyone's question, and the author's first.**
-Automated checks cannot ask it: CI verifies that code runs, and the automated review is
-prompted to find defects in the change in front of it. Bob and Codex are expected to
-challenge fit and premise, not only execution — this section exists so they can — and
+Automated checks cannot ask it: CI verifies that code runs, and the automated Claude
+review (`claude-review.yml`) is prompted to find defects in the change in front of it.
+Bob, on GitHub and in a session, and Codex are expected to challenge fit and premise, not only execution — this section exists so they can — and
 the merge decision is where it is finally settled. But a reviewer can only reject a
 premise after the work is done. The author is the one who can stop it before.
 
