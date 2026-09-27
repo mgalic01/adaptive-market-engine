@@ -69,27 +69,31 @@ e. **Verdicts, and at which head:** Bob's `NO ISSUES` or `FLAGGED`
    full head. Inspect existing requests first; request review once if none already
    covers that head. Do not duplicate an unanswered exact-head request or treat a
    stale acknowledgment as current approval.
-   *Proposed 2026-09-27, pending three-agent agreement:* a verdict may be **carried**
-   across a merge of the base when the diff outside the conflicted paths is verifiably
-   empty and the resolution itself is reviewed — see
+   *Proposed 2026-09-27, pending three-agent agreement:* no verdict is carried across
+   a merge of the base, but earlier findings stay on record, and the reviewer may scope
+   the new head's verdict to the conflict resolution and to the base changes the
+   contribution depends on, stating that scope, instead of rereading the whole diff
+   (step 5a) — see
    [verdicts and a base integration](AGENT_HANDOFF.md#verdicts-and-a-base-integration).
 
 Then act, in this priority:
 
 1. a conflict or red CI on a PR you own;
 2. anything addressed to you: a question, a required fix, a FLAGGED;
-3. merges that are ready. The merge rule while Codex is unavailable
+3. merges that are ready. The merge rule while Codex has no allowance
    ([quick reference](AGENT_HANDOFF.md#quick-reference-how-to-reach-each-agent-keep-this-current)):
    the verdict `NO ISSUES` from Bob at the head (a reading of the diff), green
    `test-and-audit` at the head (evidence it runs), and no unaddressed required fix.
    Both verdicts are needed because they answer different questions. Use the merge method with the full head SHA. Codex
    reviews afterwards.
-   *Proposed 2026-09-27, pending three-agent agreement:* "unavailable" becomes a
-   defined state — allowance exhausted, **or** an exact-head request unanswered past
-   its channel's window (1 hour for Codex Cloud, Bob and the automated review; 12 hours
-   for Codex Desktop). **A lapse never authorizes a merge**, whatever the diff touches:
-   it means escalate to the owner, naming the PR, head, reviewer and elapsed time, and
-   leave the PR open. See
+   *Proposed 2026-09-27, pending three-agent agreement:* two separate states.
+   **Allowance exhausted** — a Codex usage-limit reply, which stops counting at the
+   next Codex response that is not one, or once a new Codex request is posted — is the
+   only state this merge rule applies to. **Request lapsed** — an exact-head request
+   unanswered past its channel's window (1 hour for Codex Cloud, Bob and the automated
+   review; 12 hours for Codex Desktop) — **never authorizes a merge**, whatever the
+   diff touches: escalate to the owner, naming the PR, head, reviewer and elapsed
+   time, and leave the PR open. See
    [when a reviewer is unavailable](AGENT_HANDOFF.md#when-a-reviewer-is-unavailable).
 
 ## 4. Sweep closed PRs and issues

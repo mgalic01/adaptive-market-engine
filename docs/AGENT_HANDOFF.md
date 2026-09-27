@@ -29,9 +29,12 @@ are in the sections below.
   starts a Bob review. When a trigger is only being mentioned, write it without the
   at-sign (for example "the codex-review trigger") or link this section instead.
 - **Plain "Bob" starts nothing.** Neither does `@bobby`.
-- **Merge authority:** while Codex is unavailable, the owner's rule is to merge on
+- **Merge authority:** while Codex has no allowance, the owner's rule is to merge on
   Bob's `NO ISSUES` with green checks, and Codex reviews afterwards.
-  See [what Bob's verdicts mean](#what-bobs-verdicts-mean) and
+  See [what Bob's verdicts mean](#what-bobs-verdicts-mean).
+  *Proposed 2026-09-27, pending three-agent agreement:* "no allowance" gets a defined
+  end, and a review request that has simply gone unanswered is a different state,
+  **lapsed**, which escalates to the owner and **never** opens this merge path. See
   [when a reviewer is unavailable](#when-a-reviewer-is-unavailable).
 - **Codex's own work:** Claude or Bob must review the latest full head and post
   substantive feedback before Codex merges it, including documentation and delegated
@@ -39,9 +42,11 @@ are in the sections below.
   See the [standing owner rule](#external-review-before-codex-merges-its-own-work).
 - **Who posted what.** Claude sessions, Codex Desktop and the owner's own Bob session
   all post as `mgalic01`, so **the GitHub author tells you nothing about which agent
-  wrote a comment.** *Proposed 2026-09-27, pending three-agent agreement:* every agent
-  comment begins with a tag on its own first line, so the sender is machine-readable
-  rather than inferred:
+  wrote a comment.** Every message starts with its sender, for example "Claude → Codex",
+  "Codex → Claude" or "Bob → …". *Proposed 2026-09-27, pending three-agent agreement;
+  until all three agree, that sender line is the rule and no tag is required:* every
+  agent comment begins with a tag on its own first line, so the sender is
+  machine-readable rather than inferred:
 
   | Tag | Who |
   | --- | --- |
@@ -87,109 +92,133 @@ are in the sections below.
 
 **Proposed 2026-09-27, pending agreement from Claude, Codex and Bob. Until all three
 agree, the previous rule stands without exception: any push, including a merge of
-`main`, voids every verdict.**
+`main`, voids every verdict, and the new head gets an ordinary full review.**
 
-A verdict counts only at the head it names, and that stays true. But merging the base
-into a long-running PR changes the head while changing nothing a reviewer judged, so
-every verdict dies to an integration that altered no reviewed content. The longer a PR
-waits for a reviewer, the likelier it needs an integration — which destroys the
-approvals it was waiting to collect. On 2026-09-27, PR #83 lost Bob's `NO ISSUES` to
-an index merge that changed no prose at all, and the re-review cycle that followed is
-where an outstanding required fix was lost track of. The rule meant to protect review
-integrity was actively costing it.
+What stays true, even once this is agreed: a verdict counts only at the head it names,
+and a merge of the base voids it. **No verdict is carried across an integration, and no
+mechanical check can make it carry.** The other rules that say so —
+[what Bob's verdicts mean](#what-bobs-verdicts-mean), item 5 of
+[branch ownership](#branch-ownership-local-checks-and-review-batches) and the
+[external-review rule](#external-review-before-codex-merges-its-own-work) — stay as
+written.
 
-**Carrying a verdict across an integration.** Verdicts recorded at the previous head
-remain valid at the new head when *all* of these hold:
+What this changes is how much the new head's review has to reread. Waiting for a
+reviewer makes an integration likelier, and every integration used to restart review
+from nothing. On 2026-09-27, PR #83 lost Bob's `NO ISSUES` to an index merge that
+changed no prose, and in the re-review cycle that followed an outstanding required fix
+was lost track of. So after a merge of the base:
 
-1. The new head is a merge of the base into the PR branch, with no other commit.
-2. **The PR's own contribution is unchanged.** Compare the contribution against each
-   base, so that what the base brought in is excluded rather than counted as drift:
+1. **Prior findings stay on record as evidence.** The new request links the verdicts
+   and findings from the old head. A required fix still open at the old head stays
+   open; a merge never discharges it.
+2. **A new verdict at the new full head is still required,** with `test-and-audit`
+   green at that head. Instead of rereading the whole diff (START_HERE step 5a), the
+   reviewer may scope that verdict to two things:
+   1. **The conflict resolution.** `git show --remerge-diff <new-head>` (Git 2.36 or
+      later) prints only where the recorded merge differs from Git's own automatic
+      merge: each resolved conflict, and any edit slipped into the merge commit. Empty
+      output means a clean merge.
+   2. **The base changes the contribution depends on.** List what the base brought in:
 
-   ```
-   git diff $(git merge-base <base-old> <old-head>) <old-head> -- . ':!<conflicted paths>' > before.diff
-   git diff $(git merge-base <base-new> <new-head>) <new-head> -- . ':!<conflicted paths>' > after.diff
-   diff before.diff after.diff        # must be empty
-   ```
+      ```
+      git diff --stat $(git merge-base <new-head>^1 <new-head>^2) <new-head>^2
+      ```
 
-   Verify it, do not assert it.
-3. Each conflict resolution is itself reviewed at the new head. Carrying a verdict
-   carries it over the *reviewed content*, never over the resolution.
-4. The agent carrying it states in the PR comment: the old head, the new head, the
-   base before and after, the conflicted paths, the commands from (2) and their output.
+      Review every listed file that the contribution imports, calls, configures, tests
+      against or cites in its prose. Review any change to `pyproject.toml`,
+      `.github/`, configuration, dataset specs or masks whatever the contribution is.
+3. **The verdict states its scope:** the old and new heads, the old verdicts it relies
+   on, the two commands above with their output, which base files it reviewed, and
+   which it judged unrelated and why.
+4. **Scoping is allowed only** when the new head is one merge of the base whose first
+   parent is the reviewed old head, with no other commit. A rebase, a squash, an extra
+   commit, or any change to the contribution itself means a full review, as before. So
+   does a dependency set the reviewer cannot bound with confidence. When in doubt,
+   review in full.
 
-If any condition fails — a rebase, a squash, an extra commit, a changed contribution —
-every verdict is void as before. When in doubt, re-request; this shortens an accounting
-loop, it does not lower the bar for what gets read.
+**Why no verdict is carried.** Two earlier drafts of this rule carried verdicts on a
+mechanical test, and review refuted both.
 
-**Why the merge-base form, and not the obvious one.** The first version of this rule
-said `git diff <old-head> <new-head> -- . ':!<conflicted paths>'` must print nothing.
-That **cannot pass**. After a base integration, `git diff old new` shows everything the
-base brought in, so excluding the conflicted paths still leaves every commit that
-landed on the base meanwhile. Run verbatim on PR #83 — old head
-`e5d5ff5e1231e3082909162c025aa6aa52eab5a7`, new head
-`96fb1d82b6da4d66e42d3ebccc2e30958a0dad60`, sole conflicted path
-`docs/reviews/README.md` — it reports 8 changed files and 226 insertions, because
-`main` had advanced eight commits. The condition failed on the exact PR the rule was
-written to rescue. Found by a second Claude cloud session, which ran it rather than
-reasoning about it; confirmed independently here before the wording was changed. The
-merge-base form on that same case produces two 264-line diffs that compare **identical**.
+- The first said `git diff <old-head> <new-head> -- . ':!<conflicted paths>'` must print
+  nothing. That cannot pass: after an integration it shows everything the base brought
+  in. On PR #83 (old head `e5d5ff5e1231e3082909162c025aa6aa52eab5a7`, new head
+  `96fb1d82b6da4d66e42d3ebccc2e30958a0dad60`) it reported 8 files and 226 insertions.
+- The second compared the PR's contribution against each merge base, as patch text.
+  Patch text is a proxy: its `index` lines and hunk context move when the base edits a
+  neighbouring line, so it refuses valid cases. Worse, even exact equality of the
+  contribution does not preserve what a reviewer judged. Codex's counterexample: the
+  feature changes `strategy.py` to `return n <= LIMIT`; `main` changes only
+  `limits.py`, `LIMIT = 5` to `LIMIT = 50`. After the merge, both contribution diffs
+  and the `strategy.py` blob are identical, yet `accept(10)` turns from `False` to
+  `True`. The scoped review above catches it: `limits.py` is in the base's list, and
+  the contribution imports it.
 
-A narrower form — restricting the diff to the PR's own paths — also works, but it
-requires listing those paths correctly and a wrong list silently widens the exclusion.
-The merge-base form needs no list, so it is the one written down.
+Any future mechanical exception needs adversarial fixtures like that one, and all
+three agents' agreement, before it is written down.
 
 ## When a reviewer is unavailable
 
 **Proposed 2026-09-27, pending agreement from Claude, Codex and Bob. Until all three
 agree, the previous rule stands: the stop-gap applies only while Codex has no
-ChatGPT allowance.**
+ChatGPT allowance, and nothing else in this section applies.**
 
-The old wording keyed the stop-gap to Codex having *no allowance* — a statement about
-quota. The condition that actually stalls the queue is different: Codex Desktop has
-quota but is not **running**, because it has no inbound channel and only the owner can
-start it. Nothing in the handbook covered that, so a PR could wait indefinitely on a
-reviewer that no message can reach.
+Two gaps motivated this. The stop-gap was keyed to Codex having *no allowance*, a
+statement about quota, while the thing that actually stalled the queue was Codex
+Desktop having quota but not **running**: it has no inbound channel, and only the owner
+can start it. And a stated intention to review — "I will review that final head for
+merge" — had no expiry and no fallback. Both left an agent with two bad choices: wait
+silently, or invent its own licence to proceed.
 
-A second gap sat beside it: an agent's stated intention to review — "I will review that
-final head for merge" — had no expiry and no fallback, so one sentence could block a PR
-with no documented way forward.
+This section names **two different states**, because they have different consequences:
 
-**Unavailable** therefore means either of these, and replaces "has no allowance":
+| State | What establishes it | When it ends | What it allows |
+| --- | --- | --- | --- |
+| **Allowance exhausted** | a usage-limit reply from Codex | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it; from then on the answer to that request decides | the owner's existing stop-gap: merge on Bob's `NO ISSUES` at the full head, green `test-and-audit` at that head and no unaddressed required fix; Codex reviews afterwards |
+| **Request lapsed** | an exact-head review unanswered past its channel's window (below) | when the reviewer answers at that head, or the head changes | **escalation to the owner only. Never a merge.** |
 
-- the reviewer has replied that its allowance is used up; or
-- an **exact-head review request has gone unanswered** past the window for that
-  reviewer's channel, counted from when the request was posted with the full head SHA.
+Wherever the handbook uses Codex being unavailable, or having no allowance, as a reason
+to merge — the quick reference's merge authority, START_HERE step 3's merge rule, and
+the merge of a Bob task-file PR — it means **allowance exhausted**, never lapsed.
 
-The window differs by channel, because the channels differ by orders of magnitude:
+**Exhaustion expires.** A usage-limit reply says nothing about tomorrow. It stops
+counting at the next Codex response that is not a usage-limit reply, on any PR, and
+as soon as a new request is posted after it. An agent that wants to use the stop-gap
+after a new request must cite a usage-limit reply to that request; if the request is
+simply unanswered, that is a lapse, not exhaustion.
+
+**The lapse window** differs by channel, because the channels differ by orders of
+magnitude:
 
 | Reviewer | Window | Why |
 | --- | --- | --- |
 | Codex Cloud, Bob, the automated review | **1 hour** | They answer in minutes. Cloud answered exact-head requests in under three minutes on 2026-09-27 (PR #83 at 23:31:12, PR #87 at 00:50:53). |
 | Codex Desktop | **12 hours** | It has no inbound channel and runs only when the owner opens it. |
+| Any other channel, including the opt-in local Codex reviewer | none defined | Report an unanswered request at the next check-in, under the existing breakage rule. |
 
-Reposting does not restart the clock. A new head does — **except** when the verdicts
-were carried under
-[verdicts and a base integration](#verdicts-and-a-base-integration), in which case the
-elapsed time carries with them. Without that exception the two rules fight: a base
-integration creates a new head, so a PR that had waited eleven hours would start again
-at zero, rebuilding the very loop the carrying rule exists to break.
+**When the clock starts.** From the exact-head request, posted with the full head SHA.
+For a review that starts on its own at a push — the automated review, or a Codex Cloud
+review already pending, where the
+[event-driven rules](#event-driven-codex-cloud-reviews-owner-instruction-2026-09-25)
+tell agents not to post a request — from the time that head was pushed. Reposting does
+not restart the clock.
+
+**A new head always restarts it.** A request names one head, and an unanswered request
+for an old head says nothing about the new one. After any new head, including a merge of
+the base, post a new exact-head request naming the new SHA (or confirm that an
+automatic review of it started), and the clock starts again there. An earlier draft
+carried the elapsed time across an integration; that was dropped along with carried
+verdicts, because the old request no longer covered the head it would have applied to.
 
 **A lapse never authorizes a merge.** Whatever the diff touches, the action is the
-same: **escalate to the owner**, naming the PR, the full head, which reviewer is being
-waited on, when the request was posted and how long it has waited. The PR stays open.
+same: **escalate to the owner**, naming the PR, the full head, the reviewer being
+waited on, when the request was posted or the head pushed, and how long it has waited.
+The PR stays open.
 
-This is deliberately narrower than the first draft of this rule, which let a
-documentation-only diff merge on Bob's `NO ISSUES` plus the automated review's
-`APPROVE`. The owner rejected that, and was right to: every check in the chain — CI,
-Bob, the automated review, Codex Cloud — takes the PR's premise as given and verifies
-its execution. **None of them asks whether the change should exist at all, or what it
-costs the project to carry.** That judgement happens once, at the merge, and automating
-it away on the strength of checks that never ask the question would remove the only
-place it is made.
-
-So the purpose of naming a lapse is not to unblock a merge. It is so that an agent
-waiting on a reviewer has a defined action other than waiting silently or inventing its
-own licence to proceed — the two failures this rule was written after.
+The reason is the owner's, and it applies beyond this rule. Every check in the chain —
+CI, Bob, the automated review, Codex Cloud — takes the PR's premise as given and
+verifies its execution. **None of them asks whether the change should exist at all, or
+what it costs the project to carry.** That judgement is made once, at the merge.
+Letting silence stand in for it would remove the only place it is made.
 
 ## What Bob's verdicts mean
 
