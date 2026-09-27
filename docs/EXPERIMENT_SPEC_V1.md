@@ -8,8 +8,8 @@ variants yet.** This document fixes what will be built and how it will be judged
 
 The scope is paper trading and historical replay only. Nothing here authorises live
 trading, API keys or withdrawals. The default risk limits (3% daily pause, 8% soft and
-12% hard drawdown, with the drawdown recovery of **amendment 1**, §3), the 50/50 profit
-vault and the paper-only boundary are unchanged by every **grid** variant (V0, A, B, C, E, F, G, H, C+G, C+H). The benchmark D is the one
+12% hard drawdown, amended by the drawdown recovery of **amendment 1** in §3), the 50/50
+profit vault and the paper-only boundary are unchanged by every **grid** variant (V0, A, B, C, E, F, G, H, C+G, C+H). The benchmark D is the one
 labelled exception (§3 D): it is a replay-only calculation with its own sizing and no
 risk controls or vault, and it never touches persisted paper state.
 
@@ -138,7 +138,10 @@ and it catches any later change to `risk_high`'s formula that is not mirrored he
    `ALLOW`; otherwise nothing changes and the check repeats on the next frame.
 4. The rebase check runs first in the step. After a committed rebase, the range-exit and
    pause recovery rules apply unchanged.
-5. The episode ends at its rebase, so it has at most one. A restart of the process
+5. The episode ends at its rebase, so it has at most one. **It also ends when the account
+   is halted, for any category:** the halt supersedes it, and its start time is cleared.
+   After a restart or a manual resume no episode is open, so a later `REDUCE` starts a new
+   episode with its own 24-hour cool-off and `recovery_frames` confirmations. A restart of the process
    restores the saved episode start. The 8% and 12% triggers are both measured from the
    rebased `risk_high`. Each rebase is recorded: time, old and new reference, episode
    start.
@@ -159,7 +162,8 @@ no others:
 - range-exit state (`range_exit`, `range_exit_since`), outside-range timers and the grid
   bounds are reset, since the account is flat with no grid;
 - `risk_high` takes the committed rebase value;
-- the halt start and category are cleared;
+- the halt start and category are cleared (any soft-drawdown episode was already closed
+  when the halt began, so none is open after the restart);
 - the account enters a pause ("automatic restart after drawdown halt: awaiting confirmed
   eligible data"), so the normal `recovery_frames` confirmations apply before a new grid.
 
@@ -194,6 +198,10 @@ config values, persisted in the account identity, and fixed for all v1 runs.
   on an ineligible frame; no restart while the daily loss is 3% or more or the emergency
   flag is set; never for categories `emergency`, `exhaustion` or `integrity`; one restart
   per halt; the category is set at every halt call site.
+- Episode across a halt: a soft episode open when a hard halt starts is closed by the
+  halt. After the automatic restart the account cannot rebase until a new episode's own
+  24 hours and `recovery_frames` confirmations have passed. The same holds after a manual
+  resume from any other halt category.
 
 ### A: trend/cycle switch (daily SMA50 and SMA200)
 Inputs are the completed daily close `C`, `SMA50` and `SMA200` of the traded pair. The

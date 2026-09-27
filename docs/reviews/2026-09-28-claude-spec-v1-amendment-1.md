@@ -60,6 +60,16 @@ Bob FLAGGED the first head with two concerns, and both are fixed.
 | The automatic restart clears the halt "as `resume()` clears it today", so any other state `resume()` resets would be cleared too | The restart now lists exactly the fields it changes. These are the same ones `resume()` changes on `main`: `halt`, `liquidating`, the range-exit state and timers, the grid bounds, `risk_high` (the committed rebase), the halt start and category, and a recovery pause. It states what it does not touch: the daily baseline, both C1 references, the reserves and the vault. The emergency flag is a per-frame signal, not account state, so nothing can clear it. A test for the side effects was added |
 | The C1(b) reference is defined only by reference to `risk_high` | A standalone definition with three update points: creation (initial active capital, as `Account.new`), every mark (`max(reference, last_equity)`, as `_mark`), and every settlement (the same factor as `_settle`). An equivalence test was added: with no rebase or restart, the reference equals `risk_high` at every evaluation, which catches any later drift |
 
+## Revision 3: the automated review at `fb2c43d`
+
+| Finding | Change |
+| --- | --- |
+| Required: a soft episode that is open when a hard halt starts was undefined. If it survived, its stale 24-hour cool-off would already be satisfied at restart, merging the two separate waits | Soft path, step 5: any halt ends the open episode and clears its start. The restart's field list says no episode is open afterwards. A new test covers the case, and the same rule applies after a manual resume |
+| Nit: broken parenthesis in the header's risk-limit sentence | Reworded |
+
+Bob gave NO ISSUES at `fb2c43d` before this finding, so his verdict does not cover
+revision 3.
+
 #102 merged at `fd66a25` (Bob NO ISSUES, automated APPROVE, green), so its decision
 record is on `main`. This branch merges that `main`; only the index conflicted, and every
 row is kept.
