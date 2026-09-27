@@ -24,18 +24,27 @@ are in the sections below.
 
 **Important distinctions:**
 - **`@bob` never runs anything.** Commands need `/bob-run` or a merged task file.
-- **A trigger fires anywhere in a comment, even inside backticks or quotes — but a PR
-  description is not a comment.** `bob-review.yml` listens to `issue_comment` only
-  (`on: issue_comment: types: [created]`), so **`@bob` in a PR description starts
-  nothing at all, and fails silently**: no run appears, and the author is left
-  believing a review was requested. Ask Bob in a **comment**, every time. Verified
-  2026-09-27 after a request written into a PR description produced only `skipped`
-  runs. Codex Cloud is different: it reviews on PR opened, draft marked ready, and
-  **new commits pushed to an open PR**, so a Codex review arrives with or without a
-  trigger, and a comment trigger only adds an extra review. When a trigger is only
-  being mentioned, write it without the at-sign (for example "the codex-review
-  trigger") or link this section instead — the at-sign still costs allowance in a
-  comment even when you meant to quote it.
+- **Bob starts only from a new PR Conversation comment.** `bob-review.yml` listens to
+  `issue_comment` only (`on: issue_comment: types: [created]`), from the owner, a
+  member or a collaborator. Inside such a comment the whole word `@bob` fires
+  anywhere, even inside backticks or quotes. **Every other place starts nothing and
+  fails silently**, leaving the author believing a review was requested: a PR
+  description generates no `issue_comment` event, so it produces no run at all; an
+  inline review comment or a review body is a different event
+  (`pull_request_review_comment` or `pull_request_review`) that the workflow does not
+  listen to; and editing an existing comment is not `created`. Verified 2026-09-27: a
+  request written only into a PR description produced no run.
+- **Codex Cloud may review without a trigger, but it is not guaranteed.** With the
+  repository's current settings it can start automatically when a PR is opened or a
+  draft is marked ready, and it was observed to start on new commits pushed to an open
+  PR (PR #83). Configuration, allowance or service availability can stop it, so
+  follow the [request procedure](#event-driven-codex-cloud-reviews-owner-instruction-2026-09-25):
+  check for an existing exact-head request or a pending or completed review, and if
+  none covers the head, post one explicit request. It may be the only review of that
+  head. When a trigger is only being mentioned, write it without the at-sign (for
+  example "the codex-review trigger") or link this section instead: the at-sign still
+  costs allowance in a comment even when you meant to quote it. Whether a PR
+  description starts Codex has not been checked, so do not write it there either.
 - **Plain "Bob" starts nothing.** Neither does `@bobby`.
 - **Merge authority:** while Codex has no allowance, the owner's rule is to merge on
   Bob's `NO ISSUES` with green checks, and Codex reviews afterwards.
