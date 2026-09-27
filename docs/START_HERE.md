@@ -140,8 +140,9 @@ e. **Verdicts, and at which head:** Bob's `NO ISSUES` or `FLAGGED`
    *Proposed 2026-09-27, pending three-agent agreement:* no verdict is carried across
    a merge of the base, but earlier findings stay on record, and a reviewer who gave
    their own verdict at the old head may scope the new head's verdict to the conflict
-   resolution and to the base changes the contribution depends on, stating that scope,
-   instead of rereading the whole diff (step 5a) — see
+   resolution and to the base changes that depend on the contribution or that it
+   depends on, stating that scope, instead of rereading the whole diff (step 5a). Bob's
+   GitHub reviewer, which cannot see earlier comments, always reviews in full — see
    [verdicts and a base integration](AGENT_HANDOFF.md#verdicts-and-a-base-integration).
 
 Then act, in this priority:

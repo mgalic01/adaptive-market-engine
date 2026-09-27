@@ -134,7 +134,7 @@ was lost track of. So after a merge of the base:
    open; a merge never discharges it.
 2. **A new verdict at the new full head is still required,** with `test-and-audit`
    green at that head. Instead of rereading the whole diff (START_HERE step 5a), the
-   reviewer may scope that verdict to two things:
+   reviewer may scope that verdict to three things:
    1. **The conflict resolution.** `git show --format= --remerge-diff <new-head>`
       (Git 2.36 or later) prints only where the recorded merge differs from Git's own
       automatic merge: each resolved conflict, and any edit slipped into the merge
@@ -149,9 +149,22 @@ was lost track of. So after a merge of the base:
       Review every listed file that the contribution imports, calls, configures, tests
       against or cites in its prose. Review any change to `pyproject.toml`,
       `.github/`, configuration, dataset specs or masks whatever the contribution is.
+   3. **The base changes that depend on the contribution.** The edge runs both ways:
+      the base may add a caller of something whose meaning the PR changes. List every
+      symbol the contribution adds, removes or changes the meaning of — function,
+      class, constant, configuration key, command-line flag, file path, documented
+      rule or anchor — plus the module name of each contributed file. Search the
+      base's files for them at the new head:
+
+      ```
+      git grep -n -w -e <symbol> [-e <symbol> ...] <new-head> -- $(git diff --name-only $(git merge-base <new-head>^1 <new-head>^2) <new-head>^2)
+      ```
+
+      Review every file it reports. If the contribution changes behaviour that no name
+      captures, review the whole base delta.
 3. **The verdict states its scope:** the old and new heads, the reviewer's own old
-   verdict it relies on, the two commands above with their output, which base files it
-   reviewed, and which it judged unrelated and why.
+   verdict it relies on, the commands above with their output and the symbol list,
+   which base files it reviewed, and which it judged unrelated and why.
 4. **Scoping is allowed only** when the new head is one merge of the base whose first
    parent is the reviewed old head, with no other commit, **and** the reviewer scoping
    it gave a substantive verdict of their own at that old head. A reviewer may lean
@@ -159,6 +172,13 @@ was lost track of. So after a merge of the base:
    reviewer reviews the full diff. A rebase, a squash, an extra commit, or any change
    to the contribution itself means a full review, as before. So does a dependency set
    the reviewer cannot bound with confidence. When in doubt, review in full.
+5. **Bob's GitHub reviewer (`bob-review.yml`) never gives a scoped verdict.** Its only input is the
+   triggering comment, the PR description, the diff and the review index; it never
+   reads other PR comments (see
+   [low-cost working](#low-cost-working-owner-instruction-2026-09-25)). It cannot
+   see its own earlier verdict or the prior findings, so it always reviews in full.
+   The owner's desktop Bob session, which reads the thread, may scope like any other
+   reviewer.
 
 **Why no verdict is carried.** Two earlier drafts of this rule carried verdicts on a
 mechanical test, and review refuted both.
@@ -176,8 +196,15 @@ mechanical test, and review refuted both.
   and the `strategy.py` blob are identical, yet `accept(10)` turns from `False` to
   `True`. The scoped review above catches it: `limits.py` is in the base's list, and
   the contribution imports it.
+- The reverse direction needs its own check (Codex Cloud, on revision 4). The feature
+  changes `normalize()` in `metrics.py` from a percentage to a fraction; the base adds
+  `alerts.py`, which calls `normalize()` and compares the result with `50`. The merge
+  is clean, and the contribution imports nothing from `alerts.py`, so a forward-only
+  rule judges it unrelated. Yet `alert(80, 100)` is `True` on the base and `False`
+  after the merge. Item 2.3 catches it: searching the base's files for `normalize`
+  reports both lines of `alerts.py`.
 
-Any future mechanical exception needs adversarial fixtures like that one, and all
+Any future mechanical exception needs adversarial fixtures like these, and all
 three agents' agreement, before it is written down.
 
 ## When a reviewer is unavailable
@@ -220,11 +247,14 @@ magnitude:
 | Any other channel, including the opt-in local Codex reviewer | none defined | Report an unanswered request at the next check-in, under the existing breakage rule. |
 
 **When the clock starts.** From the exact-head request, posted with the full head SHA.
-For a review that starts on its own at a push — the automated review, or a Codex Cloud
-review already pending, where the
+For a review that starts on its own — the automated review, or a Codex Cloud review
+already pending, where the
 [event-driven rules](#event-driven-codex-cloud-reviews-owner-instruction-2026-09-25)
-tell agents not to post a request — from the time that head was pushed. Reposting does
-not restart the clock.
+tell agents not to post a request — from the moment that review became able to run at
+that head: the latest of the head being pushed while the PR was not a draft, the PR
+being opened as ready, marked ready for review, or reopened. A push while the PR is a
+draft starts nothing, because `claude-review.yml` skips draft PRs. Reposting does not
+restart the clock.
 
 **A new head always restarts it.** A request names one head, and an unanswered request
 for an old head says nothing about the new one. After any new head, including a merge of
