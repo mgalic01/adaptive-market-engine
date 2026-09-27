@@ -50,12 +50,15 @@ class PreflightTests(unittest.TestCase):
         ):
             self.assertEqual(0, preflight.main([]))
             self.assertEqual("wrong-checkout", os.environ["PYTHONPATH"])
-        self.assertEqual(4, len(self.calls))
+        self.assertEqual(6, len(self.calls))
         self.assertIn("--no-cache", self.calls[0][0])
         self.assertIn("--no-fix", self.calls[0][0])
         self.assertIn("--check", self.calls[1][0])
-        self.assertEqual("scripts/check_reports.py", self.calls[2][0][-1])
-        self.assertEqual(["pytest", "-p", "no:cacheprovider", "--", "tests"], self.calls[3][0][3:])
+        # The same paths CI type-checks and scans (quality.yml).
+        self.assertEqual(["mypy", "src", "scripts"], self.calls[2][0][3:])
+        self.assertEqual(["bandit", "-q", "-r", "src", "scripts"], self.calls[3][0][3:])
+        self.assertEqual("scripts/check_reports.py", self.calls[4][0][-1])
+        self.assertEqual(["pytest", "-p", "no:cacheprovider", "--", "tests"], self.calls[5][0][3:])
         for command, options in self.calls:
             self.assertEqual([sys.executable, "-B"], command[:2])
             self.assertEqual(self.root, options["cwd"])
@@ -67,6 +70,31 @@ class PreflightTests(unittest.TestCase):
             self.assertNotIn("PYTEST_ADDOPTS", options["env"])
             self.assertNotIn("PYTEST_PLUGINS", options["env"])
         self.assertIn("full pytest suite", self.stdout.getvalue())
+        self.assertIn(f"Interpreter: Python {sys.version.split()[0]}", self.stdout.getvalue())
+
+    def test_an_interpreter_below_the_floor_stops_before_any_check(self):
+        with (
+            patch.object(preflight.sys, "version_info", (3, 11, 15, "final", 0)),
+            patch.object(preflight.subprocess, "run", self.runner),
+        ):
+            self.assertEqual(2, preflight.main([]))
+        self.assertEqual([], self.calls)
+        self.assertIn("below the project floor 3.12", self.stderr.getvalue())
+
+    def test_a_newer_interpreter_runs_but_says_it_is_not_ci_evidence(self):
+        with (
+            patch.object(preflight.sys, "version_info", (3, 14, 0, "final", 0)),
+            patch.object(preflight.subprocess, "run", self.runner),
+        ):
+            self.assertEqual(0, preflight.main([]))
+        self.assertEqual(6, len(self.calls))
+        self.assertIn("not CI evidence", self.stdout.getvalue())
+
+    def test_the_floor_matches_pyproject(self):
+        text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+        floor = ".".join(map(str, preflight.FLOOR))
+        self.assertIn(f'requires-python = ">={floor}"', text)
+        self.assertIn(f'python_version = "{floor}"', text)
 
     def test_focused_files_are_normalized_deduplicated_and_labeled(self):
         with patch.object(preflight.subprocess, "run", self.runner):

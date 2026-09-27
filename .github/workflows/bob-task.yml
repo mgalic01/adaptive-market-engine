@@ -374,6 +374,11 @@ jobs:
           ref: main
           persist-credentials: false
 
+      # The validator runs on the project's floor, not the runner image's python3.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Download the worker's artifact
         id: download
         continue-on-error: true

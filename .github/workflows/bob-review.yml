@@ -51,6 +51,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The scripts below run on the project's floor, not on whatever python3 the
+      # runner image happens to ship.
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.ok == 'true'
+        with:
+          python-version: "3.12"
+
       - uses: actions/setup-node@v4
         if: steps.gate.outputs.ok == 'true'
         with:
