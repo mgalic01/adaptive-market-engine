@@ -66,17 +66,28 @@ e. **Verdicts, and at which head:** Bob's `NO ISSUES` or `FLAGGED`
    full head. Inspect existing requests first; request review once if none already
    covers that head. Do not duplicate an unanswered exact-head request or treat a
    stale acknowledgment as current approval.
+   *Proposed 2026-09-27, pending three-agent agreement:* a verdict may be **carried**
+   across a merge of the base when the diff outside the conflicted paths is verifiably
+   empty and the resolution itself is reviewed — see
+   [verdicts and a base integration](AGENT_HANDOFF.md#verdicts-and-a-base-integration).
 
 Then act, in this priority:
 
 1. a conflict or red CI on a PR you own;
 2. anything addressed to you: a question, a required fix, a FLAGGED;
-3. merges that are ready. The merge rule while Codex has no allowance
+3. merges that are ready. The merge rule while Codex is unavailable
    ([quick reference](AGENT_HANDOFF.md#quick-reference-how-to-reach-each-agent-keep-this-current)):
    the verdict `NO ISSUES` from Bob at the head (a reading of the diff), green
    `test-and-audit` at the head (evidence it runs), and no unaddressed required fix.
    Both verdicts are needed because they answer different questions. Use the merge method with the full head SHA. Codex
    reviews afterwards.
+   *Proposed 2026-09-27, pending three-agent agreement:* "unavailable" becomes a
+   defined state — allowance exhausted, **or** an exact-head request unanswered for 12
+   hours — and on a lapse only a documentation-only diff may merge, needing the
+   automated review's `APPROVE` as well as Bob's `NO ISSUES`. Anything touching `src/`,
+   `tests/`, `scripts/`, `.github/`, `pyproject.toml` or `SECURITY.md` escalates to the
+   owner instead. See
+   [when a reviewer is unavailable](AGENT_HANDOFF.md#when-a-reviewer-is-unavailable).
 
 ## 4. Sweep closed PRs and issues
 

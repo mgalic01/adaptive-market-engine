@@ -25,9 +25,10 @@ are in the sections below.
   starts a Bob review. When a trigger is only being mentioned, write it without the
   at-sign (for example "the codex-review trigger") or link this section instead.
 - **Plain "Bob" starts nothing.** Neither does `@bobby`.
-- **Merge authority:** while Codex has no allowance, the owner's rule is to merge on
+- **Merge authority:** while Codex is unavailable, the owner's rule is to merge on
   Bob's `NO ISSUES` with green checks, and Codex reviews afterwards.
-  See [what Bob's verdicts mean](#what-bobs-verdicts-mean).
+  See [what Bob's verdicts mean](#what-bobs-verdicts-mean) and
+  [when a reviewer is unavailable](#when-a-reviewer-is-unavailable).
 - **Codex's own work:** Claude or Bob must review the latest full head and post
   substantive feedback before Codex merges it, including documentation and delegated
   changes. Codex chooses the reviewer; unavailable review leaves the PR open.
@@ -56,6 +57,79 @@ are in the sections below.
 - **Breakage:** a failed Bob run posts an alert that names the owner. An agent that
   sees any other break, such as a usage-limit reply or an unanswered handoff, tells
   the owner in its next message.
+
+## Verdicts and a base integration
+
+**Proposed 2026-09-27, pending agreement from Claude, Codex and Bob. Until all three
+agree, the previous rule stands without exception: any push, including a merge of
+`main`, voids every verdict.**
+
+A verdict counts only at the head it names, and that stays true. But merging the base
+into a long-running PR changes the head while changing nothing a reviewer judged, so
+every verdict dies to an integration that altered no reviewed content. The longer a PR
+waits for a reviewer, the likelier it needs an integration — which destroys the
+approvals it was waiting to collect. On 2026-09-27, PR #83 lost Bob's `NO ISSUES` to
+an index merge that changed no prose at all, and the re-review cycle that followed is
+where an outstanding required fix was lost track of. The rule meant to protect review
+integrity was actively costing it.
+
+**Carrying a verdict across an integration.** Verdicts recorded at the previous head
+remain valid at the new head when *all* of these hold:
+
+1. The new head is a merge of the base into the PR branch, with no other commit.
+2. Outside the files that actually conflicted, the diff between the old and new heads
+   is **empty**. Verify it, do not assert it:
+   `git diff <old-head> <new-head> -- . ':!<each conflicted path>'` must print nothing.
+3. Each conflict resolution is itself reviewed at the new head. Carrying a verdict
+   carries it over the *reviewed content*, never over the resolution.
+4. The agent carrying it states in the PR comment: the old head, the new head, the
+   conflicted paths, the exact command from (2) and its empty output.
+
+If any condition fails — a rebase, a squash, an extra commit, a non-empty diff — every
+verdict is void as before. When in doubt, re-request; this shortens an accounting loop,
+it does not lower the bar for what gets read.
+
+## When a reviewer is unavailable
+
+**Proposed 2026-09-27, pending agreement from Claude, Codex and Bob. Until all three
+agree, the previous rule stands: the stop-gap applies only while Codex has no
+ChatGPT allowance.**
+
+The old wording keyed the stop-gap to Codex having *no allowance* — a statement about
+quota. The condition that actually stalls the queue is different: Codex Desktop has
+quota but is not **running**, because it has no inbound channel and only the owner can
+start it. Nothing in the handbook covered that, so a PR could wait indefinitely on a
+reviewer that no message can reach.
+
+A second gap sat beside it: an agent's stated intention to review — "I will review that
+final head for merge" — had no expiry and no fallback, so one sentence could block a PR
+with no documented way forward.
+
+**Unavailable** therefore means either of these, and replaces "has no allowance":
+
+- the reviewer has replied that its allowance is used up; or
+- an **exact-head review request has gone unanswered for 12 hours**, counted from when
+  the request was posted with the full head SHA. Reposting does not restart the clock;
+  a new head does.
+
+When a reviewer is unavailable, what follows depends on what the PR touches, because
+the two cases carry different risk:
+
+| The diff touches | On lapse |
+| --- | --- |
+| **Documentation only** — no file outside `docs/`, and no workflow, config or packaging file | The stop-gap merge rule applies, and needs **both** Bob's `NO ISSUES` **and** the automated review's `APPROVE` at the full head, plus green `test-and-audit`. Codex reviews afterwards. |
+| **Anything else** — `src/`, `tests/`, `scripts/`, `.github/`, `pyproject.toml`, `SECURITY.md` | A lapse **never** authorizes a merge. Escalate to the owner, naming the PR, the head, the waiting reviewer and how long it has waited. The PR stays open. |
+
+Requiring the automated review as well as Bob's is not belt-and-braces. On
+2026-09-27 at PR #83, Bob returned `NO ISSUES` on a documentation change while an
+already-required correction had been silently dropped from it; the automated review
+caught it by re-reading the source against the prose at that head. A reading-level
+verdict and a fresh source-versus-prose check answer different questions, and for
+documentation whose purpose is describing code, both are needed.
+
+Whoever merges under a lapse records in the merge message: the request that lapsed,
+when it was posted, and the verdicts relied on. A lapse is a documented exception, not
+a silent one.
 
 ## What Bob's verdicts mean
 
