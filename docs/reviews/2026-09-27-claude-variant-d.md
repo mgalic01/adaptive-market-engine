@@ -2,8 +2,9 @@
 
 2026-09-27. Named writer: Claude (subagent of the desktop session `a05e63c8`, isolated
 worktree). Branch `claude/variant-d-trend-benchmark`, created from `origin/main` at
-`b7a857b337c538311f754046542f5e7f5be56272`. The PR comment for the push names the
-head.
+`b7a857b337c538311f754046542f5e7f5be56272`; the code commit was then merged with `main`
+at `c3c8e250bc5ec8837498d47bd0090cc4bd8c2edc` (which includes variant B, PR #99). The
+PR comment for the push names the head.
 
 Scope: `src/crypto_grid_bot/strategy/daily_sma.py` (new),
 `src/crypto_grid_bot/backtest/trend_benchmark.py` (new), one opt-in flag in
@@ -142,12 +143,14 @@ fees are computed by hand from the adapter's rounding and written as literals.
 
 ## Verification actually run
 
-Windows 10, Python 3.14, in the isolated worktree, before the push:
+Windows 10, Python 3.14.7, in the isolated worktree, on the merge with `main`
+`c3c8e25`, before the push:
 
-- `PYTHONUTF8=1 python -m pytest -q`: 458 passed, 2 skipped (the existing Windows
-  symlink skips), 567 subtests. On the same base without this change: 433 passed.
+- `PYTHONUTF8=1 python -m pytest -q`: 482 passed, 2 skipped (the existing Windows
+  symlink skips), 571 subtests; 25 of the passes are the new tests. Before the merge,
+  on base `b7a857b`: 433 passed without this change, 458 with it.
 - `python -m ruff check .`, `python -m ruff format --check .`: clean.
-- `python -m mypy` (strict, `src`): no issues in 39 files.
+- `python -m mypy` (strict, `src`): no issues in 40 files.
 - `python scripts/check_reports.py`: 0 problems.
 
 ## Limits
