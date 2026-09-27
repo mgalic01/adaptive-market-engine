@@ -40,6 +40,9 @@ from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_co
 
 DEFAULT_CAPITAL = D("100")
 SCHEMA = 4
+# Risk results that let a paused account count towards recovery. A soft drawdown only
+# shrinks new buys (capital_multiplier); it never blocks trading on its own.
+RECOVERABLE = (RiskAction.ALLOW, RiskAction.REDUCE)
 
 
 class TransientFrame(ValueError):
@@ -199,7 +202,7 @@ class PaperSimulator:
         account.recovery_count = 0
         account.draining = True
 
-    def _risk_action(self, account: Account, quote: Quote, emergency: bool) -> RiskAction:
+    def _risk_action(self, account: Account, quote: Quote, emergency: bool) -> RiskDecision:
         equity = account.equity(quote, self.rules)
         result = self.risk.evaluate(
             PortfolioSnapshot(
@@ -214,9 +217,16 @@ class PaperSimulator:
             self.risk_observer(equity, account.risk_high, result)
         if result.action == RiskAction.EXIT:
             self._halt(account, "; ".join(result.reasons), exit_requested=True)
-        elif result.action != RiskAction.ALLOW and not account.halt:
+        elif result.action == RiskAction.PAUSE and not account.halt:
             self._pause(account, "; ".join(result.reasons))
-        return result.action
+        return result
+
+    @staticmethod
+    def _scale(decision: RiskDecision) -> Decimal:
+        """Fraction of the normal size for new buys: below one only on a soft drawdown."""
+        if decision.action != RiskAction.REDUCE:
+            return ONE
+        return D(str(decision.capital_multiplier))
 
     def _validate_frame(self, account: Account, frame: Frame) -> None:
         quote = frame.quote
@@ -317,7 +327,8 @@ class PaperSimulator:
         account.last_observed, account.last_received = quote.observed_at, quote.received_at
         self._mark(account, quote, self.rules)
         report.update(regime=regime.regime.value, opportunity_score=score.score)
-        action = self._risk_action(account, quote, frame.signals.emergency)
+        decision = self._risk_action(account, quote, frame.signals.emergency)
+        action = decision.action
         if account.halt:
             if account.liquidating:
                 report["fills"] = [asdict(fill) for fill in liquidate(account, quote, self.rules)]
@@ -345,7 +356,7 @@ class PaperSimulator:
             )
             if (
                 account.inventory == ZERO
-                and action == RiskAction.ALLOW
+                and action in RECOVERABLE
                 and score.eligible
                 and (back_inside or cooled)
             ):
@@ -357,7 +368,7 @@ class PaperSimulator:
         else:
             if not score.eligible:
                 self._pause(account, "; ".join(score.reasons))
-            elif account.pause and action == RiskAction.ALLOW:
+            elif account.pause and action in RECOVERABLE:
                 account.recovery_count += 1
                 if account.recovery_count >= self.policy.recovery_frames:
                     account.pause = ""
@@ -370,12 +381,8 @@ class PaperSimulator:
                     self.rules,
                     recycle=not account.pause and not account.draining and frame.allow_new_grid,
                     epoch=frame.epoch,
-                    reentry_quantity=(
-                        None
-                        if self.policy.inventory_cap is None
-                        else lambda order_id, price, quantity: self._cap(
-                            account, quote, capped, order_id, price, quantity
-                        )
+                    reentry_quantity=self._reentry_quantity(
+                        account, quote, capped, self._scale(decision)
                     ),
                 )
             ]
@@ -401,7 +408,7 @@ class PaperSimulator:
 
         # Recheck risk after any fills, but never reuse this event's liquidity for an exit.
         if report["fills"]:
-            self._risk_action(account, quote, frame.signals.emergency)
+            decision = self._risk_action(account, quote, frame.signals.emergency)
         if not account.halt and account.inventory == ZERO:
             # A flat account is a safe harvest point even with unused deeper buys.
             # Do this only after sells, draining, or when all orders are already gone.
@@ -415,7 +422,9 @@ class PaperSimulator:
                     account.draining = False
                     if not account.pause and not account.range_exit and frame.allow_new_grid:
                         try:
-                            report["opened"] = self._open_grid(account, frame, capped)
+                            report["opened"] = self._open_grid(
+                                account, frame, capped, self._scale(decision)
+                            )
                             report["decision"] = "open_grid"
                         except GridNotViable as exc:
                             report.update(decision="cash", reason=str(exc))
@@ -425,6 +434,8 @@ class PaperSimulator:
             report.update(decision="pause", reason=account.pause)
         if self.policy.inventory_cap is not None:
             report["capped"] = capped
+        if self._scale(decision) < ONE and not account.halt:
+            report["capital_multiplier"] = self._scale(decision)
         report["cancelled"] = sorted(
             previous_orders - account.orders.keys() - {fill["order_id"] for fill in report["fills"]}
         )
@@ -462,7 +473,8 @@ class PaperSimulator:
             day = timestamp(frame.quote.observed_at).date().isoformat()
             if account.day != day:
                 account.day, account.day_start = day, account.last_equity
-            if self._risk_action(account, frame.quote, frame.signals.emergency) != RiskAction.ALLOW:
+            risk = self._risk_action(account, frame.quote, frame.signals.emergency)
+            if risk.action != RiskAction.ALLOW:
                 raise ValueError("resume blocked by current risk limits; baselines are preserved")
             previous_halt = account.halt
             account.halt = ""
@@ -544,11 +556,32 @@ class PaperSimulator:
             )
         return allowed
 
-    def _open_grid(self, account: Account, frame: Frame, capped: list[dict[str, Any]]) -> list[str]:
+    def _reentry_quantity(
+        self, account: Account, quote: Quote, capped: list[dict[str, Any]], scale: Decimal
+    ) -> Callable[[str, Decimal, Decimal], Decimal] | None:
+        """Sizing for reentry buys: None keeps V0's sold quantity unchanged."""
+        if scale == ONE and self.policy.inventory_cap is None:
+            return None
+
+        def quantity(order_id: str, price: Decimal, requested: Decimal) -> Decimal:
+            allowed = floor_step(requested * scale, self.rules.quantity_step)
+            if allowed * price < self.rules.minimum_notional:
+                return ZERO
+            return self._cap(account, quote, capped, order_id, price, allowed)
+
+        return quantity
+
+    def _open_grid(
+        self,
+        account: Account,
+        frame: Frame,
+        capped: list[dict[str, Any]],
+        scale: Decimal = ONE,
+    ) -> list[str]:
         rules, quote = self.rules, frame.quote
         spread = (quote.ask - quote.bid) / quote.ask
         cost = 2 * (rules.fee_rate + rules.slippage_rate) + spread
-        budget = account.available_quote(rules) * D("0.8")
+        budget = account.available_quote(rules) * D("0.8") * scale
         plan = self.builder.build(
             symbol=rules.symbol,
             fair_value=float(frame.fair_value),
