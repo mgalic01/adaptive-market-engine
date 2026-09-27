@@ -26,6 +26,7 @@ from crypto_grid_bot.simulation.execution import (
     liquidate,
     place,
     reduce_unreserved,
+    unpaired_inventory,
 )
 from crypto_grid_bot.simulation.models import Account, D, LimitOrder, MarketRules, Quote
 from crypto_grid_bot.simulation.runner import PaperSimulator
@@ -62,8 +63,8 @@ class RefusalReasonTests(TestCase):
         self.assertEqual("depth", result.blocked)
         self.assertEqual(D("200"), result.quantity)
         self.assertEqual(D("4.596"), result.notional)
-        self.assertEqual(D("5000"), result.unreserved)
-        self.assertEqual(D("114.90"), result.unreserved_notional)
+        self.assertEqual(D("5000"), result.outstanding)
+        self.assertEqual(D("114.90"), result.outstanding_notional)
         self.assertEqual(D("5000"), account.inventory)
 
     def test_thin_book_never_progresses_and_never_raises(self):
@@ -77,7 +78,7 @@ class RefusalReasonTests(TestCase):
         result = reduce_unreserved(account, quote(size="10000000"), RULES)
         self.assertEqual([], result.fills)
         self.assertEqual("dust", result.blocked)
-        self.assertEqual(D("4.596"), result.unreserved_notional)
+        self.assertEqual(D("4.596"), result.outstanding_notional)
 
     def test_a_liquidation_that_can_trade_reports_no_block(self):
         account = holding("5000")
@@ -90,7 +91,29 @@ class RefusalReasonTests(TestCase):
         place(account, LimitOrder("s", "sell", D("0.02400"), D("500"), D("500")), RULES)
         result = reduce_unreserved(account, quote(size="10000000"), RULES)
         self.assertEqual(("reserved", []), (result.blocked, result.fills))
-        self.assertEqual(D("0"), result.unreserved)
+        self.assertEqual(D("0"), result.outstanding)
+
+    def test_a_bounded_drain_reports_only_what_it_was_asked_to_clear(self):
+        # A resting buy filled 300 of 400 units sits alongside a 100-unit dust residue,
+        # so unreserved inventory is 400 but only 100 is stuck. Reporting the whole 400
+        # would put ~4x the real value into max_unsellable_notional, which reads as
+        # trapped capital; the buy's 300 are simply waiting for their own paired sell.
+        account = holding("400")
+        order = LimitOrder("grid/1", "buy", D("0.02200"), D("400"), D("100"))
+        account.orders[order.order_id] = order
+        self.assertEqual(D("100"), unpaired_inventory(account))
+        result = reduce_unreserved(account, quote(size="10000000"), RULES, maximum=D("100"))
+        self.assertEqual("dust", result.blocked)
+        self.assertEqual(D("100"), result.outstanding)
+        self.assertEqual(D("100") * D("0.02298"), result.outstanding_notional)
+        self.assertEqual(D("400"), account.inventory)
+
+    def test_an_unbounded_drain_still_reports_the_whole_unreserved_balance(self):
+        account = holding("5000")
+        result = reduce_unreserved(account, quote(), RULES)
+        self.assertEqual(
+            (D("5000"), D("114.90")), (result.outstanding, result.outstanding_notional)
+        )
 
     def test_a_full_liquidation_leaves_dust_and_says_so(self):
         account = holding("5000")

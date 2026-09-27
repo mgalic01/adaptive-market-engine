@@ -21,9 +21,12 @@ DEVELOPMENT_END = "2024-12"
 def development_month(month: str) -> str:
     """``month`` if it is inside the development window; DataError otherwise."""
     try:
-        datetime.strptime(month, "%Y-%m")
+        parsed = datetime.strptime(month, "%Y-%m")
     except ValueError as exc:
         raise DataError("month must be YYYY-MM") from exc
-    if month > DEVELOPMENT_END:
+    # Compare the parsed date, not the text: strptime accepts an unpadded month, and
+    # "2024-9" > "2024-12" as a string, so a hand-edited spec could be refused as
+    # reserved although it is inside the window.
+    if parsed.strftime("%Y-%m") > DEVELOPMENT_END:
         raise DataError(f"{month} is in the reserved window; audits stop at {DEVELOPMENT_END}")
     return month

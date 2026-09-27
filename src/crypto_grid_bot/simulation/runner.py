@@ -295,7 +295,7 @@ class PaperSimulator:
         # distinguishable from one that attempted none: a rejected or halting frame
         # returns before this and carries no key at all.
         report["exit_blocked"] = result.blocked if result.blocked in ("depth", "dust") else ""
-        report["exit_blocked_notional"] = result.unreserved_notional
+        report["exit_blocked_notional"] = result.outstanding_notional
 
     @staticmethod
     def _mark(account: Account, quote: Quote, rules: MarketRules) -> None:

@@ -216,7 +216,7 @@ class Reduction:
     * ``depth`` - the per-frame participation chunk is below the minimum notional
       although the unreserved position is not. Waiting for a deeper bid is the only
       lawful course; the wait may never end, so it is reported on every frame.
-    * ``dust`` - the whole unreserved position is below the minimum notional at this
+    * ``dust`` - the whole outstanding position is below the minimum notional at this
       bid. No later frame and no extra depth can clear it; only a higher price can.
     * ``reserved`` - every unit of inventory is already reserved by a resting sell, so
       there is nothing for this exit to do. Not a minimum-notional refusal.
@@ -227,9 +227,13 @@ class Reduction:
     # The chunk this frame could have sold, and its value at the exit price.
     quantity: Decimal = ZERO
     notional: Decimal = ZERO
-    # Inventory not reserved by a resting sell, and its value at the exit price.
-    unreserved: Decimal = ZERO
-    unreserved_notional: Decimal = ZERO
+    # What this attempt was asked to clear, and its value at the exit price: the
+    # unreserved inventory, or the ``maximum`` bound when the caller drains only part of
+    # it. Never the whole unreserved balance when a bound was given -- the excluded part
+    # belongs to a resting buy and is not stuck, so reporting it would overstate how
+    # much value an exit cannot shift.
+    outstanding: Decimal = ZERO
+    outstanding_notional: Decimal = ZERO
 
 
 def reduce_unreserved(
@@ -249,7 +253,7 @@ def reduce_unreserved(
     quote.validate(rules)
     account.validate(rules)
     nonnegative(consumed)
-    price = floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
+    price = exit_price(quote, rules)
     unreserved = account.inventory - account.reserved_base()
     # ``maximum`` limits the exit to one part of the unreserved inventory, such as a
     # residue, when the rest belongs to a buy still resting on the book.
@@ -259,9 +263,10 @@ def reduce_unreserved(
     quantity = floor_step(min(target, capacity), rules.quantity_step)
 
     def outcome(blocked: str, fills: list[Fill] | None = None) -> Reduction:
-        return Reduction(
-            fills or [], blocked, quantity, price * quantity, unreserved, price * unreserved
-        )
+        # ``target``, not ``unreserved``: what a bounded drain leaves behind is what it
+        # was asked to clear, never the resting buy's filled inventory it deliberately
+        # excluded.
+        return Reduction(fills or [], blocked, quantity, price * quantity, target, price * target)
 
     if target <= ZERO:
         return outcome("reserved" if account.inventory > ZERO else "")
