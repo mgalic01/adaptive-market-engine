@@ -20,10 +20,18 @@ are in the sections below.
 
 **Important distinctions:**
 - **`@bob` never runs anything.** Commands need `/bob-run` or a merged task file.
-- **Trigger words fire wherever they appear** in a PR description or comment, even
-  inside backticks or quotes. `@codex review` spends Codex allowance, and `@bob`
-  starts a Bob review. When a trigger is only being mentioned, write it without the
-  at-sign (for example "the codex-review trigger") or link this section instead.
+- **A trigger fires anywhere in a comment, even inside backticks or quotes — but a PR
+  description is not a comment.** `bob-review.yml` listens to `issue_comment` only
+  (`on: issue_comment: types: [created]`), so **`@bob` in a PR description starts
+  nothing at all, and fails silently**: no run appears, and the author is left
+  believing a review was requested. Ask Bob in a **comment**, every time. Verified
+  2026-09-27 after a request written into a PR description produced only `skipped`
+  runs. Codex Cloud is different: it reviews on PR opened, draft marked ready, and
+  **new commits pushed to an open PR**, so a Codex review arrives with or without a
+  trigger, and a comment trigger only adds an extra review. When a trigger is only
+  being mentioned, write it without the at-sign (for example "the codex-review
+  trigger") or link this section instead — the at-sign still costs allowance in a
+  comment even when you meant to quote it.
 - **Plain "Bob" starts nothing.** Neither does `@bobby`.
 - **Merge authority:** while Codex has no allowance, the owner's rule is to merge on
   Bob's `NO ISSUES` with green checks, and Codex reviews afterwards.
