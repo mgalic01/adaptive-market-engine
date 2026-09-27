@@ -20,6 +20,11 @@
 - `practice-2022`: **all SOLUSDT runs are invalid** (the harness marked them so):
   82,792 frames rejected because today's SOL tick (0.01) at 2022 prices of $10–14,
   rounded outward on both sides, makes the simulated spread exceed the 0.15% limit.
+  *Correction 2026-09-27: SOL's 2022-06 to 2023-01 range in the archives is $8.00 to
+  $48.38, not $10–14. Two ticks exceed the 0.15% limit only below $13.33, so the
+  rejection bit for part of the window, not all of it: 82,792 of 352,800 frames (23.5%),
+  consistent with SOL trading below $13.33 for roughly a quarter of the window. The runs
+  are still invalid; the stated mechanism was right but its price range was not.*
   The SOL numbers are excluded below. BTC and XRP runs have no rejected frames.
 
 ## Results (return %, both intrabar paths)
@@ -82,6 +87,19 @@ the profit of paired buy→sell cycles.
    returns: their busiest day was 76, 50, 48 and 52 requests (previously reported 64, 44,
    42 and 46), against Revolut X's 1,000. The other runs were not re-run, so no
    corrected global maximum is claimed; their stored counts are lower bounds.
+   *Correction 2026-09-27, three points:*
+   - *The "previously reported" four are not the four busiest runs. Ranked by busiest
+     day, the 0%/0.09% non-SOL values are 64, 59, 46, 46 and 44; this list omits 59 and
+     includes 42. No `results.json` present in the repository reproduces the corrected
+     76, 50, 48 and 52, so those four figures cannot be checked here.*
+   - *"The other runs were not re-run" stopped being true after this report's last
+     commit (`f1c481d`, 17:52 UTC). Full post-fix re-runs of both datasets at 0.1%/0.1%
+     followed at 20:49 and 21:02 UTC, with returns identical to the earlier 0.1% runs and
+     corrected request counts.*
+   - *One of those re-runs records SOLUSDT gated at **3,360 requests on one day**, 3.4
+     times Revolut X's 1,000. The SOL runs are invalid (above), so this is not a finding
+     about the strategy, but it is an over-budget day this report did not mention under
+     a heading saying the budget did not bind.*
 6. **Harness issues found:** today's tick size applied to much lower historical prices
    (SOL) and a range-exit counter that counted rejected frames (fixed in `f136773`).
 

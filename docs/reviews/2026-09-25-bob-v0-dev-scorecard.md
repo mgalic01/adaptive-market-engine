@@ -115,8 +115,13 @@ verify-2024h1) has zero rejected frames. Assertion verified in `data/score.py`.
 This matches the exchange-filter cause described in §5 and in
 `docs/backtests/fee-levels-2026-09.md` (Validity section): today's SOL tick (0.01)
 at 2022 prices of roughly $10–14 makes the simulated spread exceed the 0.15% limit.
+*Correction 2026-09-27:* *the archives give SOL a 2022-06 to 2023-01 range of $8.00 to $48.38; two ticks
+exceed 0.15% only below $13.33, which is why 23.5% of frames (82,792 of 352,800) were
+rejected rather than all of them.*
 The `transient_pauses` field in `results.json` is produced by `result_failures()` in
 `__main__.py`.
+*Correction 2026-09-27:* *it is a `Metrics` field counted and written by `backtest/replay.py` (lines 413
+and 719 at `8a45cb5`); `result_failures()` only reads it to build the failure list.*
 
 **Mask decision:** SOLUSDT is excluded from practice-2022 for every variant.
 This is a mask exclusion (§5), not a failed V0 run, and does not count under C4.
@@ -193,7 +198,9 @@ Fields sourced from `results.json`: `max_drawdown_pct` (total-equity drawdown), 
 **C1(a): FAIL** (5 of 8 included runs exceed 10%)
 **C1(b): FAIL** (same 5 runs; no hard-drawdown halts in any run)
 
-Note: `active_max_drawdown_pct` is consistently 0.04–0.27 pp higher than `max_drawdown_pct`
+Note (Correction 2026-09-27: *the range read from the table above is 0.02–0.26 pp, from 0.0232 for
+verify-2024h1 BTCUSDT high_first to 0.2557 for practice-2022 XRPUSDT low_first; it was
+stated as 0.04–0.27*): `active_max_drawdown_pct` is consistently higher than `max_drawdown_pct`
 because the active-equity drawdown is measured against a separate `risk_high` watermark
 (sampled at every pre/post-fill risk evaluation), while total-equity drawdown is measured
 against the peak total equity.
@@ -253,7 +260,9 @@ Per-run detail:
 | verify-2024h1 | BTCUSDT | low_first | 42 | 21/13 | 1.6154 | 5.06 | 10 |
 
 Mean rate (exact): sum = (81+87+99+100)/35 + (11+11+21+42)/26 = 367/35 + 85/26 = 9542/910 + 2975/910
-= 12517/7280. Mean = (12517/7280) / 8 = 12517/7280. Wait — sum of 8 rates divided by 8:
+= 12517/910. *Correction 2026-09-27:* *this line first printed `12517/7280` and then "Wait —"; the sum is
+12517/910, as the working below shows. The final mean is unaffected.* Sum of 8 rates
+divided by 8:
 sum = 81/35 + 87/35 + 99/35 + 100/35 + 11/26 + 11/26 + 21/26 + 42/26
     = 367/35 + 85/26
     = (367×26 + 85×35) / (35×26)
@@ -409,8 +418,9 @@ for BTC and XRP (no rejected frames) it changes nothing." The current commit is
 
 **For the spec (Claude):**
 
-5. **C1 threshold precision.** Three of the four failing runs are within 1 pp of 10%
-   (10.0008, 10.0561, 10.4723, 10.9344%). The ADAUSDT cases are within 0.1 pp. The spec
+5. **C1 threshold precision.** *Correction 2026-09-27:* *C1 fails **five** runs, not four (§6 above), and
+   **all five** are within 1 pp of 10%:* 10.0008, 10.0561, 10.3249, 10.4723 and 10.9344%
+   *(the verify-2024h1 BTCUSDT low_first run at 10.3249% was missing from this list).* The ADAUSDT cases are within 0.1 pp. The spec
    says "≤ 10%" without a tolerance band. This is intentional (owner decision), but the
    scoring code should not round before comparison. Worth a comment in the spec that the
    10% bound is exact.

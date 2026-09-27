@@ -7,8 +7,9 @@ actually contacts is worse than no list, because it reads as an exhaustive one.
 
 What this checks, exactly:
 
-- **Binance hostnames only**: subdomains of ``binance.vision`` or ``binance.com``, in any
-  letter case, found anywhere in ``src/*.py`` text, comments and docstrings included.
+- **Binance hostnames only**: ``binance.vision`` or ``binance.com`` or any subdomain of
+  either, in any letter case, found anywhere in ``src/**/*.py`` (every Python file under
+  ``src/``, recursively) text, comments and docstrings included.
   Any other host, another exchange's for example, is not looked for and passes unnoticed.
 - **Exact membership** in the block between the ``allowed-hosts`` markers in
   ``SECURITY.md``, compared lowercased, since hostnames are case-insensitive. A host is
@@ -36,7 +37,9 @@ POLICY = ROOT / "SECURITY.md"
 # Deliberately broad within Binance: a trading host this project must never use has to
 # surface here rather than pass silently.
 # Hostnames are case-insensitive, so both sides are matched in any case and lowercased.
-HOSTNAME = re.compile(r"\b[a-z0-9][a-z0-9.-]*\.binance\.(?:vision|com)\b", re.I)
+# The subdomain is optional: an apex host such as binance.com is as reachable as
+# api.binance.com, and a pattern requiring a subdomain let it through unnoticed.
+HOSTNAME = re.compile(r"\b(?:[a-z0-9][a-z0-9.-]*\.)?binance\.(?:vision|com)\b", re.I)
 BEGIN = "<!-- allowed-hosts:begin"
 END = "<!-- allowed-hosts:end -->"
 LISTED = re.compile(r"^\s*- `([a-z0-9][a-z0-9.-]*)`", re.M | re.I)
@@ -138,6 +141,23 @@ class ExactMembershipTests(unittest.TestCase):
         self.assertEqual(undocumented(hosts_in(text), allowed_hosts(self.POLICY)), [])
         upper_policy = self.POLICY.replace("`data-api.binance.vision`", "`DATA-API.BINANCE.VISION`")
         self.assertEqual(allowed_hosts(upper_policy), {"data-api.binance.vision"})
+
+    def test_an_apex_host_is_detected_like_a_subdomain(self):
+        # A pattern that required a subdomain let https://binance.com/... through
+        # unnoticed, although it is as reachable as api.binance.com.
+        for text, host in (
+            ('URL = "https://binance.com/api/v3/order"\n', "binance.com"),
+            ('URL = "https://binance.vision/data"\n', "binance.vision"),
+            ('URL = "https://api.binance.com/o"\n', "api.binance.com"),
+        ):
+            with self.subTest(host=host):
+                self.assertEqual(hosts_in(text), {host})
+                self.assertEqual(undocumented(hosts_in(text), set()), [host])
+
+    def test_a_lookalike_domain_is_not_mistaken_for_binance(self):
+        for text in ('x = "notbinance.com"\n', 'x = "mybinance.vision"\n'):
+            with self.subTest(text=text):
+                self.assertEqual(hosts_in(text), set())
 
     def test_reversed_markers_fail_loudly(self):
         # With the end marker first, a naive split reads to the end of the file, so a

@@ -27,7 +27,7 @@ time>/` (`results.json` and `summary.md`), which is not committed.
 
 ## Data
 
-- **Source:** Binance monthly spot kline archives (`data/spot/monthly/klines/<SYMBOL>/<1m|1h>/`).
+- **Source:** Binance monthly spot kline archives (`data/spot/monthly/klines/<SYMBOL>/<1m|1h|1d>/`).
 - **Format** (verified 2026-09-24 on real files): one headerless 12-column CSV per zip.
   Timestamps are milliseconds up to 2024-12 and microseconds from 2025-01; both are
   normalised to milliseconds and checked to be exact candle boundaries.
@@ -40,12 +40,17 @@ time>/` (`results.json` and `summary.md`), which is not committed.
     as `missing` and never filled in.
 - **Files per dataset:** 1m klines for traded pairs cover the evaluation window only;
   1h klines for traded pairs, the market proxy and the breadth basket also cover the
-  warm-up months.
+  warm-up months. When a spec declares `daily_warmup_start`, 1d klines for the traded
+  pairs and the market proxy cover that month onward (spec v1 P3).
 - **Exchange filters** (tick size, quantity step, minimum notional) are today's values
   from the public API, applied historically. This is an approximation and is recorded
   as such in the manifest.
 - **Chronology cross-check:** `verify` aggregates every traded pair's 1m bars into hours
-  and compares open, high, low, close and volume exactly with Binance's own 1h archive.
+  and compares them with Binance's own 1h archive. Open, high, low and close must match
+  exactly. **Volume is compared within a 0.1% tolerance** (`VOLUME_DRIFT_TOLERANCE`, rules
+  `drift-tolerance-v1`, an owner decision recorded in spec v1 §5); an hour inside it is
+  counted as `hours_volume_drift` and is not a failure. `--strict-volume` restores exact
+  matching and records the rules as strict. Results record which rules were used.
 
 ## From klines to simulator quotes
 
@@ -184,12 +189,18 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
 
 - Every file matches the manifest before the run starts.
 - **Chronology gate** (R1 of Codex's review), resolved *before* any replay starts:
-  - aggregated 1m bars match Binance's 1h archive exactly;
+  - aggregated 1m bars match Binance's 1h archive: prices exactly, volume within the
+    tolerance above (exactly under `--strict-volume`);
   - no official hour in the window lacks minute data;
   - no hour is missing from both sources;
-  - no hour is missing individual minutes. Exact OHLCV equality cannot reveal a missing
+  - no hour is missing individual minutes. Bar equality cannot reveal a missing
     zero-volume minute, so these are counted directly.
-  - Any non-zero count makes `verify` and `run` exit with code 2, and nothing replays.
+  - when the spec declares daily history, every day in its window appears exactly once
+    and equals the aggregation of its 24 hourly bars, with enough completed days of
+    warm-up (`daily_days_mismatched`, `_missing`, `_duplicated`, `_hours_incomplete`,
+    `daily_warmup_short`).
+  - Any non-zero count of those fields makes `verify` and `run` exit with code 2, and
+    nothing replays. `hours_volume_drift` is reported but is not one of them.
   - Gaps from a genuine listing or delisting are not exempted yet; such a dataset must
     first declare them explicitly.
 - **Run validity:** accounting problems, rejected frames or zero evaluation bars mark the

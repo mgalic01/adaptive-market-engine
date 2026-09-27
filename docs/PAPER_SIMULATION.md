@@ -151,7 +151,7 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Schema 1-3 databases are rejected by version 0.6; no implicit
+initial cash. **Schema 1-3 databases are rejected, from version 0.6 on; no implicit
 migration or reset occurs.** Preserve old experiments with the old code, or start a
 clearly separate schema 4 experiment. Never edit identity/state to bypass risk history.
 The frame-gap policy (added in 0.5.1/0.6) is part of saved identity, so experiments

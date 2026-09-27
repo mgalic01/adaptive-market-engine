@@ -22,7 +22,7 @@ than simply holding? The diagnostic
 grid sells realised gains, and forced marketable exits realised as much or more in
 losses.
 
-## 2. Prerequisites (implemented and reviewed before any variant run)
+## 2. Prerequisites (to be implemented and reviewed before any variant run)
 
 These are measurement and data changes, with two qualified exceptions:
 - **P4 can change V0 decisions** on formerly invalid SOL runs. Those runs become a
@@ -573,6 +573,13 @@ included runs (every included pair, window and path):
 | C5 | **Minimum activity:** for each included run, its rate = completed cycles (P7) ÷ (evaluation window length in days ÷ 7). The window is `[start of the start month, end of the end month)` in UTC, the same for every run in a dataset, whether or not the run halted. C5 = the arithmetic mean of the per-run rates over all included runs (equal weight), computed exactly (no rounding), and must be **≥ 1**. The ISO-week counter is reported, not scored. The share of bars holding inventory is reported. | Owner's compromise on Bob's 10%-invested rule |
 | C6 | **The gate earns its place:** in at least **60%** of included runs, the variant's return ÷ max(max drawdown, 0.1 percentage points) exceeds that of the **ungated V0 baseline** in the same pair, window and path. | Bob |
 | R1 | **Economics, reported only:** the capital at which the mean monthly return would cover €5/month of hosting (5 ÷ mean monthly return fraction), or "not reachable" if the mean return is ≤ 0. Running on the owner's own PC costs €0 in hosting. | Bob, as information |
+
+*Note on units (added 2026-09-27, clarification only; no criterion changes).* Every
+replay result is in USDT quote units with no EUR conversion
+([BACKTEST_METHOD](BACKTEST_METHOD.md), "Currency"), and capital is 100 quote units per
+pair (§4). R1's hosting cost is in euros. R1's arithmetic is sound because a monthly
+return *fraction* has no unit, but it assumes the USDT return equals the EUR return,
+i.e. it ignores EUR/USDT exchange-rate movement over the month.
 
 **Selection (deterministic):**
 1. The **eligible set** is the passing variants among V0, A, B, C, E (only after Codex's

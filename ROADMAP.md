@@ -41,8 +41,10 @@ Continue broader infrastructure only if the results justify it.
 
 Status (v0.8): harness v1 is implemented and verified on two pairs over a development
 window ([method](docs/BACKTEST_METHOD.md), [report](docs/backtests/verify-2024h1.md)).
-Next: owner agreement on the proposed acceptance criteria, then the multi-market,
-survivorship-aware run on an untouched window.
+The owner confirmed the acceptance criteria (C1–C6) on 2026-09-24
+([record](docs/reviews/2026-09-24-owner-decisions-confirmed.md)); spec v1 is still a draft
+and is not yet frozen. Next: the multi-market, survivorship-aware run on an untouched
+window, once spec v1 is frozen.
 
 ## 3. Read-only market-data shadow mode (partly implemented; expansion deferred)
 
@@ -71,7 +73,10 @@ mark-to-market losses, delistings, and point-in-time universes. Compare cash,
 buy-and-hold and static-grid baselines. Report total equity including reserve,
 drawdown, turnover, costs and uncertainty. Do not optimize solely for win rate
 or realized grid profit while ignoring inventory losses. News cannot create
-orders or override risk controls. Revisit heuristic thresholds using held-out data.
+orders or override risk controls. Fix heuristic thresholds on development data before
+any held-out run; the held-out run tests them and never tunes them. Revisiting a
+threshold after seeing held-out results would spend the holdout (START_HERE step 1,
+"No tuning after seeing results").
 
 Gate: documented results and failure tests; no guaranteed return assumptions.
 

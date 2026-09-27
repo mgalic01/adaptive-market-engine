@@ -6,7 +6,12 @@
 - **Context:** The `practice-2022` SOL runs are currently invalid because today's SOL
   tick size (0.01), applied to 2022 prices of $10–14 and rounded outward on both sides,
   inflates the simulated spread above the 0.15% eligibility limit. 82,792 frames were
-  rejected and all SOL runs were correctly marked invalid. This decision resolves
+  rejected and all SOL runs were correctly marked invalid.
+  *Correction 2026-09-27, to the context only; the decision below is unchanged. The
+  archives give SOL a 2022-06 to 2023-01 range of $8.00 to $48.38, not $10–14. Two
+  ticks exceed 0.15% only below $13.33, so the rejection applied to part of the window —
+  82,792 of 352,800 frames (23.5%) — rather than to all of it. The mechanism described
+  here is right; only its price range was.* This decision resolves
   harness problem 4.1 from
   [`2026-09-24-claude-fees-and-strategy-plan.md`](2026-09-24-claude-fees-and-strategy-plan.md).
 
