@@ -7,13 +7,15 @@ actually contacts is worse than no list, because it reads as an exhaustive one.
 
 What this checks, exactly:
 
-- **Binance hostnames only**: subdomains of ``binance.vision`` or ``binance.com``, found
-  anywhere in ``src/*.py`` text, comments and docstrings included. Any other host,
-  another exchange's for example, is not looked for and passes unnoticed.
+- **Binance hostnames only**: subdomains of ``binance.vision`` or ``binance.com``, in any
+  letter case, found anywhere in ``src/*.py`` text, comments and docstrings included.
+  Any other host, another exchange's for example, is not looked for and passes unnoticed.
 - **Exact membership** in the block between the ``allowed-hosts`` markers in
-  ``SECURITY.md``. A host is not "listed" because it is a substring of a longer listed
-  host (``api.binance.vision`` inside ``data-api.binance.vision``), nor because the
-  document mentions it elsewhere, such as in a warning.
+  ``SECURITY.md``, compared lowercased, since hostnames are case-insensitive. A host is
+  not "listed" because it is a substring of a longer listed host (``api.binance.vision``
+  inside ``data-api.binance.vision``), nor because the document mentions it elsewhere,
+  such as in a warning. Each marker must appear exactly once, begin before end;
+  otherwise the check raises rather than guessing where the list is.
 - **One direction only**: a host in ``src/`` missing from the list fails. The reverse, a
   listed host the code no longer contacts, is deliberately not checked: a stale entry
   makes the list over-broad, a weaker failure than an under-broad one, and a reverse
@@ -33,14 +35,15 @@ POLICY = ROOT / "SECURITY.md"
 
 # Deliberately broad within Binance: a trading host this project must never use has to
 # surface here rather than pass silently.
-HOSTNAME = re.compile(r"\b[a-z0-9][a-z0-9.-]*\.binance\.(?:vision|com)\b")
+# Hostnames are case-insensitive, so both sides are matched in any case and lowercased.
+HOSTNAME = re.compile(r"\b[a-z0-9][a-z0-9.-]*\.binance\.(?:vision|com)\b", re.I)
 BEGIN = "<!-- allowed-hosts:begin"
 END = "<!-- allowed-hosts:end -->"
-LISTED = re.compile(r"^\s*- `([a-z0-9][a-z0-9.-]*)`", re.M)
+LISTED = re.compile(r"^\s*- `([a-z0-9][a-z0-9.-]*)`", re.M | re.I)
 
 
 def hosts_in(text: str) -> set[str]:
-    return set(HOSTNAME.findall(text))
+    return {host.lower() for host in HOSTNAME.findall(text)}
 
 
 def hosts_in_source() -> set[str]:
@@ -54,8 +57,11 @@ def allowed_hosts(policy: str) -> set[str]:
     """The exact hosts listed between the markers; anything else in the document is prose."""
     if policy.count(BEGIN) != 1 or policy.count(END) != 1:
         raise ValueError("SECURITY.md must contain exactly one allowed-hosts begin/end marker pair")
-    block = policy.split(BEGIN, 1)[1].split(END, 1)[0]
-    hosts = set(LISTED.findall(block))
+    start, end = policy.index(BEGIN), policy.index(END)
+    if end < start:
+        raise ValueError("the allowed-hosts end marker comes before the begin marker")
+    block = policy[start + len(BEGIN) : end]
+    hosts = {host.lower() for host in LISTED.findall(block)}
     if not hosts:
         raise ValueError("the allowed-hosts block lists no hosts")
     return hosts
@@ -83,7 +89,7 @@ class DocumentedHostTests(unittest.TestCase):
 
 
 class ExactMembershipTests(unittest.TestCase):
-    """The failure modes a whole-document substring test had, proven on synthetic text."""
+    """Failure modes of earlier versions of this check, proven on synthetic text."""
 
     POLICY = (
         "Market data uses only these hosts. Never use `api.binance.com`.\n"
@@ -119,3 +125,27 @@ class ExactMembershipTests(unittest.TestCase):
     def test_the_scan_sees_comments_and_docstrings(self):
         text = '"""Uses stream.binance.vision."""\n# fallback: backup.binance.com\n'
         self.assertEqual(hosts_in(text), {"stream.binance.vision", "backup.binance.com"})
+
+    def test_an_uppercase_host_in_source_is_found_and_not_listed(self):
+        # DNS names are case-insensitive: the runtime would reach this host.
+        text = 'ORDER_URL = "https://API.BINANCE.COM/api/v3/order"\n'
+        self.assertEqual(hosts_in(text), {"api.binance.com"})
+        missing = undocumented(hosts_in(text), allowed_hosts(self.POLICY))
+        self.assertEqual(missing, ["api.binance.com"])
+
+    def test_letter_case_is_ignored_on_both_sides(self):
+        text = 'HOST = "Data-API.Binance.Vision"\n'
+        self.assertEqual(undocumented(hosts_in(text), allowed_hosts(self.POLICY)), [])
+        upper_policy = self.POLICY.replace("`data-api.binance.vision`", "`DATA-API.BINANCE.VISION`")
+        self.assertEqual(allowed_hosts(upper_policy), {"data-api.binance.vision"})
+
+    def test_reversed_markers_fail_loudly(self):
+        # With the end marker first, a naive split reads to the end of the file, so a
+        # bullet outside any valid block would count as listed.
+        policy = (
+            "  <!-- allowed-hosts:end -->\n"
+            "  <!-- allowed-hosts:begin -->\n"
+            "  - `api.binance.com` - not inside a valid block\n"
+        )
+        with self.assertRaisesRegex(ValueError, "end marker comes before"):
+            allowed_hosts(policy)
