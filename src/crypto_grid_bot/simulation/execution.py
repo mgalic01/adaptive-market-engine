@@ -5,6 +5,7 @@ Resting limit fills pay the maker fee; marketable exits pay the taker fee.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
 
 from crypto_grid_bot.simulation.models import (
@@ -87,6 +88,7 @@ def match(
     *,
     recycle: bool = True,
     epoch: str | None = None,
+    reentry_quantity: Callable[[str, Decimal, Decimal], Decimal] | None = None,
 ) -> list[Fill]:
     """Orders present before this quote only; child orders wait for a later event.
 
@@ -98,6 +100,9 @@ def match(
     ``epoch`` groups several quotes that replay one historical bar. Orders created
     under an epoch cannot fill until a later epoch, so a buy and its child sell never
     both fill on an invented favourable path inside a single bar.
+
+    ``reentry_quantity`` (order ID, price, quantity) may shrink a reentry buy when it
+    is created; ZERO skips it. Unset, every reentry keeps the sold quantity.
     """
     quote.validate(rules)
     account.validate(rules)
@@ -139,12 +144,18 @@ def match(
                     rules,
                 )
             elif order.side == "sell" and order.reentry is not None and recycle:
+                reentry_id = f"{quote.event_id}/reentry/{account.fill_count}"
+                quantity = order.quantity
+                if reentry_quantity is not None:
+                    quantity = reentry_quantity(reentry_id, order.reentry, quantity)
+                if quantity == ZERO:
+                    continue
                 reentry = LimitOrder(
-                    f"{quote.event_id}/reentry/{account.fill_count}",
+                    reentry_id,
                     "buy",
                     order.reentry,
-                    order.quantity,
-                    order.quantity,
+                    quantity,
+                    quantity,
                     target=order.price,
                     epoch=epoch,
                 )
