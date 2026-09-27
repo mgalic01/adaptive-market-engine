@@ -246,6 +246,12 @@ jobs:
           lines with the task, the outcome, the report path, and anything the owner,
           Claude or Codex must act on. No other line may start with 'IBM Bob'. End with
           '— IBM Bob (task run)' and write nothing after it.
+
+          Sign exactly once. The signature is the last line of your final message and
+          appears nowhere else: not after a draft, not after a postscript. If you want to
+          add anything after writing the signature, rewrite the whole message from its
+          first 'IBM Bob' line instead. A message whose last signed block has no 'IBM Bob'
+          line of its own is refused and never posted.
           "
           # env -i: only PATH, HOME and Bob's key reach his process; no GitHub token.
           # Command, edit and read tools stay on; MCP, browser and subagents are off.
