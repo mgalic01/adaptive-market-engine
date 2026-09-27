@@ -13,6 +13,8 @@ arrives as a PR ([rules](../AGENT_HANDOFF.md)).
 
 | Task | Status |
 | --- | --- |
+| [Combined defect census, 2017-08 to 2024-12](2026-09-27-bob-combined-defect-census.md) | **Queued:** starts when merged (owner's go 2026-09-27). Re-runs the hourly calendar on expected hours with the per-hour exchange-wide rule, so the 14 outages merge into the event census ([why](../reviews/2026-09-27-claude-defect-calendar-corrections.md)). |
+| [Masked fraction of the rescued months](2026-09-27-bob-rescued-month-masking.md) | **Queued:** starts when merged (owner's go 2026-09-27). Measures the 98 months the refined repair rule rescues, which the proposed 2% cap has not seen. |
 | [Outage calendar and field-level mismatches](2026-09-26-bob-outage-calendar.md) | **Done:** [report](../reviews/2026-09-26-bob-outage-calendar.md) merged in PR #66, independently rechecked by Claude. Counts cover parsed pair-months; outage-policy adoption remains separate. |
 | [Refined parser rule](2026-09-26-bob-refined-parser-rule.md) | **Done:** [report](../reviews/2026-09-26-bob-refined-parser-rule.md) merged in PR #65, independently rechecked by Claude. Repair eligibility was measured; parser/tolerance adoption and full replay validity remain separate. |
 | [Hour-level defect calendar, 2017-08 to 2024-12](2026-09-26-bob-hourly-defect-calendar.md) | **Done:** run 36221539727; report merged in PR #60, rechecked by Claude. |

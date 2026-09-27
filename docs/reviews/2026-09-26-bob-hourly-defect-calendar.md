@@ -57,6 +57,8 @@ Every figure matches the batch-1 report (PR #49) exactly.
 
 ## Event Summary by Year
 
+*[Correction at review (Claude, 2026-09-27; [measured](2026-09-27-claude-defect-calendar-corrections.md)): the exchange-wide/pair-specific split below uses the union rule described under "Exchange-Wide Defect Events". Under the report's own per-hour definition, 51 events move to pair-specific: exchange-wide **27 events, 32 hours** (2017: 21 and 26; 2019: 0), pair-specific **3,116 events, 6,070 hours**. The event runs themselves are unchanged.]*
+
 | Year | Exchange-wide events | Exchange-wide hours | Pair-specific events | Pair-specific hours | Unparsed months |
 | --- | --- | --- | --- | --- | --- |
 | 2017 | 71 | 203 | 250 | 425 | 2 |
@@ -72,6 +74,8 @@ Every figure matches the batch-1 report (PR #49) exactly.
 ---
 
 ## Defect Hours per Pair and Year (Share of Listed Hours)
+
+*[Correction at review (Claude, 2026-09-27; [measured](2026-09-27-claude-defect-calendar-corrections.md)): the denominator is not listed hours. It is the hours present in at least one archive, in months that parse, so an hour missing from both archives is in neither column. That removes 468 pair-hours (the 14 outages, 58 distinct hours in 12 months). On expected hours the ten pairs are 7,114/490,786 = **1.450%**, not 1.355%. **BTCUSDT 2019 (0.00%) is 28/8,040 = 0.35% and XRPUSDT 2020 (0.00%) is 6/6,600 = 0.09%**; TRXUSDT 2018 is 0.53%, not 0.02%. No cell below is an upper bound for its pair-year; the corrected cells are in the linked record.]*
 
 A defect hour is an hour whose tolerant status is not `match` or `drift` (i.e. `mismatch`, `absent_minutes`, or `absent_hourly`).
 Notice how cleanly 2024 (and most pairs in 2021-2023) perform at hour resolution:
@@ -121,6 +125,8 @@ These 14 months raised `DataError` during archive reading (candle boundary check
 *[Correction at review: this table only holds hours that exist in at least one archive. Hours missing from both 1m and 1h for every listed pair are not here. Claude's recheck with the same functions: BTC, ETH, BNB and LTC each miss 11 hours in 2018-06 (2018-06-26 02:00 to 2018-06-27 13:00) and 10 hours in 2019-05 (2019-05-15 03:00 to 12:00) from both archives. In 2017, when only 2 or 3 pairs were listed, 80% means every pair.]*
 
 An event is **exchange-wide** if at least 80% of listed pairs at that time are affected.
+
+*[Correction at review (Claude, 2026-09-27; [measured](2026-09-27-claude-defect-calendar-corrections.md)): the script does not compute that. It divides the union of affected pairs by the union of listed pairs over the whole event, so an event where a different single pair is defective each hour scores 100%. Applied hour by hour, after reproducing all 78 rows' union figures exactly, **27 of these 78 events (32 of 211 hours) meet the definition above**: events 1, 5, 7, 11, 23, 25, 27, 29, 32, 34, 35, 42, 50, 51, 52, 57, 58, 60, 62, 63, 64, 72, 73, 75, 76, 77 and 78. Event 74 is 8/9 then 1/9; event 71 is 1/3 in eight of its ten hours. The "Listed pairs affected" column is also the union over the event.]*
 
 | # | Start (UTC) | End (UTC) | Hours | Kinds | Listed pairs affected | Pairs |
 | --- | --- | --- | --- | --- | --- | --- |
