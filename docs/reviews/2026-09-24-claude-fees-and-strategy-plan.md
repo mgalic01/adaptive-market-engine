@@ -96,6 +96,10 @@ record:
   makers skew their quotes by inventory (Avellaneda–Stoikov).
 - At 15 minutes, crypto mean reversion is real but about 1.3 bp gross, which is below
   realistic costs and adverse selection.
+  **Correction (2026-09-27, PR #106, evidence ledger):** these figures very likely come
+  from arXiv 2608.21888. Its primary sample runs from 2025-01-01 to 2026-02-11, with a
+  holdout to 2026-08-08, all inside the reserved window. The figure is **withdrawn as
+  evidence**; the exposure is recorded in `2026-09-27-claude-downtrend-response.md`.
 - Slow trend following (price against its 50- and 200-day averages) has the best
   documented retail evidence. It mainly reduces drawdowns, and it trades rarely.
 - The Bitcoin 4-year cycle: peak on 2025-10-06. By the historical pattern the bottom

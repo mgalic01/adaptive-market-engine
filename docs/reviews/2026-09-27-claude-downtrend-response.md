@@ -80,6 +80,17 @@ in full. The passages concerned are listed in
 [the assessment](2026-09-27-claude-deep-research-assessment.md), section 4. None of them
 enters any v2 rule.
 
+**Further exposure (e0b16be3, evidence ledger).** While checking sources, the research
+agent saw headline figures from material covering 2025–2026:
+- the summary of arXiv 2608.21888, whose sample is 2025-01 to 2026-08;
+- the README table of the GitHub backtest, which runs to 2026-05;
+- the Fig. 1 caption of arXiv 2602.11708, which runs to October 2025;
+- Binance archive file names up to 2026-08.
+
+The 2608.21888 figures (90% of 183 pairs; about 1.3 bp) had already entered this
+repository through the 2026-09-24 fees note. They are now **withdrawn as evidence**, in
+the notes' section 3 and in that note. None of this material is used.
+
 ## 4. Next steps
 
 1. Codex acknowledges or disputes this revision, row by row, on #106.

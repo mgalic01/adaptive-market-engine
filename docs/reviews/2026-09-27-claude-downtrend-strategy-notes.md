@@ -71,6 +71,12 @@ research. Industry blogs are marked as weak. **Depth of reading:** I read abstra
 and search summaries, not the full papers, except where a claim is quoted with its
 figures. Treat the figures as leads to verify, not as settled facts.
 
+**Revision 3 — checked against the sources.** A research agent read the primary sources,
+mostly in full text, and recorded the results in the
+[evidence ledger](2026-09-27-claude-evidence-ledger-106.md). The corrections below are marked **"Ledger"**.
+**Two sources are withdrawn** because their data lie in the reserved 2025–2026 window.
+I checked that point, and the BIS instrument point, myself.
+
 1. **Trend-following / time-series momentum — the strongest evidence.**
    - In **traditional diversified futures** (not crypto, and not a short-only rule):
      positive returns in every decade since 1880 across 67 markets, and good performance
@@ -81,20 +87,28 @@ figures. Treat the figures as leads to verify, not as settled facts.
    - **Corrected (narrowed).** In those futures studies, the crisis performance comes
      from long/short trend portfolios. That makes shorting worth investigating. It is not
      evidence that a crypto short rule would earn it.
-   - Crypto studies also find time-series momentum, including long-only
-     ([Le & Ruthbah, Monash](https://www.monash.edu/__data/assets/pdf_file/0011/3744821/Trend-following-Strategies-for-Crypto-Investors.pdf);
-     [arXiv 2602.11708](https://arxiv.org/html/2602.11708v1)).
-   - A simple rule — stay in coins only while BTC is above its 200-day average — roughly
-     halved the maximum drawdown in one public backtest. That is a weak, non-reviewed
-     source ([GitHub](https://github.com/IsaacDodds/crypto-momentum-backtest)), and it
-     shows the rule controls drawdown rather than adding return.
+   - Crypto studies also find time-series momentum
+     ([Le & Ruthbah, Monash](https://www.monash.edu/__data/assets/pdf_file/0011/3744821/Trend-following-Strategies-for-Crypto-Investors.pdf),
+     read at abstract depth only).
+   - **Ledger:** [arXiv 2602.11708](https://arxiv.org/html/2602.11708v1) is a 70/30
+     long/short strategy on 6-hour bars, not long-only. It is a non-reviewed preprint, and
+     one of its figures extends into October 2025. The claim "including long-only" now
+     rests on Le & Ruthbah alone.
+   - **Withdrawn (Ledger).** The public GitHub backtest that "roughly halved the maximum
+     drawdown" runs from 2021 to 2026-05, inside the reserved window. It is no longer
+     cited, and its figures are not used.
 2. **Momentum crashes — the main danger for shorts.** These studies measure
    cross-sectional momentum (winners minus losers, in equities), not the directional
    rule discussed here, but they show the shape of the risk. Such strategies suffer rare,
    severe losses in panic states, *during market rebounds*: a winners-minus-losers
-   portfolio lost about three-quarters of its value in a few months in 2009. Volatility
-   scaling roughly halves the worst drawdowns
+   portfolio lost about three-quarters of its value in a few months in 2009: −42% in
+   March and −46% in April, about −74% over two months, for a zero-cost long/short US
+   equity portfolio
    ([Daniel & Moskowitz](https://www.nber.org/system/files/working_papers/w20439/w20439.pdf)).
+   **Ledger:** they do not say that volatility scaling "roughly halves" drawdowns. They
+   report that *dynamic* scaling roughly doubles the Sharpe ratio, partly by avoiding
+   crashes. The claim that risk management "virtually eliminates crashes" is Barroso and
+   Santa-Clara's (*Journal of Financial Economics*, 2015).
    Crypto bear markets are full of sharp relief rallies; BTC rose about 40% from its
    June 2022 low within weeks.
 3. **Volatility targeting.** In the population Moreira and Muir studied — mainly US equity
@@ -106,31 +120,44 @@ figures. Treat the figures as leads to verify, not as settled facts.
    **Corrected:** that is not evidence for crypto. Whether it carries over to a
    single-coin crypto strategy, rebalanced daily, is a hypothesis to test, not a finding.
    It remains attractive because crypto downtrends are usually high-volatility. **Spec
-   v1 has nothing like it**; B caps inventory, not risk.
+   v1 has nothing like it**; B caps inventory, not risk. **Ledger, counter-evidence:**
+   Cederburg, O'Doherty, Wang and Yan (*Journal of Financial Economics*, 2020) tested 103
+   equity strategies. Realistic out-of-sample volatility management generally did not
+   beat the unmanaged portfolios.
 4. **Grid trading.** A classic grid has essentially zero expected return without
    directional insight, and in a downtrend it keeps buying into the decline
-   ([arXiv 2506.11921](https://arxiv.org/abs/2506.11921)). That is exactly the loss
-   mechanism of our V0: forced exits of inventory accumulated on the way down.
-   Short-horizon mean reversion is real in crypto: at 15-minute horizons it is
-   significant on 90% of 183 Binance pairs
-   ([arXiv 2608.21888](https://arxiv.org/abs/2608.21888)). **Corrected: the cost caveat.**
-   The repository's earlier summary of this study puts the effect at about 1.3 bp gross
-   per trade, below realistic costs and adverse selection
-   (`docs/reviews/2026-09-24-claude-fees-and-strategy-plan.md`, line 97). Statistical
-   significance is not a net, tradable edge. It gives no economic support to the grid or
-   to the mirrored grid. The reversal literature also reports that
+   ([arXiv 2506.11921](https://arxiv.org/abs/2506.11921)). **Ledger:** that paper
+   proves zero expectation only under a symmetric random walk, with no drift and no fees.
+   With a 0.08% fee the classic grid's return is negative. It is a non-reviewed preprint,
+   with data from 2021-01 to 2024-07. That is exactly the loss mechanism of our V0: forced
+   exits of inventory accumulated on the way down.
+   **Withdrawn (Ledger), with the exposure recorded.** The 15-minute mean-reversion
+   study ([arXiv 2608.21888](https://arxiv.org/abs/2608.21888)) behind "90% of 183
+   Binance pairs" and "about 1.3 bp gross" draws its primary sample from **2025-01-01 to
+   2026-02-11**, with a holdout from 2026-02-12 to 2026-08-08. That is the reserved
+   window. Neither figure is evidence for this project. The same applies to the earlier
+   summary at `docs/reviews/2026-09-24-claude-fees-and-strategy-plan.md` line 97, now
+   marked there. The point that a grid has no net edge after costs rests instead on the
+   fee argument of arXiv 2506.11921 above. The reversal literature also reports that
    daily reversal is mainly an illiquid-coin effect, while large coins show daily
-   momentum. That is from search summaries only
-   ([Fairfield](https://digitalcommons.fairfield.edu/cgi/viewcontent.cgi?article=1249&context=business-facultypubs),
-   [*Up or down?*](https://www.sciencedirect.com/science/article/pii/S1057521921002349));
-   verify before relying on it.
-5. **Funding and carry.** Cash-and-carry (long spot, short perpetual) earns positive
-   funding, mostly in bull markets
-   ([BIS, *Crypto carry*](https://www.bis.org/publ/work1087.pdf)). **In bear markets
-   funding is often negative, which means shorts pay longs.** It was sharply negative in
-   March 2020, so a trend short can bleed funding exactly when it is right. Some sources
-   report that extremely negative funding tends to precede relief rallies; this is
-   unverified here. **Corrected:** that is *not* the idea behind v1's variant G. G is a
+   momentum. **Ledger:** that is Zaremba et al. (*International Review of Financial
+   Analysis*, 2021, more than 3,600 coins), confirmed at abstract level; its sample
+   period is unknown
+   ([*Up or down?*](https://www.sciencedirect.com/science/article/pii/S1057521921002349)).
+   The Fairfield paper (Kozlowski et al., 200 coins, 2015–2019) supports only the
+   illiquid-coin half.
+5. **Funding and carry. Ledger: this point was misattributed.**
+   - The BIS study ([*Crypto carry*](https://www.bis.org/publ/work1087.pdf)) measures
+     the **basis of dated 1- and 3-month futures** against spot, from 2019 to January
+     2022. It does not study perpetual funding.
+   - It finds carry averaging about 10% a year. Carry spiked in booms, was sometimes
+     negative, and high carry predicted crashes.
+   - The mechanism is certain: when the funding rate is negative, shorts pay longs.
+     That is a risk for a trend short.
+   - **Unverified, and no longer attributed to BIS:** "funding is often negative in bear
+     markets", "sharply negative in March 2020", and "extremely negative funding precedes
+     relief rallies". All three can be checked from the 2020–2024 Binance funding
+     archives once the P8 fetch is approved. **Corrected:** that is *not* the idea behind v1's variant G. G is a
    long-crowding gate. It blocks new grids only when the newest three funding rates are
    all above +0.0005, and low or negative funding never blocks
    (`docs/EXPERIMENT_SPEC_V1.md` §3 G). A negative-funding squeeze rule would be a
@@ -218,11 +245,31 @@ are where overfitting would come from.
 - Binance **futures** klines and funding archives. **Corrected:** funding was surveyed
   for variant G, but the P8 fetch and a checksum-pinned manifest are still pending.
   Futures klines would be new.
-- Taker buy volume is already a field in Binance klines.
-- Open interest may be in Binance's public futures metrics files. **To verify**; not
-  checked today.
+- **Ledger, availability of the Binance BTCUSDT archives:**
+  - the perpetual launched on 9 September 2019;
+  - klines, funding, mark and index prices start in **2020-01**;
+  - trades start in 2019-09;
+  - open-interest "metrics" start on **2020-09-01**;
+  - **nothing covers 2018.** A perpetual-based test starts in 2020 at the earliest, and
+    in 2020-09 if it uses open interest. The 2018 bear market cannot be tested with
+    perpetuals from these archives.
+- Taker buy volume is a field in Binance klines, including futures klines (Ledger).
 - For Kraken, verified separately: its own price, mark and funding history, fees,
   minimums and liquidation rules. Binance evidence does not validate Kraken execution.
+- **Ledger, venue facts as of 2026-09-27:**
+  - **Kraken EEA:** derivatives through a CySEC-licensed MiFID II entity, open to retail
+    clients after an appropriateness test. The BTC perpetual has hourly funding (capped
+    at ±0.5% per hour), a 0.0001 BTC minimum lot and at most 10× leverage. Base fees are
+    0.02% maker and 0.05% taker.
+  - **Timing trap:** Kraken's EEA product dates only from about 2025, so its own history
+    lies entirely in the reserved window. Kraken EEA must be verified by forward paper
+    trading, or with older Kraken Futures history clearly labelled as a different
+    entity.
+  - **Binance:** news reports and the Croatian regulator HANFA (3 July 2026) indicate
+    that Binance held no EU MiCA licence when the transition ended on 1 July 2026. Only
+    licensed or notified firms may now serve clients in Croatia. The owner's "Binance"
+    access needs re-checking for new positions. Binance's public archives remain usable
+    as research data.
 
 ## 5. Open questions for Codex (and later Bob)
 
