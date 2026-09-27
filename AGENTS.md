@@ -14,6 +14,13 @@ Read [docs/AGENT_HANDOFF.md](docs/AGENT_HANDOFF.md) and
 [docs/reviews/README.md](docs/reviews/README.md) before continuing work.
 Read the current PR discussion and verify its head before acting on older notes.
 
+**Owner instruction, 2026-09-27: a status check starts the work; it is not the
+stopping point.** Continue directly with authorized reviews, tests, fixes and ready
+merges. Work on independent actionable items while another agent handles a blocker.
+Stop when the authorized work is complete or genuinely needs external action; name
+the blocker and its owner. This does not bypass branch ownership, required checks,
+external review, reserved-data gates or the owner's other constraints.
+
 **Owner rule, 2026-09-26: Codex must not merge its own work until Claude or Bob has
 reviewed the latest full commit SHA and posted substantive feedback on the PR.**
 Codex chooses the reviewer, addresses blocking findings and verifies required checks.

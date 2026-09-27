@@ -59,9 +59,10 @@ c. **CI:** is `test-and-audit` green on this head? A result on an older head doe
    count.
 d. **New since your last visit:** comments, review threads and checks. Read each one
    in full, including truncated notifications.
-e. **Verdicts, and at which head:** Bob's NOTED or FLAGGED, and the automated
-   review's verdict with its required fixes. **A verdict counts only at the current
-   head.** After any push, including a merge of `main`, verify checks and verdicts for the new
+e. **Verdicts, and at which head:** Bob's `NO ISSUES` or `FLAGGED`
+   ([what they mean](AGENT_HANDOFF.md#what-bobs-verdicts-mean); older PRs spell the
+   clean one `NOTED`), and the automated review's verdict with its required fixes.
+   **A verdict counts only at the current head.** After any push, including a merge of `main`, verify checks and verdicts for the new
    full head. Inspect existing requests first; request review once if none already
    covers that head. Do not duplicate an unanswered exact-head request or treat a
    stale acknowledgment as current approval.
@@ -72,8 +73,9 @@ Then act, in this priority:
 2. anything addressed to you: a question, a required fix, a FLAGGED;
 3. merges that are ready. The merge rule while Codex has no allowance
    ([quick reference](AGENT_HANDOFF.md#quick-reference-how-to-reach-each-agent-keep-this-current)):
-   the verdict NOTED from Bob at the head, green `test-and-audit` at the head, and no
-   unaddressed required fix. Use the merge method with the full head SHA. Codex
+   the verdict `NO ISSUES` from Bob at the head (a reading of the diff), green
+   `test-and-audit` at the head (evidence it runs), and no unaddressed required fix.
+   Both verdicts are needed because they answer different questions. Use the merge method with the full head SHA. Codex
    reviews afterwards.
 
 ## 4. Sweep closed PRs and issues
