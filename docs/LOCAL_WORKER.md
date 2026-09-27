@@ -40,11 +40,15 @@ for the reviewer to withhold a recommendation. No repository checkout/code execu
 The model receives evidence through stdin, treats GitHub text as untrusted, critically
 assesses correctness/methodology/security and disagreements, and names limits/next
 owners. It runs no tests: CI and other reviewers are third-party execution evidence.
-The report names the exact head. A head/base change invalidates it; changed discussion or check/status evidence
-is marked STALE. Publication rechecks open state/head and neutralizes mention and Bob task-command triggers. Oversized reports remain local;
+The report names the exact captured head and base. Either SHA changing invalidates
+the recommendation, even if no replacement report appears; changed discussion or check/status evidence
+is marked STALE. Publication rechecks open state, head and base immediately before
+posting and neutralizes mention and Bob task-command triggers. Oversized reports remain local;
 publication rejects them rather than truncating findings.
-GitHub cannot atomically check a comment/PR state and publish; the small remaining race
-is acknowledged. There is no automatic retry after uncertain publication.
+GitHub cannot atomically check a comment/PR state and publish: state, head or base
+can still change between the final GET and comment POST. Reviewers must compare both
+recorded SHAs with the current PR, even for a newly posted report. There is no
+automatic retry after uncertain publication.
 
 ## Credentials and containment
 
@@ -91,7 +95,11 @@ try {
 
 The token is available only to the controller process and excluded from the model's
 child environment.
-GitHub webhook: JSON, SSL verification on, configured secret, events listed above.
+GitHub webhook: set **Payload URL** to the tunnel's HTTPS origin followed by
+`/github`, for example `https://example.trycloudflare.com/github`. The origin alone
+returns HTTP 404 for webhook POSTs. Use JSON, SSL verification on, the configured
+secret, and the events listed above. When the temporary tunnel URL changes, update
+Payload URL with the new origin and keep the `/github` suffix.
 Use a reviewed immutable deployment copy; don't run unattended code from a branch
 another agent is editing. No startup service or scheduled task is installed.
 

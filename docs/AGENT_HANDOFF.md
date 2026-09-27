@@ -2,6 +2,9 @@
 
 Start at [START_HERE.md](START_HERE.md): the order every agent follows at each session start. This guide holds the detailed rules it links to.
 
+For a visual overview of roles, notifications and deliberate merge decisions, see
+[How our agents work together](AGENT_WORKFLOW.md).
+
 ## Quick reference: how to reach each agent (keep this current)
 
 This is **the single place** for how the three agents (Claude, Codex and Bob) are
