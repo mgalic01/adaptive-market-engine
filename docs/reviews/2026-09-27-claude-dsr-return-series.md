@@ -14,8 +14,9 @@
   [data-reuse agreement](2026-09-25-claude-data-reuse-proposal.md), layer 4, lists what
   the spec must fix; this report takes that list item by item. A cloud Claude review on
   PR #93 found the gap; Codex had accepted the requirement earlier.
-- **Revision 2 (same day):** reworked for nine Codex Cloud findings and the automated
-  review on PR #101. Section 11 lists each change.
+- **Revisions (same day):** revision 2 answered nine Codex Cloud findings and the
+  automated review; revision 3 answers Bob, the automated review and seven further Cloud
+  findings. Section 11 lists each change.
 
 ## 1. The list this must answer
 
@@ -50,6 +51,10 @@ criterion C1(a).
 
 **Proposal.** One observation per **UTC calendar day** *d*: `E_d`, total equity after
 the last quote of the last valid bar whose open time falls in that day.
+- **A common cutoff.** For every eligible pair, that last valid bar must open in the
+  day's final hour, at 23:00 UTC or later. Otherwise the day counts as missing for
+  section 5. So the pairs in a basket are always valued within the same hour, and no
+  return spans much more than 24 hours.
 - The return is the simple return `E_d / E_(d−1) − 1`.
 - **The first return of each test window** uses as `E_0` the equity immediately before
   the window's first quote. For a fresh account (section 6) that is the initial capital,
@@ -63,8 +68,6 @@ the last quote of the last valid bar whose open time falls in that day.
   - A 3-month test window then gives about 90 observations, and the stitched stream up
     to 2,284 (2018-08-01 .. 2024-10-31, 75 months). That is long enough for skewness and
     kurtosis estimates to mean something.
-- **Hourly is a reported sensitivity only,** never used for selection or for the
-  headline DSR.
 - **Clock time, not trade time.** Every calendar day of a test window is an observation,
   whether or not the account traded. Section 4 gives the reason and its limits.
 - **Risk-free rate: zero.** Cash in the simulator earns nothing, and the question the
@@ -115,9 +118,11 @@ showed that is only half true:
   is the case that decides go/no-go.
 - **For a losing candidate** (*μ* < 0), the same shrinkage makes its Sharpe less
   negative.
-- **Across the trial family**, shrinkage also narrows the spread of Sharpe estimates.
-  That lowers the DSR's expected-maximum benchmark (section 8), which pushes the DSR
-  *up*.
+- **Across the trial family**, each trial is shrunk by its own √*p*. The spread of Sharpe
+  estimates, which sets the DSR's benchmark (section 8), can therefore narrow, widen or
+  reorder.
+- **Net effect on the DSR:** the candidate's own shrinkage and the benchmark's change can
+  pull in opposite directions. The net sign is **not claimed** for any case.
 
 So clock time is not conservative in every direction. It is chosen because it measures
 what the owner's money actually experiences, per calendar day. The alternative — a
@@ -142,11 +147,14 @@ Part 1 leaves masked hours and outages to settings still to be agreed. The retur
 depends on them only through this rule.
 
 **Proposal.**
-- A day with **at least one valid bar** gives an observation, sampled after its last
-  valid bar.
-- **If any eligible pair has a day with no valid bar in a fold's test window, that
-  fold's series is indeterminate for the DSR.** It still counts for C1–C6 as the spec
-  already defines.
+- A day counts as **missing** if any eligible pair has no valid bar at or after 23:00
+  UTC that day (section 3's cutoff).
+- **A fold with any missing day is indeterminate for the DSR.** It still counts for
+  C1–C6 as the spec already defines.
+- **One indeterminate fold makes the variant's headline DSR indeterminate.** Dropping the
+  fold and stitching the rest would change the tested calendar in a way that could
+  flatter or hurt the result, so it is not the headline. The DSR over the remaining folds
+  is shown only as a labelled sensitivity.
 - The report states each indeterminate fold and the missing days that caused it.
 - **An invalid run** (§5 of the spec) contributes no series. It already fails C4.
 
@@ -189,6 +197,10 @@ intrabar paths.
   that average assumes a daily rebalance back to equal weights, which no account does.
   My first version proposed it; Codex Cloud pointed out it is not the return of holding
   separate accounts. The equity-weighted form above is.
+- **Each path is deflated against its own family.** For path *q*, `V_q` is the variance
+  of the trials' Sharpes **on path *q***, and `N` is the same trial count for both
+  paths. Paths are never pooled into one family, because that would count dependent
+  paths as extra trials.
 - **The variant's DSR is the lower of its two path DSRs,** matching C2's worse-path
   logic.
 - Per-pair series and DSRs are reported, never used for selection.
@@ -204,19 +216,34 @@ Everything a result could otherwise steer is fixed here.
   `SR0 = √V · ( (1 − γ)·Φ⁻¹(1 − 1/N) + γ·Φ⁻¹(1 − 1/(N·e)) )`.
   Here `V` is the variance of the daily Sharpes across the `N` trials of the family,
   and `γ` ≈ 0.5772 is the Euler–Mascheroni constant.
+- **`V` uses the sample variance, divisor `N − 1`.** With `N` = 2 that is twice the
+  divide-by-`N` value, so `SR0` is √2 larger. That is the more demanding choice, and it
+  is fixed here so that no library default can decide it. `V` is computed per path
+  (section 7).
 - **Moment conventions:** `γ4` is **Pearson kurtosis**, not excess kurtosis: a normal
   distribution has 3. Skewness, kurtosis and the Sharpe's standard deviation use
   **population (divide-by-`T`) moment estimators**, with no small-sample correction.
   Any library must be checked against these conventions before use.
 - **The Sharpe that enters is the raw daily Sharpe,** mean over standard deviation of
   the stitched daily returns.
-- **Dependence enters through `T`, not through an adjusted Sharpe.** `T` is replaced by
-  an effective count `T_eff = T / (1 + 2·Σ_(k=1..5) (1 − k/6)·ρ_k)`, using Bartlett
-  weights on the first five autocorrelations.
-  - It is capped at `T`, so negative autocorrelation never earns extra observations.
-  - Each `ρ_k` is estimated from lag pairs **within the same fold only**: the pair
+- **Dependence enters through `T`, not through an adjusted Sharpe.**
+  - Let `Dn = 1 + 2·Σ_(k=1..5) (1 − k/6)·ρ_k`, using Bartlett weights on the first five
+    autocorrelations. Then `T_eff = T / Dn` when `Dn > 1`, and `T_eff = T` when
+    `Dn ≤ 1`. Negative autocorrelation therefore never earns extra observations, and a
+    zero or negative `Dn` cannot produce a meaningless count.
+  - **`T_eff` replaces `T` only in the `√(T − 1)` factor.** The moments — mean, standard
+    deviation, skewness and kurtosis — are always estimated over the `T` actual
+    observations.
+  - **If `T_eff < 2`, the DSR is indeterminate**, since `√(T_eff − 1)` then gives no
+    usable scale.
+- **The autocorrelation estimator, frozen.**
+  - `r̄` is the mean of the whole stitched series. There is no per-fold demeaning.
+  - `ρ_k = Σ (r_t − r̄)(r_(t−k) − r̄) / Σ (r_t − r̄)²`.
+  - The numerator sums only over pairs `(t, t − k)` **within the same fold**; the pair
     formed by one fold's last return and the next fold's first return is excluded,
-    because those come from different accounts and parameter sets.
+    because they come from different accounts and parameter sets.
+  - The denominator sums over all `T` observations.
+  - There is no fold weighting and no divisor correction.
 - **Lo's adjusted annual Sharpe** is reported next to the naive one, for information
   only; it does not enter the DSR.
 - **`V` and `N`:** each trial's Sharpe is built by these same rules, and `N` comes from
@@ -233,17 +260,21 @@ Everything a result could otherwise steer is fixed here.
 ## 9. Decisions this asks for, before any variant runs
 
 1. Basis: reserve-inclusive total equity of one account (section 2).
-2. Daily UTC end-of-day samples in clock time, the first return seeded from the equity
-   before the window's first quote, risk-free rate zero, √365 for display only; hourly
-   as a sensitivity only (section 3).
+2. Daily UTC end-of-day samples in clock time with a common cutoff in the final hour,
+   the first return seeded from the equity before the window's first quote, risk-free
+   rate zero, √365 for display only; no hourly sensitivity (section 3).
 3. Returns from actual equity on every day, flat, paused and halted days included;
    zero variance is indeterminate (section 4).
-4. Any day with no valid bar makes the fold indeterminate for the DSR (section 5).
+4. Any missing day makes the fold indeterminate for the DSR, and any indeterminate fold
+   makes the headline DSR indeterminate (section 5).
 5. A fresh account per test window, the reserved run included; no return across a
    boundary (section 6).
-6. An equity-weighted basket per path and fold; the lower path DSR (section 7).
-7. The frozen DSR: formula, Pearson kurtosis, population moments, raw Sharpe, `T_eff`
-   with within-fold Bartlett lags 1–5 capped at `T`; Lo reported only; a 0.95 flag.
+6. An equity-weighted basket per path and fold; each path deflated against its own
+   trial family; the lower path DSR (section 7).
+7. The frozen DSR: formula, Pearson kurtosis, population moments, raw Sharpe, sample
+   variance for `V`, and `T_eff` from within-fold Bartlett lags 1–5 that only lowers
+   `T`, replaces `T` only in `√(T − 1)`, and makes the DSR indeterminate below 2. Lo is
+   reported only; a 0.95 flag.
    Whether it gates the go/no-go run is the owner's call (section 8).
 8. Implementation: a new end-of-day equity measurement, V0 byte-identical, and the
    existing `hourly_equity` left as a diagnostic.
@@ -265,7 +296,7 @@ Everything a result could otherwise steer is fixed here.
   in PR #100), which section 5 depends on only through its gap rule; the trial count
   (part 2, PR #93); and the trusted process that writes the trial register.
 
-## 11. Changes in revision 2
+## 11. Changes in revisions 2 and 3
 
 | Finding (PR #101) | Change |
 | --- | --- |
@@ -280,3 +311,12 @@ Everything a result could otherwise steer is fixed here.
 | Cloud P2: autocorrelation across fold resets | §8: lag pairs within a fold only |
 | Cloud P1: how dependence enters the DSR | §8: raw Sharpe; dependence through capped `T_eff`; Lo reported only |
 | Cloud P1: kurtosis convention | §8: Pearson kurtosis, population moments |
+| Bob (rev. 2): which `T` does `T_eff` replace? | §8: only in `√(T − 1)`; moments use the actual `T` |
+| Automated review (rev. 2): `T_eff` unbounded below the cap | §8: `Dn ≤ 1` gives `T`; the DSR is indeterminate if `T_eff < 2` |
+| Automated review nit, Cloud: dispersion direction | §4: trials shrink by their own √*p*; the net DSR direction is not claimed |
+| Cloud P1: asynchronous end-of-day valuations | §3: a common cutoff, with each pair's last valid bar at or after 23:00 UTC |
+| Cloud P1: cross-trial variance divisor | §8: sample variance, `N − 1` |
+| Cloud P2: effect of an indeterminate fold | §5: the headline DSR is indeterminate; the remaining folds are a labelled sensitivity only |
+| Cloud P2: benchmark family per path | §7: `V_q` per path, never pooled |
+| Cloud P2: hourly sensitivity undefined | §3: removed |
+| Cloud P2: autocorrelation estimator | §8: stitched mean, within-fold lag products, fixed denominator |
