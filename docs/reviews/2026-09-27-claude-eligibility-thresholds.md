@@ -2,9 +2,10 @@
 
 - **Date:** 2026-09-27. **Author:** Claude (cloud session `session_012TnmLLUR1KhRL31nnfnujH`).
 - **Status: owner decision, recorded before any variant result exists.** The owner
-  confirmed decisions 1 and 2 of
-  [the fold-grid report](2026-09-27-claude-fold-grid-and-eligibility.md) and asked for the
-  two open values to be proposed from measurement rather than picked. Fixing the rule now
+  confirmed the mask and repair settings proposed in
+  [the fold-grid report, PR #92](https://github.com/mgalic01/adaptive-market-engine/pull/92)
+  — not yet merged, and still changing — and asked for the two values it leaves open to be
+  proposed from measurement rather than picked. Fixing the rule now
   is what keeps the walk-forward honest: choosing it after seeing returns would be the
   post-hoc tuning `START_HERE.md` step 1 forbids.
 - **Scope.** Sets the mask granularity, the maximum masked fraction and the repair rule's
@@ -14,9 +15,9 @@
 
 ## The decisions
 
-1. **Mask defect hours; do not fail their month.** Decision 1 of the fold-grid report.
+1. **Mask defect hours; do not fail their month.** The mask setting of PR #92.
 2. **Adopt Bob's [refined parser rule](2026-09-26-bob-refined-parser-rule.md)** for
-   off-boundary close times. Decision 2.
+   off-boundary close times. The repair setting of PR #92.
 3. **Maximum masked fraction: 2% of a month's expected hours, counting real defects
    only.** A pair-month carrying more is not eligible, masked or otherwise.
 4. **The open-only convention class is excluded from that count by its own named rule**,
@@ -45,8 +46,14 @@ traded minute ([finding](2026-09-26-claude-open-mismatch-explained.md),
 | LINKUSDT 2020 | 0.7% | 0.18% |
 
 Between 74% and 82% of the apparent rate in the worst pair-years is the convention
-difference. DOGE 2019's 53% — the figure the fold-grid report cited as making its 79.6%
-an upper bound — is **11.9%** of real defects.
+difference. DOGE 2019's 53% — which PR #92 cites among the reasons its usable-fold count is
+a ceiling — is **11.9%** of real defects.
+
+**This record deliberately quotes no headline count from PR #92.** That PR is open and its
+figure has already moved once while this document sat in review: a start-bound correction
+took it from 199 usable pair-folds to 185. Everything below rests on the measurement in
+this record's own appendix, so it does not go stale when #92 changes again. How the two fit
+together is for #92 to state once both are merged.
 
 ### Where the distribution breaks
 
