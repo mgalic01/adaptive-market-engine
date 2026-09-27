@@ -572,6 +572,7 @@ included runs (every included pair, window and path):
 | C4 | **Integrity:** every included run is valid (§5). | Both |
 | C5 | **Minimum activity:** for each included run, its rate = completed cycles (P7) ÷ (evaluation window length in days ÷ 7). The window is `[start of the start month, end of the end month)` in UTC, the same for every run in a dataset, whether or not the run halted. C5 = the arithmetic mean of the per-run rates over all included runs (equal weight), computed exactly (no rounding), and must be **≥ 1**. The ISO-week counter is reported, not scored. The share of bars holding inventory is reported. | Owner's compromise on Bob's 10%-invested rule |
 | C6 | **The gate earns its place:** in at least **60%** of included runs, the variant's return ÷ max(max drawdown, 0.1 percentage points) exceeds that of the **ungated V0 baseline** in the same pair, window and path. | Bob |
+| C7 | **Survives the family** (owner decision, 2026-09-27; applied to the winner only, see Selection step 6). For every selectable variant `v` and each intrabar path `q`, `p(v, q) = 1 − Φ( SR · √(T_eff − 1) / √(1 − γ3·SR + (γ4 − 1)/4 · SR²) )`, with the daily series, raw daily `SR`, Pearson `γ4`, population moments and within-fold `T_eff` exactly as frozen in [draft spec part 3](reviews/2026-09-27-claude-dsr-return-series.md) §8, and `SR0` = 0. A variant's `p` is its **worse path**, max over `q`. A **Holm step-down** at family-wise **5%** runs over **`N_family` = 17** hypotheses: the 10 selectable forward configurations (V0 on engine `exit-residue-v1`, which the owner ruled an additional registered trial on 2026-09-27, and the 9 new ones) and the 7 retrospective gated configurations, which enter with `p` = 1. Rank the `p` values ascending; the variant at rank `i` is rejected-null (passes) when every rank up to `i` has `p ≤ 0.05 / (N_family − i + 1)`. An indeterminate `p` fails. `N_family` = 21 (adding the 3 ungated retrospective states and D) is reported beside it as the sensitivity. This replaces the deflated Sharpe ratio, which cannot be estimated on this family ([why](reviews/2026-09-27-claude-dsr-coherence.md)). | Owner, on Claude's proposal |
 | R1 | **Economics, reported only:** the capital at which the mean monthly return would cover €5/month of hosting (5 ÷ mean monthly return fraction), or "not reachable" if the mean return is ≤ 0. Running on the owner's own PC costs €0 in hosting. | Bob, as information |
 
 *Note on units (added 2026-09-27, clarification only; no criterion changes).* Every
@@ -594,8 +595,11 @@ i.e. it ignores EUR/USDT exchange-rate movement over the month.
    C+G, C+H.
 5. D **cannot be selected.** C1–C6 are still computed and reported for D, for
    information only, next to the winner.
+6. **C7** is evaluated after steps 1–5, on the selected winner only. It does not change
+   the ranking. A winner that fails C7 is reported as the development winner, and v1
+   ends with "no winner" for the reserved window.
 
-**No winner:** if no variant passes, v1 ends with "no winner". Nothing runs on the
+**No winner:** if no variant passes C1–C6, or the winner fails C7, v1 ends with "no winner". Nothing runs on the
 reserved window, and the report says so.
 
 ## 7. Reserved evaluation (run exactly once)
