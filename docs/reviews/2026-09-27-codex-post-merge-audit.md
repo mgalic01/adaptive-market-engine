@@ -76,3 +76,22 @@ prompt were not measured.
 PR #116's proposed index migration is not adopted here: this report follows current
 main's index rule. Its writer must preserve this entry when integrating the migration.
 Rollback is a documentation/prompt revert; it requires no account-state migration.
+
+## Follow-up after PR #120 (2026-09-27)
+
+Integrated main `8a45cb540ce9a75153e16f7e23bb57efa9ea5fa7`; the only merge conflict
+was the index insertion, resolved by preserving both handoff rows. Post-merge Cloud
+feedback on #120 is addressed in this correction PR because #120 is closed:
+
+- Its durable evidence checkpoint now names final head
+  `b60513c51167b3c71866917a557397b66816b4bb`, the 43 Windows / 2 Linux fixture tests,
+  exact-head Claude/Bob reviews and merge SHA. The actual reviews already covered
+  that final head; the defect was the stale durable checkpoint, not an unreviewed merge.
+- Quality push CI excludes exactly `automation/codex-worker-state`, preventing the
+  proposed queue's state transitions from launching full source CI. PR checks and
+  all other branch push checks remain enabled. The plan also requires verification
+  of other configured triggers before remote activation. The state branch and remote
+  workers do not yet exist, so this fixes a design/activation hazard, not a measured
+  production CI loop.
+
+No login, deployment, trading change or new provider call is part of these fixes.

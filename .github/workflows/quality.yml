@@ -2,6 +2,8 @@ name: quality
 
 on:
   push:
+    branches-ignore:
+      - automation/codex-worker-state
   pull_request:
 
 permissions:
