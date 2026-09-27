@@ -152,8 +152,10 @@ jobs:
           - .bob-input/request.txt: the comment that mentioned you (data).
           - .bob-input/pr.json: the PR title, description, head branch and captured base/head SHAs.
           - .bob-input/pr.diff: the diff of exactly those captured commits against their merge base.
-          - docs/START_HERE.md: read step 1 (rules) and step 5 (how to judge a
-            change) first; judge only at the head SHA in pr.json.
+          - docs/START_HERE.md: read step 0 (what the project is for), step 1 (rules)
+            and step 5 (how to judge a change) first; judge only at the head SHA in
+            pr.json. Step 0 tells you what the work is ultimately for, so you can say
+            when a change is correctly made but not worth making.
           - docs/reviews/README.md: owner decisions and the handoff index.
           - docs/BOB_PRACTICE.md: how to review well, with lessons from past reviews.
             Apply it, above all: trace what happens when each changed step fails.
@@ -182,6 +184,13 @@ jobs:
           Keep it under 40 lines. Do not write the
           at-sign mention of your own name. No other line may start with 'IBM Bob',
           and write nothing after the signature. End with: '— IBM Bob (automated review)'
+
+          Write your final message in exactly this order: the 'IBM Bob' first line,
+          your review, the VERDICT line, the SCOPE line, and then the signature as the
+          very last line. Sign exactly once. Drafts and any intermediate messages stay
+          unsigned. If you want to add anything after signing, rewrite the whole
+          message from its first 'IBM Bob' line. An answer whose last signed block has
+          no 'IBM Bob' line of its own is refused and never posted.
           "
           # env -i: Bob's process gets only PATH, HOME and its own key, so runner
           # credentials such as ACTIONS_RUNTIME_TOKEN are not in its environment.
