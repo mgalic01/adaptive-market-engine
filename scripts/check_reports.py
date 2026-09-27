@@ -179,22 +179,37 @@ def sections(text: str) -> list[tuple[str, int, int]]:
 
 
 def stated_hashes(text: str) -> list[tuple[str, str, str]]:
-    """(path, digest, line) for every ``path.py`` in backticks with a digest after it.
+    """(path, digest, line) for every ``path.py`` in backticks with a digest beside it.
 
-    The window stops at the next pinned path so a table row cannot borrow the next
-    row's digest, and a correction naming another script cannot steal its hash.
+    The digest is looked for after the path first, then — only on the same line, and
+    only when nothing follows it — before the path. A table written
+    ``| SHA-256 | Script |`` puts the digest in the earlier column, and searching
+    forward alone let such a pin through unchecked.
+
+    Either way the search stops at the neighbouring pinned path, so a table row cannot
+    borrow another row's digest and a correction naming a second script cannot steal its
+    hash.
     """
     pins = []
     for match in PIN_PATH.finditer(text):
-        window = text[match.end() : match.end() + WINDOW]
-        following = PIN_PATH.search(window)
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        after = text[match.end() : match.end() + WINDOW]
+        following = PIN_PATH.search(after)
         if following:
-            window = window[: following.start()]
-        digest = HEX64.search(window)
+            after = after[: following.start()]
+        digest = HEX64.search(after)
+        if digest is None:
+            # Same line only: a digest on an earlier line belongs to earlier prose, and
+            # a path is never far from its own hash in a table row.
+            before = text[line_start : match.start()]
+            preceding = list(PIN_PATH.finditer(before))
+            if preceding:
+                before = before[preceding[-1].end() :]
+            found = list(HEX64.finditer(before))
+            digest = found[-1] if found else None
         if digest is None:
             continue
-        line_start = text.rfind("\n", 0, match.start()) + 1
-        line_end = text.find("\n", match.end() + digest.end())
+        line_end = text.find("\n", match.end())
         pins.append(
             (
                 match.group(1),

@@ -554,9 +554,49 @@ class ReservedWindowTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(DataError, "reserved window"):
                     dataset.archive_get(path)
-            with self.assertRaisesRegex(DataError, "carries no month"):
+            with self.assertRaisesRegex(DataError, "monthly spot kline archive"):
                 dataset.archive_get("/data/spot/monthly/klines/ADAUSDT/1m/index.html")
         self.assertEqual([], calls)
+
+    def test_the_fetcher_refuses_a_reserved_path_wearing_a_development_suffix(self):
+        # An end-anchored month search reads the query, not the object: this path asks
+        # for 2025-01 while ending in "-2024-12.zip".
+        calls: list[str] = []
+
+        def connection(host, timeout):
+            calls.append(host)
+            raise AssertionError("no connection may be opened for a reserved month")
+
+        base = "/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m"
+        with patch.object(dataset, "https_connection", connection):
+            for path in (
+                f"{base}-2025-01.zip?x=-2024-12.zip",
+                f"{base}-2025-01.zip#-2024-12.zip",
+                f"{base}-2025-01.zip/../ADAUSDT-1m-2024-12.zip",
+                # The file name must agree with its own directories.
+                "/data/spot/monthly/klines/ADAUSDT/1m/BTCUSDT-1m-2024-12.zip",
+                "/data/spot/monthly/klines/ADAUSDT/1h/ADAUSDT-1m-2024-12.zip",
+            ):
+                with (
+                    self.subTest(path=path),
+                    self.assertRaisesRegex(DataError, "monthly spot kline archive"),
+                ):
+                    dataset.archive_get(path)
+        self.assertEqual([], calls)
+
+    def test_the_fetcher_still_accepts_the_canonical_paths(self):
+        seen: list[str] = []
+
+        def connection(host, timeout):
+            seen.append(host)
+            raise DataError("stop before the network")
+
+        canonical = archive_path("ADAUSDT", "1m", "2024-12")
+        with patch.object(dataset, "https_connection", connection):
+            for path in (canonical, canonical + ".CHECKSUM"):
+                with self.subTest(path=path), self.assertRaises(DataError):
+                    dataset.archive_get(path)
+        self.assertEqual(2, len(seen))  # both reached the connection, so both passed
 
     def test_the_readers_still_open_the_last_development_month(self):
         # The same archive contents in 2024-12 get past the guard to the parser.

@@ -192,6 +192,28 @@ class ReportTests(unittest.TestCase):
 
     # --- what counts as a pin --------------------------------------------------
 
+    def test_a_digest_stated_before_its_script_is_still_a_pin(self):
+        # "| SHA-256 | Script |" is the natural column order for a table; searching only
+        # forward from the path let such a stated hash through unchecked.
+        report = self.write(
+            f"# R\n\n| SHA-256 | Script |\n| --- | --- |\n| `{'a' * 64}` | `data/early.py` |\n"
+        )
+        (problem,) = check_report(report)
+        self.assertIn("data/early.py", problem)
+        self.assertIn("no appendix in this review", problem)
+
+    def test_a_table_row_cannot_borrow_the_previous_rows_digest(self):
+        report = self.write(
+            "# R\n\n| SHA-256 | Script |\n| --- | --- |\n"
+            f"| `{'a' * 64}` | `data/one.py` |\n| `data/two.py` | no digest |\n"
+        )
+        pins = {path for path, _, _ in stated_hashes(report.read_text(encoding="utf-8"))}
+        self.assertEqual({"data/one.py"}, pins)
+
+    def test_a_digest_on_an_earlier_line_is_not_borrowed(self):
+        text = f"The digest was `{'a' * 64}`.\n\nSee `data/other.py` for the method.\n"
+        self.assertEqual([], stated_hashes(text))
+
     def test_a_bare_file_name_in_prose_is_not_a_pin(self):
         # In 2026-09-26-bob-hourly-defect-calendar.md a correction note names
         # `events.py` and `calendar.py` without a directory; pairing those with the

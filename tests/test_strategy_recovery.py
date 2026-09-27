@@ -10,7 +10,12 @@ from unittest import TestCase
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.control import decode_frame, resume_paper
 from crypto_grid_bot.simulation.demo import demo_frames
-from crypto_grid_bot.simulation.execution import match, place, reduce_unreserved
+from crypto_grid_bot.simulation.execution import (
+    exit_price,
+    match,
+    place,
+    reduce_unreserved,
+)
 from crypto_grid_bot.simulation.models import (
     Account,
     D,
@@ -458,11 +463,34 @@ class StrategyRecoveryTests(TestCase):
             self.sim._settle(state, frame(0).quote)
         self.assertEqual(before, encode(state.to_dict()))
 
+    def test_a_held_residue_is_on_both_sides_of_the_baseline_rescaling(self):
+        # The residue is excluded from the allocation base but IS in day_start, risk_high
+        # and every later active-equity reading. Excluding it from both sides of the ratio
+        # shrinks the baselines, which can push a later drawdown across its threshold.
+        state = Account.start(D(100))
+        state.cash, state.inventory = D("110"), D("100")
+        state.day_start = state.risk_high = D("112")
+        quote = frame(0).quote
+        marked = (
+            state.inventory * exit_price(quote, self.sim.rules) * (D(1) - self.sim.rules.taker_fee)
+        )
+        self.assertGreater(marked, 0)
+        allocation = self.sim._settle(state, quote)
+        after = D(str(allocation["active_capital_after_allocation"]))
+        expected = (after + marked) / (D("110") + marked)
+        self.assertEqual(D("112") * expected, state.risk_high)
+        self.assertEqual(D("112") * expected, state.day_start)
+        # Excluding the residue from both sides would have been strictly smaller.
+        self.assertGreater(expected, after / D("110"))
+
     def test_older_schema_databases_are_not_silently_reinterpreted(self):
         row = self.sim.store.connection.execute("SELECT identity FROM state").fetchone()[0]
         identity = json.loads(row)
-        self.assertEqual(4, identity["schema"])
-        for old in (1, 2, 3):
+        self.assertEqual(5, identity["schema"])
+        # 4 is in the list: a database written before "exit-residue-v1" ran under the old
+        # lifecycle, where a residue blocked settlement and a validation halt armed no
+        # exit, so reopening it here would mix two semantics in one event history.
+        for old in (1, 2, 3, 4):
             identity["schema"] = old
             self.sim.store.connection.execute("UPDATE state SET identity=?", (encode(identity),))
             with self.subTest(schema=old), self.assertRaisesRegex(ValueError, "settings differ"):
@@ -523,8 +551,20 @@ class StrategyRecoveryTests(TestCase):
         # A thin book cannot absorb the position, so the exit is still outstanding.
         self.sim.process(frame(3, "0.02330", size="1000"))
         self.assertGreater(self.sim.store.read().inventory, 0)
-        with self.assertRaisesRegex(ValueError, "flat paper account.*still.*sellable"):
+        with self.assertRaisesRegex(ValueError, "flat paper account.*still held"):
             self.sim.resume(frame(4), event_id="too-early", reason="test")
+
+    def test_a_halt_holding_only_dust_stays_halted(self):
+        # The residue is marked to the bid, so its value moves with price. Admitting it
+        # would let a rally clear a hard-drawdown halt that is documented as final.
+        self.dust()
+        self.sim.process(self.crossed(3))
+        state = self.sim.store.read()
+        self.assertTrue(state.halt)
+        self.assertEqual(D(100), state.inventory)
+        for index, bid in ((4, "0.02330"), (5, "0.20000")):
+            with self.subTest(bid=bid), self.assertRaisesRegex(ValueError, "still held"):
+                self.sim.resume(frame(index, bid), event_id=f"dust/{index}", reason="test")
 
     def dust(self):
         """Leave a residue below the minimum notional: 100 units are worth about 2.3."""

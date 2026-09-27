@@ -237,22 +237,26 @@ def local_path(data_dir: Path, symbol: str, interval: str, month: str) -> Path:
     return data_dir / "binance" / archive_path(symbol, interval, month).lstrip("/")
 
 
-_ARCHIVE_MONTH = re.compile(r"-(\d{4}-\d{2})\.zip(?:\.CHECKSUM)?$")
+# The whole object path, not a suffix: an end-anchored month search accepts a reserved
+# path carrying a development-looking query ("...-2025-01.zip?x=-2024-12.zip"). The
+# back-references also force the file name to agree with its directories.
+_ARCHIVE_PATH = re.compile(
+    r"^/data/spot/monthly/klines/([A-Z0-9]{2,24})/(1m|1h|1d)/"
+    r"\1-\2-(\d{4}-\d{2})\.zip(?:\.CHECKSUM)?$"
+)
 
 
 def archive_get(path: str) -> bytes | None:
     """GET one archive object from the fixed host; None only for HTTP 404.
 
-    The path must name a monthly archive or its checksum, and its month must be in the
-    development window. This is the lowest network call, so the window is enforced here
-    and not only in ``fetch_file``.
+    The whole path must match the canonical monthly archive (or checksum) shape, and its
+    month must be in the development window. This is the lowest network call, so the
+    window is enforced here and not only in ``fetch_file``.
     """
-    if not path.startswith("/data/spot/monthly/klines/"):
-        raise DataError("path is outside the spot kline archive")
-    month = _ARCHIVE_MONTH.search(path)
-    if month is None:
-        raise DataError(f"archive path carries no month: {path}")
-    development_month(month.group(1))
+    canonical = _ARCHIVE_PATH.fullmatch(path)
+    if canonical is None:
+        raise DataError(f"not a monthly spot kline archive path: {path}")
+    development_month(canonical.group(3))
     connection = https_connection(ARCHIVE_HOST, timeout=60)
     try:
         connection.request("GET", path)

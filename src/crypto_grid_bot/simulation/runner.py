@@ -20,6 +20,7 @@ from crypto_grid_bot.portfolio.profit_vault import ProfitVault, ProfitVaultState
 from crypto_grid_bot.risk.engine import RiskEngine
 from crypto_grid_bot.simulation.execution import (
     Reduction,
+    exit_price,
     exitable,
     liquidate,
     match,
@@ -47,7 +48,12 @@ from crypto_grid_bot.strategy.opportunity import OpportunityScorer
 from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
 
 DEFAULT_CAPITAL = D("100")
-SCHEMA = 4
+# 5 (2026-09-27, engine "exit-residue-v1"): a residue the exchange filters forbid
+# selling no longer blocks settlement or a new grid, and a validation halt holding
+# inventory arms liquidation. A schema-4 database was written under the old lifecycle,
+# so reopening it here would mix two semantics in one event history; the identity
+# mismatch refuses it instead.
+SCHEMA = 5
 
 
 class TransientFrame(ValueError):
@@ -487,11 +493,18 @@ class PaperSimulator:
             account.validate(self.rules)
             if not account.halt or account.orders:
                 raise ValueError("resume requires a halted, reconciled flat paper account")
-            if not self._resolved(account, frame.quote):
+            if account.inventory != ZERO:
+                # Flat, not merely "nothing sellable": a held residue is marked to the
+                # current bid, so its value moves with price. Admitting it here would let
+                # a rally lift active equity back above the soft-drawdown line and clear a
+                # hard-drawdown halt that is documented as final. The lifecycle gates
+                # tolerate a residue (they are what the freeze bug was about); resuming a
+                # halt does not.
                 raise ValueError(
                     "resume requires a flat paper account: "
-                    f"{exitable(account, frame.quote, self.rules)} base units are still "
-                    "sellable, so the liquidation is incomplete"
+                    f"{account.inventory} base units are still held, so the exit is "
+                    "incomplete. A residue below the exchange minimum can only be cleared "
+                    "by a higher bid; the halt stands until then"
                 )
             regime = self.classifier.classify(frame.signals)
             if not self.scorer.score(frame.candidate, regime).eligible:
@@ -538,6 +551,13 @@ class PaperSimulator:
         active_before = account.cash - account.pending
         if active_before <= ZERO:
             raise ValueError("cannot settle an exhausted active account")
+        # A held residue is excluded from the allocation base but IS in day_start,
+        # risk_high and every later active-equity reading, so it must sit on both sides
+        # of the rescaling ratio. Leaving it out of both depresses the baselines and can
+        # move a later drawdown or daily-loss reading across its threshold.
+        marked_residue = (
+            account.inventory * exit_price(quote, self.rules) * (ONE - self.rules.taker_fee)
+        )
         account.settlement_count += 1
         state = ProfitVaultState(
             account.reserve_high,
@@ -551,7 +571,9 @@ class PaperSimulator:
         account.pending, account.reserve_high = state.pending_reserve, state.active_high_water_mark
         # Proportional adjustment preserves returns even when reserve exceeds the
         # original capital; subtracting could make a baseline zero or negative.
-        factor = allocation.active_capital_after_allocation / active_before
+        factor = (allocation.active_capital_after_allocation + marked_residue) / (
+            active_before + marked_residue
+        )
         account.day_start *= factor
         account.risk_high *= factor
         if allocation.transfer_due:
