@@ -124,11 +124,6 @@ def test_worker_command_is_isolated_and_has_no_payload_in_arguments(tmp_path):
     assert env == {"PATH": "path"}
 
 
-def test_public_fetch_rejects_external_url_before_request():
-    with pytest.raises(ValueError):
-        worker().fetch("https://attacker.invalid/secret")
-
-
 def test_real_http_rejects_unsigned_and_queues_once(tmp_path):
     import http.client
     import threading
@@ -221,79 +216,17 @@ def ready_snapshot():
     }
 
 
-def test_only_complete_current_agreement_is_mergeable():
-    worker()
-    from local_worker_github import merge_blocks
-
-    s = ready_snapshot()
-    assert merge_blocks(s, "READY") == []
-    assert merge_blocks(s, "BLOCKED")
-    s["comments"][0]["body"] = s["comments"][0]["body"].replace("a" * 40, "c" * 40)
-    assert "Bob" in " ".join(merge_blocks(s, "READY"))
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        "IBM Bob\nVERDICT: FLAGGED at "
-        + "a" * 40
-        + " - 1 concern(s), listed above\nSCOPE: "
-        + "x" * 200,
-        "IBM Bob: stop, this is wrong",
-    ],
-)
-def test_new_bob_negative_invalidates_old_clean_verdict(body):
-    worker()
-    from local_worker_github import merge_blocks
-
-    s = ready_snapshot()
-    s["comments"].append(
-        {"created_at": "3", "user": {"login": "github-actions[bot]"}, "body": body}
-    )
-    assert "Bob" in " ".join(merge_blocks(s, "READY"))
-
-
-def test_new_claude_negative_and_sha_mentioned_outside_review_header_block():
-    worker()
-    from local_worker_github import merge_blocks
-
-    s = ready_snapshot()
-    s["comments"][-1]["body"] = s["comments"][-1]["body"].replace("Reviewed at head", "Mentioning")
-    assert "Claude" in " ".join(merge_blocks(s, "READY"))
-    s = ready_snapshot()
-    s["comments"].append({"created_at": "3", "user": {"login": "claude[bot]"}, "body": "Stop"})
-    assert "Claude" in " ".join(merge_blocks(s, "READY"))
-
-
-@pytest.mark.parametrize("change", ["checks", "inline", "protection", "rename", "handoff", "draft"])
-def test_merge_gate_failure_cases(change):
-    worker()
-    from local_worker_github import merge_blocks
-
-    s = ready_snapshot()
-    if change == "checks":
-        s["checks"][0]["conclusion"] = "failure"
-    elif change == "inline":
-        s["inline"] = [{"commit_id": "a" * 40}]
-    elif change == "protection":
-        s["protection"] = {}
-    elif change == "rename":
-        s["files"][0]["previous_filename"] = "docs/tasks/task.md"
-    elif change == "handoff":
-        s["files"] = s["files"][:1]
-    else:
-        s["pr"]["draft"] = True
-    assert merge_blocks(s, "READY")
-
-
-def test_discussion_fingerprint_ignores_only_own_report():
+def test_discussion_fingerprint_includes_earlier_worker_reports():
     worker()
     from local_worker_github import MARKER, discussion_digest
 
     s = ready_snapshot()
     original = discussion_digest(s)
     s["comments"].append({"user": {"login": "mgalic01"}, "body": MARKER + "report"})
-    assert discussion_digest(s) == original
+    assert discussion_digest(s) != original
+    original = discussion_digest(s)
+    s["comments"][-1]["body"] += "New blocking finding"
+    assert discussion_digest(s) != original
     s["comments"].append({"user": {"login": "mgalic01"}, "body": "Critical defect"})
     assert discussion_digest(s) != original
 
@@ -325,7 +258,7 @@ def test_partial_patch_and_data_tree_abort_before_content(monkeypatch):
     assert len(calls) == 3
 
 
-def test_worker_report_success_and_changed_discussion_prevent_merge(tmp_path, monkeypatch):
+def test_worker_report_marks_changed_discussion_stale(tmp_path, monkeypatch):
     import copy
     import subprocess
 
@@ -344,7 +277,6 @@ def test_worker_report_success_and_changed_discussion_prevent_merge(tmp_path, mo
     monkeypatch.setattr(m.GitHub, "snapshot", lambda *_: current)
     posts = []
     monkeypatch.setattr(m.GitHub, "comment", lambda *args: posts.append(args))
-    monkeypatch.setattr(m.GitHub, "merge", lambda *_: pytest.fail("must not merge unread findings"))
 
     def run(args, **kwargs):
         out = Path(args[args.index("--output-last-message") + 1])
@@ -363,7 +295,137 @@ def test_worker_report_success_and_changed_discussion_prevent_merge(tmp_path, mo
     monkeypatch.setattr(m.subprocess, "run", run)
     q = module().Queue(tmp_path / "queue.sqlite")
     q.add(payload(), 91, 0)
-    m.run_batch(q, q.claim(30), tmp_path, "dummy.exe", True, True)
+    m.run_batch(q, q.claim(30), tmp_path, "dummy.exe", True)
     assert q.status()["runs"][0][1] == "completed"
     assert len(posts) == 1
-    assert "discussion changed" in posts[0][-1]
+    assert "discussion changed" in posts[0][-2]
+    assert "recommendation: STALE" in posts[0][-2]
+
+
+def test_queue_closes_connections_and_rolls_back(tmp_path):
+    import sqlite3
+
+    q = module().Queue(tmp_path / "queue.sqlite")
+    with pytest.raises(RuntimeError), q.connect() as db:
+        db.execute("INSERT INTO events VALUES ('dummy',1,0,NULL)")
+        raise RuntimeError("simulated failure")
+    assert q.status()["pending"] == 0
+    with pytest.raises(sqlite3.ProgrammingError):
+        db.execute("SELECT 1")
+
+
+def test_service_lock_rejects_second_owner(tmp_path):
+    with worker().service_lock(tmp_path), pytest.raises(OSError), worker().service_lock(tmp_path):
+        pytest.fail("second service must not acquire the lock")
+
+
+def test_completed_checks_wake_one_pr_and_own_comments_do_not():
+    body = payload(action="completed", check_suite={"pull_requests": [{"number": 94}]})
+    assert module().validate(body, signed(body), "check_suite", SECRET) == 94
+    body = payload(
+        action="created",
+        issue={"number": 94, "pull_request": {}},
+        comment={"body": "<!-- codex-local-worker -->\nreport"},
+    )
+    assert module().validate(body, signed(body), "issue_comment", SECRET) is None
+
+
+def test_no_automatic_merge_interface():
+    import inspect
+
+    m = worker()
+    assert not hasattr(m.GitHub, "merge")
+    assert "allow_merge" not in inspect.signature(m.run_batch).parameters
+    with pytest.raises(ValueError, match="only read or publish"):
+        m.GitHub().request("pulls/1/merge", "PUT", {"sha": "a" * 40})
+
+
+def test_ancestry_blocks_unreviewed_merge_base_before_patches(monkeypatch):
+    worker()
+    from local_worker_github import GitHub
+
+    api = GitHub()
+    calls = []
+
+    def request(path):
+        calls.append(path)
+        assert path.startswith("git/commits/")
+        return {"parents": []}
+
+    monkeypatch.setattr(api, "request", request)
+    with pytest.raises(ValueError, match="ancestry"):
+        api.require_ancestor("b" * 40, "a" * 40)
+    assert calls == ["git/commits/" + "a" * 40]
+    monkeypatch.setattr(api, "request", lambda _: {"parents": [{"sha": "b" * 40}]})
+    api.require_ancestor("b" * 40, "a" * 40)
+
+
+def test_json_publication_header(monkeypatch):
+    import io
+    import urllib.request
+
+    from local_worker_github import GitHub
+
+    seen = []
+
+    class Opener:
+        def open(self, request, **kwargs):
+            seen.append(request)
+            return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *args: Opener())
+    GitHub("dummy").request("issues/1/comments", "POST", {"body": "review"})
+    assert seen[0].get_header("Content-type") == "application/json"
+    assert json.loads(seen[0].data) == {"body": "review"}
+
+
+def test_run_directory_collision_is_terminal_and_preserves_files(tmp_path):
+    m = worker()
+    q = module().Queue(tmp_path / "queue.sqlite")
+    q.add(payload(), 91, 0)
+    batch = q.claim(30)
+    run = tmp_path / f"run-{batch[0]}"
+    run.mkdir()
+    report = run / "report.md"
+    report.write_text("preserve me")
+    m.run_batch(q, batch, tmp_path, "dummy.exe")
+    assert q.status()["runs"][0][1] == "failed"
+    assert report.read_text() == "preserve me"
+
+
+def test_report_write_failure_still_finishes_queue(tmp_path, monkeypatch):
+    m = worker()
+    q = module().Queue(tmp_path / "queue.sqlite")
+    q.add(payload(), 91, 0)
+    monkeypatch.setattr(m, "evidence", lambda _: {})
+
+    def fail(*args, **kwargs):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr(Path, "write_text", fail)
+    m.run_batch(q, q.claim(30), tmp_path, "dummy.exe")
+    assert q.status()["runs"][0][1] == "failed"
+
+
+def test_publication_neutralizes_task_trigger_and_rejects_oversize(monkeypatch):
+    import re
+
+    from local_worker_github import GitHub
+
+    api = GitHub("dummy")
+    calls = []
+
+    def request(path, method="GET", body=None):
+        calls.append((path, method, body))
+        return {"state": "open", "head": {"sha": "a" * 40}}
+
+    monkeypatch.setattr(api, "request", request)
+    text = "Quoted trigger:\n/bob-run docs/tasks/2026-09-27-bob-example.md\n@bob @codex review"
+    api.comment(1, text, "a" * 40)
+    body = calls[-1][2]["body"]
+    assert not re.search(r"(^|\s)/bob-run\s+docs/tasks/[A-Za-z0-9._-]+\.md", body)
+    assert "@" not in body
+    calls.clear()
+    with pytest.raises(ValueError, match="oversized"):
+        api.comment(1, "Finding. " * 3000, "a" * 40)
+    assert calls == []

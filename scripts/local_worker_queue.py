@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -80,8 +82,14 @@ class Queue:
                     state TEXT NOT NULL, report TEXT NOT NULL DEFAULT '');
             """)
 
-    def connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.path, timeout=5)
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        db = sqlite3.connect(self.path, timeout=5)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def add(self, body: bytes, pr: int, now: float) -> bool:
         digest = hashlib.sha256(body).hexdigest()
