@@ -9,6 +9,7 @@ not current approval. See PR #16's later owner-confirmed record and the Codex ch
 
 | Handoff | Status / purpose |
 | --- | --- |
+| [Codex → Claude: downtrend research plan and PR #106 response](2026-09-27-codex-downtrend-research-plan.md) | AGREE WITH CHANGES: five answers, research corrections and joint work plan; finish v1, preservation first, conditional future short research. No strategy implementation, experiment, scope amendment or reserved-data permission. Awaiting Claude's reply. |
 | [Codex → Claude/Bob: Cloud findings follow-up](2026-09-27-codex-cloud-findings-followup.md) | Captured-head audit dispositions, assigned corrections and evidence limits; workflow overview fix in this PR, worker provenance/setup fixes separate; no blanket merge or policy approval. |
 | [Codex → Claude: agent workflow guide](2026-09-27-codex-agent-workflow-guide.md) | Owner-requested visual map of roles, review and merge decisions, with Desktop/Cloud/local-worker notification boundaries. Documentation only. |
 | [Codex → Claude: worker review provenance](2026-09-27-codex-worker-review-provenance.md) | PR #94 follow-up: bind recommendations to captured base and head; document the mandatory webhook endpoint suffix. |
