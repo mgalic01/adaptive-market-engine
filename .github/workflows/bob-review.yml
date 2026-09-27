@@ -184,6 +184,13 @@ jobs:
           Keep it under 40 lines. Do not write the
           at-sign mention of your own name. No other line may start with 'IBM Bob',
           and write nothing after the signature. End with: '— IBM Bob (automated review)'
+
+          Write your final message in exactly this order: the 'IBM Bob' first line,
+          your review, the VERDICT line, the SCOPE line, and then the signature as the
+          very last line. Sign exactly once. Drafts and any intermediate messages stay
+          unsigned. If you want to add anything after signing, rewrite the whole
+          message from its first 'IBM Bob' line. An answer whose last signed block has
+          no 'IBM Bob' line of its own is refused and never posted.
           "
           # env -i: Bob's process gets only PATH, HOME and its own key, so runner
           # credentials such as ACTIONS_RUNTIME_TOKEN are not in its environment.
