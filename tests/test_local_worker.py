@@ -64,7 +64,7 @@ def test_pin_repository_sender_and_pr_event():
         with pytest.raises(ValueError):
             m.validate(body, signed(body), "pull_request", SECRET)
     body = payload(action="edited")
-    assert m.validate(body, signed(body), "pull_request", SECRET) is None
+    assert m.validate(body, signed(body), "pull_request", SECRET) == 91
     body = payload(action="created", issue={"number": 91})
     assert m.validate(body, signed(body), "issue_comment", SECRET) is None
     body = payload(action="created", issue={"number": 91, "pull_request": {}})
@@ -361,22 +361,40 @@ def test_ancestry_blocks_unreviewed_merge_base_before_patches(monkeypatch):
 
 
 def test_json_publication_header(monkeypatch):
-    import io
-    import urllib.request
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
 
-    from local_worker_github import GitHub
+    import local_worker_github
 
     seen = []
 
-    class Opener:
-        def open(self, request, **kwargs):
-            seen.append(request)
-            return io.BytesIO(b"{}")
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append(
+                (
+                    self.headers.get("Content-Type"),
+                    self.rfile.read(int(self.headers["Content-Length"])),
+                )
+            )
+            self.send_response(201)
+            self.end_headers()
+            self.wfile.write(b"{}")
 
-    monkeypatch.setattr(urllib.request, "build_opener", lambda *args: Opener())
-    GitHub("dummy").request("issues/1/comments", "POST", {"body": "review"})
-    assert seen[0].get_header("Content-type") == "application/json"
-    assert json.loads(seen[0].data) == {"body": "review"}
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(local_worker_github, "API", f"http://127.0.0.1:{server.server_port}/")
+    try:
+        local_worker_github.GitHub("dummy").request("issues/1/comments", "POST", {"body": "review"})
+        assert seen[0][0] == "application/json"
+        assert json.loads(seen[0][1]) == {"body": "review"}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 def test_run_directory_collision_is_terminal_and_preserves_files(tmp_path):
@@ -429,3 +447,41 @@ def test_publication_neutralizes_task_trigger_and_rejects_oversize(monkeypatch):
     with pytest.raises(ValueError, match="oversized"):
         api.comment(1, "Finding. " * 3000, "a" * 40)
     assert calls == []
+
+
+def test_check_and_status_changes_invalidate_fingerprint():
+    from local_worker_github import discussion_digest
+
+    s = ready_snapshot()
+    old = discussion_digest(s)
+    s["checks"][0]["conclusion"] = "failure"
+    assert discussion_digest(s) != old
+    old = discussion_digest(s)
+    s["statuses"].append({"context": "extra", "state": "pending"})
+    assert discussion_digest(s) != old
+
+
+def test_worker_start_requires_read_token(tmp_path, monkeypatch):
+    m = worker()
+    secret = tmp_path / "secret"
+    secret.write_bytes(SECRET)
+    monkeypatch.delenv("LOCAL_WORKER_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(m.shutil, "which", lambda _: "dummy.exe")
+    monkeypatch.setattr(m, "server", lambda *a: pytest.fail("must reject before listening"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["worker", "serve", "--state", str(tmp_path), "--secret-file", str(secret), "--run-worker"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        m.main()
+    assert exc.value.code == 2
+
+
+def test_edits_to_earlier_worker_comment_queue_review():
+    body = payload(
+        action="edited",
+        issue={"number": 94, "pull_request": {}},
+        comment={"body": "<!-- codex-local-worker --> amended finding"},
+    )
+    assert module().validate(body, signed(body), "issue_comment", SECRET) == 94

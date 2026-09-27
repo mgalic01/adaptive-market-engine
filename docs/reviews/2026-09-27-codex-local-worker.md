@@ -40,6 +40,10 @@ No strategy/runtime/accounting change, data download/replay or specification fre
 - Independent review found indirect Bob task dispatch via quoted slash commands and
   silent publication truncation. Commands are neutralized and oversized publication
   rejected; local reports survive publication failure. No Bob task was launched.
+- Further Cloud findings: require the local controller token for review reads even
+  without publication; include checks/statuses in freshness; queue edited PRs and
+  edited/deleted comments or amended/dismissed reviews. These cases have fixture
+  regressions; JSON publication is tested through a real loopback HTTP server.
 - Real CLI diagnostic completed through ChatGPT login. Actual dummy file write was
   blocked with code-mode host is disabled; file absent. Tool wrappers remain advertised,
   so complete tool/OS isolation is not claimed.
@@ -52,11 +56,11 @@ No strategy/runtime/accounting change, data download/replay or specification fre
   67a28f0348ad36a6491d91a8a00baf904acf0926, recommending BLOCKED with substantive
   methodology findings. Publication and merge were disabled. That test preceded
   adding the captured base's four startup/rule documents to the packet.
-- Corrected scope: 25 focused tests pass; full Windows pytest suite exits 0.
+- Corrected scope: 28 focused tests pass; full Windows suite 418 passed, 2 skipped, 563 subtests.
   Worker-only ruff, linux/win32 mypy and Bandit pass; check_reports finds 0 problems.
-  Integrated main 0bb28574b8554f337bd4128b852d5a4080302c59 introduces unrelated
-  ruff/format/mypy/Bandit failures in the new Bob hook and skill installer. Full
-  repository checks remain blocked on those repairs; no blanket green claim.
+  Main's tooling failures at 0bb2857 were independently repaired/reviewed in #96,
+  merged as 7b3b297ba37db9f7d62dccd2a6bc25f14d9f03b9 and integrated here. The
+  index conflict retains both handoffs. Full revised-head verification is on #94.
 - Final corrected-head CI belongs in the PR handoff. Bob's first-head review is
   historical evidence, not approval of the corrected scope.
 
@@ -64,6 +68,11 @@ Residual limits: same-user Windows processes are not a credential-isolation boun
 PR closing after its last check can race publication; GitHub has no atomic check/comment
 API. Temporary tunnels change URL after restart and stop delivering while the PC sleeps.
 No automatic redelivery, permanent service or production-availability claim.
+
+Claude independently checked the initial free-text approval parser against today's
+14 automated verdicts: only 2 verdict lines matched and none included its required
+full-head sentence (PR #94 comment 5854888091). This reinforces the removal: a free-
+text verdict parser must not substitute for reasoning about fit, evidence and risk.
 
 ## Next owners
 

@@ -188,6 +188,8 @@ def discussion_digest(snapshot: dict[str, Any]) -> str:
         "comments": snapshot["comments"],
         "reviews": snapshot["reviews"],
         "inline": snapshot["inline"],
+        "checks": snapshot["checks"],
+        "statuses": snapshot["statuses"],
         "title": snapshot["pr"].get("title"),
         "body": snapshot["pr"].get("body"),
     }

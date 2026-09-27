@@ -190,7 +190,10 @@ def run_batch(
             )
         blocks = []
         if discussion_digest(current) != discussion_digest(snapshot):
-            blocks.append("discussion changed during review; a fresh review is required")
+            blocks.append(
+                "discussion changed or check evidence changed during review; "
+                "a fresh review is required"
+            )
         body = (
             f"## Codex local worker → Claude/Bob handoff\n\n"
             f"PR #{numbers[0]}, head **{review['head']}**.\n\n{review['review']}\n\n"
@@ -323,8 +326,8 @@ def main() -> None:
     executable = shutil.which("codex")
     if args.run_worker and not executable:
         parser.error("Codex CLI missing")
-    if args.publish and not os.environ.get("LOCAL_WORKER_GITHUB_TOKEN"):
-        parser.error("publication needs LOCAL_WORKER_GITHUB_TOKEN on this PC")
+    if (args.run_worker or args.publish) and not os.environ.get("LOCAL_WORKER_GITHUB_TOKEN"):
+        parser.error("review/publication needs LOCAL_WORKER_GITHUB_TOKEN on this PC")
     with service_lock(state):
         queue.recover()
         http = server(queue, secret, args.port)

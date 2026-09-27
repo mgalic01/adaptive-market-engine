@@ -14,10 +14,10 @@ bound only to 127.0.0.1:8765. HMAC SHA-256 validates raw bytes before parsing. R
 ID 1384347674 and name mgalic01/adaptive-market-engine are pinned. Sender allowlist:
 owner mgalic01, GitHub Actions bot, Claude bot, Codex connector bot.
 
-PR opened/synchronize/reopened/ready_for_review/closed, created PR/inline comments,
-submitted reviews, and completed check-suite/workflow events identifying exactly one
+PR opened/synchronize/reopened/ready_for_review/closed/edited, created/edited/deleted
+PR/inline comments, submitted/edited/dismissed reviews, and completed check-suite/workflow events identifying exactly one
 PR can queue review. Other issues and arbitrary branch pushes do not. The receiver
-ignores its own marked comments. Only event hashes and PR numbers enter SQLite.
+ignores newly created marked worker comments; edits to old reports still queue review. Only event hashes and PR numbers enter SQLite.
 There is no GitHub polling; the one-second loop checks the local queue.
 
 Thirty quiet seconds coalesce activity for one PR. Maximum six starts/hour, 24/day,
@@ -37,7 +37,7 @@ for the reviewer to withhold a recommendation. No repository checkout/code execu
 The model receives evidence through stdin, treats GitHub text as untrusted, critically
 assesses correctness/methodology/security and disagreements, and names limits/next
 owners. It runs no tests: CI and other reviewers are third-party execution evidence.
-The report names the exact head. A head/base change invalidates it; changed discussion
+The report names the exact head. A head/base change invalidates it; changed discussion or check/status evidence
 is marked STALE. Publication rechecks open state/head and neutralizes mention and Bob task-command triggers. Oversized reports remain local;
 publication rejects them rather than truncating findings.
 GitHub cannot atomically check a comment/PR state and publish; the small remaining race
@@ -46,7 +46,8 @@ is acknowledged. There is no automatic retry after uncertain publication.
 ## Credentials and containment
 
 Codex uses the PC's existing ChatGPT login/allowance. No OpenAI API key goes to GitHub.
-A controller-only local GitHub token enables reads/comments. The child environment
+A controller-only local GitHub token is required for review reads and publication,
+avoiding the small anonymous REST allowance. The child environment
 allowlist excludes that token and webhook secrets. User config/rules are ignored;
 shell/apps/plugins/browser/image tools and code-mode execution are disabled, with
 read-only sandbox and a neutral working directory. Some tool wrappers remain advertised
@@ -70,7 +71,7 @@ python scripts/local_worker.py status --state <private-state>
 cloudflared tunnel --url http://127.0.0.1:8765 --no-autoupdate
 ```
 
-For publication, explicitly map the existing Windows User variable without printing
+For any review run (with or without publication), explicitly map the existing Windows User variable without printing
 or persisting its value. Run from the reviewed deployment directory; use absolute
 paths for Python, state and secret in an unattended launcher:
 

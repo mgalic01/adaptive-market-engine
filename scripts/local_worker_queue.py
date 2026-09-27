@@ -14,10 +14,10 @@ REPO_ID = 1384347674
 MAX_BODY = 1024 * 1024
 SENDERS = {"mgalic01", "github-actions[bot]", "claude[bot]", "chatgpt-codex-connector[bot]"}
 ACTIONS = {
-    "pull_request": {"opened", "synchronize", "reopened", "ready_for_review", "closed"},
-    "issue_comment": {"created"},
-    "pull_request_review": {"submitted"},
-    "pull_request_review_comment": {"created"},
+    "pull_request": {"opened", "synchronize", "reopened", "ready_for_review", "closed", "edited"},
+    "issue_comment": {"created", "edited", "deleted"},
+    "pull_request_review": {"submitted", "edited", "dismissed"},
+    "pull_request_review_comment": {"created", "edited", "deleted"},
     "check_suite": {"completed"},
     "workflow_run": {"completed"},
 }
@@ -57,7 +57,9 @@ def validate(body: bytes, signature: str, event: str, secret: bytes) -> int | No
             if "pull_request" not in issue:
                 return None
             comment = object_value(data.get("comment", {}))
-            if str(comment.get("body", "")).startswith("<!-- codex-local-worker -->"):
+            if data["action"] == "created" and str(comment.get("body", "")).startswith(
+                "<!-- codex-local-worker -->"
+            ):
                 return None
             number = issue.get("number")
         else:
