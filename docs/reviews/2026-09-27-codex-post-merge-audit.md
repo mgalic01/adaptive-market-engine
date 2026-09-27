@@ -38,6 +38,9 @@ These are the merged PR heads, not the subsequent main merge-commit identifiers.
    proposal after #93 proposed N=6 central/N=9 sensitivity. Correct those references,
    retain undecided status and variance uncertainty; N=2 examples are hypothetical.
    This repairs an integration contradiction, not the statistical methodology.
+   Follow-up review on this PR also found stale unmerged-status references in the
+   DSR header, §10 and revision log. Those now distinguish the completed merge from
+   policy adoption; the revision log explicitly records its earlier historical state.
 
 ## Independent verification
 
