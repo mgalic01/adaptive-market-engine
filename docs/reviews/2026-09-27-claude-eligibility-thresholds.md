@@ -1,7 +1,34 @@
 # Proposed eligibility thresholds for development folds (from measurement)
 
 - **Date:** 2026-09-27. **Author:** Claude (cloud session `session_012TnmLLUR1KhRL31nnfnujH`).
-- **Status: two values PROPOSED from measurement. Not yet an owner decision.** The owner
+- **OWNER DECISION, 2026-09-28** (chat with Claude session `e0b16be3`, about 13:05–13:25
+  UTC). This decision supersedes the "proposed" status below, which is kept as history.
+  - **What was asked:** whether to keep the proposed 2% cap, which would exclude 9 of the
+    98 months the repair rule rescues (Bob, #132).
+  - **What the owner said:**
+    - *"yea use it"*;
+    - then *"One rule: raise to 16%"*;
+    - then, after Claude corrected a fact (the worst raw-parseable month, DOGEUSDT
+      2019-09, is 16.5%), *"17%"*;
+    - on the second value, *"Confirm exact match"*;
+    - then *"i confirm"*.
+  - **The rules now in force:**
+    1. **One rule for every pair-month, raw-parseable and repaired alike** (the owner's
+       "one rule for all", as on #102): a pair-month is eligible if its **real defects are
+       at most 17%** of its expected hours. Defect hours stay masked and never enter a
+       replay. The mask and repair settings (items 1 and 2 below) are unchanged.
+    2. **Price and volume tolerance on repaired hours: `Decimal(0)`, an exact match.
+       Confirmed.**
+  - **The effect, as measured:**
+    - every one of the 772 measured pair-months is under 17%;
+    - that includes the 22 raw-parseable months above 2% (worst DOGEUSDT 2019-09, 16.5%)
+      and the 9 repaired months above 2% (worst DOGEUSDT 2021-12, 15.99%, #132), so 31
+      months qualify that the 2% cap would have excluded;
+    - the 8 unusable months and the 110 months Binance does not publish stay out.
+  - **This is not the forbidden post-hoc tuning.** The rule is a data-quality eligibility
+    rule, decided from data-quality measurements. No strategy was run, and no result
+    exists to tune against (`START_HERE.md` step 1).
+- *Superseded 2026-09-28 (history):* **Status: two values PROPOSED from measurement. Not yet an owner decision.** The owner
   confirmed the *approach* — adopt hour-level masking and Bob's refined repair rule
   ([PR #92](https://github.com/mgalic01/adaptive-market-engine/pull/92), which was open and
   changing when this record merged and has since merged itself — see the post-merge note) — and asked for the two values it leaves open to be derived rather than picked.
@@ -16,8 +43,9 @@
 - **Measured since (PR #132, 2026-09-27):** Bob's
   [rescued-month masking report](2026-09-27-bob-rescued-month-masking.md) measured the 98
   months the repair rule rescues, the limitation below: **9 of the 98 exceed 2% real
-  defects**, so a 2% cap would exclude them. Both values remain proposed, pending the
-  owner's decision, which is tracked in
+  defects**, so a 2% cap would exclude them. That measurement led to the owner's decision
+  of 2026-09-28 at the top of this record (17%, one rule for all; `Decimal(0)` confirmed),
+  tracked in
   [issue #144](https://github.com/mgalic01/adaptive-market-engine/issues/144#issuecomment-5870332726).
 - **Why record it before results exist.** Whichever values are adopted must be fixed before
   any variant runs, or choosing them becomes the post-hoc tuning `START_HERE.md` step 1

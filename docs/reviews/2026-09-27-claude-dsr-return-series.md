@@ -66,7 +66,7 @@ the close of day *d*.
   the closing quote of that pair's **last valid 1m bar that closes at or before `τ_d`**,
   that is, the last valid bar opening at or before 23:59 UTC on day *d*. "Valid" means
   present and not masked under part 1's rules (PR #92, with the values proposed in
-  PR #100, once agreed). No bar at or after `τ_d` is ever used.
+  PR #100, once agreed). *[Decided by the owner on 2026-09-28: one rule for every pair-month, real defects at most **17%** of expected hours; `Decimal(0)` confirmed. See [the eligibility record](2026-09-27-claude-eligibility-thresholds.md).]* No bar at or after `τ_d` is ever used.
 - **Only the price can be stale, not the account.** A replay changes the account only at
   a quote. Between that bar's closing quote and `τ_d` nothing fills and nothing moves, so
   `E_(i,d)` is the account's exact state at `τ_d`. What can be old is the price its
@@ -235,7 +235,7 @@ intrabar paths.
 - **Eligibility is fixed per fold, and fixed before any run.** A pair is eligible for a
   whole fold or not at all, so the basket does not change within a window.
   - Eligibility is decided **only from data coverage**: the fold-eligibility rule of part 1
-    (PR #92) with the masking values proposed in PR #100, once agreed.
+    (PR #92) with the masking values proposed in PR #100, once agreed. *[Decided by the owner on 2026-09-28: one rule for every pair-month, real defects at most **17%** of expected hours; `Decimal(0)` confirmed. See [the eligibility record](2026-09-27-claude-eligibility-thresholds.md).]*
   - It never depends on anything a run produces — trades, returns, activity, or whether a
     Sharpe is defined.
   - The eligible pair set for every fold is published before the first variant run.
@@ -353,7 +353,7 @@ Everything a result could otherwise steer is fixed here.
   durations in section 4 are equity-change timings from V0 replays already reported,
   not Sharpe figures.
 - **Not settled here:** the masking and outage settings of part 1 (proposed values are
-  in PR #100), which sections 3 and 5 depend on only through the valid-bar and gap
+  in PR #100; *[Decided by the owner on 2026-09-28: one rule for every pair-month, real defects at most **17%** of expected hours; `Decimal(0)` confirmed. See [the eligibility record](2026-09-27-claude-eligibility-thresholds.md).]*), which sections 3 and 5 depend on only through the valid-bar and gap
   rules; the trial count (part 2, PR #93: merged as a proposal, not adopted); and the trusted
   process that writes the trial register.
 
