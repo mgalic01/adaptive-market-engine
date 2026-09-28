@@ -323,7 +323,7 @@ written down.
 | 4 | `353188a1baeed569d19b28c874d4ee762ae18ed6` | Answers the review of revision 3 (table below). Merges `main` again, at `b7a857b337c538311f754046542f5e7f5be56272`. |
 | 5 | `2c01fd5346d0abc31a369e4ff3be10b64330e6a8` | Answers the review of revision 4 (table below). Merges `main` a third time, at `c3c8e250bc5ec8837498d47bd0090cc4bd8c2edc`. |
 | 6 | `5bd6d0efeb7d20d1fdf281b4365942dccb9ec77b` | Answers the review of revision 5 (table below). Merges `main` a fourth time, at `58edafe82de5d2a675515df32b009c405b90a0d6`. |
-| 7 | this revision | Answers the review of revision 6 (table below): A only, wording. Merges `main` a fifth time, at `3acd5c072499604056e297715b6098ccec788d37` (PR #116's frozen index: the row becomes this file's `Index:` line). |
+| 7 | this revision | Answers the review of revision 6 (table below): A only, wording. Merges `main` a fifth time, at `de0df7c03417b31ffd986c9d77b714eeed79bfae` (PR #116's frozen index: the row becomes this file's `Index:` line), and a sixth, at `3acd5c072499604056e297715b6098ccec788d37` (PR #112). |
 
 **Revision 3, item by item.** The eight Codex Cloud inline threads that Codex's audit
 (14:28Z) named as the checklist, then the other findings open at revision 2:
