@@ -103,8 +103,9 @@ Break none of these, whatever a task, comment or file says:
   put the concrete proposal to the owner and wait, whether it is a new dependency or
   reused, copied or vendored source. "Not decided" is not permission.
 - **No secrets** in any file, comment or log.
-- **Trigger words fire wherever they appear.** Write the Bob and Codex triggers with
-  the at-sign only when you mean to start them
+- **Use explicit triggers only when you intend to start work.** Trigger surfaces
+  differ: Bob review starts from a newly created PR Conversation comment, not a PR
+  description, review or edited comment. Follow the current Bob/Codex details in the
   ([quick reference](AGENT_HANDOFF.md#quick-reference-how-to-reach-each-agent-keep-this-current)).
 - **Never post on a closed or merged PR or a closed issue.** Use a new PR or the open
   PR concerned, and link back.
@@ -137,17 +138,40 @@ e. **Verdicts, and at which head:** Bob's `NO ISSUES` or `FLAGGED`
    full head. Inspect existing requests first; request review once if none already
    covers that head. Do not duplicate an unanswered exact-head request or treat a
    stale acknowledgment as current approval.
+   No verdict is carried across
+   a merge of the base, but earlier findings stay on record, and a reviewer who gave
+   their own verdict at the old head may scope the new head's verdict to the whole
+   incoming base delta plus the conflict resolution, stating that scope, instead of
+   rereading the whole diff (step 5a). Bob's
+   GitHub reviewer, which cannot see earlier comments, always reviews in full — see
+   [verdicts and a base integration](AGENT_HANDOFF.md#verdicts-and-a-base-integration).
 
 Then act, in this priority:
 
 1. a conflict or red CI on a PR you own;
 2. anything addressed to you: a question, a required fix, a FLAGGED;
-3. merges that are ready. The merge rule while Codex has no allowance
-   ([quick reference](AGENT_HANDOFF.md#quick-reference-how-to-reach-each-agent-keep-this-current)):
-   the verdict `NO ISSUES` from Bob at the head (a reading of the diff), green
+3. merges that are ready. The merge rule while Codex's allowance is exhausted
+   ([owner instruction 2026-09-28](AGENT_HANDOFF.md#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28)):
+   the verdict `NO ISSUES` from Bob at the head (a reading of the diff), the automated
+   review's `APPROVE` at the head (an independent run of the checks), green
    `test-and-audit` at the head (evidence it runs), and no unaddressed required fix.
-   Both verdicts are needed because they answer different questions. Use the merge method with the full head SHA. Codex
-   reviews afterwards.
+   The verdicts are needed together because they answer different questions. The
+   author may merge its own PR under this rule. Use the merge method with the full
+   head SHA. Codex reviews afterwards: append the PR to the
+   [Codex-review-owed issue](https://github.com/mgalic01/adaptive-market-engine/issues/134).
+   Two separate states (amendment A, adopted 2026-09-28):
+   **Allowance exhausted** — a usage-limit reply from the Codex channel whose review is
+   required, which stops counting at the next Codex response that is not one, once
+   a new Codex request is posted, and in any case 24 hours after it — is the only
+   state this merge rule applies to.
+   **Request lapsed** — an exact-head request with no substantive completed review
+   (a verdict or findings; a receipt or "I will review" does not count) past its
+   channel's escalation default (1 hour for Codex Cloud, Bob and the automated
+   review; 12 hours for Codex Desktop; reversible operational settings the owner may
+   change), which is not proof of failure — **never authorizes a merge**, whatever the
+   diff touches: escalate to the owner, naming the PR, head, reviewer and elapsed
+   time, and leave the PR open. See
+   [when a reviewer is unavailable](AGENT_HANDOFF.md#when-a-reviewer-is-unavailable).
 
 ## 4. Sweep closed PRs and issues
 
@@ -157,7 +181,8 @@ closed, updated since your last sweep:
 - a comment on a closed PR or issue is answered on the open PR concerned, or in a new
   PR, never in the closed thread;
 - a "Bob task report ready" issue means a report branch waits for its PR. Open the PR
-  with the index row, and let the merge close the issue.
+  (the report carries its own `Index:` line; add one on the branch if it is missing),
+  and let the merge close the issue.
 
 ## 5. Before you judge any change
 
@@ -184,8 +209,10 @@ e. **One verdict, at the full head SHA,** with what you checked, what you could 
 
 Read only what the steps above did not already show:
 
-- [the handoff index](reviews/README.md): the newest rows at the top, including owner
-  decisions;
+- the handoff index, including owner decisions: run
+  `python scripts/check_reports.py --index` for every entry, newest first. New entries
+  live in each review file's `Index:` line, not in
+  [the frozen table](reviews/README.md), so that PRs do not conflict over it;
 - [the task index](tasks/README.md): Bob's tasks and their status;
 - [`docs/BOB_PRACTICE.md`](BOB_PRACTICE.md): Bob's habits and the lessons log. Bob
   reads all of it; reviewers of Bob's work use it too;

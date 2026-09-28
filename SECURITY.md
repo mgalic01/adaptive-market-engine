@@ -20,8 +20,9 @@ It has no networked exchange implementation and does not read API credentials.
   that is a rule for whoever writes the change, not something the system enforces.
 
   `tests/test_documented_hosts.py` catches one kind of mistake, and only one: **a Binance
-  hostname** — a subdomain of `binance.vision` or `binance.com`, in any letter case —
-  written anywhere in `src/*.py`, comments and docstrings included, that is not an exact
+  hostname** — `binance.vision` or `binance.com` or any subdomain of either, in any
+  letter case — written anywhere in `src/**/*.py` (every Python file under `src/`,
+  recursively), comments and docstrings included, that is not an exact
   entry in the list above. It compares whole hostnames, lowercased, so a host is not
   "listed" because it appears inside a longer listed one or elsewhere in this document.
   The markers must each appear once, begin before end, or the test fails. It is **a
@@ -43,7 +44,10 @@ The offline simulator uses SQLite transactions and event IDs to recover paper
 orders, fills and reserve accounting after restart. Back up the database with a
 SQLite-aware backup method; do not copy only the main file while its WAL is active.
 Do not manually edit balances or delete event rows to bypass a halt. SQLite is
-local storage, not a tamper-proof exchange ledger. Halts do not auto-resume.
+local storage, not a tamper-proof exchange ledger. Only a hard-drawdown halt of category
+`drawdown` restarts automatically, after 24 hours and journaled (spec v1 amendment 1,
+`docs/EXPERIMENT_SPEC_V1.md` §3); emergency, capital-exhaustion and integrity halts stay
+latched until an audited resume.
 
 Before live deployment: add live order/balance reconciliation, real exchange
 filters and fee-asset handling, bounded retries, a wall-clock stale-feed watchdog,

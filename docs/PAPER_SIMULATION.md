@@ -1,4 +1,4 @@
-# Paper simulation contract (schema 4)
+# Paper simulation contract (schema 6)
 
 ## Scope and order lifecycle
 
@@ -53,8 +53,10 @@ new net portfolio profit if other holdings have depreciated.
 | Stale/future/out-of-order quote or signal, backward receive clock, excessive spread | Cancel buys; retain sells; no fills or marking from this frame | Two distinct, consecutive fresh eligible observations |
 | Fresh frame with news/candidate veto | Cancel buys, stop replenishment, allow reduce-only sells | Same confirmation rule after eligibility returns |
 | Daily-loss limit or soft drawdown | Cancel buys, manage sells, block new exposure | Risk limits must pass, then confirmed recovery |
-| Invalid numeric/model/symbol input | Cancel all orders; latch halt | Explicit audited resume with fresh checks |
-| Emergency or hard drawdown | Cancel orders; latch halt and liquidate using valid event liquidity | Explicit resume; current risk limits must still pass |
+| Invalid numeric/model/symbol input (category `integrity`) | Cancel all orders; latch halt; if a position is held, arm the exit so it is sold on the next valid frame | Explicit audited resume with fresh checks, once the liquidation is complete (a residue below the exchange minimum is admitted) |
+| Hard drawdown (category `drawdown`) | Cancel orders; latch halt and liquidate using valid event liquidity | **Restarts automatically** 24 hours (`hard_cooloff_seconds`) after the halt began, once the liquidation is complete, the frame is eligible and a rebase of `risk_high` to the current active equity would pass the risk check; journaled as `restart`. A manual resume is refused by the frozen risk check until then. See the note below. |
+| Emergency signal (category `emergency`) | Cancel orders; latch halt and liquidate using valid event liquidity | Resumable **only while the drawdown itself is within limits**: the emergency flag is read from the resume frame, so once it clears and every other limit passes, resume succeeds. An emergency raised at or past the hard-drawdown level stays refused (spec v1 amendment 1 states this asymmetry as intended); it never restarts by itself. |
+| Active capital exhausted (category `exhaustion`) | Cancel orders; latch halt | **Final.** Active equity is zero, so the drawdown is 1.0. The reserve is protected and resume cannot return it to the active account. |
 | Saved accounting invariant failure | Abort the transaction / refuse opening the account | Investigate; resume cannot bypass corruption |
 
 `SimulationPolicy.recovery_frames` defaults to 2 and is persisted in account
@@ -66,9 +68,62 @@ to 180 seconds, allowing fresh one-minute observations. This is separate from
 each quote and its strategy inputs. Slower replays must explicitly set a gap at
 least as large as their observation interval; the future replay adapter must
 validate that relationship. The read-only collector remains separate from this
-simulator. Emergency/hard-drawdown halts never clear automatically.
+simulator. Emergency, exhaustion and integrity halts never clear automatically; a
+`drawdown` halt does, below.
+
+**Drawdown recovery (spec v1 amendment 1, `docs/EXPERIMENT_SPEC_V1.md` §3, engine
+`drawdown-recovery-v1`, schema 6).** Every halt carries its start (`halt_since`) and one
+of four categories (`halt_category`: `drawdown`, `emergency`, `exhaustion`,
+`integrity`), captured once on the transition into the halt and never changed by the
+later halt calls the runtime makes while it lasts. Two controls recover by themselves:
+
+- **Soft drawdown (option C).** The first `REDUCE` outside an episode opens one
+  (`episode_since`) with today's response. On every later valid frame, before any other
+  change, the engine counts a confirmation when the frame is eligible and the risk
+  engine would `ALLOW` with `risk_high` tentatively set to this frame's active equity
+  (`episode_count`; a continuity gap, an unusable frame, an ineligible frame or a
+  failing tentative check resets it). Once `soft_cooloff_seconds` (24 h) have passed
+  since the episode started and `recovery_frames` confirmations are in a row, the
+  rebase is committed: `risk_high` becomes the current active equity, journaled as
+  `rebase`. One rebase per episode; a halt of any category ends an open episode; a
+  later `REDUCE` starts a new one with its own cool-off. The 8% and 12% triggers are
+  then measured from the rebased reference.
+- **Hard drawdown (automatic restart).** A `drawdown` halt restarts on the first valid
+  frame, after that frame's liquidation attempt, where `hard_cooloff_seconds` (24 h)
+  have passed since the halt began, no order rests, the liquidation is complete in
+  PR #122's sense (`exit_state` is not `incomplete`; a residue below the exchange
+  minimum stays held and marked), the frame is eligible and the tentative rebase would
+  `ALLOW` (so the emergency flag blocks it while set). It changes exactly what a manual
+  resume changes: clears the halt and its identity, resets the range-exit state, the
+  outside-range timers and the grid bounds, rebases `risk_high`, and enters the normal
+  recovery pause ("automatic restart after drawdown halt"); the settlement of any held
+  residue and a new grid follow on later frames. It never touches the daily baseline,
+  the C1 references, the reserves or the vault. Journaled as `restart`. A halt instance
+  restarts at most once; a later 12% fall from the rebased reference is a new instance.
+  There is no loss floor and no capital threshold, by the owner's decision.
+
+The **C1(b) measurement reference** (`measure_high`) is separate from the breaker's
+`risk_high`: it starts with the initial capital, rises at every mark and is scaled at
+every settlement by the same factor, in the same statement, but a rebase or a restart
+never changes it. In a run without either it equals `risk_high` at every evaluation,
+which a test asserts. Replay measures `active_max_drawdown_pct` against it and counts
+`soft_drawdown_rebases` and `drawdown_restarts`.
+
 Risk baselines are preserved through recovery; a realised loss is not erased by
 issuing resume. UTC daily baselines still carry overnight gaps into the risk check.
+
+**A drawdown halt cannot be resumed by hand; it restarts by itself.** `resume()`
+requires the current risk action to be `ALLOW`. Only `_settle` rescales `risk_high`,
+and it never runs while halted; for a flat account active equity cannot change either.
+The measured drawdown is therefore frozen at the value that triggered the halt, so
+every manual resume attempt is refused, and the refusal says so; the automatic restart
+above is what clears it, after the cool-off. An "active capital exhausted" halt, whose
+drawdown is pinned at 1.0, stays final.
+
+An **emergency** halt is different, and the row above says so: the emergency flag comes
+from the frame passed to `resume()`, not from a frozen baseline, so a halt raised only
+by that flag clears once the flag does. It is final only when the account is also at or
+past the drawdown limit. Do not read "latched" as "unrecoverable" for this one case.
 
 Pausing cancels the remainder of a partially filled buy. Its unpaired inventory
 is sold conservatively on a usable frame, sharing remaining bid capacity with
@@ -76,6 +131,26 @@ other sells. Existing paired sell orders are retained, but replenishment stays
 disabled until the interrupted grid has drained. Sub-minimum dust remains visible
 in `unreserved_inventory`; it is not rounded away or funded using protected money.
 A dust-resolution policy is still required for production operation.
+
+Because that residue cannot be sold at all — no later frame at the same price can
+satisfy the exchange's step and minimum-notional filters — no lifecycle step waits for
+it. Profit settlement, opening the next grid and leaving a range exit require instead
+that nothing *sellable* is held: flat, or holding only such a residue, with no resting
+sell reserving it.
+
+**`resume()` uses the same criterion** (spec v1 amendment 1, reversing PR #122's
+exact-zero rule): it is refused while the liquidation is incomplete and admitted with a
+residue below the exchange minimum, which stays held and marked and is drained or
+settled exactly as after any resume. The risk check is what keeps the final halts final:
+a held residue marked to the bid can move the measured drawdown by at most one minimum
+notional against `risk_high`, a margin the amendment accepts, since the same account
+without the emergency flag restarts after 24 hours on a full rebase anyway.
+
+The residue is never written off and never invented:
+it stays in `inventory`, in `unreserved_inventory` and in the equity mark, and it is
+excluded from the settlement base, which understates profit rather than overstating it.
+Waiting for exact zero instead made a healthy account stop trading for good after any
+partial fill smaller than one minimum notional.
 
 A stored grid accumulates observed outside-range time (`outside_seconds`). Only an
 interval bracketed by two consecutive valid outside-range frames no more than
@@ -105,7 +180,9 @@ reason says "recentering disabled". Both settings are hypotheses to measure in
 [BACKTEST_PLAN.md](BACKTEST_PLAN.md), not validated choices.
 
 If risk triggers after normal matching, liquidation waits for a later usable
-frame. Stale data never authorizes an exit. An offline runner has no independent
+frame. Stale data never authorizes an exit. The same holds for the exit armed by a
+validation halt: the invalid frame returns before the liquidation branch, so the sale
+can only ever use a later frame that passed every freshness, ordering and quote check. An offline runner has no independent
 watchdog: feed-loss handling for real resting orders remains separate work.
 
 ## Explicit paper resume
@@ -116,7 +193,10 @@ eligible signals and passing risk limits. It logs the prior halt and operator
 reason in the same transactional journal, places no order, and waits for the
 normal recovery confirmations. Repeating the same command ID/payload is idempotent;
 changing its payload is rejected. Inventory or outstanding liquidation must be
-resolved before resume; it cannot override loss limits or restore reserve funds.
+resolved before resume; it cannot override loss limits or restore reserve funds. A
+refusal names which precondition failed, including the total inventory still held when
+the liquidation is incomplete, and says plainly when a halt is final or restarts by
+itself.
 
 The operator CLI reopens the saved rules/policy and additionally checks freshness
 against the real UTC clock. `fresh-frame.json` must contain `Frame.payload()` with
@@ -151,9 +231,14 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Schema 1-3 databases are rejected by version 0.6; no implicit
-migration or reset occurs.** Preserve old experiments with the old code, or start a
-clearly separate schema 4 experiment. Never edit identity/state to bypass risk history.
+initial cash. **Only schema 6 databases are accepted; schema 1-5 are rejected, with no
+implicit migration or reset.** Schema 5 (engine `exit-residue-v1`, PR #122) changed the
+exit lifecycle; schema 6 (engine `drawdown-recovery-v1`, spec v1 amendment 1) added the
+halt identity, the episode, the C1(b) reference and the two cool-offs to the saved
+state and identity, and made a `drawdown` halt restart. An older database is refused
+rather than silently reinterpreted: its halts were final. Preserve old experiments with
+the old code, or start a clearly separate schema 6 experiment. Never edit identity/state
+to bypass risk history.
 The frame-gap policy (added in 0.5.1/0.6) is part of saved identity, so experiments
 without that setting are rejected. Use a new database for the new policy; retain
 the original database and matching code for reviewing the old experiment.

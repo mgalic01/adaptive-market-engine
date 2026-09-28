@@ -14,7 +14,7 @@ are in the sections below.
 
 | To get… | Write or do this | What starts | What it can do | Cost and limits |
 | --- | --- | --- | --- | --- |
-| **Bob's quick review or answer** | a PR comment with the whole word `@bob` (owner or collaborator) | `bob-review.yml`, the **read-only** Bob on GitHub | reads the comment, PR description and diff, and `docs/reviews/README.md`; answers once. No commands, no files, no token | Bob's credits, about one minute; the answer appears as `github-actions[bot]` |
+| **Bob's quick review or answer** | a PR comment with the whole word `@bob` (owner or collaborator) | `bob-review.yml`, the **read-only** Bob on GitHub | reads the comment, PR description and diff, and the generated handoff index; answers once. No commands, no files, no token | Bob's credits, about one minute; the answer appears as `github-actions[bot]` |
 | **Bob doing real work** (runs, data, hashes, tests) | **merge a PR that adds** `docs/tasks/<date>-bob-<topic>.md` to `main` (it starts **automatically**), or comment `/bob-run docs/tasks/<file>.md`, or Actions → **IBM Bob task run** → Run workflow | `bob-task.yml`, the **task runner** on a GitHub Linux machine | runs commands with the project installed; writes only a report `docs/reviews/*-bob-*.md`, which arrives as a PR from `bob/task-*` | Bob's credits, up to 240 minutes. Owner-only triggers. A task PR is merged only after review, because the merge is the go |
 | **Codex review (cloud)** | a PR comment `@codex review` with the full head SHA and a handoff link | the ChatGPT Codex connector (Codex cloud) | reviews the PR and posts as `chatgpt-codex-connector[bot]` | the owner's ChatGPT plan; replies "usage limit" when the allowance is used up |
 | **Codex desktop** (merges, larger reviews) | the owner starts Codex; it reads `AGENTS.md` first | Codex in the owner's app | pushes and merges as the owner (`mgalic01`) | the owner's ChatGPT plan |
@@ -46,16 +46,53 @@ are in the sections below.
   costs allowance in a comment even when you meant to quote it. Whether a PR
   description starts Codex has not been checked, so do not write it there either.
 - **Plain "Bob" starts nothing.** Neither does `@bobby`.
-- **Merge authority:** while Codex has no allowance, the owner's rule is to merge on
-  Bob's `NO ISSUES` with green checks, and Codex reviews afterwards.
-  See [what Bob's verdicts mean](#what-bobs-verdicts-mean).
+- **Merge authority:** while Codex's allowance is exhausted, the owner's rule is to
+  merge on Bob's `NO ISSUES` and the automated review's `APPROVE` at the full head,
+  with green checks and no unaddressed required fix from any reviewer, and Codex
+  reviews afterwards; the merging agent appends the PR
+  to the [Codex-review-owed issue](https://github.com/mgalic01/adaptive-market-engine/issues/134).
+  See [what Bob's verdicts mean](#what-bobs-verdicts-mean) and
+  [merging while Codex's allowance is exhausted](#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28).
+  "Allowance exhausted" has a defined end, and a review request that has simply gone
+  unanswered is a different state, **lapsed**, which escalates to the owner and
+  **never** opens this merge path. See
+  [when a reviewer is unavailable](#when-a-reviewer-is-unavailable).
 - **Codex's own work:** Claude or Bob must review the latest full head and post
   substantive feedback before Codex merges it, including documentation and delegated
   changes. Codex chooses the reviewer; unavailable review leaves the PR open.
   See the [standing owner rule](#external-review-before-codex-merges-its-own-work).
-- **Who posted what:** Claude, Codex desktop and the owner's own Bob session all post
-  as `mgalic01`. Every message starts with its sender, for example
-  "Claude → Codex", "Codex → Claude" or "Bob → …".
+- **Who posted what.** Claude sessions, Codex Desktop and the owner's own Bob session
+  all post as `mgalic01`, so **the GitHub author tells you nothing about which agent
+  wrote a comment.** Every message starts with its sender, for example "Claude → Codex",
+  "Codex → Claude" or "Bob → …". Since 2026-09-28 (amendment C, adopted by the owner's
+  decision), every agent comment also begins with a tag on its own first line, so the
+  sender is machine-readable rather than inferred:
+
+  | Tag | Who |
+  | --- | --- |
+  | `[Claude Code <session-id>]` | a Claude Code session |
+  | `[Codex Desktop]` | Codex in the owner's app |
+  | `[Bob]` | the owner's own Bob session |
+
+  The bot accounts need no tag, because their logins are already distinct:
+  `chatgpt-codex-connector[bot]` is Codex Cloud, `claude[bot]` is the automated review,
+  and `github-actions[bot]` carries Bob's GitHub answer. After the tag, keep naming the
+  recipient as before — "Claude → Codex", "Codex → Claude", "Bob → …".
+
+  **Read the tag and the login together.** A tag is plain text, so anyone who can
+  comment can type one. A tag counts only on a comment whose GitHub author is
+  `mgalic01`. On any other login, ignore the tag and treat the comment as that login's:
+  it is never Claude, Codex or Bob review evidence. On a `mgalic01` comment, the tag,
+  not the login, says which agent wrote it. **A tag is declared attribution, not an
+  authenticated identity:** anything posting as `mgalic01` can write any tag, so a tag
+  says who claims to have written a comment, never who proved it. On 2026-09-27 a Claude
+  session's review of PR #89 was attributed to Codex Desktop by another agent that keyed
+  off `mgalic01` alone; the comment had said which session wrote it, in its first line.
+  Distinct GitHub accounts would make attribution authenticated rather than declared,
+  but two of Bob's triggers gate on
+  `author_association == 'OWNER'` and on `github.actor == github.repository_owner`
+  (`bob-task.yml`), so moving an agent off the owner account would break `/bob-run` and
+  the task-file-merge trigger. The tag is the cheap fix that breaks nothing.
 - **Never post on a closed or merged PR, or a closed issue** (owner rule,
   2026-09-25). Nobody is notified: Claude is subscribed only to open PRs, and Codex
   and Bob do not watch closed threads. A finding about merged work, a question or a
@@ -77,6 +114,222 @@ are in the sections below.
 - **Breakage:** a failed Bob run posts an alert that names the owner. An agent that
   sees any other break, such as a usage-limit reply or an unanswered handoff, tells
   the owner in its next message.
+
+## Verdicts and a base integration
+
+*Adopted 2026-09-28 by the owner's decision (Claude session `012TnmLL`); Codex's acknowledgment of revision 7 is owed on return, see [the adoption record](reviews/2026-09-28-claude-owner-decision-protocol-adoption.md).*
+
+What stays true, even once this is agreed: a verdict counts only at the head it names,
+and a merge of the base voids it. **No verdict is carried across an integration, and no
+mechanical check can make it carry.** The other rules that say so —
+[what Bob's verdicts mean](#what-bobs-verdicts-mean), item 5 of
+[branch ownership](#branch-ownership-local-checks-and-review-batches) and the
+[external-review rule](#external-review-before-codex-merges-its-own-work) — stay as
+written.
+
+What this changes is how much the new head's review has to reread. Waiting for a
+reviewer makes an integration likelier, and every integration used to restart review
+from nothing. On 2026-09-27, PR #83 lost Bob's `NO ISSUES` to an index merge that
+changed no prose, and in the re-review cycle that followed an outstanding required fix
+was lost track of. So after a merge of the base:
+
+1. **Prior findings stay on record as evidence.** The new request links the verdicts
+   and findings from the old head. A required fix still open at the old head stays
+   open; a merge never discharges it.
+2. **A new verdict at the new full head is still required,** with `test-and-audit`
+   green at that head. Instead of rereading the whole diff (START_HERE step 5a), the
+   reviewer may scope that verdict: read **the entire incoming base delta** and **the
+   conflict resolution**, and rely for the unchanged contribution only on their own
+   earlier reading of it. Two commands enumerate what to read:
+
+   ```
+   git diff $(git merge-base <new-head>^1 <new-head>^2) <new-head>^2
+   git show --format= --remerge-diff <new-head>
+   ```
+
+   The first is everything the base brought in. The second (Git 2.36 or later) is
+   where the recorded merge differs from Git's own automatic merge: each resolved
+   conflict, and any edit slipped into the merge commit; `--format=` suppresses the
+   commit header, so a clean merge prints nothing. **The commands enumerate evidence;
+   they never certify safety.** Reading the whole base delta, not a selection of it,
+   puts in front of the reviewer every base change the contribution depends on, every
+   base change that depends on it directly or through other files, and any coupling
+   through data, configuration or reflection, with no dependency analysis written
+   into prose.
+   The reviewer judges how the base delta and the contribution behave together; if
+   that combined behaviour cannot be bounded with confidence, the verdict is a full
+   review.
+3. **The verdict states its scope:** the old and new heads, the reviewer's own old
+   verdict it relies on, both commands, and that the whole base delta and the
+   resolution were read.
+4. **Scoping is allowed only** when the new head is one merge of the base whose first
+   parent is the reviewed old head, with no other commit, **and** the reviewer scoping
+   it gave a substantive verdict of their own at that old head. A reviewer may lean
+   only on their own earlier reading, never on another reviewer's: a different
+   reviewer reviews the full diff. A rebase, a squash, an extra commit, or any change
+   to the contribution itself means a full review, as before. When in doubt, review in
+   full.
+5. **Bob's GitHub reviewer (`bob-review.yml`) never gives a scoped verdict.** Its only
+   input is the triggering comment, the PR description, the diff and the review index;
+   it never reads other PR comments (see
+   [low-cost working](#low-cost-working-owner-instruction-2026-09-25)). It cannot
+   see its own earlier verdict or the prior findings, so it always reviews in full.
+   The owner's desktop Bob session, which reads the thread, may scope like any other
+   reviewer.
+
+**Why no verdict is carried.** Two earlier drafts of this rule carried verdicts on a
+mechanical test, and review refuted both.
+
+- The first said `git diff <old-head> <new-head> -- . ':!<conflicted paths>'` must print
+  nothing. That cannot pass: after an integration it shows everything the base brought
+  in. On PR #83 (old head `e5d5ff5e1231e3082909162c025aa6aa52eab5a7`, new head
+  `96fb1d82b6da4d66e42d3ebccc2e30958a0dad60`) it reported 8 files and 226 insertions.
+- The second compared the PR's contribution against each merge base, as patch text.
+  Patch text is a proxy: its `index` lines and hunk context move when the base edits a
+  neighbouring line, so it refuses valid cases. Worse, even exact equality of the
+  contribution does not preserve what a reviewer judged. Codex's counterexample: the
+  feature changes `strategy.py` to `return n <= LIMIT`; `main` changes only
+  `limits.py`, `LIMIT = 5` to `LIMIT = 50`. After the merge, both contribution diffs
+  and the `strategy.py` blob are identical, yet `accept(10)` turns from `False` to
+  `True`.
+
+**Why the scope is the whole base delta, not a selection.** Two later drafts tried to
+select which base changes to read, and review refuted both.
+
+- Reading only what the contribution depends on misses the reverse direction (Codex
+  Cloud, on revision 4). The feature changes `normalize()` in `metrics.py` from a
+  percentage to a fraction; the base adds `alerts.py`, which calls `normalize()` and
+  compares the result with `50`. The merge is clean, and the contribution imports
+  nothing from `alerts.py`. Yet `alert(80, 100)` is `True` on the base and `False`
+  after the merge.
+- Adding a search of the base's files for each symbol the contribution changes finds
+  direct callers, but not transitive ones (Bob, on revision 5): a base `router.py` that
+  imports `alerts.py` never names `normalize` and is missed.
+
+Each fix to the selection invited the next counterexample, and a full dependency
+analysis does not belong in prose. Reading the whole base delta puts every one of these
+cases in front of the reviewer, and it is still a bounded review: the base delta and the conflict resolution,
+not the contribution again. Any future mechanical exception needs adversarial fixtures
+like these, and all three agents' agreement, before it is written down.
+
+## When a reviewer is unavailable
+
+*Adopted 2026-09-28 by the owner's decision (Claude session `012TnmLL`); Codex's acknowledgment of revision 7 is owed on return, see [the adoption record](reviews/2026-09-28-claude-owner-decision-protocol-adoption.md).*
+
+Two gaps motivated this. The stop-gap was keyed to Codex having *no allowance*, a
+statement about quota, while the thing that actually stalled the queue was Codex
+Desktop having quota but not **running**: it has no inbound channel, and only the owner
+can start it. And a stated intention to review — "I will review that final head for
+merge" — had no expiry and no fallback. Both left an agent with two bad choices: wait
+silently, or invent its own licence to proceed.
+
+This section names **two different states**, because they have different consequences:
+
+| State | What establishes it | When it ends | What it allows |
+| --- | --- | --- | --- |
+| **Allowance exhausted** | a usage-limit reply from the Codex channel whose review is required | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it (from then on the answer to that request decides), and in any case **24 hours after the usage-limit reply** unless a newer one renews it | the owner's existing stop-gap: merge on Bob's `NO ISSUES` and the automated review's `APPROVE` at the full head, green `test-and-audit` at that head and no unaddressed required fix; Codex reviews afterwards |
+| **Request lapsed** | an exact-head review without a substantive completed review past its channel's window (below) | when a **substantive completed review** at that head is posted (a verdict, or findings), or the head changes; a receipt, an acknowledgment, an "I will review" or a progress message neither ends nor restarts it | **escalation to the owner only. Never a merge.** |
+
+Wherever the handbook uses Codex being unavailable, or having no allowance, as a reason
+to merge — the quick reference's merge authority, START_HERE step 3's merge rule, and
+the merge of a Bob task-file PR — it means **allowance exhausted**, never lapsed.
+
+**Exhaustion belongs to one channel.** A usage-limit reply is evidence about the
+channel that sent it. A Codex Cloud usage limit does not establish that Codex Desktop
+is unavailable, nor the reverse: the stop-gap needs a usage-limit reply from the
+channel whose review is actually required. Expiry, below, stays broad on purpose: any
+later Codex response or request ends it, so the stop-gap is used less, never more.
+
+**Exhaustion expires.** A usage-limit reply says nothing about tomorrow. It stops
+counting at the next Codex response that is not a usage-limit reply, on any PR, and
+as soon as a new request is posted after it. An agent that wants to use the stop-gap
+after a new request must cite a usage-limit reply to that request; if the request is
+simply unanswered, that is a lapse, not exhaustion. **It is also time-bound:** a
+usage-limit reply stops counting 24 hours after it was posted, whatever else has
+happened. To use the stop-gap after that, post one new exact-head request naming the
+head, which the no-duplicate-request rule allows once per 24 hours for exactly this
+purpose, and cite the usage-limit reply it receives; a request that gets no reply is
+a lapse. So a replenished allowance can never be bypassed on the strength of an old
+reply.
+
+**The lapse window** differs by channel, because the channels differ by orders of
+magnitude:
+
+| Reviewer | Window | Why |
+| --- | --- | --- |
+| Codex Cloud, Bob, the automated review | **1 hour** | They answer in minutes. Cloud answered exact-head requests in under three minutes on 2026-09-27 (PR #83 at 23:31:12, PR #87 at 00:50:53). |
+| Codex Desktop | **12 hours** | It has no inbound channel and runs only when the owner opens it. |
+| Any other channel, including the opt-in local Codex reviewer | none defined | Report an unanswered request at the next check-in, under the existing breakage rule. |
+
+These windows are **escalation defaults**: the point at which silence is worth telling
+the owner about. They are reversible operational settings under the agents' agreed
+process, and the owner may change them at any time; nothing in them needs a new owner
+approval for ordinary review and fix work. A lapsed window is not proof that the
+reviewer has failed, and never permission to merge. **What counts as an answer:** only
+a substantive completed review at that head, a verdict or findings. A receipt, an
+acknowledgment, an "I will review that head" or a progress message is not one; it
+neither ends nor restarts the clock, because a stated intention with no expiry is one
+of the two gaps this section closes. For the automated review, which no agent asks,
+"lapsed" means that no verdict comment has been posted at that head within the window
+after its workflow became able to run; a run that failed or was skipped at that head
+is lapsed too.
+
+**When the clock starts.** From the exact-head request, posted with the full head SHA.
+For a review that starts on its own — the automated review, or a Codex Cloud review
+already pending, where the
+[event-driven rules](#event-driven-codex-cloud-reviews-owner-instruction-2026-09-25)
+tell agents not to post a request — from the moment that review became able to run at
+that head: the latest of the head being pushed while the PR was not a draft, the PR
+being opened as ready, marked ready for review, or reopened. A push while the PR is a
+draft starts nothing, because `claude-review.yml` skips draft PRs. Reposting does not
+restart the clock.
+
+**A new head always restarts it.** A request names one head, and an unanswered request
+for an old head says nothing about the new one. After any new head, including a merge of
+the base, post a new exact-head request naming the new SHA (or confirm that an
+automatic review of it started), and the clock starts again there. An earlier draft
+carried the elapsed time across an integration; that was dropped along with carried
+verdicts, because the old request no longer covered the head it would have applied to.
+
+**A lapse never authorizes a merge.** Whatever the diff touches, the action is the
+same: **escalate to the owner**, naming the PR, the full head, the reviewer being
+waited on, when the request was posted or the head pushed, and how long it has waited.
+The PR stays open.
+
+The reason is the owner's, and it applies beyond this rule. Whether a change should
+exist, and what it costs the project to carry, is a judgement every reviewer is expected
+to challenge ([START_HERE step 0](START_HERE.md)), and the merge is where it is finally
+made, deliberately. **A green check, a clean verdict or an elapsed window does not
+replace that judgement.** Letting silence stand in for it would remove the deliberate
+decision the merge exists to make.
+
+
+## Merging while Codex's allowance is exhausted (owner instruction 2026-09-28)
+
+The owner's standing rule is that Claude does not merge its own work. While Codex's
+allowance is exhausted (the state defined above), the owner's instruction of
+2026-09-28, given in Claude's session on adopting the amendments, is:
+
+1. **The author may merge its own PR**, Claude's or Bob's, when all four hold at the
+   full head: Bob's `NO ISSUES` (a reading of the diff), the automated review's
+   `APPROVE` (an independent run of the checks), green `test-and-audit`, and no
+   unaddressed required fix from any reviewer, Codex's earlier findings included.
+   Use the merge method with the full head SHA.
+2. **The automated review is part of the gate**, not a courtesy: it exists at every
+   head and costs nothing. A PR without its `APPROVE` at the merged head is not
+   merged under this rule.
+3. **Every such merge is queued for Codex.** The merge commit message says Codex's
+   review is owed, and the merging agent appends a row to the
+   [Codex-review-owed issue](https://github.com/mgalic01/adaptive-market-engine/issues/134)
+   in the same session: PR, merge time, merge commit, who reviewed before the merge.
+   Codex ticks rows on return; a finding becomes a follow-up PR or issue, never a
+   reopening of the merged PR.
+4. **A lapse is not exhaustion.** This rule applies only while a current usage-limit
+   reply (under 24 hours old, from the required channel) is on record. A silent Codex
+   with allowance is a lapse, which escalates and never merges.
+5. Merges that start a paid Bob run (a task-file PR) also need the owner's go, which
+   the owner gave as a blanket approval of paid Bob runs on 2026-09-27; the merging
+   agent still says in the merge commit that the merge starts a run.
 
 ## What Bob's verdicts mean
 
@@ -115,7 +368,12 @@ are left as written.
 2. **Durable handoffs:** write a new file under `docs/reviews/`, named
    `YYYY-MM-DD-codex-<topic>.md` or `YYYY-MM-DD-claude-<topic>.md`.
    Use a distinct topic (and suffix when needed); preserve earlier reviews.
-   Add the file to the index in the same PR.
+   The file indexes itself: its first line is the `# Title` heading and one line
+   within its first 20 starts with `Index:` and gives its status or purpose in one
+   line. Do not add a row to `docs/reviews/README.md`: that table is frozen, and one
+   table every PR edited made each merge conflict with every other open PR.
+   `python scripts/check_reports.py --index` prints the whole index, newest first;
+   CI fails on a missing entry or an edited table.
 3. **Push notification:** after each push, post or update a PR Conversation comment
    headed **Codex → Claude handoff** (or the reverse). Link the handoff at that
    branch/commit, name the new head SHA, summarize changes since the previous push,
@@ -349,8 +607,9 @@ Credits are limited, so every agent works on demand, not by polling:
   a committed SHA-256. Bob is read-only there: every tool group except `read` is disabled,
   and his process has no GitHub token or runner credentials. The workflow gives him, as
   data, the triggering comment, the PR title, description and captured base/head SHAs,
-  the diff generated from those immutable commits, and
-  `docs/reviews/README.md`; he never reads other PR comments. The PR diff and description
+  the diff generated from those immutable commits, and the handoff index the workflow
+  generates from `main` with `scripts/check_reports.py --index`; he never reads other
+  PR comments. The PR diff and description
   are untrusted input, so the workflow, not Bob, posts his answer, and refuses to post
   one that contains his key or a GitHub-token-shaped string.
 - **Broken communication is reported at once (owner instruction, 2026-09-25).** If a
@@ -370,8 +629,20 @@ Credits are limited, so every agent works on demand, not by polling:
       Bob starting automatically when a task file is merged, without asking me per
       run"). The merge is the go, including merges by Claude or Codex. Editing an
       existing task file never starts a run. So **a task PR is merged only after the
-      same review as code**: Codex's approval, or, while Codex is unavailable, Bob's
-      `NO ISSUES` with green checks;
+      same review as code**: Codex's approval, or, while Codex's allowance is
+      exhausted, the full gate of
+      [merging while Codex's allowance is exhausted](#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28):
+      Bob's `NO ISSUES` and the automated review's `APPROVE` at the full head, green
+      `test-and-audit`, and **no unaddressed required fix** from any reviewer.
+      "Exhausted" means **allowance exhausted** only; a lapsed request
+      escalates to the owner and never merges a task PR. See
+      [when a reviewer is unavailable](#when-a-reviewer-is-unavailable). **A run
+      that fails on Bob's side** (a "Connection Failed" or backend error in the
+      worker log, after or during the task, with no task or data defect named) is
+      rerun once with `/bob-run` under the owner's blanket approval of paid Bob runs
+      (2026-09-27); the rerunning agent posts the diagnosis from the run log on the
+      failure issue first. A second failure of the same run is reported to the owner,
+      not rerun (owner instruction 2026-09-28);
     - a comment `/bob-run docs/tasks/<date>-bob-<topic>.md` from the repository
       owner's account, for example to re-run a task. Claude and Codex also post as
       the owner, so they post `/bob-run` only with a linked Codex approval or owner
@@ -451,8 +722,8 @@ Bob does only what the task file says. Anything unclear is a question, not a gue
   the PR how he could have caught it himself.
 - **Branches:** `bob/<topic>`. Bob never pushes to `main`, `claude/...` or `codex/...`
   branches.
-- **Reports:** `docs/reviews/YYYY-MM-DD-bob-<topic>.md`, added to the index in the same
-  PR. A report names the task file, the exact commit, the commands run, every result
+- **Reports:** `docs/reviews/YYYY-MM-DD-bob-<topic>.md`, carrying its own `Index:`
+  line (see "Where messages live"). A report names the task file, the exact commit, the commands run, every result
   (including failed and invalid runs), where raw outputs are and their SHA-256, and
   anything not done.
 - **PR comments:** after each push, a comment headed **Bob → Claude handoff**,

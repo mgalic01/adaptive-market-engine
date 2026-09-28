@@ -21,7 +21,9 @@ reserve accounting, order stub, tests, and CI. No claim of strategy profitabilit
 Gate: replay/restart/failure tests pass; no network trading endpoint exists.
 Scope is one simulated symbol per account, cash-start grids, quote-asset fees,
 and flat-account reserve checkpoints. Version 0.4 adds grid recycling and confirmed
-recovery of temporary pauses; hard halts require reviewed resume. Rotation execution,
+recovery of temporary pauses; hard halts require reviewed resume, except a `drawdown`
+halt, which restarts by itself after 24 hours (amendment 1 to spec v1,
+`docs/EXPERIMENT_SPEC_V1.md` §3, engine `drawdown-recovery-v1`). Rotation execution,
 live order reconciliation and real transfers remain separate work.
 
 ## Next gate: strategy feasibility before expanding integrations
@@ -41,8 +43,15 @@ Continue broader infrastructure only if the results justify it.
 
 Status (v0.8): harness v1 is implemented and verified on two pairs over a development
 window ([method](docs/BACKTEST_METHOD.md), [report](docs/backtests/verify-2024h1.md)).
-Next: owner agreement on the proposed acceptance criteria, then the multi-market,
-survivorship-aware run on an untouched window.
+The owner confirmed the acceptance criteria (C1–C6) on 2026-09-24
+([record](docs/reviews/2026-09-24-owner-decisions-confirmed.md)); spec v1 is still a draft
+and is not yet frozen. The reserved window is the **last** step, not the next one. In
+order (spec v1 §§2-7): freeze spec v1, build and review the §2 prerequisites, implement
+the variants, run the development practice matrix, and select a winner deterministically
+under C1-C6. The one-use reserved run needs two more things: **C7 settled and passed, or
+explicitly waived by the owner** (its return series, its trial family and the other
+agents' agreement are all open), and the owner's go. If no variant passes, v1 ends with
+"no winner" and nothing runs on that window.
 
 ## 3. Read-only market-data shadow mode (partly implemented; expansion deferred)
 
@@ -71,7 +80,11 @@ mark-to-market losses, delistings, and point-in-time universes. Compare cash,
 buy-and-hold and static-grid baselines. Report total equity including reserve,
 drawdown, turnover, costs and uncertainty. Do not optimize solely for win rate
 or realized grid profit while ignoring inventory losses. News cannot create
-orders or override risk controls. Revisit heuristic thresholds using held-out data.
+orders or override risk controls. Every heuristic threshold is **registered and frozen
+before the development results it would be chosen from are inspected**, not fixed
+afterwards on development data; the held-out run then tests them and never tunes them.
+Revisiting a threshold after seeing either development or held-out results is the tuning
+the startup rule forbids (START_HERE step 1, "No tuning after seeing results").
 
 Gate: documented results and failure tests; no guaranteed return assumptions.
 

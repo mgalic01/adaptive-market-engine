@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_DOWN, Decimal, localcontext
 from typing import Any
 
@@ -125,6 +125,11 @@ class Fill:
     fee: Decimal
 
 
+# Spec v1 amendment 1: the four halt categories, set where a halt is raised, never
+# inferred from its text. Only ``drawdown`` restarts automatically.
+HALT_CATEGORIES = ("", "drawdown", "emergency", "exhaustion", "integrity")
+
+
 @dataclass
 class Account:
     initial_cash: Decimal
@@ -156,13 +161,31 @@ class Account:
     cycles: int = 0
     fill_count: int = 0
     orders: dict[str, LimitOrder] = field(default_factory=dict)
+    # Variant A (spec v1, section 3 A) only; empty and omitted from saved state when off.
+    # The latest daily-bar day whose trend signal this account has applied.
+    trend_day: str = ""
+    # T0 of the running Down sequence (its effective observation); empty when none runs.
+    down_since: str = ""
+    # Spec v1 amendment 1 (drawdown recovery), schema 6.
+    # The C1(b) measurement reference: starts with the initial active capital, rises at
+    # every mark and is scaled at every settlement exactly as ``risk_high`` is, but a
+    # rebase or an automatic restart never changes it. Equal to ``risk_high`` in any run
+    # without one.
+    measure_high: Decimal = ZERO
+    # The halt instance: its start (``observed_at``) and category, captured once on the
+    # transition from not halted to halted and never changed by later halt calls.
+    halt_since: str = ""
+    halt_category: str = ""
+    # The open soft-drawdown episode: its start, and its consecutive confirmations.
+    episode_since: str = ""
+    episode_count: int = 0
 
     @classmethod
     def start(cls, cash: Decimal) -> Account:
         nonnegative(cash)
         if cash <= ZERO:
             raise ValueError("initial capital must be positive")
-        return cls(cash, cash, cash, cash, cash, last_equity=cash)
+        return cls(cash, cash, cash, cash, cash, last_equity=cash, measure_high=cash)
 
     def reserved_quote(self, rules: MarketRules) -> Decimal:
         return sum(
@@ -203,12 +226,42 @@ class Account:
             "grid_lower",
             "grid_upper",
             "outside_seconds",
+            "measure_high",
         ):
             nonnegative(getattr(self, name))
-        if min(self.initial_cash, self.reserve_high, self.risk_high, self.day_start) <= ZERO:
+        if (
+            min(
+                self.initial_cash,
+                self.reserve_high,
+                self.risk_high,
+                self.day_start,
+                self.measure_high,
+            )
+            <= ZERO
+        ):
             raise ValueError("account baselines must be positive")
+        if self.halt_category not in HALT_CATEGORIES or bool(self.halt) != bool(self.halt_category):
+            raise ValueError("halt category does not match the halt")
+        if self.halt_since and not self.halt:
+            raise ValueError("halt start without a halt")
+        if self.episode_since and self.halt:
+            raise ValueError("a drawdown episode cannot stay open during a halt")
+        if self.episode_count and not self.episode_since:
+            raise ValueError("episode confirmations without an open episode")
         if self.grid_lower > self.grid_upper:
             raise ValueError("saved grid bounds are inverted")
+        held_by_buys = sum(
+            (
+                order.quantity - order.remaining
+                for order in self.orders.values()
+                if order.side == "buy"
+            ),
+            ZERO,
+        )
+        if self.inventory - self.reserved_base() < held_by_buys:
+            # Otherwise unpaired_inventory goes negative and the exit classifier would
+            # report nothing owed while a sell reservation exceeds what is held.
+            raise ValueError("resting orders claim more inventory than the account holds")
         if any(
             type(flag) is not bool for flag in (self.liquidating, self.draining, self.range_exit)
         ):
@@ -217,7 +270,13 @@ class Account:
             raise ValueError("range-exit timestamp does not match the lifecycle flag")
         if self.outside_seconds and not self.outside_last:
             raise ValueError("outside-range time has no last observation")
-        for counter in (self.recovery_count, self.settlement_count, self.cycles, self.fill_count):
+        for counter in (
+            self.recovery_count,
+            self.settlement_count,
+            self.cycles,
+            self.fill_count,
+            self.episode_count,
+        ):
             if type(counter) is not int or counter < 0:
                 raise ValueError("invalid saved counter")
         for transfer_id, amount in self.confirmed_transfers.items():
@@ -233,9 +292,16 @@ class Account:
             self.range_exit_since,
             self.last_observed,
             self.last_received,
+            self.down_since,
+            self.halt_since,
+            self.episode_since,
         ):
             if when:
                 timestamp(when)
+        if type(self.trend_day) is not str or type(self.down_since) is not str:
+            raise ValueError("invalid saved trend-switch state")
+        if self.trend_day:
+            date.fromisoformat(self.trend_day)
         for key, order in self.orders.items():
             if key != order.order_id or order.side not in ("buy", "sell"):
                 raise ValueError("invalid saved order identity")
@@ -275,6 +341,9 @@ class Account:
                 # Replay-only field: omitted when unused so saved paper state keeps the
                 # schema 4 layout that earlier versions read.
                 del order["epoch"]
+        for key in ("trend_day", "down_since"):
+            if not data[key]:
+                del data[key]  # Variant A only: V0 saved state keeps its exact layout.
         return data
 
     @classmethod
@@ -294,6 +363,7 @@ class Account:
             "grid_lower",
             "grid_upper",
             "outside_seconds",
+            "measure_high",
         ):
             data[key] = decimal(data[key])
         orders: dict[str, LimitOrder] = {}

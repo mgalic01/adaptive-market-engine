@@ -36,6 +36,7 @@ from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, In
 from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
+from crypto_grid_bot.simulation.execution import exit_state
 from crypto_grid_bot.simulation.models import (
     ONE,
     ZERO,
@@ -47,6 +48,7 @@ from crypto_grid_bot.simulation.models import (
     timestamp,
 )
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
+from crypto_grid_bot.simulation.trend_switch import MINIMUM_DAILY_WARMUP, TrendSchedule
 
 PATH_MODES = ("high_first", "low_first")
 # Scorer context lines that precede its actual failure reasons.
@@ -230,7 +232,38 @@ class Metrics:
     # every risk evaluation (the basis of the runtime's soft/hard drawdown breakers).
     active_max_drawdown: Decimal = ZERO
     risk_evaluations: int = 0
-    hard_drawdown_halts: int = 0  # halt events, not evaluations
+    hard_drawdown_halts: int = 0  # halt instances of category drawdown, not evaluations
+    # Spec v1 amendment 1: committed soft-drawdown rebases and automatic restarts.
+    rebases: int = 0
+    restarts: int = 0
+    # Frames whose marketable exit was refused because the order would be below the
+    # exchange minimum notional ("depth": this frame's participation chunk; "dust": the
+    # whole unreserved position). A refusal sells nothing, so it is invisible in the
+    # fill journal; without these counters a permanently stalled exit looks like a
+    # quiet account. ``final_*`` come from the account at the run's last quote
+    # (execution.exit_state), not from the last refusal, so a partial fill or an idle
+    # frame at the end cannot hide an unfinished exit or a held remainder.
+    exit_blocked_frames: int = 0
+    exit_blocked_by_kind: Counter[str] = field(default_factory=Counter)
+    exit_blocked_streak: int = 0
+    max_exit_blocked_streak: int = 0
+    max_exit_blocked_notional: Decimal = ZERO
+    final_exit_blocked: str = ""
+    final_blocked_notional: Decimal = ZERO
+
+
+def record_exit_block(metrics: Metrics, blocked: str, notional: Decimal) -> None:
+    """Record one frame's exit refusal (``blocked`` empty means the exit was not refused)."""
+    if not blocked:
+        metrics.exit_blocked_streak = 0
+        return
+    metrics.exit_blocked_frames += 1
+    metrics.exit_blocked_by_kind[blocked] += 1
+    metrics.exit_blocked_streak += 1
+    metrics.max_exit_blocked_streak = max(
+        metrics.max_exit_blocked_streak, metrics.exit_blocked_streak
+    )
+    metrics.max_exit_blocked_notional = max(metrics.max_exit_blocked_notional, notional)
 
 
 class RequestCountingOrders(dict[str, LimitOrder]):
@@ -349,7 +382,15 @@ def replay(
     minutes: Iterable[Kline],
     features: FeatureEngine,
     policy: SimulationPolicy | None = None,
+    daily: Sequence[Kline] | None = None,
 ) -> tuple[Metrics, Account]:
+    """``daily`` is the traded pair's completed 1d history (P3), read only by variant A
+    (``policy.trend_switch``), which refuses to run without it."""
+    schedule: TrendSchedule | None = None
+    if policy is not None and policy.trend_switch:
+        if daily is None:
+            raise ValueError("variant A (trend switch) needs the pair's daily history")
+        schedule = TrendSchedule(daily)
     # ":memory:" gives the simulator an in-memory SQLite store; replay never writes to it.
     simulator = PaperSimulator(Path(":memory:"), config, run.rules, run.initial_quote, policy)
     account = simulator.store.read()
@@ -359,24 +400,35 @@ def replay(
     orders = account.orders = RequestCountingOrders()
     metrics = Metrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
 
-    def observe_risk(equity: Decimal, high: Decimal, decision: RiskDecision) -> None:
+    def observe_risk(
+        equity: Decimal, high: Decimal, reference: Decimal, decision: RiskDecision
+    ) -> None:
+        # C1(b): active equity against the measurement reference, which is scaled at
+        # settlement exactly as risk_high is but never rebased (amendment 1); ``high`` is
+        # the engine's own, rebased, breaker reference.
         metrics.risk_evaluations += 1
-        if high > ZERO:
+        if reference > ZERO:
             metrics.active_max_drawdown = max(
-                metrics.active_max_drawdown, max(ZERO, (high - equity) / high)
+                metrics.active_max_drawdown, max(ZERO, (reference - equity) / reference)
             )
 
     simulator.risk_observer = observe_risk
     spread_pct = float(run.spread * 100)
     hold: _BuyAndHold | None = None
     was_range_exit = False
+    was_halted = False
     last_hour = -1
+    last_quote: Quote | None = None
     for kline in minutes:
         inputs = features.at(kline.open_ms)
         if inputs is None:
             metrics.warmup_bars += 1
             continue
         if hold is None:
+            if schedule is not None and schedule.completed_bars(kline.open_ms) < (
+                MINIMUM_DAILY_WARMUP
+            ):
+                raise ValueError("variant A needs 200 completed daily bars before evaluation")
             hold = _BuyAndHold(run, kline)
             metrics.first_bar_ms = kline.open_ms
         metrics.bars += 1
@@ -387,14 +439,17 @@ def replay(
         # entry veto above means this tick-sized placeholder can never size a grid.
         atr = inputs.atr if inputs.atr > ZERO else run.rules.tick_size
         epoch = f"{run.symbol}/{kline.open_ms}"
+        # Variant A: the state from the last daily bar closed at this minute's start.
+        trend = schedule.at(kline.open_ms) if schedule is not None else None
         report: dict[str, Any] = {}
         for quote in bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size):
             # Depth is re-bounded before every quote from the account at that moment.
             depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
             candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
-            frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch)
+            frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch, trend)
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
+            last_quote = quote
             metrics.requests_by_day[quote.observed_at[:10]] += order_requests(
                 orders, since, report["fills"]
             )
@@ -405,17 +460,28 @@ def replay(
                 metrics.cycles_by_week[f"{year}-W{week:02d}"] += cycles
             metrics.frames += 1
             _record_fills(metrics, report["fills"], report.get("exit_reason"))
+            # Only frames that attempted an exit carry the key. A rejected or halting
+            # frame attempted none, and must not reset the streak or count as cleared.
+            if "exit_blocked" in report:
+                record_exit_block(
+                    metrics, str(report["exit_blocked"]), report["exit_blocked_notional"]
+                )
             metrics.grids_opened += int(bool(report["opened"]))
             # From the account, not the report: a rejected frame's report omits the flag.
             exiting = account.range_exit
             metrics.range_exits += int(exiting and not was_range_exit)
             was_range_exit = exiting
             metrics.transient_pauses += int("regime" not in report)
-            if account.halt and not metrics.halted_at:
-                metrics.halted_at, metrics.halt_reason = quote.observed_at, account.halt
-                # The halt is latched, so a run has at most one; later evaluations that
-                # still see the drawdown are not new halts.
-                metrics.hard_drawdown_halts += int(account.halt.startswith("hard drawdown"))
+            if account.halt and not was_halted:
+                # A halt instance starts on the not-halted to halted transition; later
+                # evaluations that still see the drawdown are not new halts. A drawdown
+                # halt may restart after H (amendment 1), so a run can have several.
+                if not metrics.halted_at:
+                    metrics.halted_at, metrics.halt_reason = quote.observed_at, account.halt
+                metrics.hard_drawdown_halts += int(account.halt_category == "drawdown")
+            was_halted = bool(account.halt)
+            metrics.rebases += int("rebase" in report)
+            metrics.restarts += int("restart" in report)
             if "total_equity" in report:
                 total = Decimal(report["total_equity"])
                 metrics.final_equity = total
@@ -440,6 +506,10 @@ def replay(
             last_hour = hour
     if hold is not None:
         metrics.hold_final, metrics.hold_max_drawdown = hold.value, hold.max_drawdown
+    if last_quote is not None:
+        metrics.final_exit_blocked, metrics.final_blocked_notional = exit_state(
+            account, last_quote, run.rules
+        )
     return metrics, account
 
 
@@ -501,7 +571,6 @@ def load_daily(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kl
 
 
 DAY_MS = 86_400_000
-MINIMUM_DAILY_WARMUP = 200
 
 
 def cross_check_daily(
@@ -570,6 +639,16 @@ def load_minutes(data_dir: Path, manifest: dict[str, Any], symbol: str) -> Itera
 # failure. Larger differences, any price difference and any missing bar stay fatal.
 # Results record INTEGRITY_RULES; ``--strict-volume`` restores exact matching (tolerance 0).
 VOLUME_DRIFT_TOLERANCE = Decimal("0.001")
+# Which engine produced a result. Bump it whenever a change moves replay results, so
+# runs from before and after the change are never compared as one trial.
+#   exit-residue-v1 (2026-09-27): a residue the exchange filters forbid selling no
+#   longer blocks settlement or new grids; a validation halt holding inventory arms
+#   liquidation; refused exits are counted. Runs without this field predate it.
+#   drawdown-recovery-v1 (2026-09-28, spec v1 amendment 1): a soft-drawdown episode
+#   rebases risk_high after a 24 h cool-off; a drawdown halt restarts by itself after
+#   24 h; C1(b) is measured against a reference that is never rebased. No V0 result on
+#   exit-residue-v1 was run or inspected.
+ENGINE_VERSION = "drawdown-recovery-v1"
 INTEGRITY_RULES = "drift-tolerance-v1"
 STRICT_INTEGRITY_RULES = "strict-v0"
 
@@ -675,6 +754,7 @@ def summarise(
         "path_mode": run.path_mode,
         "strategy": "gated grid (price-only-v1)" if run.gated else "ungated grid baseline",
         "feature_version": FEATURE_VERSION,
+        "engine_version": ENGINE_VERSION,
         "news_component": "ABSENT (news_risk fixed at 0; no historical source)",
         "window": [_utc(metrics.first_bar_ms), _utc(metrics.last_bar_ms)],
         "initial_quote": str(initial),
@@ -694,6 +774,8 @@ def summarise(
         "active_max_drawdown_pct": float(metrics.active_max_drawdown * 100),
         "risk_evaluations": metrics.risk_evaluations,
         "hard_drawdown_halts": metrics.hard_drawdown_halts,
+        "soft_drawdown_rebases": metrics.rebases,
+        "drawdown_restarts": metrics.restarts,
         "order_requests": sum(metrics.requests_by_day.values()),
         "max_order_requests_per_day": max(metrics.requests_by_day.values(), default=0),
         "days_over_request_budget": sum(
@@ -703,6 +785,14 @@ def summarise(
         "sells": metrics.sells,
         "grids_opened": metrics.grids_opened,
         "range_exits": metrics.range_exits,
+        "exit_blocked_frames": metrics.exit_blocked_frames,
+        "exit_blocked_frames_by_kind": dict(metrics.exit_blocked_by_kind),
+        "max_exit_blocked_streak": metrics.max_exit_blocked_streak,
+        "max_unsellable_notional": str(metrics.max_exit_blocked_notional),
+        # "depth" here means the run ended still unable to exit; "dust" means the
+        # residual is below one minimum notional and needs a higher price to sell.
+        "final_exit_blocked": metrics.final_exit_blocked or None,
+        "final_unsellable_notional": str(metrics.final_blocked_notional),
         "reserve_pending": str(account.pending),
         "reserve_secured": str(account.secured),
         "final_inventory": str(account.inventory),

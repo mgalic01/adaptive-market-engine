@@ -1,6 +1,7 @@
 """Regressions from Claude's review; prices are constructed, not backtest evidence."""
 
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,7 +11,11 @@ from unittest import TestCase
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.control import decode_frame, resume_paper
 from crypto_grid_bot.simulation.demo import demo_frames
-from crypto_grid_bot.simulation.execution import match, place, reduce_unreserved
+from crypto_grid_bot.simulation.execution import (
+    match,
+    place,
+    reduce_unreserved,
+)
 from crypto_grid_bot.simulation.models import (
     Account,
     D,
@@ -455,18 +460,193 @@ class StrategyRecoveryTests(TestCase):
         state.cash = D(0)
         before = encode(state.to_dict())
         with self.assertRaisesRegex(ValueError, "exhausted"):
-            self.sim._settle(state)
+            self.sim._settle(state, frame(0).quote)
         self.assertEqual(before, encode(state.to_dict()))
+
+    def test_a_held_residue_is_on_both_sides_of_the_baseline_rescaling(self):
+        # The residue is excluded from the allocation base but IS in day_start, risk_high
+        # and every later active-equity reading. Excluding it from both sides of the ratio
+        # shrinks the baselines, which can push a later drawdown across its threshold.
+        state = Account.start(D(100))
+        state.cash, state.inventory = D("110"), D("100")
+        state.day_start = state.risk_high = D("112")
+        quote = frame(0).quote
+        # Exactly Account.equity's marking, which is what populated day_start and
+        # risk_high: the unrounded liquidation price, not the tick-floored exit price.
+        marked = (
+            state.inventory
+            * quote.bid
+            * (D(1) - self.sim.rules.slippage_rate)
+            * (D(1) - self.sim.rules.taker_fee)
+        )
+        flat = Account.start(D(100))
+        flat.cash, flat.inventory = state.cash, state.inventory
+        self.assertEqual(flat.equity(quote, self.sim.rules), state.cash + marked)
+        self.assertGreater(marked, 0)
+        allocation = self.sim._settle(state, quote)
+        after = D(str(allocation["active_capital_after_allocation"]))
+        expected = (after + marked) / (D("110") + marked)
+        self.assertEqual(D("112") * expected, state.risk_high)
+        self.assertEqual(D("112") * expected, state.day_start)
+        # Excluding the residue from both sides would have been strictly smaller.
+        self.assertGreater(expected, after / D("110"))
 
     def test_older_schema_databases_are_not_silently_reinterpreted(self):
         row = self.sim.store.connection.execute("SELECT identity FROM state").fetchone()[0]
         identity = json.loads(row)
-        self.assertEqual(4, identity["schema"])
-        for old in (1, 2, 3):
+        self.assertEqual(6, identity["schema"])
+        # 4 is in the list: a database written before "exit-residue-v1" ran under the old
+        # lifecycle, where a residue blocked settlement and a validation halt armed no
+        # exit, so reopening it here would mix two semantics in one event history.
+        for old in (1, 2, 3, 4, 5):
             identity["schema"] = old
             self.sim.store.connection.execute("UPDATE state SET identity=?", (encode(identity),))
             with self.subTest(schema=old), self.assertRaisesRegex(ValueError, "settings differ"):
                 self.open()
+
+    def crossed(self, index, bid="0.02330"):
+        """A frame whose quote is invalid (bid above ask): raises ValueError, not Transient."""
+        current = frame(index, bid)
+        return replace(current, quote=replace(current.quote, ask=D(bid) - D("0.00100")))
+
+    def test_data_halt_holding_inventory_exits_on_the_next_valid_frame(self):
+        # Absorbing state 1: the halt cancelled the resting sells that were the only exit,
+        # and resume() refuses a non-flat account, so the position was frozen for good.
+        self.sim.process(frame(0))
+        self.sim.process(frame(1, "0.02196"))
+        held = self.sim.store.read()
+        self.assertGreater(held.inventory, 0)
+        report = self.sim.process(self.crossed(2))
+        after_bad = self.sim.store.read()
+        self.assertEqual("halt", report["decision"])
+        self.assertIn("uncrossed", report["reason"])
+        # Nothing is traded on the invalid frame itself: it returns before liquidation.
+        self.assertFalse(report["fills"])
+        self.assertEqual(held.inventory, after_bad.inventory)
+        self.assertEqual(held.cash, after_bad.cash)
+        self.assertEqual(held.fees, after_bad.fees)
+        self.assertTrue(after_bad.liquidating)
+        self.assertFalse(after_bad.orders)
+        self.restart()
+        exit_report = self.sim.process(frame(3, "0.02330"))
+        self.assertEqual("halt", exit_report["decision"])
+        self.assertEqual("liquidation", exit_report["exit_reason"])
+        self.assertEqual(0, self.sim.store.read().inventory)
+        self.assertEqual(
+            "resume_pending",
+            self.sim.resume(frame(4), event_id="incident-1", reason="feed fixed")["decision"],
+        )
+        self.assertFalse(self.sim.store.read().liquidating)
+
+    def test_a_flat_data_halt_stays_resumable_without_arming_liquidation(self):
+        # The one genuinely recoverable halt must keep working, and a flat halt must not
+        # be marked as liquidating.
+        self.sim.process(frame(0))
+        report = self.sim.process(replace(frame(1), atr=D(0)))
+        self.assertEqual("halt", report["decision"])
+        state = self.sim.store.read()
+        self.assertEqual(0, state.inventory)
+        self.assertFalse(state.liquidating)
+        self.assertEqual(
+            "resume_pending",
+            self.sim.resume(frame(2), event_id="flat-1", reason="input fixed")["decision"],
+        )
+
+    def test_incomplete_liquidation_still_blocks_resume_and_says_why(self):
+        self.sim.process(frame(0))
+        self.sim.process(frame(1, "0.02196"))
+        self.sim.process(self.crossed(2))
+        # A thin book cannot absorb the position, so the exit is still outstanding.
+        self.sim.process(frame(3, "0.02330", size="1000"))
+        self.assertGreater(self.sim.store.read().inventory, 0)
+        with self.assertRaisesRegex(ValueError, "flat paper account.*still held"):
+            self.sim.resume(frame(4), event_id="too-early", reason="test")
+
+    def test_a_halt_holding_only_dust_is_resumable(self):
+        # Spec v1 amendment 1 reverses PR #122's exact-zero rule: a residue below the
+        # exchange minimum is liquidation-complete, so it no longer locks a resumable
+        # (integrity) halt. It stays held and marked; the risk check still decides.
+        self.dust()
+        self.sim.process(self.crossed(3))
+        state = self.sim.store.read()
+        self.assertEqual(("integrity", D(100)), (state.halt_category, state.inventory))
+        result = self.sim.resume(frame(4, "0.02330"), event_id="dust/4", reason="test")
+        state = self.sim.store.read()
+        self.assertEqual("resume_pending", result["decision"])
+        self.assertEqual(("", "", D(100)), (state.halt, state.halt_category, state.inventory))
+        self.assertTrue(state.draining)
+
+    def dust(self):
+        """Leave a residue below the minimum notional: 100 units are worth about 2.3."""
+        self.sim.process(frame(0))
+        self.sim.process(frame(1, "0.02196", size="1000"))
+        self.sim.process(frame(2, eligible=False))  # cancels the partial buy, arms the drain
+        state = self.sim.store.read()
+        self.assertEqual(D(100), state.inventory)
+        self.assertLess(state.inventory * D("0.02330"), self.sim.rules.minimum_notional)
+        self.assertFalse(state.orders)
+        return state
+
+    def test_unsellable_residue_does_not_freeze_a_healthy_account(self):
+        # Neither halted nor paused, eligible data, 2.3 of 100 units stuck as dust: the
+        # harvest gate required inventory == ZERO, so no grid was ever opened again.
+        self.dust()
+        for index in range(3, 10):
+            self.sim.process(frame(index, "0.02330"))
+        state = self.sim.store.read()
+        self.assertEqual(D(100), state.inventory)  # still unsellable, and not written off
+        self.assertGreaterEqual(state.cycles, 2)
+        self.assertTrue(any(order.side == "buy" for order in state.orders.values()))
+
+    def test_a_residue_that_becomes_sellable_is_exited_not_left_behind(self):
+        self.dust()
+        for index in range(3, 10):
+            self.sim.process(frame(index, "0.02330"))
+        self.assertEqual(D(100), self.sim.store.read().inventory)
+        # A tenfold price rise puts the residue above the minimum notional again.
+        for index in range(10, 14):
+            self.sim.process(frame(index, "0.23300"))
+        self.assertEqual(0, self.sim.store.read().inventory)
+
+    def test_a_residue_that_becomes_sellable_is_exited_while_buys_rest(self):
+        # The new grid's lower buys cannot pair the old residue: each buy's sell covers
+        # only its own fill. So the residue is sold once the market will take it.
+        self.dust()
+        for index in range(3, 10):
+            self.sim.process(frame(index, "0.02330"))
+        self.assertTrue(any(o.side == "buy" for o in self.sim.store.read().orders.values()))
+        self.sim.process(frame(10, "0.06000"))
+        state = self.sim.store.read()
+        self.assertEqual(0, state.inventory)
+        self.assertTrue(any(o.side == "buy" for o in state.orders.values()))
+
+    def test_range_exit_clears_with_an_unsellable_residue(self):
+        # Absorbing state 4: clearing the exit required inventory == ZERO, which
+        # liquidation cannot deliver once the remainder is below the minimum notional.
+        self.dust()
+        for index in (3, 4, 5, 7, 8):
+            self.sim.process(frame(index, "0.02500"))
+        self.assertTrue(self.sim.store.read().range_exit)
+        self.assertEqual(D(100), self.sim.store.read().inventory)
+        report = self.sim.process(frame(9, "0.02300"))
+        self.assertEqual("returned inside", report["range_exit_cleared"])
+        state = self.sim.store.read()
+        self.assertFalse(state.range_exit)
+        self.assertEqual(D(100), state.inventory)
+
+    def test_a_hard_drawdown_halt_says_it_restarts_by_itself_not_by_hand(self):
+        # Spec v1 amendment 1: the manual resume is still refused by the frozen risk
+        # check, and the refusal now says what clears the halt instead: the cool-off.
+        self.sim.process(frame(0))
+        self.sim.process(frame(1, "0.02196"))
+        self.sim.process(frame(2, "0.01000"))
+        state = self.sim.store.read()
+        self.assertTrue(state.halt)
+        self.assertEqual(
+            ("drawdown", frame(2).quote.observed_at), (state.halt_category, state.halt_since)
+        )
+        with self.assertRaisesRegex(ValueError, "frozen.*restarts automatically"):
+            self.sim.resume(frame(3), event_id="drawdown", reason="try recovery")
 
     def test_resume_cli_loads_saved_rules_and_requires_current_frame(self):
         self.check_resume_cli()
@@ -543,7 +723,78 @@ class ReentryTests(TestCase):
         fills = match(self.account, quote, self.rules, recycle=False)
         exits = reduce_unreserved(
             self.account, quote, self.rules, consumed=sum((f.quantity for f in fills), D(0))
-        )
+        ).fills
         self.assertEqual(D(4), fills[0].quantity)
         self.assertEqual(D(2), exits[0].quantity)
         self.assertEqual(D(2), self.account.inventory)
+
+
+class PanelFixTests(TestCase):
+    """Findings of the 2026-09-28 panel review on the runner (PR #122 follow-up)."""
+
+    def setUp(self):
+        self.temp = TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "paper.db"
+        self.config = replace(load_config(ROOT / "config/default.toml"), minimum_transfer_quote=0.1)
+        self.policy = SimulationPolicy(outside_range_seconds=3, maximum_frame_gap_seconds=30)
+        self.sim = PaperSimulator(self.path, self.config, MarketRules(), policy=self.policy)
+
+    def tearDown(self):
+        if self.sim is not None:
+            self.sim.close()
+
+    def test_resolved_is_the_stricter_gate_under_a_partly_filled_buy(self):
+        # The harvest gate calls _resolved while buys may still rest. Its docstring once
+        # claimed every caller was gated on an empty book; it is not, and the two
+        # measures disagree here by design: _resolved refuses the harvest, while the
+        # drain's measure owes nothing because the child sell will pair the inventory.
+        from crypto_grid_bot.simulation.execution import exit_state, unpaired_inventory
+
+        account = Account.start(D(100))
+        account.orders["b"] = LimitOrder("b", "buy", D("0.02000"), D(5000), D(2000))
+        account.inventory = D(3000)
+        account.cash = D(40)
+        quote = frame(0).quote
+        self.assertFalse(self.sim._resolved(account, quote))
+        self.assertEqual(D(0), unpaired_inventory(account))
+        self.assertEqual("", exit_state(account, quote, self.sim.rules)[0])
+
+    def test_an_exhaustion_halt_arms_the_exit_for_a_held_residue(self):
+        # Before the fix this was the one halt site that left liquidating False, so a
+        # residue held at exhaustion was reported as stuck only a frame later, once the
+        # risk engine re-halted the account.
+        account = Account.start(D(100))
+        account.cash = D(0)
+        account.inventory = D(100)  # about 2.3 quote at this bid: below the minimum
+        account.risk_high = account.day_start = D("2")
+        account.draining = True
+        self.sim._step(account, frame(0))
+        self.assertTrue(account.halt.startswith("active capital exhausted"), account.halt)
+        self.assertTrue(account.liquidating)
+
+    def test_a_schema_four_database_is_refused_by_the_resume_cli(self):
+        self.sim.process(frame(0))
+        self.sim.close()
+        connection = sqlite3.connect(self.path)
+        try:
+            identity = json.loads(
+                connection.execute("SELECT identity FROM state WHERE id=1").fetchone()[0]
+            )
+            identity["schema"] = 4
+            connection.execute("UPDATE state SET identity=? WHERE id=1", (json.dumps(identity),))
+            connection.commit()
+        finally:
+            connection.close()
+        now = datetime.now(UTC)
+        recent = frame(1)
+        recent = replace(
+            recent,
+            quote=replace(recent.quote, observed_at=now.isoformat(), received_at=now.isoformat()),
+            signals=replace(recent.signals, observed_at=now),
+        )
+        path = Path(self.temp.name) / "frame.json"
+        path.write_text(encode(recent.payload()))
+        with self.assertRaisesRegex(ValueError, "paper schema 6"):
+            resume_paper(self.path, self.config, path, event_id="cli", reason="reviewed")
+        self.sim = None  # the tampered database cannot be reopened; nothing left to close
