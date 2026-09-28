@@ -302,6 +302,21 @@ Bob's other notes, for the record:
   6. Bob's point D: a heredoc body line that reads `git push` is parsed as a push. It can
      only refuse a command when that branch's PR is claimed by someone else, which is
      rare and visible in the refusal message. Accepted as a nuisance, not a hole.
+- **The automated review at `3875759` (CHANGES NEEDED): a real bypass, fixed.** The
+  `gh pr merge` repository scan did not skip option values. `--body "-R" --squash`
+  therefore read `--squash` as the repository, the merge was dismissed as another
+  repository's, and no claim was checked. `_gh_targets` now makes one pass that knows
+  which words are option values, and the REST merge path takes the repository from the
+  URL itself (`repos/<owner>/<repo>/pulls/<N>/merge`). Regression tests cover a body,
+  a subject and a title that look like the flag, a field value on the REST path, and
+  another repository's REST path.
+- **Its nits:**
+  - `author_association` now defaults to not-the-owner, so a comment without the
+    field fails closed.
+  - `git push --repo=<repository>` **is** a real `git push` option (git-push(1)), so
+    `--repo` stays in the push option list.
+  - The no-interpreter fallback matches "merge" anywhere in the hook's input. It can
+    only over-block, and only when Python cannot run at all. Accepted.
 - The workflow skips cleanly while `main` has no `scripts/claims.py` (this PR's own
   runs).
 - An owner comment whose first line is exactly `/release all` needs no tag.

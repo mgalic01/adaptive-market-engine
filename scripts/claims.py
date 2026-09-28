@@ -106,7 +106,7 @@ def parse_command(comment: dict[str, Any]) -> Command | None:
     """The claim command in one comment, or None if the comment is not one."""
     if (comment.get("user") or {}).get("login") != OWNER_LOGIN:
         return None
-    if comment.get("author_association", "OWNER") != "OWNER":
+    if comment.get("author_association") != "OWNER":
         return None
     if comment.get("updated_at", comment["created_at"]) != comment["created_at"]:
         return None  # an edited comment no longer counts: post a new one
@@ -433,39 +433,44 @@ def find_targets(command: str, cwd: str) -> list[Target]:
 
 
 def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
-    repo_flag = next((toks[i + 1] for i, t in enumerate(toks[:-1]) if t in ("-R", "--repo")), None)
-    for t in toks:
-        if t.startswith("--repo="):
+    """Merges in a `gh` command. The option scan knows which words are option values, so
+    a body or subject that reads `-R` or `--repo=...` is never taken for the repository
+    (automated review at 3875759: that silently skipped the claim check)."""
+    if toks[:1] == ["api"]:
+        # The REST path names the repository itself; a flag or a field value cannot.
+        merges = re.findall(r"repos/([^/\s'\"]+/[^/\s'\"]+)/pulls/(\d+)/merge\b", segment)
+        if merges:
+            return [Target("merge", pr=int(n)) for repo, n in merges if repo == REPO]
+        if "mergePullRequest" in segment:
+            return [Target("merge", unknown="a GraphQL merge; use `gh pr merge <N>`")]
+        return []
+    if toks[:2] != ["pr", "merge"]:
+        return []
+    repo_flag: str | None = None
+    arg: str | None = None
+    pending: str | None = None  # the option whose value is the next word
+    for t in toks[2:]:
+        if pending is not None:
+            if pending in ("-R", "--repo"):
+                repo_flag = t
+            pending = None
+        elif t in GH_MERGE_VALUE_OPTS:
+            pending = t
+        elif t.startswith("--repo="):
             repo_flag = t.split("=", 1)[1]
+        elif not t.startswith("-") and arg is None:
+            arg = t
     if repo_flag is not None:
         repo_flag = repo_flag.removesuffix(".git").removesuffix("/")
         if repo_flag != REPO and not repo_flag.endswith("/" + REPO):
             return []
-    if repo_flag is None and not is_this_repo(_git(cwd, "remote", "get-url", "origin")):
+    elif not is_this_repo(_git(cwd, "remote", "get-url", "origin")):
         return []
-    if toks[:2] == ["pr", "merge"]:
-        arg, skip = None, False
-        for t in toks[2:]:
-            if skip:
-                skip = False
-            elif t in GH_MERGE_VALUE_OPTS:
-                skip = True
-            elif not t.startswith("-") and arg is None:
-                arg = t
-        if arg is None:
-            branch = current_branch(cwd)
-            return [Target("merge", branch=branch, unknown=None if branch else "no PR named")]
-        number = re.search(r"(?:^|/pull/)(\d+)$", arg)
-        return (
-            [Target("merge", pr=int(number.group(1)))] if number else [Target("merge", branch=arg)]
-        )
-    if toks[:1] == ["api"]:
-        merges = [int(n) for n in re.findall(r"pulls/(\d+)/merge\b", segment)]
-        if merges:
-            return [Target("merge", pr=n) for n in merges]
-        if "mergePullRequest" in segment:
-            return [Target("merge", unknown="a GraphQL merge; use `gh pr merge <N>`")]
-    return []
+    if arg is None:
+        branch = current_branch(cwd)
+        return [Target("merge", branch=branch, unknown=None if branch else "no PR named")]
+    number = re.search(r"(?:^|/pull/)(\d+)$", arg)
+    return [Target("merge", pr=int(number.group(1)))] if number else [Target("merge", branch=arg)]
 
 
 def hook_decision(
