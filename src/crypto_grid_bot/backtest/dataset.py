@@ -23,6 +23,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, cast
 
+from crypto_grid_bot.backtest.funding import read_funding_archive
 from crypto_grid_bot.backtest.klines import INTERVAL_MS, month_bounds_ms, read_archive
 from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.client import FeedError, PublicClient, https_connection
@@ -31,7 +32,9 @@ from crypto_grid_bot.market_data.parsing import DataError, amount, parse_instrum
 ARCHIVE_HOST = "data.binance.vision"
 MAX_ZIP_BYTES = 64 * 1024 * 1024
 MANIFEST_SCHEMA = 1
-_CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Z0-9]{2,24}-(?:1m|1h|1d)-\d{4}-\d{2}\.zip)\n?")
+_CHECKSUM = re.compile(
+    r"([0-9a-f]{64})  ([A-Z0-9]{2,24}-(?:1m|1h|1d|fundingRate)-\d{4}-\d{2}\.zip)\n?"
+)
 
 Fetcher = Callable[[str], bytes | None]
 InstrumentSource = Callable[[str], dict[str, str]]
@@ -237,6 +240,22 @@ def local_path(data_dir: Path, symbol: str, interval: str, month: str) -> Path:
     return data_dir / "binance" / archive_path(symbol, interval, month).lstrip("/")
 
 
+_MONTH_NAME = re.compile(r"\d{4}-\d{2}")
+
+
+def funding_archive_path(symbol: str, month: str) -> str:
+    """The USDT-M perpetual's monthly funding-rate archive (spec v1 P8, signal G)."""
+    symbol_name(symbol)
+    if _MONTH_NAME.fullmatch(month) is None:  # an unpadded month is not an archive name
+        raise DataError(f"month must be YYYY-MM: {month}")
+    month_bounds_ms(month)
+    return f"/data/futures/um/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{month}.zip"
+
+
+def funding_local_path(data_dir: Path, symbol: str, month: str) -> Path:
+    return data_dir / "binance" / funding_archive_path(symbol, month).lstrip("/")
+
+
 # The whole object path, not a suffix: an end-anchored month search accepts a reserved
 # path carrying a development-looking query ("...-2025-01.zip?x=-2024-12.zip"). The
 # back-references also force the file name to agree with its directories.
@@ -244,19 +263,33 @@ _ARCHIVE_PATH = re.compile(
     r"^/data/spot/monthly/klines/([A-Z0-9]{2,24})/(1m|1h|1d)/"
     r"\1-\2-(\d{4}-\d{2})\.zip(?:\.CHECKSUM)?$"
 )
+_FUNDING_PATH = re.compile(
+    r"^/data/futures/um/monthly/fundingRate/([A-Z0-9]{2,24})/"
+    r"\1-fundingRate-(\d{4}-\d{2})\.zip(?:\.CHECKSUM)?$"
+)
+
+
+def _archive_month(path: str) -> str:
+    """The month of a canonical archive (or checksum) path; anything else is refused."""
+    kline = _ARCHIVE_PATH.fullmatch(path)
+    if kline is not None:
+        return kline.group(3)
+    funding = _FUNDING_PATH.fullmatch(path)
+    if funding is not None:
+        return funding.group(2)
+    raise DataError(f"not a monthly spot kline archive or USDT-M funding archive path: {path}")
 
 
 def archive_get(path: str) -> bytes | None:
     """GET one archive object from the fixed host; None only for HTTP 404.
 
-    The whole path must match the canonical monthly archive (or checksum) shape, and its
-    month must be in the development window. This is the lowest network call, so the
-    window is enforced here and not only in ``fetch_file``.
+    The whole path must match the canonical monthly spot kline or USDT-M funding archive
+    (or checksum) shape, and its month must be in the development window. This is the
+    lowest network call, so the window is enforced here and not only in ``fetch_file``
+    and ``fetch_funding_file``. Any status other than 200 and 404 is an error: a
+    redirect is never followed.
     """
-    canonical = _ARCHIVE_PATH.fullmatch(path)
-    if canonical is None:
-        raise DataError(f"not a monthly spot kline archive path: {path}")
-    development_month(canonical.group(3))
+    development_month(_archive_month(path))
     connection = https_connection(ARCHIVE_HOST, timeout=60)
     try:
         connection.request("GET", path)
@@ -309,6 +342,38 @@ def _write_atomic(path: Path, data: bytes) -> None:
         raise
 
 
+def _fetch_verified(path: str, target: Path, fetcher: Fetcher) -> str | None:
+    """Store the archive at ``path`` in ``target`` under Binance's published checksum.
+
+    Returns the published SHA-256, or None when the archive is not published at all. A
+    cached file is kept only while it matches the checksum. Every failure is a
+    ``DataError``; the archive's content is not opened here.
+    """
+    checksum = fetcher(path + ".CHECKSUM")
+    if checksum is None:
+        if fetcher(path) is not None:
+            raise DataError(f"{path} is published without a checksum")
+        return None
+    try:
+        published = checksum.decode("ascii", errors="strict")
+    except UnicodeDecodeError as exc:
+        # A non-ASCII checksum body is a corrupt or hostile response, not a decode bug:
+        # it must fail at this module's DataError boundary like every other bad checksum.
+        raise DataError(f"unexpected checksum file for {path}") from exc
+    match = _CHECKSUM.fullmatch(published)
+    if match is None or match.group(2) != path.rsplit("/", 1)[1]:
+        raise DataError(f"unexpected checksum file for {path}")
+    expected = match.group(1)
+    if not target.exists() or sha256_file(target) != expected:
+        body = fetcher(path)
+        if body is None:
+            raise DataError(f"{path} has a checksum but no archive")
+        if hashlib.sha256(body).hexdigest() != expected:
+            raise DataError(f"{path} does not match Binance's published SHA-256")
+        _write_atomic(target, body)
+    return expected
+
+
 def fetch_file(
     data_dir: Path, symbol: str, interval: str, month: str, fetcher: Fetcher
 ) -> dict[str, Any]:
@@ -320,29 +385,10 @@ def fetch_file(
         "month": month,
         "url": f"https://{ARCHIVE_HOST}{path}",
     }
-    checksum = fetcher(path + ".CHECKSUM")
-    if checksum is None:
-        if fetcher(path) is not None:
-            raise DataError(f"{path} is published without a checksum")
-        return {**entry, "status": "missing"}
-    try:
-        published = checksum.decode("ascii", errors="strict")
-    except UnicodeDecodeError as exc:
-        # A non-ASCII checksum body is a corrupt or hostile response, not a decode bug:
-        # it must fail at this module's DataError boundary like every other bad checksum.
-        raise DataError(f"unexpected checksum file for {path}") from exc
-    match = _CHECKSUM.fullmatch(published)
-    if match is None or match.group(2) != path.rsplit("/", 1)[1]:
-        raise DataError(f"unexpected checksum file for {path}")
-    expected = match.group(1)
     target = local_path(data_dir, symbol, interval, month)
-    if not target.exists() or sha256_file(target) != expected:
-        body = fetcher(path)
-        if body is None:
-            raise DataError(f"{path} has a checksum but no archive")
-        if hashlib.sha256(body).hexdigest() != expected:
-            raise DataError(f"{path} does not match Binance's published SHA-256")
-        _write_atomic(target, body)
+    expected = _fetch_verified(path, target, fetcher)
+    if expected is None:
+        return {**entry, "status": "missing"}
     try:
         _, stats = read_archive(target, symbol, interval, month)
     except DataError as exc:
@@ -355,6 +401,37 @@ def fetch_file(
         "sha256": expected,
         "bytes": target.stat().st_size,
         **asdict(stats),
+    }
+
+
+def fetch_funding_file(data_dir: Path, symbol: str, month: str, fetcher: Fetcher) -> dict[str, Any]:
+    """``fetch_file`` for one monthly funding-rate archive of a USDT-M perpetual.
+
+    Same host, checksum rule, atomic write and cache rule; the stored archive is then
+    parsed by ``read_funding_archive``, whose rejection is an ``ArchiveParseError``.
+    """
+    development_month(month)  # refuse the reserved window before any network or cache access
+    path = funding_archive_path(symbol, month)
+    entry: dict[str, Any] = {
+        "kind": "fundingRate",
+        "symbol": symbol,
+        "month": month,
+        "url": f"https://{ARCHIVE_HOST}{path}",
+    }
+    target = funding_local_path(data_dir, symbol, month)
+    expected = _fetch_verified(path, target, fetcher)
+    if expected is None:
+        return {**entry, "status": "missing"}
+    try:
+        records = read_funding_archive(target, symbol, month)
+    except DataError as exc:
+        raise ArchiveParseError(str(exc)) from exc
+    return {
+        **entry,
+        "status": "ok",
+        "sha256": expected,
+        "bytes": target.stat().st_size,
+        "records": len(records),
     }
 
 

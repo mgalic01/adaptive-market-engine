@@ -13,9 +13,13 @@ from unittest.mock import patch
 
 from crypto_grid_bot.backtest import dataset
 from crypto_grid_bot.backtest.dataset import (
+    ArchiveParseError,
     archive_path,
     fetch_dataset,
     fetch_file,
+    fetch_funding_file,
+    funding_archive_path,
+    funding_local_path,
     load_manifest,
     load_spec,
     local_path,
@@ -28,6 +32,7 @@ from crypto_grid_bot.backtest.klines import (
     read_archive,
     read_member,
 )
+from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.market_data.parsing import DataError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,9 +74,62 @@ class FakeArchive:
         name = path.rsplit("/", 1)[1]
         self.objects[path + ".CHECKSUM"] = f"{digest}  {name}".encode()
 
+    def add_funding(self, symbol, month, text, *, checksum=None, member=None):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(member or f"{symbol}-fundingRate-{month}.csv", text)
+        body = buffer.getvalue()
+        path = funding_archive_path(symbol, month)
+        digest = checksum or hashlib.sha256(body).hexdigest()
+        self.objects[path] = body
+        name = path.rsplit("/", 1)[1]
+        self.objects[path + ".CHECKSUM"] = f"{digest}  {name}".encode()
+
     def __call__(self, path):
         self.requests.append(path)
         return self.objects.get(path)
+
+
+FUNDING_HEADER = "calc_time,funding_interval_hours,last_funding_rate\n"
+
+
+def funding_rows(start_ms, count):
+    return FUNDING_HEADER + "".join(
+        f"{start_ms + i * 8 * 3_600_000},8,0.0001\n" for i in range(count)
+    )
+
+
+class FakeResponse:
+    def __init__(self, status, body):
+        self.status = status
+        self._body = body
+
+    def read(self, limit):
+        return self._body[:limit]
+
+
+class FakeConnection:
+    """One canned HTTP response; records the request and whether it was closed."""
+
+    def __init__(self, status=200, body=b"", *, fail=None):
+        self.status, self.body, self.fail = status, body, fail
+        self.requests = []
+        self.closed = False
+
+    def __call__(self, host, *, timeout):
+        self.host = host
+        return self
+
+    def request(self, method, path):
+        self.requests.append((method, path))
+        if self.fail is not None:
+            raise self.fail
+
+    def getresponse(self):
+        return FakeResponse(self.status, self.body)
+
+    def close(self):
+        self.closed = True
 
 
 class ParseTests(unittest.TestCase):
@@ -414,6 +472,175 @@ class FetchTests(unittest.TestCase):
             handle.write(source.replace('fee_rate = "0.001"', 'fee_rate = "0"'))
         self.addCleanup(Path(handle.name).unlink)
         self.assertEqual(0, load_spec(Path(handle.name)).fee_rate)
+
+
+class FundingFetchTests(unittest.TestCase):
+    """fetch_funding_file mirrors fetch_file for the USDT-M funding archives (spec P8)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.data = Path(self.temp.name)
+        self.archive = FakeArchive()
+
+    def test_verified_file_is_stored_and_described(self):
+        self.archive.add_funding("BTCUSDT", "2024-01", funding_rows(JAN_2024_MS, 4))
+        entry = fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+        self.assertEqual("ok", entry["status"])
+        self.assertEqual("fundingRate", entry["kind"])
+        self.assertEqual(4, entry["records"])
+        target = funding_local_path(self.data, "BTCUSDT", "2024-01")
+        self.assertTrue(target.exists())
+        self.assertEqual(
+            self.data / "binance/data/futures/um/monthly/fundingRate/BTCUSDT"
+            "/BTCUSDT-fundingRate-2024-01.zip",
+            target,
+        )
+        self.assertEqual(entry["sha256"], hashlib.sha256(target.read_bytes()).hexdigest())
+        self.assertEqual(
+            "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT"
+            "/BTCUSDT-fundingRate-2024-01.zip",
+            entry["url"],
+        )
+
+    def test_checksum_mismatch_is_rejected_and_nothing_is_stored(self):
+        self.archive.add_funding(
+            "BTCUSDT", "2024-01", funding_rows(JAN_2024_MS, 4), checksum="0" * 64
+        )
+        with self.assertRaisesRegex(DataError, "SHA-256"):
+            fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+        self.assertFalse(funding_local_path(self.data, "BTCUSDT", "2024-01").exists())
+
+    def test_a_checksum_naming_another_file_is_rejected(self):
+        self.archive.add_funding("BTCUSDT", "2024-01", funding_rows(JAN_2024_MS, 4))
+        path = funding_archive_path("BTCUSDT", "2024-01")
+        digest = self.archive.objects[path + ".CHECKSUM"].split(b"  ")[0].decode()
+        self.archive.objects[path + ".CHECKSUM"] = f"{digest}  BTCUSDT-1d-2024-01.zip".encode()
+        with self.assertRaisesRegex(DataError, "unexpected checksum file"):
+            fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+        self.assertFalse(funding_local_path(self.data, "BTCUSDT", "2024-01").exists())
+
+    def test_unpublished_month_is_recorded_missing(self):
+        entry = fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+        self.assertEqual("missing", entry["status"])
+        self.assertEqual(
+            [
+                funding_archive_path("BTCUSDT", "2024-01") + ".CHECKSUM",
+                funding_archive_path("BTCUSDT", "2024-01"),
+            ],
+            self.archive.requests,
+        )
+
+    def test_an_archive_without_a_checksum_is_an_error(self):
+        self.archive.add_funding("BTCUSDT", "2024-01", funding_rows(JAN_2024_MS, 4))
+        del self.archive.objects[funding_archive_path("BTCUSDT", "2024-01") + ".CHECKSUM"]
+        with self.assertRaisesRegex(DataError, "without a checksum"):
+            fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+
+    def test_cached_file_is_reused_only_when_checksum_matches(self):
+        self.archive.add_funding("BTCUSDT", "2024-01", funding_rows(JAN_2024_MS, 4))
+        fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+        fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+        zip_path = funding_archive_path("BTCUSDT", "2024-01")
+        self.assertEqual(1, self.archive.requests.count(zip_path))
+        funding_local_path(self.data, "BTCUSDT", "2024-01").write_bytes(b"tampered")
+        fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+        self.assertEqual(2, self.archive.requests.count(zip_path))
+
+    def test_a_hash_verified_archive_the_parser_rejects_is_a_parse_error(self):
+        # Wrong member name, and a row outside the month: both fail after the checksum.
+        cases = {
+            "member": dict(member="ETHUSDT-fundingRate-2024-01.csv"),
+            "rows": dict(text=funding_rows(JAN_2025_MS, 2)),
+        }
+        for name, extra in cases.items():
+            with self.subTest(name):
+                self.archive = FakeArchive()
+                text = extra.pop("text", funding_rows(JAN_2024_MS, 4))
+                self.archive.add_funding("BTCUSDT", "2024-01", text, **extra)
+                with self.assertRaises(ArchiveParseError):
+                    fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+
+    def test_a_reserved_month_is_refused_before_any_request_or_cache_access(self):
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            fetch_funding_file(self.data, "BTCUSDT", "2025-01", self.archive)
+        self.assertEqual([], self.archive.requests)
+        self.assertEqual([], list(self.data.iterdir()))
+
+    def test_the_last_development_month_is_still_fetched(self):
+        december = 1733011200000  # 2024-12-01T00:00:00Z
+        self.archive.add_funding("BTCUSDT", "2024-12", funding_rows(december, 3))
+        entry = fetch_funding_file(self.data, "BTCUSDT", "2024-12", self.archive)
+        self.assertEqual(("ok", 3), (entry["status"], entry["records"]))
+
+    def test_the_path_helpers_validate_their_arguments(self):
+        for symbol, month in (("btcusdt", "2024-01"), ("BTCUSDT", "2024-1"), ("BTCUSDT", "x")):
+            with self.subTest(symbol=symbol, month=month), self.assertRaises(DataError):
+                funding_archive_path(symbol, month)
+
+
+class ArchiveGetTests(unittest.TestCase):
+    """archive_get's path guard and status handling, with a canned connection."""
+
+    KLINE = archive_path("ADAUSDT", "1m", "2024-12")
+    FUNDING = funding_archive_path("BTCUSDT", "2024-12")
+
+    def get(self, path, connection):
+        with patch.object(dataset, "https_connection", connection):
+            return dataset.archive_get(path)
+
+    def test_both_canonical_shapes_reach_the_fixed_host(self):
+        for path in (
+            self.KLINE,
+            self.KLINE + ".CHECKSUM",
+            self.FUNDING,
+            self.FUNDING + ".CHECKSUM",
+        ):
+            with self.subTest(path=path):
+                connection = FakeConnection(200, b"zip")
+                self.assertEqual(b"zip", self.get(path, connection))
+                self.assertEqual("data.binance.vision", connection.host)
+                self.assertEqual([("GET", path)], connection.requests)
+                self.assertTrue(connection.closed)
+
+    def test_forbidden_paths_are_refused_before_connecting(self):
+        connection = FakeConnection(200, b"zip")
+        base = "/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-"
+        forbidden = {
+            "directory": "/data/futures/um/monthly/fundingRate/BTCUSDT/",
+            "query": base + "2024-12.zip?prefix=x",
+            "reserved suffix trick": base + "2025-01.zip?x=-2024-12.zip",
+            "symbol mismatch": base.replace("BTCUSDT-", "ETHUSDT-") + "2024-12.zip",
+            "other market": base.replace("/um/", "/cm/") + "2024-12.zip",
+            "relative": base.lstrip("/") + "2024-12.zip",
+            "csv": base + "2024-12.csv",
+        }
+        for name, path in forbidden.items():
+            with (
+                self.subTest(name),
+                self.assertRaisesRegex(DataError, "not a monthly spot kline archive or"),
+            ):
+                self.get(path, connection)
+        for path in (base + "2025-01.zip", base + "2025-01.zip.CHECKSUM"):
+            with self.subTest(path=path), self.assertRaisesRegex(DataError, "reserved window"):
+                self.get(path, connection)
+        self.assertEqual([], connection.requests)
+
+    def test_404_is_missing_and_every_other_status_is_an_error(self):
+        self.assertIsNone(self.get(self.FUNDING, FakeConnection(404, b"")))
+        for status in (301, 302, 307, 403, 429, 500, 503):
+            with self.subTest(status=status), self.assertRaisesRegex(FeedError, f"HTTP {status}"):
+                self.get(self.FUNDING, FakeConnection(status, b"elsewhere"))
+
+    def test_transport_failures_and_oversized_bodies_are_feed_errors(self):
+        for fail in (OSError("reset"), dataset.http.client.HTTPException("bad")):
+            connection = FakeConnection(fail=fail)
+            with self.subTest(fail=fail), self.assertRaisesRegex(FeedError, "transport"):
+                self.get(self.FUNDING, connection)
+            self.assertTrue(connection.closed)
+        too_big = b"x" * (dataset.MAX_ZIP_BYTES + 1)
+        with self.assertRaisesRegex(FeedError, "size limit"):
+            self.get(self.FUNDING, FakeConnection(200, too_big))
 
 
 class ReservedWindowTests(unittest.TestCase):
