@@ -5,6 +5,7 @@
 - **Commit:** `876f7ce9d3a32b4a31bc558a0eb038a462c1472e`
 - **Python:** 3.12.14
 - **Working outputs:** `data/t-baseline.log`, `data/t-alone-*.log`, `data/t-reverse.log`, `data/t-hashseeds.log`, `data/t-warnings-as-errors.log`, `data/t-durations.log`, `data/t-flakiness.log`, `data/untested.py` (SHA-256: `db563af487b88c11c7f5cc9875e16745989aa81e5cffd88c665a05454ab0c17f`), `data/spot_check.py` (SHA-256: `65dd777956b29b08db4827a6de0c505b9ee6d35e6c47790362065616e8db7e32`)
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 
 **Stop condition check:** `git status --porcelain --untracked-files=all` returned empty (working tree clean, `data/` is gitignored). No stop conditions were triggered. All steps completed.
 

@@ -259,3 +259,40 @@ identity or journal contains an A key. A revert therefore affects only accounts 
    `@bob` request on the PR).
 3. After merge, and only with the register entry for A: wire `daily` into the job runner and
    add the `results.json` fields in the harness PR.
+
+## Revision 2 (2026-09-28, session `012TnmLL`): Bob's second review and Codex's findings
+
+Bob's second review (comment `5861201540`) and Codex's independent review (`5858957868`)
+found the same three defects from two directions; Bob's later 4-agent panel did not
+address them, so its "ready" verdict is superseded. All are fixed at this head, on top of
+a merge with `main` that brings in PR #122's residue-tolerant lifecycle, which is exactly
+what the first finding needs.
+
+| Finding | Fix | Test |
+| --- | --- | --- |
+| **Bob F1 (critical):** the Down sequence ended only at `inventory == 0`, which a residue below the minimum notional never reaches; `recycle` stayed off and the account emitted an empty `trend_exit` on every frame for good | The sequence ends when nothing sellable is left (`_resolved`: no resting sell and nothing the market filters would accept), PR #122's rule; the residue stays held and marked, and the next Up day opens a grid with it | `test_a_sub_minimum_remainder_ends_the_sequence_instead_of_looping` |
+| **Bob F2 / Codex P2:** `starts_down_sequence` read the raw signal, so a stale (two-day-old) Down object started a sequence and cancelled buys while the effective state was Unavailable; **Bob C2:** `trend_day` advanced on it too | `_apply_trend` acts only when the effective state is not Unavailable | `test_a_stale_signal_neither_starts_a_sequence_nor_advances_the_applied_day` |
+| **Codex P1, deadline order:** a deadline quote crossing the resting sells filled them before the exit, flattening the account with no exit reason; the spec cancels the sells first | The deadline is evaluated and the sells cancelled **before** this observation's matching; the bounded exit then labels its fills `trend_exit` | `test_the_deadline_cancels_the_sells_before_this_observations_matching` |
+| **Codex P1, obsolete range state:** cancelling an unfilled grid left its bounds and outside clock, so 121 outside observations put an empty account into a range exit and the next Up day stayed paused | When the sequence ends with no orders, the grid bounds and outside clock are reset unless a genuine V0 range exit is in progress | `test_a_sequence_that_ends_flat_leaves_no_obsolete_grid_behind` |
+| **Bob C1:** dates were compared as text but `validate()` accepted an unpadded day | `TrendSignal.validate` requires canonical ISO form for `day` and `last_down` | `test_dates_must_be_in_canonical_iso_form` |
+| **Bob C4:** no test for Unavailable frames inside a running sequence | Test added: the deadline is wall-clock from T0 and fires through missing daily bars | `test_unavailable_observations_inside_a_sequence_keep_its_deadline` |
+| **Bob C3:** `resume()` and `down_since` | Already cleared by `resume()` (line "a flat account has ended any variant A sequence"); no change | existing `PersistenceTests` |
+
+**Bob F3, first provisioning into an active Down market — for the owner, not changed.**
+On the first signal, `starts_down_sequence` starts a sequence only for a Down classified
+on that signal's own day. But a sequence exists to *exit* inventory, and a freshly
+provisioned account holds none; what protects it is the new-grid gate, which needs the
+**Up** state. A market that has been Down for three days is not Up, so no grid opens
+until two consecutive closes above SMA200 (Recovering, then Up). If the state is already
+Up on the first signal, the Down days are over. So the code is safe as written; the
+owner is asked to confirm the reading that "predates the run" means "no inventory to
+exit", and the record says so.
+
+**Merge with `main`:** PR #122 changed the harvest gate, the drain and `_settle` in the
+same lines this variant touches. Resolved by keeping `main`'s residue-tolerant gates and
+this variant's trend gating on top; the drain now passes `maximum=unpaired` as `main`
+does and labels its fills `drain` or `trend_exit`. Ambiguity #5 (SMA50 definition against
+variant D's `daily_sma.py`) stays a pre-run item, as Bob noted.
+
+Verification (Python 3.12.3): preflight green, ruff, format, mypy (49 files), bandit,
+`check_reports` 0 problems, pytest 606 passed, 2 skipped, 639 subtests.

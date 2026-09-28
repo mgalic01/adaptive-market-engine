@@ -18,7 +18,15 @@ from crypto_grid_bot.domain import (
 )
 from crypto_grid_bot.portfolio.profit_vault import ProfitVault, ProfitVaultState
 from crypto_grid_bot.risk.engine import RiskEngine
-from crypto_grid_bot.simulation.execution import liquidate, match, place, reduce_unreserved
+from crypto_grid_bot.simulation.execution import (
+    Reduction,
+    exitable,
+    liquidate,
+    match,
+    place,
+    reduce_unreserved,
+    unpaired_inventory,
+)
 from crypto_grid_bot.simulation.inventory_cap import capped_quantity
 from crypto_grid_bot.simulation.models import (
     ONE,
@@ -36,6 +44,7 @@ from crypto_grid_bot.simulation.models import (
 from crypto_grid_bot.simulation.store import StateStore, encode
 from crypto_grid_bot.simulation.trend_switch import (
     DOWN_DEADLINE_SECONDS,
+    UNAVAILABLE,
     UP,
     TrendSignal,
     effective_state,
@@ -46,7 +55,12 @@ from crypto_grid_bot.strategy.opportunity import OpportunityScorer
 from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
 
 DEFAULT_CAPITAL = D("100")
-SCHEMA = 4
+# 5 (2026-09-27, engine "exit-residue-v1"): a residue the exchange filters forbid
+# selling no longer blocks settlement or a new grid, and a validation halt holding
+# inventory arms liquidation. A schema-4 database was written under the old lifecycle,
+# so reopening it here would mix two semantics in one event history; the identity
+# mismatch refuses it instead.
+SCHEMA = 5
 
 
 class TransientFrame(ValueError):
@@ -211,6 +225,26 @@ class PaperSimulator:
         account.recovery_count = 0
         account.liquidating = account.liquidating or exit_requested
 
+    def _resolved(self, account: Account, quote: Quote) -> bool:
+        """True when no position is left that the account could still trade out of.
+
+        Either flat, or holding only a residue the market filters forbid selling: the
+        engine has no way to reduce that residue, so no recovery step may wait for it.
+
+        Deliberately scoped differently from ``unpaired_inventory``: this asks "is
+        anything sellable held", so it counts the filled part of a resting buy, while the
+        drain and the end-of-run verdict ask "what does this exit owe" and exclude it.
+        The range-exit and settlement callers are gated on an empty order book
+        (``liquidate``'s precondition, and ``_settle``'s own check). The harvest gate is
+        not: a partly filled buy may still rest there, and then ``exitable`` counts its
+        filled part while ``unpaired_inventory`` does not. That disagreement is the
+        point. This is the stricter test, so a harvest never sells inventory a resting
+        buy's child sell will pair, and it is never True while ``exit_state`` is
+        ``incomplete``. Keeping them distinct is what stops a partly filled buy being
+        drained out from under its own child sell.
+        """
+        return not account.reserved_base() and not exitable(account, quote, self.rules)
+
     def _pause(self, account: Account, reason: str) -> None:
         self._cancel_buys(account)
         account.pause = reason
@@ -287,6 +321,22 @@ class PaperSimulator:
             self._pause(account, "outside-range timeout: exit to cash")
 
     @staticmethod
+    def _record_exit(report: dict[str, Any], result: Reduction, reason: str) -> None:
+        """Journal an exit attempt, including a refusal that sold nothing.
+
+        A refused exit used to leave no trace at all, so an account that could make no
+        progress looked identical to one with nothing left to sell.
+        """
+        report["fills"].extend(asdict(fill) for fill in result.fills)
+        if result.fills:
+            report["exit_reason"] = reason
+        # Always recorded, so a frame that attempted an exit and was not refused is
+        # distinguishable from one that attempted none: a rejected or halting frame
+        # returns before this and carries no key at all.
+        report["exit_blocked"] = result.blocked if result.blocked in ("depth", "dust") else ""
+        report["exit_blocked_notional"] = result.outstanding_notional
+
+    @staticmethod
     def _mark(account: Account, quote: Quote, rules: MarketRules) -> None:
         account.last_equity = account.equity(quote, rules)
         account.risk_high = max(account.risk_high, account.last_equity)
@@ -319,7 +369,11 @@ class PaperSimulator:
             )
             return report  # No marking, fills, liquidation or recovery on unusable data.
         except ValueError as exc:
-            self._halt(account, str(exc))
+            # A validation halt cancels the resting sells that were the inventory's only
+            # exit, so held inventory must be armed for liquidation. Nothing is traded on
+            # this invalid frame: the return below precedes the liquidation branch, so the
+            # exit runs on the next frame that validates.
+            self._halt(account, str(exc), exit_requested=account.inventory != ZERO)
             report.update(decision="halt", reason=str(exc), cancelled=sorted(previous_orders))
             return report
 
@@ -342,14 +396,10 @@ class PaperSimulator:
         trend = self._apply_trend(account, frame) if self.policy.trend_switch else None
         if account.halt:
             if account.liquidating:
-                report["fills"] = [asdict(fill) for fill in liquidate(account, quote, self.rules)]
-                if report["fills"]:
-                    report["exit_reason"] = "liquidation"
+                self._record_exit(report, liquidate(account, quote, self.rules), "liquidation")
             report.update(decision="halt", reason=account.halt)
         elif account.range_exit:
-            report["fills"] = [asdict(fill) for fill in liquidate(account, quote, self.rules)]
-            if report["fills"]:
-                report["exit_reason"] = "range_exit"
+            self._record_exit(report, liquidate(account, quote, self.rules), "range_exit")
             back_inside = account.grid_lower <= quote.bid <= account.grid_upper
             cooled = (
                 self.policy.recenter_after_exit
@@ -365,8 +415,10 @@ class PaperSimulator:
                     else " (recentering disabled)"
                 ),
             )
+            # _resolved counts the whole unreserved inventory; safe here because
+            # liquidate() above required an empty order book.
             if (
-                account.inventory == ZERO
+                self._resolved(account, quote)
                 and action == RiskAction.ALLOW
                 and score.eligible
                 and (back_inside or cooled)
@@ -384,6 +436,16 @@ class PaperSimulator:
                 if account.recovery_count >= self.policy.recovery_frames:
                     account.pause = ""
                     account.recovery_count = 0
+            # Variant A deadline (spec v1, section 3 A): T0 + 24 h, not reset by further
+            # Down days. The remaining sells are cancelled BEFORE this observation's
+            # matching, so a quote that would have filled them cannot (Codex, PR #114);
+            # what is left is then exited under the bid-size limit, retried at each later
+            # valid observation.
+            trend_due = bool(account.down_since) and (
+                seconds_between(account.down_since, quote.observed_at) >= DOWN_DEADLINE_SECONDS
+            )
+            if trend_due:
+                account.orders.clear()
             report["fills"] = [
                 asdict(fill)
                 for fill in match(
@@ -405,47 +467,49 @@ class PaperSimulator:
                     ),
                 )
             ]
-            # Variant A deadline: cancel the remaining sells, then exit all inventory
-            # under the same bid-size limit, retried at each later valid observation.
-            trend_due = bool(account.down_since) and (
-                seconds_between(account.down_since, quote.observed_at) >= DOWN_DEADLINE_SECONDS
-            )
-            if trend_due:
-                account.orders.clear()
-            # Cancelled partial buys can leave unpaired inventory. Exit it using only
-            # remaining bid capacity, never inventory reserved by an existing sell.
-            if account.draining or trend_due:
+            # Unpaired inventory: neither reserved by a resting sell nor the filled part
+            # of a buy still resting, whose own sell will pair it once it fills. Cancelled
+            # partial buys leave it, and so does a residue a harvest tolerated. Exit it
+            # using only remaining bid capacity, never inventory reserved by a sell, and
+            # never the part of a resting buy that has already filled.
+            unpaired = unpaired_inventory(account)
+            if unpaired > ZERO:
                 consumed = sum(
                     (D(fill["quantity"]) for fill in report["fills"] if fill["side"] == "sell"),
                     ZERO,
                 )
-                drained = [
-                    asdict(fill)
-                    for fill in reduce_unreserved(
-                        account,
-                        quote,
-                        self.rules,
-                        consumed=consumed,
-                    )
-                ]
-                if drained:
-                    report["fills"].extend(drained)
+                self._record_exit(
+                    report,
+                    reduce_unreserved(
+                        account, quote, self.rules, consumed=consumed, maximum=unpaired
+                    ),
                     # Same-step labelling (spec v1, section 3 A): drain outranks trend_exit.
-                    report["exit_reason"] = "drain" if account.draining else "trend_exit"
+                    "drain" if account.draining or not trend_due else "trend_exit",
+                )
 
         # Recheck risk after any fills, but never reuse this event's liquidity for an exit.
         if report["fills"]:
             self._risk_action(account, quote, frame.signals.emergency)
-        if not account.halt and account.inventory == ZERO:
+        # Buys may still rest here, so _resolved (whole unreserved inventory) is the
+        # stricter gate: a partly filled buy's inventory blocks the harvest until its own
+        # child sell has paired it. See _resolved.
+        if not account.halt and self._resolved(account, quote):
             # A flat account is a safe harvest point even with unused deeper buys.
             # Do this only after sells, draining, or when all orders are already gone.
             sold = any(fill["side"] == "sell" for fill in report["fills"])
             if sold or account.draining or not account.orders:
                 self._cancel_buys(account)
                 if account.cash - account.pending <= ZERO:
-                    self._halt(account, "active capital exhausted")
+                    # Arm the exit for any residue, as the other halt sites do, so the
+                    # stuck inventory is reported from the next frame rather than only
+                    # once the risk engine re-halts a frame later.
+                    self._halt(
+                        account,
+                        "active capital exhausted",
+                        exit_requested=account.inventory != ZERO,
+                    )
                 else:
-                    report["allocation"] = self._settle(account)
+                    report["allocation"] = self._settle(account, quote)
                     account.draining = False
                     if (
                         not account.pause
@@ -473,11 +537,20 @@ class PaperSimulator:
         if self.policy.inventory_cap is not None:
             report["capped"] = capped
         if trend is not None:
-            # The sequence ends once the account is flat; only a later observation can
-            # then open a grid (and only in the Up state).
-            if account.down_since and account.inventory == ZERO:
+            # The sequence ends once nothing sellable is left: flat, or holding only a
+            # residue the market filters forbid selling (PR #122's rule; waiting for
+            # inventory == 0 looped forever on such a residue, Bob's F1). Only a later
+            # observation can then open a grid, and only in the Up state.
+            if account.down_since and not account.orders and self._resolved(account, quote):
                 report["down_sequence_ended"] = account.down_since
                 account.down_since = ""
+                if not account.range_exit:
+                    # The grid this sequence ended left no orders behind; its bounds and
+                    # outside-range clock are obsolete and would otherwise time an empty
+                    # account out into a range exit (Codex, PR #114). A genuine V0 range
+                    # exit in progress is untouched.
+                    account.grid_lower = account.grid_upper = ZERO
+                    account.outside_seconds, account.outside_last = ZERO, ""
             report["trend"] = {
                 "state": trend,
                 "day": frame.trend.day if frame.trend is not None else None,
@@ -512,8 +585,21 @@ class PaperSimulator:
         def operation(account: Account) -> dict[str, Any]:
             self._validate_frame(account, frame)
             account.validate(self.rules)
-            if not account.halt or account.orders or account.inventory != ZERO:
+            if not account.halt or account.orders:
                 raise ValueError("resume requires a halted, reconciled flat paper account")
+            if account.inventory != ZERO:
+                # Flat, not merely "nothing sellable": a held residue is marked to the
+                # current bid, so its value moves with price. Admitting it here would let
+                # a rally lift active equity back above the soft-drawdown line and clear a
+                # hard-drawdown halt that is documented as final. The lifecycle gates
+                # tolerate a residue (they are what the freeze bug was about); resuming a
+                # halt does not.
+                raise ValueError(
+                    "resume requires a flat paper account: "
+                    f"{account.inventory} base units are still held, so the exit is "
+                    "incomplete. A residue below the exchange minimum can only be cleared "
+                    "by a higher bid; the halt stands until then"
+                )
             regime = self.classifier.classify(frame.signals)
             if not self.scorer.score(frame.candidate, regime).eligible:
                 raise ValueError("resume eligibility checks failed")
@@ -521,7 +607,13 @@ class PaperSimulator:
             if account.day != day:
                 account.day, account.day_start = day, account.last_equity
             if self._risk_action(account, frame.quote, frame.signals.emergency) != RiskAction.ALLOW:
-                raise ValueError("resume blocked by current risk limits; baselines are preserved")
+                raise ValueError(
+                    "resume blocked by current risk limits; baselines are preserved. A flat "
+                    "account's equity cannot move, so its drawdown against risk_high is "
+                    "frozen: a hard-drawdown or capital-exhaustion halt is final for this "
+                    "account and no repeated resume can clear it. An emergency halt resumes "
+                    "once the emergency signal has cleared and every other limit passes"
+                )
             previous_halt = account.halt
             account.halt = ""
             account.liquidating = False
@@ -551,23 +643,40 @@ class PaperSimulator:
 
         A Down classification that became effective since the last applied signal
         starts a Down sequence (T0 = this observation) unless one is running. Resting
-        buys are cancelled at once; resting sells stay.
+        buys are cancelled at once; resting sells stay. Only a usable signal acts: a
+        stale or missing one gates as Unavailable and must neither start a sequence nor
+        advance ``trend_day`` (Bob's F2 and C2 on PR #114).
         """
         signal, observed = frame.trend, frame.quote.observed_at
         state = effective_state(signal, observed)
-        if signal is not None:
+        if signal is not None and state != UNAVAILABLE:
             if starts_down_sequence(signal, account.trend_day) and not account.down_since:
                 account.down_since = observed
                 self._cancel_buys(account)
             account.trend_day = max(account.trend_day, signal.day)
         return state
 
-    def _settle(self, account: Account) -> dict[str, Any]:
-        if account.orders or account.inventory != ZERO:
-            raise ValueError("profit settlement requires flat inventory and no orders")
+    def _settle(self, account: Account, quote: Quote) -> dict[str, Any]:
+        # An unsellable residue is left out of the allocation base, which understates
+        # profit; it is never counted as settled cash.
+        # No orders is checked first, so _resolved here sees the whole inventory.
+        if account.orders or not self._resolved(account, quote):
+            raise ValueError("profit settlement requires no orders and no sellable inventory")
         active_before = account.cash - account.pending
         if active_before <= ZERO:
             raise ValueError("cannot settle an exhausted active account")
+        # A held residue is excluded from the allocation base but IS in day_start,
+        # risk_high and every later active-equity reading, so it must sit on both sides
+        # of the rescaling ratio. Leaving it out of both depresses the baselines and can
+        # move a later drawdown or daily-loss reading across its threshold. Marked exactly
+        # as Account.equity marks it, since that is what populated those baselines: the
+        # unrounded liquidation price, not the tick-floored price an order would use.
+        marked_residue = (
+            account.inventory
+            * quote.bid
+            * (ONE - self.rules.slippage_rate)
+            * (ONE - self.rules.taker_fee)
+        )
         account.settlement_count += 1
         state = ProfitVaultState(
             account.reserve_high,
@@ -581,7 +690,9 @@ class PaperSimulator:
         account.pending, account.reserve_high = state.pending_reserve, state.active_high_water_mark
         # Proportional adjustment preserves returns even when reserve exceeds the
         # original capital; subtracting could make a baseline zero or negative.
-        factor = allocation.active_capital_after_allocation / active_before
+        factor = (allocation.active_capital_after_allocation + marked_residue) / (
+            active_before + marked_residue
+        )
         account.day_start *= factor
         account.risk_high *= factor
         if allocation.transfer_due:

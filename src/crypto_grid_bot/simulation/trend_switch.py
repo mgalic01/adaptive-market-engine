@@ -159,8 +159,14 @@ class TrendSignal:
         if type(self.day) is not str or self.state not in STATES:
             raise ValueError("invalid daily trend signal")
         day = date.fromisoformat(self.day)
+        # Canonical ISO form only: the engine orders days as text, and "2026-1-5"
+        # would parse yet sort wrongly against "2026-01-05".
+        if day.isoformat() != self.day:
+            raise ValueError("invalid daily trend signal")
         if self.last_down is not None and (
-            type(self.last_down) is not str or date.fromisoformat(self.last_down) > day
+            type(self.last_down) is not str
+            or date.fromisoformat(self.last_down).isoformat() != self.last_down
+            or date.fromisoformat(self.last_down) > day
         ):
             raise ValueError("invalid daily trend signal")
         if timestamp(observed_at) < _midnight_after(day):

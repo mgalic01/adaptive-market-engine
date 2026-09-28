@@ -6,6 +6,7 @@ Resting limit fills pay the maker fee; marketable exits pay the taker fee.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from crypto_grid_bot.simulation.models import (
@@ -169,35 +170,145 @@ def match(
     return fills
 
 
+def exit_price(quote: Quote, rules: MarketRules) -> Decimal:
+    """The price a marketable exit would get at this bid, after slippage and rounding."""
+    return floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
+
+
+def marketable(quantity: Decimal, quote: Quote, rules: MarketRules) -> Decimal:
+    """``quantity`` if the market filters would accept selling it at this bid, else ZERO.
+
+    Deliberately liquidity-independent: it answers "can this ever be sold at this
+    price", not "does this frame have the depth for it". ZERO therefore means a residue
+    below the quantity step or the minimum notional -- an exchange filter no later frame
+    at this price can satisfy -- and never merely a thin book.
+    """
+    step = floor_step(quantity, rules.quantity_step)
+    if step <= ZERO or exit_price(quote, rules) * step < rules.minimum_notional:
+        return ZERO
+    return step
+
+
+def unpaired_inventory(account: Account) -> Decimal:
+    """Inventory with no sell to clear it: not reserved by a resting sell, and not the
+    part of a resting buy that has already filled, whose own child sell will pair it
+    when the buy completes. This is exactly what a drain has to exit, so the runner's
+    drain trigger and the end-of-run classifier must both use it.
+    """
+    held_by_buys = sum(
+        (o.quantity - o.remaining for o in account.orders.values() if o.side == "buy"), ZERO
+    )
+    return account.inventory - account.reserved_base() - held_by_buys
+
+
+def exitable(account: Account, quote: Quote, rules: MarketRules) -> Decimal:
+    """Unreserved inventory the market filters would allow an exit to sell at this bid."""
+    return marketable(account.inventory - account.reserved_base(), quote, rules)
+
+
+@dataclass(frozen=True)
+class Reduction:
+    """One marketable-exit attempt: what filled, and if nothing did, exactly why.
+
+    ``blocked`` is the refusal an exchange would have produced, or "" when the attempt
+    was not refused (it either traded, or there was nothing unreserved to sell):
+
+    * ``depth`` - the per-frame participation chunk is below the minimum notional
+      although the unreserved position is not. Waiting for a deeper bid is the only
+      lawful course; the wait may never end, so it is reported on every frame.
+    * ``dust`` - the whole outstanding position is below the minimum notional at this
+      bid. No later frame and no extra depth can clear it; only a higher price can.
+    * ``reserved`` - every unit of inventory is already reserved by a resting sell, so
+      there is nothing for this exit to do. Not a minimum-notional refusal.
+    """
+
+    fills: list[Fill] = field(default_factory=list)
+    blocked: str = ""
+    # The chunk this frame could have sold, and its value at the exit price.
+    quantity: Decimal = ZERO
+    notional: Decimal = ZERO
+    # What this attempt was asked to clear, and its value at the exit price: the
+    # unreserved inventory, or the ``maximum`` bound when the caller drains only part of
+    # it. Never the whole unreserved balance when a bound was given -- the excluded part
+    # belongs to a resting buy and is not stuck, so reporting it would overstate how
+    # much value an exit cannot shift.
+    outstanding: Decimal = ZERO
+    outstanding_notional: Decimal = ZERO
+
+
 def reduce_unreserved(
     account: Account,
     quote: Quote,
     rules: MarketRules,
     *,
     consumed: Decimal = ZERO,
-) -> list[Fill]:
+    maximum: Decimal | None = None,
+) -> Reduction:
     """Exit residual inventory without spending liquidity used by existing sells.
 
-    The exit crosses the bid, so it pays the taker fee.
+    The exit crosses the bid, so it pays the taker fee. An exchange rejects an order
+    below the minimum notional, so such an exit is refused rather than forced; the
+    refusal is returned (see ``Reduction``) and never swallowed.
     """
     quote.validate(rules)
     account.validate(rules)
     nonnegative(consumed)
+    if maximum is not None and maximum <= ZERO:
+        # A bound of zero or less would report a negative or empty target as "owed".
+        raise ValueError("maximum must be positive when given")
+    price = exit_price(quote, rules)
+    unreserved = account.inventory - account.reserved_base()
+    # ``maximum`` limits the exit to one part of the unreserved inventory, such as a
+    # residue, when the rest belongs to a buy still resting on the book.
+    target = unreserved if maximum is None else min(unreserved, maximum)
+    sellable = floor_step(target, rules.quantity_step)
     capacity = max(ZERO, quote.bid_size * rules.participation - consumed)
-    quantity = floor_step(
-        min(account.inventory - account.reserved_base(), capacity), rules.quantity_step
-    )
-    price = floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
+    quantity = floor_step(min(target, capacity), rules.quantity_step)
+
+    def outcome(blocked: str, fills: list[Fill] | None = None) -> Reduction:
+        # ``target``, not ``unreserved``: what a bounded drain leaves behind is what it
+        # was asked to clear, never the resting buy's filled inventory it deliberately
+        # excluded.
+        return Reduction(fills or [], blocked, quantity, price * quantity, target, price * target)
+
+    if target <= ZERO:
+        return outcome("reserved" if account.inventory > ZERO else "")
     if quantity == ZERO or price * quantity < rules.minimum_notional:
-        return []
+        # Distinguish a position no exchange will ever let us sell at this price from
+        # one that is merely too large for this frame's share of the displayed bid.
+        return outcome("dust" if price * sellable < rules.minimum_notional else "depth")
     order = LimitOrder("exit/" + quote.event_id, "sell", price, quantity, quantity)
     fill = _apply_fill(account, order, quantity, price, rules.taker_fee)
     account.validate(rules)
-    return [fill]
+    return outcome("", [fill])
 
 
-def liquidate(account: Account, quote: Quote, rules: MarketRules) -> list[Fill]:
+def liquidate(account: Account, quote: Quote, rules: MarketRules) -> Reduction:
     """Bounded simulated emergency sell, after existing orders are cancelled."""
     if account.orders:
         raise ValueError("cancel resting orders before liquidation")
     return reduce_unreserved(account, quote, rules)
+
+
+def exit_state(account: Account, quote: Quote, rules: MarketRules) -> tuple[str, Decimal]:
+    """Where the account's exits stand at this quote, from the account itself.
+
+    Judged on ``unpaired_inventory``, the same quantity the runner drains, and never on
+    a flag: a healthy account with resting buys still owes an exit for an old residue,
+    and the filled part of a resting buy must not make that residue look sellable.
+
+    * ``("incomplete", value)``: unpaired inventory the market would still accept is
+      unsold, so the run never showed it could exit.
+    * ``("dust", value)``: what is left is below an exchange filter at this bid; only a
+      higher price clears it. Reported, not a failure.
+    * ``("", 0)``: nothing is owed.
+
+    ``value`` is the unpaired inventory at the exit price.
+    """
+    unpaired = unpaired_inventory(account)
+    if unpaired <= ZERO:
+        return "", ZERO
+    value = exit_price(quote, rules) * unpaired
+    if marketable(unpaired, quote, rules) == ZERO:
+        return "dust", value
+    return "incomplete", value

@@ -2,14 +2,23 @@
 
 Each check here once cost a review round (PRs #40, #59, #60, #65, #66):
 
-* every index row in ``docs/reviews/README.md`` links to a file that exists, and every
-  review file is indexed;
-* a script source copied into a Bob report hashes to the SHA-256 the report states
-  for it, unless that mismatch is marked "Correction at review" on the same line;
+* every index row in ``docs/reviews/README.md`` links to a file that exists, no target
+  is listed twice, and every review file is indexed;
+* every SHA-256 a review states for a ``*.py`` path is accounted for: either a fenced
+  block in the same review hashes to it, or the review's mismatch is corrected in place
+  with the real digest written out, or the pair is listed in ``UNVERIFIABLE`` below with
+  a reason. A stated hash that is none of those three is an error;
 * Bob reports fence script sources as ``text``: ``ruff format`` rewrites ``python``
   blocks in Markdown, which would change the hashed source;
 * with ``--changed`` (a Bob task branch), the branch touches only its one report and
   the index, and the index gains exactly one row, for that report, and loses none.
+
+Nothing here is allowed to pass quietly: every run prints the verified, corrected and
+unverifiable pins by name, and the three counts sum to every pin found. A pin is a
+``*.py`` path in backticks with a SHA-256 beside it; a path named without one is a
+mention, counted and printed as information. In a Bob report a mention of a ``data/``
+script is an error unless the pair is listed in ``UNVERIFIABLE``: those scripts live in
+a git-ignored directory, so the report's hash is the only record of what ran.
 
 Judgement stays with the reviewers; this only removes the checks a script can do.
 """
@@ -20,16 +29,101 @@ import argparse
 import hashlib
 import re
 import sys
+from collections import Counter
 from pathlib import Path, PurePosixPath
 
 REVIEWS = Path("docs/reviews")
 INDEX = REVIEWS / "README.md"
-ROW_LINK = re.compile(r"^\| \[[^\]]*\]\(([^)#\s]+)\)", re.MULTILINE)
-SCRIPT_HEADING = re.compile(r"^#{2,4} .*?`(data/[\w.-]+\.py)`", re.MULTILINE)
+# The link in a row's first cell, with any "#anchor" dropped. Emphasis or other text
+# may precede it: a row written "| **[x](y)** |" must not read as having no link.
+ROW_LINK = re.compile(r"^\|[^|\n]*?\[[^\]]*\]\(([^)\s#]+)(?:#[^)\s]*)?\)", re.MULTILINE)
+# A pinned artifact is named by its repository-relative path in backticks, at any
+# heading level, in a table, or in prose. The "/" is required: a bare `events.py`
+# inside a sentence is a mention, not a pin, and pairing it with the next digest on
+# the line mispairs corrections with the hash they correct.
+PIN_PATH = re.compile(r"`([A-Za-z0-9_][A-Za-z0-9_./-]*/[A-Za-z0-9_.-]+\.py)`")
+HEADING = re.compile(r"^(#{1,6})[ \t]+(.*)$", re.MULTILINE)
 FENCE = re.compile(r"^```(\w*)[ \t]*$", re.MULTILINE)
 HEX64 = re.compile(r"\b[0-9a-f]{64}\b")
 BOB_REPORT = re.compile(r"docs/reviews/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md")
+BOB_NAME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md")
 CORRECTION = "Correction at review"
+# How far after the path a digest may sit and still be the digest of that path.
+WINDOW = 200
+
+_NO_SOURCE = (
+    "merged before this check existed; `data/` is git-ignored, the source is in no "
+    "commit and the report carries no appendix, so nothing in the repository can "
+    "confirm this digest"
+)
+# Hashes stated for a script that no appendix carries and no commit holds. ``data/``
+# is git-ignored by policy, so requiring the file on disk would make the check
+# host-dependent and vacuous in CI; the only in-repo evidence for a ``data/`` script
+# is its appendix. Each entry is therefore a one-time, reviewed admission that a
+# named digest in a named document cannot be checked, and every run prints it. The
+# entry lives here, in reviewed code, and not in the document, so that a document
+# cannot exempt itself; the digest is part of the entry, so an entry cannot be
+# re-pointed at a different artifact without a new review. An entry that no longer
+# matches a stated hash is an error, so this cannot rot into a blanket exemption.
+UNVERIFIABLE: dict[tuple[str, str], tuple[str, str]] = {
+    ("2026-09-25-bob-dev-data-inventory.md", "data/inventory.py"): (
+        "790c6f8b7b69db7a8fe7ae67a1eea848b3451fcdc19d984a1d70b97902bb0006",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-dev-data-inventory.md", "data/analyze.py"): (
+        "a98f4d37d07d5cb17780b252dbaa88a4dd3c287f4b944d080020be27709d7110",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-dev-data-inventory.md", "data/analyze_details.py"): (
+        "534b73631aecef434f0e1f7c1ffbd427a925957649855ba0947386aaed822e7e",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-dev-data-inventory.md", "data/inspect_csv.py"): (
+        "9110fe20bd5f665bb764fca46ee90111501d02283e17b5683a7f8821bc77b300",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-dev-data-inventory.md", "data/check_proposal.py"): (
+        "4f234505c09ca417014be97f29bae18bba18b9daf404ab411084409ff5bc983f",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-dev-data-inventory.md", "data/check_early.py"): (
+        "d7105064e977a2b537c78f4de4797fe383330813736bc8a9553304738b955341",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-dev-data-inventory.md", "data/generate_summary_table.py"): (
+        "5073ee3c778a71e72fc337baebb6b43d0cbda9e90b731454d182c9266331a2f3",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-docs-audit.md", "data/links.py"): (
+        "0bb844577884ecb1e9eb10c9d7a2faaa05161680ff1ff2851ee83fcf6450a80e",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-docs-audit.md", "data/check_review_index.py"): (
+        "ca5350088f3b54bbfc75b12963054a2c0017884ae091942253ce839c0d8c186c",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-docs-audit.md", "data/check_task_index.py"): (
+        "1279a2e647ff8a63d31f22fecd729f85c4e5b632121e7a3c70658c571c306782",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-test-suite-audit.md", "data/untested.py"): (
+        "db563af487b88c11c7f5cc9875e16745989aa81e5cffd88c665a05454ab0c17f",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-test-suite-audit.md", "data/spot_check.py"): (
+        "65dd777956b29b08db4827a6de0c505b9ee6d35e6c47790362065616e8db7e32",
+        _NO_SOURCE,
+    ),
+    ("2026-09-25-bob-v0-dev-scorecard.md", "data/score.py"): (
+        "8324d14b275e672e1e29d2511609144fe4c2a610cc44de5c091d4ce222d04c2b",
+        _NO_SOURCE,
+    ),
+    ("2026-09-26-bob-hourly-defect-calendar.md", "data/generate_report_tables.py"): (
+        "595c21467ad57d0b448d992f37c9af5d6f6ca4c9137d0a68fcd15f1f428a061a",
+        "merged before this check existed; the report appendices carry `data/calendar.py` "
+        "and `data/events.py` only, and this script's source is in no commit",
+    ),
+}
 
 
 def index_links(text: str) -> list[str]:
@@ -40,6 +134,13 @@ def check_index(reviews: Path = REVIEWS) -> list[str]:
     links = index_links((reviews / "README.md").read_text(encoding="utf-8"))
     errors = [
         f"index links a missing file: {link}" for link in links if not (reviews / link).is_file()
+    ]
+    # ``links`` is a list, so a target listed twice passed before: two rows for one
+    # file are two different claims about its status, and the second is invisible.
+    errors += [
+        f"index lists {link} in {count} rows; a file gets one row"
+        for link, count in sorted(Counter(links).items())
+        if count > 1
     ]
     files = sorted(p.name for p in reviews.glob("*.md") if p.name != "README.md")
     errors += [f"review file not in the index: {name}" for name in files if name not in links]
@@ -59,55 +160,260 @@ def fenced_blocks(text: str) -> list[tuple[int, str, str]]:
     return blocks
 
 
-def stated_hash(text: str, script: str) -> tuple[str, bool] | None:
-    """The first SHA-256 given for ``script`` outside its appendix, and whether the
-    line carrying it marks a correction at review."""
-    for match in re.finditer(re.escape(f"`{script}`"), text):
-        window = text[match.end() : match.end() + 200]
-        found = HEX64.search(window)
-        if found:
-            line_end = text.find("\n", match.end() + found.end())
-            line_start = text.rfind("\n", 0, match.start()) + 1
-            line = text[line_start : line_end if line_end >= 0 else len(text)]
-            return found.group(0), CORRECTION in line
-    return None
+def fence_marks(text: str) -> int:
+    return len(FENCE.findall(text))
 
 
-def check_report(path: Path, checked: list[str] | None = None) -> list[str]:
-    """Problems in one review; appends each hash-checked script to ``checked``.
+def sections(text: str) -> list[tuple[str, int, int]]:
+    """(heading line, body start, body end) for every heading, nested by level.
 
-    A report with no appendix heading and no stated hash is a no-op: the ``text``
-    fence rule exists only to stop ``ruff format`` rewriting a block whose SHA-256
-    the report pins, so it is not imposed on prose that pins nothing.
+    A section ends at the next heading of the same or a higher level, so an appendix
+    written as ``## Appendix`` + ``### 1. `data/x.py``` gives each script its own body.
+    """
+    found = []
+    # A ``#`` line inside a fenced block is a comment in the fenced source, not a
+    # heading; Bob's ``text``-fenced Python carries them.
+    fenced = [(start, start + len(body)) for start, _, body in fenced_blocks(text)]
+    heads = [
+        head
+        for head in HEADING.finditer(text)
+        if not any(start <= head.start() <= end for start, end in fenced)
+    ]
+    for i, head in enumerate(heads):
+        level = len(head.group(1))
+        end = len(text)
+        for later in heads[i + 1 :]:
+            if len(later.group(1)) <= level:
+                end = later.start()
+                break
+        found.append((head.group(0), head.end(), end))
+    return found
+
+
+def stated_hashes(text: str) -> list[tuple[str, str, str]]:
+    """(path, digest, line) for every ``path.py`` in backticks with a digest beside it.
+
+    The digest is looked for after the path first, then — only on the same line, and
+    only when nothing follows it — before the path. A table written
+    ``| SHA-256 | Script |`` puts the digest in the earlier column, and searching
+    forward alone let such a pin through unchecked.
+
+    Either way the search stops at the neighbouring pinned path, so a table row cannot
+    borrow another row's digest and a correction naming a second script cannot steal its
+    hash.
+    """
+    pins = []
+    for match in PIN_PATH.finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        after = text[match.end() : match.end() + WINDOW]
+        following = PIN_PATH.search(after)
+        if following:
+            after = after[: following.start()]
+        digest = HEX64.search(after)
+        if digest is None:
+            # Same line only: a digest on an earlier line belongs to earlier prose, and
+            # a path is never far from its own hash in a table row.
+            before = text[line_start : match.start()]
+            preceding = list(PIN_PATH.finditer(before))
+            if preceding:
+                before = before[preceding[-1].end() :]
+            found = list(HEX64.finditer(before))
+            digest = found[-1] if found else None
+        if digest is None:
+            continue
+        line_end = text.find("\n", match.end())
+        pins.append(
+            (
+                match.group(1),
+                digest.group(0),
+                text[line_start : line_end if line_end >= 0 else len(text)],
+            )
+        )
+    return pins
+
+
+def hashless_mentions(text: str) -> list[str]:
+    """Distinct ``*.py`` paths named in backticks with no digest beside them, in order."""
+    pinned = {script for script, _, _ in stated_hashes(text)}
+    seen: list[str] = []
+    for match in PIN_PATH.finditer(text):
+        script = match.group(1)
+        if script not in pinned and script not in seen:
+            seen.append(script)
+    return seen
+
+
+def check_report(
+    path: Path, checked: list[str] | None = None, mentions: list[str] | None = None
+) -> list[str]:
+    """Problems in one review; appends one line per stated hash to ``checked``.
+
+    Every stated hash ends up in exactly one of three states, all of them printed:
+    ``verified`` (a fenced block in this review hashes to it), ``corrected`` (the
+    review says on the same line that the appendix hashes to some other digest, and
+    it does), or ``unverifiable`` (listed in ``UNVERIFIABLE``). Anything else errors.
+
+    A review that states no hash for a ``*.py`` path is a no-op: the ``text`` fence
+    rule exists only to stop ``ruff format`` rewriting a block whose SHA-256 the
+    review pins, so it is not imposed on prose that pins nothing.
     """
     text = path.read_text(encoding="utf-8")
     errors: list[str] = []
+    pins = stated_hashes(text)
     blocks = fenced_blocks(text)
-    if not SCRIPT_HEADING.search(text):
-        # Prose with an incidental python block pins nothing, so the text-fence rule
-        # has nothing to protect. An appendix heading *without* a hash still errors.
-        return errors
+    # An appendix is a heading that names a path and carries a fenced block. A heading
+    # that merely names a path ("Why `src/x.py` broke") pins nothing and is left alone.
+    named = {
+        found.group(1)
+        for heading, start, end in sections(text)
+        for found in PIN_PATH.finditer(heading)
+        if any(start <= b[0] < end for b in blocks)
+    }
+    unhashed = hashless_mentions(text)
+    if mentions is not None:
+        mentions += [f"{path.name}:{script}" for script in unhashed]
+    if BOB_NAME.fullmatch(path.name):
+        # Bob's scripts live in git-ignored ``data/``; a report that names one without
+        # its hash leaves no way to know what ran. Repository paths need no pin, and a
+        # script with an appendix is reported below as missing its hash, once.
+        errors += [
+            f"{path}: {script} is named with no SHA-256 beside it; Bob's data/ scripts "
+            "must be pinned, or the pair listed in UNVERIFIABLE in scripts/check_reports.py"
+            for script in unhashed
+            if script.startswith("data/")
+            and script not in named
+            and (path.name, script) not in UNVERIFIABLE
+        ]
+    if not pins and not named:
+        return errors  # a review that pins nothing; any Bob data/ mention is already listed
+    errors += [
+        f"{path}: {script} has an appendix but no stated SHA-256"
+        for script in sorted(named - {script for script, _, _ in pins})
+    ]
+    if fence_marks(text) % 2:
+        errors.append(f"{path}: odd number of ``` fences; a block is unclosed")
     errors += [
         f"{path}: script fenced as python at offset {start}; use text"
         for start, language, _ in blocks
         if language == "python"
     ]
-    for heading in SCRIPT_HEADING.finditer(text):
-        script = heading.group(1)
-        following = [b for b in blocks if b[0] > heading.end()]
-        if not following:
+    # One script, two different stated digests: only the first was ever checked.
+    by_path: dict[str, set[str]] = {}
+    for script, digest, _ in pins:
+        by_path.setdefault(script, set()).add(digest)
+    for script, digests in sorted(by_path.items()):
+        if len(digests) > 1:
+            errors.append(
+                f"{path}: {script} is given {len(digests)} different SHA-256 values: "
+                + ", ".join(sorted(digests))
+            )
+    seen: set[tuple[str, str]] = set()
+    for script, digest, line in pins:
+        if (script, digest) in seen:
             continue
-        _, _, body = following[0]
-        stated = stated_hash(text, script)
-        if stated is None:
-            errors.append(f"{path}: {script} has an appendix but no stated SHA-256")
-            continue
-        expected, marked = stated
+        seen.add((script, digest))
+        errors += check_pin(path, script, digest, line, text, blocks, checked)
+    return errors
+
+
+def appendix_blocks(
+    script: str, text: str, blocks: list[tuple[int, str, str]]
+) -> list[tuple[int, str, str]] | None:
+    """The fenced blocks under the innermost heading naming ``script``, or None."""
+    best: tuple[int, int] | None = None
+    for heading, start, end in sections(text):
+        if f"`{script}`" in heading and (best is None or start >= best[0]):
+            best = (start, end)
+    if best is None:
+        return None
+    return [b for b in blocks if best[0] <= b[0] < best[1]]
+
+
+def check_pin(
+    path: Path,
+    script: str,
+    digest: str,
+    line: str,
+    text: str,
+    blocks: list[tuple[int, str, str]],
+    checked: list[str] | None,
+) -> list[str]:
+    def record(state: str, detail: str = "") -> None:
         if checked is not None:
-            checked.append(f"{path.name}:{script}")
-        actual = hashlib.sha256(body.encode("utf-8")).hexdigest()
-        if actual != expected and not marked:
-            errors.append(f"{path}: {script} appendix hashes to {actual}, report states {expected}")
+            checked.append(f"{state} {path.name}:{script}{detail}")
+
+    section = appendix_blocks(script, text, blocks)
+    if section is not None:
+        if not section:
+            # Was ``if not following: continue`` — an appendix heading with no block
+            # meant the stated hash was never checked and nothing was said.
+            return [f"{path}: {script} has an appendix heading but no fenced block"]
+        actual = hashlib.sha256(section[0][2].encode("utf-8")).hexdigest()
+        if actual == digest:
+            record("verified")
+            return []
+        matching = [i for i, b in enumerate(section) if _sha(b[2]) == digest]
+        if matching:
+            # ``following[0]`` was positional: the hashed source must be the first
+            # block of the appendix, or a later edit silently changes what is hashed.
+            return [
+                f"{path}: {script} is stated as {digest}, which is block "
+                f"{matching[0] + 1} of its appendix, not the first"
+            ]
+        # Only the part of the line that belongs to this pin: from the path to the next
+        # pinned path, so a correction cannot borrow the digest stated for another script
+        # on the same line.
+        own = line[line.find(f"`{script}`") :] if f"`{script}`" in line else line
+        following = PIN_PATH.search(own, len(script) + 2)
+        if following:
+            own = own[: following.start()]
+        if CORRECTION in line and actual in own:
+            # The only accepted form: the correction names the real digest, so the
+            # appendix is still hash-checked, against the corrected value.
+            record("corrected", f" (states {digest[:12]}.., appendix is {actual[:12]}..)")
+            return []
+        if CORRECTION in line:
+            return [
+                f"{path}: {script} is marked '{CORRECTION}' but the line does not give "
+                f"the digest the appendix actually hashes to, {actual}"
+            ]
+        return [f"{path}: {script} appendix hashes to {actual}, report states {digest}"]
+    allowed = UNVERIFIABLE.get((path.name, script))
+    if allowed is None:
+        return [
+            f"{path}: {script} is pinned to {digest} with no appendix in this review and "
+            "no committed source, so the digest cannot be checked; add the source as the "
+            "first fenced block under a heading naming the path, or add the pair to "
+            "UNVERIFIABLE in scripts/check_reports.py with a reason"
+        ]
+    expected, reason = allowed
+    if expected != digest:
+        return [
+            f"{path}: {script} is allowed as unverifiable for {expected} but the review "
+            f"now states {digest}; re-review the entry in scripts/check_reports.py"
+        ]
+    record("UNVERIFIABLE", f" {digest} - {reason}")
+    return []
+
+
+def _sha(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def check_allow_list(reviews: Path = REVIEWS) -> list[str]:
+    """Every ``UNVERIFIABLE`` entry must still match a stated hash in its document."""
+    errors = []
+    for (name, script), (digest, _) in sorted(UNVERIFIABLE.items()):
+        report = reviews / name
+        if not report.is_file():
+            errors.append(f"UNVERIFIABLE names a missing review: {name}")
+            continue
+        pins = stated_hashes(report.read_text(encoding="utf-8"))
+        if (script, digest) not in {(p, d) for p, d, _ in pins}:
+            errors.append(
+                f"UNVERIFIABLE entry {name}:{script} {digest} matches no stated hash "
+                "there any more; remove it"
+            )
     return errors
 
 
@@ -158,15 +464,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--changed", type=Path, help="output of git diff --name-status BASE...HEAD")
     parser.add_argument("--base-index", type=Path, help="docs/reviews/README.md at BASE")
     args = parser.parse_args(argv)
-    errors = check_index()
+    errors = check_index() + check_allow_list()
     checked: list[str] = []
-    # Every review with an embedded appendix, not only Bob's: Claude publishes
-    # hashed appendices too (2026-09-26 open-mismatch note), and an unchecked hash
-    # is exactly the defect this script exists to catch. Reviews without an
-    # appendix heading are a no-op in check_report.
+    mentions: list[str] = []
+    # Every review that states a hash, not only Bob's: Claude publishes hashed
+    # appendices too (2026-09-26 open-mismatch note), and an unchecked hash is
+    # exactly the defect this script exists to catch.
     for report in sorted(REVIEWS.glob("*.md")):
         if report.name != "README.md":
-            errors += check_report(report, checked)
+            errors += check_report(report, checked, mentions)
     if args.changed is not None:
         if args.base_index is None:
             parser.error("--changed needs --base-index")
@@ -181,7 +487,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     for error in errors:
         print(error)
-    print(f"check_reports: {len(checked)} appendix script(s) hash-checked: {', '.join(checked)}")
+    for entry in checked:
+        print(f"check_reports: {entry}")
+    counts = Counter(entry.split(" ", 1)[0] for entry in checked)
+    print(
+        f"check_reports: {len(checked)} stated hash(es): {counts['verified']} verified, "
+        f"{counts['corrected']} corrected in place, {counts['UNVERIFIABLE']} unverifiable"
+    )
+    print(
+        f"check_reports: {len(mentions)} script mention(s) without a hash "
+        f"(information; a mention is not a pin)"
+    )
     print(f"check_reports: {len(errors)} problem(s)")
     return 1 if errors else 0
 

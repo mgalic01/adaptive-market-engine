@@ -19,7 +19,7 @@ from crypto_grid_bot.backtest.replay import RunConfig, check_accounting, replay
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.control import decode_frame, resume_paper
 from crypto_grid_bot.simulation.demo import demo_frames
-from crypto_grid_bot.simulation.models import Account, MarketRules, floor_step
+from crypto_grid_bot.simulation.models import ZERO, Account, MarketRules, floor_step
 from crypto_grid_bot.simulation.runner import PaperSimulator, SimulationPolicy
 from crypto_grid_bot.simulation.store import encode
 from crypto_grid_bot.simulation.trend_switch import (
@@ -207,6 +207,15 @@ class NoLookaheadTests(TestCase):
         with self.assertRaises(ValueError):
             TrendSignal(day(4), "sideways").validate(noon)
 
+    def test_dates_must_be_in_canonical_iso_form(self):
+        # Bob's C1 on PR #114: days are ordered as text, so an unpadded day that parses
+        # would sort wrongly. It is refused.
+        when = (DAY0 + timedelta(days=2)).isoformat()
+        TrendSignal("2026-01-01", UP).validate(when)
+        for day, last_down in (("2026-1-1", None), ("2026-01-01", "2025-12-3")):
+            with self.subTest(day=day, last_down=last_down), self.assertRaises(ValueError):
+                TrendSignal(day, UP, last_down).validate(when)
+
     def test_engine_halts_rather_than_act_on_lookahead(self):
         simulator = PaperSimulator(
             Path(":memory:"), load_config(ROOT / "config/default.toml"), MarketRules(), policy=A
@@ -346,6 +355,96 @@ class SwitchingTests(TestCase):
             self.assertEqual("trend_exit", report["exit_reason"])
         self.assertEqual(t0.isoformat(), report["down_sequence_ended"])
         self.assertEqual("", self.account.down_since)
+
+    def test_the_deadline_cancels_the_sells_before_this_observations_matching(self):
+        # Codex on PR #114: a deadline quote crossing both resting sells filled them
+        # first, flattening the account with no exit reason. The spec cancels the sells
+        # before the bounded exit; so must the engine.
+        t0, _bid = self.start_down()
+        sells = self.lowest_sells()
+        crossing = sells[-1].price + TICK
+        report = self.step(t0 + timedelta(days=1), signal(2, DOWN, 2), bid=crossing, size="5000")
+        self.assertFalse(any(f["order_id"] in {o.order_id for o in sells} for f in report["fills"]))
+        self.assertEqual(sorted(o.order_id for o in sells), report["cancelled"])
+        self.assertEqual("trend_exit", report["exit_reason"])
+        self.assertTrue(all(f["order_id"].startswith("exit/") for f in report["fills"]))
+
+    def test_a_sub_minimum_remainder_ends_the_sequence_instead_of_looping(self):
+        # Bob's F1 on PR #114: the sequence waited for inventory == 0, which a residue
+        # below the minimum notional never reaches; recycle stayed off and the account
+        # emitted an empty trend_exit on every frame for good. PR #122's rule applies:
+        # the sequence ends when nothing sellable is left, and the residue stays marked.
+        t0, bid = self.start_down()
+        # Stand the account at the deadline holding only a residue: no orders, 100 units
+        # (about 2.3 quote at this bid, below the minimum notional) and its cash intact.
+        self.account.orders.clear()
+        self.account.inventory = D(100)
+        self.account.cash = D(100)
+        report = self.step(t0 + timedelta(days=1), signal(2, DOWN, 2), bid=bid, size="5000")
+        self.assertEqual([], report["fills"])
+        self.assertEqual("dust", report["exit_blocked"])
+        self.assertEqual(t0.isoformat(), report["down_sequence_ended"])
+        self.assertEqual("", self.account.down_since)
+        self.assertEqual(D(100), self.account.inventory)
+        later = self.step(t0 + timedelta(days=2), signal(3, UP), bid=bid)
+        self.assertEqual("open_grid", later["decision"])
+        self.assertEqual(D(100), self.account.inventory)  # held through the new grid
+
+    def test_a_stale_signal_neither_starts_a_sequence_nor_advances_the_applied_day(self):
+        # Bob's F2 and C2 on PR #114: starts_down_sequence read the raw signal, so a
+        # two-day-old Down object cancelled the buys while the effective state was
+        # Unavailable, and trend_day advanced on it.
+        bid, ask = self.open_and_fill_two_levels()
+        applied = self.account.trend_day
+        orders = set(self.account.orders)
+        stale = self.step(DAY0 + timedelta(days=3), signal(1, DOWN, 1), bid=bid, ask=ask)
+        self.assertEqual("unavailable", stale["trend"]["state"])
+        self.assertEqual("", self.account.down_since)
+        self.assertEqual(applied, self.account.trend_day)
+        self.assertEqual(orders, set(self.account.orders))
+
+    def test_unavailable_observations_inside_a_sequence_keep_its_deadline(self):
+        # Bob's C4 on PR #114: the deadline is wall-clock from T0, so missing daily bars
+        # after the start neither end the sequence nor postpone the exit.
+        t0, bid = self.start_down()
+        for seconds in (1, 3600, 86_399):
+            report = self.step(t0 + timedelta(seconds=seconds), None, bid=bid)
+            self.assertEqual("unavailable", report["trend"]["state"])
+            self.assertEqual(t0.isoformat(), self.account.down_since)
+            self.assertNotIn("exit_reason", report)
+        report = self.step(t0 + timedelta(days=1), None, bid=bid, size="5000")
+        self.assertEqual("trend_exit", report["exit_reason"])
+
+    def test_a_sequence_that_ends_flat_leaves_no_obsolete_grid_behind(self):
+        # Codex on PR #114: cancelling an unfilled grid left its bounds and outside clock,
+        # so 121 observations outside those bounds put an empty account into a range exit
+        # and the next Up day stayed paused.
+        t1 = DAY0 + timedelta(days=1)
+        self.assertEqual("open_grid", self.step(t1, signal(0, UP))["decision"])
+        lower = self.account.grid_lower
+        self.assertGreater(lower, ZERO)
+        report = self.step(DAY0 + timedelta(days=2), signal(1, DOWN, 1))
+        self.assertFalse(self.account.orders)
+        self.assertIn("down_sequence_ended", report)
+        self.assertEqual(
+            (ZERO, ZERO, ZERO, ""),
+            (
+                self.account.grid_lower,
+                self.account.grid_upper,
+                self.account.outside_seconds,
+                self.account.outside_last,
+            ),
+        )
+        far_below = floor_step(lower * D("0.9"), TICK)  # outside the old bounds, still tradable
+        when = DAY0 + timedelta(days=2, seconds=1)
+        for _ in range(130):
+            when += timedelta(seconds=180)
+            self.step(when, signal(1, DOWN, 1), bid=far_below)
+        self.assertFalse(self.account.range_exit)
+        # Back at a price the demo frame's fair value can grid, the next Up day opens.
+        self.assertEqual(
+            "open_grid", self.step(DAY0 + timedelta(days=4), signal(3, UP))["decision"]
+        )
 
     def test_started_sequence_completes_after_the_state_returns_to_up(self):
         t0, bid = self.start_down()
