@@ -534,6 +534,14 @@ reserved-data restrictions still apply. The other proposals in PR #74 remain pen
    next batch rather than one push per small edit. A main integration also changes the
    head and needs current-head checks/review; do not carry an old verdict forward.
    Do not duplicate an existing exact-head request merely because it lacks a reply.
+6. **One topic, one active PR (owner preference, 2026-09-27).** Keep a coherent
+   topic's proposal, review responses and decision record in one active PR. Reviewers
+   deliver their responses as comments, or as commits handed to the named writer to
+   integrate. They do not open a companion PR only to publish their response. Separate
+   PRs remain right for independently scoped implementation or fixes. This does not
+   allow parallel writers on one branch, and it does not waive any review or check
+   requirement. Example: Codex's downtrend response, first published as #107, was
+   closed as superseded and integrated into #106 by its writer.
 
 ### Review delivery states
 
