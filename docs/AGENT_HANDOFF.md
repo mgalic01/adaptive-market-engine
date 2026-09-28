@@ -626,6 +626,10 @@ Credits are limited, so every agent works on demand, not by polling:
       [merging while Codex's allowance is exhausted](#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28):
       Bob's `NO ISSUES` and the automated review's `APPROVE` at the full head, green
       `test-and-audit`, and **no unaddressed required fix** from any reviewer.
+      **While Codex's allowance is exhausted, Claude substitutes for Codex's
+      pre-merge task-file review** (owner instruction 2026-09-28): Claude reviews
+      the task PR and posts its verdict; the exhausted-allowance gate then applies
+      as for any other PR. Codex reviews the task file on return, owed in issue #134.
       "Exhausted" means **allowance exhausted** only; a lapsed request
       escalates to the owner and never merges a task PR. See
       [when a reviewer is unavailable](#when-a-reviewer-is-unavailable). **A run
