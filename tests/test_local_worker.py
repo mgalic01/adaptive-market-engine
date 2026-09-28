@@ -71,7 +71,7 @@ def test_pin_repository_sender_and_pr_event():
     assert m.validate(body, signed(body), "issue_comment", SECRET) == 91
 
 
-def test_durable_dedup_debounce_and_budget(tmp_path):
+def test_durable_dedup_and_debounce_without_hourly_start_cap(tmp_path):
     m = module()
     q = m.Queue(tmp_path / "queue.sqlite")
     assert q.add(payload(), 91, 0)
@@ -88,8 +88,7 @@ def test_durable_dedup_debounce_and_budget(tmp_path):
         assert batch
         q.finish(batch[0], "failed", "")
     q.add(payload(number=20), 20, 300)
-    assert q.claim(400) is None
-    assert q.claim(3700)
+    assert q.claim(400) is not None
 
 
 def test_claim_serializes_and_restart_does_not_repeat_uncertain_run(tmp_path):
@@ -102,6 +101,22 @@ def test_claim_serializes_and_restart_does_not_repeat_uncertain_run(tmp_path):
     q.recover()
     assert q.status()["runs"][0][1] == "interrupted"
     assert q.claim(90)[1] == [92]
+
+
+def test_no_hourly_or_daily_start_caps_even_after_failures_and_restart(tmp_path):
+    path = tmp_path / "queue.sqlite"
+    q = module().Queue(path)
+    for i in range(81):
+        # Cross both former caps in less than an hour, retaining the quiet period.
+        now = i * 40
+        q.add(payload(number=i + 1), i + 1, now)
+        batch = q.claim(now + 30)
+        assert batch is not None, f"start {i + 1} must not be blocked by a run-count cap"
+        q.finish(batch[0], "failed" if i % 2 else "completed", "")
+        if i == 39:
+            q = module().Queue(path)
+    with q.connect() as db:
+        assert db.execute("SELECT count(*) FROM runs").fetchone()[0] == 81
 
 
 def worker():
@@ -386,6 +401,38 @@ def test_ancestry_blocks_unreviewed_merge_base_before_patches(monkeypatch):
     api.require_ancestor("b" * 40, "a" * 40)
 
 
+def test_base_missing_a_rules_file_fails_closed_not_with_keyerror(monkeypatch):
+    # PR #94's review asked for this: a PR whose base predates one of the RULES files
+    # must be refused with a clear ValueError, like every other refusal in snapshot(),
+    # not escape as an unhandled KeyError from a bare index into the base tree.
+    worker()
+    from local_worker_github import RULES, GitHub
+
+    s = ready_snapshot()
+    s["pr"]["base"]["repo"] = {"id": 1384347674}
+    base, head = s["pr"]["base"]["sha"], s["pr"]["head"]["sha"]
+    # Identical trees, so the data-scope screen passes; neither holds a RULES file.
+    tree = {"truncated": False, "tree": [{"type": "blob", "path": "src/example.py", "sha": "x"}]}
+    blobs = []
+
+    def request(path):
+        if path == "pulls/1":
+            return s["pr"]
+        if path.startswith("git/trees/"):
+            return tree
+        if path == f"git/commits/{head}":
+            return {"parents": [{"sha": base}]}  # ancestry passes
+        raise AssertionError(f"unexpected request after the guard should have fired: {path}")
+
+    api = GitHub()
+    monkeypatch.setattr(api, "request", request)
+    monkeypatch.setattr(api, "blob", lambda sha: blobs.append(sha))
+    with pytest.raises(ValueError, match="base rules file missing at base commit") as caught:
+        api.snapshot(1)
+    assert RULES[0] in str(caught.value), "the error must name the missing file"
+    assert blobs == [], "a blob was fetched before the missing rules file was noticed"
+
+
 def test_json_publication_header(monkeypatch):
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -609,3 +656,40 @@ def test_reviewable_path_allowlist():
         "data/README.md",
     ]:
         assert not reviewable_path(path)
+
+
+def test_newer_index_entries_come_from_the_base_tree_only():
+    # PR #116 froze the README index; newer files carry their own "Index:" line. The
+    # reviewer's context must include them (Codex's finding on #116), read from the base
+    # tree and bounded, never from the head a PR controls.
+    worker()
+    from local_worker_github import NEWER_ENTRIES, newer_entries
+
+    readme = "| H | S |\n| --- | --- |\n| [old](2026-09-20-claude-old.md) | legacy |\n"
+    tree = {
+        "docs/reviews/2026-09-20-claude-old.md": "sha-old",
+        "docs/reviews/2026-09-28-claude-new.md": "sha-new",
+        "docs/reviews/2026-09-29-bob-newer.md": "sha-newer",
+        "docs/reviews/README.md": "sha-readme",
+        "docs/tasks/2026-09-28-bob-task.md": "sha-task",
+    }
+    blobs = {
+        "sha-new": "# The new record\n\nIndex: what it decided.\n",
+        "sha-newer": "# Bob's report\n\nSome prose without an entry.\n",
+    }
+    fetched = []
+
+    def fetch(sha):
+        fetched.append(sha)
+        return blobs[sha]
+
+    text = newer_entries(readme, tree, fetch)
+    assert fetched == ["sha-newer", "sha-new"], "newest first, legacy and non-review files skipped"
+    assert "- 2026-09-28-claude-new.md: The new record — what it decided." in text
+    assert "- 2026-09-29-bob-newer.md: Bob's report — (no Index: line)" in text
+    assert newer_entries(readme, {"docs/reviews/2026-09-20-claude-old.md": "sha-old"}, fetch) == ""
+    many = {
+        f"docs/reviews/2026-01-{i:02d}-claude-x.md": "sha-new" for i in range(1, NEWER_ENTRIES + 3)
+    }
+    text = newer_entries(readme, many, fetch)
+    assert "2 older entries not fetched" in text

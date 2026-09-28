@@ -38,6 +38,7 @@ source hash verifies the embedded script, not the underlying market data.
 2. **Outage events (Step 2):**
    - **14 total outage events** (`absent_both`) occurred between 2017-08 and 2024-12, comprising **58 total outage hours**.
    - **All 14 outage events were exchange-wide** (every listed pair was `absent_both` for every hour of the event, with >= 5 pairs listed for all events).
+     *[Note (Claude, 2026-09-27): true under this report's rule. Once the hourly calendar also counts hours missing from both archives, event 8 (2019-11-13) runs straight into that calendar's event 74, and the merged run is 9/9, 9/9, 8/9, 1/9. See the [defect calendar corrections](2026-09-27-claude-defect-calendar-corrections.md); a Bob re-run settles all 14.]*
    - **0** events were pair-specific or "all listed pairs (few)".
    - **7 major outages** lasted **3 or more consecutive hours** (e.g., 2018-06-26 10h, 2018-11-14 7h, 2019-05-15 10h, 2019-08-15 8h).
 

@@ -23,6 +23,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from crypto_grid_bot.backtest.klines import MICROSECOND_FLOOR, month_bounds_ms, read_member
+from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.parsing import DataError, symbol_name
 
 HEADER = ("calc_time", "funding_interval_hours", "last_funding_rate")
@@ -111,6 +112,7 @@ def parse_funding_rows(text: str, month: str) -> list[FundingRecord]:
 
 def read_funding_archive(path: Path, symbol: str, month: str) -> list[FundingRecord]:
     symbol_name(symbol)
+    development_month(month)
     return parse_funding_rows(read_member(path, f"{symbol}-fundingRate-{month}.csv"), month)
 
 

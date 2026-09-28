@@ -4,11 +4,25 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# pyproject.toml's requires-python, and the only version CI runs. Evidence produced on
+# an older interpreter is invalid; a newer one is useful but is not CI evidence.
+FLOOR = (3, 12)
+
+
+def interpreter_problem(version: tuple[int, ...]) -> str | None:
+    """Why this interpreter cannot produce evidence, or None if it can."""
+    if version[:2] < FLOOR:
+        return (
+            f"Python {'.'.join(map(str, version[:3]))} is below the project floor "
+            f"{'.'.join(map(str, FLOOR))}; results from it are not evidence."
+        )
+    return None
 
 
 def test_files(root: Path, selectors: list[str] | None) -> list[str]:
@@ -54,11 +68,26 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
 
+    version = tuple(int(part) for part in sys.version_info[:3])
+    print(
+        f"Interpreter: Python {platform.python_version()} ({sys.executable}) on "
+        f"{platform.system()} {platform.release()}",
+        flush=True,
+    )
+    problem = interpreter_problem(version)
+    if problem:
+        print(problem, file=sys.stderr, flush=True)
+        return 2
+    if version[:2] > FLOOR:
+        print(
+            f"Note: CI runs Python {'.'.join(map(str, FLOOR))}; a pass here is not CI evidence.",
+            flush=True,
+        )
     focused = args.tests is not None
     print(
         "FOCUSED PREFLIGHT: selected test files only; this is NOT the full suite or full CI."
         if focused
-        else "Preflight: lint, format, reports and the full deterministic pytest suite.",
+        else "Preflight: lint, format, types, security, reports and the full pytest suite.",
         flush=True,
     )
     env = os.environ.copy()
@@ -73,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     steps = [
         ("Lint", [*python, "-m", "ruff", "check", "--no-fix", "--no-cache", "."]),
         ("Format check", [*python, "-m", "ruff", "format", "--check", "--no-cache", "."]),
+        # The same type and security checks CI runs, over the same paths.
+        ("Type check", [*python, "-m", "mypy", "src", "scripts"]),
+        ("Security scan", [*python, "-m", "bandit", "-q", "-r", "src", "scripts"]),
         ("Report checks", [*python, "scripts/check_reports.py"]),
         (
             "Focused pytest" if focused else "Full pytest",

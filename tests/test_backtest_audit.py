@@ -376,3 +376,29 @@ class RunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MonthFormTests(unittest.TestCase):
+    """The window guard accepts exactly ``YYYY-MM``; every other spelling is refused.
+
+    ``strptime`` alone accepted ``2024-9``; downstream compares months as text, so a
+    spec ending in ``2024-6`` was accepted and then iterated to ``2024-12``.
+    """
+
+    def test_only_the_zero_padded_form_is_accepted(self):
+        self.assertEqual("2024-09", development_month("2024-09"))
+        for month in (
+            "2024-9",
+            "2025-1",
+            "2024-12\n",
+            " 2024-12",
+            "202412",
+            "2024-12-01",
+            "2024-13",
+            "2024-00",
+            "",
+        ):
+            with self.subTest(month=repr(month)), self.assertRaises(DataError):
+                development_month(month)
+        with self.assertRaises(DataError):
+            development_month(None)  # type: ignore[arg-type]
