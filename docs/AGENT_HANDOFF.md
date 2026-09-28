@@ -46,12 +46,15 @@ are in the sections below.
   costs allowance in a comment even when you meant to quote it. Whether a PR
   description starts Codex has not been checked, so do not write it there either.
 - **Plain "Bob" starts nothing.** Neither does `@bobby`.
-- **Merge authority:** while Codex has no allowance, the owner's rule is to merge on
-  Bob's `NO ISSUES` with green checks, and Codex reviews afterwards.
-  See [what Bob's verdicts mean](#what-bobs-verdicts-mean).
-  *Proposed 2026-09-27, pending three-agent agreement:* "no allowance" gets a defined
-  end, and a review request that has simply gone unanswered is a different state,
-  **lapsed**, which escalates to the owner and **never** opens this merge path. See
+- **Merge authority:** while Codex's allowance is exhausted, the owner's rule is to
+  merge on Bob's `NO ISSUES` and the automated review's `APPROVE` at the full head,
+  with green checks, and Codex reviews afterwards; the merging agent appends the PR
+  to the [Codex-review-owed issue](https://github.com/mgalic01/adaptive-market-engine/issues/134).
+  See [what Bob's verdicts mean](#what-bobs-verdicts-mean) and
+  [merging while Codex's allowance is exhausted](#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28).
+  "Allowance exhausted" has a defined end, and a review request that has simply gone
+  unanswered is a different state, **lapsed**, which escalates to the owner and
+  **never** opens this merge path. See
   [when a reviewer is unavailable](#when-a-reviewer-is-unavailable).
 - **Codex's own work:** Claude or Bob must review the latest full head and post
   substantive feedback before Codex merges it, including documentation and delegated
@@ -60,10 +63,9 @@ are in the sections below.
 - **Who posted what.** Claude sessions, Codex Desktop and the owner's own Bob session
   all post as `mgalic01`, so **the GitHub author tells you nothing about which agent
   wrote a comment.** Every message starts with its sender, for example "Claude → Codex",
-  "Codex → Claude" or "Bob → …". *Proposed 2026-09-27, pending three-agent agreement;
-  until all three agree, that sender line is the rule and no tag is required:* every
-  agent comment begins with a tag on its own first line, so the sender is
-  machine-readable rather than inferred:
+  "Codex → Claude" or "Bob → …". Since 2026-09-28 (amendment C, adopted by the owner's
+  decision), every agent comment also begins with a tag on its own first line, so the
+  sender is machine-readable rather than inferred:
 
   | Tag | Who |
   | --- | --- |
@@ -114,9 +116,7 @@ are in the sections below.
 
 ## Verdicts and a base integration
 
-**Proposed 2026-09-27, pending agreement from Claude, Codex and Bob. Until all three
-agree, the previous rule stands without exception: any push, including a merge of
-`main`, voids every verdict, and the new head gets an ordinary full review.**
+*Adopted 2026-09-28 by the owner's decision (Claude session `012TnmLL`); Codex's acknowledgment of revision 7 is owed on return, see [the adoption record](reviews/2026-09-28-claude-owner-decision-protocol-adoption.md).*
 
 What stays true, even once this is agreed: a verdict counts only at the head it names,
 and a merge of the base voids it. **No verdict is carried across an integration, and no
@@ -213,9 +213,7 @@ like these, and all three agents' agreement, before it is written down.
 
 ## When a reviewer is unavailable
 
-**Proposed 2026-09-27, pending agreement from Claude, Codex and Bob. Until all three
-agree, the previous rule stands: the stop-gap applies only while Codex has no
-ChatGPT allowance, and nothing else in this section applies.**
+*Adopted 2026-09-28 by the owner's decision (Claude session `012TnmLL`); Codex's acknowledgment of revision 7 is owed on return, see [the adoption record](reviews/2026-09-28-claude-owner-decision-protocol-adoption.md).*
 
 Two gaps motivated this. The stop-gap was keyed to Codex having *no allowance*, a
 statement about quota, while the thing that actually stalled the queue was Codex
@@ -303,6 +301,34 @@ to challenge ([START_HERE step 0](START_HERE.md)), and the merge is where it is 
 made, deliberately. **A green check, a clean verdict or an elapsed window does not
 replace that judgement.** Letting silence stand in for it would remove the deliberate
 decision the merge exists to make.
+
+
+## Merging while Codex's allowance is exhausted (owner instruction 2026-09-28)
+
+The owner's standing rule is that Claude does not merge its own work. While Codex's
+allowance is exhausted (the state defined above), the owner's instruction of
+2026-09-28, given in Claude's session on adopting the amendments, is:
+
+1. **The author may merge its own PR**, Claude's or Bob's, when all four hold at the
+   full head: Bob's `NO ISSUES` (a reading of the diff), the automated review's
+   `APPROVE` (an independent run of the checks), green `test-and-audit`, and no
+   unaddressed required fix from any reviewer, Codex's earlier findings included.
+   Use the merge method with the full head SHA.
+2. **The automated review is part of the gate**, not a courtesy: it exists at every
+   head and costs nothing. A PR without its `APPROVE` at the merged head is not
+   merged under this rule.
+3. **Every such merge is queued for Codex.** The merge commit message says Codex's
+   review is owed, and the merging agent appends a row to the
+   [Codex-review-owed issue](https://github.com/mgalic01/adaptive-market-engine/issues/134)
+   in the same session: PR, merge time, merge commit, who reviewed before the merge.
+   Codex ticks rows on return; a finding becomes a follow-up PR or issue, never a
+   reopening of the merged PR.
+4. **A lapse is not exhaustion.** This rule applies only while a current usage-limit
+   reply (under 24 hours old, from the required channel) is on record. A silent Codex
+   with allowance is a lapse, which escalates and never merges.
+5. Merges that start a paid Bob run (a task-file PR) also need the owner's go, which
+   the owner gave as a blanket approval of paid Bob runs on 2026-09-27; the merging
+   agent still says in the merge commit that the merge starts a run.
 
 ## What Bob's verdicts mean
 
@@ -594,11 +620,17 @@ Credits are limited, so every agent works on demand, not by polling:
       Bob starting automatically when a task file is merged, without asking me per
       run"). The merge is the go, including merges by Claude or Codex. Editing an
       existing task file never starts a run. So **a task PR is merged only after the
-      same review as code**: Codex's approval, or, while Codex is unavailable, Bob's
-      `NO ISSUES` with green checks. *Proposed 2026-09-27, pending three-agent
-      agreement:* "unavailable" here means **allowance exhausted** only; a lapsed
-      request escalates to the owner and never merges a task PR. See
-      [when a reviewer is unavailable](#when-a-reviewer-is-unavailable);
+      same review as code**: Codex's approval, or, while Codex's allowance is
+      exhausted, Bob's `NO ISSUES` and the automated review's `APPROVE` with green
+      checks. "Exhausted" means **allowance exhausted** only; a lapsed request
+      escalates to the owner and never merges a task PR. See
+      [when a reviewer is unavailable](#when-a-reviewer-is-unavailable). **A run
+      that fails on Bob's side** (a "Connection Failed" or backend error in the
+      worker log, after or during the task, with no task or data defect named) is
+      rerun once with `/bob-run` under the owner's blanket approval of paid Bob runs
+      (2026-09-27); the rerunning agent posts the diagnosis from the run log on the
+      failure issue first. A second failure of the same run is reported to the owner,
+      not rerun (owner instruction 2026-09-28);
     - a comment `/bob-run docs/tasks/<date>-bob-<topic>.md` from the repository
       owner's account, for example to re-run a task. Claude and Codex also post as
       the owner, so they post `/bob-run` only with a linked Codex approval or owner

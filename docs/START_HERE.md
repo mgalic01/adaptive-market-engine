@@ -138,7 +138,7 @@ e. **Verdicts, and at which head:** Bob's `NO ISSUES` or `FLAGGED`
    full head. Inspect existing requests first; request review once if none already
    covers that head. Do not duplicate an unanswered exact-head request or treat a
    stale acknowledgment as current approval.
-   *Proposed 2026-09-27, pending three-agent agreement:* no verdict is carried across
+   No verdict is carried across
    a merge of the base, but earlier findings stay on record, and a reviewer who gave
    their own verdict at the old head may scope the new head's verdict to the whole
    incoming base delta plus the conflict resolution, stating that scope, instead of
@@ -150,13 +150,16 @@ Then act, in this priority:
 
 1. a conflict or red CI on a PR you own;
 2. anything addressed to you: a question, a required fix, a FLAGGED;
-3. merges that are ready. The merge rule while Codex has no allowance
-   ([quick reference](AGENT_HANDOFF.md#quick-reference-how-to-reach-each-agent-keep-this-current)):
-   the verdict `NO ISSUES` from Bob at the head (a reading of the diff), green
+3. merges that are ready. The merge rule while Codex's allowance is exhausted
+   ([owner instruction 2026-09-28](AGENT_HANDOFF.md#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28)):
+   the verdict `NO ISSUES` from Bob at the head (a reading of the diff), the automated
+   review's `APPROVE` at the head (an independent run of the checks), green
    `test-and-audit` at the head (evidence it runs), and no unaddressed required fix.
-   Both verdicts are needed because they answer different questions. Use the merge method with the full head SHA. Codex
-   reviews afterwards.
-   *Proposed 2026-09-27, pending three-agent agreement:* two separate states.
+   The verdicts are needed together because they answer different questions. The
+   author may merge its own PR under this rule. Use the merge method with the full
+   head SHA. Codex reviews afterwards: append the PR to the
+   [Codex-review-owed issue](https://github.com/mgalic01/adaptive-market-engine/issues/134).
+   Two separate states (amendment A, adopted 2026-09-28):
    **Allowance exhausted** — a usage-limit reply from the Codex channel whose review is
    required, which stops counting at the next Codex response that is not one, once
    a new Codex request is posted, and in any case 24 hours after it — is the only

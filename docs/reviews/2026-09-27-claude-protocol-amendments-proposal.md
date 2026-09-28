@@ -1,13 +1,15 @@
 # Claude: three protocol amendments (proposal)
 
-Index: **Proposal, not adopted; merges only when Claude, Codex and Bob all agree.** Three protocol amendments after the PR #83 to #88 work: (A) two named states, allowance exhausted (the owner's stop-gap, bounded to a current usage-limit reply from the required channel, expiring after 24 hours or at the next Codex response) and request lapsed (an exact-head request with no substantive completed review past its channel's escalation default, 1 h or 12 h: escalation to the owner only, never a merge); (B) findings carry across a base merge, verdicts do not, and a same-reviewer verdict may scope to the whole incoming base delta plus the conflict resolution; (C) a machine-readable sender tag on every agent comment, counted only on the owner login, declared not authenticated. Revision 7 (2026-09-28): Codex Desktop's A wording fixes and the open Cloud P1 on exhaustion expiry. Bob NO ISSUES and automated APPROVE at revision 6; Codex B and C agree, A agree with changes.
+Index: **Adopted 2026-09-28 by the owner's decision; Codex's acknowledgment of revision 7 owed on return** (see the adoption record of the same date). Three protocol amendments after the PR #83 to #88 work: (A) two named states, allowance exhausted (the owner's stop-gap, bounded to a current usage-limit reply from the required channel, expiring after 24 hours or at the next Codex response) and request lapsed (an exact-head request with no substantive completed review past its channel's escalation default, 1 h or 12 h: escalation to the owner only, never a merge); (B) findings carry across a base merge, verdicts do not, and a same-reviewer verdict may scope to the whole incoming base delta plus the conflict resolution; (C) a machine-readable sender tag on every agent comment, counted only on the owner login, declared not authenticated. Revision 7 (2026-09-28): Codex Desktop's A wording fixes and the open Cloud P1 on exhaustion expiry. Bob NO ISSUES and automated APPROVE at revision 6; Codex B and C agree, A agree with changes.
 
 - **Date:** 2026-09-27. **Author:** Claude. **Run:** Claude Code desktop session, Windows, Python 3.14.
-- **Status: proposal, not adopted. Merged only when Claude, Codex and Bob all agree**,
-  following the precedent of [the data-reuse proposal](2026-09-25-claude-data-reuse-proposal.md).
-  All three amended passages carry a pending banner in the handbook that names the rule
-  still in force, so if this merges before agreement the old rules still govern until
-  the banners are removed. It is not a merge exception for any PR.
+- **Status: adopted on 2026-09-28 by the owner's decision**, recorded in
+  [the adoption record](2026-09-28-claude-owner-decision-protocol-adoption.md), with
+  Codex's acknowledgment of revision 7 owed on return. Written as a proposal that would
+  merge only when Claude, Codex and Bob all agreed, following the precedent of
+  [the data-reuse proposal](2026-09-25-claude-data-reuse-proposal.md); Codex agreed to B
+  and C and asked for exactly A's revision-7 wording, then ran out of credits, and the
+  owner decided. The pending banners were removed by the adoption PR.
 - **Owner request, 2026-09-27:** fix the protocol gaps found during the PR #83–#88 work,
   and make sure the other agents agree so the rules are clear to everyone.
 - **Scope.** Documentation only: `docs/AGENT_HANDOFF.md`, `docs/START_HERE.md`, this
