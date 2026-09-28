@@ -48,6 +48,7 @@ from crypto_grid_bot.simulation.models import (
     timestamp,
 )
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
+from crypto_grid_bot.simulation.trend_switch import MINIMUM_DAILY_WARMUP, TrendSchedule
 
 PATH_MODES = ("high_first", "low_first")
 # Scorer context lines that precede its actual failure reasons.
@@ -378,7 +379,15 @@ def replay(
     minutes: Iterable[Kline],
     features: FeatureEngine,
     policy: SimulationPolicy | None = None,
+    daily: Sequence[Kline] | None = None,
 ) -> tuple[Metrics, Account]:
+    """``daily`` is the traded pair's completed 1d history (P3), read only by variant A
+    (``policy.trend_switch``), which refuses to run without it."""
+    schedule: TrendSchedule | None = None
+    if policy is not None and policy.trend_switch:
+        if daily is None:
+            raise ValueError("variant A (trend switch) needs the pair's daily history")
+        schedule = TrendSchedule(daily)
     # ":memory:" gives the simulator an in-memory SQLite store; replay never writes to it.
     simulator = PaperSimulator(Path(":memory:"), config, run.rules, run.initial_quote, policy)
     account = simulator.store.read()
@@ -407,6 +416,10 @@ def replay(
             metrics.warmup_bars += 1
             continue
         if hold is None:
+            if schedule is not None and schedule.completed_bars(kline.open_ms) < (
+                MINIMUM_DAILY_WARMUP
+            ):
+                raise ValueError("variant A needs 200 completed daily bars before evaluation")
             hold = _BuyAndHold(run, kline)
             metrics.first_bar_ms = kline.open_ms
         metrics.bars += 1
@@ -417,12 +430,14 @@ def replay(
         # entry veto above means this tick-sized placeholder can never size a grid.
         atr = inputs.atr if inputs.atr > ZERO else run.rules.tick_size
         epoch = f"{run.symbol}/{kline.open_ms}"
+        # Variant A: the state from the last daily bar closed at this minute's start.
+        trend = schedule.at(kline.open_ms) if schedule is not None else None
         report: dict[str, Any] = {}
         for quote in bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size):
             # Depth is re-bounded before every quote from the account at that moment.
             depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
             candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
-            frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch)
+            frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch, trend)
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
             last_quote = quote
@@ -542,7 +557,6 @@ def load_daily(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kl
 
 
 DAY_MS = 86_400_000
-MINIMUM_DAILY_WARMUP = 200
 
 
 def cross_check_daily(

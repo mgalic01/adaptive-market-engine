@@ -42,6 +42,14 @@ from crypto_grid_bot.simulation.models import (
     timestamp,
 )
 from crypto_grid_bot.simulation.store import StateStore, encode
+from crypto_grid_bot.simulation.trend_switch import (
+    DOWN_DEADLINE_SECONDS,
+    UNAVAILABLE,
+    UP,
+    TrendSignal,
+    effective_state,
+    starts_down_sequence,
+)
 from crypto_grid_bot.strategy.grid import GridBuilder, GridNotViable
 from crypto_grid_bot.strategy.opportunity import OpportunityScorer
 from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
@@ -74,6 +82,9 @@ class SimulationPolicy:
     # Experiment variant B (spec v1, section 3 B): committed exposure may not exceed this
     # fraction of prospective active equity when a buy is created. None = off (V0).
     inventory_cap: Decimal | None = None
+    # Experiment variant A (spec v1, section 3 A): the daily SMA50/SMA200 trend switch.
+    # False = off (V0). The daily state arrives on each Frame as ``trend``.
+    trend_switch: bool = False
 
     def __post_init__(self) -> None:
         if type(self.recovery_frames) is not int or not 2 <= self.recovery_frames <= 100:
@@ -93,12 +104,16 @@ class SimulationPolicy:
             nonnegative(self.inventory_cap)
             if not ZERO < self.inventory_cap < ONE:
                 raise ValueError("inventory cap must be above zero and below one")
+        if type(self.trend_switch) is not bool:
+            raise ValueError("trend_switch must be a boolean")
 
     def identity(self) -> dict[str, Any]:
-        """Persisted form; omits an unset cap so existing paper identities still match."""
+        """Persisted form; omits unset variants so existing paper identities still match."""
         value = asdict(self)
         if self.inventory_cap is None:
             del value["inventory_cap"]
+        if not self.trend_switch:
+            del value["trend_switch"]
         return value
 
 
@@ -112,12 +127,16 @@ class Frame:
     allow_new_grid: bool = True
     # Historical replay only: frames sharing an epoch replay one bar (see match()).
     epoch: str | None = None
+    # Variant A only: the daily trend state for this observation (see trend_switch.py).
+    trend: TrendSignal | None = None
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
         value["signals"]["observed_at"] = self.signals.observed_at.isoformat()
         if value["epoch"] is None:
             del value["epoch"]  # Keeps journals written before this field byte-identical.
+        if value["trend"] is None:
+            del value["trend"]  # Likewise for journals without variant A.
         return value
 
 
@@ -274,6 +293,9 @@ class PaperSimulator:
             raise ValueError("fair value and ATR must be positive")
         if frame.candidate.symbol != self.rules.symbol:
             raise ValueError("candidate does not match configured market")
+        if self.policy.trend_switch and frame.trend is not None:
+            # A daily bar that had not closed at this observation is lookahead: fail closed.
+            frame.trend.validate(quote.observed_at)
 
     def _track_range(self, account: Account, quote: Quote) -> None:
         """Accumulate observed outside-range time; call before updating last_observed."""
@@ -371,6 +393,7 @@ class PaperSimulator:
         self._mark(account, quote, self.rules)
         report.update(regime=regime.regime.value, opportunity_score=score.score)
         action = self._risk_action(account, quote, frame.signals.emergency)
+        trend = self._apply_trend(account, frame) if self.policy.trend_switch else None
         if account.halt:
             if account.liquidating:
                 self._record_exit(report, liquidate(account, quote, self.rules), "liquidation")
@@ -413,13 +436,27 @@ class PaperSimulator:
                 if account.recovery_count >= self.policy.recovery_frames:
                     account.pause = ""
                     account.recovery_count = 0
+            # Variant A deadline (spec v1, section 3 A): T0 + 24 h, not reset by further
+            # Down days. The remaining sells are cancelled BEFORE this observation's
+            # matching, so a quote that would have filled them cannot (Codex, PR #114);
+            # what is left is then exited under the bid-size limit, retried at each later
+            # valid observation.
+            trend_due = bool(account.down_since) and (
+                seconds_between(account.down_since, quote.observed_at) >= DOWN_DEADLINE_SECONDS
+            )
+            if trend_due:
+                account.orders.clear()
             report["fills"] = [
                 asdict(fill)
                 for fill in match(
                     account,
                     quote,
                     self.rules,
-                    recycle=not account.pause and not account.draining and frame.allow_new_grid,
+                    # A running variant A Down sequence places no new buy (reentries too).
+                    recycle=not account.pause
+                    and not account.draining
+                    and frame.allow_new_grid
+                    and not account.down_since,
                     epoch=frame.epoch,
                     reentry_quantity=(
                         None
@@ -446,7 +483,8 @@ class PaperSimulator:
                     reduce_unreserved(
                         account, quote, self.rules, consumed=consumed, maximum=unpaired
                     ),
-                    "drain",
+                    # Same-step labelling (spec v1, section 3 A): drain outranks trend_exit.
+                    "drain" if account.draining or not trend_due else "trend_exit",
                 )
 
         # Recheck risk after any fills, but never reuse this event's liquidity for an exit.
@@ -473,7 +511,20 @@ class PaperSimulator:
                 else:
                     report["allocation"] = self._settle(account, quote)
                     account.draining = False
-                    if not account.pause and not account.range_exit and frame.allow_new_grid:
+                    if (
+                        not account.pause
+                        and not account.range_exit
+                        and frame.allow_new_grid
+                        and trend is not None
+                        and (trend != UP or account.down_since)
+                    ):
+                        # Variant A: a new grid needs Up and no running Down sequence.
+                        report.update(
+                            decision="cash",
+                            reason=f"trend switch: {trend}"
+                            + ("; Down sequence running" if account.down_since else ""),
+                        )
+                    elif not account.pause and not account.range_exit and frame.allow_new_grid:
                         try:
                             report["opened"] = self._open_grid(account, frame, capped)
                             report["decision"] = "open_grid"
@@ -485,6 +536,26 @@ class PaperSimulator:
             report.update(decision="pause", reason=account.pause)
         if self.policy.inventory_cap is not None:
             report["capped"] = capped
+        if trend is not None:
+            # The sequence ends once nothing sellable is left: flat, or holding only a
+            # residue the market filters forbid selling (PR #122's rule; waiting for
+            # inventory == 0 looped forever on such a residue, Bob's F1). Only a later
+            # observation can then open a grid, and only in the Up state.
+            if account.down_since and not account.orders and self._resolved(account, quote):
+                report["down_sequence_ended"] = account.down_since
+                account.down_since = ""
+                if not account.range_exit:
+                    # The grid this sequence ended left no orders behind; its bounds and
+                    # outside-range clock are obsolete and would otherwise time an empty
+                    # account out into a range exit (Codex, PR #114). A genuine V0 range
+                    # exit in progress is untouched.
+                    account.grid_lower = account.grid_upper = ZERO
+                    account.outside_seconds, account.outside_last = ZERO, ""
+            report["trend"] = {
+                "state": trend,
+                "day": frame.trend.day if frame.trend is not None else None,
+                "down_since": account.down_since or None,
+            }
         report["cancelled"] = sorted(
             previous_orders - account.orders.keys() - {fill["order_id"] for fill in report["fills"]}
         )
@@ -550,6 +621,7 @@ class PaperSimulator:
             account.range_exit, account.range_exit_since = False, ""
             account.grid_lower = account.grid_upper = ZERO
             account.outside_seconds, account.outside_last = ZERO, ""
+            account.down_since = ""  # a flat account has ended any variant A sequence
             self._pause(account, "operator resume: awaiting confirmed eligible data")
             account.last_observed = frame.quote.observed_at
             account.last_received = frame.quote.received_at
@@ -565,6 +637,24 @@ class PaperSimulator:
         return self.store.transact(
             "control/resume/" + event_id, {"frame": frame.payload(), "reason": reason}, operation
         )
+
+    def _apply_trend(self, account: Account, frame: Frame) -> str:
+        """Variant A at a valid observation: return the gating state.
+
+        A Down classification that became effective since the last applied signal
+        starts a Down sequence (T0 = this observation) unless one is running. Resting
+        buys are cancelled at once; resting sells stay. Only a usable signal acts: a
+        stale or missing one gates as Unavailable and must neither start a sequence nor
+        advance ``trend_day`` (Bob's F2 and C2 on PR #114).
+        """
+        signal, observed = frame.trend, frame.quote.observed_at
+        state = effective_state(signal, observed)
+        if signal is not None and state != UNAVAILABLE:
+            if starts_down_sequence(signal, account.trend_day) and not account.down_since:
+                account.down_since = observed
+                self._cancel_buys(account)
+            account.trend_day = max(account.trend_day, signal.day)
+        return state
 
     def _settle(self, account: Account, quote: Quote) -> dict[str, Any]:
         # An unsellable residue is left out of the allocation base, which understates
