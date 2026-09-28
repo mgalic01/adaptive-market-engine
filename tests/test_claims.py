@@ -209,6 +209,23 @@ class TargetTest(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual([t.pr for t in find_targets(cmd, ".")], [141])
             self.assertEqual(find_targets("gh -R other/repo pr merge 141", "."), [])
+            # gh fills {owner}/{repo} from -R or from the checkout's origin.
+            placeholder = (
+                "gh api -X PUT repos/{owner}/{repo}/pulls/141/merge -f merge_method=squash"
+            )
+            self.assertEqual([t.pr for t in find_targets(placeholder, ".")], [141])
+            with_r = f"gh -R {REPO} api -X PUT repos/{{owner}}/{{repo}}/pulls/141/merge"
+            self.assertEqual([t.pr for t in find_targets(with_r, ".")], [141])
+            other = "gh -R other/repo api -X PUT repos/{owner}/{repo}/pulls/141/merge"
+            self.assertEqual(find_targets(other, "."), [])
+            self.assertIsNotNone(find_targets("gh api -X PUT pulls/141/merge", ".")[0].unknown)
+            # Any client can call the same REST or GraphQL merge.
+            curl = f"curl -X PUT -H x https://api.github.com/repos/{REPO}/pulls/141/merge"
+            self.assertEqual([t.pr for t in find_targets(curl, ".")], [141])
+            other_curl = "curl -X PUT https://api.github.com/repos/other/repo/pulls/141/merge"
+            self.assertEqual(find_targets(other_curl, "."), [])
+            gql = "python -c 'post(\"mutation { mergePullRequest }\")'"
+            self.assertIsNotNone(find_targets(gql, ".")[0].unknown)
 
     def test_windows_paths_keep_backslashes(self):
         with git_stub() as g:

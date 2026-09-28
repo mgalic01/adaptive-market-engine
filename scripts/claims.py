@@ -429,6 +429,9 @@ def find_targets(command: str, cwd: str) -> list[Target]:
                 targets.extend(push_targets(rest[1:], here))
         elif exe == "gh":
             targets.extend(_gh_targets(toks[1:], segment, cwd))
+        elif "/merge" in segment or "mergePullRequest" in segment:
+            # curl, python and other clients can call the same REST or GraphQL merge.
+            targets.extend(_rest_merge_targets(segment, cwd, None))
     return targets
 
 
@@ -446,13 +449,7 @@ def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
         else:
             toks = toks[1:]
     if toks[:1] == ["api"]:
-        # The REST path names the repository itself; a flag or a field value cannot.
-        merges = re.findall(r"repos/([^/\s'\"]+/[^/\s'\"]+)/pulls/(\d+)/merge\b", segment)
-        if merges:
-            return [Target("merge", pr=int(n)) for repo, n in merges if repo == REPO]
-        if "mergePullRequest" in segment:
-            return [Target("merge", unknown="a GraphQL merge; use `gh pr merge <N>`")]
-        return []
+        return _rest_merge_targets(segment, cwd, global_repo)
     if toks[:2] != ["pr", "merge"]:
         return []
     repo_flag: str | None = None
@@ -481,6 +478,34 @@ def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
         return [Target("merge", branch=branch, unknown=None if branch else "no PR named")]
     number = re.search(r"(?:^|/pull/)(\d+)$", arg)
     return [Target("merge", pr=int(number.group(1)))] if number else [Target("merge", branch=arg)]
+
+
+def _rest_merge_targets(segment: str, cwd: str, global_repo: str | None) -> list[Target]:
+    """REST or GraphQL merges in any client's command (`gh api`, curl, python...).
+    `{owner}`/`{repo}` placeholders are filled the way gh does, from -R or the
+    checkout (automated review at 6b88b44). A merge whose repository cannot be
+    resolved is refused, never skipped."""
+    out: list[Target] = []
+    for owner, name, n in re.findall(
+        r"repos/([^/\s'\"]+)/([^/\s'\"]+)/pulls/(\d+)/merge\b", segment
+    ):
+        repo = f"{owner}/{name}"
+        if "{" in repo:
+            if global_repo is not None:
+                ours = is_this_repo(global_repo) or global_repo.endswith("/" + REPO)
+            else:
+                ours = is_this_repo(_git(cwd, "remote", "get-url", "origin"))
+            if ours:
+                out.append(Target("merge", pr=int(n)))
+        elif repo == REPO:
+            out.append(Target("merge", pr=int(n)))
+    if out:
+        return out
+    if re.search(r"pulls/\d+/merge\b", segment) and "repos/" not in segment:
+        return [Target("merge", unknown="a merge path without repos/<owner>/<repo>/")]
+    if "mergePullRequest" in segment:
+        return [Target("merge", unknown="a GraphQL merge; use `gh pr merge <N>`")]
+    return []
 
 
 def hook_decision(

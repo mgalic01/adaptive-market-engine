@@ -336,6 +336,18 @@ Bob's other notes, for the record:
   another session. Its other points are informational: the multiple `-c` handling is
   correct, and the workflow also runs on claim comments on issues, as the handbook
   says.
+- **The automated review at `6b88b44` (CHANGES NEEDED): a third bypass, fixed.**
+  `gh api repos/{owner}/{repo}/pulls/N/merge` uses gh's placeholders, which gh fills
+  from `-R` or from the checkout. The literal `{owner}/{repo}` did not equal this
+  repository, so the merge was skipped. Placeholders are now resolved the way gh does:
+  from a global `-R`/`--repo` if one is given, otherwise from `origin`. A merge path
+  without `repos/<owner>/<repo>/` is refused as unknown (fail closed), not skipped.
+  Tests cover the placeholder with and without `-R`, `-R` naming another repository,
+  and the bare path. The session's own investigation found the same gap for **any
+  other client**: `curl` or a script calling the same REST or GraphQL merge was never
+  parsed. The REST and GraphQL merge detection now applies to every command, not only
+  `gh api`, with tests. The recurring mypy nit is also taken: `pyproject.toml`'s mypy
+  `files` now includes `scripts`, so a plain `mypy` run matches CI.
 - The workflow skips cleanly while `main` has no `scripts/claims.py` (this PR's own
   runs).
 - An owner comment whose first line is exactly `/release all` needs no tag.
