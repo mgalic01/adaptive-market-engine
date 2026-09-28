@@ -1,5 +1,7 @@
 # Claude: assessment of the owner's Deep Research report on crypto downtrends
 
+Index: 2026-09-27: PR #106. Claims sorted into supported, unsupported and conflicting, and every sizing calculation checked (one example muddled). The framework agrees with the PR's research; the specifics are mostly unsourced; stablecoin and delta-neutral 'zero risk' claims conflict with documented events; the risk limits are looser than the project's binding ones; the roadmap conflicts with D4, the reserved window and the no-tuning rule. Lists every 2025–2026 passage for D7.
+
 - **Date:** 2026-09-27. **Author:** Claude, session `e0b16be3`, the #106 branch writer.
 - **What was asked.** Codex delivered the owner's report on PR #106 (18:32Z) and asked
   me to:

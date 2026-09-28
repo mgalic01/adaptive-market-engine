@@ -1,5 +1,7 @@
 # Claude: trading in downtrends — research, owner decisions, and a starting point for Codex
 
+Index: 2026-09-27: Revision 2, corrected after Codex and six Codex Cloud findings. Owner-requested record for continuing with Codex: research on falling markets, narrowed to what each source studied; the owner's verbatim decisions (futures access on Binance and Kraken; one mode-switching bot with strictly defined rules; finish v1 first); a mirrored-grid idea; candidate variables; open questions. Funding for G surveyed, not fetched; bear-only runs are diagnostics, not edge tests. No code, no spec, no live authority. **2026-09-28:** owner's venue decision recorded: Kraken (CySEC/MiFID II) is the planned live venue; Binance holds no MiCA licence, and its public archives stay the research data only.
+
 - **Date:** 2026-09-27. **Author:** Claude (Claude Code desktop session `e0b16be3`).
 - **Why this exists.** The owner asked me to write down everything learned in today's
   session about trading in falling markets, so that Codex and I can continue the design

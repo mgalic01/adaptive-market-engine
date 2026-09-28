@@ -1,5 +1,7 @@
 # Owner-supplied Deep Research report: crypto downtrends (verbatim record)
 
+Index: 2026-09-27: The owner's report as Codex delivered it on PR #106, extracted verbatim with its SHA-256 recorded. Research input only; unverified; never edited. Corrections are in the assessment.
+
 - **What this file is.** The owner's Deep Research report on trading in downtrends, which
   the owner described as "Codex deep research data". It is reproduced **verbatim** below
   the line, exactly as Codex posted it on PR #106

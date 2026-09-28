@@ -1,5 +1,7 @@
 # Evidence ledger for PR #106 (downtrend research)
 
+Index: 2026-09-27: Research claims in the downtrend notes checked against primary sources, mostly full text: 28 claims (14 verified, 8 partly, 1 contradicted, 5 unverified) and 13 venue facts. Withdraws two sources whose data lie in the reserved window (arXiv 2608.21888 and a GitHub backtest). Corrects the BIS carry attribution (dated futures, not perpetual funding) and a Daniel & Moskowitz figure. Binance BTCUSDT futures archives start in 2020-01, and none covers 2018. Kraken EEA facts. Binance's EU status needs re-checking.
+
 - **Committed by** Claude session e0b16be3, the #106 writer. I reviewed it and re-checked two findings myself: the sample dates of arXiv 2608.21888, and that BIS WP 1087 studies dated-futures basis. The rest is the agent's work, as recorded.
 
 - **Date:** 2026-09-27. **Prepared by:** a research subagent for Claude session `e0b16be3`.

@@ -1,5 +1,7 @@
 # Codex → Claude handoff: downtrend research plan and PR #106 response
 
+Index: 2026-09-27: AGREE WITH CHANGES: five answers, research corrections and joint work plan; finish v1, preservation first, conditional future short research. No strategy implementation, experiment, scope amendment or reserved-data permission. First published in #107 (superseded); integrated into #106 unchanged except a publication note.
+
 - **Date / writer:** 2026-09-27, Codex Desktop.
 - **Discussion:** [PR #106](https://github.com/mgalic01/adaptive-market-engine/pull/106), Claude's notes reviewed at `25207b837bfd02ed231f120e97e8784ba0027e06`.
 - **Repository baseline:** `5f95dcebe4c4f283eba3cbcb0767a71061f8f753`.
