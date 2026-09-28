@@ -69,6 +69,22 @@ each quote and its strategy inputs. Slower replays must explicitly set a gap at
 least as large as their observation interval; the future replay adapter must
 validate that relationship. The read-only collector remains separate from this
 simulator. Emergency/hard-drawdown halts never clear automatically.
+
+**Pending change (spec v1 amendment 1, `docs/EXPERIMENT_SPEC_V1.md` §3 "Drawdown
+recovery"):** once its implementation merges, a soft-drawdown episode rebases the risk
+reference after a 24-hour cool-off, and a hard-drawdown halt (category `drawdown` only)
+restarts automatically after 24 hours. That supersedes five statements here: "Emergency/
+hard-drawdown halts never clear automatically" above (for `drawdown`); the **Final** in
+the hard-drawdown row; the paragraph "A drawdown halt is final, not merely manual" below;
+"`resume()` is deliberately stricter and requires exact zero inventory" and "stays halted
+until a higher bid makes the residue sellable"; and "resume makes no distinction between
+an incomplete liquidation and a residue below the minimum". The manual `resume()` will
+admit a residue below the exchange minimum (`exit_state` `dust`) and keep refusing an
+incomplete liquidation; its risk check is unchanged, so capital exhaustion stays final,
+an emergency halt at or past the hard-drawdown level stays refused, and the integrity
+halt's manual resume "once the exit has completed" reads as that same criterion. This
+table describes the code until then.
+
 Risk baselines are preserved through recovery; a realised loss is not erased by
 issuing resume. UTC daily baselines still carry overnight gaps into the risk check.
 
@@ -78,8 +94,9 @@ halted; for a flat account active equity cannot change either. The measured draw
 therefore frozen at the value that triggered the halt, so every resume attempt is
 refused, however long the operator waits and however far the market recovers. The same
 holds for an "active capital exhausted" halt, whose drawdown is pinned at 1.0. Changing
-this needs a policy decision on rebasing the reference, which is what PR #102 is
-deciding; it is deliberately not a code default.
+this needs a policy decision on rebasing the reference, which PR #102 decided on
+2026-09-27 (spec v1 amendment 1; implementation pending); it is deliberately not a code
+default today.
 
 An **emergency** halt is different, and the row above says so: the emergency flag comes
 from the frame passed to `resume()`, not from a frozen baseline, so a halt raised only

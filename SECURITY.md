@@ -44,7 +44,10 @@ The offline simulator uses SQLite transactions and event IDs to recover paper
 orders, fills and reserve accounting after restart. Back up the database with a
 SQLite-aware backup method; do not copy only the main file while its WAL is active.
 Do not manually edit balances or delete event rows to bypass a halt. SQLite is
-local storage, not a tamper-proof exchange ledger. Halts do not auto-resume.
+local storage, not a tamper-proof exchange ledger. Halts do not auto-resume today; spec
+v1 amendment 1 (`docs/EXPERIMENT_SPEC_V1.md` §3, not yet implemented) will make a
+hard-drawdown halt of category `drawdown` restart automatically after 24 hours, journaled;
+emergency, capital-exhaustion and integrity halts stay latched until an audited resume.
 
 Before live deployment: add live order/balance reconciliation, real exchange
 filters and fee-asset handling, bounded retries, a wall-clock stale-feed watchdog,
