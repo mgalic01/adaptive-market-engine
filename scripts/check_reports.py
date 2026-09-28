@@ -55,11 +55,11 @@ HEX64 = re.compile(r"\b[0-9a-f]{64}\b")
 BOB_REPORT = re.compile(r"docs/reviews/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md")
 BOB_NAME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md")
 CORRECTION = "Correction at review"
-# The legacy table was frozen on 2026-09-27 at main c3c8e25, with 83 rows. This is the
+# The legacy table was frozen on 2026-09-28 at the merge of PR #116, with 99 rows. This is the
 # SHA-256 of every README line that starts with "|", joined with "\n" plus a final "\n".
 # It changes only if someone adds or edits a table row, which is exactly what the freeze
 # forbids: a row added by every PR at the same place made each merge conflict every PR.
-LEGACY_SHA256 = "eb915343394ef3f8a9f104f21c42f830186f6001a61ff3a72c849064eeec5c21"
+LEGACY_SHA256 = "6784aa704c76696281606c84cd356f4ad3ba3a9f56e87d6362cab1835b8ffacb"
 DATED_NAME = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2})-[A-Za-z0-9._-]+\.md")
 INDEX_LINE = re.compile(r"Index:[ \t]*(.*?)[ \t]*")
 ENTRY_LINES = 20  # the Index: line must be within a file's first ENTRY_LINES lines

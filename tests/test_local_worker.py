@@ -656,3 +656,40 @@ def test_reviewable_path_allowlist():
         "data/README.md",
     ]:
         assert not reviewable_path(path)
+
+
+def test_newer_index_entries_come_from_the_base_tree_only():
+    # PR #116 froze the README index; newer files carry their own "Index:" line. The
+    # reviewer's context must include them (Codex's finding on #116), read from the base
+    # tree and bounded, never from the head a PR controls.
+    worker()
+    from local_worker_github import NEWER_ENTRIES, newer_entries
+
+    readme = "| H | S |\n| --- | --- |\n| [old](2026-09-20-claude-old.md) | legacy |\n"
+    tree = {
+        "docs/reviews/2026-09-20-claude-old.md": "sha-old",
+        "docs/reviews/2026-09-28-claude-new.md": "sha-new",
+        "docs/reviews/2026-09-29-bob-newer.md": "sha-newer",
+        "docs/reviews/README.md": "sha-readme",
+        "docs/tasks/2026-09-28-bob-task.md": "sha-task",
+    }
+    blobs = {
+        "sha-new": "# The new record\n\nIndex: what it decided.\n",
+        "sha-newer": "# Bob's report\n\nSome prose without an entry.\n",
+    }
+    fetched = []
+
+    def fetch(sha):
+        fetched.append(sha)
+        return blobs[sha]
+
+    text = newer_entries(readme, tree, fetch)
+    assert fetched == ["sha-newer", "sha-new"], "newest first, legacy and non-review files skipped"
+    assert "- 2026-09-28-claude-new.md: The new record — what it decided." in text
+    assert "- 2026-09-29-bob-newer.md: Bob's report — (no Index: line)" in text
+    assert newer_entries(readme, {"docs/reviews/2026-09-20-claude-old.md": "sha-old"}, fetch) == ""
+    many = {
+        f"docs/reviews/2026-01-{i:02d}-claude-x.md": "sha-new" for i in range(1, NEWER_ENTRIES + 3)
+    }
+    text = newer_entries(readme, many, fetch)
+    assert "2 older entries not fetched" in text
