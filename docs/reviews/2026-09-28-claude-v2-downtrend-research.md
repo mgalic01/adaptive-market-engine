@@ -1,6 +1,6 @@
 # Claude → the owner, Bob and Codex: what a confirmed downtrend is actually worth (spec v2 research)
 
-Index: 2026-09-28 research for spec v2, measured on BTCUSDT development months (daily 2017-08 to 2024-12, funding 2020-01 to 2024-12, all checksum-verified through the project's own fetchers). Three findings that change the v2 plan: **(1) shorting a confirmed downtrend lost money on this data** — price ROSE in 32 of 48 Down runs and the compounded gross short over every run is -12.2% before costs, and adding the short side to each of three published trend rules cut returns and raised drawdown; **(2) funding is a tailwind for a short, not a cost** — Binance BTCUSDT funding was net positive every year 2020 to 2024, including the 2022 bear year, correcting the assumption recorded in PR #106; **(3) the oscillation inside downtrends is large and real** — 1,960% of travel across 801 Down days, 145 rallies of 3% or more, and it can be harvested on spot without futures at all, which makes the owner's "sell the bounces" idea a v1 question the existing V0-versus-variant-A comparison already answers. Recommendation: do not build a short engine yet. No strategy is adopted, no parameter is tuned, and no result here is a registered trial.
+Index: 2026-09-28 research for spec v2, measured on BTCUSDT development months (daily 2017-08 to 2024-12, funding 2020-01 to 2024-12, all checksum-verified through the project's own fetchers). Three findings that change the v2 plan: **(1) shorting a confirmed downtrend lost money on this data** — price ROSE in 32 of 48 Down runs and the compounded gross short over every run is -48.1% before costs, and adding the short side to each of three published trend rules cut returns and raised drawdown; **(2) funding is a tailwind for a short, not a cost** — Binance BTCUSDT funding was net positive every year 2020 to 2024, including the 2022 bear year, correcting the assumption recorded in PR #106; **(3) the oscillation inside downtrends is large and real** — 1,960% of travel across 801 Down days, 145 rallies of 3% or more, and it can be harvested on spot without futures at all, which makes the owner's "sell the bounces" idea a v1 question the existing V0-versus-variant-A comparison already answers. Recommendation: do not build a short engine yet. **Revision 2** corrected two arithmetic errors found in review (a double-charged trading cost, and a short formula in section 2 that flattered shorting); both corrections strengthen the conclusion. No strategy is adopted, no parameter is tuned, and no result here is a registered trial.
 
 - **Date:** 2026-09-28. **Author:** Claude (session `012TnmLL`). **Requested by** the owner
   the same day: "lets start with this", on the three research questions Claude proposed
@@ -49,28 +49,35 @@ its last. 48 runs, 840 Down days, 33.7% of the window.
 
 | Run | Days | Price move | Short gross | Funding | Net |
 | --- | --- | --- | --- | --- | --- |
-| 2018-03-14..2018-04-19 | 36 | +7.5% | -7.0% | n/a | -7.0% |
-| 2018-05-21..2018-07-16 | 56 | -8.3% | +9.0% | n/a | +9.0% |
-| 2018-08-07..2018-08-27 | 20 | +12.6% | -11.2% | n/a | -11.2% |
-| 2018-11-08..2019-01-05 | 58 | -37.9% | +61.0% | n/a | +61.0% |
-| 2019-09-26..2019-10-25 | 29 | +12.9% | -11.4% | n/a | -11.4% |
-| 2019-11-15..2020-01-04 | 50 | -13.3% | +15.4% | n/a | +15.4% |
-| 2020-03-08..2020-04-15 | 38 | -10.4% | +11.7% | -1.20% | +10.5% |
-| 2021-05-21..2021-07-24 | 64 | -5.5% | +5.8% | +0.24% | +6.1% |
-| 2021-12-28..2022-02-06 | 40 | -5.6% | +6.0% | +0.63% | +6.6% |
-| 2022-04-11..2022-07-18 | 98 | -41.6% | +71.3% | +0.99% | +72.3% |
-| 2022-08-19..2022-09-11 | 23 | +5.9% | -5.6% | +0.05% | -5.6% |
-| 2022-11-08..2023-01-03 | 56 | +5.8% | -5.5% | +0.17% | -5.3% |
-| 2023-08-30..2023-09-18 | 19 | +4.9% | -4.7% | +0.07% | -4.6% |
-| 2024-08-03..2024-08-22 | 19 | +10.1% | -9.2% | +0.01% | -9.2% |
+| 2018-03-14..2018-04-19 | 36 | +7.5% | -7.5% | n/a | -7.5% |
+| 2018-05-21..2018-07-16 | 56 | -8.3% | +8.3% | n/a | +8.3% |
+| 2018-08-07..2018-08-27 | 20 | +12.6% | -12.6% | n/a | -12.6% |
+| 2018-11-08..2019-01-05 | 58 | -37.9% | +37.9% | n/a | +37.9% |
+| 2019-09-26..2019-10-25 | 29 | +12.9% | -12.9% | n/a | -12.9% |
+| 2019-11-15..2020-01-04 | 50 | -13.3% | +13.3% | n/a | +13.3% |
+| 2020-03-08..2020-04-15 | 38 | -10.4% | +10.4% | -1.20% | +9.2% |
+| 2021-05-21..2021-07-24 | 64 | -5.5% | +5.5% | +0.24% | +5.8% |
+| 2021-12-28..2022-02-06 | 40 | -5.6% | +5.6% | +0.63% | +6.3% |
+| 2022-04-11..2022-07-18 | 98 | -41.6% | +41.6% | +0.99% | +42.6% |
+| 2022-08-19..2022-09-11 | 23 | +5.9% | -5.9% | +0.05% | -5.9% |
+| 2022-11-08..2023-01-03 | 56 | +5.8% | -5.8% | +0.17% | -5.7% |
+| 2023-08-30..2023-09-18 | 19 | +4.9% | -4.9% | +0.07% | -4.8% |
+| 2024-08-03..2024-08-22 | 19 | +10.1% | -10.1% | +0.01% | -10.1% |
 
 Runs under 15 days are omitted from the table; the script prints them all.
 
 **Price rose in 32 of the 48 Down runs.** The compounded gross short across every run is
-**-12.2%, before a single fee**. Two runs carry everything: 2018-11 (+61.0%) and 2022-04
-(+71.3%). Everything else is a slow bleed of small losses, which is exactly the shape
-Daniel and Moskowitz describe: the losses arrive as sharp rebounds inside the decline, and
-a short is maximally exposed to them.
+**-48.1%, before a single fee**, and no run was violent enough to wipe the position out.
+Two runs carry all the profit: 2018-11 (+37.9%) and 2022-04 (+41.6%). Everything else is a
+slow bleed of small losses, which is exactly the shape Daniel and Moskowitz describe: the
+losses arrive as sharp rebounds inside the decline, and a short is maximally exposed to
+them.
+
+**A short's gain is `1 - S`, not `1/S - 1`** (revision 2). Short 100 at price 100 and
+cover at 50: the account holds 150, not 200. Revision 1 used the reciprocal here, which
+flattered shorting; the corrected figures above are smaller on the winning runs and the
+compounded total fell from -12.2% to -48.1%. The correction therefore **strengthens** the
+finding rather than softening it.
 
 This is not an artefact of the 50/200 rule. Section 5 repeats it with two other published
 rules and the result is the same in both.
@@ -128,18 +135,22 @@ in seven years.**
 
 ## 5. The published rules, written exactly and run on our data
 
-Three rules, each acted on one day late, each paying 0.28% a switch, funding applied to
-short days from 2020. Window 2018-08-18 to 2024-12-31, 2,328 traded days.
+Three rules, each acted on one day late, funding applied to short days from 2020. Window
+2018-08-18 to 2024-12-31, 2,328 traded days. Costs are charged **one leg (0.14%) per side
+traded**: entering or leaving a position is one leg, so a full in-and-out is 0.28% and a
+direct long-to-short flip is 0.28% too. Revision 1 charged a full round trip on every
+switch, which double-counted every entry and exit; the corrected figures below are a
+little better for the rules that pass through cash, and unchanged in their ordering.
 
 | Rule | Short? | Total return | Max drawdown | Switches | Days long | Days short |
 | --- | --- | --- | --- | --- | --- | --- |
 | Buy and hold | n/a | +1321% | 77% | 1 | 2328 | 0 |
-| Time-series momentum, 12-month sign | no | +1374% | 63% | 23 | 1584 | 0 |
-| Time-series momentum, 12-month sign | yes | +699% | 80% | 23 | 1584 | 743 |
-| Donchian 20/10 (Turtle) | no | +2397% | 61% | 67 | 1253 | 0 |
-| Donchian 20/10 (Turtle) | yes | +307% | 74% | 125 | 1253 | 734 |
-| Dual MA 50/200 (variant A's states) | no | +564% | 57% | 31 | 1156 | 0 |
-| Dual MA 50/200 (variant A's states) | yes | +40% | 74% | 104 | 1156 | 840 |
+| Time-series momentum, 12-month sign | no | +1423% | 63% | 23 | 1584 | 0 |
+| Time-series momentum, 12-month sign | yes | +700% | 80% | 23 | 1584 | 743 |
+| Donchian 20/10 (Turtle) | no | +2643% | 60% | 67 | 1253 | 0 |
+| Donchian 20/10 (Turtle) | yes | +377% | 72% | 125 | 1253 | 734 |
+| Dual MA 50/200 (variant A's states) | no | +593% | 56% | 31 | 1156 | 0 |
+| Dual MA 50/200 (variant A's states) | yes | +57% | 73% | 104 | 1156 | 840 |
 
 The rules as published, and what each one is:
 
@@ -153,7 +164,9 @@ The rules as published, and what each one is:
    short when it falls below the lowest low; leave on the opposite 10-day extreme. The
    channel must exclude the current bar, or the breakout is unreachable: an earlier draft
    of this script included it and produced zero trades, which is recorded here because it
-   is the kind of error that silently reads as "the rule does not work".
+   is the kind of error that silently reads as "the rule does not work". The short leg
+   uses the same `2 - S` convention as section 2, applied per day, which is a short
+   rebalanced to equity daily.
 3. **Dual moving average**: the 50/200 pair variant A already computes.
 
 **Every rule loses by adding the short side, and every rule's drawdown gets worse.** Two of
@@ -196,7 +209,7 @@ hat.
 | Before this research | After |
 | --- | --- |
 | Two ways to trade downtrends, short or harvest bounces; both need v2 | Shorting is the weaker of the two on this data; harvesting is testable in v1 with no new engine |
-| Shorting needs a futures engine, so schedule it after v1 | Shorting needs a futures engine **and** evidence it earns anything; the evidence is currently against it |
+| Shorting needs a futures engine, so schedule it after v1 | Shorting needs a futures engine **and** evidence it earns anything; the evidence is currently against it, and got worse when the arithmetic was corrected |
 | Funding is a tailwind for bear-market shorts (PR #106) | Funding pays the short in every year measured, but is too small to matter; the note's reasoning is corrected |
 | Variant A's F3 (idle in cash through a downtrend) is a cost to confirm | Standing aside *is* the published edge; F3 is the rule working, not a flaw |
 
@@ -234,6 +247,16 @@ hat.
 - **Survivorship and regime.** Seven years containing two large bull markets is a sample
   that flatters long-only rules. The honest statement is that shorting failed *in this
   sample*, not that shorting cannot work.
+- **Two arithmetic errors were found in review and corrected in revision 2**, and both
+  had been biasing the tables. A trading cost charged as a full round trip on every switch
+  double-counted entries and exits, making the rules that pass through cash look worse
+  than they are; and section 2 measured a short as `1/S - 1` rather than `1 - S`, which
+  flattered shorting badly on the two winning runs. Correcting them moved the headline
+  from -12.2% to -48.1% and improved the long-only returns. A third suggestion from the
+  same review, to make section 5's per-day short the reciprocal as well, was **not**
+  taken: `2 - S` is the right factor for a short whose notional equals its equity, and the
+  reciprocal is not a short's return. The disagreement and the arithmetic are in the PR
+  thread; anyone relying on these numbers should read that exchange.
 - **Not a registered trial.** Nothing here is run through the backtest CLI, nothing
   produces a `results.json`, and nothing counts against the trial register. These are
   exploratory measurements on the development window and they must not later be presented
@@ -241,7 +264,7 @@ hat.
 
 ## Appendix: `data/v2_downtrend_research.py` source
 
-SHA-256: `0197b817b087cca8d8916b6dd339e821f371197da245928f26f12b5864d8fcbd`
+SHA-256: `24972175cc9ee332170088ea3a99eb9144969f53e8612b3ddedd9f29852cc746`
 
 Run it from the repository root with the project installed:
 `python data/v2_downtrend_research.py data`. It fetches what it needs through the project's
@@ -261,7 +284,14 @@ after 2024-12 is requested; ``development_month`` refuses it in three places any
 
 No lookahead anywhere: a signal computed from the close of day d is acted on at the
 close of day d+1, the first price a live bot could reach. Costs use the paper defaults
-in config/default.toml (taker 0.09%, slippage 0.05%).
+in config/default.toml (taker 0.09%, slippage 0.05%), charged one leg per side traded:
+entering or leaving a position is one leg, a direct long-to-short flip is two.
+
+Short convention, the same in both places: a short whose notional equals the equity
+behind it returns ``2 - S`` over a step where price moves by the factor ``S``. Short 100
+at price 100 and cover at 50 and the account holds 150, not 200; the reciprocal ``1 / S``
+is not a short's return and flatters it. Section 2 holds one fixed-size short per run;
+section 5 rebalances to equity each day, which is the same formula applied per step.
 """
 
 import sys
@@ -282,8 +312,8 @@ from crypto_grid_bot.simulation.trend_switch import DOWN, classify_days
 
 FIRST_DAILY, FIRST_FUNDING, LAST = "2017-08", "2020-01", "2024-12"
 TAKER, SLIP = D("0.0009"), D("0.0005")
-COST = TAKER + SLIP
-ROUND_TRIP = COST * 2
+COST = TAKER + SLIP  # one leg: entering or leaving a position
+ROUND_TRIP = COST * 2  # a full in-and-out, or one direct long-to-short flip
 
 
 def months(first: str) -> list[str]:
@@ -348,16 +378,23 @@ def section_short(runs, days, close, funding) -> None:
     print("\n## 2. Shorting each Down run, gross and after funding\n")
     print("| Run | Days | Price move | Short gross | Funding | Net |")
     print("| --- | --- | --- | --- | --- | --- |")
-    compounded, losers = D(1), 0
+    compounded, losers, wipeouts = D(1), 0, 0
     for a, b in runs:
         i, j = days.index(a) + 1, days.index(b) + 1
         if j >= len(days) or days[i] not in close or days[j] not in close:
             continue
         ea, eb = days[i], days[j]
-        move = (close[eb] / close[ea] - 1) * 100
-        gross = (close[ea] / close[eb] - 1) * 100
+        step = close[eb] / close[ea]
+        move = (step - 1) * 100
+        # One fixed-size short per run, its notional equal to the equity behind it:
+        # the account ends at 2 - step, so the gain is 1 - step, not 1/step - 1.
+        factor = 2 - step
+        gross = (factor - 1) * 100
         fund = sum((funding.get(d, D(0)) for d in days[i:j]), D(0)) * 100
-        compounded *= close[ea] / close[eb]
+        if factor <= 0:
+            wipeouts += 1
+            factor = D(0)
+        compounded *= factor
         losers += move > 0
         if (j - i) >= 15:
             print(
@@ -366,7 +403,8 @@ def section_short(runs, days, close, funding) -> None:
             )
     print(f"\nRuns: {len(runs)}; price ROSE in {losers} of them (a short lost).")
     print(
-        f"Compounded gross short over every Down run: {(compounded - 1) * 100:+.1f}% before costs."
+        f"Compounded gross short over every Down run: {(compounded - 1) * 100:+.1f}% before costs "
+        f"({wipeouts} run(s) would have wiped the position out)."
     )
 
 
@@ -461,7 +499,10 @@ def section_rules(bars: list, funding: dict[str, D]) -> None:
             if not allow_short and want == -1:
                 want = 0
             if want != state:
-                equity *= 1 - ROUND_TRIP if (state or want) else D(1)
+                # One leg per side traded: leaving a position is one, entering is one,
+                # so a direct long-to-short flip is two and a plain entry or exit is one.
+                legs = (1 if state else 0) + (1 if want else 0)
+                equity *= (1 - COST) ** legs
                 switches += 1
                 state = want
             step = close[i + 1] / close[i]
@@ -469,7 +510,8 @@ def section_rules(bars: list, funding: dict[str, D]) -> None:
                 equity *= step
                 dl += 1
             elif state == -1:
-                equity *= 2 - step
+                # Rebalanced to equity each day: the same 2 - S as section 2, per step.
+                equity *= max(D(0), 2 - step)
                 equity *= 1 + funding.get(day[i + 1], D(0))
                 ds += 1
             peak = max(peak, equity)
@@ -483,7 +525,10 @@ def section_rules(bars: list, funding: dict[str, D]) -> None:
         mdd = max(mdd, (peak - equity) / peak)
 
     print(f"\n## 5. Published trend rules on BTCUSDT, {day[366]} .. {day[-1]}\n")
-    print(f"Round trip {ROUND_TRIP * 100:.2f}%. Funding applied to short days from 2020.\n")
+    print(
+        f"One leg {COST * 100:.2f}%, so a full in-and-out is {ROUND_TRIP * 100:.2f}% and a "
+        f"direct flip the same. Funding applied to short days from 2020.\n"
+    )
     print("| Rule | Short? | Total return | Max drawdown | Switches | Days long | Days short |")
     print("| --- | --- | --- | --- | --- | --- | --- |")
     print(
