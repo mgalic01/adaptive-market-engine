@@ -228,8 +228,8 @@ This section names **two different states**, because they have different consequ
 
 | State | What establishes it | When it ends | What it allows |
 | --- | --- | --- | --- |
-| **Allowance exhausted** | a usage-limit reply from the Codex channel whose review is required | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it; from then on the answer to that request decides | the owner's existing stop-gap: merge on Bob's `NO ISSUES` at the full head, green `test-and-audit` at that head and no unaddressed required fix; Codex reviews afterwards |
-| **Request lapsed** | an exact-head review unanswered past its channel's window (below) | when the reviewer answers at that head, or the head changes | **escalation to the owner only. Never a merge.** |
+| **Allowance exhausted** | a usage-limit reply from the Codex channel whose review is required | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it (from then on the answer to that request decides), and in any case **24 hours after the usage-limit reply** unless a newer one renews it | the owner's existing stop-gap: merge on Bob's `NO ISSUES` at the full head, green `test-and-audit` at that head and no unaddressed required fix; Codex reviews afterwards |
+| **Request lapsed** | an exact-head review without a substantive completed review past its channel's window (below) | when a **substantive completed review** at that head is posted (a verdict, or findings), or the head changes; a receipt, an acknowledgment, an "I will review" or a progress message neither ends nor restarts it | **escalation to the owner only. Never a merge.** |
 
 Wherever the handbook uses Codex being unavailable, or having no allowance, as a reason
 to merge — the quick reference's merge authority, START_HERE step 3's merge rule, and
@@ -245,7 +245,13 @@ later Codex response or request ends it, so the stop-gap is used less, never mor
 counting at the next Codex response that is not a usage-limit reply, on any PR, and
 as soon as a new request is posted after it. An agent that wants to use the stop-gap
 after a new request must cite a usage-limit reply to that request; if the request is
-simply unanswered, that is a lapse, not exhaustion.
+simply unanswered, that is a lapse, not exhaustion. **It is also time-bound:** a
+usage-limit reply stops counting 24 hours after it was posted, whatever else has
+happened. To use the stop-gap after that, post one new exact-head request naming the
+head, which the no-duplicate-request rule allows once per 24 hours for exactly this
+purpose, and cite the usage-limit reply it receives; a request that gets no reply is
+a lapse. So a replenished allowance can never be bypassed on the strength of an old
+reply.
 
 **The lapse window** differs by channel, because the channels differ by orders of
 magnitude:
@@ -257,8 +263,17 @@ magnitude:
 | Any other channel, including the opt-in local Codex reviewer | none defined | Report an unanswered request at the next check-in, under the existing breakage rule. |
 
 These windows are **escalation defaults**: the point at which silence is worth telling
-the owner about. A lapsed window is not proof that the reviewer has failed, and never
-permission to merge.
+the owner about. They are reversible operational settings under the agents' agreed
+process, and the owner may change them at any time; nothing in them needs a new owner
+approval for ordinary review and fix work. A lapsed window is not proof that the
+reviewer has failed, and never permission to merge. **What counts as an answer:** only
+a substantive completed review at that head, a verdict or findings. A receipt, an
+acknowledgment, an "I will review that head" or a progress message is not one; it
+neither ends nor restarts the clock, because a stated intention with no expiry is one
+of the two gaps this section closes. For the automated review, which no agent asks,
+"lapsed" means that no verdict comment has been posted at that head within the window
+after its workflow became able to run; a run that failed or was skipped at that head
+is lapsed too.
 
 **When the clock starts.** From the exact-head request, posted with the full head SHA.
 For a review that starts on its own — the automated review, or a Codex Cloud review

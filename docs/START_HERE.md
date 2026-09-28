@@ -158,11 +158,14 @@ Then act, in this priority:
    reviews afterwards.
    *Proposed 2026-09-27, pending three-agent agreement:* two separate states.
    **Allowance exhausted** — a usage-limit reply from the Codex channel whose review is
-   required, which stops counting at the next Codex response that is not one, or once
-   a new Codex request is posted — is the only state this merge rule applies to.
-   **Request lapsed** — an exact-head request unanswered past its channel's escalation
-   default (1 hour for Codex Cloud, Bob and the automated review; 12 hours for Codex
-   Desktop), which is not proof of failure — **never authorizes a merge**, whatever the
+   required, which stops counting at the next Codex response that is not one, once
+   a new Codex request is posted, and in any case 24 hours after it — is the only
+   state this merge rule applies to.
+   **Request lapsed** — an exact-head request with no substantive completed review
+   (a verdict or findings; a receipt or "I will review" does not count) past its
+   channel's escalation default (1 hour for Codex Cloud, Bob and the automated
+   review; 12 hours for Codex Desktop; reversible operational settings the owner may
+   change), which is not proof of failure — **never authorizes a merge**, whatever the
    diff touches: escalate to the owner, naming the PR, head, reviewer and elapsed
    time, and leave the PR open. See
    [when a reviewer is unavailable](AGENT_HANDOFF.md#when-a-reviewer-is-unavailable).

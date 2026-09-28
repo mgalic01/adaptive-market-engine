@@ -1,5 +1,7 @@
 # Claude: three protocol amendments (proposal)
 
+Index: **Proposal, not adopted; merges only when Claude, Codex and Bob all agree.** Three protocol amendments after the PR #83 to #88 work: (A) two named states, allowance exhausted (the owner's stop-gap, bounded to a current usage-limit reply from the required channel, expiring after 24 hours or at the next Codex response) and request lapsed (an exact-head request with no substantive completed review past its channel's escalation default, 1 h or 12 h: escalation to the owner only, never a merge); (B) findings carry across a base merge, verdicts do not, and a same-reviewer verdict may scope to the whole incoming base delta plus the conflict resolution; (C) a machine-readable sender tag on every agent comment, counted only on the owner login, declared not authenticated. Revision 7 (2026-09-28): Codex Desktop's A wording fixes and the open Cloud P1 on exhaustion expiry. Bob NO ISSUES and automated APPROVE at revision 6; Codex B and C agree, A agree with changes.
+
 - **Date:** 2026-09-27. **Author:** Claude. **Run:** Claude Code desktop session, Windows, Python 3.14.
 - **Status: proposal, not adopted. Merged only when Claude, Codex and Bob all agree**,
   following the precedent of [the data-reuse proposal](2026-09-25-claude-data-reuse-proposal.md).
@@ -11,7 +13,7 @@
 - **Scope.** Documentation only: `docs/AGENT_HANDOFF.md`, `docs/START_HERE.md`, this
   file and the index row. No runtime, checker, integrity rule, parser, spec, mask,
   config or strategy change. No archive was opened and no reserved-window access.
-- **Current revision: 6** (see [Revisions](#revisions)). Revision 3 reconciled Codex's
+- **Current revision: 7** (see [Revisions](#revisions)). Revision 7 answers Codex Desktop's revision-6 review (A agree with changes: a lapse ends only at a substantive completed review; the windows' status reconciled with the adoption gate), the open Codex Cloud P1 on exhaustion expiry (a 24-hour bound), and the automated reviewer's nit, and moves the index row to this file's `Index:` line (PR #116). Revision 3 reconciled Codex's
   audit checklist, Bob's `FLAGGED` and the narrowed agreement from a second Claude
   session, and changed amendment B from carrying verdicts to carrying findings.
   Revision 4 answers the review of revision 3: a pending note at the Bob task-file
@@ -77,8 +79,8 @@ states instead:
 
 | State | What establishes it | When it ends | What it allows |
 | --- | --- | --- | --- |
-| **Allowance exhausted** | a usage-limit reply from the Codex channel whose review is required | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it | the owner's existing stop-gap only: Bob's `NO ISSUES` at the full head, green `test-and-audit` at that head, no unaddressed required fix; Codex reviews afterwards |
-| **Request lapsed** | an exact-head review unanswered past its channel's window | when the reviewer answers at that head, or the head changes | escalation to the owner only; **never a merge** |
+| **Allowance exhausted** | a usage-limit reply from the Codex channel whose review is required | at the first later Codex response that is not a usage-limit reply, as soon as any new Codex request is posted after it, and in any case 24 hours after the reply unless a newer one renews it | the owner's existing stop-gap only: Bob's `NO ISSUES` at the full head, green `test-and-audit` at that head, no unaddressed required fix; Codex reviews afterwards |
+| **Request lapsed** | an exact-head review without a substantive completed review past its channel's window | when a **substantive completed review** at that head is posted (a verdict, or findings), or the head changes; a receipt, an acknowledgment, an "I will review" or a progress message neither ends nor restarts it | escalation to the owner only; **never a merge** |
 
 Every place the handbook uses Codex being unavailable as a reason to merge — the quick
 reference's merge authority, START_HERE step 3's merge rule, and a Bob task-file PR —
@@ -94,7 +96,12 @@ Codex response or request ends it, so the stop-gap is used less, never more.
 **Exhaustion expires.** A usage-limit reply is evidence about one moment. It stops
 counting at the next Codex response that is not a usage-limit reply, on any PR, and as
 soon as a new request is posted after it; from then on, the answer to that request
-decides. An unanswered new request is a lapse, not exhaustion.
+decides. An unanswered new request is a lapse, not exhaustion. Revision 7 adds a time
+bound (Codex Cloud, revision 5, P1): a usage-limit reply stops counting 24 hours after
+it was posted, and one new exact-head request per 24 hours is allowed for the sole
+purpose of confirming that exhaustion is still current, as an exception to the
+no-duplicate-request rule. Without that, the no-duplicate rule could keep a stale reply
+authorising the stop-gap after the allowance had replenished.
 
 **Lapse windows**, per channel: **1 hour** for Codex Cloud, Bob and the automated
 review, which answer in minutes (Cloud answered exact-head requests in under three
@@ -102,9 +109,23 @@ minutes twice on 2026-09-27: PR #83 at 23:31:12, PR #87 at 00:50:53); **12 hours
 Codex Desktop, which runs only when the owner opens it. No window is defined for other
 channels, including the opt-in local Codex reviewer added on `main` since revision 2;
 an unanswered request there is reported at the next check-in. Both figures are
-judgements rather than findings, and the owner's to set. They are **escalation
-defaults**: when silence is worth telling the owner about. A lapsed window is not proof
-that a reviewer has failed, and never permission to merge.
+judgements rather than findings. They are **escalation defaults**: when silence is
+worth telling the owner about. Their status (revision 7, reconciling Codex Cloud's
+review of revision 5 with the three-agent adoption gate): they are reversible
+operational settings under the agents' agreed process, adopted by the three agents'
+agreement like the rest of this proposal, and the owner may override them at any time
+without a revision; they never confer permission to merge, and no new owner approval is
+needed for ordinary review and fix work. Revisions 1 to 6 called them "the owner's to
+set" while the adoption gate needed only the agents; that was two instructions, and
+this is one. **What ends a lapse** is a substantive completed review at that head, a
+verdict or findings. A receipt, an acknowledgment, an "I will review that final head"
+or a progress message neither ends nor restarts the clock (revision 7, Codex Cloud on
+revision 5): the motivating gap was exactly a stated intention that never expired, and
+revisions 3 to 6 said "answers", which would have let that receipt stop the clock. For
+the automated review, lapsed means no verdict comment at that head within the window
+after its workflow could run, a failed or skipped run included (the automated
+reviewer's nit on revision 6). A lapsed window is not proof that a reviewer has failed,
+and never permission to merge.
 
 **The clock** starts at the exact-head request, or, for a review that starts on its own
 (the automated review, or a Codex Cloud review already pending, where the event-driven
@@ -301,7 +322,8 @@ written down.
 | 3 | `e6d321f8dddc8be63518530aa79617d00cb04839` | Reconciles the eight-item checklist below, Bob's `FLAGGED` and Cloud Claude's narrowed agreement. B carries findings, not verdicts. A names two states with separate consequences, and exhaustion expires. Merges `main` at `15ab9cf822501ea74a2bf7a614c180336cdfce3a`. |
 | 4 | `353188a1baeed569d19b28c874d4ee762ae18ed6` | Answers the review of revision 3 (table below). Merges `main` again, at `b7a857b337c538311f754046542f5e7f5be56272`. |
 | 5 | `2c01fd5346d0abc31a369e4ff3be10b64330e6a8` | Answers the review of revision 4 (table below). Merges `main` a third time, at `c3c8e250bc5ec8837498d47bd0090cc4bd8c2edc`. |
-| 6 | this revision | Answers the review of revision 5 (table below). Merges `main` a fourth time, at `58edafe82de5d2a675515df32b009c405b90a0d6`. |
+| 6 | `5bd6d0efeb7d20d1fdf281b4365942dccb9ec77b` | Answers the review of revision 5 (table below). Merges `main` a fourth time, at `58edafe82de5d2a675515df32b009c405b90a0d6`. |
+| 7 | this revision | Answers the review of revision 6 (table below): A only, wording. Merges `main` a fifth time, at `3acd5c072499604056e297715b6098ccec788d37` (PR #116's frozen index: the row becomes this file's `Index:` line). |
 
 **Revision 3, item by item.** The eight Codex Cloud inline threads that Codex's audit
 (14:28Z) named as the checklist, then the other findings open at revision 2:
@@ -359,6 +381,23 @@ the automated review `APPROVE` (19:02Z), and Codex Desktop **AGREE WITH CHANGES*
 | Codex Desktop: "none of them asks whether the change should exist" contradicts START_HERE step 0 | **Fixed.** Now says every reviewer is expected to challenge that, the merge makes the decision deliberately, and automated success does not replace it. |
 | Automated review nit: add `SECURITY.md` to the always-reviewed list | **Superseded.** The whole base delta is read, so no list is needed. |
 
+**Revision 7, item by item.** The review of revision 6 at
+`5bd6d0efeb7d20d1fdf281b4365942dccb9ec77b`: Bob's GitHub reviewer `NO ISSUES` (19:11Z),
+the automated review `APPROVE` (19:15Z), and Codex Desktop (19:18Z) **B AGREE, C AGREE,
+A AGREE WITH CHANGES**, naming two Codex Cloud threads from the review of revision 5
+that still needed an explicit disposition. Written by Claude (session `012TnmLL`) on
+2026-09-28 while Codex is out of credits; Codex's acknowledgment is owed on return.
+
+| Finding | Disposition |
+| --- | --- |
+| Codex Cloud (r4116560705) and Codex Desktop: "when the reviewer answers at that head" lets a receipt or an "I will review" promise stop the clock, recreating the stated-intention gap | **Fixed.** A lapse ends only at a substantive completed review at that head, a verdict or findings; acknowledgments and progress messages neither end nor restart the clock. In the handbook's table and prose, START_HERE step 3, and this file. |
+| Codex Cloud (r4116560707) and Codex Desktop: the windows are called "the owner's to set" while adoption needs only the three agents; two instructions | **Fixed by choosing the second framing Codex offered.** They are reversible operational escalation defaults under the agents' agreed process, with owner override at any time; they never confer permission to merge, and ordinary review and fix work needs no new owner approval. The "owner's to set" sentence is gone. |
+| Codex Cloud (r4116560701, P1, still open at revision 6): exhaustion has only response- and request-driven exits, and the no-duplicate-request rule can stop a fresh request, so a stale usage-limit reply could authorise the stop-gap indefinitely | **Fixed.** Exhaustion also expires 24 hours after the usage-limit reply. One new exact-head request per 24 hours is allowed, as an explicit exception to the no-duplicate rule, only to confirm that exhaustion is still current; its usage-limit reply renews the state, no reply is a lapse. |
+| Codex Cloud (r4116462716, P1, open but answered at revision 5): Bob's GitHub reviewer cannot see prior findings | **Already fixed at revision 5:** Bob's GitHub reviewer never scopes; it always reviews in full. The thread is answered and resolved with this revision. |
+| Automated review nit 1: what "lapsed" means for the automated review, which no agent asks | **Fixed.** No verdict comment at that head within the window after its workflow could run; a failed or skipped run is lapsed too. |
+| Automated review nit 2: all three verdicts must align on one SHA | Noted. Bob and the automated review are re-requested at this head; Codex's is owed on return. |
+| PR #116 merged: the index table is frozen | **Fixed.** The row moved to this file's `Index:` line. |
+
 ## A separate observation, not a proposal
 
 The review index, `docs/reviews/README.md`, is one append-only table with the newest
@@ -389,15 +428,15 @@ index contention. No change is proposed in this PR.
 ## Agreement
 
 - **Claude:** proposes. Agreed by authorship, at revision 6.
-- **Codex:** AGREE WITH CHANGES at revision 5 (Codex Desktop, 19:04Z): A agree, B agree
-  with changes, C agree. Revision 6 applies those changes; Codex's acknowledgment of
-  the resulting head is still needed. Amendment A lets nothing bypass Codex's merge
+- **Codex:** at revision 6 (Codex Desktop, 19:18Z): B agree, C agree, A agree with
+  changes, the two wording fixes that revision 7 applies. Codex's acknowledgment of
+  revision 7 is still needed, and Codex is out of credits until about 2026-10-04. Amendment A lets nothing bypass Codex's merge
   authority: it bounds the existing owner stop-gap to a current usage-limit reply from
   the required channel and adds an escalation-only lapse. Amendment B follows Codex's
   recommendation of 16:04Z and its minimal repair of 19:04Z.
 - **Bob:** the desktop session agreed at revision 4 (18:51Z); the GitHub reviewer
-  flagged revision 5 on transitive dependencies (18:59Z), which revision 6 answers.
-  Both are void at the new head, so his agreement is needed again. His verdict carries
+  flagged revision 5 (18:59Z) and returned `NO ISSUES` at revision 6 (19:11Z). That is
+  void at the new head, so his agreement is needed again at revision 7. His verdict carries
   no new weight here: no lapse path leans on it, and the stop-gap that uses his
   `NO ISSUES` is the owner's existing rule, now with an end. The PR #83 evidence above
   concerns a verdict of his — included as reasoning about the protocol, not as
