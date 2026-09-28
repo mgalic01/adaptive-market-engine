@@ -215,10 +215,14 @@ class PaperSimulator:
         Deliberately scoped differently from ``unpaired_inventory``: this asks "is
         anything sellable held", so it counts the filled part of a resting buy, while the
         drain and the end-of-run verdict ask "what does this exit owe" and exclude it.
-        Every caller here is already gated on an empty order book or on ``liquidate``'s
-        no-resting-orders precondition, so the two never disagree in practice; keeping
-        them distinct is what stops a partly filled buy being drained out from under its
-        own child sell.
+        The range-exit and settlement callers are gated on an empty order book
+        (``liquidate``'s precondition, and ``_settle``'s own check). The harvest gate is
+        not: a partly filled buy may still rest there, and then ``exitable`` counts its
+        filled part while ``unpaired_inventory`` does not. That disagreement is the
+        point. This is the stricter test, so a harvest never sells inventory a resting
+        buy's child sell will pair, and it is never True while ``exit_state`` is
+        ``incomplete``. Keeping them distinct is what stops a partly filled buy being
+        drained out from under its own child sell.
         """
         return not account.reserved_base() and not exitable(account, quote, self.rules)
 
@@ -388,6 +392,8 @@ class PaperSimulator:
                     else " (recentering disabled)"
                 ),
             )
+            # _resolved counts the whole unreserved inventory; safe here because
+            # liquidate() above required an empty order book.
             if (
                 self._resolved(account, quote)
                 and action == RiskAction.ALLOW
@@ -446,6 +452,9 @@ class PaperSimulator:
         # Recheck risk after any fills, but never reuse this event's liquidity for an exit.
         if report["fills"]:
             self._risk_action(account, quote, frame.signals.emergency)
+        # Buys may still rest here, so _resolved (whole unreserved inventory) is the
+        # stricter gate: a partly filled buy's inventory blocks the harvest until its own
+        # child sell has paired it. See _resolved.
         if not account.halt and self._resolved(account, quote):
             # A flat account is a safe harvest point even with unused deeper buys.
             # Do this only after sells, draining, or when all orders are already gone.
@@ -453,7 +462,14 @@ class PaperSimulator:
             if sold or account.draining or not account.orders:
                 self._cancel_buys(account)
                 if account.cash - account.pending <= ZERO:
-                    self._halt(account, "active capital exhausted")
+                    # Arm the exit for any residue, as the other halt sites do, so the
+                    # stuck inventory is reported from the next frame rather than only
+                    # once the risk engine re-halts a frame later.
+                    self._halt(
+                        account,
+                        "active capital exhausted",
+                        exit_requested=account.inventory != ZERO,
+                    )
                 else:
                     report["allocation"] = self._settle(account, quote)
                     account.draining = False
@@ -553,6 +569,7 @@ class PaperSimulator:
     def _settle(self, account: Account, quote: Quote) -> dict[str, Any]:
         # An unsellable residue is left out of the allocation base, which understates
         # profit; it is never counted as settled cash.
+        # No orders is checked first, so _resolved here sees the whole inventory.
         if account.orders or not self._resolved(account, quote):
             raise ValueError("profit settlement requires no orders and no sellable inventory")
         active_before = account.cash - account.pending

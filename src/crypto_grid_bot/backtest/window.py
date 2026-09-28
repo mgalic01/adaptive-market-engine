@@ -11,22 +11,34 @@ called it.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from crypto_grid_bot.market_data.parsing import DataError
 
 DEVELOPMENT_END = "2024-12"
+_MONTH = re.compile(r"[0-9]{4}-[0-9]{2}")
+
+
+def _year_month(month: str) -> tuple[int, int]:
+    return int(month[:4]), int(month[5:])
 
 
 def development_month(month: str) -> str:
-    """``month`` if it is inside the development window; DataError otherwise."""
+    """``month`` if it is inside the development window; DataError otherwise.
+
+    The form is exactly ``YYYY-MM``, zero-padded. ``strptime`` alone would accept
+    ``2024-9``, and everything downstream compares months as text: ``DatasetSpec.months``
+    would then iterate ``"2024-12" <= "2024-6"`` to the end of the year, and the archive
+    path regex would refuse the same month one layer down. Refusing the unpadded form
+    here keeps every layer's reading of a month the same.
+    """
+    if type(month) is not str or _MONTH.fullmatch(month) is None:
+        raise DataError("month must be YYYY-MM, zero-padded")
     try:
-        parsed = datetime.strptime(month, "%Y-%m")
+        datetime.strptime(month, "%Y-%m")
     except ValueError as exc:
         raise DataError("month must be YYYY-MM") from exc
-    # Compare the parsed date, not the text: strptime accepts an unpadded month, and
-    # "2024-9" > "2024-12" as a string, so a hand-edited spec could be refused as
-    # reserved although it is inside the window.
-    if parsed.strftime("%Y-%m") > DEVELOPMENT_END:
+    if _year_month(month) > _year_month(DEVELOPMENT_END):
         raise DataError(f"{month} is in the reserved window; audits stop at {DEVELOPMENT_END}")
     return month

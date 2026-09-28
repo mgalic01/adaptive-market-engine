@@ -1,7 +1,14 @@
 from dataclasses import replace
 from unittest import TestCase
 
-from crypto_grid_bot.simulation.execution import cancel, liquidate, match, place, reduce_unreserved
+from crypto_grid_bot.simulation.execution import (
+    cancel,
+    exitable,
+    liquidate,
+    match,
+    place,
+    reduce_unreserved,
+)
 from crypto_grid_bot.simulation.models import Account, D, LimitOrder, MarketRules, Quote
 
 
@@ -154,3 +161,39 @@ class MakerTakerFeeTests(TestCase):
         self.assertEqual(D("9.79"), fill.price)
         self.assertEqual(D("9.79") * 5 * D("0.0009"), fill.fee)
         self.assertEqual(fill.fee, account.fees)
+
+
+class PanelHardeningTests(TestCase):
+    """Hardening from the 2026-09-28 panel review (PR #122 follow-up)."""
+
+    def setUp(self):
+        self.rules = MarketRules(
+            "TESTUSDT", D("0.01"), D("1"), D("5"), D("0.001"), D("0.0005"), D("0.1")
+        )
+        self.account = Account.start(D("100"))
+
+    def test_a_non_positive_maximum_is_refused(self):
+        self.account.inventory = D("10")
+        for maximum in (D("0"), D("-5")):
+            with self.subTest(maximum=maximum), self.assertRaisesRegex(ValueError, "positive"):
+                reduce_unreserved(self.account, quote(), self.rules, maximum=maximum)
+
+    def test_resting_orders_cannot_claim_more_inventory_than_is_held(self):
+        # A buy filled 6 of 10 says 6 units are held for its child sell. Fewer than 6 in
+        # inventory would make unpaired_inventory negative and the exit classifier report
+        # nothing owed.
+        self.account.orders["b"] = LimitOrder("b", "buy", D("10"), D("10"), D("4"))
+        self.account.inventory = D("3")
+        with self.assertRaisesRegex(ValueError, "claim more inventory"):
+            self.account.validate(self.rules)
+        self.account.inventory = D("6")
+        self.account.validate(self.rules)
+
+    def test_exactly_the_minimum_notional_is_sellable_and_one_step_less_is_not(self):
+        # exit price = floor(0.0501 * (1 - 0.0005), 0.01) = 0.05; 100 units are worth
+        # exactly the 5.0 minimum notional.
+        at_bid = quote("0.0501", "0.0502")
+        self.account.inventory = D("100")
+        self.assertEqual(D("100"), exitable(self.account, at_bid, self.rules))
+        self.account.inventory = D("99")
+        self.assertEqual(D("0"), exitable(self.account, at_bid, self.rules))

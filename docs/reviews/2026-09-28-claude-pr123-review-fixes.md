@@ -10,7 +10,7 @@ source before changing anything, and all six were correct.
    skipped as unparsed. On `main`, `fetch_file` raises `ArchiveParseError` (a
    `DataError` subclass) only for a hash-verified archive that fails to parse, and plain
    `DataError` for checksum, missing-archive and hash failures
-   (`backtest/dataset.py:306–331`). The task now skips only `ArchiveParseError`. Any
+   (`backtest/dataset.py:306–331`) *[2026-09-28: those are `8a45cb5`'s lines, the `main` this record was drafted against; on `2cce58e` and later they are `dataset.py:326–351`.]*. The task now skips only `ArchiveParseError`. Any
    other `DataError` stops the run, and the stop conditions say so. An unpublished month
    is `fetch_file`'s `missing` status, not an error.
 2. **Masking task: the same distinction.** The repair path is entered only on

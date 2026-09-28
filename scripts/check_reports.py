@@ -14,7 +14,11 @@ Each check here once cost a review round (PRs #40, #59, #60, #65, #66):
   the index, and the index gains exactly one row, for that report, and loses none.
 
 Nothing here is allowed to pass quietly: every run prints the verified, corrected and
-unverifiable pins by name, and the three counts sum to every pin found.
+unverifiable pins by name, and the three counts sum to every pin found. A pin is a
+``*.py`` path in backticks with a SHA-256 beside it; a path named without one is a
+mention, counted and printed as information. In a Bob report a mention of a ``data/``
+script is an error unless the pair is listed in ``UNVERIFIABLE``: those scripts live in
+a git-ignored directory, so the report's hash is the only record of what ran.
 
 Judgement stays with the reviewers; this only removes the checks a script can do.
 """
@@ -42,6 +46,7 @@ HEADING = re.compile(r"^(#{1,6})[ \t]+(.*)$", re.MULTILINE)
 FENCE = re.compile(r"^```(\w*)[ \t]*$", re.MULTILINE)
 HEX64 = re.compile(r"\b[0-9a-f]{64}\b")
 BOB_REPORT = re.compile(r"docs/reviews/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md")
+BOB_NAME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md")
 CORRECTION = "Correction at review"
 # How far after the path a digest may sit and still be the digest of that path.
 WINDOW = 200
@@ -166,7 +171,14 @@ def sections(text: str) -> list[tuple[str, int, int]]:
     written as ``## Appendix`` + ``### 1. `data/x.py``` gives each script its own body.
     """
     found = []
-    heads = list(HEADING.finditer(text))
+    # A ``#`` line inside a fenced block is a comment in the fenced source, not a
+    # heading; Bob's ``text``-fenced Python carries them.
+    fenced = [(start, start + len(body)) for start, _, body in fenced_blocks(text)]
+    heads = [
+        head
+        for head in HEADING.finditer(text)
+        if not any(start <= head.start() <= end for start, end in fenced)
+    ]
     for i, head in enumerate(heads):
         level = len(head.group(1))
         end = len(text)
@@ -220,7 +232,20 @@ def stated_hashes(text: str) -> list[tuple[str, str, str]]:
     return pins
 
 
-def check_report(path: Path, checked: list[str] | None = None) -> list[str]:
+def hashless_mentions(text: str) -> list[str]:
+    """Distinct ``*.py`` paths named in backticks with no digest beside them, in order."""
+    pinned = {script for script, _, _ in stated_hashes(text)}
+    seen: list[str] = []
+    for match in PIN_PATH.finditer(text):
+        script = match.group(1)
+        if script not in pinned and script not in seen:
+            seen.append(script)
+    return seen
+
+
+def check_report(
+    path: Path, checked: list[str] | None = None, mentions: list[str] | None = None
+) -> list[str]:
     """Problems in one review; appends one line per stated hash to ``checked``.
 
     Every stated hash ends up in exactly one of three states, all of them printed:
@@ -244,8 +269,23 @@ def check_report(path: Path, checked: list[str] | None = None) -> list[str]:
         for found in PIN_PATH.finditer(heading)
         if any(start <= b[0] < end for b in blocks)
     }
+    unhashed = hashless_mentions(text)
+    if mentions is not None:
+        mentions += [f"{path.name}:{script}" for script in unhashed]
+    if BOB_NAME.fullmatch(path.name):
+        # Bob's scripts live in git-ignored ``data/``; a report that names one without
+        # its hash leaves no way to know what ran. Repository paths need no pin, and a
+        # script with an appendix is reported below as missing its hash, once.
+        errors += [
+            f"{path}: {script} is named with no SHA-256 beside it; Bob's data/ scripts "
+            "must be pinned, or the pair listed in UNVERIFIABLE in scripts/check_reports.py"
+            for script in unhashed
+            if script.startswith("data/")
+            and script not in named
+            and (path.name, script) not in UNVERIFIABLE
+        ]
     if not pins and not named:
-        return errors
+        return errors  # a review that pins nothing; any Bob data/ mention is already listed
     errors += [
         f"{path}: {script} has an appendix but no stated SHA-256"
         for script in sorted(named - {script for script, _, _ in pins})
@@ -320,7 +360,14 @@ def check_pin(
                 f"{path}: {script} is stated as {digest}, which is block "
                 f"{matching[0] + 1} of its appendix, not the first"
             ]
-        if CORRECTION in line and actual in line:
+        # Only the part of the line that belongs to this pin: from the path to the next
+        # pinned path, so a correction cannot borrow the digest stated for another script
+        # on the same line.
+        own = line[line.find(f"`{script}`") :] if f"`{script}`" in line else line
+        following = PIN_PATH.search(own, len(script) + 2)
+        if following:
+            own = own[: following.start()]
+        if CORRECTION in line and actual in own:
             # The only accepted form: the correction names the real digest, so the
             # appendix is still hash-checked, against the corrected value.
             record("corrected", f" (states {digest[:12]}.., appendix is {actual[:12]}..)")
@@ -419,12 +466,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     errors = check_index() + check_allow_list()
     checked: list[str] = []
+    mentions: list[str] = []
     # Every review that states a hash, not only Bob's: Claude publishes hashed
     # appendices too (2026-09-26 open-mismatch note), and an unchecked hash is
     # exactly the defect this script exists to catch.
     for report in sorted(REVIEWS.glob("*.md")):
         if report.name != "README.md":
-            errors += check_report(report, checked)
+            errors += check_report(report, checked, mentions)
     if args.changed is not None:
         if args.base_index is None:
             parser.error("--changed needs --base-index")
@@ -445,6 +493,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"check_reports: {len(checked)} stated hash(es): {counts['verified']} verified, "
         f"{counts['corrected']} corrected in place, {counts['UNVERIFIABLE']} unverifiable"
+    )
+    print(
+        f"check_reports: {len(mentions)} script mention(s) without a hash "
+        f"(information; a mention is not a pin)"
     )
     print(f"check_reports: {len(errors)} problem(s)")
     return 1 if errors else 0

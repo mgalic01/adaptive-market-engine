@@ -1,6 +1,7 @@
 """Regressions from Claude's review; prices are constructed, not backtest evidence."""
 
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -718,3 +719,74 @@ class ReentryTests(TestCase):
         self.assertEqual(D(4), fills[0].quantity)
         self.assertEqual(D(2), exits[0].quantity)
         self.assertEqual(D(2), self.account.inventory)
+
+
+class PanelFixTests(TestCase):
+    """Findings of the 2026-09-28 panel review on the runner (PR #122 follow-up)."""
+
+    def setUp(self):
+        self.temp = TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "paper.db"
+        self.config = replace(load_config(ROOT / "config/default.toml"), minimum_transfer_quote=0.1)
+        self.policy = SimulationPolicy(outside_range_seconds=3, maximum_frame_gap_seconds=30)
+        self.sim = PaperSimulator(self.path, self.config, MarketRules(), policy=self.policy)
+
+    def tearDown(self):
+        if self.sim is not None:
+            self.sim.close()
+
+    def test_resolved_is_the_stricter_gate_under_a_partly_filled_buy(self):
+        # The harvest gate calls _resolved while buys may still rest. Its docstring once
+        # claimed every caller was gated on an empty book; it is not, and the two
+        # measures disagree here by design: _resolved refuses the harvest, while the
+        # drain's measure owes nothing because the child sell will pair the inventory.
+        from crypto_grid_bot.simulation.execution import exit_state, unpaired_inventory
+
+        account = Account.start(D(100))
+        account.orders["b"] = LimitOrder("b", "buy", D("0.02000"), D(5000), D(2000))
+        account.inventory = D(3000)
+        account.cash = D(40)
+        quote = frame(0).quote
+        self.assertFalse(self.sim._resolved(account, quote))
+        self.assertEqual(D(0), unpaired_inventory(account))
+        self.assertEqual("", exit_state(account, quote, self.sim.rules)[0])
+
+    def test_an_exhaustion_halt_arms_the_exit_for_a_held_residue(self):
+        # Before the fix this was the one halt site that left liquidating False, so a
+        # residue held at exhaustion was reported as stuck only a frame later, once the
+        # risk engine re-halted the account.
+        account = Account.start(D(100))
+        account.cash = D(0)
+        account.inventory = D(100)  # about 2.3 quote at this bid: below the minimum
+        account.risk_high = account.day_start = D("2")
+        account.draining = True
+        self.sim._step(account, frame(0))
+        self.assertTrue(account.halt.startswith("active capital exhausted"), account.halt)
+        self.assertTrue(account.liquidating)
+
+    def test_a_schema_four_database_is_refused_by_the_resume_cli(self):
+        self.sim.process(frame(0))
+        self.sim.close()
+        connection = sqlite3.connect(self.path)
+        try:
+            identity = json.loads(
+                connection.execute("SELECT identity FROM state WHERE id=1").fetchone()[0]
+            )
+            identity["schema"] = 4
+            connection.execute("UPDATE state SET identity=? WHERE id=1", (json.dumps(identity),))
+            connection.commit()
+        finally:
+            connection.close()
+        now = datetime.now(UTC)
+        recent = frame(1)
+        recent = replace(
+            recent,
+            quote=replace(recent.quote, observed_at=now.isoformat(), received_at=now.isoformat()),
+            signals=replace(recent.signals, observed_at=now),
+        )
+        path = Path(self.temp.name) / "frame.json"
+        path.write_text(encode(recent.payload()))
+        with self.assertRaisesRegex(ValueError, "paper schema 5"):
+            resume_paper(self.path, self.config, path, event_id="cli", reason="reviewed")
+        self.sim = None  # the tampered database cannot be reopened; nothing left to close

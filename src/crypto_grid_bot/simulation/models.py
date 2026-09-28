@@ -209,6 +209,18 @@ class Account:
             raise ValueError("account baselines must be positive")
         if self.grid_lower > self.grid_upper:
             raise ValueError("saved grid bounds are inverted")
+        held_by_buys = sum(
+            (
+                order.quantity - order.remaining
+                for order in self.orders.values()
+                if order.side == "buy"
+            ),
+            ZERO,
+        )
+        if self.inventory - self.reserved_base() < held_by_buys:
+            # Otherwise unpaired_inventory goes negative and the exit classifier would
+            # report nothing owed while a sell reservation exceeds what is held.
+            raise ValueError("resting orders claim more inventory than the account holds")
         if any(
             type(flag) is not bool for flag in (self.liquidating, self.draining, self.range_exit)
         ):

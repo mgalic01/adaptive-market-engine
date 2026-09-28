@@ -150,7 +150,8 @@ def read_member(path: Path, expected_member: str) -> str:
 
     The member name must end in its month (``...-YYYY-MM.csv``), and that month must be
     in the development window: this is the lowest reader, so the window is enforced
-    here and not only in the wrappers that call it.
+    here and not only in the wrappers that call it. The *content* is returned unchecked:
+    ``parse_rows`` is what verifies that every row lies inside the named month.
     """
     month = _MEMBER_MONTH.search(expected_member)
     if month is None:

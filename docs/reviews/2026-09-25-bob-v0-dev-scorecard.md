@@ -56,6 +56,7 @@ python data/score.py
 | File | SHA-256 |
 | --- | --- |
 | `data/score.py` | `8324d14b275e672e1e29d2511609144fe4c2a610cc44de5c091d4ce222d04c2b` |
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 | `data/backtests/practice-2022/20260926T010022Z-m0-t0.0009/results.json` | `f0167a194fdc935daea07750a88fc8c4b0911678665e8e565a31ab7040c841da` |
 | `data/backtests/practice-2022/20260926T011114Z-m0.001-t0.001/results.json` | `58504abe5ca6ec914a64244aea4ea14ee55093f2428677ef9e2cb272d121376f` |
 | `data/backtests/verify-2024h1/20260926T011617Z-m0-t0.0009/results.json` | `343cbfc056538985756eec55db8a9d3c71318bbffa9ebbb96b159e3da8428b77` |

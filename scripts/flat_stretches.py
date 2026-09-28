@@ -69,10 +69,13 @@ class Stretch:
     def span_hours(self) -> int:
         """Elapsed hours between the first and last sample of the stretch.
 
-        This is the measured quantity. ``samples`` is not: it is one larger for a
-        gapless stretch and smaller than the span wherever hours are missing.
+        Measured between the samples' *hour buckets*, not their raw timestamps: a
+        sample stamped mid-hour (the first minutes of its hour absent) would otherwise
+        shorten the span by a fraction of an hour, drop the stretch at a 24 h gate, and
+        make ``missing_hours`` negative. ``samples`` is not the measure either: it is one
+        larger for a gapless stretch and smaller than the span wherever hours are missing.
         """
-        return (self.end_ms - self.start_ms) // HOUR_MS
+        return self.end_ms // HOUR_MS - self.start_ms // HOUR_MS
 
     @property
     def missing_hours(self) -> int:
@@ -85,7 +88,7 @@ class Stretch:
         return self.span_hours + 1 - self.hours_present
 
     def hours_to_series_end(self, series_end_ms: int) -> int:
-        return (series_end_ms - self.end_ms) // HOUR_MS
+        return series_end_ms // HOUR_MS - self.end_ms // HOUR_MS
 
     def describe(self, series_end_ms: int) -> str:
         span = f"{self.span_hours} h ({self.span_hours / 24:.1f} d)"
@@ -96,7 +99,7 @@ class Stretch:
                 "flat when the data ran out, no later equity observable; span is a lower bound"
             )
         elif self.changed_at_ms is not None:
-            waited = (self.changed_at_ms - self.start_ms) // HOUR_MS
+            waited = self.changed_at_ms // HOUR_MS - self.start_ms // HOUR_MS
             outcome = f"CHANGED at {utc(self.changed_at_ms)} after {waited} h"
         else:
             raise ValueError("a stretch that is not censored must record when equity changed")

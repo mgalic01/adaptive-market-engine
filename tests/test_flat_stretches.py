@@ -165,3 +165,19 @@ class DocumentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MidHourSampleTest(unittest.TestCase):
+    def test_a_stretch_whose_first_sample_is_mid_hour_spans_whole_hours(self) -> None:
+        # replay.py stamps an hour with the minute bar that opened it, so a stretch can
+        # start at :30. Measured on raw timestamps this 25-hour stretch spanned 23 h,
+        # reported -1 missing hours and was dropped at the 24 h gate.
+        flat = [(START + 30 * 60 * 1000, Decimal(90))]
+        flat += [(START + h * HOUR_MS, Decimal(90)) for h in range(1, 25)]
+        s = [(START - HOUR_MS, Decimal(100)), *flat, (START + 25 * HOUR_MS, Decimal(95))]
+        found = stretches(s)[1]
+        self.assertEqual(25, found.hours_present)
+        self.assertEqual(24, found.span_hours)
+        self.assertEqual(0, found.missing_hours)
+        self.assertEqual(1, len(select(stretches(s), min_hours=24, threshold=Decimal(8))))
+        self.assertEqual(1, found.hours_to_series_end(START + 25 * HOUR_MS))

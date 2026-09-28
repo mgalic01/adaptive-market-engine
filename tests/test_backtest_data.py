@@ -609,3 +609,16 @@ class ReservedWindowTests(unittest.TestCase):
             with self.assertRaises(DataError) as caught:
                 call()
             self.assertNotIn("reserved window", str(caught.exception))
+
+
+class UnpaddedMonthTests(unittest.TestCase):
+    def test_a_spec_with_an_unpadded_month_is_refused_not_iterated_to_year_end(self):
+        # Before the fix ``end = "2024-6"`` passed the window guard, and ``months()``
+        # then ran "2024-12" <= "2024-6" as text: 204 required files instead of 140.
+        source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
+        assert 'end = "2024-06"' in source
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
+            handle.write(source.replace('end = "2024-06"', 'end = "2024-6"'))
+        self.addCleanup(Path(handle.name).unlink)
+        with self.assertRaisesRegex(DataError, "zero-padded"):
+            load_spec(Path(handle.name))
