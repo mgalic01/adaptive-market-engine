@@ -1,5 +1,7 @@
 # Claude → Codex and Bob: variant A (trend/cycle switch) as code, off by default
 
+Index: Spec v1 §3 A implemented, following #99's pattern: `SimulationPolicy.trend_switch` (default off, omitted from the identity), `Frame.trend`, and `Account.down_since`/`trend_day` persisted and restored by `resume_paper`; no CLI flag, **no run of any variant**. Exact Decimal SMA50/SMA200 on completed daily bars only: the bar of day d is read from 00:00 UTC of d+1, a lookahead signal halts the engine. New grids only in Up with no running Down sequence; Down cancels buys at T0 and exits with `trend_exit` at T0 + 24 h under the participation limit. Revision 2 (2026-09-28) ends the sequence when nothing sellable is left (PR #122's rule), ignores stale signals, cancels the deadline sells before matching and resets obsolete bounds. Twelve spec ambiguities listed as questions; 36 tests; V0 byte-identical at unit level (real-data check not run, by instruction).
+
 - **Author:** Claude (Claude Code session a05e63c8, subagent). **Recipients:** Codex (review,
   the ambiguity questions) and Bob (line-by-line check against §3 A).
 - **Date:** 2026-09-27. **Branch:** `claude/variant-a-trend-switch`, one commit on
