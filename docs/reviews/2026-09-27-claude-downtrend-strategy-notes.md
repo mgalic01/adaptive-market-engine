@@ -45,6 +45,21 @@ After my first summary, which put shorting aside for now:
 | Which exchange would the real bot use? | **"Both Binance and Kraken."** |
 | How should shorting fit into the bot? | **Option 1, one bot that switches mode** (grid when sideways or up, trend short in clear downtrends, cash otherwise), with: *"the boot really needs to have CLEAR and excellently defined rules on when to switch when to stay out if the rules are not met etc..."* |
 | How does this relate to the current experiment (spec v1)? | **"Finish v1, then design v2"** |
+| **2026-09-28, venue update:** after the ledger's Binance finding, record Kraken as the planned live venue? | **"yes please do"**, after the owner asked me to check whether Binance had resolved its EU issues ("if not binance we can use Kraken perhaps") |
+
+**Venue decision, 2026-09-28 (supersedes "Both Binance and Kraken" for live trading).**
+
+- **Kraken is the planned live venue** for the v2 bot:
+  - EU spot trading is licensed under MiCA through Ireland;
+  - crypto derivatives are offered through Payward Europe Digital Solutions (CY), CySEC licence 342/17, under MiFID II;
+  - perpetual futures are open to retail clients after an appropriateness test.
+- **Binance is not a live venue.** As of 2026-09-28 it holds no MiCA licence. It withdrew its Greek application on 2026-06-24, and a French application is pending. It stopped new activity for EU users on 2026-07-01, and serves some existing users under a "reverse solicitation" exemption that ESMA is questioning. HANFA stated on 2026-07-03 that only authorised firms may serve Croatian clients. Sources: [CoinDesk](https://www.coindesk.com/policy/2026/06/26/binance-tells-eu-users-it-will-no-longer-provide-services-after-failing-to-secure-mica-license), [Euronews](https://www.euronews.com/business/2026/06/25/binance-to-halt-crypto-services-across-eu-countries-after-failing-to-secure-mica-approval), [Cryptonomist, 2026-09-08](https://en.cryptonomist.ch/2026/09/08/binance-eu-mica-licensing/), [FinTelegram](https://fintelegram.com/binance-croatia-google-play-mica-app-restrictions/). These are news reports; I found no official Binance statement on EU futures. The owner will check in the app whether new futures positions are still possible, for the record only.
+- **Binance's public data stays the research source.** The archives start in 2020-01 (open interest from 2020-09). Using public market history is not trading on the venue.
+- **Consequences for v2:**
+  1. Kraken's EEA product dates from about 2025, so its own history lies in the reserved window. **Kraken execution is proven by forward paper trading, not by backtest.**
+  2. **Leverage:** ESMA's statement of 24 February 2026 says crypto perpetuals offered to retail "likely fall under the CFD category". Where the national regulator applies this, retail leverage is capped at **2×**, with negative-balance protection and a 50% margin close-out. The plan is about 1×, so the cap does not bind. Both protections are welcome. Sources: [ESMA statement](https://www.esma.europa.eu/sites/default/files/2026-02/ESMA35-243228190-8024_-_Public_statement_on_derivatives_in_scope_of_the_CFD_product_intervention_measures.pdf), [Finance Magnates](https://www.financemagnates.com/forex/10x-down-to-2x-has-europe-killed-crypto-perps-even-before-it-started/).
+  3. Kraken's fees, minimums and hourly funding (ledger B8–B10) replace Binance's in any v2 cost model for live figures. Backtests on Binance data report both venues' cost assumptions.
+  4. The README's "spot only, no futures" rule still needs the owner-approved amendment (D5) before any futures code is written.
 
 **Assumptions I stated to the owner, not yet confirmed by them:**
 - paper-only until the owner explicitly approves going live;
