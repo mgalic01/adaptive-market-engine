@@ -184,8 +184,11 @@ development environment:
 python scripts/preflight.py
 ```
 
-It checks lint, formatting and report integrity, then runs the full deterministic
-pytest suite. It uses the calling Python interpreter and this checkout's `src`,
+It first prints the interpreter and stops if it is older than Python 3.12, the
+project floor and the only version CI runs; a newer interpreter runs but is labelled
+as not CI evidence. It then checks lint, formatting, types (mypy) and security
+(bandit) over the same paths as CI, and report integrity, then runs the full
+deterministic pytest suite. It uses the calling Python interpreter and this checkout's `src`,
 does not install dependencies or fix files, disables check caches where supported,
 and stops at the first failure. The full GitHub CI checks remain required.
 

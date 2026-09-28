@@ -97,11 +97,13 @@ class ExecutionTests(TestCase):
 
     def test_emergency_liquidation_respects_depth_and_reports_dust(self):
         self.account.inventory = D("10")
-        fills = liquidate(self.account, quote(size="20"), self.rules)
-        self.assertEqual(D("2"), fills[0].quantity)
-        self.assertEqual(D("9.79"), fills[0].price)
-        self.assertEqual(D("8"), self.account.inventory)
-        self.assertEqual([], liquidate(self.account, quote("0.01", "0.02"), self.rules))
+        result = liquidate(self.account, quote(size="20"), self.rules)
+        self.assertEqual(D("2"), result.fills[0].quantity)
+        self.assertEqual(D("9.79"), result.fills[0].price)
+        self.assertEqual(("", D("8")), (result.blocked, self.account.inventory))
+        # A bid that cannot support one minimum notional refuses and says which refusal.
+        refused = liquidate(self.account, quote("0.01", "0.02"), self.rules)
+        self.assertEqual(([], "dust"), (refused.fills, refused.blocked))
         self.assertEqual(D("8"), self.account.inventory)
 
 
@@ -148,7 +150,7 @@ class MakerTakerFeeTests(TestCase):
         account.inventory = D("5")
         mark = D("5") * D("9.8") * (1 - D("0.0005")) * (1 - D("0.0009"))
         self.assertEqual(D("100") + mark, account.equity(quote(), rules))
-        (fill,) = reduce_unreserved(account, quote(), rules)
+        (fill,) = reduce_unreserved(account, quote(), rules).fills
         self.assertEqual(D("9.79"), fill.price)
         self.assertEqual(D("9.79") * 5 * D("0.0009"), fill.fee)
         self.assertEqual(fill.fee, account.fees)

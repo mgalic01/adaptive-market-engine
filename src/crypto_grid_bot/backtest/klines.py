@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import zipfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.parsing import DataError, amount, symbol_name
 
 INTERVAL_MS = {"1m": 60_000, "1h": 3_600_000, "1d": 86_400_000}
@@ -136,11 +138,24 @@ def read_archive(
 ) -> tuple[list[Kline], FileStats]:
     """Parse the single expected CSV member of a verified archive zip."""
     symbol_name(symbol)
+    development_month(month)
     return parse_rows(read_member(path, f"{symbol}-{interval}-{month}.csv"), interval, month)
 
 
+_MEMBER_MONTH = re.compile(r"-(\d{4}-\d{2})\.csv$")
+
+
 def read_member(path: Path, expected_member: str) -> str:
-    """Return the ASCII text of the archive's only member, which must be named as given."""
+    """Return the ASCII text of the archive's only member, which must be named as given.
+
+    The member name must end in its month (``...-YYYY-MM.csv``), and that month must be
+    in the development window: this is the lowest reader, so the window is enforced
+    here and not only in the wrappers that call it.
+    """
+    month = _MEMBER_MONTH.search(expected_member)
+    if month is None:
+        raise DataError(f"archive member name carries no month: {expected_member}")
+    development_month(month.group(1))
     try:
         with zipfile.ZipFile(path) as archive:
             members = archive.infolist()
