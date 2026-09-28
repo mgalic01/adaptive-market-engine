@@ -255,7 +255,7 @@ settings fixed, before any variant runs.
   raw rate is ADA 2019, 247 of 8,012 parsed hours (3.08%, report). The calendar does not
   cover the unparsed months at all, so masked fractions of the repaired months are
   unknown. A per-month cap on real defects — 2% is **proposed in #100**, not decided —
-  would be applied to the months inside the passing folds, and its effect on these
+  *[Decided by the owner on 2026-09-28: one rule for every pair-month, real defects at most **17%** of expected hours; `Decimal(0)` confirmed. See [the eligibility record](2026-09-27-claude-eligibility-thresholds.md).]* would be applied to the months inside the passing folds, and its effect on these
   counts is not measured by this report.
 - **The repair rule is not yet policy.** Bob's report calls its output "repair-rule
   eligibility, not full replay validity", and leaves any price tolerance to a policy
@@ -278,13 +278,15 @@ forbid. None of it is chosen from strategy results.
 
 1. **Mask settings (direction chosen).** The maximum masked fraction per month and its
    denominator, and a limit on consecutive masked hours. **Proposed in #100** (merged; the values
-   remain undecided): 2% of a month's expected hours, counted on real defects only. Also: whether
+   remain undecided): 2% of a month's expected hours, counted on real defects only.
+   *[Decided by the owner on 2026-09-28: one rule for every pair-month, real defects at most **17%** of expected hours; `Decimal(0)` confirmed. See [the eligibility record](2026-09-27-claude-eligibility-thresholds.md).]* Also: whether
    a day that fails the daily/hourly cross-check, such as 2021-01-21, is fatal, masked or
    repaired — the difference between blocks B and C.
 2. **Repair settings (direction chosen).** The refined rule's price tolerance — DOGE
    2020-02 turns on a one-tick difference — and positive validation of repaired months:
    how a month moves from unknown to verified before it counts. **Proposed in #100**
    (merged; the value remains undecided): no price tolerance, strict `Decimal(0)`.
+   *[Decided by the owner on 2026-09-28: one rule for every pair-month, real defects at most **17%** of expected hours; `Decimal(0)` confirmed. See [the eligibility record](2026-09-27-claude-eligibility-thresholds.md).]*
 3. **Behaviour through gaps.** For masked hours and outages alike: what happens to
    resting orders and positions, how risk is sampled, how features are invalidated and
    when they count as recovered, and how accounting treats the gap — with protected

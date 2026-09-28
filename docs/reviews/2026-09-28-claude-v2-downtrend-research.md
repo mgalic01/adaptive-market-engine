@@ -24,6 +24,11 @@ Index: 2026-09-28 research for spec v2, measured on BTCUSDT development months (
   signal from the close of day d is acted on at the close of day d+1. Costs are the paper
   defaults (taker 0.09%, slippage 0.05%), so a round trip is 0.28%. The appendix pins the
   script; every table below is its output.
+- **Where the costs come from.** The taker 0.09% is the spec's primary fee scenario
+  ([`EXPERIMENT_SPEC_V1.md`](../EXPERIMENT_SPEC_V1.md) §4, Revolut X taker 0.0009), and
+  the slippage 0.05% is the `slippage_rate` default in
+  `src/crypto_grid_bot/simulation/models.py`. They are not in `config/default.toml`, as the
+  script's docstring says; the docstring is left as it is because the script is pinned.
 
 ## 1. How much of a bear market the rule catches
 
@@ -124,6 +129,9 @@ total move. A ratio above 1 means price moved back and forth more than it finall
 | 2022-09-13..2022-10-03 | 21 | +0.5% | 38% | 68.4 | 4 | 5.1% |
 | 2022-11-08..2023-01-03 | 57 | +5.8% | 76% | 13.0 | 5 | 10.5% |
 
+The table lists only the runs of 20 days or more; the totals that follow cover every run of
+5 days or more, so they include runs the table does not show.
+
 Across all 28 runs of five days or more: **801 days, 1,960% of travel, 145 rallies of 3% or
 more**, and a mean "biggest rally inside the run" of 9.2%. Even the worst decline in the
 window, 2022-04 to 2022-07, travelled 282% to fall 41.6%, with 18 separate rallies of 3% or
@@ -169,7 +177,9 @@ The rules as published, and what each one is:
    rebalanced to equity daily.
 3. **Dual moving average**: the 50/200 pair variant A already computes.
 
-**Every rule loses by adding the short side, and every rule's drawdown gets worse.** Two of
+**Every rule loses by adding the short side, and every rule's drawdown gets worse**, on
+this one asset and a window that holds two large bull markets (see the survivorship and
+regime caveat in section 8). Two of
 the three long-only versions beat buy-and-hold on return (Donchian by a wide margin) and
 all three beat it on drawdown. That is the honest summary of "what the best trend traders
 do", applied here: *the edge is in when to stand aside, not in when to bet against.*
