@@ -20,8 +20,9 @@ It has no networked exchange implementation and does not read API credentials.
   that is a rule for whoever writes the change, not something the system enforces.
 
   `tests/test_documented_hosts.py` catches one kind of mistake, and only one: **a Binance
-  hostname** — a subdomain of `binance.vision` or `binance.com`, in any letter case —
-  written anywhere in `src/*.py`, comments and docstrings included, that is not an exact
+  hostname** — `binance.vision` or `binance.com` or any subdomain of either, in any
+  letter case — written anywhere in `src/**/*.py` (every Python file under `src/`,
+  recursively), comments and docstrings included, that is not an exact
   entry in the list above. It compares whole hostnames, lowercased, so a host is not
   "listed" because it appears inside a longer listed one or elsewhere in this document.
   The markers must each appear once, begin before end, or the test fails. It is **a

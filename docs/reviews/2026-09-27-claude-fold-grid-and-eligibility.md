@@ -158,6 +158,14 @@ trivial. Bob's [hourly defect calendar](2026-09-26-bob-hourly-defect-calendar.md
 pairs below 0.12% over the same years. But masking alone buys almost nothing — **21
 pair-folds against 18** on the test-month check — because the folds are not being
 killed by defect hours.
+*[Correction 2026-09-27: both figures came from a table that leaves hours missing from both
+archives out of its numerator and its denominator
+([measured](2026-09-27-claude-defect-calendar-corrections.md)). Counting them, BTC has 69
+defect hours in 52,680 from 2018 to 2024 (0.131%), and **none** of the ten pairs is below
+0.12% over those years; the lowest is BTC. The 21-against-18 fold count comes from the
+test-month check, not from these rates, and stands. "Most scattered defect hours are
+trivial" needs one qualification: twelve of those months also carry a 1–11 hour hole in
+every listed pair.]*
 
 **They are being killed by months that will not parse at all, and those are
 exchange-wide.** Ten such months — 2018-07, 2019-06, 2020-02, 2020-03, 2020-12, 2021-02,

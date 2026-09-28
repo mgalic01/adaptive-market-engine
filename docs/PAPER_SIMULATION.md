@@ -1,4 +1,4 @@
-# Paper simulation contract (schema 4)
+# Paper simulation contract (schema 5)
 
 ## Scope and order lifecycle
 
@@ -193,9 +193,11 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Schema 1-3 databases are rejected by version 0.6; no implicit
-migration or reset occurs.** Preserve old experiments with the old code, or start a
-clearly separate schema 4 experiment. Never edit identity/state to bypass risk history.
+initial cash. **Only schema 5 databases are accepted; schema 1-4 are rejected, with no
+implicit migration or reset.** Schema 5 (engine `exit-residue-v1`, PR #122) changed the
+exit lifecycle; a schema 4 database is refused rather than silently reinterpreted.
+Preserve old experiments with the old code, or start a clearly separate schema 5
+experiment. Never edit identity/state to bypass risk history.
 The frame-gap policy (added in 0.5.1/0.6) is part of saved identity, so experiments
 without that setting are rejected. Use a new database for the new policy; retain
 the original database and matching code for reviewing the old experiment.
