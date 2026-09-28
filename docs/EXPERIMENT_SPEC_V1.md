@@ -22,7 +22,7 @@ than simply holding? The diagnostic
 grid sells realised gains, and forced marketable exits realised as much or more in
 losses.
 
-## 2. Prerequisites (implemented and reviewed before any variant run)
+## 2. Prerequisites (to be implemented and reviewed before any variant run)
 
 These are measurement and data changes, with two qualified exceptions:
 - **P4 can change V0 decisions** on formerly invalid SOL runs. Those runs become a
@@ -88,6 +88,10 @@ common to all:
 - **Two versions (amendment 1).** "V0" means the amended V0, with the drawdown recovery
   below. The pre-amendment V0 (drawdown lockout) keeps its published results, labelled as
   pre-amendment, and both versions are registered trials in part 2's trial count (PR #93).
+  The amended V0 runs on engine `exit-residue-v1` (PR #122); it is the "fixed V0" that
+  the owner's 2026-09-27 decision counts as one extra trial in `N_family` (C7). Running
+  the un-amended `exit-residue-v1` V0 as well would be a further configuration and adds
+  one to `N_family`; it is not planned.
 
 ### Drawdown recovery (amendment 1, owner decision 2026-09-27)
 
@@ -117,8 +121,12 @@ state, updated at exactly three points and nowhere else:
    starts with (`Account.new`).
 2. **At every mark,** where `risk_high = max(risk_high, last_equity)` runs today
    (`_mark`), it becomes `max(reference, last_equity)`.
-3. **At every settlement,** it is multiplied by the same factor as `risk_high`:
-   `factor = active capital after allocation / active capital before` (`_settle`).
+3. **At every settlement,** it is multiplied by the same factor as `risk_high`, whatever
+   `_settle` computes at the time. Since PR #122 (engine `exit-residue-v1`) that is
+   `factor = (active capital after allocation + marked residue) / (active capital before
+   + marked residue)`, where the marked residue is any unsellable remainder valued as
+   `Account.equity` values it; with no residue it reduces to the plain ratio. The
+   reference is scaled in the same statement as `risk_high`, never by a second formula.
 
 A rebase or an automatic restart never changes it. So in any run without a rebase or a
 restart it equals `risk_high` at every evaluation. That equality is a required test,
@@ -150,14 +158,24 @@ and it catches any later change to `risk_high`'s formula that is not mirrored he
 automatically. Every other category stays latched until an explicit audited resume, as
 today. A `drawdown` halt restarts when, on one valid frame:
 1. at least **24 hours** (H) of `observed_at` have passed since the halt started;
-2. every precondition of today's `resume()` holds except its risk check: halted, flat,
-   no open orders, `account.validate` passes, the frame is valid, and the eligibility
-   check passes; while a forced liquidation is incomplete, nothing happens;
+2. every precondition of today's `resume()` holds except its risk check and its
+   exact-zero inventory rule: halted, no open orders, `account.validate` passes, the
+   frame is valid, and the eligibility check passes. **"Flat" here means the forced
+   liquidation is complete in the sense of PR #122:** no inventory is left that the
+   market would still accept (`exit_state` is not `incomplete`). A remainder below the
+   exchange minimum (`dust`) does not block the restart; it stays held and marked, as the
+   owner accepted for trading and settlement on 2026-09-27, and its marked value is part
+   of the active equity the tentative rebase uses. While the liquidation is incomplete,
+   nothing happens. The manual `resume()` keeps its exact-zero rule (PR #122), because
+   that rule protects halts that stay final; a `drawdown` halt is no longer one of them.
+   Without this, a `drawdown` halt with a dust residue could never restart or be resumed,
+   which is the lockout this amendment removes;
 3. a tentative rebase of `risk_high` to the current active equity makes the risk
    result `ALLOW` (daily loss under 3%, no emergency flag).
 
 The restart then changes exactly these fields, the ones today's `resume()` changes, and
-no others:
+no others (beyond the observation timestamps and the mark that every valid step already
+records):
 - `halt` is cleared and `liquidating` is set to false;
 - range-exit state (`range_exit`, `range_exit_since`), outside-range timers and the grid
   bounds are reset, since the account is flat with no grid;
@@ -172,7 +190,8 @@ normal UTC day roll. It does not touch either C1 reference, the reserves or the 
 The emergency flag is a per-frame signal, not account state, so nothing can clear it.
 The event is recorded: halt start, category, restart time, and the old and new reference. A halt restarts at most once. There
 is **no overall loss floor**: cumulative losses across episodes are unbounded by the
-owner's choice, and C1 still judges every run. The manual `resume()` is unchanged.
+owner's choice, and C1 still judges every run. The manual `resume()` is unchanged,
+including its exact-zero inventory rule.
 
 **Same control, not same effect.** Every grid variant runs these controls identically,
 so the defined control and the baseline are the same in every comparison. Inventory paths
@@ -194,7 +213,8 @@ config values, persisted in the account identity, and fixed for all v1 runs.
   reference equals `risk_high` at every evaluation.**
 - Restart side effects: an automatic restart changes only the fields listed above; the
   daily baseline, both C1 references and the reserves are unchanged by it.
-- Hard drawdown: no restart before H; no restart while partially liquidated; no restart
+- Hard drawdown: no restart before H; no restart while partially liquidated (exitable
+  inventory remains); a restart with only a dust residue held, which stays marked; no restart
   on an ineligible frame; no restart while the daily loss is 3% or more or the emergency
   flag is set; never for categories `emergency`, `exhaustion` or `integrity`; one restart
   per halt; the category is set at every halt call site.
@@ -696,7 +716,15 @@ included runs (every included pair, window and path):
 | C4 | **Integrity:** every included run is valid (§5). | Both |
 | C5 | **Minimum activity:** for each included run, its rate = completed cycles (P7) ÷ (evaluation window length in days ÷ 7). The window is `[start of the start month, end of the end month)` in UTC, the same for every run in a dataset, whether or not the run halted. C5 = the arithmetic mean of the per-run rates over all included runs (equal weight), computed exactly (no rounding), and must be **≥ 1**. The ISO-week counter is reported, not scored. The share of bars holding inventory is reported. | Owner's compromise on Bob's 10%-invested rule |
 | C6 | **The gate earns its place:** in at least **60%** of included runs, the variant's return ÷ max(max drawdown, 0.1 percentage points) exceeds that of the **ungated V0 baseline** in the same pair, window and path. | Bob |
+| C7 | **Survives the family — adopted in principle, not yet binding.** The owner decided on 2026-09-27 to replace the deflated Sharpe ratio, which has no content on this family ([why](reviews/2026-09-27-claude-dsr-coherence.md)), with a Holm step-down over the disclosed family at family-wise 5%, evaluated on the selected winner only and gating the reserved-window run. The statistic is the one-sided p-value `p = 1 − Φ( SR · √(T_eff − 1) / √(1 − γ3·SR + (γ4 − 1)/4 · SR²) )` on each variant's worse path, using the series, moment conventions and `T_eff` of [draft spec part 3](reviews/2026-09-27-claude-dsr-return-series.md) §8 with `SR0` = 0. **C7 does not gate anything until all three of the following are settled and recorded here** (Codex, 2026-09-27): (a) the return series C7 is computed on — §4 defines two windows, while part 3 requires 25 walk-forward folds whose geometry is still a proposal, and the two give different `T`, `SR` and `T_eff`; (b) the family, since `N_family` = 16–17 and 20–21 (17 and 21 used as working figures, since R1's code state is unknown) are **floors** (unpublished inspected runs are known to exist), and a Holm cutoff from a floor does not control the stated error rate — either the missing trials are accounted for in the register or a conservative budget is preregistered; (c) Codex's and Bob's acknowledgment, since all three agents agreed to the DSR (Bob acknowledged on 2026-09-27 in his PR #123 review; Codex's is owed). **Until C7 is settled and acknowledged, or the owner explicitly waives it in writing, nothing runs on the reserved window.** The owner's decision was that a multiple-testing test gates that run, so an unresolved C7 is a hold on the run, not permission to proceed under six criteria. C1–C6 remain the binding set for development selection in the meantime. | Owner in principle; specification open |
 | R1 | **Economics, reported only:** the capital at which the mean monthly return would cover €5/month of hosting (5 ÷ mean monthly return fraction), or "not reachable" if the mean return is ≤ 0. Running on the owner's own PC costs €0 in hosting. | Bob, as information |
+
+*Note on units (added 2026-09-27, clarification only; no criterion changes).* Every
+replay result is in USDT quote units with no EUR conversion
+([BACKTEST_METHOD](BACKTEST_METHOD.md), "Currency"), and capital is 100 quote units per
+pair (§4). R1's hosting cost is in euros. R1's arithmetic is sound because a monthly
+return *fraction* has no unit, but it assumes the USDT return equals the EUR return,
+i.e. it ignores EUR/USDT exchange-rate movement over the month.
 
 **Selection (deterministic):**
 1. The **eligible set** is the passing variants among V0, A, B, C, E (only after Codex's
@@ -711,9 +739,14 @@ included runs (every included pair, window and path):
    C+G, C+H.
 5. D **cannot be selected.** C1–C6 are still computed and reported for D, for
    information only, next to the winner.
+6. **C7** selects nothing and does not change the ranking. Once settled it is evaluated
+   after steps 1–5 on the selected winner only. While it is unsettled, steps 1–5 still
+   produce a development winner, but the reserved window stays closed (see its row).
 
-**No winner:** if no variant passes, v1 ends with "no winner". Nothing runs on the
-reserved window, and the report says so.
+**No winner:** if no variant passes C1–C6, v1 ends with "no winner". Nothing runs on the
+reserved window, and the report says so. A development winner that passes C1–C6 does not
+by itself open the reserved window: C7 must first be settled and passed, or explicitly
+waived by the owner (see its row).
 
 ## 7. Reserved evaluation (run exactly once)
 

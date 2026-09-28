@@ -8,6 +8,11 @@
   **The owner has not confirmed 2% or `Decimal(0)`; this record proposes them.** An earlier
   version of this document called them an owner decision, which overstated the
   confirmation given. Corrected after review.
+- **Corrections (2026-09-27, after merge):** ten errors found after this record merged are
+  listed in [Corrections](#corrections-2026-09-27-after-merge). Figures that were wrong are
+  corrected in place and struck through; claims that were never supported are marked as
+  such rather than silently reworded. The two proposed values are unchanged; one
+  justification for the first is withdrawn.
 - **Why record it before results exist.** Whichever values are adopted must be fixed before
   any variant runs, or choosing them becomes the post-hoc tuning `START_HERE.md` step 1
   forbids. Proposing them now, with the measurement attached, is what makes that possible.
@@ -23,23 +28,33 @@
    off-boundary close times. The repair setting of PR #92.
 3. **Proposed maximum masked fraction: 2% of a month's expected hours, counting real
    defects only.** A pair-month carrying more would not be eligible, masked or otherwise.
+   *[Corrected 2026-09-27: despite its name, this bounds real defects, not the masked
+   fraction. The mask still covers open-only hours, and months under this cap carry up to
+   16.8% masked hours. See Corrections, item 1.]*
    **Measured on the raw-parseable population only** — see the population section below;
    the cutoff is unmeasured for months the repair rule rescues, so the rule is proposed
    for that population rather than validated on it.
 4. **The open-only convention class is excluded from that count by its own named rule**,
    not by a price tolerance.
 5. **Proposed price tolerance on repaired hours: none — strict equality**, `Decimal(0)`.
+   *[Corrected 2026-09-27: `compare_bars` always requires exact OHLC equality; its
+   tolerance argument governs volume only. `Decimal(0)` therefore makes **volume** exact on
+   repaired hours, stricter than the 0.1% `VOLUME_DRIFT_TOLERANCE` this measurement used.
+   See Corrections, item 11.]*
 
 ## Why 2%, and why counted on real defects
 
 Decision 3's number is worth little without decision 4, and the measurement shows why.
 
 Every pair-month of the development window was measured from the local cache: **890
-pair-months**, of which **674 parse**, 106 do not (the repair rule's territory) and 110
-are not cached here. For each, the share of expected hours a mask would have to cover,
-split into the **open-only convention class** — the hour's first minute had no trades, so
-the 1m archive carries the previous close while the official 1h bar opens at the first
-traded minute ([finding](2026-09-26-claude-open-mismatch-explained.md),
+pair-months**, of which **674 parse**, 106 do not (the repair rule's territory; it
+rescues 98 of them) and 110 are not cached here — all 110 before the pair's first archive
+month, i.e. before it was listed *[corrected 2026-09-27]*. For each, the share of expected hours a mask would have to cover,
+split into the **open-only convention class** — hypothesised: the hour's first minute had
+no trades, so the 1m archive carries the previous close while the official 1h bar opens at
+the first traded minute *[corrected 2026-09-27: the cited finding supports this on a
+1,689-hour sample and calls the carry-forward part a hypothesis; see Corrections, item 4]*
+([finding](2026-09-26-claude-open-mismatch-explained.md),
 [provenance](2026-09-26-claude-volume-field-provenance.md)) — and **everything else**.
 
 ### The convention class dominates the apparent defect rate
@@ -51,8 +66,11 @@ traded minute ([finding](2026-09-26-claude-open-mismatch-explained.md),
 | LINKUSDT 2019 | 17.1% | 3.56% |
 | LINKUSDT 2020 | 0.7% | 0.18% |
 
-Between 74% and 82% of the apparent rate in the worst pair-years is the convention
-difference. DOGE 2019's 53% — which PR #92 cites among the reasons its usable-fold count is
+Between ~~74% and 82%~~ **73% and 83%** of the apparent rate in the worst pair-years is the
+convention difference *[corrected 2026-09-27: 74–82% was the range of the four rows above,
+one of which (LINK 2020, 0.7%) is not a worst pair-year; across the seven pair-years above 5%
+masked it is 73.3% (BNBUSDT 2017, 49.6% apparent, omitted from the table) to 83.2%
+(SOLUSDT 2020)]*. DOGE 2019's 53% — which PR #92 cites among the reasons its usable-fold count is
 a ceiling — is **11.9%** of real defects.
 
 **This record deliberately quotes no headline count from PR #92.** That PR was open when this
@@ -92,8 +110,12 @@ The choice is insensitive over a wide range, which is the next best thing to a g
 | 5% | 16 (2.4%) |
 
 Any cap in [2%, 5%] differs by at most six months. **2%** is the tightest value sitting
-after the break: a month at the cap still has 98% of its hours intact, about 14 masked
-hours in 720.
+after the break: ~~a month at the cap still has 98% of its hours intact, about 14 masked
+hours in 720~~ a month at the cap has at most 2% of its expected hours carrying a real
+defect, about 14 in 720. *[Corrected 2026-09-27: this was never true of masked hours. The
+mask also covers the open-only class, so admitted months carry up to 16.8% masked hours
+(DOGEUSDT 2020-10, 125 of 744); 28 admitted months exceed 2% masked and 13 exceed 5%. See
+Corrections, item 1.]*
 
 ### Why the count must exclude the convention class
 
@@ -107,7 +129,10 @@ Applying the same cap to **raw** mismatch counts instead:
 | 5% | 33 (4.9%) | 16 (2.4%) | 17 |
 
 **A 2% cap on raw mismatches discards 28 pair-months whose real defect rate is under
-2%** — sound months, dropped for a labelling convention. They include DOGEUSDT 2020-08,
+2%** — ~~sound months~~ months that pass under the proposed classification *[corrected
+2026-09-27: they are not shown sound; see "What I checked"]*, dropped for a labelling
+convention. These are also the months with the most masked hours of any the 2% cap admits
+(2.0% to 16.8%). They include DOGEUSDT 2020-08,
 -09, -10 and -11 (real defects 1.1% to 1.8%), BTCUSDT 2017-10 (1.3%), ADAUSDT 2019-12
 (1.8%), SOLUSDT 2020-11 (1.3%) and LINKUSDT 2019-12 (0.7%). Four consecutive months of
 DOGE, the pair whose usable folds are scarcest.
@@ -124,7 +149,8 @@ so this changes nothing he reported — it declines to loosen it.
 
 The open question his report left was whether a **price tolerance** should be added. It
 should not be used for this. The thing such a tolerance would absorb is the convention
-class, and that class is 74% to 82% of apparent defects in thin months. Folding it into a
+class, and that class is ~~74% to 82%~~ 73% to 83% of apparent defects in the worst
+pair-years. Folding it into a
 tolerance would silently settle the open-only reclassification — a separate question the
 owner and Codex have not decided — and would do so in a form that also hides real price
 disagreements of the same magnitude. Decision 4 handles the convention class by name,
@@ -132,13 +158,18 @@ visibly, and leaves everything else strict.
 
 ## The measurement's population is narrower than the rule's
 
-**The cap is measured on the 674 months that parse *without* repair. The 106 the refined
-repair rule would rescue are not in any band above.** The script classifies a month as
+**The cap is measured on the 674 months that parse *without* repair. The ~~106~~ **98**
+the refined repair rule would rescue are not in any band above.** *[Corrected 2026-09-27:
+106 months fail the strict parser; Bob's refined rule makes 99 of 107 present pair-months in
+those calendar months usable, one of which (XRPUSDT 2021-12) already parses, so it rescues
+98 of the 106. Eight stay unusable: BTC, ETH and BNB 2017-12; BTC, ETH, BNB and LTC
+2018-02; DOGE 2020-02. Codex's review flagged the 106 before merge.]* The script classifies a month as
 `unparsed` and moves on; it does not apply the repair rule and then measure. So the
 distribution describes a population narrower than the eligible set the adopted rule
 creates, and a repaired month's real-defect share is unmeasured here.
 
-That matters in a specific direction: the ten exchange-wide unparseable months are the ones
+That matters in a specific direction: the ~~ten~~ **14** unparseable calendar months
+(`UNPARSED_MONTHS` in `audit_run.py`; exchange-wide from 2020-12 on, fewer pairs before) are the ones
 the repair rule exists for, and nothing here shows whether their defect shares sit below
 2% or above it. If they sit above, the cap would exclude the very months the repair rule was
 adopted to recover — and the two decisions would work against each other. Measuring that
@@ -154,13 +185,20 @@ a reason to treat 2% as provisional until the repaired months are measured too.
   is replay policy and is not settled here.
 - **The open-only reclassification** in the cross-check itself. Untouched.
 - **Anything about returns.** No strategy was run. Every figure is data coverage.
-- **The 110 not-cached pair-months.** Absent from this container's cache, not known to be
-  absent upstream. The bands describe the 674 that parse.
+- **The 110 not-cached pair-months.** ~~Absent from this container's cache, not known to be
+  absent upstream.~~ Every one precedes its pair's first archive month, and those first
+  months match [Bob's upstream inventory](2026-09-25-bob-dev-data-inventory.md) exactly
+  (890 − 780 listed pair-months = 110). They are pre-listing months, not a cache gap.
+  *[Corrected 2026-09-27.]* The bands describe the 674 that parse.
 
 ## What I checked, and what I could not
 
-- Every figure comes from the appendix script run over the local cache; none is typed by
-  hand. It makes no network request, and calls `development_month` before touching any
+- ~~Every figure comes from the appendix script run over the local cache; none is typed by
+  hand.~~ Every **table** comes from the appendix scripts run over the local cache. Several
+  prose figures were derived from those tables by hand and were not printed by any script:
+  the eight named months and their rates, "74% to 82%", "96.7%" and "14 in 720" — and two
+  of those were wrong. *[Corrected 2026-09-27; the corrected figures are printed by the
+  third appendix script.]* It makes no network request, and calls `development_month` before touching any
   month, so the reserved window cannot be read.
 - The convention class is identified exactly as the merged finding defines it —
   `differing_fields` returning `("open",)` alone — not by a heuristic.
@@ -175,7 +213,7 @@ a reason to treat 2% as provisional until the repaired months are measured too.
   agreement previously claimed, and it was only visible once the cause was named correctly.
 - **The open-only deduction is by field signature, not per-instance verification.** An hour
   is deducted from the real-defect count when `differing_fields` returns `("open",)` alone.
-  That assumes the mechanism established in
+  That assumes the mechanism ~~established~~ hypothesised in
   [the open-mismatch finding](2026-09-26-claude-open-mismatch-explained.md) — an untraded
   first minute — holds for **every** such hour. It was verified on 1,689 of them, not on all
   5,277. This script does not re-check the first minute's volume per instance, so the split
@@ -191,7 +229,12 @@ a reason to treat 2% as provisional until the repaired months are measured too.
   not re-checked during this measurement. The cached files were checksum-verified when
   fetched; this run trusts that, and a reader reproducing it on a tampered cache would get
   tampered numbers without warning.
-- **Listing hour derived once per symbol, as `audit_run.audit_outages` does.** An earlier
+- **Listing hour derived once per symbol, ~~as `audit_run.audit_outages` does~~.**
+  *[Corrected 2026-09-27: not as `audit_outages` does. This script takes the first
+  **parseable** month; `audit_outages` reads the first row of the first **present** month.
+  They differ for LTCUSDT — 2018-03-01 00:00 here, 2017-12-13 03:00 there — because LTC's
+  first three months fail the strict parser. No published number changes: every measured
+  LTC month starts on or after 2018-03. See Corrections, items 5 and 6.]* An earlier
   version took `minutes[0]` per month, which shortens the expected-hours denominator for any
   later month whose data starts late, understating the defect share. Measured on this cache:
   nine months have a shortened denominator and **all nine are listing months**, where
@@ -219,6 +262,15 @@ python data/masked_bands.py data/masked_fraction.jsonl
 published tables with no committed reducer, so they could not be regenerated from the
 appendix; Codex's review caught that.
 
+The figures in the Corrections section come from a third script, added with that section.
+It also reads the refined-rule audit output, which `audit_run rules` produces through
+`fetch_file` and so fetches Binance's checksums:
+
+```
+PYTHONPATH=src python -m crypto_grid_bot.backtest.audit_run rules --out data/rules.json
+python data/masked_corrections.py data/masked_fraction.jsonl data/rules.json
+```
+
 ## Post-merge note (2026-09-27)
 
 This record merged as `b7a857b`. **PR #92 merged minutes later, as `c3c8e25`**, so the two
@@ -229,7 +281,8 @@ record is now on `main` as
 Three things this does **not** change:
 
 - **The decision to quote no headline count from #92 stands**, and for the same reason: every
-  figure here comes from this record's own appendix, so nothing above depends on a number
+  table here comes from this record's own appendix *[corrected 2026-09-27: "every figure"
+  was too strong; see Corrections, item 7]*, so nothing above depends on a number
   that lives in the other document and can move again.
 - **The two proposed values are still undecided.** #92's merged record cites them correctly as
   "proposed in #100, not decided". Merging either PR decided neither value; it published the
@@ -241,6 +294,106 @@ What is now actionable, and was deferred to "once both are merged": both are mer
 two records can be reconciled — #92's fold counts read against this record's convention split,
 and the open-only reclassification stated once rather than in two places. Neither merged PR can
 carry that work, so it needs its own change.
+
+## Corrections (2026-09-27, after merge)
+
+Found after merge, by a later Claude review of this record against its own data and
+sources. All ten were wrong **when written**; none is a statement that later events made
+stale. Every count below is printed by the third appendix script from the same 890-row
+measurement, except two targeted checks named where they are used (items 5 and 6). The two proposed values stand. One of their justifications does not.
+
+**Figures that were wrong, corrected in place above.**
+
+- **2. "The 106 the refined repair rule would rescue."** It rescues **98**. Bob's refined-rule
+  report counts 107 present pair-months in the 14 calendar months, 99 usable; one of those,
+  XRPUSDT 2021-12, parses without repair, so it is not among the 106. Eight of the 106 stay
+  unusable: BTC, ETH and BNB 2017-12; BTC, ETH, BNB and LTC 2018-02 (unaligned opens the
+  rule does not repair); DOGE 2020-02 (the strict-equality check fails on `open`). Codex
+  raised the population point as a P1 at 12:26:53Z, quoting Bob's 99 of 107, and the
+  specific "not all 106" point at 17:36:59Z; the record merged at 18:21:59Z with the 106
+  unchanged. The same conflation is in the index row and in the second script's printed
+  NOTE, which says months the rule "would rescue" are the ones counted as `unparsed`.
+- **3. "The ten exchange-wide unparseable months."** There are **14** (`UNPARSED_MONTHS`,
+  `audit_run.py`). They are exchange-wide only from 2020-12; 2017-09 affects two pairs.
+- **8. "Not known to be absent upstream."** The 110 are the months before each pair's first
+  archive month, and those first months are the ones Bob's inventory found upstream. They
+  were knowable as pre-listing months when this was written.
+- **9. "74% to 82%"** was the minimum and maximum of the four tabulated rows, one of which is
+  not a worst pair-year. Across the seven pair-years above 5% masked it is **73.3% to
+  83.2%**. BNBUSDT 2017 — the second-highest apparent rate anywhere, 49.6% — is at the
+  bottom of that range and was not in the table.
+
+**Claims that were never supported, marked above rather than reworded.**
+
+- **1. "A month at the cap still has 98% of its hours intact."** Never true. The cap counts
+  real defects; the mask covers every failing hour, open-only included. Of the 652 months
+  the cap admits, the worst is **DOGEUSDT 2020-10: 1.75% real defects, 16.8% masked (125
+  of 744), 83.2% intact.** 28 admitted months exceed 2% masked, 13 exceed 5% and 3 exceed
+  10%. Those 28 are exactly the months section "Why the count must exclude the convention
+  class" defends as wrongly excluded — so the record argued for admitting them while
+  describing a month at the cap as 98% intact. **This sentence was offered as the
+  justification for 2%, and that justification is withdrawn.** What 2% bounds is real
+  defects. How many masked hours a month may carry and still replay validly is replay
+  policy, which this record already leaves open; it is now also the only thing that could
+  bound total masking, since this cap does not.
+- **4. "The mechanism established in the open-mismatch finding."** That finding does not
+  establish it. It reports a 1,689-hour sample consistent with a convention difference,
+  says it "does not by itself prove that the first clock minute was untraded, or that
+  Binance synthesized a carry-forward bar. Those are hypotheses", and calls the one
+  carry-forward statistic (1,023 of 1,024) "an unverified historical claim". This record
+  stated the carry-forward mechanism as fact in the measurement section and as
+  "established" under What I checked. The deduction of open-only hours therefore rests on a
+  hypothesis tested on 32% of the class, as the record's own limitation bullet already said;
+  the word "established" contradicted it.
+- **5. "As `audit_run.audit_outages` does."** Not true for LTCUSDT (above). The separate claim
+  that the per-month and per-symbol derivations "agree here" is correct: a targeted
+  recomputation from each month's first raw row gives the same expected-hours denominator
+  as the published run for all 674 measured months.
+- **7. "Every figure comes from the appendix script; none is typed by hand."** Every table
+  does; several prose figures did not, including two of the wrong ones above.
+
+**Defects in the hash-pinned scripts, left unedited.** The appendices below are the exact
+sources that produced the published numbers, so they are not rewritten. Their hashes are
+unchanged. Two defects in them are recorded here instead:
+
+- **6. A latent crash.** The listing hour comes from the first month that parses. If the
+  repair rule is applied inside `measure` — the next step this record calls for — but not
+  inside `listing_hour_of`, a targeted run shows LTCUSDT 2017-12 and 2018-01 are repaired, fall wholly before the
+  2018-03-01 listing hour, and are returned as `ok` with `expected: 0` and a `None`
+  fraction; the band reducer then raises `TypeError` comparing a float with `None`. (LTC
+  2018-02 is one of the eight the rule does not rescue, so it stays `unparsed`.) Nothing in
+  the published run reaches this. Any repair-first re-measurement must derive the listing
+  hour from the first present month's raw first row, as `audit_outages` does, and should
+  refuse an `ok` row with no expected hours.
+- **10. A stale docstring.** The first script's docstring still says expected hours "run from
+  the pair's first listed hour of the month", which describes the version before the
+  listing-hour fix. The code takes the later of the month's first hour and the
+  once-per-symbol listing hour. Its comment that this is "the pattern
+  audit_run.audit_outages uses" is item 5's error.
+
+**Found in the same review, beyond the ten.**
+
+- **11. `Decimal(0)` is not a price tolerance.** `compare_bars` always requires exact OHLC
+  equality; its tolerance argument applies to volume only. So decision 5, as written,
+  makes repaired hours' **volume** exact while this measurement compares every other hour
+  with a 0.1% volume tolerance. Codex Cloud raised this at 16:40:07Z, before merge. The
+  proposal should say which it means: no price tolerance (already the rule for every
+  hour) or exact volume on repaired hours (a stricter policy than the measurement used).
+
+### What the corrections do to the proposal
+
+- **2% on real defects still sits where it did.** None of the band, cap or pair-year
+  tables changes; the break between [1%, 2%) and [2%, 3%) and the insensitivity over
+  [2%, 5%] are what they were, and both still describe the raw-parseable 674 only.
+- **Its interpretation narrows.** It bounds real defects, not masked hours. A reader who
+  took "98% intact" as the eligibility guarantee should not: admitted months are up to
+  83.2% intact.
+- **The population limit is smaller in count but not in weight.** 98 months are unmeasured,
+  not 106, and the eight the rule cannot rescue are ineligible whatever the cap, so they do
+  not bear on it. The 98 are concentrated in the 14 calendar months where most or all pairs
+  fail together, so a cap that excludes one of them tends to remove a whole calendar month
+  across the basket rather than one pair. 2% remains provisional until those 98 are measured
+  with the repair applied before the parse split.
 
 ## Appendix: `data/masked_fraction.py` source
 
@@ -451,4 +604,98 @@ def main(path):
 
 if __name__ == "__main__":
     main(sys.argv[1] if len(sys.argv) > 1 else "data/masked_fraction.jsonl")
+```
+
+## Appendix: `data/masked_corrections.py` source
+
+SHA-256: `0ac156c9ad1de8a61359fe27b4bc78aa376603ebee24e468c9ba6a682c98e202`
+
+Added with the Corrections section. Prints every figure that section states from the same
+measurement JSONL and the refined-rule audit output. The first two appendices are unchanged.
+
+```text
+"""Re-derive the corrected figures in the eligibility record's Corrections section.
+
+Reads the same JSONL as data/masked_bands.py and the refined-rule audit output, and
+prints every number the Corrections section states, so none of them is typed by hand.
+
+    PYTHONPATH=src python -m crypto_grid_bot.backtest.audit_run rules --out data/rules.json
+    python data/masked_corrections.py data/masked_fraction.jsonl data/rules.json
+"""
+
+import json
+import sys
+from collections import defaultdict
+
+CAP = 0.02
+
+
+def load(path):
+    return [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
+
+
+def main(masked_path, rules_path):
+    rows = load(masked_path)
+    ok = [r for r in rows if r["status"] == "ok"]
+    if any(not r["expected"] for r in ok):
+        raise SystemExit("an 'ok' row has no expected hours; refusing to reduce")
+
+    admitted = [r for r in ok if r["hard_fraction"] <= CAP]
+    worst = max(admitted, key=lambda r: r["fraction"])
+    print(f"admitted at a {CAP:.0%} real-defect cap: {len(admitted)} of {len(ok)}")
+    print(f"  worst total masked: {worst['pair']} {worst['month']} "
+          f"{worst['masked']}/{worst['expected']} = {100 * worst['fraction']:.1f}% "
+          f"(real {100 * worst['hard_fraction']:.2f}%)")
+    for floor in (0.02, 0.05, 0.10):
+        k = sum(1 for r in admitted if r["fraction"] > floor)
+        print(f"  admitted with total masked above {floor:.0%}: {k}")
+
+    print("\nretained at the cap but excluded on raw mismatches (by total masked):")
+    wrong = [r for r in ok if r["fraction"] > CAP and r["hard_fraction"] <= CAP]
+    for r in sorted(wrong, key=lambda r: -r["fraction"]):
+        print(f"  {r['pair']} {r['month']}  all {100 * r['fraction']:5.1f}%  "
+              f"real {100 * r['hard_fraction']:4.2f}%")
+
+    print("\nconvention share of masked hours, pair-years with total masked above 5%:")
+    years = defaultdict(lambda: [0, 0, 0])
+    for r in ok:
+        acc = years[(r["pair"], r["month"][:4])]
+        acc[0] += r["expected"]
+        acc[1] += r["masked"]
+        acc[2] += r["hard"]
+    for (pair, year), (exp, masked, hard) in sorted(
+        years.items(), key=lambda kv: -kv[1][1] / kv[1][0]
+    ):
+        if masked / exp > 0.05:
+            print(f"  {pair} {year}: all {100 * masked / exp:5.1f}%  "
+                  f"convention {100 * (masked - hard) / masked:5.1f}%")
+
+    unparsed = {(r["pair"], r["month"]) for r in rows if r["status"] == "unparsed"}
+    months = sorted({m for _, m in unparsed})
+    rules = load_rules(rules_path)
+    rescued = sorted(k for k in unparsed if rules.get(k) == "usable")
+    stuck = sorted(k for k in unparsed if rules.get(k) != "usable")
+    print(f"\nunparsed pair-months: {len(unparsed)} across {len(months)} calendar months")
+    print(f"  refined rule rescues {len(rescued)}; {len(stuck)} stay unusable:")
+    for pair, month in stuck:
+        print(f"    {pair} {month}: {rules.get((pair, month), 'not in rules audit')}")
+    extra = sorted(k for k, v in rules.items() if v == "usable" and k not in unparsed)
+    print(f"  refined-usable but already parseable: {extra}")
+
+    missing = [r for r in rows if r["status"] == "not_cached"]
+    first = {}
+    for r in rows:
+        if r["status"] != "not_cached":
+            first[r["pair"]] = min(first.get(r["pair"], r["month"]), r["month"])
+    before = sum(1 for r in missing if r["month"] < first[r["pair"]])
+    print(f"\nnot_cached: {len(missing)}; before the pair's first archive month: {before}")
+
+
+def load_rules(path):
+    data = json.load(open(path, encoding="utf-8"))
+    return {(r["symbol"], r["month"]): r["refined"] for r in data["pair_months"]}
+
+
+if __name__ == "__main__":
+    main(sys.argv[1], sys.argv[2])
 ```

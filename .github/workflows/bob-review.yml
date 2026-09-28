@@ -51,6 +51,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The scripts below run on the project's floor, not on whatever python3 the
+      # runner image happens to ship.
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.ok == 'true'
+        with:
+          python-version: "3.12"
+
       - uses: actions/setup-node@v4
         if: steps.gate.outputs.ok == 'true'
         with:
@@ -187,9 +194,10 @@ jobs:
 
           Write your final message in exactly this order: the 'IBM Bob' first line,
           your review, the VERDICT line, the SCOPE line, and then the signature as the
-          very last line. Sign exactly once. Drafts and any intermediate messages stay
-          unsigned. If you want to add anything after signing, rewrite the whole
-          message from its first 'IBM Bob' line. An answer whose last signed block has
+          very last line. Sign exactly once. Do not emit drafts, preliminary reviews,
+          intermediate verdicts or revisions as messages; keep them internal. Emit
+          only the completed final answer. Make revisions before emitting it.
+          An answer whose last signed block has
           no 'IBM Bob' line of its own is refused and never posted.
           "
           # env -i: Bob's process gets only PATH, HOME and its own key, so runner

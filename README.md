@@ -5,8 +5,10 @@ Version 0.4 added repeating grid levels, automatic recovery from temporary pause
 and audited paper resume. Version 0.5 makes the configured regime limits the real
 decision boundaries, stops a flapping feed from postponing the outside-range exit
 and adds optional recentering after that exit. Version 0.6 separates frame cadence
-from data freshness, so pauses clear and range exits fire at 60 s polling. Historical strategy validation is
-the next gate; profitable operation is not established.
+from data freshness, so pauses clear and range exits fire at 60 s polling. Version 0.7
+adds a read-only Binance best-price stream (websockets). Version 0.8, the current
+version, documents the replay method and omits unused order epochs from saved state.
+Historical strategy validation is the next gate; profitable operation is not established.
 It cannot submit live Binance orders, access an account, or move real funds.
 
 ## Agreed operating rules
@@ -137,8 +139,9 @@ test, not a backtest, EUR conversion, forecast or evidence of profitability.**
 It reads no credentials and needs no network. Running the same command again
 reuses recorded results without duplicating trades or savings. A different
 database path starts a separate simulation; changed account settings are
-rejected against an existing database. Version 0.8 uses schema 4 and rejects old
-schema 1-3 experiments; no implicit migration or resetting of losses occurs. The
+rejected against an existing database. The current code uses schema 5 (the exit
+lifecycle fix, engine `exit-residue-v1`) and rejects schema 1-4 experiments; no implicit
+migration or resetting of losses occurs. The
 frame-gap policy is part of account identity; start a new database instead of
 reopening an experiment under changed timing rules.
 
@@ -182,8 +185,11 @@ development environment:
 python scripts/preflight.py
 ```
 
-It checks lint, formatting and report integrity, then runs the full deterministic
-pytest suite. It uses the calling Python interpreter and this checkout's `src`,
+It first prints the interpreter and stops if it is older than Python 3.12, the
+project floor and the only version CI runs; a newer interpreter runs but is labelled
+as not CI evidence. It then checks lint, formatting, types (mypy) and security
+(bandit) over the same paths as CI, and report integrity, then runs the full
+deterministic pytest suite. It uses the calling Python interpreter and this checkout's `src`,
 does not install dependencies or fix files, disables check caches where supported,
 and stops at the first failure. The full GitHub CI checks remain required.
 

@@ -74,6 +74,27 @@ revision 3.
 record is on `main`. This branch merges that `main`; only the index conflicted, and every
 row is kept.
 
+## Revision 4 (2026-09-28, session `012TnmLL`): re-checked against `main` after PRs #122 and #123
+
+Bob gave NO ISSUES at `28b7ed7`. Since then #122 (engine `exit-residue-v1`) and #123
+merged, and #122 changed the code this amendment leans on. Re-checked against `main`
+`ad98f7b`:
+
+| What #122 changed | Effect on the amendment | Change |
+| --- | --- | --- |
+| `_settle` now puts the marked residue on both sides of the rescaling factor | The C1(b) reference's settlement step gave the old plain ratio; applied literally, it would drift from `risk_high` and fail its own equivalence test | Step 3 now states the current formula and binds the reference to whatever `_settle` computes, in the same statement as `risk_high` |
+| `resume()` requires **exact zero** inventory, because a hard-drawdown halt was final | The restart inherited "every precondition of `resume()`", so a `drawdown` halt holding a dust residue could never restart or be resumed: a new lockout, the thing this amendment removes | Restart precondition 2 now defines "flat" as PR #122's *liquidation complete*: no exitable inventory (`exit_state` not `incomplete`); a dust residue stays held and marked. The manual `resume()` keeps exact zero, since it still protects the final halts. A test case is added. **This is a design choice made here, for Bob's, Codex's and the owner's review**; it follows the owner's 2026-09-27 acceptance of trading and settling with a residue held |
+| `PAPER_SIMULATION.md` now says twice that a drawdown halt is final | The pending-change note did not say which statements it supersedes | The note names the two, and says what stands: emergency's conditional resume, exhaustion's finality, integrity's manual resume, and the manual resume's exact-zero rule |
+| `_halt` gained `exit_requested`; the validation halt now arms liquidation | None: still three call sites (`_risk_action`, the `ValueError` handler, capital exhaustion), so the category is set at the same three places | None |
+
+Also: the restart's field list now notes that the observation timestamps and the mark
+are recorded by every valid step anyway; and the "Two versions" note says that the
+amended V0 runs on `exit-residue-v1` and is the one extra V0 trial that #123's
+`N_family` already counts, unless the un-amended fixed V0 is also run.
+
+Merged `main` into the branch; only the index conflicted, and every row is kept. Code
+facts above were read from `simulation/runner.py` on `main` `ad98f7b`.
+
 ## What this does not do
 
 - No code. The implementation follows as its own PR, with the tests listed under
