@@ -621,8 +621,11 @@ Credits are limited, so every agent works on demand, not by polling:
       run"). The merge is the go, including merges by Claude or Codex. Editing an
       existing task file never starts a run. So **a task PR is merged only after the
       same review as code**: Codex's approval, or, while Codex's allowance is
-      exhausted, Bob's `NO ISSUES` and the automated review's `APPROVE` with green
-      checks. "Exhausted" means **allowance exhausted** only; a lapsed request
+      exhausted, the full gate of
+      [merging while Codex's allowance is exhausted](#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28):
+      Bob's `NO ISSUES` and the automated review's `APPROVE` at the full head, green
+      `test-and-audit`, and **no unaddressed required fix** from any reviewer.
+      "Exhausted" means **allowance exhausted** only; a lapsed request
       escalates to the owner and never merges a task PR. See
       [when a reviewer is unavailable](#when-a-reviewer-is-unavailable). **A run
       that fails on Bob's side** (a "Connection Failed" or backend error in the
