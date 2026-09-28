@@ -30,24 +30,20 @@ from crypto_grid_bot.backtest.klines import (
     parse_rows,
 )
 from crypto_grid_bot.backtest.replay import compare_bars
+
+# Re-exported: audit_run, the tests and the hash-pinned data/*.py appendices import
+# these from here, so the `as` form keeps them public (and stops ruff removing them).
+from crypto_grid_bot.backtest.window import DEVELOPMENT_END as DEVELOPMENT_END
+from crypto_grid_bot.backtest.window import development_month as development_month
 from crypto_grid_bot.market_data.parsing import DataError
 
 HOUR_MS = INTERVAL_MS["1h"]
-DEVELOPMENT_END = "2024-12"
 PRESENT_BOTH = "present_both"
 ABSENT_MINUTES = "absent_minutes"
 ABSENT_HOURLY = "absent_hourly"
 ABSENT_BOTH = "absent_both"
 PRICE_FIELDS = ("open", "high", "low", "close")
 Rule = Literal["narrow", "refined"]
-
-
-def development_month(month: str) -> str:
-    """``month`` if it is inside the development window; DataError otherwise."""
-    month_bounds_ms(month)  # validates the YYYY-MM form
-    if month > DEVELOPMENT_END:
-        raise DataError(f"{month} is in the reserved window; audits stop at {DEVELOPMENT_END}")
-    return month
 
 
 def expected_hours(first_hour_ms: int, month: str) -> range:

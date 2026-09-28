@@ -192,11 +192,27 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
   - Any non-zero count makes `verify` and `run` exit with code 2, and nothing replays.
   - Gaps from a genuine listing or delisting are not exempted yet; such a dataset must
     first declare them explicitly.
-- **Run validity:** accounting problems, rejected frames or zero evaluation bars mark the
-  run `"valid": false`, and `run` exits 2. The results are kept for diagnosis but are
+- **Run validity:** accounting problems, rejected frames, zero evaluation bars, or a
+  run that ends still unable to exit because the bid is too thin mark the run
+  `"valid": false`, and `run` exits 2. The results are kept for diagnosis but are
   not performance evidence.
+- **Refused exits:** an exit order below the exchange's minimum notional is refused, as
+  an exchange would refuse it, and every refusal is counted (`exit_blocked_frames`,
+  split by kind, the longest streak, and `final_exit_blocked`):
+  - `depth`: this frame's share of the bid is too small; only a deeper bid clears it.
+  - `dust`: the whole unsold remainder is worth less than one minimum order at this
+    bid; only a higher price clears it. It is reported, not failed. It no longer blocks
+    profit settlement or a new grid, and it stays marked in equity at the bid
+    (`max_unsellable_notional` and `final_unsellable_notional` show how much).
+- **The end of a run** is judged from the account at the last quote, not from the last
+  refusal, so a partial fill or an idle frame cannot hide an unfinished exit.
+  `final_exit_blocked` is `incomplete` when an exit was owed (liquidation, range exit or
+  drain) and inventory the market would still accept is unsold — that **fails the run** —
+  `dust` when only an unsellable remainder is held, which is reported, or absent.
 - **Identity:** `results.json` records the SHA-256 of the dataset spec, the manifest and
-  the config.
+  the config, and the `engine_version`. Results from different engine versions are
+  different trials and are never pooled; results without the field predate
+  `exit-residue-v1`.
 - Exact Decimal identities between the fill journal and the final account:
   - cash = initial − buys − buy fees + sells − sell fees − secured reserve;
   - inventory = bought − sold;
