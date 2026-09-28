@@ -20,6 +20,7 @@ from crypto_grid_bot.portfolio.profit_vault import ProfitVault, ProfitVaultState
 from crypto_grid_bot.risk.engine import RiskEngine
 from crypto_grid_bot.simulation.execution import (
     Reduction,
+    exit_state,
     exitable,
     liquidate,
     match,
@@ -60,7 +61,16 @@ DEFAULT_CAPITAL = D("100")
 # inventory arms liquidation. A schema-4 database was written under the old lifecycle,
 # so reopening it here would mix two semantics in one event history; the identity
 # mismatch refuses it instead.
-SCHEMA = 5
+# 6 (2026-09-28, engine "drawdown-recovery-v1", spec v1 amendment 1): a soft-drawdown
+# episode rebases ``risk_high`` after a cool-off; a ``drawdown`` halt restarts by itself
+# after a cool-off; a manual resume admits a residue below the exchange minimum; the
+# account carries the halt's start and category, the episode and the C1(b) reference.
+# Schema 1-5 databases are refused: their halts were final and their state lacks these
+# fields.
+SCHEMA = 6
+# The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
+DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
+RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"
 
 
 class TransientFrame(ValueError):
@@ -85,6 +95,11 @@ class SimulationPolicy:
     # Experiment variant A (spec v1, section 3 A): the daily SMA50/SMA200 trend switch.
     # False = off (V0). The daily state arrives on each Frame as ``trend``.
     trend_switch: bool = False
+    # Spec v1 amendment 1 (owner decision 2026-09-27): the soft-drawdown cool-off before
+    # ``risk_high`` may be rebased, and the hard-drawdown cool-off H before a ``drawdown``
+    # halt restarts. Both are part of the account identity and fixed for all v1 runs.
+    soft_cooloff_seconds: int = 86400
+    hard_cooloff_seconds: int = 86400
 
     def __post_init__(self) -> None:
         if type(self.recovery_frames) is not int or not 2 <= self.recovery_frames <= 100:
@@ -106,6 +121,9 @@ class SimulationPolicy:
                 raise ValueError("inventory cap must be above zero and below one")
         if type(self.trend_switch) is not bool:
             raise ValueError("trend_switch must be a boolean")
+        for name in ("soft_cooloff_seconds", "hard_cooloff_seconds"):
+            if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be a positive integer")
 
     def identity(self) -> dict[str, Any]:
         """Persisted form; omits unset variants so existing paper identities still match."""
@@ -153,9 +171,11 @@ class PaperSimulator:
             raise ValueError("only paper mode is supported")
         self.config, self.rules = config, rules
         self.policy = policy or SimulationPolicy()
-        # Replay measurement hook: sees (active equity, risk high-water mark, decision) at
-        # every risk evaluation. It observes only and must not change the account.
-        self.risk_observer: Callable[[Decimal, Decimal, RiskDecision], None] | None = None
+        # Replay measurement hook: sees (active equity, risk high-water mark, C1(b)
+        # measurement reference, decision) at every risk evaluation the engine performs.
+        # A tentative evaluation for a rebase or a restart is not one. It observes only
+        # and must not change the account.
+        self.risk_observer: Callable[[Decimal, Decimal, Decimal, RiskDecision], None] | None = None
         identity = encode(
             {
                 "schema": SCHEMA,
@@ -218,12 +238,39 @@ class PaperSimulator:
         return cancelled
 
     @staticmethod
-    def _halt(account: Account, reason: str, *, exit_requested: bool = False) -> None:
+    def _halt(
+        account: Account,
+        reason: str,
+        *,
+        category: str,
+        observed: str,
+        exit_requested: bool = False,
+    ) -> None:
+        """Halt, or keep halted. The start, category and reason are captured once, on the
+        transition from not halted to halted, and no later call changes them (spec v1
+        amendment 1: an ``integrity`` or ``emergency`` halt past 12% is never
+        re-categorised as ``drawdown``, and an invalid frame during a ``drawdown`` halt
+        does not make it ``integrity``). Later calls may still clear orders and arm the
+        exit. A halt of any category ends an open soft-drawdown episode."""
         account.orders.clear()
-        account.halt = reason
+        if not account.halt:
+            account.halt = reason
+            account.halt_since = observed
+            account.halt_category = category
+            account.episode_since, account.episode_count = "", 0
         account.pause = ""
         account.recovery_count = 0
         account.liquidating = account.liquidating or exit_requested
+
+    @staticmethod
+    def _halt_time(account: Account, quote: Quote) -> str:
+        """The halt start for an invalid frame: its own time if parseable, else the last
+        valid observation. Empty only when neither exists."""
+        try:
+            timestamp(quote.observed_at)
+        except (TypeError, ValueError):
+            return account.last_observed
+        return quote.observed_at
 
     def _resolved(self, account: Account, quote: Quote) -> bool:
         """True when no position is left that the account could still trade out of.
@@ -263,12 +310,105 @@ class PaperSimulator:
             )
         )
         if self.risk_observer is not None:
-            self.risk_observer(equity, account.risk_high, result)
+            self.risk_observer(equity, account.risk_high, account.measure_high, result)
         if result.action == RiskAction.EXIT:
-            self._halt(account, "; ".join(result.reasons), exit_requested=True)
+            # The engine checks the emergency flag before the drawdown, so a frame with
+            # both is an emergency halt (spec v1 amendment 1).
+            self._halt(
+                account,
+                "; ".join(result.reasons),
+                category=EMERGENCY if emergency else DRAWDOWN,
+                observed=quote.observed_at,
+                exit_requested=True,
+            )
         elif result.action != RiskAction.ALLOW and not account.halt:
             self._pause(account, "; ".join(result.reasons))
+            if result.action == RiskAction.REDUCE and not account.episode_since:
+                # The first REDUCE outside an episode starts one (amendment 1, soft
+                # drawdown, item 1); its cool-off runs from this observation.
+                account.episode_since, account.episode_count = quote.observed_at, 0
         return result.action
+
+    def _tentative_allow(self, account: Account, quote: Quote, emergency: bool) -> bool:
+        """Would the risk engine ALLOW with ``risk_high`` rebased to this frame's active
+        equity? By construction this tests the daily loss, the emergency flag and the
+        input checks, and nothing about drawdown (amendment 1). Not an engine evaluation:
+        the observer does not see it and the account is untouched."""
+        equity = account.equity(quote, self.rules)
+        result = self.risk.evaluate(
+            PortfolioSnapshot(
+                float(equity), float(account.day_start), float(equity), 0, emergency=emergency
+            )
+        )
+        return result.action == RiskAction.ALLOW
+
+    def _rebase(
+        self, account: Account, frame: Frame, eligible: bool, report: dict[str, Any]
+    ) -> None:
+        """Soft drawdown, option C (amendment 1): on each valid frame of an open episode,
+        before any other state change, count the confirmations and commit the rebase once
+        the cool-off has passed. Runs first in the step, after the mark."""
+        if not account.episode_since or account.halt:
+            return
+        quote = frame.quote
+        confirmed = eligible and self._tentative_allow(account, quote, frame.signals.emergency)
+        account.episode_count = account.episode_count + 1 if confirmed else 0
+        if (
+            confirmed
+            and account.episode_count >= self.policy.recovery_frames
+            and seconds_between(account.episode_since, quote.observed_at)
+            >= self.policy.soft_cooloff_seconds
+        ):
+            report["rebase"] = {
+                "episode_since": account.episode_since,
+                "old_reference": account.risk_high,
+                "new_reference": account.last_equity,
+            }
+            account.risk_high = account.last_equity
+            account.episode_since, account.episode_count = "", 0
+
+    def _restart(
+        self, account: Account, frame: Frame, eligible: bool, report: dict[str, Any]
+    ) -> bool:
+        """Hard drawdown, automatic restart (amendment 1). Evaluated on a halted frame after
+        this frame's liquidation attempt. Only a ``drawdown`` halt restarts; it changes
+        exactly the fields a manual ``resume()`` changes, and never the daily baseline,
+        the C1 references, the reserves or the vault."""
+        quote = frame.quote
+        if account.halt_category != DRAWDOWN or not account.halt_since or account.orders:
+            return False
+        if (
+            seconds_between(account.halt_since, quote.observed_at)
+            < self.policy.hard_cooloff_seconds
+        ):
+            return False
+        # "Flat" is PR #122's liquidation-complete: nothing the market would still accept.
+        # A residue below the exchange minimum stays held and marked.
+        if exit_state(account, quote, self.rules)[0] == "incomplete" or not eligible:
+            return False
+        try:
+            account.validate(self.rules)
+        except ValueError:
+            return False
+        if not self._tentative_allow(account, quote, frame.signals.emergency):
+            return False
+        reference = account.equity(quote, self.rules)
+        report["restart"] = {
+            "halt_since": account.halt_since,
+            "category": account.halt_category,
+            "halt": account.halt,
+            "old_reference": account.risk_high,
+            "new_reference": reference,
+        }
+        account.halt, account.liquidating = "", False
+        account.halt_since, account.halt_category = "", ""
+        account.range_exit, account.range_exit_since = False, ""
+        account.grid_lower = account.grid_upper = ZERO
+        account.outside_seconds, account.outside_last = ZERO, ""
+        account.down_since = ""  # a flat account has ended any variant A sequence
+        account.risk_high = reference
+        self._pause(account, RESTART_PAUSE)
+        return True
 
     def _validate_frame(self, account: Account, frame: Frame) -> None:
         quote = frame.quote
@@ -340,6 +480,7 @@ class PaperSimulator:
     def _mark(account: Account, quote: Quote, rules: MarketRules) -> None:
         account.last_equity = account.equity(quote, rules)
         account.risk_high = max(account.risk_high, account.last_equity)
+        account.measure_high = max(account.measure_high, account.last_equity)
 
     def _step(self, account: Account, frame: Frame) -> dict[str, Any]:
         quote = frame.quote
@@ -353,6 +494,7 @@ class PaperSimulator:
         }
         previous_orders = set(account.orders)
         capped: list[dict[str, Any]] = []
+        restarted = False
         try:
             self._validate_frame(account, frame)
             regime = self.classifier.classify(frame.signals)
@@ -362,6 +504,7 @@ class PaperSimulator:
             # observed outside; otherwise a flapping feed could postpone the exit forever.
             if not account.halt:
                 self._pause(account, str(exc))
+            account.episode_count = 0  # a TransientFrame breaks the confirmations
             report.update(
                 decision="halt" if account.halt else "pause",
                 reason=account.halt or account.pause,
@@ -373,7 +516,13 @@ class PaperSimulator:
             # exit, so held inventory must be armed for liquidation. Nothing is traded on
             # this invalid frame: the return below precedes the liquidation branch, so the
             # exit runs on the next frame that validates.
-            self._halt(account, str(exc), exit_requested=account.inventory != ZERO)
+            self._halt(
+                account,
+                str(exc),
+                category=INTEGRITY,
+                observed=self._halt_time(account, quote),
+                exit_requested=account.inventory != ZERO,
+            )
             report.update(decision="halt", reason=str(exc), cancelled=sorted(previous_orders))
             return report
 
@@ -388,16 +537,22 @@ class PaperSimulator:
             and (observed - timestamp(account.last_observed)).total_seconds()
             > self.policy.maximum_frame_gap_seconds
         ):
-            account.recovery_count = 0
+            account.recovery_count = account.episode_count = 0
         account.last_observed, account.last_received = quote.observed_at, quote.received_at
         self._mark(account, quote, self.rules)
         report.update(regime=regime.regime.value, opportunity_score=score.score)
+        self._rebase(account, frame, score.eligible, report)
         action = self._risk_action(account, quote, frame.signals.emergency)
         trend = self._apply_trend(account, frame) if self.policy.trend_switch else None
         if account.halt:
             if account.liquidating:
                 self._record_exit(report, liquidate(account, quote, self.rules), "liquidation")
-            report.update(decision="halt", reason=account.halt)
+            # Preconditions read after the liquidation attempt, so a restart can happen
+            # on the frame that completes it. Its settlement and any new grid follow on
+            # the next frame, exactly as after a manual resume.
+            restarted = self._restart(account, frame, score.eligible, report)
+            if account.halt:
+                report.update(decision="halt", reason=account.halt)
         elif account.range_exit:
             self._record_exit(report, liquidate(account, quote, self.rules), "range_exit")
             back_inside = account.grid_lower <= quote.bid <= account.grid_upper
@@ -493,7 +648,7 @@ class PaperSimulator:
         # Buys may still rest here, so _resolved (whole unreserved inventory) is the
         # stricter gate: a partly filled buy's inventory blocks the harvest until its own
         # child sell has paired it. See _resolved.
-        if not account.halt and self._resolved(account, quote):
+        if not account.halt and not restarted and self._resolved(account, quote):
             # A flat account is a safe harvest point even with unused deeper buys.
             # Do this only after sells, draining, or when all orders are already gone.
             sold = any(fill["side"] == "sell" for fill in report["fills"])
@@ -506,6 +661,8 @@ class PaperSimulator:
                     self._halt(
                         account,
                         "active capital exhausted",
+                        category=EXHAUSTION,
+                        observed=quote.observed_at,
                         exit_requested=account.inventory != ZERO,
                     )
                 else:
@@ -571,6 +728,10 @@ class PaperSimulator:
             total_equity=account.last_equity + account.pending + account.secured,
             recovery_count=account.recovery_count,
             draining=account.draining,
+            halt_category=account.halt_category,
+            episode_since=account.episode_since or None,
+            risk_high=account.risk_high,
+            measure_high=account.measure_high,
             range_exit=account.range_exit,
             outside_seconds=account.outside_seconds,
             unreserved_inventory=account.inventory - account.reserved_base(),
@@ -587,18 +748,17 @@ class PaperSimulator:
             account.validate(self.rules)
             if not account.halt or account.orders:
                 raise ValueError("resume requires a halted, reconciled flat paper account")
-            if account.inventory != ZERO:
-                # Flat, not merely "nothing sellable": a held residue is marked to the
-                # current bid, so its value moves with price. Admitting it here would let
-                # a rally lift active equity back above the soft-drawdown line and clear a
-                # hard-drawdown halt that is documented as final. The lifecycle gates
-                # tolerate a residue (they are what the freeze bug was about); resuming a
-                # halt does not.
+            if exit_state(account, frame.quote, self.rules)[0] == "incomplete":
+                # Liquidation-complete, PR #122's criterion (spec v1 amendment 1): a
+                # remainder below the exchange minimum is admitted, stays held and marked,
+                # and is drained or settled as after any resume; inventory the market
+                # would still accept is not. The risk check below is what keeps the final
+                # halts final: a held residue marked to the bid can move the measured
+                # drawdown by at most one minimum notional against risk_high.
                 raise ValueError(
                     "resume requires a flat paper account: "
                     f"{account.inventory} base units are still held, so the exit is "
-                    "incomplete. A residue below the exchange minimum can only be cleared "
-                    "by a higher bid; the halt stands until then"
+                    "incomplete; the halt stands until the liquidation completes"
                 )
             regime = self.classifier.classify(frame.signals)
             if not self.scorer.score(frame.candidate, regime).eligible:
@@ -610,12 +770,16 @@ class PaperSimulator:
                 raise ValueError(
                     "resume blocked by current risk limits; baselines are preserved. A flat "
                     "account's equity cannot move, so its drawdown against risk_high is "
-                    "frozen: a hard-drawdown or capital-exhaustion halt is final for this "
-                    "account and no repeated resume can clear it. An emergency halt resumes "
-                    "once the emergency signal has cleared and every other limit passes"
+                    "frozen: a capital-exhaustion halt is final for this account and no "
+                    "repeated resume can clear it; a hard-drawdown halt cannot be resumed by "
+                    "hand and restarts automatically once its cool-off has passed (spec v1 "
+                    "amendment 1). An emergency halt resumes once the emergency signal has "
+                    "cleared and every other limit passes"
                 )
             previous_halt = account.halt
             account.halt = ""
+            account.halt_since, account.halt_category = "", ""
+            account.episode_since, account.episode_count = "", 0
             account.liquidating = False
             # Flat with no orders: no grid remains, so clear its bounds and range timers.
             account.range_exit, account.range_exit_since = False, ""
@@ -694,7 +858,10 @@ class PaperSimulator:
             active_before + marked_residue
         )
         account.day_start *= factor
+        # The C1(b) reference is scaled in the same statement as risk_high, by the same
+        # factor, and nowhere else (amendment 1).
         account.risk_high *= factor
+        account.measure_high *= factor
         if allocation.transfer_due:
             self.vault.confirm_transfer(
                 state, allocation.transfer_due, f"simulated-checkpoint/{account.settlement_count}"

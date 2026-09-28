@@ -503,6 +503,7 @@ class SwitchingTests(TestCase):
         self.account = Account.from_dict(json.loads(encode(saved.to_dict())))
         self.account.orders.clear()
         self.account.halt = "test halt without liquidation"
+        self.account.halt_category = "integrity"
         report = self.step(deadline, signal(2, DOWN, 2), bid=bid)
         self.assertEqual([], report["fills"])  # the halt is V0's; the deadline adds nothing
         self.assertEqual(t0.isoformat(), self.account.down_since)

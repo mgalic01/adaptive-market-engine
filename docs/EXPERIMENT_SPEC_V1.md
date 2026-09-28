@@ -92,7 +92,8 @@ common to all:
   beside them), and both versions are registered trials (the
   [coherence record](reviews/2026-09-27-claude-dsr-coherence.md) §3, which superseded
   part 2's count). The amended V0 runs on the engine version and paper schema its
-  implementation PR assigns: a successor of `exit-residue-v1`, and schema 6 refusing 1–5,
+  implementation PR assigns: a successor of `exit-residue-v1` (assigned:
+  `drawdown-recovery-v1`, 2026-09-28), and schema 6 refusing 1–5,
   because the amendment moves replay results and adds persisted state (`replay.py`'s bump
   rule; `PAPER_SIMULATION.md`). It is the "fixed V0" of the owner's 2026-09-27 decision,
   the fixed V0 that actually runs, and the one extra trial `N_family` (C7) already counts.

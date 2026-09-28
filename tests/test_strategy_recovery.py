@@ -494,11 +494,11 @@ class StrategyRecoveryTests(TestCase):
     def test_older_schema_databases_are_not_silently_reinterpreted(self):
         row = self.sim.store.connection.execute("SELECT identity FROM state").fetchone()[0]
         identity = json.loads(row)
-        self.assertEqual(5, identity["schema"])
+        self.assertEqual(6, identity["schema"])
         # 4 is in the list: a database written before "exit-residue-v1" ran under the old
         # lifecycle, where a residue blocked settlement and a validation halt armed no
         # exit, so reopening it here would mix two semantics in one event history.
-        for old in (1, 2, 3, 4):
+        for old in (1, 2, 3, 4, 5):
             identity["schema"] = old
             self.sim.store.connection.execute("UPDATE state SET identity=?", (encode(identity),))
             with self.subTest(schema=old), self.assertRaisesRegex(ValueError, "settings differ"):
@@ -562,17 +562,19 @@ class StrategyRecoveryTests(TestCase):
         with self.assertRaisesRegex(ValueError, "flat paper account.*still held"):
             self.sim.resume(frame(4), event_id="too-early", reason="test")
 
-    def test_a_halt_holding_only_dust_stays_halted(self):
-        # The residue is marked to the bid, so its value moves with price. Admitting it
-        # would let a rally clear a hard-drawdown halt that is documented as final.
+    def test_a_halt_holding_only_dust_is_resumable(self):
+        # Spec v1 amendment 1 reverses PR #122's exact-zero rule: a residue below the
+        # exchange minimum is liquidation-complete, so it no longer locks a resumable
+        # (integrity) halt. It stays held and marked; the risk check still decides.
         self.dust()
         self.sim.process(self.crossed(3))
         state = self.sim.store.read()
-        self.assertTrue(state.halt)
-        self.assertEqual(D(100), state.inventory)
-        for index, bid in ((4, "0.02330"), (5, "0.20000")):
-            with self.subTest(bid=bid), self.assertRaisesRegex(ValueError, "still held"):
-                self.sim.resume(frame(index, bid), event_id=f"dust/{index}", reason="test")
+        self.assertEqual(("integrity", D(100)), (state.halt_category, state.inventory))
+        result = self.sim.resume(frame(4, "0.02330"), event_id="dust/4", reason="test")
+        state = self.sim.store.read()
+        self.assertEqual("resume_pending", result["decision"])
+        self.assertEqual(("", "", D(100)), (state.halt, state.halt_category, state.inventory))
+        self.assertTrue(state.draining)
 
     def dust(self):
         """Leave a residue below the minimum notional: 100 units are worth about 2.3."""
@@ -632,12 +634,18 @@ class StrategyRecoveryTests(TestCase):
         self.assertFalse(state.range_exit)
         self.assertEqual(D(100), state.inventory)
 
-    def test_a_hard_drawdown_halt_reports_that_it_is_final(self):
+    def test_a_hard_drawdown_halt_says_it_restarts_by_itself_not_by_hand(self):
+        # Spec v1 amendment 1: the manual resume is still refused by the frozen risk
+        # check, and the refusal now says what clears the halt instead: the cool-off.
         self.sim.process(frame(0))
         self.sim.process(frame(1, "0.02196"))
         self.sim.process(frame(2, "0.01000"))
-        self.assertTrue(self.sim.store.read().halt)
-        with self.assertRaisesRegex(ValueError, "frozen.*hard-drawdown.*final"):
+        state = self.sim.store.read()
+        self.assertTrue(state.halt)
+        self.assertEqual(
+            ("drawdown", frame(2).quote.observed_at), (state.halt_category, state.halt_since)
+        )
+        with self.assertRaisesRegex(ValueError, "frozen.*restarts automatically"):
             self.sim.resume(frame(3), event_id="drawdown", reason="try recovery")
 
     def test_resume_cli_loads_saved_rules_and_requires_current_frame(self):
@@ -787,6 +795,6 @@ class PanelFixTests(TestCase):
         )
         path = Path(self.temp.name) / "frame.json"
         path.write_text(encode(recent.payload()))
-        with self.assertRaisesRegex(ValueError, "paper schema 5"):
+        with self.assertRaisesRegex(ValueError, "paper schema 6"):
             resume_paper(self.path, self.config, path, event_id="cli", reason="reviewed")
         self.sim = None  # the tampered database cannot be reopened; nothing left to close

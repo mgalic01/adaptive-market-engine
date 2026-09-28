@@ -60,6 +60,8 @@ SUMMARY_FIELDS = {
     "active_max_drawdown_pct",
     "risk_evaluations",
     "hard_drawdown_halts",
+    "soft_drawdown_rebases",
+    "drawdown_restarts",
     "order_requests",
     "max_order_requests_per_day",
     "days_over_request_budget",

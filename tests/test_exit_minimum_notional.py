@@ -151,6 +151,7 @@ class StepReportTests(TestCase):
     def halted(self, inventory="5000"):
         account = holding(inventory)
         account.halt = "hard drawdown breach"
+        account.halt_category = "drawdown"
         account.liquidating = True
         return account
 
@@ -289,6 +290,7 @@ class FinalExitStateTests(TestCase):
     def test_a_partial_fill_on_the_last_frame_leaves_the_exit_incomplete(self):
         account = holding("5000")
         account.halt, account.liquidating = "hard drawdown", True
+        account.halt_category = "drawdown"
         # 3000 * 0.10 = 300 units, 6.894 quote: one legal chunk sells, 4700 remain.
         result = liquidate(account, quote(size="3000"), RULES)
         self.assertEqual(("", D("300")), (result.blocked, result.fills[0].quantity))
