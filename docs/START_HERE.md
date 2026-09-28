@@ -163,8 +163,11 @@ Then act, in this priority:
    the verdict `NO ISSUES` from Bob at the head (a reading of the diff), the automated
    review's `APPROVE` at the head (an independent run of the checks), green
    `test-and-audit` at the head (evidence it runs), and no unaddressed required fix.
-   The verdicts are needed together because they answer different questions. The
-   author may merge its own PR under this rule. Use the merge method with the full
+   The verdicts are needed together because they answer different questions.
+   **Since 2026-09-28 (owner, item 6 of the linked section), Bob's review before a
+   Claude merge must be a thorough, deep investigation that was asked for as one. A
+   Bob merge needs a thorough Claude-session review at the head first; the automated
+   review alone is not enough.** The author may merge its own PR under this rule. Use the merge method with the full
    head SHA. Codex reviews afterwards: append the PR to the
    [Codex-review-owed issue](https://github.com/mgalic01/adaptive-market-engine/issues/134).
    Two separate states (amendment A, adopted 2026-09-28):
