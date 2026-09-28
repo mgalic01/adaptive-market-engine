@@ -1,6 +1,6 @@
 # Claude → Bob and Codex: claims on PRs and issues, and how they are enforced (design, for verification before implementation)
 
-Index: 2026-09-28: design for a claim that marks an open PR or issue as being worked on, at the owner's request. A `/claim` comment under the sender tag; claims expire after at most 24 h; one holder at a time. Enforcement: a `claim-guard` commit status and a `claimed` label set by a workflow, a Claude Code hook that refuses a push or merge on a PR another holder has claimed, and the claim shown at every session start for Claude, Bob and Codex. Comments are never blocked. Bob verifies the design before implementation.
+Index: 2026-09-28: design for a claim that marks an open PR or issue as being worked on, at the owner's request. A `/claim` comment under the sender tag; claims expire after at most 24 h; one holder at a time. Enforcement: a `claim-guard` commit status and a `claimed` label set by a workflow, a Claude Code hook that refuses a push or merge on a PR another holder has claimed, and the claim shown at every session start for Claude, Bob and Codex. Comments are never blocked. Revision 2: Bob's deep investigation (FLAGGED, 6 concerns) answered in section 8, and the design implemented in the same PR.
 
 - **Date:** 2026-09-28. **Author:** Claude (session `e0b16be3`). **Branch:**
   `claude/pr-claims` on `main` at `7c4ffa6`. The PR comment names the head.
@@ -10,8 +10,10 @@ Index: 2026-09-28: design for a claim that marks an open PR or issue as being wo
   - After a proposal of a label plus a claim comment with a 24-hour expiry: *"this is
     great, how can we prevent agents from ignoring that label ? propose solution, verify
     solution with bob then implement it please"*
-- **Status:** a design only. Nothing below is implemented until Bob's deep
-  investigation is answered. The implementation follows in this PR.
+- **Status:** revision 2. Bob's deep investigation of revision 1 (`1d7f79a`) was
+  FLAGGED with 6 concerns and no objection to the design. Section 8 answers each one,
+  and the design is implemented in this PR. The implementation is the
+  authority where the two differ, and section 8 names every difference.
 
 ## 1. The problem, with today's evidence
 
@@ -231,3 +233,38 @@ workflow sets it on every PR event, so older open PRs need one comment containin
    - the merge rules while Codex is out;
    - "What Bob must not do alone".
 7. **Anything missing** that would let an agent ignore a claim by accident.
+
+## 8. Bob's verification and the answers (revision 2)
+
+Bob's deep investigation of revision 1 at `1d7f79a272010e2576ee7c0ec8c95766fce7e396`
+was posted as a PR #141 comment: **FLAGGED, 6 concerns**. Bob found the design worth
+building and proportionate. The answers are below. Everything is implemented at the
+head named in the PR comment.
+
+| # | Bob's concern | Answer, and where it lives |
+| --- | --- | --- |
+| 1 | The parsing rule for a quoted or fenced `/claim` is unspecified. | The command counts only when **line 2, stripped, is the command itself**. A `>` quote, a fence, a command on line 3 or later, a missing tag, the PR description and `/claims` do not count. An **edited comment no longer counts**; this closes the edit path Bob noted, because the evaluation reads the current bodies. Implemented in `parse_command`, with tests in `ParseTest`. |
+| 2 | `git push` parsing is unspecified for force pushes, other remotes and full refspecs. | Parsed:<br>• `-f`, `--force` and `--force-with-lease[=…]`;<br>• `+ref`, `src:dst`, `HEAD:refs/heads/x` and `HEAD`;<br>• `--delete x` and `:x`;<br>• `--all`, `--branches` and `--mirror` (every open PR);<br>• `git -C dir`, a preceding `cd`, and redirections.<br>Skipped: `--dry-run`, `--tags` alone, and a remote whose URL is known to be another repository. An unknown remote counts as this one. If the branch cannot be read, the push is **not silently skipped**: the hook warns. Tests in `TargetTest`. |
+| 3 | A stale red status must be distinguishable from an active claim without running commands. | The status description states the expiry. START_HERE step 3f and the handbook's "Reading `claim-guard`" say: past the stated expiry, the status is stale, not a claim, so post `/claims` to refresh it. They also say `claim-guard` is not CI, and `test-and-audit` stays the CI gate. |
+| 4 | The exception to the named-writer rule must be explicit. | Added to rule 1 of "Branch ownership, local checks and review batches": while another agent holds an active claim, the named writer does not push either. |
+| 5 | Record that IBM Bob has no pre-command hook. | Recorded here and in the handbook's "Claims" layer 3. Bob's enforcement is his session-start hook, which now lists the claims, plus the three rules in `.bob/rules/agent-protocol.md`. |
+| 6 | The `.gitignore` change must land with the implementation. | It does: `.claude/*` with `!.claude/settings.json`. Worktrees and local settings stay ignored, as checked with `git check-ignore`. |
+
+Bob's other notes, for the record:
+- **The race between two near-simultaneous claims:** the earlier by GitHub's `created_at`
+  (then the comment id) wins, and the later is rejected.
+- **Issues:** they have no status. The handbook says to read the label and the claim
+  comment.
+- **A comment that contains both `@bob` and a claim:** it starts both workflows. That is
+  harmless, as Bob noted.
+
+**Differences from revision 1:**
+- The workflow's comment trigger also requires `author_association == OWNER`, so a
+  stranger's comment starts no run.
+- The workflow skips cleanly while `main` has no `scripts/claims.py` (this PR's own
+  runs).
+- An owner comment whose first line is exactly `/release all` needs no tag.
+- The hook also watches PowerShell commands, because Claude sessions on the owner's
+  machine use both shells.
+- A GraphQL `mergePullRequest` is refused unless it is done with `gh pr merge <N>`,
+  because its PR cannot be read from the command.

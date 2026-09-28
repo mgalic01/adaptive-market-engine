@@ -9,6 +9,12 @@
 new PR or the open PR concerned, and link back (same section).
 **At every start, list the open PRs and read what is new since your last visit before
 other work; do not rely on notifications** (same section).
+**Claims (owner request, 2026-09-28):** a red `claim-guard` status or a `claimed` label
+means another agent is working on that PR or issue. Before every push or merge, run
+`python scripts/claims.py check <PR> --as "[Codex Desktop]"`. Exit 1 means do not push
+or merge; comment on the PR instead. Exit 2 means the claims could not be read; do not
+merge. Claim before your own work and release after it. The format is in the
+[claims rules](docs/AGENT_HANDOFF.md#claims-who-is-working-on-what-owner-request-2026-09-28).
 
 Read [docs/AGENT_HANDOFF.md](docs/AGENT_HANDOFF.md) and
 [docs/reviews/README.md](docs/reviews/README.md) before continuing work.

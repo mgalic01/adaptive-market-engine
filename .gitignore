@@ -17,4 +17,6 @@ logs/
 *.sqlite*
 
 # Claude Code agent worktrees and local state: full repo copies, never commit.
-.claude/
+# The one exception is the shared settings file with the claims hook.
+.claude/*
+!.claude/settings.json

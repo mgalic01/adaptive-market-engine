@@ -98,6 +98,10 @@ are in the sections below.
   and Bob do not watch closed threads. A finding about merged work, a question or a
   follow-up goes in a **new PR** (or on the open PR it concerns), with a link back to
   the closed one. A task run's alerts on its own issue are the only exception.
+- **Claims** (owner request, 2026-09-28): a red `claim-guard` status or a `claimed`
+  label means another agent is working on that PR or issue. **Do not push to its
+  branch or merge it.** Comment to reach the holder instead. Claim before your own work
+  and release after it. See [claims](#claims-who-is-working-on-what-owner-request-2026-09-28).
 - **Don't rely on notifications** (owner rule, 2026-09-25). They are missed or
   never sent. Every time an agent starts a session or checks in anyway, it first lists
   the **open PRs**, reads the comments and checks added since its last visit, and acts
@@ -310,10 +314,12 @@ The owner's standing rule is that Claude does not merge its own work. While Code
 allowance is exhausted (the state defined above), the owner's instruction of
 2026-09-28, given in Claude's session on adopting the amendments, is:
 
-1. **The author may merge its own PR**, Claude's or Bob's, when all four hold at the
+1. **The author may merge its own PR**, Claude's or Bob's, when all five hold at the
    full head: Bob's `NO ISSUES` (a reading of the diff), the automated review's
-   `APPROVE` (an independent run of the checks), green `test-and-audit`, and no
-   unaddressed required fix from any reviewer, Codex's earlier findings included.
+   `APPROVE` (an independent run of the checks), green `test-and-audit`, no
+   unaddressed required fix from any reviewer, Codex's earlier findings included, and
+   green `claim-guard`, meaning no other agent holds a claim
+   ([claims](#claims-who-is-working-on-what-owner-request-2026-09-28)).
    Use the merge method with the full head SHA.
 2. **The automated review is part of the gate**, not a courtesy: it exists at every
    head and costs nothing. A PR without its `APPROVE` at the merged head is not
@@ -475,6 +481,11 @@ reserved-data restrictions still apply. The other proposals in PR #74 remain pen
    the active handoff before editing. Parallel writers use separate branches and
    isolated worktrees. Agree on interfaces and integration order where changes overlap.
    Do not switch branches, overwrite files, commit or clean up another writer's tree.
+   **Exception, since 2026-09-28:** while another agent holds an active
+   [claim](#claims-who-is-working-on-what-owner-request-2026-09-28) on the branch's PR,
+   for example a reviewer's, the named writer does not push either, until the holder
+   releases or the claim expires. A push in the middle of a review makes the review
+   stale.
 2. **Reviewers are read-only.** Review the identified full head. Run independent checks
    in an isolated checkout or scratch area when they need generated files or fixtures.
    Do not commit fixes into a shared dirty tree. Send findings to the branch writer;
@@ -516,6 +527,77 @@ for a superseded head remain historical evidence, not the current head's acknowl
 A Cloud review is a separate review; it does not wake or resume Codex desktop. These
 rules add no polling service, scheduled watcher, relay, credentials or new API billing.
 Use the existing event-driven instructions and ordinary session-start/check-in sweep.
+
+## Claims: who is working on what (owner request 2026-09-28)
+
+The owner asked for a way for everyone to see that someone is already working on a PR
+or issue, and then: *"how can we prevent agents from ignoring that label ? propose
+solution, verify solution with bob then implement it please"*. The design, Bob's deep
+investigation and the answers to it are in
+[the claims design](reviews/2026-09-28-claude-pr-claims-design.md) (PR #141).
+
+**A claim** is a comment whose first line starts with your sender tag (see "Who posted
+what") and whose second line is the command:
+
+```
+[Claude Code e0b16be3]
+/claim 24h review of head 76a7561
+```
+
+- **Duration:** `/claim [<N>h] [what]`, 1 to 24 hours, default 24, measured from the
+  comment's GitHub time.
+- **Renew and release:** the holder renews with a new `/claim`, and posts `/release`
+  (tag on line 1) as soon as its work is posted.
+- **Owner override:** `/release all` as the whole first line. Only the owner types it.
+- **Who holds it:** one holder at a time. Each Claude session is its own holder. A claim
+  from another holder while one is active is rejected, and the workflow says so on the
+  PR at once.
+- **What counts:** only comments from `mgalic01`, only new comments, only the command on
+  line 2. The PR description, an edited comment, and a command quoted or fenced
+  anywhere else do not count. An edited claim stops counting; post a new one.
+- **When to claim:** before work on a PR that ends in a push, a merge or a review you are
+  about to write, if it takes more than a few minutes. The branch's named writer needs
+  no claim to push its own branch while no one else holds one. A reviewer's claim
+  also stops the writer's pushes (the exception in the named-writer rule).
+- **Never blocked:** comments, reviews and review requests. A comment is how you reach
+  the holder.
+
+**Reading `claim-guard`** (a commit status on the PR head, set by `claims.yml`):
+- **green:** no active claim.
+- **red:** its description names the holder and the expiry. If the expiry has passed,
+  the claim is over, and the status is only stale: post a comment containing `/claims`
+  to refresh it. Otherwise another agent holds the PR: no push, no merge.
+- **missing** (a PR from before `claims.yml`): post `/claims` to set it.
+
+`claim-guard` is not CI: `test-and-audit` stays the CI gate, and a green `claim-guard`
+is a separate merge condition (item 1 of "Merging while Codex's allowance is
+exhausted"). **Issues** have no commits, so they get the `claimed` label but no status:
+read the label and the claim comment.
+
+**How it is enforced.** No agent can be made unable to ignore a claim, because every
+agent holds the owner's token. The layers make an accidental violation hard and any
+violation visible:
+1. **`claims.yml`** sets `claim-guard` and the `claimed` label at every PR push and every
+   comment containing `/claim`, `/release` or `/claims`. It always runs `main`'s
+   `scripts/claims.py`, so a PR cannot change how its own claims are judged. It has no
+   timer: this section adds no polling service or scheduled watcher, so an expired claim
+   shows at the next event.
+2. **Claude Code:** the committed `.claude/settings.json` runs `scripts/claims.py hook`
+   before every Bash or PowerShell command. It refuses `gh pr merge`, a REST or GraphQL
+   merge, and `git push` to a PR's branch while another holder has the PR. If GitHub
+   cannot be read, a merge is refused and a push is allowed with a warning.
+3. **Bob:** IBM Bob has no pre-command hook (Bob's answer on PR #141). His session-start
+   hook lists the claims, and `.bob/rules/agent-protocol.md` requires
+   `python scripts/claims.py check <PR> --as "[Bob]"` before every push or merge.
+4. **Codex:** `AGENTS.md` requires the same check with `--as "[Codex Desktop]"`.
+5. **Every agent:** START_HERE step 3 reads the claim before acting on a PR.
+
+The automated review, Bob's GitHub answers and the Codex connector only review, so
+they never claim and are never blocked.
+
+**Binding on GitHub** is the owner's decision. A ruleset on `main` that requires
+`claim-guard` with no bypass makes a merge over a claim impossible. Without it, a red
+`claim-guard` is visible but does not stop the merge button.
 
 ## External review before Codex merges its own work
 

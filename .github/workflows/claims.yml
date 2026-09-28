@@ -1,0 +1,49 @@
+name: claims
+
+# Claims on PRs and issues (docs/AGENT_HANDOFF.md, "Claims"). Sets the `claim-guard`
+# commit status on a PR's head and the `claimed` label, and answers a rejected claim.
+# No timer: the handbook allows no scheduled watcher, so a claim's expiry shows at the
+# next event (a push, or a comment containing /claim, /release or /claims). Runs no
+# agent. Always runs main's script, so a PR cannot change how its own claims are judged.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  statuses: write
+  issues: write
+  pull-requests: read
+
+jobs:
+  claims:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event.comment.author_association == 'OWNER' &&
+       (contains(github.event.comment.body, '/claim') ||
+        contains(github.event.comment.body, '/release')))
+    concurrency:
+      group: claims-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Evaluate claims
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Until this workflow's PR merges, main has no script; skip rather than fail.
+          if [ -f scripts/claims.py ]; then
+            python scripts/claims.py workflow
+          else
+            echo "scripts/claims.py is not on main yet; nothing to evaluate."
+          fi

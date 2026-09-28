@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/scripts/claims.py\"; py=python; command -v python >/dev/null 2>&1 || py=python3; if [ -f \"$f\" ]; then \"$py\" \"$f\" hook || true; fi",
+            "timeout": 30,
+            "statusMessage": "Checking PR claims"
+          }
+        ]
+      }
+    ]
+  }
+}
