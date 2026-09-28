@@ -434,6 +434,9 @@ def find_targets(command: str, cwd: str) -> list[Target]:
 
 def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
     repo_flag = next((toks[i + 1] for i, t in enumerate(toks[:-1]) if t in ("-R", "--repo")), None)
+    for t in toks:
+        if t.startswith("--repo="):
+            repo_flag = t.split("=", 1)[1]
     if repo_flag is not None:
         repo_flag = repo_flag.removesuffix(".git").removesuffix("/")
         if repo_flag != REPO and not repo_flag.endswith("/" + REPO):

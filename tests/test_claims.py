@@ -185,6 +185,8 @@ class TargetTest(unittest.TestCase):
             self.assertEqual(find_targets("gh pr merge 5 --repo other/repo", "."), [])
             url = f"gh pr merge 5 --repo https://github.com/{REPO}.git"
             self.assertEqual(find_targets(url, ".")[0].pr, 5)
+            self.assertEqual(find_targets("gh pr merge 5 --repo=other/repo", "."), [])
+            self.assertEqual(find_targets(f"gh pr merge 5 --repo={REPO}", ".")[0].pr, 5)
 
     def test_windows_paths_keep_backslashes(self):
         with git_stub() as g:
@@ -352,6 +354,20 @@ class WorkflowTest(unittest.TestCase):
             claims.workflow("pull_request", event, NOW)
         self.assertEqual(next(a for a in sent if "/statuses/" in a[1])[2]["state"], "success")
         self.assertTrue(any(a[0] == "DELETE" for a in sent))
+
+    def test_comment_on_a_pr_reads_the_head_and_sets_the_status(self):
+        sent = []
+        event = {"issue": {"number": 9, "labels": [], "pull_request": {"url": "x"}}}
+        with (
+            mock.patch.object(claims, "fetch_comments", return_value=[claim()]),
+            mock.patch.object(claims, "get", return_value={"head": {"sha": "c" * 40}}) as get,
+            mock.patch.object(claims, "send", side_effect=lambda *a: sent.append(a)),
+        ):
+            claims.workflow("issue_comment", event, NOW)
+        get.assert_called_once_with(f"repos/{REPO}/pulls/9")
+        status = next(a for a in sent if "/statuses/" in a[1])
+        self.assertTrue(status[1].endswith("/statuses/" + "c" * 40))
+        self.assertEqual(status[2]["state"], "failure")
 
     def test_issue_gets_label_but_no_status(self):
         sent = []

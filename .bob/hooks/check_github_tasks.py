@@ -96,15 +96,13 @@ def fetch_latest_pr_updates():
             + "\n".join(updates)
         )
     parts.append(claims_summary())
-    if parts:
-        context_msg = "\n\n".join(parts)
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context_msg,
-            }
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": "\n\n".join(parts),
         }
-        sys.stdout.write(json.dumps(output))
+    }
+    sys.stdout.write(json.dumps(output))
     sys.exit(0)
 
 
