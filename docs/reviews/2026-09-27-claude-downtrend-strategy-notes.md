@@ -1,6 +1,6 @@
 # Claude: trading in downtrends — research, owner decisions, and a starting point for Codex
 
-Index: 2026-09-27: Revision 2, corrected after Codex and six Codex Cloud findings. Owner-requested record for continuing with Codex: research on falling markets, narrowed to what each source studied; the owner's verbatim decisions (futures access on Binance and Kraken; one mode-switching bot with strictly defined rules; finish v1 first); a mirrored-grid idea; candidate variables; open questions. Funding for G surveyed, not fetched; bear-only runs are diagnostics, not edge tests. No code, no spec, no live authority. **2026-09-28:** owner's venue decision recorded: Kraken (CySEC/MiFID II) is the planned live venue; Binance holds no MiCA licence, and its public archives stay the research data only.
+Index: 2026-09-27: Revision 2, corrected after Codex and six Codex Cloud findings. Owner-requested record for continuing with Codex: research on falling markets, narrowed to what each source studied; the owner's verbatim decisions (futures access on Binance and Kraken; one mode-switching bot with strictly defined rules; finish v1 first); a mirrored-grid idea; candidate variables; open questions. Funding for G surveyed, not fetched; bear-only runs are diagnostics, not edge tests. No code, no spec, no live authority. **2026-09-28:** owner's venue decision recorded: Kraken (CySEC/MiFID II) is the planned live venue; Binance holds no MiCA licence, and its public archives stay the research data only. **2026-09-28:** links PR #137's measured v2 research (§3a): shorting confirmed downtrends lost money on 2017–2024 BTC data, funding paid shorts on net 2020–2024, and the bounce harvest is v1's V0-versus-A question; #137's figures are under review, and whether its runs count as trials is put to Codex and Bob.
 
 - **Date:** 2026-09-27. **Author:** Claude (Claude Code desktop session `e0b16be3`).
 - **Why this exists.** The owner asked me to write down everything learned in today's
@@ -174,7 +174,13 @@ I checked that point, and the BIS instrument point, myself.
    - **Unverified, and no longer attributed to BIS:** "funding is often negative in bear
      markets", "sharply negative in March 2020", and "extremely negative funding precedes
      relief rallies". All three can be checked from the 2020–2024 Binance funding
-     archives once the P8 fetch is approved. **Corrected:** that is *not* the idea behind v1's variant G. G is a
+     archives once the P8 fetch is approved.
+   - **Measured since (PR #137, under review; see §3a).** Binance BTCUSDT funding was
+     *net positive* in every year from 2020 to 2024, including the 2022 bear year. A held
+     short therefore **received** funding on balance. "Funding is often negative in bear
+     markets, so shorts pay" is not supported on this data, and is withdrawn as a
+     working assumption. The per-period risk remains: when the rate is negative, a
+     short pays. **Corrected:** that is *not* the idea behind v1's variant G. G is a
    long-crowding gate. It blocks new grids only when the newest three funding rates are
    all above +0.0005, and low or negative funding never blocks
    (`docs/EXPERIMENT_SPEC_V1.md` §3 G). A negative-funding squeeze rule would be a
@@ -198,6 +204,62 @@ I checked that point, and the BIS instrument point, myself.
 
 **Not used:** Daloopa. It covers listed-company financials, not crypto trading, and it
 is not authorised in this session.
+
+## 3a. Measured on the project's own data: PR #137 (linked, 2026-09-28)
+
+A cloud Claude session (`012TnmLL`), working at the owner's request, published a measured
+answer to this topic in
+[PR #137](https://github.com/mgalic01/adaptive-market-engine/pull/137),
+`docs/reviews/2026-09-28-claude-v2-downtrend-research.md`.
+- **Data:** BTCUSDT daily archives 2017-08 to 2024-12, and funding 2020-01 to 2024-12,
+  all checksum-verified. The reserved window was never requested.
+- **Method:** variant A's own classifier, no look-ahead, and paper costs of 0.28% a
+  round trip.
+
+**This file links it rather than copying it:** #137 is the measurement record, and #106
+stays the topic hub (owner rule, `AGENT_HANDOFF.md` item 6). What it reports:
+
+1. **Shorting a confirmed downtrend lost money on this data.**
+   - Price *rose* in 32 of the 48 Down runs.
+   - The compounded gross short over all runs was about −12.2% before fees.
+   - Two runs carried everything; the rest was sharp rebounds, the momentum-crash
+     shape of §3 point 2.
+   - Three published rules, 12-month TSMOM, Donchian 20/10 and dual MA 50/200, **all
+     got worse when the short side was added**.
+2. **Funding paid the short** in every year from 2020 to 2024, including 2022 (§3
+   point 5 above). It was small next to the price moves.
+3. **The oscillation inside downtrends is large and needs no futures:** 145 rallies of
+   3% or more across 801 Down days. Selling those rallies from spot inventory is what
+   the v1 grid already does, so "sell the bounces or step aside?" is **V0 against
+   variant A over Down periods**, a comparison spec v1 already schedules.
+
+**#137's recommendation** is the owner's to accept or reject:
+- do not build the short/futures engine yet;
+- let v1 answer the bounce question;
+- if shorts are still wanted, start with a mirrored grid on spot inventory.
+
+**Status and caveats (e0b16be3):**
+- **Under review.** At `9deb5c3`, Bob found no issues, but the automated review asked
+  for **CHANGES NEEDED** on two points in the script's short and cost arithmetic. Its
+  figures are therefore provisional until #137 settles them. My reading, for #137's
+  writer to check:
+  - the cost point looks right;
+  - the per-day short factor `2 − S` is correct for a short resized to equity each day;
+  - the *multi-day* ratio `close[entry]/close[exit]` in #137's §2 overstates a
+    fixed-size short's gains. Correcting it would make shorting look **worse**, so the
+    conclusion would strengthen.
+- **One point for Codex and Bob: do these runs count as trials?** #137 says they do not
+  count against the trial register. But part 2's rule (PR #93) counts inspected runs,
+  and the data-reuse agreement makes agent changes prompted by results registered
+  development trials. Six rule variants were run and inspected on development data,
+  and they already shape the v2 direction. **I think they count as v2 development
+  trials, and should be registered as such.** This is a question, not a finding.
+- **It changes the owner's shorting plan.** The owner's brief (§2) wants a bot that can
+  also profit in downtrends by shorting. On this data, shorting confirmed downtrends
+  destroyed value, and the bounce harvest was the better opportunity. That does not
+  settle the plan — one asset, one window, a simplified short model — but it is the
+  strongest evidence we have. It should be put to the owner plainly before any v2
+  design work.
 
 ## 4. The side question: downtrends are not straight lines
 
