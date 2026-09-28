@@ -1,6 +1,6 @@
 # Claude: trading in downtrends — research, owner decisions, and a starting point for Codex
 
-Index: 2026-09-27: Revision 2, corrected after Codex and six Codex Cloud findings. Owner-requested record for continuing with Codex: research on falling markets, narrowed to what each source studied; the owner's verbatim decisions (futures access on Binance and Kraken; one mode-switching bot with strictly defined rules; finish v1 first); a mirrored-grid idea; candidate variables; open questions. Funding for G surveyed, not fetched; bear-only runs are diagnostics, not edge tests. No code, no spec, no live authority. **2026-09-28:** owner's venue decision recorded: Kraken (CySEC/MiFID II) is the planned live venue; Binance holds no MiCA licence, and its public archives stay the research data only. **2026-09-28:** links PR #137's measured v2 research (§3a): shorting confirmed downtrends lost money on 2017–2024 BTC data, funding paid shorts on net 2020–2024, and the bounce harvest is v1's V0-versus-A question; #137's figures are under review, and whether its runs count as trials is put to Codex and Bob. **2026-09-28, pre-merge corrections:** the 2009 momentum-crash loss is about −69% over two months (not −74%); the June 2022 rally figure is unverified; paper-only operation and the vault are binding rules, not assumptions; #137's figures updated to its revision 2.
+Index: 2026-09-27: Revision 2, corrected after Codex and six Codex Cloud findings. Owner-requested record for continuing with Codex: research on falling markets, narrowed to what each source studied; the owner's verbatim decisions (futures access on Binance and Kraken; one mode-switching bot with strictly defined rules; finish v1 first); a mirrored-grid idea; candidate variables; open questions. Funding for G surveyed, not fetched; bear-only runs are diagnostics, not edge tests. No code, no spec, no live authority. **2026-09-28:** owner's venue decision recorded: Kraken (CySEC/MiFID II) is the planned live venue; Binance holds no MiCA licence, and its public archives stay the research data only. **2026-09-28:** links PR #137's measured v2 research (§3a): shorting confirmed downtrends lost money on 2017–2024 BTC data, funding paid shorts on net 2020–2024, and the bounce harvest is v1's V0-versus-A question; #137's figures are under review, and whether its runs count as trials is put to Codex and Bob. **2026-09-28, pre-merge corrections:** the 2009 momentum-crash loss is about −69% over two months (not −74%); the June 2022 rally figure is unverified; paper-only operation and the vault are binding rules, not assumptions; #137's figures updated to its revision 2. **2026-09-28, after #137 merged** (`9a52b39`, at its revision 2 head `546f5be`): §3a's figures are final as merged.
 
 - **Date:** 2026-09-27. **Author:** Claude (Claude Code desktop session `e0b16be3`).
 - **Why this exists.** The owner asked me to write down everything learned in today's
@@ -183,7 +183,7 @@ I checked that point, and the BIS instrument point, myself.
      markets", "sharply negative in March 2020", and "extremely negative funding precedes
      relief rallies". All three can be checked from the 2020–2024 Binance funding
      archives once the P8 fetch is approved.
-   - **Measured since (PR #137, under review; see §3a).** Binance BTCUSDT funding was
+   - **Measured since (PR #137, merged; see §3a).** Binance BTCUSDT funding was
      *net positive* in every year from 2020 to 2024, including the 2022 bear year. A held
      short therefore **received** funding on balance. "Funding is often negative in bear
      markets, so shorts pay" is not supported on this data, and is withdrawn as a
@@ -248,7 +248,7 @@ stays the topic hub (owner rule, `AGENT_HANDOFF.md` item 6). What it reports:
 - if shorts are still wanted, start with a mirrored grid on spot inventory.
 
 **Status and caveats (e0b16be3):**
-- **Under review; the arithmetic is settled (updated 2026-09-28).** At `9deb5c3` the
+- **Merged; the arithmetic is settled (updated 2026-09-28).** At `9deb5c3` the
   automated review asked for CHANGES NEEDED on #137's short and cost arithmetic.
   #137's revision 2 (`546f5be`):
   - applied the cost correction (one 0.14% leg per side traded);
@@ -257,9 +257,10 @@ stays the topic hub (owner rule, `AGENT_HANDOFF.md` item 6). What it reports:
   - corrected §2's multi-day short ratio, which had flattered shorting. The compounded
     short fell from −12.2% to −48.1%, which strengthens the conclusion.
 
-  The figures quoted here are revision 2's. #137 is not merged, and its PR description
-  still carried revision 1's numbers at `546f5be`, so treat them as provisional until
-  it merges.
+  The figures quoted here are revision 2's, and they are final: #137 merged on
+  2026-09-28 (merge commit `9a52b39`) at its revision 2 head `546f5be`. Its PR
+  description still carried revision 1's numbers at that head; the merged file,
+  `docs/reviews/2026-09-28-claude-v2-downtrend-research.md`, is the record.
 - **One point for Codex and Bob: do these runs count as trials?** #137 says they do not
   count against the trial register. But part 2's rule (PR #93) counts inspected runs,
   and the data-reuse agreement makes agent changes prompted by results registered

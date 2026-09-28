@@ -175,6 +175,11 @@ class TargetTest(unittest.TestCase):
                 find_targets(f"gh pr merge https://github.com/{REPO}/pull/141 --squash", ".")[0].pr,
                 141,
             )
+            # A PR URL with a query, a fragment or a trailing slash still names the PR.
+            for suffix in ("?tab=files", "#issuecomment-1", "/"):
+                cmd = f"gh pr merge https://github.com/{REPO}/pull/141{suffix} --merge"
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, ".")[0].pr, 141)
             self.assertEqual(find_targets("gh pr merge --merge", ".")[0].branch, "claude/cur")
             self.assertEqual(
                 find_targets(f"gh api -X PUT repos/{REPO}/pulls/7/merge", ".")[0].pr, 7

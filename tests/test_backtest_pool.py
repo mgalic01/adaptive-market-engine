@@ -12,7 +12,7 @@ import json
 import multiprocessing
 import os
 import pickle
-import subprocess  # nosec B404
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -74,7 +74,7 @@ class PoolJobReferenceTests(unittest.TestCase):
         for name, fn in self.jobs.items():
             with self.subTest(job=name):
                 self.assertNotEqual("__main__", fn.__module__.rpartition(".")[2])
-                self.assertIs(fn, pickle.loads(pickle.dumps(fn)))  # nosec B301
+                self.assertIs(fn, pickle.loads(pickle.dumps(fn)))
 
     def test_a_spawned_worker_can_unpickle_every_pool_job(self):
         context = multiprocessing.get_context("spawn")
@@ -121,7 +121,7 @@ class SpawnedCliTests(unittest.TestCase):
         env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
         command = [sys.executable, "-c", DRIVER, "verify", "--spec", str(spec_path)]
         command += ["--data-dir", str(work / "data"), "--jobs", "2"]
-        done = subprocess.run(  # nosec B603
+        done = subprocess.run(
             command, capture_output=True, text=True, env=env, timeout=300, check=False
         )
         self.assertNotIn("BrokenProcessPool", done.stderr)

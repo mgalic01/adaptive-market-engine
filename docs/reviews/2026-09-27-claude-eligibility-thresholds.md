@@ -13,6 +13,12 @@
   corrected in place and struck through; claims that were never supported are marked as
   such rather than silently reworded. The two proposed values are unchanged; one
   justification for the first is withdrawn.
+- **Measured since (PR #132, 2026-09-27):** Bob's
+  [rescued-month masking report](2026-09-27-bob-rescued-month-masking.md) measured the 98
+  months the repair rule rescues, the limitation below: **9 of the 98 exceed 2% real
+  defects**, so a 2% cap would exclude them. Both values remain proposed, pending the
+  owner's decision, which is tracked in
+  [issue #144](https://github.com/mgalic01/adaptive-market-engine/issues/144#issuecomment-5870332726).
 - **Why record it before results exist.** Whichever values are adopted must be fixed before
   any variant runs, or choosing them becomes the post-hoc tuning `START_HERE.md` step 1
   forbids. Proposing them now, with the measurement attached, is what makes that possible.

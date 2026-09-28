@@ -476,6 +476,10 @@ def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
     if arg is None:
         branch = current_branch(cwd)
         return [Target("merge", branch=branch, unknown=None if branch else "no PR named")]
+    if "/pull/" in arg:
+        # A PR URL may carry ?query, #fragment or a trailing slash (automated review
+        # at f3f334a); a branch name is left as it is.
+        arg = re.split(r"[?#]", arg, maxsplit=1)[0].rstrip("/")
     number = re.search(r"(?:^|/pull/)(\d+)$", arg)
     return [Target("merge", pr=int(number.group(1)))] if number else [Target("merge", branch=arg)]
 
