@@ -333,11 +333,14 @@ allowance is exhausted (the state defined above), the owner's instruction of
    the owner gave as a blanket approval of paid Bob runs on 2026-09-27; the merging
    agent still says in the merge commit that the merge starts a run.
 6. **Deep review before every such merge (owner instruction, 2026-09-28, about 10:45 UTC,
-   in Claude session `e0b16be3`).** The owner's words: *"i allow you to merge if codex
-   is out, but Bob needs to do temeljitu a and deep investigation before you merge
-   anything. same goes for things if bob merges you need to do the correct steps before
-   he does it."* ("Temeljitu" is Croatian for "thorough".) This raises the bar of item 1
-   in both directions:
+   in Claude session `e0b16be3`).** In English: **"I allow you to merge if Codex is
+   out, but Bob needs to do a thorough and deep investigation before you merge
+   anything. The same goes if Bob merges: you need to do the correct steps before he
+   does."** The owner's original words, kept as the record (the one Croatian word,
+   *temeljitu*, means "thorough"): *"i allow you to merge if codex is out, but Bob
+   needs to do temeljitu a and deep investigation before you merge anything. same goes
+   for things if bob merges you need to do the correct steps before he does it."* This
+   raises the bar of item 1 in both directions:
    - **Before Claude merges,** Bob's `NO ISSUES` counts only if the request asked for a
      **thorough, deep investigation** and Bob's answer shows one. The request names the
      full head and asks Bob to:
