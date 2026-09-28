@@ -223,6 +223,30 @@ class MainHookTest(unittest.TestCase):
         self.assertIn("systemMessage", self.run_hook("git push origin claude/a"))
 
 
+class CliTest(unittest.TestCase):
+    def test_pagination_reads_every_page(self):
+        pages = {1: [comment("x")] * 100, 2: [claim()]}
+
+        def read(path):
+            return pages.get(int(path.rsplit("page=", 1)[1]), [])
+
+        self.assertEqual(len(claims.fetch_comments(5, read)), 101)
+        self.assertEqual(len(claims.open_prs(read)), 101)
+
+    def test_status_and_check(self):
+        out = io.StringIO()
+        recent = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with (
+            mock.patch.object(claims, "open_prs", return_value=[{"number": 7}]),
+            mock.patch.object(claims, "fetch_comments", return_value=[claim(tag="Bob", at=recent)]),
+            mock.patch.object(sys, "stdout", out),
+        ):
+            self.assertEqual(claims.main(["status"]), 0)
+            self.assertEqual(claims.main(["check", "7", "--as", "**[Bob]**"]), 0)
+            self.assertEqual(claims.main(["check", "7", "--as", "[Codex Desktop]"]), 1)
+        self.assertIn("#7: claimed by [Bob]", out.getvalue())
+
+
 class HookTest(unittest.TestCase):
     def reader(self, comments, prs=()):
         def read(path):

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"$CLAUDE_PROJECT_DIR/scripts/claims.py\"; py=python; command -v python >/dev/null 2>&1 || py=python3; if [ -f \"$f\" ]; then \"$py\" \"$f\" hook || true; fi",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/scripts/claims.py\"; [ -f \"$f\" ] || exit 0; py=python; command -v python >/dev/null 2>&1 || py=python3; in=$(cat); if ! printf '%s' \"$in\" | \"$py\" \"$f\" hook; then case \"$in\" in *merge*|*Merge*) echo \"claims: the claims hook could not run, so the merge is refused (fail closed)\" >&2; exit 2;; esac; fi",
             "timeout": 30,
             "statusMessage": "Checking PR claims"
           }

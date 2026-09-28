@@ -82,8 +82,10 @@ A new workflow, `claims.yml`:
   `issue_comment` `created`. A step-level prefilter skips comments containing neither
   `/claim`, `/release` nor `/claims`. It runs no agent and uses no allowance.
 - **Always checks out `main`**, never the PR head, and runs `scripts/claims.py` from
-  it. A PR cannot change how its own claims are judged. The comment bodies are passed
-  in environment variables and parsed in Python, never interpolated into the shell.
+  it. A PR cannot change how its own claims are judged. The script reads the event from
+  `GITHUB_EVENT_PATH` and the comments through the API, in Python; no comment text is
+  ever interpolated into the shell (revision 2 wording; revision 1 said environment
+  variables).
 - **Evaluates** the claims from the PR's comments, with the rules in section 2.
 - **Sets a commit status `claim-guard` on the PR's head SHA:**
   - `success`, "no active claim";
@@ -283,6 +285,23 @@ Bob's other notes, for the record:
 
   Its two required fixes at that head were already answered at `13da5d7`
   (`pull_request_target` and the START_HERE bullet).
+- **Bob at `b00a461` (FLAGGED, 2 concerns) and the automated review at `13da5d7` (APPROVE, 2 nits):**
+  1. *If Python cannot run at all, the hook printed nothing and `|| true` let a merge
+     through.* Fixed in `.claude/settings.json`. When the script exists but cannot run,
+     the shell answers exit code 2 (Claude Code's blocking code) for a command that
+     mentions a merge, and lets every other command through. Pipe-tested with a missing
+     interpreter and with a crashing script.
+  2. *"`/claims` does not trigger the workflow."* It does. `contains()` in a workflow
+     expression is a case-insensitive substring test, and `/claims` contains `/claim`.
+     No change.
+  3. *No test of the `status` CLI or of pagination past page 1.* Both added.
+  4. The design's "environment variables" wording is corrected above.
+  5. *"`scripts` is outside mypy's configured files."* CI and preflight run
+     `mypy src scripts` explicitly (`quality.yml`, `scripts/preflight.py`), so
+     `claims.py` is type-checked in CI under the strict config. No change.
+  6. Bob's point D: a heredoc body line that reads `git push` is parsed as a push. It can
+     only refuse a command when that branch's PR is claimed by someone else, which is
+     rare and visible in the refusal message. Accepted as a nuisance, not a hole.
 - The workflow skips cleanly while `main` has no `scripts/claims.py` (this PR's own
   runs).
 - An owner comment whose first line is exactly `/release all` needs no tag.
