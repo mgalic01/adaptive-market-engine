@@ -108,3 +108,30 @@ serves it` is on `main`.
   the appendix as hash-checked. The only other line came from the simulation's missing
   `docs/tasks`. `check_report()` alone gave `[]`.
 - **Script hash:** the new line range reproduces the new pinned hash.
+
+## Revision 3: Codex's Cloud P1 (a tested project fetcher first), 2026-09-28
+
+Written by Claude (session `012TnmLL`), which took the PR over while Codex is out of
+credits. Codex's gate: "use a tested project funding-fetch entry point before this task
+is activated ... add the narrowly scoped project fetcher and synthetic tests (allowed
+and forbidden path, redirects and statuses, checksum failure and reserved-month guard),
+then call it from the task." This revision does exactly that, in the same PR, so the
+merge that starts Bob's run also carries the fetcher and its tests.
+
+| Item | What changed |
+| --- | --- |
+| Project fetcher | `dataset.py` gains `funding_archive_path`, `funding_local_path` and `fetch_funding_file(data_dir, symbol, month, fetcher)`. The checksum, download, atomic-write and cache rule of `fetch_file` moved into one shared `_fetch_verified`, so the two fetchers cannot drift; `fetch_file`'s behaviour and return value are unchanged. The stored funding archive is parsed by `read_funding_archive`; a rejection is `ArchiveParseError`, as for klines. The entry adds `kind: fundingRate` and `records`. |
+| `archive_get` | accepts the canonical USDT-M funding path (`/data/futures/um/monthly/fundingRate/<S>/<S>-fundingRate-YYYY-MM.zip`, optionally `.CHECKSUM`) beside the spot kline path, through one `_archive_month`; the whole path must match and the month is passed through `development_month` before any connection, as before. A directory, query string, symbol mismatch, other market, relative path or `.csv` is refused. `_CHECKSUM` accepts `fundingRate` as the interval token; the file-name equality check is unchanged. |
+| Tests (`tests/test_backtest_data.py`) | `FundingFetchTests` (10): verified file stored under the mirrored local path and described; checksum mismatch stores nothing; a checksum naming another file; unpublished month is `missing` with exactly two requests; archive without checksum; cache reused only while it matches; hash-verified archive the parser rejects (wrong member, row outside the month) is `ArchiveParseError`; reserved month refused before any request or cache access; 2024-12 still fetched; the path helper rejects a lowercase symbol and an unpadded month. `ArchiveGetTests` (4) with a canned connection: both canonical shapes reach `data.binance.vision` and the connection is closed; seven forbidden shapes and two reserved paths never connect; 404 is `None` and 301, 302, 307, 403, 429, 500, 503 are `FeedError` (a redirect is never followed); transport failures and an oversized body are `FeedError`. |
+| Task script | `funding_get` keeps its own `re.fullmatch` and `allowed` guard and now calls the project's `archive_get`; `funding_file` is `fetch_funding_file(DATA, "BTCUSDT", allowed(month), funding_get)`; `funding_path` and `open_funding` use the project's path helpers. The embedded `funding_get` transport, `funding_file` checksum code and `FUNDING_SUM` are gone (about 45 lines fewer). `--self-test` keeps its 17 cases and passes offline: 0 wrong, 2 requests reach the disabled network. |
+| Pinned inputs | `dataset.py`, `funding.py` and `klines.py` re-pinned to their content as this PR merges it (main at `3b94378` plus this PR's `dataset.py`); the other seven pins are unchanged. |
+| Step 6 | follows PR #116's index scheme: the report carries a `# ` title and an `Index:` line, `docs/reviews/README.md` is not edited (frozen), and the checker must print `0 problem(s)` with exit 0. The deferred-index diagnostic no longer exists. |
+| Index | this record's row moved from the frozen table to its own `Index:` line. |
+
+**Verification of this revision** (Linux, Python 3.12.3): preflight green (ruff,
+format, mypy 39 source files, bandit, `check_reports` 0 problems, pytest 594 passed,
+2 skipped). The script copied out of the task by its stated line range reproduces the
+stated hash. Offline, with `archive_get` replaced by a synthetic archive, the script's
+`funding_file("2024-12")` returned `ok` with 93 records and two requests (`.CHECKSUM`
+then the zip), `open_funding` read the same 93, and an unpublished month returned
+`missing`. Not run: any real request; Bob's run is the first.

@@ -5,7 +5,11 @@
   "Not yet done" in [the G signal handoff](../reviews/2026-09-25-claude-g-funding-signal.md).
 - **Revised** after Codex's review of PR #113 (Codex Desktop comment 5858830916 and
   the Cloud findings): the Step 6 checker condition, pinned inputs, and daily
-  completeness.
+  completeness. **Revised again on 2026-09-28** (Codex's Cloud P1: a tested project
+  fetcher before this task runs): the script now calls
+  `crypto_grid_bot.backtest.dataset.fetch_funding_file`, which PR #113 adds with its
+  tests; Step 6 follows PR #116's index scheme; the pins are the files as PR #113
+  merges them.
 - **Review:** starts automatically when this file is merged, so **Codex reviews it
   first**. The merge is the go.
 - **Report:** `docs/reviews/2026-09-27-bob-p8-funding-archives.md`, nothing else.
@@ -63,7 +67,9 @@ The script in the last section of this file, copied unchanged:
 - **Requested:** the only two network functions, `kline_get` and `funding_get`, accept
   only a full archive or `.CHECKSUM` path for one of the planned symbols
   (`re.fullmatch`, so no directory, prefix or query string), and call `allowed` on its
-  month before connecting.
+  month before connecting. Both then call the project's `archive_get`, which accepts
+  only a canonical spot kline or USDT-M funding archive path and refuses a reserved
+  month again on its own (`development_month`), so the guard holds twice.
 - **Opened:** `open_funding` calls `allowed` before reading. `fetch_file` opens a
   daily archive only after `kline_get` has passed its checksum request.
 - **Listed:** no path that is not a single file can pass the two patterns.
@@ -105,18 +111,23 @@ Record `git rev-parse HEAD` in Step 1 as well.
   is an `INCOMPLETE` line and a `PROBLEM`. The only exceptions are SOLUSDT before its
   listing: 2020-05 to 2020-07 must be `missing`, and 2020-08 must start at 2020-08-11
   00:00 UTC with exactly 10 missing days and 1 gap (the leading absence).
-- Funding archives: the project has no funding fetcher yet (`archive_get` accepts only
-  spot kline paths). `funding_file` follows `fetch_file`'s conventions exactly:
-  - the same host `data.binance.vision`, through the project's `https_connection`;
+- Funding archives: `crypto_grid_bot.backtest.dataset.fetch_funding_file(Path("data"),
+  "BTCUSDT", month, funding_get)`, the project's fetcher (added by PR #113 with
+  network-free tests: allowed and forbidden paths, every HTTP status, checksum failure,
+  the reserved-month guard). It shares `fetch_file`'s code for the checksum rule:
+  - the same host `data.binance.vision`, through the project's `archive_get`;
   - 404 means missing; any other non-200 status is an error, and redirects are never
     followed;
   - the published `.CHECKSUM` must name the file, and the SHA-256 of the body must match
-    before the file is written (atomically, with `dataset._write_atomic`);
-  - the local path mirrors `local_path`:
+    before the file is written (atomically); a cached file is reused only while it
+    matches;
+  - the local path is `funding_local_path`:
     `data/binance/data/futures/um/monthly/fundingRate/BTCUSDT/<file>`.
 
-  Each archive is then parsed with
-  `crypto_grid_bot.backtest.funding.read_funding_archive(path, "BTCUSDT", month)`.
+  The fetcher parses each stored archive with
+  `crypto_grid_bot.backtest.funding.read_funding_archive(path, "BTCUSDT", month)` (a
+  rejection is `ArchiveParseError`); the script opens it again with `open_funding` for
+  the per-month measures.
 - A transport error (`FeedError`) is retried at most twice, 10 s apart, and every
   attempt is printed (`RETRY` lines). A third failure is a traceback: stop.
 - Data files stay under `data/`, which git ignores. Nothing under `data/` is committed.
@@ -131,13 +142,13 @@ output into the report.
 
    ```text
    mkdir -p data
-   sed -n '277,795p' docs/tasks/2026-09-27-bob-p8-funding-archives.md > data/p8_archives.py
+   sed -n '282,759p' docs/tasks/2026-09-27-bob-p8-funding-archives.md > data/p8_archives.py
    sha256sum data/p8_archives.py
    ```
 
    The hash must be exactly:
 
-   `579b701c4e25bc447829f83377b4878fbf066bb08eaad117417806981dd26fa9`
+   `35a4ea2cf36cae67339784fada62063880a41455d1a60316902f93c52363c75e`
 
    Do not edit the script. If the hash differs, or the script fails in a way this task
    does not describe, stop and report; never patch it.
@@ -163,8 +174,11 @@ output into the report.
    ```
 
    The `grep -c` must print `0` (its exit status is then 1, which is expected).
-6. Write the report (below). Do **not** edit `docs/reviews/README.md`: the publisher
-   drops that edit, and the index row is added when your report PR is reviewed. Then:
+6. Write the report (below). Do **not** edit `docs/reviews/README.md`: since PR #116
+   that table is frozen and pinned by hash, and every new review file carries its own
+   index entry. Your report's first line is its `# ` title, and one line within its
+   first 20 lines starts with `Index: ` and gives the one-paragraph summary the index
+   shows (`python scripts/check_reports.py --index` prints the whole index). Then:
 
    ```text
    git status --porcelain --untracked-files=all
@@ -173,22 +187,13 @@ output into the report.
    date -u
    ```
 
-   Because your report is not in the index yet, `check_reports.py` reports exactly one
-   problem, and **only this one is allowed**:
-
-   ```text
-   review file not in the index: 2026-09-27-bob-p8-funding-archives.md
-   ```
-
-   Its output must be that line, the `hash-checked` line (which must include
-   `2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py`), and
-   `check_reports: 1 problem(s)`, with exit 1. Any other problem line, or any other
-   count, is a real problem: fix your report and rerun. The `python -c` line checks your
-   report's appendix on its own, without the index: it must print
-   `appendix problems: []` and
+   `check_reports.py` must print `check_reports: 0 problem(s)` with exit 0, and its
+   `hash-checked` line must include
+   `2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py`. Any problem line is a
+   real problem (a missing `Index:` line, a stated hash that does not match, a data
+   script mentioned without its hash): fix your report and rerun. The `python -c` line
+   checks your report's appendix on its own: it must print `appendix problems: []` and
    `appendix checked: ['2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py']`.
-   After the index row is added, the report PR must pass the full checker with
-   `0 problem(s)`; that is checked at review, not by you.
 
 ## Validity checks (all must hold for a valid run)
 
@@ -271,7 +276,7 @@ Stop, keep everything, and report what you have, with the full error, if:
 [`docs/BOB_PRACTICE.md`](../BOB_PRACTICE.md), "Before you finish", all eleven items.
 Every count in the report is printed by the script or by a command you ran.
 
-## The script (`data/p8_archives.py`, lines 277 to 795 of this file)
+## The script (`data/p8_archives.py`, lines 282 to 759 of this file)
 
 ```text
 """P8 archives for G and H, development months only.
@@ -281,8 +286,6 @@ python data/p8_archives.py --self-test, then python data/p8_archives.py
 """
 
 import collections
-import hashlib
-import http.client
 import json
 import re
 import sys
@@ -290,12 +293,12 @@ import time
 from pathlib import Path
 
 from crypto_grid_bot.backtest.dataset import (
-    ARCHIVE_HOST,
-    MAX_ZIP_BYTES,
     ArchiveParseError,
-    _write_atomic,
     archive_get,
     fetch_file,
+    fetch_funding_file,
+    funding_archive_path,
+    funding_local_path,
     load_manifest,
     load_spec,
     local_path,
@@ -303,7 +306,7 @@ from crypto_grid_bot.backtest.dataset import (
 )
 from crypto_grid_bot.backtest.funding import FundingSignal, read_funding_archive
 from crypto_grid_bot.backtest.klines import month_bounds_ms
-from crypto_grid_bot.market_data.client import FeedError, https_connection
+from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.market_data.parsing import DataError
 
 LAST_MONTH = "2024-12"  # the reserved window starts 2025-01 and is out of scope
@@ -321,12 +324,12 @@ FUNDING = re.compile(
     r"/data/futures/um/monthly/fundingRate/BTCUSDT/"
     r"BTCUSDT-fundingRate-(\d{4}-\d{2})\.zip(?:\.CHECKSUM)?"
 )
-FUNDING_SUM = re.compile(r"([0-9a-f]{64})  (BTCUSDT-fundingRate-\d{4}-\d{2}\.zip)\n?")
 PR19 = Path("docs/reviews/2026-09-25-bob-funding-cadence.md")
 PR19_ROW = re.compile(r"^\| (\d{4}-\d{2}) \| [^|]+ \| (\d+) \| (\d+) \| (\d+) \| (\S+) \|$", re.M)
 REQUESTED: list[str] = []
-# The reviewed inputs (git blobs at main 58edafe). Any other content stops the run before
-# any request, so the evidence cannot come from specs, manifests or code nobody reviewed.
+# The reviewed inputs: main at 3b94378 (PR #116), with dataset.py as PR #113 merges it
+# (its fetch_funding_file). Any other content stops the run before any request, so the
+# evidence cannot come from specs, manifests or code nobody reviewed.
 INPUTS = {
     "config/datasets/practice-2022.toml": (
         "f259445fd78d840a5c758026c6ee6bd717ea47656cee228111a397d9fa1d7bdd"
@@ -344,13 +347,13 @@ INPUTS = {
         "b9d3ec73f3f2f7ac39ff1dc4ee85098388dea19659d9e881b91e40844b919d21"
     ),
     "src/crypto_grid_bot/backtest/dataset.py": (
-        "cf75842c7cc893fe1925cb8dc33fa5a40952d658e8cca1bcd134a273f26b7b6f"
+        "9c3b6b5a84b3c58037c85bf32caadf7ae63622bfa612c10beb6f49f9f99150a5"
     ),
     "src/crypto_grid_bot/backtest/funding.py": (
-        "92451d9a4ce7eeb1146eef74a069490537f65f38fb51967bb2b753b33073c442"
+        "34b0558761c9861782351833df5d3f645730a4011fe3be90d70de36082357aee"
     ),
     "src/crypto_grid_bot/backtest/klines.py": (
-        "16caab1e1b882b53bca1e993de4d2a7d2de4579f206f709d6b79f9b388e2f9a0"
+        "ce12820936efe09f55658c418e8ef65e393f2f56882b320077efef99408491cb"
     ),
     "src/crypto_grid_bot/market_data/client.py": (
         "c6ee5a25a1572957c1115bb56cdab2c5ba714d56d26036b59b6246e1dd8c97a7"
@@ -404,60 +407,21 @@ def funding_get(path: str) -> bytes | None:
         raise OutOfScope(f"not a planned funding archive path: {path}")
     allowed(found.group(1))
     REQUESTED.append(path)
-    connection = https_connection(ARCHIVE_HOST, timeout=60)
-    try:
-        connection.request("GET", path)
-        response = connection.getresponse()
-        body = response.read(MAX_ZIP_BYTES + 1)
-    except (OSError, http.client.HTTPException) as exc:
-        raise FeedError(f"transport failed for {path}") from exc
-    finally:
-        connection.close()
-    if response.status == 404:
-        return None
-    if response.status != 200:  # a redirect (3xx) is an error too, never followed
-        raise FeedError(f"HTTP {response.status} for {path}")
-    if len(body) > MAX_ZIP_BYTES:
-        raise FeedError(f"size limit exceeded for {path}")
-    return body
+    return archive_get(path)  # the project's fetcher: it refuses the month again itself
 
 
 def funding_path(month: str) -> str:
-    return f"/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-{allowed(month)}.zip"
+    return funding_archive_path("BTCUSDT", allowed(month))
 
 
 def funding_file(month: str) -> dict:
-    """fetch_file's checksum convention, for one BTCUSDT funding archive."""
-    path = funding_path(month)
-    name = path.rsplit("/", 1)[1]
-    target = DATA / "binance" / path.lstrip("/")
-    entry = {"kind": "fundingRate", "symbol": "BTCUSDT", "month": month}
-    entry["url"] = f"https://{ARCHIVE_HOST}{path}"
-    checksum = funding_get(path + ".CHECKSUM")
-    if checksum is None:
-        if funding_get(path) is not None:
-            raise DataError(f"{path} is published without a checksum")
-        return {**entry, "status": "missing"}
-    match = FUNDING_SUM.fullmatch(checksum.decode("ascii"))
-    if match is None or match.group(2) != name:
-        raise DataError(f"unexpected checksum file for {path}")
-    expected = match.group(1)
-    if not target.exists() or sha256_file(target) != expected:
-        body = funding_get(path)
-        if body is None:
-            raise DataError(f"{path} has a checksum but no archive")
-        if hashlib.sha256(body).hexdigest() != expected:
-            raise DataError(f"{path} does not match Binance's published SHA-256")
-        _write_atomic(target, body)
-    if sha256_file(target) != expected:
-        raise DataError(f"{target} does not match its checksum after writing")
-    return {**entry, "status": "ok", "sha256": expected, "bytes": target.stat().st_size}
+    """The project's fetch_funding_file (same rules as fetch_file), through funding_get."""
+    return fetch_funding_file(DATA, "BTCUSDT", allowed(month), funding_get)
 
 
 def open_funding(month: str) -> list:
-    return read_funding_archive(
-        DATA / "binance" / funding_path(month).lstrip("/"), "BTCUSDT", month
-    )
+    path = funding_local_path(DATA, "BTCUSDT", allowed(month))
+    return read_funding_archive(path, "BTCUSDT", month)
 
 
 def retried(call, *args):
@@ -479,7 +443,7 @@ def self_test() -> int:
     def no_network(*_args, **_kwargs):
         raise Network
 
-    globals()["https_connection"] = globals()["archive_get"] = no_network
+    globals()["archive_get"] = no_network
     kline = "/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-{}.zip"
     funding = "/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-{}.zip"
     cases = [
