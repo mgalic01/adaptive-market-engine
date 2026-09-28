@@ -4,6 +4,30 @@ import subprocess
 import sys
 
 
+def claims_summary():
+    """Active claims on open PRs (docs/AGENT_HANDOFF.md, "Claims"). Unknown is said out loud."""
+    script = os.path.join("scripts", "claims.py")
+    check = 'python scripts/claims.py check <PR> --as "[Bob]"'
+    if not os.path.exists(script):
+        return f"Claims: scripts/claims.py is not in this checkout; run `{check}` from main."
+    try:
+        res = subprocess.run(
+            [sys.executable, script, "status"], capture_output=True, text=True, timeout=60
+        )
+    except Exception:
+        res = None
+    if res is None or res.returncode != 0:
+        return f"Claims: UNKNOWN (could not be read). Run `{check}` before any push or merge."
+    held = [line for line in res.stdout.splitlines() if "claimed by" in line]
+    rule = (
+        f"Before a push or merge on a PR run `{check}`. Exit 1 means another holder has "
+        "it: do not push or merge, comment on the PR instead."
+    )
+    if not held:
+        return "Claims: no active claim on any open PR. " + rule
+    return "Claims (another holder's PR: no push, no merge):\n" + "\n".join(held) + "\n" + rule
+
+
 def fetch_latest_pr_updates():
     # Only run in adaptive-market-engine repository directory
     if not (os.path.exists("src/crypto_grid_bot") and os.path.exists("docs/AGENT_HANDOFF.md")):
@@ -32,10 +56,9 @@ def fetch_latest_pr_updates():
             del env["GITHUB_TOKEN"]
 
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=8, env=env)
-        if res.returncode != 0 or not res.stdout.strip():
-            sys.exit(0)
-
-        open_prs = json.loads(res.stdout)
+        # Without gh, still fall through to the claims summary below.
+        ok = res.returncode == 0 and res.stdout.strip()
+        open_prs = json.loads(res.stdout) if ok else []
         for pr in open_prs:
             pr_num = pr.get("number")
             comments_cmd = [
@@ -66,18 +89,20 @@ def fetch_latest_pr_updates():
     except Exception:
         pass
 
+    parts = []
     if updates:
-        context_msg = (
+        parts.append(
             "Recent GitHub updates/mentions for Bob on adaptive-market-engine:\n"
             + "\n".join(updates)
         )
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context_msg,
-            }
+    parts.append(claims_summary())
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": "\n\n".join(parts),
         }
-        sys.stdout.write(json.dumps(output))
+    }
+    sys.stdout.write(json.dumps(output))
     sys.exit(0)
 
 

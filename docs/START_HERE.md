@@ -145,6 +145,14 @@ e. **Verdicts, and at which head:** Bob's `NO ISSUES` or `FLAGGED`
    rereading the whole diff (step 5a). Bob's
    GitHub reviewer, which cannot see earlier comments, always reviews in full — see
    [verdicts and a base integration](AGENT_HANDOFF.md#verdicts-and-a-base-integration).
+f. **Claim** (owner request, 2026-09-28): read `claim-guard` on the head and the
+   `claimed` label. If another agent holds an active claim, **do not push to the branch
+   or merge**, whatever else is ready; comment to reach the holder. A red `claim-guard`
+   whose stated expiry has passed is stale, not a claim: post a comment containing
+   `/claims` to refresh it. A merge needs `claim-guard` green at the head, in addition
+   to the merge rule below. `test-and-audit` stays the CI gate. Claim before your own
+   work and release after it; see
+   [claims](AGENT_HANDOFF.md#claims-who-is-working-on-what-owner-request-2026-09-28).
 
 Then act, in this priority:
 
@@ -154,7 +162,8 @@ Then act, in this priority:
    ([owner instruction 2026-09-28](AGENT_HANDOFF.md#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28)):
    the verdict `NO ISSUES` from Bob at the head (a reading of the diff), the automated
    review's `APPROVE` at the head (an independent run of the checks), green
-   `test-and-audit` at the head (evidence it runs), and no unaddressed required fix.
+   `test-and-audit` at the head (evidence it runs), no unaddressed required fix, and
+   green `claim-guard` at the head, meaning no other agent's active claim (step f).
    The verdicts are needed together because they answer different questions.
    **Since 2026-09-28 (owner, item 6 of the linked section), Bob's review before a
    Claude merge must be a thorough, deep investigation that was asked for as one. A
