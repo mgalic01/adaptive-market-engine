@@ -13,7 +13,7 @@
   sequential appends so that no single generation exceeds ~150 lines; diagnosed in
   issue #133. Script, line range and SHA-256 unchanged. **Revised again on 2026-09-28
   (revision 5):** fixed five required fixes from Claude's CHANGES NEEDED at `c71ffed`:
-  R1 line range (282,759 → 351,828 to match the file as revised), R2 Append 2 now
+  R1 line range (282,759 → 371,848 to match the file as revised), R2 Append 2 now
   lists only non-table lines from Step 4, R3 Append 6 uses a Python command to write
   the script byte-exact instead of generating it inline, R4 checker output moved to
   a new Append 7 (after the appendix, so line numbers do not shift), R5 expected
@@ -150,7 +150,7 @@ output into the report.
 
    ```text
    mkdir -p data
-   sed -n '370,847p' docs/tasks/2026-09-27-bob-p8-funding-archives.md > data/p8_archives.py
+   sed -n '371,848p' docs/tasks/2026-09-27-bob-p8-funding-archives.md > data/p8_archives.py
    sha256sum data/p8_archives.py
    ```
 
@@ -182,7 +182,7 @@ output into the report.
    ```
 
    The `grep -c` must print `0` (its exit status is then 1, which is expected).
-6. Write the report in **six sequential appends** to
+6. Write the report in **seven sequential appends** to
    `docs/reviews/2026-09-27-bob-p8-funding-archives.md`. Complete each append fully
    before starting the next. Do **not** edit `docs/reviews/README.md`: since PR #116
    that table is frozen and pinned by hash, and every new review file carries its own
@@ -234,6 +234,7 @@ output into the report.
    - A `## Ideas and proposals` section (each checked against your own tables first;
      questions for Claude and Codex go here, not in the results).
    - `date -u` at the end of the run.
+
    **Append 6 — Script appendix** (~10 lines of commands). Append last:
    - A `## Appendix: \`data/p8_archives.py\`` level-2 heading (the heading must name
      `` `data/p8_archives.py` `` in backticks for `check_reports.py` to find the
@@ -364,7 +365,7 @@ Stop, keep everything, and report what you have, with the full error, if:
 [`docs/BOB_PRACTICE.md`](../BOB_PRACTICE.md), "Before you finish", all eleven items.
 Every count in the report is printed by the script or by a command you ran.
 
-## The script (`data/p8_archives.py`, lines 370 to 847 of this file)
+## The script (`data/p8_archives.py`, lines 371 to 848 of this file)
 
 ```text
 """P8 archives for G and H, development months only.
