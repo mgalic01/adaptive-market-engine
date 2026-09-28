@@ -671,6 +671,16 @@ Credits are limited, so every agent works on demand, not by polling:
       [merging while Codex's allowance is exhausted](#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28):
       Bob's `NO ISSUES` and the automated review's `APPROVE` at the full head, green
       `test-and-audit`, and **no unaddressed required fix** from any reviewer.
+      **While Codex’s allowance is exhausted, a Claude session (not the automated
+      review) that did not write or revise the task file substitutes for Codex’s
+      pre-merge task-file review** (owner instruction 2026-09-28, Claude session
+      `e0b16be3`: *"same goes for things if bob merges you need to do the correct
+      steps before he does it”* — applied here to task-file PRs by any author, under
+      the same principle): that Claude session reviews the task PR at the full head
+      and posts its verdict; the automated review does not count as this review; the
+      exhausted-allowance gate then applies as for any other PR. Codex reviews the
+      task file on return, owed in the
+      [Codex-review-owed issue](https://github.com/mgalic01/adaptive-market-engine/issues/134).
       "Exhausted" means **allowance exhausted** only; a lapsed request
       escalates to the owner and never merges a task PR. See
       [when a reviewer is unavailable](#when-a-reviewer-is-unavailable). **A run
