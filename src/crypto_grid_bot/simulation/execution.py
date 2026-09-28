@@ -253,6 +253,9 @@ def reduce_unreserved(
     quote.validate(rules)
     account.validate(rules)
     nonnegative(consumed)
+    if maximum is not None and maximum <= ZERO:
+        # A bound of zero or less would report a negative or empty target as "owed".
+        raise ValueError("maximum must be positive when given")
     price = exit_price(quote, rules)
     unreserved = account.inventory - account.reserved_base()
     # ``maximum`` limits the exit to one part of the unreserved inventory, such as a

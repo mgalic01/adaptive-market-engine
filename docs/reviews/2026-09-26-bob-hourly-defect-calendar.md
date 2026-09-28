@@ -21,6 +21,7 @@
 | `data/calendar.py` | `b972b3b6f5a0bae815d6cafbf8395e33cb8c50a88453e4a44813477c8b60b43e` |
 | `data/events.py` | `53097095f39c35ee5ca0560268ea263417691de9e236ed99ceb2ca107ce80809` *[Correction at review: the appendix source of `events.py` hashes to `55f19293acc5616c8910e6a873f70d0310057ab7529aac5372a6e891ac1d4368`, so the file was changed after hashing or the appendix differs from what ran. `calendar.py` matches its hash exactly.]* |
 | `data/generate_report_tables.py` | `595c21467ad57d0b448d992f37c9af5d6f6ca4c9137d0a68fcd15f1f428a061a` |
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 | `data/calendar.jsonl` | `76389c8c498133d9f58d684dc40b2232fd642ec3b87272ebf2a2a917eaaa92b5` |
 
 ---
