@@ -21,8 +21,9 @@ reserve accounting, order stub, tests, and CI. No claim of strategy profitabilit
 Gate: replay/restart/failure tests pass; no network trading endpoint exists.
 Scope is one simulated symbol per account, cash-start grids, quote-asset fees,
 and flat-account reserve checkpoints. Version 0.4 adds grid recycling and confirmed
-recovery of temporary pauses; hard halts require reviewed resume (amendment 1 to spec v1
-changes this for `drawdown` halts: `docs/EXPERIMENT_SPEC_V1.md` §3). Rotation execution,
+recovery of temporary pauses; hard halts require reviewed resume, except a `drawdown`
+halt, which restarts by itself after 24 hours (amendment 1 to spec v1,
+`docs/EXPERIMENT_SPEC_V1.md` §3, engine `drawdown-recovery-v1`). Rotation execution,
 live order reconciliation and real transfers remain separate work.
 
 ## Next gate: strategy feasibility before expanding integrations

@@ -48,9 +48,9 @@ Implemented:
 - conservative spread/slippage-aware fills with shared liquidity limits;
 - automatic settled-profit allocation and simulated reserve transfers;
 - SQLite atomic state/event persistence, duplicate protection and recovery;
-- recoverable pauses, latched hard halts (a `drawdown` halt will restart automatically
-  after 24 h once spec v1 amendment 1 is implemented: `docs/EXPERIMENT_SPEC_V1.md` §3),
-  audited paper resume and bounded exits;
+- recoverable pauses, latched hard halts (a `drawdown` halt restarts automatically
+  after 24 h and a soft-drawdown pause rebases its reference after 24 h: spec v1
+  amendment 1, `docs/EXPERIMENT_SPEC_V1.md` §3), audited paper resume and bounded exits;
 - flat-inventory profit checkpoints and persistent simulated transfer IDs;
 - public Binance candle/book/filter capture with strict validation;
 - descriptive closed-candle indicators and isolated SQLite observation storage;
@@ -244,10 +244,10 @@ inputs latch a halt. Stale/spread/order-of-arrival issues cancel buys and pause
 without fills. Fresh hard-drawdown or emergency
 inputs can trigger simulated liquidation, bounded by available liquidity;
 unfilled inventory or dust remains visible. Daily-loss and soft-drawdown pauses cancel buy entries and manage exits. Temporary
-pauses recover after consecutive eligible observations; hard halts require the
-audited paper resume checks (pending: spec v1 amendment 1, `docs/EXPERIMENT_SPEC_V1.md`
-§3, makes a hard-drawdown halt of category `drawdown` restart automatically after 24
-hours once implemented; emergency, capital-exhaustion and integrity halts stay manual).
+pauses recover after consecutive eligible observations; a hard-drawdown halt of
+category `drawdown` restarts automatically after 24 hours (spec v1 amendment 1,
+`docs/EXPERIMENT_SPEC_V1.md` §3); emergency, capital-exhaustion and integrity halts
+require the audited paper resume checks.
 Resume cannot erase losses. Savings earmarks adjust
 risk baselines proportionally and cannot fund orders.
 

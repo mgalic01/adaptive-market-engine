@@ -232,7 +232,10 @@ class Metrics:
     # every risk evaluation (the basis of the runtime's soft/hard drawdown breakers).
     active_max_drawdown: Decimal = ZERO
     risk_evaluations: int = 0
-    hard_drawdown_halts: int = 0  # halt events, not evaluations
+    hard_drawdown_halts: int = 0  # halt instances of category drawdown, not evaluations
+    # Spec v1 amendment 1: committed soft-drawdown rebases and automatic restarts.
+    rebases: int = 0
+    restarts: int = 0
     # Frames whose marketable exit was refused because the order would be below the
     # exchange minimum notional ("depth": this frame's participation chunk; "dust": the
     # whole unreserved position). A refusal sells nothing, so it is invisible in the
@@ -397,17 +400,23 @@ def replay(
     orders = account.orders = RequestCountingOrders()
     metrics = Metrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
 
-    def observe_risk(equity: Decimal, high: Decimal, decision: RiskDecision) -> None:
+    def observe_risk(
+        equity: Decimal, high: Decimal, reference: Decimal, decision: RiskDecision
+    ) -> None:
+        # C1(b): active equity against the measurement reference, which is scaled at
+        # settlement exactly as risk_high is but never rebased (amendment 1); ``high`` is
+        # the engine's own, rebased, breaker reference.
         metrics.risk_evaluations += 1
-        if high > ZERO:
+        if reference > ZERO:
             metrics.active_max_drawdown = max(
-                metrics.active_max_drawdown, max(ZERO, (high - equity) / high)
+                metrics.active_max_drawdown, max(ZERO, (reference - equity) / reference)
             )
 
     simulator.risk_observer = observe_risk
     spread_pct = float(run.spread * 100)
     hold: _BuyAndHold | None = None
     was_range_exit = False
+    was_halted = False
     last_hour = -1
     last_quote: Quote | None = None
     for kline in minutes:
@@ -463,11 +472,16 @@ def replay(
             metrics.range_exits += int(exiting and not was_range_exit)
             was_range_exit = exiting
             metrics.transient_pauses += int("regime" not in report)
-            if account.halt and not metrics.halted_at:
-                metrics.halted_at, metrics.halt_reason = quote.observed_at, account.halt
-                # The halt is latched, so a run has at most one; later evaluations that
-                # still see the drawdown are not new halts.
-                metrics.hard_drawdown_halts += int(account.halt.startswith("hard drawdown"))
+            if account.halt and not was_halted:
+                # A halt instance starts on the not-halted to halted transition; later
+                # evaluations that still see the drawdown are not new halts. A drawdown
+                # halt may restart after H (amendment 1), so a run can have several.
+                if not metrics.halted_at:
+                    metrics.halted_at, metrics.halt_reason = quote.observed_at, account.halt
+                metrics.hard_drawdown_halts += int(account.halt_category == "drawdown")
+            was_halted = bool(account.halt)
+            metrics.rebases += int("rebase" in report)
+            metrics.restarts += int("restart" in report)
             if "total_equity" in report:
                 total = Decimal(report["total_equity"])
                 metrics.final_equity = total
@@ -630,7 +644,11 @@ VOLUME_DRIFT_TOLERANCE = Decimal("0.001")
 #   exit-residue-v1 (2026-09-27): a residue the exchange filters forbid selling no
 #   longer blocks settlement or new grids; a validation halt holding inventory arms
 #   liquidation; refused exits are counted. Runs without this field predate it.
-ENGINE_VERSION = "exit-residue-v1"
+#   drawdown-recovery-v1 (2026-09-28, spec v1 amendment 1): a soft-drawdown episode
+#   rebases risk_high after a 24 h cool-off; a drawdown halt restarts by itself after
+#   24 h; C1(b) is measured against a reference that is never rebased. No V0 result on
+#   exit-residue-v1 was run or inspected.
+ENGINE_VERSION = "drawdown-recovery-v1"
 INTEGRITY_RULES = "drift-tolerance-v1"
 STRICT_INTEGRITY_RULES = "strict-v0"
 
@@ -756,6 +774,8 @@ def summarise(
         "active_max_drawdown_pct": float(metrics.active_max_drawdown * 100),
         "risk_evaluations": metrics.risk_evaluations,
         "hard_drawdown_halts": metrics.hard_drawdown_halts,
+        "soft_drawdown_rebases": metrics.rebases,
+        "drawdown_restarts": metrics.restarts,
         "order_requests": sum(metrics.requests_by_day.values()),
         "max_order_requests_per_day": max(metrics.requests_by_day.values(), default=0),
         "days_over_request_budget": sum(
