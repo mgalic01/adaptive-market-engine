@@ -181,6 +181,8 @@ class TargetTest(unittest.TestCase):
                 find_targets("gh api graphql -f query='mutation{mergePullRequest}'", ".")[0].unknown
             )
             self.assertEqual(find_targets("gh pr merge 5 --repo other/repo", "."), [])
+            url = f"gh pr merge 5 --repo https://github.com/{REPO}.git"
+            self.assertEqual(find_targets(url, ".")[0].pr, 5)
 
     def test_windows_paths_keep_backslashes(self):
         with git_stub() as g:

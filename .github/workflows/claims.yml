@@ -4,9 +4,11 @@ name: claims
 # commit status on a PR's head and the `claimed` label, and answers a rejected claim.
 # No timer: the handbook allows no scheduled watcher, so a claim's expiry shows at the
 # next event (a push, or a comment containing /claim, /release or /claims). Runs no
-# agent. Always runs main's script, so a PR cannot change how its own claims are judged.
+# agent. `pull_request_target` runs this workflow file from main, not from the PR, and
+# the job checks out main only and never the PR's code, so a PR can change neither the
+# workflow nor the script that judges its own claims (automated review, PR #141).
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
@@ -20,7 +22,7 @@ permissions:
 jobs:
   claims:
     if: >-
-      github.event_name == 'pull_request' ||
+      github.event_name == 'pull_request_target' ||
       (github.event.comment.author_association == 'OWNER' &&
        (contains(github.event.comment.body, '/claim') ||
         contains(github.event.comment.body, '/release')))

@@ -578,8 +578,10 @@ read the label and the claim comment.
 agent holds the owner's token. The layers make an accidental violation hard and any
 violation visible:
 1. **`claims.yml`** sets `claim-guard` and the `claimed` label at every PR push and every
-   comment containing `/claim`, `/release` or `/claims`. It always runs `main`'s
-   `scripts/claims.py`, so a PR cannot change how its own claims are judged. It has no
+   comment containing `/claim`, `/release` or `/claims`. It runs on
+   `pull_request_target`, so the workflow file comes from `main`, and it checks out
+   `main` only, never the PR's code: a PR can change neither the workflow nor the
+   script that judges its own claims. It has no
    timer: this section adds no polling service or scheduled watcher, so an expired claim
    shows at the next event.
 2. **Claude Code:** the committed `.claude/settings.json` runs `scripts/claims.py hook`

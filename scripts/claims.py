@@ -423,8 +423,10 @@ def find_targets(command: str, cwd: str) -> list[Target]:
 
 def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
     repo_flag = next((toks[i + 1] for i, t in enumerate(toks[:-1]) if t in ("-R", "--repo")), None)
-    if repo_flag is not None and repo_flag != REPO and not repo_flag.endswith("/" + REPO):
-        return []
+    if repo_flag is not None:
+        repo_flag = repo_flag.removesuffix(".git").removesuffix("/")
+        if repo_flag != REPO and not repo_flag.endswith("/" + REPO):
+            return []
     if repo_flag is None and not is_this_repo(_git(cwd, "remote", "get-url", "origin")):
         return []
     if toks[:2] == ["pr", "merge"]:

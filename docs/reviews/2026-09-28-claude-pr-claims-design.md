@@ -261,6 +261,15 @@ Bob's other notes, for the record:
 **Differences from revision 1:**
 - The workflow's comment trigger also requires `author_association == OWNER`, so a
   stranger's comment starts no run.
+- **The PR trigger is `pull_request_target`, not `pull_request`** (the automated
+  review at `1d7f79a`, a required fix). Under `pull_request` GitHub runs the workflow
+  file from the PR itself, so a PR could edit `claims.yml` and fake its own green
+  `claim-guard`, even though the script comes from `main`. `pull_request_target` runs
+  the workflow from `main` with the base repository's token. That is safe here because
+  the job checks out `main` only and never runs the PR's code. Section 3's
+  "`pull_request`" and "a PR cannot change how its own claims are judged" now hold
+  in this stronger form.
+- `gh pr merge --repo` accepts a URL form of this repository (Bob, `d8db014`).
 - The workflow skips cleanly while `main` has no `scripts/claims.py` (this PR's own
   runs).
 - An owner comment whose first line is exactly `/release all` needs no tag.
