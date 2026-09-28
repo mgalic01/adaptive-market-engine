@@ -48,7 +48,8 @@ are in the sections below.
 - **Plain "Bob" starts nothing.** Neither does `@bobby`.
 - **Merge authority:** while Codex's allowance is exhausted, the owner's rule is to
   merge on Bob's `NO ISSUES` and the automated review's `APPROVE` at the full head,
-  with green checks, and Codex reviews afterwards; the merging agent appends the PR
+  with green checks and no unaddressed required fix from any reviewer, and Codex
+  reviews afterwards; the merging agent appends the PR
   to the [Codex-review-owed issue](https://github.com/mgalic01/adaptive-market-engine/issues/134).
   See [what Bob's verdicts mean](#what-bobs-verdicts-mean) and
   [merging while Codex's allowance is exhausted](#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28).
@@ -226,7 +227,7 @@ This section names **two different states**, because they have different consequ
 
 | State | What establishes it | When it ends | What it allows |
 | --- | --- | --- | --- |
-| **Allowance exhausted** | a usage-limit reply from the Codex channel whose review is required | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it (from then on the answer to that request decides), and in any case **24 hours after the usage-limit reply** unless a newer one renews it | the owner's existing stop-gap: merge on Bob's `NO ISSUES` at the full head, green `test-and-audit` at that head and no unaddressed required fix; Codex reviews afterwards |
+| **Allowance exhausted** | a usage-limit reply from the Codex channel whose review is required | at the first later Codex response that is not a usage-limit reply, or as soon as any new Codex request is posted after it (from then on the answer to that request decides), and in any case **24 hours after the usage-limit reply** unless a newer one renews it | the owner's existing stop-gap: merge on Bob's `NO ISSUES` and the automated review's `APPROVE` at the full head, green `test-and-audit` at that head and no unaddressed required fix; Codex reviews afterwards |
 | **Request lapsed** | an exact-head review without a substantive completed review past its channel's window (below) | when a **substantive completed review** at that head is posted (a verdict, or findings), or the head changes; a receipt, an acknowledgment, an "I will review" or a progress message neither ends nor restarts it | **escalation to the owner only. Never a merge.** |
 
 Wherever the handbook uses Codex being unavailable, or having no allowance, as a reason
