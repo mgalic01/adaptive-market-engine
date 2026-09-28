@@ -61,6 +61,11 @@ pass, with normal moments (`γ3` = 0, `γ4` = 3):
 | Holm/Bonferroni, N = 16, 5% | 0.0573 | 0.0811 | 0.0994 |
 | Holm/Bonferroni, N = 19, 5% | 0.0585 | 0.0828 | 0.1015 |
 
+*[2026-09-28: illustrative. N = 7 and N = 16 were the rule-C and central `N_family` counts
+when this record was first written; N = 19 is a sensitivity value with no count behind it.
+The current floors are 16–17 and 20–21 (§3). The table shows how the Bonferroni hurdle
+moves with N and is used for nothing else.]*
+
 Estimating `V` from the forward family instead would make the hurdle depend on the
 results it judges. A fixed economic `SR0` carries no multiplicity meaning. White's Reality
 Check and Hansen's SPA are better tests, but they are less conservative than Holm, so
@@ -118,6 +123,14 @@ makes the Holm cutoff stricter, so it errs toward rejecting a variant.
 ruled on 2026-09-27 that V0 on engine `exit-residue-v1` is an additional registered
 trial, so forward V0 is new, not a repeat of retrospective V0-b.
 
+*[2026-09-28: the "fixed V0" is the V0 that will actually run, which since spec v1
+amendment 1 (PR #124) is the amended V0: the exit fix of `exit-residue-v1` plus the
+drawdown recovery, on the engine version and schema its implementation PR assigns. No V0
+result on `exit-residue-v1` itself has been run or inspected (PR #122 ran no replay), so
+the "+ V0 on `exit-residue-v1`" row below stands for that one trial. If the un-amended
+fixed V0 is ever run and inspected as well, it is one further trial and both budgets
+below gain one.]*
+
 | Budget | Arithmetic | N |
 | --- | --- | ---: |
 | **`N_family`, central** | 6–7 retrospective gated + V0 on `exit-residue-v1` + 9 new selectable | **16–17** (working: 17) |
@@ -146,7 +159,9 @@ seeds, intrabar paths, pairs and folds add nothing.
   geometry, which is itself a proposal); `N_family` = 17 and 21 (upper ends of 16–17 and 20–21) are **floors**, and a
   Holm cutoff taken from a floor does not control family-wise error at 5%; and all three
   agents agreed to the DSR, so retiring it needs Codex's and Bob's acknowledgment. Bob
-  gave his on 2026-09-27 in his PR #123 review; Codex's is owed.
+  gave his on 2026-09-27 in his PR #123 review *[2026-09-28: his words were "I agree with
+  retiring the frozen DSR in favor of the Holm step-down (C7) once settled", conditional on
+  C7 being settled, consistent with C7 not yet binding]*; Codex's is owed.
   Until those are settled, C1–C6 remain the binding set.
 - **The family must be accounted for, not assumed.** Either the unpublished inspected
   runs are classified in the trial register — shown to reproduce a counted configuration,

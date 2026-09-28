@@ -58,7 +58,7 @@ Bob FLAGGED the first head with two concerns, and both are fixed.
 | Bob's concern | Change |
 | --- | --- |
 | The automatic restart clears the halt "as `resume()` clears it today", so any other state `resume()` resets would be cleared too | The restart now lists exactly the fields it changes. These are the same ones `resume()` changes on `main`: `halt`, `liquidating`, the range-exit state and timers, the grid bounds, `risk_high` (the committed rebase), the halt start and category, and a recovery pause. It states what it does not touch: the daily baseline, both C1 references, the reserves and the vault. The emergency flag is a per-frame signal, not account state, so nothing can clear it. A test for the side effects was added |
-| The C1(b) reference is defined only by reference to `risk_high` | A standalone definition with three update points: creation (initial active capital, as `Account.new`), every mark (`max(reference, last_equity)`, as `_mark`), and every settlement (the same factor as `_settle`). An equivalence test was added: with no rebase or restart, the reference equals `risk_high` at every evaluation, which catches any later drift |
+| The C1(b) reference is defined only by reference to `risk_high` | A standalone definition with three update points: creation (initial active capital, as `Account.start`; revision 5 corrected the name), every mark (`max(reference, last_equity)`, as `_mark`), and every settlement (the same factor as `_settle`). An equivalence test was added: with no rebase or restart, the reference equals `risk_high` at every evaluation, which catches any later drift |
 
 ## Revision 3: the automated review at `fb2c43d`
 
@@ -95,6 +95,28 @@ amended V0 runs on `exit-residue-v1` and is the one extra V0 trial that #123's
 Merged `main` into the branch; only the index conflicted, and every row is kept. Code
 facts above were read from `simulation/runner.py` on `main` `ad98f7b`.
 
+## Revision 5 (2026-09-28, four-agent panel review; session `012TnmLL`)
+
+The owner asked for an independent panel (critic, sceptic, reviewer, mediator) over PRs
+#122, #123 and this one. Its consolidated record is
+[2026-09-28-claude-panel-review-122-123-124.md](2026-09-28-claude-panel-review-122-123-124.md).
+Bob's NO ISSUES at `9672f3c` accepted revision 4's exact-zero rationale, which the panel
+showed to be wrong, so his review is re-requested at this head.
+
+| Finding | Evidence | Change |
+| --- | --- | --- |
+| **Blocker (reviewer, confirmed by the mediator):** the runtime calls `_halt` on every valid frame while the risk engine returns `EXIT`, and on every invalid frame during a halt. "Set where the halt is raised" would re-time the 24 h clock and re-categorise on every frame | Probe: five more `_halt` calls after a drawdown halt, reason drifting; an integrity halt past 12% overwritten with "hard drawdown reached" on the next frame; an emergency halt likewise one frame after the flag clears | §3 "State": start, category and reason are captured once, on the transition into the halt; later calls change nothing but orders and liquidation arming; no flips in either direction; "halt instance" defined; tests added |
+| **Revision 4's exact-zero rationale was hollow (critic, sceptic; mediator's probe):** an `integrity` halt and an `emergency` halt holding dust pass the risk check and are refused only by the inventory rule, with no automatic way out; `exhaustion` and drawdown-past-12% are refused by the risk check alone | `resume()` probe on the test fixture: `exit_state` = `dust`, risk check `ALLOW`, `resume()` refused "still held"; `liquidate` refuses dust until the bid more than doubles | The manual `resume()` adopts the liquidation-complete criterion for all categories (new paragraph "Manual `resume()`"); "is unchanged" removed. **A design decision made here**, reversing PR #122's rule, open to review. The emergency-at-≥12% asymmetry is kept and disclosed as intended |
+| The amended V0 cannot "run on engine `exit-residue-v1`" (all three) | `replay.py` "bump it whenever a change moves replay results"; `BACKTEST_METHOD.md` "different engine versions are different trials"; PR #122 ran no replay | "Two versions": the implementation PR assigns a successor version and schema 6; `exit-residue-v1` names the exit fix alone; the coherence record §3 is annotated to match; the un-amended fixed V0 is a stated choice, not "not planned" in passing |
+| The restart's "exactly these fields" list omitted `recovery_count` = 0 and `draining` = true, set through `_pause` (sceptic) | `runner.py` `resume()` → `_pause` | Field list corrected; why the day roll is untouched stated |
+| `Account.new` does not exist (sceptic, reviewer) | `models.py` `Account.start` | Corrected in the spec and here |
+| `integrity` listed "an accounting invariant failure", which never calls `_halt` (sceptic) | `store.py` rolls back and re-raises | Wording corrected |
+| Soft-path confirmations had no engine API; equity timing and restart-vs-liquidation order on one frame unstated (reviewer) | `RiskEngine.evaluate` returns one action | (b) restated as the tentative evaluation returning `ALLOW`; `last_equity` after the mark; liquidation attempted first |
+| Five more statements become false with no pointer: `PAPER_SIMULATION.md` "never clear automatically" and the exact-zero paragraphs, `README.md` ×2, `SECURITY.md`, `ROADMAP.md` (automated reviewer, panel) | grep | Pending-change pointers added at each; the `PAPER_SIMULATION.md` note now names all five superseded statements and sits in its own paragraph |
+| Bob's DSR acknowledgment was conditional: "once settled" (sceptic, verified on GitHub) | PR #123 comment 2026-09-27T22:36:07Z | Quoted in the spec C7 row, the coherence record and the index |
+
+Revision 4's edits sat inside a merge commit; revision 5 is its own commit.
+
 ## What this does not do
 
 - No code. The implementation follows as its own PR, with the tests listed under
@@ -106,7 +128,8 @@ facts above were read from `simulation/runner.py` on `main` `ad98f7b`.
 
 - `python scripts/check_reports.py`: 0 problems. `pytest`, `ruff`, `ruff format --check`
   and `mypy` were run on this branch; the results are in the PR comment for this head.
-- Code facts checked against `main` `8a45cb5`:
+- Code facts checked against `main` `8a45cb5` (revisions 1–3), re-checked at `ad98f7b`
+  (revision 4) and `9672f3c` (revision 5):
   - halts are raised with free-text reasons at three call sites in
     `simulation/runner.py` (`_risk_action`, the `ValueError` handler, and capital
     exhaustion in `_step`);
