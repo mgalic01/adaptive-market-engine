@@ -37,7 +37,7 @@ Index: 2026-09-28 research for spec v2, measured on BTCUSDT development months (
 | 2023 | 291 | 3 | 28 | 43 | 0 | +154.5% |
 | 2024 | 288 | 5 | 23 | 50 | 0 | +111.8% |
 
-The rule identifies the two bear years clearly: 213 of 302 classified days in 2018 and 283
+The rule identifies the two bear years clearly: 213 of 303 classified days in 2018 and 283
 of 365 in 2022 are Down, and 2022 has **no** Up day at all. So the answer to "how much of
 2018 and 2022 would it catch" is: most of them. The detection is not the problem.
 
