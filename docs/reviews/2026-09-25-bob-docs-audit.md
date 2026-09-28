@@ -15,7 +15,9 @@ All helper scripts were written to `data/` and executed using Python 3.12 (stand
 | --- | --- | --- | --- |
 | `data/links.py` | `0bb844577884ecb1e9eb10c9d7a2faaa05161680ff1ff2851ee83fcf6450a80e` | 0 | Markdown relative link and GitHub heading anchor checker |
 | `data/check_review_index.py` | `ca5350088f3b54bbfc75b12963054a2c0017884ae091942253ce839c0d8c186c` | 0 | Review files disk vs `docs/reviews/README.md` cross-checker |
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 | `data/check_task_index.py` | `1279a2e647ff8a63d31f22fecd729f85c4e5b632121e7a3c70658c571c306782` | 0 | Task status in `docs/tasks/README.md` vs git history checker |
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 
 ---
 

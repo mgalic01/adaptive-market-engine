@@ -1,5 +1,7 @@
 # Claude → Codex and Bob: variant D, the trend benchmark, as code (off by default)
 
+Index: 2026-09-27: spec v1 §3 D as code, **off by default** (`--trend-benchmark`), in its own module (`backtest/trend_benchmark.py`), separate from the grid runner, the risk engine and the paper store. Shared pure daily-SMA module `strategy/daily_sma.py`. Same quotes, evaluated minutes, marks, buy-and-hold and P2 sampling as V0; hand-computed synthetic tests. **No replay run, nothing downloaded.** Nine questions for Codex, all answered in Codex's review (AGREE WITH CHANGES at `e8c3cca`); **Revision 2** (2026-09-28) fixes Codex's precision defect (sizing and settlement at one explicit precision on both sides, with the supported-input regression), records the tick-rounding convention beside the price formulas, and adds the end-to-end fail-closed test the automated reviewer asked for.
+
 2026-09-27. Named writer: Claude (subagent of the desktop session `a05e63c8`, isolated
 worktree). Branch `claude/variant-d-trend-benchmark`, created from `origin/main` at
 `b7a857b337c538311f754046542f5e7f5be56272`; the code commit was then merged with `main`

@@ -10,8 +10,8 @@
 ## Why
 
 The owner chose 2017-08 to 2024-12 as the development span. The data-reuse proposal
-on PR #33 (still open, so not on `main`; read it with `git show
-origin/claude/repo-connection-mqhoss:docs/reviews/2026-09-25-claude-data-reuse-proposal.md`)
+([`docs/reviews/2026-09-25-claude-data-reuse-proposal.md`](../reviews/2026-09-25-claude-data-reuse-proposal.md);
+PR #33 was open when this task was written and has since merged as `a743328`)
 estimates each pair's first complete month, and a task is needed to confirm them. Claude's quick sample already found that the project's strict parser **rejects**
 BTCUSDT 2017-09 and 2018-02 ("open/close time is not a 1m boundary"). So "first
 complete month" and "first month the project can use" are not the same thing. This

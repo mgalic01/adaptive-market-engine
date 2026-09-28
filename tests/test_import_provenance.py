@@ -5,6 +5,9 @@ A machine carrying an editable install of a second checkout puts that tree's ``s
 then collects this repository's tests and runs them against the other tree, so a fix
 already present here looks like a live regression. This test fails loudly instead.
 
+The provenance check is path-based; it does not detect a stale worktree at a different
+revision.
+
 ``pythonpath`` also makes the suite importable under *any* interpreter, including one
 below the ``requires-python`` floor, where ``pip install -e .`` refuses outright. A green
 run on such an interpreter says nothing about the supported one, so the floor is asserted
@@ -29,8 +32,9 @@ class ImportProvenanceTests(unittest.TestCase):
             actual,
             EXPECTED,
             f"crypto_grid_bot was imported from {actual}, not {EXPECTED}. Every result in "
-            "this run describes that other source tree. Check for an editable-install "
-            "'.pth' in site-packages pointing at another checkout, and confirm "
+            "this run describes that other source tree. A likely cause is an editable-install "
+            "'.pth' in site-packages pointing at another checkout. Also check PYTHONPATH, "
+            "a parent conftest.py, or a pytest plugin modifying sys.path, and confirm "
             'pythonpath = ["src"] is still set in [tool.pytest.ini_options].',
         )
 

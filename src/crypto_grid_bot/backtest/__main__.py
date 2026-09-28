@@ -29,6 +29,7 @@ from crypto_grid_bot.backtest.dataset import (
 from crypto_grid_bot.backtest.features import FEATURE_VERSION
 from crypto_grid_bot.backtest.jobs import cross_check_job, manifest_path, run_job
 from crypto_grid_bot.backtest.replay import (
+    ENGINE_VERSION,
     INTEGRITY_RULES,
     PATH_MODES,
     STRICT_INTEGRITY_RULES,
@@ -109,6 +110,15 @@ def result_failures(results: list[dict[str, Any]]) -> list[str]:
             failures.append(f"{name}: {r['transient_pauses']} rejected frames")
         if not r["bars"]:
             failures.append(f"{name}: no evaluation bars")
+        # A run that ends with an exit still owed (liquidation, range exit or drain)
+        # and inventory the market would accept still unsold has not shown an exit
+        # path, so its drawdown and return are not evidence. A remainder no exchange
+        # would buy (dust) is reported, not failed.
+        if r.get("final_exit_blocked") == "incomplete":
+            failures.append(
+                f"{name}: run ended with an exit still incomplete; "
+                f"{r['final_unsellable_notional']} unsold"
+            )
     return failures
 
 
@@ -228,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         "dataset": spec.name,
         "purpose": spec.purpose,
         "feature_version": FEATURE_VERSION,
+        "engine_version": ENGINE_VERSION,
         "manifest_created_at": manifest["created_at"],
         **_identity(args.spec, args.config),
         "integrity_rules": integrity,
