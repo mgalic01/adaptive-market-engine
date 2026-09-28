@@ -48,6 +48,9 @@ and end-to-end delivery tests. Nothing copies the current Desktop login automati
   This repository is public: this branch is public too, not a secrets store.
   Persist IDs, hashes, timestamps, states and public GitHub links only; never raw
   payloads, model transcripts, environment variables, recipient addresses or auth.
+  State-only pushes must not start source CI or review loops. The quality workflow
+  excludes this exact branch; before activation, verify every other push/CodeQL
+  trigger and the remote controller's own event filters exclude its updates too.
 - Claims have owners and recoverable leases. Cancellation before/after reservation,
   crash recovery and publication uncertainty need explicit states. A failed start
   remains recorded; separately report model starts versus pre-model failures.
