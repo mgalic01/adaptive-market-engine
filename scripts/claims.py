@@ -498,8 +498,8 @@ def hook_decision(
     targets = find_targets(command, cwd)
     if not targets:
         return None
-    session = str(payload.get("session_id") or "")[:8]
-    me = f"Claude Code {session}" if session else None
+    session_id = str(payload.get("session_id") or "")
+    me = f"Claude Code {session_id[:8]}" if session_id else None
     now = now or datetime.now(UTC)
     merge = any(t.kind == "merge" for t in targets)
     warnings: list[str] = [f"{t.kind}: {t.unknown}" for t in targets if t.unknown]
@@ -518,7 +518,7 @@ def hook_decision(
         for number in sorted(numbers):
             state = evaluate(fetch_comments(number, reader), now)
             c = state.active
-            if c and c.holder != me:
+            if c and not is_own(c.holder, session_id):
                 blocks.append(
                     f"PR #{number} is claimed by [{c.holder}] until {fmt(c.until)}"
                     + (f" ({c.note})" if c.note else "")
@@ -540,6 +540,16 @@ def hook_decision(
     if warnings:
         return {"systemMessage": "claims: " + "; ".join(warnings)}
     return None
+
+
+def is_own(holder: str, session_id: str) -> bool:
+    """A claim is this session's when its tag names this session: the usual first 8
+    characters of the id, or any longer prefix up to the full id (Bob at b00a461)."""
+    prefix = "Claude Code "
+    if not session_id or not holder.startswith(prefix):
+        return False
+    tag = holder[len(prefix) :]
+    return len(tag) >= 8 and session_id.startswith(tag)
 
 
 def _deny(reason: str) -> dict[str, Any]:

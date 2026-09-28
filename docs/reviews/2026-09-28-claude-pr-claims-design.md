@@ -327,6 +327,15 @@ Bob's other notes, for the record:
   hook's 30-second timeout, Claude Code would drop the hook and let the command run.
   Each read now gives up after 10 seconds per method, and the hook's timeout is 120
   seconds, so the fail-closed decision always runs.
+- **The owner's Bob session, code review at `b00a461` (FLAGGED): fixed.** The hook took
+  a claim as its own only when the tag was exactly `[Claude Code <first 8 characters>]`.
+  A claim tagged with a longer or full session id would therefore have blocked its own
+  holder. `is_own` now accepts any tag that is a prefix of this session's id and is at
+  least 8 characters long. A shorter tag is never taken as the session's own, because it
+  is too ambiguous. Tests cover the full id, the usual 8 characters, a too-short tag and
+  another session. Its other points are informational: the multiple `-c` handling is
+  correct, and the workflow also runs on claim comments on issues, as the handbook
+  says.
 - The workflow skips cleanly while `main` has no `scripts/claims.py` (this PR's own
   runs).
 - An owner comment whose first line is exactly `/release all` needs no tag.

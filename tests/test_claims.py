@@ -296,6 +296,26 @@ class HookTest(unittest.TestCase):
             "[Claude Code e0b16be3]", out["hookSpecificOutput"]["permissionDecisionReason"]
         )
 
+    def test_own_claim_with_the_full_session_id_is_own(self):
+        with git_stub():
+            self.assertIsNone(
+                hook_decision(
+                    self.payload("gh pr merge 139"),
+                    self.reader([claim(tag=f"Claude Code {ME}")]),
+                    NOW,
+                )
+            )
+            other = claim(tag="Claude Code e0b16be4-0000")
+            out = hook_decision(self.payload("gh pr merge 139"), self.reader([other]), NOW)
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_is_own(self):
+        self.assertTrue(claims.is_own("Claude Code e0b16be3", ME))
+        self.assertTrue(claims.is_own(f"Claude Code {ME}", ME))
+        self.assertFalse(claims.is_own("Claude Code e0b16b", ME))  # too short to be sure
+        self.assertFalse(claims.is_own("Bob", ME))
+        self.assertFalse(claims.is_own("Claude Code e0b16be3", ""))
+
     def test_own_claim_and_free_pr_are_allowed(self):
         with git_stub():
             self.assertIsNone(
