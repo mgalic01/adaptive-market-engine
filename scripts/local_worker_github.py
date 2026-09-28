@@ -15,6 +15,43 @@ API = f"https://api.github.com/repos/{REPO}/"
 MARKER = "<!-- codex-local-worker -->"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 RULES = ("docs/START_HERE.md", "AGENTS.md", "docs/AGENT_HANDOFF.md", "docs/reviews/README.md")
+INDEX = "docs/reviews/README.md"
+REVIEW_FILE = re.compile(r"docs/reviews/([0-9]{4}-[0-9]{2}-[0-9]{2}-[A-Za-z0-9._-]+\.md)\Z")
+ROW_LINK = re.compile(r"^\|[^|\n]*?\[[^\]]*\]\(([^)\s#]+)(?:#[^)\s]*)?\)", re.MULTILINE)
+INDEX_LINE = re.compile(r"^Index:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+ENTRY_LINES = 20  # an Index: line sits within a review file's first ENTRY_LINES lines
+NEWER_ENTRIES = 40  # blobs fetched for the newest index entries; older ones are counted
+
+
+def newer_entries(readme: str, tree: dict[str, str], fetch: Any) -> str:
+    """Index entries of the base tree's review files that have no legacy row.
+
+    Since the index froze (proposal PR #116) a new review file carries its own entry, so
+    the README alone no longer shows the newest handoffs and owner decisions. This reads
+    them from the *base* tree only, never the head, so a PR cannot author the context it
+    is reviewed under, and it fetches at most ``NEWER_ENTRIES`` blobs, newest first.
+    """
+    legacy = {PurePosixPath(link).name for link in ROW_LINK.findall(readme)}
+    newer = sorted(
+        (
+            (found.group(1), sha)
+            for path, sha in tree.items()
+            if (found := REVIEW_FILE.fullmatch(path)) and found.group(1) not in legacy
+        ),
+        reverse=True,
+    )
+    if not newer:
+        return ""
+    lines = ["", "## Newer index entries (base tree; review files without a legacy row)", ""]
+    for name, sha in newer[:NEWER_ENTRIES]:
+        head = fetch(sha).split("\n")[:ENTRY_LINES]
+        title = head[0].lstrip("#").strip() if head else ""
+        found = INDEX_LINE.search("\n".join(head))
+        summary = found.group(1) if found else "(no Index: line)"
+        lines.append(f"- {name}: {title} — {summary}")
+    if len(newer) > NEWER_ENTRIES:
+        lines.append(f"- … {len(newer) - NEWER_ENTRIES} older entries not fetched")
+    return "\n".join(lines) + "\n"
 
 
 def reviewable_path(path: str) -> bool:
@@ -128,6 +165,7 @@ class GitHub:
             if path not in trees[0]:
                 raise ValueError(f"base rules file missing at base commit: {path}")
             rules[path] = self.blob(trees[0][path])
+        rules[INDEX] += newer_entries(rules[INDEX], trees[0], self.blob)
         comparison = self.request(f"compare/{pr['base']['sha']}...{head}?per_page=1")
         files = comparison["files"]
         if len(files) != pr["changed_files"] or len(files) > 30:
