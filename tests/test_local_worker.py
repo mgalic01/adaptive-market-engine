@@ -71,7 +71,7 @@ def test_pin_repository_sender_and_pr_event():
     assert m.validate(body, signed(body), "issue_comment", SECRET) == 91
 
 
-def test_durable_dedup_debounce_and_budget(tmp_path):
+def test_durable_dedup_and_debounce_without_hourly_start_cap(tmp_path):
     m = module()
     q = m.Queue(tmp_path / "queue.sqlite")
     assert q.add(payload(), 91, 0)
@@ -88,8 +88,7 @@ def test_durable_dedup_debounce_and_budget(tmp_path):
         assert batch
         q.finish(batch[0], "failed", "")
     q.add(payload(number=20), 20, 300)
-    assert q.claim(400) is None
-    assert q.claim(3700)
+    assert q.claim(400) is not None
 
 
 def test_claim_serializes_and_restart_does_not_repeat_uncertain_run(tmp_path):
@@ -102,6 +101,22 @@ def test_claim_serializes_and_restart_does_not_repeat_uncertain_run(tmp_path):
     q.recover()
     assert q.status()["runs"][0][1] == "interrupted"
     assert q.claim(90)[1] == [92]
+
+
+def test_no_hourly_or_daily_start_caps_even_after_failures_and_restart(tmp_path):
+    path = tmp_path / "queue.sqlite"
+    q = module().Queue(path)
+    for i in range(81):
+        # Cross both former caps in less than an hour, retaining the quiet period.
+        now = i * 40
+        q.add(payload(number=i + 1), i + 1, now)
+        batch = q.claim(now + 30)
+        assert batch is not None, f"start {i + 1} must not be blocked by a run-count cap"
+        q.finish(batch[0], "failed" if i % 2 else "completed", "")
+        if i == 39:
+            q = module().Queue(path)
+    with q.connect() as db:
+        assert db.execute("SELECT count(*) FROM runs").fetchone()[0] == 81
 
 
 def worker():
@@ -384,6 +399,38 @@ def test_ancestry_blocks_unreviewed_merge_base_before_patches(monkeypatch):
     assert calls == ["git/commits/" + "a" * 40]
     monkeypatch.setattr(api, "request", lambda _: {"parents": [{"sha": "b" * 40}]})
     api.require_ancestor("b" * 40, "a" * 40)
+
+
+def test_base_missing_a_rules_file_fails_closed_not_with_keyerror(monkeypatch):
+    # PR #94's review asked for this: a PR whose base predates one of the RULES files
+    # must be refused with a clear ValueError, like every other refusal in snapshot(),
+    # not escape as an unhandled KeyError from a bare index into the base tree.
+    worker()
+    from local_worker_github import RULES, GitHub
+
+    s = ready_snapshot()
+    s["pr"]["base"]["repo"] = {"id": 1384347674}
+    base, head = s["pr"]["base"]["sha"], s["pr"]["head"]["sha"]
+    # Identical trees, so the data-scope screen passes; neither holds a RULES file.
+    tree = {"truncated": False, "tree": [{"type": "blob", "path": "src/example.py", "sha": "x"}]}
+    blobs = []
+
+    def request(path):
+        if path == "pulls/1":
+            return s["pr"]
+        if path.startswith("git/trees/"):
+            return tree
+        if path == f"git/commits/{head}":
+            return {"parents": [{"sha": base}]}  # ancestry passes
+        raise AssertionError(f"unexpected request after the guard should have fired: {path}")
+
+    api = GitHub()
+    monkeypatch.setattr(api, "request", request)
+    monkeypatch.setattr(api, "blob", lambda sha: blobs.append(sha))
+    with pytest.raises(ValueError, match="base rules file missing at base commit") as caught:
+        api.snapshot(1)
+    assert RULES[0] in str(caught.value), "the error must name the missing file"
+    assert blobs == [], "a blob was fetched before the missing rules file was noticed"
 
 
 def test_json_publication_header(monkeypatch):

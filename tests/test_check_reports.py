@@ -279,40 +279,6 @@ class IndexTests(unittest.TestCase):
         self.assertIn("index links a missing file: gone.md", errors)
         self.assertTrue(any(e.startswith("review file not in the index: b.md") for e in errors))
 
-    def test_a_duplicated_row_fails(self):
-        # ``links`` was a list and membership was tested one way only, so N identical
-        # rows passed: two rows are two claims about one file's status.
-        (self.reviews / "README.md").write_text(index("a.md", "a.md"), encoding="utf-8")
-        self.assertEqual(
-            ["index lists a.md in 2 rows; a file gets one row"], check_index(self.reviews)
-        )
-
-    def test_a_row_whose_link_carries_an_anchor_is_seen(self):
-        (self.reviews / "README.md").write_text(
-            "| H | S |\n| --- | --- |\n| [a](a.md#findings) | x |\n", encoding="utf-8"
-        )
-        self.assertEqual([], check_index(self.reviews))
-
-    def test_a_row_whose_link_is_not_first_in_the_cell_is_seen(self):
-        (self.reviews / "README.md").write_text(
-            "| H | S |\n| --- | --- |\n| **[a](a.md)** | x |\n", encoding="utf-8"
-        )
-        self.assertEqual([], check_index(self.reviews))
-
-    def test_a_link_outside_the_directory_still_resolves(self):
-        # The live index has one such row, for ../tasks/README.md.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        reviews = Path(tmp.name) / "reviews"
-        reviews.mkdir()
-        (reviews / "a.md").write_text("a", encoding="utf-8")
-        (Path(tmp.name) / "tasks").mkdir()
-        (Path(tmp.name) / "tasks" / "README.md").write_text("t", encoding="utf-8")
-        (reviews / "README.md").write_text(
-            index("a.md") + "| [Tasks](../tasks/README.md) | x |\n", encoding="utf-8"
-        )
-        self.assertEqual([], check_index(reviews))
-
     def test_a_file_carrying_its_own_entry_needs_no_row(self):
         self.add("2026-09-27-claude-x.md", entry())
         self.assertEqual([], check_index(self.reviews))
@@ -342,6 +308,26 @@ class IndexTests(unittest.TestCase):
     def test_a_legacy_file_may_not_also_carry_an_entry(self):
         self.add("a.md", entry())
         self.assertTrue(check_index(self.reviews))
+
+    def test_a_duplicated_row_fails(self):
+        # ``links`` was a list and membership was tested one way only, so N identical
+        # rows passed: two rows are two claims about one file's status.
+        (self.reviews / "README.md").write_text(index("a.md", "a.md"), encoding="utf-8")
+        self.assertEqual(
+            ["index lists a.md in 2 rows; a file gets one row"], check_index(self.reviews)
+        )
+
+    def test_a_row_whose_link_carries_an_anchor_is_seen(self):
+        (self.reviews / "README.md").write_text(
+            "| H | S |\n| --- | --- |\n| [a](a.md#findings) | x |\n", encoding="utf-8"
+        )
+        self.assertEqual([], check_index(self.reviews))
+
+    def test_a_row_whose_link_is_not_first_in_the_cell_is_seen(self):
+        (self.reviews / "README.md").write_text(
+            "| H | S |\n| --- | --- |\n| **[a](a.md)** | x |\n", encoding="utf-8"
+        )
+        self.assertEqual([], check_index(self.reviews))
 
 
 class BuildIndexTests(unittest.TestCase):
@@ -423,6 +409,20 @@ class FrozenTableTests(unittest.TestCase):
         readme = (REPO_REVIEWS / "README.md").read_text(encoding="utf-8")
         self.assertEqual([], check_frozen("Reworded header.\n" + readme))
 
+    def test_a_link_outside_the_directory_still_resolves(self):
+        # The live index has one such row, for ../tasks/README.md.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        reviews = Path(tmp.name) / "reviews"
+        reviews.mkdir()
+        (reviews / "a.md").write_text("a", encoding="utf-8")
+        (Path(tmp.name) / "tasks").mkdir()
+        (Path(tmp.name) / "tasks" / "README.md").write_text("t", encoding="utf-8")
+        (reviews / "README.md").write_text(
+            index("a.md") + "| [Tasks](../tasks/README.md) | x |\n", encoding="utf-8"
+        )
+        self.assertEqual([], check_index(reviews))
+
 
 class ScopeTests(unittest.TestCase):
     NEW = "docs/reviews/2026-09-26-bob-x.md"
@@ -499,3 +499,80 @@ class LiveTreeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _write(text, name="2026-09-26-bob-x.md"):
+    tmp = tempfile.TemporaryDirectory()
+    path = Path(tmp.name) / name
+    path.write_text(text, encoding="utf-8")
+    return tmp, path
+
+
+class PanelFixTests(unittest.TestCase):
+    """Findings of the 2026-09-28 panel review on the checker (PR #122 follow-up)."""
+
+    def write(self, text, name="2026-09-26-bob-x.md"):
+        tmp, path = _write(text, name)
+        self.addCleanup(tmp.cleanup)
+        return path
+
+    def test_a_hash_line_inside_a_fence_is_not_a_heading(self):
+        # Bob's text-fenced Python carries "#" comments; one naming the script used to
+        # be read as the innermost appendix heading, with no block under it.
+        source = "# see `data/x.py` for the entry point\nprint(1)\n"
+        digest = hashlib.sha256(source.encode()).hexdigest()
+        text = (
+            "# Report\n\n- **Script:** `data/x.py` (SHA-256: `" + digest + "`)\n\n"
+            "## Appendix: `data/x.py` source\n\n```text\n" + source + "```\n"
+        )
+        checked = []
+        self.assertEqual([], check_report(self.write(text), checked))
+        self.assertEqual(1, len(checked))
+        self.assertTrue(checked[0].startswith("verified "))
+
+    def test_a_correction_cannot_borrow_the_digest_of_the_next_pin_on_the_line(self):
+        text = (
+            "# Report\n\n| Script | SHA-256 | Note | Script | SHA-256 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            f"| `data/x.py` | `{OTHER}` | Correction at review | `data/y.py` | `{DIGEST}` |\n\n"
+            f"## Appendix: `data/x.py` source\n\n```text\n{SOURCE}```\n\n"
+            f"## Appendix: `data/y.py` source\n\n```text\n{SOURCE}```\n"
+        )
+        errors = check_report(self.write(text))
+        self.assertEqual(1, len(errors), errors)
+        self.assertIn("does not give the digest the appendix actually hashes to", errors[0])
+
+    def test_a_bob_report_naming_a_data_script_with_no_hash_fails(self):
+        text = "# Report\n\nRun `data/z.py` to reproduce; `data/z.py` reads the cache.\n"
+        errors = check_report(self.write(text))
+        self.assertEqual(1, len(errors), errors)
+        self.assertIn("data/z.py is named with no SHA-256 beside it", errors[0])
+
+    def test_the_same_mention_in_a_claude_record_or_of_a_repository_path_is_not_an_error(self):
+        text = "# Report\n\nRun `data/z.py` to reproduce.\n"
+        self.assertEqual([], check_report(self.write(text, "2026-09-26-claude-x.md")))
+        repo = "# Report\n\nSee `tests/test_z.py` and `scripts/check_reports.py`.\n"
+        self.assertEqual([], check_report(self.write(repo)))
+
+    def test_an_allow_list_entry_covers_a_hashless_bob_mention(self):
+        check_reports.UNVERIFIABLE[("2026-09-26-bob-x.md", "data/z.py")] = (OTHER, "reason")
+        self.addCleanup(check_reports.UNVERIFIABLE.pop, ("2026-09-26-bob-x.md", "data/z.py"))
+        text = "# Report\n\nRun `data/z.py` to reproduce.\n"
+        self.assertEqual([], check_report(self.write(text)))
+
+    def test_mentions_are_reported_once_each_and_exclude_pins(self):
+        text = report() + "\nAlso `a/b.py`, again `a/b.py`, and `c/d.py`.\n"
+        self.assertEqual(["a/b.py", "c/d.py"], check_reports.hashless_mentions(text))
+        mentions = []
+        self.assertEqual(
+            [], check_report(self.write(text, "2026-09-26-claude-x.md"), None, mentions)
+        )
+        self.assertEqual(
+            ["2026-09-26-claude-x.md:a/b.py", "2026-09-26-claude-x.md:c/d.py"], mentions
+        )
+
+    def test_an_appendix_without_a_hash_is_one_error_not_two(self):
+        text = "## Appendix: `data/x.py` source\n\n```text\n" + SOURCE + "```\n"
+        errors = check_report(self.write(text))
+        self.assertEqual(1, len(errors), errors)
+        self.assertIn("no stated SHA-256", errors[0])

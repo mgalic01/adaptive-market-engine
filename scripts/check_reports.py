@@ -8,6 +8,8 @@ Each check here once cost a review round (PRs #40, #59, #60, #65, #66, #89, #100
   line and exactly one ``Index:`` line near the top. ``--index`` prints the whole index,
   newest first, from those entries and the legacy table. Nothing generated is committed,
   so two PRs that each add a review file never edit the same line;
+* every index row in ``docs/reviews/README.md`` links to a file that exists, no target
+  is listed twice, and every review file is indexed;
 * every SHA-256 a review states for a ``*.py`` path is accounted for: either a fenced
   block in the same review hashes to it, or the review's mismatch is corrected in place
   with the real digest written out, or the pair is listed in ``UNVERIFIABLE`` below with
@@ -18,7 +20,11 @@ Each check here once cost a review round (PRs #40, #59, #60, #65, #66, #89, #100
   leaves the index unchanged.
 
 Nothing here is allowed to pass quietly: every run prints the verified, corrected and
-unverifiable pins by name, and the three counts sum to every pin found.
+unverifiable pins by name, and the three counts sum to every pin found. A pin is a
+``*.py`` path in backticks with a SHA-256 beside it; a path named without one is a
+mention, counted and printed as information. In a Bob report a mention of a ``data/``
+script is an error unless the pair is listed in ``UNVERIFIABLE``: those scripts live in
+a git-ignored directory, so the report's hash is the only record of what ran.
 
 Judgement stays with the reviewers; this only removes the checks a script can do.
 """
@@ -47,19 +53,29 @@ HEADING = re.compile(r"^(#{1,6})[ \t]+(.*)$", re.MULTILINE)
 FENCE = re.compile(r"^```(\w*)[ \t]*$", re.MULTILINE)
 HEX64 = re.compile(r"\b[0-9a-f]{64}\b")
 BOB_REPORT = re.compile(r"docs/reviews/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md")
+BOB_NAME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[A-Za-z0-9._-]+\.md")
 CORRECTION = "Correction at review"
-# How far after the path a digest may sit and still be the digest of that path.
-WINDOW = 200
-# The legacy table was frozen on 2026-09-27 at main c3c8e25, with 83 rows, then grew
-# as PRs #122 and #123 added rows before this PR was rebased. This is the SHA-256 of
-# every README line that starts with "|", joined with "\n" plus a final "\n".
+# The legacy table was frozen on 2026-09-27 at main c3c8e25, with 83 rows. This is the
+# SHA-256 of every README line that starts with "|", joined with "\n" plus a final "\n".
 # It changes only if someone adds or edits a table row, which is exactly what the freeze
 # forbids: a row added by every PR at the same place made each merge conflict every PR.
-LEGACY_SHA256 = "de40025ccf0ed5ddc99c77f5a33c8ce213dd942a84167c98ff3eb5a28dbed1c3"
+LEGACY_SHA256 = "eb915343394ef3f8a9f104f21c42f830186f6001a61ff3a72c849064eeec5c21"
 DATED_NAME = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2})-[A-Za-z0-9._-]+\.md")
 INDEX_LINE = re.compile(r"Index:[ \t]*(.*?)[ \t]*")
 ENTRY_LINES = 20  # the Index: line must be within a file's first ENTRY_LINES lines
 HOW_TO = "give the file a '# Title' first line and one 'Index: <summary>' line near the top"
+
+
+@dataclass(frozen=True)
+class Entry:
+    date: str
+    name: str
+    title: str
+    summary: str
+
+
+# How far after the path a digest may sit and still be the digest of that path.
+WINDOW = 200
 
 _NO_SOURCE = (
     "merged before this check existed; `data/` is git-ignored, the source is in no "
@@ -136,14 +152,6 @@ UNVERIFIABLE: dict[tuple[str, str], tuple[str, str]] = {
 }
 
 
-@dataclass(frozen=True)
-class Entry:
-    date: str
-    name: str
-    title: str
-    summary: str
-
-
 def index_links(text: str) -> list[str]:
     return ROW_LINK.findall(text)
 
@@ -172,7 +180,7 @@ def read_entry(path: Path) -> tuple[Entry | None, list[str]]:
 
     ``(None, [])`` means the file has no ``Index:`` line in its first lines at all.
     """
-    lines = path.read_text(encoding="utf-8").removeprefix("\ufeff").splitlines()
+    lines = path.read_text(encoding="utf-8").removeprefix("﻿").splitlines()
     found = [m.group(1) for line in lines[:ENTRY_LINES] if (m := INDEX_LINE.fullmatch(line))]
     if not found:
         return None, []
@@ -197,6 +205,13 @@ def check_index(reviews: Path = REVIEWS) -> list[str]:
     links = index_links((reviews / "README.md").read_text(encoding="utf-8"))
     errors = [
         f"index links a missing file: {link}" for link in links if not (reviews / link).is_file()
+    ]
+    # ``links`` is a list, so a target listed twice passed before: two rows for one
+    # file are two different claims about its status, and the second is invisible.
+    errors += [
+        f"index lists {link} in {count} rows; a file gets one row"
+        for link, count in sorted(Counter(links).items())
+        if count > 1
     ]
     for path in sorted(p for p in reviews.glob("*.md") if p.name != "README.md"):
         entry, problems = read_entry(path)
@@ -281,7 +296,14 @@ def sections(text: str) -> list[tuple[str, int, int]]:
     written as ``## Appendix`` + ``### 1. `data/x.py``` gives each script its own body.
     """
     found = []
-    heads = list(HEADING.finditer(text))
+    # A ``#`` line inside a fenced block is a comment in the fenced source, not a
+    # heading; Bob's ``text``-fenced Python carries them.
+    fenced = [(start, start + len(body)) for start, _, body in fenced_blocks(text)]
+    heads = [
+        head
+        for head in HEADING.finditer(text)
+        if not any(start <= head.start() <= end for start, end in fenced)
+    ]
     for i, head in enumerate(heads):
         level = len(head.group(1))
         end = len(text)
@@ -335,7 +357,20 @@ def stated_hashes(text: str) -> list[tuple[str, str, str]]:
     return pins
 
 
-def check_report(path: Path, checked: list[str] | None = None) -> list[str]:
+def hashless_mentions(text: str) -> list[str]:
+    """Distinct ``*.py`` paths named in backticks with no digest beside them, in order."""
+    pinned = {script for script, _, _ in stated_hashes(text)}
+    seen: list[str] = []
+    for match in PIN_PATH.finditer(text):
+        script = match.group(1)
+        if script not in pinned and script not in seen:
+            seen.append(script)
+    return seen
+
+
+def check_report(
+    path: Path, checked: list[str] | None = None, mentions: list[str] | None = None
+) -> list[str]:
     """Problems in one review; appends one line per stated hash to ``checked``.
 
     Every stated hash ends up in exactly one of three states, all of them printed:
@@ -359,8 +394,23 @@ def check_report(path: Path, checked: list[str] | None = None) -> list[str]:
         for found in PIN_PATH.finditer(heading)
         if any(start <= b[0] < end for b in blocks)
     }
+    unhashed = hashless_mentions(text)
+    if mentions is not None:
+        mentions += [f"{path.name}:{script}" for script in unhashed]
+    if BOB_NAME.fullmatch(path.name):
+        # Bob's scripts live in git-ignored ``data/``; a report that names one without
+        # its hash leaves no way to know what ran. Repository paths need no pin, and a
+        # script with an appendix is reported below as missing its hash, once.
+        errors += [
+            f"{path}: {script} is named with no SHA-256 beside it; Bob's data/ scripts "
+            "must be pinned, or the pair listed in UNVERIFIABLE in scripts/check_reports.py"
+            for script in unhashed
+            if script.startswith("data/")
+            and script not in named
+            and (path.name, script) not in UNVERIFIABLE
+        ]
     if not pins and not named:
-        return errors
+        return errors  # a review that pins nothing; any Bob data/ mention is already listed
     errors += [
         f"{path}: {script} has an appendix but no stated SHA-256"
         for script in sorted(named - {script for script, _, _ in pins})
@@ -435,7 +485,14 @@ def check_pin(
                 f"{path}: {script} is stated as {digest}, which is block "
                 f"{matching[0] + 1} of its appendix, not the first"
             ]
-        if CORRECTION in line and actual in line:
+        # Only the part of the line that belongs to this pin: from the path to the next
+        # pinned path, so a correction cannot borrow the digest stated for another script
+        # on the same line.
+        own = line[line.find(f"`{script}`") :] if f"`{script}`" in line else line
+        following = PIN_PATH.search(own, len(script) + 2)
+        if following:
+            own = own[: following.start()]
+        if CORRECTION in line and actual in own:
             # The only accepted form: the correction names the real digest, so the
             # appendix is still hash-checked, against the corrected value.
             record("corrected", f" (states {digest[:12]}.., appendix is {actual[:12]}..)")
@@ -531,12 +588,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     errors = check_index() + check_frozen(INDEX.read_text(encoding="utf-8")) + check_allow_list()
     checked: list[str] = []
+    mentions: list[str] = []
     # Every review that states a hash, not only Bob's: Claude publishes hashed
     # appendices too (2026-09-26 open-mismatch note), and an unchecked hash is
     # exactly the defect this script exists to catch.
     for report in sorted(REVIEWS.glob("*.md")):
         if report.name != "README.md":
-            errors += check_report(report, checked)
+            errors += check_report(report, checked, mentions)
     if args.changed is not None:
         if args.base_index is None:
             parser.error("--changed needs --base-index")
@@ -557,6 +615,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"check_reports: {len(checked)} stated hash(es): {counts['verified']} verified, "
         f"{counts['corrected']} corrected in place, {counts['UNVERIFIABLE']} unverifiable"
+    )
+    print(
+        f"check_reports: {len(mentions)} script mention(s) without a hash "
+        f"(information; a mention is not a pin)"
     )
     print(f"check_reports: {len(errors)} problem(s)")
     return 1 if errors else 0
