@@ -9,17 +9,17 @@
   fetcher before this task runs): the script now calls
   `crypto_grid_bot.backtest.dataset.fetch_funding_file`, which PR #113 adds with its
   tests; Step 6 follows PR #116's index scheme; the pins are the files as PR #113
-  merges them. **Revised again on 2026-09-28 (revision 4):** Step 6 split into 6
-  sequential appends so that no single generation exceeds ~150 lines; diagnosed in
-  issue #133. Script, line range and SHA-256 unchanged. **Revised again on 2026-09-28
-  (revision 5):** fixed five required fixes from Claude's CHANGES NEEDED at `c71ffed`:
-  R1 line range (282,759 → 371,848 to match the file as revised), R2 Append 2 now
-  lists only non-table lines from Step 4, R3 Append 6 uses a Python command to write
-  the script byte-exact instead of generating it inline, R4 checker output moved to
-  a new Append 7 (after the appendix, so line numbers do not shift), R5 expected
-  `python -c` output updated to include the `verified ` prefix.
-- **Review:** starts automatically when this file is merged, so **Codex reviews it
-  first**. The merge is the go.
+  merges them. **Revised again on 2026-09-28 (revision 4, by Bob):** Step 6 split into
+  sequential appends after two runs failed while writing the report (issue #133).
+  **Revision 5 (2026-09-28, Claude session `e0b16be3`, after the owner reassigned
+  PR #138):** the logs, the tables and the script are appended to the report by
+  commands, byte for byte, and never retyped. Only three short passages and a two-line
+  check are written by hand, each to a file under `data/` and appended by command. The
+  script is unchanged (same SHA-256). Its line range in this file moved, and
+  Step 2 names the new one. The expected checker lines are the ones the checker prints.
+- **Review:** editing this file does not start a run. After this revision merges, the
+  run is started with `/bob-run docs/tasks/2026-09-27-bob-p8-funding-archives.md`
+  under the owner's go (2026-09-28, PR #138).
 - **Report:** `docs/reviews/2026-09-27-bob-p8-funding-archives.md`, nothing else.
 - **Read first:** [`docs/BOB_PRACTICE.md`](../BOB_PRACTICE.md), all of it.
 - **Read-only:** no change to code, tests, configs, dataset specs or manifests. You
@@ -142,15 +142,16 @@ Record `git rev-parse HEAD` in Step 1 as well.
 
 ## Steps
 
-Run every command from the repository root, in this order. Paste each command and its
-output into the report.
+Run every command from the repository root, in this order. Each command and its output
+goes into the report as Step 6 says: short output by hand, long output appended by
+command.
 
 1. `date -u`, `git rev-parse HEAD`, `python --version`.
 2. Copy the script out of this file, byte for byte, and check its hash:
 
    ```text
    mkdir -p data
-   sed -n '371,848p' docs/tasks/2026-09-27-bob-p8-funding-archives.md > data/p8_archives.py
+   sed -n '423,900p' docs/tasks/2026-09-27-bob-p8-funding-archives.md > data/p8_archives.py
    sha256sum data/p8_archives.py
    ```
 
@@ -182,106 +183,147 @@ output into the report.
    ```
 
    The `grep -c` must print `0` (its exit status is then 1, which is expected).
-6. Write the report in **seven sequential appends** to
-   `docs/reviews/2026-09-27-bob-p8-funding-archives.md`. Complete each append fully
-   before starting the next. Do **not** edit `docs/reviews/README.md`: since PR #116
-   that table is frozen and pinned by hash, and every new review file carries its own
-   index entry.
+6. Write the report `docs/reviews/2026-09-27-bob-p8-funding-archives.md` in **seven
+   steps, 6a to 6g, in this order**. Complete each step before starting the next.
 
-   **Append 1 — header and Steps 1–3** (~80 lines). Write the file from scratch with:
+   **What you write by hand.** Only three short passages (6a, 6c and 6e, each under
+   about 50 lines) and the two-line check in 6f.
+   - Create the report in 6a with your file-writing tool: the file is new and short.
+   - For 6c, 6e and 6f, write the passage to its own new file (`data/p8-6c.md`,
+     `data/p8-6e.md`, `data/p8-6f.md`), then append it with this command, giving the
+     file name as the argument:
+
+     ```text
+     python -c "import sys; from pathlib import Path; t = Path(sys.argv[1]).read_text(encoding='utf-8'); f = Path('docs/reviews/2026-09-27-bob-p8-funding-archives.md').open('a', encoding='utf-8', newline='\n'); f.write('\n' + t + ('' if t.endswith('\n') else '\n')); f.close()" data/p8-6c.md
+     ```
+
+   - **After 6a, never write or edit the report with a file tool.** It holds the
+     verbatim logs, and rewriting it is the long generation that failed twice (issue
+     #133).
+
+   **What is appended by command.** Everything long goes in byte for byte and is never
+   retyped: the self-test log, the run log with all its tables, the script, and the
+   checker output. A retyped script would also fail its hash.
+
+   **Rules for everything you write by hand:**
+   - **Only append.** Nothing is ever inserted above text that is already in the
+     report.
+   - **Name no `*.py` path in backticks other than `` `data/p8_archives.py` ``,** and
+     write no SHA-256 near a backticked `*.py` path, except for 6a's pin. Write
+     repository paths and log lines without backticks, or quote whole log lines in a
+     `text` fence. The checker reads a backticked `*.py` name with a 64-hex value near
+     it as a pin, and would report a problem.
+   - Do **not** edit `docs/reviews/README.md`. Since PR #116 that table is frozen and
+     pinned by hash, and every new review file carries its own index entry.
+
+   **6a. Header and Steps 1–3, by hand** (about 30 lines). Create the report with:
    - The `# ` title as the first line.
-   - One `Index: ` line within the first 20 lines giving the one-paragraph summary
+   - One `Index: ` line within the first 20 lines, giving the outcome in one paragraph
      (`python scripts/check_reports.py --index` prints the whole index).
-   - **The first time you name `` `data/p8_archives.py` `` in backticks, put its
-     SHA-256 on the same line right after it:**
+   - A line that names `` `data/p8_archives.py` `` in backticks and puts its SHA-256
+     **on the same line, right after it**:
      `35a4ea2cf36cae67339784fada62063880a41455d1a60316902f93c52363c75e`
-     (`scripts/check_reports.py` takes the first 64-hex value within 200 characters
-     of that name).
-   - The commit, Python version, `date -u` at the start.
-   - Every command from Steps 1, 2 and 3 with its full output.
+     (`scripts/check_reports.py` takes the first 64-hex value within 200 characters of
+     the first backticked mention).
+   - The commit, the Python version and `date -u` at the start.
+   - A `## Steps 1 to 3` section with the Step 1 and Step 2 commands and their output,
+     and the Step 3 command with its `exit` line.
 
-   **Append 2 — Step 4 summary and Step 5** (~60 lines). Append to the same file:
-   - The Step 4 command (`python data/p8_archives.py > ... ; echo "exit $?"`), its exit
-     line, and the non-table lines from `data/p8-run.log`: every `INPUT`, `RETRY`,
-     `REQUESTS`, `CONFIG`, `PROBLEM`, and `RESULT` line. Do **not** include the long
-     tables here; those go in Appends 3 and 4.
-   - Every command from Step 5 (the hashes and the `find` count) with its full output.
+   **6b. The self-test log, by command:**
 
-   **Append 3 — Funding per-month table** (~70 lines). Append:
-   - A `## Funding archives` section heading.
-   - The full 60-row funding table from the script's output (the `## Funding archives,
-     BTCUSDT, per month` block including header and separator rows).
-   - The three `FUNDING` summary lines that follow the table.
+   ```text
+   python -c "import sys; from pathlib import Path; t = Path(sys.argv[1]).read_text(encoding='utf-8'); f = Path('docs/reviews/2026-09-27-bob-p8-funding-archives.md').open('a', encoding='utf-8', newline='\n'); f.write('\n\x60\x60\x60text\n' + t + ('' if t.endswith('\n') else '\n') + '\x60\x60\x60\n'); f.close()" data/p8-selftest.log
+   ```
 
-   **Append 4 — PR #19 comparison and daily table** (~140 lines). Append:
-   - The full PR #19 comparison table (the `## Comparison with PR #19` block,
-     60 rows).
-   - A `## Daily archives` section heading.
-   - The full 104-row daily table (the `## Daily (1d) archives` block including header
-     and separator rows), every `UNPARSED` and `INCOMPLETE` line, and the `DAILY`
-     summary lines.
+   **6c. Steps 4 and 5, by hand** (about 15 lines). Write to `data/p8-6c.md`, then
+   append it with the command at the top of Step 6:
+   - a `## Steps 4 and 5` section: the Step 4 command and its `exit` line, and every
+     Step 5 command with its full output (the `sha256sum` lines and the `find` count);
+   - one sentence saying that the run log follows verbatim, with every table in it.
 
-   **Append 5 — Known values, manifest diff, requests, and checker output** (~120
-   lines). Append:
-   - A `## Known values` section with the 11-row table.
-   - A `## Manifest additions` section: the script's "Proposed manifest additions"
-     table, the SHA-256 of each `data/p8/<dataset>.additions.json`, the `CONFIG`
-     lines, and the statement that the additions are a proposal (funding entries have
-     no `interval` and a new `kind`, and an `unparsed` status is not in the manifest
-     schema, so `load_manifest` would reject them today).
-   - The `REQUESTS` line and the `find` count from Step 5.
-   - The `INPUT` lines.
-   - A `## Ideas and proposals` section (each checked against your own tables first;
-     questions for Claude and Codex go here, not in the results).
+   **6d. The run log, by command.** This is the same command as 6b, with the run log:
+
+   ```text
+   python -c "import sys; from pathlib import Path; t = Path(sys.argv[1]).read_text(encoding='utf-8'); f = Path('docs/reviews/2026-09-27-bob-p8-funding-archives.md').open('a', encoding='utf-8', newline='\n'); f.write('\n\x60\x60\x60text\n' + t + ('' if t.endswith('\n') else '\n') + '\x60\x60\x60\n'); f.close()" data/p8-run.log
+   ```
+
+   The run log holds every table this task asks for:
+   - the funding per-month table and the `FUNDING` lines;
+   - the PR #19 comparison;
+   - the daily table, with the `DAILY`, `UNPARSED` and `INCOMPLETE` lines;
+   - the known values;
+   - the proposed manifest additions;
+   - the `INPUT`, `RETRY`, `REQUESTS`, `CONFIG`, `PROBLEM` and `RESULT` lines.
+
+   Do not copy any of them again.
+
+   **6e. Results and ideas, by hand** (under about 50 lines). Write to `data/p8-6e.md`,
+   then append it with the command at the top of Step 6:
+   - A `## Results` section:
+     - the `RESULT` line;
+     - for each of Validity checks 1 to 4, whether it holds, quoting the log line that
+       shows it;
+     - the `REQUESTS` line and the `find` count from Step 5;
+     - `CONFIG config/datasets unchanged: True`;
+     - the SHA-256 of each `data/p8/<dataset>.additions.json` (from Step 5);
+     - the plain statement that the manifest additions are a **proposal**. Funding
+       entries have no `interval` and a new `kind`, and an `unparsed` status is not in
+       the manifest schema, so `load_manifest` would reject them today.
+   - A `## Ideas and proposals` section. Check each idea against the tables in the run
+     log first. Questions for Claude and Codex go here, not in the results.
    - `date -u` at the end of the run.
 
-   **Append 6 — Script appendix** (~10 lines of commands). Append last:
-   - A `## Appendix: \`data/p8_archives.py\`` level-2 heading (the heading must name
-     `` `data/p8_archives.py` `` in backticks for `check_reports.py` to find the
-     appendix block).
-   - Write the script into the report with a single command (no typing; byte-exact):
+   **6f. The script appendix, by command, then its check.**
+   1. Append the heading and the script:
 
       ```text
-      python -c "
-      from pathlib import Path
-      s = Path('data/p8_archives.py').read_text(encoding='utf-8')
-      f = Path('docs/reviews/2026-09-27-bob-p8-funding-archives.md').open('a', encoding='utf-8', newline='\n')
-      f.write('\n\x60\x60\x60text\n' + s + '\x60\x60\x60\n')
-      f.close()
-      "
+      python -c "from pathlib import Path; s = Path('data/p8_archives.py').read_text(encoding='utf-8'); f = Path('docs/reviews/2026-09-27-bob-p8-funding-archives.md').open('a', encoding='utf-8', newline='\n'); f.write('\n## Appendix: \x60data/p8_archives.py\x60\n\n\x60\x60\x60text\n' + s + '\x60\x60\x60\n'); f.close()"
       ```
 
-   - After writing, locate the fence line numbers and verify the hash:
+   2. Print the check command for the appendix, with its line numbers filled in:
 
       ```text
-      grep -n '^```' docs/reviews/2026-09-27-bob-p8-funding-archives.md | tail -2
+      python -c "from pathlib import Path; L = Path('docs/reviews/2026-09-27-bob-p8-funding-archives.md').read_text(encoding='utf-8').split('\n'); F = [i for i, l in enumerate(L, 1) if l.startswith('\x60\x60\x60')]; print(f\"sed -n '{F[-2] + 1},{F[-1] - 1}p' docs/reviews/2026-09-27-bob-p8-funding-archives.md | sha256sum\")"
       ```
 
-      Take `<first>` as the content-start line (the line after the opening ` ```text `)
-      and `<last>` as the content-end line (the line before the closing ` ``` `), then:
-
-      ```text
-      sed -n '<first>,<last>p' docs/reviews/2026-09-27-bob-p8-funding-archives.md | sha256sum
-      ```
-
-      The output must show
+   3. Run the command it prints. It must print
       `35a4ea2cf36cae67339784fada62063880a41455d1a60316902f93c52363c75e`.
+   4. Write two lines to `data/p8-6f.md`, that command and its output, then append the
+      file with the command at the top of Step 6.
 
-   **Append 7 — Checker output** (~10 lines). Append last, after the script appendix:
+   **6g. The checks, by command.**
+   1. Run the checkers, with their output in one file:
 
       ```text
-      git status --porcelain --untracked-files=all
-      python scripts/check_reports.py; echo "exit $?"
-      python -c "import sys; sys.path.insert(0, 'scripts'); from pathlib import Path; import check_reports as c; checked = []; problems = c.check_report(Path('docs/reviews/2026-09-27-bob-p8-funding-archives.md'), checked); print('appendix problems:', problems); print('appendix checked:', checked)"
-      date -u
+      ( git status --porcelain --untracked-files=all; python scripts/check_reports.py > data/p8-check-reports.log 2>&1; s=$?; grep -v '^check_reports: UNVERIFIABLE ' data/p8-check-reports.log; echo "exit $s"; python -c "import sys; sys.path.insert(0, 'scripts'); from pathlib import Path; import check_reports as c; checked = []; problems = c.check_report(Path('docs/reviews/2026-09-27-bob-p8-funding-archives.md'), checked); print('appendix problems:', problems); print('appendix checked:', checked)"; date -u ) > data/p8-checks.log 2>&1
       ```
 
-      `check_reports.py` must print `check_reports: 0 problem(s)` with exit 0.
-      The `python -c` appendix check must print `appendix problems: []` and
-      `appendix checked: ['verified 2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py']`.
-      Any problem line is a real problem: fix your report and rerun.
-      The report is complete when those two conditions hold and `git status` shows only
-      your report file as new with nothing modified.
+      The `UNVERIFIABLE` lines are left out on purpose. They are about other reports,
+      and they name other scripts in backticks next to hashes. Copied into this
+      report, they would read as pins and fail the checker.
+   2. Append a final `## Checks` section with that file, byte for byte:
+
+      ```text
+      python -c "from pathlib import Path; t = Path('data/p8-checks.log').read_text(encoding='utf-8'); f = Path('docs/reviews/2026-09-27-bob-p8-funding-archives.md').open('a', encoding='utf-8', newline='\n'); f.write('\n## Checks\n\n\x60\x60\x60text\n' + t + ('' if t.endswith('\n') else '\n') + '\x60\x60\x60\n'); f.close()"
+      ```
+
+   3. Run `python scripts/check_reports.py; echo "exit $?"` once more. The report is
+      complete when that output ends with the two lines `check_reports: 0 problem(s)`
+      and `exit 0`. Quote those two lines in your final message, nothing else of it.
+
+   `data/p8-checks.log` must contain these lines, in any order the checker chooses,
+   plus one `date -u` line:
+   - `?? docs/reviews/2026-09-27-bob-p8-funding-archives.md` (git status, nothing else);
+   - `check_reports: verified 2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py`;
+   - `check_reports: 0 problem(s)`;
+   - `exit 0`;
+   - `appendix problems: []`;
+   - `appendix checked: ['verified 2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py']`.
+
+   Other `check_reports:` lines about other reports are expected: their `verified` and
+   `corrected` lines, and the counts of stated hashes and script mentions.
+   `UNVERIFIABLE` lines are filtered out. A line of this list that is missing, or any
+   line that names a problem with this report, is a real problem: stop and report.
 
 ## Validity checks (all must hold for a valid run)
 
@@ -308,43 +350,50 @@ output into the report.
    - `REQUESTS ...; latest month 2024-12; after 2024-12: 0`;
    - `CONFIG config/datasets unchanged: True`.
 4. Step 5: the `find | grep -c` count is `0`.
-5. Steps 6–7: `git status` shows only your report as new and nothing modified;
-   `check_reports.py` prints `check_reports: 0 problem(s)` with exit 0 (not 1 as in
-   previous revisions — the deferred-index problem is gone once the appendix is
-   present); the `python -c` appendix check prints `appendix problems: []` and
-   `appendix checked: ['verified 2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py']`.
+5. Step 6: `data/p8-checks.log` holds the lines listed at the end of Step 6.
+   That means:
+   - `git status` shows only your report as new, and nothing modified;
+   - `check_reports.py` prints `check_reports: 0 problem(s)` with exit 0;
+   - the appendix check prints `appendix problems: []` and names the report and
+     `data/p8_archives.py`.
+
+   The final `check_reports.py` run after 6g also prints `0 problem(s)`. Before the
+   appendix exists, the checker reports one problem: the script is "pinned ... with no
+   appendix in this review". That is why the checks run only at the end.
 
 ## What to report
 
-`docs/reviews/2026-09-27-bob-p8-funding-archives.md` (written in seven appends as above):
-- the commit, Python version, `date -u` at the start and end, and every command with
-  its output (long tables once, in their sections below);
-- **the first time the report names `data/p8_archives.py` in backticks, put its SHA-256
-  on the same line right after it** (`scripts/check_reports.py` takes the first 64-hex
-  value within 200 characters of that name). Put its source in an appendix (Append 6),
-  under a level-2 heading that names `data/p8_archives.py` in backticks, in a `text`
-  fence, then the check `sed -n '<first>,<last>p' <report> | sha256sum` showing the
-  same hash;
-- the self-test output;
-- **Funding, per month:** the script's table (records, expected, first and last
-  `calc_time`, `funding_interval_hours` distribution, invalid records, largest offset,
-  bytes, SHA-256), the `FUNDING` summary lines, and the PR #19 comparison table;
-- **Daily, per file:** the script's table (status, rows, expected, missing, gaps, first
-  and last open, bytes, SHA-256), the `DAILY` lines and every `UNPARSED` and
-  `INCOMPLETE` line;
-- the `INPUT` lines;
-- the known-values table;
-- **Manifest diff:** the script's "Proposed manifest additions" table, the SHA-256 of
-  each `data/p8/<dataset>.additions.json`, and the `CONFIG` lines showing that the
-  committed specs and manifests did not change. State plainly that the additions are
-  a proposal: funding entries have no `interval` and a new `kind`, and an `unparsed`
-  status is not in the manifest schema, so `load_manifest` would reject them today;
-- the `REQUESTS` line and the `find` count;
-- the Step 7 output: the `check_reports.py` lines and the appendix check;
-- **Ideas and proposals** (separate), each checked against your own tables first, for
-  example the manifest schema the funding entries need, or what an `unparsed` daily
-  month means for H. Report facts in the results; questions for Claude and Codex go
-  here.
+`docs/reviews/2026-09-27-bob-p8-funding-archives.md`, written in steps 6a to 6g as
+above:
+- the commit, Python version, and `date -u` at the start and end;
+- every command with its output, the long ones appended verbatim;
+- **the first time the report names `data/p8_archives.py` in backticks, its SHA-256 on
+  the same line right after it** (6a);
+- the self-test log (6b) and the run log (6d), verbatim. The run log holds:
+  - **Funding, per month:** the table (records, expected, first and last `calc_time`,
+    `funding_interval_hours` distribution, invalid records, largest offset, bytes,
+    SHA-256), the `FUNDING` summary lines and the PR #19 comparison table;
+  - **Daily, per file:** the table (status, rows, expected, missing, gaps, first and
+    last open, bytes, SHA-256), the `DAILY` lines, and every `UNPARSED` and
+    `INCOMPLETE` line;
+  - the known-values table;
+  - the proposed manifest additions;
+  - the `INPUT`, `REQUESTS`, `CONFIG` and `RESULT` lines.
+
+  Long tables appear once, in the run log.
+- the results (6e):
+  - the `RESULT` line and each validity check;
+  - the `REQUESTS` line and the `find` count;
+  - the SHA-256 of each `data/p8/<dataset>.additions.json`;
+  - the plain statement that the manifest additions are a proposal. Funding entries
+    have no `interval` and a new `kind`, and an `unparsed` status is not in the
+    manifest schema, so `load_manifest` would reject them today;
+- the script appendix and its `sed … | sha256sum` check (6f);
+- the checks (6g);
+- **Ideas and proposals** (6e, separate from the results), each checked against the run
+  log's tables first. Examples: the manifest schema that the funding entries need, or
+  what an `unparsed` daily month means for H. Report facts in the results; questions
+  for Claude and Codex go here.
 
 ## Stop conditions
 
@@ -362,10 +411,13 @@ Stop, keep everything, and report what you have, with the full error, if:
 
 ## Self-check before your final message
 
-[`docs/BOB_PRACTICE.md`](../BOB_PRACTICE.md), "Before you finish", all eleven items.
-Every count in the report is printed by the script or by a command you ran.
+[`docs/BOB_PRACTICE.md`](../BOB_PRACTICE.md), "Before you finish", all eleven items:
+apply items 1, 2 and 4 to 11 to each hand-written passage before you append it; item 3
+is Step 6g. From 6f on, change nothing already in the report; an error found later
+goes in your final message. Every count in the report is printed by the script or by a
+command you ran.
 
-## The script (`data/p8_archives.py`, lines 371 to 848 of this file)
+## The script (`data/p8_archives.py`, lines 423 to 900 of this file)
 
 ```text
 """P8 archives for G and H, development months only.
