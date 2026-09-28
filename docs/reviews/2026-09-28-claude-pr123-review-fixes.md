@@ -49,6 +49,14 @@ source before changing anything, and all six were correct.
    Updated in the coherence record §3, the trial-count revision note, the spec C7 row and
    both index rows. The owner-decisions record states no count, so it is unchanged.
 
+## Found while merging `main`
+
+PR #122 bumped the paper schema to 5, but `PAPER_SIMULATION.md` (title and rejection
+rule) and `README.md` still said schema 4 and "schema 1-3 rejected". `control.py:59` and
+the identity check accept only `SCHEMA` = 5. Both documents now say schema 5, with 1-4
+rejected. This is the same class of drift as the two `PAPER_SIMULATION.md` findings on
+#122, and it reached `main` in #122's merge.
+
 ## Not changed
 
 - The hurdle table in coherence §2 (N = 7, 16, 19). It illustrates Bonferroni cutoffs,
