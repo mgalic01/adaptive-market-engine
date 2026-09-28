@@ -1,6 +1,6 @@
 # Claude: trading in downtrends — research, owner decisions, and a starting point for Codex
 
-Index: 2026-09-27: Revision 2, corrected after Codex and six Codex Cloud findings. Owner-requested record for continuing with Codex: research on falling markets, narrowed to what each source studied; the owner's verbatim decisions (futures access on Binance and Kraken; one mode-switching bot with strictly defined rules; finish v1 first); a mirrored-grid idea; candidate variables; open questions. Funding for G surveyed, not fetched; bear-only runs are diagnostics, not edge tests. No code, no spec, no live authority. **2026-09-28:** owner's venue decision recorded: Kraken (CySEC/MiFID II) is the planned live venue; Binance holds no MiCA licence, and its public archives stay the research data only. **2026-09-28:** links PR #137's measured v2 research (§3a): shorting confirmed downtrends lost money on 2017–2024 BTC data, funding paid shorts on net 2020–2024, and the bounce harvest is v1's V0-versus-A question; #137's figures are under review, and whether its runs count as trials is put to Codex and Bob.
+Index: 2026-09-27: Revision 2, corrected after Codex and six Codex Cloud findings. Owner-requested record for continuing with Codex: research on falling markets, narrowed to what each source studied; the owner's verbatim decisions (futures access on Binance and Kraken; one mode-switching bot with strictly defined rules; finish v1 first); a mirrored-grid idea; candidate variables; open questions. Funding for G surveyed, not fetched; bear-only runs are diagnostics, not edge tests. No code, no spec, no live authority. **2026-09-28:** owner's venue decision recorded: Kraken (CySEC/MiFID II) is the planned live venue; Binance holds no MiCA licence, and its public archives stay the research data only. **2026-09-28:** links PR #137's measured v2 research (§3a): shorting confirmed downtrends lost money on 2017–2024 BTC data, funding paid shorts on net 2020–2024, and the bounce harvest is v1's V0-versus-A question; #137's figures are under review, and whether its runs count as trials is put to Codex and Bob. **2026-09-28, pre-merge corrections:** the 2009 momentum-crash loss is about −69% over two months (not −74%); the June 2022 rally figure is unverified; paper-only operation and the vault are binding rules, not assumptions; #137's figures updated to its revision 2.
 
 - **Date:** 2026-09-27. **Author:** Claude (Claude Code desktop session `e0b16be3`).
 - **Why this exists.** The owner asked me to write down everything learned in today's
@@ -63,8 +63,13 @@ After my first summary, which put shorting aside for now:
   3. Kraken's fees, minimums and hourly funding (ledger B8–B10) replace Binance's in any v2 cost model for live figures. Backtests on Binance data report both venues' cost assumptions.
   4. The README's "spot only, no futures" rule still needs the owner-approved amendment (D5) before any futures code is written.
 
+**Binding rules, not assumptions (corrected 2026-09-28, after Codex).** Operation
+stays paper-only until the owner explicitly approves going live, and the protected
+profit (the 50/50 vault) is never traded, in either mode. Both are existing project
+rules (`README.md` on the profit split and the protected reserve;
+`docs/EXPERIMENT_SPEC_V1.md` §1; `AGENTS.md`), not points awaiting confirmation.
+
 **Assumptions I stated to the owner, not yet confirmed by them:**
-- paper-only until the owner explicitly approves going live;
 - leverage near 1x;
 - trend rules fixed in advance on a stated timescale, with volatility-based sizing, a hard
   exit on a trend reversal and a per-trade loss limit;
@@ -78,8 +83,7 @@ After my first summary, which put shorting aside for now:
   **Corrected:** testing only on the 2018 and 2022 bear markets would select on the
   outcome (section 5, question 5);
 - **disclosing** that we already know the reserved 2025–26 window contains a roughly 50%
-  decline (spec v1 §7), which biases any short strategy tested on it;
-- the protected profit (the 50/50 vault) is never traded, in either mode.
+  decline (spec v1 §7), which biases any short strategy tested on it.
 
 ## 3. What the research says
 
@@ -118,16 +122,20 @@ I checked that point, and the BIS instrument point, myself.
    cross-sectional momentum (winners minus losers, in equities), not the directional
    rule discussed here, but they show the shape of the risk. Such strategies suffer rare,
    severe losses in panic states, *during market rebounds*: a winners-minus-losers
-   portfolio lost about three-quarters of its value in a few months in 2009: −42% in
-   March and −46% in April, about −74% over two months, for a zero-cost long/short US
+   portfolio lost about two-thirds of its value in two months in 2009: −42% in
+   March and −46% in April, about −69% compounded, for a zero-cost long/short US
    equity portfolio
    ([Daniel & Moskowitz](https://www.nber.org/system/files/working_papers/w20439/w20439.pdf)).
+   **Corrected (2026-09-28, automated review and Codex Cloud):** the two months compound
+   to (1 − 0.423) × (1 − 0.455) − 1 ≈ −68.6%, not the −74% of revision 3, and they do
+   not support "three-quarters" (ledger A9).
    **Ledger:** they do not say that volatility scaling "roughly halves" drawdowns. They
    report that *dynamic* scaling roughly doubles the Sharpe ratio, partly by avoiding
    crashes. The claim that risk management "virtually eliminates crashes" is Barroso and
    Santa-Clara's (*Journal of Financial Economics*, 2015).
-   Crypto bear markets are full of sharp relief rallies; BTC rose about 40% from its
-   June 2022 low within weeks.
+   Crypto bear markets are full of sharp relief rallies. **Unverified (ledger A26):** BTC
+   reportedly rose about 40% from its June 2022 low within about eight weeks. That comes
+   from search snippets only; it is checkable from the 2022 development archives.
 3. **Volatility targeting.** In the population Moreira and Muir studied — mainly US equity
    factor portfolios (the market, value, momentum, profitability and others) plus a
    currency carry factor, each rescaled monthly by the inverse of the previous month's
@@ -221,7 +229,8 @@ stays the topic hub (owner rule, `AGENT_HANDOFF.md` item 6). What it reports:
 
 1. **Shorting a confirmed downtrend lost money on this data.**
    - Price *rose* in 32 of the 48 Down runs.
-   - The compounded gross short over all runs was about −12.2% before fees.
+   - The compounded gross short over all runs was about −48.1% before fees (#137
+     revision 2; revision 1 said −12.2%).
    - Two runs carried everything; the rest was sharp rebounds, the momentum-crash
      shape of §3 point 2.
    - Three published rules, 12-month TSMOM, Donchian 20/10 and dual MA 50/200, **all
@@ -239,15 +248,18 @@ stays the topic hub (owner rule, `AGENT_HANDOFF.md` item 6). What it reports:
 - if shorts are still wanted, start with a mirrored grid on spot inventory.
 
 **Status and caveats (e0b16be3):**
-- **Under review.** At `9deb5c3`, Bob found no issues, but the automated review asked
-  for **CHANGES NEEDED** on two points in the script's short and cost arithmetic. Its
-  figures are therefore provisional until #137 settles them. My reading, for #137's
-  writer to check:
-  - the cost point looks right;
-  - the per-day short factor `2 − S` is correct for a short resized to equity each day;
-  - the *multi-day* ratio `close[entry]/close[exit]` in #137's §2 overstates a
-    fixed-size short's gains. Correcting it would make shorting look **worse**, so the
-    conclusion would strengthen.
+- **Under review; the arithmetic is settled (updated 2026-09-28).** At `9deb5c3` the
+  automated review asked for CHANGES NEEDED on #137's short and cost arithmetic.
+  #137's revision 2 (`546f5be`):
+  - applied the cost correction (one 0.14% leg per side traded);
+  - kept the per-day short factor `2 − S`, which Bob and the automated review both
+    confirm is right for a short resized to equity each day;
+  - corrected §2's multi-day short ratio, which had flattered shorting. The compounded
+    short fell from −12.2% to −48.1%, which strengthens the conclusion.
+
+  The figures quoted here are revision 2's. #137 is not merged, and its PR description
+  still carried revision 1's numbers at `546f5be`, so treat them as provisional until
+  it merges.
 - **One point for Codex and Bob: do these runs count as trials?** #137 says they do not
   count against the trial register. But part 2's rule (PR #93) counts inspected runs,
   and the data-reuse agreement makes agent changes prompted by results registered
@@ -375,6 +387,9 @@ are where overfitting would come from.
    of work.
 
 ## 6. Where v1 stands today, for context
+
+**Snapshot as of 2026-09-27, morning.** Since then #92, #93, #99, #101 and #102 have
+all merged; each PR records its final state.
 
 - **PR #99:** variant B (the inventory cap) as code, off by default; V0 replay
   byte-identical. Bob found no issues; the automated review approved.

@@ -1,6 +1,6 @@
 # Claude: assessment of the owner's Deep Research report on crypto downtrends
 
-Index: 2026-09-27: PR #106. Claims sorted into supported, unsupported and conflicting, and every sizing calculation checked (one example muddled). The framework agrees with the PR's research; the specifics are mostly unsourced; stablecoin and delta-neutral 'zero risk' claims conflict with documented events; the risk limits are looser than the project's binding ones; the roadmap conflicts with D4, the reserved window and the no-tuning rule. Lists every 2025–2026 passage for D7.
+Index: 2026-09-27: PR #106. Claims sorted into supported, unsupported and conflicting, and every sizing calculation checked (one example muddled). The framework agrees with the PR's research; the specifics are mostly unsourced; stablecoin and delta-neutral 'zero risk' claims conflict with documented events; the risk limits are looser than the project's binding ones; the roadmap conflicts with D4, the reserved window and the no-tuning rule. Lists every 2025–2026 passage for D7. **2026-09-28, Codex's corrections:** stop-distance losses are nominal, not maximums; the inventory cap covers only the variants with B; the DCA, trend-filter drawdown and expectancy=1 claims are unsupported.
 
 - **Date:** 2026-09-27. **Author:** Claude, session `e0b16be3`, the #106 branch writer.
 - **What was asked.** Codex delivered the owner's report on PR #106 (18:32Z) and asked
@@ -28,7 +28,8 @@ Index: 2026-09-27: PR #106. Claims sorted into supported, unsupported and confli
 The report's **framework** is sound and agrees with what Codex and I already wrote:
 - capital preservation first;
 - regime → mode → size → stop → exit;
-- simple trend filters and volatility scaling as the best-evidenced tools;
+- simple trend filters and volatility scaling as the best-evidenced tools (in the
+  populations studied; for crypto they are hypotheses);
 - expectancy over win rate;
 - low leverage;
 - cash as a legitimate mode.
@@ -60,10 +61,9 @@ arithmetic.
 | Claim in the report | Why it holds | Source |
 | --- | --- | --- |
 | In bear markets, professionals prioritise capital preservation over returns | The trend-following evidence and the momentum-crash evidence both point this way | Notes §3; Codex plan (preservation first) |
-| Simple trend filters (for example 200-day MA) reduce drawdowns more than they add return | Consistent with the time-series momentum literature and one weak crypto backtest | Notes §3 point 1 |
 | Volatility scaling reduces crash exposure and can improve risk-adjusted returns | Holds **in the populations studied** (mainly US equity factors); for crypto it is a hypothesis | Notes §3 point 3, as corrected today |
 | Negative funding means shorts pay longs; funding can turn a small edge negative | Matches the mechanics. **Ledger:** not supported by BIS, which studies dated-futures basis, not perpetual funding | Notes §3 point 5 |
-| High leverage is ruinous in crypto; relief rallies and short squeezes hurt shorts | Matches the momentum-crash evidence; BTC rose about 40% from its June 2022 low within weeks | Notes §3 point 2 |
+| High leverage is ruinous in crypto; relief rallies and short squeezes hurt shorts | Matches the momentum-crash evidence. BTC's rebound from its June 2022 low was reportedly about 40% within weeks, but that figure is **unverified** (ledger A26) | Notes §3 point 2 |
 | Expectancy, not win rate, decides profitability | 0.8 × 1.5 − 0.2 × 20 = 1.2 − 4 = **−2.8%**; the arithmetic is correct | Checked |
 | A mistaken dip-buy in a bear market loses; "buy every dip" fails in prolonged bears | This is our own V0 loss mechanism: inventory bought on the way down, then force-sold | Diagnosis, v1 |
 | Avoid illiquid, high-beta altcoins in downtrends | Many altcoins fell 90% or more in 2018 and 2022; v1 trades large pairs only | Well documented |
@@ -79,8 +79,15 @@ arithmetic.
 | €100k × 1% = €1,000; ÷ 10% stop | €10,000 | yes |
 | €100k × 1% = €1,000; ÷ 4% stop | €25,000 | yes |
 | €100k × 0.5% = €500; ÷ 5% stop | €10,000 | yes |
-| Max-loss table (0.25%, 0.5% or 1% of €10k, €50k and €100k) | €25–€1,000 | yes, all nine cells |
+| Max-loss table (0.25%, 0.5% or 1% of €10k, €50k and €100k) | €25–€1,000 | the arithmetic, yes, in all nine cells; the "max-loss" label, no (below) |
 | "€100k … at 4× leverage … €2,000 position with 25% stop distance (0.25× account = €2500 risk …)" | — | **no.** €2,000 × 25% = €500, which is consistent, but "0.25× account" is €25,000, not €2,500, and leverage plays no part in a risk-per-trade calculation. Muddled; disregard it. |
+
+**Nominal, not maximum (corrected 2026-09-28, after Codex).** `position × stop distance`
+is the planned loss if the stop fills exactly. It is not a maximum. Gaps through the
+stop, slippage, fees, thin liquidity and partial fills make actual losses larger, and
+a requested exit does not guarantee a fill (Codex's plan). The check above confirms
+the multiplication only; it does not endorse the report's "Max-loss" label. Any v2
+sizing rule must model realised losses, not nominal ones.
 
 ### 2.2 Unsupported
 
@@ -88,6 +95,9 @@ No source is given, and none is verified here. These can be hypotheses, never in
 
 | Claim | Problem |
 | --- | --- |
+| Simple trend filters (for example 200-day MA) reduce drawdowns more than they add return | **Moved from Supported (2026-09-28, Codex Cloud).** The one crypto backtest behind it was withdrawn (reserved window, ledger A8). The futures studies test diversified long/short time-series momentum, not a crypto 200-day long/cash filter. A hypothesis to register, not a finding. |
+| "Empirical studies show DCA beats lump-sum by reducing timing risk" (strategy table, "Reduce Exposure / DCA Slowly") | **Added 2026-09-28 (Codex).** No study is cited, and "beats" is undefined: return, drawdown or timing risk? The notes' sources (§3 point 6, industry analyses) say lump-sum wins most of the time on return, while DCA lowers drawdown and entry-timing risk. Unsupported as stated; the narrower drawdown and timing-risk property is at most a hypothesis. |
+| Testing roadmap step 1: benchmarks with "baseline drawdown, expectancy=1" | **Added 2026-09-28 (Codex Cloud).** The report defines expectancy per trade, from win and loss rates and sizes. All-cash has no trades, and buy-and-hold's result depends on the window, so neither has a universal expectancy of 1. A v2 comparison must name its metric and derive every benchmark's value the same way, or mark per-trade expectancy not applicable. |
 | "an EMA crossover + walk-forward had *similar returns to buy&hold but ~50% less drawdown*" ("the cited study") | The study is not identified. It is directionally consistent with the trend literature, but the figure cannot be checked. |
 | Funding arbitrage "~3–7% annual" (strategy table) and "~3–5% annual" (shortlist) | Two different ranges in the same report, with no source. **Ledger:** my earlier comparison with BIS (about 10–11% a year) mixed instruments. BIS measures the dated-futures basis from 2019 to January 2022, not perpetual funding. The level depends heavily on instrument, period and venue. |
 | "in mid-2024, Bitcoin pulled back ~15% but stayed above its rising 200DMA" | **Ledger: contradicted.** BTC briefly fell below $50k on 5 August 2024 while its 200-day average stood near $61.5k (CNBC). Earlier note: unverified. My recollection is that the 2024 declines were larger and dipped under the 200-day average in August 2024. This is within development data (2024), so our own archives could check it. Not done today. |
@@ -109,7 +119,7 @@ These conflict with a documented fact, or with a binding project rule or agreed 
 | Leverage "≤2–3×", "≤3×" | The owner-facing assumption in the notes (§2) is leverage near 1×, not yet confirmed by the owner. D3/D5: no futures code without an amendment to the README's spot-only rule. | Open. Any leverage above 1× needs its own owner decision (D5/D6). |
 | Roadmap step 6: short-only tests "during known downtrends (2018Q4, 2022Q1)" | Conflicts with **D4**: no edge claim from bear-only windows. It also needs futures history that may not exist for 2018. The BTCUSDT perpetual on Binance reportedly began in September 2019; this is not verified. | Mechanics diagnostics at most. Any edge test uses a complete, registered pre-reserved calendar. |
 | Roadmap step 2: test on "2023–25 data" | 2025 is in the **reserved window**. | Excluded. The development calendar ends at 2024-12. |
-| "Pure Martingale or grid systems … risk catastrophic blow-up" | Partly consistent (a plain grid has near-zero expectancy, and V0 lost through forced exits). But the v1 grid is not a martingale: fixed sizes, with B's cap and the 3%, 8% and 12% triggers. | Keep the warning. It targets unbounded grids, and v1's defences exist to answer it. |
+| "Pure Martingale or grid systems … risk catastrophic blow-up" | Partly consistent (a plain grid has near-zero expectancy, and V0 lost through forced exits). But the v1 grid is not a martingale: it uses fixed order sizes, and every grid variant keeps the 3%, 8% and 12% triggers. **Corrected (2026-09-28, Codex):** only the variants containing B have an ex-ante inventory cap (40%): B, C (= A + B), C+G and C+H. V0, A, E, F, G and H have none. | Keep the warning. It targets unbounded grids. v1's common triggers answer part of it for every variant, and the inventory cap only for the variants that include B. |
 | Options strategies (puts, collars, covered calls) in the shortlist | Not in the owner's stated venues' scope as far as verified. Contract minimums likely exceed a €100 account. No options data in the project. | Out of scope for now. Revisit only with a verified venue, data and account size. |
 | Illustrative accounts of €10k–€100k | The owner's account is €100. At 0.5% risk (€0.50) and a roughly 5-unit minimum order, the stop must be within 10% for even one minimum-size position. At 0.25%, within 5%. Few simultaneous positions are possible. | Any v2 sizing rule must be shown feasible at €100 with the venue's real minimums (Cloud's Kraken finding). |
 
