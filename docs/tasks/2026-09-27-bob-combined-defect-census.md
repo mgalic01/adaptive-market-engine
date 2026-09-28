@@ -37,8 +37,15 @@ measures.
   archive_get)`, and read with `crypto_grid_bot.backtest.klines.read_archive(path,
   symbol, interval, month)`, as in PR #66. The path is
   `crypto_grid_bot.backtest.dataset.local_path(Path("data"), symbol, interval, month)`.
-- **Unparsed months:** the 14 months that raise `DataError` are recorded as unparsed and
-  skipped, as in PRs #60 and #66.
+- **Errors, by type.** `fetch_file` distinguishes three outcomes, and each is handled
+  differently:
+  - status `missing`: Binance does not publish that month. Record it; not an error.
+  - `crypto_grid_bot.backtest.dataset.ArchiveParseError`: the archive passed its
+    published SHA-256 but does not parse. These are the 14 **unparsed** months of PRs #60
+    and #66. Record them and continue.
+  - any other `DataError` (checksum file malformed or absent, checksum without archive,
+    hash mismatch): the download is not trustworthy. **Stop** (see Stop conditions).
+    Never skip these as unparsed.
 - **Out of scope:** code, spec or manifest changes; backtests; policy decisions.
 
 ## Step 1: one status per expected hour (write `data/defect_census.py`)
@@ -46,30 +53,41 @@ measures.
 For each pair, exactly as in your outage task:
 1. The **listing hour** is the UTC hour containing the first row of the pair's earliest
    1m archive, whether or not that month parses.
-2. For every parsed month, the expected hours are
-   `crypto_grid_bot.backtest.audit.expected_hours(listing_hour_ms, month)`. Do not build
-   them from the bars you found.
-3. Statuses come from `crypto_grid_bot.backtest.audit.hour_statuses(minute_open_ms,
+2. For **every** month in scope, parsed or not, the expected hours are
+   `crypto_grid_bot.backtest.audit.expected_hours(listing_hour_ms, month)`. They depend
+   only on the listing hour and the calendar. Do not build them from the bars you found.
+3. For a parsed month, statuses come from `crypto_grid_bot.backtest.audit.hour_statuses(minute_open_ms,
    official_open_ms, expected)`. For each `present_both` hour, also compare with
    `crypto_grid_bot.backtest.replay.compare_bars(ours, theirs, VOLUME_DRIFT_TOLERANCE)`,
    where `ours` comes from `crypto_grid_bot.backtest.klines.aggregate(minutes, 3_600_000)`.
+   For an unparsed month, every expected hour has status **`unknown`**: it is neither a
+   defect nor clean.
 4. A **defect hour** is any expected hour that is `absent_minutes`, `absent_hourly` or
    `absent_both`, or `present_both` with a `compare_bars` result other than `match` or
    `drift`.
 
 ## Step 2: the per-pair table, on expected hours
 
-For every pair and year: defect hours / expected hours, and the rate. Then the totals per
+For every pair and year: defect hours / expected hours, and the rate, where the
+denominator excludes `unknown` hours. Print the `unknown` hours per pair and year in their
+own column. Then the totals per
 pair and for all ten. Also print, per pair and year, how many defect hours are
 `absent_both`.
 
 ## Step 3: events, with the rule applied hour by hour
 
-- A pair is **listed at** hour h when h is one of its expected hours from Step 1.
+- A pair is **listed at** hour h when h is one of its expected hours from Step 1. This
+  comes from the listing hour alone: a pair whose month did not parse is still listed.
 - Merge consecutive UTC hours in which **at least one** listed pair has a defect hour into
   one **event**, as your events script did, now including `absent_both` hours.
 - For every hour of every event, record `affected at h / listed at h`, where "affected"
-  counts only pairs listed at h.
+  counts only pairs listed at h, and also `unknown at h`, the listed pairs whose status at
+  h is `unknown`. The true ratio lies between `affected / listed` and
+  `(affected + unknown) / listed`.
+- An hour with `unknown at h > 0` is **indeterminate** under a rule if the rule's result
+  differs between those two bounds. An event containing an indeterminate hour is
+  classified **indeterminate** under that rule, not met or unmet. Print these events in
+  their own list, with the per-hour bounds, and keep them out of the met/unmet counts.
 - Classify each event under three rules and print all three:
   - `breadth-per-hour-v1`: the ratio is at least 0.8 **in every hour** of the event;
   - the same, and additionally at least 5 pairs listed in every hour;
@@ -96,6 +114,9 @@ table: figure, Claude, you, equal?
 | `absent_both` pair-hours, all pairs and years | 468 |
 | 2019-11-13 02:00 to 05:00 per-hour ratios | 9/9, 9/9, 8/9, 1/9 |
 
+The denominators exclude `unknown` hours, as in Step 2, and no pair has an unparsed
+month in 2019-11, so these values are unchanged by the `unknown` rule.
+
 Any difference must be explained before you go on. If you cannot explain one, stop and
 report. A disagreement is a finding, not something to adjust away.
 
@@ -114,7 +135,9 @@ report. A disagreement is a finding, not something to adjust away.
 
 ## Stop conditions
 
-- A Python traceback, not a per-file `DataError`: stop and report it in full.
+- A Python traceback, or any `DataError` that is not an `ArchiveParseError` (a checksum,
+  missing-archive or hash failure): stop and report it in full. Only `ArchiveParseError`
+  months are recorded as unparsed.
 - Any file for 2025-01 or later: stop.
 - A Step 4 difference you cannot explain: stop and report.
 - Anything else unexpected: stop, keep everything, report.

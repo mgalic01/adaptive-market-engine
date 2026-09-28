@@ -33,7 +33,9 @@ Start from `data/masked_fraction.py` in the eligibility record's appendix. Copy 
 exactly and check that its SHA-256 is the one stated there before you change anything.
 Then change only these four things:
 
-1. **Repair before parsing.** For a month where `read_archive` raises `DataError`, read
+1. **Repair before parsing.** For a month where `fetch_file` (change 4) raises
+   `crypto_grid_bot.backtest.dataset.ArchiveParseError` (the archive passed its published
+   SHA-256 but does not parse), read
    the raw rows of both files with `crypto_grid_bot.backtest.klines.read_member` and the
    `csv` module. Call `crypto_grid_bot.backtest.audit.rule_outcome(minute_rows, hour_rows,
    month, "refined")`. If it is not usable, record `{"status": "unusable", "reason": ...}`.
@@ -50,9 +52,14 @@ Then change only these four things:
    records `not_cached` when a file is absent, because it ran on a full cache. Your
    machine will not have one. Before reading a pair-month, call
    `crypto_grid_bot.backtest.dataset.fetch_file(Path("data"), symbol, interval, month,
-   archive_get)` for both the 1m and the 1h archive, so every file is hash-checked, and
-   catch `DataError` per file exactly as in PR #66. A month Binance does not publish
-   stays `not_cached`; it must not become `unusable`.
+   archive_get)` for both the 1m and the 1h archive, so every file is hash-checked.
+   Handle its outcomes by type:
+   - status `missing` (Binance does not publish the month): record `not_cached`. It must
+     not become `unusable`.
+   - `ArchiveParseError`: go to the repair path in change 1.
+   - any other `DataError` (checksum file malformed or absent, checksum without archive,
+     hash mismatch): the file is not trustworthy. **Stop** (see Stop conditions). Never
+     repair, skip or record it as `unusable`.
 
 Months that parse without repair are measured exactly as before.
 
@@ -96,7 +103,9 @@ must be explained before you go on. If you cannot explain one, stop and report.
 
 ## Stop conditions
 
-- A Python traceback, not a per-file `DataError`: stop and report it in full.
+- A Python traceback, or any `DataError` that is not an `ArchiveParseError` (a checksum,
+  missing-archive or hash failure): stop and report it in full. Only `ArchiveParseError`
+  months go to the repair path.
 - Any file for 2025-01 or later: stop.
 - A Step 3 difference you cannot explain: stop and report.
 - Anything else unexpected: stop, keep everything, report.

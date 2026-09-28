@@ -94,17 +94,25 @@ only through `N_family`.
 range `98baf70..876f7ce` could not see it. It changed the coverage window in
 `features.py` from `minute_ms − 168 h` to the 168 whole hours before the current hour,
 which feeds data quality into the gated path's regime and opportunity checks. It cannot
-reach the ungated baseline, whose data quality is fixed at 1.0. Its own committed
-`verify-2024h1.md` says "The first replay of harness v1 is running", so R1 ran on code
-before it. The gated path therefore had **7** behaviour states, not 6. The ungated
-count stays 3.
+reach the ungated baseline, whose data quality is fixed at 1.0. The ungated count stays 3.
+
+**Which side of `a077a0f` R1 ran on is unknown.** An earlier version of this section said
+R1 ran before it, citing the placeholder `verify-2024h1.md` ("The first replay of harness
+v1 is running"). That inference was wrong (Codex, 2026-09-27): `a077a0f` itself created
+that file, and the same placeholder says the file "will be replaced by the verified
+results … from a run on the committed code", so R1 may have run on `a077a0f` or on code
+just before it. If before, `a077a0f` adds a gated state; if on it, it does not. So the
+gated path had **6 or 7** behaviour states.
 
 | Rule (trial-count record §3) | As merged | Corrected |
 | --- | ---: | ---: |
 | A (one strategy) | 1 | 1 |
-| **B** (post-inspection behaviour changes) | 6 | **7** |
-| C (B + benchmark once) | 7 | **8** |
-| **D** (B + benchmark per own state) | 9 | **10** |
+| **B** (post-inspection behaviour changes) | 6 | **6–7** |
+| C (B + benchmark once) | 7 | **7–8** |
+| **D** (B + benchmark per own state) | 9 | **9–10** |
+
+Where one number is needed, the **upper** value is the working figure: a larger family
+makes the Holm cutoff stricter, so it errs toward rejecting a variant.
 
 **The forward family.** Spec §4 has 11 configurations; D is not selectable. The owner
 ruled on 2026-09-27 that V0 on engine `exit-residue-v1` is an additional registered
@@ -112,8 +120,8 @@ trial, so forward V0 is new, not a repeat of retrospective V0-b.
 
 | Budget | Arithmetic | N |
 | --- | --- | ---: |
-| **`N_family`, central** | 7 retrospective gated + V0 on `exit-residue-v1` + 9 new selectable | **17** |
-| `N_family`, sensitivity | + 3 ungated retrospective states + D | **21** |
+| **`N_family`, central** | 6–7 retrospective gated + V0 on `exit-residue-v1` + 9 new selectable | **16–17** (working: 17) |
+| `N_family`, sensitivity | + 3 ungated retrospective states + D | **20–21** (working: 21) |
 
 Both are floors: unpublished inspected runs exist (R1 proves it).
 
@@ -135,9 +143,10 @@ seeds, intrabar paths, pairs and folds add nothing.
 - **C7 is adopted in principle and is not yet binding.** Codex's review of 2026-09-27
   withheld agreement on three grounds, all correct, and the spec row now records them:
   the series C7 is computed on is undefined (§4's two windows against part 3's 25-fold
-  geometry, which is itself a proposal); `N_family` = 17 and 21 are **floors**, and a
+  geometry, which is itself a proposal); `N_family` = 17 and 21 (upper ends of 16–17 and 20–21) are **floors**, and a
   Holm cutoff taken from a floor does not control family-wise error at 5%; and all three
-  agents agreed to the DSR, so retiring it needs Codex's and Bob's acknowledgment.
+  agents agreed to the DSR, so retiring it needs Codex's and Bob's acknowledgment. Bob
+  gave his on 2026-09-27 in his PR #123 review; Codex's is owed.
   Until those are settled, C1–C6 remain the binding set.
 - **The family must be accounted for, not assumed.** Either the unpublished inspected
   runs are classified in the trial register — shown to reproduce a counted configuration,

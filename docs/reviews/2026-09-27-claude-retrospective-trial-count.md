@@ -6,12 +6,15 @@
   second still missed four observed runs and R3's ungated results. The withdrawn claims
   are listed in [section 8](#8-withdrawn-claims) rather than quietly replaced. Every
   finding was checked at source before each revision.
-- **Revision 4 (2026-09-27, after merge):** `a077a0f` changed gated behaviour and sits
-  before this record's enumeration range, and R1 ran before it. The gated path has **7**
-  states, so rule B is **N = 7** and rule D **N = 10**; "N = 6" and "N = 9" below are
-  superseded. Fee overrides and the omitted reproduction events are settled in
+- **Revision 4 (2026-09-27, after merge; corrected 2026-09-28):** `a077a0f` changed
+  gated behaviour and sits before this record's enumeration range. Whether R1 ran before
+  it or on it is **unknown** (`a077a0f` itself created the placeholder report that said a
+  replay was running). The gated path has **6 or 7** states, so rule B is **N = 6–7** and
+  rule D **N = 9–10**, with the upper values as the conservative working figures; the
+  first version of this note stated 7 and 10 as settled. Fee overrides and the omitted
+  reproduction events are settled in
   [the coherence record](2026-09-27-claude-dsr-coherence.md), which also gives the forward
-  family, `N_family` = 17 (sensitivity 21), used by C7 in the spec.
+  family, `N_family` = 16–17 (sensitivity 20–21), used by C7 in the spec.
 - **What this does for the goal.** The deflated Sharpe ratio adopted in the merged
   [data-reuse proposal](2026-09-25-claude-data-reuse-proposal.md) as the named
   multiple-testing diagnostic needs an honest count of strategies already tried. If that

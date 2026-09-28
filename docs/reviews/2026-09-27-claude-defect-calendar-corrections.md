@@ -132,8 +132,9 @@ pair-specific.
 | 2024 | 0 | 0 | 0 | 0 |
 | **Total** | **78 → 27** | **211 → 32** | **3,065 → 3,116** | **5,891 → 6,070** |
 
-66 of the 78 published events fall in 2017–2018, when 2 or 3 pairs were listed and "80%"
-means every pair. The outage calendar requires at least 5 listed pairs; this report has no
+71 of the 78 published events fall in 2017, all with only 2 or 3 pairs listed, where
+"80%" means every pair. (Corrected at review, 2026-09-28: this line first said "66 of the
+78 … in 2017–2018". The two 2018 events, 72 and 73, have 4 and 7 pairs listed.) The outage calendar requires at least 5 listed pairs; this report has no
 such floor. Whether to add one is a definition choice for the re-run below, stated there,
 not decided here.
 
