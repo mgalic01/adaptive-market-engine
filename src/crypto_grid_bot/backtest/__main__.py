@@ -35,6 +35,7 @@ from crypto_grid_bot.backtest.replay import (
     STRICT_INTEGRITY_RULES,
     VOLUME_DRIFT_TOLERANCE,
 )
+from crypto_grid_bot.backtest.trend_benchmark import trend_job
 
 
 def checked_symbols(spec: DatasetSpec) -> list[str]:
@@ -163,6 +164,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="fail on any volume difference (no drift tolerance)",
     )
+    parser.add_argument(
+        "--trend-benchmark",
+        action="store_true",
+        help="also run variant D, the trend benchmark (spec v1 §3 D; not a grid, "
+        "no risk controls, cannot be selected)",
+    )
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
     maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
@@ -211,6 +218,14 @@ def main(argv: list[str] | None = None) -> int:
             for mode in PATH_MODES
             for gated in (True, False)
         ]
+        if args.trend_benchmark:
+            futures += [
+                pool.submit(
+                    trend_job, args.spec, args.config, args.data_dir, s, mode, (maker, taker)
+                )
+                for s in spec.traded
+                for mode in PATH_MODES
+            ]
         results = [f.result() for f in futures]
     failures = result_failures(results)
     stamp = (
@@ -228,6 +243,8 @@ def main(argv: list[str] | None = None) -> int:
         **_identity(args.spec, args.config),
         "integrity_rules": integrity,
         "fees": {"maker": str(maker), "taker": str(taker if taker is not None else maker)},
+        # Present only when D ran, so a grid-only results.json keeps its exact layout.
+        **({"trend_benchmark": "D (spec v1 §3 D)"} if args.trend_benchmark else {}),
         # Invalid results are kept for diagnosis but are never performance evidence.
         "valid": not failures,
         "failures": failures,
