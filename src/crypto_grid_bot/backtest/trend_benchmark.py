@@ -66,24 +66,39 @@ RISK_POLICY = (
     "benchmark with a different risk policy: no daily-loss pause, no drawdown halt, "
     "no emergency exit, no profit vault or reserves (spec v1 §3 D)"
 )
-# The simulator settles fills at precision 50; the journal uses the same.
+# The simulator settles fills at precision 50; the journal uses the same. Every price,
+# sizing and settlement step below runs at this one explicit precision, never at the
+# ambient context: a price computed at one precision and settled at another can spend
+# more than the cash held (Codex's review of PR #112, a supported-input defect).
 _PRECISION = 50
 
 
 def buy_price(quote: Quote, rules: MarketRules) -> Decimal:
-    """``ask × (1 + slippage)``, rounded up to the tick (never in D's favour)."""
-    raw = quote.ask * (ONE + rules.slippage_rate)
-    return (raw / rules.tick_size).to_integral_value(rounding=ROUND_CEILING) * rules.tick_size
+    """``ask × (1 + slippage)``, rounded up to the tick (never in D's favour).
+
+    Convention, recorded beside the spec's price formula (Codex, PR #112, question 2):
+    the spec writes the formula without a rounding rule; D rounds buys **up** and sells
+    **down** to the tick, both against D, as V0's liquidation does for its sells.
+    """
+    with localcontext() as context:
+        context.prec = _PRECISION
+        raw = quote.ask * (ONE + rules.slippage_rate)
+        ticks = (raw / rules.tick_size).to_integral_value(rounding=ROUND_CEILING)
+        return ticks * rules.tick_size
 
 
 def sell_price(quote: Quote, rules: MarketRules) -> Decimal:
     """``bid × (1 − slippage)``, rounded down to the tick, exactly as V0's liquidation."""
-    return floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
+    with localcontext() as context:
+        context.prec = _PRECISION
+        return floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
 
 
 def exit_value(bid: Decimal, rules: MarketRules) -> Decimal:
     """Per-unit mark, identical to ``Account.equity`` and the buy-and-hold mark."""
-    return bid * (ONE - rules.slippage_rate) * (ONE - rules.taker_fee)
+    with localcontext() as context:
+        context.prec = _PRECISION
+        return bid * (ONE - rules.slippage_rate) * (ONE - rules.taker_fee)
 
 
 @dataclass(frozen=True)
@@ -131,12 +146,12 @@ def enter(account: TrendAccount, quote: Quote, rules: MarketRules) -> TrendFill 
     """One observation of an entry. The entry ends when the quantity is below the minimum
     notional (spec §3 D: "The entry ends when that quantity is below the minimum
     notional"); see the handoff, question 1, for the reading used."""
-    price, quantity = buy_price(quote, rules), entry_quantity(account, quote, rules)
-    if price * quantity < rules.minimum_notional:
-        account.phase = "idle"
-        return None
     with localcontext() as context:
         context.prec = _PRECISION
+        price, quantity = buy_price(quote, rules), entry_quantity(account, quote, rules)
+        if price * quantity < rules.minimum_notional:
+            account.phase = "idle"
+            return None
         notional = price * quantity
         fee = notional * rules.taker_fee
         account.cash -= notional + fee
@@ -153,17 +168,17 @@ def exit_step(account: TrendAccount, quote: Quote, rules: MarketRules) -> TrendF
     limit below the minimum with more inventory left sells nothing now and retries at
     the next observation, as V0's liquidation does.
     """
-    price = sell_price(quote, rules)
-    held = floor_step(account.inventory, rules.quantity_step)
-    if price * held < rules.minimum_notional:
-        account.phase = "idle"
-        return None
-    capacity = quote.bid_size * rules.participation
-    quantity = floor_step(min(held, capacity), rules.quantity_step)
-    if price * quantity < rules.minimum_notional:
-        return None
     with localcontext() as context:
         context.prec = _PRECISION
+        price = sell_price(quote, rules)
+        held = floor_step(account.inventory, rules.quantity_step)
+        if price * held < rules.minimum_notional:
+            account.phase = "idle"
+            return None
+        capacity = quote.bid_size * rules.participation
+        quantity = floor_step(min(held, capacity), rules.quantity_step)
+        if price * quantity < rules.minimum_notional:
+            return None
         notional = price * quantity
         fee = notional * rules.taker_fee
         account.cash += notional - fee

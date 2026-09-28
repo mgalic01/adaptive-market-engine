@@ -186,3 +186,27 @@ Windows 10, Python 3.14.7, in the isolated worktree, on the merge with `main`
 3. The A branch decides whether to import `strategy/daily_sma.py`.
 4. D runs only inside a registered practice-matrix run with `--trend-benchmark`, after
    the prerequisites and the owner's go for that run.
+
+## Revision 2: Codex's review at `e8c3cca` and the automated reviewer's nits, 2026-09-28
+
+Written by Claude (session `012TnmLL`), which took the PR over while Codex is out of
+credits. Reviews at `e8c3cca`: Bob NO ISSUES; the automated Claude reviewer APPROVE with
+three optional nits; Codex Desktop **AGREE WITH CHANGES**, answering all nine questions
+and finding one supported-input precision defect. This revision does what Codex asked
+("incorporate the precision fix and explicit conventions into the same PR/handoff").
+
+| Item | Disposition |
+| --- | --- |
+| **Codex's precision defect** (buy side): `enter()` computed its price at the ambient Decimal precision (28) while `entry_quantity` recomputed it at precision 50. With cash 100, bid 1, ask `1.0000000000000000000000000006`, tick and step `1e-29`, minimum notional 1, zero fees and slippage, participation 1, sizes 1000, the price was `1.000000000000000000000000001`, the quantity `99.99999999999999999999999994000`, and cash ended at **-4e-26**. | **Fixed.** `buy_price`, `sell_price`, `exit_value`, the whole of `enter` and the whole of `exit_step` now run inside the same explicit precision-50 context as sizing and settlement (`_PRECISION`); nothing in D's fill path runs at the ambient context any more. Regression `PrecisionTests.test_the_buy_side_never_spends_more_than_the_cash_held` uses exactly Codex's inputs: it fails on the old code with Codex's price, and passes now with price `1.0000000000000000000000000006`, the same quantity, cash exactly `0` and `check_trend_accounting` empty. |
+| The same on the exit side (Codex: "on both entry and exit") | **Fixed and tested.** `test_the_sell_side_settles_at_the_same_precision_as_its_price`: a bid with 29 significant digits sells 100 units for `100.00000000000000000000000006`, kept to the last digit in both the account and the journal. This also closes the automated reviewer's nit 1 (`exit_step` at the ambient context). |
+| Codex's answers to questions 1 to 9 | **Adopted as the readings already implemented**, no code change: (1) thin entry, literal rule, one sizing attempt per transition, retrying would need a spec amendment; (2) buys up, sells down; (3) V0's readiness gate and evaluated minutes; (4) immediate entry when the signal already says hold; (5) the signal day's close is in its SMA50, equality is cash; (6) `cross_check_job` plus `integrity_failures` enforce the daily warm-up through the CLI, and a direct `trend_job` result is not validated evidence by itself; (7) zero grid cycles under P7, C5 fails for information; (8) missing data is still an integrity defect; (9) one fill is one request. |
+| Codex, question 2: "explicitly record it beside the spec's price formulas before freezing evidence" | **Recorded** in `buy_price`'s docstring, beside the formula in the code, and here: the spec writes `ask × (1 + slippage)` and `bid × (1 − slippage)` without a rounding rule; D rounds buys **up** and sells **down** to the tick, both against D, as V0's liquidation does for its sells. The spec text itself is not edited by this PR; if the convention is to enter §3 D, that is a spec amendment (Codex or the owner decides). |
+| Automated reviewer, nit 2 (confirm or push back on Q1 and Q2) | Answered by Codex (above). |
+| Automated reviewer, nit 3 (end-to-end fail-closed test) | **Done.** `TrendJobTests.test_a_spec_without_daily_history_fails_closed_through_the_job_itself` calls `trend_job` on a spec without `daily_warmup_start` and asserts the one `accounting_problems` entry names it, 120 bars labelled `undefined`, no buys. The tiny dataset fixture is shared with the existing job test. |
+| Index | this record's row moved from the frozen table to its own `Index:` line (PR #116). Merged with `main` at `3b94378`. |
+
+**Verification of this revision** (Linux, Python 3.12.3): preflight green (ruff, format,
+mypy 41 source files, bandit, `check_reports` 0 problems, pytest 608 passed, 2
+skipped). The regression was run against the previous `trend_benchmark.py` with the new
+tests and failed exactly as Codex described. No replay of real data, nothing downloaded,
+no run of any variant.

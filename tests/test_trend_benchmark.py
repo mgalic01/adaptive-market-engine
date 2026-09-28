@@ -28,6 +28,8 @@ from crypto_grid_bot.backtest.replay import RunConfig, bar_quotes, replay
 from crypto_grid_bot.backtest.trend_benchmark import (
     SMA_LENGTH,
     TrendAccount,
+    TrendMetrics,
+    _journal,
     check_trend_accounting,
     daily_history_problems,
     enter,
@@ -36,7 +38,7 @@ from crypto_grid_bot.backtest.trend_benchmark import (
     trend_job,
 )
 from crypto_grid_bot.config import load_config
-from crypto_grid_bot.simulation.models import MarketRules
+from crypto_grid_bot.simulation.models import MarketRules, Quote
 from crypto_grid_bot.strategy.daily_sma import (
     DAY_MS,
     DailyCloses,
@@ -237,6 +239,58 @@ class FillArithmeticTests(unittest.TestCase):
         metrics, account = run_d(minutes, SWITCHING)
         self.assertEqual((1, 0), (metrics.entries_started, metrics.buys))
         self.assertEqual((D(100), D(0)), (account.cash, account.inventory))
+
+
+class PrecisionTests(unittest.TestCase):
+    """Codex's supported-input defect (PR #112 review): a buy price computed at the
+    ambient Decimal precision and a quantity sized at precision 50 disagreed by one unit
+    in the last place, and the settlement spent 4e-26 more than the cash held. Sizing,
+    pricing and settlement now share one explicit precision on both sides."""
+
+    RULES = MarketRules(
+        symbol="TESTUSDT",
+        tick_size=D("1e-29"),
+        quantity_step=D("1e-29"),
+        minimum_notional=D("1"),
+        fee_rate=D("0"),
+        slippage_rate=D("0"),
+        participation=D("1"),
+        taker_fee_rate=D("0"),
+    )
+    RUN = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0"))
+    ASK = D("1.0000000000000000000000000006")  # 29 significant digits: past precision 28
+
+    def quote(self):
+        return Quote("q/0", "TESTUSDT", "t", "t", D("1"), self.ASK, D(1000), D(1000))
+
+    def test_the_buy_side_never_spends_more_than_the_cash_held(self):
+        account = TrendAccount(cash=D(100), holding=True, phase="entering")
+        fill = enter(account, self.quote(), self.RULES)
+        self.assertEqual(self.ASK, fill.price)  # the ask itself: no slippage, on the tick
+        # 100 / 1.0000000000000000000000000006 floored to 1e-29, and price x quantity
+        # is exactly what leaves the cash: nothing is rounded away between the two.
+        self.assertEqual(D("99.99999999999999999999999994000"), fill.quantity)
+        self.assertEqual(D("0.0000000000000000000000000000000"), account.cash)
+        self.assertGreaterEqual(account.cash, 0)
+        metrics = TrendMetrics()
+        _journal(metrics, fill, "t")
+        self.assertEqual([], check_trend_accounting(self.RUN, metrics, account))
+
+    def test_the_sell_side_settles_at_the_same_precision_as_its_price(self):
+        account = TrendAccount(cash=D(0), inventory=D(100), holding=False, phase="exiting")
+        fill = exit_step(account, self.quote(), self.RULES)
+        self.assertEqual((D("1"), D(100)), (fill.price, fill.quantity))
+        self.assertEqual(D(100), account.cash)
+        bid = D("1.0000000000000000000000000006")
+        rich = Quote("q/1", "TESTUSDT", "t", "t", bid, bid, D(1000), D(1000))
+        account = TrendAccount(cash=D(0), inventory=D(100), holding=False, phase="exiting")
+        fill = exit_step(account, rich, self.RULES)
+        # 100 x 1.0000000000000000000000000006 has 30 significant digits: kept, not
+        # rounded to 28, so the journal and the account agree to the last digit.
+        self.assertEqual(D("100.00000000000000000000000006"), account.cash)
+        metrics = TrendMetrics()
+        _journal(metrics, fill, "t")
+        self.assertEqual(account.cash, metrics.sell_notional)  # the journal keeps every digit
 
 
 class TimingTests(unittest.TestCase):
@@ -443,31 +497,37 @@ JAN_2024_MS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
 class TrendJobTests(unittest.TestCase):
     """The pool job end to end on a tiny synthetic archive (nothing is downloaded)."""
 
+    @staticmethod
+    def tiny_dataset(work, *, daily=True):
+        """A spec, manifest and hash-checked synthetic archives under ``work``."""
+        spec_path = work / "tiny.toml"
+        spec_path.write_text(
+            'name = "tiny"\npurpose = "variant D wiring test"\ntraded = ["BTCUSDT"]\n'
+            'market_proxy = "BTCUSDT"\nbreadth_basket = ["BTCUSDT"]\n'
+            + ('daily_warmup_start = "2023-11"\n' if daily else "")
+            + 'warmup_start = "2023-12"\nstart = "2024-01"\nend = "2024-01"\n'
+            'initial_quote = "100"\nfee_rate = "0.001"\nslippage_rate = "0.0005"\n'
+            'participation = "0.10"\nassumed_spread_pct = "0.05"\n'
+        )
+        archive = FakeArchive()
+        archive.add("BTCUSDT", "1m", "2024-01", minute_rows(JAN_2024_MS, 120))
+        archive.add("BTCUSDT", "1h", "2023-12", hour_rows(DEC_2023_MS, 744))
+        archive.add("BTCUSDT", "1h", "2024-01", hour_rows(JAN_2024_MS, 3))
+        archive.add("BTCUSDT", "1d", "2023-11", day_rows(NOV_2023_MS, 30))
+        archive.add("BTCUSDT", "1d", "2023-12", day_rows(DEC_2023_MS, 31))
+        archive.add("BTCUSDT", "1d", "2024-01", day_rows(JAN_2024_MS, 31))
+        filters = {"base": "BTC", "quote": "USDT", "tick_size": "0.01"}
+        filters |= {"quantity_step": "0.00001", "min_notional": "5"}
+        manifest = fetch_dataset(
+            load_spec(spec_path), work / "data", fetcher=archive, instruments=lambda s: filters
+        )
+        write_manifest(work / "tiny.manifest.json", manifest)
+        return spec_path
+
     def test_trend_job_matches_the_grid_run_window_and_samples(self):
         with tempfile.TemporaryDirectory() as temp:
             work = Path(temp)
-            spec_path = work / "tiny.toml"
-            spec_path.write_text(
-                'name = "tiny"\npurpose = "variant D wiring test"\ntraded = ["BTCUSDT"]\n'
-                'market_proxy = "BTCUSDT"\nbreadth_basket = ["BTCUSDT"]\n'
-                'daily_warmup_start = "2023-11"\nwarmup_start = "2023-12"\n'
-                'start = "2024-01"\nend = "2024-01"\n'
-                'initial_quote = "100"\nfee_rate = "0.001"\nslippage_rate = "0.0005"\n'
-                'participation = "0.10"\nassumed_spread_pct = "0.05"\n'
-            )
-            archive = FakeArchive()
-            archive.add("BTCUSDT", "1m", "2024-01", minute_rows(JAN_2024_MS, 120))
-            archive.add("BTCUSDT", "1h", "2023-12", hour_rows(DEC_2023_MS, 744))
-            archive.add("BTCUSDT", "1h", "2024-01", hour_rows(JAN_2024_MS, 3))
-            archive.add("BTCUSDT", "1d", "2023-11", day_rows(NOV_2023_MS, 30))
-            archive.add("BTCUSDT", "1d", "2023-12", day_rows(DEC_2023_MS, 31))
-            archive.add("BTCUSDT", "1d", "2024-01", day_rows(JAN_2024_MS, 31))
-            filters = {"base": "BTC", "quote": "USDT", "tick_size": "0.01"}
-            filters |= {"quantity_step": "0.00001", "min_notional": "5"}
-            manifest = fetch_dataset(
-                load_spec(spec_path), work / "data", fetcher=archive, instruments=lambda s: filters
-            )
-            write_manifest(work / "tiny.manifest.json", manifest)
+            spec_path = self.tiny_dataset(work)
             config = ROOT / "config/default.toml"
             fees = (D("0"), D("0.0009"))
             grid = run_job(spec_path, config, work / "data", "BTCUSDT", "high_first", True, fees)
@@ -483,6 +543,19 @@ class TrendJobTests(unittest.TestCase):
         self.assertEqual({"cash": 120}, d["signal_by_bar"])
         self.assertEqual((0, D(100)), (d["buys"], D(d["final_total_equity"])))
         self.assertEqual(SMA_LENGTH, 50)
+
+    def test_a_spec_without_daily_history_fails_closed_through_the_job_itself(self):
+        # The automated reviewer's nit 3: the wiring from daily_history_problems to the
+        # job's accounting_problems, exercised end to end rather than read by hand.
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            spec_path = self.tiny_dataset(work, daily=False)
+            config = ROOT / "config/default.toml"
+            d = trend_job(spec_path, config, work / "data", "BTCUSDT", "high_first")
+        (problem,) = d["accounting_problems"]
+        self.assertIn("daily_warmup_start", problem)
+        self.assertEqual({"undefined": 120}, d["signal_by_bar"])  # no daily bars: cash
+        self.assertEqual(0, d["buys"])
 
 
 if __name__ == "__main__":
