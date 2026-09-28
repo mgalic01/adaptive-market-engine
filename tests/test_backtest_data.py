@@ -9,7 +9,9 @@ import zipfile
 from dataclasses import replace
 from decimal import Decimal as D
 from pathlib import Path
+from unittest.mock import patch
 
+from crypto_grid_bot.backtest import dataset
 from crypto_grid_bot.backtest.dataset import (
     archive_path,
     fetch_dataset,
@@ -19,7 +21,13 @@ from crypto_grid_bot.backtest.dataset import (
     local_path,
     verify_dataset,
 )
-from crypto_grid_bot.backtest.klines import aggregate, parse_rows, read_archive
+from crypto_grid_bot.backtest.funding import read_funding_archive
+from crypto_grid_bot.backtest.klines import (
+    aggregate,
+    parse_rows,
+    read_archive,
+    read_member,
+)
 from crypto_grid_bot.market_data.parsing import DataError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -406,3 +414,211 @@ class FetchTests(unittest.TestCase):
             handle.write(source.replace('fee_rate = "0.001"', 'fee_rate = "0"'))
         self.addCleanup(Path(handle.name).unlink)
         self.assertEqual(0, load_spec(Path(handle.name)).fee_rate)
+
+
+class ReservedWindowTests(unittest.TestCase):
+    """The reserved window (2025-01 onward) is refused on every path to archive data.
+
+    Each test asserts the error names the reserved window, so it proves the window
+    guard fired rather than an unrelated check. That matters: the manifest test above
+    already rejects "9999-12", but only because that month overflows, not because of
+    any window rule; a realistic reserved month used to pass straight through.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.data = Path(self.temp.name)
+
+    def _spec_with(self, old: str, new: str) -> Path:
+        source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
+        assert old in source, old
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
+            handle.write(source.replace(old, new))
+        self.addCleanup(Path(handle.name).unlink)
+        return Path(handle.name)
+
+    def test_fetch_file_refuses_a_reserved_month_before_any_network_call(self):
+        calls: list[str] = []
+
+        def fetcher(path):
+            calls.append(path)
+            return None
+
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            fetch_file(self.data, "ADAUSDT", "1m", "2025-01", fetcher)
+        self.assertEqual([], calls, "the reserved month reached the fetcher")
+        self.assertFalse(any(self.data.rglob("*")), "something was written for a reserved month")
+
+    def test_fetch_file_still_accepts_the_last_development_month(self):
+        archive = FakeArchive()
+        archive.add("ADAUSDT", "1m", "2024-12", minute_rows(JAN_2024_MS, 1))
+        # The fake's rows are for January, so this is expected to fail on content --
+        # but only after the window guard has let 2024-12 through to the fetcher.
+        calls: list[str] = []
+
+        def fetcher(path):
+            calls.append(path)
+            return archive(path)
+
+        try:
+            fetch_file(self.data, "ADAUSDT", "1m", "2024-12", fetcher)
+        except DataError as exc:
+            self.assertNotIn("reserved window", str(exc))
+        self.assertTrue(calls, "2024-12 was refused, but it is a development month")
+
+    def test_a_spec_reaching_the_reserved_window_is_rejected(self):
+        for old, new in (
+            ('end = "2024-06"', 'end = "2025-01"'),
+            ('end = "2024-06"', 'end = "2026-08"'),
+            ('start = "2024-01"\nend = "2024-06"', 'start = "2025-01"\nend = "2025-06"'),
+            ('daily_warmup_start = "2023-05"', 'daily_warmup_start = "2025-01"'),
+        ):
+            with self.subTest(new=new), self.assertRaisesRegex(DataError, "reserved window"):
+                load_spec(self._spec_with(old, new))
+
+    def test_a_spec_ending_at_the_last_development_month_is_accepted(self):
+        spec = load_spec(self._spec_with('end = "2024-06"', 'end = "2024-12"'))
+        self.assertEqual("2024-12", spec.end)
+        self.assertEqual("2024-12", max(month for _, _, month in spec.required()))
+
+    def test_a_manifest_listing_a_reserved_month_is_rejected(self):
+        spec = load_spec(ROOT / "config/datasets/verify-2024h1.toml")
+        manifest = {
+            "schema": 1,
+            "dataset": spec.name,
+            "instruments": {},
+            "files": [
+                {
+                    "symbol": "ADAUSDT",
+                    "interval": "1m",
+                    "month": "2025-01",
+                    "status": "ok",
+                    "sha256": "a" * 64,
+                }
+            ],
+        }
+        path = self.data / "reserved.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            load_manifest(path)
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            verify_dataset(spec, manifest, self.data)
+
+    def _archive(self, member: str) -> Path:
+        # A real zip holding exactly the expected member: if the guard were missing,
+        # the reader would open it and fail on its contents instead.
+        path = self.data / (member.removesuffix(".csv") + ".zip")
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(member, "not,parsed\n")
+        return path
+
+    def test_the_kline_reader_refuses_a_reserved_month_without_opening_it(self):
+        path = self._archive("ADAUSDT-1m-2025-01.csv")
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            read_archive(path, "ADAUSDT", "1m", "2025-01")
+
+    def test_the_funding_reader_refuses_a_reserved_month_without_opening_it(self):
+        path = self._archive("BTCUSDT-fundingRate-2025-01.csv")
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            read_funding_archive(path, "BTCUSDT", "2025-01")
+
+    def test_the_raw_member_reader_refuses_a_reserved_month(self):
+        # read_member is imported directly by audit_run, so the wrappers' guards are not
+        # the only way in; a real zip proves the refusal precedes opening it.
+        path = self._archive("ADAUSDT-1m-2025-01.csv")
+        with self.assertRaisesRegex(DataError, "reserved window"):
+            read_member(path, "ADAUSDT-1m-2025-01.csv")
+        self.assertIn(
+            "not,parsed",
+            read_member(self._archive("ADAUSDT-1m-2024-12.csv"), "ADAUSDT-1m-2024-12.csv"),
+        )
+
+    def test_the_raw_member_reader_refuses_a_name_carrying_no_month(self):
+        path = self._archive("ADAUSDT-1m-2024-12.csv")
+        with self.assertRaisesRegex(DataError, "carries no month"):
+            read_member(path, "anything.csv")
+
+    def test_the_archive_fetcher_refuses_a_reserved_month_before_connecting(self):
+        # archive_get is a reusable network API; fetch_file's guard is not the only way in.
+        calls: list[str] = []
+
+        def connection(host, timeout):
+            calls.append(host)
+            raise AssertionError("no connection may be opened for a reserved month")
+
+        with patch.object(dataset, "https_connection", connection):
+            for path in (
+                "/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2025-01.zip",
+                "/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2025-01.zip.CHECKSUM",
+            ):
+                with self.assertRaisesRegex(DataError, "reserved window"):
+                    dataset.archive_get(path)
+            with self.assertRaisesRegex(DataError, "monthly spot kline archive"):
+                dataset.archive_get("/data/spot/monthly/klines/ADAUSDT/1m/index.html")
+        self.assertEqual([], calls)
+
+    def test_the_fetcher_refuses_a_reserved_path_wearing_a_development_suffix(self):
+        # An end-anchored month search reads the query, not the object: this path asks
+        # for 2025-01 while ending in "-2024-12.zip".
+        calls: list[str] = []
+
+        def connection(host, timeout):
+            calls.append(host)
+            raise AssertionError("no connection may be opened for a reserved month")
+
+        base = "/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m"
+        with patch.object(dataset, "https_connection", connection):
+            for path in (
+                f"{base}-2025-01.zip?x=-2024-12.zip",
+                f"{base}-2025-01.zip#-2024-12.zip",
+                f"{base}-2025-01.zip/../ADAUSDT-1m-2024-12.zip",
+                # The file name must agree with its own directories.
+                "/data/spot/monthly/klines/ADAUSDT/1m/BTCUSDT-1m-2024-12.zip",
+                "/data/spot/monthly/klines/ADAUSDT/1h/ADAUSDT-1m-2024-12.zip",
+            ):
+                with (
+                    self.subTest(path=path),
+                    self.assertRaisesRegex(DataError, "monthly spot kline archive"),
+                ):
+                    dataset.archive_get(path)
+        self.assertEqual([], calls)
+
+    def test_the_fetcher_still_accepts_the_canonical_paths(self):
+        seen: list[str] = []
+
+        def connection(host, timeout):
+            seen.append(host)
+            raise DataError("stop before the network")
+
+        canonical = archive_path("ADAUSDT", "1m", "2024-12")
+        with patch.object(dataset, "https_connection", connection):
+            for path in (canonical, canonical + ".CHECKSUM"):
+                with self.subTest(path=path), self.assertRaises(DataError):
+                    dataset.archive_get(path)
+        self.assertEqual(2, len(seen))  # both reached the connection, so both passed
+
+    def test_the_readers_still_open_the_last_development_month(self):
+        # The same archive contents in 2024-12 get past the guard to the parser.
+        kline = self._archive("ADAUSDT-1m-2024-12.csv")
+        funding = self._archive("BTCUSDT-fundingRate-2024-12.csv")
+        for call in (
+            lambda: read_archive(kline, "ADAUSDT", "1m", "2024-12"),
+            lambda: read_funding_archive(funding, "BTCUSDT", "2024-12"),
+        ):
+            with self.assertRaises(DataError) as caught:
+                call()
+            self.assertNotIn("reserved window", str(caught.exception))
+
+
+class UnpaddedMonthTests(unittest.TestCase):
+    def test_a_spec_with_an_unpadded_month_is_refused_not_iterated_to_year_end(self):
+        # Before the fix ``end = "2024-6"`` passed the window guard, and ``months()``
+        # then ran "2024-12" <= "2024-6" as text: 204 required files instead of 140.
+        source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
+        assert 'end = "2024-06"' in source
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
+            handle.write(source.replace('end = "2024-06"', 'end = "2024-6"'))
+        self.addCleanup(Path(handle.name).unlink)
+        with self.assertRaisesRegex(DataError, "zero-padded"):
+            load_spec(Path(handle.name))

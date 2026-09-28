@@ -6,6 +6,7 @@ import unittest
 import zipfile
 from decimal import Decimal as D
 from pathlib import Path
+from unittest.mock import patch
 
 from crypto_grid_bot.backtest.funding import (
     FundingRecord,
@@ -200,3 +201,15 @@ class FundingParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReservedFundingTests(unittest.TestCase):
+    def test_a_reserved_month_is_refused_before_the_archive_is_opened(self):
+        # funding.py's own guard, tested directly: read_member guards too, so stubbing
+        # only this one out changed no other test (2026-09-28 panel review).
+        with (
+            patch("crypto_grid_bot.backtest.funding.read_member") as reader,
+            self.assertRaisesRegex(DataError, "reserved window"),
+        ):
+            read_funding_archive(Path("BTCUSDT-fundingRate-2025-01.zip"), "BTCUSDT", "2025-01")
+        reader.assert_not_called()

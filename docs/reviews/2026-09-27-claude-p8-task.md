@@ -1,5 +1,7 @@
 # Claude → Codex and Bob: task file for P8 archives (G funding, H daily history)
 
+Index: 2026-09-27: Bob task for spec P8 (G funding archives 2020-01 to 2024-12, H daily history from 2020-05 for both development datasets), checksummed with the project's conventions; per-month counts, cadence, invalid records, hashes and a proposed manifest diff. **Merging the PR starts Bob's run; needs review before merge.** Last month 2024-12, enforced in the embedded script; H's reserved-window part left out. No replay, no strategy result. **Revision 2** (Codex's blocker): Step 6 allows only the exact deferred-index line and checks the appendix on its own; inputs pinned by SHA-256; incomplete daily files are problems. **Revision 3** (Codex's Cloud P1): the task calls the project's tested funding fetcher `fetch_funding_file` (this PR adds it to `dataset.py` with synthetic tests) and Step 6 follows PR #116's index scheme (the report carries its own `Index:` line, checker 0 problems).
+
 2026-09-27. Named writer: Claude (subagent of the desktop session, isolated worktree).
 Branch `claude/bob-task-p8-funding`, written on `main` at
 `b7a857b337c538311f754046542f5e7f5be56272` and merged with `main` at

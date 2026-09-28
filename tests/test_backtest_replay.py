@@ -40,6 +40,7 @@ SUMMARY_FIELDS = {
     "path_mode",
     "strategy",
     "feature_version",
+    "engine_version",
     "news_component",
     "window",
     "initial_quote",
@@ -85,6 +86,12 @@ SUMMARY_FIELDS = {
     "rules",
     "assumed_spread_pct",
     "hourly_equity",
+    "exit_blocked_frames",
+    "exit_blocked_frames_by_kind",
+    "max_exit_blocked_streak",
+    "max_unsellable_notional",
+    "final_exit_blocked",
+    "final_unsellable_notional",
 }
 
 
@@ -661,7 +668,7 @@ class ProfitAttributionTests(unittest.TestCase):
                     with localcontext() as simulator:
                         simulator.prec = 50
                         if key.startswith("exit/"):
-                            fills = reduce_unreserved(account, quote, rules)
+                            fills = reduce_unreserved(account, quote, rules).fills
                         else:
                             place(
                                 account,

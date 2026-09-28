@@ -5,6 +5,12 @@
 - **Dataset:** [`config/datasets/verify-2024h1.toml`](../../config/datasets/verify-2024h1.toml),
   manifest created 2026-09-24T10:21:23Z (92 archive files, all SHA-256 verified, no
   gaps, all millisecond timestamps).
+  *Correction 2026-09-27: the figures above are right for this run, but that manifest is
+  no longer the committed one. Commit `28d81cd` (spec v1 P3) added 28 daily archives, so
+  the committed manifest now has 120 files (12 × 1m, 80 × 1h, 28 × 1d), created
+  2026-09-24T21:05:33Z. The run's recorded `manifest_sha256` and `spec_sha256` therefore
+  identify the earlier manifest and spec, not the files on `main` today; reproducing this
+  run exactly needs those earlier versions. `config_sha256` still matches.*
 - **Window:** 2024-01-01 to 2024-06-30, 262,080 one-minute bars per pair, with no bars
   lost to warm-up.
 - **Capital and costs:** 100 USDT initial capital, 0.1% fee, 0.05% slippage, 0.05%

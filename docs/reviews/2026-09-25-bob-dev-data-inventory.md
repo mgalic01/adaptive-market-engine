@@ -17,13 +17,19 @@
 | Artifact / Script | SHA-256 checksum |
 | --- | --- |
 | `data/inventory.py` | `790c6f8b7b69db7a8fe7ae67a1eea848b3451fcdc19d984a1d70b97902bb0006` |
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 | `data/inventory.json` | `2de83492527a12ff95cd6f778df6e1ca02d53ca9bdfee46b9b0a31c0ae921a49` |
 | `data/analyze.py` | `a98f4d37d07d5cb17780b252dbaa88a4dd3c287f4b944d080020be27709d7110` |
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 | `data/analyze_details.py` | `534b73631aecef434f0e1f7c1ffbd427a925957649855ba0947386aaed822e7e` |
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 | `data/inspect_csv.py` | `9110fe20bd5f665bb764fca46ee90111501d02283e17b5683a7f8821bc77b300` |
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 | `data/check_proposal.py` | `4f234505c09ca417014be97f29bae18bba18b9daf404ab411084409ff5bc983f` |
 | `data/check_early.py` | `d7105064e977a2b537c78f4de4797fe383330813736bc8a9553304738b955341` |
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 | `data/generate_summary_table.py` | `5073ee3c778a71e72fc337baebb6b43d0cbda9e90b731454d182c9266331a2f3` |
+*[2026-09-28: this digest cannot be verified: `data/` is git-ignored and the source is in no commit; listed as UNVERIFIABLE in the report checker, scripts/check_reports.py.]*
 
 Execution completed with `rows 890` (10 symbols × 89 months from 2017-08 to 2024-12).
 
