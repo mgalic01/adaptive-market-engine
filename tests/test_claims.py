@@ -199,6 +199,16 @@ class TargetTest(unittest.TestCase):
             api = f"gh api -X PUT repos/{REPO}/pulls/8/merge -f commit_title=-R"
             self.assertEqual(find_targets(api, ".")[0].pr, 8)
             self.assertEqual(find_targets("gh api -X PUT repos/other/repo/pulls/8/merge", "."), [])
+            # A global repository flag before the subcommand.
+            for cmd in (
+                f"gh -R {REPO} pr merge 141 --squash",
+                f"gh --repo {REPO} pr merge 141",
+                f"gh --repo={REPO} pr merge 141",
+                f"gh -R {REPO} api -X PUT repos/{REPO}/pulls/141/merge",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual([t.pr for t in find_targets(cmd, ".")], [141])
+            self.assertEqual(find_targets("gh -R other/repo pr merge 141", "."), [])
 
     def test_windows_paths_keep_backslashes(self):
         with git_stub() as g:

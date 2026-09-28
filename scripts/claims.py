@@ -195,7 +195,7 @@ def _http(method: str, path: str, token: str | None, payload: Any = None) -> Any
         req.add_header("Authorization", f"Bearer {token}")
     if data is not None:
         req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
+    with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
         body = resp.read().decode("utf-8")
     return json.loads(body) if body else None
 
@@ -215,7 +215,7 @@ def get(path: str) -> Any:
     if gh:
         try:
             r = subprocess.run(  # nosec B603
-                [gh, "api", path], capture_output=True, text=True, timeout=20, check=False
+                [gh, "api", path], capture_output=True, text=True, timeout=10, check=False
             )
             if r.returncode == 0:
                 return json.loads(r.stdout)
@@ -435,7 +435,16 @@ def find_targets(command: str, cwd: str) -> list[Target]:
 def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
     """Merges in a `gh` command. The option scan knows which words are option values, so
     a body or subject that reads `-R` or `--repo=...` is never taken for the repository
-    (automated review at 3875759: that silently skipped the claim check)."""
+    (automated review at 3875759: that silently skipped the claim check). A global
+    `-R`/`--repo` before the subcommand counts too (automated review at 987702a)."""
+    global_repo: str | None = None
+    while toks and toks[0].startswith("-"):
+        if toks[0] in ("-R", "--repo") and len(toks) > 1:
+            global_repo, toks = toks[1], toks[2:]
+        elif toks[0].startswith("--repo="):
+            global_repo, toks = toks[0].split("=", 1)[1], toks[1:]
+        else:
+            toks = toks[1:]
     if toks[:1] == ["api"]:
         # The REST path names the repository itself; a flag or a field value cannot.
         merges = re.findall(r"repos/([^/\s'\"]+/[^/\s'\"]+)/pulls/(\d+)/merge\b", segment)
@@ -460,6 +469,7 @@ def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
             repo_flag = t.split("=", 1)[1]
         elif not t.startswith("-") and arg is None:
             arg = t
+    repo_flag = repo_flag if repo_flag is not None else global_repo
     if repo_flag is not None:
         repo_flag = repo_flag.removesuffix(".git").removesuffix("/")
         if repo_flag != REPO and not repo_flag.endswith("/" + REPO):

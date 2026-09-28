@@ -317,6 +317,16 @@ Bob's other notes, for the record:
     `--repo` stays in the push option list.
   - The no-interpreter fallback matches "merge" anywhere in the hook's input. It can
     only over-block, and only when Python cannot run at all. Accepted.
+- **The automated review at `987702a` (CHANGES NEEDED): another bypass, fixed.** A global
+  `-R`/`--repo` placed before the subcommand (`gh -R <repo> pr merge N`, also for
+  `gh api`) was not parsed, so `pr merge` was never matched and no claim was checked.
+  `_gh_targets` now consumes leading global options first. A repository given there
+  counts unless the subcommand names its own. Tests cover `-R`, `--repo`, `--repo=`,
+  the REST form and another repository.
+- **Its timeout nit: taken, because it was a real fail-open.** If a read outlasted the
+  hook's 30-second timeout, Claude Code would drop the hook and let the command run.
+  Each read now gives up after 10 seconds per method, and the hook's timeout is 120
+  seconds, so the fail-closed decision always runs.
 - The workflow skips cleanly while `main` has no `scripts/claims.py` (this PR's own
   runs).
 - An owner comment whose first line is exactly `/release all` needs no tag.
