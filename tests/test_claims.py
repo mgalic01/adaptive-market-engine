@@ -1,5 +1,7 @@
 """Claims on PRs: parsing, expiry, one holder at a time, and the hook's decisions."""
 
+import io
+import json
 import sys
 import unittest
 from datetime import UTC, datetime
@@ -190,13 +192,44 @@ class TargetTest(unittest.TestCase):
             self.assertIn(r"C:\Users\x\wt", str(g.call_args_list[0].args[0]))
 
 
+class RepoMatchTest(unittest.TestCase):
+    def test_anchored_match(self):
+        for url in (
+            REPO,
+            f"https://github.com/{REPO}.git",
+            f"https://github.com/{REPO}/",
+            f"git@github.com:{REPO}.git",
+        ):
+            self.assertTrue(claims.is_this_repo(url), url)
+        for url in (f"https://github.com/{REPO}-fork.git", f"https://github.com/x{REPO}"):
+            self.assertFalse(claims.is_this_repo(url), url)
+
+
+class MainHookTest(unittest.TestCase):
+    def run_hook(self, command):
+        payload = {"tool_name": "Bash", "tool_input": {"command": command}, "session_id": ME}
+        out = io.StringIO()
+        with (
+            mock.patch.object(claims, "hook_decision", side_effect=KeyError("boom")),
+            mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))),
+            mock.patch.object(sys, "stdout", out),
+        ):
+            self.assertEqual(claims.main(["hook"]), 0)
+        return json.loads(out.getvalue())
+
+    def test_a_crash_refuses_a_merge_and_allows_the_rest(self):
+        merge = self.run_hook("gh pr merge 1")
+        self.assertEqual(merge["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("systemMessage", self.run_hook("git push origin claude/a"))
+
+
 class HookTest(unittest.TestCase):
     def reader(self, comments, prs=()):
         def read(path):
             if "/comments" in path:
                 return comments if "page=1" in path else []
             if "pulls?state=open" in path:
-                return list(prs)
+                return list(prs) if "page=1" in path else []
             raise AssertionError(path)
 
         return read

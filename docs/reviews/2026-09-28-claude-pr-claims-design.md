@@ -274,6 +274,15 @@ Bob's other notes, for the record:
   conditions, while the handbook's item 1 lists five. The bullet now names green
   `claim-guard` as well. This edit waited for PR #140 to merge, because #140 rewrote
   the same paragraph, and was then made on top of `main`.
+- **The automated review's nits at `d8db014`**, all taken:
+  - an unexpected crash in the hook refuses a merge (fail closed) and only warns for
+    other commands, where before `|| true` would have let it through;
+  - `open_prs` paginates;
+  - the repository match is anchored, so `…-fork` and a longer owner name are not this
+    repository.
+
+  Its two required fixes at that head were already answered at `13da5d7`
+  (`pull_request_target` and the START_HERE bullet).
 - The workflow skips cleanly while `main` has no `scripts/claims.py` (this PR's own
   runs).
 - An owner comment whose first line is exactly `/release all` needs no tag.

@@ -252,7 +252,14 @@ def fetch_comments(number: int, reader: Callable[[str], Any] = get) -> list[dict
 
 
 def open_prs(reader: Callable[[str], Any] = get) -> list[dict[str, Any]]:
-    return list(reader(f"repos/{REPO}/pulls?state=open&per_page=100"))
+    out: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        batch = reader(f"repos/{REPO}/pulls?state=open&per_page=100&page={page}")
+        out.extend(batch)
+        if len(batch) < 100:
+            return out
+        page += 1
 
 
 # --- The Claude Code hook ------------------------------------------------------------
@@ -286,7 +293,11 @@ def current_branch(cwd: str) -> str | None:
 
 
 def is_this_repo(url: str | None) -> bool:
-    return url is None or REPO in url.removesuffix(".git")
+    """This repository, anchored: `...-fork` or `other-mgalic01/...` is not it."""
+    if url is None:
+        return True
+    url = url.strip().removesuffix("/").removesuffix(".git")
+    return url == REPO or url.endswith(("/" + REPO, ":" + REPO))
 
 
 def remote_is_ours(remote: str, cwd: str) -> bool:
@@ -600,7 +611,16 @@ def main(argv: list[str] | None = None) -> int:
             payload = json.loads(sys.stdin.read() or "{}")
         except ValueError:
             return 0
-        answer = hook_decision(payload, now=now)
+        try:
+            answer = hook_decision(payload, now=now)
+        except Exception as e:  # a crash must never let a merge through
+            command = str((payload.get("tool_input") or {}).get("command") or "")
+            reason = f"the claims check failed ({type(e).__name__})"
+            answer = (
+                _deny(f"{reason}, so the merge is refused (fail closed).")
+                if "merge" in command.lower()
+                else {"systemMessage": f"claims: {reason}; the command is allowed"}
+            )
         if answer:
             print(json.dumps(answer))
         return 0
