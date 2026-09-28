@@ -162,7 +162,8 @@ Then act, in this priority:
    ([owner instruction 2026-09-28](AGENT_HANDOFF.md#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28)):
    the verdict `NO ISSUES` from Bob at the head (a reading of the diff), the automated
    review's `APPROVE` at the head (an independent run of the checks), green
-   `test-and-audit` at the head (evidence it runs), and no unaddressed required fix.
+   `test-and-audit` at the head (evidence it runs), no unaddressed required fix, and
+   green `claim-guard` at the head, meaning no other agent's active claim (step f).
    The verdicts are needed together because they answer different questions.
    **Since 2026-09-28 (owner, item 6 of the linked section), Bob's review before a
    Claude merge must be a thorough, deep investigation that was asked for as one. A

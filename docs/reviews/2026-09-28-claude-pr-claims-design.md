@@ -270,6 +270,10 @@ Bob's other notes, for the record:
   "`pull_request`" and "a PR cannot change how its own claims are judged" now hold
   in this stronger form.
 - `gh pr merge --repo` accepts a URL form of this repository (Bob, `d8db014`).
+- **Bob's one concern at `d8db014` (FLAGGED):** START_HERE step 3's merge bullet listed four
+  conditions, while the handbook's item 1 lists five. The bullet now names green
+  `claim-guard` as well. This edit waited for PR #140 to merge, because #140 rewrote
+  the same paragraph, and was then made on top of `main`.
 - The workflow skips cleanly while `main` has no `scripts/claims.py` (this PR's own
   runs).
 - An owner comment whose first line is exactly `/release all` needs no tag.
