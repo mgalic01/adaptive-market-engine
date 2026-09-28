@@ -49,7 +49,9 @@ are in the sections below.
 - **Merge authority:** while Codex's allowance is exhausted, the owner's rule is to
   merge on Bob's `NO ISSUES` and the automated review's `APPROVE` at the full head,
   with green checks and no unaddressed required fix from any reviewer, and Codex
-  reviews afterwards; the merging agent appends the PR
+  reviews afterwards. **Since 2026-09-28 Bob's review must be a thorough, deep
+  investigation before Claude merges, and a Claude session's thorough review must come
+  before Bob merges** (item 6 of the section linked below); the merging agent appends the PR
   to the [Codex-review-owed issue](https://github.com/mgalic01/adaptive-market-engine/issues/134).
   See [what Bob's verdicts mean](#what-bobs-verdicts-mean) and
   [merging while Codex's allowance is exhausted](#merging-while-codexs-allowance-is-exhausted-owner-instruction-2026-09-28).
@@ -330,6 +332,41 @@ allowance is exhausted (the state defined above), the owner's instruction of
 5. Merges that start a paid Bob run (a task-file PR) also need the owner's go, which
    the owner gave as a blanket approval of paid Bob runs on 2026-09-27; the merging
    agent still says in the merge commit that the merge starts a run.
+6. **Deep review before every such merge (owner instruction, 2026-09-28, about 10:45 UTC,
+   in Claude session `e0b16be3`).** In English: **"I allow you to merge if Codex is
+   out, but Bob needs to do a thorough and deep investigation before you merge
+   anything. The same goes if Bob merges: you need to do the correct steps before he
+   does."** The owner's original words, kept as the record (the one Croatian word,
+   *temeljitu*, means "thorough"): *"i allow you to merge if codex is out, but Bob
+   needs to do temeljitu a and deep investigation before you merge anything. same goes
+   for things if bob merges you need to do the correct steps before he does it."* This
+   raises the bar of item 1 in both directions:
+   - **Before Claude merges,** Bob's `NO ISSUES` counts only if the request asked for a
+     **thorough, deep investigation** and Bob's answer shows one. The request names the
+     full head and asks Bob to:
+     1. read the whole diff **and** the unchanged code or documents it relies on;
+     2. check every factual claim, number, hash, link and cross-reference against the
+        repository, not against the PR text;
+     3. look for what the change could break, and for anything a test does not
+        cover;
+     4. say in `SCOPE:` exactly what he verified and what he took from the diff alone.
+
+     A short verdict that reads only the diff does not open this merge path. If Bob's
+     answer is shallow, ask again. If it still is, the PR waits for Codex.
+   - **Before Bob merges** (a PR Bob authored, under item 1), a **Claude session**
+     posts a thorough review at the full head first. The automated review alone is not
+     enough. The Claude review:
+     1. reads the whole diff and what it relies on;
+     2. runs the checks locally (`scripts/preflight.py`, `scripts/check_reports.py`)
+        and reports the results;
+     3. verifies claims, numbers and hashes against the repository;
+     4. confirms scope: paper-only, no reserved-window data, no parameter tuning after
+        results, and that the task file's instructions were followed;
+     5. states plainly what it could not verify.
+
+     Bob merges only after that review finds nothing unaddressed, and records the
+     reviewing session in the Codex-review-owed issue row.
+   - Items 1–5 still apply in full. Codex still reviews afterwards.
 
 ## What Bob's verdicts mean
 
@@ -497,6 +534,14 @@ reserved-data restrictions still apply. The other proposals in PR #74 remain pen
    next batch rather than one push per small edit. A main integration also changes the
    head and needs current-head checks/review; do not carry an old verdict forward.
    Do not duplicate an existing exact-head request merely because it lacks a reply.
+6. **One topic, one active PR (owner preference, 2026-09-27).** Keep a coherent
+   topic's proposal, review responses and decision record in one active PR. Reviewers
+   deliver their responses as comments, or as commits handed to the named writer to
+   integrate. They do not open a companion PR only to publish their response. Separate
+   PRs remain right for independently scoped implementation or fixes. This does not
+   allow parallel writers on one branch, and it does not waive any review or check
+   requirement. Example: Codex's downtrend response, first published as #107, was
+   closed as superseded and integrated into #106 by its writer.
 
 ### Review delivery states
 
