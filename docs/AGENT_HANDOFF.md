@@ -668,10 +668,17 @@ Credits are limited, so every agent works on demand, not by polling:
       [when a reviewer is unavailable](#when-a-reviewer-is-unavailable). **A run
       that fails on Bob's side** (a "Connection Failed" or backend error in the
       worker log, after or during the task, with no task or data defect named) is
-      rerun once with `/bob-run` under the owner's blanket approval of paid Bob runs
+      rerun with `/bob-run` under the owner's blanket approval of paid Bob runs
       (2026-09-27); the rerunning agent posts the diagnosis from the run log on the
-      failure issue first. A second failure of the same run is reported to the owner,
-      not rerun (owner instruction 2026-09-28);
+      failure issue first. **There is no limit on reruns and no stop after a second
+      failure** (owner instruction, 2026-09-28, in Claude session `e0b16be3`, replacing
+      the earlier rule that a second failure goes to the owner: *"Let it go to Bob
+      please, bot has a huge budget. For bot this rule can be removed."*). Each rerun
+      still needs its own diagnosis. When a diagnosis names a task or data defect, the
+      task file is fixed through review before the next run, not rerun as it is. A
+      repeated failure is also mentioned to the owner in the next message, as
+      "Broken communication is reported at once" requires; that does not hold the
+      rerun;
     - a comment `/bob-run docs/tasks/<date>-bob-<topic>.md` from the repository
       owner's account, for example to re-run a task. Claude and Codex also post as
       the owner, so they post `/bob-run` only with a linked Codex approval or owner
