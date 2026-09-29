@@ -98,3 +98,4 @@ class GridPlan:
     levels: tuple[float, ...]
     capital: float
     estimated_spacing_pct: float
+    fta_resistance_used: float | None = None
