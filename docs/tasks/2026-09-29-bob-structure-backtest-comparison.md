@@ -206,7 +206,19 @@ goes into the report as Step 7 says.
    The comparison table must have one row per (dataset, pair, path_mode) combination
    and columns: Dataset | Pair | Path | Baseline return % | FTA return % | Δ return pp |
    Baseline max DD % | FTA max DD % | Δ DD pp | Baseline cycles | FTA cycles | Δ cycles |
-   Baseline halted | FTA halted.
+   Baseline halted | FTA halted | Baseline win rate % | FTA win rate % |
+   Baseline profit factor | FTA profit factor | Baseline expectancy $ | FTA expectancy $ |
+   Baseline avg hold h | FTA avg hold h.
+
+   Metric definitions (compute from fills in results.json):
+   - **Win rate %**: (profitable cycles / total cycles) × 100. A cycle is profitable if
+     sell proceeds − buy cost − fees > 0.
+   - **Profit factor**: sum of all profitable cycle gains / sum of all losing cycle losses
+     (absolute values). > 1.0 means the strategy earns more than it loses.
+   - **Expectancy per cycle $**: (win rate × avg win $) − (loss rate × avg loss $).
+     Positive expectancy is required for long-term viability.
+   - **Avg hold h**: mean hours between buy fill timestamp and corresponding sell fill
+     timestamp across all completed cycles.
 
    All numbers come from the `results.json` files the CLI wrote. Print each number you
    type from its source file, then include it in the table. Never retype from memory.
@@ -260,7 +272,8 @@ goes into the report as Step 7 says.
    `"valid": true` and zero `"failures"`.
 5. Step 6: restored grid.py SHA matches Step 3's source SHA; `git status` is clean.
 6. Step 7: comparison table has one row per (dataset, pair, path_mode); all numbers
-   traced to their `results.json`.
+   traced to their `results.json`; win rate, profit factor, expectancy and avg hold
+   columns present and computed from fills per the metric definitions above.
 7. Step 8: `git status` shows only the new report; `check_reports.py` prints
    `check_reports: 0 problem(s)`.
 
