@@ -114,6 +114,74 @@ regime change before going live with any real capital.
 
 ---
 
+### S6 — Indicator expansion: what's built, what's missing, what to add
+**Source:** Community discussions relayed by owner, 2026-09-29.
+
+The community consensus (and your bot's own design) is: mix indicator *categories*
+(trend + momentum + volatility + volume), not redundant copies of the same signal.
+Below is the full set of commonly-used indicators mapped against what your bot
+already computes vs what is missing.
+
+| Indicator | Category | Already in bot? | Notes |
+| --- | --- | --- | --- |
+| **SMA/EMA** | Trend direction | ✅ SMA20, SMA50, SMA200 | Used in regime score and trend_switch |
+| **ADX** | Trend strength | ✅ ADX14 | Core to BULL/BEAR vs RANGE decision |
+| **ATR** | Volatility / risk | ✅ ATR14 | Used for grid sizing and S/R zone clustering |
+| **Volume indicators** | Market confirmation | ✅ 24h quote volume, volume vs baseline | Used in liquidity_health signal |
+| **MACD** | Trend confirmation | ❌ Not built | Derived from EMA12 - EMA26; adds confirmation of trend transitions. Lower priority — SMA ratio covers similar ground |
+| **RSI** | Momentum | ❌ Not built | Relative Strength Index (14-period). Useful as overbought/oversold filter. Currently covered approximately by `momentum` signal (24h return tanh-scaled) |
+| **Bollinger Bands** | Volatility | ❌ Not built | Upper/lower bands at ±2σ around SMA20. Useful for detecting price extremes and squeeze setups. ATR covers volatility sizing but not band position |
+| **Stochastic** | Momentum | ❌ Not built | %K/%D oscillator. Redundant with RSI — adding both adds no new information. Low priority |
+| **VWAP** | Price/volume | ❌ Not built | Volume-weighted average price. Intraday reference for whether buyers or sellers dominate. Genuinely different from existing signals — worth adding to opportunity scorer |
+| **Ichimoku Cloud** | Trend analysis | ❌ Not built | Multi-component system (cloud, conversion/base lines, lagging span). High complexity, partially redundant with SMA-based trend. Low priority |
+
+**Key lesson from community:** adding RSI + Stochastic + CCI is the same signal three
+times — it feels like more confidence but adds no information. Real diversification
+comes from mixing categories. Your bot already has the right categories covered;
+the gaps are MACD (trend confirmation), RSI (momentum extremes), Bollinger Bands
+(volatility position), and VWAP (intraday volume reference).
+
+**Recommended additions for v2 (in priority order):**
+1. **RSI(14)** — add as overbought/oversold filter on entry (skip longs if RSI > 70,
+   skip shorts if RSI < 30). Low implementation cost, genuine new signal category.
+2. **VWAP** — add to opportunity scorer as intraday price/volume reference.
+3. **Bollinger Band position** — add as volatility squeeze detector (tight bands
+   precede large moves; wide bands mean expansion already happening).
+4. **MACD** — add as trend confirmation once the above are measured.
+
+**What needs building:** extend `SeriesFeatures` in `backtest/features.py` with RSI,
+VWAP, and Bollinger Band calculations. Add to `Inputs` dataclass. Measure impact via
+backtest before wiring into any decision.
+
+**Owner decisions needed:**
+- [ ] Confirm priority order above or reorder.
+- [ ] Schedule as a formal Bob task once PRs #147–#150 are merged and measured.
+
+---
+
+### S7 — Regime as filter not gate (entry in TRANSITION with tighter risk)
+**Source:** Community discussion relayed by owner, 2026-09-29.
+
+Currently regime is a binary gate: the bot only opens a new grid in RANGE. In
+TRANSITION (unclear signal), no new grid opens regardless of how strong the
+individual signals are. The community pattern of "2–3 core indicators for entry,
+rest as filters" suggests a softer approach: allow entry in TRANSITION if core signals
+are sufficiently strong, but apply tighter risk rules (smaller capital allocation,
+tighter drawdown threshold, smaller grid).
+
+**This is a meaningful behaviour change and needs measurement before implementation.**
+
+**Questions to answer:**
+- How often is the market in TRANSITION, and what fraction of profitable grid
+  opportunities occur during TRANSITION?
+- If entries are allowed in TRANSITION with 50% capital allocation, does total return
+  improve or does drawdown increase?
+
+**Owner decisions needed:**
+- [ ] Is this worth investigating, or keep the binary gate as a simplicity principle?
+
+---
+
 ## Infrastructure items
 
 ### I1 — Reliable 24/7 hosting (VPS or homelab)
