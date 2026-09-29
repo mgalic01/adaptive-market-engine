@@ -37,10 +37,10 @@ import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
-REPO = "mgalic01/adaptive-market-engine"
+REPO = "mgalic01/adaptive-market-engine"  # lowercase: GitHub ignores the case of names
 OWNER_LOGIN = "mgalic01"
 CONTEXT = "claim-guard"
 LABEL = "claimed"
@@ -184,11 +184,9 @@ def _token() -> str | None:
 
 
 def _http(method: str, path: str, token: str | None, payload: Any = None) -> Any:
-    url = API + path
-    if not url.startswith(API):
-        raise GitHubError("refusing a non-GitHub URL")
+    # API ends with "/", so no path can change the host the token is sent to.
     data = None if payload is None else json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=data, method=method)  # nosec B310
+    req = urllib.request.Request(API + path, data=data, method=method)  # nosec B310
     req.add_header("Accept", "application/vnd.github+json")
     req.add_header("User-Agent", "amengine-claims")
     if token:
@@ -240,26 +238,25 @@ def send(method: str, path: str, payload: Any = None) -> Any:
         raise GitHubError(f"GitHub HTTP {e.code} on {method} {path.split('?')[0]}") from None
 
 
-def fetch_comments(number: int, reader: Callable[[str], Any] = get) -> list[dict[str, Any]]:
+def _pages(path: str, reader: Callable[[str], Any]) -> list[dict[str, Any]]:
+    """Every item of a list endpoint, read 100 per page."""
     out: list[dict[str, Any]] = []
+    sep = "&" if "?" in path else "?"
     page = 1
     while True:
-        batch = reader(f"repos/{REPO}/issues/{number}/comments?per_page=100&page={page}")
+        batch = reader(f"{path}{sep}per_page=100&page={page}")
         out.extend(batch)
         if len(batch) < 100:
             return out
         page += 1
+
+
+def fetch_comments(number: int, reader: Callable[[str], Any] = get) -> list[dict[str, Any]]:
+    return _pages(f"repos/{REPO}/issues/{number}/comments", reader)
 
 
 def open_prs(reader: Callable[[str], Any] = get) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    page = 1
-    while True:
-        batch = reader(f"repos/{REPO}/pulls?state=open&per_page=100&page={page}")
-        out.extend(batch)
-        if len(batch) < 100:
-            return out
-        page += 1
+    return _pages(f"repos/{REPO}/pulls?state=open", reader)
 
 
 # --- The Claude Code hook ------------------------------------------------------------
@@ -293,10 +290,11 @@ def current_branch(cwd: str) -> str | None:
 
 
 def is_this_repo(url: str | None) -> bool:
-    """This repository, anchored: `...-fork` or `other-mgalic01/...` is not it."""
+    """This repository, anchored: `...-fork` or `other-mgalic01/...` is not it. GitHub
+    ignores case, so `MGalic01/...` is it (automated audit, 2026-09-29)."""
     if url is None:
         return True
-    url = url.strip().removesuffix("/").removesuffix(".git")
+    url = url.strip().removesuffix("/").removesuffix(".git").removesuffix("/").lower()
     return url == REPO or url.endswith(("/" + REPO, ":" + REPO))
 
 
@@ -308,6 +306,8 @@ def remote_is_ours(remote: str, cwd: str) -> bool:
 
 
 PUSH_VALUE_OPTS = {"--repo", "-o", "--push-option", "--receive-pack", "--exec"}
+# A PR or branch the shell computes: `$n`, `${n}`, `$(...)` or backticks.
+COMPUTED_RE = re.compile(r"\$[\w{(]|`")
 
 
 def _branch_of(ref: str, cwd: str) -> str | None:
@@ -352,6 +352,9 @@ def push_targets(args: list[str], cwd: str) -> list[Target]:
         return [Target("push", branch=branch)]
     out = []
     for spec in refspecs:
+        if COMPUTED_RE.search(spec):
+            out.append(Target("push", unknown=f"the branch {spec!r} is known only at run time"))
+            continue
         spec = spec.lstrip("+")
         dst = spec if delete or ":" not in spec else (spec.split(":", 1)[1] or spec.split(":")[0])
         if dst.startswith("refs/tags/"):
@@ -372,17 +375,19 @@ GH_MERGE_VALUE_OPTS = {
 
 
 def _exe(token: str) -> str:
-    return Path(token).name.lower().removesuffix(".exe")
+    """`git`, `/usr/bin/git` and `C:\\...\\git.exe` are all `git`, on any platform."""
+    return PureWindowsPath(token).name.lower().removesuffix(".exe")
 
 
 def split_words(segment: str) -> list[str]:
-    """Shell words; Windows paths keep their backslashes."""
+    """Shell words; Windows paths keep their backslashes. A segment cut out of a quoted
+    string (`bash -c "cd x && git push"`) loses the quote at its edge."""
     try:
         if "\\" in segment:
             return [w.strip("\"'") for w in shlex.split(segment, posix=False)]
         return shlex.split(segment, posix=True)
     except ValueError:
-        return segment.split()
+        return [w.strip("\"'") for w in segment.split()]
 
 
 REDIRECT_RE = re.compile(r"^(?:\d*|&)(?:>>?|<)(.*)$")
@@ -404,13 +409,85 @@ def drop_redirections(words: list[str]) -> list[str]:
     return out
 
 
-def find_targets(command: str, cwd: str) -> list[Target]:
-    """Every push or merge in a shell command, with the working directory it runs in."""
+# Words before the command that still run it (automated audit, 2026-09-29): the shell's
+# `then git push`, `! git push` or `{ git push; }`, PowerShell's call and dot-source
+# operators (`& git push`), and wrappers such as `env X=1 git push`.
+PREFIX_WORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "&", "."}
+WRAPPERS = {"env", "timeout", "nohup", "nice", "time", "command", "exec"}
+WRAPPER_VALUE_OPTS = {"-u", "--unset", "-s", "--signal", "-k", "--kill-after", "-n", "-a"}
+WRAPPER_NUMBER_RE = re.compile(r"\d[\d.]*[smhd]?")  # `timeout 60`, `timeout 1.5m`
+POSIX_SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
+SHELLS = (*POSIX_SHELLS, "pwsh", "powershell", "cmd")
+EVALS = ("eval", "iex", "invoke-expression")
+MAX_DEPTH = 3  # how deep `bash -c "pwsh -Command '...'"` and `$(...)` are read
+
+
+def unwrap(words: list[str]) -> list[str]:
+    """The command without what runs it: `VAR=1`, PowerShell's `$out =`, `& git` or
+    `&git`, a shell keyword, or a wrapper with its options (`timeout -s KILL 60`)."""
+    while words:
+        w = words[0]
+        if w in PREFIX_WORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w):
+            words = words[1:]
+        elif w.startswith("$") and words[1:2] == ["="]:
+            words = words[2:]
+        elif w.startswith("&"):
+            words = [w[1:], *words[1:]]
+        elif _exe(w) in WRAPPERS:
+            words = words[1:]
+            while words and (words[0].startswith("-") or WRAPPER_NUMBER_RE.fullmatch(words[0])):
+                words = words[2:] if words[0] in WRAPPER_VALUE_OPTS else words[1:]
+        else:
+            break
+    return words
+
+
+def shell_command(exe: str, args: list[str]) -> str | None:
+    """The command string that `bash -c`, `pwsh -Command` or `cmd /c` runs, or None."""
+    for i, a in enumerate(args):
+        if exe in POSIX_SHELLS and re.fullmatch(r"-[a-z]*c[a-z]*", a):  # -c, -lc, -ec
+            return args[i + 1] if i + 1 < len(args) else None
+        name = a.lower().lstrip("-/") if a[:1] in ("-", "/") else ""
+        if exe in ("pwsh", "powershell") and name and "command".startswith(name):
+            return " ".join(args[i + 1 :])
+        if exe == "cmd" and a[:1] == "/" and name in ("c", "k"):
+            return " ".join(args[i + 1 :])
+    return None
+
+
+def substitutions(command: str) -> list[str]:
+    """The commands in `$(...)` and backticks, which the shell runs first. A nested one
+    is inside its outer one's text."""
+    found = re.findall(r"`([^`]*)`", command)
+    start = command.find("$(")
+    while start >= 0:
+        level, end = 0, start + 1
+        while end < len(command):
+            level += {"(": 1, ")": -1}.get(command[end], 0)
+            if level == 0:
+                break
+            end += 1
+        found.append(command[start + 2 : end])
+        start = command.find("$(", end)
+    return found
+
+
+def _unknown(text: str, why: str) -> list[Target]:
+    """A command known only when it runs: a merge in it is refused (fail closed), a push
+    only warned about (fail open), as when GitHub cannot be read."""
+    lowered = text.lower()
+    return [Target(kind, unknown=why) for kind in ("merge", "push") if kind in lowered]
+
+
+def find_targets(command: str, cwd: str, depth: int = 0) -> list[Target]:
+    """Every push or merge in a shell command, with the working directory it runs in.
+    What `bash -c`, `pwsh -Command`, `cmd /c`, `$(...)` or backticks run is read too, to
+    MAX_DEPTH levels (automated audit, 2026-09-29)."""
+    if depth > MAX_DEPTH:
+        return _unknown(command, "a command nested too deep to read")
     targets: list[Target] = []
     for segment in re.split(r"&&|\|\||[;|\n]", command):
-        toks = drop_redirections(split_words(segment))
-        while toks and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", toks[0]):
-            toks = toks[1:]
+        toks = unwrap(drop_redirections(split_words(segment)))
         if not toks:
             continue
         exe = _exe(toks[0])
@@ -429,9 +506,19 @@ def find_targets(command: str, cwd: str) -> list[Target]:
                 targets.extend(push_targets(rest[1:], here))
         elif exe == "gh":
             targets.extend(_gh_targets(toks[1:], segment, cwd))
+        elif exe in SHELLS:
+            inner = shell_command(exe, toks[1:])
+            if inner is not None:
+                targets.extend(find_targets(inner, cwd, depth + 1))
         elif "/merge" in segment or "mergePullRequest" in segment:
             # curl, python and other clients can call the same REST or GraphQL merge.
             targets.extend(_rest_merge_targets(segment, cwd, None))
+        elif exe in EVALS or (len(toks) > 1 and re.match(r"\$\{?\w", toks[0])):
+            # `eval "$cmd"`, `iex $cmd`, `& $gh pr merge 5`: the text of this command
+            # line is all there is to go on. A lone `$x` (PowerShell prints it) runs nothing.
+            targets.extend(_unknown(command, f"{toks[0]} runs a command known only at run time"))
+    for inner in substitutions(command):
+        targets.extend(find_targets(inner, cwd, depth + 1))
     return targets
 
 
@@ -467,15 +554,13 @@ def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
         elif not t.startswith("-") and arg is None:
             arg = t
     repo_flag = repo_flag if repo_flag is not None else global_repo
-    if repo_flag is not None:
-        repo_flag = repo_flag.removesuffix(".git").removesuffix("/")
-        if repo_flag != REPO and not repo_flag.endswith("/" + REPO):
-            return []
-    elif not is_this_repo(_git(cwd, "remote", "get-url", "origin")):
+    if not is_this_repo(repo_flag or _git(cwd, "remote", "get-url", "origin")):
         return []
     if arg is None:
         branch = current_branch(cwd)
         return [Target("merge", branch=branch, unknown=None if branch else "no PR named")]
+    if COMPUTED_RE.search(arg):
+        return [Target("merge", unknown=f"the PR {arg!r} is known only at run time")]
     # A PR URL may carry a tab path (/files), ?query, #fragment or a trailing slash
     # after the number, as gh accepts (automated reviews at f3f334a and 01c221f).
     number = re.search(r"/pull/(\d+)(?:[/?#]|$)", arg) or re.fullmatch(r"(\d+)", arg)
@@ -493,13 +578,10 @@ def _rest_merge_targets(segment: str, cwd: str, global_repo: str | None) -> list
     ):
         repo = f"{owner}/{name}"
         if "{" in repo:
-            if global_repo is not None:
-                ours = is_this_repo(global_repo) or global_repo.endswith("/" + REPO)
-            else:
-                ours = is_this_repo(_git(cwd, "remote", "get-url", "origin"))
-            if ours:
-                out.append(Target("merge", pr=int(n)))
-        elif repo == REPO:
+            ours = is_this_repo(global_repo or _git(cwd, "remote", "get-url", "origin"))
+        else:
+            ours = is_this_repo(repo)
+        if ours:
             out.append(Target("merge", pr=int(n)))
     if out:
         return out
@@ -537,7 +619,7 @@ def hook_decision(
         if wanted or any(t.every_branch for t in targets):
             for pr in open_prs(reader):
                 head = pr.get("head") or {}
-                same_repo = (head.get("repo") or {}).get("full_name") == REPO
+                same_repo = ((head.get("repo") or {}).get("full_name") or "").lower() == REPO
                 if same_repo and (
                     head.get("ref") in wanted or any(t.every_branch for t in targets)
                 ):
@@ -592,7 +674,7 @@ def _deny(reason: str) -> dict[str, Any]:
 # --- The workflow --------------------------------------------------------------------
 
 
-def workflow(event_name: str, event: dict[str, Any], now: datetime) -> list[str]:
+def workflow(event: dict[str, Any], now: datetime) -> list[str]:
     """Set the status and label for one PR or issue, and answer rejected claims."""
     pr_event = event.get("pull_request")
     issue = event.get("issue") or {}
@@ -682,7 +764,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "workflow":
         with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
             event = json.load(f)
-        for line in workflow(os.environ.get("GITHUB_EVENT_NAME", ""), event, now):
+        for line in workflow(event, now):
             print(line)
         return 0
     try:
