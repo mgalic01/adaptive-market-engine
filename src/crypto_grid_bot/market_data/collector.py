@@ -81,7 +81,7 @@ class Collector:
             raise DataError("capture exceeded ten-second coherence window")
         if abs((received - local_start) - duration * 1000) > 1000:
             raise DataError("local clock changed during capture")
-        if last < first or received < local_start:
+        if received < local_start:
             raise DataError("clock moved backwards during capture")
         raw = {"exchange_info": metadata, "klines": raw_candles, "depth": raw_book}
         return {
