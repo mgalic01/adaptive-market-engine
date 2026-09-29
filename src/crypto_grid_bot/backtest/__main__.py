@@ -36,6 +36,7 @@ from crypto_grid_bot.backtest.replay import (
     VOLUME_DRIFT_TOLERANCE,
 )
 from crypto_grid_bot.backtest.trend_benchmark import trend_job
+from crypto_grid_bot.simulation.runner import SimulationPolicy
 
 
 def checked_symbols(spec: DatasetSpec) -> list[str]:
@@ -170,6 +171,12 @@ def main(argv: list[str] | None = None) -> int:
         help="also run variant D, the trend benchmark (spec v1 §3 D; not a grid, "
         "no risk controls, cannot be selected)",
     )
+    parser.add_argument(
+        "--variant-a",
+        action="store_true",
+        help="enable variant A: daily SMA50/SMA200 trend switch (spec v1 §3 A); "
+        "requires daily_warmup_start in the spec",
+    )
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
     maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
@@ -210,9 +217,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 2 if failures else 0
+        policy = SimulationPolicy(trend_switch=True) if args.variant_a else None
         futures = [
             pool.submit(
-                run_job, args.spec, args.config, args.data_dir, s, mode, gated, (maker, taker)
+                run_job, args.spec, args.config, args.data_dir, s, mode, gated, (maker, taker), policy
             )
             for s in spec.traded
             for mode in PATH_MODES

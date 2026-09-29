@@ -31,6 +31,7 @@ from crypto_grid_bot.backtest.replay import (
     summarise,
 )
 from crypto_grid_bot.config import load_config
+from crypto_grid_bot.simulation.runner import SimulationPolicy
 
 
 def manifest_path(spec_path: Path) -> Path:
@@ -45,8 +46,14 @@ def run_job(
     path_mode: str,
     gated: bool,
     fees: tuple[Decimal, Decimal | None] | None = None,
+    policy: SimulationPolicy | None = None,
 ) -> dict[str, Any]:
-    """``fees`` is (maker, taker) overriding the spec; taker None means maker."""
+    """``fees`` is (maker, taker) overriding the spec; taker None means maker.
+
+    ``policy`` controls simulation variants; None gives V0 behaviour (no trend switch).
+    When ``policy.trend_switch`` is True, the pair's daily bars are required and are
+    already loaded as ``pair_daily`` — passed to both ``FeatureEngine`` and ``replay()``.
+    """
     spec, config = load_spec(spec_path), load_config(config_path)
     manifest = load_manifest(manifest_path(spec_path))
     maker, taker = fees or (spec.fee_rate, None)
@@ -90,7 +97,14 @@ def run_job(
         daily_bars=pair_daily,
     )
     run = RunConfig(symbol, path_mode, gated, rules, spec.initial_quote, spread)
-    metrics, account = replay(config, run, load_minutes(data_dir, manifest, symbol), features)
+    metrics, account = replay(
+        config,
+        run,
+        load_minutes(data_dir, manifest, symbol),
+        features,
+        policy=policy,
+        daily=pair_daily,
+    )
     return summarise(run, metrics, account, check_accounting(run, metrics, account))
 
 
