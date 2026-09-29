@@ -10,7 +10,7 @@ from crypto_grid_bot.domain import MarketSignals
 from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.market_data.command import run_capture
 from crypto_grid_bot.market_data.parsing import DataError
-from crypto_grid_bot.market_data.stream import run_stream
+from crypto_grid_bot.market_data.stream import StreamStopped, run_stream
 from crypto_grid_bot.simulation.control import resume_paper
 from crypto_grid_bot.simulation.demo import run_demo
 from crypto_grid_bot.simulation.store import encode
@@ -41,8 +41,8 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = _parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     config = load_config(args.config)
     if args.resume_paper:
         if not all((args.database, args.resume_frame, args.event_id, args.reason)):
@@ -70,6 +70,9 @@ def main() -> int:
             raise SystemExit("--stream-prices requires at least one --symbol SYMBOL")
         try:
             print(encode(run_stream(args.symbol, args.seconds)))
+        except StreamStopped as exc:
+            print(encode({"status": "stopped", "reason": str(exc), **exc.summary}))
+            return 2
         except (DataError, FeedError) as exc:
             print(encode({"status": "stopped", "reason": str(exc), "orders_authorized": False}))
             return 2

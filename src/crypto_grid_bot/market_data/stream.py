@@ -12,7 +12,7 @@ import json
 import random
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
@@ -36,6 +36,9 @@ BACKOFF_SECONDS = (1, 2, 4, 8, 16, 32, 60, 120, 300)
 # Binance allows 300 connection attempts per 5 minutes per IP; stay far below it.
 MAX_CONNECTS = 10
 CONNECT_WINDOW_SECONDS = 300.0
+# The run summary covers at most this many ticks per symbol. It was the bound of the
+# former per-tick buffer and is kept so the reported figures stay the same.
+SUMMARY_TICK_LIMIT = 200_000
 
 
 @dataclass(frozen=True)
@@ -293,15 +296,55 @@ class PriceStream:
                 on_tick(tick)
 
 
-def summarize(stream: PriceStream, ticks: dict[str, list[BookTick]]) -> dict[str, Any]:
+class StreamStopped(FeedError):
+    """HTTP 418/429 stopped the stream; carries the summary of what came before."""
+
+    def __init__(self, message: str, summary: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.summary = summary
+
+
+@dataclass(slots=True)
+class TickTally:
+    """One symbol's summary figures, updated per tick in constant memory."""
+
+    count: int = 0
+    max_gap_ms: int | None = None
+    last: BookTick | None = None
+
+    def add(self, tick: BookTick) -> None:
+        if self.last is not None:
+            gap = tick.received_ms - self.last.received_ms
+            if self.max_gap_ms is None or gap > self.max_gap_ms:
+                self.max_gap_ms = gap
+        self.count += 1
+        self.last = tick
+
+
+def tally_tick(tallies: dict[str, TickTally], tick: BookTick) -> None:
+    tally = tallies.setdefault(tick.symbol, TickTally())
+    if tally.count < SUMMARY_TICK_LIMIT:
+        tally.add(tick)
+
+
+def summarize(stream: PriceStream, ticks: Mapping[str, Iterable[BookTick]]) -> dict[str, Any]:
+    """Summarize complete tick series; a live run tallies instead of keeping them."""
+    tallies: dict[str, TickTally] = {}
+    for symbol, series in ticks.items():
+        tally = tallies[symbol] = TickTally()
+        for tick in series:
+            tally.add(tick)
+    return summarize_tallies(stream, tallies)
+
+
+def summarize_tallies(stream: PriceStream, tallies: Mapping[str, TickTally]) -> dict[str, Any]:
     symbols: dict[str, Any] = {}
     for symbol in sorted(stream.book.symbols):
-        series = ticks.get(symbol, [])
-        gaps = [b.received_ms - a.received_ms for a, b in zip(series, series[1:], strict=False)]
-        last = series[-1] if series else None
+        tally = tallies.get(symbol, TickTally())
+        last = tally.last
         symbols[symbol] = {
-            "ticks": len(series),
-            "max_gap_ms": max(gaps) if gaps else None,
+            "ticks": tally.count,
+            "max_gap_ms": tally.max_gap_ms,
             "last_bid": str(last.bid) if last else None,
             "last_ask": str(last.ask) if last else None,
             "last_spread_pct": (
@@ -331,12 +374,10 @@ def run_stream(symbols: list[str], seconds: int) -> dict[str, Any]:
     if not 1 <= seconds <= 3600:
         raise DataError("stream duration must be 1-3600 seconds")
     stream = PriceStream(symbols)
-    ticks: dict[str, list[BookTick]] = {}
-
-    def record(tick: BookTick) -> None:
-        series = ticks.setdefault(tick.symbol, [])
-        if len(series) < 200_000:
-            series.append(tick)
-
-    asyncio.run(stream.run(seconds, record))
-    return summarize(stream, ticks)
+    tallies: dict[str, TickTally] = {}
+    try:
+        asyncio.run(stream.run(seconds, lambda tick: tally_tick(tallies, tick)))
+    except FeedError as exc:
+        # A 418/429 stop keeps what was collected; stopped_reason names the status.
+        raise StreamStopped(str(exc), summarize_tallies(stream, tallies)) from exc
+    return summarize_tallies(stream, tallies)
