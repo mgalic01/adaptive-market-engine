@@ -3,6 +3,7 @@
 import contextlib
 import io
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,11 @@ import preflight  # noqa: E402
 
 class PreflightTests(unittest.TestCase):
     def setUp(self):
+        # main() prints platform.system()/release(). On Windows (Python 3.14) a cold
+        # platform cache can shell out ("ver") through subprocess.run, which these tests
+        # mock, whenever the WMI query fails. Filling the cache first keeps the mock for
+        # preflight's own checks only.
+        platform.uname()
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
