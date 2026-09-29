@@ -9,11 +9,10 @@ marks the news component as ABSENT; that is not evidence that no news risk exist
 from __future__ import annotations
 
 import math
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right, insort
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from statistics import median
 
 from crypto_grid_bot.backtest.klines import Kline
 
@@ -41,6 +40,33 @@ def _dec(values: Sequence[Decimal | None], index: int) -> Decimal:
     if value is None:
         raise ValueError("feature requested before its warm-up completed")
     return value
+
+
+def _rolling_median(values: Sequence[float | None], size: int) -> list[float | None]:
+    """``statistics.median`` of each trailing ``size`` window holding no None, else None.
+
+    The window is kept sorted as it slides instead of being re-sorted at every index.
+    Equal values stay in arrival order, exactly as a stable sort leaves them, so every
+    median is the same float a fresh ``median(window)`` gives.
+    """
+    medians: list[float | None] = [None] * len(values)
+    window: list[float] = []
+    missing = 0
+    half = size // 2
+    for i, value in enumerate(values):
+        if value is None:
+            missing += 1
+        else:
+            insort(window, value)  # after any equal value: arrival order
+        if i >= size:
+            old = values[i - size]
+            if old is None:
+                missing -= 1
+            else:
+                del window[bisect_left(window, old)]  # the oldest of any equal values
+        if i >= size - 1 and not missing:
+            medians[i] = window[half] if size % 2 else (window[half - 1] + window[half]) / 2
+    return medians
 
 
 class SeriesFeatures:
@@ -100,13 +126,8 @@ class SeriesFeatures:
                     peak = max(peak, price)
                     worst = max(worst, (peak - price) / peak)
                 self.dd168[i] = worst
-        for i in range(BASELINE_HOURS - 1, n):
-            window = self.atr_pct[i - BASELINE_HOURS + 1 : i + 1]
-            if all(value is not None for value in window):
-                self.atr_pct_median[i] = median(v for v in window if v is not None)
-            volumes = self.qv24[i - BASELINE_HOURS + 1 : i + 1]
-            if all(value is not None for value in volumes):
-                self.qv24_median[i] = median(v for v in volumes if v is not None)
+        self.atr_pct_median = _rolling_median(self.atr_pct, BASELINE_HOURS)
+        self.qv24_median = _rolling_median(self.qv24, BASELINE_HOURS)
         self._wilder_adx(candles)
 
     def _wilder_adx(self, candles: Sequence[Kline]) -> None:
@@ -154,6 +175,19 @@ class SeriesFeatures:
         first_open = (minute_ms // HOUR_MS - COVERAGE_HOURS) * HOUR_MS
         present = index + 1 - bisect_right(self.opens, first_open - 1)
         return min(1.0, present / COVERAGE_HOURS)
+
+    def stable_until(self, minute_ms: int, until: int) -> int:
+        """``until``, or the earlier minute at which ``last_completed`` or the staleness
+        test in ``coverage`` first changes after ``minute_ms``; both are constant between."""
+        index = self.last_completed(minute_ms)
+        following = 0 if index is None else index + 1
+        if following < len(self.opens):
+            until = min(until, self.opens[following] + HOUR_MS)  # that candle completes
+        if index is not None:
+            stale_from = self.opens[index] + HOUR_MS + STALE_AFTER_MS + 1
+            if stale_from > minute_ms:
+                until = min(until, stale_from)
+        return until
 
     def ready(self, index: int) -> bool:
         return all(
@@ -217,13 +251,48 @@ class FeatureEngine:
         self._levels = levels
         self._edge_scale = 2 * minimum_cost_multiple - 1
         self._cost = round_trip_cost
+        # (first minute, end minute, Inputs): the last result and the span it holds for.
+        self._cached: tuple[int, int, Inputs | None] = (0, 0, None)
 
     def at(self, minute_ms: int) -> Inputs | None:
-        """Inputs for a decision in the minute starting at ``minute_ms``; None in warm-up."""
+        """Inputs for a decision in the minute starting at ``minute_ms``; None in warm-up.
+
+        The Inputs depend on the minute only through the hour and each series' latest
+        completed candle and staleness, so one result is reused, as the same object,
+        until any of them can change (``_stable_until``).
+        """
+        start, until, cached = self._cached
+        if start <= minute_ms < until:
+            return cached
+        inputs = self._inputs(minute_ms)
+        self._cached = (minute_ms, self._stable_until(minute_ms), inputs)
+        return inputs
+
+    def warmed(self, minute_ms: int) -> bool:
+        """Whether ``at(minute_ms)`` is not None, without building the Inputs."""
+        return self._ready(minute_ms) is not None
+
+    def _stable_until(self, minute_ms: int) -> int:
+        # The hour bounds coverage's window of whole hours; the series bound the rest.
+        until = (minute_ms // HOUR_MS + 1) * HOUR_MS
+        for series in (self.pair, self.market, *self.basket):
+            until = series.stable_until(minute_ms, until)
+        return until
+
+    def _ready(self, minute_ms: int) -> tuple[int, int] | None:
+        """The pair's and the market's latest completed indices, once both are warmed up."""
         pair, market = self.pair, self.market
         p, m = pair.last_completed(minute_ms), market.last_completed(minute_ms)
         if p is None or m is None or not pair.ready(p) or not market.ready(m):
             return None
+        return p, m
+
+    def _inputs(self, minute_ms: int) -> Inputs | None:
+        ready = self._ready(minute_ms)
+        if ready is None:
+            return None
+        pair, market = self.pair, self.market
+        p, m = ready
         votes: list[bool] = []
         for series in self.basket:
             index = series.last_completed(minute_ms)

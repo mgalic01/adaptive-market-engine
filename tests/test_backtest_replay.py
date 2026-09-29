@@ -1,6 +1,8 @@
 """Chronology, adapter and accounting tests for the historical replay (synthetic data)."""
 
 import math
+import random
+import statistics
 import unittest
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -8,7 +10,14 @@ from decimal import Decimal as D
 from decimal import getcontext, localcontext
 from pathlib import Path
 
-from crypto_grid_bot.backtest.features import HOUR_MS, FeatureEngine, SeriesFeatures
+from crypto_grid_bot.backtest.features import (
+    BASELINE_HOURS,
+    HOUR_MS,
+    STALE_AFTER_MS,
+    FeatureEngine,
+    SeriesFeatures,
+    _rolling_median,
+)
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import (
     Metrics,
@@ -167,6 +176,88 @@ class FeatureChronologyTests(unittest.TestCase):
         self.assertEqual(1.0, fresh.market_quality)
         self.assertEqual(0.0, stale.market_quality)
         self.assertEqual(0.0, stale.pair_quality)
+
+
+class FeatureEfficiencyTests(unittest.TestCase):
+    """The incremental medians and the cached Inputs give exactly the direct results."""
+
+    OPTIONS = {
+        "range_atr_multiple": 2.0,
+        "levels": 8,
+        "minimum_cost_multiple": 3.0,
+        "round_trip_cost": 0.0035,
+    }
+
+    def setUp(self):
+        candles = hourly(WARMUP + 12)
+        # The pair misses four hours near the end, so it goes stale one minute after an
+        # hour boundary; the basket members end at different hours and go stale in turn.
+        self.pair = SeriesFeatures("TESTUSDT", candles[: WARMUP + 2] + candles[WARMUP + 6 :])
+        self.basket = [
+            SeriesFeatures(f"B{i}USDT", candles[: WARMUP + 3 + i], full=False) for i in range(6)
+        ]
+
+    def engine(self):
+        return FeatureEngine(self.pair, self.pair, self.basket, **self.OPTIONS)
+
+    def test_rolling_median_equals_a_fresh_median_of_every_window(self):
+        rng = random.Random(11)
+        values = [None] * 5 + [rng.choice([0.0, -0.0, 1.5, 2.5, rng.random()]) for _ in range(400)]
+        values[200:203] = [None] * 3
+        for size in (1, 2, 5, 6, 50):
+            expected = [None] * len(values)
+            for i in range(size - 1, len(values)):
+                window = values[i - size + 1 : i + 1]
+                if None not in window:
+                    expected[i] = statistics.median(window)
+            with self.subTest(size=size):
+                # repr tells -0.0 from 0.0: the window must also keep a stable sort's order.
+                got = _rolling_median(values, size)
+                self.assertEqual([repr(v) for v in expected], [repr(v) for v in got])
+
+    def test_series_baselines_are_the_medians_of_their_30_day_windows(self):
+        for series, i in ((self.pair, WARMUP), (self.pair, 733), (self.pair, 742)):
+            for values, medians in (
+                (series.atr_pct, series.atr_pct_median),
+                (series.qv24, series.qv24_median),
+            ):
+                window = values[i - BASELINE_HOURS + 1 : i + 1]
+                expected = None if None in window else statistics.median(window)
+                self.assertEqual(expected, medians[i])
+        self.assertIsNone(self.pair.qv24_median[741])
+        self.assertIsNotNone(self.pair.qv24_median[742])
+
+    def test_every_minute_matches_an_uncached_engine_in_any_order(self):
+        engine = self.engine()
+        first, end = START_MS + (WARMUP - 60) * HOUR_MS, START_MS + (WARMUP + 12) * HOUR_MS
+        minutes = list(range(first, end, 60_000))
+        rng = random.Random(5)
+        for minute in [*minutes, *reversed(minutes), *rng.sample(minutes, 500)]:
+            self.assertEqual(self.engine().at(minute), engine.at(minute), minute)
+
+    def test_staleness_inside_an_hour_is_not_served_from_the_cache(self):
+        engine = self.engine()
+        # The pair's last candle before its hole completes at WARMUP + 2 hours.
+        edge = START_MS + (WARMUP + 2) * HOUR_MS + STALE_AFTER_MS
+        before, after = engine.at(edge), engine.at(edge + 60_000)
+        self.assertEqual(edge // HOUR_MS, (edge + 60_000) // HOUR_MS)
+        self.assertGreater(before.pair_quality, 0.0)
+        self.assertEqual(0.0, after.pair_quality)
+
+    def test_one_result_is_reused_within_an_hour(self):
+        engine = self.engine()
+        minute = START_MS + (WARMUP - 10) * HOUR_MS
+        self.assertIs(engine.at(minute), engine.at(minute + 59 * 60_000))
+        self.assertIsNot(engine.at(minute), engine.at(minute + 60 * 60_000))
+
+    def test_warmed_is_exactly_whether_at_returns_inputs(self):
+        engine = self.engine()
+        seen = set()
+        for minute in range(START_MS + 730 * HOUR_MS, START_MS + 760 * HOUR_MS, 60_000):
+            warmed = engine.warmed(minute)
+            seen.add(warmed)
+            self.assertEqual(self.engine().at(minute) is not None, warmed, minute)
+        self.assertEqual({False, True}, seen)
 
 
 class AdapterTests(unittest.TestCase):
