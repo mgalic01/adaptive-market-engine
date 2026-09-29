@@ -1,10 +1,17 @@
 name: quality
 
 on:
+  # PR branches are checked once, by the pull_request run (the merge commit), not
+  # again by a push run of the same commit.
   push:
-    branches-ignore:
-      - automation/codex-worker-state
+    branches: [main]
   pull_request:
+
+# A newer push to a PR cancels its superseded run. Every push to main gets its own
+# group (the run ID), so a main run is never cancelled and never replaced while queued.
+concurrency:
+  group: quality-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
