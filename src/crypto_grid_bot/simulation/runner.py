@@ -147,6 +147,8 @@ class Frame:
     epoch: str | None = None
     # Variant A only: the daily trend state for this observation (see trend_switch.py).
     trend: TrendSignal | None = None
+    # V2: nearest resistance above current price from structure.py; None when unavailable.
+    fta_resistance: float | None = None
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -155,6 +157,8 @@ class Frame:
             del value["epoch"]  # Keeps journals written before this field byte-identical.
         if value["trend"] is None:
             del value["trend"]  # Likewise for journals without variant A.
+        if value["fta_resistance"] is None:
+            del value["fta_resistance"]  # Omit from journals when structure unavailable.
         return value
 
 
@@ -910,6 +914,7 @@ class PaperSimulator:
             min_notional=float(rules.minimum_notional * (ONE + rules.fee_rate)),
             round_trip_cost_pct=float(cost * 100),
             capital_utilization=1,
+            fta_resistance=frame.fta_resistance,
         )
         levels = tuple(floor_step(D(str(level)), rules.tick_size) for level in plan.levels)
         pairs = [

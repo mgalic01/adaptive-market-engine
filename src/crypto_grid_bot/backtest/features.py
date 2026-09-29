@@ -16,6 +16,10 @@ from decimal import Decimal
 from statistics import median
 
 from crypto_grid_bot.backtest.klines import Kline
+from crypto_grid_bot.strategy.structure import (
+    StructureParams,
+    analyse_multi_timeframe,
+)
 
 FEATURE_VERSION = "price-only-v1"
 HOUR_MS = 3_600_000
@@ -195,9 +199,29 @@ class Inputs:
     atr: Decimal
     # From analyse_multi_timeframe(); 0.0 until structure data is wired in
     structure_alignment: float = 0.0
+    # Nearest resistance zone above current price; None when structure unavailable
+    fta_resistance: float | None = None
     # Flat or zero-volume history: ratios are undefined, so new entries are vetoed
     # (quality 0) while existing inventory keeps being marked and risk-managed.
     degenerate: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _KlineView:
+    """Lightweight OHLC adapter wrapping one Kline bar with float-typed fields.
+
+    ``structure.py`` requires float-typed high/low/close; Kline stores Decimal.
+    This view converts at construction time so structure functions receive proper floats.
+    """
+
+    open_ms: int
+    high: float
+    low: float
+    close: float
+
+    @staticmethod
+    def from_kline(k: Kline) -> "_KlineView":
+        return _KlineView(k.open_ms, float(k.high), float(k.low), float(k.close))
 
 
 class FeatureEngine:
@@ -211,6 +235,8 @@ class FeatureEngine:
         levels: int,
         minimum_cost_multiple: float,
         round_trip_cost: float,
+        hourly_candles: Sequence[Kline] | None = None,
+        daily_bars: Sequence[Kline] | None = None,
     ) -> None:
         if levels < 2 or round_trip_cost <= 0:
             raise ValueError("invalid feature engine parameters")
@@ -219,6 +245,10 @@ class FeatureEngine:
         self._levels = levels
         self._edge_scale = 2 * minimum_cost_multiple - 1
         self._cost = round_trip_cost
+        # V2: raw candles for structure.py (needs OHLC; SeriesFeatures discards high/low)
+        self._hourly_candles: list[Kline] = list(hourly_candles) if hourly_candles else []
+        self._daily_bars: list[Kline] = list(daily_bars) if daily_bars else []
+        self._structure_params = StructureParams()
 
     def at(self, minute_ms: int) -> Inputs | None:
         """Inputs for a decision in the minute starting at ``minute_ms``; None in warm-up."""
@@ -250,6 +280,34 @@ class FeatureEngine:
         lower, upper = float(fair) - half, float(fair) + half
         spacing = (upper / lower) ** (1 / (self._levels - 1)) - 1 if lower > 0 else 0.0
         pair_volume = _at(pair.qv24, p)
+
+        # V2: multi-timeframe structure alignment.
+        # Hourly bars up to (not including) this minute; daily bars if available.
+        # Uses raw pair candles via _KlineView (float-typed) — SeriesFeatures discards high/low.
+        hourly_candles = (
+            [_KlineView.from_kline(k) for k in self._hourly_candles[:p + 1]]
+            if self._hourly_candles else None
+        )
+        daily_candles = (
+            [_KlineView.from_kline(k) for k in self._daily_bars]
+            if self._daily_bars else None
+        )
+        mtf = analyse_multi_timeframe(
+            hourly_bars=hourly_candles,
+            daily_bars=daily_candles,
+            weekly_bars=None,  # weekly not yet loaded
+            current_price=float(fair),
+            params=self._structure_params,
+        )
+        structure_alignment = mtf.alignment
+
+        # FTA: nearest resistance above current price (from daily structure if available)
+        fta_resistance: float | None = None
+        if daily_candles and mtf.daily and mtf.daily.fta.resistance:
+            fta_resistance = mtf.daily.fta.resistance.price
+        elif mtf.hourly and mtf.hourly.fta.resistance:
+            fta_resistance = mtf.hourly.fta.resistance.price
+
         return Inputs(
             hour_open_ms=pair.opens[p],
             trend=math.tanh((float(_dec(market.sma20, m)) / _at(market.sma50, m) - 1) / 0.02),
@@ -268,4 +326,6 @@ class FeatureEngine:
             fair_value=fair,
             atr=atr,
             degenerate=degenerate,
+            structure_alignment=structure_alignment,
+            fta_resistance=fta_resistance,
         )

@@ -59,7 +59,8 @@ def run_job(
         taker,
     )
     spread = spec.assumed_spread_pct / 100
-    pair = SeriesFeatures(symbol, load_hourly(data_dir, manifest, symbol))
+    pair_hourly = load_hourly(data_dir, manifest, symbol)
+    pair = SeriesFeatures(symbol, pair_hourly)
     market = (
         pair
         if spec.market_proxy == symbol
@@ -69,6 +70,13 @@ def run_job(
         SeriesFeatures(s, load_hourly(data_dir, manifest, s), full=False)
         for s in spec.breadth_basket
     ]
+    # V2: pass raw hourly candles for structure.py (needs OHLC; SeriesFeatures discards high/low).
+    # Daily bars are loaded only when the spec declares a daily_warmup_start.
+    pair_daily = (
+        load_daily(data_dir, manifest, symbol)
+        if spec.daily_warmup_start and symbol in {*spec.traded, spec.market_proxy}
+        else None
+    )
     features = FeatureEngine(
         pair,
         market,
@@ -78,6 +86,8 @@ def run_job(
         minimum_cost_multiple=config.minimum_grid_cost_multiple,
         # A grid cycle is two resting fills, so it pays the maker fee twice.
         round_trip_cost=float(2 * (maker + spec.slippage_rate) + spread),
+        hourly_candles=pair_hourly,
+        daily_bars=pair_daily,
     )
     run = RunConfig(symbol, path_mode, gated, rules, spec.initial_quote, spread)
     metrics, account = replay(config, run, load_minutes(data_dir, manifest, symbol), features)
