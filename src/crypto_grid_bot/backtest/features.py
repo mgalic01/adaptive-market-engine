@@ -193,6 +193,8 @@ class Inputs:
     minute_quote_volume: float  # 24h quote volume / 1440; depth is sized in replay
     fair_value: Decimal
     atr: Decimal
+    # From analyse_multi_timeframe(); 0.0 until structure data is wired in
+    structure_alignment: float = 0.0
     # Flat or zero-volume history: ratios are undefined, so new entries are vetoed
     # (quality 0) while existing inventory keeps being marked and risk-managed.
     degenerate: bool = False

@@ -39,6 +39,8 @@ class MarketSignals:
     data_quality: float = 1.0
     news_risk: float = 0.0
     emergency: bool = False
+    # Multi-timeframe structural alignment [-1, +1]; 0.0 when unavailable (structure.py)
+    structure_alignment: float = 0.0
     observed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
