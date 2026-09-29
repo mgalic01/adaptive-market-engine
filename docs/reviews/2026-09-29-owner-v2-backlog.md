@@ -52,8 +52,8 @@ regime classifier. A backtest comparison task is in PR #149.
 
 ---
 
-### S3 — Monte Carlo / out-of-sample validation
-**Source:** Community best-practice advice relayed by owner, 2026-09-29.
+### S3 — Monte Carlo / out-of-sample validation / minimum sample size
+**Source:** Community best-practice advice + scientist's experimental framework, relayed by owner, 2026-09-29.
 
 Backtest results on development datasets are hypotheses, not proof. Before any capital
 or strategy decision, results need:
@@ -63,15 +63,23 @@ or strategy decision, results need:
 2. **Out-of-sample (reserved window) test** — run on data the strategy was never
    optimised against. The reserved window (2025-01 onwards) is already set aside for
    this. Owner must give explicit go before any reserved-window data is opened.
+3. **Minimum sample size rule** — "14 trades is still an extremely small experiment"
+   (scientist-trader, 2026-09-29). A result from too few completed cycles is
+   statistically meaningless. The project needs a written rule: how many completed
+   grid cycles are required before a strategy variant is considered evaluated?
+   Suggested starting point: 200 completed cycles minimum per dataset per variant,
+   with a target of 500+ for high-confidence conclusions. This needs owner sign-off.
 
 **What needs building:**
 - A Monte Carlo wrapper around the existing replay engine (randomise bar order within
   windows, re-run N times, report distribution of outcomes).
 - A protocol for opening the reserved window: owner decision + documented rationale.
+- A minimum-cycle rule recorded in `docs/AGENT_HANDOFF.md` or the spec.
 
 **Owner decisions needed:**
 - [ ] When to open the reserved window for out-of-sample validation (after v1 is stable)?
 - [ ] How many Monte Carlo runs are required before a strategy is considered validated?
+- [ ] What is the minimum completed-cycle count before a backtest result is trusted (200? 500?)?
 
 ---
 
@@ -179,6 +187,44 @@ tighter drawdown threshold, smaller grid).
 
 **Owner decisions needed:**
 - [ ] Is this worth investigating, or keep the binary gate as a simplicity principle?
+
+---
+
+### S8 — Scientific experimental loop: profit factor, win rate, expectancy metrics
+**Source:** Scientist-trader's framework relayed by owner, 2026-09-29.
+
+The scientific loop is: **build → test → compare → improve → test again**, changing
+one variable at a time, letting the strongest variants survive. This matches the spec's
+existing registered-trial framework exactly. What's missing is the right *measurement
+instruments* to compare variants meaningfully.
+
+Currently backtest reports include: total return, max drawdown, number of cycles.
+What's missing and should be added to all future backtest reports:
+
+| Metric | What it measures | Why it matters |
+| --- | --- | --- |
+| **Win rate** | % of completed cycles that are profitable | Tells you if the strategy is losing on individual trades despite positive total return |
+| **Profit factor** | Gross profit / gross loss | > 1.0 means the strategy earns more than it loses; < 1.0 is a losing system |
+| **Expectancy per cycle** | (Win rate × avg win) − (loss rate × avg loss) | The expected value of a single cycle; must be positive for the strategy to be viable |
+| **Average holding time** | Mean time from buy fill to sell fill | Tells you capital efficiency — a cycle that takes 11 hours ties up capital that could cycle again |
+| **Max consecutive losses** | Longest run of losing cycles | Risk management input — how deep can drawdown go before recovery? |
+
+**These metrics should be added to PR #149's backtest task** so that the V0 vs FTA vs
+structure-alignment comparison produces a complete picture, not just total return.
+
+**The experimental loop principle** — once a variant is measured with these metrics,
+the comparison table drives the next experiment: if FTA improves profit factor but
+reduces cycle frequency, the next experiment asks whether tighter grid spacing
+recovers the frequency. One variable at a time.
+
+**What needs building:**
+- Extend `replay.py` or the report formatter to output win rate, profit factor,
+  expectancy per cycle, average holding time, and max consecutive losses.
+- Add these columns to the comparison table in PR #149's task.
+
+**Owner decisions needed:**
+- [ ] Confirm these are the right metrics to track (or add/remove any).
+- [ ] Should these be added to existing Bob task report format, or only to comparison tasks?
 
 ---
 
