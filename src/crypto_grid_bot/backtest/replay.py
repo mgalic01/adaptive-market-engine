@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from crypto_grid_bot.backtest.dataset import local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
@@ -37,6 +37,7 @@ from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
 from crypto_grid_bot.simulation.execution import exit_state
+from crypto_grid_bot.simulation.inventory_cap import mark as unit_mark
 from crypto_grid_bot.simulation.models import (
     ONE,
     ZERO,
@@ -315,44 +316,75 @@ def order_requests(
     return orders.requests - since + exits
 
 
+class FillJournal(Protocol):
+    """The fill totals the grid replay and variant D both keep (``Metrics``, ``TrendMetrics``)."""
+
+    buys: int
+    sells: int
+    buy_notional: Decimal
+    sell_notional: Decimal
+    buy_fees: Decimal
+    sell_fees: Decimal
+    bought: Decimal
+    sold: Decimal
+    cost_basis: Decimal
+
+
+def journal_fill(
+    journal: FillJournal, side: str, price: Decimal, quantity: Decimal, fee: Decimal
+) -> Decimal | None:
+    """Add one fill to an average-cost journal; the realised P&L (after fees) of a sell,
+    None for a buy. Call it at the simulator's precision 50 (see ``_record_fills``)."""
+    notional = price * quantity
+    if side == "buy":
+        journal.buys += 1
+        journal.buy_notional += notional
+        journal.buy_fees += fee
+        journal.bought += quantity
+        journal.cost_basis += notional + fee
+        return None
+    held = journal.bought - journal.sold
+    cost = journal.cost_basis * quantity / held if held > ZERO else ZERO
+    journal.cost_basis -= cost
+    journal.sells += 1
+    journal.sell_notional += notional
+    journal.sell_fees += fee
+    journal.sold += quantity
+    return notional - fee - cost
+
+
 def _record_fills(
     metrics: Metrics, fills: Sequence[dict[str, Any]], exit_reason: str | None = None
 ) -> None:
+    if not fills:
+        return
     # PaperSimulator.step updates balances at precision 50. Preserve the same fill
     # amounts here: the caller's default precision (28) can round valid 18-place
     # prices/quantities and make the independent cash/fee identities fail.
     with localcontext() as context:
         context.prec = 50
         for fill in fills:
-            quantity, fee = Decimal(fill["quantity"]), Decimal(fill["fee"])
-            notional = Decimal(fill["price"]) * quantity
-            held = metrics.bought - metrics.sold
-            if fill["side"] == "buy":
-                metrics.buys += 1
-                metrics.buy_notional += notional
-                metrics.buy_fees += fee
-                metrics.bought += quantity
-                metrics.cost_basis += notional + fee
+            pnl = journal_fill(
+                metrics,
+                fill["side"],
+                Decimal(fill["price"]),
+                Decimal(fill["quantity"]),
+                Decimal(fill["fee"]),
+            )
+            if pnl is None:
+                continue
+            if str(fill["order_id"]).startswith("exit/"):
+                metrics.exit_pnl += pnl
+                metrics.exit_sells += 1
+                reason = exit_reason or "unlabelled"
+                metrics.exit_pnl_by_reason[reason] = (
+                    metrics.exit_pnl_by_reason.get(reason, ZERO) + pnl
+                )
             else:
-                cost = metrics.cost_basis * quantity / held if held > ZERO else ZERO
-                metrics.cost_basis -= cost
-                pnl = notional - fee - cost
-                if str(fill["order_id"]).startswith("exit/"):
-                    metrics.exit_pnl += pnl
-                    metrics.exit_sells += 1
-                    reason = exit_reason or "unlabelled"
-                    metrics.exit_pnl_by_reason[reason] = (
-                        metrics.exit_pnl_by_reason.get(reason, ZERO) + pnl
-                    )
-                else:
-                    metrics.grid_sell_pnl += pnl
-                metrics.sells += 1
-                metrics.sell_notional += notional
-                metrics.sell_fees += fee
-                metrics.sold += quantity
+                metrics.grid_sell_pnl += pnl
 
 
-class _BuyAndHold:
+class BuyAndHold:
     """Buy once at the first evaluated bar (ask + slippage + taker fee); conservative marks."""
 
     def __init__(self, run: RunConfig, first: Kline) -> None:
@@ -367,11 +399,9 @@ class _BuyAndHold:
         self.peak = self.value = run.initial_quote
         self.max_drawdown = ZERO
 
-    def mark(self, bid: Decimal) -> None:
+    def mark(self, quote: Quote) -> None:
         """Mark at a quote's bid, sampled at the same quotes as the strategy (P2)."""
-        rules = self.run.rules
-        exit_value = bid * (ONE - rules.slippage_rate) * (ONE - rules.taker_fee)
-        self.value = self.cash + self.quantity * exit_value
+        self.value = self.cash + self.quantity * unit_mark(quote, self.run.rules)
         self.peak = max(self.peak, self.value)
         self.max_drawdown = max(self.max_drawdown, (self.peak - self.value) / self.peak)
 
@@ -414,7 +444,7 @@ def replay(
 
     simulator.risk_observer = observe_risk
     spread_pct = float(run.spread * 100)
-    hold: _BuyAndHold | None = None
+    hold: BuyAndHold | None = None
     was_range_exit = False
     was_halted = False
     last_hour = -1
@@ -429,7 +459,7 @@ def replay(
                 MINIMUM_DAILY_WARMUP
             ):
                 raise ValueError("variant A needs 200 completed daily bars before evaluation")
-            hold = _BuyAndHold(run, kline)
+            hold = BuyAndHold(run, kline)
             metrics.first_bar_ms = kline.open_ms
         metrics.bars += 1
         metrics.last_bar_ms = kline.open_ms
@@ -488,7 +518,7 @@ def replay(
                 metrics.peak_equity = max(metrics.peak_equity, total)
                 drawdown = (metrics.peak_equity - total) / metrics.peak_equity
                 metrics.max_drawdown = max(metrics.max_drawdown, drawdown)
-            hold.mark(quote.bid)
+            hold.mark(quote)
         # Bar-level bookkeeping from the bar's closing quote.
         metrics.regimes[str(report.get("regime", "unavailable"))] += 1
         metrics.decisions[str(report["decision"])] += 1
@@ -548,26 +578,39 @@ def check_accounting(run: RunConfig, metrics: Metrics, account: Account) -> list
     return problems
 
 
-def load_hourly(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kline]:
-    candles: list[Kline] = []
-    for entry in manifest["files"]:
-        if entry["symbol"] == symbol and entry["interval"] == "1h" and entry["status"] == "ok":
-            month = entry["month"]
-            rows, _ = read_archive(local_path(data_dir, symbol, "1h", month), symbol, "1h", month)
-            candles.extend(rows)
+def _archive_months(manifest: dict[str, Any], symbol: str, interval: str) -> list[str]:
+    """Months of the pair's verified archives at one interval, in manifest order."""
+    return [
+        entry["month"]
+        for entry in manifest["files"]
+        if entry["symbol"] == symbol and entry["interval"] == interval and entry["status"] == "ok"
+    ]
+
+
+def _read_month(data_dir: Path, symbol: str, interval: str, month: str) -> list[Kline]:
+    rows, _ = read_archive(local_path(data_dir, symbol, interval, month), symbol, interval, month)
+    return rows
+
+
+def load_candles(
+    data_dir: Path, manifest: dict[str, Any], symbol: str, interval: str
+) -> list[Kline]:
+    """Every verified candle of the pair at one interval, sorted by open time."""
+    candles = [
+        kline
+        for month in _archive_months(manifest, symbol, interval)
+        for kline in _read_month(data_dir, symbol, interval, month)
+    ]
     candles.sort(key=lambda k: k.open_ms)
     return candles
+
+
+def load_hourly(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kline]:
+    return load_candles(data_dir, manifest, symbol, "1h")
 
 
 def load_daily(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kline]:
-    candles: list[Kline] = []
-    for entry in manifest["files"]:
-        if entry["symbol"] == symbol and entry["interval"] == "1d" and entry["status"] == "ok":
-            month = entry["month"]
-            rows, _ = read_archive(local_path(data_dir, symbol, "1d", month), symbol, "1d", month)
-            candles.extend(rows)
-    candles.sort(key=lambda k: k.open_ms)
-    return candles
+    return load_candles(data_dir, manifest, symbol, "1d")
 
 
 DAY_MS = 86_400_000
@@ -624,14 +667,9 @@ def cross_check_daily(
 
 
 def load_minutes(data_dir: Path, manifest: dict[str, Any], symbol: str) -> Iterator[Kline]:
-    months = sorted(
-        e["month"]
-        for e in manifest["files"]
-        if e["symbol"] == symbol and e["interval"] == "1m" and e["status"] == "ok"
-    )
-    for month in months:
-        rows, _ = read_archive(local_path(data_dir, symbol, "1m", month), symbol, "1m", month)
-        yield from rows
+    """The pair's 1m bars in time order, read lazily one month archive at a time."""
+    for month in sorted(_archive_months(manifest, symbol, "1m")):
+        yield from _read_month(data_dir, symbol, "1m", month)
 
 
 # Owner decision (2026-09-24): Binance archives sometimes disagree on volume only. With
@@ -741,7 +779,7 @@ def check_hourly_series(
     }
 
 
-def _utc(ms: int) -> str | None:
+def utc_iso(ms: int) -> str | None:
     return datetime.fromtimestamp(ms / 1000, UTC).isoformat() if ms else None
 
 
@@ -756,7 +794,7 @@ def summarise(
         "feature_version": FEATURE_VERSION,
         "engine_version": ENGINE_VERSION,
         "news_component": "ABSENT (news_risk fixed at 0; no historical source)",
-        "window": [_utc(metrics.first_bar_ms), _utc(metrics.last_bar_ms)],
+        "window": [utc_iso(metrics.first_bar_ms), utc_iso(metrics.last_bar_ms)],
         "initial_quote": str(initial),
         "final_total_equity": str(metrics.final_equity),
         "return_pct": float((metrics.final_equity / initial - 1) * 100),

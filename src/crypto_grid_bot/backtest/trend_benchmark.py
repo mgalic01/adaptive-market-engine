@@ -39,23 +39,22 @@ from decimal import ROUND_CEILING, Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
-from crypto_grid_bot.backtest.dataset import DatasetSpec, load_manifest, load_spec
-from crypto_grid_bot.backtest.features import FeatureEngine, SeriesFeatures
-from crypto_grid_bot.backtest.jobs import manifest_path
+from crypto_grid_bot.backtest.dataset import DatasetSpec
+from crypto_grid_bot.backtest.jobs import prepare_run
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import (
     DAILY_REQUEST_BUDGET,
     POINT_OFFSETS_S,
+    BuyAndHold,
     RunConfig,
-    _BuyAndHold,
-    _utc,
     bar_quotes,
+    journal_fill,
     load_daily,
-    load_hourly,
     load_minutes,
-    rules_for,
+    utc_iso,
 )
-from crypto_grid_bot.config import load_config
+from crypto_grid_bot.simulation.execution import exit_price
+from crypto_grid_bot.simulation.inventory_cap import mark as unit_mark
 from crypto_grid_bot.simulation.models import ONE, ZERO, MarketRules, Quote, floor_step
 from crypto_grid_bot.strategy.daily_sma import DailyCloses, close_above_sma, signal_day
 
@@ -88,17 +87,19 @@ def buy_price(quote: Quote, rules: MarketRules) -> Decimal:
 
 
 def sell_price(quote: Quote, rules: MarketRules) -> Decimal:
-    """``bid × (1 − slippage)``, rounded down to the tick, exactly as V0's liquidation."""
+    """``bid × (1 − slippage)``, rounded down to the tick: V0's liquidation price
+    (``execution.exit_price``), at D's precision."""
     with localcontext() as context:
         context.prec = _PRECISION
-        return floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
+        return exit_price(quote, rules)
 
 
-def exit_value(bid: Decimal, rules: MarketRules) -> Decimal:
-    """Per-unit mark, identical to ``Account.equity`` and the buy-and-hold mark."""
+def exit_value(quote: Quote, rules: MarketRules) -> Decimal:
+    """Per-unit mark ``bid × (1 − slippage) × (1 − taker)`` as ``Account.equity``; the
+    buy-and-hold's helper (``inventory_cap.mark``), at D's precision."""
     with localcontext() as context:
         context.prec = _PRECISION
-        return bid * (ONE - rules.slippage_rate) * (ONE - rules.taker_fee)
+        return unit_mark(quote, rules)
 
 
 @dataclass(frozen=True)
@@ -229,25 +230,12 @@ class TrendMetrics:
 
 def _journal(metrics: TrendMetrics, fill: TrendFill, observed_at: str) -> None:
     metrics.fills.append((observed_at, fill))
+    metrics.requests_by_day[observed_at[:10]] += 1
     with localcontext() as context:
         context.prec = _PRECISION
-        notional = fill.price * fill.quantity
-        metrics.requests_by_day[observed_at[:10]] += 1
-        if fill.side == "buy":
-            metrics.buys += 1
-            metrics.buy_notional += notional
-            metrics.buy_fees += fill.fee
-            metrics.bought += fill.quantity
-            metrics.cost_basis += notional + fill.fee
-            return
-        held = metrics.bought - metrics.sold
-        cost = metrics.cost_basis * fill.quantity / held if held > ZERO else ZERO
-        metrics.cost_basis -= cost
-        metrics.realised_pnl += notional - fill.fee - cost
-        metrics.sells += 1
-        metrics.sell_notional += notional
-        metrics.sell_fees += fill.fee
-        metrics.sold += fill.quantity
+        pnl = journal_fill(metrics, fill.side, fill.price, fill.quantity, fill.fee)
+        if pnl is not None:
+            metrics.realised_pnl += pnl
 
 
 def _label(signal: bool | None) -> str:
@@ -268,7 +256,7 @@ def replay_trend(
     account = TrendAccount(cash=run.initial_quote)
     metrics = TrendMetrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
     signals: dict[int, bool | None] = {}
-    hold: _BuyAndHold | None = None
+    hold: BuyAndHold | None = None
     last_hour = -1
     signal: bool | None = None
     for kline in minutes:
@@ -276,7 +264,7 @@ def replay_trend(
             metrics.warmup_bars += 1
             continue
         if hold is None:
-            hold = _BuyAndHold(run, kline)
+            hold = BuyAndHold(run, kline)
             metrics.first_bar_ms = kline.open_ms
         metrics.bars += 1
         metrics.last_bar_ms = kline.open_ms
@@ -313,13 +301,13 @@ def replay_trend(
             # P2: total equity after this quote's fills; buy-and-hold at the same quote.
             with localcontext() as context:
                 context.prec = _PRECISION
-                account.last_mark = exit_value(quote.bid, rules)
+                account.last_mark = exit_value(quote, rules)
                 total = account.equity()
                 metrics.final_equity = total
                 metrics.peak_equity = max(metrics.peak_equity, total)
                 drawdown = (metrics.peak_equity - total) / metrics.peak_equity
                 metrics.max_drawdown = max(metrics.max_drawdown, drawdown)
-            hold.mark(quote.bid)
+            hold.mark(quote)
         metrics.signal_by_bar[_label(signal)] += 1
         metrics.bars_with_inventory += int(account.inventory > ZERO)
         hour = kline.open_ms // 3_600_000
@@ -387,7 +375,7 @@ def summarise_trend(
         "selectable": False,  # spec §6: D is excluded before ranking
         "risk_policy": RISK_POLICY,
         "signal": f"completed daily close > SMA{SMA_LENGTH} of the traded pair, else cash",
-        "window": [_utc(metrics.first_bar_ms), _utc(metrics.last_bar_ms)],
+        "window": [utc_iso(metrics.first_bar_ms), utc_iso(metrics.last_bar_ms)],
         "initial_quote": str(initial),
         "final_total_equity": str(metrics.final_equity),
         "return_pct": float((metrics.final_equity / initial - 1) * 100),
@@ -450,45 +438,19 @@ def trend_job(
     """One D run, for the backtest CLI's process pool (see ``jobs`` on why pool work
     lives outside ``__main__``). ``fees`` is (maker, taker); D pays only the taker fee,
     which defaults to the maker fee exactly as for the grid runs."""
-    spec, config = load_spec(spec_path), load_config(config_path)
-    manifest = load_manifest(manifest_path(spec_path))
-    maker, taker = fees or (spec.fee_rate, None)
-    rules = rules_for(
-        symbol,
-        manifest["instruments"][symbol],
-        maker,
-        spec.slippage_rate,
-        spec.participation,
-        taker,
+    # V0's warm-up gate, built by the grid job's own setup: FeatureEngine.at is None
+    # exactly when the pair's or the market proxy's latest completed hour is not ready
+    # (FeatureEngine.warmed). The basket changes only the values, never that gate, so it
+    # is not loaded, and D evaluates V0's minutes.
+    prepared = prepare_run(
+        spec_path, config_path, data_dir, symbol, path_mode, False, fees, basket=False
     )
-    spread = spec.assumed_spread_pct / 100
-    run = RunConfig(symbol, path_mode, False, rules, spec.initial_quote, spread)
+    spec, manifest, run = prepared.spec, prepared.manifest, prepared.run
     problems = daily_history_problems(spec)
     daily = load_daily(data_dir, manifest, symbol) if spec.daily_warmup_start else []
     closes = DailyCloses((k.open_ms, k.close) for k in daily)
-    # V0's warm-up gate: FeatureEngine.at is None exactly when the pair's or the market
-    # proxy's latest completed hour is not ready. The basket and the sizing parameters
-    # change only the values, never that gate, so D evaluates V0's minutes.
-    pair = SeriesFeatures(symbol, load_hourly(data_dir, manifest, symbol))
-    market = (
-        pair
-        if spec.market_proxy == symbol
-        else SeriesFeatures(spec.market_proxy, load_hourly(data_dir, manifest, spec.market_proxy))
-    )
-    gate = FeatureEngine(
-        pair,
-        market,
-        [],
-        range_atr_multiple=config.range_atr_multiple,
-        levels=config.maximum_levels,
-        minimum_cost_multiple=config.minimum_grid_cost_multiple,
-        round_trip_cost=float(2 * (maker + spec.slippage_rate) + spread),
-    )
     metrics, account = replay_trend(
-        run,
-        load_minutes(data_dir, manifest, symbol),
-        closes,
-        lambda open_ms: gate.at(open_ms) is not None,
+        run, load_minutes(data_dir, manifest, symbol), closes, prepared.features.warmed
     )
     problems += check_trend_accounting(run, metrics, account)
     return summarise_trend(run, metrics, account, problems)
