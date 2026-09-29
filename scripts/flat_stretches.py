@@ -24,7 +24,7 @@ This corrects two defects of the appendix script in
    one stretch per result could ever qualify, and no resumption was observable
    for any of them. Here the outcome is a three-way label — ``CHANGED``,
    ``CENSORED``, or excluded — and a censored stretch reports its span as a
-   lower bound with the time to the end of the series.
+   lower bound.
 
 What it still cannot show, by construction: constant *total* equity is not proof
 of a flat account or of no trading, and the drawdown here is measured against
@@ -87,10 +87,7 @@ class Stretch:
         """
         return self.span_hours + 1 - self.hours_present
 
-    def hours_to_series_end(self, series_end_ms: int) -> int:
-        return series_end_ms // HOUR_MS - self.end_ms // HOUR_MS
-
-    def describe(self, series_end_ms: int) -> str:
+    def describe(self) -> str:
         span = f"{self.span_hours} h ({self.span_hours / 24:.1f} d)"
         gaps = f", {self.missing_hours} h missing" if self.missing_hours else ""
         if self.censored:
@@ -156,8 +153,11 @@ def series_of(result: dict[str, Any]) -> list[tuple[int, Decimal]]:
 
 
 def result_name(result: dict[str, Any]) -> str:
-    gated = "gated" if str(result["strategy"]).startswith("gated") else "ungated"
-    return f"{result['symbol']} {result['path_mode']} {gated}"
+    if result.get("benchmark"):  # a benchmark row, e.g. variant D: not a grid run
+        kind = f"variant {result['variant']}"
+    else:
+        kind = "gated" if str(result["strategy"]).startswith("gated") else "ungated"
+    return f"{result['symbol']} {result['path_mode']} {kind}"
 
 
 def analyse(
@@ -197,7 +197,7 @@ def report(paths: list[Path], *, min_hours: int, threshold: Decimal) -> list[str
                 f"series ends {utc(end_ms) if end_ms else 'n/a'}"
             )
             for stretch in found:
-                lines.append(f"    {stretch.describe(end_ms)}")
+                lines.append(f"    {stretch.describe()}")
     return lines
 
 
