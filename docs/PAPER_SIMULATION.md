@@ -114,11 +114,19 @@ issuing resume. UTC daily baselines still carry overnight gaps into the risk che
 
 **A drawdown halt cannot be resumed by hand; it restarts by itself.** `resume()`
 requires the current risk action to be `ALLOW`. Only `_settle` rescales `risk_high`,
-and it never runs while halted; for a flat account active equity cannot change either.
-The measured drawdown is therefore frozen at the value that triggered the halt, so
-every manual resume attempt is refused, and the refusal says so; the automatic restart
-above is what clears it, after the cool-off. An "active capital exhausted" halt, whose
-drawdown is pinned at 1.0, stays final.
+and it never runs while halted; for an exactly flat account active equity cannot change
+either. The measured drawdown is therefore frozen at the value that triggered the halt,
+so a manual resume attempt is refused, and the refusal says so; the automatic restart
+above is what clears it, after the cool-off. **The one margin is a dust residue.** The
+halt admits a remainder below the exchange minimum as liquidation-complete, and that
+remainder stays held and marked to the bid, so it can move the measured drawdown by at
+most one minimum notional against `risk_high` (5 quote units on a 100-unit account;
+above that it is sellable and the armed liquidation sells it). In that corner case a
+halt taken just past 12% whose residue then rallies can pass the risk check and be
+resumed by hand before the restart. The spec accepts this margin (spec v1 amendment 1,
+"Manual `resume()`"). An "active capital exhausted" halt stays final: even if a manual
+resume is admitted (it can be, when a held residue keeps the drawdown under 8%), the
+harvest gate that raised it halts the account again on the next frame.
 
 An **emergency** halt is different, and the row above says so: the emergency flag comes
 from the frame passed to `resume()`, not from a frozen baseline, so a halt raised only
