@@ -161,6 +161,7 @@ def signals_for(inputs: Inputs, observed_at: datetime, *, gated: bool) -> Market
         data_quality=inputs.market_quality,
         news_risk=0.0,  # ABSENT: no historical news source; reported, not assumed safe
         emergency=False,
+        structure_alignment=inputs.structure_alignment,
         observed_at=observed_at,
     )
 
@@ -446,7 +447,17 @@ def replay(
             # Depth is re-bounded before every quote from the account at that moment.
             depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
             candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
-            frame = Frame(quote, signals, candidate, inputs.fair_value, atr, True, epoch, trend, inputs.fta_resistance)
+            frame = Frame(
+                quote,
+                signals,
+                candidate,
+                inputs.fair_value,
+                atr,
+                True,
+                epoch,
+                trend,
+                inputs.fta_resistance,
+            )
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
             last_quote = quote

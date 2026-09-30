@@ -83,14 +83,14 @@ class GridBuilderTests(TestCase):
         cap = fta * 0.999
         # Every level must be <= cap
         for lvl in plan.levels:
-            self.assertLessEqual(lvl, cap + 1e-12,
-                                 msg=f"level {lvl} exceeds cap {cap}")
+            self.assertLessEqual(lvl, cap + 1e-12, msg=f"level {lvl} exceeds cap {cap}")
         # Levels that were originally below fta should be unchanged
         plan_no_fta = self.builder.build(**self._std)
-        for orig, capped in zip(plan_no_fta.levels, plan.levels):
+        for orig, capped in zip(plan_no_fta.levels, plan.levels, strict=False):
             if orig < fta:
-                self.assertAlmostEqual(orig, capped, places=12,
-                                       msg="levels below FTA must not be altered")
+                self.assertAlmostEqual(
+                    orig, capped, places=12, msg="levels below FTA must not be altered"
+                )
         # fta_resistance_used must be recorded
         self.assertEqual(plan.fta_resistance_used, fta)
 

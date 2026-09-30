@@ -130,11 +130,12 @@ Our backtest windows now make complete sense through this lens:
 
 ```python
 class CyclePhase(StrEnum):
-    ACCUMULATION = "accumulation"   # 12-24 months post-ATH
-    EARLY_BULL   = "early_bull"     # 6-12 months pre-halving
-    LATE_BULL    = "late_bull"      # 6-18 months post-halving
-    DISTRIBUTION = "distribution"   # RSI/structure signals approaching top
-    BEAR         = "bear"           # Post-ATH decline
+    ACCUMULATION = "accumulation"  # 12-24 months post-ATH
+    EARLY_BULL = "early_bull"  # 6-12 months pre-halving
+    LATE_BULL = "late_bull"  # 6-18 months post-halving
+    DISTRIBUTION = "distribution"  # RSI/structure signals approaching top
+    BEAR = "bear"  # Post-ATH decline
+
 
 HALVINGS_MS = [
     1354147200000,  # 2012-11-28

@@ -7,9 +7,7 @@
 # compared for consistency.
 #
 # Traded pairs: BTCUSDT, ETHUSDT, XRPUSDT — complete 1h and 1m archives for this period.
-# No daily_warmup_start: daily (1d) archives not yet fetched; add after:
-#   python -m crypto_grid_bot.backtest fetch --spec this-file.toml
-# and set daily_warmup_start = "2021-07" (200 days before 2022-01).
+daily_warmup_start = "2021-07"
 name = "long-bull-bear-2022"
 purpose = "V2 research: 2022 crash and early recovery, 9 evaluation months 2022-06 to 2023-02"
 traded = ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
