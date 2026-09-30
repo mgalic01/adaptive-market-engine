@@ -496,8 +496,10 @@ def analyse_multi_timeframe(
     """Aligned structure across hourly, daily and weekly timeframes.
 
     Any timeframe can be None or empty — it is skipped and its field is None.
-    ``alignment`` weights: weekly 0.5, daily 0.35, hourly 0.15.
-    These reflect that higher timeframes are more authoritative for structural direction.
+    Nominal weights: weekly 0.50, daily 0.35, hourly 0.15 (higher timeframes more
+    authoritative). When one or more timeframes are absent the remaining weights are
+    renormalised so that the present timeframes still sum to 1.0.  When all are absent
+    ``alignment`` is 0.0.
     """
     if params is None:
         params = StructureParams()

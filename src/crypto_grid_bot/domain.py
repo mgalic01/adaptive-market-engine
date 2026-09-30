@@ -100,4 +100,7 @@ class GridPlan:
     levels: tuple[float, ...]
     capital: float
     estimated_spacing_pct: float
+    # The FTA resistance price that was applied to cap grid levels, or None when no cap
+    # was applied (structure unavailable, or regime was not RANGE). Written to the journal
+    # via Frame.payload() → _open_grid(); not read by any strategy or risk logic.
     fta_resistance_used: float | None = None
