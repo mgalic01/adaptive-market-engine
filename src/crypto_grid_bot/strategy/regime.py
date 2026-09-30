@@ -78,12 +78,14 @@ def thresholds_from_config(config: BotConfig) -> RegimeThresholds:
 class RegimeClassifier:
     """Classify market state using a transparent weighted vote."""
 
+    # structure_alignment added 2026-09-29; trend reduced 0.35→0.25 to keep total=1.0
     _WEIGHTS = {
-        "trend": 0.35,
+        "trend": 0.25,
         "breadth": 0.20,
         "momentum": 0.15,
         "volatility_health": 0.15,
         "liquidity_health": 0.15,
+        "structure_alignment": 0.10,
     }
 
     def __init__(self, thresholds: RegimeThresholds | None = None) -> None:
