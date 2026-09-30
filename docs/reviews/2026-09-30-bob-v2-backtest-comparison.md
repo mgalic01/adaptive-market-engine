@@ -191,3 +191,121 @@ V2 ungated ETH and XRP are **worse** than V0 ungated in the crash window. This i
 *Results produced by `scripts/run_nopool.py` on `bob/v2-integrated` commit `9abb1f3`, GitHub Actions ubuntu-latest, Python 3.12.14, fees maker=0.001 taker=0.001.*
 
 — IBM Bob (owner's desktop session)
+
+---
+
+## 8. Strategic analysis: why the bot sits flat in bull markets and what to do about it
+
+*This section is addressed to Claude and Codex for review. It diagnoses the root cause from the code, not just the results, and proposes concrete changes.*
+
+### 8.1 The exact mechanism that kills bull-market participation
+
+The `RegimeClassifier` in [`regime.py`](../../src/crypto_grid_bot/strategy/regime.py) runs on every minute bar. In a strong bull market, the weighted score:
+
+```
+score = trend×0.25 + breadth×0.20 + momentum×0.15 + volatility_health×0.15
+      + liquidity_health×0.15 + structure_alignment×0.10
+```
+
+will be strongly positive (e.g. `trend ≈ +0.8`, `breadth ≈ +0.6`, `momentum ≈ +0.7`), giving a score well above the `bull_threshold = 0.35`. The classifier correctly returns `BULL`.
+
+The problem is what happens next, in [`runner.py _open_grid()`](../../src/crypto_grid_bot/simulation/runner.py). The regime gate only opens a new grid when the regime is `RANGE`. `BULL` → no grid. Period.
+
+This is correct behaviour for a pure grid strategy — you don't want to place symmetric buy orders below price in a bull market because price never comes back down. But it means **zero participation in the market's most profitable periods**.
+
+The 2023-2024 bull window data confirms this precisely:
+- BTC gained +245.69%, ETH +98.99%, XRP +303.12%
+- Gated bot returned 0.00% on BTC and ETH, −6.91% on XRP
+- The bot held cash the entire time
+
+### 8.2 Why XRP is the exception
+
+XRP's bull was accompanied by extreme volatility (B&H DD 48.98% even during a +303% return). The classifier sees high `volatility_health` penalty and mixed `structure_alignment`, which keeps the score closer to the range boundary. The bot opened 17 grids but still lost −6.91% — the grids caught some oscillations but the trend-chasing moves overwhelmed them.
+
+**Conclusion:** XRP-class pairs (high volatility relative to trend) are partially tradeable with the grid in bull conditions. Pure trend pairs (BTC/ETH in a strong bull) are not.
+
+### 8.3 The three options, with code-level detail
+
+**Option 1: Bull mode → Buy and hold (simplest, highest upside)**
+
+When the regime is `BULL` and no grid is open, buy the full deployable capital at market and hold. Sell when regime returns to `RANGE` or `BEAR`.
+
+- *Code change needed:* Add a `bull_hold` mode to the runner's state machine. When `regime == BULL` and `account.inventory == 0`, place a market buy. When regime exits `BULL`, exit at market.
+- *Risk:* buying at the top of a bull run that immediately reverses. The regime classifier needs to be right about when the bull starts and ends — it currently uses a 14-period ADX and SMA-based trend, which lags by ~14 hours.
+- *Potential gain (from data):* BTC +245%, ETH +99% in 15 months. Even capturing 50% of the move with lag = +100-120%.
+- *Variant name in spec:* This is the spirit of **Variant A (trend_switch)** — the daily SMA50/SMA200 filter already exists in [`trend_switch.py`](../../src/crypto_grid_bot/simulation/trend_switch.py). The `trend_switch: bool = True` flag in `SimulationPolicy` enables it. **This variant is already implemented and just needs daily bars and a backtest run.**
+
+**Option 2: Asymmetric bull grid (moderate complexity)**
+
+In a bull regime, shift the grid centre upward and make it asymmetric — more levels above current price (sell targets) than below (buy orders). This captures the oscillation within the uptrend rather than trying to buy the dips.
+
+- *Code change needed:* `GridBuilder.build()` currently places the grid symmetrically around `fair_value` (SMA20). An `asymmetry: float = 0.0` parameter would shift the centre: positive shifts buy/sell ratio toward sells.
+- *Risk:* if the trend reverses, the bot is left holding inventory bought near the high with no nearby buy support below.
+- *Potential gain:* partial capture of grid cycles within the bull — maybe 10-30% vs 0% currently.
+- *Complexity:* medium. One new parameter, limited interaction with existing logic.
+
+**Option 3: Volatility-gated participation (addresses the XRP problem too)**
+
+Instead of `BULL → no grid`, use `BULL + high volatility → open a small defensive grid`. The insight is that XRP-type pairs oscillate massively even during bull trends — there is genuine grid profit available if position size is capped tightly.
+
+- *Code change needed:* Add a `bull_volatility_threshold` parameter. When `regime == BULL` and `atr_pct > threshold`, open a reduced grid (e.g. 50% capital, tighter range). The current `inventory_cap` (Variant B) could serve this purpose if enabled in bull mode.
+- *Risk:* catching a falling knife if the "oscillation" is actually the start of a reversal.
+- *Potential gain:* captures XRP-class opportunities (+2-5% per window) without getting fully trapped on BTC/ETH-class trends.
+
+### 8.4 Why the FTA cap may be hurting ungated (the V2 regression finding)
+
+From §4: V2 ungated ETH lost −17.93% in the crash window vs V0 ungated −13.35% — a −4.58% regression. XRP: −3.61% vs +0.87% — a −4.48% regression.
+
+The FTA cap in `GridBuilder.build()` clips all sell levels above `fta_resistance × 0.999`. In a bear/crash market, resistance zones cluster below the prior highs. The effect:
+
+1. Grid opens near a resistance zone
+2. All sell targets above the FTA are capped to the same level (`fta × 0.999`)
+3. Multiple sell orders pile up at the same price → only the first one fills; the rest are left hanging
+4. Inventory accumulates without cycling → position grows through the crash → larger loss
+
+**This is likely the mechanism.** The FTA cap was designed for a range market where the grid sits below resistance and you want to exit before it. In a trending/crashing market, resistance zones are everywhere (every prior support is now resistance), so the cap is constantly firing and compressing all the upper grid levels to one price.
+
+**Proposed fix:** Only apply the FTA cap when the regime is `RANGE`. When `regime == BEAR` or `BULL`, disable the FTA cap — the grid geometry should be unrestricted. This is a one-line change in `runner.py`'s `_open_grid()` call:
+
+```python
+# Only apply FTA cap in ranging markets — in trending markets it compresses
+# sell levels to a single price, preventing cycle completion.
+fta = frame.fta_resistance if signals_regime == MarketRegime.RANGE else None
+frame_with_fta = dataclasses.replace(frame, fta_resistance=fta)
+```
+
+### 8.5 Recommended priority order for Claude/Codex
+
+| Priority | Change | Expected impact | Risk | Complexity |
+|----------|--------|-----------------|------|-----------|
+| **1** | Run Variant A (trend_switch, daily SMA) | Capture bull-market returns | Requires daily bars | Low — already implemented |
+| **2** | Fix FTA cap to RANGE-only | Fix V2 ungated regression ~4.5% | Low — isolated change | Low — one condition |
+| **3** | Bull-mode buy-and-hold | +100-200% potential in bull windows | Regime lag risk | Medium — new state |
+| **4** | Asymmetric bull grid | +10-30% in bull windows | Inventory risk on reversal | Medium — new parameter |
+| **5** | SOL volatility floor | Reduce 500-grid cycling | Minimal | Low — threshold check |
+
+### 8.6 What the data says about where grid profits actually come from
+
+Across all 4 windows and all profitable gated runs, the pattern is consistent:
+
+- **Profit comes from XRP/altcoin pairs during range-within-trend periods** — not from BTC/ETH
+- **Profit requires low grid count with high cycle completion** — XRP crash: 7 grids, +4.67%; XRP bull: 17 grids, −6.91%. More grids = more fees = more loss when cycles don't complete
+- **The gate's real value is preventing halts** — every ungated halt is a catastrophic loss (−15% to −18%). The gate avoids all of them. Capital preservation is the gate's main contribution, not profit generation.
+- **Current strategy income potential without bull participation: ~0-5% per 9-month window on favourable altcoin pairs.** That is below meaningful threshold. Bull participation is not optional — it is the primary income source the strategy is currently missing entirely.
+
+### 8.7 Immediate action items for this codebase
+
+1. **Fetch daily bars** for the two new specs and set `daily_warmup_start`. Command:
+   ```
+   python -m crypto_grid_bot.backtest fetch --spec config/datasets/long-recovery-2023-2024.toml --data-dir data
+   python -m crypto_grid_bot.backtest fetch --spec config/datasets/long-bull-bear-2022.toml --data-dir data
+   ```
+   Then add `daily_warmup_start = "2022-10"` (long-bull-bear) and `daily_warmup_start = "2022-10"` (long-recovery) to both `.toml` files.
+
+2. **Run Variant A backtest** (`--variant-a` flag, `SimulationPolicy(trend_switch=True)`). This is the single most important unmeasured test. If Variant A captures even 30% of the bull return, it transforms the strategy's income profile.
+
+3. **Fix the FTA cap scope** (RANGE-only). This is a small code change with high confidence of fixing the −4.5% regression on ETH/XRP ungated in the crash window.
+
+4. **Do not tune any parameters** on these results. These are development window observations only. The reserved window (2025-01+) stays closed until formal C7 testing.
+
+— IBM Bob (owner's desktop session)
