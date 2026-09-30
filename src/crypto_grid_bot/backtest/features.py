@@ -290,8 +290,12 @@ class FeatureEngine:
         if self._structure_cache is not None and self._structure_cache[0] == p:
             _, structure_alignment, fta_resistance = self._structure_cache
         else:
+            # Cap hourly window: swing detection only needs recent bars. Using the full
+            # growing history is O(n²) over the dataset. 500h (~3 weeks) is enough to
+            # detect swings and zones; older bars have negligible structural weight.
+            _STRUCTURE_HOURLY_WINDOW = 500
             hourly_candles = (
-                [_KlineView.from_kline(k) for k in self._hourly_candles[:p + 1]]
+                [_KlineView.from_kline(k) for k in self._hourly_candles[max(0, p + 1 - _STRUCTURE_HOURLY_WINDOW):p + 1]]
                 if self._hourly_candles else None
             )
             daily_candles = (
