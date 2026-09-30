@@ -44,13 +44,7 @@ jobs:
             --data-dir data
 
       - name: Run backtest
-        run: |
-          python -m crypto_grid_bot.backtest run \
-            --spec config/datasets/${{ github.event.inputs.spec }}.toml \
-            --config config/default.toml \
-            --data-dir data \
-            --out data/backtests \
-            --jobs 4
+        run: python scripts/run_nopool.py ${{ github.event.inputs.spec }}
 
       - name: Upload results
         uses: actions/upload-artifact@v4
