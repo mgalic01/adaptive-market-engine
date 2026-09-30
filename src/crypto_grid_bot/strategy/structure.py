@@ -45,14 +45,15 @@ Given a sequence of OHLC candles (any timeframe), it:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, Sequence
-
+from typing import Protocol
 
 # ---------------------------------------------------------------------------
 # Protocols — any OHLC object satisfying these can be passed in
 # ---------------------------------------------------------------------------
+
 
 class OHLCBar(Protocol):
     """Minimal OHLC interface. ``open_ms`` is the bar's UTC open timestamp in ms."""
@@ -74,16 +75,18 @@ class OHLCBar(Protocol):
 # Enumerations
 # ---------------------------------------------------------------------------
 
+
 class StructuralTrend(StrEnum):
-    BULLISH = "bullish"    # higher highs AND higher lows
-    BEARISH = "bearish"    # lower highs AND lower lows
-    RANGING = "ranging"    # mixed / oscillating
-    UNKNOWN = "unknown"    # not enough confirmed swing points yet
+    BULLISH = "bullish"  # higher highs AND higher lows
+    BEARISH = "bearish"  # lower highs AND lower lows
+    RANGING = "ranging"  # mixed / oscillating
+    UNKNOWN = "unknown"  # not enough confirmed swing points yet
 
 
 # ---------------------------------------------------------------------------
 # Immutable result objects
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class SwingPoint:
@@ -128,8 +131,8 @@ class StructureLevel:
     ``max_distance_atr`` × ATR of the current price.
     """
 
-    resistance: StructureZone | None   # nearest zone above current price
-    support: StructureZone | None      # nearest zone below current price
+    resistance: StructureZone | None  # nearest zone above current price
+    support: StructureZone | None  # nearest zone below current price
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,12 +166,13 @@ class MultiTimeframeStructure:
     hourly: TimeframeStructure | None
     daily: TimeframeStructure | None
     weekly: TimeframeStructure | None
-    alignment: float   # [-1, +1]
+    alignment: float  # [-1, +1]
 
 
 # ---------------------------------------------------------------------------
 # Thresholds — all parameters explicit, no magic numbers in logic
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class StructureParams:
@@ -210,6 +214,7 @@ class StructureParams:
 # ---------------------------------------------------------------------------
 # Core calculations
 # ---------------------------------------------------------------------------
+
 
 def _true_range(bars: Sequence[OHLCBar], i: int) -> float:
     """True range of bar i. Uses previous close if available, else high-low."""
@@ -253,14 +258,17 @@ def detect_swing_highs(bars: Sequence[OHLCBar], n: int) -> list[SwingPoint]:
     length = len(highs)
     for i in range(n, length - n):
         candidate = highs[i]
-        if all(candidate > highs[j] for j in range(i - n, i)) and \
-           all(candidate > highs[j] for j in range(i + 1, i + n + 1)):
-            result.append(SwingPoint(
-                index=i,
-                open_ms=bars[i].open_ms,
-                price=candidate,
-                is_high=True,
-            ))
+        if all(candidate > highs[j] for j in range(i - n, i)) and all(
+            candidate > highs[j] for j in range(i + 1, i + n + 1)
+        ):
+            result.append(
+                SwingPoint(
+                    index=i,
+                    open_ms=bars[i].open_ms,
+                    price=candidate,
+                    is_high=True,
+                )
+            )
     return result
 
 
@@ -276,14 +284,17 @@ def detect_swing_lows(bars: Sequence[OHLCBar], n: int) -> list[SwingPoint]:
     length = len(lows)
     for i in range(n, length - n):
         candidate = lows[i]
-        if all(candidate < lows[j] for j in range(i - n, i)) and \
-           all(candidate < lows[j] for j in range(i + 1, i + n + 1)):
-            result.append(SwingPoint(
-                index=i,
-                open_ms=bars[i].open_ms,
-                price=candidate,
-                is_high=False,
-            ))
+        if all(candidate < lows[j] for j in range(i - n, i)) and all(
+            candidate < lows[j] for j in range(i + 1, i + n + 1)
+        ):
+            result.append(
+                SwingPoint(
+                    index=i,
+                    open_ms=bars[i].open_ms,
+                    price=candidate,
+                    is_high=False,
+                )
+            )
     return result
 
 
@@ -330,24 +341,23 @@ def cluster_into_zones(
         n = len(group)
         zone_price = sum(s.price for s in group) / n
         # Sort group by open_ms to assign recency weights
-        by_time = sorted(group, key=lambda s: s.open_ms)
         if n == 1:
             weights = [1.0]
         else:
-            weights = [
-                (1.0 - recency_weight) + recency_weight * (i / (n - 1))
-                for i in range(n)
-            ]
+            weights = [(1.0 - recency_weight) + recency_weight * (i / (n - 1)) for i in range(n)]
         import math
+
         strength = (sum(weights) / n) * (1.0 + math.log2(n))
         latest = max(s.open_ms for s in group)
-        zones.append(StructureZone(
-            price=zone_price,
-            is_resistance=is_resistance,
-            strength=strength,
-            test_count=n,
-            latest_open_ms=latest,
-        ))
+        zones.append(
+            StructureZone(
+                price=zone_price,
+                is_resistance=is_resistance,
+                strength=strength,
+                test_count=n,
+                latest_open_ms=latest,
+            )
+        )
 
     zones.sort(key=lambda z: z.price)
     return zones
@@ -376,10 +386,10 @@ def classify_structural_trend(
     last_highs = [s.price for s in highs[-min_swings:]]
     last_lows = [s.price for s in lows[-min_swings:]]
 
-    highs_ascending = all(b > a for a, b in zip(last_highs, last_highs[1:]))
-    highs_descending = all(b < a for a, b in zip(last_highs, last_highs[1:]))
-    lows_ascending = all(b > a for a, b in zip(last_lows, last_lows[1:]))
-    lows_descending = all(b < a for a, b in zip(last_lows, last_lows[1:]))
+    highs_ascending = all(b > a for a, b in zip(last_highs, last_highs[1:], strict=False))
+    highs_descending = all(b < a for a, b in zip(last_highs, last_highs[1:], strict=False))
+    lows_ascending = all(b > a for a, b in zip(last_lows, last_lows[1:], strict=False))
+    lows_descending = all(b < a for a, b in zip(last_lows, last_lows[1:], strict=False))
 
     if highs_ascending and lows_ascending:
         return StructuralTrend.BULLISH
@@ -423,6 +433,7 @@ def find_fta(
 # Public entry points
 # ---------------------------------------------------------------------------
 
+
 def analyse_timeframe(
     bars: Sequence[OHLCBar],
     current_price: float,
@@ -445,11 +456,17 @@ def analyse_timeframe(
     swing_lows = detect_swing_lows(bars, params.swing_n)
 
     resistance_zones = cluster_into_zones(
-        swing_highs, atr, params.merge_atr, is_resistance=True,
+        swing_highs,
+        atr,
+        params.merge_atr,
+        is_resistance=True,
         recency_weight=params.zone_recency_weight,
     )
     support_zones = cluster_into_zones(
-        swing_lows, atr, params.merge_atr, is_resistance=False,
+        swing_lows,
+        atr,
+        params.merge_atr,
+        is_resistance=False,
         recency_weight=params.zone_recency_weight,
     )
 

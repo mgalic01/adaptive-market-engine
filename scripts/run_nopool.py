@@ -22,7 +22,12 @@ from crypto_grid_bot.backtest.__main__ import _identity, _table, result_failures
 from crypto_grid_bot.backtest.dataset import load_manifest, load_spec
 from crypto_grid_bot.backtest.features import FEATURE_VERSION
 from crypto_grid_bot.backtest.jobs import manifest_path, run_job
-from crypto_grid_bot.backtest.replay import ENGINE_VERSION, INTEGRITY_RULES, PATH_MODES, VOLUME_DRIFT_TOLERANCE
+from crypto_grid_bot.backtest.replay import (
+    ENGINE_VERSION,
+    INTEGRITY_RULES,
+    PATH_MODES,
+    VOLUME_DRIFT_TOLERANCE,
+)
 from crypto_grid_bot.simulation.runner import SimulationPolicy
 
 VARIANT_A = "--variant-a" in sys.argv
