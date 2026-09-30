@@ -1,5 +1,7 @@
 # FTA-aware sell targets: cap grid levels below nearest resistance
 
+Index: 2026-09-29: FTA resistance cap wired into `GridBuilder.build()` in `strategy/grid.py`.
+
 **Date:** 2026-09-29
 **Branch:** bob/fta-sell-target
 **Author:** IBM Bob (owner's desktop session)

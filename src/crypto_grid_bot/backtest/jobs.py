@@ -31,6 +31,7 @@ from crypto_grid_bot.backtest.replay import (
     summarise,
 )
 from crypto_grid_bot.config import load_config
+from crypto_grid_bot.simulation.runner import SimulationPolicy
 
 
 def manifest_path(spec_path: Path) -> Path:
@@ -45,8 +46,14 @@ def run_job(
     path_mode: str,
     gated: bool,
     fees: tuple[Decimal, Decimal | None] | None = None,
+    policy: SimulationPolicy | None = None,
 ) -> dict[str, Any]:
-    """``fees`` is (maker, taker) overriding the spec; taker None means maker."""
+    """``fees`` is (maker, taker) overriding the spec; taker None means maker.
+
+    ``policy`` controls simulation variants; None gives V0 behaviour (no trend switch).
+    When ``policy.trend_switch`` is True, the pair's daily bars are required and are
+    already loaded as ``pair_daily`` — passed to both ``FeatureEngine`` and ``replay()``.
+    """
     spec, config = load_spec(spec_path), load_config(config_path)
     manifest = load_manifest(manifest_path(spec_path))
     maker, taker = fees or (spec.fee_rate, None)
@@ -59,7 +66,8 @@ def run_job(
         taker,
     )
     spread = spec.assumed_spread_pct / 100
-    pair = SeriesFeatures(symbol, load_hourly(data_dir, manifest, symbol))
+    pair_hourly = load_hourly(data_dir, manifest, symbol)
+    pair = SeriesFeatures(symbol, pair_hourly)
     market = (
         pair
         if spec.market_proxy == symbol
@@ -69,6 +77,13 @@ def run_job(
         SeriesFeatures(s, load_hourly(data_dir, manifest, s), full=False)
         for s in spec.breadth_basket
     ]
+    # V2: pass raw hourly candles for structure.py (needs OHLC; SeriesFeatures discards high/low).
+    # Daily bars are loaded only when the spec declares a daily_warmup_start.
+    pair_daily = (
+        load_daily(data_dir, manifest, symbol)
+        if spec.daily_warmup_start and symbol in {*spec.traded, spec.market_proxy}
+        else None
+    )
     features = FeatureEngine(
         pair,
         market,
@@ -78,9 +93,18 @@ def run_job(
         minimum_cost_multiple=config.minimum_grid_cost_multiple,
         # A grid cycle is two resting fills, so it pays the maker fee twice.
         round_trip_cost=float(2 * (maker + spec.slippage_rate) + spread),
+        hourly_candles=pair_hourly,
+        daily_bars=pair_daily,
     )
     run = RunConfig(symbol, path_mode, gated, rules, spec.initial_quote, spread)
-    metrics, account = replay(config, run, load_minutes(data_dir, manifest, symbol), features)
+    metrics, account = replay(
+        config,
+        run,
+        load_minutes(data_dir, manifest, symbol),
+        features,
+        policy=policy,
+        daily=pair_daily,
+    )
     return summarise(run, metrics, account, check_accounting(run, metrics, account))
 
 

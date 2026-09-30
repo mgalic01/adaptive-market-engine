@@ -1,0 +1,28 @@
+# Recovery and bull window: 2023 recovery through 2024 BTC ETF approval and new ATHs.
+# Clean window: all months 2023-04 through 2024-12 pass Binance archive integrity.
+# (2023-03 has a Binance outage defect across all pairs; warmup starts 2023-04.)
+#
+# Together with long-bull-bear-2022.toml this gives two complete market-cycle
+# windows for V2 research. Verify-2024h1.toml overlaps this window (2024-01 to 2024-06);
+# results can be compared for consistency.
+#
+# Traded pairs: BTCUSDT, ETHUSDT, XRPUSDT — complete 1h and 1m archives for this period.
+# No daily_warmup_start: daily (1d) archives not yet fetched; add after:
+#   python -m crypto_grid_bot.backtest fetch --spec this-file.toml
+# and set daily_warmup_start = "2022-10" (200 days before 2023-04).
+name = "long-recovery-2023-2024"
+purpose = "V2 research: 2023 recovery + 2024 ETF bull, 15 evaluation months 2023-10 to 2024-12"
+traded = ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
+market_proxy = "BTCUSDT"
+breadth_basket = [
+  "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+  "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
+]
+warmup_start = "2023-04"
+start = "2023-10"
+end = "2024-12"
+initial_quote = "100"
+fee_rate = "0.001"
+slippage_rate = "0.0005"
+participation = "0.10"
+assumed_spread_pct = "0.05"

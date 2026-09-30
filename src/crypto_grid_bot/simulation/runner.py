@@ -11,8 +11,10 @@ from typing import Any
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import (
     CandidateMetrics,
+    MarketRegime,
     MarketSignals,
     PortfolioSnapshot,
+    RegimeAssessment,
     RiskAction,
     RiskDecision,
 )
@@ -147,6 +149,8 @@ class Frame:
     epoch: str | None = None
     # Variant A only: the daily trend state for this observation (see trend_switch.py).
     trend: TrendSignal | None = None
+    # V2: nearest resistance above current price from structure.py; None when unavailable.
+    fta_resistance: float | None = None
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -155,6 +159,8 @@ class Frame:
             del value["epoch"]  # Keeps journals written before this field byte-identical.
         if value["trend"] is None:
             del value["trend"]  # Likewise for journals without variant A.
+        if value["fta_resistance"] is None:
+            del value["fta_resistance"]  # Omit from journals when structure unavailable.
         return value
 
 
@@ -683,7 +689,7 @@ class PaperSimulator:
                         )
                     elif not account.pause and not account.range_exit and frame.allow_new_grid:
                         try:
-                            report["opened"] = self._open_grid(account, frame, capped)
+                            report["opened"] = self._open_grid(account, frame, capped, regime)
                             report["decision"] = "open_grid"
                         except GridNotViable as exc:
                             report.update(decision="cash", reason=str(exc))
@@ -897,11 +903,20 @@ class PaperSimulator:
             )
         return allowed
 
-    def _open_grid(self, account: Account, frame: Frame, capped: list[dict[str, Any]]) -> list[str]:
+    def _open_grid(self, account: Account, frame: Frame, capped: list[dict[str, Any]], regime: RegimeAssessment | None = None) -> list[str]:
         rules, quote = self.rules, frame.quote
         spread = (quote.ask - quote.bid) / quote.ask
         cost = 2 * (rules.fee_rate + rules.slippage_rate) + spread
         budget = account.available_quote(rules) * D("0.8")
+        # FTA resistance cap only applies in a ranging market. In trending markets
+        # (BULL/BEAR) resistance zones cluster everywhere and the cap compresses all
+        # sell levels to one price, preventing cycle completion. See backtest comparison
+        # 2026-09-30 §8.4 for the diagnosis.
+        fta = (
+            frame.fta_resistance
+            if regime is None or regime.regime == MarketRegime.RANGE
+            else None
+        )
         plan = self.builder.build(
             symbol=rules.symbol,
             fair_value=float(frame.fair_value),
@@ -910,6 +925,7 @@ class PaperSimulator:
             min_notional=float(rules.minimum_notional * (ONE + rules.fee_rate)),
             round_trip_cost_pct=float(cost * 100),
             capital_utilization=1,
+            fta_resistance=fta,
         )
         levels = tuple(floor_step(D(str(level)), rules.tick_size) for level in plan.levels)
         pairs = [

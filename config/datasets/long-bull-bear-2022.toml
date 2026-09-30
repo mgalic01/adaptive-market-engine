@@ -1,0 +1,28 @@
+# Long bull-bear window: 2022 crash (LUNA May 2022, FTX Nov 2022) through early recovery.
+# Clean window: all months 2022-01 through 2023-02 pass Binance archive integrity.
+# (2023-03 has a Binance outage defect across all pairs; this spec ends at 2023-02.)
+#
+# Together with long-recovery-2023-2024.toml this gives two complete market-cycle
+# windows for V2 research. Practice-2022.toml overlaps this window; results can be
+# compared for consistency.
+#
+# Traded pairs: BTCUSDT, ETHUSDT, XRPUSDT — complete 1h and 1m archives for this period.
+# No daily_warmup_start: daily (1d) archives not yet fetched; add after:
+#   python -m crypto_grid_bot.backtest fetch --spec this-file.toml
+# and set daily_warmup_start = "2021-07" (200 days before 2022-01).
+name = "long-bull-bear-2022"
+purpose = "V2 research: 2022 crash and early recovery, 9 evaluation months 2022-06 to 2023-02"
+traded = ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
+market_proxy = "BTCUSDT"
+breadth_basket = [
+  "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+  "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
+]
+warmup_start = "2022-01"
+start = "2022-06"
+end = "2023-02"
+initial_quote = "100"
+fee_rate = "0.001"
+slippage_rate = "0.0005"
+participation = "0.10"
+assumed_spread_pct = "0.05"

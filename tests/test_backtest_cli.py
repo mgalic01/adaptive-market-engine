@@ -98,7 +98,7 @@ class CliIntegrityTests(unittest.TestCase):
         self.strict.append(strict_volume)
         return {"symbol": symbol, **self.checks}
 
-    def fake_run(self, spec, config, data_dir, symbol, mode, gated, fees=None):
+    def fake_run(self, spec, config, data_dir, symbol, mode, gated, fees=None, policy=None):
         self.replays.append(symbol)
         self.fees.append(fees)
         return {**good_result(symbol, mode, gated), **self.result_patch}

@@ -1,0 +1,50 @@
+# Full-range development window: 2019-01 warm-up, 2019-07 evaluation start, 2024-12 end.
+# Covers the 2019-20 bear, the 2020-21 bull, the 2022 crash (LUNA, FTX), the 2023-24
+# recovery and the 2024 ETF-driven bull. Longest available V2 test window without
+# entering the reserved window (2025+).
+#
+# Traded pairs: BTCUSDT, ETHUSDT, XRPUSDT — all have complete 1h and 1m archives
+# from at least 2018-05 through 2024-12. XRP starts 2018-05 so six warm-up months
+# (2019-01 to 2019-06) are well within range.
+#
+# No daily_warmup_start: daily (1d) archives have not been fetched yet.
+# Re-add daily_warmup_start = "2018-07" after running:
+#   python -m crypto_grid_bot.backtest fetch --spec this-file.toml
+# (That will also download the 1d zips and update the manifest.)
+#
+# Basket exclusions:
+#   SOLUSDT:  listed 2020-08; first six months of the spec window are missing.
+#   DOGEUSDT: first listed file is 2019-07; six months of warm-up are missing.
+# ADA is omitted: its archive has many non-contiguous gaps (listed in 2023-03 file
+# only; not suitable for a basket that requires documented contiguous exclusions).
+#
+# This dataset is for V2 development research only.
+# Not the untouched test window; results here may guide design, never prove it.
+name = "full-range-2019-2024"
+purpose = "full-development-window V2 research: 5.5-year evaluation 2019-07 to 2024-12"
+traded = ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
+market_proxy = "BTCUSDT"
+breadth_basket = [
+  "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+  "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
+]
+warmup_start = "2019-01"
+start = "2019-07"
+end = "2024-12"
+initial_quote = "100"
+fee_rate = "0.001"
+slippage_rate = "0.0005"
+participation = "0.10"
+assumed_spread_pct = "0.05"
+
+[[basket_exclusions]]
+symbol = "SOLUSDT"
+from = "2019-01-01T00:00Z"
+to = "2020-08-01T00:00Z"
+reason = "SOLUSDT was not listed on Binance before August 2020; no 1h archive exists for this period"
+
+[[basket_exclusions]]
+symbol = "DOGEUSDT"
+from = "2019-01-01T00:00Z"
+to = "2019-07-01T00:00Z"
+reason = "DOGEUSDT-1h archive starts 2019-07; first six warm-up months are absent"
