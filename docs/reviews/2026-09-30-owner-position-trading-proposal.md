@@ -96,15 +96,31 @@ Bitcoin has historically followed a consistent 4-year cycle driven by the halvin
 | 3rd | 2020-05-11 | ~$8,600 | 2021-11 | ~$69,000 |
 | 4th | 2024-04-20 | ~$64,000 | 2025-Q4 est. | unknown (reserved window) |
 
-**The 4th halving occurred on 2024-04-20.** Based on the historical pattern, the cycle peak is expected in late 2025. This is in the reserved window — the bot must NOT make predictions about 2025 prices. But the cycle position is a known, public fact.
+**The 4th halving occurred on 2024-04-20.** Based on the historical pattern (17–18 months post-halving), the cycle peak is estimated around **October–November 2025** — this is in the reserved window and the bot makes no price prediction about it.
+
+### Current position in the cycle (as of 2026-09-30)
+
+Today is **30 September 2026.** Working through the timeline:
+
+- 4th halving: 2024-04-20
+- Estimated cycle peak: ~Oct–Nov 2025 (17 months post-halving, consistent with prior cycles)
+- Time since estimated peak: **~11 months**
+- Prior bear market durations post-ATH: 13 months (2018), 12 months (2022)
+- Expected bottom range: **Oct 2026 – Apr 2027**
+
+**The owner is correct: as of today we are nearing the end of the bear market / entering the accumulation zone.** This is historically the best time to begin accumulating — not the bull, not the parabolic phase. The bot sitting in cash right now is actually appropriate for capital preservation, but it should be preparing to accumulate, not waiting indefinitely.
+
+This is the exact scenario the position trading mode (P3) is designed for.
 
 ### What the cycle tells us about the development data
 
 Our backtest windows now make complete sense through this lens:
 
-- **2022-06 to 2023-02 (bear window):** post-ATH bear market, 18 months after the 2021-11 peak. Exactly the "bear market / capitulation" phase. The bot should have been doing nothing or going short. The gated strategy correctly sat out.
-- **2023-10 to 2024-12 (recovery/bull window):** late bear to early bull, leading into the 4th halving (April 2024). The bot should have been accumulating. The gated strategy sat in cash earning 0%. **This is the primary missed opportunity.**
-- **2024-04-20 onwards:** post-halving bull. Historical pattern says this runs 12–18 months. This is entirely in the reserved window.
+- **2022-06 to 2023-02 (bear window):** post-3rd-ATH bear market, 7–15 months after the Nov 2021 peak. Capitulation phase. The gated strategy correctly sat out.
+- **2023-10 to 2024-12 (recovery/bull window):** late bear → accumulation → early bull leading into the 4th halving (April 2024). **This is the buy zone.** The gated strategy sat in cash earning 0%. This is the primary missed opportunity — accumulation phase entries should have been triggered.
+- **2024-04-20 to 2024-12 (end of development data):** early post-halving bull. Hold phase. Bot should have been holding positions accumulated in 2023.
+- **2025 onwards (reserved window):** estimated parabolic bull and distribution phase. Not used in development.
+- **Today, Sept 2026:** post-peak bear, approaching bottom. **Accumulation mode should be activating.**
 
 ### P2a: Cycle phase signal
 
