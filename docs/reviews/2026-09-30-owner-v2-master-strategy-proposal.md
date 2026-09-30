@@ -259,3 +259,101 @@ Mark each with your decision. Claude and Codex will not implement anything witho
 | `src/crypto_grid_bot/market_data/client.py` | REST client with depth endpoint on allowlist (already built) |
 
 — IBM Bob (owner's desktop session)
+
+---
+
+## 10. What has been built so far (complete history)
+
+### 10.1 Foundation (merged to `main`, fully stable)
+
+Everything below `344f9ae` on `main` is the stable V0 foundation. Key capabilities:
+
+| What | Where | Status |
+|------|-------|--------|
+| Paper simulation engine | `simulation/runner.py` | ✅ Merged, tested |
+| Geometric grid builder | `strategy/grid.py` | ✅ Merged, tested |
+| Regime classifier (5 signals: trend, breadth, momentum, vol_health, liq_health) | `strategy/regime.py` | ✅ Merged, tested |
+| Opportunity scorer | `strategy/opportunity.py` | ✅ Merged, tested |
+| Historical replay engine (backtest) | `backtest/replay.py` | ✅ Merged, tested |
+| Binance kline archive fetcher (1m, 1h, 1d) | `backtest/dataset.py` | ✅ Merged, tested |
+| Archive integrity checker | `backtest/dataset.py` | ✅ Merged, tested |
+| Live WebSocket price stream (bid/ask) | `market_data/stream.py` | ✅ Merged, tested |
+| Live REST client (klines, depth, exchange info) | `market_data/client.py` | ✅ Merged, tested |
+| Variant A daily SMA50/SMA200 trend switch | `simulation/trend_switch.py` | ✅ Merged, **not yet backtested** |
+| Variant B inventory cap | `simulation/runner.py` | ✅ Merged, not yet measured |
+| Soft/hard drawdown recovery (spec v1 amendment 1) | `simulation/runner.py` | ✅ Merged |
+| Funding rate signal (G) | `backtest/funding.py` | ✅ Merged, partial |
+| Test suite | `tests/` | ✅ 773 passed, 4 skipped |
+
+### 10.2 V2 work in progress (on `bob/v2-integrated`, PR #151)
+
+All commits on top of `main` at `344f9ae`:
+
+| Commit | What was built | Tests |
+|--------|---------------|-------|
+| `c2055b5` | `structure.py` — swing detection, support/resistance zones, FTA, multi-timeframe alignment | 55 new tests |
+| `c220c4d` | `GridBuilder.build()` — optional FTA resistance cap (sell just below resistance) | 5 new tests |
+| `86a11ab` | `structure_alignment` added to `MarketSignals`, `Inputs`, `RegimeClassifier` (weight 0.10; `trend` reduced 0.35→0.25) | Existing tests updated |
+| `11a158b` | V2 backlog docs (S3 min sample size, S8 scientific loop metrics) | Docs only |
+| `67fd563` | Full V2 wiring: `_KlineView`, `fta_resistance` in `Inputs`/`Frame`, `hourly_candles`/`daily_bars` in `FeatureEngine`, `jobs.py`, `replay.py` | 773 passed |
+| `0edcc1f` | Variant A flag (`--variant-a`) wired into backtest CLI and `run_job` | Tests updated |
+| `9d18c68` | Performance fix 1: `_structure_cache` — only recomputes structure when hourly candle index `p` changes (was O(n²)) | Existing tests |
+| `7e24568` | Performance fix 2: cap hourly window to 500 bars (prevents O(n) growth per cache miss) | Existing tests |
+| `9abb1f3` | `scripts/run_nopool.py` — sequential runner (no `ProcessPoolExecutor`); `backtest.yml` updated | Workflow |
+| `9d7bd99` | V2 vs V0 backtest comparison report across 4 windows | Docs |
+| `cde876c` | Strategic analysis appendix (§8): root cause diagnosis + concrete proposals | Docs |
+| `8bed5be` | Owner proposal: position trading mode + 4-year cycle | Docs |
+| `a47797b` | Cycle position corrected: late bear/accumulation as of 2026-09-30 | Docs |
+| `4b88127` | Owner proposal: live market data layer | Docs |
+| `9f35e12` | **This document** — master strategy proposal | Docs |
+
+### 10.3 Backtest results summary (development windows only)
+
+Four runs completed on GitHub Actions, 2026-09-30:
+
+| Window | Period | BTC gated | ETH gated | XRP gated | Key finding |
+|--------|--------|-----------|-----------|-----------|-------------|
+| long-bull-bear-2022 | 2022-06→2023-02 | 0.00% | −2.10% | **+4.67%** | Gate saves capital; XRP profits in range pockets |
+| long-recovery-2023-2024 | 2023-10→2024-12 | 0.00% | 0.00% | −6.91% | Bot sits out entire bull market — primary gap |
+| practice-2022 | 2022-06→2023-01 | +0.72% | n/a | +2.71% | SOL: 500 grids in crash — eligibility needs review |
+| verify-2024h1 | 2024-01→2024-06 | 0.00% | n/a | n/a | ADA gated −0.73% vs ungated −15.46% (halted) |
+
+---
+
+## 11. Open PRs — merge order for Claude and Codex
+
+**Rule:** never merge to `main` without Claude review + owner go. Never merge out of order — later PRs depend on earlier ones being on `main` first.
+
+### Current open PRs (6 total)
+
+```
+#146 → #147 → (#148 + #150 in either order) → #149 → #151
+```
+
+| PR | Title | What it contains | Depends on | Status |
+|----|-------|-----------------|-----------|--------|
+| **#146** | Owner direction: regime-adaptive grid spacing | Docs only — records owner direction on tight/wide spacing per regime. No code. | Nothing | Merge first — docs only, no conflicts |
+| **#147** | Market structure perception | `structure.py` — swing detection, S/R zones, FTA, MTF alignment. 55 tests. | #146 (docs context) | Merge second |
+| **#148** | FTA-aware sell targets | `GridBuilder.build()` FTA cap. 5 tests. | #147 (`structure.py` provides the concept; `grid.py` itself is independent) | Merge with or after #147 |
+| **#150** | Structure alignment signal | `structure_alignment` in `MarketSignals`, `Inputs`, `RegimeClassifier`. | #147 (uses `structure.py` concept) | Merge with or after #147 |
+| **#149** | Bob task: backtest comparison | Task file for V0 vs FTA vs structure_alignment comparison. Docs only. | #147, #148, #150 all merged first | Merge after #148 + #150 |
+| **#151** | V2 integrated (this branch) | Everything above cherry-picked + wiring + performance fixes + new dataset specs + backtest results + all proposals from today | All of #146–#150 merged | Merge last — this is the integration branch |
+
+### Why this order
+
+- **#146 first:** pure docs, no conflicts with anything, provides context for reviewers of #147
+- **#147 second:** `structure.py` is the foundation. #148 and #150 both depend on its concepts (though not its import directly). Must be on `main` before either can be cleanly reviewed.
+- **#148 and #150 in either order:** independent of each other. #148 touches `grid.py`; #150 touches `domain.py` and `regime.py`. No file overlap.
+- **#149 after #148 + #150:** the task file runs the comparison — it requires all features to be on `main` first.
+- **#151 last:** this integration branch cherry-picked everything from the above PRs. Once #146–#150 are all merged, #151's cherry-picks become redundant and only the V2-specific additions (new specs, performance fixes, today's proposals) are new. Claude/Codex should review what's unique to #151 at that point.
+
+### Note on #151 vs individual PRs
+
+PR #151 (`bob/v2-integrated`) already contains all code from #147, #148, and #150 as cherry-picks — it is the only branch where everything actually runs together and has been backtested. If Claude/Codex want to verify the integration works, they should review #151. If they want to merge cleanly, they should merge #146 → #150 first, then #151 will only add the V2-specific work on top.
+
+### After all PRs merge
+
+Once `main` has all 6 PRs merged, the next immediate tasks (from §7 build order) are:
+1. Fix FTA cap to RANGE-only (trivial bug fix, no owner decision needed)
+2. Fetch daily bars → run Variant A backtest (owner decision PR-D2 needed)
+3. Add `buy_pressure` signal (owner decision LD-1 needed)
