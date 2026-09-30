@@ -220,7 +220,7 @@ class _KlineView:
     close: float
 
     @staticmethod
-    def from_kline(k: Kline) -> "_KlineView":
+    def from_kline(k: Kline) -> _KlineView:
         return _KlineView(k.open_ms, float(k.high), float(k.low), float(k.close))
 
 
@@ -295,12 +295,15 @@ class FeatureEngine:
             # detect swings and zones; older bars have negligible structural weight.
             _STRUCTURE_HOURLY_WINDOW = 500
             hourly_candles = (
-                [_KlineView.from_kline(k) for k in self._hourly_candles[max(0, p + 1 - _STRUCTURE_HOURLY_WINDOW):p + 1]]
-                if self._hourly_candles else None
+                [
+                    _KlineView.from_kline(k)
+                    for k in self._hourly_candles[max(0, p + 1 - _STRUCTURE_HOURLY_WINDOW) : p + 1]
+                ]
+                if self._hourly_candles
+                else None
             )
             daily_candles = (
-                [_KlineView.from_kline(k) for k in self._daily_bars]
-                if self._daily_bars else None
+                [_KlineView.from_kline(k) for k in self._daily_bars] if self._daily_bars else None
             )
             mtf = analyse_multi_timeframe(
                 hourly_bars=hourly_candles,

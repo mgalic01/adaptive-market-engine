@@ -220,7 +220,15 @@ def main(argv: list[str] | None = None) -> int:
         policy = SimulationPolicy(trend_switch=True) if args.variant_a else None
         futures = [
             pool.submit(
-                run_job, args.spec, args.config, args.data_dir, s, mode, gated, (maker, taker), policy
+                run_job,
+                args.spec,
+                args.config,
+                args.data_dir,
+                s,
+                mode,
+                gated,
+                (maker, taker),
+                policy,
             )
             for s in spec.traded
             for mode in PATH_MODES

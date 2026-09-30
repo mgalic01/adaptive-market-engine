@@ -217,9 +217,9 @@ When ready to integrate this into the live strategy:
 
 **Step 1 — Add to `Inputs` dataclass (`backtest/features.py`):**
 ```python
-structure_alignment: float = 0.0        # [-1, +1], from MultiTimeframeStructure
+structure_alignment: float = 0.0  # [-1, +1], from MultiTimeframeStructure
 nearest_resistance: float | None = None  # price of nearest FTA resistance, or None
-nearest_support: float | None = None     # price of nearest FTA support, or None
+nearest_support: float | None = None  # price of nearest FTA support, or None
 ```
 
 **Step 2 — Feed into `FeatureEngine.at()`:**

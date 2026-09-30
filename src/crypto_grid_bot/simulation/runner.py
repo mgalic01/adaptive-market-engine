@@ -903,7 +903,13 @@ class PaperSimulator:
             )
         return allowed
 
-    def _open_grid(self, account: Account, frame: Frame, capped: list[dict[str, Any]], regime: RegimeAssessment | None = None) -> list[str]:
+    def _open_grid(
+        self,
+        account: Account,
+        frame: Frame,
+        capped: list[dict[str, Any]],
+        regime: RegimeAssessment | None = None,
+    ) -> list[str]:
         rules, quote = self.rules, frame.quote
         spread = (quote.ask - quote.bid) / quote.ask
         cost = 2 * (rules.fee_rate + rules.slippage_rate) + spread
@@ -913,9 +919,7 @@ class PaperSimulator:
         # sell levels to one price, preventing cycle completion. See backtest comparison
         # 2026-09-30 §8.4 for the diagnosis.
         fta = (
-            frame.fta_resistance
-            if regime is None or regime.regime == MarketRegime.RANGE
-            else None
+            frame.fta_resistance if regime is None or regime.regime == MarketRegime.RANGE else None
         )
         plan = self.builder.build(
             symbol=rules.symbol,

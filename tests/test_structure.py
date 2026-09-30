@@ -14,15 +14,13 @@ Test strategy:
 
 from __future__ import annotations
 
-import math
 import unittest
 from dataclasses import dataclass
 
 from crypto_grid_bot.strategy.structure import (
-    MultiTimeframeStructure,
+    StructuralTrend,
     StructureLevel,
     StructureParams,
-    StructuralTrend,
     StructureZone,
     SwingPoint,
     TimeframeStructure,
@@ -36,10 +34,10 @@ from crypto_grid_bot.strategy.structure import (
     find_fta,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class Bar:
@@ -50,29 +48,34 @@ class Bar:
     open: float = 0.0
 
 
-def flat_bars(n: int, price: float = 100.0, *, start_ms: int = 0, step_ms: int = 3_600_000) -> list[Bar]:
+def flat_bars(
+    n: int, price: float = 100.0, *, start_ms: int = 0, step_ms: int = 3_600_000
+) -> list[Bar]:
     """n bars all at the same OHLC price."""
     return [Bar(start_ms + i * step_ms, price, price, price) for i in range(n)]
 
 
 def ascending_bars(n: int, start: float = 100.0, step: float = 1.0) -> list[Bar]:
     """n bars with strictly ascending close/high/low."""
-    return [Bar(i * 3_600_000, start + i * step, start + i * step - 0.5, start + i * step) for i in range(n)]
+    return [
+        Bar(i * 3_600_000, start + i * step, start + i * step - 0.5, start + i * step)
+        for i in range(n)
+    ]
 
 
 def descending_bars(n: int, start: float = 200.0, step: float = 1.0) -> list[Bar]:
     """n bars with strictly descending close/high/low."""
-    return [Bar(i * 3_600_000, start - i * step, start - i * step - 0.5, start - i * step) for i in range(n)]
+    return [
+        Bar(i * 3_600_000, start - i * step, start - i * step - 0.5, start - i * step)
+        for i in range(n)
+    ]
 
 
 def zigzag_bars(n: int, base: float = 100.0, amplitude: float = 5.0) -> list[Bar]:
     """Alternating high/low bars for swing detection testing."""
     bars = []
     for i in range(n):
-        if i % 2 == 0:
-            price = base + amplitude
-        else:
-            price = base - amplitude
+        price = base + amplitude if i % 2 == 0 else base - amplitude
         bars.append(Bar(i * 3_600_000, price, price - 0.1, price))
     return bars
 
@@ -88,6 +91,7 @@ def make_swing_low(index: int, price: float, open_ms: int = 0) -> SwingPoint:
 # ---------------------------------------------------------------------------
 # compute_atr
 # ---------------------------------------------------------------------------
+
 
 class TestComputeATR(unittest.TestCase):
     def test_returns_zero_for_fewer_bars_than_period(self):
@@ -120,6 +124,7 @@ class TestComputeATR(unittest.TestCase):
 # detect_swing_highs / detect_swing_lows
 # ---------------------------------------------------------------------------
 
+
 class TestDetectSwingHighs(unittest.TestCase):
     def test_empty_sequence_returns_empty(self):
         self.assertEqual([], detect_swing_highs([], 3))
@@ -139,7 +144,10 @@ class TestDetectSwingHighs(unittest.TestCase):
         bars = (
             [Bar(i * 1000, 100.0 + i, 100.0 + i - 0.5, 100.0 + i) for i in range(10)]
             + [Bar(10_000, 115.0, 114.5, 115.0)]
-            + [Bar((11 + i) * 1000, 115.0 - (i + 1), 115.0 - (i + 1) - 0.5, 115.0 - (i + 1)) for i in range(10)]
+            + [
+                Bar((11 + i) * 1000, 115.0 - (i + 1), 115.0 - (i + 1) - 0.5, 115.0 - (i + 1))
+                for i in range(10)
+            ]
         )
         highs = detect_swing_highs(bars, 3)
         self.assertEqual(1, len(highs))
@@ -151,8 +159,10 @@ class TestDetectSwingHighs(unittest.TestCase):
         # Zigzag: high, low, high, low, ... with n=1
         highs_at = [10.0, 8.0, 10.0, 8.0, 10.0]
         lows_at = [8.0, 8.0, 8.0, 8.0, 8.0]
-        bars = [Bar(i * 1000, highs_at[i % len(highs_at)], lows_at[i % len(lows_at)], 9.0)
-                for i in range(20)]
+        bars = [
+            Bar(i * 1000, highs_at[i % len(highs_at)], lows_at[i % len(lows_at)], 9.0)
+            for i in range(20)
+        ]
         result = detect_swing_highs(bars, 1)
         # Every even-indexed bar (after index 0) where high > neighbours
         self.assertGreater(len(result), 0)
@@ -175,7 +185,10 @@ class TestDetectSwingLows(unittest.TestCase):
         bars = (
             [Bar(i * 1000, 100.0 - i, 100.0 - i - 0.5, 100.0 - i) for i in range(10)]
             + [Bar(10_000, 85.0, 84.5, 85.0)]
-            + [Bar((11 + i) * 1000, 85.0 + (i + 1), 85.0 + (i + 1) - 0.5, 85.0 + (i + 1)) for i in range(10)]
+            + [
+                Bar((11 + i) * 1000, 85.0 + (i + 1), 85.0 + (i + 1) - 0.5, 85.0 + (i + 1))
+                for i in range(10)
+            ]
         )
         lows = detect_swing_lows(bars, 3)
         self.assertEqual(1, len(lows))
@@ -201,31 +214,40 @@ class TestDetectSwingLows(unittest.TestCase):
 # cluster_into_zones
 # ---------------------------------------------------------------------------
 
+
 class TestClusterIntoZones(unittest.TestCase):
     def test_empty_swings_returns_empty(self):
-        result = cluster_into_zones([], atr=1.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5)
+        result = cluster_into_zones(
+            [], atr=1.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5
+        )
         self.assertEqual([], result)
 
     def test_single_swing_becomes_single_zone(self):
         swings = [make_swing_high(0, 100.0, open_ms=1000)]
-        zones = cluster_into_zones(swings, atr=1.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5)
+        zones = cluster_into_zones(
+            swings, atr=1.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5
+        )
         self.assertEqual(1, len(zones))
         self.assertAlmostEqual(100.0, zones[0].price)
         self.assertEqual(1, zones[0].test_count)
         self.assertAlmostEqual(1.0, zones[0].strength)
 
     def test_two_close_swings_merge(self):
-        # ATR=10, merge_atr=0.5 → threshold=5. Two swings 3 apart → merge.
+        # ATR=10, merge_atr=0.5 -> threshold=5. Two swings 3 apart -> merge.
         swings = [make_swing_high(0, 100.0, 1000), make_swing_high(1, 103.0, 2000)]
-        zones = cluster_into_zones(swings, atr=10.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5)
+        zones = cluster_into_zones(
+            swings, atr=10.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5
+        )
         self.assertEqual(1, len(zones))
         self.assertAlmostEqual(101.5, zones[0].price)
         self.assertEqual(2, zones[0].test_count)
 
     def test_two_far_swings_stay_separate(self):
-        # ATR=1, merge_atr=0.5 → threshold=0.5. Swings 10 apart → separate.
+        # ATR=1, merge_atr=0.5 -> threshold=0.5. Swings 10 apart -> separate.
         swings = [make_swing_high(0, 100.0, 1000), make_swing_high(1, 110.0, 2000)]
-        zones = cluster_into_zones(swings, atr=1.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5)
+        zones = cluster_into_zones(
+            swings, atr=1.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5
+        )
         self.assertEqual(2, len(zones))
 
     def test_zones_sorted_by_price_ascending(self):
@@ -234,27 +256,37 @@ class TestClusterIntoZones(unittest.TestCase):
             make_swing_high(1, 100.0, 2000),
             make_swing_high(2, 110.0, 3000),
         ]
-        zones = cluster_into_zones(swings, atr=0.1, merge_atr=0.5, is_resistance=True, recency_weight=0.5)
+        zones = cluster_into_zones(
+            swings, atr=0.1, merge_atr=0.5, is_resistance=True, recency_weight=0.5
+        )
         prices = [z.price for z in zones]
         self.assertEqual(sorted(prices), prices)
 
     def test_merged_zone_price_is_mean(self):
         swings = [make_swing_high(0, 100.0, 1000), make_swing_high(1, 106.0, 2000)]
-        zones = cluster_into_zones(swings, atr=20.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5)
+        zones = cluster_into_zones(
+            swings, atr=20.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5
+        )
         self.assertEqual(1, len(zones))
         self.assertAlmostEqual(103.0, zones[0].price)
 
     def test_strength_is_higher_for_more_tests(self):
         one = [make_swing_high(0, 100.0, 1000)]
         three = [make_swing_high(i, 100.0 + i * 0.01, i * 1000) for i in range(3)]
-        zone_one = cluster_into_zones(one, atr=10.0, merge_atr=1.0, is_resistance=True, recency_weight=0.5)
-        zone_three = cluster_into_zones(three, atr=10.0, merge_atr=1.0, is_resistance=True, recency_weight=0.5)
+        zone_one = cluster_into_zones(
+            one, atr=10.0, merge_atr=1.0, is_resistance=True, recency_weight=0.5
+        )
+        zone_three = cluster_into_zones(
+            three, atr=10.0, merge_atr=1.0, is_resistance=True, recency_weight=0.5
+        )
         self.assertGreater(zone_three[0].strength, zone_one[0].strength)
 
     def test_zero_atr_no_merging(self):
         # When atr=0 threshold is 0, so no merging regardless of price proximity
         swings = [make_swing_high(0, 100.0, 1000), make_swing_high(1, 100.001, 2000)]
-        zones = cluster_into_zones(swings, atr=0.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5)
+        zones = cluster_into_zones(
+            swings, atr=0.0, merge_atr=0.5, is_resistance=True, recency_weight=0.5
+        )
         self.assertEqual(2, len(zones))
 
 
@@ -262,19 +294,17 @@ class TestClusterIntoZones(unittest.TestCase):
 # classify_structural_trend
 # ---------------------------------------------------------------------------
 
+
 class TestClassifyStructuralTrend(unittest.TestCase):
     def test_not_enough_swings_returns_unknown(self):
-        self.assertEqual(
-            StructuralTrend.UNKNOWN,
-            classify_structural_trend([], [], min_swings=2)
-        )
+        self.assertEqual(StructuralTrend.UNKNOWN, classify_structural_trend([], [], min_swings=2))
         self.assertEqual(
             StructuralTrend.UNKNOWN,
             classify_structural_trend(
                 [make_swing_high(0, 100.0)],
                 [make_swing_low(1, 90.0)],
                 min_swings=2,
-            )
+            ),
         )
 
     def test_higher_highs_and_higher_lows_is_bullish(self):
@@ -312,12 +342,17 @@ class TestClassifyStructuralTrend(unittest.TestCase):
 # find_fta
 # ---------------------------------------------------------------------------
 
+
 class TestFindFTA(unittest.TestCase):
     def _r(self, price: float) -> StructureZone:
-        return StructureZone(price=price, is_resistance=True, strength=1.0, test_count=1, latest_open_ms=0)
+        return StructureZone(
+            price=price, is_resistance=True, strength=1.0, test_count=1, latest_open_ms=0
+        )
 
     def _s(self, price: float) -> StructureZone:
-        return StructureZone(price=price, is_resistance=False, strength=1.0, test_count=1, latest_open_ms=0)
+        return StructureZone(
+            price=price, is_resistance=False, strength=1.0, test_count=1, latest_open_ms=0
+        )
 
     def test_no_zones_returns_none_both_sides(self):
         fta = find_fta(100.0, [], [], atr=1.0, max_distance_atr=5.0)
@@ -369,6 +404,7 @@ class TestFindFTA(unittest.TestCase):
 # analyse_timeframe
 # ---------------------------------------------------------------------------
 
+
 class TestAnalyseTimeframe(unittest.TestCase):
     def test_none_for_empty_bars(self):
         self.assertIsNone(analyse_timeframe([], 100.0))
@@ -398,7 +434,7 @@ class TestAnalyseTimeframe(unittest.TestCase):
         params = StructureParams(swing_n=1, min_swings=2, atr_period=3)
         # Pattern: low, high, higher-low, higher-high, padding
         bars = (
-            [Bar(0, 105.0, 95.0, 100.0)]   # low area
+            [Bar(0, 105.0, 95.0, 100.0)]  # low area
             + [Bar(1_000, 120.0, 105.0, 115.0)]  # first swing high ~120
             + [Bar(2_000, 108.0, 100.0, 104.0)]  # higher low ~100
             + [Bar(3_000, 130.0, 108.0, 125.0)]  # higher high ~130
@@ -422,7 +458,7 @@ class TestAnalyseTimeframe(unittest.TestCase):
         params = StructureParams(swing_n=2, atr_period=5, min_swings=2)
         bars = (
             [Bar(i * 1000, 100.0, 99.0, 100.0) for i in range(5)]
-            + [Bar(5_000, 120.0, 119.0, 120.0)]   # clear swing high
+            + [Bar(5_000, 120.0, 119.0, 120.0)]  # clear swing high
             + [Bar(i * 1000 + 6_000, 100.0, 99.0, 100.0) for i in range(10)]
         )
         result = analyse_timeframe(bars, 100.0, params)
@@ -434,6 +470,7 @@ class TestAnalyseTimeframe(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # analyse_multi_timeframe
 # ---------------------------------------------------------------------------
+
 
 class TestAnalyseMultiTimeframe(unittest.TestCase):
     def test_all_none_returns_zero_alignment(self):
@@ -478,6 +515,7 @@ class TestAnalyseMultiTimeframe(unittest.TestCase):
 # StructureParams validation
 # ---------------------------------------------------------------------------
 
+
 class TestStructureParams(unittest.TestCase):
     def test_defaults_are_valid(self):
         params = StructureParams()
@@ -509,8 +547,14 @@ class TestStructureParams(unittest.TestCase):
             StructureParams(zone_recency_weight=1.1)
 
     def test_valid_custom_params(self):
-        params = StructureParams(swing_n=5, merge_atr=1.0, max_distance_atr=10.0,
-                                  min_swings=3, atr_period=7, zone_recency_weight=0.8)
+        params = StructureParams(
+            swing_n=5,
+            merge_atr=1.0,
+            max_distance_atr=10.0,
+            min_swings=3,
+            atr_period=7,
+            zone_recency_weight=0.8,
+        )
         self.assertEqual(5, params.swing_n)
 
 
