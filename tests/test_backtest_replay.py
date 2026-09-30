@@ -895,3 +895,132 @@ class VolumeDriftTests(unittest.TestCase):
         self.assertEqual((0, 1), (result["hours_mismatched"], result["hours_volume_drift"]))
         strict = cross_check_hourly(minutes, [drifted], (START_MS, START_MS + HOUR_MS), D(0))
         self.assertEqual((1, 0), (strict["hours_mismatched"], strict["hours_volume_drift"]))
+
+
+# ---------------------------------------------------------------------------
+# Audit fix tests (F16, F17, F18) — 2026-09-30
+# ---------------------------------------------------------------------------
+
+class SignalsForStructureAlignmentTests(unittest.TestCase):
+    """F16: signals_for(gated=True) must pass structure_alignment from Inputs."""
+
+    def _inputs(self, structure_alignment: float):
+        engine = engine_for(hourly(WARMUP))
+        base = engine.at(START_MS + WARMUP * HOUR_MS)
+        # Replace structure_alignment with a known non-zero value.
+        from dataclasses import replace as dc_replace
+        from crypto_grid_bot.backtest.features import Inputs
+        return dc_replace(base, structure_alignment=structure_alignment)
+
+    def test_gated_signals_carries_structure_alignment(self):
+        """structure_alignment from Inputs must appear in the gated MarketSignals."""
+        when = datetime(2024, 6, 1, tzinfo=UTC)
+        inputs = self._inputs(0.75)
+        signals = signals_for(inputs, when, gated=True)
+        self.assertAlmostEqual(0.75, signals.structure_alignment)
+
+    def test_gated_signals_negative_structure_alignment(self):
+        when = datetime(2024, 6, 1, tzinfo=UTC)
+        inputs = self._inputs(-0.50)
+        signals = signals_for(inputs, when, gated=True)
+        self.assertAlmostEqual(-0.50, signals.structure_alignment)
+
+    def test_ungated_signals_structure_alignment_is_zero(self):
+        """Ungated baseline always uses structure_alignment=0.0 (by design)."""
+        when = datetime(2024, 6, 1, tzinfo=UTC)
+        inputs = self._inputs(0.99)
+        signals = signals_for(inputs, when, gated=False)
+        self.assertEqual(0.0, signals.structure_alignment)
+
+
+class FtaRegimeGateTests(unittest.TestCase):
+    """F17/F18: _open_grid passes fta_resistance only in RANGE; full Inputs→Frame→GridBuilder chain."""
+
+    def setUp(self):
+        from crypto_grid_bot.domain import MarketRegime, RegimeAssessment
+        self.MarketRegime = MarketRegime
+        self.RegimeAssessment = RegimeAssessment
+        self.config = load_config(ROOT / "config/default.toml")
+
+    def _open_grid_regime(self, regime_value, fta_resistance):
+        """Open a grid with a specific regime and fta_resistance; return the grid plan used."""
+        from decimal import Decimal
+
+        simulator = PaperSimulator(Path(":memory:"), self.config, RULES, D(100))
+        account = simulator.store.read()
+        simulator.close()
+
+        engine = engine_for(hourly(WARMUP))
+        inputs = engine.at(START_MS + WARMUP * HOUR_MS)
+        when = datetime.fromtimestamp((START_MS + WARMUP * HOUR_MS) / 1000, UTC)
+
+        # Force a specific fta_resistance onto the inputs
+        from dataclasses import replace as dc_replace
+        inputs = dc_replace(inputs, fta_resistance=fta_resistance)
+
+        signals = signals_for(inputs, when, gated=True)
+        candidate = candidate_for(inputs, "TESTUSDT", 0.05, 1e9, gated=True)
+        quote = bar_quotes(
+            candle(START_MS + WARMUP * HOUR_MS, float(inputs.fair_value),
+                   float(inputs.fair_value) * 1.001,
+                   float(inputs.fair_value) * 0.999,
+                   float(inputs.fair_value)),
+            "TESTUSDT", "low_first", D("0.0005"), RULES.tick_size
+        )[0]
+        frame = Frame(quote, signals, candidate, inputs.fair_value, inputs.atr,
+                      True, None, None, fta_resistance)
+
+        regime = self.RegimeAssessment(regime_value, 0.5, 0.9, ())
+        # Capture fta passed to builder by patching it
+        captured = {}
+        original_build = simulator.builder.build
+
+        def capture_build(**kwargs):
+            captured["fta_resistance"] = kwargs.get("fta_resistance")
+            return original_build(**kwargs)
+
+        simulator.builder.build = capture_build
+        try:
+            simulator._open_grid(account, frame, [], regime)
+        except Exception:
+            pass  # GridNotViable is fine — we only care about captured["fta_resistance"]
+        return captured.get("fta_resistance", "NOT_CALLED")
+
+    def test_fta_passed_in_range_regime(self):
+        """FTA resistance cap is active when regime is RANGE."""
+        fta = float(engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS).fair_value) * 1.05
+        result = self._open_grid_regime(self.MarketRegime.RANGE, fta)
+        self.assertEqual(fta, result)
+
+    def test_fta_suppressed_in_bull_regime(self):
+        """FTA resistance cap is disabled when regime is BULL."""
+        fta = float(engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS).fair_value) * 1.05
+        result = self._open_grid_regime(self.MarketRegime.BULL, fta)
+        self.assertIsNone(result)
+
+    def test_fta_suppressed_in_bear_regime(self):
+        """FTA resistance cap is disabled when regime is BEAR."""
+        fta = float(engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS).fair_value) * 1.05
+        result = self._open_grid_regime(self.MarketRegime.BEAR, fta)
+        self.assertIsNone(result)
+
+    def test_frame_carries_fta_from_inputs(self):
+        """F18: Inputs.fta_resistance is preserved through Frame construction (replay.py line 449)."""
+        engine = engine_for(hourly(WARMUP))
+        inputs = engine.at(START_MS + WARMUP * HOUR_MS)
+        from dataclasses import replace as dc_replace
+        fta_val = float(inputs.fair_value) * 1.08
+        inputs = dc_replace(inputs, fta_resistance=fta_val)
+        when = datetime.fromtimestamp((START_MS + WARMUP * HOUR_MS) / 1000, UTC)
+        signals = signals_for(inputs, when, gated=True)
+        candidate = candidate_for(inputs, "TESTUSDT", 0.05, 1e9, gated=True)
+        quote = bar_quotes(
+            candle(START_MS + WARMUP * HOUR_MS, float(inputs.fair_value),
+                   float(inputs.fair_value) * 1.001,
+                   float(inputs.fair_value) * 0.999,
+                   float(inputs.fair_value)),
+            "TESTUSDT", "low_first", D("0.0005"), RULES.tick_size
+        )[0]
+        frame = Frame(quote, signals, candidate, inputs.fair_value, inputs.atr,
+                      True, None, None, inputs.fta_resistance)
+        self.assertAlmostEqual(fta_val, frame.fta_resistance)

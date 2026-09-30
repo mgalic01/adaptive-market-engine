@@ -161,6 +161,7 @@ def signals_for(inputs: Inputs, observed_at: datetime, *, gated: bool) -> Market
         data_quality=inputs.market_quality,
         news_risk=0.0,  # ABSENT: no historical news source; reported, not assumed safe
         emergency=False,
+        structure_alignment=inputs.structure_alignment,
         observed_at=observed_at,
     )
 
