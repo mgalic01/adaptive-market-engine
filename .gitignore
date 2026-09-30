@@ -20,3 +20,6 @@ logs/
 # The one exception is the shared settings file with the claims hook.
 .claude/*
 !.claude/settings.json
+
+# Bob equivalence-check worktrees (base + cand repo copies + downloaded kline data).
+bob-eq/
