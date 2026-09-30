@@ -249,6 +249,9 @@ class FeatureEngine:
         self._hourly_candles: list[Kline] = list(hourly_candles) if hourly_candles else []
         self._daily_bars: list[Kline] = list(daily_bars) if daily_bars else []
         self._structure_params = StructureParams()
+        # Cache: avoid recomputing structure on every minute bar — only recompute when
+        # a new hourly candle closes (p changes). Stores (p, structure_alignment, fta).
+        self._structure_cache: tuple[int, float, float | None] | None = None
 
     def at(self, minute_ms: int) -> Inputs | None:
         """Inputs for a decision in the minute starting at ``minute_ms``; None in warm-up."""
@@ -281,32 +284,34 @@ class FeatureEngine:
         spacing = (upper / lower) ** (1 / (self._levels - 1)) - 1 if lower > 0 else 0.0
         pair_volume = _at(pair.qv24, p)
 
-        # V2: multi-timeframe structure alignment.
-        # Hourly bars up to (not including) this minute; daily bars if available.
-        # Uses raw pair candles via _KlineView (float-typed) — SeriesFeatures discards high/low.
-        hourly_candles = (
-            [_KlineView.from_kline(k) for k in self._hourly_candles[:p + 1]]
-            if self._hourly_candles else None
-        )
-        daily_candles = (
-            [_KlineView.from_kline(k) for k in self._daily_bars]
-            if self._daily_bars else None
-        )
-        mtf = analyse_multi_timeframe(
-            hourly_bars=hourly_candles,
-            daily_bars=daily_candles,
-            weekly_bars=None,  # weekly not yet loaded
-            current_price=float(fair),
-            params=self._structure_params,
-        )
-        structure_alignment = mtf.alignment
-
-        # FTA: nearest resistance above current price (from daily structure if available)
-        fta_resistance: float | None = None
-        if daily_candles and mtf.daily and mtf.daily.fta.resistance:
-            fta_resistance = mtf.daily.fta.resistance.price
-        elif mtf.hourly and mtf.hourly.fta.resistance:
-            fta_resistance = mtf.hourly.fta.resistance.price
+        # V2: multi-timeframe structure alignment — cached per completed hourly candle.
+        # Structure only changes when a new hourly bar closes (once per hour), so we
+        # skip the O(n) swing detection on the other ~59 minute bars within each hour.
+        if self._structure_cache is not None and self._structure_cache[0] == p:
+            _, structure_alignment, fta_resistance = self._structure_cache
+        else:
+            hourly_candles = (
+                [_KlineView.from_kline(k) for k in self._hourly_candles[:p + 1]]
+                if self._hourly_candles else None
+            )
+            daily_candles = (
+                [_KlineView.from_kline(k) for k in self._daily_bars]
+                if self._daily_bars else None
+            )
+            mtf = analyse_multi_timeframe(
+                hourly_bars=hourly_candles,
+                daily_bars=daily_candles,
+                weekly_bars=None,  # weekly not yet loaded
+                current_price=float(fair),
+                params=self._structure_params,
+            )
+            structure_alignment = mtf.alignment
+            fta_resistance = None
+            if daily_candles and mtf.daily and mtf.daily.fta.resistance:
+                fta_resistance = mtf.daily.fta.resistance.price
+            elif mtf.hourly and mtf.hourly.fta.resistance:
+                fta_resistance = mtf.hourly.fta.resistance.price
+            self._structure_cache = (p, structure_alignment, fta_resistance)
 
         return Inputs(
             hour_open_ms=pair.opens[p],
