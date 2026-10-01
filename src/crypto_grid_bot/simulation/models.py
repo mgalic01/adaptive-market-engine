@@ -166,6 +166,10 @@ class Account:
     trend_day: str = ""
     # T0 of the running Down sequence (its effective observation); empty when none runs.
     down_since: str = ""
+    # Variant E (spec v1, section 3 E) only; runtime-only state, not persisted.
+    # True when the 6h outside-range timer fired but volume was below threshold,
+    # granting a single extension to 12h total from the original t0.
+    e_extended: bool = False
     # Spec v1 amendment 1 (drawdown recovery), schema 6.
     # The C1(b) measurement reference: starts with the initial active capital, rises at
     # every mark and is scaled at every settlement exactly as ``risk_high`` is, but a
@@ -344,6 +348,9 @@ class Account:
         for key in ("trend_day", "down_since"):
             if not data[key]:
                 del data[key]  # Variant A only: V0 saved state keeps its exact layout.
+        # Variant E runtime state: never persisted; a fresh replay run always starts
+        # with e_extended=False and the extension state is rebuilt from replay inputs.
+        data.pop("e_extended", None)
         return data
 
     @classmethod

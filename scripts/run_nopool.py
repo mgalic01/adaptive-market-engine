@@ -14,6 +14,7 @@ import json
 import sys
 import time
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -31,6 +32,9 @@ from crypto_grid_bot.backtest.replay import (
 from crypto_grid_bot.simulation.runner import SimulationPolicy
 
 VARIANT_A = "--variant-a" in sys.argv
+VARIANT_B = "--variant-b" in sys.argv
+VARIANT_C = "--variant-c" in sys.argv
+VARIANT_E = "--variant-e" in sys.argv
 SPEC_NAME = next((a for a in sys.argv[1:] if not a.startswith("--")), "long-recovery-2023-2024")
 SPEC_PATH = Path(f"config/datasets/{SPEC_NAME}.toml")
 CONFIG_PATH = Path("config/default.toml")
@@ -56,7 +60,16 @@ for symbol in spec.traded:
             label = f"{symbol}/{mode}/{'gated' if gated else 'ungated'}"
             print(f"[{done}/{total}] {label} ...", flush=True)
             t0 = time.time()
-            policy = SimulationPolicy(trend_switch=True) if VARIANT_A else None
+            if VARIANT_C:
+                policy = SimulationPolicy(trend_switch=True, inventory_cap=Decimal("0.40"))
+            elif VARIANT_A:
+                policy = SimulationPolicy(trend_switch=True)
+            elif VARIANT_B:
+                policy = SimulationPolicy(inventory_cap=Decimal("0.40"))
+            elif VARIANT_E:
+                policy = SimulationPolicy(volume_exit=True)
+            else:
+                policy = None
             r = run_job(SPEC_PATH, CONFIG_PATH, DATA_DIR, symbol, mode, gated, policy=policy)
             elapsed = time.time() - t0
             ret = r["return_pct"]
@@ -65,7 +78,16 @@ for symbol in spec.traded:
             results.append(r)
 
 failures = result_failures(results)
-_variant_suffix = "-variant-a" if VARIANT_A else ""
+if VARIANT_C:
+    _variant_suffix = "-variant-c"
+elif VARIANT_A:
+    _variant_suffix = "-variant-a"
+elif VARIANT_B:
+    _variant_suffix = "-variant-b"
+elif VARIANT_E:
+    _variant_suffix = "-variant-e"
+else:
+    _variant_suffix = ""
 # Read fee from spec so the stamp and results.json accurately reflect what was used.
 # run_job() receives fees=None and falls back to spec.fee_rate for both maker and taker.
 _fee = str(spec.fee_rate)

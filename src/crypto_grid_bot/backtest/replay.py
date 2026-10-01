@@ -377,6 +377,32 @@ class _BuyAndHold:
         self.max_drawdown = max(self.max_drawdown, (self.peak - self.value) / self.peak)
 
 
+_E_WINDOW_MS = 6 * HOUR_MS  # 6 hours in milliseconds
+_E_REFERENCE_HOURS = 720  # 30-day reference window for variant E threshold
+
+
+def _e_compute_threshold(hourly_candles: Sequence[Kline], t0_ms: int) -> Decimal | None:
+    """Compute the E threshold = 2 × median(720 completed 1h base volumes ending before t0) × 6.
+
+    Returns None when fewer than 720 completed reference hours are available or the median is zero.
+    The 720 reference hours are those whose open_ms is in the 720 completed hours ending at
+    the last whole hour that closed at or before t0 — i.e. open_ms < floor_hour(t0).
+    """
+    floor_hour_t0 = (t0_ms // HOUR_MS) * HOUR_MS  # first ms of the hour containing t0
+    # Completed hours: open_ms < floor_hour_t0 means the candle closed before t0's minute started.
+    # We want the 720 most recent such candles.
+    completed = [k for k in hourly_candles if k.open_ms < floor_hour_t0]
+    if len(completed) < _E_REFERENCE_HOURS:
+        return None
+    reference = completed[-_E_REFERENCE_HOURS:]
+    volumes = sorted(k.volume for k in reference)
+    n = len(volumes)
+    med = (volumes[n // 2 - 1] + volumes[n // 2]) / 2 if n % 2 == 0 else volumes[n // 2]
+    if med <= 0:
+        return None
+    return med * 2 * 6
+
+
 def replay(
     config: BotConfig,
     run: RunConfig,
@@ -420,6 +446,14 @@ def replay(
     was_halted = False
     last_hour = -1
     last_quote: Quote | None = None
+    # Variant E: per-episode state tracked in the replay loop.
+    # e_t0_ms:    open_ms of the kline where the outside-range episode began.
+    # e_threshold: 2 × median(720h base volume) × 6, frozen at t0; None if unavailable.
+    # e_bar_vol:  accumulated 1m base volume in [floor_min(t0), floor_min(t0 + 6h)).
+    volume_exit = policy is not None and policy.volume_exit
+    e_t0_ms: int | None = None
+    e_threshold: Decimal | None = None
+    e_bar_vol: Decimal = ZERO
     for kline in minutes:
         inputs = features.at(kline.open_ms)
         if inputs is None:
@@ -442,11 +476,28 @@ def replay(
         epoch = f"{run.symbol}/{kline.open_ms}"
         # Variant A: the state from the last daily bar closed at this minute's start.
         trend = schedule.at(kline.open_ms) if schedule is not None else None
+        # Variant E: detect episode start/end and accumulate bar volume for the threshold
+        # comparison. Snapshot state *before* step() updates it.
+        if volume_exit:
+            prev_outside_last = account.outside_last
+            prev_was_range_exit = was_range_exit
         report: dict[str, Any] = {}
         for quote in bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size):
             # Depth is re-bounded before every quote from the account at that moment.
             depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
             candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
+            # Variant E: pass threshold and accumulated bar volume to the frame so that
+            # _track_range() can make the extension decision without needing the kline data.
+            e_frame_threshold: Decimal | None = None
+            e_frame_vol: Decimal = ZERO
+            if volume_exit and e_t0_ms is not None:
+                e_frame_threshold = e_threshold
+                # Only accumulate volume for bars within [t0, t0 + 6h); bars at or after
+                # t0 + 6h are past the measurement window (the decision has already been made).
+                if kline.open_ms < e_t0_ms + _E_WINDOW_MS:
+                    e_frame_vol = e_bar_vol + kline.volume
+                else:
+                    e_frame_vol = e_bar_vol
             frame = Frame(
                 quote,
                 signals,
@@ -457,6 +508,8 @@ def replay(
                 epoch,
                 trend,
                 inputs.fta_resistance,
+                e_frame_threshold,
+                e_frame_vol,
             )
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
@@ -500,6 +553,29 @@ def replay(
                 drawdown = (metrics.peak_equity - total) / metrics.peak_equity
                 metrics.max_drawdown = max(metrics.max_drawdown, drawdown)
             hold.mark(quote.bid)
+        # Variant E: update episode state after all 4 quotes of the bar have been processed.
+        # This detects episode start (outside_last went from "" to non-empty) and episode
+        # end (outside_last is now ""), and accumulates bar volume for the measurement window.
+        if volume_exit:
+            if e_t0_ms is None and account.outside_last and not prev_outside_last:
+                # Episode started in this bar: record t0 and freeze the threshold.
+                e_t0_ms = kline.open_ms
+                e_threshold = _e_compute_threshold(features._hourly_candles, kline.open_ms)
+                e_bar_vol = ZERO
+            if e_t0_ms is not None:
+                if not account.outside_last and not account.range_exit:
+                    # Price returned inside range: episode ended without a range exit.
+                    e_t0_ms = None
+                    e_threshold = None
+                    e_bar_vol = ZERO
+                elif account.range_exit and not prev_was_range_exit:
+                    # Range exit triggered this bar: episode ends.
+                    e_t0_ms = None
+                    e_threshold = None
+                    e_bar_vol = ZERO
+                elif kline.open_ms < e_t0_ms + _E_WINDOW_MS:
+                    # Still within the 6h measurement window: accumulate bar volume.
+                    e_bar_vol += kline.volume
         # Bar-level bookkeeping from the bar's closing quote.
         metrics.regimes[str(report.get("regime", "unavailable"))] += 1
         metrics.decisions[str(report["decision"])] += 1

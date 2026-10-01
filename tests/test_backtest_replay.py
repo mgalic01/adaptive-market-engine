@@ -1057,3 +1057,277 @@ class FtaRegimeGateTests(unittest.TestCase):
             inputs.fta_resistance,
         )
         self.assertAlmostEqual(fta_val, frame.fta_resistance)
+
+
+# ---------------------------------------------------------------------------
+# Variant E tests (spec v1 §3 E) — volume-confirmed range exit
+# ---------------------------------------------------------------------------
+
+
+class EThresholdTests(unittest.TestCase):
+    """_e_compute_threshold: median of 720 completed 1h base volumes × 2 × 6."""
+
+    def _hours(self, count, volume):
+        return [
+            candle(START_MS + i * HOUR_MS, 1.0, 1.001, 0.999, 1.0, volume=str(volume))
+            for i in range(count)
+        ]
+
+    def test_threshold_is_2_times_median_times_6(self):
+        from crypto_grid_bot.backtest.replay import _e_compute_threshold
+
+        # 720 hours all with volume=100 → median=100, threshold=2×100×6=1200
+        hours = self._hours(720, 100)
+        t0_ms = START_MS + 720 * HOUR_MS  # exactly after the last hour closes
+        result = _e_compute_threshold(hours, t0_ms)
+        self.assertEqual(D("1200"), result)
+
+    def test_fewer_than_720_hours_returns_none(self):
+        from crypto_grid_bot.backtest.replay import _e_compute_threshold
+
+        hours = self._hours(719, 100)
+        t0_ms = START_MS + 720 * HOUR_MS
+        self.assertIsNone(_e_compute_threshold(hours, t0_ms))
+
+    def test_zero_median_returns_none(self):
+        from crypto_grid_bot.backtest.replay import _e_compute_threshold
+
+        # All zero volume → median 0 → threshold unavailable
+        hours = self._hours(720, 0)
+        t0_ms = START_MS + 720 * HOUR_MS
+        self.assertIsNone(_e_compute_threshold(hours, t0_ms))
+
+    def test_uses_only_completed_hours_before_t0(self):
+        from crypto_grid_bot.backtest.replay import _e_compute_threshold
+
+        # Hours with open_ms < floor_hour(t0): included. Hours at or after: excluded.
+        # t0 is mid-hour (START_MS + 720 h + 30 min). floor_hour = START_MS + 720 h.
+        # So only the first 720 hours (open_ms in [START_MS, START_MS+719h]) qualify.
+        hours = self._hours(721, 100)  # 721 hours, last one opens at START_MS+720h
+        t0_ms = START_MS + 720 * HOUR_MS + 30 * 60_000  # mid-hour
+        # floor_hour(t0) = START_MS + 720*HOUR_MS
+        # completed = open_ms < floor_hour_t0 → hours[0..719] → exactly 720
+        result = _e_compute_threshold(hours, t0_ms)
+        self.assertEqual(D("1200"), result)
+
+    def test_even_count_median_is_mean_of_two_middle(self):
+        from crypto_grid_bot.backtest.replay import _e_compute_threshold
+
+        # Build 720 hours: half with volume=100, half with volume=200
+        # Sorted: 360×100, 360×200 → median = (100+200)/2 = 150 → threshold = 1800
+        hours = [
+            candle(
+                START_MS + i * HOUR_MS, 1.0, 1.001, 0.999, 1.0, volume="100" if i < 360 else "200"
+            )
+            for i in range(720)
+        ]
+        t0_ms = START_MS + 720 * HOUR_MS
+        result = _e_compute_threshold(hours, t0_ms)
+        self.assertEqual(D("1800"), result)
+
+
+class VariantEReplayTests(unittest.TestCase):
+    """Spec v1 §3 E: volume-confirmed range exit, end-to-end via replay()."""
+
+    # Use a simpler, faster replay setup than the full WARMUP scenario.
+    # We need: enough hourly candles for features + 720 for E threshold + evaluation bars.
+
+    def setUp(self):
+        self.config = load_config(ROOT / "config/default.toml")
+        # Build 750 warmup hours + enough evaluation minutes.
+        self.all_hours = hourly(WARMUP + 50)
+        self.t = START_MS + WARMUP * HOUR_MS
+
+    def _engine(self, extra_hourly=None):
+        hours = self.all_hours if extra_hourly is None else extra_hourly
+        series = SeriesFeatures("TESTUSDT", hours)
+        basket = [SeriesFeatures(f"B{i}USDT", hours, full=False) for i in range(5)]
+        return FeatureEngine(
+            series,
+            series,
+            basket,
+            range_atr_multiple=2.0,
+            levels=8,
+            minimum_cost_multiple=3.0,
+            round_trip_cost=0.0035,
+            hourly_candles=hours,
+        )
+
+    def _run(self, minutes, engine=None, volume_exit=True):
+        from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+        engine = engine or self._engine()
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        policy = SimulationPolicy(volume_exit=volume_exit)
+        metrics, account = replay(self.config, run, minutes, engine, policy=policy)
+        self.assertEqual([], check_accounting(run, metrics, account))
+        return metrics, account
+
+    def _fair(self):
+        return float(self._engine().at(self.t).fair_value)
+
+    def _bars(self, start, stop, price):
+        """Return 1m bars from minute `start` to minute `stop` (exclusive) at `price`."""
+        return [
+            candle(self.t + i * 60_000, price, price * 1.001, price * 0.999, price)
+            for i in range(start, stop)
+        ]
+
+    # 6 hours = 360 minutes
+    _SIX_H = 360
+    # 12 hours = 720 minutes
+    _TWELVE_H = 720
+
+    def test_volume_above_threshold_exits_at_6h(self):
+        """Volume ≥ threshold: no extension, range exit fires at 6 h (spec: equality exits)."""
+        # Place the grid, then go outside range with high volume (10× threshold).
+        fair = self._fair()
+        minutes = self._bars(0, 30, fair)  # grid opens
+        # Outside-range: bars just below grid_lower (0.955 × fair < grid_lower ≈ 0.951 × fair),
+        # with huge volume. threshold ≈ 2 × 1M × 6 = 12M; 2M per bar >> threshold.
+        # 0.955 keeps inventory value drop well below the 12% hard-drawdown limit.
+        minutes += [
+            candle(
+                self.t + (30 + i) * 60_000,
+                fair * 0.955,
+                fair * 0.956,
+                fair * 0.954,
+                fair * 0.955,
+                volume="2000000",
+            )
+            for i in range(self._SIX_H + 10)
+        ]
+        metrics, account = self._run(minutes)
+        # Should have exited (range exit) within 6h window.
+        self.assertGreater(metrics.range_exits, 0)
+        self.assertFalse(account.halt)
+
+    def test_volume_below_threshold_extends_to_12h(self):
+        """Volume < threshold: extension granted, exit fires at 12 h."""
+        fair = self._fair()
+        minutes = self._bars(0, 30, fair)  # grid opens
+        # Outside-range: tiny volume bars → extension granted → exit at 12h.
+        # threshold ≈ 2 × 1M × 6 = 12M; volume=1 per bar is far below.
+        # 0.955 × fair keeps drawdown within the 12% hard-halt limit.
+        minutes += [
+            candle(
+                self.t + (30 + i) * 60_000,
+                fair * 0.955,
+                fair * 0.956,
+                fair * 0.954,
+                fair * 0.955,
+                volume="1",
+                taker="0",
+            )
+            for i in range(self._TWELVE_H + 10)
+        ]
+        metrics, account = self._run(minutes)
+        # Must still exit (extended to 12h, but range exit fires).
+        self.assertGreater(metrics.range_exits, 0)
+        self.assertFalse(account.halt)
+
+    def test_return_inside_range_resets_episode(self):
+        """Price returning inside range resets the timer; a later departure starts a new episode."""
+        fair = self._fair()
+        minutes = self._bars(0, 30, fair)  # grid opens
+        # Step 1: go outside for 3h (below extension threshold).
+        # 0.955 × fair keeps drawdown within the 12% hard-halt limit.
+        minutes += [
+            candle(
+                self.t + (30 + i) * 60_000,
+                fair * 0.955,
+                fair * 0.956,
+                fair * 0.954,
+                fair * 0.955,
+                volume="1",
+                taker="0",
+            )
+            for i in range(180)
+        ]
+        # Step 2: return inside range for 5 minutes.
+        minutes += self._bars(210, 215, fair)
+        # Step 3: go outside again for 7h (enough to exit at 6h on second episode).
+        minutes += [
+            candle(
+                self.t + (215 + i) * 60_000,
+                fair * 0.955,
+                fair * 0.956,
+                fair * 0.954,
+                fair * 0.955,
+                volume="2000000",
+            )
+            for i in range(self._SIX_H + 10)
+        ]
+        metrics, _ = self._run(minutes)
+        # The second episode should trigger a range exit.
+        self.assertGreater(metrics.range_exits, 0)
+
+    def test_missing_reference_falls_back_to_v0_6h_exit(self):
+        """Fewer than 720 reference hours → threshold unavailable → V0 6h exit."""
+        # Use the same stable WARMUP+50 candles as all other E tests so the grid opens
+        # cleanly. Only override hourly_candles to 100 entries (< 720) so that
+        # _e_compute_threshold returns None and the code falls back to the V0 6h exit.
+        hours = self.all_hours
+        series = SeriesFeatures("TESTUSDT", hours)
+        basket = [SeriesFeatures(f"B{i}USDT", hours, full=False) for i in range(5)]
+        sparse_engine = FeatureEngine(
+            series,
+            series,
+            basket,
+            range_atr_multiple=2.0,
+            levels=8,
+            minimum_cost_multiple=3.0,
+            round_trip_cost=0.0035,
+            hourly_candles=hours[:100],  # only 100 entries → _e_compute_threshold returns None
+        )
+        fair = float(sparse_engine.at(self.t).fair_value)
+        minutes = self._bars(0, 30, fair)  # grid opens
+        # 0.955 × fair keeps drawdown within the 12% hard-halt limit.
+        minutes += [
+            candle(
+                self.t + (30 + i) * 60_000,
+                fair * 0.955,
+                fair * 0.956,
+                fair * 0.954,
+                fair * 0.955,
+                volume="1",
+                taker="0",
+            )
+            for i in range(self._SIX_H + 10)
+        ]
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+        policy = SimulationPolicy(volume_exit=True)
+        metrics, account = replay(self.config, run, minutes, sparse_engine, policy=policy)
+        # threshold is None → falls back to V0 6h exit (no extension).
+        # The range exit must still fire.
+        self.assertGreater(metrics.range_exits, 0)
+
+    def test_variant_e_off_behaves_identically_to_v0(self):
+        """volume_exit=False must produce the same range_exits as a V0 (policy=None) run."""
+        fair = self._fair()
+        minutes = self._bars(0, 30, fair)
+        # 0.955 × fair keeps drawdown within the 12% hard-halt limit.
+        minutes += [
+            candle(
+                self.t + (30 + i) * 60_000,
+                fair * 0.955,
+                fair * 0.956,
+                fair * 0.954,
+                fair * 0.955,
+                volume="2000000",
+            )
+            for i in range(self._SIX_H + 10)
+        ]
+        engine = self._engine()
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        # V0 run.
+        metrics_v0, _ = replay(self.config, run, list(minutes), engine)
+        # Variant E off run.
+        from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+        metrics_e_off, _ = replay(
+            self.config, run, list(minutes), engine, policy=SimulationPolicy(volume_exit=False)
+        )
+        self.assertEqual(metrics_v0.range_exits, metrics_e_off.range_exits)

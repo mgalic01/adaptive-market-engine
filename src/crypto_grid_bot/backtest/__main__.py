@@ -177,6 +177,22 @@ def main(argv: list[str] | None = None) -> int:
         help="enable variant A: daily SMA50/SMA200 trend switch (spec v1 §3 A); "
         "requires daily_warmup_start in the spec",
     )
+    parser.add_argument(
+        "--variant-b",
+        action="store_true",
+        help="enable variant B: inventory cap at 40%% of prospective active equity (spec v1 §3 B)",
+    )
+    parser.add_argument(
+        "--variant-c",
+        action="store_true",
+        help="enable variant C: A + B together (spec v1 §3 C); requires daily_warmup_start",
+    )
+    parser.add_argument(
+        "--variant-e",
+        action="store_true",
+        help="enable variant E: volume-confirmed range exit (spec v1 §3 E); "
+        "not eligible for selection until Codex reviews implementation",
+    )
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
     maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
@@ -217,7 +233,16 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 2 if failures else 0
-        policy = SimulationPolicy(trend_switch=True) if args.variant_a else None
+        if args.variant_c:
+            policy = SimulationPolicy(trend_switch=True, inventory_cap=Decimal("0.40"))
+        elif args.variant_a:
+            policy = SimulationPolicy(trend_switch=True)
+        elif args.variant_b:
+            policy = SimulationPolicy(inventory_cap=Decimal("0.40"))
+        elif args.variant_e:
+            policy = SimulationPolicy(volume_exit=True)
+        else:
+            policy = None
         futures = [
             pool.submit(
                 run_job,

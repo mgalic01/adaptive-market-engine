@@ -97,6 +97,11 @@ class SimulationPolicy:
     # Experiment variant A (spec v1, section 3 A): the daily SMA50/SMA200 trend switch.
     # False = off (V0). The daily state arrives on each Frame as ``trend``.
     trend_switch: bool = False
+    # Experiment variant E (spec v1, section 3 E): volume-confirmed range exit.
+    # When True, a 6h outside-range timer that triggers on low volume is extended to 12h.
+    # The threshold (2 × median 720h volume × 6) and measured volume arrive on each Frame.
+    # False = off (V0). Not eligible for selection until Codex reviews implementation.
+    volume_exit: bool = False
     # Spec v1 amendment 1 (owner decision 2026-09-27): the soft-drawdown cool-off before
     # ``risk_high`` may be rebased, and the hard-drawdown cool-off H before a ``drawdown``
     # halt restarts. Both are part of the account identity and fixed for all v1 runs.
@@ -123,6 +128,8 @@ class SimulationPolicy:
                 raise ValueError("inventory cap must be above zero and below one")
         if type(self.trend_switch) is not bool:
             raise ValueError("trend_switch must be a boolean")
+        if type(self.volume_exit) is not bool:
+            raise ValueError("volume_exit must be a boolean")
         for name in ("soft_cooloff_seconds", "hard_cooloff_seconds"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -134,6 +141,8 @@ class SimulationPolicy:
             del value["inventory_cap"]
         if not self.trend_switch:
             del value["trend_switch"]
+        if not self.volume_exit:
+            del value["volume_exit"]
         return value
 
 
@@ -151,6 +160,12 @@ class Frame:
     trend: TrendSignal | None = None
     # V2: nearest resistance above current price from structure.py; None when unavailable.
     fta_resistance: float | None = None
+    # Variant E (spec v1, §3 E): volume-confirmed range exit inputs. Both are None/zero
+    # when variant E is off or the reference is unavailable (falls back to V0 behaviour).
+    # e_threshold: 2 × median(last 720 completed 1h base volumes) × 6, frozen at t0.
+    # e_bar_volume: accumulated 1m base volume in [floor_min(t0), floor_min(t0+6h)).
+    e_threshold: Decimal | None = None
+    e_bar_volume: Decimal = ZERO
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -161,6 +176,10 @@ class Frame:
             del value["trend"]  # Likewise for journals without variant A.
         if value["fta_resistance"] is None:
             del value["fta_resistance"]  # Omit from journals when structure unavailable.
+        if value["e_threshold"] is None:
+            del value["e_threshold"]
+        if not value["e_bar_volume"]:
+            del value["e_bar_volume"]
         return value
 
 
@@ -443,13 +462,14 @@ class PaperSimulator:
             # A daily bar that had not closed at this observation is lookahead: fail closed.
             frame.trend.validate(quote.observed_at)
 
-    def _track_range(self, account: Account, quote: Quote) -> None:
+    def _track_range(self, account: Account, quote: Quote, frame: Frame) -> None:
         """Accumulate observed outside-range time; call before updating last_observed."""
         if not account.grid_lower or account.range_exit:
             return
         observed = quote.observed_at
         if account.grid_lower <= quote.bid <= account.grid_upper:
             account.outside_seconds, account.outside_last = ZERO, ""
+            account.e_extended = False
             return
         # Count only intervals bracketed by two consecutive valid outside observations
         # within the continuity limit. Gaps do not prove time outside the range, but they
@@ -460,10 +480,31 @@ class PaperSimulator:
                 account.outside_seconds += elapsed
         account.outside_last = observed
         if account.outside_seconds >= self.policy.outside_range_seconds:
+            # Variant E: at the 6h trigger, check volume before committing to exit.
+            if (
+                self.policy.volume_exit
+                and not account.e_extended
+                and frame.e_threshold is not None
+                and frame.e_bar_volume < frame.e_threshold
+            ):
+                # Volume is below threshold and extension not yet used: extend to 12h.
+                # The outside_seconds clock keeps running; exit fires when it reaches 2×.
+                account.e_extended = True
+                return
+            # V0 path, or E with extension already used, or E with volume ≥ threshold,
+            # or E extension has now run out (outside_seconds ≥ 2 × outside_range_seconds).
+            if (
+                self.policy.volume_exit
+                and account.e_extended
+                and account.outside_seconds < self.policy.outside_range_seconds * 2
+            ):
+                # Still within the 12h window — wait.
+                return
             account.orders.clear()
             account.range_exit = True
             account.range_exit_since = observed
             account.outside_seconds, account.outside_last = ZERO, ""
+            account.e_extended = False
             self._pause(account, "outside-range timeout: exit to cash")
 
     @staticmethod
@@ -536,7 +577,10 @@ class PaperSimulator:
         day = observed.date().isoformat()
         if account.day != day:
             account.day, account.day_start = day, account.last_equity
-        self._track_range(account, quote)
+        # _track_range uses account.last_observed for continuity detection: call it before
+        # last_observed is updated to the current quote's time, so the check
+        # ``outside_last == last_observed`` correctly identifies consecutive observations.
+        self._track_range(account, quote, frame)
         # A gap or a new ineligible frame breaks the recovery streak.
         if (
             account.last_observed

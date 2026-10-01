@@ -608,7 +608,7 @@ class V0UnchangedTests(TestCase):
         other, (other_identity, other_data) = self.run_demo("signed.db", signed)
         self.assertEqual((reports, identity, data), (other, other_identity, other_data))
         # The persisted policy is exactly the pre-variant field set.
-        unset = {"inventory_cap": None, "trend_switch": False}
+        unset = {"inventory_cap": None, "trend_switch": False, "volume_exit": False}
         self.assertEqual(asdict(SimulationPolicy()), SimulationPolicy().identity() | unset)
 
 
