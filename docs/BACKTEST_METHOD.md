@@ -159,6 +159,16 @@ and its baseline needs 720 defined observations. Every dataset includes at least
 two hourly warm-up months before `start`; readiness is still checked from the actual
 available observations, not inferred from the calendar span.
 
+**Variant A daily-bar gate:** when `--variant-a` is active, the strategy reads the
+daily trend state from the previous UTC day's completed bar (via `TrendSchedule.at()`
+and `effective_state()`). The gate is conservative: if the daily bar for the previous
+calendar day is absent from the archive (the archive has a gap, or the bar has not yet
+closed), `effective_state()` returns `UNAVAILABLE` and the strategy stays in cash for
+that observation. A missing daily bar during the evaluation window therefore causes
+cash-holding, not an error, for every minute of that day. This is intentional:
+a strategy with imperfect data coverage should be inactive rather than acting on a
+stale or interpolated signal.
+
 The unchanged engine then applies:
 - the regime classifier;
 - the opportunity scorer;

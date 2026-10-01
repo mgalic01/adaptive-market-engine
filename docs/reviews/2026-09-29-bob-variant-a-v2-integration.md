@@ -3,7 +3,7 @@
 Index: 2026-09-29: Variant A (daily SMA50/SMA200 trend switch) activated in `bob/v2-integrated` via `--variant-a` CLI flag.
 
 **Date:** 2026-09-29
-**Branch:** bob/v2-integrated
+**Branch:** bob/v2-integrated (merged to `main` via PR #151; see also PR #154 for subsequent fixes)
 **Author:** IBM Bob (owner's desktop session)
 **Related:** spec v1 §3 A, `simulation/trend_switch.py`, PR #151 (v2-integrated)
 

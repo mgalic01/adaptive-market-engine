@@ -17,7 +17,7 @@ Index: 2026-09-30: Full codebase audit — 19 findings (5 critical, 5 major, 9 m
 |---|---|
 | 🔴 CRITICAL | 5 (F1, F8, F11, F12, F19) |
 | 🟡 MAJOR | 5 (F6, F15, F16, F17, F18) |
-| 🟡 MINOR | 5 (F2, F3, F4, F5, F7, F9, F13, F14) |
+| 🟡 MINOR | 8 (F2, F3, F4, F5, F7, F9, F13, F14) |
 | ⚪ ADVISORY | 3 (F10, and documented absences in news_risk/emergency) |
 
 ---
