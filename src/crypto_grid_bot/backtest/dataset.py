@@ -435,6 +435,30 @@ def fetch_funding_file(data_dir: Path, symbol: str, month: str, fetcher: Fetcher
     }
 
 
+def _fetch_one(
+    data_dir: Path, symbol: str, interval: str, month: str, fetcher: Fetcher
+) -> dict[str, Any]:
+    """``fetch_file`` with ``ArchiveParseError`` recorded as status ``"unparsed"``.
+
+    Binance publishes a small number of months (e.g. 2020-02) whose close timestamps
+    are malformed and cannot be parsed by the strict parser.  ``load_minutes`` already
+    skips ``"unparsed"`` entries in the manifest, so treating them as gaps here is
+    correct — the backtest runs without those bars, the same as for any missing month.
+    """
+    try:
+        return fetch_file(data_dir, symbol, interval, month, fetcher)
+    except ArchiveParseError as exc:
+        path = archive_path(symbol, interval, month)
+        return {
+            "symbol": symbol,
+            "interval": interval,
+            "month": month,
+            "url": f"https://{ARCHIVE_HOST}{path}",
+            "status": "unparsed",
+            "reason": str(exc),
+        }
+
+
 def fetch_dataset(
     spec: DatasetSpec,
     data_dir: Path,
@@ -443,7 +467,7 @@ def fetch_dataset(
     instruments: InstrumentSource = exchange_filters,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> dict[str, Any]:
-    files = [fetch_file(data_dir, s, i, m, fetcher) for s, i, m in spec.required()]
+    files = [_fetch_one(data_dir, s, i, m, fetcher) for s, i, m in spec.required()]
     fetched_at = now().isoformat(timespec="seconds")
     return {
         "schema": MANIFEST_SCHEMA,
@@ -517,7 +541,7 @@ def _validate_manifest(manifest: Any) -> None:
         # The replay loaders read every file a manifest lists, so a hand-edited manifest
         # would otherwise bypass load_spec's window check. Refuse it here too.
         development_month(month)
-        if status not in ("ok", "missing"):
+        if status not in ("ok", "missing", "unparsed"):
             raise DataError("dataset manifest file status is invalid")
         if status == "ok" and (
             not isinstance(entry.get("sha256"), str)
