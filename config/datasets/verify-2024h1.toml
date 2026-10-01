@@ -1,8 +1,19 @@
 # Verification dataset for the historical replay harness (first deliverable).
 # Development window only: used to prove chronology, accounting and fill handling.
 # It is NOT a performance test window, and BTC/ADA are today's survivors.
+#
+# Basket note (C3/M7 audit finding, 2026-09-30):
+# This spec has 10 symbols in breadth_basket (including ADAUSDT), vs 9 in the long-*
+# specs (which omit ADAUSDT). This is INTENTIONAL: verify-2024h1 is a chronology /
+# accounting verification spec, not a performance comparison window. Results here are
+# never directly compared against long-bull-bear-2022 or long-recovery-2023-2024.
+# ADAUSDT appears in both traded and breadth_basket. This creates a second-order
+# correlation: ADA's own trend influences the breadth score that gates whether to open
+# an ADA grid. The effect is small (one of ten basket votes) and accepted here because
+# the spec's sole purpose is verifying fill/accounting correctness, not regime accuracy.
+# Do not align this basket with the long-* specs without owner decision.
 name = "verify-2024h1"
-purpose = "chronology/accounting verification on two pairs; not a performance claim"
+purpose = "chronology/accounting verification on two pairs; not a performance claim; basket intentionally differs from long-* specs — see comment above"
 traded = ["ADAUSDT", "BTCUSDT"]
 # Broad-market regime inputs come from the proxy; breadth from the basket.
 market_proxy = "BTCUSDT"

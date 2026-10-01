@@ -546,6 +546,10 @@ class PaperSimulator:
             account.recovery_count = account.episode_count = 0
         account.last_observed, account.last_received = quote.observed_at, quote.received_at
         self._mark(account, quote, self.rules)
+        # regime.reasons contains per-signal diagnostic strings. They are intentionally
+        # not written to the report: in a full backtest replay the volume of per-frame
+        # reason strings would dominate the output and add no measurable value to results
+        # analysis. For live diagnostics, log regime.reasons at the call site instead.
         report.update(regime=regime.regime.value, opportunity_score=score.score)
         self._rebase(account, frame, score.eligible, report)
         action = self._risk_action(account, quote, frame.signals.emergency)

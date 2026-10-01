@@ -7,10 +7,7 @@
 # from at least 2018-05 through 2024-12. XRP starts 2018-05 so six warm-up months
 # (2019-01 to 2019-06) are well within range.
 #
-# No daily_warmup_start: daily (1d) archives have not been fetched yet.
-# Re-add daily_warmup_start = "2018-07" after running:
-#   python -m crypto_grid_bot.backtest fetch --spec this-file.toml
-# (That will also download the 1d zips and update the manifest.)
+# Daily bars are needed for FTA resistance and Variant A.
 #
 # Basket exclusions:
 #   SOLUSDT:  listed 2020-08; first six months of the spec window are missing.
@@ -28,6 +25,7 @@ breadth_basket = [
   "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
   "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
 ]
+daily_warmup_start = "2018-07"
 warmup_start = "2019-01"
 start = "2019-07"
 end = "2024-12"

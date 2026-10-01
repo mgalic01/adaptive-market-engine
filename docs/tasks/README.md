@@ -13,6 +13,7 @@ arrives as a PR ([rules](../AGENT_HANDOFF.md)).
 
 | Task | Status |
 | --- | --- |
+| [Structure-aware features backtest comparison](2026-09-29-bob-structure-backtest-comparison.md) | **Done:** task file merged in PR #149; report in [`docs/reviews/2026-09-30-bob-v2-backtest-comparison.md`](../reviews/2026-09-30-bob-v2-backtest-comparison.md). Critical finding F1 (structure_alignment silently zeroed) fixed in PR #154. |
 | [P8 archives for G and H, development months only](2026-09-27-bob-p8-funding-archives.md) | **Awaiting Codex's review.** Merging the PR that adds it starts the run. BTCUSDT funding archives 2020-01 to 2024-12 and H's daily history from 2020-05, checksummed; proposed manifest entries only. Nothing after 2024-12, enforced in the script. Revised after Codex's blocker on PR #113; revision 3 (2026-09-28) calls the project's `fetch_funding_file`, which PR #113 adds. |
 | [Combined defect census, 2017-08 to 2024-12](2026-09-27-bob-combined-defect-census.md) | **Queued:** starts when merged (owner's go 2026-09-27). Re-runs the hourly calendar on expected hours with the per-hour exchange-wide rule, so the 14 outages merge into the event census ([why](../reviews/2026-09-27-claude-defect-calendar-corrections.md)). |
 | [Masked fraction of the rescued months](2026-09-27-bob-rescued-month-masking.md) | **Queued:** starts when merged (owner's go 2026-09-27). Measures the 98 months the refined repair rule rescues, which the proposed 2% cap has not seen. |

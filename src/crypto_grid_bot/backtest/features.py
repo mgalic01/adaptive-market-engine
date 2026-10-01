@@ -181,7 +181,6 @@ class SeriesFeatures:
 class Inputs:
     """Strategy inputs, constant between completed-hour boundaries."""
 
-    hour_open_ms: int  # open time of the traded pair's latest completed candle
     trend: float
     breadth: float
     momentum: float
@@ -321,7 +320,6 @@ class FeatureEngine:
             self._structure_cache = (p, structure_alignment, fta_resistance)
 
         return Inputs(
-            hour_open_ms=pair.opens[p],
             trend=math.tanh((float(_dec(market.sma20, m)) / _at(market.sma50, m) - 1) / 0.02),
             breadth=2 * sum(votes) / len(votes) - 1 if breadth_ok else 0.0,
             momentum=math.tanh(_at(market.ret24, m) / 0.05),

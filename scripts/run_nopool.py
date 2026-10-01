@@ -66,7 +66,10 @@ for symbol in spec.traded:
 
 failures = result_failures(results)
 _variant_suffix = "-variant-a" if VARIANT_A else ""
-stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-m0.001-t0.001" + _variant_suffix
+# Read fee from spec so the stamp and results.json accurately reflect what was used.
+# run_job() receives fees=None and falls back to spec.fee_rate for both maker and taker.
+_fee = str(spec.fee_rate)
+stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + f"-m{_fee}-t{_fee}" + _variant_suffix
 out = OUT_DIR / spec.name / stamp
 out.mkdir(parents=True, exist_ok=True)
 
@@ -78,7 +81,7 @@ document = {
     "manifest_created_at": manifest["created_at"],
     **_identity(SPEC_PATH, CONFIG_PATH),
     "integrity_rules": integrity,
-    "fees": {"maker": "0.001", "taker": "0.001"},
+    "fees": {"maker": _fee, "taker": _fee},
     "valid": not failures,
     "failures": failures,
     "results": results,

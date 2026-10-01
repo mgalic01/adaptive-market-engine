@@ -28,9 +28,23 @@ jobs:
       - run: python -m pip install -e . --no-deps
       - run: ruff check .
       - run: ruff format --check .
+      # mypy covers src and scripts; tests/ is intentionally excluded — the test helpers
+      # use runtime-only patterns (dataclass replace, mock.patch) that mypy cannot resolve
+      # without stub packages not included in requirements-dev.lock.
       - run: mypy src scripts
       - run: pytest
       - run: python scripts/check_reports.py
+      # Validate all dataset spec files parse cleanly — catches typos and missing required
+      # fields without requiring fetched data.
+      - name: Validate dataset specs
+        run: |
+          python -c "
+          from pathlib import Path
+          from crypto_grid_bot.backtest.dataset import load_spec
+          for p in sorted(Path('config/datasets').glob('*.toml')):
+              load_spec(p)
+              print(f'OK: {p.name}')
+          "
       - name: Bob task branch scope
         if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'bob/task-')
         run: |

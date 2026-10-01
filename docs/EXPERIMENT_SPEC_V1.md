@@ -6,6 +6,12 @@ version (v2), and results under v1 stay reported. **No strategy code exists for 
 variants yet.** This document fixes what will be built and how it will be judged,
 *before* any variant is run.
 
+> **Section freeze status (owner decision 2026-09-24):**
+> §6 acceptance criteria C1–C6 are **frozen** — agents may not reopen or renegotiate
+> them without a new owner decision. §§1–5 remain draft and may change.
+> §§7–8 govern the reserved window and are locked once C7 is settled.
+> The overall document heading retains "DRAFT" because §§1–5 and C7 are still open.
+
 The scope is paper trading and historical replay only. Nothing here authorises live
 trading, API keys or withdrawals. The default risk limits (3% daily pause, 8% soft and
 12% hard drawdown, amended by the drawdown recovery of **amendment 1** in §3), the 50/50

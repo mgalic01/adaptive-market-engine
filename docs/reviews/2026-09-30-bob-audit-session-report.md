@@ -5,6 +5,7 @@ Index: 2026-09-30: Comprehensive 40-step audit found 19 issues; 5 critical fixed
 - **Written by:** Bob (IBM Bob, owner's desktop session), 2026-09-30
 - **Branch:** `bob/audit-fixes-2026-09-30`
 - **Base:** `main` at `22c597d` (post PR merges #146–#151)
+- **Fixes merged:** PR #154 at `48770195cf162f870d689de45c029e68dedcb820`
 - **Tests after fixes:** 780 passed, 4 skipped, 0 failures (was 773 before this session)
 
 ---
@@ -33,7 +34,7 @@ Full findings log: [`docs/reviews/2026-09-30-bob-audit-findings.md`](2026-09-30-
 | ID | File | Description |
 |---|---|---|
 | **F1** | `backtest/replay.py` | `structure_alignment` never passed to `MarketSignals` in `signals_for()` — regime classifier permanently running at 90% signal power |
-| **F8** | `config/datasets/*.toml` | `daily_warmup_start` absent from 3 specs — FTA and Variant A silently inactive on primary research windows |
+| **F8** | `config/datasets/*.toml` | `daily_warmup_start` absent from 3 specs — FTA and Variant A silently inactive on primary research windows. Fixed for 2 of 3 specs in PR #154; `full-range-2019-2024.toml` still pending (requires daily data fetch first). |
 | **F11** | `.github/workflows/backtest.yml` | `ref: bob/v2-integrated` — CI runs stale pre-merge code, not `main` |
 | **F12** | `scripts/run_nopool.py` | No `--variant-a` flag — Variant A completely inaccessible from CI |
 | **F19** | `src/crypto_grid_bot/strategy/structure.py` | UTF-16 encoding on Windows — Python cannot import it, entire local test suite fails |
@@ -176,7 +177,7 @@ Added two new test classes at the end of the file:
 
 | ID | What's needed | Blocker |
 |---|---|---|
-| **F8** | Fetch daily bars; add `daily_warmup_start` to 3 specs | Owner must trigger `python -m crypto_grid_bot.backtest fetch` for each spec, then re-add the field |
+| **F8** | Fetch daily bars; add `daily_warmup_start` to `full-range-2019-2024.toml` (1 remaining spec; the 2 primary research specs were fixed in PR #154) | Owner must trigger `python -m crypto_grid_bot.backtest fetch --spec config/datasets/full-range-2019-2024.toml --data-dir data`, then add `daily_warmup_start = "2018-07"` |
 | **F6** | Update proposals to reflect actual BULL eligibility mechanism | Documentation-only change, low urgency |
 | **F15** | Add real bar sequence tests to `test_structure.py` | No blocker — next cleanup PR |
 | **F2, F3, F4** | Remove or use dead fields | No blocker — next cleanup PR |
