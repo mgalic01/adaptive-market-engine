@@ -102,6 +102,11 @@ class SimulationPolicy:
     # The threshold (2 × median 720h volume × 6) and measured volume arrive on each Frame.
     # False = off (V0). Not eligible for selection until Codex reviews implementation.
     volume_exit: bool = False
+    # Experiment variant F (spec v1, section 3 F): order-flow entry block.
+    # When True, new buys are blocked when taker-buy share < 0.40 over the last 15 completed
+    # 1m bars; unblocked when share >= 0.45. Starts blocked (fails closed).
+    # False = off (V0). Not eligible for selection until Codex reviews implementation.
+    flow_block_entry: bool = False
     # Spec v1 amendment 1 (owner decision 2026-09-27): the soft-drawdown cool-off before
     # ``risk_high`` may be rebased, and the hard-drawdown cool-off H before a ``drawdown``
     # halt restarts. Both are part of the account identity and fixed for all v1 runs.
@@ -130,6 +135,8 @@ class SimulationPolicy:
             raise ValueError("trend_switch must be a boolean")
         if type(self.volume_exit) is not bool:
             raise ValueError("volume_exit must be a boolean")
+        if type(self.flow_block_entry) is not bool:
+            raise ValueError("flow_block_entry must be a boolean")
         for name in ("soft_cooloff_seconds", "hard_cooloff_seconds"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -143,6 +150,8 @@ class SimulationPolicy:
             del value["trend_switch"]
         if not self.volume_exit:
             del value["volume_exit"]
+        if not self.flow_block_entry:
+            del value["flow_block_entry"]
         return value
 
 
@@ -166,6 +175,10 @@ class Frame:
     # e_bar_volume: accumulated 1m base volume in [floor_min(t0), floor_min(t0+6h)).
     e_threshold: Decimal | None = None
     e_bar_volume: Decimal = ZERO
+    # Variant F (spec v1, §3 F): order-flow entry block. None when F is off.
+    # share = taker-buy base ÷ total base over the last 15 completed consecutive 1m bars.
+    # None when unavailable (missing bar or zero aggregate volume).
+    f_share: float | None = None
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -180,6 +193,8 @@ class Frame:
             del value["e_threshold"]
         if not value["e_bar_volume"]:
             del value["e_bar_volume"]
+        if value["f_share"] is None:
+            del value["f_share"]
         return value
 
 
@@ -260,6 +275,52 @@ class PaperSimulator:
         cancelled = [key for key, order in account.orders.items() if order.side == "buy"]
         for key in cancelled:
             del account.orders[key]
+        return cancelled
+
+    def _f_cancel_buys(self, account: Account, quote: Quote, report: dict) -> list[str]:
+        """Variant F: cancel all resting buys and handle partial fills.
+
+        For each cancelled buy, the already-filled quantity (quantity - remaining)
+        needs a resting sell at order.target. If the notional is below minimum,
+        accumulate in account.flow_fragments[target] until it reaches minimum_notional,
+        then place a single sell.
+
+        Returns the list of cancelled order IDs (same as _cancel_buys).
+        """
+        rules = self.rules
+        # Snapshot buy orders before modifying.
+        buys = {key: order for key, order in account.orders.items() if order.side == "buy"}
+        if not buys:
+            return []
+        cancelled: list[str] = []
+        for key, order in buys.items():
+            del account.orders[key]
+            cancelled.append(key)
+            filled = order.quantity - order.remaining
+            if filled <= ZERO or order.target is None:
+                continue
+            # Return the reserved quote for the remaining unfilled portion back to cash.
+            # This is handled automatically by the account: deleting the order removes
+            # the reservation, so cash is freed implicitly. Only handle the filled qty.
+            # Place a sell for the filled quantity (possibly accumulating fragments).
+            target = order.target
+            accum = account.flow_fragments.get(target, ZERO) + filled
+            notional = target * floor_step(accum, rules.quantity_step)
+            if notional >= rules.minimum_notional:
+                qty = floor_step(accum, rules.quantity_step)
+                sell_id = f"{quote.event_id}/f_frag/{key}"
+                sell = LimitOrder(sell_id, "sell", target, qty, qty, reentry=order.price)
+                place(account, sell, rules)
+                remainder = accum - qty
+                if remainder > ZERO:
+                    account.flow_fragments[target] = remainder
+                else:
+                    account.flow_fragments.pop(target, None)
+            else:
+                account.flow_fragments[target] = accum
+        if cancelled:
+            report.setdefault("cancelled", [])
+            report["cancelled"] = sorted(set(report["cancelled"]) | set(cancelled))
         return cancelled
 
     @staticmethod
@@ -655,6 +716,11 @@ class PaperSimulator:
             )
             if trend_due:
                 account.orders.clear()
+            # Variant F: when flow_block is active, cancel all resting buys and handle
+            # partial fills (fragment accumulation) before matching. This ensures no buys
+            # are filled during a blocked frame and no new reentry buys are placed.
+            if self.policy.flow_block_entry and account.flow_block:
+                self._f_cancel_buys(account, quote, report)
             report["fills"] = [
                 asdict(fill)
                 for fill in match(
@@ -662,10 +728,12 @@ class PaperSimulator:
                     quote,
                     self.rules,
                     # A running variant A Down sequence places no new buy (reentries too).
+                    # Variant F: also suppress reentry buys when flow_block is active.
                     recycle=not account.pause
                     and not account.draining
                     and frame.allow_new_grid
-                    and not account.down_since,
+                    and not account.down_since
+                    and not (self.policy.flow_block_entry and account.flow_block),
                     epoch=frame.epoch,
                     reentry_quantity=(
                         None
@@ -735,12 +803,20 @@ class PaperSimulator:
                             reason=f"trend switch: {trend}"
                             + ("; Down sequence running" if account.down_since else ""),
                         )
-                    elif not account.pause and not account.range_exit and frame.allow_new_grid:
+                    elif (
+                        not account.pause
+                        and not account.range_exit
+                        and frame.allow_new_grid
+                        # Variant F: block new grid when flow_block is active.
+                        and not (self.policy.flow_block_entry and account.flow_block)
+                    ):
                         try:
                             report["opened"] = self._open_grid(account, frame, capped, regime)
                             report["decision"] = "open_grid"
                         except GridNotViable as exc:
                             report.update(decision="cash", reason=str(exc))
+                    elif self.policy.flow_block_entry and account.flow_block:
+                        report.update(decision="cash", reason="flow_block: buy side blocked")
         if account.halt:
             report.update(decision="halt", reason=account.halt)
         elif account.pause:

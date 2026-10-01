@@ -193,6 +193,12 @@ def main(argv: list[str] | None = None) -> int:
         help="enable variant E: volume-confirmed range exit (spec v1 §3 E); "
         "not eligible for selection until Codex reviews implementation",
     )
+    parser.add_argument(
+        "--variant-f",
+        action="store_true",
+        help="enable variant F: order-flow entry block (spec v1 §3 F); "
+        "not eligible for selection until Codex reviews implementation",
+    )
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
     maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
@@ -241,6 +247,8 @@ def main(argv: list[str] | None = None) -> int:
             policy = SimulationPolicy(inventory_cap=Decimal("0.40"))
         elif args.variant_e:
             policy = SimulationPolicy(volume_exit=True)
+        elif args.variant_f:
+            policy = SimulationPolicy(flow_block_entry=True)
         else:
             policy = None
         futures = [

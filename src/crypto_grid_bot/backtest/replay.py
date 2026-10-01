@@ -23,7 +23,7 @@ Kline-to-quote adapter (the explicit, tested adapter BACKTEST_PLAN.md requires):
 from __future__ import annotations
 
 import re
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -403,6 +403,39 @@ def _e_compute_threshold(hourly_candles: Sequence[Kline], t0_ms: int) -> Decimal
     return med * 2 * 6
 
 
+_F_SIGNAL_BARS = 15  # variant F: last N completed 1m bars for the taker-buy share
+_F_MINUTE_MS = 60_000  # 1 minute in milliseconds
+_F_BLOCK_THRESHOLD = 0.40  # strict; block when share < this
+_F_UNBLOCK_THRESHOLD = 0.45  # inclusive; unblock when share >= this
+
+
+def _f_compute_share(buf: Sequence[Kline], current_open_ms: int) -> float | None:
+    """Compute taker-buy share = taker_buy_base / volume over the 15 completed consecutive
+    1m bars immediately preceding ``current_open_ms``.
+
+    Returns None when:
+    - fewer than 15 bars are in the buffer that precede ``current_open_ms``;
+    - the 15 bars are not consecutive (any gap > 1 minute);
+    - aggregate base volume over the 15 bars is zero.
+    A single zero-volume bar inside the window is valid input (spec v1, §3 F).
+    """
+    # Collect the 15 bars whose open_ms is strictly before current_open_ms, most recent last.
+    preceding = [k for k in buf if k.open_ms < current_open_ms]
+    if len(preceding) < _F_SIGNAL_BARS:
+        return None
+    window = preceding[-_F_SIGNAL_BARS:]
+    # Verify the 15 bars are consecutive: each open_ms must be exactly 1 minute after
+    # the previous (the bars are stored in chronological order).
+    for i in range(1, len(window)):
+        if window[i].open_ms != window[i - 1].open_ms + _F_MINUTE_MS:
+            return None
+    total_vol = sum((k.volume for k in window), Decimal(0))
+    if total_vol == 0:
+        return None
+    taker_buy = sum((k.taker_buy_base for k in window), Decimal(0))
+    return float(taker_buy / total_vol)
+
+
 def replay(
     config: BotConfig,
     run: RunConfig,
@@ -454,6 +487,10 @@ def replay(
     e_t0_ms: int | None = None
     e_threshold: Decimal | None = None
     e_bar_vol: Decimal = ZERO
+    # Variant F: rolling buffer of recent 1m klines for the taker-buy share signal.
+    # Sized at _F_SIGNAL_BARS + 1 so we always have the 15 preceding bars available.
+    flow_block_entry = policy is not None and policy.flow_block_entry
+    f_buf: deque[Kline] = deque(maxlen=_F_SIGNAL_BARS + 1)
     for kline in minutes:
         inputs = features.at(kline.open_ms)
         if inputs is None:
@@ -476,6 +513,19 @@ def replay(
         epoch = f"{run.symbol}/{kline.open_ms}"
         # Variant A: the state from the last daily bar closed at this minute's start.
         trend = schedule.at(kline.open_ms) if schedule is not None else None
+        # Variant F: compute taker-buy share from the last 15 completed 1m bars and
+        # update flow_block state on the account before step() runs.
+        # The buffer is appended AFTER share computation so the current bar is excluded.
+        f_share: float | None = None
+        if flow_block_entry:
+            f_share = _f_compute_share(f_buf, kline.open_ms)
+            # Update flow_block: unblock at >= 0.45; block (or stay blocked) at < 0.40
+            # or when unavailable (None). The 0.40-0.45 band keeps the current state.
+            if f_share is None or f_share < _F_BLOCK_THRESHOLD:
+                account.flow_block = True
+            elif f_share >= _F_UNBLOCK_THRESHOLD:
+                account.flow_block = False
+            # else: 0.40 <= share < 0.45 — hysteresis band, no state change.
         # Variant E: detect episode start/end and accumulate bar volume for the threshold
         # comparison. Snapshot state *before* step() updates it.
         if volume_exit:
@@ -510,6 +560,7 @@ def replay(
                 inputs.fta_resistance,
                 e_frame_threshold,
                 e_frame_vol,
+                f_share if flow_block_entry else None,
             )
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
@@ -576,6 +627,9 @@ def replay(
                 elif kline.open_ms < e_t0_ms + _E_WINDOW_MS:
                     # Still within the 6h measurement window: accumulate bar volume.
                     e_bar_vol += kline.volume
+        # Variant F: add this bar to the rolling buffer after all its quotes are processed.
+        if flow_block_entry:
+            f_buf.append(kline)
         # Bar-level bookkeeping from the bar's closing quote.
         metrics.regimes[str(report.get("regime", "unavailable"))] += 1
         metrics.decisions[str(report["decision"])] += 1

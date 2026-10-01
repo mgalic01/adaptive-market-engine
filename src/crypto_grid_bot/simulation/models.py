@@ -170,6 +170,12 @@ class Account:
     # True when the 6h outside-range timer fired but volume was below threshold,
     # granting a single extension to 12h total from the original t0.
     e_extended: bool = False
+    # Variant F (spec v1, section 3 F) only; runtime-only state, not persisted.
+    # flow_block: True when new buys are suppressed (starts True = fails closed).
+    # flow_fragments: accumulated below-minimum-notional quantities keyed by target price.
+    #   Values are Decimal quantities; persisted sells are placed once they reach min_notional.
+    flow_block: bool = True
+    flow_fragments: dict = field(default_factory=dict)  # dict[Decimal, Decimal]
     # Spec v1 amendment 1 (drawdown recovery), schema 6.
     # The C1(b) measurement reference: starts with the initial active capital, rises at
     # every mark and is scaled at every settlement exactly as ``risk_high`` is, but a
@@ -351,6 +357,10 @@ class Account:
         # Variant E runtime state: never persisted; a fresh replay run always starts
         # with e_extended=False and the extension state is rebuilt from replay inputs.
         data.pop("e_extended", None)
+        # Variant F runtime state: never persisted; flow_block starts True (fails closed)
+        # and flow_fragments is empty at the start of every replay run.
+        data.pop("flow_block", None)
+        data.pop("flow_fragments", None)
         return data
 
     @classmethod
