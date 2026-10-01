@@ -8,6 +8,7 @@ from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
+from crypto_grid_bot.backtest.cycle import H2_OUTSIDE_RANGE_SECONDS, H3_SCORE_RELAXATION
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import (
     CandidateMetrics,
@@ -112,6 +113,12 @@ class SimulationPolicy:
     # of the last three settlements have rates > +0.0005 (strict). Existing grids and
     # exits are unaffected. False = off (V0).
     funding_gate: bool = False
+    # Experiment variant H (spec v1, section 3 H): Bitcoin halving cycle context.
+    # When True:
+    # - H2 (phase [18,30), C > 1.60×SMA200): no new grid; 2h outside-range threshold.
+    # - H3 (phase [30,48), C < 0.50×ATH): opportunity score minimum lowered by 0.10.
+    # False = off (V0).
+    cycle_gate: bool = False
     # Spec v1 amendment 1 (owner decision 2026-09-27): the soft-drawdown cool-off before
     # ``risk_high`` may be rebased, and the hard-drawdown cool-off H before a ``drawdown``
     # halt restarts. Both are part of the account identity and fixed for all v1 runs.
@@ -144,6 +151,8 @@ class SimulationPolicy:
             raise ValueError("flow_block_entry must be a boolean")
         if type(self.funding_gate) is not bool:
             raise ValueError("funding_gate must be a boolean")
+        if type(self.cycle_gate) is not bool:
+            raise ValueError("cycle_gate must be a boolean")
         for name in ("soft_cooloff_seconds", "hard_cooloff_seconds"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -161,6 +170,8 @@ class SimulationPolicy:
             del value["flow_block_entry"]
         if not self.funding_gate:
             del value["funding_gate"]
+        if not self.cycle_gate:
+            del value["cycle_gate"]
         return value
 
 
@@ -191,6 +202,11 @@ class Frame:
     # Variant G (spec v1, §3 G): funding-rate gate. None when G is off.
     # True when G blocks a new grid (signal unavailable or all three rates > 0.0005).
     g_blocks: bool | None = None
+    # Variant H (spec v1, §3 H): Bitcoin halving cycle context. None when H is off.
+    # h2_active: True in phase [18,30) and C > 1.60×SMA200 — blocks grid, 2h threshold.
+    # h3_active: True in phase [30,48) and C < 0.50×ATH — lowers score minimum by 0.10.
+    h2_active: bool | None = None
+    h3_active: bool | None = None
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -209,6 +225,10 @@ class Frame:
             del value["f_share"]
         if value["g_blocks"] is None:
             del value["g_blocks"]
+        if value["h2_active"] is None:
+            del value["h2_active"]
+        if value["h3_active"] is None:
+            del value["h3_active"]
         return value
 
 
@@ -554,7 +574,15 @@ class PaperSimulator:
             if elapsed <= self.policy.maximum_frame_gap_seconds:
                 account.outside_seconds += elapsed
         account.outside_last = observed
-        if account.outside_seconds >= self.policy.outside_range_seconds:
+        # Variant H2: use 2h threshold instead of 6h when H2 is active.
+        # H2 changes only the threshold, never the timer start. This is strictly tighter,
+        # so the exit fires earlier (at 2h). E's extension only applies at the V0 6h level.
+        effective_threshold = (
+            H2_OUTSIDE_RANGE_SECONDS
+            if self.policy.cycle_gate and frame.h2_active
+            else self.policy.outside_range_seconds
+        )
+        if account.outside_seconds >= effective_threshold:
             # Variant E: at the 6h trigger, check volume before committing to exit.
             if (
                 self.policy.volume_exit
@@ -670,6 +698,14 @@ class PaperSimulator:
         # reason strings would dominate the output and add no measurable value to results
         # analysis. For live diagnostics, log regime.reasons at the call site instead.
         report.update(regime=regime.regime.value, opportunity_score=score.score)
+        # Variant H3: for a new grid only, the opportunity score minimum is lowered by
+        # H3_SCORE_RELAXATION (0.10) when H3 is active. Existing grids, all risk checks
+        # and every other eligibility gate are unchanged.
+        h3_eligible = score.eligible or (
+            self.policy.cycle_gate
+            and frame.h3_active
+            and score.score >= self.config.minimum_opportunity_score - H3_SCORE_RELAXATION
+        )
         self._rebase(account, frame, score.eligible, report)
         action = self._risk_action(account, quote, frame.signals.emergency)
         trend = self._apply_trend(account, frame) if self.policy.trend_switch else None
@@ -713,7 +749,7 @@ class PaperSimulator:
                 account.grid_lower = account.grid_upper = ZERO
                 report["range_exit_cleared"] = "returned inside" if back_inside else "recenter"
         else:
-            if not score.eligible:
+            if not h3_eligible:
                 self._pause(account, "; ".join(score.reasons))
             elif account.pause and action == RiskAction.ALLOW:
                 account.recovery_count += 1
@@ -825,6 +861,8 @@ class PaperSimulator:
                         and not (self.policy.flow_block_entry and account.flow_block)
                         # Variant G: block new grid when funding signal blocks.
                         and not (self.policy.funding_gate and frame.g_blocks)
+                        # Variant H2: block new grid when H2 is active (overheated cycle phase).
+                        and not (self.policy.cycle_gate and frame.h2_active)
                     ):
                         try:
                             report["opened"] = self._open_grid(account, frame, capped, regime)
@@ -837,6 +875,8 @@ class PaperSimulator:
                         report.update(
                             decision="cash", reason="funding_gate: high funding or unavailable"
                         )
+                    elif self.policy.cycle_gate and frame.h2_active:
+                        report.update(decision="cash", reason="cycle_gate: H2 phase — overheated")
         if account.halt:
             report.update(decision="halt", reason=account.halt)
         elif account.pause:

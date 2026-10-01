@@ -52,8 +52,9 @@ def run_job(
     """``fees`` is (maker, taker) overriding the spec; taker None means maker.
 
     ``policy`` controls simulation variants; None gives V0 behaviour (no trend switch).
-    When ``policy.trend_switch`` is True, the pair's daily bars are required and are
-    already loaded as ``pair_daily`` — passed to both ``FeatureEngine`` and ``replay()``.
+    When ``policy.trend_switch`` or ``policy.cycle_gate`` is True, the pair's daily bars
+    are required and are already loaded as ``pair_daily`` — passed to both
+    ``FeatureEngine`` and ``replay()``.
     """
     spec, config = load_spec(spec_path), load_config(config_path)
     manifest = load_manifest(manifest_path(spec_path))
@@ -79,12 +80,11 @@ def run_job(
         for s in spec.breadth_basket
     ]
     # V2: pass raw hourly candles for structure.py (needs OHLC; SeriesFeatures discards high/low).
-    # Daily bars are loaded only when the spec declares a daily_warmup_start.
-    pair_daily = (
-        load_daily(data_dir, manifest, symbol)
-        if spec.daily_warmup_start and symbol in {*spec.traded, spec.market_proxy}
-        else None
-    )
+    # Daily bars are loaded when the spec declares a daily_warmup_start, or when any
+    # policy variant that requires daily data (trend_switch, cycle_gate) is active.
+    needs_daily = spec.daily_warmup_start and symbol in {*spec.traded, spec.market_proxy}
+    needs_daily = needs_daily or (policy is not None and (policy.trend_switch or policy.cycle_gate))
+    pair_daily = load_daily(data_dir, manifest, symbol) if needs_daily else None
     features = FeatureEngine(
         pair,
         market,

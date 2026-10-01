@@ -31,6 +31,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
+from crypto_grid_bot.backtest.cycle import compute_ath, compute_sma200, cycle_signal
 from crypto_grid_bot.backtest.dataset import funding_local_path, local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
 from crypto_grid_bot.backtest.funding import FundingRecord, FundingSignal, read_funding_archive
@@ -447,7 +448,7 @@ def replay(
     funding: FundingSignal | None = None,
 ) -> tuple[Metrics, Account]:
     """``daily`` is the traded pair's completed 1d history (P3), read only by variant A
-    (``policy.trend_switch``), which refuses to run without it.
+    (``policy.trend_switch``) and variant H (``policy.cycle_gate``).
 
     ``funding`` is the BTCUSDT perpetual funding-rate history; required by variant G
     (``policy.funding_gate``). When G is active and ``funding`` is None, all new grids
@@ -458,6 +459,9 @@ def replay(
         if daily is None:
             raise ValueError("variant A (trend switch) needs the pair's daily history")
         schedule = TrendSchedule(daily)
+    cycle_gate = policy is not None and policy.cycle_gate
+    if cycle_gate and daily is None:
+        raise ValueError("variant H (cycle gate) needs the pair's daily history")
     funding_gate = policy is not None and policy.funding_gate
     # ":memory:" gives the simulator an in-memory SQLite store; replay never writes to it.
     simulator = PaperSimulator(Path(":memory:"), config, run.rules, run.initial_quote, policy)
@@ -540,6 +544,17 @@ def replay(
         g_blocks: bool | None = None
         if funding_gate:
             g_blocks = True if funding is None else funding.state(kline.open_ms).blocks
+        # Variant H: compute the halving cycle signal for this bar (once per bar, same for
+        # all four quotes — cycle phase and SMA200/ATH comparisons are daily-scale).
+        h2_active: bool | None = None
+        h3_active: bool | None = None
+        if cycle_gate:
+            assert daily is not None  # enforced above
+            sma200 = compute_sma200(daily, kline.open_ms)
+            ath = compute_ath(daily, kline.open_ms)
+            csig = cycle_signal(kline.open_ms, inputs.fair_value, sma200, ath)
+            h2_active = csig.h2_active
+            h3_active = csig.h3_active
         # Variant E: detect episode start/end and accumulate bar volume for the threshold
         # comparison. Snapshot state *before* step() updates it.
         if volume_exit:
@@ -576,6 +591,8 @@ def replay(
                 e_frame_vol,
                 f_share if flow_block_entry else None,
                 g_blocks,
+                h2_active,
+                h3_active,
             )
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)

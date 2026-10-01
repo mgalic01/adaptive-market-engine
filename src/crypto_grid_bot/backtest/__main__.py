@@ -205,6 +205,25 @@ def main(argv: list[str] | None = None) -> int:
         help="enable variant G: funding-rate gate (spec v1 §3 G); "
         "not eligible for selection until Codex reviews implementation",
     )
+    parser.add_argument(
+        "--variant-h",
+        action="store_true",
+        help="enable variant H: Bitcoin halving cycle context (spec v1 §3 H); "
+        "requires daily_warmup_start in the spec; "
+        "not eligible for selection until Codex reviews implementation",
+    )
+    parser.add_argument(
+        "--variant-cg",
+        action="store_true",
+        help="enable variant C+G: A + B + funding-rate gate (spec v1 §3 C+G); "
+        "requires daily_warmup_start in the spec",
+    )
+    parser.add_argument(
+        "--variant-ch",
+        action="store_true",
+        help="enable variant C+H: A + B + halving cycle context (spec v1 §3 C+H); "
+        "requires daily_warmup_start in the spec",
+    )
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
     maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
@@ -245,7 +264,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 2 if failures else 0
-        if args.variant_c:
+        if args.variant_ch:
+            policy = SimulationPolicy(
+                trend_switch=True, inventory_cap=Decimal("0.40"), cycle_gate=True
+            )
+        elif args.variant_cg:
+            policy = SimulationPolicy(
+                trend_switch=True, inventory_cap=Decimal("0.40"), funding_gate=True
+            )
+        elif args.variant_c:
             policy = SimulationPolicy(trend_switch=True, inventory_cap=Decimal("0.40"))
         elif args.variant_a:
             policy = SimulationPolicy(trend_switch=True)
@@ -257,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
             policy = SimulationPolicy(flow_block_entry=True)
         elif args.variant_g:
             policy = SimulationPolicy(funding_gate=True)
+        elif args.variant_h:
+            policy = SimulationPolicy(cycle_gate=True)
         else:
             policy = None
         futures = [

@@ -37,6 +37,9 @@ VARIANT_C = "--variant-c" in sys.argv
 VARIANT_E = "--variant-e" in sys.argv
 VARIANT_F = "--variant-f" in sys.argv
 VARIANT_G = "--variant-g" in sys.argv
+VARIANT_H = "--variant-h" in sys.argv
+VARIANT_CG = "--variant-cg" in sys.argv
+VARIANT_CH = "--variant-ch" in sys.argv
 SPEC_NAME = next((a for a in sys.argv[1:] if not a.startswith("--")), "long-recovery-2023-2024")
 SPEC_PATH = Path(f"config/datasets/{SPEC_NAME}.toml")
 CONFIG_PATH = Path("config/default.toml")
@@ -62,7 +65,15 @@ for symbol in spec.traded:
             label = f"{symbol}/{mode}/{'gated' if gated else 'ungated'}"
             print(f"[{done}/{total}] {label} ...", flush=True)
             t0 = time.time()
-            if VARIANT_C:
+            if VARIANT_CH:
+                policy = SimulationPolicy(
+                    trend_switch=True, inventory_cap=Decimal("0.40"), cycle_gate=True
+                )
+            elif VARIANT_CG:
+                policy = SimulationPolicy(
+                    trend_switch=True, inventory_cap=Decimal("0.40"), funding_gate=True
+                )
+            elif VARIANT_C:
                 policy = SimulationPolicy(trend_switch=True, inventory_cap=Decimal("0.40"))
             elif VARIANT_A:
                 policy = SimulationPolicy(trend_switch=True)
@@ -74,6 +85,8 @@ for symbol in spec.traded:
                 policy = SimulationPolicy(flow_block_entry=True)
             elif VARIANT_G:
                 policy = SimulationPolicy(funding_gate=True)
+            elif VARIANT_H:
+                policy = SimulationPolicy(cycle_gate=True)
             else:
                 policy = None
             r = run_job(SPEC_PATH, CONFIG_PATH, DATA_DIR, symbol, mode, gated, policy=policy)
@@ -84,7 +97,11 @@ for symbol in spec.traded:
             results.append(r)
 
 failures = result_failures(results)
-if VARIANT_C:
+if VARIANT_CH:
+    _variant_suffix = "-variant-ch"
+elif VARIANT_CG:
+    _variant_suffix = "-variant-cg"
+elif VARIANT_C:
     _variant_suffix = "-variant-c"
 elif VARIANT_A:
     _variant_suffix = "-variant-a"
@@ -96,6 +113,8 @@ elif VARIANT_F:
     _variant_suffix = "-variant-f"
 elif VARIANT_G:
     _variant_suffix = "-variant-g"
+elif VARIANT_H:
+    _variant_suffix = "-variant-h"
 else:
     _variant_suffix = ""
 # Read fee from spec so the stamp and results.json accurately reflect what was used.
