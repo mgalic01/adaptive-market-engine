@@ -613,6 +613,7 @@ class V0UnchangedTests(TestCase):
             "trend_switch": False,
             "volume_exit": False,
             "flow_block_entry": False,
+            "funding_gate": False,
         }
         self.assertEqual(asdict(SimulationPolicy()), SimulationPolicy().identity() | unset)
 

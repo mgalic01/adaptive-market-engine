@@ -199,6 +199,12 @@ def main(argv: list[str] | None = None) -> int:
         help="enable variant F: order-flow entry block (spec v1 §3 F); "
         "not eligible for selection until Codex reviews implementation",
     )
+    parser.add_argument(
+        "--variant-g",
+        action="store_true",
+        help="enable variant G: funding-rate gate (spec v1 §3 G); "
+        "not eligible for selection until Codex reviews implementation",
+    )
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
     maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
@@ -249,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
             policy = SimulationPolicy(volume_exit=True)
         elif args.variant_f:
             policy = SimulationPolicy(flow_block_entry=True)
+        elif args.variant_g:
+            policy = SimulationPolicy(funding_gate=True)
         else:
             policy = None
         futures = [

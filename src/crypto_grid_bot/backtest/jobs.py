@@ -24,6 +24,7 @@ from crypto_grid_bot.backtest.replay import (
     cross_check_daily,
     cross_check_hourly,
     load_daily,
+    load_funding,
     load_hourly,
     load_minutes,
     replay,
@@ -97,6 +98,13 @@ def run_job(
         daily_bars=pair_daily,
     )
     run = RunConfig(symbol, path_mode, gated, rules, spec.initial_quote, spread)
+    # Variant G: load the BTCUSDT funding-rate signal when the gate is active.
+    # funding_gate=True with no funding data in the manifest causes G to fail closed.
+    funding = (
+        load_funding(data_dir, manifest, "BTCUSDT")
+        if policy is not None and policy.funding_gate
+        else None
+    )
     metrics, account = replay(
         config,
         run,
@@ -104,6 +112,7 @@ def run_job(
         features,
         policy=policy,
         daily=pair_daily,
+        funding=funding,
     )
     return summarise(run, metrics, account, check_accounting(run, metrics, account))
 

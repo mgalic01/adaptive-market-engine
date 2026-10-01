@@ -31,8 +31,9 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
-from crypto_grid_bot.backtest.dataset import local_path
+from crypto_grid_bot.backtest.dataset import funding_local_path, local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
+from crypto_grid_bot.backtest.funding import FundingRecord, FundingSignal, read_funding_archive
 from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
@@ -443,14 +444,21 @@ def replay(
     features: FeatureEngine,
     policy: SimulationPolicy | None = None,
     daily: Sequence[Kline] | None = None,
+    funding: FundingSignal | None = None,
 ) -> tuple[Metrics, Account]:
     """``daily`` is the traded pair's completed 1d history (P3), read only by variant A
-    (``policy.trend_switch``), which refuses to run without it."""
+    (``policy.trend_switch``), which refuses to run without it.
+
+    ``funding`` is the BTCUSDT perpetual funding-rate history; required by variant G
+    (``policy.funding_gate``). When G is active and ``funding`` is None, all new grids
+    are blocked (G fails closed per spec).
+    """
     schedule: TrendSchedule | None = None
     if policy is not None and policy.trend_switch:
         if daily is None:
             raise ValueError("variant A (trend switch) needs the pair's daily history")
         schedule = TrendSchedule(daily)
+    funding_gate = policy is not None and policy.funding_gate
     # ":memory:" gives the simulator an in-memory SQLite store; replay never writes to it.
     simulator = PaperSimulator(Path(":memory:"), config, run.rules, run.initial_quote, policy)
     account = simulator.store.read()
@@ -526,6 +534,12 @@ def replay(
             elif f_share >= _F_UNBLOCK_THRESHOLD:
                 account.flow_block = False
             # else: 0.40 <= share < 0.45 — hysteresis band, no state change.
+        # Variant G: compute the funding gate state for this bar (once per bar, same for
+        # all four quotes since funding settlements are hour-scale events).
+        # When funding=None and gate is active, g_blocks=True (fails closed per spec).
+        g_blocks: bool | None = None
+        if funding_gate:
+            g_blocks = True if funding is None else funding.state(kline.open_ms).blocks
         # Variant E: detect episode start/end and accumulate bar volume for the threshold
         # comparison. Snapshot state *before* step() updates it.
         if volume_exit:
@@ -561,6 +575,7 @@ def replay(
                 e_frame_threshold,
                 e_frame_vol,
                 f_share if flow_block_entry else None,
+                g_blocks,
             )
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
@@ -709,6 +724,29 @@ def load_daily(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kl
             candles.extend(rows)
     candles.sort(key=lambda k: k.open_ms)
     return candles
+
+
+def load_funding(data_dir: Path, manifest: dict[str, Any], symbol: str) -> FundingSignal:
+    """Load all available funding-rate records for ``symbol`` from the manifest.
+
+    Entries with status != "ok" are skipped (treated as a gap in the record sequence).
+    The returned FundingSignal raises DataError on duplicate scheduled times (spec §5).
+    """
+    records: list[FundingRecord] = []
+    for entry in manifest["files"]:
+        if (
+            entry.get("kind") == "fundingRate"
+            and entry["symbol"] == symbol
+            and entry["status"] == "ok"
+        ):
+            records.extend(
+                read_funding_archive(
+                    funding_local_path(data_dir, symbol, entry["month"]),
+                    symbol,
+                    entry["month"],
+                )
+            )
+    return FundingSignal(records)
 
 
 DAY_MS = 86_400_000

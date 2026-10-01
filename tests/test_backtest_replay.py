@@ -1707,3 +1707,150 @@ class FFragmentTests(unittest.TestCase):
         sells = [o for o in account.orders.values() if o.side == "sell"]
         self.assertEqual(len(sells), 1)
         self.assertGreaterEqual(sells[0].price * sells[0].quantity, RULES.minimum_notional)
+
+
+class VariantGReplayTests(unittest.TestCase):
+    """Spec v1 §3 G: funding-rate gate, integration tests via replay()."""
+
+    def setUp(self):
+        self.config = load_config(ROOT / "config/default.toml")
+        self.all_hours = hourly(WARMUP + 50)
+        self.t = START_MS + WARMUP * HOUR_MS
+
+    def _engine(self):
+        hours = self.all_hours
+        series = SeriesFeatures("TESTUSDT", hours)
+        basket = [SeriesFeatures(f"B{i}USDT", hours, full=False) for i in range(5)]
+        return FeatureEngine(
+            series,
+            series,
+            basket,
+            range_atr_multiple=2.0,
+            levels=8,
+            minimum_cost_multiple=3.0,
+            round_trip_cost=0.0035,
+            hourly_candles=hours,
+        )
+
+    def _fair(self):
+        return float(self._engine().at(self.t).fair_value)
+
+    def _bars(self, start, stop, price):
+        return [
+            candle(self.t + i * 60_000, price, price * 1.001, price * 0.999, price)
+            for i in range(start, stop)
+        ]
+
+    def _funding_signal(self, rate):
+        """Build a FundingSignal whose three most-recent usable records all carry ``rate``."""
+        from decimal import Decimal as D
+
+        from crypto_grid_bot.backtest.funding import FundingRecord, FundingSignal
+
+        # Three 8-hour settlements before the evaluation window.
+        # self.t is at WARMUP hours from START_MS.
+        # Place them 24h, 16h and 8h before self.t so they are usable at t.
+        hour_ms = 3_600_000
+        settle_3 = self.t - 8 * hour_ms  # scheduled at self.t - 8h
+        settle_2 = self.t - 16 * hour_ms
+        settle_1 = self.t - 24 * hour_ms
+        # calc_time = scheduled + 11 ms offset; usable = calc_time + 60_000
+        records = [
+            FundingRecord(settle_1 + 11, 8, D(rate)),
+            FundingRecord(settle_2 + 11, 8, D(rate)),
+            FundingRecord(settle_3 + 11, 8, D(rate)),
+        ]
+        return FundingSignal(records)
+
+    def test_high_funding_blocks_new_grid(self):
+        """G blocks a new grid when all three rates > 0.0005."""
+        from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+        fair = self._fair()
+        minutes = self._bars(0, 20, fair)
+        engine = self._engine()
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        signal = self._funding_signal("0.001")  # rate 0.001 > 0.0005 → blocks
+        policy = SimulationPolicy(funding_gate=True)
+        metrics, account = replay(self.config, run, minutes, engine, policy=policy, funding=signal)
+        # G must block all grid opens.
+        self.assertEqual(metrics.grids_opened, 0)
+        self.assertEqual(account.halt, "")
+
+    def test_low_funding_allows_grid(self):
+        """G does not block when the rate is <= 0.0005."""
+        from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+        fair = self._fair()
+        minutes = self._bars(0, 20, fair)
+        engine = self._engine()
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        signal = self._funding_signal("0.0003")  # rate 0.0003 <= 0.0005 → clear
+        policy = SimulationPolicy(funding_gate=True)
+        metrics, account = replay(self.config, run, minutes, engine, policy=policy, funding=signal)
+        # G must not block grid opens; at least one grid should open.
+        self.assertGreater(metrics.grids_opened, 0)
+        self.assertEqual(account.halt, "")
+
+    def test_funding_gate_off_is_v0(self):
+        """funding_gate=False must produce the same grids_opened as V0."""
+        from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+        fair = self._fair()
+        minutes = self._bars(0, 20, fair)
+        engine = self._engine()
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        metrics_v0, _ = replay(self.config, run, list(minutes), engine)
+        metrics_g_off, _ = replay(
+            self.config,
+            run,
+            list(minutes),
+            engine,
+            policy=SimulationPolicy(funding_gate=False),
+        )
+        self.assertEqual(metrics_v0.grids_opened, metrics_g_off.grids_opened)
+
+    def test_no_funding_data_fails_closed(self):
+        """funding=None with funding_gate=True fails closed (no new grids)."""
+        from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+        fair = self._fair()
+        minutes = self._bars(0, 20, fair)
+        engine = self._engine()
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        policy = SimulationPolicy(funding_gate=True)
+        metrics, account = replay(self.config, run, minutes, engine, policy=policy, funding=None)
+        self.assertEqual(metrics.grids_opened, 0)
+        self.assertEqual(account.halt, "")
+
+    def test_existing_grid_and_exits_unaffected(self):
+        """G only blocks new grids; existing grids' sells and range exits continue."""
+        from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+        fair = self._fair()
+        # First open a grid WITHOUT G active (so the grid is placed).
+        first_minutes = self._bars(0, 20, fair)
+        engine = self._engine()
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        # Then run with G active + high rate AND an outside-range sequence.
+        signal = self._funding_signal("0.001")  # blocks new grids
+        policy = SimulationPolicy(funding_gate=True)
+        # Combine in-range bars (grid will try to open, G blocks) + outside bars.
+        SIX_H = 360
+        outside_bars = [
+            candle(
+                self.t + (20 + i) * 60_000,
+                fair * 0.955,
+                fair * 0.956,
+                fair * 0.954,
+                fair * 0.955,
+                volume="2000000",
+            )
+            for i in range(SIX_H + 10)
+        ]
+        minutes = first_minutes + outside_bars
+        metrics, account = replay(self.config, run, minutes, engine, policy=policy, funding=signal)
+        # G blocked the new grid, so grids_opened = 0.
+        self.assertEqual(metrics.grids_opened, 0)
+        # The account should not be halted (no inventory to liquidate).
+        self.assertEqual(account.halt, "")

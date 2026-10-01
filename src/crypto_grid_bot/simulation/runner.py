@@ -107,6 +107,11 @@ class SimulationPolicy:
     # 1m bars; unblocked when share >= 0.45. Starts blocked (fails closed).
     # False = off (V0). Not eligible for selection until Codex reviews implementation.
     flow_block_entry: bool = False
+    # Experiment variant G (spec v1, section 3 G): funding-rate gate.
+    # When True, no new grid while the funding signal is unavailable or while all three
+    # of the last three settlements have rates > +0.0005 (strict). Existing grids and
+    # exits are unaffected. False = off (V0).
+    funding_gate: bool = False
     # Spec v1 amendment 1 (owner decision 2026-09-27): the soft-drawdown cool-off before
     # ``risk_high`` may be rebased, and the hard-drawdown cool-off H before a ``drawdown``
     # halt restarts. Both are part of the account identity and fixed for all v1 runs.
@@ -137,6 +142,8 @@ class SimulationPolicy:
             raise ValueError("volume_exit must be a boolean")
         if type(self.flow_block_entry) is not bool:
             raise ValueError("flow_block_entry must be a boolean")
+        if type(self.funding_gate) is not bool:
+            raise ValueError("funding_gate must be a boolean")
         for name in ("soft_cooloff_seconds", "hard_cooloff_seconds"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -152,6 +159,8 @@ class SimulationPolicy:
             del value["volume_exit"]
         if not self.flow_block_entry:
             del value["flow_block_entry"]
+        if not self.funding_gate:
+            del value["funding_gate"]
         return value
 
 
@@ -179,6 +188,9 @@ class Frame:
     # share = taker-buy base ÷ total base over the last 15 completed consecutive 1m bars.
     # None when unavailable (missing bar or zero aggregate volume).
     f_share: float | None = None
+    # Variant G (spec v1, §3 G): funding-rate gate. None when G is off.
+    # True when G blocks a new grid (signal unavailable or all three rates > 0.0005).
+    g_blocks: bool | None = None
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -195,6 +207,8 @@ class Frame:
             del value["e_bar_volume"]
         if value["f_share"] is None:
             del value["f_share"]
+        if value["g_blocks"] is None:
+            del value["g_blocks"]
         return value
 
 
@@ -809,6 +823,8 @@ class PaperSimulator:
                         and frame.allow_new_grid
                         # Variant F: block new grid when flow_block is active.
                         and not (self.policy.flow_block_entry and account.flow_block)
+                        # Variant G: block new grid when funding signal blocks.
+                        and not (self.policy.funding_gate and frame.g_blocks)
                     ):
                         try:
                             report["opened"] = self._open_grid(account, frame, capped, regime)
@@ -817,6 +833,10 @@ class PaperSimulator:
                             report.update(decision="cash", reason=str(exc))
                     elif self.policy.flow_block_entry and account.flow_block:
                         report.update(decision="cash", reason="flow_block: buy side blocked")
+                    elif self.policy.funding_gate and frame.g_blocks:
+                        report.update(
+                            decision="cash", reason="funding_gate: high funding or unavailable"
+                        )
         if account.halt:
             report.update(decision="halt", reason=account.halt)
         elif account.pause:

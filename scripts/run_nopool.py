@@ -36,6 +36,7 @@ VARIANT_B = "--variant-b" in sys.argv
 VARIANT_C = "--variant-c" in sys.argv
 VARIANT_E = "--variant-e" in sys.argv
 VARIANT_F = "--variant-f" in sys.argv
+VARIANT_G = "--variant-g" in sys.argv
 SPEC_NAME = next((a for a in sys.argv[1:] if not a.startswith("--")), "long-recovery-2023-2024")
 SPEC_PATH = Path(f"config/datasets/{SPEC_NAME}.toml")
 CONFIG_PATH = Path("config/default.toml")
@@ -71,6 +72,8 @@ for symbol in spec.traded:
                 policy = SimulationPolicy(volume_exit=True)
             elif VARIANT_F:
                 policy = SimulationPolicy(flow_block_entry=True)
+            elif VARIANT_G:
+                policy = SimulationPolicy(funding_gate=True)
             else:
                 policy = None
             r = run_job(SPEC_PATH, CONFIG_PATH, DATA_DIR, symbol, mode, gated, policy=policy)
@@ -91,6 +94,8 @@ elif VARIANT_E:
     _variant_suffix = "-variant-e"
 elif VARIANT_F:
     _variant_suffix = "-variant-f"
+elif VARIANT_G:
+    _variant_suffix = "-variant-g"
 else:
     _variant_suffix = ""
 # Read fee from spec so the stamp and results.json accurately reflect what was used.
