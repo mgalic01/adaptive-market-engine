@@ -49,7 +49,7 @@ def _limit_equity(base: Decimal, limit: Decimal) -> Decimal:
     a fixed 120-digit context rounded a 121-digit balance onto a limit)."""
     # 1 - limit with every digit kept, however small the limit (Codex review of #159:
     # at the default 28 digits, 1 - 1e-30 rounded to 1).
-    with localcontext(_wide(len(limit.as_tuple().digits) - limit.as_tuple().exponent + 1)):
+    with localcontext(_wide(len(limit.as_tuple().digits) - limit.adjusted() + 1)):
         keep = 1 - limit
     digits = len(base.as_tuple().digits) + len(keep.as_tuple().digits)
     with localcontext(_wide(digits)):
