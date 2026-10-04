@@ -459,6 +459,27 @@ class TargetTest(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.branches(cmd), ["claude/a"])
 
+    def test_the_repository_selected_by_git_dir_is_checked(self):
+        # Codex review of #159: a push into this repository from another directory.
+        def fake(cwd, *args):
+            ours = "other" not in Path(cwd).as_posix()
+            if args[:2] == ("remote", "get-url"):
+                return f"https://github.com/{REPO}.git" if ours else "https://x/other.git"
+            return "claude/x" if args[:2] == ("rev-parse", "--abbrev-ref") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            for cmd in (
+                "cd /tmp/other && git --git-dir /work/repo/.git push origin claude/a",
+                "cd /tmp/other && git --git-dir=/work/repo/.git push origin claude/a",
+                "cd /tmp/other && GIT_DIR=/work/repo/.git git push origin claude/a",
+                "cd /tmp/other && env GIT_DIR=/work/repo/.git git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    targets = find_targets(cmd, ".")
+                    self.assertEqual([t.branch for t in targets], ["claude/a"])
+            # The other repository's own push is not this repository's.
+            self.assertEqual(find_targets("cd /tmp/other && git push origin claude/a", "."), [])
+
     def test_case_arms_and_function_bodies_are_read(self):
         # Codex review of #159: the command follows a case pattern or a function's name.
         with git_stub():

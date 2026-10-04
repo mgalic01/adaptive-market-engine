@@ -434,10 +434,10 @@ WRAPPER_VALUE_OPTS = {
     "-o",
     "--output",
 }
-# Git's global options that take the next word as their value (-C is handled apart,
-# since it moves the working directory): `git --git-dir .git push` was read as running
-# the subcommand `.git` (Codex review of #159).
-GIT_VALUE_OPTS = {"-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"}
+# Git's global options that take the next word as their value: `git --git-dir .git push`
+# was read as running the subcommand `.git` (Codex review of #159). -C and --git-dir are
+# handled apart, since they select where the repository is read.
+GIT_VALUE_OPTS = {"-c", "--work-tree", "--namespace", "--config-env", "--super-prefix"}
 # A `case` arm's pattern word, which the arm's command follows.
 CASE_PATTERN_RE = re.compile(r"\(?[^()]*\)")
 # `env -S 'gh pr merge 5'` (or -S'...', --split-string=...) runs the words of its value.
@@ -680,9 +680,19 @@ def find_targets(
             cwd = str(Path(cwd, toks[-1]))
         elif exe == "git":
             here, rest = cwd, toks[1:]
+            # The repository is read where -C, --git-dir or GIT_DIR points: git runs fine
+            # inside a git directory (Codex review of #159: `cd other && git --git-dir
+            # <this repo>/.git push` was checked against the other repository).
+            for w in split_words(segment):
+                if w.startswith("GIT_DIR="):
+                    here = str(Path(here, w.split("=", 1)[1]))
+                elif _exe(w) == "git":
+                    break
             while rest and rest[0].startswith("-"):
-                if rest[0] == "-C" and len(rest) > 1:
+                if rest[0] in ("-C", "--git-dir") and len(rest) > 1:
                     here, rest = str(Path(here, rest[1])), rest[2:]
+                elif rest[0].startswith("--git-dir="):
+                    here, rest = str(Path(here, rest[0].split("=", 1)[1])), rest[1:]
                 elif rest[0] in GIT_VALUE_OPTS and len(rest) > 1:
                     rest = rest[2:]
                 else:
