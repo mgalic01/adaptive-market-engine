@@ -447,6 +447,18 @@ class TargetTest(unittest.TestCase):
                         [(t.pr, t.unknown) for t in find_targets(cmd, ".")], [(5, None)]
                     )
 
+    def test_git_global_options_with_values(self):
+        # Codex review of #159: the option's value is not the subcommand.
+        with git_stub():
+            for cmd in (
+                "git --git-dir .git push origin claude/a",
+                "git --work-tree . --namespace ns push origin claude/a",
+                "git --git-dir=.git push origin claude/a",
+                "git -c core.pager=cat --config-env x=Y push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+
     def test_case_arms_and_function_bodies_are_read(self):
         # Codex review of #159: the command follows a case pattern or a function's name.
         with git_stub():
