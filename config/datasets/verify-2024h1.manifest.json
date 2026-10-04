@@ -1,5 +1,5 @@
 {
- "created_at": "2026-09-24T21:05:33+00:00",
+ "created_at": "2026-10-01T23:17:35+00:00",
  "dataset": "verify-2024h1",
  "files": [
   {
@@ -2166,7 +2166,7 @@
  "instruments": {
   "ADAUSDT": {
    "base": "ADA",
-   "fetched_at": "2026-09-24T21:05:33+00:00",
+   "fetched_at": "2026-10-01T23:17:35+00:00",
    "min_notional": "5.00000000",
    "note": "current exchange filters applied to historical replay (approximation)",
    "quantity_step": "0.10000000",
@@ -2175,7 +2175,7 @@
   },
   "BTCUSDT": {
    "base": "BTC",
-   "fetched_at": "2026-09-24T21:05:33+00:00",
+   "fetched_at": "2026-10-01T23:17:35+00:00",
    "min_notional": "5.00000000",
    "note": "current exchange filters applied to historical replay (approximation)",
    "quantity_step": "0.00001000",

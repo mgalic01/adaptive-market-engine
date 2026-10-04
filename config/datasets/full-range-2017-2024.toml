@@ -1,0 +1,68 @@
+# Full-range development window: maximum available history through the development ceiling.
+# BTC and ETH data starts 2017-08 (Binance listing). XRP starts 2018-05 — that sets the
+# warmup floor. Evaluation starts 2018-11 (6 warm-up months from 2018-05).
+# End: 2024-12 (DEVELOPMENT_END; 2025+ is the reserved window, locked until C7 is settled).
+#
+# Covers: the 2018 bear market, the 2019 recovery, the 2020-21 bull, the 2022 crash
+# (LUNA/FTX), the 2023-24 recovery and the 2024 ETF-driven bull — the complete
+# available development history, ~6.5 years of evaluation.
+#
+# Traded pairs: BTCUSDT, ETHUSDT, XRPUSDT.
+#   BTC/ETH: continuous from 2017-08.
+#   XRP: continuous from 2018-05 (sets warmup_start floor).
+#
+# Daily bars (for Variant A, H and FTA resistance): from 2018-05 (matches warmup_start;
+# the 2018-05 and 2018-06 daily archives are missing for all three pairs — recorded as
+# "missing" in the manifest, which is valid. 1d archives exist from 2018-07 onward).
+#
+# Basket exclusions (pre-listing gaps documented from Binance archive availability):
+#   SOLUSDT:  not listed until 2020-08.
+#   DOGEUSDT: 1h archive starts 2019-07.
+#   LINKUSDT: 1h archive starts 2019-01.
+#   TRXUSDT:  1h archive starts 2018-06 (one month gap from warmup_start 2018-05).
+#   BNBUSDT:  1h archive starts 2017-11 — fully covered, no exclusion needed.
+#   LTCUSDT:  1h archive starts 2017-12 — fully covered, no exclusion needed.
+#
+# This dataset is for development research only.
+# Not the untouched test window; results here may guide design, never prove it.
+name = "full-range-2017-2024"
+purpose = "full-history development research: 6.5-year evaluation 2018-11 to 2024-12"
+traded = ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
+market_proxy = "BTCUSDT"
+breadth_basket = [
+  "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+  "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
+]
+daily_warmup_start = "2018-05"
+warmup_start = "2018-05"
+start = "2019-01"
+end = "2024-12"
+initial_quote = "100"
+fee_rate = "0.001"
+slippage_rate = "0.0005"
+participation = "0.10"
+assumed_spread_pct = "0.05"
+
+[[basket_exclusions]]
+symbol = "SOLUSDT"
+from = "2018-05-01T00:00Z"
+to = "2020-08-01T00:00Z"
+reason = "SOLUSDT was not listed on Binance before August 2020; no 1h archive exists for this period"
+
+[[basket_exclusions]]
+symbol = "DOGEUSDT"
+from = "2018-05-01T00:00Z"
+to = "2019-07-01T00:00Z"
+reason = "DOGEUSDT 1h archive starts 2019-07; earlier months are absent"
+
+[[basket_exclusions]]
+symbol = "LINKUSDT"
+from = "2018-05-01T00:00Z"
+to = "2019-01-01T00:00Z"
+reason = "LINKUSDT 1h archive starts 2019-01; earlier months are absent"
+
+[[basket_exclusions]]
+symbol = "TRXUSDT"
+from = "2018-05-01T00:00Z"
+to = "2018-06-01T00:00Z"
+reason = "TRXUSDT 1h archive starts 2018-06; the single warm-up month 2018-05 is absent"
