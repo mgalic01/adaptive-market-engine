@@ -20,10 +20,17 @@ def _wide(prec: int) -> Context:
     return Context(prec=prec, Emin=MIN_EMIN, Emax=MAX_EMAX)
 
 
+# The exponents at which _limit_equity's products stay exact, with room for a limit's
+# digits. A balance beyond them is invalid, as one beyond a float's range always was
+# (Codex review of #159: 1e(MIN_EMIN - 1) rounded the 12% product).
+_EXPONENTS = range(MIN_EMIN + 40, MAX_EMAX - 40)
+
+
 def _exact(value: Decimal | float) -> Decimal | None:
-    """``value`` as an exact Decimal (a float or int converts exactly); None unless finite."""
+    """``value`` as an exact Decimal (a float or int converts exactly); None unless finite
+    and within ``_EXPONENTS``."""
     number = value if isinstance(value, Decimal) else Decimal(value)
-    return number if number.is_finite() else None
+    return number if number.is_finite() and number.adjusted() in _EXPONENTS else None
 
 
 def _percent(base: Decimal, equity: Decimal) -> str:

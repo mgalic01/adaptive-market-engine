@@ -390,6 +390,14 @@ class TargetTest(unittest.TestCase):
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a delimiter that is not a whole recognised word leaves
+            # the here-document unstripped, so the merge after it is still found.
+            for cmd in (
+                "cat <<END+\nliteral\nEND+\ngh pr merge 5",
+                "cat <<'END+'\nliteral\nEND+\ngh pr merge 5",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
             # Codex review of #159: two bodies on one line, read in order.
             self.assertEqual(find_targets("cat <<'A' <<'B'\nfirst\nA\ngh pr merge 5\nB", "."), [])
             for cmd in (
@@ -398,6 +406,22 @@ class TargetTest(unittest.TestCase):
                 "cat <<'EOF'\ntext\nEOF\ngh pr merge 5",
                 "cat <<'A' <<'B'\nfirst\nA\nsecond\nB\ngh pr merge 5",
                 "cat <<'A'; bash <<'B'\nfirst\nA\ngh pr merge 5\nB",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+
+    def test_wrapper_options_with_values_and_env_split_strings(self):
+        # Codex review of #159: each runs the merge after the wrapper's options.
+        with git_stub():
+            for cmd in (
+                "env -C sub gh pr merge 5",
+                "env --chdir sub gh pr merge 5",
+                "env -S 'gh pr merge 5'",
+                "env -S'gh pr merge 5'",
+                "env --split-string='gh pr merge 5'",
+                "env -u HOME -S 'gh pr merge 5 --squash'",
+                "/usr/bin/time -f %e gh pr merge 5",
+                "nice --adjustment 5 gh pr merge 5",
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])

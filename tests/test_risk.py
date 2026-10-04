@@ -1,5 +1,5 @@
+from decimal import MIN_EMIN, localcontext
 from decimal import Decimal as D
-from decimal import localcontext
 from unittest import TestCase
 
 from crypto_grid_bot.domain import PortfolioSnapshot, RiskAction
@@ -124,6 +124,23 @@ class RiskEngineTests(TestCase):
         ):
             with self.subTest(equity=equity):
                 decision = self.engine.evaluate(PortfolioSnapshot(equity, equity, high, 1))
+                self.assertEqual(action, decision.action)
+
+    def test_exponents_beyond_the_exact_range_are_invalid(self) -> None:
+        # Codex review of #159: at 1e(MIN_EMIN - 1) the 12% product rounded from 8.8 to 9.
+        low = PortfolioSnapshot(
+            D(f"8.9e{MIN_EMIN - 2}"), D(f"8.9e{MIN_EMIN - 2}"), D(f"1e{MIN_EMIN - 1}"), 1
+        )
+        decision = self.engine.evaluate(low)
+        self.assertEqual(
+            (RiskAction.PAUSE, ("invalid portfolio equity",)), (decision.action, decision.reasons)
+        )
+        # Just inside the range, the comparison is exact: 11% is a soft drawdown, 12% exits.
+        edge = MIN_EMIN + 41  # the equities sit one exponent lower, at the range start
+        for equity, action in (("0.89", RiskAction.REDUCE), ("0.88", RiskAction.EXIT)):
+            with self.subTest(equity=equity):
+                value = D(f"{equity}e{edge}")
+                decision = self.engine.evaluate(PortfolioSnapshot(value, value, D(f"1e{edge}"), 1))
                 self.assertEqual(action, decision.action)
 
     def test_any_finite_decimal_exponent_is_compared_exactly(self) -> None:
