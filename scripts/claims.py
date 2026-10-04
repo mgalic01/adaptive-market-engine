@@ -559,6 +559,13 @@ def _unknown(text: str, why: str) -> list[Target]:
     ]
 
 
+# Command separators: `&&`, `||`, `;`, a pipe, a newline, and a lone `&` that sends a
+# command to the background (Codex review of #159: `true & gh pr merge 5`). A `&` next to
+# `>` is a redirection (`2>&1`, `&>out`); PowerShell's call operator (`& git push`) leaves
+# an empty segment before its command, which is then read as before.
+SEPARATORS = re.compile(r"&&|\|\||(?<![>&])&(?![&>])|[;|\n]")
+
+
 def find_targets(command: str, cwd: str, depth: int = 0) -> list[Target]:
     """Every push or merge in a shell command, with the working directory it runs in.
     What `bash -c`, `pwsh -Command`, `cmd /c`, `$(...)` or backticks run is read too, to
@@ -567,7 +574,7 @@ def find_targets(command: str, cwd: str, depth: int = 0) -> list[Target]:
         return _unknown(command, "a command nested too deep to read")
     command, bodies = heredocs(command)
     targets: list[Target] = []
-    for segment in re.split(r"&&|\|\||[;|\n]", command):
+    for segment in SEPARATORS.split(command):
         toks = unwrap(drop_redirections(split_words(segment)))
         if not toks:
             continue
