@@ -385,6 +385,12 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(self.count("captures"), 0)
         self.assertEqual(self.count("failures"), 2)
 
+    def test_local_clock_stepping_back_during_capture_is_rejected(self):
+        # Within the one-second tolerance of the duration check, but earlier than the start.
+        wall = iter([NOW, NOW, NOW - 500, NOW - 500, NOW - 500, NOW - 500]).__next__
+        with self.assertRaisesRegex(DataError, "clock moved backwards during capture"):
+            Collector(PublicClient(FakeFeed()), wall_ms=wall, monotonic=lambda: 0).capture(SYMBOL)
+
     def test_out_of_order_capture_rejected(self):
         self.store.save(collector().capture(SYMBOL))
         with self.assertRaisesRegex(DataError, "clock did not advance"):
