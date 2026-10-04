@@ -402,6 +402,20 @@ class TargetTest(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
 
+    def test_a_lone_ampersand_ends_a_command(self):
+        # Codex review of #159: the shell runs both commands. A redirection is no separator,
+        # and PowerShell's call operator still works.
+        with git_stub():
+            self.assertEqual(self.prs("true & gh pr merge 5"), [5])
+            for cmd in (
+                "git status & git push origin claude/a",
+                "git push origin claude/a 2>&1 &",
+                "git push origin claude/a &> log.txt",
+                "$r = & git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+
     def test_a_pr_or_branch_the_shell_computes_is_unknown(self):
         with git_stub():
             for cmd in (
