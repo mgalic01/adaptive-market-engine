@@ -497,33 +497,47 @@ def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
     (Codex review of #159)."""
     found: list[tuple[str, bool, str]] = []
     pos = 0
-    while (m := HEREDOC_RE.search(command, pos)) is not None:
-        start = command.find("\n", m.end()) + 1
-        if start == 0:
+    while (first := HEREDOC_RE.search(command, pos)) is not None:
+        line_start = command.rfind("\n", 0, first.start()) + 1
+        line_end = command.find("\n", first.start())
+        if line_end < 0:
             break
-        delimiter, tabs = m.group(4), m.group(1) == "-"
-        end = start
-        while end < len(command):
-            line_end = command.find("\n", end)
-            line_end = len(command) if line_end < 0 else line_end
-            row = command[end:line_end]
-            if (row.lstrip("\t") if tabs else row) == delimiter:
-                body, rest = command[start:end], command[line_end + 1 :]
-                break
-            end = line_end + 1
-        else:
-            body, rest = command[start:], ""
-        reader = command[command.rfind("\n", 0, m.start()) + 1 : m.start()]
-        found.append((body, bool(m.group(2) or m.group(3)), reader))
-        command, pos = command[:start] + rest, start
+        # The bodies follow the line in the order of its `<<`s (Codex review of #159).
+        cursor = line_end + 1
+        for m in HEREDOC_RE.finditer(command, first.start(), line_end):
+            delimiter, tabs = m.group(4), m.group(1) == "-"
+            end = cursor
+            while end < len(command):
+                row_end = command.find("\n", end)
+                row_end = len(command) if row_end < 0 else row_end
+                row = command[end:row_end]
+                if (row.lstrip("\t") if tabs else row) == delimiter:
+                    body, after = command[cursor:end], row_end + 1
+                    break
+                end = row_end + 1
+            else:
+                body, after = command[cursor:], len(command)
+            found.append((body, bool(m.group(2) or m.group(3)), command[line_start : m.start()]))
+            cursor = after
+        command, pos = command[: line_end + 1] + command[cursor:], line_end + 1
     return command, found
+
+
+# `merge` or `push` as a word, or GraphQL's mergePullRequest; not `submerged`, `merger`
+# or `pushd` (Codex review of #159).
+UNKNOWN_KINDS = {
+    "merge": re.compile(r"(?<![a-z])merge(?![a-z])|mergepullrequest"),
+    "push": re.compile(r"(?<![a-z])push(?![a-z])"),
+}
 
 
 def _unknown(text: str, why: str) -> list[Target]:
     """A command known only when it runs: a merge in it is refused (fail closed), a push
     only warned about (fail open), as when GitHub cannot be read."""
     lowered = text.lower()
-    return [Target(kind, unknown=why) for kind in ("merge", "push") if kind in lowered]
+    return [
+        Target(kind, unknown=why) for kind, word in UNKNOWN_KINDS.items() if word.search(lowered)
+    ]
 
 
 def find_targets(command: str, cwd: str, depth: int = 0) -> list[Target]:
@@ -561,6 +575,10 @@ def find_targets(command: str, cwd: str, depth: int = 0) -> list[Target]:
         elif "/merge" in segment or "mergePullRequest" in segment:
             # curl, python and other clients can call the same REST or GraphQL merge.
             targets.extend(_rest_merge_targets(segment, cwd, None))
+        elif exe in EVALS and not any(c in "".join(toks[1:]) for c in "$`\\"):
+            # `eval "gh pr merge 5"` runs literal text: read it as the command it is
+            # (Codex review of #159: `eval 'echo submerged'` was refused as a merge).
+            targets.extend(find_targets(" ".join(toks[1:]), cwd, depth + 1))
         elif exe in EVALS or (len(toks) > 1 and re.match(r"\$\{?\w", toks[0])):
             # `eval "$cmd"`, `iex $cmd`, `& $gh pr merge 5`: the text of this command
             # line is all there is to go on. A lone `$x` (PowerShell prints it) runs nothing.

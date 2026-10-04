@@ -108,10 +108,23 @@ class RiskEngineTests(TestCase):
         self.assertEqual(RiskAction.EXIT, decision.action)
         self.assertEqual(("hard drawdown reached: 50.00%",), decision.reasons)
 
-    def test_equities_beyond_a_float_are_invalid(self) -> None:
-        # Codex review of #159: Decimal arithmetic on these raised decimal.Overflow.
-        snapshot = PortfolioSnapshot(D("1e1000000"), D("2e1000000"), D("2e1000000"), 1)
-        decision = self.engine.evaluate(snapshot)
-        self.assertEqual(
-            (RiskAction.PAUSE, ("invalid portfolio equity",)), (decision.action, decision.reasons)
-        )
+    def test_any_finite_decimal_exponent_is_compared_exactly(self) -> None:
+        # Codex review of #159: in the default context 1e1000000 raised decimal.Overflow,
+        # and equal equities of 1e-1000119 underflowed to a "0.00%" hard drawdown.
+        cases = [
+            (
+                ("1e1000000", "2e1000000", "2e1000000"),
+                RiskAction.EXIT,
+                "hard drawdown reached: 50.00%",
+            ),
+            (("1e-1000119", "1e-1000119", "1e-1000119"), RiskAction.ALLOW, "risk checks passed"),
+            (
+                ("88e-1000119", "100e-1000119", "100e-1000119"),
+                RiskAction.EXIT,
+                "hard drawdown reached: 12.00%",
+            ),
+        ]
+        for values, action, reason in cases:
+            with self.subTest(values=values):
+                decision = self.engine.evaluate(PortfolioSnapshot(*map(D, values), 1))
+                self.assertEqual((action, (reason,)), (decision.action, decision.reasons))

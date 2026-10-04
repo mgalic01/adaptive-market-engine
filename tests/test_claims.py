@@ -381,10 +381,14 @@ class TargetTest(unittest.TestCase):
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(find_targets(cmd, "."), [])
+            # Codex review of #159: two bodies on one line, read in order.
+            self.assertEqual(find_targets("cat <<'A' <<'B'\nfirst\nA\ngh pr merge 5\nB", "."), [])
             for cmd in (
                 "cat <<EOF\nit's $(gh pr merge 5)\nEOF",
                 "bash <<'EOF'\ngh pr merge 5\nEOF",
                 "cat <<'EOF'\ntext\nEOF\ngh pr merge 5",
+                "cat <<'A' <<'B'\nfirst\nA\nsecond\nB\ngh pr merge 5",
+                "cat <<'A'; bash <<'B'\nfirst\nA\ngh pr merge 5\nB",
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
@@ -406,10 +410,8 @@ class TargetTest(unittest.TestCase):
     def test_commands_known_only_at_run_time(self):
         with git_stub():
             for cmd in (
-                'eval "gh pr merge 5"',
                 'cmd="gh pr merge 5"; eval "$cmd"',
-                'iex "gh pr merge 5"',
-                "Invoke-Expression 'gh pr merge 5'",
+                'eval "gh pr merge $n"',
                 '$gh = "gh"; & $gh pr merge 5',
                 "$GH pr merge 5",
             ):
@@ -417,13 +419,32 @@ class TargetTest(unittest.TestCase):
                     targets = find_targets(cmd, ".")
                     self.assertEqual([t.kind for t in targets], ["merge"])
                     self.assertIsNotNone(targets[0].unknown)
-            push = find_targets('eval "git push origin claude/a"', ".")
+            push = find_targets('b="claude/a"; eval "git push origin $b"', ".")
             self.assertEqual([(t.kind, t.branch) for t in push], [("push", None)])
             # Nothing pushed or merged, and a variable PowerShell only prints.
             for cmd in (
                 'eval "$(ssh-agent -s)"',
                 "$j = gh pr view 5 --json mergeable; $j | ConvertFrom-Json",
+                'eval "$msg"; echo the merger is submerged',
             ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+
+    def test_literal_eval_text_is_read_as_the_command_it_runs(self):
+        # Codex review of #159: only literal text is read; `$`, backticks or a backslash
+        # leave it known only at run time (above).
+        with git_stub():
+            for cmd in (
+                'eval "gh pr merge 5"',
+                'iex "gh pr merge 5"',
+                "Invoke-Expression 'gh pr merge 5'",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(
+                        [(t.pr, t.unknown) for t in find_targets(cmd, ".")], [(5, None)]
+                    )
+            self.assertEqual(self.branches('eval "git push origin claude/a"'), ["claude/a"])
+            for cmd in ("eval 'echo submerged'", "eval 'echo merge done'", "iex 'Write-Host push'"):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(find_targets(cmd, "."), [])
 
@@ -613,13 +634,13 @@ class HookTest(unittest.TestCase):
 
     def test_run_time_commands_refuse_a_merge_and_warn_on_a_push(self):
         with git_stub():
-            for command in ('eval "gh pr merge 139"', "gh pr merge $(cat pr.txt)"):
+            for command in ('c="gh pr merge 139"; eval "$c"', "gh pr merge $(cat pr.txt)"):
                 with self.subTest(command=command):
                     out = hook_decision(self.payload(command), self.reader([]), NOW)
                     reason = out["hookSpecificOutput"]["permissionDecisionReason"]
                     self.assertIn("could not be determined", reason)
             push = hook_decision(
-                self.payload('eval "git push origin claude/a"'), self.reader([]), NOW
+                self.payload('b="claude/a"; eval "git push origin $b"'), self.reader([]), NOW
             )
         self.assertIn("known only at run time", push["systemMessage"])
 
