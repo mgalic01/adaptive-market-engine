@@ -52,17 +52,14 @@ def source_identity() -> str:
     return digest.hexdigest()
 
 
-# The sources the backtest CLI imported, taken as it imports this module at start-up.
-SOURCE_IDENTITY = source_identity()
-
-
 def check_sources(expected: str) -> None:
-    """A pool worker's initializer: load every job module, then refuse to run unless the
-    sources are the CLI's (Codex review of #160). A spawned worker imports the code from
-    disk when it starts, so a checkout that changed, even one that changed back, while
-    the workers started would otherwise run other code under the recorded commit."""
-    importlib.import_module("crypto_grid_bot.backtest.trend_benchmark")
-    if source_identity() != expected:
+    """A pool worker's initializer: refuse to run unless the sources this worker imported
+    are the CLI's (Codex review of #160). A spawned worker imports the code from disk
+    when it starts, so a checkout that changed, even one that changed back, while the
+    workers started would otherwise run other code under the recorded commit. The
+    identity compared is the one taken as this module was imported, never a fresh read
+    of the disk, which could already be back to the expected sources."""
+    if expected != SOURCE_IDENTITY:
         raise RuntimeError("a pool worker's sources differ from the backtest CLI's")
 
 
@@ -245,3 +242,11 @@ def cross_check_job(
             tolerance,
         )
     return result
+
+
+# Every job module is loaded before the sources are hashed, so the identity covers all
+# the code a worker can run; trend_benchmark imports prepare_run from here, so it is
+# loaded last. The hash is taken as soon as the imports finish: in a spawned worker,
+# that is when it loads the code it will run (Codex review of #160).
+importlib.import_module("crypto_grid_bot.backtest.trend_benchmark")
+SOURCE_IDENTITY = source_identity()

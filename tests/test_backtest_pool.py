@@ -95,6 +95,26 @@ class PoolJobReferenceTests(unittest.TestCase):
         ):
             pool.submit(getattr, jobs.run_job, "__name__").result()
 
+    def test_the_check_uses_the_identity_taken_at_import(self):
+        # Codex review of #160: a fresh read of the disk could already be back to the
+        # expected sources while the worker runs other code it imported earlier.
+        from crypto_grid_bot.backtest import jobs
+
+        with patch.object(jobs, "source_identity", lambda: "restored"):
+            jobs.check_sources(jobs.SOURCE_IDENTITY)  # the import-time identity: accepted
+            with self.assertRaises(RuntimeError):
+                jobs.check_sources("restored")
+        # Importing jobs loads every job module before the identity is taken.
+        probe = (
+            "import sys, crypto_grid_bot.backtest.jobs as j; "
+            "print('crypto_grid_bot.backtest.trend_benchmark' in sys.modules)"
+        )
+        env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+        out = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, env=env, check=True
+        )
+        self.assertEqual("True", out.stdout.strip())
+
     def test_a_spawned_worker_can_unpickle_every_pool_job(self):
         context = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(1, mp_context=context) as pool:
