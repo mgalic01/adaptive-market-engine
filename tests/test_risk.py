@@ -143,6 +143,22 @@ class RiskEngineTests(TestCase):
                 decision = self.engine.evaluate(PortfolioSnapshot(value, value, D(f"1e{edge}"), 1))
                 self.assertEqual(action, decision.action)
 
+    def test_limits_smaller_than_the_default_precision_stay_exact(self) -> None:
+        # Codex review of #159: with limits of 1e-30, 1 - limit rounded to 1 and an
+        # unchanged account read as a 0.00% hard drawdown.
+        engine = RiskEngine(
+            daily_loss_pause_pct=1e-30,
+            soft_drawdown_pct=2e-30,
+            hard_drawdown_pct=3e-30,
+            maximum_data_age_seconds=30,
+        )
+        self.assertEqual(
+            RiskAction.ALLOW, engine.evaluate(PortfolioSnapshot(100, 100, 100, 1)).action
+        )
+        on_limit = D("99." + "9" * 27 + "7")  # 100 x (1 - 3e-30), exactly
+        snapshot = PortfolioSnapshot(on_limit, on_limit, D(100), 1)
+        self.assertEqual(RiskAction.EXIT, engine.evaluate(snapshot).action)
+
     def test_any_finite_decimal_exponent_is_compared_exactly(self) -> None:
         # Codex review of #159: in the default context 1e1000000 raised decimal.Overflow,
         # and equal equities of 1e-1000119 underflowed to a "0.00%" hard drawdown.

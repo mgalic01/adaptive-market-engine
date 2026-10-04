@@ -417,7 +417,7 @@ class Inline:
 
     submitted: list = []
 
-    def __init__(self, max_workers):
+    def __init__(self, max_workers, **kwargs):
         pass
 
     def __enter__(self):

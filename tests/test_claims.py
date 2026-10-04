@@ -336,6 +336,8 @@ class TargetTest(unittest.TestCase):
 
     def test_command_substitutions_are_read_inside(self):
         with git_stub():
+            # Codex review of #159: a quoted ")" does not end the substitution.
+            self.assertEqual(self.prs("""echo $(eval 'printf ")"; gh pr merge 5')"""), [5])
             for cmd in (
                 "echo $(gh pr merge 5)",
                 "echo `gh pr merge 5`",
@@ -402,6 +404,8 @@ class TargetTest(unittest.TestCase):
             for cmd in ("# <<EOF\ngh pr merge 5\nEOF", "echo hi # <<EOF\ngh pr merge 5"):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a quoted reader name is still the shell that runs it.
+            self.assertEqual(self.prs("/bin/'bash' <<'EOF'\ngh pr merge 5\nEOF"), [5])
             # Codex review of #159: two bodies on one line, read in order.
             self.assertEqual(find_targets("cat <<'A' <<'B'\nfirst\nA\ngh pr merge 5\nB", "."), [])
             for cmd in (
@@ -442,6 +446,23 @@ class TargetTest(unittest.TestCase):
                     self.assertEqual(
                         [(t.pr, t.unknown) for t in find_targets(cmd, ".")], [(5, None)]
                     )
+
+    def test_case_arms_and_function_bodies_are_read(self):
+        # Codex review of #159: the command follows a case pattern or a function's name.
+        with git_stub():
+            for cmd in (
+                "case x in x) gh pr merge 5;; esac",
+                "case $b in main) echo no;; *) gh pr merge 5;; esac",
+                "f() { gh pr merge 5; }; f",
+                "f () { gh pr merge 5; }",
+                "function f { gh pr merge 5; }",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            self.assertEqual(
+                self.branches("case $b in (main|dev) git push origin claude/a;; esac"),
+                ["claude/a"],
+            )
 
     def test_a_lone_ampersand_ends_a_command(self):
         # Codex review of #159: the shell runs both commands. A redirection is no separator,

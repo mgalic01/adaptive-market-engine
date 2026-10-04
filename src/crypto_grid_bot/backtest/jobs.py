@@ -9,6 +9,8 @@ not re-run a package's ``__main__``, so functions defined there by
 
 from __future__ import annotations
 
+import hashlib
+import importlib
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -38,6 +40,28 @@ from crypto_grid_bot.backtest.replay import (
 )
 from crypto_grid_bot.config import BotConfig, load_config
 from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+
+def source_identity() -> str:
+    """SHA-256 of this package's Python sources as they are on disk now, by path."""
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        digest.update(path.relative_to(root).as_posix().encode() + b"\0")
+        digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def check_sources(expected: str) -> None:
+    """A pool worker's initializer: refuse to run unless the sources this worker imported
+    are the CLI's (Codex review of #160). A spawned worker imports the code from disk
+    when it starts, so a checkout that changed, even one that changed back, while the
+    workers started would otherwise run other code under the recorded commit. The
+    identity compared is the one taken as this module was imported, never a fresh read
+    of the disk, which could already be back to the expected sources."""
+    if expected != SOURCE_IDENTITY:
+        raise RuntimeError("a pool worker's sources differ from the backtest CLI's")
+
 
 # Spec v1 section 3 B: committed exposure at most 40% of prospective active equity.
 VARIANT_B_INVENTORY_CAP = Decimal("0.40")
@@ -234,3 +258,11 @@ def cross_check_job(
             tolerance,
         )
     return result
+
+
+# Every job module is loaded before the sources are hashed, so the identity covers all
+# the code a worker can run; trend_benchmark imports prepare_run from here, so it is
+# loaded last. The hash is taken as soon as the imports finish: in a spawned worker,
+# that is when it loads the code it will run (Codex review of #160).
+importlib.import_module("crypto_grid_bot.backtest.trend_benchmark")
+SOURCE_IDENTITY = source_identity()

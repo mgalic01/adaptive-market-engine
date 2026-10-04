@@ -434,6 +434,8 @@ WRAPPER_VALUE_OPTS = {
     "-o",
     "--output",
 }
+# A `case` arm's pattern word, which the arm's command follows.
+CASE_PATTERN_RE = re.compile(r"\(?[^()]*\)")
 # `env -S 'gh pr merge 5'` (or -S'...', --split-string=...) runs the words of its value.
 SPLIT_STRING_RE = re.compile(r"(?:-S|--split-string=?)(.*)", re.DOTALL)
 WRAPPER_NUMBER_RE = re.compile(r"\d[\d.]*[smhd]?")  # `timeout 60`, `timeout 1.5m`
@@ -445,11 +447,22 @@ MAX_DEPTH = 3  # how deep `bash -c "pwsh -Command '...'"` and `$(...)` are read
 
 def unwrap(words: list[str]) -> list[str]:
     """The command without what runs it: `VAR=1`, PowerShell's `$out =`, `& git` or
-    `&git`, a shell keyword, or a wrapper with its options (`timeout -s KILL 60`)."""
+    `&git`, a shell keyword, a wrapper with its options (`timeout -s KILL 60`), a `case`
+    header or arm pattern, or a function definition's name. A command in a function
+    body counts although it runs only when called (fail closed)."""
     while words:
         w = words[0]
         if w in PREFIX_WORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w):
             words = words[1:]
+        elif w == "case":
+            # `case x in x) gh pr merge 5;; esac` (Codex review of #159).
+            words = words[words.index("in") + 1 :] if "in" in words else []
+        elif CASE_PATTERN_RE.fullmatch(w):
+            words = words[1:]  # an arm's pattern: `x)`, `*)`, `(main|dev)`
+        elif w == "function":
+            words = words[2:]  # `function f { ...`
+        elif w.endswith("()") or words[1:2] == ["()"]:
+            words = words[1:] if w.endswith("()") else words[2:]  # `f() { ...`, `f () {`
         elif w.startswith("$") and words[1:2] == ["="]:
             words = words[2:]
         elif w.startswith("&"):
@@ -503,11 +516,15 @@ def substitutions(command: str, quotes: bool = True) -> list[str]:
             found.append(command[i + 1 : end])
             i = end
         elif quote != "'" and command.startswith("$(", i):
+            # Its own quoting starts afresh, and a quoted or escaped parenthesis does not
+            # close it (Codex review of #159: `$(eval 'printf ")"; gh pr merge 5')`).
+            quoted = _quoted(command[i + 1 :])
             level, end = 0, i + 1
             while end < len(command):
-                level += {"(": 1, ")": -1}.get(command[end], 0)
-                if level == 0:
-                    break
+                if not quoted[end - i - 1]:
+                    level += {"(": 1, ")": -1}.get(command[end], 0)
+                    if level == 0:
+                        break
                 end += 1
             found.append(command[i + 2 : end])
             i = end
@@ -690,7 +707,8 @@ def find_targets(
             targets.extend(_unknown(root, f"{toks[0]} runs a command known only at run time"))
     inners = substitutions(command)
     for body, quoted, reader in bodies:
-        if any(_exe(w) in (*SHELLS, *EVALS) for w in reader.split()):
+        # Shell words, so that `/bin/'bash' <<EOF` is bash (Codex review of #159).
+        if any(_exe(w) in (*SHELLS, *EVALS) for w in split_words(reader)):
             inners.append(body)  # `bash <<EOF` runs its body
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))
