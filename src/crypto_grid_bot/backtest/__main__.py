@@ -31,6 +31,8 @@ from crypto_grid_bot.backtest.dataset import (
 )
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE_VERSION
 from crypto_grid_bot.backtest.jobs import (
+    SOURCE_IDENTITY,
+    check_sources,
     cross_check_job,
     manifest_path,
     run_job,
@@ -283,7 +285,15 @@ def main(argv: list[str] | None = None) -> int:
         "volume_drift_tolerance": "0" if args.strict_volume else str(VOLUME_DRIFT_TOLERANCE),
     }
     jobs = max(1, min(args.jobs, 8))
-    executor = InProcess() if jobs == 1 else ProcessPoolExecutor(max_workers=jobs)
+    # Each pool worker refuses to start on other sources than this process imported
+    # (jobs.check_sources); the run then fails before any result is written.
+    executor = (
+        InProcess()
+        if jobs == 1
+        else ProcessPoolExecutor(
+            max_workers=jobs, initializer=check_sources, initargs=(SOURCE_IDENTITY,)
+        )
+    )
     with executor as pool:
         # Chronology is settled before any replay starts; invalid data never replays.
         # Submit every check before waiting on any, so they run in parallel.
@@ -368,6 +378,9 @@ def main(argv: list[str] | None = None) -> int:
         # results.json keeps its exact layout.
         **({"policy": policy.identity()} if policy is not None else {}),
         **({"code_commit": commit} if commit is not None else {}),
+        # The sources that ran, which the commit alone cannot vouch for (Codex review of
+        # #160); recorded with the commit, so a V0 results.json keeps its exact layout.
+        **({"code_sha256": SOURCE_IDENTITY} if commit is not None else {}),
         # Invalid results are kept for diagnosis but are never performance evidence.
         "valid": not failures,
         "failures": failures,

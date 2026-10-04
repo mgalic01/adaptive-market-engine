@@ -9,6 +9,8 @@ not re-run a package's ``__main__``, so functions defined there by
 
 from __future__ import annotations
 
+import hashlib
+import importlib
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -38,6 +40,31 @@ from crypto_grid_bot.backtest.replay import (
 )
 from crypto_grid_bot.config import BotConfig, load_config
 from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+
+def source_identity() -> str:
+    """SHA-256 of this package's Python sources as they are on disk now, by path."""
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        digest.update(path.relative_to(root).as_posix().encode() + b"\0")
+        digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+# The sources the backtest CLI imported, taken as it imports this module at start-up.
+SOURCE_IDENTITY = source_identity()
+
+
+def check_sources(expected: str) -> None:
+    """A pool worker's initializer: load every job module, then refuse to run unless the
+    sources are the CLI's (Codex review of #160). A spawned worker imports the code from
+    disk when it starts, so a checkout that changed, even one that changed back, while
+    the workers started would otherwise run other code under the recorded commit."""
+    importlib.import_module("crypto_grid_bot.backtest.trend_benchmark")
+    if source_identity() != expected:
+        raise RuntimeError("a pool worker's sources differ from the backtest CLI's")
+
 
 # Spec v1 section 3 B: committed exposure at most 40% of prospective active equity.
 VARIANT_B_INVENTORY_CAP = Decimal("0.40")

@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from crypto_grid_bot.backtest import __main__ as cli
+from crypto_grid_bot.backtest import jobs
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE_VERSION
 from crypto_grid_bot.market_data.parsing import DataError
 from crypto_grid_bot.simulation.runner import SimulationPolicy
@@ -44,7 +45,7 @@ class Done:
 class Inline:
     """Synchronous stand-in for ProcessPoolExecutor."""
 
-    def __init__(self, max_workers):
+    def __init__(self, max_workers, **kwargs):
         pass
 
     def __enter__(self):
@@ -168,7 +169,7 @@ class CliIntegrityTests(unittest.TestCase):
         self.assertEqual({None}, set(self.policies))
         (v0,) = self.documents().values()
         self.assertEqual(FEATURE_VERSION, v0["feature_version"])
-        self.assertFalse({"policy", "code_commit"} & set(v0))
+        self.assertFalse({"policy", "code_commit", "code_sha256"} & set(v0))
         # --record-commit adds the commit alone; the run is still V0.
         for written in Path(self.temp.name).rglob("results.json"):
             written.unlink()
@@ -176,7 +177,8 @@ class CliIntegrityTests(unittest.TestCase):
         self.assertEqual({None}, set(self.policies))
         (recorded,) = self.documents().values()
         self.assertEqual(
-            {"code_commit": "0123abc"}, {k: recorded[k] for k in set(recorded) - set(v0)}
+            {"code_commit": "0123abc", "code_sha256": jobs.SOURCE_IDENTITY},
+            {k: recorded[k] for k in set(recorded) - set(v0)},
         )
 
     def test_variant_and_structure_flags_reach_every_replay_and_are_recorded(self):
@@ -227,6 +229,22 @@ class CliIntegrityTests(unittest.TestCase):
         # The snapshot comes before everything; the second reading checks it at the end.
         self.assertEqual((0, 0, 0), seen[0])
         self.assertEqual(2, len(seen))
+
+    def test_pool_workers_check_their_sources_and_runs_name_them(self):
+        # Codex review of #160: each pool worker compares its sources with the CLI's.
+        made = []
+
+        class Capturing(Inline):
+            def __init__(self, max_workers, **kwargs):
+                made.append(kwargs)
+
+        with patch.object(cli, "ProcessPoolExecutor", Capturing):
+            self.assertEqual(0, self.main("run", "--variant-a", "--jobs", "2"))
+        self.assertEqual(
+            [{"initializer": jobs.check_sources, "initargs": (jobs.SOURCE_IDENTITY,)}], made
+        )
+        (document,) = self.documents().values()
+        self.assertEqual(jobs.SOURCE_IDENTITY, document["code_sha256"])
 
     def test_a_checkout_changed_during_the_run_makes_it_invalid(self):
         # Codex review of #160: spawned workers may have imported the newer code.

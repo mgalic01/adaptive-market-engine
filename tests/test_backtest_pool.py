@@ -35,7 +35,7 @@ class Recorder:
 
     submitted: list = []
 
-    def __init__(self, max_workers):
+    def __init__(self, max_workers, **kwargs):
         pass
 
     def __enter__(self):
@@ -76,6 +76,25 @@ class PoolJobReferenceTests(unittest.TestCase):
                 self.assertNotEqual("__main__", fn.__module__.rpartition(".")[2])
                 self.assertIs(fn, pickle.loads(pickle.dumps(fn)))
 
+    def test_a_spawned_worker_refuses_other_sources(self):
+        # Codex review of #160: the initializer runs in the worker before any job.
+        from concurrent.futures.process import BrokenProcessPool
+
+        from crypto_grid_bot.backtest import jobs
+
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(
+            1, mp_context=context, initializer=jobs.check_sources, initargs=(jobs.SOURCE_IDENTITY,)
+        ) as pool:
+            self.assertEqual("run_job", pool.submit(getattr, jobs.run_job, "__name__").result())
+        with (
+            self.assertRaises(BrokenProcessPool),
+            ProcessPoolExecutor(
+                1, mp_context=context, initializer=jobs.check_sources, initargs=("other",)
+            ) as pool,
+        ):
+            pool.submit(getattr, jobs.run_job, "__name__").result()
+
     def test_a_spawned_worker_can_unpickle_every_pool_job(self):
         context = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(1, mp_context=context) as pool:
@@ -88,7 +107,7 @@ class Timeline:
 
     events: list = []
 
-    def __init__(self, max_workers):
+    def __init__(self, max_workers, **kwargs):
         pass
 
     def __enter__(self):
