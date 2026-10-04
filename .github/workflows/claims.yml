@@ -42,10 +42,5 @@ jobs:
       - name: Evaluate claims
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Until this workflow's PR merges, main has no script; skip rather than fail.
-          if [ -f scripts/claims.py ]; then
-            python scripts/claims.py workflow
-          else
-            echo "scripts/claims.py is not on main yet; nothing to evaluate."
-          fi
+        # No fallback: a missing script fails the job instead of passing silently.
+        run: python scripts/claims.py workflow

@@ -2,6 +2,7 @@
 
 import io
 import json
+import shlex
 import sys
 import unittest
 from datetime import UTC, datetime
@@ -238,6 +239,175 @@ class TargetTest(unittest.TestCase):
             find_targets(r"git -C C:\Users\x\wt push origin claude/a", ".")
             self.assertIn(r"C:\Users\x\wt", str(g.call_args_list[0].args[0]))
 
+    # Automated audit, 2026-09-29: every form below used to yield no target at all.
+
+    def branches(self, command):
+        return [t.branch for t in find_targets(command, ".")]
+
+    def prs(self, command):
+        return [t.pr for t in find_targets(command, ".")]
+
+    def test_powershell_call_operator(self):
+        git_exe = r"& 'C:\Program Files\Git\cmd\git.exe' push origin claude/a"
+        with git_stub():
+            for cmd in ("& git push origin claude/a", "&git push origin claude/a", git_exe):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+            for cmd in ("& gh pr merge 141 --merge", "$out = gh pr merge 141 --merge"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [141])
+            self.assertEqual(find_targets("& git push upstream claude/a", "."), [])
+            self.assertEqual(find_targets("& git status", "."), [])
+
+    def test_wrappers_and_shell_keywords(self):
+        with git_stub():
+            for cmd in (
+                "env GIT_TRACE=1 git push origin claude/a",
+                "env -u GH_TOKEN GIT_TRACE=1 git push origin claude/a",
+                "/usr/bin/env git push origin claude/a",
+                "timeout 60 git push origin claude/a",
+                "timeout -s KILL 1.5m git push origin claude/a",
+                "nohup git push origin claude/a",
+                "nice -n 10 git push origin claude/a",
+                "command git push origin claude/a",
+                "time git push origin claude/a",
+                "for i in 1; do git push origin claude/a; done",
+                "! git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+            for cmd in (
+                "timeout 60 gh pr merge 5",
+                "exec gh pr merge 5",
+                "if true; then gh pr merge 5; fi",
+                "{ gh pr merge 5; }",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            for cmd in (
+                "env GIT_TRACE=1 git status",
+                "timeout 60 git push upstream claude/a",
+                "nohup git push --dry-run origin claude/a",
+                "command -v gh",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+
+    def test_shells_are_read_inside(self):
+        bash_exe = r"& 'C:\Program Files\Git\bin\bash.exe' -c 'git push origin claude/a'"
+        with git_stub():
+            for cmd in (
+                'bash -c "git push origin claude/a"',
+                "sh -c 'git push origin claude/a'",
+                'bash -lc "cd sub && git push origin claude/a"',
+                'pwsh -c "git push origin claude/a"',
+                bash_exe,
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+            for cmd in (
+                'bash -c "gh pr merge 5 --squash"',
+                'pwsh -Command "gh pr merge 5 --squash"',
+                "powershell -NoProfile -Command gh pr merge 5",
+                'pwsh -NoProfile -Command "Set-Location sub; gh pr merge 5"',
+                "cmd /c gh pr merge 5",
+                "zsh -c \"bash -c 'gh pr merge 5'\"",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            for cmd in (
+                'bash -c "git status"',
+                "bash merge.sh",
+                "pwsh -File merge.ps1",
+                'bash -c "gh pr merge 5 --repo other/repo"',
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+
+    def test_nesting_deeper_than_the_limit_is_unknown(self):
+        cmd = "gh pr merge 5"
+        for _ in range(claims.MAX_DEPTH):
+            cmd = "bash -c " + shlex.quote(cmd)
+        with git_stub():
+            self.assertEqual(self.prs(cmd), [5])
+            deeper = find_targets("bash -c " + shlex.quote(cmd), ".")
+        self.assertEqual([(t.kind, t.pr) for t in deeper], [("merge", None)])
+        self.assertIsNotNone(deeper[0].unknown)
+
+    def test_command_substitutions_are_read_inside(self):
+        with git_stub():
+            for cmd in (
+                "echo $(gh pr merge 5)",
+                "echo `gh pr merge 5`",
+                "$(gh pr merge 5)",
+                "x=$(echo $(gh pr merge 5 --squash))",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            self.assertEqual(self.branches("out=$(git push origin claude/a 2>&1)"), ["claude/a"])
+            # A body read by the shell leaves the PR known; a commit message is no merge.
+            body = 'gh pr merge 141 --squash --body "$(cat body.md)"'
+            self.assertEqual([(t.pr, t.unknown) for t in find_targets(body, ".")], [(141, None)])
+            commit = "git commit -m \"$(cat <<'EOF'\nFix the merge check\nEOF\n)\""
+            self.assertEqual(find_targets(commit, "."), [])
+
+    def test_a_pr_or_branch_the_shell_computes_is_unknown(self):
+        with git_stub():
+            for cmd in (
+                "gh pr merge $(gh pr view --json number -q .number)",
+                "gh pr merge $n --squash",
+                "gh pr merge `cat pr.txt`",
+            ):
+                with self.subTest(cmd=cmd):
+                    unknown = [t.kind for t in find_targets(cmd, ".") if t.unknown]
+                    self.assertEqual(unknown, ["merge"])
+            push = find_targets("git push origin $branch", ".")
+            self.assertEqual([(t.kind, t.branch) for t in push], [("push", None)])
+            self.assertIsNotNone(push[0].unknown)
+
+    def test_commands_known_only_at_run_time(self):
+        with git_stub():
+            for cmd in (
+                'eval "gh pr merge 5"',
+                'cmd="gh pr merge 5"; eval "$cmd"',
+                'iex "gh pr merge 5"',
+                "Invoke-Expression 'gh pr merge 5'",
+                '$gh = "gh"; & $gh pr merge 5',
+                "$GH pr merge 5",
+            ):
+                with self.subTest(cmd=cmd):
+                    targets = find_targets(cmd, ".")
+                    self.assertEqual([t.kind for t in targets], ["merge"])
+                    self.assertIsNotNone(targets[0].unknown)
+            push = find_targets('eval "git push origin claude/a"', ".")
+            self.assertEqual([(t.kind, t.branch) for t in push], [("push", None)])
+            # Nothing pushed or merged, and a variable PowerShell only prints.
+            for cmd in (
+                'eval "$(ssh-agent -s)"',
+                "$j = gh pr view 5 --json mergeable; $j | ConvertFrom-Json",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+
+    def test_repository_names_ignore_case(self):
+        mixed = "MGalic01/Adaptive-Market-Engine"
+        with git_stub():
+            for cmd in (
+                f"gh pr merge 5 -R {mixed}",
+                "gh pr merge 5 --repo=MGALIC01/adaptive-market-engine",
+                f"gh pr merge 5 --repo {REPO}.git/",
+                f"gh -R {mixed} pr merge 5",
+                f"gh api -X PUT repos/{mixed}/pulls/5/merge",
+                f"gh -R {mixed} api -X PUT repos/{{owner}}/{{repo}}/pulls/5/merge",
+                f"curl -X PUT https://api.github.com/repos/{mixed}/pulls/5/merge",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            self.assertEqual(
+                self.branches(f"git push https://github.com/{mixed}.git claude/a"), ["claude/a"]
+            )
+            self.assertEqual(find_targets("gh pr merge 5 -R MGalic01/Other-Repo", "."), [])
+
 
 class RepoMatchTest(unittest.TestCase):
     def test_anchored_match(self):
@@ -250,6 +420,18 @@ class RepoMatchTest(unittest.TestCase):
             self.assertTrue(claims.is_this_repo(url), url)
         for url in (f"https://github.com/{REPO}-fork.git", f"https://github.com/x{REPO}"):
             self.assertFalse(claims.is_this_repo(url), url)
+
+    def test_case_is_ignored(self):
+        for url in (
+            "MGalic01/Adaptive-Market-Engine",
+            "https://github.com/MGALIC01/adaptive-market-engine.git",
+            "git@github.com:MGalic01/adaptive-market-engine.git",
+            f"{REPO}.git/",
+        ):
+            self.assertTrue(claims.is_this_repo(url), url)
+        self.assertFalse(
+            claims.is_this_repo("https://github.com/MGalic01/Adaptive-Market-Engine-fork")
+        )
 
 
 class MainHookTest(unittest.TestCase):
@@ -356,6 +538,53 @@ class HookTest(unittest.TestCase):
             )
         self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
 
+    def test_wrapped_forms_are_denied_when_held_and_allowed_when_own_or_free(self):
+        # Automated audit, 2026-09-29: each of these used to run with no claim check.
+        prs = [{"number": 139, "head": {"ref": "claude/a", "repo": {"full_name": REPO}}}]
+        forms = (
+            ("& git push origin claude/a", "PowerShell"),
+            (r"& 'C:\Program Files\Git\cmd\git.exe' push origin claude/a", "PowerShell"),
+            ("& gh pr merge 139 --merge", "PowerShell"),
+            ('pwsh -Command "gh pr merge 139 --squash"', "Bash"),
+            ('bash -c "cd sub && git push origin claude/a"', "Bash"),
+            ("timeout 60 gh pr merge 139", "Bash"),
+            ("env GIT_TRACE=1 git push origin claude/a", "Bash"),
+            ("echo $(gh pr merge 139)", "Bash"),
+            ("gh pr merge 139 -R MGalic01/Adaptive-Market-Engine", "Bash"),
+        )
+        with git_stub():
+            for command, tool in forms:
+                with self.subTest(command=command):
+                    held = hook_decision(
+                        self.payload(command, tool), self.reader([claim(tag="Bob")], prs), NOW
+                    )
+                    self.assertEqual(held["hookSpecificOutput"]["permissionDecision"], "deny")
+                    own = self.reader([claim()], prs)
+                    self.assertIsNone(hook_decision(self.payload(command, tool), own, NOW))
+                    free = self.reader([], prs)
+                    self.assertIsNone(hook_decision(self.payload(command, tool), free, NOW))
+
+    def test_github_reporting_another_case_is_still_this_repo(self):
+        mixed = {"full_name": "MGalic01/Adaptive-Market-Engine"}
+        prs = [{"number": 141, "head": {"ref": "claude/a", "repo": mixed}}]
+        with git_stub():
+            out = hook_decision(
+                self.payload("git push origin claude/a"), self.reader([claim(tag="Bob")], prs), NOW
+            )
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_run_time_commands_refuse_a_merge_and_warn_on_a_push(self):
+        with git_stub():
+            for command in ('eval "gh pr merge 139"', "gh pr merge $(cat pr.txt)"):
+                with self.subTest(command=command):
+                    out = hook_decision(self.payload(command), self.reader([]), NOW)
+                    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+                    self.assertIn("could not be determined", reason)
+            push = hook_decision(
+                self.payload('eval "git push origin claude/a"'), self.reader([]), NOW
+            )
+        self.assertIn("known only at run time", push["systemMessage"])
+
     def test_github_down_fails_closed_for_merge_and_open_for_push(self):
         def down(path):
             raise claims.GitHubError("GitHub unreachable")
@@ -383,7 +612,7 @@ class WorkflowTest(unittest.TestCase):
             mock.patch.object(claims, "fetch_comments", return_value=comments),
             mock.patch.object(claims, "send", side_effect=lambda *a: sent.append(a)),
         ):
-            claims.workflow("pull_request", event, NOW)
+            claims.workflow(event, NOW)
         status = next(a for a in sent if "/statuses/" in a[1])
         self.assertEqual(status[2]["state"], "failure")
         self.assertEqual(status[2]["context"], "claim-guard")
@@ -400,7 +629,7 @@ class WorkflowTest(unittest.TestCase):
             mock.patch.object(claims, "fetch_comments", return_value=answered),
             mock.patch.object(claims, "send", side_effect=lambda *a: sent.append(a)),
         ):
-            claims.workflow("pull_request", event, NOW)
+            claims.workflow(event, NOW)
         self.assertFalse(any(a[1].endswith("/comments") for a in sent))
 
     def test_free_pr_is_green_and_loses_the_label(self):
@@ -416,7 +645,7 @@ class WorkflowTest(unittest.TestCase):
             mock.patch.object(claims, "fetch_comments", return_value=[]),
             mock.patch.object(claims, "send", side_effect=lambda *a: sent.append(a)),
         ):
-            claims.workflow("pull_request", event, NOW)
+            claims.workflow(event, NOW)
         self.assertEqual(next(a for a in sent if "/statuses/" in a[1])[2]["state"], "success")
         self.assertTrue(any(a[0] == "DELETE" for a in sent))
 
@@ -428,7 +657,7 @@ class WorkflowTest(unittest.TestCase):
             mock.patch.object(claims, "get", return_value={"head": {"sha": "c" * 40}}) as get,
             mock.patch.object(claims, "send", side_effect=lambda *a: sent.append(a)),
         ):
-            claims.workflow("issue_comment", event, NOW)
+            claims.workflow(event, NOW)
         get.assert_called_once_with(f"repos/{REPO}/pulls/9")
         status = next(a for a in sent if "/statuses/" in a[1])
         self.assertTrue(status[1].endswith("/statuses/" + "c" * 40))
@@ -441,7 +670,7 @@ class WorkflowTest(unittest.TestCase):
             mock.patch.object(claims, "fetch_comments", return_value=[claim()]),
             mock.patch.object(claims, "send", side_effect=lambda *a: sent.append(a)),
         ):
-            claims.workflow("issue_comment", event, NOW)
+            claims.workflow(event, NOW)
         self.assertFalse(any("/statuses/" in a[1] for a in sent))
         self.assertTrue(any(a[1].endswith("/issues/134/labels") for a in sent))
 
