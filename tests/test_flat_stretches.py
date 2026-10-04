@@ -62,7 +62,7 @@ class LabelsTest(unittest.TestCase):
         self.assertEqual(flat.missing_hours, 0)
         self.assertEqual(flat.changed_at_ms, s[32][0])
         self.assertEqual(f"{flat.drawdown_pct:.2f}", "9.00")
-        self.assertIn("CHANGED", flat.describe(s[-1][0]))
+        self.assertIn("CHANGED", flat.describe())
 
     def test_stretch_running_into_the_end_of_the_series_is_labelled_censored(self) -> None:
         # The same flat run, but the series stops while still flat.
@@ -73,8 +73,7 @@ class LabelsTest(unittest.TestCase):
         self.assertTrue(flat.censored)
         self.assertIsNone(flat.changed_at_ms)
         self.assertEqual(flat.end_ms, s[-1][0])
-        self.assertEqual(flat.hours_to_series_end(s[-1][0]), 0)
-        text = flat.describe(s[-1][0])
+        text = flat.describe()
         self.assertIn("CENSORED", text)
         self.assertIn("lower bound", text)
 
@@ -100,7 +99,7 @@ class GapTest(unittest.TestCase):
         self.assertEqual(found[0].span_hours, 60)
         self.assertEqual(found[0].samples, 21)
         self.assertEqual(found[0].missing_hours, 40)
-        self.assertIn("40 h missing", found[0].describe(s[-1][0]))
+        self.assertIn("40 h missing", found[0].describe())
         self.assertEqual(len(select(stretches(s), min_hours=61, threshold=Decimal(8))), 0)
 
     def test_twenty_four_samples_span_twenty_three_hours_and_miss_a_twenty_four_hour_gate(
@@ -162,6 +161,25 @@ class DocumentTest(unittest.TestCase):
         out = analyse(document([]), min_hours=24, threshold=Decimal(8))
         self.assertEqual(out, [("SYN0USDT high_first ungated", [], 0)])
 
+    def test_a_variant_d_row_is_named_as_the_benchmark_not_as_an_ungated_grid(self) -> None:
+        # A --trend-benchmark results.json carries D rows beside the grid rows.
+        doc = document([], [], [])
+        doc["results"][0]["strategy"] = "gated grid (price-only-v1)"
+        doc["results"][2] |= {
+            "strategy": "trend benchmark D (not a grid)",
+            "variant": "D",
+            "benchmark": True,
+        }
+        names = [name for name, _, _ in analyse(doc, min_hours=24, threshold=Decimal(8))]
+        self.assertEqual(
+            [
+                "SYN0USDT high_first gated",
+                "SYN1USDT high_first ungated",
+                "SYN2USDT high_first variant D",
+            ],
+            names,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -180,4 +198,3 @@ class MidHourSampleTest(unittest.TestCase):
         self.assertEqual(24, found.span_hours)
         self.assertEqual(0, found.missing_hours)
         self.assertEqual(1, len(select(stretches(s), min_hours=24, threshold=Decimal(8))))
-        self.assertEqual(1, found.hours_to_series_end(START + 25 * HOUR_MS))
