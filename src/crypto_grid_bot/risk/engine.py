@@ -2,35 +2,35 @@
 
 The limits are compared with the equities exactly, in Decimal: a float conversion of
 the balances could put a drawdown or a daily loss a hair either side of a limit it sits
-on. The reason texts keep their float formatting.
+on. The reason texts keep their float formatting where a float can hold the base.
 """
 
 from __future__ import annotations
 
-from decimal import Decimal, localcontext
+from decimal import MAX_EMAX, MIN_EMIN, Context, Decimal, localcontext
 from math import isfinite
 
 from crypto_grid_bot.domain import PortfolioSnapshot, RiskAction, RiskDecision
 
-# Enough digits for a limit times a prec-50 balance, and its difference, to stay exact.
-_PRECISION = 120
+# Enough digits for a limit times a prec-50 balance, and its difference, to stay exact,
+# at any exponent a Decimal can have: no balance underflows or overflows the comparisons
+# (Codex review of #159: 1e-1000119 compared as a 100% loss, 1e1000000 raised Overflow).
+_CONTEXT = Context(prec=120, Emin=MIN_EMIN, Emax=MAX_EMAX)
 
 
 def _exact(value: Decimal | float) -> Decimal | None:
-    """``value`` as an exact Decimal (a float or int converts exactly); None unless finite
-    and within a float's range, as the float checks before it required (``1e1000000``
-    would overflow the Decimal arithmetic; Codex review of #159)."""
+    """``value`` as an exact Decimal (a float or int converts exactly); None unless finite."""
     number = value if isinstance(value, Decimal) else Decimal(value)
-    return number if number.is_finite() and isfinite(float(number)) else None
+    return number if number.is_finite() else None
 
 
 def _percent(base: Decimal, equity: Decimal) -> str:
     """The reason text's loss percentage, formatted from floats as it always was. A base
-    a float cannot hold (``1e-1000`` becomes 0.0) is formatted in Decimal instead, so the
-    decision is still returned (Codex review of #159)."""
+    a float cannot hold (``1e-1000`` becomes 0.0) is formatted in Decimal instead."""
     as_float = float(base)
     if as_float == 0 or not isfinite(as_float):
-        return f"{(base - equity) / base:.2%}"
+        with localcontext(_CONTEXT):
+            return f"{(base - equity) / base:.2%}"
     return f"{(as_float - float(equity)) / as_float:.2%}"
 
 
@@ -74,8 +74,7 @@ class RiskEngine:
         if portfolio.emergency:
             return RiskDecision(RiskAction.EXIT, ("emergency flag is active",))
 
-        with localcontext() as context:
-            context.prec = _PRECISION
+        with localcontext(_CONTEXT):
             # loss / base >= limit, compared as loss >= limit * base: no division, so an
             # equity exactly on a limit is on it. Both bases are positive (checked above).
             hard = high - equity >= self._hard_drawdown_pct * high
