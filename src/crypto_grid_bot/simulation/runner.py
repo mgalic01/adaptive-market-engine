@@ -958,7 +958,7 @@ class PaperSimulator:
         # FTA resistance cap only applies in a ranging market. In trending markets
         # (BULL/BEAR) resistance zones cluster everywhere and the cap compresses all
         # sell levels to one price, preventing cycle completion. See backtest comparison
-        # 2026-09-30 Â§8.4 for the diagnosis.
+        # 2026-09-30 §8.4 for the diagnosis.
         fta = (
             frame.fta_resistance if regime is None or regime.regime == MarketRegime.RANGE else None
         )
