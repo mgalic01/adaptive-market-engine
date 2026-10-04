@@ -90,8 +90,10 @@ def match(
 
     Price/time priority approximates an exchange queue. Crossing quotes are
     required; touching limits and candle extrema are not enough. Executions are
-    charged at the limit (no optimistic price improvement). Slippage must fit
-    inside that limit, and per-side liquidity is shared across all orders.
+    charged at the limit (no optimistic price improvement). The quote must cross the
+    limit by the fill trigger, which is the slippage unless a labelled sensitivity run
+    sets ``MarketRules.fill_trigger_rate`` (D9), and per-side liquidity is shared
+    across all orders.
 
     ``epoch`` groups several quotes that replay one historical bar. Orders created
     under an epoch cannot fill until a later epoch, so a buy and its child sell never
@@ -114,13 +116,16 @@ def match(
         account.orders.values(), key=lambda o: (o.side, -o.price if o.side == "buy" else o.price)
     )
     fills: list[Fill] = []
+    # The resting-fill test is the only use of the fill trigger; exits and marks keep
+    # the slippage as their cash cost.
+    trigger = rules.fill_trigger
     for order in orders:
         if epoch is not None and order.epoch == epoch:
             continue
         crossed = (
-            quote.ask * (ONE + rules.slippage_rate) < order.price
+            quote.ask * (ONE + trigger) < order.price
             if order.side == "buy"
-            else quote.bid * (ONE - rules.slippage_rate) > order.price
+            else quote.bid * (ONE - trigger) > order.price
         )
         quantity = min(order.remaining, capacities[order.side])
         if not crossed or quantity <= ZERO:

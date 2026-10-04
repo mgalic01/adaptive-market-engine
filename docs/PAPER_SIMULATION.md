@@ -32,7 +32,9 @@ new net portfolio profit if other holdings have depreciated.
 - Prices, quantities, balances, reservations and fees use Decimal. The unused
   float-based exchange stub was removed; it is not a future live adapter contract.
 - A buy requires ask strictly below its limit after slippage; a sell requires bid
-  strictly above its limit after slippage. Touching a limit is insufficient.
+  strictly above its limit after slippage. Touching a limit is insufficient. That margin
+  is `MarketRules.fill_trigger`: the slippage, unless the missed-fill sensitivity sweep
+  sets `fill_trigger_rate` (D9). Exits and marks always pay the slippage.
 - Limit fills receive the order limit without favourable price improvement.
   Reducing unpaired inventory and forced exits use bid minus slippage, tick-rounded.
 - All fills on one side share that event's participation-limited liquidity. A

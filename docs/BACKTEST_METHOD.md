@@ -17,7 +17,11 @@ PYTHONPATH=src python -m crypto_grid_bot.backtest run    --spec config/datasets/
 ```
 
 Without `--taker-fee` the taker fee equals the maker fee. The fees used are recorded in
-`results.json` and in the output directory name.
+`results.json` and in the output directory name. `--fill-trigger RATE` is for the
+missed-fill sensitivity sweep only (spec v1 §4, owner decision D9): it sets how far a quote
+must cross a resting limit, which otherwise equals the slippage. Exits and marks keep the
+slippage, and the run records the setting in `results.json` and as `-fill<RATE>` in its
+directory name.
 
 `fetch` is the only command that uses the network: it reads public archive files from
 `https://data.binance.vision` and the current exchange filters from the public data
@@ -71,7 +75,8 @@ Klines contain trades, not quotes. The adapter in `backtest/replay.py` is explic
   - The assumed spread is a dataset parameter (`assumed_spread_pct`; 0.05% in
     `verify-2024h1`).
 - **Crossing:** the unchanged engine still requires a limit to be crossed by the slippage
-  rate. Touching a level never fills.
+  rate (the fill trigger, which only the missed-fill sweep sets apart, D9). Touching a
+  level never fills.
 - **Liquidity:**
   - Taker-sell volume can fill resting buys; taker-buy volume can fill resting sells.
   - Each side's bar volume is split evenly over the four quotes, and the engine's

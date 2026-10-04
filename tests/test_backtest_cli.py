@@ -138,6 +138,33 @@ class CliIntegrityTests(unittest.TestCase):
         fees = json.loads(latest.read_text())["fees"]
         self.assertEqual({"maker": "0", "taker": "0.0009"}, fees)
 
+    def test_a_fill_trigger_reaches_every_replay_and_is_recorded(self):
+        # D9: the missed-fill sweep's trigger. A run without it submits and writes exactly
+        # as before; the fixture's fake_run takes no fill_trigger at all.
+        self.assertEqual(0, self.main("run"))
+        (plain,) = Path(self.temp.name).rglob("results.json")
+        self.assertFalse({"fill_trigger", "code_commit"} & set(json.loads(plain.read_text())))
+        self.assertNotIn("fill", plain.parent.name)
+        triggers = []
+
+        def fake_run(*args, fill_trigger=None):
+            triggers.append(fill_trigger)
+            return self.fake_run(*args)
+
+        self.replays.clear()
+        with patch.object(cli, "run_job", fake_run):
+            self.assertEqual(0, self.main("run", "--fill-trigger", "0.0002"))
+        self.assertEqual([Decimal("0.0002")] * len(self.replays), triggers)
+        self.assertTrue(triggers)
+        (swept,) = Path(self.temp.name).rglob("*-m0.001-t0.001-fill0.0002/results.json")
+        document = json.loads(swept.read_text())
+        self.assertEqual(("0.0002", "0123abc"), (document["fill_trigger"], document["code_commit"]))
+
+    def test_out_of_range_fill_trigger_is_rejected(self):
+        for value in ("-0.001", "0.1", "abc"):
+            with self.subTest(value=value), self.assertRaises(DataError):
+                self.main("run", "--fill-trigger", value)
+
     def test_integrity_rules_are_versioned_and_strict_mode_reaches_every_check(self):
         self.assertEqual(0, self.main("run"))
         self.assertEqual({False}, set(self.strict))

@@ -411,6 +411,29 @@ class ReplayTests(unittest.TestCase):
                 self.assertEqual(600, metrics.bars)
                 self.assertGreater(metrics.hold_final, 0)
 
+    def test_the_fill_trigger_defaults_to_the_slippage_and_only_moves_resting_fills(self):
+        # D9 (owner decision 2026-10-05). Set to the slippage, the trigger gives the same
+        # run as when it is unset, and only the rules record it; a stricter one misses
+        # resting fills, with the accounting intact.
+        engine = engine_for(hourly(WARMUP))
+        t = START_MS + WARMUP * HOUR_MS
+        minutes = []
+        for i in range(600):
+            mid = float(engine.at(t).fair_value) * (1 + 0.03 * math.sin(2 * math.pi * i / 90))
+            minutes.append(candle(t + i * 60_000, mid, mid * 1.003, mid * 0.997, mid))
+        rows = []
+        for trigger in (None, D("0.0005"), D("0.005")):
+            rules = replace(RULES, fill_trigger_rate=trigger)
+            run = RunConfig("TESTUSDT", "high_first", False, rules, D(100), D("0.0005"))
+            metrics, account = replay(self.config, run, minutes, engine)
+            rows.append(summarise(run, metrics, account, check_accounting(run, metrics, account)))
+        default, same, strict = rows
+        self.assertNotIn("fill_trigger_rate", default.pop("rules"))
+        self.assertEqual("0.0005", same.pop("rules")["fill_trigger_rate"])
+        self.assertEqual(default, same)
+        self.assertEqual([], strict["accounting_problems"])
+        self.assertLess(strict["buys"], default["buys"])
+
     def test_rejected_frames_do_not_inflate_the_range_exit_count(self):
         from unittest.mock import patch
 

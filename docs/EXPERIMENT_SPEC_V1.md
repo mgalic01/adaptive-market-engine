@@ -834,8 +834,13 @@ Choosing these values after seeing results would be tuning; they are fixed now.
 | --- | --- | --- | --- |
 | Spread | Assumed quoted spread | 0.05% | 0.10%, 0.20% |
 | Participation | Volume participation cap | 10% | 5%, 20% |
-| Missed-fill | Fill trigger (slippage threshold) | 0.05% | 0.02%, 0.10% |
+| Missed-fill | Fill trigger: how far a quote must cross a resting limit (`fill_trigger_rate`, D9) | 0.05%, equal to the slippage | 0.02%, 0.10% |
 | Timing | Bar offset (decision delay) | 0 bars | +1 bar, +5 bars |
+
+The fill-trigger setting exists only for this labelled sweep (owner decision 2026-10-05,
+D9): `--fill-trigger` sets it, and `results.json` and the output directory name record
+it. Exits, marks and costs keep the slippage, and every other run leaves the setting
+unset, so its resting fills use the slippage as before.
 
 The fee sensitivity (0.001 / 0.001) and the Kraken scenario are already registered
 above. Together these cover: cost drag (fees, spread), fill realism (participation,

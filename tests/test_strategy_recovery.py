@@ -659,6 +659,12 @@ class StrategyRecoveryTests(TestCase):
         self.sim = self.open(MarketRules(fee_rate=D("0"), taker_fee_rate=D("0.0009")))
         self.check_resume_cli()  # a mis-decoded taker fee would fail as "settings differ"
 
+    def test_resume_cli_restores_a_separate_fill_trigger(self):
+        self.sim.close()
+        self.path = Path(self.temp.name) / "trigger.db"
+        self.sim = self.open(MarketRules(fill_trigger_rate=D("0.0002")))
+        self.check_resume_cli()  # an undecoded trigger would fail as "settings differ"
+
     def test_resume_cli_restores_the_inventory_cap(self):
         self.reopen(replace(self.policy, inventory_cap=D("0.4")), "capped.db")
         self.check_resume_cli()  # a dropped or undecoded cap would fail loudly, not resume

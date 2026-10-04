@@ -2,12 +2,14 @@ from dataclasses import replace
 from unittest import TestCase
 
 from crypto_grid_bot.simulation.execution import (
+    exit_price,
     exitable,
     liquidate,
     match,
     place,
     reduce_unreserved,
 )
+from crypto_grid_bot.simulation.inventory_cap import mark
 from crypto_grid_bot.simulation.models import Account, D, LimitOrder, MarketRules, Quote
 
 
@@ -160,6 +162,68 @@ class MakerTakerFeeTests(TestCase):
         self.assertEqual(D("9.79"), fill.price)
         self.assertEqual(D("9.79") * 5 * D("0.0009"), fill.fee)
         self.assertEqual(fill.fee, account.fees)
+
+
+class FillTriggerTests(TestCase):
+    """D9 (owner decision 2026-10-05): the missed-fill sweep's own resting-fill trigger.
+    Unset, it is the slippage; exits and marks keep the slippage either way."""
+
+    def rules(self, trigger=None):
+        return MarketRules(
+            "TESTUSDT",
+            D("0.01"),
+            D("1"),
+            D("5"),
+            D("0"),
+            D("0.0005"),
+            D("0.1"),
+            D("0.0009"),
+            None if trigger is None else D(trigger),
+        )
+
+    def test_unset_it_is_the_slippage_and_the_identity_omits_it(self):
+        rules = self.rules()
+        self.assertEqual(D("0.0005"), rules.fill_trigger)
+        self.assertNotIn("fill_trigger_rate", rules.identity())
+        self.assertEqual(D("0.0002"), self.rules("0.0002").identity()["fill_trigger_rate"])
+        for value in ("-0.0001", "0.1"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.rules(value)
+
+    def test_it_alone_decides_whether_a_resting_order_fills(self):
+        # A buy at 10 fills when ask x (1 + trigger) < 10; a sell at 11 when
+        # bid x (1 - trigger) > 11. Each quote fills at one trigger and not the other.
+        cases = (
+            ("buy", None, ("9.9", "9.992"), True),  # 9.992 x 1.0005 < 10
+            ("buy", "0.001", ("9.9", "9.992"), False),  # 9.992 x 1.001 > 10
+            ("buy", None, ("9.9", "9.997"), False),  # 9.997 x 1.0005 > 10
+            ("buy", "0.0002", ("9.9", "9.997"), True),  # 9.997 x 1.0002 < 10
+            ("sell", None, ("11.008", "11.02"), True),  # 11.008 x 0.9995 > 11
+            ("sell", "0.001", ("11.008", "11.02"), False),  # 11.008 x 0.999 < 11
+        )
+        for side, trigger, (bid, ask), fills in cases:
+            with self.subTest(side=side, trigger=trigger, bid=bid, ask=ask):
+                rules, account = self.rules(trigger), Account.start(D("100"))
+                account.inventory = D("5")
+                price = D("10") if side == "buy" else D("11")
+                place(account, LimitOrder("o", side, price, D("5"), D("5")), rules)
+                self.assertEqual(fills, bool(match(account, quote(bid, ask), rules)))
+
+    def test_exits_and_marks_keep_the_slippage(self):
+        default, swept = self.rules(), self.rules("0.002")
+        self.assertEqual(exit_price(quote(), default), exit_price(quote(), swept))
+        self.assertEqual(mark(quote(), default), mark(quote(), swept))
+        fills = []
+        for rules in (default, swept):
+            account = Account.start(D("100"))
+            account.inventory = D("5")
+            self.assertEqual(
+                Account.start(D("100")).cash + mark(quote(), rules) * 5,
+                account.equity(quote(), rules),
+            )
+            (fill,) = reduce_unreserved(account, quote(), rules).fills
+            fills.append((fill.price, fill.quantity, fill.fee, account.cash))
+        self.assertEqual(fills[0], fills[1])
 
 
 class PanelHardeningTests(TestCase):

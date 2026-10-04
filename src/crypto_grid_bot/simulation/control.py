@@ -70,8 +70,9 @@ def resume_paper(
         "participation",
     ):
         rules[key] = decimal(rules[key])
-    if "taker_fee_rate" in rules:
-        rules["taker_fee_rate"] = decimal(rules["taker_fee_rate"])
+    for optional in ("taker_fee_rate", "fill_trigger_rate"):  # absent when unset
+        if optional in rules:
+            rules[optional] = decimal(rules[optional])
     policy = dict(identity["policy"])
     if "inventory_cap" in policy:
         policy["inventory_cap"] = decimal(policy["inventory_cap"])

@@ -55,6 +55,10 @@ class MarketRules:
     participation: Decimal = D("0.10")
     # Taker fee for marketable exits and liquidation; None means equal to fee_rate.
     taker_fee_rate: Decimal | None = None
+    # How far a quote must cross a resting limit before it fills; None means equal to
+    # slippage_rate. Set only for the labelled missed-fill sensitivity sweep (spec v1 §4,
+    # owner decision 2026-10-05, D9): exits, marks and costs always use slippage_rate.
+    fill_trigger_rate: Decimal | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol or self.symbol != self.symbol.upper():
@@ -63,7 +67,7 @@ class MarketRules:
             nonnegative(value)
             if value == ZERO:
                 raise ValueError("market filters must be positive")
-        for value in (self.fee_rate, self.slippage_rate, self.taker_fee):
+        for value in (self.fee_rate, self.slippage_rate, self.taker_fee, self.fill_trigger):
             nonnegative(value)
             if value >= D("0.1"):
                 raise ValueError("fee and slippage rates must be below 10%")
@@ -75,11 +79,16 @@ class MarketRules:
     def taker_fee(self) -> Decimal:
         return self.fee_rate if self.taker_fee_rate is None else self.taker_fee_rate
 
+    @property
+    def fill_trigger(self) -> Decimal:
+        return self.slippage_rate if self.fill_trigger_rate is None else self.fill_trigger_rate
+
     def identity(self) -> dict[str, Any]:
-        """Persisted form; omits an unset taker fee so older identities still match."""
+        """Persisted form; omits the unset optional rates so older identities still match."""
         value = asdict(self)
-        if self.taker_fee_rate is None:
-            del value["taker_fee_rate"]
+        for name in ("taker_fee_rate", "fill_trigger_rate"):
+            if value[name] is None:
+                del value[name]
         return value
 
 

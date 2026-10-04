@@ -895,7 +895,9 @@ def rules_for(
     spec_slippage: Decimal,
     participation: Decimal,
     taker_fee: Decimal | None = None,
+    fill_trigger: Decimal | None = None,
 ) -> MarketRules:
+    """``fill_trigger`` (D9) is set only by a labelled missed-fill sensitivity run."""
     return MarketRules(
         symbol=symbol,
         tick_size=Decimal(instrument["tick_size"]),
@@ -905,4 +907,5 @@ def rules_for(
         slippage_rate=spec_slippage,
         participation=participation,
         taker_fee_rate=taker_fee,
+        fill_trigger_rate=fill_trigger,
     )
