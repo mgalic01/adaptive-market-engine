@@ -1,6 +1,6 @@
 # Claude → the owner, Bob and Codex: strategy audit of v1 at 344f9ae (what holds, what to correct, what you need to decide)
 
-Index: 2026-09-29 strategy audit of `main` at 344f9ae across eight areas, every finding checked by independent verifiers who tried to refute it. **Verified sound:** a completed grid buy-and-sell pair is profitable in both fee scenarios, and the vault, going flat in a downtrend, funding (a signal only) and minimum-notional handling at 100 units all check out. **Three corrections to merged records:** the v2 research's "V0 (always grid)" is really the *ungated* V0, its "Dual MA (variant A's states)" row is not variant A, and resting grid fills cost the maker fee (0% primary), not 0.14% a leg. **18 owner decisions**, each with numbers, options and a recommendation; the ones that change V0 or the scoring must be settled before any variant runs. **Still to build before v1 can finish:** the variant axis (this PR, phase 2), E/F/H and G's wiring, the comparison mask, and a C1–C6 scorer. This PR also adds 14 tests the amendment and variant B require; one is an expected failure that shows a real spec/code mismatch (an exhaustion halt is not refused by the risk check). **Phase 2 (2026-10-04), the V2 code audit, section (g):** the V2 market-structure code merged since 344f9ae read future daily bars and changed V0 for every run without a flag (issue #158). This PR fixes the lookahead, puts all V2 behaviour behind an off-by-default `--structure` switch (V0 proved byte-identical to 344f9ae), labels every result with what produced it, makes variants A, B and C runnable, and makes the CI runner check its data. Results produced since #151 on specs with daily bars are invalid. Three new owner decisions, D19 to D21. **Phase 3 (2026-10-05), section (h):** the owner's decisions of 2026-10-02 (D1–D16, Bob's `65a7eb0`) recorded in the decisions table; D7 (a soft-drawdown episode that has already recovered closes without a rebase, its 92% boundary now worded consistently), amendment 2 (a flat account clears its old band) and amendment 3 (the range-exit clock stands still while halted) implemented as engine `drawdown-recovery-v2`, schema 8. On the synthetic datasets only gated V0 moves, through amendment 2 (three fictitious range exits per run removed), and D is unchanged. On 2026-10-05 the owner confirmed D7's wording and decided D8, D9 and D11–D14 as recommended: D9's separate fill trigger is implemented (default unchanged; the synthetic results stay byte-identical), and the rest are recorded (D8 in spec §8, D11 and D13 as comments, D12 already done in #159, D14 unchanged).
+Index: 2026-09-29 strategy audit of `main` at 344f9ae across eight areas, every finding checked by independent verifiers who tried to refute it. **Verified sound:** a completed grid buy-and-sell pair is profitable in both fee scenarios, and the vault, going flat in a downtrend, funding (a signal only) and minimum-notional handling at 100 units all check out. **Three corrections to merged records:** the v2 research's "V0 (always grid)" is really the *ungated* V0, its "Dual MA (variant A's states)" row is not variant A, and resting grid fills cost the maker fee (0% primary), not 0.14% a leg. **18 owner decisions**, each with numbers, options and a recommendation; the ones that change V0 or the scoring must be settled before any variant runs. **Still to build before v1 can finish:** the variant axis (this PR, phase 2), E/F/H and G's wiring, the comparison mask, and a C1–C6 scorer. This PR also adds 14 tests the amendment and variant B require; one is an expected failure that shows a real spec/code mismatch (an exhaustion halt is not refused by the risk check). **Phase 2 (2026-10-04), the V2 code audit, section (g):** the V2 market-structure code merged since 344f9ae read future daily bars and changed V0 for every run without a flag (issue #158). This PR fixes the lookahead, puts all V2 behaviour behind an off-by-default `--structure` switch (V0 proved byte-identical to 344f9ae), labels every result with what produced it, makes variants A, B and C runnable, and makes the CI runner check its data. Results produced since #151 on specs with daily bars are invalid. Three new owner decisions, D19 to D21. **Phase 3 (2026-10-05), section (h):** the owner's decisions of 2026-10-02 (D1–D16, Bob's `65a7eb0`) recorded in the decisions table; D7 (a soft-drawdown episode that has already recovered closes without a rebase, its 92% boundary now worded consistently), amendment 2 (a flat account clears its old band) and amendment 3 (the range-exit clock stands still while halted) implemented as engine `drawdown-recovery-v2`, schema 8. On the synthetic datasets only gated V0 moves, through amendment 2 (three fictitious range exits per run removed), and D is unchanged. On 2026-10-05 the owner confirmed D7's wording and decided D8, D9 and D11–D14 as recommended: D9's separate fill trigger is implemented (default unchanged; the synthetic results stay byte-identical), and the rest are recorded (D8 in spec §8, D11 and D13 as comments, D12 already done in #159, D14 unchanged). Codex's five spec findings on #163 are fixed: V0's engine and schema, `N_family` 17–18 and 21–22, amendment 3's wording at a halt, the economic bar matched to §8, and the missed-fill row.
 
 - **Date:** 2026-09-29. **Author:** Claude (coordinator session `e0b16be3`, strategy slice).
 - **Base:** `origin/main` at 344f9ae. Paper-only. No market data was read and no backtest
@@ -793,9 +793,27 @@ table above:
 - **D13, recorded.** One comment line at each SMA helper says why its gap rule differs.
 - **D14.** No change; variant B is the registered treatment.
 
+**Codex's review of #163 (at `8251c01`): five spec findings, fixed.**
+- **The economic bar (§6), a wording fix the owner should see.** It said that passing
+  would "justify live deployment" and let the owner decide whether to "proceed to a live
+  pilot", but §8 allows at most a proposal for paper trading against live Revolut X
+  prices. It now says so, with a dated note. The owner's bar is unchanged: about 5% over
+  six years is not enough, and the target is well above 5% a year.
+- **§3's V0 paragraph** now names engine `drawdown-recovery-v2`, paper schema 8 (refusing
+  1–7) and the decisions of 2026-10-02 (D7, amendments 2 and 3), and lists V0 on
+  `drawdown-recovery-v1` among the earlier versions, each a registered trial. No other
+  engine or schema pin in the spec disagrees.
+- **`N_family` (C7)** is 17–18 and 21–22, with working figures 18 and 22: the coherence
+  record's 16–17 and 20–21 plus V0 on `drawdown-recovery-v2`, as amendment 2 says. The
+  record's own rule agrees: another inspected version of the fixed V0 is one further
+  trial in both budgets. No trial register exists yet to add it to; it is part of C7's
+  unbuilt machinery, section (e).
+- **The missed-fill row (§4)** names the new fill-trigger setting (D9, above).
+- **Amendment 3** now says what the engine does: the clock stands still while halted, and
+  nothing carries over the halt, since a halt clears only on a flat account with no
+  orders, whose bounds and clock amendment 2 and amendment 1's halt-clearing rule clear.
+  It carries a dated note too, as its decision text changed.
+
 **Still open, or for the owner.**
 - D17–D21 are open. D18's strict expected failure is unchanged and still fails as
   expected.
-- §3's V0 paragraph still names amendment 1's engine and schema as V0's, and amendment 2
-  counts one more registered trial in `N_family`; updating that record is for the owner
-  and Bob.

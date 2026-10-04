@@ -101,30 +101,38 @@ common to all:
   `results.json`.
 - **Unchanged:** default config, fills, costs, data identities and the common mark
   cadence (P2).
-- **Two versions (amendment 1).** "V0" means the amended V0, with the drawdown recovery
-  below. The pre-amendment V0 (drawdown lockout) keeps its published results
-  (`docs/backtests/verify-2024h1.md` and `fee-levels-2026-09.md`, which predate
-  `engine_version` and will be labelled pre-amendment when amended results are published
-  beside them), and both versions are registered trials (the
+- **Versions (amendment 1 and the owner's decisions of 2026-10-02).** "V0" means the
+  amended V0: the drawdown recovery of amendment 1 below, with D7 in its step 3, and
+  amendments 2 and 3. It runs on engine `drawdown-recovery-v2` and paper schema 8, which
+  refuses schemas 1–7, because these changes move replay results and the meaning of saved
+  state (`replay.py`'s bump rule; `PAPER_SIMULATION.md`). Each earlier V0 keeps its
+  results and is a registered trial (the
   [coherence record](reviews/2026-09-27-claude-dsr-coherence.md) §3, which superseded
-  part 2's count). The amended V0 runs on the engine version and paper schema its
-  implementation PR assigns: a successor of `exit-residue-v1` (assigned:
-  `drawdown-recovery-v1`, 2026-09-28), and schema 6 refusing 1–5,
-  because the amendment moves replay results and adds persisted state (`replay.py`'s bump
-  rule; `PAPER_SIMULATION.md`). It is the "fixed V0" of the owner's 2026-09-27 decision,
-  the fixed V0 that actually runs, and the one extra trial `N_family` (C7) already counts.
-  `exit-residue-v1` names the exit fix alone (PR #122); no V0 result on it has been run or
-  inspected. Running the un-amended fixed V0 is not planned, a choice made here and open
-  to review; if it is ever run and inspected it is one further trial and `N_family` gains
-  one more.
+  part 2's count): the pre-amendment V0 (drawdown lockout), whose published results
+  (`docs/backtests/verify-2024h1.md` and `fee-levels-2026-09.md`) predate
+  `engine_version` and will be labelled pre-amendment when amended results are published
+  beside them; and V0 on `drawdown-recovery-v1` (amendment 1 alone, schema 6, assigned
+  2026-09-28), the "fixed V0" of the owner's 2026-09-27 decision and the one extra trial
+  the coherence record counts, whose results are labelled pre-amendment-2. V0 on
+  `drawdown-recovery-v2` is one further registered trial (amendment 2), which C7's
+  `N_family` includes. `exit-residue-v1` names the exit fix alone (PR #122); no V0
+  result on it has been run or inspected. Running the un-amended fixed V0 is not planned,
+  a choice made here and open to review; if it is ever run and inspected it is one
+  further trial and `N_family` gains one more.
 
 ### Range-exit clock paused during halts (amendment 3, owner decision 2026-10-02, D16)
 
 **Rule:** the 6-hour outside-range timer (`outside_seconds`) does not advance while the
-account is halted (any halt category). The clock resumes from where it stopped when the
-halt clears (automatic restart or manual resume). A range exit that was already triggered
-before the halt completes normally; this rule only pauses the accumulation of
-outside-range time that would trigger a new exit.
+account is halted (any halt category): it stands still. Nothing carries over the halt,
+though. A halt clears only on a flat account with no orders (the automatic restart and
+the manual resume both require it), and there the grid bounds and the clock are
+cleared: by amendment 2 once the halted account is flat, and by amendment 1's
+halt-clearing rule, the restart's field list, which a manual resume shares. A range exit
+that was already triggered before the halt completes normally; this rule only stops the
+accumulation of outside-range time that would trigger a new exit. *(Wording made exact
+2026-10-05: the decision text said the clock "resumes from where it stopped when the
+halt clears", which no engine path can do, since both ways a halt clears leave the clock
+at zero; Codex's review of #163.)*
 
 **Why.** A halted account is not trading. Time spent outside the band during a halt is
 not meaningful outside-range exposure — the bot cannot act on it. Counting it inflates
@@ -164,9 +172,9 @@ no range was actually exited.
 **Engine impact.** This changes V0 results (fewer idle periods, more grids on choppy
 windows). It requires an engine version bump and a schema bump if the cleared state
 differs from what an existing persisted account holds (assigned, together with
-amendment 3 and D7: engine `drawdown-recovery-v2`, paper schema 8). All V0 results produced before
-this amendment are labelled pre-amendment-2 and stay published for reference. This
-amendment is counted as one further registered trial in `N_family`.
+amendment 3 and D7: engine `drawdown-recovery-v2`, paper schema 8). All V0 results
+produced before this amendment are labelled pre-amendment-2 and stay published for
+reference. This amendment is counted as one further registered trial in `N_family` (C7).
 
 ### Drawdown recovery (amendment 1, owner decision 2026-09-27)
 
@@ -899,11 +907,14 @@ pair for the other variants.
 a sufficient one. A return of ~5% over 6 years is approximately 0.8% annualised — worse
 than a savings account and not worth the operational overhead of running a bot. The
 variants need to demonstrate meaningfully positive annualised returns (target: well above
-5% per year) across the binding windows to justify live deployment. C1–C6 set the floor
-for scientific validity; economic viability is a separate, higher bar that the owner
-will assess from the R1 metric and the raw return figures before deciding whether to
-proceed to a live pilot (§8). A development winner that barely clears C1–C6 is not
-automatically a green light.
+5% per year) across the binding windows. C1–C6 set the floor for scientific validity;
+economic viability is a separate, higher bar that the owner will assess from the R1
+metric and the raw return figures. Passing both justifies at most the step §8 allows, a
+proposal for paper trading against live Revolut X prices; it never justifies live
+capital directly. A development winner that barely clears C1–C6 is not automatically a
+green light. *(Wording made consistent with §8 on 2026-10-05: the note said passing would
+"justify live deployment" and let the owner decide whether to "proceed to a live pilot",
+which §8 does not allow. The owner's bar itself is unchanged; Codex's review of #163.)*
 
 The owner compared his criteria from this conversation with Bob's proposal
 (`2025-09-25-owner-acceptance-criteria.md`) and chose this combined set. Acceptance is
@@ -918,7 +929,7 @@ included runs (every included pair, window and path):
 | C4 | **Integrity:** every included run is valid (§5). | Both |
 | C5 | **Minimum activity:** for each included run, its rate = completed cycles (P7) ÷ (evaluation window length in days ÷ 7). The window is `[start of the start month, end of the end month)` in UTC, the same for every run in a dataset, whether or not the run halted. C5 = the arithmetic mean of the per-run rates over all included runs (equal weight), computed exactly (no rounding), and must be **≥ 1**. The ISO-week counter is reported, not scored. The share of bars holding inventory is reported. **C5 and C2 are unchanged for trend-gated variants (owner decision 2026-10-02, D4):** a variant that is idle during downtrends correctly scores zero activity and zero return on those runs; the Down-period readout (D3, above) answers the bounce question separately and is the right diagnostic for that period, not a relaxed criterion. | Owner's compromise on Bob's 10%-invested rule |
 | C6 | **The gate earns its place:** in at least **60%** of included runs, the variant's return ÷ max(max drawdown, 0.1 percentage points) exceeds that of the **ungated V0 baseline** in the same pair, window and path. | Bob |
-| C7 | **Survives the family — adopted in principle, not yet binding.** The owner decided on 2026-09-27 to replace the deflated Sharpe ratio, which has no content on this family ([why](reviews/2026-09-27-claude-dsr-coherence.md)), with a Holm step-down over the disclosed family at family-wise 5%, evaluated on the selected winner only and gating the reserved-window run. The statistic is the one-sided p-value `p = 1 − Φ( SR · √(T_eff − 1) / √(1 − γ3·SR + (γ4 − 1)/4 · SR²) )` on each variant's worse path, using the series, moment conventions and `T_eff` of [draft spec part 3](reviews/2026-09-27-claude-dsr-return-series.md) §8 with `SR0` = 0. **C7 does not gate anything until all three of the following are settled and recorded here** (Codex, 2026-09-27): (a) the return series C7 is computed on — §4 defines two windows, while part 3 requires 25 walk-forward folds whose geometry is still a proposal, and the two give different `T`, `SR` and `T_eff`; (b) the family, since `N_family` = 16–17 and 20–21 (17 and 21 used as working figures, since R1's code state is unknown) are **floors** (unpublished inspected runs are known to exist), and a Holm cutoff from a floor does not control the stated error rate — either the missing trials are accounted for in the register or a conservative budget is preregistered; (c) Codex's and Bob's acknowledgment, since all three agents agreed to the DSR (Bob, PR #123 review, 2026-09-27: "I agree with retiring the frozen DSR in favor of the Holm step-down (C7) once settled", an acknowledgment conditional on C7 being settled; Codex's is owed). **Until C7 is settled and acknowledged, or the owner explicitly waives it in writing, nothing runs on the reserved window.** The owner's decision was that a multiple-testing test gates that run, so an unresolved C7 is a hold on the run, not permission to proceed under six criteria. C1–C6 remain the binding set for development selection in the meantime. | Owner in principle; specification open |
+| C7 | **Survives the family — adopted in principle, not yet binding.** The owner decided on 2026-09-27 to replace the deflated Sharpe ratio, which has no content on this family ([why](reviews/2026-09-27-claude-dsr-coherence.md)), with a Holm step-down over the disclosed family at family-wise 5%, evaluated on the selected winner only and gating the reserved-window run. The statistic is the one-sided p-value `p = 1 − Φ( SR · √(T_eff − 1) / √(1 − γ3·SR + (γ4 − 1)/4 · SR²) )` on each variant's worse path, using the series, moment conventions and `T_eff` of [draft spec part 3](reviews/2026-09-27-claude-dsr-return-series.md) §8 with `SR0` = 0. **C7 does not gate anything until all three of the following are settled and recorded here** (Codex, 2026-09-27): (a) the return series C7 is computed on — §4 defines two windows, while part 3 requires 25 walk-forward folds whose geometry is still a proposal, and the two give different `T`, `SR` and `T_eff`; (b) the family, since `N_family` = 17–18 and 21–22 (18 and 22 used as working figures, since R1's code state is unknown; the coherence record's 16–17 and 20–21 plus V0 on `drawdown-recovery-v2`, which amendment 2 counts as one further registered trial) are **floors** (unpublished inspected runs are known to exist), and a Holm cutoff from a floor does not control the stated error rate — either the missing trials are accounted for in the register or a conservative budget is preregistered; (c) Codex's and Bob's acknowledgment, since all three agents agreed to the DSR (Bob, PR #123 review, 2026-09-27: "I agree with retiring the frozen DSR in favor of the Holm step-down (C7) once settled", an acknowledgment conditional on C7 being settled; Codex's is owed). **Until C7 is settled and acknowledged, or the owner explicitly waives it in writing, nothing runs on the reserved window.** The owner's decision was that a multiple-testing test gates that run, so an unresolved C7 is a hold on the run, not permission to proceed under six criteria. C1–C6 remain the binding set for development selection in the meantime. | Owner in principle; specification open |
 | R1 | **Economics, reported only:** the capital at which the mean monthly return would cover €5/month of hosting (5 ÷ mean monthly return fraction), or "not reachable" if the mean return is ≤ 0. Running on the owner's own PC costs €0 in hosting. | Bob, as information |
 
 *Note on units (added 2026-09-27, clarification only; no criterion changes).* Every
