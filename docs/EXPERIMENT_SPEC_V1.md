@@ -343,10 +343,14 @@ The state is updated once per completed daily bar, from the previous state and `
     same way. Resting buys are valued at their cost including the maker fee. This is
     conservative relative to ignoring pending commitments; together with the
     prospective-equity deduction below, it charges each pending buy its full cash cost.
-  - **Prospective active equity** = active equity − Σ over every resting buy and the
-    proposed buy of limit × quantity × [(1 + maker) − (1 − slippage)(1 − taker)]. This
-    is the equity left if all of them filled at their limits and were immediately marked
-    at the limit price with the exit haircut, so it deducts their fees and haircuts.
+  - **Prospective active equity** = active equity − Σ over every resting buy of
+    (limit × remaining quantity × [(1 + maker) − (1 − slippage)(1 − taker)]) − the
+    proposed buy, valued the same way at its full proposed quantity. This is the equity
+    left if all of them filled at their limits and were immediately marked at the limit
+    price with the exit haircut, so it deducts their fees and haircuts. A partly filled
+    buy's filled part is already in active equity, so only its remainder is deducted.
+    *(Wording clarified 2026-09-29: "remaining quantity", as in committed exposure above,
+    the partial-fill rule below and the code; no rule change.)*
 - **Cap:** committed exposure (including the proposed buy) ≤ **40% of prospective active
   equity**.
   - The rule bounds new commitments under this stated valuation.
