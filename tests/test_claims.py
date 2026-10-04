@@ -398,6 +398,10 @@ class TargetTest(unittest.TestCase):
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a `<<` in a comment is no operator.
+            for cmd in ("# <<EOF\ngh pr merge 5\nEOF", "echo hi # <<EOF\ngh pr merge 5"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
             # Codex review of #159: two bodies on one line, read in order.
             self.assertEqual(find_targets("cat <<'A' <<'B'\nfirst\nA\ngh pr merge 5\nB", "."), [])
             for cmd in (
@@ -425,6 +429,19 @@ class TargetTest(unittest.TestCase):
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+
+    def test_separators_inside_quotes_are_text(self):
+        # Codex review of #159: splitting inside the quotes cut `bash -c`'s merge off.
+        with git_stub():
+            for cmd in (
+                'bash -c "gh pr merge 5; echo done"',
+                "sh -c 'cd sub && gh pr merge 5'",
+                'gh pr merge 5 --body "a; b & c | d"',
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(
+                        [(t.pr, t.unknown) for t in find_targets(cmd, ".")], [(5, None)]
+                    )
 
     def test_a_lone_ampersand_ends_a_command(self):
         # Codex review of #159: the shell runs both commands. A redirection is no separator,
@@ -476,6 +493,23 @@ class TargetTest(unittest.TestCase):
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(find_targets(cmd, "."), [])
+
+    def test_a_shell_body_or_bash_line_known_only_at_run_time(self):
+        # Codex review of #159: a POSIX shell runs a lone variable as a command, so the
+        # merge in the outer text counts, as for eval; PowerShell only prints `$c`.
+        with git_stub():
+            for cmd, posix in (
+                ("cmd='gh pr merge 5'; bash -c \"$cmd\"", False),
+                ("cmd='gh pr merge 6'; bash -c \"gh pr merge 5; $cmd\"", False),
+                ("c='gh pr merge 5'; $c", True),
+            ):
+                with self.subTest(cmd=cmd):
+                    targets = find_targets(cmd, ".", posix=posix)
+                    self.assertIn("merge", [t.kind for t in targets if t.unknown])
+            self.assertEqual(find_targets("$c = 'gh pr merge 5'; $c", "."), [])
+            # A literal body keeps its PR known.
+            body = "bash -c 'gh pr merge 5 --body \"$(cat b.md)\"'"
+            self.assertEqual([(t.pr, t.unknown) for t in find_targets(body, ".")], [(5, None)])
 
     def test_literal_eval_text_is_read_as_the_command_it_runs(self):
         # Codex review of #159: only literal text is read; `$`, backticks or a backslash
@@ -690,6 +724,15 @@ class HookTest(unittest.TestCase):
                 self.payload('b="claude/a"; eval "git push origin $b"'), self.reader([]), NOW
             )
         self.assertIn("known only at run time", push["systemMessage"])
+
+    def test_a_bash_line_running_a_variable_is_refused_as_a_merge(self):
+        # Codex review of #159: the Bash tool runs a POSIX shell.
+        with git_stub():
+            out = hook_decision(self.payload("c='gh pr merge 5'; $c", "Bash"), self.reader([]), NOW)
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "could not be determined", out["hookSpecificOutput"]["permissionDecisionReason"]
+        )
 
     def test_github_down_fails_closed_for_merge_and_open_for_push(self):
         def down(path):

@@ -521,23 +521,42 @@ def substitutions(command: str, quotes: bool = True) -> list[str]:
 HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(\\?)(['\"]?)([\w.-]+)\3(?=[\s;&|<>()]|$)")
 
 
-def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[str]]:
-    """The here-document operators the shell sees in ``command[start:end]``. One inside
-    quotes or escaped is text (Codex review of #159: `echo "<<EOF"` hid the merge on the
-    next line as a body)."""
-    quote, i = "", start
-    while i < end:
+def _quoted(command: str) -> list[bool]:
+    """Whether the shell reads each character as text: inside quotes, a quote itself, or
+    escaped by a backslash. There `;`, `&`, `|`, `<<` and `#` are no operators."""
+    mask = [False] * len(command)
+    quote, i = "", 0
+    while i < len(command):
         c = command[i]
         if c == "\\" and quote != "'":
-            i += 2  # the escaped character is text
+            mask[i : i + 2] = [True] * len(mask[i : i + 2])
+            i += 2
             continue
         if c in "'\"" and quote in ("", c):
             quote = "" if quote else c
-        elif not quote and (m := HEREDOC_RE.match(command, i, end)):
+            mask[i] = True
+        else:
+            mask[i] = bool(quote)
+        i += 1
+    return mask
+
+
+def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[str]]:
+    """The here-document operators the shell sees in ``command[start:end]``. One inside
+    quotes, escaped or in a comment is text (Codex review of #159: `echo "<<EOF"` and
+    `# <<EOF` each hid the merge on the next line as a body)."""
+    quoted, i = _quoted(command), start
+    while i < end:
+        if quoted[i]:
+            i += 1
+        elif command[i] == "#" and (i == 0 or command[i - 1] in " \t\n;&|("):
+            line_end = command.find("\n", i, end)  # a comment runs to the end of its line
+            i = end if line_end < 0 else line_end
+        elif m := HEREDOC_RE.match(command, i, end):
             yield m
             i = m.end()
-            continue
-        i += 1
+        else:
+            i += 1
 
 
 def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
@@ -597,15 +616,41 @@ def _unknown(text: str, why: str) -> list[Target]:
 SEPARATORS = re.compile(r"&&|\|\||(?<![>&])&(?![&>])|[;|\n]")
 
 
-def find_targets(command: str, cwd: str, depth: int = 0) -> list[Target]:
+def segments(command: str) -> list[str]:
+    """The commands of a command line, split at ``SEPARATORS`` outside quotes (Codex
+    review of #159: a split inside `bash -c "gh pr merge 5; echo"` cut off its merge)."""
+    quoted, parts, start, i = _quoted(command), [], 0, 0
+    while i < len(command):
+        if not quoted[i] and (m := SEPARATORS.match(command, i)):
+            parts.append(command[start:i])
+            start = i = m.end()
+        else:
+            i += 1
+    parts.append(command[start:])
+    return parts
+
+
+# A command word known only at run time: a variable.
+RUNTIME_WORD = re.compile(r"\$\{?\w")
+
+
+def find_targets(
+    command: str, cwd: str, depth: int = 0, *, posix: bool = False, root: str | None = None
+) -> list[Target]:
     """Every push or merge in a shell command, with the working directory it runs in.
     What `bash -c`, `pwsh -Command`, `cmd /c`, `$(...)` or backticks run is read too, to
-    MAX_DEPTH levels (automated audit, 2026-09-29)."""
+    MAX_DEPTH levels (automated audit, 2026-09-29).
+
+    ``posix``: the text runs in a POSIX shell, where a lone `$cmd` runs the command it
+    holds (PowerShell only prints it). ``root``: the whole command line, the only text a
+    command known at run time can be judged by (Codex review of #159: in
+    `cmd='gh pr merge 5'; bash -c "$cmd"` the merge is only in the outer text)."""
+    root = command if root is None else root
     if depth > MAX_DEPTH:
-        return _unknown(command, "a command nested too deep to read")
+        return _unknown(root, "a command nested too deep to read")
     command, bodies = heredocs(command)
     targets: list[Target] = []
-    for segment in SEPARATORS.split(command):
+    for segment in segments(command):
         toks = unwrap(drop_redirections(split_words(segment)))
         if not toks:
             continue
@@ -628,18 +673,21 @@ def find_targets(command: str, cwd: str, depth: int = 0) -> list[Target]:
         elif exe in SHELLS:
             inner = shell_command(exe, toks[1:])
             if inner is not None:
-                targets.extend(find_targets(inner, cwd, depth + 1))
+                shell = exe in POSIX_SHELLS
+                targets.extend(find_targets(inner, cwd, depth + 1, posix=shell, root=root))
         elif "/merge" in segment or "mergePullRequest" in segment:
             # curl, python and other clients can call the same REST or GraphQL merge.
             targets.extend(_rest_merge_targets(segment, cwd, None))
         elif exe in EVALS and not any(c in "".join(toks[1:]) for c in "$`\\"):
             # `eval "gh pr merge 5"` runs literal text: read it as the command it is
             # (Codex review of #159: `eval 'echo submerged'` was refused as a merge).
-            targets.extend(find_targets(" ".join(toks[1:]), cwd, depth + 1))
-        elif exe in EVALS or (len(toks) > 1 and re.match(r"\$\{?\w", toks[0])):
-            # `eval "$cmd"`, `iex $cmd`, `& $gh pr merge 5`: the text of this command
-            # line is all there is to go on. A lone `$x` (PowerShell prints it) runs nothing.
-            targets.extend(_unknown(command, f"{toks[0]} runs a command known only at run time"))
+            body = " ".join(toks[1:])
+            targets.extend(find_targets(body, cwd, depth + 1, posix=posix, root=root))
+        elif exe in EVALS or ((len(toks) > 1 or posix) and RUNTIME_WORD.match(toks[0])):
+            # `eval "$cmd"`, `iex $cmd`, `& $gh pr merge 5`: the text of the whole command
+            # line is all there is to go on. A lone `$x` runs nothing in PowerShell (it
+            # prints), but runs `$x` in a POSIX shell.
+            targets.extend(_unknown(root, f"{toks[0]} runs a command known only at run time"))
     inners = substitutions(command)
     for body, quoted, reader in bodies:
         if any(_exe(w) in (*SHELLS, *EVALS) for w in reader.split()):
@@ -647,7 +695,7 @@ def find_targets(command: str, cwd: str, depth: int = 0) -> list[Target]:
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))
     for inner in inners:
-        targets.extend(find_targets(inner, cwd, depth + 1))
+        targets.extend(find_targets(inner, cwd, depth + 1, posix=posix, root=root))
     return targets
 
 
@@ -733,7 +781,7 @@ def hook_decision(
     if "push" not in command and "merge" not in command and "Merge" not in command:
         return None
     cwd = str(payload.get("cwd") or os.getcwd())
-    targets = find_targets(command, cwd)
+    targets = find_targets(command, cwd, posix=payload.get("tool_name") == "Bash")
     if not targets:
         return None
     session_id = str(payload.get("session_id") or "")
