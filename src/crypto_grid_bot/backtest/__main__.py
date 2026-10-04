@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         "--record-commit",
         action="store_true",
         help="record the code's git commit in results.json (always recorded for a "
-        "variant or --structure run)",
+        "variant, --structure or --trend-benchmark run)",
     )
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
@@ -270,6 +270,12 @@ def main(argv: list[str] | None = None) -> int:
         missing = [f for f in manifest["files"] if f["status"] == "missing"]
         print(json.dumps({"files": len(manifest["files"]), "missing": missing}, indent=1))
         return 0
+    policy = variant_policy(args.variant, structure=args.structure)
+    # Taken before anything runs, dataset verification included: the code imported now is
+    # the code that runs, even if the checkout changes during a long run (Codex review of
+    # #160). Every run that is not plain V0 records it; V0 keeps its exact layout.
+    recorded = policy is not None or args.trend_benchmark or args.record_commit
+    commit = code_commit() if recorded else None
     manifest = load_manifest(manifest_path(args.spec))
     verify_dataset(spec, manifest, args.data_dir)
     integrity = {
@@ -277,10 +283,6 @@ def main(argv: list[str] | None = None) -> int:
         "volume_drift_tolerance": "0" if args.strict_volume else str(VOLUME_DRIFT_TOLERANCE),
     }
     jobs = max(1, min(args.jobs, 8))
-    policy = variant_policy(args.variant, structure=args.structure)
-    # Taken before anything runs: the code imported now is the code that runs, even if
-    # the checkout changes during a long run (Codex review of #160).
-    commit = code_commit() if policy is not None or args.record_commit else None
     executor = InProcess() if jobs == 1 else ProcessPoolExecutor(max_workers=jobs)
     with executor as pool:
         # Chronology is settled before any replay starts; invalid data never replays.
@@ -315,7 +317,10 @@ def main(argv: list[str] | None = None) -> int:
                 mode,
                 gated,
                 (maker, taker),
-                policy,
+                # The ungated rows are always the spec's ungated V0 baseline, which C6
+                # compares a variant with, never the variant without its gate (Codex
+                # review of #160).
+                policy if gated else None,
             )
             for s in spec.traded
             for mode in PATH_MODES

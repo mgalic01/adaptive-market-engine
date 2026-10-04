@@ -91,6 +91,7 @@ class CliIntegrityTests(unittest.TestCase):
         self.fees = []
         self.strict = []
         self.policies = []
+        self.arms = []
         self.verified = []
         patches = [
             patch.object(cli, "ProcessPoolExecutor", Inline),
@@ -113,6 +114,7 @@ class CliIntegrityTests(unittest.TestCase):
         self.replays.append(symbol)
         self.fees.append(fees)
         self.policies.append(policy)
+        self.arms.append((gated, policy))
         return {**good_result(symbol, mode, gated), **self.result_patch}
 
     def main(self, command, *extra):
@@ -194,9 +196,10 @@ class CliIntegrityTests(unittest.TestCase):
         }
         for flags, (suffix, policy) in cases.items():
             with self.subTest(flags=flags):
-                self.policies.clear()
+                self.arms.clear()
                 self.assertEqual(0, self.main("run", *flags))
-                self.assertEqual({policy}, set(self.policies))
+                # Codex review of #160: the ungated rows stay the ungated V0 baseline.
+                self.assertEqual({(True, policy), (False, None)}, set(self.arms))
                 document = self.documents()[suffix]
                 self.assertEqual(
                     json.loads(json.dumps(policy.identity(), default=str)), document["policy"]
@@ -211,12 +214,23 @@ class CliIntegrityTests(unittest.TestCase):
         seen = []
 
         def commit():
-            seen.append((len(self.strict), len(self.replays)))
+            seen.append((len(self.verified), len(self.strict), len(self.replays)))
             return "0123abc"
 
         with patch.object(cli, "code_commit", commit):
             self.assertEqual(0, self.main("run", "--variant-a"))
-        self.assertEqual([(0, 0)], seen)
+        self.assertEqual([(0, 0, 0)], seen)
+
+    def test_a_trend_benchmark_run_records_its_commit(self):
+        # Codex review of #160: variant D is evidence too.
+        def fake_trend(spec, config, data_dir, symbol, mode, fees=None):
+            return {**good_result(symbol, mode, True), "strategy": "trend benchmark D"}
+
+        with patch.object(cli, "trend_job", fake_trend):
+            self.assertEqual(0, self.main("run", "--trend-benchmark"))
+        (document,) = self.documents().values()
+        self.assertEqual("0123abc", document["code_commit"])
+        self.assertNotIn("policy", document)
 
     def test_only_one_variant_at_a_time(self):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
