@@ -369,6 +369,26 @@ class TargetTest(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
 
+    def test_here_document_bodies_are_input(self):
+        # Codex review of #159: a quoted body is never expanded; an unquoted one only
+        # runs its substitutions; a shell reading the body runs all of it.
+        with git_stub():
+            for cmd in (
+                "cat <<'EOF' > notes.md\nrun $(gh pr merge 5) later\nEOF",
+                'cat <<"EOF"\n`gh pr merge 5`\nEOF\necho done',
+                "cat <<EOF\ngh pr merge 5\nEOF",
+                "cat <<-\\EOF\n\t$(gh pr merge 5)\n\tEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+            for cmd in (
+                "cat <<EOF\nit's $(gh pr merge 5)\nEOF",
+                "bash <<'EOF'\ngh pr merge 5\nEOF",
+                "cat <<'EOF'\ntext\nEOF\ngh pr merge 5",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+
     def test_a_pr_or_branch_the_shell_computes_is_unknown(self):
         with git_stub():
             for cmd in (

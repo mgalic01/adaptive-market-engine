@@ -31,7 +31,12 @@ def claims_summary():
 # Comments quoted into Bob's context come only from the owner and the project's own
 # workflows; the repository is public, so anyone else's text is left out. GraphQL gives
 # bot logins without "[bot]" and a human account "claude" exists, hence the type check.
-TRUSTED_AUTHORS = {("User", "mgalic01"), ("Bot", "github-actions"), ("Bot", "claude")}
+TRUSTED_AUTHORS = {
+    ("User", "mgalic01"),
+    ("Bot", "github-actions"),
+    ("Bot", "claude"),
+    ("Bot", "chatgpt-codex-connector"),  # Codex Cloud (Codex review of #159)
+}
 COMMENTS_QUERY = (
     "query($owner: String!, $name: String!, $number: Int!) {"
     " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
