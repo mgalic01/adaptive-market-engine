@@ -414,7 +414,28 @@ def drop_redirections(words: list[str]) -> list[str]:
 # operators (`& git push`), and wrappers such as `env X=1 git push`.
 PREFIX_WORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "&", "."}
 WRAPPERS = {"env", "timeout", "nohup", "nice", "time", "command", "exec"}
-WRAPPER_VALUE_OPTS = {"-u", "--unset", "-s", "--signal", "-k", "--kill-after", "-n", "-a"}
+# Wrapper options that take the next word as their value (env, timeout, nice, exec and
+# GNU time); `env -C sub gh pr merge 5` was read as running `sub` (Codex review of #159).
+WRAPPER_VALUE_OPTS = {
+    "-u",
+    "--unset",
+    "-C",
+    "--chdir",
+    "-P",
+    "-s",
+    "--signal",
+    "-k",
+    "--kill-after",
+    "-n",
+    "--adjustment",
+    "-a",
+    "-f",
+    "--format",
+    "-o",
+    "--output",
+}
+# `env -S 'gh pr merge 5'` (or -S'...', --split-string=...) runs the words of its value.
+SPLIT_STRING_RE = re.compile(r"(?:-S|--split-string=?)(.*)", re.DOTALL)
 WRAPPER_NUMBER_RE = re.compile(r"\d[\d.]*[smhd]?")  # `timeout 60`, `timeout 1.5m`
 POSIX_SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
 SHELLS = (*POSIX_SHELLS, "pwsh", "powershell", "cmd")
@@ -436,6 +457,13 @@ def unwrap(words: list[str]) -> list[str]:
         elif _exe(w) in WRAPPERS:
             words = words[1:]
             while words and (words[0].startswith("-") or WRAPPER_NUMBER_RE.fullmatch(words[0])):
+                if split := SPLIT_STRING_RE.fullmatch(words[0]):
+                    if split[1]:
+                        value, rest = split[1], words[1:]
+                    else:
+                        value, rest = (words[1] if len(words) > 1 else ""), words[2:]
+                    words = [*split_words(value), *rest]
+                    break
                 words = words[2:] if words[0] in WRAPPER_VALUE_OPTS else words[1:]
         else:
             break
@@ -487,7 +515,10 @@ def substitutions(command: str, quotes: bool = True) -> list[str]:
     return found
 
 
-HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(\\?)(['\"]?)([\w.-]+)\3")
+# The delimiter must be the whole shell word. One with other characters (`END+`) is not
+# recognised, so its here-document stays in the command and its lines are read as
+# commands: a merge after it cannot be stripped as body (Codex review of #159).
+HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(\\?)(['\"]?)([\w.-]+)\3(?=[\s;&|<>()]|$)")
 
 
 def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[str]]:
