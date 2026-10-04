@@ -503,11 +503,15 @@ def substitutions(command: str, quotes: bool = True) -> list[str]:
             found.append(command[i + 1 : end])
             i = end
         elif quote != "'" and command.startswith("$(", i):
+            # Its own quoting starts afresh, and a quoted or escaped parenthesis does not
+            # close it (Codex review of #159: `$(eval 'printf ")"; gh pr merge 5')`).
+            quoted = _quoted(command[i + 1 :])
             level, end = 0, i + 1
             while end < len(command):
-                level += {"(": 1, ")": -1}.get(command[end], 0)
-                if level == 0:
-                    break
+                if not quoted[end - i - 1]:
+                    level += {"(": 1, ")": -1}.get(command[end], 0)
+                    if level == 0:
+                        break
                 end += 1
             found.append(command[i + 2 : end])
             i = end
@@ -690,7 +694,8 @@ def find_targets(
             targets.extend(_unknown(root, f"{toks[0]} runs a command known only at run time"))
     inners = substitutions(command)
     for body, quoted, reader in bodies:
-        if any(_exe(w) in (*SHELLS, *EVALS) for w in reader.split()):
+        # Shell words, so that `/bin/'bash' <<EOF` is bash (Codex review of #159).
+        if any(_exe(w) in (*SHELLS, *EVALS) for w in split_words(reader)):
             inners.append(body)  # `bash <<EOF` runs its body
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))

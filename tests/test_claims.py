@@ -336,6 +336,8 @@ class TargetTest(unittest.TestCase):
 
     def test_command_substitutions_are_read_inside(self):
         with git_stub():
+            # Codex review of #159: a quoted ")" does not end the substitution.
+            self.assertEqual(self.prs("""echo $(eval 'printf ")"; gh pr merge 5')"""), [5])
             for cmd in (
                 "echo $(gh pr merge 5)",
                 "echo `gh pr merge 5`",
@@ -402,6 +404,8 @@ class TargetTest(unittest.TestCase):
             for cmd in ("# <<EOF\ngh pr merge 5\nEOF", "echo hi # <<EOF\ngh pr merge 5"):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a quoted reader name is still the shell that runs it.
+            self.assertEqual(self.prs("/bin/'bash' <<'EOF'\ngh pr merge 5\nEOF"), [5])
             # Codex review of #159: two bodies on one line, read in order.
             self.assertEqual(find_targets("cat <<'A' <<'B'\nfirst\nA\ngh pr merge 5\nB", "."), [])
             for cmd in (
