@@ -96,6 +96,9 @@ Klines contain trades, not quotes. The adapter in `backtest/replay.py` is explic
     debit.
   - Marketable exits (range exits, liquidation), the buy-and-hold baseline and every
     equity mark pay the **taker** fee and do apply price haircuts.
+  - Equity marks use the unrounded bid × (1 − slippage), while an actual exit fill floors
+    that price to the tick, so a mark can exceed what an exit realises by at most one
+    tick per unit held.
   - The grid cost rule uses two maker fees: `2 × (maker + slippage) + spread`.
 - **Order-request budget:** each step's placements plus cancellations are counted per
   UTC day. Results report the total, the busiest day and the days above 1,000 requests,
@@ -163,8 +166,19 @@ The unchanged engine then applies:
 - the regime classifier;
 - the opportunity scorer;
 - the grid builder's rule that spacing must be at least 3× round-trip costs;
-- risk limits: 3% daily pause, 8% soft and 12% hard drawdown, with hard-drawdown halts
-  latched and no automatic resume;
+- risk limits: 3% daily pause, 8% soft and 12% hard drawdown, with the drawdown recovery
+  of [spec v1 amendment 1](EXPERIMENT_SPEC_V1.md) §3 (engine `drawdown-recovery-v1`; its
+  24 h values were set after development results had been seen, as the spec discloses):
+  - a soft-drawdown episode rebases `risk_high` to the current active equity once at
+    least 24 h of observed time have passed since it began and the normal
+    `recovery_frames` confirmations are in;
+  - a hard-drawdown (`drawdown`) halt restarts automatically, at most once per halt, on
+    the first valid frame at least 24 h after the halt began once the forced liquidation
+    is complete (an unsellable `dust` remainder does not block it) and the risk check
+    passes on a tentative rebase to the current active equity; the account then pauses
+    for the normal `recovery_frames` confirmations before a new grid;
+  - `emergency` and `integrity` halts stay latched until an explicit resume, and an
+    `exhaustion` halt is final;
 - range exit after 6 h and re-centring after 24 h;
 - the 50/50 reserve with transfers batched at 10 quote units.
 

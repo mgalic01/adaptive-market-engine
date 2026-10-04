@@ -48,6 +48,7 @@ jobs:
        github.event.comment.author_association == 'OWNER' &&
        contains(github.event.comment.body, '/bob-run'))
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       tasks: ${{ steps.list.outputs.tasks }}
     steps:
