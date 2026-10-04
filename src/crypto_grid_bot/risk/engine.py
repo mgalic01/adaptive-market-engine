@@ -47,7 +47,10 @@ def _limit_equity(base: Decimal, limit: Decimal) -> Decimal:
     """The equity at which ``base`` has lost exactly ``limit``: base x (1 - limit), with
     every digit of the product kept, whatever the size of ``base`` (Codex review of #159:
     a fixed 120-digit context rounded a 121-digit balance onto a limit)."""
-    keep = 1 - limit  # exact: a configured fraction has at most 17 digits
+    # 1 - limit with every digit kept, however small the limit (Codex review of #159:
+    # at the default 28 digits, 1 - 1e-30 rounded to 1).
+    with localcontext(_wide(len(limit.as_tuple().digits) - limit.as_tuple().exponent + 1)):
+        keep = 1 - limit
     digits = len(base.as_tuple().digits) + len(keep.as_tuple().digits)
     with localcontext(_wide(digits)):
         return base * keep
