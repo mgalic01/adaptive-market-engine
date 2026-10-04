@@ -94,9 +94,9 @@ class ConfiguredBoundaryTests(TestCase):
 
     def test_just_outside_each_range_limit_is_not_range(self) -> None:
         cases = {
-            "score": MarketSignals(0.28, 0.28, 0.28, 0.28, 0.28, adx=10),
+            "score": MarketSignals(0.26, 0.26, 0.26, 0.26, 0.26, adx=10),
             "adx": MarketSignals(0, 0, 0, 0, 0, adx=22.1),
-            "dispersion": MarketSignals(1.0, -1.0, -1.0, 0.1, 0.0, adx=10),
+            "dispersion": MarketSignals(1.0, -1.0, -1.0, 0.0, 0.0, adx=10),
         }
         for limit, signals in cases.items():
             with self.subTest(limit=limit):
@@ -116,12 +116,11 @@ class ConfiguredBoundaryTests(TestCase):
         classifier = RegimeClassifier(
             RegimeThresholds(bull=0.45, bear=-0.45, minimum_confidence=0.8)
         )
-        # With new weights, score = x*0.90 + 0.0*0.10; straddle 0.45 using x≈0.499/0.501
         for x, expected in (
-            (0.499, MarketRegime.TRANSITION),
-            (0.501, MarketRegime.BULL),
-            (-0.499, MarketRegime.TRANSITION),
-            (-0.501, MarketRegime.BEAR),
+            (0.449, MarketRegime.TRANSITION),
+            (0.451, MarketRegime.BULL),
+            (-0.449, MarketRegime.TRANSITION),
+            (-0.451, MarketRegime.BEAR),
         ):
             with self.subTest(score=x):
                 result = classifier.classify(MarketSignals(x, x, x, x, x, adx=30))
@@ -130,7 +129,7 @@ class ConfiguredBoundaryTests(TestCase):
     def test_default_directional_evidence_matches_the_previous_formula(self) -> None:
         # The retired hard-coded 0.50 equals bull / minimum_confidence at the defaults.
         for x in (0.1, 0.3, 0.35, 0.42, 0.5, 0.8):
-            for values in ((x, x, x, x, x, 0.0), (x, x, x, -x / 2, 0.0, 0.0)):
+            for values in ((x, x, x, x, x), (x, x, x, -x / 2, 0.0)):
                 named = dict(zip(RegimeClassifier._WEIGHTS, values, strict=True))
                 score = sum(named[k] * w for k, w in RegimeClassifier._WEIGHTS.items())
                 magnitude = sum(abs(named[k]) * w for k, w in RegimeClassifier._WEIGHTS.items())
@@ -140,9 +139,7 @@ class ConfiguredBoundaryTests(TestCase):
                 )
 
     def test_strong_conflicting_votes_are_neither_range_nor_trend(self) -> None:
-        cancelled = self.classifier.classify(
-            MarketSignals(1.0, -1.0, -1.0, 0.0, 0.0, adx=15, structure_alignment=0.1)
-        )
+        cancelled = self.classifier.classify(MarketSignals(1.0, -1.0, -1.0, 0.0, 0.0, adx=15))
         unhealthy_trend = self.classifier.classify(MarketSignals(1.0, 1.0, 1.0, -1.0, -1.0, adx=30))
         self.assertEqual(MarketRegime.TRANSITION, cancelled.regime)
         self.assertEqual(MarketRegime.TRANSITION, unhealthy_trend.regime)
@@ -160,3 +157,35 @@ class ConfiguredBoundaryTests(TestCase):
         ):
             with self.subTest(**kwargs), self.assertRaises(ValueError):
                 RegimeThresholds(**kwargs)
+
+
+class StructureFlagTests(TestCase):
+    """V2's sixth signal is behind the ``structure`` flag; off is exactly the V0 vote."""
+
+    def test_default_is_the_five_signal_vote_with_trend_at_0_35(self) -> None:
+        self.assertEqual(RegimeClassifier._WEIGHTS, RegimeClassifier()._weights)
+        self.assertEqual(0.35, RegimeClassifier()._weights["trend"])
+        self.assertNotIn("structure_alignment", RegimeClassifier()._weights)
+        self.assertAlmostEqual(1.0, sum(RegimeClassifier._STRUCTURE_WEIGHTS.values()))
+
+    def test_off_ignores_structure_alignment(self) -> None:
+        classifier = RegimeClassifier()
+        plain = classifier.classify(MarketSignals(0.3, 0.2, 0.1, 0.0, 0.0, adx=30))
+        aligned = classifier.classify(
+            MarketSignals(0.3, 0.2, 0.1, 0.0, 0.0, adx=30, structure_alignment=-1.0)
+        )
+        self.assertEqual(plain, aligned)
+        self.assertAlmostEqual(0.3 * 0.35 + 0.2 * 0.20 + 0.1 * 0.15, plain.score)
+
+    def test_on_votes_structure_alignment_and_changes_the_dispersion(self) -> None:
+        classifier = RegimeClassifier(structure=True)
+        signals = MarketSignals(0.3, 0.2, 0.1, 0.0, 0.0, adx=30, structure_alignment=-1.0)
+        self.assertAlmostEqual(
+            0.3 * 0.25 + 0.2 * 0.20 + 0.1 * 0.15 - 0.10, classifier.classify(signals).score
+        )
+        # Five zero signals are RANGE either way; the sixth only counts when on.
+        quiet = MarketSignals(0.0, 0.0, 0.0, 0.0, 0.0, adx=10, structure_alignment=1.0)
+        self.assertEqual(MarketRegime.RANGE, RegimeClassifier().classify(quiet).regime)
+        self.assertNotEqual(
+            RegimeClassifier().classify(quiet).score, classifier.classify(quiet).score
+        )

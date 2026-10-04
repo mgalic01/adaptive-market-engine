@@ -28,8 +28,9 @@ Given a sequence of OHLC candles (any timeframe), it:
   Strict inequality on both sides; ties are not swings.
 - Zone clustering: two swing points merge into one zone if their prices differ by less
   than ``merge_atr`` × ATR. The zone's price is the mean of its members.
-- Zone strength: 1 + (test_count - 1) × recency_weight, where recency_weight decays
-  linearly from 1.0 (most recent) to 0.0 (oldest in the window).
+- Zone strength: (mean of linear recency weights) × (1 + log2(test_count)); see
+  ``cluster_into_zones``. The mean weight depends only on the member count, so in
+  effect strength grows with the number of tests alone. No decision reads it yet.
 - Structural trend: computed from the last ``min_swings`` confirmed swing highs and lows
   separately. Bullish iff the last two swing lows are ascending AND the last two swing
   highs are ascending. Bearish iff both are descending. Ranging otherwise.
@@ -45,6 +46,7 @@ Given a sequence of OHLC candles (any timeframe), it:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -229,12 +231,10 @@ def _true_range(bars: Sequence[OHLCBar], i: int) -> float:
 
 
 def compute_atr(bars: Sequence[OHLCBar], period: int) -> float:
-    """Average True Range of the last ``period`` bars.
+    """Average True Range of the last ``period`` bars: the simple mean of their true
+    ranges (not Wilder smoothing, unlike the ADX in features.py).
 
     Returns 0.0 if fewer than ``period`` bars are available.
-    Uses Wilder smoothing (same as features.py) when there are enough bars,
-    but a simple mean is sufficient and equivalent here because we always
-    call this on a fixed tail of the sequence.
     """
     n = len(bars)
     if n < period:
@@ -310,10 +310,12 @@ def cluster_into_zones(
     Two swings merge if their prices differ by less than ``merge_atr × atr``.
     Zone price = mean of member prices.
     Zone strength formula:
-      Each member i (0=oldest, N-1=most recent) gets a linear recency weight:
+      Each member i (0=oldest, N-1=most recent, by open time) gets a linear weight:
         w_i = (1 - recency_weight) + recency_weight × (i / (N - 1))   [N > 1]
         w_i = 1.0   [N == 1]
       strength = sum(w_i) / N × (1 + log2(N))   [more tests = stronger zone]
+    The sum of the weights is the same whatever the members' times, so strength is
+    (1 - recency_weight / 2) × (1 + log2(N)) for N > 1: it does not reward a recent test.
 
     If atr == 0 (degenerate data), merge threshold is 0 and no merging occurs.
     Returns zones sorted by price ascending.
@@ -323,7 +325,7 @@ def cluster_into_zones(
 
     # Sort by price so we can do a single-pass merge
     sorted_swings = sorted(swings, key=lambda s: s.price)
-    threshold = merge_atr * atr  # 0 when atr==0 ΓåÆ no merging
+    threshold = merge_atr * atr  # 0 when atr==0 -> no merging
 
     groups: list[list[SwingPoint]] = []
     current_group: list[SwingPoint] = [sorted_swings[0]]
@@ -340,13 +342,12 @@ def cluster_into_zones(
     for group in groups:
         n = len(group)
         zone_price = sum(s.price for s in group) / n
-        # Sort group by open_ms to assign recency weights
+        # w_i belongs to the i-th member by open time; only the sum is used, and it is
+        # the same in any order, so the members need not be sorted.
         if n == 1:
             weights = [1.0]
         else:
             weights = [(1.0 - recency_weight) + recency_weight * (i / (n - 1)) for i in range(n)]
-        import math
-
         strength = (sum(weights) / n) * (1.0 + math.log2(n))
         latest = max(s.open_ms for s in group)
         zones.append(

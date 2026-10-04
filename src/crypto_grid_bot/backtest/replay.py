@@ -795,14 +795,27 @@ def utc_iso(ms: int) -> str | None:
 
 
 def summarise(
-    run: RunConfig, metrics: Metrics, account: Account, problems: list[str]
+    run: RunConfig,
+    metrics: Metrics,
+    account: Account,
+    problems: list[str],
+    *,
+    feature_version: str = FEATURE_VERSION,
 ) -> dict[str, Any]:
+    """``feature_version`` names the features the run used (STRUCTURE_FEATURE_VERSION
+    under SimulationPolicy.structure); a V0 row keeps its exact labels."""
     initial = run.initial_quote
+    if run.gated:
+        strategy = f"gated grid ({feature_version})"
+    elif feature_version == FEATURE_VERSION:
+        strategy = "ungated grid baseline"
+    else:
+        strategy = f"ungated grid baseline ({feature_version})"
     return {
         "symbol": run.symbol,
         "path_mode": run.path_mode,
-        "strategy": "gated grid (price-only-v1)" if run.gated else "ungated grid baseline",
-        "feature_version": FEATURE_VERSION,
+        "strategy": strategy,
+        "feature_version": feature_version,
         "engine_version": ENGINE_VERSION,
         "news_component": "ABSENT (news_risk fixed at 0; no historical source)",
         "window": [utc_iso(metrics.first_bar_ms), utc_iso(metrics.last_bar_ms)],

@@ -14,8 +14,18 @@ on:
           - practice-2022
           - verify-2024h1
           - full-range-2019-2024
-      variant_a:
-        description: "Run Variant A (daily SMA50/SMA200 trend switch) — requires daily_warmup_start in spec"
+      variant:
+        description: "Spec v1 variant: V0 (baseline), A (daily trend switch; needs daily_warmup_start), B (40% inventory cap) or C (A and B)"
+        required: false
+        default: "V0"
+        type: choice
+        options:
+          - "V0"
+          - "A"
+          - "B"
+          - "C"
+      structure:
+        description: "Enable the V2 market-structure features (off in V0; results labelled +structure-v1)"
         required: false
         default: "false"
         type: choice
@@ -45,18 +55,31 @@ jobs:
       - run: python -m pip install -e . --no-deps
 
       - name: Fetch data
+        env:
+          SPEC: ${{ github.event.inputs.spec }}
         run: |
           python -m crypto_grid_bot.backtest fetch \
-            --spec config/datasets/${{ github.event.inputs.spec }}.toml \
+            --spec "config/datasets/$SPEC.toml" \
             --data-dir data
 
+      # run_nopool.py is the CLI's run with --jobs 1: it verifies the dataset and runs
+      # the integrity cross-checks before any replay, and takes the fees from the spec.
       - name: Run backtest
+        env:
+          SPEC: ${{ github.event.inputs.spec }}
+          VARIANT: ${{ github.event.inputs.variant }}
+          STRUCTURE: ${{ github.event.inputs.structure }}
         run: |
-          ARGS="${{ github.event.inputs.spec }}"
-          if [ "${{ github.event.inputs.variant_a }}" = "true" ]; then
-            ARGS="$ARGS --variant-a"
+          set -- "$SPEC"
+          case "$VARIANT" in
+            A) set -- "$@" --variant-a ;;
+            B) set -- "$@" --variant-b ;;
+            C) set -- "$@" --variant-c ;;
+          esac
+          if [ "$STRUCTURE" = "true" ]; then
+            set -- "$@" --structure
           fi
-          python scripts/run_nopool.py $ARGS
+          python scripts/run_nopool.py "$@"
 
       - name: Upload results
         uses: actions/upload-artifact@v4

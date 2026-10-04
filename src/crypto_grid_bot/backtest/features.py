@@ -4,6 +4,10 @@ Hypothesis ``price-only-v1`` (pre-registered; see docs/BACKTEST_METHOD.md). A de
 during the minute starting at ``m`` may only use hourly candles whose close time is
 before ``m``. Historical news is unavailable, so ``news_risk`` is 0 and every report
 marks the news component as ABSENT; that is not evidence that no news risk existed.
+
+The optional V2 structure features (``STRUCTURE_FEATURE_VERSION``, computed only when
+candles are supplied) follow the same rule for daily bars: a day counts once it has
+closed at or before ``m``.
 """
 
 from __future__ import annotations
@@ -21,11 +25,15 @@ from crypto_grid_bot.strategy.structure import (
 )
 
 FEATURE_VERSION = "price-only-v1"
+# Results from runs with the V2 structure features (SimulationPolicy.structure) say so.
+STRUCTURE_FEATURE_VERSION = FEATURE_VERSION + "+structure-v1"
 HOUR_MS = 3_600_000
+DAY_MS = 86_400_000
 BASELINE_HOURS = 720  # 30-day medians for volatility and liquidity baselines
 COVERAGE_HOURS = 168
 STALE_AFTER_MS = 2 * HOUR_MS  # latest completed candle older than this is stale
 MINIMUM_BREADTH_MARKETS = 5
+_STRUCTURE_HOURLY_WINDOW = 500  # hourly candles the V2 structure features read
 
 
 def _clamp(value: float) -> float:
@@ -231,9 +239,9 @@ class Inputs:
     minute_quote_volume: float  # 24h quote volume / 1440; depth is sized in replay
     fair_value: Decimal
     atr: Decimal
-    # From analyse_multi_timeframe(); 0.0 until structure data is wired in
+    # V2 only, from analyse_multi_timeframe(); 0.0 without structure candles
     structure_alignment: float = 0.0
-    # Nearest resistance zone above current price; None when structure unavailable
+    # V2 only: nearest resistance zone above fair value; None without structure candles
     fta_resistance: float | None = None
     # Flat or zero-volume history: ratios are undefined, so new entries are vetoed
     # (quality 0) while existing inventory keeps being marked and risk-managed.
@@ -279,13 +287,18 @@ class FeatureEngine:
         self._levels = levels
         self._edge_scale = 2 * minimum_cost_multiple - 1
         self._cost = round_trip_cost
-        # V2: raw candles for structure.py (needs OHLC; SeriesFeatures discards high/low)
-        self._hourly_candles: list[Kline] = list(hourly_candles) if hourly_candles else []
-        self._daily_bars: list[Kline] = list(daily_bars) if daily_bars else []
+        # V2 structure features, computed only when candles are supplied (the caller
+        # supplies them only under SimulationPolicy.structure). structure.py needs OHLC,
+        # which SeriesFeatures discards; the hourly candles are the pair's own, so index
+        # p of one is index p of the other.
+        self._hourly_views = [_KlineView.from_kline(k) for k in hourly_candles or ()]
+        self._daily_views = [_KlineView.from_kline(k) for k in daily_bars or ()]
+        self._daily_opens = [k.open_ms for k in self._daily_views]
+        self._structure = bool(self._hourly_views or self._daily_views)
         self._structure_params = StructureParams()
-        # Cache: avoid recomputing structure on every minute bar — only recompute when
-        # a new hourly candle closes (p changes). Stores (p, structure_alignment, fta).
-        self._structure_cache: tuple[int, float, float | None] | None = None
+        # Structure changes only when a pair candle or a daily bar completes, so it is
+        # cached by (p, completed daily bars): (key, structure_alignment, fta).
+        self._structure_cache: tuple[tuple[int, int], float, float | None] | None = None
         # (first minute, end minute, Inputs): the last result and the span it holds for.
         self._cached: tuple[int, int, Inputs | None] = (0, 0, None)
 
@@ -295,8 +308,8 @@ class FeatureEngine:
         The Inputs depend on the minute only through the hour and each series' latest
         completed candle and staleness, so one result is reused, as the same object,
         until any of them can change (``_stable_until``). The structure features read
-        only the pair's latest completed candle and the daily bars, which are the same
-        for the whole run, so the pair's bound covers them too.
+        only the pair's completed candles and the completed daily bars, so they are
+        bounded by the pair and by the next daily close.
         """
         start, until, cached = self._cached
         if start <= minute_ms < until:
@@ -314,7 +327,14 @@ class FeatureEngine:
         until = (minute_ms // HOUR_MS + 1) * HOUR_MS
         for series in (self.pair, self.market, *self.basket):
             until = series.stable_until(minute_ms, until)
+        following = self._completed_days(minute_ms)
+        if following < len(self._daily_opens):
+            until = min(until, self._daily_opens[following] + DAY_MS)  # that day closes
         return until
+
+    def _completed_days(self, minute_ms: int) -> int:
+        """How many daily bars closed at or before ``minute_ms`` (TrendSchedule's rule)."""
+        return bisect_right(self._daily_opens, minute_ms - DAY_MS)
 
     def _ready(self, minute_ms: int) -> tuple[int, int] | None:
         """The pair's and the market's latest completed indices, once both are warmed up."""
@@ -355,41 +375,9 @@ class FeatureEngine:
         spacing = (upper / lower) ** (1 / (self._levels - 1)) - 1 if lower > 0 else 0.0
         pair_volume = _at(pair.qv24, p)
 
-        # V2: multi-timeframe structure alignment — cached per completed hourly candle.
-        # Structure only changes when a new hourly bar closes (once per hour), so we
-        # skip the O(n) swing detection on the other ~59 minute bars within each hour.
-        if self._structure_cache is not None and self._structure_cache[0] == p:
-            _, structure_alignment, fta_resistance = self._structure_cache
-        else:
-            # Cap hourly window: swing detection only needs recent bars. Using the full
-            # growing history is O(n²) over the dataset. 500h (~3 weeks) is enough to
-            # detect swings and zones; older bars have negligible structural weight.
-            _STRUCTURE_HOURLY_WINDOW = 500
-            hourly_candles = (
-                [
-                    _KlineView.from_kline(k)
-                    for k in self._hourly_candles[max(0, p + 1 - _STRUCTURE_HOURLY_WINDOW) : p + 1]
-                ]
-                if self._hourly_candles
-                else None
-            )
-            daily_candles = (
-                [_KlineView.from_kline(k) for k in self._daily_bars] if self._daily_bars else None
-            )
-            mtf = analyse_multi_timeframe(
-                hourly_bars=hourly_candles,
-                daily_bars=daily_candles,
-                weekly_bars=None,  # weekly not yet loaded
-                current_price=float(fair),
-                params=self._structure_params,
-            )
-            structure_alignment = mtf.alignment
-            fta_resistance = None
-            if daily_candles and mtf.daily and mtf.daily.fta.resistance:
-                fta_resistance = mtf.daily.fta.resistance.price
-            elif mtf.hourly and mtf.hourly.fta.resistance:
-                fta_resistance = mtf.hourly.fta.resistance.price
-            self._structure_cache = (p, structure_alignment, fta_resistance)
+        structure_alignment, fta_resistance = (
+            self._structure_features(p, minute_ms, float(fair)) if self._structure else (0.0, None)
+        )
 
         return Inputs(
             hour_open_ms=pair.opens[p],
@@ -412,3 +400,34 @@ class FeatureEngine:
             structure_alignment=structure_alignment,
             fta_resistance=fta_resistance,
         )
+
+    def _structure_features(
+        self, p: int, minute_ms: int, fair: float
+    ) -> tuple[float, float | None]:
+        """V2 multi-timeframe alignment and FTA from completed candles only.
+
+        Swing detection is O(n), so the result is cached until a pair candle or a daily
+        bar completes. ``fair`` depends only on ``p``, so the key covers it.
+        """
+        days = self._completed_days(minute_ms)
+        cache = self._structure_cache
+        if cache is not None and cache[0] == (p, days):
+            return cache[1], cache[2]
+        # Swing detection only needs recent bars: the full growing history would be
+        # O(n^2) over the dataset. 500 hours (~3 weeks) is enough for swings and zones.
+        hourly = self._hourly_views[max(0, p + 1 - _STRUCTURE_HOURLY_WINDOW) : p + 1]
+        daily = self._daily_views[:days]
+        mtf = analyse_multi_timeframe(
+            hourly_bars=hourly or None,
+            daily_bars=daily or None,
+            weekly_bars=None,  # weekly not yet loaded
+            current_price=fair,
+            params=self._structure_params,
+        )
+        fta_resistance = None
+        if daily and mtf.daily and mtf.daily.fta.resistance:
+            fta_resistance = mtf.daily.fta.resistance.price
+        elif mtf.hourly and mtf.hourly.fta.resistance:
+            fta_resistance = mtf.hourly.fta.resistance.price
+        self._structure_cache = ((p, days), mtf.alignment, fta_resistance)
+        return mtf.alignment, fta_resistance

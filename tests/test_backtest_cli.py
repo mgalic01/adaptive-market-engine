@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from decimal import Decimal
@@ -10,7 +11,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from crypto_grid_bot.backtest import __main__ as cli
+from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE_VERSION
 from crypto_grid_bot.market_data.parsing import DataError
+from crypto_grid_bot.simulation.runner import SimulationPolicy
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+import run_nopool  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = str(ROOT / "config/datasets/verify-2024h1.toml")
@@ -82,10 +89,13 @@ class CliIntegrityTests(unittest.TestCase):
         self.replays = []
         self.fees = []
         self.strict = []
+        self.policies = []
+        self.verified = []
         patches = [
             patch.object(cli, "ProcessPoolExecutor", Inline),
             patch.object(cli, "load_manifest", lambda path: {"created_at": "t"}),
-            patch.object(cli, "verify_dataset", lambda *a: None),
+            patch.object(cli, "verify_dataset", lambda *a: self.verified.append(a)),
+            patch.object(cli, "code_commit", lambda: "0123abc"),
             patch.object(cli, "_identity", lambda *a: {}),
             patch.object(cli, "cross_check_job", self.fake_check),
             patch.object(cli, "run_job", self.fake_run),
@@ -101,6 +111,7 @@ class CliIntegrityTests(unittest.TestCase):
     def fake_run(self, spec, config, data_dir, symbol, mode, gated, fees=None, policy=None):
         self.replays.append(symbol)
         self.fees.append(fees)
+        self.policies.append(policy)
         return {**good_result(symbol, mode, gated), **self.result_patch}
 
     def main(self, command, *extra):
@@ -141,6 +152,86 @@ class CliIntegrityTests(unittest.TestCase):
         self.assertEqual(
             {"version": "strict-v0", "volume_drift_tolerance": "0"},
             documents["0.0005-t0.0005"]["integrity_rules"],
+        )
+
+    def documents(self):
+        return {
+            p.parent.name.split("-m0.001-t0.001")[-1]: json.loads(p.read_text())
+            for p in Path(self.temp.name).rglob("results.json")
+        }
+
+    def test_v0_records_no_policy_and_no_commit_unless_asked(self):
+        self.assertEqual(0, self.main("run"))
+        self.assertEqual({None}, set(self.policies))
+        (v0,) = self.documents().values()
+        self.assertEqual(FEATURE_VERSION, v0["feature_version"])
+        self.assertFalse({"policy", "code_commit"} & set(v0))
+        # --record-commit adds the commit alone; the run is still V0.
+        for written in Path(self.temp.name).rglob("results.json"):
+            written.unlink()
+        self.assertEqual(0, self.main("run", "--record-commit"))
+        self.assertEqual({None}, set(self.policies))
+        (recorded,) = self.documents().values()
+        self.assertEqual(
+            {"code_commit": "0123abc"}, {k: recorded[k] for k in set(recorded) - set(v0)}
+        )
+
+    def test_variant_and_structure_flags_reach_every_replay_and_are_recorded(self):
+        cap = Decimal("0.40")
+        cases = {
+            ("--variant-a",): ("-variant-A", SimulationPolicy(trend_switch=True)),
+            ("--variant-b",): ("-variant-B", SimulationPolicy(inventory_cap=cap)),
+            ("--variant-c",): (
+                "-variant-C",
+                SimulationPolicy(trend_switch=True, inventory_cap=cap),
+            ),
+            ("--structure",): ("-structure", SimulationPolicy(structure=True)),
+            ("--variant-b", "--structure"): (
+                "-variant-B-structure",
+                SimulationPolicy(inventory_cap=cap, structure=True),
+            ),
+        }
+        for flags, (suffix, policy) in cases.items():
+            with self.subTest(flags=flags):
+                self.policies.clear()
+                self.assertEqual(0, self.main("run", *flags))
+                self.assertEqual({policy}, set(self.policies))
+                document = self.documents()[suffix]
+                self.assertEqual(
+                    json.loads(json.dumps(policy.identity(), default=str)), document["policy"]
+                )
+                self.assertEqual("0123abc", document["code_commit"])
+                structure = "--structure" in flags
+                version = STRUCTURE_FEATURE_VERSION if structure else FEATURE_VERSION
+                self.assertEqual(version, document["feature_version"])
+
+    def test_only_one_variant_at_a_time(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.main("run", "--variant-a", "--variant-b")
+
+    def test_one_job_runs_every_check_in_this_process(self):
+        # run_nopool.py is the CLI with --jobs 1: no pool, and the dataset is verified
+        # and cross-checked before any replay, exactly as with a pool.
+        with patch.object(cli, "ProcessPoolExecutor", None):
+            self.assertEqual(0, self.main("run", "--jobs", "1"))
+            self.assertTrue(self.verified)
+            self.assertTrue(self.strict)  # the cross-checks ran
+            self.assertTrue(self.replays)
+            self.checks = {**CLEAN, "hours_missing": 1}
+            self.replays.clear()
+            self.assertEqual(2, self.main("run", "--jobs", "1"))
+            self.assertEqual([], self.replays)
+
+    def test_run_nopool_is_the_cli_run_with_one_job(self):
+        spec = ["--spec", "config/datasets/long-bull-bear-2022.toml"]
+        self.assertEqual(
+            ["run", *spec, "--variant-a", "--structure", "--jobs", "1"],
+            run_nopool.cli_args(["long-bull-bear-2022", "--variant-a", "--structure"]),
+        )
+        default = ["run", "--spec", "config/datasets/long-recovery-2023-2024.toml"]
+        self.assertEqual([*default, "--jobs", "1"], run_nopool.cli_args([]))
+        self.assertEqual(
+            [*default, "--variant-b", "--jobs", "1"], run_nopool.cli_args(["--variant-b"])
         )
 
     def test_out_of_range_fee_override_is_rejected(self):
