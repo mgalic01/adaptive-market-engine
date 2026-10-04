@@ -71,7 +71,12 @@ GRID_BUDGET_FRACTION = D("0.8")
 # account carries the halt's start and category, the episode and the C1(b) reference.
 # Schema 1-5 databases are refused: their halts were final and their state lacks these
 # fields.
-SCHEMA = 6
+# 7 (2026-10-04, strategy audit #160): V2 market structure is a policy flag, off by
+# default. Code between #150/#151 and this change ran every account with structure on
+# (the six-signal regime vote and the FTA cap) under the same schema-6 identity as the
+# V0 accounts before it, so a schema-6 database cannot say which semantics produced
+# its history; it is refused rather than reopened under either (Codex review of #160).
+SCHEMA = 7
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"

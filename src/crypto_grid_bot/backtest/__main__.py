@@ -278,6 +278,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     jobs = max(1, min(args.jobs, 8))
     policy = variant_policy(args.variant, structure=args.structure)
+    # Taken before anything runs: the code imported now is the code that runs, even if
+    # the checkout changes during a long run (Codex review of #160).
+    commit = code_commit() if policy is not None or args.record_commit else None
     executor = InProcess() if jobs == 1 else ProcessPoolExecutor(max_workers=jobs)
     with executor as pool:
         # Chronology is settled before any replay starts; invalid data never replays.
@@ -351,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
         # Present only for a variant or structure run (or --record-commit), so a V0
         # results.json keeps its exact layout.
         **({"policy": policy.identity()} if policy is not None else {}),
-        **({"code_commit": code_commit()} if policy is not None or args.record_commit else {}),
+        **({"code_commit": commit} if commit is not None else {}),
         # Invalid results are kept for diagnosis but are never performance evidence.
         "valid": not failures,
         "failures": failures,

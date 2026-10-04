@@ -206,6 +206,18 @@ class CliIntegrityTests(unittest.TestCase):
                 version = STRUCTURE_FEATURE_VERSION if structure else FEATURE_VERSION
                 self.assertEqual(version, document["feature_version"])
 
+    def test_the_commit_is_taken_before_any_check_or_replay(self):
+        # Codex review of #160: a commit read after the run could name other code.
+        seen = []
+
+        def commit():
+            seen.append((len(self.strict), len(self.replays)))
+            return "0123abc"
+
+        with patch.object(cli, "code_commit", commit):
+            self.assertEqual(0, self.main("run", "--variant-a"))
+        self.assertEqual([(0, 0)], seen)
+
     def test_only_one_variant_at_a_time(self):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             self.main("run", "--variant-a", "--variant-b")
