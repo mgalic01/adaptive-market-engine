@@ -58,6 +58,8 @@ from crypto_grid_bot.strategy.opportunity import OpportunityScorer
 from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
 
 DEFAULT_CAPITAL = D("100")
+# The share of unprotected quote a new grid may commit; the rest absorbs fees and rounding.
+GRID_BUDGET_FRACTION = D("0.8")
 # 5 (2026-09-27, engine "exit-residue-v1"): a residue the exchange filters forbid
 # selling no longer blocks settlement or a new grid, and a validation halt holding
 # inventory arms liquidation. A schema-4 database was written under the old lifecycle,
@@ -215,6 +217,9 @@ class PaperSimulator:
             reserve_fraction=D(str(config.reserve_fraction)),
             minimum_transfer_quote=D(str(config.minimum_transfer_quote)),
         )
+        # Config floats as the exact Decimals the per-frame and per-level checks use.
+        self._maximum_spread_pct = D(str(config.maximum_spread_pct))
+        self._minimum_grid_cost_multiple = D(str(config.minimum_grid_cost_multiple))
 
     def close(self) -> None:
         self.store.close()
@@ -228,7 +233,10 @@ class PaperSimulator:
         """Advance an in-memory account by one frame, without the event journal.
 
         Historical replay only: the same decision logic, Decimal context and final
-        invariant check as ``process``, but nothing is persisted or deduplicated.
+        invariant check as ``process``, but nothing is persisted or deduplicated. That
+        final check is the frame's one full account validation (the execution calls
+        inside the step skip theirs, see ``execution``); the account arrives validated
+        by the previous step or by the store's read.
         """
         with localcontext() as context:
             context.prec = 50
@@ -307,13 +315,7 @@ class PaperSimulator:
     def _risk_action(self, account: Account, quote: Quote, emergency: bool) -> RiskAction:
         equity = account.equity(quote, self.rules)
         result = self.risk.evaluate(
-            PortfolioSnapshot(
-                float(equity),
-                float(account.day_start),
-                float(account.risk_high),
-                0,
-                emergency=emergency,
-            )
+            PortfolioSnapshot(equity, account.day_start, account.risk_high, 0, emergency=emergency)
         )
         if self.risk_observer is not None:
             self.risk_observer(equity, account.risk_high, account.measure_high, result)
@@ -342,9 +344,7 @@ class PaperSimulator:
         the observer does not see it and the account is untouched."""
         equity = account.equity(quote, self.rules)
         result = self.risk.evaluate(
-            PortfolioSnapshot(
-                float(equity), float(account.day_start), float(equity), 0, emergency=emergency
-            )
+            PortfolioSnapshot(equity, account.day_start, equity, 0, emergency=emergency)
         )
         return result.action == RiskAction.ALLOW
 
@@ -372,6 +372,21 @@ class PaperSimulator:
             }
             account.risk_high = account.last_equity
             account.episode_since, account.episode_count = "", 0
+
+    def _clear_halt(self, account: Account, reason: str) -> None:
+        """End the halt of a flat account with no orders and pause it for confirmed
+        eligible data: the one place an automatic restart and a manual ``resume()``
+        clear state, so the two cannot drift apart (spec v1 amendment 1)."""
+        account.halt, account.liquidating = "", False
+        account.halt_since, account.halt_category = "", ""
+        # _halt already closed any episode; cleared here as well so both paths match.
+        account.episode_since, account.episode_count = "", 0
+        # Flat with no orders: no grid remains, so clear its bounds and range timers.
+        account.range_exit, account.range_exit_since = False, ""
+        account.grid_lower = account.grid_upper = ZERO
+        account.outside_seconds, account.outside_last = ZERO, ""
+        account.down_since = ""  # a flat account has ended any variant A sequence
+        self._pause(account, reason)
 
     def _restart(
         self, account: Account, frame: Frame, eligible: bool, report: dict[str, Any]
@@ -406,14 +421,8 @@ class PaperSimulator:
             "old_reference": account.risk_high,
             "new_reference": reference,
         }
-        account.halt, account.liquidating = "", False
-        account.halt_since, account.halt_category = "", ""
-        account.range_exit, account.range_exit_since = False, ""
-        account.grid_lower = account.grid_upper = ZERO
-        account.outside_seconds, account.outside_last = ZERO, ""
-        account.down_since = ""  # a flat account has ended any variant A sequence
         account.risk_high = reference
-        self._pause(account, RESTART_PAUSE)
+        self._clear_halt(account, RESTART_PAUSE)
         return True
 
     def _validate_frame(self, account: Account, frame: Frame) -> None:
@@ -431,7 +440,7 @@ class PaperSimulator:
         if account.last_received and received < timestamp(account.last_received):
             raise TransientFrame("receive clock moved backwards")
         actual_spread_pct = (quote.ask - quote.bid) / quote.ask * 100
-        if actual_spread_pct > D(str(self.config.maximum_spread_pct)):
+        if actual_spread_pct > self._maximum_spread_pct:
             raise TransientFrame("observed spread exceeds the eligibility limit")
         nonnegative(frame.fair_value)
         nonnegative(frame.atr)
@@ -500,6 +509,9 @@ class PaperSimulator:
         }
         previous_orders = set(account.orders)
         capped: list[dict[str, Any]] = []
+        if self.policy.inventory_cap is not None:
+            # On every frame of a capped run, rejected frames included.
+            report["capped"] = capped
         restarted = False
         try:
             self._validate_frame(account, frame)
@@ -552,7 +564,9 @@ class PaperSimulator:
         trend = self._apply_trend(account, frame) if self.policy.trend_switch else None
         if account.halt:
             if account.liquidating:
-                self._record_exit(report, liquidate(account, quote, self.rules), "liquidation")
+                self._record_exit(
+                    report, liquidate(account, quote, self.rules, check=False), "liquidation"
+                )
             # Preconditions read after the liquidation attempt, so a restart can happen
             # on the frame that completes it. Its settlement and any new grid follow on
             # the next frame, exactly as after a manual resume.
@@ -560,7 +574,9 @@ class PaperSimulator:
             if account.halt:
                 report.update(decision="halt", reason=account.halt)
         elif account.range_exit:
-            self._record_exit(report, liquidate(account, quote, self.rules), "range_exit")
+            self._record_exit(
+                report, liquidate(account, quote, self.rules, check=False), "range_exit"
+            )
             back_inside = account.grid_lower <= quote.bid <= account.grid_upper
             cooled = (
                 self.policy.recenter_after_exit
@@ -607,6 +623,7 @@ class PaperSimulator:
             )
             if trend_due:
                 account.orders.clear()
+            refused: list[dict[str, Any]] = []
             report["fills"] = [
                 asdict(fill)
                 for fill in match(
@@ -626,8 +643,14 @@ class PaperSimulator:
                             account, quote, capped, order_id, price, quantity
                         )
                     ),
+                    refused=refused,
+                    check=False,
                 )
             ]
+            if refused:
+                # A reentry buy the balance or minimum-notional check declined: that level
+                # has left the grid, which the journal must show.
+                report["reentry_refused"] = refused
             # Unpaired inventory: neither reserved by a resting sell nor the filled part
             # of a buy still resting, whose own sell will pair it once it fills. Cancelled
             # partial buys leave it, and so does a residue a harvest tolerated. Exit it
@@ -642,7 +665,12 @@ class PaperSimulator:
                 self._record_exit(
                     report,
                     reduce_unreserved(
-                        account, quote, self.rules, consumed=consumed, maximum=unpaired
+                        account,
+                        quote,
+                        self.rules,
+                        consumed=consumed,
+                        maximum=unpaired,
+                        check=False,
                     ),
                     # Same-step labelling (spec v1, section 3 A): drain outranks trend_exit.
                     "drain" if account.draining or not trend_due else "trend_exit",
@@ -655,50 +683,11 @@ class PaperSimulator:
         # stricter gate: a partly filled buy's inventory blocks the harvest until its own
         # child sell has paired it. See _resolved.
         if not account.halt and not restarted and self._resolved(account, quote):
-            # A flat account is a safe harvest point even with unused deeper buys.
-            # Do this only after sells, draining, or when all orders are already gone.
-            sold = any(fill["side"] == "sell" for fill in report["fills"])
-            if sold or account.draining or not account.orders:
-                self._cancel_buys(account)
-                if account.cash - account.pending <= ZERO:
-                    # Arm the exit for any residue, as the other halt sites do, so the
-                    # stuck inventory is reported from the next frame rather than only
-                    # once the risk engine re-halts a frame later.
-                    self._halt(
-                        account,
-                        "active capital exhausted",
-                        category=EXHAUSTION,
-                        observed=quote.observed_at,
-                        exit_requested=account.inventory != ZERO,
-                    )
-                else:
-                    report["allocation"] = self._settle(account, quote)
-                    account.draining = False
-                    if (
-                        not account.pause
-                        and not account.range_exit
-                        and frame.allow_new_grid
-                        and trend is not None
-                        and (trend != UP or account.down_since)
-                    ):
-                        # Variant A: a new grid needs Up and no running Down sequence.
-                        report.update(
-                            decision="cash",
-                            reason=f"trend switch: {trend}"
-                            + ("; Down sequence running" if account.down_since else ""),
-                        )
-                    elif not account.pause and not account.range_exit and frame.allow_new_grid:
-                        try:
-                            report["opened"] = self._open_grid(account, frame, capped, regime)
-                            report["decision"] = "open_grid"
-                        except GridNotViable as exc:
-                            report.update(decision="cash", reason=str(exc))
+            self._harvest(account, frame, report, capped, trend, regime)
         if account.halt:
             report.update(decision="halt", reason=account.halt)
         elif account.pause:
             report.update(decision="pause", reason=account.pause)
-        if self.policy.inventory_cap is not None:
-            report["capped"] = capped
         if trend is not None:
             # The sequence ends once nothing sellable is left: flat, or holding only a
             # residue the market filters forbid selling (PR #122's rule; waiting for
@@ -719,9 +708,10 @@ class PaperSimulator:
                 "day": frame.trend.day if frame.trend is not None else None,
                 "down_since": account.down_since or None,
             }
-        report["cancelled"] = sorted(
-            previous_orders - account.orders.keys() - {fill["order_id"] for fill in report["fills"]}
-        )
+        # An order is cancelled if it left the book without completing, so one that
+        # filled in part and was then cancelled on this frame is listed too.
+        completed = {fill["order_id"] for fill in report["fills"] if fill["remaining"] == ZERO}
+        report["cancelled"] = sorted(previous_orders - account.orders.keys() - completed)
         self._mark(account, quote, self.rules)
         report.update(
             active_equity=account.last_equity,
@@ -743,6 +733,59 @@ class PaperSimulator:
             unreserved_inventory=account.inventory - account.reserved_base(),
         )
         return report
+
+    def _harvest(
+        self,
+        account: Account,
+        frame: Frame,
+        report: dict[str, Any],
+        capped: list[dict[str, Any]],
+        trend: str | None,
+        regime: RegimeAssessment,
+    ) -> None:
+        """Harvest an account with nothing sellable left: cancel its unused buys, then
+        halt on exhausted capital, or settle profit and open the next grid unless a
+        pause, a range exit, the frame or variant A forbids one.
+
+        Ordering: the caller runs this after the frame's fills and their risk recheck,
+        only on a frame neither halted nor just restarted, and only once ``_resolved``
+        holds; variant A's end-of-sequence bookkeeping follows it."""
+        quote = frame.quote
+        # A flat account is a safe harvest point even with unused deeper buys.
+        # Do this only after sells, draining, or when all orders are already gone.
+        sold = any(fill["side"] == "sell" for fill in report["fills"])
+        if not (sold or account.draining or not account.orders):
+            return
+        self._cancel_buys(account)
+        if account.cash - account.pending <= ZERO:
+            # Arm the exit for any residue, as the other halt sites do, so the stuck
+            # inventory is reported from the next frame rather than only once the risk
+            # engine re-halts a frame later.
+            self._halt(
+                account,
+                "active capital exhausted",
+                category=EXHAUSTION,
+                observed=quote.observed_at,
+                exit_requested=account.inventory != ZERO,
+            )
+            return
+        report["allocation"] = self._settle(account, quote)
+        account.draining = False
+        if account.pause or account.range_exit or not frame.allow_new_grid:
+            return
+        if trend is not None and (trend != UP or account.down_since):
+            # Variant A: a new grid needs Up and no running Down sequence.
+            report.update(
+                decision="cash",
+                reason=f"trend switch: {trend}"
+                + ("; Down sequence running" if account.down_since else ""),
+            )
+            return
+        try:
+            report["opened"] = self._open_grid(account, frame, capped, regime)
+            report["decision"] = "open_grid"
+        except GridNotViable as exc:
+            report.update(decision="cash", reason=str(exc))
 
     def resume(self, frame: Frame, *, event_id: str, reason: str) -> dict[str, Any]:
         """Audited paper-only control; never erase losses or place/fill orders."""
@@ -783,16 +826,7 @@ class PaperSimulator:
                     "cleared and every other limit passes"
                 )
             previous_halt = account.halt
-            account.halt = ""
-            account.halt_since, account.halt_category = "", ""
-            account.episode_since, account.episode_count = "", 0
-            account.liquidating = False
-            # Flat with no orders: no grid remains, so clear its bounds and range timers.
-            account.range_exit, account.range_exit_since = False, ""
-            account.grid_lower = account.grid_upper = ZERO
-            account.outside_seconds, account.outside_last = ZERO, ""
-            account.down_since = ""  # a flat account has ended any variant A sequence
-            self._pause(account, "operator resume: awaiting confirmed eligible data")
+            self._clear_halt(account, "operator resume: awaiting confirmed eligible data")
             account.last_observed = frame.quote.observed_at
             account.last_received = frame.quote.received_at
             self._mark(account, frame.quote, self.rules)
@@ -913,7 +947,7 @@ class PaperSimulator:
         rules, quote = self.rules, frame.quote
         spread = (quote.ask - quote.bid) / quote.ask
         cost = 2 * (rules.fee_rate + rules.slippage_rate) + spread
-        budget = account.available_quote(rules) * D("0.8")
+        budget = account.available_quote(rules) * GRID_BUDGET_FRACTION
         # FTA resistance cap only applies in a ranging market. In trending markets
         # (BULL/BEAR) resistance zones cluster everywhere and the cap compresses all
         # sell levels to one price, preventing cycle completion. See backtest comparison
@@ -928,7 +962,6 @@ class PaperSimulator:
             capital=float(budget),
             min_notional=float(rules.minimum_notional * (ONE + rules.fee_rate)),
             round_trip_cost_pct=float(cost * 100),
-            capital_utilization=1,
             fta_resistance=fta,
         )
         levels = tuple(floor_step(D(str(level)), rules.tick_size) for level in plan.levels)
@@ -945,7 +978,7 @@ class PaperSimulator:
             quantity = floor_step(per_order / (low * (ONE + rules.fee_rate)), rules.quantity_step)
             if low * quantity < rules.minimum_notional:
                 raise GridNotViable("rounded quantity cannot satisfy minimum notional")
-            if (high - low) / low < cost * D(str(self.config.minimum_grid_cost_multiple)):
+            if (high - low) / low < cost * self._minimum_grid_cost_multiple:
                 raise GridNotViable("rounded spacing cannot cover conservative costs")
             orders.append(
                 LimitOrder(
@@ -960,7 +993,7 @@ class PaperSimulator:
             )
         if self.policy.inventory_cap is None:
             for order in orders:
-                place(account, order, rules)
+                place(account, order, rules, check=False)
         else:
             orders = self._place_capped(account, quote, orders, capped)
         account.grid_lower, account.grid_upper = levels[0], levels[-1]
@@ -985,7 +1018,7 @@ class PaperSimulator:
             quantity = self._cap(account, quote, capped, order.order_id, order.price, requested)
             if quantity:
                 order.quantity = order.remaining = quantity
-                place(account, order, self.rules)
+                place(account, order, self.rules, check=False)
                 placed.append(order)
             if quantity != requested:
                 capped.extend(

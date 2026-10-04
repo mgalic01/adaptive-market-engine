@@ -1,6 +1,13 @@
 """Conservative limit fills with shared volume budgets and quote-denominated fees.
 
 Resting limit fills pay the maker fee; marketable exits pay the taker fee.
+
+Each entry point validates the quote and the whole account first by default. The paper
+engine passes ``check=False``: it validates the frame's quote first thing in its step
+and the whole account at every frame boundary (``PaperSimulator.step``, and
+``StateStore.transact`` before saving and on every read), so the per-call checks would
+only repeat work on a state validated moments before. ``place``'s checks of the new
+order itself always run.
 """
 
 from __future__ import annotations
@@ -8,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Any
 
 from crypto_grid_bot.simulation.models import (
     ONE,
@@ -19,11 +27,13 @@ from crypto_grid_bot.simulation.models import (
     Quote,
     floor_step,
     nonnegative,
+    validate_grid_links,
 )
 
 
-def place(account: Account, order: LimitOrder, rules: MarketRules) -> None:
-    account.validate(rules)
+def place(account: Account, order: LimitOrder, rules: MarketRules, *, check: bool = True) -> None:
+    if check:
+        account.validate(rules)
     if order.order_id in account.orders or not order.order_id:
         raise ValueError("order ID must be unique")
     if order.side not in ("buy", "sell"):
@@ -38,18 +48,7 @@ def place(account: Account, order: LimitOrder, rules: MarketRules) -> None:
         raise ValueError("price or quantity violates market precision")
     if order.price * order.quantity < rules.minimum_notional:
         raise ValueError("order is below minimum notional")
-    if order.target is not None:
-        nonnegative(order.target)
-        if order.side != "buy" or order.target <= order.price or order.target % rules.tick_size:
-            raise ValueError("invalid grid sell target")
-    if order.reentry is not None:
-        nonnegative(order.reentry)
-        if (
-            order.side != "sell"
-            or not ZERO < order.reentry < order.price
-            or order.reentry % rules.tick_size
-        ):
-            raise ValueError("invalid grid reentry level")
+    validate_grid_links(order, rules, "grid")
     if order.side == "buy":
         required = order.price * order.quantity * (ONE + rules.fee_rate)
         if required > account.available_quote(rules):
@@ -57,12 +56,6 @@ def place(account: Account, order: LimitOrder, rules: MarketRules) -> None:
     elif order.quantity > account.inventory - account.reserved_base():
         raise ValueError("insufficient unreserved inventory")
     account.orders[order.order_id] = order
-
-
-def cancel(account: Account, order_id: str) -> None:
-    if order_id not in account.orders:
-        raise ValueError("unknown order")
-    del account.orders[order_id]
 
 
 def _apply_fill(
@@ -79,7 +72,7 @@ def _apply_fill(
     account.fees += fee
     account.fill_count += 1
     order.remaining -= quantity
-    return Fill(order.order_id, order.side, price, quantity, fee)
+    return Fill(order.order_id, order.side, price, quantity, fee, order.remaining)
 
 
 def match(
@@ -90,6 +83,8 @@ def match(
     recycle: bool = True,
     epoch: str | None = None,
     reentry_quantity: Callable[[str, Decimal, Decimal], Decimal] | None = None,
+    refused: list[dict[str, Any]] | None = None,
+    check: bool = True,
 ) -> list[Fill]:
     """Orders present before this quote only; child orders wait for a later event.
 
@@ -104,9 +99,13 @@ def match(
 
     ``reentry_quantity`` (order ID, price, quantity) may shrink a reentry buy when it
     is created; ZERO skips it. Unset, every reentry keeps the sold quantity.
+
+    ``refused`` receives a record of each reentry buy that the affordability or the
+    minimum-notional check declines, so a level that leaves the grid stays visible.
     """
-    quote.validate(rules)
-    account.validate(rules)
+    if check:
+        quote.validate(rules)
+        account.validate(rules)
     capacities = {
         "buy": floor_step(quote.ask_size * rules.participation, rules.quantity_step),
         "sell": floor_step(quote.bid_size * rules.participation, rules.quantity_step),
@@ -143,6 +142,7 @@ def match(
                         epoch=epoch,
                     ),
                     rules,
+                    check=check,
                 )
             elif order.side == "sell" and order.reentry is not None and recycle:
                 reentry_id = f"{quote.event_id}/reentry/{account.fill_count}"
@@ -161,12 +161,24 @@ def match(
                     epoch=epoch,
                 )
                 cost = reentry.price * reentry.quantity * (ONE + rules.fee_rate)
-                if (
-                    cost <= account.available_quote(rules)
-                    and reentry.price * reentry.quantity >= rules.minimum_notional
-                ):
-                    place(account, reentry, rules)
-    account.validate(rules)
+                if cost > account.available_quote(rules):
+                    reason = "insufficient unprotected quote balance including fees"
+                elif reentry.price * reentry.quantity < rules.minimum_notional:
+                    reason = "order is below minimum notional"
+                else:
+                    place(account, reentry, rules, check=check)
+                    continue
+                if refused is not None:
+                    refused.append(
+                        {
+                            "order_id": reentry_id,
+                            "price": reentry.price,
+                            "quantity": reentry.quantity,
+                            "reason": reason,
+                        }
+                    )
+    if check:
+        account.validate(rules)
     return fills
 
 
@@ -243,6 +255,7 @@ def reduce_unreserved(
     *,
     consumed: Decimal = ZERO,
     maximum: Decimal | None = None,
+    check: bool = True,
 ) -> Reduction:
     """Exit residual inventory without spending liquidity used by existing sells.
 
@@ -250,8 +263,9 @@ def reduce_unreserved(
     below the minimum notional, so such an exit is refused rather than forced; the
     refusal is returned (see ``Reduction``) and never swallowed.
     """
-    quote.validate(rules)
-    account.validate(rules)
+    if check:
+        quote.validate(rules)
+        account.validate(rules)
     nonnegative(consumed)
     if maximum is not None and maximum <= ZERO:
         # A bound of zero or less would report a negative or empty target as "owed".
@@ -279,15 +293,18 @@ def reduce_unreserved(
         return outcome("dust" if price * sellable < rules.minimum_notional else "depth")
     order = LimitOrder("exit/" + quote.event_id, "sell", price, quantity, quantity)
     fill = _apply_fill(account, order, quantity, price, rules.taker_fee)
-    account.validate(rules)
+    if check:
+        account.validate(rules)
     return outcome("", [fill])
 
 
-def liquidate(account: Account, quote: Quote, rules: MarketRules) -> Reduction:
+def liquidate(
+    account: Account, quote: Quote, rules: MarketRules, *, check: bool = True
+) -> Reduction:
     """Bounded simulated emergency sell, after existing orders are cancelled."""
     if account.orders:
         raise ValueError("cancel resting orders before liquidation")
-    return reduce_unreserved(account, quote, rules)
+    return reduce_unreserved(account, quote, rules, check=check)
 
 
 def exit_state(account: Account, quote: Quote, rules: MarketRules) -> tuple[str, Decimal]:
