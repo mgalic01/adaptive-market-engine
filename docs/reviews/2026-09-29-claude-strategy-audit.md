@@ -661,8 +661,9 @@ by the resume command.
   `range_exit_since` are already clear in that state; a genuine exit keeps its band and
   its cooldown.
 - **Amendment 3.** The outside-range clock does nothing while the account is halted: it
-  neither advances nor resets, and `outside_last` keeps the last observation before the
-  halt, so the halted span is never counted. An exit already triggered is unaffected.
+  neither advances nor resets (only amendment 2 clears it, once the halted account is
+  flat), and `outside_last` keeps the last observation before the halt, so the halted
+  span is never counted. An exit already triggered is unaffected.
 - **A judgement call.** Amendment 3 also says the clock "resumes from where it stopped
   when the halt clears". No engine path can show it: a restart and a manual resume both
   need a flat account, whose clock amendment 2 and amendment 1's restart field list

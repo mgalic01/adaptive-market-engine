@@ -493,11 +493,12 @@ class PaperSimulator:
     def _track_range(self, account: Account, quote: Quote) -> None:
         """Accumulate observed outside-range time; call before updating last_observed.
 
-        Amendment 3 (owner decision 2026-10-02, D16): the clock neither advances nor
-        resets while the account is halted, whatever the category; a range exit already
-        triggered is not affected. ``outside_last`` keeps the last observation before
-        the halt, so the halted span is never counted: an interval counts only between
-        two consecutive valid observations."""
+        Amendment 3 (owner decision 2026-10-02, D16): while the account is halted,
+        whatever the category, nothing here advances or resets the clock (amendment 2
+        still clears it once the account is flat); a range exit already triggered is
+        not affected. ``outside_last`` keeps the last observation before the halt, so
+        the halted span is never counted: an interval counts only between two
+        consecutive valid observations."""
         if not account.grid_lower or account.range_exit or account.halt:
             return
         observed = quote.observed_at

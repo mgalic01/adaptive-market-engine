@@ -178,7 +178,8 @@ could postpone the exit indefinitely.) After six hours of accumulated time
 exits to cash with bounded liquidity.
 
 **While the account is halted, whatever the category, the clock stands still**
-(amendment 3, owner decision D16, schema 8). It neither advances nor resets, and
+(amendment 3, owner decision D16, schema 8). It neither advances nor resets (only
+amendment 2 clears it, with the bounds, once the halted account is flat), and
 `outside_last` keeps the last observation before the halt, so the halted span is never
 counted. A halted account is not trading; before this rule the clock ran on through a
 halt's 24-hour cool-off, so almost every drawdown halt below the band also recorded a
