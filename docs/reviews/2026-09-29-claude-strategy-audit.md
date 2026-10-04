@@ -1,6 +1,6 @@
 # Claude → the owner, Bob and Codex: strategy audit of v1 at 344f9ae (what holds, what to correct, what you need to decide)
 
-Index: 2026-09-29 strategy audit of `main` at 344f9ae across eight areas, every finding checked by independent verifiers who tried to refute it. **Verified sound:** a completed grid buy-and-sell pair is profitable in both fee scenarios, and the vault, going flat in a downtrend, funding (a signal only) and minimum-notional handling at 100 units all check out. **Three corrections to merged records:** the v2 research's "V0 (always grid)" is really the *ungated* V0, its "Dual MA (variant A's states)" row is not variant A, and resting grid fills cost the maker fee (0% primary), not 0.14% a leg. **18 owner decisions**, each with numbers, options and a recommendation; the ones that change V0 or the scoring must be settled before any variant runs. **Still to build before v1 can finish:** the variant axis (this PR, phase 2), E/F/H and G's wiring, the comparison mask, and a C1–C6 scorer. This PR also adds 14 tests the amendment and variant B require; one is an expected failure that shows a real spec/code mismatch (an exhaustion halt is not refused by the risk check).
+Index: 2026-09-29 strategy audit of `main` at 344f9ae across eight areas, every finding checked by independent verifiers who tried to refute it. **Verified sound:** a completed grid buy-and-sell pair is profitable in both fee scenarios, and the vault, going flat in a downtrend, funding (a signal only) and minimum-notional handling at 100 units all check out. **Three corrections to merged records:** the v2 research's "V0 (always grid)" is really the *ungated* V0, its "Dual MA (variant A's states)" row is not variant A, and resting grid fills cost the maker fee (0% primary), not 0.14% a leg. **18 owner decisions**, each with numbers, options and a recommendation; the ones that change V0 or the scoring must be settled before any variant runs. **Still to build before v1 can finish:** the variant axis (this PR, phase 2), E/F/H and G's wiring, the comparison mask, and a C1–C6 scorer. This PR also adds 14 tests the amendment and variant B require; one is an expected failure that shows a real spec/code mismatch (an exhaustion halt is not refused by the risk check). **Phase 2 (2026-10-04), the V2 code audit, section (g):** the V2 market-structure code merged since 344f9ae read future daily bars and changed V0 for every run without a flag (issue #158). This PR fixes the lookahead, puts all V2 behaviour behind an off-by-default `--structure` switch (V0 proved byte-identical to 344f9ae), labels every result with what produced it, makes variants A, B and C runnable, and makes the CI runner check its data. Results produced since #151 on specs with daily bars are invalid. Three new owner decisions, D19 to D21.
 
 - **Date:** 2026-09-29. **Author:** Claude (coordinator session `e0b16be3`, strategy slice).
 - **Base:** `origin/main` at 344f9ae. Paper-only. No market data was read and no backtest
@@ -9,6 +9,8 @@ Index: 2026-09-29 strategy audit of `main` at 344f9ae across eight areas, every 
   threshold or strategy constant changes in this PR.
 - **This PR (strategy PR, phase 1):** tests and documents only. Phase 2 adds the variant
   axis in code.
+- **Phase 2 (2026-10-04, Claude session `b9db01ca`):** the V2 code audit and its fixes,
+  stacked on the code-audit PR #159. See section (g).
 
 ## (a) What the audit checked, and how
 
@@ -155,6 +157,9 @@ recommendation.
 | D16 | Range-exit counter inflated during halts | Stop the clock while halted | first variant run |
 | D17 | Halts at 8–12% can never be resumed by hand | Allow a resume with a rebase | any forward paper run |
 | D18 | Exhaustion halt: refused, or final in effect? | Refuse it by category | any forward paper run |
+| D19 | The FTA cap is a hidden entry veto: redefine it? | An explicit, registered veto, or levels re-spaced below the FTA | any V2 run |
+| D20 | The RANGE-only FTA rule was chosen after seeing results | V2 under a spec v2 with registered trials, parameters frozen first | any V2 rerun |
+| D21 | Equal highs (double tops) are invisible to swing detection | Decide on purpose; no change without your decision | any V2 run |
 
 ### D1. Should a grid try fewer levels before giving up?
 
@@ -432,13 +437,72 @@ recommendation.
 - **Why not quietly.** The spec's text and its required-test list say otherwise; one of
   the two must change on the record.
 
+### D19. The FTA cap is a hidden entry veto (V2)
+
+- **Question.** V2's "first trouble area" (FTA) cap was meant to keep a grid's sell
+  targets just below the nearest resistance. In practice it never moves a sell target
+  that is actually placed: it either does nothing or stops the grid from opening. Which
+  do you want it to be?
+- **Numbers.** The engine places buy-and-sell pairs only *below* fair value: with 8
+  levels, the highest sell target placed is the first level above fair value. The FTA is
+  always *above* fair value. When the cap reaches that first level, it also reaches every
+  level above it; they all collapse to the same price, and the engine refuses the grid
+  with the message "no distinct, passive buy levels after tick rounding", which names the
+  wrong cause. The same happens whenever the cap reaches two or more levels, placed or
+  not. In a synthetic sweep of FTA positions between fair value and the top of the band,
+  a grid could open in only **24 to 29%** of positions (27% at an ATR of 2% of price),
+  and in those the cap changed only the top level, where no order is placed.
+- **Options.** (a) Redefine it as what it does: an explicit, registered entry veto ("no
+  new grid while resistance sits within X of fair value"), with its own reason message.
+  (b) Make it a real sell-target cap: re-space the levels so all of them fit below the
+  FTA (a different grid, which needs its own pre-registration). (c) Drop it.
+- **Recommendation.** (a) or (b), registered as a V2 trial under a spec v2 (D20) before
+  any V2 run. Not a quiet fix: either option changes which grids open.
+- **Why not quietly.** It changes V2's results, and V2's results have already been looked
+  at (D20).
+
+### D20. The RANGE-only FTA rule was added after looking at results (V2)
+
+- **Question.** The FTA cap applies only when the market is classified RANGE. That rule
+  was added after viewing development backtest results (the code cites the 2026-09-30
+  comparison, section 8.4, as its diagnosis). The no-tuning rule says a rule chosen after
+  seeing results is a trial, and must be counted as one.
+- **Options.** (a) Put V2 under a spec v2: list every V2 rule and parameter (swing size,
+  zone merge distance, the 500-hour window, the 0.10 vote weight, the 0.999 buffer, the
+  RANGE-only gate) as registered trials, freeze them, then run. (b) Treat V2 as
+  exploratory only and never as evidence.
+- **Recommendation.** (a). Freeze the parameters before any rerun; until then V2 runs are
+  exploration.
+- **Why not quietly.** Choosing among rules after seeing their results is exactly what
+  pre-registration forbids.
+
+### D21. Equal highs are invisible to swing detection (V2)
+
+- **Question.** A bar counts as a swing high only if its high is strictly above the 3
+  bars on each side. Two equal highs, a classic "double top", therefore produce no swing
+  at all, so no resistance zone forms there. The same holds for equal lows. Is that
+  intended?
+- **Numbers.** On data with exact repeats (a price that tops out twice at the same tick)
+  the zone a chart reader would draw is absent. The test suite's regular synthetic hourly
+  series repeats its daily highs exactly, so it shows no hourly swings at all; this
+  audit's chronology test needed hand-made daily bars partly for that reason.
+- **Options.** (a) Keep strict inequality and write the rule down. (b) Allow ties on one
+  side (for example "at least as high as the bars before, strictly higher than the bars
+  after"), registered under D20.
+- **Recommendation.** Your decision; this PR does not change it, as you asked. Any change
+  belongs in D20's registered set.
+- **Why not quietly.** It changes which zones exist, so it changes the FTA and the
+  structure vote.
+
 ## (e) What v1 still needs built before it can finish
 
 These are the spec-versus-code gaps that block the experiment itself:
 
 - **Variants A, B and C cannot be run.** The engine has them, but the backtest command
-  offers no way to choose them; it runs only V0, ungated V0 and D. *Being added in phase
-  2 of this PR.*
+  offers no way to choose them; it runs only V0, ungated V0 and D. *Done in phase 2:*
+  `--variant-a`, `--variant-b` (inventory cap 0.40, section 3 B) and `--variant-c` (A and
+  B), in the CLI, `scripts/run_nopool.py` and the backtest workflow. Each row names its
+  variant, and the results record the policy and the code commit.
 - **E, F and H do not exist in the code, and G is not connected.** G's funding signal is
   implemented, but every replay frame allows a new grid unconditionally, so nothing can
   block one. E and H2 also need a variable outside-range time in the engine.
@@ -497,3 +561,59 @@ Each was checked by the verifiers and did not survive; listed so nobody re-raise
 - **"The evidence does not support a 'wider grids in Down' variant, so no new variant is
   needed"**: the citations are accurate, but the argument built on them does not hold;
   whether to add any variant remains your decision, not a finding.
+
+## (g) Phase 2: audit of the V2 code (2026-10-04)
+
+Between 344f9ae and the code-audit PR #159, main gained "V2": market-structure features
+(swing points, support and resistance zones, a first trouble area), a sixth vote in the
+regime classifier and an FTA cap on grid levels (#147, #148, #150, #151, #154). This
+phase audited that code; issue #158 has the short version. In plain words:
+
+| Finding | What it means | What this PR did |
+| --- | --- | --- |
+| **Lookahead** (critical) | The daily structure read *every* daily bar in the dataset, including the decision's own unfinished day and all later days. A backtest decision could see the future. | **Fixed.** Only days that closed at or before the decision minute are read (the same rule as variant A). The caches now refresh when a day closes. A new test changes and adds daily bars after the decision and checks that nothing changes; it fails on the old code. |
+| **V0 changed without a flag** (critical) | V2 changed the baseline for everyone: the trend vote's weight fell from 0.35 to 0.25, a sixth vote was added (for the live paper bot too), and the FTA cap applied to every backtest. The spec requires new behaviour behind a switch that is off by default. | **Gated.** All V2 behaviour now sits behind `--structure` (`SimulationPolicy.structure`), off by default. With it off, V0 is restored: its `results.json` is byte for byte the same as at 344f9ae on synthetic data (below). With it on, V2 runs as on main, minus the lookahead. |
+| **Labels** (major) | V2 results carried the same version labels as V0 results, and no code commit, so nobody could tell them apart. | **Fixed.** A structure run is labelled `price-only-v1+structure-v1` in the results and in every row. A variant or structure run records its policy, its variant and the code commit, and says so in its folder name. V0 output keeps its exact layout (`--record-commit` adds the commit on request). |
+| **FTA cap is a hidden veto** (major) | It either does nothing or blocks the grid, with a misleading reason. | **Your decision, D19.** Unchanged, and now off by default. |
+| **RANGE-only FTA rule chosen after seeing results** | A question under the no-tuning rule. | **Your decision, D20.** |
+| **Equal highs make no swing** | Double tops and double bottoms are invisible. | **Your decision, D21.** Unchanged, as you asked. |
+| **CI runner skipped the data checks** | `scripts/run_nopool.py` (used by the backtest workflow) skipped the dataset verification and the hourly and daily cross-checks, hard-coded the fees, and still wrote `"valid": true`. | **Fixed.** It is now the CLI's own `run` with `--jobs 1` (no process pool): every check runs first, fees come from the spec, and "valid" means every check passed. The workflow gains variant and structure choices. |
+| **Small errors in `structure.py`** | Docstrings that disagreed with the code (the zone-strength formula; the ATR is a simple mean, not Wilder's), an import inside a loop, a garbled character. Zone strength is read by nothing outside the module and its tests. | **Fixed,** with results unchanged. Swing detection is untouched (D21). |
+
+**Results that are invalid as evidence.** Every V0 or V2 backtest produced on main since
+#151 on a spec with daily bars (practice-2022, verify-2024h1, long-bull-bear-2022 and
+long-recovery-2023-2024) used future daily bars, and every V0 run since #150 used the
+changed vote. That includes `docs/reviews/2026-09-30-bob-v2-backtest-comparison.md` and
+the "V2 corrected baseline" in PR #156. None of them may be used for decisions. V0
+results from before #150, such as the stored drawdown-recovery-v1 runs, are not affected.
+Bob's P8 data task is not affected either: it fetches and verifies archives and runs no
+replay.
+
+**How V0 was proved unchanged.** Synthetic datasets (fixed-seed random walks: one traded
+pair, five basket pairs, two months of hourly warm-up, 245 days of daily warm-up, a whole
+month of minute bars; one flat, one falling, one without daily bars) were built through
+the pinned dataset code. The real backtest command ran on them at 344f9ae and on this
+branch with the switch off, and the `results.json` files were compared byte for byte.
+Variants A, B and C were run for all four path and gating cases (at 344f9ae through the
+replay itself, which its command could not select); their sorted-key JSON was compared
+the same way, without the branch's new "variant" row label. No market data was read and
+no backtest ran on real data.
+
+| Run (synthetic) | 344f9ae SHA-256 | This branch, switch off |
+| --- | --- | --- |
+| Flat: V0 gated, V0 ungated and D (`results.json`) | `eaf29a0a4df9d3f27e3f46629d276c8817dbf47e9101bf16251c2646f96a8a5a` | identical |
+| Falling: V0 gated, V0 ungated and D (`results.json`) | `18b76b74511613559fb0da092395a15a6cf4808d5fb460aaa0178bdf3b74d2c1` | identical |
+| No daily bars: V0 gated and ungated (`results.json`) | `e4c413c030b551a4a27ad1453e5828b5bc0628b1a9798fce83041a32523e831a` | identical |
+| Flat: variant B | `4fe47896e88c56a6e60269f2a532741376afb79e0318463102636f09c497baff` | identical |
+| Falling: variant A | `fcc9f5cca9e26c6902a40414080694d69aa3ff608a913a9dcda7a036b367810b` | identical |
+| Falling: variant C | `fe0b7fd5ebd071038227a7cef97ce97bb292d83b29fe1d126fa827e29793de91` | identical |
+
+The same data show the switch matters: the code before this PR (d500e75, the head of
+the code-audit PR) gives different V0 files
+(flat `7e2d66d9…`, falling `ea25f90d…`, no daily bars `aaa4e5bc…`). With the switch on
+and no daily bars (so no lookahead to remove), this branch gives main's results exactly,
+once the new labels are set aside. With daily bars, removing the lookahead moved V2's
+gated return on the flat data from 22.9% to 18.5%.
+
+**What is still owed for V2.** D19 to D21, then a spec v2 with V2's parameters frozen
+(D20), before any V2 run counts.

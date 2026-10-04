@@ -101,7 +101,9 @@ class RegimeClassifier:
         "structure_alignment": 0.10,
     }
 
-    def __init__(self, thresholds: RegimeThresholds | None = None, *, structure: bool = False):
+    def __init__(
+        self, thresholds: RegimeThresholds | None = None, *, structure: bool = False
+    ) -> None:
         self._thresholds = thresholds or RegimeThresholds()
         self._weights = self._STRUCTURE_WEIGHTS if structure else self._WEIGHTS
 
