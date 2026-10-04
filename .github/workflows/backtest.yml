@@ -81,7 +81,9 @@ jobs:
           fi
           python scripts/run_nopool.py "$@"
 
+      # An invalid run (exit 2) still writes results.json: upload it for diagnosis.
       - name: Upload results
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: backtest-${{ github.event.inputs.spec }}

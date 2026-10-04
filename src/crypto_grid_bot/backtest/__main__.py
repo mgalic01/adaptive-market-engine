@@ -139,23 +139,32 @@ def _identity(spec_path: Path, config_path: Path) -> dict[str, str]:
 
 
 def code_commit() -> str:
-    """The git commit of this code, or "unknown" outside a git checkout."""
+    """The git commit of this code, with "+dirty" when tracked files differ from it (the
+    commit alone would not be the code that ran; Codex review of #160), or "unknown"
+    outside a git checkout."""
     git = shutil.which("git")
     if git is None:
         return "unknown"
-    try:
-        result = subprocess.run(  # nosec B603
-            [git, "rev-parse", "HEAD"],
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # nosec B603
+            [git, *args],
             cwd=Path(__file__).resolve().parent,
             capture_output=True,
             text=True,
             timeout=10,
             check=False,
         )
+
+    try:
+        head = run("rev-parse", "HEAD")
+        status = run("status", "--porcelain", "--untracked-files=no")
     except (OSError, subprocess.SubprocessError):
         return "unknown"
-    commit = result.stdout.strip()
-    return commit if result.returncode == 0 and commit else "unknown"
+    commit = head.stdout.strip()
+    if head.returncode != 0 or not commit or status.returncode != 0:
+        return "unknown"
+    return commit + ("+dirty" if status.stdout.strip() else "")
 
 
 class InProcess:

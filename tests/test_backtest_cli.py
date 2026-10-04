@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -416,3 +417,21 @@ class CompletenessTests(unittest.TestCase):
         self.assertEqual(1, result["hours_incomplete"])
         self.assertEqual(1, result["minutes_missing"])
         self.assertEqual(1, result["hours_absent_from_both"])
+
+
+class CodeCommitTests(unittest.TestCase):
+    """Codex review of #160: uncommitted edits to tracked files are recorded."""
+
+    def commit_with(self, porcelain: str) -> str:
+        def fake_run(args, **kwargs):
+            out = "0123abc\n" if "rev-parse" in args else porcelain
+            return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+
+        with patch.object(cli.subprocess, "run", fake_run):
+            return cli.code_commit()
+
+    def test_clean_checkout_records_the_commit(self) -> None:
+        self.assertEqual("0123abc", self.commit_with(""))
+
+    def test_edited_tracked_file_marks_the_commit_dirty(self) -> None:
+        self.assertEqual("0123abc+dirty", self.commit_with(" M src/x.py\n"))
