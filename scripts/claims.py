@@ -455,17 +455,18 @@ def shell_command(exe: str, args: list[str]) -> str | None:
     return None
 
 
-def substitutions(command: str) -> list[str]:
+def substitutions(command: str, quotes: bool = True) -> list[str]:
     """The commands in `$(...)` and backticks, which the shell runs first. Inside single
     quotes the shell reads them as text, so they are skipped there (Codex review of
-    #159). A nested one is inside its outer one's text."""
+    #159); a here-document body has no quoting (``quotes=False``). A nested one is
+    inside its outer one's text."""
     found: list[str] = []
     quote, i = "", 0
     while i < len(command):
         c = command[i]
         if c == "\\" and quote != "'":
             i += 1  # an escaped quote or backtick is plain text
-        elif c in "'\"" and quote in ("", c):
+        elif quotes and c in "'\"" and quote in ("", c):
             quote = "" if quote else c
         elif quote != "'" and c == "`":
             end = command.find("`", i + 1)
@@ -486,6 +487,38 @@ def substitutions(command: str) -> list[str]:
     return found
 
 
+HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(\\?)(['\"]?)([\w.-]+)\3")
+
+
+def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
+    """The command without its here-document bodies, and each body with whether its
+    delimiter is quoted (the shell expands nothing in it) and the text before the `<<`
+    on its line, which names the reader. A body is the reader's input, not commands
+    (Codex review of #159)."""
+    found: list[tuple[str, bool, str]] = []
+    pos = 0
+    while (m := HEREDOC_RE.search(command, pos)) is not None:
+        start = command.find("\n", m.end()) + 1
+        if start == 0:
+            break
+        delimiter, tabs = m.group(4), m.group(1) == "-"
+        end = start
+        while end < len(command):
+            line_end = command.find("\n", end)
+            line_end = len(command) if line_end < 0 else line_end
+            row = command[end:line_end]
+            if (row.lstrip("\t") if tabs else row) == delimiter:
+                body, rest = command[start:end], command[line_end + 1 :]
+                break
+            end = line_end + 1
+        else:
+            body, rest = command[start:], ""
+        reader = command[command.rfind("\n", 0, m.start()) + 1 : m.start()]
+        found.append((body, bool(m.group(2) or m.group(3)), reader))
+        command, pos = command[:start] + rest, start
+    return command, found
+
+
 def _unknown(text: str, why: str) -> list[Target]:
     """A command known only when it runs: a merge in it is refused (fail closed), a push
     only warned about (fail open), as when GitHub cannot be read."""
@@ -499,6 +532,7 @@ def find_targets(command: str, cwd: str, depth: int = 0) -> list[Target]:
     MAX_DEPTH levels (automated audit, 2026-09-29)."""
     if depth > MAX_DEPTH:
         return _unknown(command, "a command nested too deep to read")
+    command, bodies = heredocs(command)
     targets: list[Target] = []
     for segment in re.split(r"&&|\|\||[;|\n]", command):
         toks = unwrap(drop_redirections(split_words(segment)))
@@ -531,7 +565,13 @@ def find_targets(command: str, cwd: str, depth: int = 0) -> list[Target]:
             # `eval "$cmd"`, `iex $cmd`, `& $gh pr merge 5`: the text of this command
             # line is all there is to go on. A lone `$x` (PowerShell prints it) runs nothing.
             targets.extend(_unknown(command, f"{toks[0]} runs a command known only at run time"))
-    for inner in substitutions(command):
+    inners = substitutions(command)
+    for body, quoted, reader in bodies:
+        if any(_exe(w) in (*SHELLS, *EVALS) for w in reader.split()):
+            inners.append(body)  # `bash <<EOF` runs its body
+        elif not quoted:
+            inners.extend(substitutions(body, quotes=False))
+    for inner in inners:
         targets.extend(find_targets(inner, cwd, depth + 1))
     return targets
 

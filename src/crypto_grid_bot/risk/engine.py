@@ -17,9 +17,11 @@ _PRECISION = 120
 
 
 def _exact(value: Decimal | float) -> Decimal | None:
-    """``value`` as an exact Decimal (a float or int converts exactly); None unless finite."""
+    """``value`` as an exact Decimal (a float or int converts exactly); None unless finite
+    and within a float's range, as the float checks before it required (``1e1000000``
+    would overflow the Decimal arithmetic; Codex review of #159)."""
     number = value if isinstance(value, Decimal) else Decimal(value)
-    return number if number.is_finite() else None
+    return number if number.is_finite() and isfinite(float(number)) else None
 
 
 def _percent(base: Decimal, equity: Decimal) -> str:
