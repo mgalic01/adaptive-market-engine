@@ -232,14 +232,20 @@ and it catches any later change to `risk_high`'s formula that is not mirrored he
    `TransientFrame`, an ineligible frame); (c) the account is not halted. A range exit
    waiting in cash does not block this check.
 3. If all hold, it checks whether the account has already recovered: if the current
-   active equity is at or above 92% of the existing `risk_high` (i.e. the drawdown is
-   already under 8%), the episode is **closed without rebasing** — `risk_high` stays at
-   its current value and is not lowered. This prevents the heal-then-rebase ratchet:
-   repeated partial recoveries can no longer silently erode the reference without the
-   12% halt ever firing. **(Owner decision 2026-10-02, D7.)** If the drawdown is still
-   at or above 8%, the rebase proceeds: it sets `risk_high` to the current active equity
-   **tentatively** and evaluates the risk engine again. The rebase is committed only if
-   the result is `ALLOW`; otherwise nothing changes and the check repeats on the next frame.
+   active equity is strictly above 92% of the existing `risk_high`, that is, its
+   drawdown is below the 8% soft limit as the risk engine measures it (a drawdown of
+   exactly 8% is a soft drawdown), the episode is **closed without rebasing** —
+   `risk_high` stays at its current value and is not lowered. This prevents the
+   heal-then-rebase ratchet: repeated partial recoveries can no longer silently erode the
+   reference without the 12% halt ever firing. **(Owner decision 2026-10-02, D7.)** If
+   the drawdown is still at or above 8%, the rebase proceeds: it sets `risk_high` to the
+   current active equity **tentatively** and evaluates the risk engine again. The rebase
+   is committed only if the result is `ALLOW`; otherwise nothing changes and the check
+   repeats on the next frame. *(Wording made consistent 2026-10-05: the decision text said
+   "at or above 92% … (i.e. the drawdown is already under 8%)", and the two halves
+   disagree at exactly 92%. The risk engine treats a drawdown of exactly 8% as soft
+   (`loss >= limit`), so closing there would start a new episode at once, on the same
+   frame; the close therefore needs strictly above 92%. No other change to the decision.)*
 4. The rebase check runs first in the step. After a committed rebase or a no-rebase
    close, the range-exit and pause recovery rules apply unchanged.
 5. The episode ends at its rebase or its no-rebase close, so it has at most one of
