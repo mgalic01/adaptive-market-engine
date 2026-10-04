@@ -456,19 +456,33 @@ def shell_command(exe: str, args: list[str]) -> str | None:
 
 
 def substitutions(command: str) -> list[str]:
-    """The commands in `$(...)` and backticks, which the shell runs first. A nested one
-    is inside its outer one's text."""
-    found = re.findall(r"`([^`]*)`", command)
-    start = command.find("$(")
-    while start >= 0:
-        level, end = 0, start + 1
-        while end < len(command):
-            level += {"(": 1, ")": -1}.get(command[end], 0)
-            if level == 0:
+    """The commands in `$(...)` and backticks, which the shell runs first. Inside single
+    quotes the shell reads them as text, so they are skipped there (Codex review of
+    #159). A nested one is inside its outer one's text."""
+    found: list[str] = []
+    quote, i = "", 0
+    while i < len(command):
+        c = command[i]
+        if c == "\\" and quote != "'":
+            i += 1  # an escaped quote or backtick is plain text
+        elif c in "'\"" and quote in ("", c):
+            quote = "" if quote else c
+        elif quote != "'" and c == "`":
+            end = command.find("`", i + 1)
+            if end < 0:
                 break
-            end += 1
-        found.append(command[start + 2 : end])
-        start = command.find("$(", end)
+            found.append(command[i + 1 : end])
+            i = end
+        elif quote != "'" and command.startswith("$(", i):
+            level, end = 0, i + 1
+            while end < len(command):
+                level += {"(": 1, ")": -1}.get(command[end], 0)
+                if level == 0:
+                    break
+                end += 1
+            found.append(command[i + 2 : end])
+            i = end
+        i += 1
     return found
 
 

@@ -8,6 +8,7 @@ on. The reason texts keep their float formatting.
 from __future__ import annotations
 
 from decimal import Decimal, localcontext
+from math import isfinite
 
 from crypto_grid_bot.domain import PortfolioSnapshot, RiskAction, RiskDecision
 
@@ -22,8 +23,13 @@ def _exact(value: Decimal | float) -> Decimal | None:
 
 
 def _percent(base: Decimal, equity: Decimal) -> str:
-    """The reason text's loss percentage, formatted from floats as it always was."""
-    return f"{(float(base) - float(equity)) / float(base):.2%}"
+    """The reason text's loss percentage, formatted from floats as it always was. A base
+    a float cannot hold (``1e-1000`` becomes 0.0) is formatted in Decimal instead, so the
+    decision is still returned (Codex review of #159)."""
+    as_float = float(base)
+    if as_float == 0 or not isfinite(as_float):
+        return f"{(base - equity) / base:.2%}"
+    return f"{(as_float - float(equity)) / as_float:.2%}"
 
 
 class RiskEngine:

@@ -100,3 +100,10 @@ class RiskEngineTests(TestCase):
                 hard_drawdown_pct=0.12,
                 maximum_data_age_seconds=30,
             )
+
+    def test_equities_too_small_for_a_float_still_get_a_decision(self) -> None:
+        # Codex review of #159: every float here is 0.0, and the reason text divided by it.
+        snapshot = PortfolioSnapshot(D("1e-1000"), D("2e-1000"), D("2e-1000"), 1)
+        decision = self.engine.evaluate(snapshot)
+        self.assertEqual(RiskAction.EXIT, decision.action)
+        self.assertEqual(("hard drawdown reached: 50.00%",), decision.reasons)

@@ -351,6 +351,24 @@ class TargetTest(unittest.TestCase):
             commit = "git commit -m \"$(cat <<'EOF'\nFix the merge check\nEOF\n)\""
             self.assertEqual(find_targets(commit, "."), [])
 
+    def test_substitutions_in_single_quotes_are_text(self):
+        # Codex review of #159: the shell runs none of these.
+        with git_stub():
+            for cmd in (
+                "echo '$(gh pr merge 5)'",
+                "printf '%s' '`gh pr merge 5`'",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+            # Double quotes still run them, and so do a closed or an escaped quote before.
+            for cmd in (
+                'echo "$(gh pr merge 5)"',
+                "echo 'x' $(gh pr merge 5)",
+                r"echo it\'s $(gh pr merge 5)",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+
     def test_a_pr_or_branch_the_shell_computes_is_unknown(self):
         with git_stub():
             for cmd in (
