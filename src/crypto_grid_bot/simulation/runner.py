@@ -860,7 +860,7 @@ class PaperSimulator:
             account.trend_day = max(account.trend_day, signal.day)
         return state
 
-    def _settle(self, account: Account, quote: Quote) -> dict[str, Any]:
+    def _settle(self, account: Account, quote: Quote) -> dict[str, Any] | None:
         # An unsellable residue is left out of the allocation base, which understates
         # profit; it is never counted as settled cash.
         # No orders is checked first, so _resolved here sees the whole inventory.
@@ -881,7 +881,6 @@ class PaperSimulator:
             * (ONE - self.rules.slippage_rate)
             * (ONE - self.rules.taker_fee)
         )
-        account.settlement_count += 1
         state = ProfitVaultState(
             account.reserve_high,
             account.pending,
@@ -892,6 +891,14 @@ class PaperSimulator:
             state, account.cash, positions_flat=True, orders_reconciled=True
         )
         account.pending, account.reserve_high = state.pending_reserve, state.active_high_water_mark
+        if allocation.new_profit == ZERO and allocation.transfer_due == ZERO:
+            # Nothing settled: the factor below would be exactly 1 and no transfer is due,
+            # so the baselines, the count and the transfer journal stay as they are, and
+            # the journal's allocation stays null. A flat account reaches this on every
+            # frame it waits in cash. The pending write above stays: its value is unchanged,
+            # but replay results print its exact digits.
+            return None
+        account.settlement_count += 1
         # Proportional adjustment preserves returns even when reserve exceeds the
         # original capital; subtracting could make a baseline zero or negative.
         factor = (allocation.active_capital_after_allocation + marked_residue) / (
@@ -951,7 +958,7 @@ class PaperSimulator:
         # FTA resistance cap only applies in a ranging market. In trending markets
         # (BULL/BEAR) resistance zones cluster everywhere and the cap compresses all
         # sell levels to one price, preventing cycle completion. See backtest comparison
-        # 2026-09-30 §8.4 for the diagnosis.
+        # 2026-09-30 Â§8.4 for the diagnosis.
         fta = (
             frame.fta_resistance if regime is None or regime.regime == MarketRegime.RANGE else None
         )

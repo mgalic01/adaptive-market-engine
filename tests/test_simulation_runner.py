@@ -385,3 +385,19 @@ class SimcoreAuditTests(TestCase):
         self.assertEqual(
             ("drawdown", "hard drawdown reached: 12.00%"), (account.halt_category, account.halt)
         )
+
+    def test_a_flat_account_waiting_in_cash_settles_nothing(self):
+        # Too little capital for a grid: every frame is a flat harvest point that used to
+        # run a full no-op settlement, count it and journal an empty allocation.
+        sim = PaperSimulator(
+            Path(self.directory.name) / "small.db", self.config, self.rules, D("10")
+        )
+        self.addCleanup(sim.close)
+        for frame in demo_frames(2):
+            report = sim.process(frame)
+            self.assertIn(report["decision"], ("cash", "hold"))
+            self.assertIsNone(report["allocation"])
+        state = sim.store.read()
+        self.assertEqual(
+            (0, D("10"), D("10")), (state.settlement_count, state.day_start, state.cash)
+        )
