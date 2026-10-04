@@ -93,6 +93,16 @@ class DrawdownRecoveryTests(TestCase):
         self.assertEqual(D(100), state.risk_high)
         return state
 
+    def heal(self):
+        """decline(), then a partial recovery to 6.6% below the reference: the episode is
+        still open, but the account is back under the soft limit."""
+        self.decline()
+        self.sim.process(frame(5 * DAY + 2, "0.02060"))
+        state = self.state()
+        self.assertEqual(frame(5 * DAY).quote.observed_at, state.episode_since)
+        self.assertLess(D("0.92") * state.risk_high, state.last_equity)
+        return state
+
     def halt(self):
         """A hard-drawdown halt at 00:00:02 on day 0, fully liquidated."""
         self.sim.process(frame(0))
@@ -293,6 +303,85 @@ class DrawdownRecoveryTests(TestCase):
         self.assertIn("rebase", report)
         self.assertEqual("recenter", report["range_exit_cleared"])
         self.assertFalse(self.state().range_exit)
+
+    # -- D7: a recovered episode closes without a rebase (owner decision 2026-10-02) ---
+
+    def test_an_episode_healed_under_the_soft_limit_closes_without_a_rebase(self):
+        self.heal()
+        self.sim.process(frame(6 * DAY, "0.02060"))
+        report = self.sim.process(frame(6 * DAY + 1, "0.02060"))  # the rebase would commit
+        state = self.state()
+        self.assertNotIn("rebase", report)
+        self.assertEqual(
+            {
+                "episode_since": frame(5 * DAY).quote.observed_at,
+                "closed_at": frame(6 * DAY + 1).quote.observed_at,
+                "equity": str(state.last_equity),
+                "reference": "100",
+            },
+            report["episode_closed"],
+        )
+        self.assertEqual(
+            (D(100), "", 0), (state.risk_high, state.episode_since, state.episode_count)
+        )
+        self.assertEqual("hold", report["decision"])  # the pause recovered as it always did
+        # Journaled: after a process restart the event replays its recorded result.
+        self.restart_process()
+        self.assertEqual(report, self.sim.process(frame(6 * DAY + 1, "0.02060")))
+
+    def test_an_episode_still_8_percent_or_more_down_rebases_as_before(self):
+        self.decline()  # 8.24% below the reference when the rebase falls due
+        self.sim.process(frame(6 * DAY, "0.02015"))
+        report = self.sim.process(frame(6 * DAY + 1, "0.02015"))
+        state = self.state()
+        self.assertNotIn("episode_closed", report)
+        self.assertEqual(
+            ("100", str(state.last_equity)),
+            (report["rebase"]["old_reference"], report["rebase"]["new_reference"]),
+        )
+        self.assertEqual(state.last_equity, state.risk_high)
+
+    def test_exactly_8_percent_down_still_rebases_and_a_hair_less_closes(self):
+        # The risk engine counts a drawdown of exactly 8% as soft (loss >= limit), so the
+        # episode closes only when equity is strictly above 92% of risk_high.
+        for name, cash, closes in (("exact.db", "92", False), ("hair.db", "92.000000001", True)):
+            with self.subTest(cash=cash):
+                self.fresh(name)
+                account = self.state()  # flat, against a reference of 100
+                account.cash = account.last_equity = D(cash)
+                account.episode_since = frame(-DAY).quote.observed_at
+                account.pause, account.draining = "soft drawdown reached: 8.00%", True
+                self.put(account)
+                self.sim.process(frame(0))
+                report = self.sim.process(frame(1))  # second confirmation, 24 h + 1 s
+                state = self.state()
+                self.assertEqual(closes, "episode_closed" in report)
+                self.assertEqual(not closes, "rebase" in report)
+                self.assertEqual(D(100) if closes else D(cash), state.risk_high)
+                self.assertEqual("", state.episode_since)
+
+    def test_partial_recoveries_no_longer_ratchet_the_reference_down(self):
+        # The strategy audit's ratchet (D7). Before D7 the first heal rebased risk_high to
+        # 93.36, so the second dip below opened no episode at all and the final fall, 12.16%
+        # below the original reference, was only a daily-loss pause, never the halt.
+        self.heal()
+        for index in (6 * DAY, 6 * DAY + 1):
+            report = self.sim.process(frame(index, "0.02060"))
+        self.assertIn("episode_closed", report)
+        # A second dip past 8% opens a new episode, which heals and closes the same way.
+        self.sim.process(frame(7 * DAY, "0.02015"))
+        self.assertEqual(frame(7 * DAY).quote.observed_at, self.state().episode_since)
+        self.sim.process(frame(7 * DAY + 2, "0.02060"))
+        for index in (8 * DAY, 8 * DAY + 1):
+            report = self.sim.process(frame(index, "0.02060"))
+        self.assertIn("episode_closed", report)
+        self.assertEqual(D(100), self.state().risk_high)
+        report = self.sim.process(frame(9 * DAY, "0.01905"))
+        state = self.state()
+        self.assertEqual(
+            ("halt", "drawdown", D(100)), (report["decision"], state.halt_category, state.risk_high)
+        )
+        self.assertEqual("hard drawdown reached: 12.16%", report["reason"])
 
     # -- measurement references ----------------------------------------------------
 

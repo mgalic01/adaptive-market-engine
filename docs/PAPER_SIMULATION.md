@@ -1,4 +1,4 @@
-# Paper simulation contract (schema 7)
+# Paper simulation contract (schema 8)
 
 ## Scope and order lifecycle
 
@@ -84,10 +84,16 @@ later halt calls the runtime makes while it lasts. Two controls recover by thems
   (`episode_count`; a continuity gap, an unusable frame, an ineligible frame or a
   failing tentative check resets it). Once `soft_cooloff_seconds` (24 h) have passed
   since the episode started and `recovery_frames` confirmations are in a row, the
-  rebase is committed: `risk_high` becomes the current active equity, journaled as
-  `rebase`. One rebase per episode; a halt of any category ends an open episode; a
-  later `REDUCE` starts a new one with its own cool-off. The 8% and 12% triggers are
-  then measured from the rebased reference.
+  episode ends. If the account has already recovered, meaning its drawdown from the
+  existing `risk_high` is below the soft limit by the risk engine's own comparison (a
+  drawdown of exactly 8% is still soft), it **closes without a rebase**: `risk_high`
+  stays, and the close is journaled as `episode_closed` with its time, the equity and
+  the episode start (owner decision D7, engine `drawdown-recovery-v2`, schema 8; before
+  it, repeated partial recoveries each lowered the reference, and the 12% halt never
+  fired). Otherwise the rebase is committed: `risk_high` becomes the current active
+  equity, journaled as `rebase`. One rebase or close per episode; a halt of any
+  category ends an open episode; a later `REDUCE` starts a new one with its own
+  cool-off. The 8% and 12% triggers are measured from the reference as it then stands.
 - **Hard drawdown (automatic restart).** A `drawdown` halt restarts on the first valid
   frame, after that frame's liquidation attempt, where `hard_cooloff_seconds` (24 h)
   have passed since the halt began, no order rests, the liquidation is complete in
@@ -107,7 +113,7 @@ The **C1(b) measurement reference** (`measure_high`) is separate from the breake
 every settlement by the same factor, in the same statement, but a rebase or a restart
 never changes it. In a run without either it equals `risk_high` at every evaluation,
 which a test asserts. Replay measures `active_max_drawdown_pct` against it and counts
-`soft_drawdown_rebases` and `drawdown_restarts`.
+`soft_drawdown_rebases`, `soft_drawdown_closes` (D7) and `drawdown_restarts`.
 
 Risk baselines are preserved through recovery; a realised loss is not erased by
 issuing resume. UTC daily baselines still carry overnight gaps into the risk check.
@@ -170,6 +176,26 @@ limit. Only a valid frame inside the range resets the clock.
 could postpone the exit indefinitely.) After six hours of accumulated time
 (`SimulationPolicy.outside_range_seconds`), orders are cancelled and inventory
 exits to cash with bounded liquidity.
+
+**While the account is halted, whatever the category, the clock stands still**
+(amendment 3, owner decision D16, schema 8). It neither advances nor resets, and
+`outside_last` keeps the last observation before the halt, so the halted span is never
+counted. A halted account is not trading; before this rule the clock ran on through a
+halt's 24-hour cool-off, so almost every drawdown halt below the band also recorded a
+range exit. A range exit already triggered before the halt is not affected. In
+practice the clock does not outlive the halt: a restart or a resume needs a flat
+account, and amendment 2 and the restart's field list clear its clock.
+
+**A flat account forgets its grid** (amendment 2, owner decision D15, schema 8). At the
+end of a frame, after its fills, exits, settlement and any new grid, an account with
+nothing sellable left (flat, or holding only a residue below the exchange minimum), no
+orders and no range exit pending has its grid bounds and outside-range clock cleared,
+journaled as `bounds_cleared`; a new grid can open at the next frame that allows one.
+Before this rule, an account whose grid sold out while no new grid could open (a
+pause, a closed gate, too little spacing) kept the old band, timed out of it into a
+range exit with nothing at risk, and then waited out the recentre cooldown. A genuine
+exit keeps its band and its cooldown: the rule never applies while an exit is pending.
+Variant A's end of a Down sequence was the first case of this rule (PR #114).
 
 `maximum_frame_gap_seconds` is a cadence limit (how far apart observations may be),
 separate from `maximum_data_age_seconds` (how old one observation may be). Schema 3
@@ -239,15 +265,18 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Only schema 7 databases are accepted; schema 1-6 are rejected, with no
+initial cash. **Only schema 8 databases are accepted; schema 1-7 are rejected, with no
 implicit migration or reset.** Schema 5 (engine `exit-residue-v1`, PR #122) changed the
 exit lifecycle; schema 6 (engine `drawdown-recovery-v1`, spec v1 amendment 1) added the
 halt identity, the episode, the C1(b) reference and the two cool-offs to the saved
 state and identity, and made a `drawdown` halt restart. Schema 7 (strategy audit, #160)
 made V2 market structure a policy flag that is off by default: schema 6 was written both
 by V0 code and by code that ran every account with structure on, and its identity cannot
-tell them apart. An older database is refused rather than silently reinterpreted.
-Preserve old experiments with the old code, or start a clearly separate schema 7
+tell them apart. Schema 8 (engine `drawdown-recovery-v2`, the owner's decisions of
+2026-10-02) added D7's no-rebase close and amendments 2 and 3: a schema-7 account ran
+without them, so its saved reference, bounds or clock may hold what they forbid. An
+older database is refused rather than silently reinterpreted.
+Preserve old experiments with the old code, or start a clearly separate schema 8
 experiment. Never edit identity/state to bypass risk history.
 The frame-gap policy (added in 0.5.1/0.6) is part of saved identity, so experiments
 without that setting are rejected. Use a new database for the new policy; retain
@@ -273,6 +302,9 @@ frame-gap boundaries, persisted-policy compatibility, low-score quality vetoes,
 and invalid regime configuration endpoints.
 The shallow fixture produced 2 fills on the reviewed code and 100 on the corrected
 code. This is a behavioural regression result, not a return forecast or backtest.
+Schema 8 adds tests for D7 (`tests/test_drawdown_recovery.py`) and amendments 2 and 3
+(`tests/test_flat_bounds_and_halt_clock.py`); each one for a new behaviour fails on
+schema 7 code.
 
 Historical strategy validation is now the next gate, ahead of universe/news
 integration. See [the plan](BACKTEST_PLAN.md) and [the Claude handoff](reviews/2026-09-24-codex-response.md).

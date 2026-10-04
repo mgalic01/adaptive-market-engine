@@ -73,6 +73,7 @@ SUMMARY_FIELDS = {
     "risk_evaluations",
     "hard_drawdown_halts",
     "soft_drawdown_rebases",
+    "soft_drawdown_closes",
     "drawdown_restarts",
     "order_requests",
     "max_order_requests_per_day",
@@ -421,8 +422,11 @@ class ReplayTests(unittest.TestCase):
             candle(t + i * 60_000, fair, fair * 1.003, fair * 0.997, fair) for i in range(60)
         ]
         # Then eight hours far below the grid: one range exit, with every other frame
-        # rejected as a transient (its report carries no range_exit flag).
-        low = fair * 0.8
+        # rejected as a transient (its report carries no range_exit flag). Not so far as
+        # the hard drawdown: 20% below once halted the account, and the one exit counted
+        # then was a flat, halted account timing out of its old band, which amendments 2
+        # and 3 removed. At 10% below the exit is genuine, with inventory held.
+        low = fair * 0.9
         minutes += [
             candle(t + i * 60_000, low, low * 1.001, low * 0.999, low) for i in range(60, 540)
         ]

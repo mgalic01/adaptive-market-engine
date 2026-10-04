@@ -136,7 +136,8 @@ feeds the meta-strategy calibration; an inflated count produces the wrong signal
 
 **Engine impact.** No trading behaviour changes. The reported `range_exits` count
 decreases on runs with halts. Requires an engine version bump so existing results are
-correctly labelled pre-amendment-3. No reruns of already-valid results are required
+correctly labelled pre-amendment-3 (assigned, together with amendment 2 and D7: engine
+`drawdown-recovery-v2`, paper schema 8). No reruns of already-valid results are required
 unless the corrected count would change a C4 verdict (it cannot — C4 is an integrity
 check, not a range-exit threshold).
 
@@ -162,7 +163,8 @@ no range was actually exited.
 
 **Engine impact.** This changes V0 results (fewer idle periods, more grids on choppy
 windows). It requires an engine version bump and a schema bump if the cleared state
-differs from what an existing persisted account holds. All V0 results produced before
+differs from what an existing persisted account holds (assigned, together with
+amendment 3 and D7: engine `drawdown-recovery-v2`, paper schema 8). All V0 results produced before
 this amendment are labelled pre-amendment-2 and stay published for reference. This
 amendment is counted as one further registered trial in `N_family`.
 

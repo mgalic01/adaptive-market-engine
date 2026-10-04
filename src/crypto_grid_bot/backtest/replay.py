@@ -235,8 +235,10 @@ class Metrics:
     active_max_drawdown: Decimal = ZERO
     risk_evaluations: int = 0
     hard_drawdown_halts: int = 0  # halt instances of category drawdown, not evaluations
-    # Spec v1 amendment 1: committed soft-drawdown rebases and automatic restarts.
+    # Spec v1 amendment 1: committed soft-drawdown rebases and automatic restarts, and
+    # (D7) the episodes that closed without a rebase because the account had recovered.
     rebases: int = 0
+    closes: int = 0
     restarts: int = 0
     # Frames whose marketable exit was refused because the order would be below the
     # exchange minimum notional ("depth": this frame's participation chunk; "dust": the
@@ -522,6 +524,7 @@ def replay(
                 metrics.hard_drawdown_halts += int(account.halt_category == "drawdown")
             was_halted = bool(account.halt)
             metrics.rebases += int("rebase" in report)
+            metrics.closes += int("episode_closed" in report)
             metrics.restarts += int("restart" in report)
             if "total_equity" in report:
                 total = Decimal(report["total_equity"])
@@ -697,7 +700,12 @@ VOLUME_DRIFT_TOLERANCE = Decimal("0.001")
 #   rebases risk_high after a 24 h cool-off; a drawdown halt restarts by itself after
 #   24 h; C1(b) is measured against a reference that is never rebased. No V0 result on
 #   exit-residue-v1 was run or inspected.
-ENGINE_VERSION = "drawdown-recovery-v1"
+#   drawdown-recovery-v2 (2026-10-05, owner decisions of 2026-10-02, spec v1): D7, a
+#   soft-drawdown episode already back under the soft limit when its rebase falls due
+#   closes without one; amendment 2 (D15), a flat account with no orders and no range
+#   exit pending clears its grid bounds and outside-range clock at once; amendment 3
+#   (D16), the outside-range clock stands still while halted.
+ENGINE_VERSION = "drawdown-recovery-v2"
 INTEGRITY_RULES = "drift-tolerance-v1"
 STRICT_INTEGRITY_RULES = "strict-v0"
 
@@ -837,6 +845,7 @@ def summarise(
         "risk_evaluations": metrics.risk_evaluations,
         "hard_drawdown_halts": metrics.hard_drawdown_halts,
         "soft_drawdown_rebases": metrics.rebases,
+        "soft_drawdown_closes": metrics.closes,
         "drawdown_restarts": metrics.restarts,
         "order_requests": sum(metrics.requests_by_day.values()),
         "max_order_requests_per_day": max(metrics.requests_by_day.values(), default=0),
