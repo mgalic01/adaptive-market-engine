@@ -1,4 +1,5 @@
 from decimal import Decimal as D
+from decimal import localcontext
 from unittest import TestCase
 
 from crypto_grid_bot.domain import PortfolioSnapshot, RiskAction
@@ -107,6 +108,23 @@ class RiskEngineTests(TestCase):
         decision = self.engine.evaluate(snapshot)
         self.assertEqual(RiskAction.EXIT, decision.action)
         self.assertEqual(("hard drawdown reached: 50.00%",), decision.reasons)
+
+    def test_a_balance_with_more_digits_than_any_fixed_precision_is_exact(self) -> None:
+        # Codex review of #159: a 120-digit context rounded this onto the 12% limit.
+        high = D("1." + "0" * 119 + "1")  # 121 significant digits
+        with localcontext() as context:
+            context.prec = 300
+            on_limit = high * D("0.88")
+            quantum = D(1).scaleb(on_limit.as_tuple().exponent)
+            above, below = on_limit + quantum, on_limit - quantum
+        for equity, action in (
+            (on_limit, RiskAction.EXIT),
+            (below, RiskAction.EXIT),
+            (above, RiskAction.REDUCE),
+        ):
+            with self.subTest(equity=equity):
+                decision = self.engine.evaluate(PortfolioSnapshot(equity, equity, high, 1))
+                self.assertEqual(action, decision.action)
 
     def test_any_finite_decimal_exponent_is_compared_exactly(self) -> None:
         # Codex review of #159: in the default context 1e1000000 raised decimal.Overflow,

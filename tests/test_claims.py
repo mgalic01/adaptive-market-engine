@@ -381,6 +381,15 @@ class TargetTest(unittest.TestCase):
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(find_targets(cmd, "."), [])
+            # Codex review of #159: a quoted or escaped `<<` is text, so the next
+            # line is a command, not a body.
+            for cmd in (
+                'echo "<<EOF"\ngh pr merge 5\necho EOF',
+                "echo '<<EOF'\ngh pr merge 5\nEOF",
+                "echo \\<<EOF\ngh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
             # Codex review of #159: two bodies on one line, read in order.
             self.assertEqual(find_targets("cat <<'A' <<'B'\nfirst\nA\ngh pr merge 5\nB", "."), [])
             for cmd in (
