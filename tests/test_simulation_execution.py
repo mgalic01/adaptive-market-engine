@@ -2,7 +2,6 @@ from dataclasses import replace
 from unittest import TestCase
 
 from crypto_grid_bot.simulation.execution import (
-    cancel,
     exitable,
     liquidate,
     match,
@@ -45,7 +44,7 @@ class ExecutionTests(TestCase):
         self.assertEqual(D("29.950"), self.account.available_quote(self.rules))
         with self.assertRaises(ValueError):
             place(self.account, self.order("b"), self.rules)
-        cancel(self.account, "a")
+        del self.account.orders["a"]  # how the engine cancels
         self.assertEqual(D("80"), self.account.available_quote(self.rules))
 
     def test_shared_liquidity_partial_fills_and_cancel(self):
@@ -58,7 +57,7 @@ class ExecutionTests(TestCase):
         self.assertEqual(D("3"), self.account.inventory)
         self.assertEqual(D("2"), self.account.orders["a"].remaining)
         self.assertEqual(D("60.060"), self.account.reserved_quote(self.rules))
-        cancel(self.account, "a")
+        del self.account.orders["a"]  # how the engine cancels
         self.assertEqual(D("40.040"), self.account.reserved_quote(self.rules))
 
     def test_child_sell_cannot_fill_until_later_event(self):
@@ -197,3 +196,83 @@ class PanelHardeningTests(TestCase):
         self.assertEqual(D("100"), exitable(self.account, at_bid, self.rules))
         self.account.inventory = D("99")
         self.assertEqual(D("0"), exitable(self.account, at_bid, self.rules))
+
+
+class SimcoreAuditTests(TestCase):
+    """Fill remainders, refused reentries and the validation switch (2026-10 audit)."""
+
+    def setUp(self):
+        self.rules = MarketRules(
+            "TESTUSDT", D("0.01"), D("1"), D("5"), D("0.001"), D("0.0005"), D("0.1")
+        )
+        self.account = Account.start(D("100"))
+
+    def test_a_fill_reports_what_is_still_resting(self):
+        place(self.account, LimitOrder("a", "buy", D("10"), D("5"), D("5")), self.rules)
+        (partial,) = match(self.account, quote(size="30"), self.rules)
+        self.assertEqual((D("3"), D("2")), (partial.quantity, partial.remaining))
+        (rest,) = match(self.account, replace(quote(), event_id="q2"), self.rules)
+        self.assertEqual((D("2"), D("0")), (rest.quantity, rest.remaining))
+
+    def sell_with_reentry(self):
+        self.account.inventory = D("5")
+        place(
+            self.account,
+            LimitOrder("s", "sell", D("11"), D("5"), D("5"), reentry=D("4")),
+            self.rules,
+        )
+
+    def test_a_refused_reentry_is_recorded_with_its_reason(self):
+        for quantity, reason in [
+            (D("1"), "order is below minimum notional"),  # 4 x 1 < 5
+            (D("100"), "insufficient unprotected quote balance including fees"),
+        ]:
+            with self.subTest(reason=reason):
+                self.setUp()
+                self.sell_with_reentry()
+                refused = []
+                (fill,) = match(
+                    self.account,
+                    quote("11.2", "11.3"),
+                    self.rules,
+                    reentry_quantity=lambda order_id, price, requested, q=quantity: q,
+                    refused=refused,
+                )
+                self.assertEqual("sell", fill.side)
+                self.assertEqual({}, self.account.orders)  # the level left the grid
+                self.assertEqual(
+                    [
+                        {
+                            "order_id": "q/reentry/1",
+                            "price": D("4"),
+                            "quantity": quantity,
+                            "reason": reason,
+                        }
+                    ],
+                    refused,
+                )
+
+    def test_a_placed_reentry_is_not_recorded(self):
+        self.sell_with_reentry()
+        refused = []
+        match(self.account, quote("11.2", "11.3"), self.rules, refused=refused)
+        self.assertEqual([], refused)
+        self.assertEqual(["q/reentry/1"], list(self.account.orders))
+
+    def test_check_false_skips_only_the_whole_account_validation(self):
+        self.account.halt = "inconsistent: a halt without its category"
+        order = LimitOrder("a", "buy", D("10"), D("5"), D("5"))
+        with self.assertRaisesRegex(ValueError, "halt category"):
+            place(self.account, order, self.rules)
+        with self.assertRaisesRegex(ValueError, "halt category"):
+            match(self.account, quote(), self.rules)
+        place(self.account, order, self.rules, check=False)
+        # The new order's own checks always run.
+        with self.assertRaisesRegex(ValueError, "minimum notional"):
+            place(
+                self.account,
+                LimitOrder("b", "buy", D("1"), D("1"), D("1")),
+                self.rules,
+                check=False,
+            )
+        self.assertEqual(1, len(match(self.account, quote(), self.rules, check=False)))

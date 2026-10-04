@@ -1,8 +1,8 @@
 """Completed daily bars and their simple moving averages (experiment spec v1, §3).
 
 Pure functions, exact ``Decimal`` arithmetic, no I/O. Variant D uses them for its
-SMA50 signal; variant A needs the same completed-bar timing with SMA50 and SMA200 and
-may reuse this module.
+SMA50 signal; variant A (``simulation.trend_switch``) uses the same closes and averages
+for its SMA50 and SMA200.
 
 Timing (spec v1 §3, "Timing rules common to all"): the daily bar that opens at UTC
 midnight of day ``d`` closes at midnight of ``d + 1``. Its close is used from the

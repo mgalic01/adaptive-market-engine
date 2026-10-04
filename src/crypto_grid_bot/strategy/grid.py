@@ -38,10 +38,12 @@ class GridBuilder:
         capital: float,
         min_notional: float,
         round_trip_cost_pct: float,
-        capital_utilization: float,
         fta_resistance: float | None = None,
     ) -> GridPlan:
         """Build a geometric grid plan.
+
+        ``capital`` is what the grid may deploy in full; the caller applies any
+        utilisation haircut (the paper engine's ``GRID_BUDGET_FRACTION``).
 
         ``fta_resistance`` is the price of the nearest resistance zone above the
         grid (from structure.py's find_fta). When supplied and the FTA lies within
@@ -57,13 +59,10 @@ class GridBuilder:
         """
         if any(not math.isfinite(x) or x <= 0 for x in (fair_value, atr, capital, min_notional)):
             raise GridNotViable("prices, capital, ATR, and minimum notional must be positive")
-        if not 0 < capital_utilization <= 1:
-            raise GridNotViable("capital_utilization must be between 0 and 1")
         if not math.isfinite(round_trip_cost_pct) or round_trip_cost_pct <= 0:
             raise GridNotViable("a finite positive cost estimate is required")
 
-        deployable = capital * capital_utilization
-        affordable_levels = int(deployable // min_notional)
+        affordable_levels = int(capital // min_notional)
         level_count = min(self._maximum_levels, affordable_levels)
         if level_count < self._minimum_levels:
             raise GridNotViable("capital cannot fund the minimum number of grid levels")
@@ -103,4 +102,4 @@ class GridBuilder:
             levels = tuple(min(lvl, cap) for lvl in levels)
             fta_used = fta_resistance
 
-        return GridPlan(symbol, lower, upper, levels, deployable, spacing_pct, fta_used)
+        return GridPlan(symbol, lower, upper, levels, capital, spacing_pct, fta_used)

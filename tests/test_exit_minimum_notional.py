@@ -233,8 +233,10 @@ class StepReportTests(TestCase):
         self.assertEqual("dust", reports[0]["exit_blocked"])
         self.assertFalse(account.range_exit)
         self.assertEqual("returned inside", reports[0]["range_exit_cleared"])
-        # The exit is settled, so the profit vault can harvest again.
-        self.assertIsNotNone(reports[0]["allocation"])
+        # The exit is settled, so the account harvests again: the drain ends. There was
+        # no profit, so nothing was allocated.
+        self.assertFalse(reports[0]["draining"])
+        self.assertIsNone(reports[0]["allocation"])
         # The dust is still held and still marked; it must not be silently dropped.
         self.assertEqual(D("200"), account.inventory)
 

@@ -1,3 +1,4 @@
+from decimal import Decimal as D
 from unittest import TestCase
 
 from crypto_grid_bot.domain import PortfolioSnapshot, RiskAction
@@ -50,6 +51,46 @@ class RiskEngineTests(TestCase):
     def test_unknown_orders_block_emergency_execution(self) -> None:
         snapshot = PortfolioSnapshot(100, 100, 100, 1, orders_reconciled=False, emergency=True)
         self.assertEqual(RiskAction.PAUSE, self.engine.evaluate(snapshot).action)
+
+    def test_an_equity_exactly_on_a_limit_is_on_it(self) -> None:
+        # Each equity is exactly 12%, 8% or 3% below its reference. Through floats every
+        # one of these ratios rounds a hair under its limit (e.g. 0.11999999999999990),
+        # so the old float engine let each of them through.
+        cases = [
+            ((D("44.264"), D("44.264"), D("50.3")), RiskAction.EXIT, "hard drawdown"),
+            ((D("46.276"), D("46.276"), D("50.3")), RiskAction.REDUCE, "soft drawdown"),
+            ((D("49.276"), D("50.8"), D("50.8")), RiskAction.PAUSE, "daily loss"),
+        ]
+        for values, action, reason in cases:
+            with self.subTest(values=values):
+                self.assertLess(
+                    (float(values[2]) - float(values[0])) / float(values[2]),
+                    {"hard drawdown": 0.12, "soft drawdown": 0.08}.get(reason, 0.03),
+                )
+                decision = self.engine.evaluate(PortfolioSnapshot(*values, 1))
+                self.assertEqual(action, decision.action)
+                self.assertTrue(decision.reasons[0].startswith(reason))
+        # One hundredth of a cent above each limit's equity is inside it.
+        self.assertEqual(
+            RiskAction.REDUCE,
+            self.engine.evaluate(
+                PortfolioSnapshot(D("44.2641"), D("44.2641"), D("50.3"), 1)
+            ).action,
+        )
+        self.assertEqual(
+            RiskAction.ALLOW,
+            self.engine.evaluate(
+                PortfolioSnapshot(D("46.2761"), D("46.2761"), D("50.3"), 1)
+            ).action,
+        )
+        self.assertEqual(
+            RiskAction.ALLOW,
+            self.engine.evaluate(PortfolioSnapshot(D("49.2761"), D("50.8"), D("50.8"), 1)).action,
+        )
+
+    def test_reason_text_keeps_its_float_formatting(self) -> None:
+        decision = self.engine.evaluate(PortfolioSnapshot(D("87.5"), D("100"), D("100"), 1))
+        self.assertEqual(("hard drawdown reached: 12.50%",), decision.reasons)
 
     def test_invalid_risk_thresholds_are_rejected(self) -> None:
         with self.assertRaises(ValueError):

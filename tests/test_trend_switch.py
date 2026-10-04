@@ -34,9 +34,9 @@ from crypto_grid_bot.simulation.trend_switch import (
     classify_days,
     effective_state,
     next_state,
-    simple_moving_average,
     starts_down_sequence,
 )
+from crypto_grid_bot.strategy.daily_sma import DailyCloses
 
 ROOT = Path(__file__).resolve().parents[1]
 DAY0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -84,6 +84,14 @@ def frame_at(when, bid="0.02300", *, ask=None, size="100000", trend=None):
         allow_new_grid=True,
         trend=trend,
     )
+
+
+def simple_moving_average(closes, end, window):
+    """Variant A's average (``DailyCloses``, shared with variant D) of the ``window``
+    closes ending at index ``end``, one close per UTC day from DAY0; None is a missing day.
+    """
+    bars = ((DAY0_MS + i * DAY_MS, close) for i, close in enumerate(closes) if close is not None)
+    return DailyCloses(bars).sma(DAY0_MS + end * DAY_MS, window)
 
 
 class SmaArithmeticTests(TestCase):
