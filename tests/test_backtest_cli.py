@@ -208,6 +208,11 @@ class CliIntegrityTests(unittest.TestCase):
                 structure = "--structure" in flags
                 version = STRUCTURE_FEATURE_VERSION if structure else FEATURE_VERSION
                 self.assertEqual(version, document["feature_version"])
+                # Codex review of #160: the ungated V0 rows' version is stated as well.
+                baseline = {"baseline_feature_version": FEATURE_VERSION} if structure else {}
+                self.assertEqual(
+                    baseline, {k: v for k, v in document.items() if k == "baseline_feature_version"}
+                )
 
     def test_the_commit_is_taken_before_any_check_or_replay(self):
         # Codex review of #160: a commit read after the run could name other code.
@@ -219,7 +224,20 @@ class CliIntegrityTests(unittest.TestCase):
 
         with patch.object(cli, "code_commit", commit):
             self.assertEqual(0, self.main("run", "--variant-a"))
-        self.assertEqual([(0, 0, 0)], seen)
+        # The snapshot comes before everything; the second reading checks it at the end.
+        self.assertEqual((0, 0, 0), seen[0])
+        self.assertEqual(2, len(seen))
+
+    def test_a_checkout_changed_during_the_run_makes_it_invalid(self):
+        # Codex review of #160: spawned workers may have imported the newer code.
+        commits = iter(["0123abc", "4567def"])
+        with patch.object(cli, "code_commit", lambda: next(commits)):
+            self.assertEqual(2, self.main("run", "--variant-b"))
+        (document,) = self.documents().values()
+        self.assertFalse(document["valid"])
+        self.assertIn(
+            "the checkout changed during the run: 0123abc -> 4567def", document["failures"]
+        )
 
     def test_a_trend_benchmark_run_records_its_commit(self):
         # Codex review of #160: variant D is evidence too.

@@ -336,6 +336,11 @@ def main(argv: list[str] | None = None) -> int:
             ]
         results = [f.result() for f in futures]
     failures = result_failures(results)
+    if commit is not None and (after := code_commit()) != commit:
+        # Spawned workers import the code from disk when they start, so after a change of
+        # checkout during the run the recorded commit may not be the code that ran (Codex
+        # review of #160). Such a run is kept for diagnosis but is not evidence.
+        failures.append(f"the checkout changed during the run: {commit} -> {after}")
     # A variant or structure run says so in its directory name; V0's keeps its form.
     stamp = (
         datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -349,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
         "dataset": spec.name,
         "purpose": spec.purpose,
         "feature_version": STRUCTURE_FEATURE_VERSION if args.structure else FEATURE_VERSION,
+        # A structure run's ungated rows are the V0 baseline, with V0's features; each row
+        # carries its own version (Codex review of #160).
+        **({"baseline_feature_version": FEATURE_VERSION} if args.structure else {}),
         "engine_version": ENGINE_VERSION,
         "manifest_created_at": manifest["created_at"],
         **_identity(args.spec, args.config),
