@@ -447,6 +447,23 @@ class TargetTest(unittest.TestCase):
                         [(t.pr, t.unknown) for t in find_targets(cmd, ".")], [(5, None)]
                     )
 
+    def test_case_arms_and_function_bodies_are_read(self):
+        # Codex review of #159: the command follows a case pattern or a function's name.
+        with git_stub():
+            for cmd in (
+                "case x in x) gh pr merge 5;; esac",
+                "case $b in main) echo no;; *) gh pr merge 5;; esac",
+                "f() { gh pr merge 5; }; f",
+                "f () { gh pr merge 5; }",
+                "function f { gh pr merge 5; }",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            self.assertEqual(
+                self.branches("case $b in (main|dev) git push origin claude/a;; esac"),
+                ["claude/a"],
+            )
+
     def test_a_lone_ampersand_ends_a_command(self):
         # Codex review of #159: the shell runs both commands. A redirection is no separator,
         # and PowerShell's call operator still works.

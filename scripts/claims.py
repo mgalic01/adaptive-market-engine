@@ -434,6 +434,8 @@ WRAPPER_VALUE_OPTS = {
     "-o",
     "--output",
 }
+# A `case` arm's pattern word, which the arm's command follows.
+CASE_PATTERN_RE = re.compile(r"\(?[^()]*\)")
 # `env -S 'gh pr merge 5'` (or -S'...', --split-string=...) runs the words of its value.
 SPLIT_STRING_RE = re.compile(r"(?:-S|--split-string=?)(.*)", re.DOTALL)
 WRAPPER_NUMBER_RE = re.compile(r"\d[\d.]*[smhd]?")  # `timeout 60`, `timeout 1.5m`
@@ -445,11 +447,22 @@ MAX_DEPTH = 3  # how deep `bash -c "pwsh -Command '...'"` and `$(...)` are read
 
 def unwrap(words: list[str]) -> list[str]:
     """The command without what runs it: `VAR=1`, PowerShell's `$out =`, `& git` or
-    `&git`, a shell keyword, or a wrapper with its options (`timeout -s KILL 60`)."""
+    `&git`, a shell keyword, a wrapper with its options (`timeout -s KILL 60`), a `case`
+    header or arm pattern, or a function definition's name. A command in a function
+    body counts although it runs only when called (fail closed)."""
     while words:
         w = words[0]
         if w in PREFIX_WORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w):
             words = words[1:]
+        elif w == "case":
+            # `case x in x) gh pr merge 5;; esac` (Codex review of #159).
+            words = words[words.index("in") + 1 :] if "in" in words else []
+        elif CASE_PATTERN_RE.fullmatch(w):
+            words = words[1:]  # an arm's pattern: `x)`, `*)`, `(main|dev)`
+        elif w == "function":
+            words = words[2:]  # `function f { ...`
+        elif w.endswith("()") or words[1:2] == ["()"]:
+            words = words[1:] if w.endswith("()") else words[2:]  # `f() { ...`, `f () {`
         elif w.startswith("$") and words[1:2] == ["="]:
             words = words[2:]
         elif w.startswith("&"):
