@@ -1,3 +1,4 @@
+from decimal import MIN_EMIN, localcontext
 from decimal import Decimal as D
 from unittest import TestCase
 
@@ -107,6 +108,40 @@ class RiskEngineTests(TestCase):
         decision = self.engine.evaluate(snapshot)
         self.assertEqual(RiskAction.EXIT, decision.action)
         self.assertEqual(("hard drawdown reached: 50.00%",), decision.reasons)
+
+    def test_a_balance_with_more_digits_than_any_fixed_precision_is_exact(self) -> None:
+        # Codex review of #159: a 120-digit context rounded this onto the 12% limit.
+        high = D("1." + "0" * 119 + "1")  # 121 significant digits
+        with localcontext() as context:
+            context.prec = 300
+            on_limit = high * D("0.88")
+            quantum = D(1).scaleb(on_limit.as_tuple().exponent)
+            above, below = on_limit + quantum, on_limit - quantum
+        for equity, action in (
+            (on_limit, RiskAction.EXIT),
+            (below, RiskAction.EXIT),
+            (above, RiskAction.REDUCE),
+        ):
+            with self.subTest(equity=equity):
+                decision = self.engine.evaluate(PortfolioSnapshot(equity, equity, high, 1))
+                self.assertEqual(action, decision.action)
+
+    def test_exponents_beyond_the_exact_range_are_invalid(self) -> None:
+        # Codex review of #159: at 1e(MIN_EMIN - 1) the 12% product rounded from 8.8 to 9.
+        low = PortfolioSnapshot(
+            D(f"8.9e{MIN_EMIN - 2}"), D(f"8.9e{MIN_EMIN - 2}"), D(f"1e{MIN_EMIN - 1}"), 1
+        )
+        decision = self.engine.evaluate(low)
+        self.assertEqual(
+            (RiskAction.PAUSE, ("invalid portfolio equity",)), (decision.action, decision.reasons)
+        )
+        # Just inside the range, the comparison is exact: 11% is a soft drawdown, 12% exits.
+        edge = MIN_EMIN + 41  # the equities sit one exponent lower, at the range start
+        for equity, action in (("0.89", RiskAction.REDUCE), ("0.88", RiskAction.EXIT)):
+            with self.subTest(equity=equity):
+                value = D(f"{equity}e{edge}")
+                decision = self.engine.evaluate(PortfolioSnapshot(value, value, D(f"1e{edge}"), 1))
+                self.assertEqual(action, decision.action)
 
     def test_any_finite_decimal_exponent_is_compared_exactly(self) -> None:
         # Codex review of #159: in the default context 1e1000000 raised decimal.Overflow,
