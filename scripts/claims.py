@@ -34,7 +34,7 @@ import subprocess  # nosec B404
 import sys
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PureWindowsPath
@@ -490,6 +490,25 @@ def substitutions(command: str, quotes: bool = True) -> list[str]:
 HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(\\?)(['\"]?)([\w.-]+)\3")
 
 
+def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[str]]:
+    """The here-document operators the shell sees in ``command[start:end]``. One inside
+    quotes or escaped is text (Codex review of #159: `echo "<<EOF"` hid the merge on the
+    next line as a body)."""
+    quote, i = "", start
+    while i < end:
+        c = command[i]
+        if c == "\\" and quote != "'":
+            i += 2  # the escaped character is text
+            continue
+        if c in "'\"" and quote in ("", c):
+            quote = "" if quote else c
+        elif not quote and (m := HEREDOC_RE.match(command, i, end)):
+            yield m
+            i = m.end()
+            continue
+        i += 1
+
+
 def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
     """The command without its here-document bodies, and each body with whether its
     delimiter is quoted (the shell expands nothing in it) and the text before the `<<`
@@ -497,14 +516,14 @@ def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
     (Codex review of #159)."""
     found: list[tuple[str, bool, str]] = []
     pos = 0
-    while (first := HEREDOC_RE.search(command, pos)) is not None:
+    while (first := next(_heredoc_operators(command, pos, len(command)), None)) is not None:
         line_start = command.rfind("\n", 0, first.start()) + 1
         line_end = command.find("\n", first.start())
         if line_end < 0:
             break
         # The bodies follow the line in the order of its `<<`s (Codex review of #159).
         cursor = line_end + 1
-        for m in HEREDOC_RE.finditer(command, first.start(), line_end):
+        for m in _heredoc_operators(command, first.start(), line_end):
             delimiter, tabs = m.group(4), m.group(1) == "-"
             end = cursor
             while end < len(command):

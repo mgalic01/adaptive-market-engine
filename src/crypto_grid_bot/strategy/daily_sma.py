@@ -71,13 +71,14 @@ class DailyCloses:
             values.append(value)
         return values
 
-    def sma(self, day_ms: int, length: int) -> Decimal | None:
-        """Simple moving average of the ``length`` closes ending at ``day_ms``, or None."""
+    def sma(self, day_ms: int, length: int, *, precision: int = _PRECISION) -> Decimal | None:
+        """Simple moving average of the ``length`` closes ending at ``day_ms``, or None,
+        rounded to ``precision`` digits (variant A keeps its own 50)."""
         values = self.window(day_ms, length)
         if values is None:
             return None
         with localcontext() as context:
-            context.prec = _PRECISION
+            context.prec = precision
             return sum(values, ZERO) / length
 
 

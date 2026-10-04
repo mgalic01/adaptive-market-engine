@@ -27,6 +27,7 @@ from crypto_grid_bot.simulation.trend_switch import (
     DOWN,
     MIDDLE,
     RECOVERING,
+    SMA_PRECISION,
     UNAVAILABLE,
     UP,
     TrendSchedule,
@@ -87,11 +88,12 @@ def frame_at(when, bid="0.02300", *, ask=None, size="100000", trend=None):
 
 
 def simple_moving_average(closes, end, window):
-    """Variant A's average (``DailyCloses``, shared with variant D) of the ``window``
-    closes ending at index ``end``, one close per UTC day from DAY0; None is a missing day.
+    """Variant A's average (``DailyCloses``, shared with variant D, at variant A's
+    precision) of the ``window`` closes ending at index ``end``, one close per UTC day from
+    DAY0; None is a missing day.
     """
     bars = ((DAY0_MS + i * DAY_MS, close) for i, close in enumerate(closes) if close is not None)
-    return DailyCloses(bars).sma(DAY0_MS + end * DAY_MS, window)
+    return DailyCloses(bars).sma(DAY0_MS + end * DAY_MS, window, precision=SMA_PRECISION)
 
 
 class SmaArithmeticTests(TestCase):
@@ -117,6 +119,13 @@ class SmaArithmeticTests(TestCase):
         self.assertIsNone(simple_moving_average(closes, 199, 50))
         # A window that ends before the gap is unaffected.
         self.assertEqual(D("125.5"), simple_moving_average(closes, 149, 50))
+
+    def test_variant_a_keeps_its_fifty_digit_averages(self):
+        # Codex review of #159: at the shared helper's 60 digits this SMA200 sits 5e-58
+        # below the last close, which would make the day Recovering instead of Down.
+        closes = [D("0." + "9" * 55)] + [D(1)] * 199
+        (last,) = classify_days(daily(closes))
+        self.assertEqual((D(1), D(1), DOWN), (last.sma200, last.sma50, last.state))
 
     def test_classified_averages_match_the_hand_values(self):
         (first,) = classify_days(daily([D(i) for i in range(1, 201)]))

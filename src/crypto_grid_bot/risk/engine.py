@@ -12,10 +12,12 @@ from math import isfinite
 
 from crypto_grid_bot.domain import PortfolioSnapshot, RiskAction, RiskDecision
 
-# Enough digits for a limit times a prec-50 balance, and its difference, to stay exact,
-# at any exponent a Decimal can have: no balance underflows or overflows the comparisons
-# (Codex review of #159: 1e-1000119 compared as a 100% loss, 1e1000000 raised Overflow).
-_CONTEXT = Context(prec=120, Emin=MIN_EMIN, Emax=MAX_EMAX)
+
+def _wide(prec: int) -> Context:
+    """A context for any exponent a Decimal can have, so no balance underflows or
+    overflows (Codex review of #159: 1e-1000119 compared as a 100% loss, 1e1000000
+    raised Overflow)."""
+    return Context(prec=prec, Emin=MIN_EMIN, Emax=MAX_EMAX)
 
 
 def _exact(value: Decimal | float) -> Decimal | None:
@@ -29,9 +31,19 @@ def _percent(base: Decimal, equity: Decimal) -> str:
     a float cannot hold (``1e-1000`` becomes 0.0) is formatted in Decimal instead."""
     as_float = float(base)
     if as_float == 0 or not isfinite(as_float):
-        with localcontext(_CONTEXT):
+        with localcontext(_wide(28)):
             return f"{(base - equity) / base:.2%}"
     return f"{(as_float - float(equity)) / as_float:.2%}"
+
+
+def _limit_equity(base: Decimal, limit: Decimal) -> Decimal:
+    """The equity at which ``base`` has lost exactly ``limit``: base x (1 - limit), with
+    every digit of the product kept, whatever the size of ``base`` (Codex review of #159:
+    a fixed 120-digit context rounded a 121-digit balance onto a limit)."""
+    keep = 1 - limit  # exact: a configured fraction has at most 17 digits
+    digits = len(base.as_tuple().digits) + len(keep.as_tuple().digits)
+    with localcontext(_wide(digits)):
+        return base * keep
 
 
 class RiskEngine:
@@ -74,12 +86,12 @@ class RiskEngine:
         if portfolio.emergency:
             return RiskDecision(RiskAction.EXIT, ("emergency flag is active",))
 
-        with localcontext(_CONTEXT):
-            # loss / base >= limit, compared as loss >= limit * base: no division, so an
-            # equity exactly on a limit is on it. Both bases are positive (checked above).
-            hard = high - equity >= self._hard_drawdown_pct * high
-            daily = day_start - equity >= self._daily_loss_pause_pct * day_start
-            soft = high - equity >= self._soft_drawdown_pct * high
+        # loss / base >= limit, compared as equity <= base x (1 - limit) with the product
+        # exact: no division and no rounding, so an equity exactly on a limit is on it.
+        # Both bases are positive (checked above).
+        hard = equity <= _limit_equity(high, self._hard_drawdown_pct)
+        daily = equity <= _limit_equity(day_start, self._daily_loss_pause_pct)
+        soft = equity <= _limit_equity(high, self._soft_drawdown_pct)
         if hard:
             return RiskDecision(
                 RiskAction.EXIT, (f"hard drawdown reached: {_percent(high, equity)}",)
