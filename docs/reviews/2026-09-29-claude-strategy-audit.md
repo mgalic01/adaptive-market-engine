@@ -1,6 +1,6 @@
 # Claude → the owner, Bob and Codex: strategy audit of v1 at 344f9ae (what holds, what to correct, what you need to decide)
 
-Index: 2026-09-29 strategy audit of `main` at 344f9ae across eight areas, every finding checked by independent verifiers who tried to refute it. **Verified sound:** a completed grid buy-and-sell pair is profitable in both fee scenarios, and the vault, going flat in a downtrend, funding (a signal only) and minimum-notional handling at 100 units all check out. **Three corrections to merged records:** the v2 research's "V0 (always grid)" is really the *ungated* V0, its "Dual MA (variant A's states)" row is not variant A, and resting grid fills cost the maker fee (0% primary), not 0.14% a leg. **18 owner decisions**, each with numbers, options and a recommendation; the ones that change V0 or the scoring must be settled before any variant runs. **Still to build before v1 can finish:** the variant axis (this PR, phase 2), E/F/H and G's wiring, the comparison mask, and a C1–C6 scorer. This PR also adds 14 tests the amendment and variant B require; one is an expected failure that shows a real spec/code mismatch (an exhaustion halt is not refused by the risk check). **Phase 2 (2026-10-04), the V2 code audit, section (g):** the V2 market-structure code merged since 344f9ae read future daily bars and changed V0 for every run without a flag (issue #158). This PR fixes the lookahead, puts all V2 behaviour behind an off-by-default `--structure` switch (V0 proved byte-identical to 344f9ae), labels every result with what produced it, makes variants A, B and C runnable, and makes the CI runner check its data. Results produced since #151 on specs with daily bars are invalid. Three new owner decisions, D19 to D21. **Phase 3 (2026-10-05), section (h):** the owner's decisions of 2026-10-02 (D1–D16, Bob's `65a7eb0`) recorded in the decisions table; D7 (a soft-drawdown episode that has already recovered closes without a rebase, its 92% boundary now worded consistently), amendment 2 (a flat account clears its old band) and amendment 3 (the range-exit clock stands still while halted) implemented as engine `drawdown-recovery-v2`, schema 8. On the synthetic datasets only gated V0 moves, through amendment 2 (three fictitious range exits per run removed), and D is unchanged.
+Index: 2026-09-29 strategy audit of `main` at 344f9ae across eight areas, every finding checked by independent verifiers who tried to refute it. **Verified sound:** a completed grid buy-and-sell pair is profitable in both fee scenarios, and the vault, going flat in a downtrend, funding (a signal only) and minimum-notional handling at 100 units all check out. **Three corrections to merged records:** the v2 research's "V0 (always grid)" is really the *ungated* V0, its "Dual MA (variant A's states)" row is not variant A, and resting grid fills cost the maker fee (0% primary), not 0.14% a leg. **18 owner decisions**, each with numbers, options and a recommendation; the ones that change V0 or the scoring must be settled before any variant runs. **Still to build before v1 can finish:** the variant axis (this PR, phase 2), E/F/H and G's wiring, the comparison mask, and a C1–C6 scorer. This PR also adds 14 tests the amendment and variant B require; one is an expected failure that shows a real spec/code mismatch (an exhaustion halt is not refused by the risk check). **Phase 2 (2026-10-04), the V2 code audit, section (g):** the V2 market-structure code merged since 344f9ae read future daily bars and changed V0 for every run without a flag (issue #158). This PR fixes the lookahead, puts all V2 behaviour behind an off-by-default `--structure` switch (V0 proved byte-identical to 344f9ae), labels every result with what produced it, makes variants A, B and C runnable, and makes the CI runner check its data. Results produced since #151 on specs with daily bars are invalid. Three new owner decisions, D19 to D21. **Phase 3 (2026-10-05), section (h):** the owner's decisions of 2026-10-02 (D1–D16, Bob's `65a7eb0`) recorded in the decisions table; D7 (a soft-drawdown episode that has already recovered closes without a rebase, its 92% boundary now worded consistently), amendment 2 (a flat account clears its old band) and amendment 3 (the range-exit clock stands still while halted) implemented as engine `drawdown-recovery-v2`, schema 8. On the synthetic datasets only gated V0 moves, through amendment 2 (three fictitious range exits per run removed), and D is unchanged. On 2026-10-05 the owner confirmed D7's wording and decided D8, D9 and D11–D14 as recommended: D9's separate fill trigger is implemented (default unchanged; the synthetic results stay byte-identical), and the rest are recorded (D8 in spec §8, D11 and D13 as comments, D12 already done in #159, D14 unchanged).
 
 - **Date:** 2026-09-29. **Author:** Claude (coordinator session `e0b16be3`, strategy slice).
 - **Base:** `origin/main` at 344f9ae. Paper-only. No market data was read and no backtest
@@ -12,8 +12,8 @@ Index: 2026-09-29 strategy audit of `main` at 344f9ae across eight areas, every 
 - **Phase 2 (2026-10-04, Claude session `b9db01ca`):** the V2 code audit and its fixes,
   stacked on the code-audit PR #159. See section (g).
 - **Phase 3 (2026-10-05, Claude session `b9db01ca`):** the owner's decisions of 2026-10-02
-  and the engine changes for D7, D15 and D16, on `claude/amendments-2026-10`, stacked on
-  this PR. See section (h).
+  and 2026-10-05, and the engine changes for D7, D9, D15 and D16, on
+  `claude/amendments-2026-10` (PR #163), stacked on this PR. See section (h).
 
 ## (a) What the audit checked, and how
 
@@ -140,13 +140,14 @@ V0's behaviour changes only by a recorded owner decision **before** the results 
 affect are seen (no tuning; pre-registration). Where I recommend something, it is only a
 recommendation.
 
-**The owner's decisions (2026-10-02).** The last column records them as Bob wrote them
-into the spec in `65a7eb0` (PR #156), which the owner confirmed on 2026-10-04; that
-commit is cherry-picked onto `claude/amendments-2026-10` (section (h)). It also adds the
-owner's economic-bar note to §6, which Bob's handoff (#162) lists under D5. It records
-no outcome for D8, D9 or D11–D14, so their status is unknown; D17–D21 are still open.
+**The owner's decisions.** The last column records them. Those of 2026-10-02 are as Bob
+wrote them into the spec in `65a7eb0` (PR #156), which the owner confirmed on 2026-10-04;
+that commit is cherry-picked onto `claude/amendments-2026-10` (section (h)), and it also
+adds the owner's economic-bar note to §6, which Bob's handoff (#162) lists under D5. On
+2026-10-05 the owner confirmed D7's wording and decided D8, D9 and D11–D14, each as
+recommended. D17–D21 are still open.
 
-| # | Question, short | Recommendation | Decide before | Owner's decision (2026-10-02) |
+| # | Question, short | Recommendation | Decide before | Owner's decision |
 | --- | --- | --- | --- | --- |
 | D1 | Try 7 or 6 grid levels before giving up? | Not in V0; pre-register for v2 | first variant run | Keep 8-or-nothing for v1, option (a), as Bob's handoff (#162) states; the spec needs no change for it |
 | D2 | Say that entries happen in RANGE only? | Yes, write it down | first variant run | (a): written into §3's common rules; entries are RANGE-only in practice, and H3 can act only in RANGE |
@@ -154,14 +155,14 @@ no outcome for D8, D9 or D11–D14, so their status is unknown; D17–D21 are st
 | D4 | Keep C5/C2 although they score A's idleness as 0? | Keep; D3 answers the bounce question | any variant result is seen | (a): C5 and C2 unchanged for trend-gated variants; D3 answers the bounce question |
 | D5 | Add a Kraken-fee scenario? | Yes, reported only, after checking the fees | first variant run | (a) and (b): a Kraken scenario (0.0025 / 0.0040), reported only, its fees checked before the first run; a move to Kraken reopens acceptance |
 | D6 | What does "SMA undefined" mean for A? | Keep the strict rule; write it down | A's first run | (a): the strict rule, with its 200-day consequence, written into §3 A |
-| D7 | Stop the heal-then-rebase ratchet? | Yes | first variant run | (a): amendment 1, step 3, worded consistently at exactly 92% (h). **Implemented** (h) |
-| D8 | Keep risk checks off on wide-spread frames? | Keep for v1, record it | any live or forward paper run | Not recorded in 65a7eb0, status unknown |
-| D9 | A separate fill-trigger setting for sensitivity? | Yes, default unchanged | sensitivity runs | Not recorded in 65a7eb0, status unknown |
+| D7 | Stop the heal-then-rebase ratchet? | Yes | first variant run | (a), 2026-10-02: amendment 1, step 3. Its wording at exactly 92% (strictly above closes) **confirmed by the owner 2026-10-05**. **Implemented** (h) |
+| D8 | Keep risk checks off on wide-spread frames? | Keep for v1, record it | any live or forward paper run | **Owner decision 2026-10-05:** (a), kept for v1; the exposure is recorded in spec §8, to be decided before any live or forward paper run |
+| D9 | A separate fill-trigger setting for sensitivity? | Yes, default unchanged | sensitivity runs | **Owner decision 2026-10-05:** (a), a separate fill trigger, default unchanged. **Implemented** (h) |
 | D10 | Schedule the promised sensitivity runs? | Yes, values fixed in advance | results count as acceptance evidence | (a): scheduled in §4 with fixed values: spread 0.10% and 0.20%, participation 5% and 20%, missed fill 0.02% and 0.10%, timing +1 and +5 bars |
-| D11 | Rotation and universe settings that do nothing | Keep inert, comment them | no deadline | Not recorded in 65a7eb0, status unknown |
-| D12 | The unused "25%" on a soft drawdown | Remove it | no deadline | Not recorded in 65a7eb0, status unknown |
-| D13 | Two SMA helpers with opposite gap rules | Comment only | no deadline | Not recorded in 65a7eb0, status unknown |
-| D14 | V0 can put 80% of the account in one buy | No change; that is what B tests | variant selection | Not recorded in 65a7eb0, status unknown |
+| D11 | Rotation and universe settings that do nothing | Keep inert, comment them | no deadline | **Owner decision 2026-10-05:** (b), kept inert with values unchanged, removed with the first schema change after v1; noted in the rotation module (h) |
+| D12 | The unused "25%" on a soft drawdown | Remove it | no deadline | **Owner decision 2026-10-05:** (a), removed; already done in #159 |
+| D13 | Two SMA helpers with opposite gap rules | Comment only | no deadline | **Owner decision 2026-10-05:** a one-line comment at each helper (h) |
+| D14 | V0 can put 80% of the account in one buy | No change; that is what B tests | variant selection | **Owner decision 2026-10-05:** no change; variant B tests it |
 | D15 | Old grid bounds kept after going flat (disputed) | Clear them, with a version bump | first variant run | (a): spec amendment 2. **Implemented** (h) |
 | D16 | Range-exit counter inflated during halts | Stop the clock while halted | first variant run | (a): spec amendment 3. **Implemented** (h) |
 | D17 | Halts at 8–12% can never be resumed by hand | Allow a resume with a rebase | any forward paper run | Open |
@@ -628,7 +629,7 @@ gated return on the flat data from 22.9% to 18.5%.
 **What is still owed for V2.** D19 to D21, then a spec v2 with V2's parameters frozen
 (D20), before any V2 run counts.
 
-## (h) Phase 3 (2026-10-05): the owner's decisions, and D7 and amendments 2 and 3 in the engine
+## (h) Phase 3 (2026-10-05): the owner's decisions, and D7, amendments 2 and 3 and D9 in the engine
 
 Branch `claude/amendments-2026-10`, stacked on this PR. Paper-only: synthetic data only,
 no market data read, nothing tuned beyond the three rules.
@@ -745,12 +746,56 @@ through the replay test fixtures, synthetic):
   alone clears the old band at 09:00:09, amendment 3 alone freezes the clock, and either
   removes the exit.
 
+**The owner's decisions of 2026-10-05**, each the recommendation in (d), recorded in the
+table above:
+- **D7.** The wording is confirmed: an episode closes without a rebase only when equity is
+  strictly above 92% of `risk_high`.
+- **D9, implemented.** `MarketRules.fill_trigger_rate` (unset, it is the slippage) is how
+  far a quote must cross a resting limit before it fills. The resting-fill test in
+  `execution.py`'s `match` is its only use; exit prices, marks, the settlement residue,
+  the inventory cap's exit value, the grid's round-trip cost and buy-and-hold's price all
+  keep the slippage. The account identity omits it when unset, and the resume command
+  decodes it. `--fill-trigger RATE` reaches every grid replay; the run records
+  `fill_trigger` and the code commit in `results.json`, and `-fill<RATE>` in its directory
+  name. D places no resting order, so the setting cannot change it. Spec §4's missed-fill
+  row now varies this setting, primary 0.05%, equal to the slippage.
+  - Tests, each failing on `8251c01`:
+    `test_unset_it_is_the_slippage_and_the_identity_omits_it`,
+    `test_it_alone_decides_whether_a_resting_order_fills`,
+    `test_exits_and_marks_keep_the_slippage`,
+    `test_fill_trigger_defaults_to_the_slippage_and_is_carried_when_set`,
+    `test_resume_cli_restores_a_separate_fill_trigger`,
+    `test_a_fill_trigger_reaches_every_replay_and_is_recorded`,
+    `test_out_of_range_fill_trigger_is_rejected` and
+    `test_the_fill_trigger_defaults_to_the_slippage_and_only_moves_resting_fills`.
+  - Evidence: with the default, the harness gives the same `results.json`, byte for byte,
+    as `8251c01` (both run from exports of the commit):
+
+| Run (synthetic) | `8251c01` SHA-256 | With D9, default |
+| --- | --- | --- |
+| Flat, with D | `fda0c6f6e8d7140b7fa7d921a5e2297878ac05bbd9f2348a4bd832a5ab4cd548` | identical |
+| Falling, with D | `cd117ef444ba26684c0a6cc43f77816d66ecee269beb52ded35e075e654ecf38` | identical |
+| No daily bars | `09f6abe1e1018bf991c80aabe399e7e0cc9fa3130f90918b82fc1cb9a1fb9627` | identical |
+
+  (The first two differ from this section's earlier table only by the label
+  `"code_commit": "unknown"`: since #160's round 3 a run with D records its commit, and
+  outside a git checkout that is "unknown".) With `--fill-trigger 0.001` on the flat
+  data, every V0 run misses a few resting fills (gated buys 73 → 71 and 87 → 85, ungated
+  110 → 107 and 131 → 128), and every row's rules still give the slippage as 0.0005.
+- **D8, recorded.** Spec §8 states the exposure: risk checks and forced exits stay off on
+  frames wider than the 0.15% spread limit for v1; replay cannot reach such frames; it is
+  to be decided before any live or forward paper run.
+- **D11, recorded.** The note is in the rotation module's docstring only, not in
+  `config/default.toml`: `results.json`'s `config_sha256` is the SHA-256 of that file's
+  bytes, so even a comment there would change every result's identity.
+- **D12.** Already done in #159: its sim-core audit removed `RiskDecision`'s unused
+  capital multiplier. Nothing further.
+- **D13, recorded.** One comment line at each SMA helper says why its gap rule differs.
+- **D14.** No change; variant B is the registered treatment.
+
 **Still open, or for the owner.**
 - D17–D21 are open. D18's strict expected failure is unchanged and still fails as
   expected.
-- D9 is not recorded, but D10's missed-fill sweep varies the fill trigger, which is the
-  setting D9 would separate from the exit cost; D9 should be settled before the
-  sensitivity runs.
 - §3's V0 paragraph still names amendment 1's engine and schema as V0's, and amendment 2
   counts one more registered trial in `N_family`; updating that record is for the owner
   and Bob.
