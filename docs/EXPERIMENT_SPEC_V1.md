@@ -1057,6 +1057,13 @@ start it automatically. Before asking, Claude reports:
   cost-sensitivity experiment, not a backtest of Revolut X EUR execution: Revolut X
   prices, spreads, queue positions, depth and post-only behaviour are not simulated.
 - A pass justifies at most a proposal for paper trading against live Revolut X prices.
+- **Wide-spread frames (owner decision 2026-10-05, D8).** A frame whose quoted spread is
+  above the 0.15% eligibility limit is rejected as bad data, and on it the engine runs no
+  risk check, no outside-range clock, no drain and no retry of a halt's liquidation.
+  This stays for v1, and replay cannot reach it: it assumes a constant 0.05% spread. A
+  live or forward paper feed can hold wide spreads for long stretches, keeping falling
+  coins with no exit path, so whether to run the risk checks and forced exits on such
+  frames must be decided before any live or forward paper run.
 
 ## 9. Sources
 

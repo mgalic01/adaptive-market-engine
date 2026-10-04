@@ -95,6 +95,7 @@ class SeriesFeatures:
         self.opens = [c.open_ms for c in candles]
         self.close = [float(c.close) for c in candles]
         self.sma50: list[float | None] = [None] * n
+        # D13: skips gaps (data_quality scores the missing hours); A's daily SMA refuses them.
         for i in range(49, n):
             self.sma50[i] = sum(self.close[i - 49 : i + 1]) / 50
         self.sma20: list[Decimal | None] = [None] * n

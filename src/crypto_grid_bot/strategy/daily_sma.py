@@ -64,6 +64,7 @@ class DailyCloses:
         if length < 1:
             raise ValueError("an SMA length must be at least 1")
         values = []
+        # D13: refuses gaps (a gap leaves A's trend unknown: fail closed); hourly SMA50 skips.
         for offset in range(length - 1, -1, -1):
             value = self.close(day_ms - offset * DAY_MS)
             if value is None:
