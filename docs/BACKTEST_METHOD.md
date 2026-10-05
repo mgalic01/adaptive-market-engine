@@ -203,6 +203,14 @@ H (each variant's fields are named after it). Notes on each:
   history from the most recent halving, which only P8's extended history provides, so
   without it H3 never relaxes an entry.
 
+**The full stack** (`--variant-full`, spec v1 §3, test-plan amendment of 2026-10-05) is
+C+F+G+H with the V2 structure features, which the flag turns on itself: its gated rows
+name the variant `C+F+G+H` and carry the `price-only-v1+structure-v2` label, as every
+`--structure` row does. Each part keeps its own rules. A new grid opens only when A, F, G
+and H2 all allow it, and at grid open V2's level filter runs before B's cap. The policy
+refuses C+F+G+H without the structure features, which the spec does not declare. V2 alone
+is V0 with `--structure`.
+
 E and F keep account state that is never saved, so they run in historical replay only
 ([PAPER_SIMULATION.md](PAPER_SIMULATION.md)).
 

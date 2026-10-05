@@ -15,7 +15,7 @@ on:
           - verify-2024h1
           - full-range-2019-2024
       variant:
-        description: "Spec v1 variant: V0 (baseline), A (daily trend switch; needs daily_warmup_start), B (40% inventory cap), C (A and B), E (volume-confirmed exit), F (order-flow block), G (funding gate; refuses to run until the manifest lists the funding archives, kept by the fetch below), H (cycle context; needs daily_warmup_start), C+G or C+H"
+        description: "Spec v1 variant: V0 (baseline), A (daily trend switch; needs daily_warmup_start), B (40% inventory cap), C (A and B), E (volume-confirmed exit), F (order-flow block), G (funding gate; refuses to run until the manifest lists the funding archives, kept by the fetch below), H (cycle context; needs daily_warmup_start), C+G, C+H, or C+F+G+H+V2 (the full stack: C with F, G, H and the V2 structure features, which it turns on itself). V2 alone is V0 with structure true."
         required: false
         default: "V0"
         type: choice
@@ -30,6 +30,7 @@ on:
           - "H"
           - "C+G"
           - "C+H"
+          - "C+F+G+H+V2"
       structure:
         description: "Enable the V2 market-structure features (off in V0; results labelled +structure-v2)"
         required: false
@@ -87,6 +88,7 @@ jobs:
             H) set -- "$@" --variant-h ;;
             C+G) set -- "$@" --variant-cg ;;
             C+H) set -- "$@" --variant-ch ;;
+            C+F+G+H+V2) set -- "$@" --variant-full ;;
           esac
           if [ "$STRUCTURE" = "true" ]; then
             set -- "$@" --structure

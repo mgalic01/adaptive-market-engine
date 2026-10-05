@@ -88,8 +88,9 @@ def manifest_path(spec_path: Path) -> Path:
 
 def variant_policy(variant: str | None, *, structure: bool = False) -> SimulationPolicy | None:
     """The policy of spec v1 variant ``variant`` (a name in ``VARIANTS``, such as "A" or
-    "C+G"; None is V0), with the V2 structure features when ``structure``. None when
-    nothing differs from V0, so a V0 run takes exactly the path it always has."""
+    "C+G"; None is V0), with the V2 structure features when ``structure``; the full
+    stack, "C+F+G+H", is declared only with them. None when nothing differs from V0, so
+    a V0 run takes exactly the path it always has."""
     if variant is not None and variant not in VARIANTS[1:]:
         raise ValueError(f"unknown variant {variant!r}")
     if variant is None and not structure:

@@ -211,6 +211,8 @@ class CliIntegrityTests(unittest.TestCase):
     def test_variant_and_structure_flags_reach_every_replay_and_are_recorded(self):
         cap = Decimal("0.40")
         c = {"trend_switch": True, "inventory_cap": cap}
+        full = {**c, "flow_block_entry": True, "funding_gate": True, "cycle_gate": True}
+        full |= {"structure": True}
         cases = {
             ("--variant-a",): ("-variant-A", SimulationPolicy(trend_switch=True)),
             ("--variant-b",): ("-variant-B", SimulationPolicy(inventory_cap=cap)),
@@ -221,6 +223,12 @@ class CliIntegrityTests(unittest.TestCase):
             ("--variant-h",): ("-variant-H", SimulationPolicy(cycle_gate=True)),
             ("--variant-cg",): ("-variant-C+G", SimulationPolicy(**c, funding_gate=True)),
             ("--variant-ch",): ("-variant-C+H", SimulationPolicy(**c, cycle_gate=True)),
+            # The full stack C+F+G+H+V2: its one flag sets every part, structure included.
+            ("--variant-full",): ("-variant-C+F+G+H-structure", SimulationPolicy(**full)),
+            ("--variant-full", "--structure"): (
+                "-variant-C+F+G+H-structure",
+                SimulationPolicy(**full),
+            ),
             ("--structure",): ("-structure", SimulationPolicy(structure=True)),
             ("--variant-b", "--structure"): (
                 "-variant-B-structure",
@@ -230,6 +238,8 @@ class CliIntegrityTests(unittest.TestCase):
         for flags, (suffix, policy) in cases.items():
             with self.subTest(flags=flags):
                 self.arms.clear()
+                for written in Path(self.temp.name).rglob("results.json"):
+                    written.unlink()  # two cases share a suffix
                 self.assertEqual(0, self.main("run", *flags))
                 # Codex review of #160: the ungated rows stay the ungated V0 baseline.
                 self.assertEqual({(True, policy), (False, None)}, set(self.arms))
@@ -238,7 +248,7 @@ class CliIntegrityTests(unittest.TestCase):
                     json.loads(json.dumps(policy.identity(), default=str)), document["policy"]
                 )
                 self.assertEqual("0123abc", document["code_commit"])
-                structure = "--structure" in flags
+                structure = policy.structure
                 version = STRUCTURE_FEATURE_VERSION if structure else FEATURE_VERSION
                 self.assertEqual(version, document["feature_version"])
                 # Codex review of #160: the ungated V0 rows' version is stated as well.

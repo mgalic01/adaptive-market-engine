@@ -49,6 +49,7 @@ from crypto_grid_bot.backtest.replay import (
     VOLUME_DRIFT_TOLERANCE,
 )
 from crypto_grid_bot.backtest.trend_benchmark import trend_job
+from crypto_grid_bot.simulation.runner import FULL_STACK
 
 
 def checked_symbols(spec: DatasetSpec) -> list[str]:
@@ -350,6 +351,15 @@ def main(argv: list[str] | None = None) -> int:
         help="enable C+H: variant C with the cycle context (spec v1 §3 H), a declared "
         "interaction; requires daily_warmup_start in the spec",
     )
+    variants.add_argument(
+        "--variant-full",
+        action="store_const",
+        const=FULL_STACK,
+        dest="variant",
+        help="enable the full stack C+F+G+H+V2: variant C with F, G and H and the V2 "
+        "structure features, a declared combination (spec v1 §3); sets --structure, and "
+        "requires daily_warmup_start in the spec and G's funding archives",
+    )
     parser.add_argument(
         "--structure",
         action="store_true",
@@ -363,6 +373,8 @@ def main(argv: list[str] | None = None) -> int:
         "variant, --structure or --trend-benchmark run)",
     )
     args = parser.parse_args(argv)
+    # The full stack's flag sets every part of it, V2's structure features included.
+    args.structure = args.structure or args.variant == FULL_STACK
     spec = load_spec(args.spec)
     maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
     taker = fee_rate(args.taker_fee, "taker fee") if args.taker_fee is not None else None

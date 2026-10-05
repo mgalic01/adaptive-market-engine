@@ -115,8 +115,11 @@ RESISTANCE_TARGET = D("0.999")
 # refused rather than continued under the new rules.
 SCHEMA = 10
 # Spec v1 sections 3 and 4: the variants a policy may run ("" is V0). E and F stand
-# alone; G and H run alone or with C as the declared interactions C+G and C+H.
-VARIANTS = ("", "A", "B", "C", "E", "F", "G", "H", "C+G", "C+H")
+# alone; G and H run alone or with C as the declared interactions C+G and C+H. The full
+# stack C+F+G+H+V2 (test-plan amendment, owner decision 2026-10-05) is C+F+G+H with the
+# V2 structure flag, and is declared only with it. V2 alone is V0 with that flag.
+FULL_STACK = "C+F+G+H"
+VARIANTS = ("", "A", "B", "C", "E", "F", "G", "H", "C+G", "C+H", FULL_STACK)
 # The policy's on/off flags: each is off in V0, and left out of the identity when off.
 POLICY_FLAGS = (
     "trend_switch",
@@ -212,6 +215,8 @@ class SimulationPolicy:
                 raise ValueError(f"{name} must be a positive integer")
         if self.variant not in VARIANTS:
             raise ValueError(f"spec v1 declares no variant {self.variant}")
+        if self.variant == FULL_STACK and not self.structure:
+            raise ValueError(f"spec v1 declares no variant {FULL_STACK} without V2's structure")
 
     @property
     def variant(self) -> str:

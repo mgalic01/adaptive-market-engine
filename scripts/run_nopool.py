@@ -14,8 +14,8 @@ Usage:
 
 Every flag after the spec name is passed to the CLI (``--variant-a``, ``--variant-b``,
 ``--variant-c``, ``--variant-e``, ``--variant-f``, ``--variant-g``, ``--variant-h``,
-``--variant-cg``, ``--variant-ch``, ``--structure``, ``--trend-benchmark``,
-``--maker-fee`` ...).
+``--variant-cg``, ``--variant-ch``, ``--variant-full``, ``--structure``,
+``--trend-benchmark``, ``--maker-fee`` ...).
 """
 
 import sys

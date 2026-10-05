@@ -594,9 +594,40 @@ class ReplayTests(unittest.TestCase):
                 )
         self.assertEqual(SimulationPolicy(structure=True), variant_policy(None, structure=True))
         self.assertIn("not the spec", variant_name(SimulationPolicy(inventory_cap=D("0.5"))))
-        for undeclared in ("", "D", "A+G", "E+F", "G+H"):
+        for undeclared in ("", "D", "A+G", "E+F", "G+H", "C+F+G+H+V2", "C+E+F+G+H"):
             with self.subTest(undeclared=undeclared), self.assertRaises(ValueError):
                 variant_policy(undeclared)
+
+    def test_the_full_stack_is_c_f_g_and_h_with_the_structure_features(self):
+        # Spec v1 §3 (test-plan amendment, 2026-10-05): C+F+G+H+V2, which E is not in.
+        full = SimulationPolicy(
+            trend_switch=True,
+            inventory_cap=D("0.40"),
+            flow_block_entry=True,
+            funding_gate=True,
+            cycle_gate=True,
+            structure=True,
+        )
+        self.assertEqual(full, variant_policy("C+F+G+H", structure=True))
+        self.assertEqual("C+F+G+H", full.variant)
+        self.assertEqual("C+F+G+H", variant_name(full))
+        # Its identity adds every part's flag to V0's, and nothing else.
+        added = set(full.identity()) - set(SimulationPolicy().identity())
+        self.assertEqual(
+            {
+                "inventory_cap",
+                "trend_switch",
+                "flow_block_entry",
+                "funding_gate",
+                "cycle_gate",
+                "structure",
+            },
+            added,
+        )
+        self.assertNotIn("volume_exit", full.identity())
+        # Without the structure features it is not the declared combination.
+        with self.assertRaisesRegex(ValueError, "no variant C\\+F\\+G\\+H without"):
+            variant_policy("C+F+G+H")
 
     def test_only_declared_variant_combinations_run(self):
         # Spec v1 §3 and §4: E and F stand alone; G and H run alone or with C (A and B).
@@ -616,6 +647,22 @@ class ReplayTests(unittest.TestCase):
         ):
             with self.subTest(flags=flags), self.assertRaisesRegex(ValueError, "no variant"):
                 SimulationPolicy(**flags)
+        # The full stack is declared with the V2 structure flag only, and exactly as
+        # C+F+G+H: a part missing, E added or C split is refused, structure or not.
+        full = {"trend_switch": True, "inventory_cap": cap, "flow_block_entry": True}
+        full |= {"funding_gate": True, "cycle_gate": True}
+        for flags in (
+            full,
+            {**full, "volume_exit": True, "structure": True},
+            {**full, "trend_switch": False, "structure": True},
+            {**full, "inventory_cap": None, "structure": True},
+            {**full, "flow_block_entry": False, "structure": True},
+            {**full, "funding_gate": False, "structure": True},
+            {**full, "cycle_gate": False, "structure": True},
+        ):
+            with self.subTest(flags=flags), self.assertRaisesRegex(ValueError, "no variant"):
+                SimulationPolicy(**flags)
+        self.assertEqual("C+F+G+H", SimulationPolicy(**full, structure=True).variant)
         # The V2 structure flag is not a variant and goes with any of them.
         self.assertEqual("E", SimulationPolicy(volume_exit=True, structure=True).variant)
         self.assertEqual("", SimulationPolicy(structure=True).variant)
