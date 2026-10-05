@@ -26,9 +26,10 @@
 - C2 and the selection use compound annualised returns, and `N_family` grows (§6).
 
 Where the owner accepted a reading of Claude's rather than choosing the words himself,
-the text says so. The full stack's combination order (§3) remains a reading open to
-Codex's and Bob's review. Whether stage 2 also runs the reported-only sensitivities is
-left for the owner to decide later; they decide nothing.
+the text says so. The full stack's combination order (§3) was a reading left open to
+Codex's and Bob's review. They reviewed it on #168 and #170 and raised nothing against
+it before the freeze. Whether stage 2 also runs the reported-only sensitivities is left
+for the owner to decide later; they decide nothing.
 
 The scope is paper trading and historical replay only. Nothing here authorises live
 trading, API keys or withdrawals. The default risk limits (3% daily pause, 8% soft and
