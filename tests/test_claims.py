@@ -404,6 +404,16 @@ class TargetTest(unittest.TestCase):
             for cmd in ("# <<EOF\ngh pr merge 5\nEOF", "echo hi # <<EOF\ngh pr merge 5"):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a body piped into a shell runs; an arithmetic shift is
+            # no here-document.
+            for cmd in (
+                "cat <<'EOF' | bash\ngh pr merge 5\nEOF",
+                "cat <<EOF | sh -s\ngh pr merge 5\nEOF",
+                "((x << 1))\ngh pr merge 5",
+                "echo $((x << 2))\ngh pr merge 5",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
             # Codex review of #159: a quoted reader name is still the shell that runs it.
             self.assertEqual(self.prs("/bin/'bash' <<'EOF'\ngh pr merge 5\nEOF"), [5])
             # Codex review of #159: two bodies on one line, read in order.

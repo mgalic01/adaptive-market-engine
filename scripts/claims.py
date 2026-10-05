@@ -582,16 +582,20 @@ def _quoted(command: str) -> list[bool]:
 
 def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[str]]:
     """The here-document operators the shell sees in ``command[start:end]``. One inside
-    quotes, escaped or in a comment is text (Codex review of #159: `echo "<<EOF"` and
-    `# <<EOF` each hid the merge on the next line as a body)."""
-    quoted, i = _quoted(command), start
+    quotes, escaped, in a comment or in arithmetic (`((x << 1))`, a shift) is not one
+    (Codex review of #159: each hid the merge on the next line as a body)."""
+    quoted, i, arithmetic = _quoted(command), start, 0
     while i < end:
         if quoted[i]:
             i += 1
+        elif command.startswith("((", i):
+            arithmetic, i = arithmetic + 1, i + 2
+        elif arithmetic and command.startswith("))", i):
+            arithmetic, i = arithmetic - 1, i + 2
         elif command[i] == "#" and (i == 0 or command[i - 1] in " \t\n;&|("):
             line_end = command.find("\n", i, end)  # a comment runs to the end of its line
             i = end if line_end < 0 else line_end
-        elif m := HEREDOC_RE.match(command, i, end):
+        elif not arithmetic and (m := HEREDOC_RE.match(command, i, end)):
             yield m
             i = m.end()
         else:
@@ -600,9 +604,10 @@ def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[
 
 def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
     """The command without its here-document bodies, and each body with whether its
-    delimiter is quoted (the shell expands nothing in it) and the text before the `<<`
-    on its line, which names the reader. A body is the reader's input, not commands
-    (Codex review of #159)."""
+    delimiter is quoted (the shell expands nothing in it) and the whole line of its
+    `<<`, which names its reader: the command before it or a shell it is piped into
+    (`cat <<'EOF' | bash`). A body is its reader's input, not commands (Codex review of
+    #159)."""
     found: list[tuple[str, bool, str]] = []
     pos = 0
     while (first := next(_heredoc_operators(command, pos, len(command)), None)) is not None:
@@ -625,7 +630,7 @@ def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
                 end = row_end + 1
             else:
                 body, after = command[cursor:], len(command)
-            found.append((body, bool(m.group(2) or m.group(3)), command[line_start : m.start()]))
+            found.append((body, bool(m.group(2) or m.group(3)), command[line_start:line_end]))
             cursor = after
         command, pos = command[: line_end + 1] + command[cursor:], line_end + 1
     return command, found
