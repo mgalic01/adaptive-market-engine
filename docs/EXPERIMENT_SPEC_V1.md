@@ -1145,14 +1145,19 @@ unless P4 sources historical filters
 **Failures that reach every pair-window.** Some data feeds every pair, so a failure in it
 excludes every pair-window of the window:
 - an untraded market proxy's or untraded basket member's failure;
-- a traded market proxy's failure that concerns its 1h bars, which feed every pair's
-  features. That covers a missing or duplicated hour, and a 1m or 1d bar that disagrees
-  with its hours, since the check cannot show which archive is wrong.
+- a traded market proxy's failure that leaves one of its 1h bars, which feed every
+  pair's features, missing, in doubt or unchecked. That covers:
+  - a missing or duplicated hour;
+  - a 1m or 1d bar that disagrees with its hours, since the check cannot show which
+    archive is wrong;
+  - an hour with no minutes to check it against, or no hour compared at all.
 
-A traded proxy's 1m and 1d bars feed only its own runs, so its other failures exclude
-only its own pair-window. Every other traded pair's failures are its own too, even when
-it votes in the basket. *(The traded proxy's split is Claude's reading, from Codex's
-review of #170, open to the owner.)*
+A traded proxy's 1m and 1d bars feed only its own runs. Its other failures therefore
+exclude only its own pair-window: minutes missing inside an hour whose 1h bar they still
+match, and a missing, duplicated or short daily history. Every other traded pair's
+failures are its own too, even when it votes in the basket. *(Owner decision,
+2026-10-05, on the traded proxy's split, which came out of Codex's review of #170;
+[record](reviews/2026-10-05-claude-owner-decisions-test-plan.md), "Later decisions".)*
 
 **Minimum evidence:** each development window must keep at least 2 included pairs.
 Otherwise the outcome is "insufficient evidence", not a winner.

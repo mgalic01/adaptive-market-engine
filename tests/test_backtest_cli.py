@@ -83,6 +83,11 @@ def good_result(symbol, mode, gated):
     }
 
 
+def failing(field):
+    """A value that fails integrity field ``field``: none compared, or a count above zero."""
+    return {field: 0} if field.endswith("_compared") else {field: 1}
+
+
 class CliIntegrityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -158,14 +163,27 @@ class CliIntegrityTests(unittest.TestCase):
         # BTCUSDT is traded too, but as the proxy its hours feed every pair's regime, so a
         # failure about them is never its own: nothing replays, whatever the other pairs
         # show. A 1m or 1d bar that disagrees with its hours counts as one, since the
-        # check cannot show which archive is wrong.
-        self.assertLessEqual(
-            cli.PROXY_HOURLY_FIELDS, {*cli.INTEGRITY_FIELDS, *cli.DAILY_INTEGRITY_FIELDS}
+        # check cannot show which archive is wrong, and so does an hour left unchecked:
+        # one with no minutes, or none compared at all (the automated review of #170).
+        fields = {*cli.INTEGRITY_FIELDS, *cli.DAILY_INTEGRITY_FIELDS, "hours_compared"}
+        self.assertLessEqual(cli.PROXY_HOURLY_FIELDS, fields)
+        self.assertEqual(
+            cli.PROXY_HOURLY_FIELDS,
+            {
+                "hours_compared",
+                "hours_mismatched",
+                "hours_missing",
+                "hours_absent_from_minutes",
+                "hours_absent_from_both",
+                "daily_days_mismatched",
+                "daily_days_hours_incomplete",
+            },
         )
         practice = str(ROOT / "config/datasets/practice-2022.toml")
         daily = {"daily_days_compared": 10} | {field: 0 for field in cli.DAILY_INTEGRITY_FIELDS}
+        shared = sorted(cli.PROXY_HOURLY_FIELDS)
         for overrides in (
-            *({"BTCUSDT": {**daily, field: 1}} for field in sorted(cli.PROXY_HOURLY_FIELDS)),
+            *({"BTCUSDT": {**daily, **failing(field)}} for field in shared),
             {"BTCUSDT": {"hours_missing": 1}, "SOLUSDT": {"hours_incomplete": 1}},
             # Its own daily failure as well does not make the hourly one its own.
             {"BTCUSDT": {**daily, "daily_days_missing": 1, "hours_mismatched": 1}},
@@ -180,15 +198,23 @@ class CliIntegrityTests(unittest.TestCase):
     def test_a_traded_proxys_minute_or_daily_failure_excludes_only_its_pair_window(self):
         # Codex's review of #170: BTCUSDT's 1m and 1d bars feed only its own runs, so a
         # failure confined to them excludes BTCUSDT alone. SOLUSDT and XRPUSDT still run,
-        # with BTCUSDT's hours as their market proxy, as a valid run.
+        # with BTCUSDT's hours as their market proxy, as a valid run. The minute failures
+        # left here are gaps inside hours whose 1h bar still matched its minutes.
         practice = str(ROOT / "config/datasets/practice-2022.toml")
         daily = {"daily_days_compared": 10} | {field: 0 for field in cli.DAILY_INTEGRITY_FIELDS}
         own = {*cli.INTEGRITY_FIELDS, *cli.DAILY_INTEGRITY_FIELDS} - cli.PROXY_HOURLY_FIELDS
+        self.assertEqual(
+            own,
+            {
+                "minutes_missing",
+                "hours_incomplete",
+                "daily_days_missing",
+                "daily_days_duplicated",
+                "daily_warmup_short",
+            },
+        )
         cases = [({field: 2}, f"BTCUSDT: {field}=2") for field in sorted(own)]
-        cases += [
-            ({"hours_compared": 0}, "BTCUSDT: no hours compared"),
-            ({"daily_days_compared": 0}, "BTCUSDT: no daily bars compared"),
-        ]
+        cases += [({"daily_days_compared": 0}, "BTCUSDT: no daily bars compared")]
         for fields, reason in cases:
             with self.subTest(fields=fields):
                 self.replays.clear()

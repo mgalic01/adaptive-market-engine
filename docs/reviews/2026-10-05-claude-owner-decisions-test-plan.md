@@ -9,7 +9,8 @@ Index: **Owner decisions, 2026-10-05 (test plan).** Everything runs in one batch
   - about 13:40: two stages and the nine data rules (decisions 5 and 6);
   - about 14:10: V2's exception, how the stages combine, the six readings (decisions 7–9);
   - about 14:25: the code each stage runs on (decision 10);
-  - about 18:18, after #168 merged: variant E and the freeze (decisions 11 and 12, under "Later decisions").
+  - about 18:18, after #168 merged: variant E and the freeze (decisions 11 and 12, under "Later decisions");
+  - about 20:33, during #170's review: a traded market proxy's defects (decision 13).
 - **How:** multiple-choice questions. Claude recommended every chosen option except the first long-data answer, which a later answer superseded.
 - **Scope:** this record, the spec v1 amendment (`docs/EXPERIMENT_SPEC_V1.md`, "test-plan amendment") and a dated amendment to `docs/STRUCTURE_PREREGISTRATION.md`. No code, config, dataset spec or manifest changes; separate PRs carry those.
 - **Why now:** the project forbids changing parameters or criteria after seeing results. This record fixes the test plan before any result of the coming batch exists. No market data, backtest result or strategy result was read for it, and none of #156's result reports was opened.
@@ -191,7 +192,11 @@ Claude's first draft (local commit `216a1d8`, never pushed) said the 2017–2024
 
 ## Later decisions
 
-After #168 merged, the owner answered two more questions in Claude's session, at about 18:18 UTC on 2026-10-05. Claude recommended both chosen options.
+After #168 merged, the owner answered three more questions in Claude's session on 2026-10-05:
+- decisions 11 and 12 at about 18:18 UTC;
+- decision 13 at about 20:33 UTC, during #170's review.
+
+Claude recommended every chosen option.
 
 11. **Variant E.**
     - Question: "Variant E (the longer range exit on low volume) may only be picked as the winner 'after Codex has reviewed its implementation and the boundary tests'. Codex reviewed exactly that across #165's five rounds, ending with no findings. Make E selectable?"
@@ -200,6 +205,12 @@ After #168 merged, the owner answered two more questions in Claude's session, at
 12. **Freezing spec v1.**
     - Question: "Freezing spec v1: its header says it becomes frozen 'only when Codex has reviewed it and the owner has confirmed the acceptance criteria in §6'. Codex has reviewed every amendment, ending clean on #168, and you confirmed C1–C6 on 2026-09-24 and amended C2 today. Freeze it once the full-test-setup PR merges, before stage 1?"
     - Chosen: **"Yes, freeze then"**. Option text: "I open a small PR that marks spec v1 frozen with today's date and replaces the stale 'no strategy code exists' line. From then on any rule change needs a new spec version, and stage 1 runs on the frozen rules."
+13. **A traded market proxy's defects.**
+    - Context: Codex's review of #170 asked that a BTC daily defect exclude BTC alone. The automated review then asked that an unchecked BTC hour reach every pair, and that the owner confirm the split before stage 1.
+    - Question: "BTC is both a traded pair and the 'market proxy' whose hourly bars every other pair reads. When BTC's data has a defect in a test window, which pairs should be excluded from scoring?"
+    - Chosen: **"Split by data"**. Option text: "A defect in BTC's hourly bars, or one that leaves them unchecked, excludes every pair (they all read those bars). A defect only in BTC's daily or minute data excludes just BTC; the other pairs still run. This is what #170 now does."
+    - The other option was "Any BTC defect: all pairs". Option text: "The previous behaviour: any BTC data defect, even daily-only, excludes every pair in that window. Simpler and stricter, but a BTC daily-bar problem would throw away valid ADA/XRP/SOL results."
+    - Where it landed: spec §5, "Failures that reach every pair-window", and `scoped_failures` in #170. It applies to whichever symbol is the traded proxy; BTCUSDT is the proxy in every registered window.
 
 ## Still open
 

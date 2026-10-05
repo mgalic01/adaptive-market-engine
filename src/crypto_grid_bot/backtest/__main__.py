@@ -84,13 +84,17 @@ DAILY_INTEGRITY_FIELDS = (
 )
 
 
-# A traded market proxy's failures that concern its 1h bars, which feed every pair's
-# features. Its 1m and 1d bars feed only its own runs. A 1m or 1d bar that disagrees with
-# its hours counts here too: the check cannot show which archive is wrong.
+# A traded market proxy's failures that leave one of its 1h bars missing, duplicated, in
+# doubt or unchecked. Its 1h bars feed every pair's features; its 1m and 1d bars feed
+# only its own runs. A 1m or 1d bar that disagrees with its hours counts here (the check
+# cannot show which archive is wrong), and so does an hour with no minutes to check it
+# against, or no hour compared at all.
 PROXY_HOURLY_FIELDS = frozenset(
     {
+        "hours_compared",
         "hours_mismatched",
         "hours_missing",
+        "hours_absent_from_minutes",
         "hours_absent_from_both",
         "daily_days_mismatched",
         "daily_days_hours_incomplete",
@@ -470,6 +474,8 @@ def main(argv: list[str] | None = None) -> int:
         # Section 5: a traded pair whose own check failed is excluded and not replayed, and
         # the other pairs run. A failure that reaches every pair, or an exclusion that
         # leaves none, stops the run: nothing replays, and every failure is reported.
+        # Exclusions alone leave the window "valid": they are listed under excluded_pairs,
+        # never among the failures.
         every, excluded = scoped_failures(spec, cross_checks)
         pairs = [pair for pair in spec.traded if pair not in excluded]
         failures = integrity_failures(cross_checks) if every or not pairs else []

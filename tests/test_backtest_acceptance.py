@@ -673,29 +673,41 @@ class MaskTests(unittest.TestCase):
         self.assertEqual(score.window_of(spec, checks).included, ())
 
     def test_a_traded_proxys_failure_reaches_every_pair_only_through_its_hours(self) -> None:
-        # verify-2024h1 trades ADAUSDT and BTCUSDT, the market proxy. A failure about the
-        # proxy's hours (including a 1m or 1d bar that disagrees with them) excludes both
-        # pairs. Any other failure of its 1m or 1d bars excludes BTCUSDT alone.
+        # verify-2024h1 trades ADAUSDT and BTCUSDT, the market proxy. A failure that leaves
+        # a proxy hour missing, in doubt or unchecked (a 1m or 1d bar that disagrees with
+        # it, no minutes behind it, no hour compared at all) excludes both pairs. Any other
+        # failure of its 1m or 1d bars excludes BTCUSDT alone.
         spec = load_spec(SPECS / "verify-2024h1.toml")
-        own = {*cli.INTEGRITY_FIELDS, *cli.DAILY_INTEGRITY_FIELDS} - cli.PROXY_HOURLY_FIELDS
-        cases = [(field, {"ADAUSDT", "BTCUSDT"}) for field in sorted(cli.PROXY_HOURLY_FIELDS)]
-        cases += [(field, {"BTCUSDT"}) for field in sorted(own)]
+        shared = (
+            "hours_compared",
+            "hours_mismatched",
+            "hours_missing",
+            "hours_absent_from_minutes",
+            "hours_absent_from_both",
+            "daily_days_mismatched",
+            "daily_days_hours_incomplete",
+        )
+        own = (
+            "minutes_missing",
+            "hours_incomplete",
+            "daily_days_missing",
+            "daily_days_duplicated",
+            "daily_warmup_short",
+            "daily_days_compared",
+        )
+        cases = [(field, {"ADAUSDT", "BTCUSDT"}) for field in shared]
+        cases += [(field, {"BTCUSDT"}) for field in own]
         for field, excluded in cases:
             with self.subTest(field):
                 checks = clean_checks(spec)
-                next(c for c in checks if c["symbol"] == "BTCUSDT")[field] = 1
+                value = 0 if field.endswith("_compared") else 1
+                next(c for c in checks if c["symbol"] == "BTCUSDT")[field] = value
                 window = score.window_of(spec, checks)
                 self.assertEqual(set(window.excluded), excluded)
-                self.assertEqual(window.excluded["BTCUSDT"], (f"BTCUSDT: {field}=1",))
-        for field, reason in (
-            ("hours_compared", "BTCUSDT: no hours compared"),
-            ("daily_days_compared", "BTCUSDT: no daily bars compared"),
-        ):
-            with self.subTest(field):
-                checks = clean_checks(spec)
-                next(c for c in checks if c["symbol"] == "BTCUSDT")[field] = 0
-                window = score.window_of(spec, checks)
-                self.assertEqual(window.included, ("ADAUSDT",))
+                reason = {
+                    "hours_compared": "BTCUSDT: no hours compared",
+                    "daily_days_compared": "BTCUSDT: no daily bars compared",
+                }.get(field, f"BTCUSDT: {field}=1")
                 self.assertEqual(window.excluded["BTCUSDT"], (reason,))
 
     def test_checks_must_be_one_per_checked_symbol(self) -> None:

@@ -293,12 +293,16 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
   - Some failures reach every pair, and so does an exclusion that leaves no pair. Then
     `verify` and `run` exit with code 2, and nothing replays. Those failures are:
     - any failure of an untraded market proxy or untraded basket member;
-    - a traded proxy's failure about its 1h bars, which feed every pair
-      (`PROXY_HOURLY_FIELDS`: a missing or duplicated hour, or a 1m or 1d bar that
-      disagrees with its hours).
+    - a traded proxy's failure that leaves one of its 1h bars, which feed every pair,
+      missing, in doubt or unchecked (`PROXY_HOURLY_FIELDS`): a missing or duplicated
+      hour, a 1m or 1d bar that disagrees with its hours, an hour with no minutes, or no
+      hour compared at all.
 
     A traded proxy's other 1m and 1d failures are its own pair-window's, since those
-    bars feed only its own runs.
+    bars feed only its own runs: minutes missing inside an hour whose 1h bar they still
+    match, and a missing, duplicated or short daily history (owner decision 2026-10-05).
+    Exclusions alone leave the window `valid`: they are listed under `excluded_pairs`,
+    never among the `failures`.
   - Gaps from a genuine listing or delisting are not exempted yet; such a dataset must
     first declare them explicitly.
 - **Run validity:** accounting problems, rejected frames, zero evaluation bars, or a
