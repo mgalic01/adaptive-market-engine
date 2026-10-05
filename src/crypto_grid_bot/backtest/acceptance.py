@@ -738,14 +738,20 @@ def evaluation_window(spec: DatasetSpec) -> tuple[int, int]:
 
 def data_rule_exclusions(spec: DatasetSpec, pair: str) -> list[str]:
     """Section 5's long-window data rules that exclude a pair-window for every variant
-    alike: XRP below the tick limit (rule 8), by Bob's measurement.
+    alike: XRP where a replayed quote breaks the tick limit (rule 8), by Bob's
+    measurement.
 
     They arrive with the long-window data PR, which names the fields that record that
     measurement and each run's mask report (rules 1-4: masked hours, skipped days, fills
     after a masked span). Until then nothing is excluded here and no hour is masked: a
     failed hour fails its integrity check, which excludes its pair-window in
-    ``window_of``, as in stage 1. When they land, the measurement plugs in here, and the
-    mask report joins ``Run`` and ``run_json`` in ``runs_of``."""
+    ``window_of``, as in stage 1. When they land:
+
+    * the measurement plugs in here;
+    * masking runs before the checks, which then run on the post-mask expected set, so a
+      maskable defect stops failing them in ``integrity_failures`` (section 5, "The
+      post-mask expected set"), and ``window_of`` keeps its rules;
+    * the mask report joins ``Run`` and ``run_json`` in ``runs_of``."""
     return []
 
 
