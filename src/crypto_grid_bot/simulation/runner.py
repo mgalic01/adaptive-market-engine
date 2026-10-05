@@ -183,7 +183,7 @@ class Frame:
     epoch: str | None = None
     # Variant A only: the daily trend state for this observation (see trend_switch.py).
     trend: TrendSignal | None = None
-    # V2: each timeframe's resistance zones, daily first (structure.py); () when unavailable.
+    # V2: each timeframe's resistance zones (structure.py); () when unavailable.
     resistance: tuple[ResistanceZones, ...] = ()
 
     def payload(self) -> dict[str, Any]:
@@ -1072,13 +1072,15 @@ class PaperSimulator:
         if not pairs or len(set(levels)) != len(levels):
             raise GridNotViable("no distinct, passive buy levels after tick rounding")
         required = cost * self._minimum_grid_cost_multiple
+        # Sized over every candidate level, so a level V2 skips below resistance leaves its
+        # share unspent: a skip never enlarges the orders that remain.
+        per_order = budget / len(pairs)
         # V2 (policy.structure) sells just below resistance, in a ranging market only: the
         # owner's source idea targets resistance in consolidation. The RANGE-only rule was
         # first chosen after seeing development results that were later found invalid
         # (D20); docs/STRUCTURE_PREREGISTRATION.md registers it with every other V2 rule.
         if self.policy.structure and (regime is None or regime.regime == MarketRegime.RANGE):
             pairs = self._below_resistance(pairs, frame.resistance, required)
-        per_order = budget / len(pairs)
         orders: list[LimitOrder] = []
         for index, (low, high) in enumerate(pairs):
             quantity = floor_step(per_order / (low * (ONE + rules.fee_rate)), rules.quantity_step)
@@ -1117,10 +1119,11 @@ class PaperSimulator:
         required: Decimal,
     ) -> list[tuple[Decimal, Decimal]]:
         """V2 sell targets (D19): each buy level's sell sits just below the nearest
-        resistance above it, raised or lowered from the geometric next level, which stays
-        the target when no zone is in range. A level whose target cannot clear costs
-        (spacing below ``required``) gets no buy: it may not target above the zone and
-        cannot profit below it. Fixed at grid open, from completed bars only."""
+        resistance above it on any timeframe, raised or lowered from the geometric next
+        level, which stays the target when no zone is in range. A level whose target
+        cannot clear costs (spacing below ``required``) gets no buy: it may not target
+        above the zone and cannot profit below it. Fixed at grid open, from completed bars
+        only."""
         tick = self.rules.tick_size
         kept: list[tuple[Decimal, Decimal]] = []
         blocked: set[Decimal] = set()  # the zones that left a level no buy, to the tick

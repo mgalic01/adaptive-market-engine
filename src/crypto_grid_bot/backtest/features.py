@@ -247,7 +247,7 @@ class Inputs:
     atr: Decimal
     # V2 only, from analyse_multi_timeframe(); 0.0 without structure candles
     structure_alignment: float = 0.0
-    # V2 only: each timeframe's resistance zones, daily first; () without structure candles
+    # V2 only: each timeframe's resistance zones; () without structure candles
     resistance: tuple[ResistanceZones, ...] = ()
     # Flat or zero-volume history: ratios are undefined, so new entries are vetoed
     # (quality 0) while existing inventory keeps being marked and risk-managed.
@@ -432,8 +432,8 @@ class FeatureEngine:
             current_price=fair,
             params=self._structure_params,
         )
-        # Daily zones before hourly, as the FTA prefers them: a sell target searches them
-        # in this order (runner._open_grid).
+        # One entry per timeframe supplied. A sell target takes the nearest zone in range on
+        # any of them (structure.nearest_resistance), so their order does not matter.
         resistance = tuple(
             ResistanceZones.of(structure, self._structure_params.max_distance_atr)
             for structure in (mtf.daily, mtf.hourly)

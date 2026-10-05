@@ -1261,12 +1261,13 @@ class SellAtResistanceTests(unittest.TestCase):
     def test_a_level_whose_target_cannot_clear_costs_gets_no_buy(self):
         # A zone at 0.985: 0.985 x 0.999 floors to 0.9840, only 0.33% above the top buy
         # level, which may not target above the zone and cannot profit below it, so it gets
-        # no buy. The next level down targets 0.9840 too, 3.2% above it. The three levels
-        # left share the whole budget, 80% of the 100 units.
+        # no buy. The next level down targets 0.9840 too, 3.2% above it. Every order is
+        # sized as in V0, a quarter of the budget (80% of the 100 units): the skipped
+        # level's share stays unspent and enlarges no other order.
         account = self.open_grid((ResistanceZones((0.985,), 0.05),))
         self.assertEqual([*self.GEOMETRIC[:2], (D("0.9531"), D("0.984"))], self.targets(account))
         for order in account.orders.values():
-            share = D(80) / 3 / (order.price * (1 + RULES.fee_rate))
+            share = D(80) / 4 / (order.price * (1 + RULES.fee_rate))
             self.assertEqual(floor_step(share, RULES.quantity_step), order.quantity)
 
     def test_a_grid_whose_every_level_is_blocked_is_refused_naming_the_resistance(self):
@@ -1279,22 +1280,36 @@ class SellAtResistanceTests(unittest.TestCase):
             str(refused.exception),
         )
 
-    def test_daily_zones_come_before_hourly(self):
-        # Daily 1.03 within 0.08, hourly 1.0 within 0.12. The two upper buy levels have the
-        # daily zone in range and target it, though the hourly zone is nearer; the two lower
-        # ones have no daily zone in range and target the hourly one.
+    def test_the_nearest_zone_on_any_timeframe_counts(self):
+        # Daily 1.03 within 0.08, hourly 1.0 within 0.12: every buy level has the nearer
+        # hourly zone in range and targets 0.9990 just below it, whatever the order of the
+        # timeframes; no target sits above a nearer zone in range.
         daily, hourly_zones = ResistanceZones((1.03,), 0.08), ResistanceZones((1.0,), 0.12)
-        expected = [(D("0.9"), D("0.999")), (D("0.9261"), D("0.999")), *self.RAISED[2:]]
-        self.assertEqual(expected, self.targets(self.open_grid((daily, hourly_zones))))
-        # The features list the daily zones first: an engine given only one timeframe
-        # gives that timeframe's zones alone.
+        below_hourly = [(low, D("0.999")) for low, _ in self.GEOMETRIC]
+        for timeframes in ((daily, hourly_zones), (hourly_zones, daily)):
+            self.assertEqual(below_hourly, self.targets(self.open_grid(timeframes)))
+        # Each timeframe is searched within its own radius: the daily 1.0 within 0.03
+        # reaches only the top buy level, so the level below it targets the hourly 1.03
+        # within 0.08, above the daily zone, which is out of range from there.
+        timeframes = (ResistanceZones((1.0,), 0.03), ResistanceZones((1.03,), 0.08))
+        expected = [*self.GEOMETRIC[:2], (D("0.9531"), D("1.0289")), (D("0.9808"), D("0.999"))]
+        self.assertEqual(expected, self.targets(self.open_grid(timeframes)))
+        # The features give each timeframe's zones as an engine given only that timeframe.
         candles, days = zone_candles(), zone_days()
         both = engine_for(candles, hourly_candles=candles, daily_bars=days)
         alone = [
             engine_for(candles, **timeframe).at(ZONE_MIDNIGHT_MS).resistance
             for timeframe in ({"daily_bars": days}, {"hourly_candles": candles})
         ]
-        self.assertEqual((*alone[0], *alone[1]), both.at(ZONE_MIDNIGHT_MS).resistance)
+        self.assertCountEqual((*alone[0], *alone[1]), both.at(ZONE_MIDNIGHT_MS).resistance)
+
+    def test_a_timeframe_without_a_positive_radius_offers_no_zone(self):
+        # A zero radius (a zero ATR) fails closed: its zones count at no distance, so the
+        # targets stay geometric, while another timeframe's zones in range still count.
+        zero = ResistanceZones((1.0,), 0.0)
+        self.assertEqual(self.GEOMETRIC, self.targets(self.open_grid((zero,))))
+        timeframes = (zero, ResistanceZones((1.03,), 0.08))
+        self.assertEqual(self.RAISED, self.targets(self.open_grid(timeframes)))
 
     def test_a_target_raised_above_the_top_level_widens_the_grid_upper_bound(self):
         # A zone at 1.15 within 0.2 of the two upper buy levels raises their targets to

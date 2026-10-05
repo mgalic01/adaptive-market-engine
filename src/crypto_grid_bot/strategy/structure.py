@@ -457,17 +457,19 @@ def find_fta(
 
 
 def nearest_resistance(price: float, timeframes: Sequence[ResistanceZones]) -> float | None:
-    """The nearest resistance zone strictly above ``price`` within its timeframe's
-    radius, on the first timeframe that has one; None if none has.
+    """The nearest resistance zone strictly above ``price`` on any timeframe, each
+    searched within its own radius: the lowest of the timeframes' nearest zones in
+    range, so no timeframe is preferred; None if none has one.
 
-    Each timeframe is searched by ``find_fta``'s rule, so a zero radius (a zero ATR)
-    admits any distance. Zone strength plays no part.
+    Unlike ``find_fta``, a radius that is not positive (a zero ATR) admits no zone, so a
+    sell target fails closed to the geometric level. Zone strength plays no part.
     """
+    in_range: list[float] = []
     for zones in timeframes:
         above = next((zone for zone in zones.prices if zone > price), None)
-        if above is not None and (zones.radius == 0 or above - price <= zones.radius):
-            return above
-    return None
+        if above is not None and above - price <= zones.radius:
+            in_range.append(above)
+    return min(in_range, default=None)
 
 
 # ---------------------------------------------------------------------------

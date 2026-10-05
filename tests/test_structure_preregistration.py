@@ -52,9 +52,9 @@ class StructurePreregistrationTests(unittest.TestCase):
         )
         self.assertEqual("price-only-v1+structure-v2", features.STRUCTURE_FEATURE_VERSION)
 
-    def test_the_inputs_completed_bars_only_and_daily_zones_first(self):
+    def test_the_inputs_are_completed_bars_only(self):
         # The pair's last 500 completed hourly candles, the daily bars closed by the
-        # decision minute (TrendSchedule's rule), no weekly bars; daily zones before hourly.
+        # decision minute (TrendSchedule's rule), no weekly bars; each timeframe's zones.
         candles, days = zone_candles(), zone_days()
         minute = ZONE_MIDNIGHT_MS + 12 * HOUR_MS  # mid-day: today's bar is unfinished
         engine = engine_for(candles, hourly_candles=candles, daily_bars=days)
@@ -70,8 +70,8 @@ class StructurePreregistrationTests(unittest.TestCase):
         self.assertEqual(closed, [bar.open_ms for bar in daily])
         self.assertIsNone(call.kwargs["weekly_bars"])
         mtf = analyse_multi_timeframe(**call.kwargs)
-        timeframes = (mtf.daily, mtf.hourly)
-        self.assertEqual(tuple(ResistanceZones.of(t, 5.0) for t in timeframes), inputs.resistance)
+        zones = [ResistanceZones.of(timeframe, 5.0) for timeframe in (mtf.daily, mtf.hourly)]
+        self.assertCountEqual(zones, inputs.resistance)
 
     def test_the_timeframe_weights(self):
         # One timeframe bullish among ranging ones scores its own weight; without weekly
