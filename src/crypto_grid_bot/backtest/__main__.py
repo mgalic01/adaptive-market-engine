@@ -286,7 +286,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     jobs = max(1, min(args.jobs, 8))
     # Each pool worker refuses to start on other sources than this process imported
-    # (jobs.check_sources); the run then fails before any result is written.
+    # (jobs.check_sources), or on sources rewritten while it loaded them (the check at
+    # the end of jobs); the run then fails before any result is written.
     executor = (
         InProcess()
         if jobs == 1

@@ -12,6 +12,7 @@ import json
 import multiprocessing
 import os
 import pickle
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,32 @@ class PoolJobReferenceTests(unittest.TestCase):
             [sys.executable, "-c", probe], capture_output=True, text=True, env=env, check=True
         )
         self.assertEqual("True", out.stdout.strip())
+
+    def test_a_source_rewritten_while_the_package_loads_stops_the_import(self):
+        # Codex review of #160: a checkout that changes and changes back while a
+        # spawned worker loads its code restores the content but not the file times.
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copytree(
+                ROOT / "src" / "crypto_grid_bot",
+                Path(tmp, "crypto_grid_bot"),
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
+            env = {**os.environ, "PYTHONPATH": tmp}
+            rewrite = (
+                "import os, pathlib, crypto_grid_bot as c; "
+                "p = pathlib.Path(c.__file__).with_name('domain.py'); s = p.stat(); "
+                "os.utime(p, ns=(s.st_atime_ns, s.st_mtime_ns + 2 * 10**9)); "
+            )
+            for before, fails in (("", False), (rewrite, True)):
+                with self.subTest(rewritten=fails):
+                    probe = before + "import crypto_grid_bot.backtest.jobs as j; print(j.__file__)"
+                    run = subprocess.run(
+                        [sys.executable, "-c", probe], capture_output=True, text=True, env=env
+                    )
+                    self.assertEqual(fails, run.returncode != 0, run.stderr)
+                    self.assertEqual(fails, "sources changed while it loaded" in run.stderr)
+                    if not fails:
+                        self.assertTrue(run.stdout.strip().startswith(tmp), run.stdout)
 
     def test_a_spawned_worker_can_unpickle_every_pool_job(self):
         context = multiprocessing.get_context("spawn")
