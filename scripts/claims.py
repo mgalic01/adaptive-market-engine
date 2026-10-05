@@ -551,10 +551,14 @@ POSITIONAL_RE = re.compile(r'"\$(?:\{([@*]|\d+)\}|([@*]|\d))"|\$(?:\{([@*]|\d+)\
 def _positional(script: str, params: list[str]) -> str:
     """``script`` with its positional parameters replaced by the words `sh -c script
     name args...` gives them: $0 the name, $1... the args, $@ and $* every arg (Codex
-    review of #159: `sh -c '"$@"' _ git push origin x` runs the push)."""
+    review of #159: `sh -c '"$@"' _ git push origin x` runs the push). A quoted `"$*"`
+    is one word, the args joined by a space (Codex review of #159)."""
 
     def words(m: re.Match[str]) -> str:
-        name = next(g for g in m.groups() if g is not None)
+        quoted = m.group(1) or m.group(2)
+        name = quoted or m.group(3) or m.group(4)
+        if name == "*" and quoted:
+            return shlex.quote(" ".join(params[1:]))
         if name in ("@", "*"):
             return " ".join(shlex.quote(p) for p in params[1:])
         return shlex.quote(params[int(name)]) if int(name) < len(params) else ""
@@ -867,6 +871,18 @@ def segments(command: str) -> list[str]:
     return parts
 
 
+def _assignments(command: str) -> dict[str, str]:
+    """The variables a command line assigns (`ALIAS=push git ...`, `export ALIAS=push;
+    ...`), the last assignment of each winning."""
+    found: dict[str, str] = {}
+    for segment in segments(command):
+        for word in split_words(segment):
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", word, re.DOTALL):
+                name, _, value = word.partition("=")
+                found[name] = value
+    return found
+
+
 # A command word known only at run time: a variable or a positional parameter, `$1`,
 # `$@` or `$*` (Codex review of #159).
 RUNTIME_WORD = re.compile(r"\$\{?[\w@*]")
@@ -966,6 +982,7 @@ def find_targets(
             cwd = str(Path(cwd, toks[-1]))
         elif exe == "git":
             work, git_dir, rest, aliases = base, "", toks[1:], {}
+            unknown_aliases: set[str] = set()
             # The repository is the git directory that --git-dir or GIT_DIR names, read
             # from where -C leaves git, or that place itself: git runs fine inside a git
             # directory (Codex review of #159: `cd other && git --git-dir <this
@@ -983,10 +1000,27 @@ def find_targets(
                     git_dir, rest = rest[1], rest[2:]
                 elif rest[0].startswith("--git-dir="):
                     git_dir, rest = rest[0].split("=", 1)[1], rest[1:]
+                elif rest[0].startswith("--config-env=") or (
+                    rest[0] == "--config-env" and len(rest) > 1
+                ):
+                    # `--config-env=alias.p=VAR` takes the alias from the environment:
+                    # an assignment on this command line or the hook's own; one it
+                    # cannot read could be anything (Codex review of #159).
+                    attached = rest[0].startswith("--config-env=")
+                    key, _, variable = (rest[0][13:] if attached else rest[1]).partition("=")
+                    if key.lower().startswith("alias."):
+                        name = key[len("alias.") :].lower()
+                        value = _assignments(command).get(variable, os.environ.get(variable))
+                        if value is None:
+                            unknown_aliases.add(name)
+                        else:
+                            aliases[name] = value
+                    rest = rest[1:] if attached else rest[2:]
                 elif rest[0] in GIT_VALUE_OPTS and len(rest) > 1:
-                    if rest[0] == "-c" and rest[1].startswith("alias."):
+                    # Setting names are case-insensitive: `-c ALIAS.P=push` defines `p`.
+                    if rest[0] == "-c" and rest[1].lower().startswith("alias."):
                         name, _, value = rest[1][len("alias.") :].partition("=")
-                        aliases[name] = value
+                        aliases[name.lower()] = value
                     rest = rest[2:]
                 else:
                     rest = rest[1:]
@@ -997,7 +1031,16 @@ def find_targets(
             seen: set[str] = set()
             while rest and rest[0] not in GIT_BUILTINS and rest[0] not in seen:
                 seen.add(rest[0])
-                alias = aliases.get(rest[0]) or _git(here, "config", "--get", f"alias.{rest[0]}")
+                if rest[0].lower() in unknown_aliases:
+                    # Its text is known only at run time: any push, and a merge if the
+                    # line names one, counts.
+                    targets.append(Target("push", every_branch=True))
+                    targets.extend(_unknown(root, "a git alias set from the environment"))
+                    rest = []
+                    break
+                alias = aliases.get(rest[0].lower()) or _git(
+                    here, "config", "--get", f"alias.{rest[0]}"
+                )
                 if not alias:
                     break
                 if alias.startswith("!"):
