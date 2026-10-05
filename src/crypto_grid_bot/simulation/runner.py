@@ -1118,22 +1118,25 @@ class PaperSimulator:
         resistance: tuple[ResistanceZones, ...],
         required: Decimal,
     ) -> list[tuple[Decimal, Decimal]]:
-        """V2 sell targets (D19): each buy level's sell sits just below the nearest
-        resistance above it on any timeframe, raised or lowered from the geometric next
-        level, which stays the target when no zone is in range. A level whose target
-        cannot clear costs (spacing below ``required``) gets no buy: it may not target
-        above the zone and cannot profit below it. Fixed at grid open, from completed bars
-        only."""
+        """V2 sell targets (D19), below the nearest known resistance above each buy level
+        (``nearest_resistance``): a zone in reach sets the target just below it, raised or
+        lowered from the geometric next level; one out of reach only lowers the geometric
+        level to there if it would reach it. A target a zone moved that cannot clear costs
+        (spacing below ``required``) gets no buy: it may not sit higher and cannot profit
+        lower. A geometric target left standing keeps V0's rule. Fixed at grid open, from
+        completed bars only."""
         tick = self.rules.tick_size
         kept: list[tuple[Decimal, Decimal]] = []
         blocked: set[Decimal] = set()  # the zones that left a level no buy, to the tick
         for low, high in pairs:
-            zone = nearest_resistance(float(low), resistance)
-            if zone is None:
+            nearest = nearest_resistance(float(low), resistance)
+            if nearest is None:
                 kept.append((low, high))
                 continue
-            target = floor_step(D(str(zone)) * RESISTANCE_TARGET, tick)
-            if (target - low) / low < required:
+            zone, in_reach = nearest
+            cap = floor_step(D(str(zone)) * RESISTANCE_TARGET, tick)
+            target = cap if in_reach else min(high, cap)
+            if target != high and (target - low) / low < required:
                 blocked.add(floor_step(D(str(zone)), tick))
             else:
                 kept.append((low, target))

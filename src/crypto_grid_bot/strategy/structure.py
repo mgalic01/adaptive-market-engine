@@ -12,8 +12,9 @@ Given a sequence of OHLC candles (any timeframe), it:
    higher lows), bearish (lower highs and lower lows), or ranging.
 4. Identifies the *first trouble area* (FTA) above and below the current price — the
    nearest resistance zone above and the nearest support zone below.
-5. Finds the nearest resistance above any price (``nearest_resistance``), where V2's
-   grid places a buy level's sell target, just below it (owner decision D19).
+5. Finds the nearest resistance above any price, and whether it is in reach
+   (``nearest_resistance``): V2's grid keeps a buy level's sell target just below it
+   (owner decision D19).
 
 Every V2 rule and parameter is frozen in docs/STRUCTURE_PREREGISTRATION.md.
 
@@ -183,8 +184,8 @@ class MultiTimeframeStructure:
 
 @dataclass(frozen=True, slots=True)
 class ResistanceZones:
-    """One timeframe's resistance zones as ``find_fta`` searches them: the zone prices,
-    ascending, and the search radius, ``max_distance_atr`` × that timeframe's ATR.
+    """One timeframe's resistance zone prices, ascending, and its reach: the radius
+    ``max_distance_atr`` × that timeframe's ATR, ``find_fta``'s search radius.
     """
 
     prices: tuple[float, ...]
@@ -459,20 +460,21 @@ def find_fta(
     return StructureLevel(resistance=resistance, support=support)
 
 
-def nearest_resistance(price: float, timeframes: Sequence[ResistanceZones]) -> float | None:
-    """The nearest resistance zone strictly above ``price`` on any timeframe, each
-    searched within its own radius: the lowest of the timeframes' nearest zones in
-    range, so no timeframe is preferred; None if none has one.
-
-    Unlike ``find_fta``, a radius that is not positive (a zero ATR) admits no zone, so a
-    sell target fails closed to the geometric level. Zone strength plays no part.
+def nearest_resistance(
+    price: float, timeframes: Sequence[ResistanceZones]
+) -> tuple[float, bool] | None:
+    """The nearest resistance zone strictly above ``price`` on any timeframe, at any
+    distance, and whether it is in reach: within its own timeframe's radius, which must
+    be positive (unlike ``find_fta``, a zero ATR reaches nothing). On a tie, a timeframe
+    that reaches the zone decides. None if no timeframe has a zone above ``price``. Zone
+    strength plays no part.
     """
-    in_range: list[float] = []
+    found: list[tuple[float, bool]] = []  # each timeframe's nearest zone, and its reach
     for zones in timeframes:
         above = next((zone for zone in zones.prices if zone > price), None)
-        if above is not None and above - price <= zones.radius:
-            in_range.append(above)
-    return min(in_range, default=None)
+        if above is not None:
+            found.append((above, above - price <= zones.radius))
+    return min(found, key=lambda zone: (zone[0], not zone[1]), default=None)
 
 
 # ---------------------------------------------------------------------------

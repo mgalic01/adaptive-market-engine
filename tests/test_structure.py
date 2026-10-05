@@ -430,9 +430,9 @@ class TestFindFTA(unittest.TestCase):
 
 
 class TestNearestResistance(unittest.TestCase):
-    def test_at_a_positive_radius_it_is_the_fta_analyse_timeframe_finds(self):
-        # find_fta's rule on the zone prices and radius that ResistanceZones carries: the
-        # same answer as the timeframe's own FTA, on a random walk (fixed seed).
+    def test_at_a_positive_radius_its_reach_is_the_fta_analyse_timeframe_finds(self):
+        # The nearest zone above any price, at any distance, is in reach exactly when
+        # find_fta finds it as the timeframe's FTA, on a random walk (fixed seed).
         rng = random.Random(19)
         bars, price = [], 100.0
         for i in range(300):
@@ -441,35 +441,46 @@ class TestNearestResistance(unittest.TestCase):
         params = StructureParams()
         found = set()
         for _ in range(200):
-            current = rng.uniform(0.8, 1.2) * bars[-1].close
+            # Up to 1.6 times the last close: the walk's highest zone is at about 1.5.
+            current = rng.uniform(0.8, 1.6) * bars[-1].close
             structure = analyse_timeframe(bars, current, params)
             fta = structure.fta.resistance
             zones = ResistanceZones.of(structure, params.max_distance_atr)
             self.assertGreater(zones.radius, 0)
-            expected = None if fta is None else fta.price
+            above = next((zone for zone in zones.prices if zone > current), None)
+            expected = None if above is None else (above, fta is not None)
             self.assertEqual(expected, nearest_resistance(current, [zones]))
-            found.add(expected is None)
-        self.assertEqual({True, False}, found)  # both outcomes were exercised
+            found.add(expected[1] if expected else None)
+        self.assertEqual({True, False, None}, found)  # in reach, out of reach, none above
 
-    def test_the_nearest_zone_in_range_on_any_timeframe_wins(self):
+    def test_the_nearest_zone_on_any_timeframe_counts_at_any_distance(self):
         daily, hourly = ResistanceZones((103.0,), 5.0), ResistanceZones((101.0,), 5.0)
-        # The lowest of the timeframes' nearest zones in range, whatever their order.
-        self.assertEqual(101.0, nearest_resistance(100.0, [daily, hourly]))
-        self.assertEqual(101.0, nearest_resistance(100.0, [hourly, daily]))
-        # Each within its own radius: the hourly zone at 101.5 is beyond its radius of 1,
-        # so the daily zone at 103 counts.
-        self.assertEqual(103.0, nearest_resistance(100.0, [daily, ResistanceZones((101.5,), 1.0)]))
-        self.assertIsNone(nearest_resistance(100.0, [ResistanceZones((106.0, 99.0), 5.0)]))
+        # The lowest of the timeframes' nearest zones, whatever their order.
+        self.assertEqual((101.0, True), nearest_resistance(100.0, [daily, hourly]))
+        self.assertEqual((101.0, True), nearest_resistance(100.0, [hourly, daily]))
+        # The hourly zone at 101.5 is beyond its radius of 1, out of reach, but it is still
+        # the nearest: the daily zone at 103 behind it plays no part.
+        beyond = ResistanceZones((101.5,), 1.0)
+        self.assertEqual((101.5, False), nearest_resistance(100.0, [daily, beyond]))
+        # On a tie, a timeframe that reaches the zone decides.
+        tie = [ResistanceZones((101.0,), 0.5), hourly]
+        self.assertEqual((101.0, True), nearest_resistance(100.0, tie))
+        self.assertEqual(
+            (106.0, False), nearest_resistance(100.0, [ResistanceZones((106.0, 99.0), 5.0)])
+        )
         self.assertIsNone(nearest_resistance(100.0, []))
 
-    def test_strictly_above_and_within_the_radius(self):
+    def test_strictly_above_and_in_reach_within_the_radius(self):
         self.assertIsNone(nearest_resistance(100.0, [ResistanceZones((100.0,), 5.0)]))
-        self.assertEqual(105.0, nearest_resistance(100.0, [ResistanceZones((105.0,), 5.0)]))
-        self.assertIsNone(nearest_resistance(100.0, [ResistanceZones((105.5,), 5.0)]))
+        self.assertEqual((105.0, True), nearest_resistance(100.0, [ResistanceZones((105.0,), 5.0)]))
+        self.assertEqual(
+            (105.5, False), nearest_resistance(100.0, [ResistanceZones((105.5,), 5.0)])
+        )
 
-    def test_a_radius_that_is_not_positive_admits_no_zone(self):
-        # Unlike find_fta, which searches without limit at a zero ATR, a sell target fails
-        # closed to the geometric level; another timeframe's zones in range still count.
+    def test_a_radius_that_is_not_positive_reaches_no_zone(self):
+        # Unlike find_fta, which searches without limit at a zero ATR, its zones are never
+        # in reach; they are still the nearest zones, even with another timeframe's zone
+        # in reach behind them.
         zone = StructureZone(101.0, True, 1.0, 1, 0)
         flat = TimeframeStructure(
             StructuralTrend.UNKNOWN, (zone,), StructureLevel(None, None), (), (), 0.0
@@ -477,12 +488,12 @@ class TestNearestResistance(unittest.TestCase):
         self.assertEqual(
             zone, find_fta(100.0, [zone], [], atr=0.0, max_distance_atr=5.0).resistance
         )
-        self.assertIsNone(nearest_resistance(100.0, [ResistanceZones.of(flat, 5.0)]))
-        self.assertIsNone(nearest_resistance(100.0, [ResistanceZones((101.0,), float("nan"))]))
-        in_range = ResistanceZones((103.0,), 5.0)
-        self.assertEqual(
-            103.0, nearest_resistance(100.0, [ResistanceZones.of(flat, 5.0), in_range])
-        )
+        zero = ResistanceZones.of(flat, 5.0)
+        self.assertEqual((101.0, False), nearest_resistance(100.0, [zero]))
+        nan = ResistanceZones((101.0,), float("nan"))
+        self.assertEqual((101.0, False), nearest_resistance(100.0, [nan]))
+        behind = ResistanceZones((103.0,), 5.0)
+        self.assertEqual((101.0, False), nearest_resistance(100.0, [zero, behind]))
 
     def test_of_keeps_the_resistance_zones_and_scales_the_radius(self):
         support = StructureZone(95.0, False, 1.0, 1, 0)

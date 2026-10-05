@@ -433,8 +433,8 @@ class FeatureEngine:
             current_price=fair,
             params=self._structure_params,
         )
-        # One entry per timeframe supplied. A sell target takes the nearest zone in range on
-        # any of them (structure.nearest_resistance), so their order does not matter.
+        # One entry per timeframe supplied. A sell target answers to the nearest zone on any
+        # of them (structure.nearest_resistance), so their order does not matter.
         resistance = tuple(
             ResistanceZones.of(structure, self._structure_params.max_distance_atr)
             for structure in (mtf.daily, mtf.hourly)
