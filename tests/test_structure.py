@@ -80,6 +80,27 @@ def zigzag_bars(n: int, base: float = 100.0, amplitude: float = 5.0) -> list[Bar
     return bars
 
 
+def bullish_bars() -> list[Bar]:
+    """Bar sequence that reliably produces StructuralTrend.BULLISH with swing_n=1.
+
+    Ascending zigzag: two confirmed swing highs (105 < 108) and two confirmed
+    swing lows (102 < 104) in strict ascending order.  Uses only high==low==close
+    so ATR is non-zero due to inter-bar price differences.
+    """
+    prices = [100.0, 101.0, 105.0, 102.0, 108.0, 104.0, 112.0, 107.0, 115.0, 110.0, 118.0]
+    return [Bar(i * 3_600_000, p, p, p) for i, p in enumerate(prices)]
+
+
+def bearish_bars() -> list[Bar]:
+    """Bar sequence that reliably produces StructuralTrend.BEARISH with swing_n=1.
+
+    Descending zigzag: two confirmed swing highs (115 > 112) and two confirmed
+    swing lows (108 > 104) in strict descending order.
+    """
+    prices = [118.0, 110.0, 115.0, 107.0, 112.0, 104.0, 108.0, 102.0, 105.0, 101.0, 100.0]
+    return [Bar(i * 3_600_000, p, p, p) for i, p in enumerate(prices)]
+
+
 def make_swing_high(index: int, price: float, open_ms: int = 0) -> SwingPoint:
     return SwingPoint(index=index, open_ms=open_ms, price=price, is_high=True)
 
@@ -509,6 +530,66 @@ class TestAnalyseMultiTimeframe(unittest.TestCase):
         # alignment = (0.5 * 1 + 0.35 * -1) / (0.5 + 0.35) = 0.15 / 0.85 ≈ 0.176
         expected = (0.5 * 1.0 + 0.35 * -1.0) / (0.5 + 0.35)
         self.assertAlmostEqual(expected, 0.15 / 0.85, places=5)
+
+    # ------------------------------------------------------------------
+    # F15: real bar-sequence integration tests (weekly=None always in prod)
+    # ------------------------------------------------------------------
+
+    def _params(self) -> StructureParams:
+        return StructureParams(swing_n=1, atr_period=5, min_swings=2)
+
+    def test_real_bullish_bars_produce_positive_alignment_hourly_only(self):
+        """Hourly-only bullish bars → alignment = +1.0 (hourly weight renormalised to 1.0)."""
+        bars = bullish_bars()
+        params = self._params()
+        result = analyse_multi_timeframe(bars, None, None, 115.0, params)
+        self.assertIsNotNone(result.hourly)
+        self.assertEqual(StructuralTrend.BULLISH, result.hourly.trend)
+        self.assertAlmostEqual(1.0, result.alignment, places=5)
+
+    def test_real_bearish_bars_produce_negative_alignment_hourly_only(self):
+        """Hourly-only bearish bars → alignment = -1.0 (hourly weight renormalised to 1.0)."""
+        bars = bearish_bars()
+        params = self._params()
+        result = analyse_multi_timeframe(bars, None, None, 101.0, params)
+        self.assertIsNotNone(result.hourly)
+        self.assertEqual(StructuralTrend.BEARISH, result.hourly.trend)
+        self.assertAlmostEqual(-1.0, result.alignment, places=5)
+
+    def test_real_bullish_hourly_and_daily_weekly_none_renormalises_weights(self):
+        """Both hourly and daily bullish, weekly=None.
+
+        Expected: alignment = +1.0 (both scores are +1; renormalised weights
+        hourly=0.15/0.50=0.30, daily=0.35/0.50=0.70, sum still = 1.0).
+        """
+        bars = bullish_bars()
+        params = self._params()
+        result = analyse_multi_timeframe(bars, bars, None, 115.0, params)
+        self.assertIsNotNone(result.hourly)
+        self.assertIsNotNone(result.daily)
+        self.assertIsNone(result.weekly)
+        self.assertEqual(StructuralTrend.BULLISH, result.hourly.trend)
+        self.assertEqual(StructuralTrend.BULLISH, result.daily.trend)
+        self.assertAlmostEqual(1.0, result.alignment, places=5)
+
+    def test_real_mixed_hourly_bullish_daily_bearish_weekly_none(self):
+        """Hourly bullish, daily bearish, weekly=None.
+
+        Expected alignment with renormalised weights:
+          active weights: hourly=0.15, daily=0.35 → total=0.50
+          alignment = (0.15 * 1.0 + 0.35 * -1.0) / 0.50 = -0.20 / 0.50 = -0.40
+        """
+        bullish = bullish_bars()
+        bearish = bearish_bars()
+        params = self._params()
+        result = analyse_multi_timeframe(bullish, bearish, None, 115.0, params)
+        self.assertIsNotNone(result.hourly)
+        self.assertIsNotNone(result.daily)
+        self.assertIsNone(result.weekly)
+        self.assertEqual(StructuralTrend.BULLISH, result.hourly.trend)
+        self.assertEqual(StructuralTrend.BEARISH, result.daily.trend)
+        expected = (0.15 * 1.0 + 0.35 * -1.0) / 0.50
+        self.assertAlmostEqual(expected, result.alignment, places=5)
 
 
 # ---------------------------------------------------------------------------

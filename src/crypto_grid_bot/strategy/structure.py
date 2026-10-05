@@ -34,8 +34,10 @@ Given a sequence of OHLC candles (any timeframe), it:
 - Structural trend: computed from the last ``min_swings`` confirmed swing highs and lows
   separately. Bullish iff the last two swing lows are ascending AND the last two swing
   highs are ascending. Bearish iff both are descending. Ranging otherwise.
-- Multi-timeframe alignment score: mean of per-timeframe scores where BULL=+1,
-  BEAR=-1, RANGE=0, UNKNOWN=0. Weighted by timeframe importance.
+- Multi-timeframe alignment score: the weighted mean of per-timeframe scores (BULL=+1,
+  BEAR=-1, RANGE=0, UNKNOWN=0), weights hourly 0.15, daily 0.35 and weekly 0.50,
+  renormalised over the timeframes supplied. ``features.py`` supplies no weekly bars, so
+  in effect daily counts 0.70 and hourly 0.30.
 
 **References:**
 - Luka Hranjec Jeri's analysis, 2026-09-29 (relayed by owner): FTA concept
@@ -497,7 +499,8 @@ def analyse_multi_timeframe(
     """Aligned structure across hourly, daily and weekly timeframes.
 
     Any timeframe can be None or empty — it is skipped and its field is None.
-    ``alignment`` weights: weekly 0.5, daily 0.35, hourly 0.15.
+    ``alignment`` weights: weekly 0.50, daily 0.35, hourly 0.15, renormalised over the
+    timeframes present (without weekly bars: daily 0.70, hourly 0.30); 0.0 if none is.
     These reflect that higher timeframes are more authoritative for structural direction.
     """
     if params is None:
