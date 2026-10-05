@@ -131,6 +131,36 @@ class CycleScheduleTests(TestCase):
         schedule = CycleSchedule(days(before, [500, 500, 500, 100, 45]))
         self.assertTrue(schedule.at(ms(midnight(before)) + 5 * DAY_MS).discounted)
 
+    def test_the_ath_is_unavailable_from_a_halving_until_its_days_bar_closes(self):
+        # Codex review of #165: from the 2024 halving, 2024-04-20 00:09:27, no daily close
+        # has followed the most recent halving until that day's bar closes at midnight, so
+        # yesterday's value, measured against the old cycle's ATH, must not stand in.
+        halving_day = HALVINGS[2].date()
+        # The 2020 halving's day closes at 3 (the old cycle's ATH), the day before the 2024
+        # halving at 1, the halving's own day at 2, and the day after it at 0.99.
+        before = (halving_day - H2020.date()).days - 1
+        schedule = CycleSchedule(days(H2020.date(), [3] + [1] * before + [2, 0.99, 1]))
+
+        def at(*fields):
+            return schedule.at(ms(utc(*fields)))
+
+        self.assertTrue(at(2024, 4, 20, 0, 5).discounted)  # before it: 1 < 0.50 x 3
+        for when in ((2024, 4, 20, 0, 10), (2024, 4, 20, 23, 59)):
+            with self.subTest(when=when):
+                self.assertEqual(CycleSignal("2024-04-19", False, None), at(*when))
+        # From midnight the halving's day has closed, at 2: the new cycle's ATH.
+        self.assertFalse(at(2024, 4, 21, 0, 0).discounted)  # 2 is not below 0.50 x 2
+        self.assertTrue(at(2024, 4, 22, 0, 0).discounted)  # 0.99 < 0.50 x 2, not x 3
+        # A halving exactly at a midnight counts too: the bar closing at that instant
+        # closed no later than the halving, so it is not since it.
+        midnight = ms(utc(2024, 4, 20))
+        with patch("crypto_grid_bot.strategy.cycle.HALVING_MS", (midnight,)):
+            self.assertIsNone(schedule.at(midnight).discounted)
+            self.assertTrue(schedule.at(midnight - 1).discounted)
+        # H2's comparison, which does not depend on the cycle, is left as it is.
+        overextended = CycleSchedule(days(H2020.date(), [1] * (before + 1) + [2, 2, 2]))
+        self.assertTrue(overextended.at(ms(utc(2024, 4, 21, 12))).overextended)
+
     def test_outside_the_history_there_is_nothing_to_read(self):
         signal = CycleSchedule([]).at(ms(utc(2022, 1, 16, 12)))
         self.assertEqual(CycleSignal("2022-01-15"), signal)
@@ -374,6 +404,17 @@ class ReplayWiringTests(TestCase):
         self.assertEqual({}, v0[0].variant)
         with self.assertRaisesRegex(ValueError, "daily history"):
             replay(self.config, self.run_config, self.minutes, self.engine, H, None)
+
+    def test_bars_after_a_halving_report_its_ath_unavailable_until_midnight(self):
+        # Codex review of #165: the 2024 halving falls at 00:09:27 on 2024-04-20. The 50
+        # bars that open from 00:10 to 00:59 have no completed close since it; the 60 bars
+        # before midnight and the 10 from 00:00 to 00:09 still have the 2020 cycle's ATH.
+        self.at(utc(2024, 4, 20))
+        metrics, account = self.run_replay(self.bars, self.minutes)
+        self.assertEqual([], check_accounting(self.run_config, metrics, account))
+        self.assertEqual(50, metrics.variant["cycle_ath_unavailable_bars"])
+        # The phase turns at the halving, so the bar of 00:09, ending at 00:09:29, is 0.
+        self.assertEqual({"47": 69, "0": 51}, metrics.variant["cycle_phases_by_bar"])
 
     def test_grids_only_h3_opened_and_unavailable_aths_are_reported(self):
         # Every candidate scores 0.65. At 00:00 on 2023-06-16 (phase 37) the bar of

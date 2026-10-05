@@ -15,7 +15,7 @@ fails closed) and combines it with the observation's own phase (``phase``):
 SMA200 refuses gaps, as variant A's does (D6). ATH is the highest close from the bar of
 the most recent halving's UTC day, which closes after the halving instant, through the
 signal day. It is unavailable when the history does not reach back to that bar or misses
-a day since; H3 then never relaxes.
+a day since, and from a halving until its day's bar closes; H3 then never relaxes.
 
 Everything here is Decimal and pure; nothing reads files or the clock.
 """
@@ -23,7 +23,7 @@ Everything here is Decimal and pure; nothing reads files or the clock.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, localcontext
 
@@ -35,7 +35,8 @@ HALVINGS = (
     datetime(2020, 5, 11, 19, 23, 43, tzinfo=UTC),  # block 630,000
     datetime(2024, 4, 20, 0, 9, 27, tzinfo=UTC),  # block 840,000
 )
-# Open times (UTC ms) of the daily bars that contain a halving instant.
+# The halving instants, and the open times of the daily bars that contain them (UTC ms).
+HALVING_MS = tuple(int(h.timestamp()) * 1000 for h in HALVINGS)
 HALVING_DAYS = frozenset((h.date() - date(1970, 1, 1)).days * DAY_MS for h in HALVINGS)
 H2, H3 = "h2", "h3"
 # Phase bands in whole months since the halving, half-open.
@@ -143,6 +144,14 @@ class CycleSchedule:
         Only the bar of the previous UTC day is read, which closed at 00:00 UTC of the
         decision's day, so no bar closing after ``when_ms`` can influence the result.
         Outside the daily history there is nothing to read: no H2, and no ATH.
+
+        A halving at or after that bar's close, and at or before ``when_ms``, has no
+        completed close since it until its own day's bar closes at the next midnight: the
+        ATH, "the highest completed daily close since the most recent halving" (spec v1
+        §3 H), is unavailable until then. SMA200 does not depend on the cycle.
         """
         day_ms = signal_day(when_ms)
-        return self._signals.get(day_ms) or CycleSignal(_day(day_ms))
+        signal = self._signals.get(day_ms) or CycleSignal(_day(day_ms))
+        if any(day_ms + DAY_MS <= halving <= when_ms for halving in HALVING_MS):
+            return replace(signal, discounted=None)
+        return signal
