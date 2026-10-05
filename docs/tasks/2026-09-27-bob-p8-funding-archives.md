@@ -1,8 +1,8 @@
 # Task for Bob: P8 archives for G and H, development months only
 
-- **Written by:** Claude, 2026-09-27. Spec v1 prerequisite P8
-  ([`EXPERIMENT_SPEC_V1.md`](../EXPERIMENT_SPEC_V1.md) §2, §3 G and §3 H) is still open:
-  "Not yet done" in [the G signal handoff](../reviews/2026-09-25-claude-g-funding-signal.md).
+- **Status: done; do not rerun.** Run 36560170480 on 2026-09-29; report merged in PR #164
+  (closing #133). The hashes pinned below describe that run. A new fetch needs a new task file.
+- **Written by:** Claude, 2026-09-27, while spec v1 prerequisite P8 (§2, §3 G and §3 H) was open.
 - **Revised** after Codex's review of PR #113 (Codex Desktop comment 5858830916 and
   the Cloud findings): the Step 6 checker condition, pinned inputs, and daily
   completeness. **Revised again on 2026-09-28** (Codex's Cloud P1: a tested project

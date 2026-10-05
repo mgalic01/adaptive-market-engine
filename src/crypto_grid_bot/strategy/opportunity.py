@@ -45,7 +45,15 @@ class OpportunityScorer:
         self._maximum_spread_pct = maximum_spread_pct
         self._minimum_depth_multiple = minimum_depth_multiple
 
-    def score(self, candidate: CandidateMetrics, regime: RegimeAssessment) -> CandidateScore:
+    def score(
+        self,
+        candidate: CandidateMetrics,
+        regime: RegimeAssessment,
+        *,
+        minimum_score: float | None = None,
+    ) -> CandidateScore:
+        """``minimum_score`` replaces the configured minimum for this one score (variant
+        H3 of spec v1 §3 H); every other check is unchanged."""
         self._validate(candidate)
         failures: list[str] = []
         if not regime.input_quality_ok:
@@ -62,7 +70,7 @@ class OpportunityScorer:
         base = sum(getattr(candidate, name) * weight for name, weight in self._WEIGHTS.items())
         news_multiplier = 1.0 - candidate.news_risk
         score = base * self._REGIME_FIT[regime.regime] * news_multiplier
-        if score < self._minimum_score:
+        if score < (self._minimum_score if minimum_score is None else minimum_score):
             failures.append(f"opportunity score {score:.3f} is below minimum")
         reasons = (
             f"base quality {base:.3f}",

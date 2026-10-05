@@ -23,16 +23,18 @@ Kline-to-quote adapter (the explicit, tested adapter BACKTEST_PLAN.md requires):
 from __future__ import annotations
 
 import re
-from collections import Counter
+from bisect import bisect_left, bisect_right
+from collections import Counter, deque
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from pathlib import Path
 from typing import Any, Protocol
 
-from crypto_grid_bot.backtest.dataset import local_path
+from crypto_grid_bot.backtest.dataset import funding_local_path, is_funding, local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
+from crypto_grid_bot.backtest.funding import FundingRecord, FundingSignal, read_funding_archive
 from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
@@ -50,11 +52,20 @@ from crypto_grid_bot.simulation.models import (
 )
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
 from crypto_grid_bot.simulation.trend_switch import MINIMUM_DAILY_WARMUP, TrendSchedule
+from crypto_grid_bot.strategy.cycle import CycleSchedule, CycleSignal
+from crypto_grid_bot.strategy.order_flow import FLOW_BARS, taker_buy_share
+from crypto_grid_bot.strategy.volume_exit import VolumeHistory
 
 PATH_MODES = ("high_first", "low_first")
 # Scorer context lines that precede its actual failure reasons.
 _CONTEXT = ("base quality", "regime fit", "news multiplier")
 POINT_OFFSETS_S = (0, 9, 19, 29)
+# How long each quote's observation stands within its minute: until the next quote, the
+# last until the minute ends.
+POINT_SPANS_MS = tuple(
+    1000 * (end - start)
+    for start, end in zip(POINT_OFFSETS_S, (*POINT_OFFSETS_S[1:], 60), strict=True)
+)
 QUARTER = Decimal("0.25")
 HOUR_MS = 3_600_000
 # Revolut X allows 1,000 order-placement requests per day. Cancellations are counted
@@ -254,6 +265,9 @@ class Metrics:
     max_exit_blocked_notional: Decimal = ZERO
     final_exit_blocked: str = ""
     final_blocked_notional: Decimal = ZERO
+    # Spec v1 §3's "Reported" values of variants E, G and H, as row fields
+    # (``VariantReport``); empty in any other run, whose rows keep their exact layout.
+    variant: dict[str, Any] = field(default_factory=dict)
 
 
 def record_exit_block(metrics: Metrics, blocked: str, notional: Decimal) -> None:
@@ -358,9 +372,11 @@ def journal_fill(
 
 def _record_fills(
     metrics: Metrics, fills: Sequence[dict[str, Any]], exit_reason: str | None = None
-) -> None:
+) -> Decimal:
+    """Journal one frame's fills; the realised P&L of its marketable exits."""
+    exits = ZERO
     if not fills:
-        return
+        return exits
     # PaperSimulator.step updates balances at precision 50. Preserve the same fill
     # amounts here: the caller's default precision (28) can round valid 18-place
     # prices/quantities and make the independent cash/fee identities fail.
@@ -383,8 +399,10 @@ def _record_fills(
                 metrics.exit_pnl_by_reason[reason] = (
                     metrics.exit_pnl_by_reason.get(reason, ZERO) + pnl
                 )
+                exits += pnl
             else:
                 metrics.grid_sell_pnl += pnl
+    return exits
 
 
 class BuyAndHold:
@@ -409,6 +427,205 @@ class BuyAndHold:
         self.max_drawdown = max(self.max_drawdown, (self.peak - self.value) / self.peak)
 
 
+class VariantReport:
+    """Spec v1 §3's "Reported" values of variants E, G and H, gathered bar by bar and
+    frame by frame for the row fields of a run that has them (``fields``).
+
+    * E: its decisions by outcome; the hours outside past each extended episode's
+      6-hour mark, until the extension ended (its exit, a return inside, a halt or the
+      run's end); and its extended exits' realised P&L next to the P&L the same sales
+      would have had at the bid of the 6-hour mark (a diagnostic only: it ignores fees,
+      liquidity and residual inventory).
+    * G: the new grids it blocked, one for each run of frames on which it vetoed one;
+      the hours its gate was closed, each quote's state standing until the next quote
+      (the last until its minute ends), over the evaluated minutes; and the lag from
+      each settlement to the first evaluated quote that used it.
+    * H: the evaluated bars by phase, by the rule in force and with the ATH unavailable,
+      each as at the bar's last quote, and the grids opened only because of H3, with their
+      P&L: total equity from opening until the grid ended or was replaced (or the run
+      ended), with the residue the account held at opening set aside, as it is not the
+      grid's: its mark, and its proceeds once an exit sells it (exits sell it first).
+    """
+
+    def __init__(
+        self, policy: SimulationPolicy, funding: Sequence[FundingRecord], rules: MarketRules
+    ) -> None:
+        self.volume, self.gate, self.cycle = (
+            policy.volume_exit,
+            policy.funding_gate,
+            policy.cycle_gate,
+        )
+        self.rules = rules
+        self.checks: Counter[str] = Counter()
+        self.extra = timedelta(0)
+        # E's running extension: (t0, its 6-hour mark, the bid there); then the bid of
+        # that mark while the extended exit sells.
+        self.extension: tuple[str, datetime, Decimal] | None = None
+        self.exit_bid: Decimal | None = None
+        self.exits, self.exit_pnl, self.exit_pnl_at_mark = 0, ZERO, ZERO
+        records = sorted(funding, key=lambda record: record.calc_time_ms)
+        self.calc_ms = [record.calc_time_ms for record in records]
+        self.usable_ms = [record.usable_ms for record in records]
+        self.applied: int | None = None  # records in effect at the previous quote
+        self.lags_ms: list[int] = []
+        self.blocked_grids, self.vetoing, self.closed_ms = 0, False, 0
+        self.phases: Counter[str] = Counter()
+        self.cycle_rules: Counter[str] = Counter()
+        self.no_ath = 0
+        self.h3_grids, self.h3_pnl = 0, ZERO
+        # The open H3 grid's own total equity at opening, without the residue the account
+        # held then, which counts as sold at each exit's proceeds; and what is left of it.
+        self.h3_base: Decimal | None = None
+        self.h3_residue = ZERO
+
+    def observation(self, at_ms: int, span_ms: int, funding_blocks: bool | None) -> None:
+        """One evaluated quote, before its frame: G's gate, closed or not for the
+        ``span_ms`` its observation stands, and the settlements it uses from it on."""
+        if self.gate:
+            self.closed_ms += span_ms * int(funding_blocks is not False)
+            if self.applied is None:  # those usable before the first quote act before it
+                self.applied = bisect_left(self.usable_ms, at_ms)
+            count = bisect_right(self.usable_ms, at_ms)
+            self.lags_ms += [at_ms - calc for calc in self.calc_ms[self.applied : count]]
+            self.applied = count
+
+    def frame(
+        self,
+        report: dict[str, Any],
+        account: Account,
+        quote: Quote,
+        equity: Decimal,
+        exit_pnl: Decimal,
+    ) -> None:
+        """One frame's outcome; ``equity`` is total equity after it, ``exit_pnl`` the
+        realised P&L of its marketable exits."""
+        if "regime" not in report:
+            return  # a rejected frame: nothing happened
+        observed = timestamp(quote.observed_at)
+        if self.volume:
+            self._volume(report, account, quote, observed, exit_pnl)
+        if self.gate:
+            vetoed = report.get("entry_veto") == "G"
+            self.blocked_grids += int(vetoed and not self.vetoing)
+            self.vetoing = vetoed
+        if self.cycle:
+            with localcontext() as context:
+                context.prec = 50  # the simulator's precision: these sums are exact
+                self._h3(report, account, quote, equity)
+
+    def _h3(self, report: dict[str, Any], account: Account, quote: Quote, equity: Decimal) -> None:
+        """H3's grids: the residue an exit sells, the P&L of a grid that ended or was
+        replaced, and a grid opened only because of H3."""
+        if self.h3_base is not None:
+            for fill in report["fills"]:
+                if self.h3_residue and str(fill["order_id"]).startswith("exit/"):
+                    quantity = Decimal(fill["quantity"])
+                    sold = min(self.h3_residue, quantity)
+                    fee = Decimal(fill["fee"]) * sold / quantity
+                    self.h3_base += sold * Decimal(fill["price"]) - fee
+                    self.h3_residue -= sold
+            if report["opened"] or not account.grid_lower:
+                self.h3_pnl += self._h3_pnl(self.h3_base, quote, equity)
+                self.h3_base = None
+        if report["cycle"].get("h3_only"):
+            # The harvest that opened it left only a residue no order could sell.
+            self.h3_grids += 1
+            self.h3_residue = account.inventory
+            self.h3_base = equity - self.h3_residue * unit_mark(quote, self.rules)
+
+    def _h3_pnl(self, base: Decimal, quote: Quote, equity: Decimal) -> Decimal:
+        """The open H3 grid's P&L at ``quote``: total equity, less the residue left at its
+        mark, less the grid's own equity at opening (``base``)."""
+        return equity - self.h3_residue * unit_mark(quote, self.rules) - base
+
+    def _volume(
+        self,
+        report: dict[str, Any],
+        account: Account,
+        quote: Quote,
+        observed: datetime,
+        exit_pnl: Decimal,
+    ) -> None:
+        if "volume_check" in report:
+            self.checks[report["volume_check"]] += 1
+            if report["volume_check"] == "extended":
+                self.extension = (account.volume_since, observed, quote.bid)
+        if self.extension is not None:
+            since, mark, bid = self.extension
+            running = (
+                account.volume_check == "extended"
+                and account.volume_since == since
+                and bool(account.outside_last)
+                and not account.halt
+            )
+            if not running:
+                self.extra += observed - mark
+                self.extension = None
+                if account.range_exit:  # ended by its own exit, at t0 + 12 h
+                    self.exits += 1
+                    self.exit_bid = bid
+        if self.exit_bid is not None:
+            if report.get("exit_reason") == "range_exit":
+                with localcontext() as context:
+                    context.prec = 50
+                    self.exit_pnl += exit_pnl
+                    self.exit_pnl_at_mark += exit_pnl + sum(
+                        (
+                            Decimal(fill["quantity"]) * (self.exit_bid - Decimal(fill["price"]))
+                            + Decimal(fill["fee"])
+                            for fill in report["fills"]
+                            if str(fill["order_id"]).startswith("exit/")
+                        ),
+                        ZERO,
+                    )
+            if not account.range_exit:
+                self.exit_bid = None
+
+    def bar_end(self, report: dict[str, Any], cycle: CycleSignal | None) -> None:
+        """One evaluated minute, after its quotes: H's phase, rule and ATH, from its last
+        quote's report and signal."""
+        if self.cycle and "cycle" in report:
+            self.phases[str(report["cycle"]["phase"])] += 1
+            self.cycle_rules[str(report["cycle"]["rule"])] += 1
+        if self.cycle and cycle is not None:
+            self.no_ath += int(cycle.discounted is None)
+
+    def fields(self, last: Quote | None, equity: Decimal) -> dict[str, Any]:
+        """The row fields, counting an extension or an H3 grid the run ended in up to its
+        last quote."""
+        if self.extension is not None and last is not None:
+            self.extra += timestamp(last.observed_at) - self.extension[1]
+        if self.h3_base is not None and last is not None:
+            with localcontext() as context:
+                context.prec = 50
+                self.h3_pnl += self._h3_pnl(self.h3_base, last, equity)
+        fields: dict[str, Any] = {}
+        if self.volume:
+            fields["volume_exit_checks"] = dict(self.checks)
+            fields["volume_exit_extra_hours"] = self.extra / timedelta(hours=1)
+            fields["volume_exit_extended_exits"] = {
+                "exits": self.exits,
+                "pnl": str(self.exit_pnl),
+                "pnl_at_6h_bid": str(self.exit_pnl_at_mark),
+            }
+        if self.gate:
+            lags = [lag / 1000 for lag in self.lags_ms]
+            fields["funding_gate_blocked_grids"] = self.blocked_grids
+            fields["funding_gate_blocked_hours"] = self.closed_ms / HOUR_MS
+            fields["funding_gate_lag_seconds"] = {
+                "settlements": len(lags),
+                "min": min(lags, default=None),
+                "mean": sum(lags) / len(lags) if lags else None,
+                "max": max(lags, default=None),
+            }
+        if self.cycle:
+            fields["cycle_phases_by_bar"] = dict(self.phases)
+            fields["cycle_rules_by_bar"] = dict(self.cycle_rules)
+            fields["cycle_ath_unavailable_bars"] = self.no_ath
+            fields["cycle_h3_grids"] = {"opened": self.h3_grids, "pnl": str(self.h3_pnl)}
+        return fields
+
+
 def replay(
     config: BotConfig,
     run: RunConfig,
@@ -416,16 +633,46 @@ def replay(
     features: FeatureEngine,
     policy: SimulationPolicy | None = None,
     daily: Sequence[Kline] | None = None,
+    hourly: Sequence[Kline] | None = None,
+    funding: Sequence[FundingRecord] | None = None,
 ) -> tuple[Metrics, Account]:
     """``daily`` is the traded pair's completed 1d history (P3), read only by variant A
-    (``policy.trend_switch``), which refuses to run without it."""
+    (``policy.trend_switch``) and variant H (``policy.cycle_gate``); ``hourly`` is its 1h
+    history, read only by variant E (``policy.volume_exit``); ``funding`` is the BTCUSDT
+    funding records, read only by variant G (``policy.funding_gate``). Each variant
+    refuses to run without its history."""
     schedule: TrendSchedule | None = None
     if policy is not None and policy.trend_switch:
         if daily is None:
             raise ValueError("variant A (trend switch) needs the pair's daily history")
         schedule = TrendSchedule(daily)
+    cycle_schedule: CycleSchedule | None = None
+    if policy is not None and policy.cycle_gate:
+        if daily is None:
+            raise ValueError("variant H (cycle context) needs the pair's daily history")
+        cycle_schedule = CycleSchedule((k.open_ms, k.close) for k in daily)
+    volumes: VolumeHistory | None = None
+    if policy is not None and policy.volume_exit:
+        if hourly is None:
+            raise ValueError("variant E (volume exit) needs the pair's hourly history")
+        volumes = VolumeHistory((k.open_ms, k.volume) for k in hourly)
+    gate: FundingSignal | None = None
+    if policy is not None and policy.funding_gate:
+        if funding is None:
+            raise ValueError("variant G (funding gate) needs the BTCUSDT funding history")
+        gate = FundingSignal(funding)
+    # Variant F: the bars before the current one, for its 15-minute taker-buy share.
+    flow: deque[Kline] | None = (
+        deque(maxlen=FLOW_BARS) if policy is not None and policy.flow_block_entry else None
+    )
+    reported = (
+        VariantReport(policy, funding or (), run.rules)
+        if policy is not None and (policy.volume_exit or policy.funding_gate or policy.cycle_gate)
+        else None
+    )
     # ":memory:" gives the simulator an in-memory SQLite store; replay never writes to it.
     simulator = PaperSimulator(Path(":memory:"), config, run.rules, run.initial_quote, policy)
+    simulator.volumes = volumes
     account = simulator.store.read()
     simulator.close()  # step() below uses no store
     if account.orders:
@@ -474,8 +721,22 @@ def replay(
         epoch = f"{run.symbol}/{kline.open_ms}"
         # Variant A: the state from the last daily bar closed at this minute's start.
         trend = schedule.at(kline.open_ms) if schedule is not None else None
+        # Variant F likewise reads only the bars complete at this minute's start, for all
+        # four quotes: the 15 before it.
+        share = taker_buy_share(flow, kline.open_ms) if flow is not None else None
         report: dict[str, Any] = {}
-        for quote in bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size):
+        cycle: CycleSignal | None = None
+        quotes = bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size)
+        for quote, offset, span in zip(quotes, POINT_OFFSETS_S, POINT_SPANS_MS, strict=True):
+            # Variants G and H at the quote's own instant: G the funding records usable by
+            # then, H the last daily bar closed, so a record usable, or a halving, within
+            # the minute counts from the first quote after it.
+            at_ms = kline.open_ms + offset * 1000
+            funding_blocks = gate.state(at_ms).blocks if gate is not None else None
+            if cycle_schedule is not None:
+                cycle = cycle_schedule.at(at_ms)
+            if reported is not None:
+                reported.observation(at_ms, span, funding_blocks)
             # Depth is re-bounded before every quote from the account at that moment.
             depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
             candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
@@ -489,6 +750,9 @@ def replay(
                 epoch,
                 trend,
                 inputs.resistance,
+                flow_share=share,
+                funding_blocks=funding_blocks,
+                cycle=cycle,
             )
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
@@ -502,7 +766,7 @@ def replay(
                 year, week, _ = timestamp(quote.observed_at).isocalendar()
                 metrics.cycles_by_week[f"{year}-W{week:02d}"] += cycles
             metrics.frames += 1
-            _record_fills(metrics, report["fills"], report.get("exit_reason"))
+            exit_pnl = _record_fills(metrics, report["fills"], report.get("exit_reason"))
             # Only frames that attempted an exit carry the key. A rejected or halting
             # frame attempted none, and must not reset the streak or count as cleared.
             if "exit_blocked" in report:
@@ -532,12 +796,21 @@ def replay(
                 metrics.peak_equity = max(metrics.peak_equity, total)
                 drawdown = (metrics.peak_equity - total) / metrics.peak_equity
                 metrics.max_drawdown = max(metrics.max_drawdown, drawdown)
+            if reported is not None:
+                reported.frame(report, account, quote, metrics.final_equity, exit_pnl)
             hold.mark(quote)
+        # Variants E and F may read this bar from the next minute on, once it has closed.
+        if volumes is not None:
+            volumes.record(kline.open_ms, kline.volume)
+        if flow is not None:
+            flow.append(kline)
         # Bar-level bookkeeping from the bar's closing quote.
         metrics.regimes[str(report.get("regime", "unavailable"))] += 1
         metrics.decisions[str(report["decision"])] += 1
         if report.get("reason"):
             metrics.reasons[reason_key(str(report["decision"]), str(report["reason"]))] += 1
+        if reported is not None:
+            reported.bar_end(report, cycle)
         total = metrics.final_equity
         if account.inventory > ZERO:
             metrics.bars_with_inventory += 1
@@ -551,9 +824,13 @@ def replay(
     if hold is not None:
         metrics.hold_final, metrics.hold_max_drawdown = hold.value, hold.max_drawdown
     if last_quote is not None:
+        # Variant F's held fragments are reported as dust, never as an exit owed.
+        held = simulator.held_fragments(account) if flow is not None else ZERO
         metrics.final_exit_blocked, metrics.final_blocked_notional = exit_state(
-            account, last_quote, run.rules
+            account, last_quote, run.rules, held
         )
+    if reported is not None:
+        metrics.variant = reported.fields(last_quote, metrics.final_equity)
     return metrics, account
 
 
@@ -593,11 +870,12 @@ def check_accounting(run: RunConfig, metrics: Metrics, account: Account) -> list
 
 
 def _archive_months(manifest: dict[str, Any], symbol: str, interval: str) -> list[str]:
-    """Months of the pair's verified archives at one interval, in manifest order."""
+    """Months of the pair's verified kline archives at one interval, in manifest order."""
     return [
         entry["month"]
         for entry in manifest["files"]
-        if entry["symbol"] == symbol and entry["interval"] == interval and entry["status"] == "ok"
+        if not is_funding(entry)
+        and (entry["symbol"], entry["interval"], entry["status"]) == (symbol, interval, "ok")
     ]
 
 
@@ -625,6 +903,36 @@ def load_hourly(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[K
 
 def load_daily(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kline]:
     return load_candles(data_dir, manifest, symbol, "1d")
+
+
+def load_funding(
+    data_dir: Path, manifest: dict[str, Any], symbol: str, months: Iterable[str]
+) -> list[FundingRecord]:
+    """Variant G's history: the records of the perpetual ``symbol``'s monthly funding
+    archives the manifest lists as present (spec v1 P8), whose checksums
+    ``verify_dataset`` checks before any replay.
+
+    Every one of ``months``, the run's evaluation months, needs its archive: without
+    one, G would block every new grid that month whatever the funding was, a result
+    that says nothing about funding, so the run is refused instead. Every committed
+    manifest lacks them until P8's entries are added."""
+    present = [
+        entry["month"]
+        for entry in manifest["files"]
+        if is_funding(entry) and entry["symbol"] == symbol and entry["status"] == "ok"
+    ]
+    if absent := [month for month in months if month not in present]:
+        raise ValueError(
+            f"variant G needs {symbol}'s funding archive for every evaluation month in the "
+            f"manifest (spec v1 P8); it lists none for {', '.join(absent)}"
+        )
+    return [
+        record
+        for month in present
+        for record in read_funding_archive(
+            funding_local_path(data_dir, symbol, month), symbol, month
+        )
+    ]
 
 
 DAY_MS = 86_400_000
@@ -885,6 +1193,7 @@ def summarise(
         "accounting_problems": problems,
         "rules": {key: str(value) for key, value in run.rules.identity().items()},
         "assumed_spread_pct": str(run.spread * 100),
+        **metrics.variant,
         "hourly_equity": metrics.hourly_equity,
     }
 

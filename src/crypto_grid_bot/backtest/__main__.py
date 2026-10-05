@@ -239,7 +239,7 @@ def _table(results: list[dict[str, Any]]) -> str:
         "| --- |",
     ]
     for r in results:
-        # A variant's rows name it, so the table alone tells A, B and C from V0 (Codex
+        # A variant's rows name it, so the table alone tells each variant from V0 (Codex
         # review of #160); a V0 row keeps its exact text.
         strategy = r["strategy"] + (f", variant {r['variant']}" if "variant" in r else "")
         lines.append(
@@ -303,6 +303,53 @@ def main(argv: list[str] | None = None) -> int:
         help="enable variant C: A and B together (spec v1 §3 C); requires "
         "daily_warmup_start in the spec",
     )
+    variants.add_argument(
+        "--variant-e",
+        action="store_const",
+        const="E",
+        dest="variant",
+        help="enable variant E: volume-confirmed range exit (spec v1 §3 E); not eligible "
+        "for selection until Codex has reviewed it",
+    )
+    variants.add_argument(
+        "--variant-f",
+        action="store_const",
+        const="F",
+        dest="variant",
+        help="enable variant F: order-flow entry block (spec v1 §3 F)",
+    )
+    variants.add_argument(
+        "--variant-g",
+        action="store_const",
+        const="G",
+        dest="variant",
+        help="enable variant G: BTCUSDT funding-rate gate (spec v1 §3 G); refuses to run "
+        "unless the manifest lists BTCUSDT's funding archive for every evaluation month (P8)",
+    )
+    variants.add_argument(
+        "--variant-h",
+        action="store_const",
+        const="H",
+        dest="variant",
+        help="enable variant H: Bitcoin cycle context (spec v1 §3 H); requires "
+        "daily_warmup_start in the spec",
+    )
+    variants.add_argument(
+        "--variant-cg",
+        action="store_const",
+        const="C+G",
+        dest="variant",
+        help="enable C+G: variant C with the funding-rate gate (spec v1 §3 G), a declared "
+        "interaction; requires daily_warmup_start in the spec and G's funding archives",
+    )
+    variants.add_argument(
+        "--variant-ch",
+        action="store_const",
+        const="C+H",
+        dest="variant",
+        help="enable C+H: variant C with the cycle context (spec v1 §3 H), a declared "
+        "interaction; requires daily_warmup_start in the spec",
+    )
     parser.add_argument(
         "--structure",
         action="store_true",
@@ -321,8 +368,11 @@ def main(argv: list[str] | None = None) -> int:
     taker = fee_rate(args.taker_fee, "taker fee") if args.taker_fee is not None else None
     fill = fee_rate(args.fill_trigger, "fill trigger") if args.fill_trigger is not None else None
     if args.command == "fetch":
-        manifest = fetch_dataset(spec, args.data_dir)
-        write_manifest(manifest_path(args.spec), manifest)
+        # A re-fetch keeps the funding archives the manifest lists (spec v1 P8, variant G).
+        path = manifest_path(args.spec)
+        previous = load_manifest(path) if path.exists() else None
+        manifest = fetch_dataset(spec, args.data_dir, previous=previous)
+        write_manifest(path, manifest)
         missing = [f for f in manifest["files"] if f["status"] == "missing"]
         print(json.dumps({"files": len(manifest["files"]), "missing": missing}, indent=1))
         return 0

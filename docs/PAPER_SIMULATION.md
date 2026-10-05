@@ -305,6 +305,12 @@ The frame-gap policy (added in 0.5.1/0.6) is part of saved identity, so experime
 without that setting are rejected. Use a new database for the new policy; retain
 the original database and matching code for reviewing the old experiment.
 
+Variants E and F (spec v1 §3) keep account state that is never saved: E's outside-range
+episode start and its one decision on the episode, F's buy block and its fragments. A
+saved account would lose that state at every frame, so `PaperSimulator.process` and
+`resume` refuse both: they run in historical replay only. Nothing about saved state
+changed for them, and every other variant saves what it saved before.
+
 Broad-market input quality has a separate eligibility veto. Low-quality inputs
 remain reported as `TRANSITION`, but `RegimeAssessment.input_quality_ok=False`
 blocks entries regardless of the configured opportunity score threshold. Healthy

@@ -209,7 +209,7 @@ score = trend×0.25 + breadth×0.20 + momentum×0.15 + volatility_health×0.15
 
 will be strongly positive (e.g. `trend ≈ +0.8`, `breadth ≈ +0.6`, `momentum ≈ +0.7`), giving a score well above the `bull_threshold = 0.35`. The classifier correctly returns `BULL`.
 
-The problem is what happens next, in [`runner.py _open_grid()`](../../src/crypto_grid_bot/simulation/runner.py). The regime gate only opens a new grid when the regime is `RANGE`. `BULL` → no grid. Period.
+The problem is what happens next, in [`runner.py _open_grid()`](../../src/crypto_grid_bot/simulation/runner.py). In a `BULL` regime the `OpportunityScorer` applies a 0.80 regime fit factor, and `range_quality` collapses toward 0 in a trending market — so the composite opportunity score falls below `minimum_opportunity_score` and the bot never opens a grid. This is not a hard gate on the regime flag alone; it is a multi-factor eligibility collapse driven mainly by `range_quality ≈ 0` in a trend. The practical result is the same: `BULL` → no grid opened in any of the test windows.
 
 This is correct behaviour for a pure grid strategy — you don't want to place symmetric buy orders below price in a bull market because price never comes back down. But it means **zero participation in the market's most profitable periods**.
 
@@ -265,12 +265,14 @@ The FTA cap in `GridBuilder.build()` clips all sell levels above `fta_resistance
 
 **This is likely the mechanism.** The FTA cap was designed for a range market where the grid sits below resistance and you want to exit before it. In a trending/crashing market, resistance zones are everywhere (every prior support is now resistance), so the cap is constantly firing and compressing all the upper grid levels to one price.
 
-**Proposed fix:** Only apply the FTA cap when the regime is `RANGE`. When `regime == BEAR` or `BULL`, disable the FTA cap — the grid geometry should be unrestricted. This is a one-line change in `runner.py`'s `_open_grid()` call:
+**Proposed fix:** Only apply the FTA cap when the regime is `RANGE`. When `regime == BEAR` or `BULL`, disable the FTA cap — the grid geometry should be unrestricted. This was implemented in commit `6165742` on `bob/v2-integrated` (the audit notes call it `7395b6a`, a hash not in this repository), which reached `main` in PR #151's squash merge `22c597d`. The actual implementation passes `fta` directly to `builder.build()` rather than replacing the frame — the pseudocode below was aspirational and differs from the final code:
 
 ```python
 # Only apply FTA cap in ranging markets — in trending markets it compresses
 # sell levels to a single price, preventing cycle completion.
 fta = frame.fta_resistance if signals_regime == MarketRegime.RANGE else None
+# NOTE: the actual fix passes fta to builder.build(fta_resistance=fta) directly;
+# frame_with_fta is not used in the real implementation.
 frame_with_fta = dataclasses.replace(frame, fta_resistance=fta)
 ```
 

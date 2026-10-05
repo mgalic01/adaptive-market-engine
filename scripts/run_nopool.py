@@ -13,7 +13,9 @@ Usage:
     python scripts/run_nopool.py long-bull-bear-2022 --variant-a
 
 Every flag after the spec name is passed to the CLI (``--variant-a``, ``--variant-b``,
-``--variant-c``, ``--structure``, ``--trend-benchmark``, ``--maker-fee`` ...).
+``--variant-c``, ``--variant-e``, ``--variant-f``, ``--variant-g``, ``--variant-h``,
+``--variant-cg``, ``--variant-ch``, ``--structure``, ``--trend-benchmark``,
+``--maker-fee`` ...).
 """
 
 import sys

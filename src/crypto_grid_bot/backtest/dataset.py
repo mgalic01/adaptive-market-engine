@@ -1,6 +1,7 @@
 """Dataset specs, checksummed Binance archive downloads and reproducibility manifests.
 
-Only ``https://data.binance.vision/data/spot/monthly/klines/...`` is read. Every zip is
+Only ``https://data.binance.vision/data/spot/monthly/klines/...`` and the USDT-M monthly
+funding archives (``.../futures/um/monthly/fundingRate/...``) are read. Every zip is
 verified against Binance's published SHA-256 before it is stored, and the manifest
 records what was used so a replay can prove it ran on identical inputs. A month
 that Binance does not publish (for example before listing) is recorded as missing;
@@ -256,6 +257,16 @@ def funding_local_path(data_dir: Path, symbol: str, month: str) -> Path:
     return data_dir / "binance" / funding_archive_path(symbol, month).lstrip("/")
 
 
+# A manifest entry for a funding archive carries this ``kind`` and no ``interval``; a kline
+# entry carries no ``kind``.
+FUNDING_KIND = "fundingRate"
+
+
+def is_funding(entry: dict[str, Any]) -> bool:
+    """Whether a manifest file entry is a funding archive's, not a kline archive's."""
+    return entry.get("kind") == FUNDING_KIND
+
+
 # The whole object path, not a suffix: an end-anchored month search accepts a reserved
 # path carrying a development-looking query ("...-2025-01.zip?x=-2024-12.zip"). The
 # back-references also force the file name to agree with its directories.
@@ -413,7 +424,7 @@ def fetch_funding_file(data_dir: Path, symbol: str, month: str, fetcher: Fetcher
     development_month(month)  # refuse the reserved window before any network or cache access
     path = funding_archive_path(symbol, month)
     entry: dict[str, Any] = {
-        "kind": "fundingRate",
+        "kind": FUNDING_KIND,
         "symbol": symbol,
         "month": month,
         "url": f"https://{ARCHIVE_HOST}{path}",
@@ -442,8 +453,15 @@ def fetch_dataset(
     fetcher: Fetcher = archive_get,
     instruments: InstrumentSource = exchange_filters,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    previous: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """The manifest of the spec's klines, each fetched and verified. ``previous`` is the
+    manifest being refreshed, if any: the funding archives it lists (spec v1 P8, variant
+    G), which the spec does not name, are fetched and verified again and kept after the
+    klines, so a re-fetch never drops them."""
     files = [fetch_file(data_dir, s, i, m, fetcher) for s, i, m in spec.required()]
+    kept = [entry for entry in previous["files"] if is_funding(entry)] if previous else []
+    files += [fetch_funding_file(data_dir, f["symbol"], f["month"], fetcher) for f in kept]
     fetched_at = now().isoformat(timespec="seconds")
     return {
         "schema": MANIFEST_SCHEMA,
@@ -501,9 +519,13 @@ def _validate_manifest(manifest: Any) -> None:
     for entry in files:
         if not isinstance(entry, dict):
             raise DataError("dataset manifest has an invalid file entry")
+        # A funding archive's entry (spec v1 P8, variant G) has a kind and no interval.
+        funding = is_funding(entry)
+        if "kind" in entry and not funding:
+            raise DataError("dataset manifest file kind is invalid")
         try:
             symbol = entry["symbol"]
-            interval = entry["interval"]
+            interval = FUNDING_KIND if funding else entry["interval"]
             month = entry["month"]
             status = entry["status"]
         except KeyError as exc:
@@ -511,7 +533,10 @@ def _validate_manifest(manifest: Any) -> None:
         if not all(isinstance(value, str) for value in (symbol, interval, month)):
             raise DataError("dataset manifest file identity is invalid")
         try:
-            archive_path(symbol, interval, month)
+            if funding:
+                funding_archive_path(symbol, month)
+            else:
+                archive_path(symbol, interval, month)
         except (ValueError, OverflowError) as exc:
             raise DataError("dataset manifest file identity is invalid") from exc
         # The replay loaders read every file a manifest lists, so a hand-edited manifest
@@ -527,20 +552,30 @@ def _validate_manifest(manifest: Any) -> None:
 
 
 def verify_dataset(spec: DatasetSpec, manifest: dict[str, Any], data_dir: Path) -> None:
-    """Fail unless the manifest covers exactly the spec and every local file matches it."""
+    """Fail unless the manifest's klines cover exactly the spec and every local file
+    matches it. Funding archives are optional: each may be listed once, and one listed
+    is verified like a kline archive."""
     _validate_manifest(manifest)
     if manifest["dataset"] != spec.name:
         raise DataError("manifest belongs to a different dataset")
-    listed = [(f["symbol"], f["interval"], f["month"]) for f in manifest["files"]]
+    klines = [f for f in manifest["files"] if not is_funding(f)]
+    listed = [(f["symbol"], f["interval"], f["month"]) for f in klines]
     if sorted(listed) != sorted(spec.required()) or len(set(listed)) != len(listed):
         raise DataError("manifest files do not match the dataset spec")
+    funding = [(f["symbol"], f["month"]) for f in manifest["files"] if is_funding(f)]
+    if len(set(funding)) != len(funding):
+        raise DataError("manifest lists a funding archive twice")
     for symbol in spec.traded:
         if symbol not in manifest["instruments"]:
             raise DataError(f"manifest lacks exchange filters for {symbol}")
     for entry in manifest["files"]:
         if entry["status"] == "missing":
             continue
-        path = local_path(data_dir, entry["symbol"], entry["interval"], entry["month"])
+        path = (
+            funding_local_path(data_dir, entry["symbol"], entry["month"])
+            if is_funding(entry)
+            else local_path(data_dir, entry["symbol"], entry["interval"], entry["month"])
+        )
         if not path.exists():
             raise DataError(f"missing local archive {path}; run fetch first")
         if sha256_file(path) != entry["sha256"]:

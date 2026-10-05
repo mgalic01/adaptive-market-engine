@@ -1,5 +1,6 @@
 """Network-free tests for archive parsing, checksum verification and manifests."""
 
+import contextlib
 import hashlib
 import io
 import json
@@ -8,9 +9,11 @@ import unittest
 import zipfile
 from dataclasses import replace
 from decimal import Decimal as D
+from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 
+from crypto_grid_bot.backtest import __main__ as cli
 from crypto_grid_bot.backtest import dataset
 from crypto_grid_bot.backtest.dataset import (
     ArchiveParseError,
@@ -24,14 +27,16 @@ from crypto_grid_bot.backtest.dataset import (
     load_spec,
     local_path,
     verify_dataset,
+    write_manifest,
 )
-from crypto_grid_bot.backtest.funding import read_funding_archive
+from crypto_grid_bot.backtest.funding import FundingSignal, read_funding_archive
 from crypto_grid_bot.backtest.klines import (
     aggregate,
     parse_rows,
     read_archive,
     read_member,
 )
+from crypto_grid_bot.backtest.replay import load_funding
 from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.market_data.parsing import DataError
 
@@ -246,7 +251,8 @@ class FetchTests(unittest.TestCase):
         fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
         self.assertEqual(2, self.archive.requests.count(zip_path))
 
-    def test_manifest_round_trip_and_tamper_detection(self):
+    def tiny_dataset(self):
+        """A one-pair, two-month dataset, fetched from the fake archive: (spec, manifest)."""
         spec = replace(
             load_spec(ROOT / "config/datasets/verify-2024h1.toml"),
             traded=("ADAUSDT",),
@@ -271,6 +277,10 @@ class FetchTests(unittest.TestCase):
                 "min_notional": "5",
             },
         )
+        return spec, manifest
+
+    def test_manifest_round_trip_and_tamper_detection(self):
+        spec, manifest = self.tiny_dataset()
         json.dumps(manifest)  # serialisable
         verify_dataset(spec, manifest, self.data)
         local_path(self.data, "ADAUSDT", "1h", "2024-01").write_bytes(b"tampered")
@@ -278,6 +288,163 @@ class FetchTests(unittest.TestCase):
             verify_dataset(spec, manifest, self.data)
         with self.assertRaisesRegex(DataError, "do not match"):
             verify_dataset(replace(spec, end="2024-02"), manifest, self.data)
+
+    def test_funding_archives_are_optional_and_verified_like_klines(self):
+        # Codex review of #165: G's archives (spec v1 P8) must pass verification. The
+        # klines still cover the spec exactly; a funding entry has a kind and no interval,
+        # and its archive is checksum-verified like a kline archive.
+        spec, manifest = self.tiny_dataset()
+        months = ("2023-12", "2024-01")
+        for month, start in zip(months, (1701388800011, JAN_2024_MS + 11), strict=True):
+            self.archive.add_funding("BTCUSDT", month, funding_rows(start, 4))
+        funding = [fetch_funding_file(self.data, "BTCUSDT", m, self.archive) for m in months]
+        with_funding = manifest | {"files": manifest["files"] + funding}
+        path = self.data / "with-funding.manifest.json"
+        write_manifest(path, with_funding)
+        self.assertEqual(json.loads(json.dumps(with_funding)), load_manifest(path))
+        verify_dataset(spec, with_funding, self.data)
+        records = load_funding(self.data, with_funding, "BTCUSDT", months)
+        self.assertEqual(8, len(records))  # a non-empty history reaches G
+        self.assertTrue(
+            FundingSignal(records).state(JAN_2024_MS + 16 * 3_600_000 + 60_000).available
+        )
+        # The P8 report's entry shape (its appendix, BTCUSDT 2022-04) is admitted as it is.
+        p8 = {
+            "bytes": 926,
+            "expected_records": 90,
+            "first_calc_time_ms": 1648771200000,
+            "interval_hours": {"8": 90},
+            "invalid_records": 0,
+            "kind": "fundingRate",
+            "last_calc_time_ms": 1651334400015,
+            "max_offset_ms": 31,
+            "month": "2022-04",
+            "records": 90,
+            "sha256": "57e2776cc68b3169fc9f8632dad67278f470cd453407a8ebe6c87963c8a31357",
+            "status": "ok",
+            "symbol": "BTCUSDT",
+            "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/"
+            "BTCUSDT-fundingRate-2022-04.zip",
+        }
+        write_manifest(path, manifest | {"files": manifest["files"] + [p8]})
+        load_manifest(path)
+        # A wrong checksum, a changed archive and a month listed twice all fail.
+        wrong = [entry | {"sha256": "0" * 64} for entry in funding]
+        cases = (
+            (manifest | {"files": manifest["files"] + wrong}, "checksum"),
+            (manifest | {"files": manifest["files"] + funding + funding[:1]}, "twice"),
+        )
+        for bad, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(DataError, message):
+                verify_dataset(spec, bad, self.data)
+        funding_local_path(self.data, "BTCUSDT", "2024-01").write_bytes(b"tampered")
+        with self.assertRaisesRegex(DataError, "checksum"):
+            verify_dataset(spec, with_funding, self.data)
+        # A missing funding month is recorded, not verified, as for klines.
+        missing = funding[:1] + [{**funding[1], "status": "missing"}]
+        missing[1].pop("sha256")
+        verify_dataset(spec, manifest | {"files": manifest["files"] + missing}, self.data)
+
+    def test_a_refetch_keeps_and_verifies_the_manifests_funding_archives(self):
+        # Codex review of #165: `fetch` rebuilt the files from the spec's klines alone, so
+        # a re-fetch dropped the funding entries G needs. Given the manifest it refreshes,
+        # it fetches and verifies their archives again and keeps them after the klines,
+        # and the klines come out exactly as without it.
+        spec, manifest = self.tiny_dataset()
+        self.archive.add_funding("BTCUSDT", "2024-01", funding_rows(JAN_2024_MS + 11, 4))
+        funding = fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+        previous = manifest | {"files": manifest["files"] + [funding]}
+        archive = funding_local_path(self.data, "BTCUSDT", "2024-01")
+        archive.write_bytes(b"tampered")  # verified again: fetched anew
+        filters = {"tick_size": "0.0001", "quantity_step": "0.1", "min_notional": "5"}
+        refetched = fetch_dataset(
+            spec,
+            self.data,
+            fetcher=self.archive,
+            instruments=lambda symbol: filters,
+            previous=previous,
+        )
+        self.assertEqual(previous["files"], refetched["files"])
+        verify_dataset(spec, refetched, self.data)
+        self.assertEqual(funding["sha256"], hashlib.sha256(archive.read_bytes()).hexdigest())
+        # Without funding entries, as every committed manifest, nothing changes.
+        plain = fetch_dataset(
+            spec, self.data, fetcher=self.archive, instruments=lambda symbol: filters
+        )
+        self.assertEqual(manifest["files"], plain["files"])
+        self.assertEqual(
+            plain["files"],
+            fetch_dataset(
+                spec,
+                self.data,
+                fetcher=self.archive,
+                instruments=lambda s: filters,
+                previous=manifest,
+            )["files"],
+        )
+
+    def test_the_fetch_command_keeps_the_manifests_funding_archives(self):
+        spec, manifest = self.tiny_dataset()
+        self.archive.add_funding("BTCUSDT", "2024-01", funding_rows(JAN_2024_MS + 11, 4))
+        funding = fetch_funding_file(self.data, "BTCUSDT", "2024-01", self.archive)
+        spec_path = self.data / "tiny.toml"
+        spec_path.write_text(
+            (ROOT / "config/datasets/verify-2024h1.toml").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        manifest_file = self.data / "tiny.manifest.json"
+        write_manifest(manifest_file, manifest | {"files": manifest["files"] + [funding]})
+        filters = {"tick_size": "0.0001", "quantity_step": "0.1", "min_notional": "5"}
+        offline = partial(fetch_dataset, fetcher=self.archive, instruments=lambda symbol: filters)
+        with (
+            patch.object(cli, "load_spec", lambda path: spec),
+            patch.object(cli, "fetch_dataset", offline),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(
+                0, cli.main(["fetch", "--spec", str(spec_path), "--data-dir", str(self.data)])
+            )
+        written = load_manifest(manifest_file)
+        self.assertEqual([funding], [f for f in written["files"] if f.get("kind")])
+        verify_dataset(spec, written, self.data)
+
+    def test_funding_entries_are_validated_before_file_access(self):
+        spec = load_spec(ROOT / "config/datasets/verify-2024h1.toml")
+        entry = {
+            "kind": "fundingRate",
+            "symbol": "BTCUSDT",
+            "month": "2024-01",
+            "status": "ok",
+            "sha256": "a" * 64,
+        }
+        for update in (
+            {"kind": "openInterest"},
+            {"month": "2025-01"},
+            {"month": "2024-1"},
+            {"symbol": "../BTCUSDT"},
+            {"status": "unparsed"},
+            {"sha256": "z" * 64},
+        ):
+            manifest = {
+                "schema": 1,
+                "dataset": spec.name,
+                "instruments": {},
+                "files": [entry | update],
+            }
+            path = self.data / "malformed.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.subTest(update=update):
+                with self.assertRaises(DataError):
+                    load_manifest(path)
+                with self.assertRaises(DataError):
+                    verify_dataset(spec, manifest, self.data)
+        del entry["month"]
+        with self.assertRaisesRegex(DataError, "incomplete"):
+            verify_dataset(
+                spec,
+                {"schema": 1, "dataset": spec.name, "instruments": {}, "files": [entry]},
+                self.data,
+            )
 
     def test_malformed_manifests_fail_with_data_errors(self):
         with tempfile.NamedTemporaryFile("w", delete=False) as handle:
@@ -370,6 +537,13 @@ class FetchTests(unittest.TestCase):
         for path in (ROOT / "config/datasets").glob("*.manifest.json"):
             with self.subTest(path=path.name):
                 self.assertEqual(json.loads(path.read_text(encoding="utf-8")), load_manifest(path))
+
+    def test_committed_specs_remain_loadable(self):
+        specs = sorted((ROOT / "config/datasets").glob("*.toml"))
+        self.assertTrue(specs)
+        for path in specs:
+            with self.subTest(path=path.name):
+                self.assertEqual(path.stem, load_spec(path).name)
 
     def test_spec_rejects_unknown_fields_and_bad_values(self):
         source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()

@@ -210,13 +210,17 @@ class CliIntegrityTests(unittest.TestCase):
 
     def test_variant_and_structure_flags_reach_every_replay_and_are_recorded(self):
         cap = Decimal("0.40")
+        c = {"trend_switch": True, "inventory_cap": cap}
         cases = {
             ("--variant-a",): ("-variant-A", SimulationPolicy(trend_switch=True)),
             ("--variant-b",): ("-variant-B", SimulationPolicy(inventory_cap=cap)),
-            ("--variant-c",): (
-                "-variant-C",
-                SimulationPolicy(trend_switch=True, inventory_cap=cap),
-            ),
+            ("--variant-c",): ("-variant-C", SimulationPolicy(**c)),
+            ("--variant-e",): ("-variant-E", SimulationPolicy(volume_exit=True)),
+            ("--variant-f",): ("-variant-F", SimulationPolicy(flow_block_entry=True)),
+            ("--variant-g",): ("-variant-G", SimulationPolicy(funding_gate=True)),
+            ("--variant-h",): ("-variant-H", SimulationPolicy(cycle_gate=True)),
+            ("--variant-cg",): ("-variant-C+G", SimulationPolicy(**c, funding_gate=True)),
+            ("--variant-ch",): ("-variant-C+H", SimulationPolicy(**c, cycle_gate=True)),
             ("--structure",): ("-structure", SimulationPolicy(structure=True)),
             ("--variant-b", "--structure"): (
                 "-variant-B-structure",
@@ -552,3 +556,26 @@ class CodeCommitTests(unittest.TestCase):
         rows = cli._table([v0, variant]).splitlines()[2:]
         self.assertIn("| gated |", rows[0])
         self.assertIn("| gated, variant B |", rows[1])
+
+
+class VariantGRefusalTests(unittest.TestCase):
+    def test_a_g_run_on_a_manifest_without_funding_archives_is_refused(self):
+        # Codex review of #165: such a run blocks every new grid and could be published
+        # as valid. Every committed manifest lacks the archives until P8's entries.
+        spec = jobs.load_spec(Path(SPEC))
+        prepared = jobs.PreparedRun(spec, None, {"files": []}, None, None, None, [])
+        with (
+            patch.object(jobs, "prepare_run", lambda *args, **kwargs: prepared),
+            patch.object(jobs, "replay", None),  # never reached
+            self.assertRaisesRegex(ValueError, "funding archive for every evaluation month"),
+        ):
+            jobs.run_job(
+                Path(SPEC),
+                ROOT / "config/default.toml",
+                Path("data"),
+                "BTCUSDT",
+                "high_first",
+                True,
+                None,
+                SimulationPolicy(funding_gate=True),
+            )

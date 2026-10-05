@@ -167,6 +167,45 @@ and its baseline needs 720 defined observations. Every dataset includes at least
 two hourly warm-up months before `start`; readiness is still checked from the actual
 available observations, not inferred from the calendar span.
 
+**Variant A's daily bar:** with `--variant-a` or `--variant-c`, each observation reads the
+trend state of the previous UTC day's completed daily bar (`TrendSchedule.at()`,
+`effective_state()`). If that bar is missing, the state is Unavailable, which spec v1 §3 A
+treats as Middle: no new grid, while an existing grid keeps running (its sells, reentries
+and range exit as in V0) and no fill is forced. A missing daily bar inside the window
+therefore blocks new grids, and since SMA200 needs 200 consecutive days (D6), it does so
+for up to 200 days; it is not an error. A registered run cannot reach this state: P3's
+integrity check rejects a daily archive with a gap.
+
+**Variants E to H** (`--variant-e`, `-f`, `-g`, `-h`, `-cg` and `-ch`, spec v1 §3) read only
+what was complete at the decision: E the pair's own hourly and 1m bars, F its 1m bars, G
+the BTCUSDT funding records already usable at the quote, and H its daily bars, with the
+observation's own halving phase. Their rows add the spec's "Reported" values for E, G and
+H (each variant's fields are named after it). Notes on each:
+- **E** keeps its milestones on the clock from the episode's first outside observation
+  `t0`, whatever gaps pause V0's accumulated outside time: it decides once, at the first
+  valid observation at or after `t0 + 6 h`, and an extended episode exits at the first
+  one at or after `t0 + 12 h`. Otherwise V0's own range exit applies unchanged.
+- **F** holds a fragment below the minimum notional for its target's own sell: the
+  ordinary drain of unpaired inventory leaves it, while a V0 drain, a range exit and a
+  halt's liquidation sell it like any inventory. Once its grid has ended (harvested after
+  a range exit, a drain or its last sell, or left with no order once F stops blocking, so
+  that the account re-centres), it is ordinary unpaired inventory, which the drain sells
+  once a price makes it sellable. At the end of a run a held fragment is reported as dust.
+- **G**'s funding archives may be listed in a manifest beside the klines (a `kind` of
+  `fundingRate` and no `interval`); they are checksum-verified like them, and `fetch`
+  fetches and keeps them. A G or C+G run needs BTCUSDT's archive for every evaluation
+  month and is refused without it, rather than blocking every new grid. No committed
+  manifest lists any yet, so until P8's entries are added, G and C+G cannot run.
+- **H3** relaxes the opportunity-score minimum (0.70 to 0.60) only for the decision to
+  open a new grid, while the account holds no grid. A grid that exists is judged by V0's
+  minimum, so a grid opened only because of H3 pauses, and drains, at its next frame scored
+  below 0.70: the spec's "new grids only", not a defect. H3's all-time high needs daily
+  history from the most recent halving, which only P8's extended history provides, so
+  without it H3 never relaxes an entry.
+
+E and F keep account state that is never saved, so they run in historical replay only
+([PAPER_SIMULATION.md](PAPER_SIMULATION.md)).
+
 The unchanged engine then applies:
 - the regime classifier;
 - the opportunity scorer;

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import (
     CandidateMetrics,
+    CandidateScore,
     MarketRegime,
     MarketSignals,
     PortfolioSnapshot,
@@ -53,10 +55,22 @@ from crypto_grid_bot.simulation.trend_switch import (
     effective_state,
     starts_down_sequence,
 )
+from crypto_grid_bot.strategy.cycle import (
+    H2,
+    H2_OUTSIDE_RANGE_SECONDS,
+    H3,
+    H3_SCORE_RELAXATION,
+    CycleSignal,
+    phase,
+)
 from crypto_grid_bot.strategy.grid import GridBuilder, GridNotViable
 from crypto_grid_bot.strategy.opportunity import OpportunityScorer
+from crypto_grid_bot.strategy.order_flow import flow_blocked
 from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
 from crypto_grid_bot.strategy.structure import ResistanceZones, nearest_resistance
+from crypto_grid_bot.strategy.volume_exit import DEADLINE as VOLUME_DEADLINE
+from crypto_grid_bot.strategy.volume_exit import DECISION as VOLUME_DECISION
+from crypto_grid_bot.strategy.volume_exit import VolumeHistory
 
 DEFAULT_CAPITAL = D("100")
 # The share of unprotected quote a new grid may commit; the rest absorbs fees and rounding.
@@ -100,6 +114,24 @@ RESISTANCE_TARGET = D("0.999")
 # holds resumes in the old shape, and may hold an admitted exhaustion halt, so it is
 # refused rather than continued under the new rules.
 SCHEMA = 10
+# Spec v1 sections 3 and 4: the variants a policy may run ("" is V0). E and F stand
+# alone; G and H run alone or with C as the declared interactions C+G and C+H.
+VARIANTS = ("", "A", "B", "C", "E", "F", "G", "H", "C+G", "C+H")
+# The policy's on/off flags: each is off in V0, and left out of the identity when off.
+POLICY_FLAGS = (
+    "trend_switch",
+    "volume_exit",
+    "flow_block_entry",
+    "funding_gate",
+    "cycle_gate",
+    "structure",
+)
+# Why a variant's own rule forbids a new grid (spec v1 §3), journaled with the variant.
+ENTRY_VETOES = {
+    "F": "order flow: buys blocked",
+    "G": "funding gate: funding high or unavailable",
+    "H2": "cycle H2: overextended",
+}
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"
@@ -127,6 +159,21 @@ class SimulationPolicy:
     # Experiment variant A (spec v1, section 3 A): the daily SMA50/SMA200 trend switch.
     # False = off (V0). The daily state arrives on each Frame as ``trend``.
     trend_switch: bool = False
+    # Experiment variant E (spec v1, section 3 E): on low volume at t0 + 6 h, the range
+    # exit waits until t0 + 12 h, both on the clock from the episode's first outside
+    # observation t0 (volume_exit.py; its volumes come from ``PaperSimulator.volumes``).
+    # Not eligible for selection until Codex has reviewed it. False = off (V0).
+    volume_exit: bool = False
+    # Experiment variant F (spec v1, section 3 F): a low taker-buy share blocks every new
+    # buy (order_flow.py; the share arrives on each Frame as ``flow_share``). False = off.
+    flow_block_entry: bool = False
+    # Experiment variant G (spec v1, section 3 G): high or unavailable BTCUSDT funding
+    # blocks a new grid (backtest/funding.py; the decision arrives on each Frame as
+    # ``funding_blocks``). False = off (V0).
+    funding_gate: bool = False
+    # Experiment variant H (spec v1, section 3 H): the halving-cycle rules H2 and H3
+    # (cycle.py; the daily values arrive on each Frame as ``cycle``). False = off (V0).
+    cycle_gate: bool = False
     # V2 market structure (#147-#151), off by default: the regime vote's sixth signal
     # ``structure_alignment`` with the trend weight lowered from 0.35 to 0.25, and sell
     # targets just below resistance (D19). Spec v1 section 3: new behaviour sits behind a
@@ -157,23 +204,32 @@ class SimulationPolicy:
             nonnegative(self.inventory_cap)
             if not ZERO < self.inventory_cap < ONE:
                 raise ValueError("inventory cap must be above zero and below one")
-        if type(self.trend_switch) is not bool:
-            raise ValueError("trend_switch must be a boolean")
-        if type(self.structure) is not bool:
-            raise ValueError("structure must be a boolean")
+        for name in POLICY_FLAGS:
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be a boolean")
         for name in ("soft_cooloff_seconds", "hard_cooloff_seconds"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.variant not in VARIANTS:
+            raise ValueError(f"spec v1 declares no variant {self.variant}")
+
+    @property
+    def variant(self) -> str:
+        """The spec v1 variant this policy runs, such as "C+G"; "" for V0."""
+        trend, cap = self.trend_switch, self.inventory_cap is not None
+        added = (self.volume_exit, self.flow_block_entry, self.funding_gate, self.cycle_gate)
+        names = ["C" if trend and cap else "A" if trend else "B" if cap else ""]
+        names += [name for name, on in zip("EFGH", added, strict=True) if on]
+        return "+".join(name for name in names if name)
 
     def identity(self) -> dict[str, Any]:
         """Persisted form; omits unset variants so existing paper identities still match."""
         value = asdict(self)
         if self.inventory_cap is None:
             del value["inventory_cap"]
-        if not self.trend_switch:
-            del value["trend_switch"]
-        if not self.structure:
-            del value["structure"]
+        for name in POLICY_FLAGS:
+            if not value[name]:
+                del value[name]
         return value
 
 
@@ -191,6 +247,14 @@ class Frame:
     trend: TrendSignal | None = None
     # V2: each timeframe's resistance zones (structure.py); () when unavailable.
     resistance: tuple[ResistanceZones, ...] = ()
+    # Variant F only: the taker-buy share of the 15 minutes before this one
+    # (order_flow.py); None when it is unavailable, which blocks, or F is off.
+    flow_share: Decimal | None = None
+    # Variant G only: whether the funding gate blocks a new grid at this observation;
+    # None when G is off. Under G, anything but False blocks (it fails closed).
+    funding_blocks: bool | None = None
+    # Variant H only: the daily values of the latest completed daily bar (cycle.py).
+    cycle: CycleSignal | None = None
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -201,6 +265,9 @@ class Frame:
             del value["trend"]  # Likewise for journals without variant A.
         if not value["resistance"]:
             del value["resistance"]  # Omit from journals when structure unavailable.
+        for name in ("flow_share", "funding_blocks", "cycle"):
+            if value[name] is None:
+                del value[name]  # Likewise for journals without variants F, G and H.
         return value
 
 
@@ -222,6 +289,9 @@ class PaperSimulator:
         # A tentative evaluation for a rebase or a restart is not one. It observes only
         # and must not change the account.
         self.risk_observer: Callable[[Decimal, Decimal, Decimal, RiskDecision], None] | None = None
+        # Replay input for variant E: the pair's volumes its range-exit check reads. Unset,
+        # the check is unavailable and the exit happens as in V0; replay() sets it.
+        self.volumes: VolumeHistory | None = None
         identity = encode(
             {
                 "schema": SCHEMA,
@@ -260,14 +330,23 @@ class PaperSimulator:
         # Config floats as the exact Decimals the per-frame and per-level checks use.
         self._maximum_spread_pct = D(str(config.maximum_spread_pct))
         self._minimum_grid_cost_multiple = D(str(config.minimum_grid_cost_multiple))
+        # Variant H3's opportunity-score minimum for new grids (0.70 lowered to 0.60).
+        self._h3_minimum = config.minimum_opportunity_score - H3_SCORE_RELAXATION
 
     def close(self) -> None:
         self.store.close()
 
     def process(self, frame: Frame) -> dict[str, Any]:
+        self._refuse_runtime_variants()
         return self.store.transact(
             frame.quote.event_id, frame.payload(), lambda account: self._step(account, frame)
         )
+
+    def _refuse_runtime_variants(self) -> None:
+        """Variants E and F keep account state that is never saved (``Account.to_dict``),
+        so a persisted account would lose it at every frame: they run in replay only."""
+        if self.policy.volume_exit or self.policy.flow_block_entry:
+            raise ValueError("variants E and F run in historical replay only")
 
     def step(self, account: Account, frame: Frame) -> dict[str, Any]:
         """Advance an in-memory account by one frame, without the event journal.
@@ -515,6 +594,8 @@ class PaperSimulator:
         if self.policy.trend_switch and frame.trend is not None:
             # A daily bar that had not closed at this observation is lookahead: fail closed.
             frame.trend.validate(quote.observed_at)
+        if self.policy.cycle_gate and frame.cycle is not None:
+            frame.cycle.validate(observed)  # likewise for variant H's daily values
 
     def _clear_flat_bounds(self, account: Account, quote: Quote, report: dict[str, Any]) -> None:
         """Amendment 2 (owner decision 2026-10-02, D15): flat, no orders and no range exit
@@ -533,7 +614,9 @@ class PaperSimulator:
             account.grid_lower = account.grid_upper = ZERO
             account.outside_seconds, account.outside_last = ZERO, ""
 
-    def _track_range(self, account: Account, quote: Quote) -> None:
+    def _track_range(
+        self, account: Account, quote: Quote, cycle: str | None, report: dict[str, Any]
+    ) -> None:
         """Accumulate observed outside-range time; call before updating last_observed.
 
         Amendment 3 (owner decision 2026-10-02, D16): while the account is halted,
@@ -548,6 +631,9 @@ class PaperSimulator:
         if account.grid_lower <= quote.bid <= account.grid_upper:
             account.outside_seconds, account.outside_last = ZERO, ""
             return
+        if self.policy.volume_exit and not account.outside_last:
+            # Variant E: the episode's first outside observation is its t0.
+            account.volume_since, account.volume_check = observed, ""
         # Count only intervals bracketed by two consecutive valid outside observations
         # within the continuity limit. Gaps do not prove time outside the range, but they
         # do not erase time already observed; only a valid inside frame resets the clock.
@@ -556,12 +642,39 @@ class PaperSimulator:
             if elapsed <= self.policy.maximum_frame_gap_seconds:
                 account.outside_seconds += elapsed
         account.outside_last = observed
-        if account.outside_seconds >= self.policy.outside_range_seconds:
+        if self._outside_expired(account, quote, cycle, report):
             account.orders.clear()
             account.range_exit = True
             account.range_exit_since = observed
             account.outside_seconds, account.outside_last = ZERO, ""
             self._pause(account, "outside-range timeout: exit to cash")
+
+    def _outside_expired(
+        self, account: Account, quote: Quote, cycle: str | None, report: dict[str, Any]
+    ) -> bool:
+        """Whether this outside observation ends the grid: once V0's 6 h of observed
+        outside time have accumulated, or 2 h while variant H2 is in force.
+
+        Variant E (spec v1 §3 E) keeps its milestones on the clock from the episode's
+        t0, whatever gaps paused the accumulated time: it decides once, at the first
+        valid observation at or after t0 + 6 h, on the fixed span from t0
+        (``VolumeHistory.extends``), and journals the decision. An extended episode ends
+        at the first valid observation at or after t0 + 12 h; otherwise V0's own exit
+        applies unchanged, as it does on an unavailable comparison."""
+        if cycle == H2:
+            return account.outside_seconds >= H2_OUTSIDE_RANGE_SECONDS
+        expired = account.outside_seconds >= self.policy.outside_range_seconds
+        if not self.policy.volume_exit:
+            return expired
+        since, observed = timestamp(account.volume_since), timestamp(quote.observed_at)
+        elapsed = observed - since
+        if not account.volume_check and elapsed >= VOLUME_DECISION:
+            extends = None if self.volumes is None else self.volumes.extends(since, observed)
+            account.volume_check = (
+                "unavailable" if extends is None else "extended" if extends else "exit"
+            )
+            report["volume_check"] = account.volume_check
+        return elapsed >= VOLUME_DEADLINE if account.volume_check == "extended" else expired
 
     @staticmethod
     def _record_exit(report: dict[str, Any], result: Reduction, reason: str) -> None:
@@ -641,6 +754,7 @@ class PaperSimulator:
         # may have left the account flat: clear it before the clock can run (Codex review
         # of #163), as the end of this step would have.
         self._clear_flat_bounds(account, quote, report)
+        cycle = self._cycle_rule(frame, observed, report) if self.policy.cycle_gate else None
         was_halted = bool(account.halt)
         clock = (
             account.range_exit,
@@ -648,7 +762,7 @@ class PaperSimulator:
             account.outside_seconds,
             account.outside_last,
         )
-        self._track_range(account, quote)
+        self._track_range(account, quote, cycle, report)
         # A gap or a new ineligible frame breaks the recovery streak.
         if (
             account.last_observed
@@ -674,6 +788,9 @@ class PaperSimulator:
                 account.outside_last,
             ) = clock
         trend = self._apply_trend(account, frame) if self.policy.trend_switch else None
+        if self.policy.flow_block_entry:
+            account.flow_block = flow_blocked(account.flow_block, frame.flow_share)
+        h3_only = False  # whether only variant H3's relaxed score made this frame eligible
         if account.halt:
             if account.liquidating:
                 self._record_exit(
@@ -709,7 +826,7 @@ class PaperSimulator:
             if (
                 self._resolved(account, quote)
                 and action == RiskAction.ALLOW
-                and score.eligible
+                and self._entry_eligible(account, frame, regime, score, cycle)
                 and (back_inside or cooled)
             ):
                 # Leave the exit only after liquidation; the normal recovery confirmations
@@ -718,7 +835,9 @@ class PaperSimulator:
                 account.grid_lower = account.grid_upper = ZERO
                 report["range_exit_cleared"] = "returned inside" if back_inside else "recenter"
         else:
-            if not score.eligible:
+            eligible = self._entry_eligible(account, frame, regime, score, cycle)
+            h3_only = eligible and not score.eligible
+            if not eligible:
                 self._pause(account, "; ".join(score.reasons))
             elif account.pause and action == RiskAction.ALLOW:
                 account.recovery_count += 1
@@ -735,6 +854,8 @@ class PaperSimulator:
             )
             if trend_due:
                 account.orders.clear()
+            if self._buys_blocked(account):
+                self._block_buys(account, frame)  # before matching, so none can fill
             refused: list[dict[str, Any]] = []
             report["fills"] = [
                 asdict(fill)
@@ -742,11 +863,13 @@ class PaperSimulator:
                     account,
                     quote,
                     self.rules,
-                    # A running variant A Down sequence places no new buy (reentries too).
+                    # A running variant A Down sequence places no new buy (reentries too),
+                    # and neither does variant F's block.
                     recycle=not account.pause
                     and not account.draining
                     and frame.allow_new_grid
-                    and not account.down_since,
+                    and not account.down_since
+                    and not self._buys_blocked(account),
                     epoch=frame.epoch,
                     reentry_quantity=(
                         None
@@ -768,8 +891,11 @@ class PaperSimulator:
             # of a buy still resting, whose own sell will pair it once it fills. Cancelled
             # partial buys leave it, and so does a residue a harvest tolerated. Exit it
             # using only remaining bid capacity, never inventory reserved by a sell, and
-            # never the part of a resting buy that has already filled.
+            # never the part of a resting buy that has already filled. Variant F's held
+            # fragments wait for their own sell instead.
             unpaired = unpaired_inventory(account)
+            if self.policy.flow_block_entry:
+                unpaired -= self.held_fragments(account)
             if unpaired > ZERO:
                 consumed = sum(
                     (D(fill["quantity"]) for fill in report["fills"] if fill["side"] == "sell"),
@@ -796,7 +922,9 @@ class PaperSimulator:
         # stricter gate: a partly filled buy's inventory blocks the harvest until its own
         # child sell has paired it. See _resolved.
         if not account.halt and not restarted and self._resolved(account, quote):
-            self._harvest(account, frame, report, capped, trend, regime)
+            self._harvest(account, frame, report, capped, trend, regime, cycle)
+            if h3_only and report["opened"]:
+                report["cycle"]["h3_only"] = True  # a grid opened only because of H3
         if account.halt:
             report.update(decision="halt", reason=account.halt)
         elif account.pause:
@@ -856,10 +984,11 @@ class PaperSimulator:
         capped: list[dict[str, Any]],
         trend: str | None,
         regime: RegimeAssessment,
+        cycle: str | None,
     ) -> None:
         """Harvest an account with nothing sellable left: cancel its unused buys, then
         halt on exhausted capital, or settle profit and open the next grid unless a
-        pause, a range exit, the frame or variant A forbids one.
+        pause, a range exit, the frame or variant A, F, G or H2 forbids one.
 
         Ordering: the caller runs this after the frame's fills and their risk recheck,
         only on a frame neither halted nor just restarted, and only once ``_resolved``
@@ -871,6 +1000,10 @@ class PaperSimulator:
         if not (sold or account.draining or not account.orders):
             return
         self._cancel_buys(account)
+        # The grid has ended (a range exit or a drain has run its course, or it sold
+        # out): variant F's fragments, all below the minimum here, are ordinary unpaired
+        # inventory from now on, sold once a price makes them sellable (spec v1 §3 F).
+        account.flow_fragments.clear()
         if account.cash - account.pending <= ZERO:
             # Arm the exit for any residue, as the other halt sites do, so the stuck
             # inventory is reported from the next frame rather than only once the risk
@@ -895,6 +1028,9 @@ class PaperSimulator:
                 + ("; Down sequence running" if account.down_since else ""),
             )
             return
+        if veto := self._entry_veto(account, frame, cycle):
+            report.update(decision="cash", reason=ENTRY_VETOES[veto], entry_veto=veto)
+            return
         try:
             report["opened"] = self._open_grid(account, frame, capped, regime)
             report["decision"] = "open_grid"
@@ -903,6 +1039,7 @@ class PaperSimulator:
 
     def resume(self, frame: Frame, *, event_id: str, reason: str) -> dict[str, Any]:
         """Audited paper-only control; never erase losses or place/fill orders."""
+        self._refuse_runtime_variants()
         if not event_id.strip() or not reason.strip():
             raise ValueError("resume requires a unique event ID and an operator reason")
 
@@ -988,6 +1125,98 @@ class PaperSimulator:
                 self._cancel_buys(account)
             account.trend_day = max(account.trend_day, signal.day)
         return state
+
+    @staticmethod
+    def _cycle_rule(frame: Frame, observed: datetime, report: dict[str, Any]) -> str | None:
+        """Variant H at a valid observation: the rule in force (H2, H3 or None), from the
+        frame's daily values and this observation's own phase, both journaled."""
+        signal = frame.cycle
+        rule = signal.rule(observed) if signal is not None else None
+        report["cycle"] = {
+            "day": signal.day if signal is not None else None,
+            "phase": phase(observed),
+            "rule": rule,
+        }
+        return rule
+
+    def _entry_eligible(
+        self,
+        account: Account,
+        frame: Frame,
+        regime: RegimeAssessment,
+        score: CandidateScore,
+        cycle: str | None,
+    ) -> bool:
+        """V0's eligibility, or under variant H3 its relaxed opportunity-score minimum
+        (0.60) for the decision to open a new grid, which applies only while the account
+        holds no grid: no order and nothing sellable held. A grid's own pause and drain
+        thus stay exactly V0's ("for new grids only", spec v1 §3 H), so a grid only H3
+        opened pauses at its next frame scored below V0's minimum."""
+        if score.eligible or cycle != H3 or account.orders:
+            return score.eligible
+        if not self._resolved(account, frame.quote):
+            return False
+        return self.scorer.score(frame.candidate, regime, minimum_score=self._h3_minimum).eligible
+
+    def _buys_blocked(self, account: Account) -> bool:
+        """Whether variant F's block is on: no new grid, reentry or resting buy."""
+        return self.policy.flow_block_entry and account.flow_block
+
+    def _entry_veto(self, account: Account, frame: Frame, cycle: str | None) -> str:
+        """The variant (F, G or H2) whose own rule forbids a new grid at this frame, or ""
+        (spec v1 §3)."""
+        if self._buys_blocked(account):
+            return "F"
+        if self.policy.funding_gate and frame.funding_blocks is not False:
+            return "G"
+        return "H2" if cycle == H2 else ""
+
+    def held_fragments(self, account: Account) -> Decimal:
+        """Variant F's fragments waiting for their target's minimum notional (spec v1 §3
+        F), which the ordinary unpaired exit and the end-of-run verdict leave alone. A
+        drain, a range exit and a halt's liquidation sell them like any inventory.
+
+        They belong to their grid and are ordinary unpaired inventory once it ends. The
+        harvest that ends it, after a range exit or a drain, drops them (``_harvest``).
+        They are dropped here when F no longer blocks and no order is left, since the
+        account then re-centres, and when an exit has sold them."""
+        fragments = account.flow_fragments
+        total = sum(fragments.values(), ZERO)
+        if total > unpaired_inventory(account) or not (account.flow_block or account.orders):
+            fragments.clear()
+            return ZERO
+        return ZERO if account.draining else total
+
+    def _block_buys(self, account: Account, frame: Frame) -> None:
+        """Variant F: cancel the resting buys (spec v1 §3 F). A cancelled buy's filled part
+        gets a resting sell at the buy's target, as a complete fill's child sell would;
+        a part below the minimum notional there joins that target's fragment, which gets
+        its one sell once it reaches the minimum (``held_fragments``)."""
+        self.held_fragments(account)  # first drop what an exit has sold
+        fragments, rules = account.flow_fragments, self.rules
+        for key, order in list(account.orders.items()):
+            if order.side != "buy":
+                continue
+            del account.orders[key]
+            target = order.target
+            if target is None or order.quantity == order.remaining:
+                continue
+            held = fragments.pop(target, ZERO) + order.quantity - order.remaining
+            quantity = floor_step(held, rules.quantity_step)
+            if target * quantity >= rules.minimum_notional:
+                sell = LimitOrder(
+                    f"{key}/fragment",
+                    "sell",
+                    target,
+                    quantity,
+                    quantity,
+                    reentry=order.price,
+                    epoch=frame.epoch,  # like a child sell, it cannot fill within this bar
+                )
+                place(account, sell, rules, check=False)
+                held -= quantity
+            if held:
+                fragments[target] = held
 
     def _settle(self, account: Account, quote: Quote) -> dict[str, Any] | None:
         # An unsellable residue is left out of the allocation base, which understates
