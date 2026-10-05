@@ -14,7 +14,8 @@ variants yet.** This document fixes what will be built and how it will be judged
   from 2020-05; stage 2 on two long windows (§4). A variant must pass both, and the
   winner is ranked on 2017–2024 (§6).
 - Stage 2 runs on stage 1's strategy code. Only the long-window data handling may land
-  between the stages, and it must leave every stage-1 result byte-identical (§6).
+  between the stages, and it must leave every stage-1 result unchanged. The only
+  exceptions are provenance and the new mask-report fields, which must be empty (§6).
 - Hour-level masking and eight more data rules apply (§5).
 - C2 and the selection use compound annualised returns, and `N_family` grows (§6).
 
@@ -976,9 +977,9 @@ development ceiling, and nothing touches 2025 or later.
   - manifests.
 
   This work may land after stage 1, under the conditions in §6, "Two stages". The code
-  must implement exactly the §5 rules and leave every stage-1 result byte-identical. The
-  specs and manifests must follow the rules registered here and are frozen before
-  stage 2 runs.
+  must implement exactly the §5 rules and leave every stage-1 result unchanged, as §6
+  defines it. The specs and manifests must follow the rules registered here and are
+  frozen before stage 2 runs.
 - **Warm-up of `full-range-2017-2024`.** Its spec's comment says the 2018-05 and
   2018-06 daily archives are missing. That is wrong:
   - #156's manifest lists all 240 daily entries (BTC, ETH and XRP, 2018-05 to 2024-12)
@@ -1148,11 +1149,25 @@ which the owner accepted on 2026-10-05, and each is marked where it stands.
      frames are rejected (`runner.py` L507; §8, D8), and a rejected frame makes a run
      invalid. P4 found the same mechanism for SOL.
    - **The rule.** If Bob's measurement confirms that XRP's price falls below that
-     level in a window's evaluation period, XRP's pair-window is excluded there for
-     every variant. Otherwise XRP stays.
+     level in a window, XRP's pair-window is excluded there for every variant. Otherwise
+     XRP stays.
+   - **The statistic.** This is Claude's reading of the owner's accepted rule, from the
+     automated review of #168, and it is open to the owner. It is fixed before Bob
+     measures.
+     - XRP is excluded from a window if, in any single minute of that window's warm-up
+       or evaluation span, its 1m low is below 2 × tick ÷ maximum spread = 0.0002 ÷
+       0.0015 = 2/15 USDT, about 0.1333.
+     - In warm-up months the dataset holds only 1h bars. There the 1h low stands for
+       the lowest 1m low of its hour.
+     - The test is per window, and one minute is enough, because one such minute can
+       already make frames fail the spread check.
+     - It is conservative. If every 1m low is at or above 2/15, no quote can be
+       rejected this way: the open and close quotes fail only below about 0.1332, and
+       the high and low quotes only below about 0.0667. The warm-up span is stricter
+       than the mechanism needs, since warm-up minutes are not replayed.
+     - Bob's fetch run measures it from the manifests' archives.
    - **Effect.** In the long windows the exclusion would leave BTC and ETH, the two-pair
-     minimum. In `practice-2022`, XRP's existing runs are valid (§2's equivalence list),
-     so they have no rejected frame.
+     minimum. Bob measures every window that trades XRP, `practice-2022` included.
 9. **G and H with no data in their early years,** as §3 G and §3 H already provide.
    - G is unavailable until three usable funding records exist, and the archives start
      in 2020-01. Until then it blocks new grids.
@@ -1218,6 +1233,12 @@ lengths weigh fairly:
   `full-range-2019-2024`.
 - **Units.** Percentage points are this fraction × 100. Annualising never changes a
   run's sign.
+- **Final equity of 0 or less.** The annualised return is −100%. The power is undefined
+  there. Spot-only paper equity cannot go negative, but the case is defined anyway.
+- **The tie band.** The selection's 0.25-point band (step 2) applies to the mean of the
+  runs' compound-annualised returns, in percentage points.
+- **Provenance of these two rules.** Both are Claude's readings, from the automated
+  review of #168, and both are open to the owner.
 - **Raw returns** are still reported beside the annualised ones.
 - **Not annualised:** C6 and R1 keep raw returns, since the owner's rule names only C2
   and the selection.
@@ -1260,7 +1281,9 @@ but it does not change any criterion, any ranking or any acceptance decision.
 2. Let `M` be the highest mean return in the eligible set, annualised since 2026-10-05
    ("Annualised returns", above), in percentage points rounded
    to 6 decimals. The **tie set** is every eligible variant with mean return ≥ `M − 0.25`
-   (inclusive).
+   (inclusive). *(Since 2026-10-05, the mean is taken over the runs' compound-annualised
+   returns, and the 0.25-point band applies to that value. This is Claude's reading,
+   from the automated review of #168, and it is open to the owner.)*
 3. Within the tie set, pick the lowest mean total-equity max drawdown, rounded the same
    way.
 4. If still tied, pick the first in the fixed simplicity order V0, A, B, F, G, H, E, V2,
@@ -1296,10 +1319,20 @@ waived by the owner (see its row).
     That includes G running where no funding archive exists before 2020-01 (§5,
     rule 9).
   - **Data-handling conditions.** That code must implement exactly the §5 rules
-    registered here, and it must leave every stage-1 result byte-identical. Re-running
-    stage 1's windows on stage 2's code must reproduce stage 1's `results.json`, apart
-    from the provenance fields `code_commit` and `code_sha256`. Codex and Bob verify
-    this before stage 2 runs.
+    registered here, and it must leave every stage-1 result unchanged. Codex and Bob
+    verify this before stage 2 runs.
+    - **The check.** Re-run stage 1's windows on stage 2's code. The whole of stage 1's
+      `results.json`, every metric, trade and order included, must come out identical,
+      except for the fields below.
+    - **What the comparison leaves out.** Only these fields:
+      - the provenance fields `code_commit` and `code_sha256`;
+      - the new mask-report fields of §5 rule 1 (masked hours, skipped days, fills
+        after a masked span). The long-window data PR names them, and they must be
+        empty or zero on every stage-1 run.
+    - **Any other new or renamed field breaks the identity.**
+    - **Why this is a reading.** It is Claude's reading of the owner's
+      "byte-identical", from the automated review of #168, and it is open to the owner.
+      Taken literally, byte-identity could not hold once the mask-report fields exist.
   - **Datasets.** The long-window dataset specs and manifests follow the registered
     rules and are frozen before stage 2 runs. They need not exist before stage 1.
   - **The owner's decision (2026-10-05):** "Same strategy code", with the option text

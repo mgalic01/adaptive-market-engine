@@ -1,6 +1,6 @@
 # Owner decisions on the test plan: one batch with V2 and a full stack, two stages, nine data rules
 
-Index: **Owner decisions, 2026-10-05 (test plan).** Everything runs in one batch. V2 joins v1, reversing D20's "outside v1". A registered full stack, C+F+G+H+V2, runs beside every single variant, and E stays alone. V2's two behaviours beyond V0's restrictions become a fourth named exception. Both current windows get daily history from 2020-05. Claude builds the C1–C6 scorer (#167) and Codex reviews it. #156 closes after #165 merges, and its branch is kept. Two stages, with every rule fixed now: a variant must pass C1–C6 in stage 1 (the current windows) and in stage 2 (full-range-2017-2024, judged on its own). The winner is ranked on 2017–2024, and full-range-2019-2024 is reported only. Stage 2 runs on stage 1's strategy code. Only the long-window data handling may land in between, and it must leave every stage-1 result byte-identical. All nine data rules are accepted (hour-level masking, compound annualised returns, XRP excluded below the tick limit), together with six readings. Spec v1 and the V2 pre-registration are amended. Docs only.
+Index: **Owner decisions, 2026-10-05 (test plan).** Everything runs in one batch. V2 joins v1, reversing D20's "outside v1". A registered full stack, C+F+G+H+V2, runs beside every single variant, and E stays alone. V2's two behaviours beyond V0's restrictions become a fourth named exception. Both current windows get daily history from 2020-05. Claude builds the C1–C6 scorer (#167) and Codex reviews it. #156 closes after #165 merges, and its branch is kept. Two stages, with every rule fixed now: a variant must pass C1–C6 in stage 1 (the current windows) and in stage 2 (full-range-2017-2024, judged on its own). The winner is ranked on 2017–2024, and full-range-2019-2024 is reported only. Stage 2 runs on stage 1's strategy code. Only the long-window data handling may land in between, and it must leave every stage-1 result unchanged. All nine data rules are accepted (hour-level masking, compound annualised returns, XRP excluded below the tick limit), together with six readings. Spec v1 and the V2 pre-registration are amended. Docs only.
 
 - **Date and author:** 2026-10-05, written by Claude (session `b9db01ca`).
 - **Owner:** answered in Claude's session on 2026-10-05. Approximate times, UTC:
@@ -132,7 +132,11 @@ Options the owner did not choose:
    - **The one-time 2025–26 run** is bound by masking rules 1–5 and by annualisation.
 10. **Same strategy code (spec §6, "Two stages").**
     - **Same strategy code.** Stage 2 runs on stage 1's strategy code, config and spec version. Between the stages, the only code that may land is the long-window data handling: the repair rule moved into the reader, and the hour-level masking.
-    - **Data-handling conditions.** That code must implement exactly the registered §5 rules. It must leave every stage-1 result byte-identical: re-running stage 1's windows on stage 2's code reproduces stage 1's `results.json`, apart from the provenance fields `code_commit` and `code_sha256`. Codex and Bob verify this before stage 2 runs.
+    - **Data-handling conditions.** That code must implement exactly the registered §5 rules, and it must leave every stage-1 result unchanged. Codex and Bob verify this before stage 2 runs.
+      - Re-running stage 1's windows on stage 2's code must reproduce the whole of stage 1's `results.json`, every metric, trade and order included.
+      - The comparison leaves out only `code_commit`, `code_sha256` and the new mask-report fields. The long-window data PR names those fields, and they must be empty or zero on every stage-1 run.
+      - Any other new or renamed field breaks the identity.
+      - This comparison rule is a reading (see "Still open").
     - **Datasets.** The long-window dataset specs and manifests follow the registered rules and are frozen before stage 2 runs. They need not exist before stage 1.
     - **Consequence.** Anything else the long windows need must be in stage 1's code. That includes G running where no funding archive exists before 2020-01.
 
@@ -144,7 +148,7 @@ Options the owner did not choose:
 4. The spec v1 freeze, after Codex's review.
 5. Stage 1, as soon as the variants and the scorer are merged and the spec is frozen. This is the early read.
 6. Between the stages, possibly in parallel with stage 1:
-   - the long-window data code (the repair rule in the reader, and hour-level masking), which Codex and Bob verify leaves every stage-1 result byte-identical;
+   - the long-window data code (the repair rule in the reader, and hour-level masking), which Codex and Bob verify leaves every stage-1 result unchanged, as spec §6 defines it;
    - Bob's fetch and measurements;
    - the long dataset specs and manifests, including the 2017–2024 warm-up fix below, frozen before stage 2.
 7. Stage 2, on stage 1's strategy code.
@@ -159,6 +163,10 @@ Claude's first draft (local commit `216a1d8`, never pushed) said the 2017–2024
 
 ## Still open
 
+- **Three readings from the automated review of #168, open to the owner.** Each is written into the spec as Claude's reading.
+  1. The stage-1 identity check leaves out only `code_commit`, `code_sha256` and the new mask-report fields, which must be empty or zero on every stage-1 run (spec §6, "Two stages"). A literal byte-identity could not hold once those fields exist.
+  2. XRP's statistic, fixed before Bob measures: XRP is excluded from a window if any 1m low in its warm-up or evaluation span is below 2/15 USDT (about 0.1333). In warm-up months the 1h low is used (spec §5, rule 8).
+  3. The 0.25-point tie band applies to the mean compound-annualised return, and a final equity of 0 or less annualises to −100% (spec §6, "Annualised returns" and selection step 2).
 - **Stage-2 sensitivity runs.** The owner decides later. They are reported only and decide nothing.
 - **The trial count.** The `N_family` floors in spec §6 are working figures, to be settled by the trial register. C7's condition (b) stands, and C7 is not yet binding.
 - **For review, not the owner.** How the full stack's parts combine (spec §3) is Claude's reading of the sections and of the code on main. It was not among the six readings, and it is open to Codex's and Bob's review before the freeze.
