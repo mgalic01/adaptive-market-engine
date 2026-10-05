@@ -371,6 +371,13 @@ class FetchTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertEqual(json.loads(path.read_text(encoding="utf-8")), load_manifest(path))
 
+    def test_committed_specs_remain_loadable(self):
+        specs = sorted((ROOT / "config/datasets").glob("*.toml"))
+        self.assertTrue(specs)
+        for path in specs:
+            with self.subTest(path=path.name):
+                self.assertEqual(path.stem, load_spec(path).name)
+
     def test_spec_rejects_unknown_fields_and_bad_values(self):
         source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
         for bad in (
