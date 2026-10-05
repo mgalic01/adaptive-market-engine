@@ -622,6 +622,13 @@ class PaperSimulator:
         # may have left the account flat: clear it before the clock can run (Codex review
         # of #163), as the end of this step would have.
         self._clear_flat_bounds(account, quote, report)
+        was_halted = bool(account.halt)
+        clock = (
+            account.range_exit,
+            account.range_exit_since,
+            account.outside_seconds,
+            account.outside_last,
+        )
         self._track_range(account, quote)
         # A gap or a new ineligible frame breaks the recovery streak.
         if (
@@ -635,6 +642,18 @@ class PaperSimulator:
         report.update(regime=regime.regime.value, opportunity_score=score.score)
         self._rebase(account, frame, score.eligible, report)
         action = self._risk_action(account, quote, frame.signals.emergency)
+        if account.halt and not was_halted and account.range_exit and not clock[0]:
+            # The observation that timed the range out also halted the account. The
+            # halt owns the exit and the clock stands still from it (amendment 3), so
+            # this observation starts no range exit, which would stay pending through
+            # the halt, be counted, and keep amendment 2 from clearing the flat
+            # account's bounds (Codex review of #163).
+            (
+                account.range_exit,
+                account.range_exit_since,
+                account.outside_seconds,
+                account.outside_last,
+            ) = clock
         trend = self._apply_trend(account, frame) if self.policy.trend_switch else None
         if account.halt:
             if account.liquidating:

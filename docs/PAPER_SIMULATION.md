@@ -185,7 +185,9 @@ amendment 2 clears it, with the bounds, once the halted account is flat), and
 `outside_last` keeps the last observation before the halt, so the halted span is never
 counted. A halted account is not trading; before this rule the clock ran on through a
 halt's 24-hour cool-off, so almost every drawdown halt below the band also recorded a
-range exit. A range exit already triggered before the halt is not affected. In
+range exit. A range exit already triggered before the halt is not affected; the
+observation that halts the account starts none, even one that would have timed the
+range out, since the halt owns that exit. In
 practice the clock does not outlive the halt: a restart or a resume needs a flat
 account, and amendment 2 and the restart's field list clear its clock.
 

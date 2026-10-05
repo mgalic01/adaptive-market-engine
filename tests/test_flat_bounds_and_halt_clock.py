@@ -191,6 +191,23 @@ class FlatBoundsAndHaltClockTests(TestCase):
         self.assertEqual((D(9), False), (self.state().outside_seconds, self.state().range_exit))
         self.assertTrue(self.sim.process(frame(27, "0.02196", size="0"))["range_exit"])
 
+    def test_the_observation_that_halts_the_account_starts_no_range_exit(self):
+        # Codex review of #163: the frame that would time the range out also crashes
+        # the account into a hard-drawdown halt. The halt owns the exit: no range exit
+        # starts, so none is counted, and once the halt's liquidation leaves the
+        # account flat its bounds clear (amendment 2), as amendment 3 intends.
+        self.sim.process(frame(0))
+        for index in range(1, 11):
+            self.sim.process(frame(index, "0.02196"))
+        self.assertEqual(D(9), self.state().outside_seconds)
+        report = self.sim.process(frame(11, "0.01000"))
+        state = self.state()
+        self.assertEqual(("halt", "drawdown"), (report["decision"], state.halt_category))
+        self.assertEqual((False, False), (report["range_exit"], state.range_exit))
+        later = [self.sim.process(frame(index, "0.01000")) for index in range(12, 15)]
+        self.assertFalse(any(r["range_exit"] for r in later))
+        self.assertTrue(any("bounds_cleared" in r for r in [report, *later]))
+
     def test_a_range_exit_triggered_before_a_halt_completes_through_it(self):
         self.sim.process(frame(0))
         for index in range(1, 11):

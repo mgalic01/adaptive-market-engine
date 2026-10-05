@@ -132,7 +132,8 @@ though. A halt clears only on a flat account with no orders (the automatic resta
 the manual resume both require it), and there the grid bounds and the clock are
 cleared: by amendment 2 once the halted account is flat, and by amendment 1's
 halt-clearing rule, the restart's field list, which a manual resume shares. A range exit
-that was already triggered before the halt completes normally; this rule only stops the
+that was already triggered before the halt completes normally, and the observation that
+raises the halt starts none (the halt owns that exit); this rule only stops the
 accumulation of outside-range time that would trigger a new exit. *(Wording made exact
 2026-10-05: the decision text said the clock "resumes from where it stopped when the
 halt clears", which no engine path can do, since both ways a halt clears leave the clock
