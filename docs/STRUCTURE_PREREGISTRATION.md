@@ -5,11 +5,12 @@
 - **What it does:** writes down and freezes every rule and setting of V2, the
   market-structure layer, before any V2 result counts (D20: "Write down and pin every V2
   rule and setting now. V2 results count only after that.").
-- **Status:** V2 is exploratory until this document is merged. Nothing in it was chosen
-  by looking at results: no V2 run was made for it, every setting is the value already
-  in the code, and the one new rule, sell-at-resistance, follows the owner's own
-  description (D19). The only V2 runs behind this change are code checks on synthetic
-  random walks.
+- **Status:** V2 is exploratory until this document is merged. This document chooses
+  nothing by looking at results: no V2 run was made for it, every setting is the value
+  already in the code, and the one new rule, sell-at-resistance, follows the owner's own
+  description (D19). One rule already in the code was chosen after looking at results,
+  the RANGE-only rule; it is kept and disclosed [below](#the-range-only-rule). The only
+  V2 runs behind this change are code checks on synthetic random walks.
 
 ## What V2 is
 
@@ -62,7 +63,7 @@ multiple, the risk rules and the profit vault (`config/default.toml`), and the f
 slippage of the dataset spec. V2 adds nothing to `config/default.toml`, since that
 file's hash is part of every result's identity.
 
-Two sources to be aware of:
+Two of these values have thin sources:
 - **The 0.5 ATR merge distance** is the value in the code since #147. The owner's
   requirement record says "within one ATR"; no record says why 0.5 was chosen. It is
   frozen as implemented: choosing between the two now, after V2 results have been seen,
@@ -163,8 +164,8 @@ check ran on synthetic, fixed-seed random walks to test the code. They are not t
 [`tests/test_structure_preregistration.py`](../tests/test_structure_preregistration.py)
 pins every value above and the owner's example, so a change fails it;
 `SellAtResistanceTests` in `tests/test_backtest_replay.py` pins the behaviour of rules
-8, 9 and 12–14. A change to any
-frozen rule or setting is a re-registration, never a fix: amend this document first,
-dated, with what changed and why; bump `STRUCTURE_FEATURE_VERSION`; then update the
-tests. Results under the old label stay reported, and a change made after V2 results
-have been seen is one more trial in spec v2's count.
+8, 9 and 12–14. A change to any frozen rule or setting is a re-registration, never a
+fix: amend this document first, dated, with what changed and why; bump
+`STRUCTURE_FEATURE_VERSION`; then update the tests. Results under the old label stay
+reported, and a change made after V2 results have been seen is one more trial in spec
+v2's count.
