@@ -94,7 +94,8 @@ common to all:
   part 2's count). The amended V0 runs on the engine version and paper schema its
   implementation PR assigns: a successor of `exit-residue-v1` (assigned:
   `drawdown-recovery-v1`, 2026-09-28), and schema 6 refusing 1–5 (schema 7 refusing 1–6
-  since the code audit's journal correction, #159, which moves no replay result),
+  since the code audit's journal correction, #159, and schema 8 refusing 1–7 since the
+  strategy audit's structure flag, #160; neither moves a V0 replay result),
   because the amendment moves replay results and adds persisted state (`replay.py`'s bump
   rule; `PAPER_SIMULATION.md`). It is the "fixed V0" of the owner's 2026-09-27 decision,
   the fixed V0 that actually runs, and the one extra trial `N_family` (C7) already counts.
@@ -344,10 +345,14 @@ The state is updated once per completed daily bar, from the previous state and `
     same way. Resting buys are valued at their cost including the maker fee. This is
     conservative relative to ignoring pending commitments; together with the
     prospective-equity deduction below, it charges each pending buy its full cash cost.
-  - **Prospective active equity** = active equity − Σ over every resting buy and the
-    proposed buy of limit × quantity × [(1 + maker) − (1 − slippage)(1 − taker)]. This
-    is the equity left if all of them filled at their limits and were immediately marked
-    at the limit price with the exit haircut, so it deducts their fees and haircuts.
+  - **Prospective active equity** = active equity − Σ over every resting buy of
+    (limit × remaining quantity × [(1 + maker) − (1 − slippage)(1 − taker)]) − the
+    proposed buy, valued the same way at its full proposed quantity. This is the equity
+    left if all of them filled at their limits and were immediately marked at the limit
+    price with the exit haircut, so it deducts their fees and haircuts. A partly filled
+    buy's filled part is already in active equity, so only its remainder is deducted.
+    *(Wording clarified 2026-09-29: "remaining quantity", as in committed exposure above,
+    the partial-fill rule below and the code; no rule change.)*
 - **Cap:** committed exposure (including the proposed buy) ≤ **40% of prospective active
   equity**.
   - The rule bounds new commitments under this stated valuation.

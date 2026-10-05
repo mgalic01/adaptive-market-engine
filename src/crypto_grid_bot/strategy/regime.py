@@ -76,10 +76,23 @@ def thresholds_from_config(config: BotConfig) -> RegimeThresholds:
 
 
 class RegimeClassifier:
-    """Classify market state using a transparent weighted vote."""
+    """Classify market state using a transparent weighted vote.
 
-    # structure_alignment added 2026-09-29; trend reduced 0.35→0.25 to keep total=1.0
+    ``structure`` (V2, off by default) adds ``structure_alignment`` as a sixth signal and
+    lowers the trend weight from 0.35 to 0.25 so the weights still sum to 1. The signal
+    count also sets the dispersion (the mean absolute signal), so off means exactly the
+    five-signal V0 vote.
+    """
+
     _WEIGHTS = {
+        "trend": 0.35,
+        "breadth": 0.20,
+        "momentum": 0.15,
+        "volatility_health": 0.15,
+        "liquidity_health": 0.15,
+    }
+    # structure_alignment added 2026-09-29 (#150); trend reduced 0.35 -> 0.25.
+    _STRUCTURE_WEIGHTS = {
         "trend": 0.25,
         "breadth": 0.20,
         "momentum": 0.15,
@@ -88,8 +101,11 @@ class RegimeClassifier:
         "structure_alignment": 0.10,
     }
 
-    def __init__(self, thresholds: RegimeThresholds | None = None) -> None:
+    def __init__(
+        self, thresholds: RegimeThresholds | None = None, *, structure: bool = False
+    ) -> None:
         self._thresholds = thresholds or RegimeThresholds()
+        self._weights = self._STRUCTURE_WEIGHTS if structure else self._WEIGHTS
 
     @property
     def thresholds(self) -> RegimeThresholds:
@@ -106,8 +122,8 @@ class RegimeClassifier:
             )
 
         t = self._thresholds
-        values = {name: getattr(signals, name) for name in self._WEIGHTS}
-        score = sum(values[name] * weight for name, weight in self._WEIGHTS.items())
+        values = {name: getattr(signals, name) for name in self._weights}
+        score = sum(values[name] * weight for name, weight in self._weights.items())
         dispersion = sum(abs(value) for value in values.values()) / len(values)
         quality = signals.data_quality * (1.0 - signals.news_risk)
 
@@ -152,7 +168,7 @@ class RegimeClassifier:
         threshold = t.bull if score >= 0 else -t.bear
         # Equals minimum_confidence exactly at the configured bull/bear threshold.
         strength = min(1.0, t.minimum_confidence * abs(score) / threshold)
-        magnitude = sum(abs(values[name]) * weight for name, weight in self._WEIGHTS.items())
+        magnitude = sum(abs(values[name]) * weight for name, weight in self._weights.items())
         coherence = abs(score) / magnitude if magnitude else 0.0
         return strength * (1.0 - t.coherence_weight + t.coherence_weight * coherence)
 
@@ -167,9 +183,8 @@ class RegimeClassifier:
             reasons.append(f"data quality is {signals.data_quality:.0%}")
         return tuple(reasons)
 
-    @staticmethod
-    def _validate(signals: MarketSignals) -> None:
-        for name in RegimeClassifier._WEIGHTS:
+    def _validate(self, signals: MarketSignals) -> None:
+        for name in self._weights:
             value = getattr(signals, name)
             if not isfinite(value) or not -1.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be between -1 and 1")

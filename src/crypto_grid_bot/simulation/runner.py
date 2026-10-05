@@ -76,7 +76,12 @@ GRID_BUDGET_FRACTION = D("0.8")
 # cancelled; a flat frame's no-op settlement is neither counted nor journaled. A
 # schema-6 database holds events in the old shape, so it is refused rather than
 # continued under the new one (Codex review of #159).
-SCHEMA = 7
+# 8 (2026-10-05, strategy audit #160): V2 market structure is a policy flag, off by
+# default. Code from #150/#151 up to this change, schema 7 included, ran every account
+# with structure on (the six-signal regime vote and the FTA cap) under the same identity
+# as the V0 accounts before it, so such a database cannot say which semantics produced
+# its history; it is refused rather than reopened under either (Codex review of #160).
+SCHEMA = 8
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"
@@ -104,6 +109,11 @@ class SimulationPolicy:
     # Experiment variant A (spec v1, section 3 A): the daily SMA50/SMA200 trend switch.
     # False = off (V0). The daily state arrives on each Frame as ``trend``.
     trend_switch: bool = False
+    # V2 market structure (#147-#151), off by default: the regime vote's sixth signal
+    # ``structure_alignment`` with the trend weight lowered from 0.35 to 0.25, and the
+    # FTA cap on grid levels. Spec v1 section 3: new behaviour sits behind a flag that
+    # defaults to off, so V0 and existing paper accounts are unaffected.
+    structure: bool = False
     # Spec v1 amendment 1 (owner decision 2026-09-27): the soft-drawdown cool-off before
     # ``risk_high`` may be rebased, and the hard-drawdown cool-off H before a ``drawdown``
     # halt restarts. Both are part of the account identity and fixed for all v1 runs.
@@ -130,6 +140,8 @@ class SimulationPolicy:
                 raise ValueError("inventory cap must be above zero and below one")
         if type(self.trend_switch) is not bool:
             raise ValueError("trend_switch must be a boolean")
+        if type(self.structure) is not bool:
+            raise ValueError("structure must be a boolean")
         for name in ("soft_cooloff_seconds", "hard_cooloff_seconds"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -141,6 +153,8 @@ class SimulationPolicy:
             del value["inventory_cap"]
         if not self.trend_switch:
             del value["trend_switch"]
+        if not self.structure:
+            del value["structure"]
         return value
 
 
@@ -205,7 +219,9 @@ class PaperSimulator:
             hard_drawdown_pct=config.hard_drawdown_pct,
             maximum_data_age_seconds=config.maximum_data_age_seconds,
         )
-        self.classifier = RegimeClassifier(thresholds_from_config(config))
+        self.classifier = RegimeClassifier(
+            thresholds_from_config(config), structure=self.policy.structure
+        )
         self.scorer = OpportunityScorer(
             minimum_score=config.minimum_opportunity_score,
             maximum_news_risk=config.maximum_news_risk,
@@ -973,13 +989,12 @@ class PaperSimulator:
         spread = (quote.ask - quote.bid) / quote.ask
         cost = 2 * (rules.fee_rate + rules.slippage_rate) + spread
         budget = account.available_quote(rules) * GRID_BUDGET_FRACTION
-        # FTA resistance cap only applies in a ranging market. In trending markets
-        # (BULL/BEAR) resistance zones cluster everywhere and the cap compresses all
-        # sell levels to one price, preventing cycle completion. See backtest comparison
-        # 2026-09-30 §8.4 for the diagnosis.
-        fta = (
-            frame.fta_resistance if regime is None or regime.regime == MarketRegime.RANGE else None
-        )
+        # The FTA cap is V2 behaviour (policy.structure) and applies only in a ranging
+        # market. In trending markets (BULL/BEAR) resistance zones cluster everywhere and
+        # the cap compresses all sell levels to one price, preventing cycle completion.
+        # See backtest comparison 2026-09-30 section 8.4 for the diagnosis.
+        in_range = regime is None or regime.regime == MarketRegime.RANGE
+        fta = frame.fta_resistance if self.policy.structure and in_range else None
         plan = self.builder.build(
             symbol=rules.symbol,
             fair_value=float(frame.fair_value),

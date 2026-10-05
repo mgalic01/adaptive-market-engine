@@ -1,4 +1,4 @@
-# Paper simulation contract (schema 7)
+# Paper simulation contract (schema 8)
 
 ## Scope and order lifecycle
 
@@ -114,11 +114,19 @@ issuing resume. UTC daily baselines still carry overnight gaps into the risk che
 
 **A drawdown halt cannot be resumed by hand; it restarts by itself.** `resume()`
 requires the current risk action to be `ALLOW`. Only `_settle` rescales `risk_high`,
-and it never runs while halted; for a flat account active equity cannot change either.
-The measured drawdown is therefore frozen at the value that triggered the halt, so
-every manual resume attempt is refused, and the refusal says so; the automatic restart
-above is what clears it, after the cool-off. An "active capital exhausted" halt, whose
-drawdown is pinned at 1.0, stays final.
+and it never runs while halted; for an exactly flat account active equity cannot change
+either. The measured drawdown is therefore frozen at the value that triggered the halt,
+so a manual resume attempt is refused, and the refusal says so; the automatic restart
+above is what clears it, after the cool-off. **The one margin is a dust residue.** The
+halt admits a remainder below the exchange minimum as liquidation-complete, and that
+remainder stays held and marked to the bid, so it can move the measured drawdown by at
+most one minimum notional against `risk_high` (5 quote units on a 100-unit account;
+above that it is sellable and the armed liquidation sells it). In that corner case a
+halt taken just past 12% whose residue then rallies can pass the risk check and be
+resumed by hand before the restart. The spec accepts this margin (spec v1 amendment 1,
+"Manual `resume()`"). An "active capital exhausted" halt stays final: even if a manual
+resume is admitted (it can be, when a held residue keeps the drawdown under 8%), the
+harvest gate that raised it halts the account again on the next frame.
 
 An **emergency** halt is different, and the row above says so: the emergency flag comes
 from the frame passed to `resume()`, not from a frozen baseline, so a halt raised only
@@ -231,17 +239,19 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Only schema 7 databases are accepted; schema 1-6 are rejected, with no
+initial cash. **Only schema 8 databases are accepted; schema 1-7 are rejected, with no
 implicit migration or reset.** Schema 5 (engine `exit-residue-v1`, PR #122) changed the
 exit lifecycle; schema 6 (engine `drawdown-recovery-v1`, spec v1 amendment 1) added the
 halt identity, the episode, the C1(b) reference and the two cool-offs to the saved
 state and identity, and made a `drawdown` halt restart. Schema 7 (the code audit, #159)
 corrected the journal: each fill records its remaining quantity, an order that filled
 in part and was cancelled on the same frame is listed as cancelled, and a flat frame's
-no-op settlement is neither counted nor journaled. An older database is refused
-rather than silently reinterpreted. Preserve old experiments with the old code, or
-start a clearly separate schema 7 experiment. Never edit identity/state
-to bypass risk history.
+no-op settlement is neither counted nor journaled. Schema 8 (strategy audit, #160) made
+V2 market structure a policy flag that is off by default: schemas 6 and 7 were written
+both by V0 code and by code that ran every account with structure on, and their
+identity cannot tell them apart. An older database is refused rather than silently
+reinterpreted. Preserve old experiments with the old code, or start a clearly separate
+schema 8 experiment. Never edit identity/state to bypass risk history.
 The frame-gap policy (added in 0.5.1/0.6) is part of saved identity, so experiments
 without that setting are rejected. Use a new database for the new policy; retain
 the original database and matching code for reviewing the old experiment.

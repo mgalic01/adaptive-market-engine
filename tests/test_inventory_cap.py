@@ -9,6 +9,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
+from test_strategy_recovery import frame as priced_frame
+
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.demo import demo_frames
 from crypto_grid_bot.simulation.execution import match, place
@@ -223,3 +225,81 @@ class SimulatorWiringTests(TestCase):
         below = by_level[::-1][len(placed) :]
         self.assertTrue(all(recorded[order_id]["action"] == "skipped" for order_id in below))
         self.assertTrue(fits(account, frame.quote, simulator.rules, CAP))
+
+    def reentry_at_the_cap(self, name, held, policy=None):
+        """A saved account with two resting grid sells and no buys: 1000 units to sell at
+        0.023 (reentry 0.022) and ``held`` units at 0.024. A bid of 0.0231 fills only the
+        first, so the runner's match() creates one reentry buy of 1000 at 0.022 while the
+        second sell's inventory, marked at the bid, still counts against the cap. That
+        inventory stays reserved, so the frame harvests nothing and the reentry rests."""
+        simulator = self.open(name, policy)
+        account = simulator.store.read()
+        first, second = D("1000"), D(held)
+        account.inventory = first + second
+        account.cash = D("100") - account.inventory * D("0.023")  # equity about 100
+        for identity, price, quantity, reentry in (
+            ("s1", "0.02300", first, "0.02200"),
+            ("s2", "0.02400", second, "0.02300"),
+        ):
+            account.orders[identity] = LimitOrder(
+                identity, "sell", D(price), quantity, quantity, reentry=D(reentry)
+            )
+        simulator.store.connection.execute(
+            "UPDATE state SET data=? WHERE id=1", (encode(account.to_dict()),)
+        )
+        current = priced_frame(0, "0.02310")
+        report = simulator.process(current)
+        self.assertEqual([("sell", "1000")], [(f["side"], f["quantity"]) for f in report["fills"]])
+        account = simulator.store.read()
+        buys = [order for order in account.orders.values() if order.side == "buy"]
+        return report, account, buys, current.quote
+
+    def test_a_reentry_created_at_the_cap_is_resized_by_the_simulator(self):
+        # V0 recreates the sold level whole; B resizes it to what fits.
+        _, _, (uncapped,), _ = self.reentry_at_the_cap("v0.db", "1400")
+        self.assertEqual(D("1000"), uncapped.quantity)
+        report, account, (reentry,), current = self.reentry_at_the_cap(
+            "b.db", "1400", SimulationPolicy(inventory_cap=CAP)
+        )
+        self.assertEqual(
+            (D("0.02200"), D("350"), D("350"), D("0.02300")),
+            (reentry.price, reentry.quantity, reentry.remaining, reentry.target),
+        )
+        self.assertEqual(
+            [
+                {
+                    "order_id": reentry.order_id,
+                    "price": "0.02200",
+                    "requested": "1000",
+                    "placed": "350",
+                    "action": "resized",
+                }
+            ],
+            report["capped"],
+        )
+        # The runner passed the sold level's price and quantity: without the reentry,
+        # the module's own check gives the same answer on the same account.
+        del account.orders[reentry.order_id]
+        self.assertEqual(
+            D("350"),
+            capped_quantity(account, current, MarketRules(), CAP, D("0.022"), D("1000")),
+        )
+
+    def test_a_reentry_capped_to_zero_is_not_placed_and_is_recorded(self):
+        report, account, buys, _ = self.reentry_at_the_cap(
+            "b.db", "1600", SimulationPolicy(inventory_cap=CAP)
+        )
+        self.assertEqual([], buys)
+        self.assertEqual(
+            [
+                {
+                    "order_id": report["event_id"] + "/reentry/1",
+                    "price": "0.02200",
+                    "requested": "1000",
+                    "placed": "0",
+                    "action": "skipped",
+                }
+            ],
+            report["capped"],
+        )
+        self.assertEqual(D("1600"), account.inventory)  # nothing sold to make room

@@ -9,13 +9,21 @@ not re-run a package's ``__main__``, so functions defined there by
 
 from __future__ import annotations
 
+import hashlib
+import importlib
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from crypto_grid_bot import SOURCE_HASHES, source_hash
 from crypto_grid_bot.backtest.dataset import DatasetSpec, load_manifest, load_spec
-from crypto_grid_bot.backtest.features import FeatureEngine, SeriesFeatures
+from crypto_grid_bot.backtest.features import (
+    FEATURE_VERSION,
+    STRUCTURE_FEATURE_VERSION,
+    FeatureEngine,
+    SeriesFeatures,
+)
 from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.backtest.replay import (
     VOLUME_DRIFT_TOLERANCE,
@@ -35,8 +43,74 @@ from crypto_grid_bot.config import BotConfig, load_config
 from crypto_grid_bot.simulation.runner import SimulationPolicy
 
 
+def source_files() -> dict[str, str]:
+    """This package's Python sources by path from the package root, each with the hash
+    of the source this process compiled (``SOURCE_HASHES``) or, for a file it never
+    imported, of the file on disk now."""
+    root = Path(__file__).resolve().parents[1]
+    files = {}
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root)
+        module = ".".join((root.name, *relative.with_suffix("").parts))
+        source = SOURCE_HASHES.get(module.removesuffix(".__init__"))
+        files[relative.as_posix()] = source or source_hash(path.read_bytes())
+    return files
+
+
+def source_identity(files: dict[str, str] | None = None) -> str:
+    """SHA-256 of this package's sources (``source_files()``), by path."""
+    digest = hashlib.sha256()
+    for relative, source in (source_files() if files is None else files).items():
+        digest.update(f"{relative}\0{source}\0".encode())
+    return digest.hexdigest()
+
+
+def check_sources(expected: str) -> None:
+    """A pool worker's initializer: refuse to run unless the sources this worker imported
+    are the CLI's (Codex review of #160). A spawned worker imports the code from disk
+    when it starts, so a checkout that changed, even one that changed back, while the
+    workers started would otherwise run other code under the recorded commit. The
+    identity compared is the one taken as this module was imported, from the sources
+    the worker compiled, never a fresh read of the disk, which could already be back
+    to the expected sources."""
+    if expected != SOURCE_IDENTITY:
+        raise RuntimeError("a pool worker's sources differ from the backtest CLI's")
+
+
+# Spec v1 section 3 B: committed exposure at most 40% of prospective active equity.
+VARIANT_B_INVENTORY_CAP = Decimal("0.40")
+
+
 def manifest_path(spec_path: Path) -> Path:
     return spec_path.with_name(spec_path.stem + ".manifest.json")
+
+
+def variant_policy(variant: str | None, *, structure: bool = False) -> SimulationPolicy | None:
+    """The policy of spec v1 variant ``variant`` ("A", "B" or "C"; None is V0), with the
+    V2 structure features when ``structure``. None when nothing differs from V0, so a V0
+    run takes exactly the path it always has."""
+    if variant not in (None, "A", "B", "C"):
+        raise ValueError(f"unknown variant {variant!r}")
+    if variant is None and not structure:
+        return None
+    return SimulationPolicy(
+        trend_switch=variant in ("A", "C"),
+        inventory_cap=VARIANT_B_INVENTORY_CAP if variant in ("B", "C") else None,
+        structure=structure,
+    )
+
+
+def variant_name(policy: SimulationPolicy | None) -> str | None:
+    """The spec v1 variant a policy runs, for the result rows; None for V0."""
+    if policy is None:
+        return None
+    trend, cap = policy.trend_switch, policy.inventory_cap
+    if not trend and cap is None:
+        return None
+    name = "C" if trend and cap is not None else "A" if trend else "B"
+    if cap is not None and cap != VARIANT_B_INVENTORY_CAP:
+        name += f" (inventory cap {cap}, not the spec's {VARIANT_B_INVENTORY_CAP})"
+    return name
 
 
 @dataclass(frozen=True)
@@ -61,13 +135,16 @@ def prepare_run(
     fees: tuple[Decimal, Decimal | None] | None = None,
     *,
     basket: bool = True,
+    structure: bool = False,
 ) -> PreparedRun:
     """The dataset, rules and features of one run, shared by the grid and variant-D jobs
     so that D's warm-up gate is built exactly as V0's.
 
     ``fees`` is (maker, taker) overriding the spec; taker None means maker. Without
     ``basket`` the breadth series are not loaded: they change feature values, never
-    whether a minute is warmed up (``FeatureEngine.warmed``).
+    whether a minute is warmed up (``FeatureEngine.warmed``). ``structure`` gives the
+    features the candles of the V2 structure features (SimulationPolicy.structure);
+    without them the features are V0's.
     """
     spec, config = load_spec(spec_path), load_config(config_path)
     manifest = load_manifest(manifest_path(spec_path))
@@ -92,7 +169,6 @@ def prepare_run(
         SeriesFeatures(s, load_hourly(data_dir, manifest, s), full=False)
         for s in (spec.breadth_basket if basket else ())
     ]
-    # V2: pass raw hourly candles for structure.py (needs OHLC; SeriesFeatures discards high/low).
     # Daily bars are loaded only when the spec declares a daily_warmup_start.
     pair_daily = (
         load_daily(data_dir, manifest, symbol)
@@ -108,8 +184,8 @@ def prepare_run(
         minimum_cost_multiple=config.minimum_grid_cost_multiple,
         # A grid cycle is two resting fills, so it pays the maker fee twice.
         round_trip_cost=float(2 * (maker + spec.slippage_rate) + spread),
-        hourly_candles=pair_hourly,
-        daily_bars=pair_daily,
+        hourly_candles=pair_hourly if structure else None,
+        daily_bars=pair_daily if structure else None,
     )
     run = RunConfig(symbol, path_mode, gated, rules, spec.initial_quote, spread)
     return PreparedRun(spec, config, manifest, run, features, pair_daily)
@@ -127,16 +203,25 @@ def run_job(
 ) -> dict[str, Any]:
     """``fees`` is (maker, taker) overriding the spec; taker None means maker.
 
-    ``policy`` controls simulation variants; None gives V0 behaviour (no trend switch).
-    When ``policy.trend_switch`` is True, the pair's daily bars are required; they are
-    the ones ``prepare_run`` already gave the ``FeatureEngine``.
+    ``policy`` controls simulation variants; None gives V0 behaviour. When
+    ``policy.trend_switch`` is True, the pair's daily bars are required. A variant's
+    rows name it, and rows with the V2 structure features carry their feature version.
     """
-    prepared = prepare_run(spec_path, config_path, data_dir, symbol, path_mode, gated, fees)
+    structure = policy is not None and policy.structure
+    prepared = prepare_run(
+        spec_path, config_path, data_dir, symbol, path_mode, gated, fees, structure=structure
+    )
     run, minutes = prepared.run, load_minutes(data_dir, prepared.manifest, symbol)
     metrics, account = replay(
         prepared.config, run, minutes, prepared.features, policy=policy, daily=prepared.daily
     )
-    return summarise(run, metrics, account, check_accounting(run, metrics, account))
+    version = STRUCTURE_FEATURE_VERSION if structure else FEATURE_VERSION
+    problems = check_accounting(run, metrics, account)
+    row = summarise(run, metrics, account, problems, feature_version=version)
+    name = variant_name(policy)
+    if name is not None:  # Absent for V0, so V0 rows keep their exact layout.
+        row["variant"] = name
+    return row
 
 
 def cross_check_job(
@@ -171,3 +256,13 @@ def cross_check_job(
             tolerance,
         )
     return result
+
+
+# Every job module is loaded before the sources are hashed, so the identity covers all
+# the code a worker can run; trend_benchmark imports prepare_run from here, so it is
+# loaded last. Each one is hashed as compiled (crypto_grid_bot.SOURCE_HASHES), so a
+# checkout that changes, even one that changes back, while a spawned worker loads its
+# code gives that worker another identity (Codex review of #160).
+importlib.import_module("crypto_grid_bot.backtest.trend_benchmark")
+SOURCE_FILES = source_files()
+SOURCE_IDENTITY = source_identity(SOURCE_FILES)

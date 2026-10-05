@@ -12,12 +12,15 @@ from pathlib import Path
 
 from crypto_grid_bot.backtest.features import (
     BASELINE_HOURS,
+    FEATURE_VERSION,
     HOUR_MS,
     STALE_AFTER_MS,
+    STRUCTURE_FEATURE_VERSION,
     FeatureEngine,
     SeriesFeatures,
     _rolling_median,
 )
+from crypto_grid_bot.backtest.jobs import variant_name, variant_policy
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import (
     Metrics,
@@ -38,7 +41,7 @@ from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
 from crypto_grid_bot.simulation.execution import match, place, reduce_unreserved
 from crypto_grid_bot.simulation.models import Account, LimitOrder, MarketRules, Quote, timestamp
-from crypto_grid_bot.simulation.runner import Frame, PaperSimulator
+from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
 
 ROOT = Path(__file__).resolve().parents[1]
 START_MS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
@@ -168,6 +171,54 @@ class FeatureChronologyTests(unittest.TestCase):
         edited = [replace(k, close=k.close * D("0.9")) if k.open_ms == last else k for k in candles]
         self.assertNotEqual(baseline, engine_for(edited).at(decision_ms))
 
+    def test_daily_bars_after_the_decision_cannot_change_structure_inputs(self):
+        # Issue #158-1: the V2 structure features once read every daily bar, including
+        # the decision's own unfinished day and later ones. A day may count only once it
+        # has closed (open + 1 day <= decision minute), as in TrendSchedule.
+        day = 86_400_000
+        candles = hourly(WARMUP + 72)
+        midnight = (WARMUP // 24 + 2) * 24  # an hour index that opens a UTC day
+        midnight_ms = START_MS + midnight * HOUR_MS
+        # A two-hour hole across that midnight: the pair's latest completed candle does
+        # not change there while a daily bar does, so a cache keyed on the pair alone
+        # would serve the previous day's structure.
+        candles = [c for i, c in enumerate(candles) if i not in (midnight - 1, midnight)]
+        # Flat days below fair value, except one high at 1.03 four days before that
+        # midnight: the day closing at midnight is the third after it, which confirms it
+        # as a swing high, so a resistance zone above fair value appears exactly then.
+        rng = random.Random(158)
+        days = []
+        for d in range(-60, 45):
+            open_ms, close = START_MS + d * day, 0.97 + rng.uniform(-0.005, 0.005)
+            high = 1.03 if open_ms == midnight_ms - 4 * day else close * 1.005
+            days.append(candle(open_ms, close, high, close * 0.995, close))
+
+        def structure_engine(daily):
+            return engine_for(candles, hourly_candles=candles, daily_bars=daily)
+
+        engine = structure_engine(days)  # one engine, queried in order: its caches
+        start = midnight_ms - 30 * HOUR_MS
+        minutes = [*range(start, start + 60 * HOUR_MS, 20 * 60_000)]
+        minutes += [midnight_ms + k * 60_000 for k in (-1, 0, 1)]
+        for minute in sorted(minutes):
+            completed = [d for d in days if d.open_ms + day <= minute]
+            expected = structure_engine(completed).at(minute)
+            # Days not closed by the decision minute changed beyond recognition, plus
+            # days that do not exist yet: none of it may reach the decision.
+            future = [
+                replace(d, high=d.high * 5, low=d.low / 5, close=d.close * 3)
+                for d in days
+                if d.open_ms + day > minute
+            ]
+            later = [candle(days[-1].open_ms + k * day, 9.0, 9.9, 8.1, 9.5) for k in range(1, 30)]
+            self.assertEqual(expected, structure_engine(completed + future + later).at(minute))
+            self.assertEqual(expected, engine.at(minute), minute)
+        # The completed days are in use, from the minute the confirming day closes.
+        before, after = engine.at(midnight_ms - 60_000), engine.at(midnight_ms)
+        self.assertEqual(before.hour_open_ms, after.hour_open_ms)  # inside the hole
+        self.assertIsNone(before.fta_resistance)
+        self.assertEqual(1.03, after.fta_resistance)
+
     def test_stale_hourly_data_zeroes_quality(self):
         candles = hourly(WARMUP)
         engine = engine_for(candles)
@@ -237,10 +288,11 @@ class FeatureEfficiencyTests(unittest.TestCase):
             self.assertEqual(self.engine().at(minute), engine.at(minute), minute)
 
     def test_structure_features_match_an_uncached_engine_in_any_order(self):
-        # The V2 structure inputs: the pair's hourly candles and a daily history.
+        # The V2 structure inputs: the pair's hourly candles and a daily history that
+        # starts 30 days earlier, so completed days exist at every minute checked.
         days = [
-            candle(START_MS + d * 86_400_000, p, p * 1.03, p * 0.97, p * 1.01)
-            for d, p in enumerate(1.0 + 0.2 * math.sin(d / 3) for d in range(60))
+            candle(START_MS + (d - 30) * 86_400_000, p, p * 1.03, p * 0.97, p * 1.01)
+            for d, p in enumerate(1.0 + 0.2 * math.sin(d / 3) for d in range(90))
         ]
         structure = {"hourly_candles": self.pair_candles, "daily_bars": days}
         engine = self.engine(**structure)
@@ -426,6 +478,55 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(datetime.fromtimestamp(last / 1000, UTC).isoformat(), window[1])
         # Bob's review of #54: pin the whole schema, so a dropped or renamed field fails.
         self.assertEqual(SUMMARY_FIELDS, set(summary))
+
+    def test_structure_runs_are_labelled_and_v0_labels_are_unchanged(self):
+        # Issue #158-3: results must say what produced them.
+        engine = engine_for(hourly(WARMUP))
+        t = START_MS + WARMUP * HOUR_MS
+        minutes = [candle(t + i * 60_000, 1.0, 1.001, 0.999, 1.0) for i in range(5)]
+        labels = {}
+        for gated in (True, False):
+            run = RunConfig("TESTUSDT", "low_first", gated, RULES, D(100), D("0.0005"))
+            metrics, account = replay(self.config, run, minutes, engine)
+            for version in (FEATURE_VERSION, STRUCTURE_FEATURE_VERSION):
+                row = summarise(run, metrics, account, [], feature_version=version)
+                labels[gated, version] = (row["strategy"], row["feature_version"])
+        self.assertEqual(
+            {
+                (True, FEATURE_VERSION): ("gated grid (price-only-v1)", "price-only-v1"),
+                (False, FEATURE_VERSION): ("ungated grid baseline", "price-only-v1"),
+                (True, STRUCTURE_FEATURE_VERSION): (
+                    "gated grid (price-only-v1+structure-v1)",
+                    "price-only-v1+structure-v1",
+                ),
+                (False, STRUCTURE_FEATURE_VERSION): (
+                    "ungated grid baseline (price-only-v1+structure-v1)",
+                    "price-only-v1+structure-v1",
+                ),
+            },
+            labels,
+        )
+
+    def test_variant_policies_and_names(self):
+        cap = D("0.40")
+        self.assertIsNone(variant_policy(None))
+        self.assertIsNone(variant_name(None))
+        self.assertIsNone(variant_name(SimulationPolicy(structure=True)))
+        for variant, policy in (
+            ("A", SimulationPolicy(trend_switch=True)),
+            ("B", SimulationPolicy(inventory_cap=cap)),
+            ("C", SimulationPolicy(trend_switch=True, inventory_cap=cap)),
+        ):
+            with self.subTest(variant=variant):
+                self.assertEqual(policy, variant_policy(variant))
+                self.assertEqual(variant, variant_name(policy))
+                self.assertEqual(
+                    replace(policy, structure=True), variant_policy(variant, structure=True)
+                )
+        self.assertEqual(SimulationPolicy(structure=True), variant_policy(None, structure=True))
+        self.assertIn("not the spec", variant_name(SimulationPolicy(inventory_cap=D("0.5"))))
+        with self.assertRaises(ValueError):
+            variant_policy("E")
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -1044,7 +1145,8 @@ class SignalsForStructureAlignmentTests(unittest.TestCase):
 
 
 class FtaRegimeGateTests(unittest.TestCase):
-    """F17/F18: _open_grid passes fta_resistance only in RANGE; full chain."""
+    """F17/F18: _open_grid passes fta_resistance only in RANGE and only under the V2
+    structure policy; full chain."""
 
     def setUp(self):
         from crypto_grid_bot.domain import MarketRegime, RegimeAssessment
@@ -1053,11 +1155,12 @@ class FtaRegimeGateTests(unittest.TestCase):
         self.RegimeAssessment = RegimeAssessment
         self.config = load_config(ROOT / "config/default.toml")
 
-    def _open_grid_regime(self, regime_value, fta_resistance):
+    def _open_grid_regime(self, regime_value, fta_resistance, structure=True):
         """Open a grid with a specific regime and fta_resistance; return the grid plan used."""
         import contextlib
 
-        simulator = PaperSimulator(Path(":memory:"), self.config, RULES, D(100))
+        policy = SimulationPolicy(structure=structure)
+        simulator = PaperSimulator(Path(":memory:"), self.config, RULES, D(100), policy)
         account = simulator.store.read()
         simulator.close()
 
@@ -1116,6 +1219,12 @@ class FtaRegimeGateTests(unittest.TestCase):
         fta = float(engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS).fair_value) * 1.05
         result = self._open_grid_regime(self.MarketRegime.RANGE, fta)
         self.assertEqual(fta, result)
+
+    def test_fta_suppressed_without_the_structure_policy(self):
+        """V0 (structure off, the default) never caps grid levels, even in RANGE."""
+        fta = float(engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS).fair_value) * 1.05
+        result = self._open_grid_regime(self.MarketRegime.RANGE, fta, structure=False)
+        self.assertIsNone(result)
 
     def test_fta_suppressed_in_bull_regime(self):
         """FTA resistance cap is disabled when regime is BULL."""

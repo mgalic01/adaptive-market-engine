@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import argparse
 import json
-from concurrent.futures import ProcessPoolExecutor
+import shutil
+import subprocess  # nosec B404
+from collections.abc import Callable
+from concurrent.futures import Future, ProcessPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from crypto_grid_bot import source_hash
 from crypto_grid_bot.backtest.dataset import (
     DatasetSpec,
     fee_rate,
@@ -26,8 +30,16 @@ from crypto_grid_bot.backtest.dataset import (
     verify_dataset,
     write_manifest,
 )
-from crypto_grid_bot.backtest.features import FEATURE_VERSION
-from crypto_grid_bot.backtest.jobs import cross_check_job, manifest_path, run_job
+from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE_VERSION
+from crypto_grid_bot.backtest.jobs import (
+    SOURCE_FILES,
+    SOURCE_IDENTITY,
+    check_sources,
+    cross_check_job,
+    manifest_path,
+    run_job,
+    variant_policy,
+)
 from crypto_grid_bot.backtest.replay import (
     ENGINE_VERSION,
     INTEGRITY_RULES,
@@ -36,7 +48,6 @@ from crypto_grid_bot.backtest.replay import (
     VOLUME_DRIFT_TOLERANCE,
 )
 from crypto_grid_bot.backtest.trend_benchmark import trend_job
-from crypto_grid_bot.simulation.runner import SimulationPolicy
 
 
 def checked_symbols(spec: DatasetSpec) -> list[str]:
@@ -131,6 +142,94 @@ def _identity(spec_path: Path, config_path: Path) -> dict[str, str]:
     }
 
 
+def committed_sources(commit: str) -> dict[str, str] | None:
+    """This package's Python sources at ``commit``, hashed as jobs.source_files()
+    hashes the ones this process imported, or None when git cannot read them."""
+    git, root = shutil.which("git"), Path(__file__).resolve().parents[1]
+    if git is None:
+        return None
+    try:
+        listing = subprocess.run(  # nosec B603
+            [git, "ls-tree", "-r", "-z", commit, "."],
+            cwd=root,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        blobs: dict[str, str] = {}
+        for entry in listing.stdout.decode().split("\0"):
+            meta, _, path = entry.partition("\t")
+            if path.endswith(".py") and meta.split()[1:2] == ["blob"]:
+                blobs[path] = meta.split()[2]
+        batch = subprocess.run(  # nosec B603
+            [git, "cat-file", "--batch"],
+            cwd=root,
+            input="".join(f"{blob}\n" for blob in blobs.values()).encode(),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if listing.returncode != 0 or batch.returncode != 0:
+            return None
+        sources, data, at = {}, batch.stdout, 0
+        for path in blobs:  # `<id> blob <size>\n<content>\n`, in the order asked
+            header = data.index(b"\n", at)
+            size = int(data[at:header].split()[2])
+            sources[path] = source_hash(data[header + 1 : header + 1 + size])
+            at = header + size + 2
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+    return sources
+
+
+def code_commit() -> str:
+    """The git commit of this code, with "+dirty" when tracked files differ from it or
+    when its sources are not the ones this process imported, which a checkout moved
+    since the imports would make them: the commit alone would not be the code that ran
+    (Codex reviews of #160). "unknown" outside a git checkout."""
+    git = shutil.which("git")
+    if git is None:
+        return "unknown"
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # nosec B603
+            [git, *args],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    try:
+        head = run("rev-parse", "HEAD")
+        status = run("status", "--porcelain", "--untracked-files=no")
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    commit = head.stdout.strip()
+    if head.returncode != 0 or not commit or status.returncode != 0:
+        return "unknown"
+    clean = not status.stdout.strip() and committed_sources(commit) == SOURCE_FILES
+    return commit + ("" if clean else "+dirty")
+
+
+class InProcess:
+    """A stand-in for ProcessPoolExecutor that runs each job when it is submitted, in
+    this process (``--jobs 1``). It avoids starting a worker, which is slow under the
+    spawn start method; the results are the same."""
+
+    def __enter__(self) -> InProcess:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any) -> Future[Any]:
+        future: Future[Any] = Future()
+        future.set_result(fn(*args))
+        return future
+
+
 def _table(results: list[dict[str, Any]]) -> str:
     lines = [
         "| Pair | Path | Strategy | Return % | Max DD % | Buy&hold % | B&H DD % | Fees | "
@@ -139,8 +238,11 @@ def _table(results: list[dict[str, Any]]) -> str:
         "| --- |",
     ]
     for r in results:
+        # A variant's rows name it, so the table alone tells A, B and C from V0 (Codex
+        # review of #160); a V0 row keeps its exact text.
+        strategy = r["strategy"] + (f", variant {r['variant']}" if "variant" in r else "")
         lines.append(
-            f"| {r['symbol']} | {r['path_mode']} | {r['strategy']} | {r['return_pct']:.2f} | "
+            f"| {r['symbol']} | {r['path_mode']} | {strategy} | {r['return_pct']:.2f} | "
             f"{r['max_drawdown_pct']:.2f} | {r['buy_and_hold_return_pct']:.2f} | "
             f"{r['buy_and_hold_max_drawdown_pct']:.2f} | {Decimal(r['fees']):.2f} | "
             f"{r['buys']}/{r['sells']} | {r['grids_opened']} | {r['range_exits']} | "
@@ -171,11 +273,41 @@ def main(argv: list[str] | None = None) -> int:
         help="also run variant D, the trend benchmark (spec v1 §3 D; not a grid, "
         "no risk controls, cannot be selected)",
     )
-    parser.add_argument(
+    variants = parser.add_mutually_exclusive_group()
+    variants.add_argument(
         "--variant-a",
-        action="store_true",
+        action="store_const",
+        const="A",
+        dest="variant",
         help="enable variant A: daily SMA50/SMA200 trend switch (spec v1 §3 A); "
         "requires daily_warmup_start in the spec",
+    )
+    variants.add_argument(
+        "--variant-b",
+        action="store_const",
+        const="B",
+        dest="variant",
+        help="enable variant B: inventory cap at 40%% of prospective active equity (spec v1 §3 B)",
+    )
+    variants.add_argument(
+        "--variant-c",
+        action="store_const",
+        const="C",
+        dest="variant",
+        help="enable variant C: A and B together (spec v1 §3 C); requires "
+        "daily_warmup_start in the spec",
+    )
+    parser.add_argument(
+        "--structure",
+        action="store_true",
+        help="enable the V2 market-structure features (structure alignment vote and FTA "
+        "cap; off in V0). Results are labelled " + STRUCTURE_FEATURE_VERSION,
+    )
+    parser.add_argument(
+        "--record-commit",
+        action="store_true",
+        help="record the code's git commit in results.json (always recorded for a "
+        "variant, --structure or --trend-benchmark run)",
     )
     args = parser.parse_args(argv)
     spec = load_spec(args.spec)
@@ -187,6 +319,12 @@ def main(argv: list[str] | None = None) -> int:
         missing = [f for f in manifest["files"] if f["status"] == "missing"]
         print(json.dumps({"files": len(manifest["files"]), "missing": missing}, indent=1))
         return 0
+    policy = variant_policy(args.variant, structure=args.structure)
+    # Taken before anything runs, dataset verification included: the code imported now is
+    # the code that runs, even if the checkout changes during a long run (Codex review of
+    # #160). Every run that is not plain V0 records it; V0 keeps its exact layout.
+    recorded = policy is not None or args.trend_benchmark or args.record_commit
+    commit = code_commit() if recorded else None
     manifest = load_manifest(manifest_path(args.spec))
     verify_dataset(spec, manifest, args.data_dir)
     integrity = {
@@ -194,7 +332,16 @@ def main(argv: list[str] | None = None) -> int:
         "volume_drift_tolerance": "0" if args.strict_volume else str(VOLUME_DRIFT_TOLERANCE),
     }
     jobs = max(1, min(args.jobs, 8))
-    with ProcessPoolExecutor(max_workers=jobs) as pool:
+    # Each pool worker refuses to start on other sources than this process imported
+    # (jobs.check_sources); the run then fails before any result is written.
+    executor = (
+        InProcess()
+        if jobs == 1
+        else ProcessPoolExecutor(
+            max_workers=jobs, initializer=check_sources, initargs=(SOURCE_IDENTITY,)
+        )
+    )
+    with executor as pool:
         # Chronology is settled before any replay starts; invalid data never replays.
         # Submit every check before waiting on any, so they run in parallel.
         checks = [
@@ -217,7 +364,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 2 if failures else 0
-        policy = SimulationPolicy(trend_switch=True) if args.variant_a else None
         futures = [
             pool.submit(
                 run_job,
@@ -228,7 +374,10 @@ def main(argv: list[str] | None = None) -> int:
                 mode,
                 gated,
                 (maker, taker),
-                policy,
+                # The ungated rows are always the spec's ungated V0 baseline, which C6
+                # compares a variant with, never the variant without its gate (Codex
+                # review of #160).
+                policy if gated else None,
             )
             for s in spec.traded
             for mode in PATH_MODES
@@ -244,16 +393,27 @@ def main(argv: list[str] | None = None) -> int:
             ]
         results = [f.result() for f in futures]
     failures = result_failures(results)
+    if commit is not None and (after := code_commit()) != commit:
+        # Spawned workers import the code from disk when they start, so after a change of
+        # checkout during the run the recorded commit may not be the code that ran (Codex
+        # review of #160). Such a run is kept for diagnosis but is not evidence.
+        failures.append(f"the checkout changed during the run: {commit} -> {after}")
+    # A variant or structure run says so in its directory name; V0's keeps its form.
     stamp = (
         datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         + f"-m{maker}-t{maker if taker is None else taker}"
+        + (f"-variant-{args.variant}" if args.variant else "")
+        + ("-structure" if args.structure else "")
     )
     out = args.out / spec.name / stamp
     out.mkdir(parents=True, exist_ok=True)
     document = {
         "dataset": spec.name,
         "purpose": spec.purpose,
-        "feature_version": FEATURE_VERSION,
+        "feature_version": STRUCTURE_FEATURE_VERSION if args.structure else FEATURE_VERSION,
+        # A structure run's ungated rows are the V0 baseline, with V0's features; each row
+        # carries its own version (Codex review of #160).
+        **({"baseline_feature_version": FEATURE_VERSION} if args.structure else {}),
         "engine_version": ENGINE_VERSION,
         "manifest_created_at": manifest["created_at"],
         **_identity(args.spec, args.config),
@@ -261,6 +421,13 @@ def main(argv: list[str] | None = None) -> int:
         "fees": {"maker": str(maker), "taker": str(taker if taker is not None else maker)},
         # Present only when D ran, so a grid-only results.json keeps its exact layout.
         **({"trend_benchmark": "D (spec v1 §3 D)"} if args.trend_benchmark else {}),
+        # Present only for a variant or structure run (or --record-commit), so a V0
+        # results.json keeps its exact layout.
+        **({"policy": policy.identity()} if policy is not None else {}),
+        **({"code_commit": commit} if commit is not None else {}),
+        # The sources that ran, which the commit alone cannot vouch for (Codex review of
+        # #160); recorded with the commit, so a V0 results.json keeps its exact layout.
+        **({"code_sha256": SOURCE_IDENTITY} if commit is not None else {}),
         # Invalid results are kept for diagnosis but are never performance evidence.
         "valid": not failures,
         "failures": failures,
