@@ -56,10 +56,14 @@ from crypto_grid_bot.simulation.trend_switch import (
 from crypto_grid_bot.strategy.grid import GridBuilder, GridNotViable
 from crypto_grid_bot.strategy.opportunity import OpportunityScorer
 from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
+from crypto_grid_bot.strategy.structure import ResistanceZones, nearest_resistance
 
 DEFAULT_CAPITAL = D("100")
 # The share of unprotected quote a new grid may commit; the rest absorbs fees and rounding.
 GRID_BUDGET_FRACTION = D("0.8")
+# V2 (D19): a sell target sits at this fraction of the nearest resistance above its buy
+# level, then floored to the tick: just below it (the owner's example: 0.355 -> 0.354).
+RESISTANCE_TARGET = D("0.999")
 # 5 (2026-09-27, engine "exit-residue-v1"): a residue the exchange filters forbid
 # selling no longer blocks settlement or a new grid, and a validation halt holding
 # inventory arms liquidation. A schema-4 database was written under the old lifecycle,
@@ -124,9 +128,10 @@ class SimulationPolicy:
     # False = off (V0). The daily state arrives on each Frame as ``trend``.
     trend_switch: bool = False
     # V2 market structure (#147-#151), off by default: the regime vote's sixth signal
-    # ``structure_alignment`` with the trend weight lowered from 0.35 to 0.25, and the
-    # FTA cap on grid levels. Spec v1 section 3: new behaviour sits behind a flag that
-    # defaults to off, so V0 and existing paper accounts are unaffected.
+    # ``structure_alignment`` with the trend weight lowered from 0.35 to 0.25, and sell
+    # targets just below resistance (D19). Spec v1 section 3: new behaviour sits behind a
+    # flag that defaults to off, so V0 and existing paper accounts are unaffected. Every
+    # V2 rule is frozen in docs/STRUCTURE_PREREGISTRATION.md.
     structure: bool = False
     # Spec v1 amendment 1 (owner decision 2026-09-27): the soft-drawdown cool-off before
     # ``risk_high`` may be rebased, and the hard-drawdown cool-off H before a ``drawdown``
@@ -184,8 +189,8 @@ class Frame:
     epoch: str | None = None
     # Variant A only: the daily trend state for this observation (see trend_switch.py).
     trend: TrendSignal | None = None
-    # V2: nearest resistance above current price from structure.py; None when unavailable.
-    fta_resistance: float | None = None
+    # V2: each timeframe's resistance zones (structure.py); () when unavailable.
+    resistance: tuple[ResistanceZones, ...] = ()
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -194,8 +199,8 @@ class Frame:
             del value["epoch"]  # Keeps journals written before this field byte-identical.
         if value["trend"] is None:
             del value["trend"]  # Likewise for journals without variant A.
-        if value["fta_resistance"] is None:
-            del value["fta_resistance"]  # Omit from journals when structure unavailable.
+        if not value["resistance"]:
+            del value["resistance"]  # Omit from journals when structure unavailable.
         return value
 
 
@@ -1079,12 +1084,6 @@ class PaperSimulator:
         spread = (quote.ask - quote.bid) / quote.ask
         cost = 2 * (rules.fee_rate + rules.slippage_rate) + spread
         budget = account.available_quote(rules) * GRID_BUDGET_FRACTION
-        # The FTA cap is V2 behaviour (policy.structure) and applies only in a ranging
-        # market. In trending markets (BULL/BEAR) resistance zones cluster everywhere and
-        # the cap compresses all sell levels to one price, preventing cycle completion.
-        # See backtest comparison 2026-09-30 section 8.4 for the diagnosis.
-        in_range = regime is None or regime.regime == MarketRegime.RANGE
-        fta = frame.fta_resistance if self.policy.structure and in_range else None
         plan = self.builder.build(
             symbol=rules.symbol,
             fair_value=float(frame.fair_value),
@@ -1092,7 +1091,6 @@ class PaperSimulator:
             capital=float(budget),
             min_notional=float(rules.minimum_notional * (ONE + rules.fee_rate)),
             round_trip_cost_pct=float(cost * 100),
-            fta_resistance=fta,
         )
         levels = tuple(floor_step(D(str(level)), rules.tick_size) for level in plan.levels)
         pairs = [
@@ -1102,13 +1100,22 @@ class PaperSimulator:
         ]
         if not pairs or len(set(levels)) != len(levels):
             raise GridNotViable("no distinct, passive buy levels after tick rounding")
+        required = cost * self._minimum_grid_cost_multiple
+        # Sized over every candidate level, so a level V2 skips below resistance leaves its
+        # share unspent: a skip never enlarges the orders that remain.
         per_order = budget / len(pairs)
+        # V2 (policy.structure) sells just below resistance, in a ranging market only: the
+        # owner's source idea targets resistance in consolidation. The RANGE-only rule was
+        # first chosen after seeing development results that were later found invalid
+        # (D20); docs/STRUCTURE_PREREGISTRATION.md registers it with every other V2 rule.
+        if self.policy.structure and (regime is None or regime.regime == MarketRegime.RANGE):
+            pairs = self._below_resistance(pairs, frame.resistance, required)
         orders: list[LimitOrder] = []
         for index, (low, high) in enumerate(pairs):
             quantity = floor_step(per_order / (low * (ONE + rules.fee_rate)), rules.quantity_step)
             if low * quantity < rules.minimum_notional:
                 raise GridNotViable("rounded quantity cannot satisfy minimum notional")
-            if (high - low) / low < cost * self._minimum_grid_cost_multiple:
+            if (high - low) / low < required:
                 raise GridNotViable("rounded spacing cannot cover conservative costs")
             orders.append(
                 LimitOrder(
@@ -1126,10 +1133,48 @@ class PaperSimulator:
                 place(account, order, rules, check=False)
         else:
             orders = self._place_capped(account, quote, orders, capped)
-        account.grid_lower, account.grid_upper = levels[0], levels[-1]
+        # A sell target raised to a resistance above the top level stays inside the range
+        # the outside-range clock watches.
+        targets = [order.target for order in orders if order.target is not None]
+        account.grid_lower, account.grid_upper = levels[0], max([levels[-1], *targets])
         account.outside_seconds, account.outside_last = ZERO, ""
         account.cycles += 1
         return [order.order_id for order in orders]
+
+    def _below_resistance(
+        self,
+        pairs: list[tuple[Decimal, Decimal]],
+        resistance: tuple[ResistanceZones, ...],
+        required: Decimal,
+    ) -> list[tuple[Decimal, Decimal]]:
+        """V2 sell targets (D19), below the nearest known resistance above each buy level
+        (``nearest_resistance``): a zone in reach sets the target just below it, raised or
+        lowered from the geometric next level; one out of reach only lowers the geometric
+        level to there if it would reach it. A target a zone moved that cannot clear costs
+        (spacing below ``required``) gets no buy: it may not sit higher and cannot profit
+        lower. A geometric target left standing keeps V0's rule. Fixed at grid open, from
+        completed bars only."""
+        tick = self.rules.tick_size
+        kept: list[tuple[Decimal, Decimal]] = []
+        blocked: set[Decimal] = set()  # the zones that left a level no buy, to the tick
+        for low, high in pairs:
+            nearest = nearest_resistance(float(low), resistance)
+            if nearest is None:
+                kept.append((low, high))
+                continue
+            zone, in_reach = nearest
+            cap = floor_step(D(str(zone)) * RESISTANCE_TARGET, tick)
+            target = cap if in_reach else min(high, cap)
+            if target != high and (target - low) / low < required:
+                blocked.add(floor_step(D(str(zone)), tick))
+            else:
+                kept.append((low, target))
+        if not kept:
+            zones = ", ".join(str(zone) for zone in sorted(blocked))
+            raise GridNotViable(
+                f"no buy level can sell below resistance at {zones} and clear costs"
+            )
+        return kept
 
     def _place_capped(
         self,

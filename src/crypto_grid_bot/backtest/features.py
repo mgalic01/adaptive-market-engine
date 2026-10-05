@@ -20,13 +20,19 @@ from decimal import Decimal
 
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.strategy.structure import (
+    ResistanceZones,
     StructureParams,
     analyse_multi_timeframe,
 )
 
 FEATURE_VERSION = "price-only-v1"
 # Results from runs with the V2 structure features (SimulationPolicy.structure) say so.
-STRUCTURE_FEATURE_VERSION = FEATURE_VERSION + "+structure-v1"
+# Bump it whenever a change moves V2 results; V0 results keep their labels.
+#   structure-v2 (2026-10-05, owner decisions D19-D21 and the zone width): sell targets
+#   just below the nearest resistance above each buy level replace the FTA cap, and swing
+#   points merge into zones within 1.0 ATR instead of 0.5; every V2 rule is frozen in
+#   docs/STRUCTURE_PREREGISTRATION.md.
+STRUCTURE_FEATURE_VERSION = FEATURE_VERSION + "+structure-v2"
 HOUR_MS = 3_600_000
 DAY_MS = 86_400_000
 BASELINE_HOURS = 720  # 30-day medians for volatility and liquidity baselines
@@ -242,8 +248,8 @@ class Inputs:
     atr: Decimal
     # V2 only, from analyse_multi_timeframe(); 0.0 without structure candles
     structure_alignment: float = 0.0
-    # V2 only: nearest resistance zone above fair value; None without structure candles
-    fta_resistance: float | None = None
+    # V2 only: each timeframe's resistance zones; () without structure candles
+    resistance: tuple[ResistanceZones, ...] = ()
     # Flat or zero-volume history: ratios are undefined, so new entries are vetoed
     # (quality 0) while existing inventory keeps being marked and risk-managed.
     degenerate: bool = False
@@ -298,8 +304,10 @@ class FeatureEngine:
         self._structure = bool(self._hourly_views or self._daily_views)
         self._structure_params = StructureParams()
         # Structure changes only when a pair candle or a daily bar completes, so it is
-        # cached by (p, completed daily bars): (key, structure_alignment, fta).
-        self._structure_cache: tuple[tuple[int, int], float, float | None] | None = None
+        # cached by (p, completed daily bars): (key, structure_alignment, resistance).
+        self._structure_cache: tuple[tuple[int, int], float, tuple[ResistanceZones, ...]] | None = (
+            None
+        )
         # (first minute, end minute, Inputs): the last result and the span it holds for.
         self._cached: tuple[int, int, Inputs | None] = (0, 0, None)
 
@@ -376,8 +384,8 @@ class FeatureEngine:
         spacing = (upper / lower) ** (1 / (self._levels - 1)) - 1 if lower > 0 else 0.0
         pair_volume = _at(pair.qv24, p)
 
-        structure_alignment, fta_resistance = (
-            self._structure_features(p, minute_ms, float(fair)) if self._structure else (0.0, None)
+        structure_alignment, resistance = (
+            self._structure_features(p, minute_ms, float(fair)) if self._structure else (0.0, ())
         )
 
         return Inputs(
@@ -399,13 +407,13 @@ class FeatureEngine:
             atr=atr,
             degenerate=degenerate,
             structure_alignment=structure_alignment,
-            fta_resistance=fta_resistance,
+            resistance=resistance,
         )
 
     def _structure_features(
         self, p: int, minute_ms: int, fair: float
-    ) -> tuple[float, float | None]:
-        """V2 multi-timeframe alignment and FTA from completed candles only.
+    ) -> tuple[float, tuple[ResistanceZones, ...]]:
+        """V2 multi-timeframe alignment and resistance zones from completed candles only.
 
         Swing detection is O(n), so the result is cached until a pair candle or a daily
         bar completes. ``fair`` depends only on ``p``, so the key covers it.
@@ -425,10 +433,12 @@ class FeatureEngine:
             current_price=fair,
             params=self._structure_params,
         )
-        fta_resistance = None
-        if daily and mtf.daily and mtf.daily.fta.resistance:
-            fta_resistance = mtf.daily.fta.resistance.price
-        elif mtf.hourly and mtf.hourly.fta.resistance:
-            fta_resistance = mtf.hourly.fta.resistance.price
-        self._structure_cache = ((p, days), mtf.alignment, fta_resistance)
-        return mtf.alignment, fta_resistance
+        # One entry per timeframe supplied. A sell target answers to the nearest zone on any
+        # of them (structure.nearest_resistance), so their order does not matter.
+        resistance = tuple(
+            ResistanceZones.of(structure, self._structure_params.max_distance_atr)
+            for structure in (mtf.daily, mtf.hourly)
+            if structure is not None
+        )
+        self._structure_cache = ((p, days), mtf.alignment, resistance)
+        return mtf.alignment, resistance

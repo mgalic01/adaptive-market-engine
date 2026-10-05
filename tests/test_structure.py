@@ -14,10 +14,12 @@ Test strategy:
 
 from __future__ import annotations
 
+import random
 import unittest
 from dataclasses import dataclass
 
 from crypto_grid_bot.strategy.structure import (
+    ResistanceZones,
     StructuralTrend,
     StructureLevel,
     StructureParams,
@@ -32,6 +34,7 @@ from crypto_grid_bot.strategy.structure import (
     detect_swing_highs,
     detect_swing_lows,
     find_fta,
+    nearest_resistance,
 )
 
 # ---------------------------------------------------------------------------
@@ -78,6 +81,27 @@ def zigzag_bars(n: int, base: float = 100.0, amplitude: float = 5.0) -> list[Bar
         price = base + amplitude if i % 2 == 0 else base - amplitude
         bars.append(Bar(i * 3_600_000, price, price - 0.1, price))
     return bars
+
+
+def bullish_bars() -> list[Bar]:
+    """Bar sequence that reliably produces StructuralTrend.BULLISH with swing_n=1.
+
+    Ascending zigzag: two confirmed swing highs (105 < 108) and two confirmed
+    swing lows (102 < 104) in strict ascending order.  Uses only high==low==close
+    so ATR is non-zero due to inter-bar price differences.
+    """
+    prices = [100.0, 101.0, 105.0, 102.0, 108.0, 104.0, 112.0, 107.0, 115.0, 110.0, 118.0]
+    return [Bar(i * 3_600_000, p, p, p) for i, p in enumerate(prices)]
+
+
+def bearish_bars() -> list[Bar]:
+    """Bar sequence that reliably produces StructuralTrend.BEARISH with swing_n=1.
+
+    Descending zigzag: two confirmed swing highs (115 > 112) and two confirmed
+    swing lows (108 > 104) in strict descending order.
+    """
+    prices = [118.0, 110.0, 115.0, 107.0, 112.0, 104.0, 108.0, 102.0, 105.0, 101.0, 100.0]
+    return [Bar(i * 3_600_000, p, p, p) for i, p in enumerate(prices)]
 
 
 def make_swing_high(index: int, price: float, open_ms: int = 0) -> SwingPoint:
@@ -401,6 +425,86 @@ class TestFindFTA(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# nearest_resistance (V2 sell targets, owner decision D19)
+# ---------------------------------------------------------------------------
+
+
+class TestNearestResistance(unittest.TestCase):
+    def test_at_a_positive_radius_its_reach_is_the_fta_analyse_timeframe_finds(self):
+        # The nearest zone above any price, at any distance, is in reach exactly when
+        # find_fta finds it as the timeframe's FTA, on a random walk (fixed seed).
+        rng = random.Random(19)
+        bars, price = [], 100.0
+        for i in range(300):
+            price *= 1 + rng.uniform(-0.02, 0.02)
+            bars.append(Bar(i * 3_600_000, price * 1.01, price * 0.99, price))
+        params = StructureParams()
+        found = set()
+        for _ in range(200):
+            # Up to 1.6 times the last close: the walk's highest zone is at about 1.5.
+            current = rng.uniform(0.8, 1.6) * bars[-1].close
+            structure = analyse_timeframe(bars, current, params)
+            fta = structure.fta.resistance
+            zones = ResistanceZones.of(structure, params.max_distance_atr)
+            self.assertGreater(zones.radius, 0)
+            above = next((zone for zone in zones.prices if zone > current), None)
+            expected = None if above is None else (above, fta is not None)
+            self.assertEqual(expected, nearest_resistance(current, [zones]))
+            found.add(expected[1] if expected else None)
+        self.assertEqual({True, False, None}, found)  # in reach, out of reach, none above
+
+    def test_the_nearest_zone_on_any_timeframe_counts_at_any_distance(self):
+        daily, hourly = ResistanceZones((103.0,), 5.0), ResistanceZones((101.0,), 5.0)
+        # The lowest of the timeframes' nearest zones, whatever their order.
+        self.assertEqual((101.0, True), nearest_resistance(100.0, [daily, hourly]))
+        self.assertEqual((101.0, True), nearest_resistance(100.0, [hourly, daily]))
+        # The hourly zone at 101.5 is beyond its radius of 1, out of reach, but it is still
+        # the nearest: the daily zone at 103 behind it plays no part.
+        beyond = ResistanceZones((101.5,), 1.0)
+        self.assertEqual((101.5, False), nearest_resistance(100.0, [daily, beyond]))
+        # On a tie, a timeframe that reaches the zone decides.
+        tie = [ResistanceZones((101.0,), 0.5), hourly]
+        self.assertEqual((101.0, True), nearest_resistance(100.0, tie))
+        self.assertEqual(
+            (106.0, False), nearest_resistance(100.0, [ResistanceZones((106.0, 99.0), 5.0)])
+        )
+        self.assertIsNone(nearest_resistance(100.0, []))
+
+    def test_strictly_above_and_in_reach_within_the_radius(self):
+        self.assertIsNone(nearest_resistance(100.0, [ResistanceZones((100.0,), 5.0)]))
+        self.assertEqual((105.0, True), nearest_resistance(100.0, [ResistanceZones((105.0,), 5.0)]))
+        self.assertEqual(
+            (105.5, False), nearest_resistance(100.0, [ResistanceZones((105.5,), 5.0)])
+        )
+
+    def test_a_radius_that_is_not_positive_reaches_no_zone(self):
+        # Unlike find_fta, which searches without limit at a zero ATR, its zones are never
+        # in reach; they are still the nearest zones, even with another timeframe's zone
+        # in reach behind them.
+        zone = StructureZone(101.0, True, 1.0, 1, 0)
+        flat = TimeframeStructure(
+            StructuralTrend.UNKNOWN, (zone,), StructureLevel(None, None), (), (), 0.0
+        )
+        self.assertEqual(
+            zone, find_fta(100.0, [zone], [], atr=0.0, max_distance_atr=5.0).resistance
+        )
+        zero = ResistanceZones.of(flat, 5.0)
+        self.assertEqual((101.0, False), nearest_resistance(100.0, [zero]))
+        nan = ResistanceZones((101.0,), float("nan"))
+        self.assertEqual((101.0, False), nearest_resistance(100.0, [nan]))
+        behind = ResistanceZones((103.0,), 5.0)
+        self.assertEqual((101.0, False), nearest_resistance(100.0, [zero, behind]))
+
+    def test_of_keeps_the_resistance_zones_and_scales_the_radius(self):
+        support = StructureZone(95.0, False, 1.0, 1, 0)
+        resistance = tuple(StructureZone(p, True, 1.5, 2, 0) for p in (104.0, 108.0))
+        structure = TimeframeStructure(
+            StructuralTrend.UNKNOWN, (support, *resistance), StructureLevel(None, None), (), (), 2.0
+        )
+        self.assertEqual(ResistanceZones((104.0, 108.0), 10.0), ResistanceZones.of(structure, 5.0))
+
+
+# ---------------------------------------------------------------------------
 # analyse_timeframe
 # ---------------------------------------------------------------------------
 
@@ -510,6 +614,66 @@ class TestAnalyseMultiTimeframe(unittest.TestCase):
         expected = (0.5 * 1.0 + 0.35 * -1.0) / (0.5 + 0.35)
         self.assertAlmostEqual(expected, 0.15 / 0.85, places=5)
 
+    # ------------------------------------------------------------------
+    # F15: real bar-sequence integration tests (weekly=None always in prod)
+    # ------------------------------------------------------------------
+
+    def _params(self) -> StructureParams:
+        return StructureParams(swing_n=1, atr_period=5, min_swings=2)
+
+    def test_real_bullish_bars_produce_positive_alignment_hourly_only(self):
+        """Hourly-only bullish bars → alignment = +1.0 (hourly weight renormalised to 1.0)."""
+        bars = bullish_bars()
+        params = self._params()
+        result = analyse_multi_timeframe(bars, None, None, 115.0, params)
+        self.assertIsNotNone(result.hourly)
+        self.assertEqual(StructuralTrend.BULLISH, result.hourly.trend)
+        self.assertAlmostEqual(1.0, result.alignment, places=5)
+
+    def test_real_bearish_bars_produce_negative_alignment_hourly_only(self):
+        """Hourly-only bearish bars → alignment = -1.0 (hourly weight renormalised to 1.0)."""
+        bars = bearish_bars()
+        params = self._params()
+        result = analyse_multi_timeframe(bars, None, None, 101.0, params)
+        self.assertIsNotNone(result.hourly)
+        self.assertEqual(StructuralTrend.BEARISH, result.hourly.trend)
+        self.assertAlmostEqual(-1.0, result.alignment, places=5)
+
+    def test_real_bullish_hourly_and_daily_weekly_none_renormalises_weights(self):
+        """Both hourly and daily bullish, weekly=None.
+
+        Expected: alignment = +1.0 (both scores are +1; renormalised weights
+        hourly=0.15/0.50=0.30, daily=0.35/0.50=0.70, sum still = 1.0).
+        """
+        bars = bullish_bars()
+        params = self._params()
+        result = analyse_multi_timeframe(bars, bars, None, 115.0, params)
+        self.assertIsNotNone(result.hourly)
+        self.assertIsNotNone(result.daily)
+        self.assertIsNone(result.weekly)
+        self.assertEqual(StructuralTrend.BULLISH, result.hourly.trend)
+        self.assertEqual(StructuralTrend.BULLISH, result.daily.trend)
+        self.assertAlmostEqual(1.0, result.alignment, places=5)
+
+    def test_real_mixed_hourly_bullish_daily_bearish_weekly_none(self):
+        """Hourly bullish, daily bearish, weekly=None.
+
+        Expected alignment with renormalised weights:
+          active weights: hourly=0.15, daily=0.35 → total=0.50
+          alignment = (0.15 * 1.0 + 0.35 * -1.0) / 0.50 = -0.20 / 0.50 = -0.40
+        """
+        bullish = bullish_bars()
+        bearish = bearish_bars()
+        params = self._params()
+        result = analyse_multi_timeframe(bullish, bearish, None, 115.0, params)
+        self.assertIsNotNone(result.hourly)
+        self.assertIsNotNone(result.daily)
+        self.assertIsNone(result.weekly)
+        self.assertEqual(StructuralTrend.BULLISH, result.hourly.trend)
+        self.assertEqual(StructuralTrend.BEARISH, result.daily.trend)
+        expected = (0.15 * 1.0 + 0.35 * -1.0) / 0.50
+        self.assertAlmostEqual(expected, result.alignment, places=5)
+
 
 # ---------------------------------------------------------------------------
 # StructureParams validation
@@ -520,7 +684,7 @@ class TestStructureParams(unittest.TestCase):
     def test_defaults_are_valid(self):
         params = StructureParams()
         self.assertEqual(3, params.swing_n)
-        self.assertEqual(0.5, params.merge_atr)
+        self.assertEqual(1.0, params.merge_atr)
         self.assertEqual(5.0, params.max_distance_atr)
         self.assertEqual(2, params.min_swings)
         self.assertEqual(14, params.atr_period)
@@ -549,7 +713,7 @@ class TestStructureParams(unittest.TestCase):
     def test_valid_custom_params(self):
         params = StructureParams(
             swing_n=5,
-            merge_atr=1.0,
+            merge_atr=2.0,
             max_distance_atr=10.0,
             min_swings=3,
             atr_period=7,

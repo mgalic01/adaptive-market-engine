@@ -488,7 +488,7 @@ def replay(
                 True,
                 epoch,
                 trend,
-                inputs.fta_resistance,
+                inputs.resistance,
             )
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
