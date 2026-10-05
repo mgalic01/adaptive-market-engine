@@ -430,6 +430,10 @@ class TargetTest(unittest.TestCase):
             for cmd in ("x=$[x << END ]\ngh pr merge 5", "x=$[a[1] << 2]\ngh pr merge 5"):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a reader inside a command substitution still runs the
+            # body; a quoted pipe is no pipeline.
+            self.assertEqual(self.prs("x=$(bash <<'EOF'\ngh pr merge 5\nEOF\n)"), [5])
+            self.assertEqual(find_targets("echo '| bash' <<'EOF'\ngh pr merge 5\nEOF", "."), [])
             # Codex review of #159: an argument named like a shell is not the reader.
             self.assertEqual(find_targets("echo bash <<'EOF'\n(gh pr merge 5)\nEOF", "."), [])
             # Codex review of #159: a shell elsewhere on the line is not this body's reader.

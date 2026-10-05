@@ -634,10 +634,20 @@ def _readers(pipeline: str) -> list[str]:
     """The command of each stage of a here-document's pipeline, parsed into shell words
     and unwrapped (`/bin/'bash'` is bash, `sudo bash` is bash), so that an argument such
     as the `bash` of `echo bash <<EOF` is never taken for its reader (Codex review of
-    #159). `.` and `source` stay as they are: they run their input."""
+    #159). Stages split at unquoted pipes only, and a stage's command starts after its
+    last unquoted `(`, `$(` or backtick (`x=$(bash <<EOF`). `.` and `source` stay as
+    they are: they run their input."""
+    quoted, stages, start = _quoted(pipeline), [], 0
+    for i, c in enumerate(pipeline):
+        if c == "|" and not quoted[i]:
+            stages.append(pipeline[start:i])
+            start = i + 1
+    stages.append(pipeline[start:])
     out = []
-    for stage in pipeline.split("|"):
-        words = drop_redirections(split_words(stage))
+    for stage in stages:
+        inner = _quoted(stage)
+        cut = max((i + 1 for i, c in enumerate(stage) if c in "(`" and not inner[i]), default=0)
+        words = drop_redirections(split_words(stage[cut:]))
         if words and words[0] in (".", "source"):
             out.append(words[0])
         elif toks := unwrap(words):
