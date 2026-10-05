@@ -210,13 +210,17 @@ class CliIntegrityTests(unittest.TestCase):
 
     def test_variant_and_structure_flags_reach_every_replay_and_are_recorded(self):
         cap = Decimal("0.40")
+        c = {"trend_switch": True, "inventory_cap": cap}
         cases = {
             ("--variant-a",): ("-variant-A", SimulationPolicy(trend_switch=True)),
             ("--variant-b",): ("-variant-B", SimulationPolicy(inventory_cap=cap)),
-            ("--variant-c",): (
-                "-variant-C",
-                SimulationPolicy(trend_switch=True, inventory_cap=cap),
-            ),
+            ("--variant-c",): ("-variant-C", SimulationPolicy(**c)),
+            ("--variant-e",): ("-variant-E", SimulationPolicy(volume_exit=True)),
+            ("--variant-f",): ("-variant-F", SimulationPolicy(flow_block_entry=True)),
+            ("--variant-g",): ("-variant-G", SimulationPolicy(funding_gate=True)),
+            ("--variant-h",): ("-variant-H", SimulationPolicy(cycle_gate=True)),
+            ("--variant-cg",): ("-variant-C+G", SimulationPolicy(**c, funding_gate=True)),
+            ("--variant-ch",): ("-variant-C+H", SimulationPolicy(**c, cycle_gate=True)),
             ("--structure",): ("-structure", SimulationPolicy(structure=True)),
             ("--variant-b", "--structure"): (
                 "-variant-B-structure",

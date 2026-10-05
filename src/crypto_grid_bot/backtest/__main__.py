@@ -239,7 +239,7 @@ def _table(results: list[dict[str, Any]]) -> str:
         "| --- |",
     ]
     for r in results:
-        # A variant's rows name it, so the table alone tells A, B and C from V0 (Codex
+        # A variant's rows name it, so the table alone tells each variant from V0 (Codex
         # review of #160); a V0 row keeps its exact text.
         strategy = r["strategy"] + (f", variant {r['variant']}" if "variant" in r else "")
         lines.append(
@@ -302,6 +302,53 @@ def main(argv: list[str] | None = None) -> int:
         dest="variant",
         help="enable variant C: A and B together (spec v1 §3 C); requires "
         "daily_warmup_start in the spec",
+    )
+    variants.add_argument(
+        "--variant-e",
+        action="store_const",
+        const="E",
+        dest="variant",
+        help="enable variant E: volume-confirmed range exit (spec v1 §3 E); not eligible "
+        "for selection until Codex has reviewed it",
+    )
+    variants.add_argument(
+        "--variant-f",
+        action="store_const",
+        const="F",
+        dest="variant",
+        help="enable variant F: order-flow entry block (spec v1 §3 F)",
+    )
+    variants.add_argument(
+        "--variant-g",
+        action="store_const",
+        const="G",
+        dest="variant",
+        help="enable variant G: BTCUSDT funding-rate gate (spec v1 §3 G); until the "
+        "manifest lists funding archives (P8) it blocks every new grid",
+    )
+    variants.add_argument(
+        "--variant-h",
+        action="store_const",
+        const="H",
+        dest="variant",
+        help="enable variant H: Bitcoin cycle context (spec v1 §3 H); requires "
+        "daily_warmup_start in the spec",
+    )
+    variants.add_argument(
+        "--variant-cg",
+        action="store_const",
+        const="C+G",
+        dest="variant",
+        help="enable C+G: variant C with the funding-rate gate (spec v1 §3 G), a declared "
+        "interaction; requires daily_warmup_start in the spec",
+    )
+    variants.add_argument(
+        "--variant-ch",
+        action="store_const",
+        const="C+H",
+        dest="variant",
+        help="enable C+H: variant C with the cycle context (spec v1 §3 H), a declared "
+        "interaction; requires daily_warmup_start in the spec",
     )
     parser.add_argument(
         "--structure",
