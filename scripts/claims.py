@@ -871,16 +871,21 @@ def segments(command: str) -> list[str]:
     return parts
 
 
-def _assignments(command: str) -> dict[str, str]:
-    """The variables a command line assigns (`ALIAS=push git ...`, `export ALIAS=push;
-    ...`), the last assignment of each winning."""
+def _assignments(words: list[str]) -> dict[str, str]:
+    """The `NAME=value` words among ``words``, the last of each name winning."""
     found: dict[str, str] = {}
-    for segment in segments(command):
-        for word in split_words(segment):
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", word, re.DOTALL):
-                name, _, value = word.partition("=")
-                found[name] = value
+    for word in words:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", word, re.DOTALL):
+            name, _, value = word.partition("=")
+            found[name] = value
     return found
+
+
+def _is_git(word: str) -> bool:
+    """`git`, or one of git's own commands run directly (`/usr/lib/git-core/git-push`,
+    which pushes without the `git` dispatcher; Codex review of #159)."""
+    name = _exe(word)
+    return name == "git" or (name.startswith("git-") and name[4:] in GIT_BUILTINS)
 
 
 # A command word known only at run time: a variable or a positional parameter, `$1`,
@@ -966,6 +971,7 @@ def find_targets(
         return _unknown(root, "a command nested too deep to read")
     command, bodies = heredocs(command)
     targets: list[Target] = []
+    exported: dict[str, str] = {}  # what `export` puts in later commands' environment
     for segment in segments(command):
         words = drop_redirections(split_words(segment))
         if words[:1] == ["source"] or (posix and words[:1] == ["."]):
@@ -974,9 +980,15 @@ def find_targets(
             targets.extend(_run_time_code(words[0], words[1:], segment, command))
             continue
         toks = unwrap(words)
+        if toks[:1] == ["export"]:
+            exported.update(_assignments(toks[1:]))
+        elif not toks:  # a plain assignment changes an exported variable's value
+            exported.update({k: v for k, v in _assignments(words).items() if k in exported})
         if not toks:
             continue
         exe = _exe(toks[0])
+        if exe != "git" and _is_git(exe):
+            exe, toks = "git", ["git", exe[4:], *toks[1:]]
         base = _env_dir(words, cwd)
         if exe in ("cd", "set-location", "pushd", "sl") and len(toks) > 1:
             cwd = str(Path(cwd, toks[-1]))
@@ -988,11 +1000,16 @@ def find_targets(
             # directory (Codex review of #159: `cd other && git --git-dir <this
             # repo>/.git push` was checked against the other repository, and so was
             # `git --git-dir <this repo>/.git -C other push`).
+            # Git's environment: the hook's own, what the line exported before this
+            # command, then this command's own assignments; never a later one (Codex
+            # review of #159).
+            prefix: list[str] = []
             for w in split_words(segment):
-                if w.startswith("GIT_DIR="):
-                    git_dir = w.split("=", 1)[1]
-                elif _exe(w) == "git":
+                if _is_git(w):
                     break
+                prefix.append(w)
+            env = {**os.environ, **exported, **_assignments(prefix)}
+            git_dir = env.get("GIT_DIR", "")
             while rest and rest[0].startswith("-"):
                 if rest[0] == "-C" and len(rest) > 1:
                     work, rest = str(Path(work, rest[1])), rest[2:]
@@ -1003,14 +1020,13 @@ def find_targets(
                 elif rest[0].startswith("--config-env=") or (
                     rest[0] == "--config-env" and len(rest) > 1
                 ):
-                    # `--config-env=alias.p=VAR` takes the alias from the environment:
-                    # an assignment on this command line or the hook's own; one it
-                    # cannot read could be anything (Codex review of #159).
+                    # `--config-env=alias.p=VAR` takes the alias from git's environment;
+                    # one it cannot read could be anything (Codex review of #159).
                     attached = rest[0].startswith("--config-env=")
                     key, _, variable = (rest[0][13:] if attached else rest[1]).partition("=")
                     if key.lower().startswith("alias."):
                         name = key[len("alias.") :].lower()
-                        value = _assignments(command).get(variable, os.environ.get(variable))
+                        value = env.get(variable)
                         if value is None:
                             unknown_aliases.add(name)
                         else:
