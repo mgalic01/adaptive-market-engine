@@ -1,4 +1,15 @@
-"""Hysteresis policy that prevents wasteful opportunity chasing."""
+"""Hysteresis policy that prevents wasteful opportunity chasing.
+
+Reserved and inert (owner decision 2026-10-05, D11). Nothing in the engine calls this
+policy, and neither it nor the ``[universe]`` settings changes any trade: the engine
+trades one pair. The ``[rotation]`` and ``[universe]`` settings stay, values unchanged
+(they are still validated when the config loads), because they are part of every saved
+paper account's identity; they are to be removed with the first schema change after v1.
+Before any wiring, a dwell time per confirmation, a cooldown that also covers the first
+rotation, and how improvement and switching cost are measured must be registered. This
+note is here, not in ``config/default.toml``: a comment there would change every
+result's ``config_sha256``.
+"""
 
 from __future__ import annotations
 

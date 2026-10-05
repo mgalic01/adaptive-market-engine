@@ -149,6 +149,14 @@ class RulesForTests(unittest.TestCase):
         rules = rules_for("BTCUSDT", self.FILTERS, D("0.001"), D("0.0005"), D("0.10"))
         self.assertIsNone(rules.taker_fee_rate)
 
+    def test_fill_trigger_defaults_to_the_slippage_and_is_carried_when_set(self):
+        rules = rules_for("BTCUSDT", self.FILTERS, D("0"), D("0.0005"), D("0.10"))
+        self.assertEqual((None, D("0.0005")), (rules.fill_trigger_rate, rules.fill_trigger))
+        swept = rules_for(
+            "BTCUSDT", self.FILTERS, D("0"), D("0.0005"), D("0.10"), fill_trigger=D("0.001")
+        )
+        self.assertEqual((D("0.001"), D("0.0005")), (swept.fill_trigger, swept.slippage_rate))
+
     def test_non_positive_filters_are_rejected(self):
         for field in self.FILTERS:
             for value in ("0", "-1"):

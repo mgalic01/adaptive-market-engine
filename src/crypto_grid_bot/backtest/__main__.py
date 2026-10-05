@@ -16,6 +16,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -263,6 +264,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--maker-fee", help="override the spec fee for resting fills")
     parser.add_argument("--taker-fee", help="fee for marketable exits (default: maker)")
     parser.add_argument(
+        "--fill-trigger",
+        help="the missed-fill sensitivity sweep only (spec v1 §4, D9): how far a quote must "
+        "cross a resting limit to fill (default: the spec's slippage, which exits still pay)",
+    )
+    parser.add_argument(
         "--strict-volume",
         action="store_true",
         help="fail on any volume difference (no drift tolerance)",
@@ -313,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
     spec = load_spec(args.spec)
     maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
     taker = fee_rate(args.taker_fee, "taker fee") if args.taker_fee is not None else None
+    fill = fee_rate(args.fill_trigger, "fill trigger") if args.fill_trigger is not None else None
     if args.command == "fetch":
         manifest = fetch_dataset(spec, args.data_dir)
         write_manifest(manifest_path(args.spec), manifest)
@@ -323,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     # Taken before anything runs, dataset verification included: the code imported now is
     # the code that runs, even if the checkout changes during a long run (Codex review of
     # #160). Every run that is not plain V0 records it; V0 keeps its exact layout.
-    recorded = policy is not None or args.trend_benchmark or args.record_commit
+    recorded = policy is not None or args.trend_benchmark or args.record_commit or fill is not None
     commit = code_commit() if recorded else None
     manifest = load_manifest(manifest_path(args.spec))
     verify_dataset(spec, manifest, args.data_dir)
@@ -364,9 +371,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 2 if failures else 0
+        # A sensitivity run's fill trigger reaches every grid replay (D9). Without the flag
+        # each job is submitted exactly as before. D places no resting order, so the
+        # trigger cannot change it.
+        grid_job = run_job if fill is None else partial(run_job, fill_trigger=fill)
         futures = [
             pool.submit(
-                run_job,
+                grid_job,
                 args.spec,
                 args.config,
                 args.data_dir,
@@ -402,6 +413,7 @@ def main(argv: list[str] | None = None) -> int:
     stamp = (
         datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         + f"-m{maker}-t{maker if taker is None else taker}"
+        + (f"-fill{fill}" if fill is not None else "")
         + (f"-variant-{args.variant}" if args.variant else "")
         + ("-structure" if args.structure else "")
     )
@@ -419,6 +431,9 @@ def main(argv: list[str] | None = None) -> int:
         **_identity(args.spec, args.config),
         "integrity_rules": integrity,
         "fees": {"maker": str(maker), "taker": str(taker if taker is not None else maker)},
+        # Present only in a missed-fill sensitivity run (D9), so every other results.json
+        # keeps its exact layout.
+        **({"fill_trigger": str(fill)} if fill is not None else {}),
         # Present only when D ran, so a grid-only results.json keeps its exact layout.
         **({"trend_benchmark": "D (spec v1 §3 D)"} if args.trend_benchmark else {}),
         # Present only for a variant or structure run (or --record-commit), so a V0

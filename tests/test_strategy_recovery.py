@@ -251,12 +251,16 @@ class StrategyRecoveryTests(TestCase):
         self.assertFalse(self.sim.store.read().orders)
 
     def test_invalid_frame_pauses_but_does_not_erase_outside_range_time(self):
+        # Inventory is held, so the pause leaves its sells and the account is not flat.
+        # (A flat account's stale band and clock are cleared instead: amendment 2.)
         self.sim.process(frame(0))
-        self.sim.process(frame(1, "0.02500"))
-        self.assertEqual("pause", self.sim.process(stale(frame(2, "0.02500")))["decision"])
-        self.assertEqual(frame(1).quote.observed_at, self.sim.store.read().outside_last)
+        self.sim.process(frame(1, "0.02196"))  # the buys fill; below the band from here
+        self.assertEqual("pause", self.sim.process(stale(frame(2, "0.02196")))["decision"])
+        state = self.sim.store.read()
+        self.assertGreater(state.inventory, 0)
+        self.assertEqual(frame(1).quote.observed_at, state.outside_last)
         # Two valid outside observations 3 s apart bracket the unusable frame.
-        self.sim.process(frame(4, "0.02500"))
+        self.sim.process(frame(4, "0.02196"))
         self.assertTrue(self.sim.store.read().range_exit)
 
     def test_gap_neither_counts_nor_erases_outside_range_time(self):
@@ -494,13 +498,14 @@ class StrategyRecoveryTests(TestCase):
     def test_older_schema_databases_are_not_silently_reinterpreted(self):
         row = self.sim.store.connection.execute("SELECT identity FROM state").fetchone()[0]
         identity = json.loads(row)
-        self.assertEqual(8, identity["schema"])
+        self.assertEqual(9, identity["schema"])
         # 4 is in the list: a database written before "exit-residue-v1" ran under the old
         # lifecycle, where a residue blocked settlement and a validation halt armed no
         # exit, so reopening it here would mix two semantics in one event history. 6 is
         # too (the journal's old shape, #159), and 7: it was written with V2 structure
-        # always on, as was 6 since #150/#151.
-        for old in (1, 2, 3, 4, 5, 6, 7):
+        # always on, as was 6 since #150/#151. So is 8: it ran without D7 and amendments
+        # 2 and 3 ("drawdown-recovery-v2").
+        for old in (1, 2, 3, 4, 5, 6, 7, 8):
             identity["schema"] = old
             self.sim.store.connection.execute("UPDATE state SET identity=?", (encode(identity),))
             with self.subTest(schema=old), self.assertRaisesRegex(ValueError, "settings differ"):
@@ -659,6 +664,12 @@ class StrategyRecoveryTests(TestCase):
         self.sim = self.open(MarketRules(fee_rate=D("0"), taker_fee_rate=D("0.0009")))
         self.check_resume_cli()  # a mis-decoded taker fee would fail as "settings differ"
 
+    def test_resume_cli_restores_a_separate_fill_trigger(self):
+        self.sim.close()
+        self.path = Path(self.temp.name) / "trigger.db"
+        self.sim = self.open(MarketRules(fill_trigger_rate=D("0.0002")))
+        self.check_resume_cli()  # an undecoded trigger would fail as "settings differ"
+
     def test_resume_cli_restores_the_inventory_cap(self):
         self.reopen(replace(self.policy, inventory_cap=D("0.4")), "capped.db")
         self.check_resume_cli()  # a dropped or undecoded cap would fail loudly, not resume
@@ -797,6 +808,6 @@ class PanelFixTests(TestCase):
         )
         path = Path(self.temp.name) / "frame.json"
         path.write_text(encode(recent.payload()))
-        with self.assertRaisesRegex(ValueError, "paper schema 8"):
+        with self.assertRaisesRegex(ValueError, "paper schema 9"):
             resume_paper(self.path, self.config, path, event_id="cli", reason="reviewed")
         self.sim = None  # the tampered database cannot be reopened; nothing left to close

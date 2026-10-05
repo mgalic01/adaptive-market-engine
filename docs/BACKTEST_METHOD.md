@@ -17,7 +17,11 @@ PYTHONPATH=src python -m crypto_grid_bot.backtest run    --spec config/datasets/
 ```
 
 Without `--taker-fee` the taker fee equals the maker fee. The fees used are recorded in
-`results.json` and in the output directory name.
+`results.json` and in the output directory name. `--fill-trigger RATE` is for the
+missed-fill sensitivity sweep only (spec v1 §4, owner decision D9): it sets how far a quote
+must cross a resting limit, which otherwise equals the slippage. Exits and marks keep the
+slippage, and the run records the setting in `results.json` and as `-fill<RATE>` in its
+directory name.
 
 `fetch` is the only command that uses the network: it reads public archive files from
 `https://data.binance.vision` and the current exchange filters from the public data
@@ -71,7 +75,8 @@ Klines contain trades, not quotes. The adapter in `backtest/replay.py` is explic
   - The assumed spread is a dataset parameter (`assumed_spread_pct`; 0.05% in
     `verify-2024h1`).
 - **Crossing:** the unchanged engine still requires a limit to be crossed by the slippage
-  rate. Touching a level never fills.
+  rate (the fill trigger, which only the missed-fill sweep sets apart, D9). Touching a
+  level never fills.
 - **Liquidity:**
   - Taker-sell volume can fill resting buys; taker-buy volume can fill resting sells.
   - Each side's bar volume is split evenly over the four quotes, and the engine's
@@ -168,10 +173,14 @@ The unchanged engine then applies:
 - the grid builder's rule that spacing must be at least 3× round-trip costs;
 - risk limits: 3% daily pause, 8% soft and 12% hard drawdown, with the drawdown recovery
   of [spec v1 amendment 1](EXPERIMENT_SPEC_V1.md) §3 (engine `drawdown-recovery-v1`; its
-  24 h values were set after development results had been seen, as the spec discloses):
-  - a soft-drawdown episode rebases `risk_high` to the current active equity once at
-    least 24 h of observed time have passed since it began and the normal
-    `recovery_frames` confirmations are in;
+  24 h values were set after development results had been seen, as the spec discloses),
+  and since engine `drawdown-recovery-v2` the owner's decisions of 2026-10-02 (D7 and
+  amendments 2 and 3):
+  - a soft-drawdown episode ends once at least 24 h of observed time have passed since
+    it began and the normal `recovery_frames` confirmations are in: it closes without a
+    rebase if the account is already back under the 8% soft limit (D7; exactly 8% still
+    counts as soft), and otherwise rebases `risk_high` to the current active equity.
+    Results count both (`soft_drawdown_closes`, `soft_drawdown_rebases`);
   - a hard-drawdown (`drawdown`) halt restarts automatically, at most once per halt, on
     the first valid frame at least 24 h after the halt began once the forced liquidation
     is complete (an unsellable `dust` remainder does not block it) and the risk check
@@ -179,7 +188,11 @@ The unchanged engine then applies:
     for the normal `recovery_frames` confirmations before a new grid;
   - `emergency` and `integrity` halts stay latched until an explicit resume, and an
     `exhaustion` halt is final;
-- range exit after 6 h and re-centring after 24 h;
+- range exit after 6 h of observed time outside the band and re-centring after 24 h. The
+  outside-range clock stands still while the account is halted (amendment 3), and an
+  account left flat with no orders and no exit pending clears its old band at once
+  (amendment 2), so a halted account, or one left flat with no orders, never times out
+  into a range exit;
 - the 50/50 reserve with transfers batched at 10 quote units.
 
 ## Baselines

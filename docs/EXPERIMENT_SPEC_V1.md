@@ -80,29 +80,110 @@ common to all:
   suppresses or clears them further. Every other control, including the latched halt for
   emergency, capital exhaustion and integrity failures, is unchanged.
 
+- **Entry regime gate (owner decision 2026-10-02, D2):** the opportunity score is
+  multiplied by a regime factor before being checked against the 0.70 entry minimum.
+  The factors are: RANGE 1.00, BULL 0.80, TRANSITION 0.35, BEAR 0.20, STRESS 0.00.
+  Because TRANSITION (0.35) and BEAR (0.20) produce a maximum scaled score below 0.70
+  regardless of the pair's quality, **no new grid can open in TRANSITION or BEAR in
+  practice**. BULL requires a near-perfect base score (≥ 0.875) to clear the minimum.
+  This is the intended behaviour — grid entries are effectively RANGE-only — and it is
+  stated here so that variant results are interpreted correctly:
+  - H3's score relaxation (0.70 → 0.60) applies only to new grids, but 0.60 > 0.35 and
+    0.60 > 0.20, so **H3 can only act in RANGE** (or an almost-perfect BULL bar). It
+    cannot open grids in TRANSITION or BEAR regardless of cycle phase.
+  - Scoring a variant idle during TRANSITION or BEAR periods on C5 (activity) or C2
+    (makes money) correctly reflects the variant's whole-window behaviour; the
+    Down-period readout (D3) answers the narrower bounce question separately.
+  - This is not a code change. The factors are config values and have not changed.
+
 ### V0: baseline (`price-only-v1`)
 - **Code:** the commit that merges the prerequisites; it is recorded in every
   `results.json`.
 - **Unchanged:** default config, fills, costs, data identities and the common mark
   cadence (P2).
-- **Two versions (amendment 1).** "V0" means the amended V0, with the drawdown recovery
-  below. The pre-amendment V0 (drawdown lockout) keeps its published results
-  (`docs/backtests/verify-2024h1.md` and `fee-levels-2026-09.md`, which predate
-  `engine_version` and will be labelled pre-amendment when amended results are published
-  beside them), and both versions are registered trials (the
+- **Versions (amendment 1 and the owner's decisions of 2026-10-02).** "V0" means the
+  amended V0: the drawdown recovery of amendment 1 below, with D7 in its step 3, and
+  amendments 2 and 3. It runs on engine `drawdown-recovery-v2` and paper schema 9, which
+  refuses schemas 1–8, because these changes move replay results and the meaning of saved
+  state (`replay.py`'s bump rule; `PAPER_SIMULATION.md`). The same engine version has the
+  risk engine compare the 3%, 8% and 12% limits with the exact balances, not through
+  floats (moved here from #159). Each earlier V0 keeps its
+  results and is a registered trial (the
   [coherence record](reviews/2026-09-27-claude-dsr-coherence.md) §3, which superseded
-  part 2's count). The amended V0 runs on the engine version and paper schema its
-  implementation PR assigns: a successor of `exit-residue-v1` (assigned:
-  `drawdown-recovery-v1`, 2026-09-28), and schema 6 refusing 1–5 (schema 7 refusing 1–6
-  since the code audit's journal correction, #159, and schema 8 refusing 1–7 since the
-  strategy audit's structure flag, #160; neither moves a V0 replay result),
-  because the amendment moves replay results and adds persisted state (`replay.py`'s bump
-  rule; `PAPER_SIMULATION.md`). It is the "fixed V0" of the owner's 2026-09-27 decision,
-  the fixed V0 that actually runs, and the one extra trial `N_family` (C7) already counts.
-  `exit-residue-v1` names the exit fix alone (PR #122); no V0 result on it has been run or
-  inspected. Running the un-amended fixed V0 is not planned, a choice made here and open
-  to review; if it is ever run and inspected it is one further trial and `N_family` gains
-  one more.
+  part 2's count): the pre-amendment V0 (drawdown lockout), whose published results
+  (`docs/backtests/verify-2024h1.md` and `fee-levels-2026-09.md`) predate
+  `engine_version` and will be labelled pre-amendment when amended results are published
+  beside them; and V0 on `drawdown-recovery-v1` (amendment 1 alone, schema 6, assigned
+  2026-09-28; the code audit's journal correction, schema 7, #159, and the strategy
+  audit's structure flag, schema 8, #160, kept that engine and moved no V0 replay
+  result), the "fixed V0" of the owner's 2026-09-27 decision and the one extra trial
+  the coherence record counts, whose results are labelled pre-amendment-2. V0 on
+  `drawdown-recovery-v2` is one further registered trial (amendment 2), which C7's
+  `N_family` includes. `exit-residue-v1` names the exit fix alone (PR #122); no V0
+  result on it has been run or inspected. Running the un-amended fixed V0 is not planned,
+  a choice made here and open to review; if it is ever run and inspected it is one
+  further trial and `N_family` gains one more.
+
+### Range-exit clock paused during halts (amendment 3, owner decision 2026-10-02, D16)
+
+**Rule:** the 6-hour outside-range timer (`outside_seconds`) does not advance while the
+account is halted (any halt category): it stands still. Nothing carries over the halt,
+though. A halt clears only on a flat account with no orders (the automatic restart and
+the manual resume both require it), and there the grid bounds and the clock are
+cleared: by amendment 2 once the halted account is flat, and by amendment 1's
+halt-clearing rule, the restart's field list, which a manual resume shares. A range exit
+that was already triggered before the halt completes normally, and the observation that
+raises the halt starts none (the halt owns that exit); this rule only stops the
+accumulation of outside-range time that would trigger a new exit. *(Wording made exact
+2026-10-05: the decision text said the clock "resumes from where it stopped when the
+halt clears", which no engine path can do, since both ways a halt clears leave the clock
+at zero; Codex's review of #163.)*
+
+**Why.** A halted account is not trading. Time spent outside the band during a halt is
+not meaningful outside-range exposure — the bot cannot act on it. Counting it inflates
+the `range_exits` metric in `results.json` by approximately one per halt (a halted
+account sitting below its band for 6+ hours records a spurious exit). With Amendment 1
+allowing multiple automatic restarts per run, this over-count compounds. The range-exit
+count is a primary diagnostic for how hostile a window is to the strategy and directly
+feeds the meta-strategy calibration; an inflated count produces the wrong signal.
+
+**Engine impact.** No trading behaviour changes. The reported `range_exits` count
+decreases on runs with halts. Requires an engine version bump so existing results are
+correctly labelled pre-amendment-3 (assigned, together with amendment 2 and D7: engine
+`drawdown-recovery-v2`, paper schema 9). No reruns of already-valid results are required
+unless the corrected count would change a C4 verdict (it cannot — C4 is an integrity
+check, not a range-exit threshold).
+
+### Flat-account bounds clearing (amendment 2, owner decision 2026-10-02, D15)
+
+**Rule:** when the account becomes flat (no inventory the exchange would accept, and no
+open orders) and no range-exit is pending, the grid bounds (`grid_lower`, `grid_upper`) and all outside-range timers
+(`range_exit`, `range_exit_since`, `outside_seconds`, `outside_last`) are cleared
+immediately. A new grid may open at the very next eligible observation without waiting
+for the stale band's 6-hour outside-range timer or the 24-hour recentre cooldown.
+A residue below the exchange minimum, which no order could sell, counts as flat, as it
+does everywhere else in the engine since PR #122 *(owner decision 2026-10-05: such dust
+cannot be protected or exited, and keeping its stale band would bring back the empty-
+account range exit this amendment removes)*.
+
+**Why.** When a grid sells out completely and no new grid opens (spacing too tight,
+gate closed, pause active), the account previously kept the old band. If price had
+moved away, the empty account would record a spurious range exit and wait up to 30 hours
+before the next grid — with nothing at risk. In one reproduction the next grid opened
+after 1,382 minutes; with this fix it opens after 1 minute.
+
+**Preserved intent.** The no-chase cooldown still applies to a genuine range exit: when
+inventory was actually forced out of a band, the full 6-hour outside-range timer and
+24-hour recentre cooldown run as before. This fix applies only to the case where the
+account is flat with no grid and no pending exit — i.e. there is nothing to protect and
+no range was actually exited.
+
+**Engine impact.** This changes V0 results (fewer idle periods, more grids on choppy
+windows). It requires an engine version bump and a schema bump if the cleared state
+differs from what an existing persisted account holds (assigned, together with
+amendment 3 and D7: engine `drawdown-recovery-v2`, paper schema 9). All V0 results
+produced before this amendment are labelled pre-amendment-2 and stay published for
+reference. This amendment is counted as one further registered trial in `N_family` (C7).
 
 ### Drawdown recovery (amendment 1, owner decision 2026-09-27)
 
@@ -169,19 +250,31 @@ and it catches any later change to `risk_high`'s formula that is not mirrored he
    `recovery_count` today (a frame gap over `maximum_frame_gap_seconds`, a
    `TransientFrame`, an ineligible frame); (c) the account is not halted. A range exit
    waiting in cash does not block this check.
-3. If all hold, it sets `risk_high` to the current active equity (`last_equity` after
-   this step's mark, which runs before the risk check) **tentatively** and evaluates the
-   risk engine again. The rebase is committed only if the result is
-   `ALLOW`; otherwise nothing changes and the check repeats on the next frame.
-4. The rebase check runs first in the step. After a committed rebase, the range-exit and
-   pause recovery rules apply unchanged.
-5. The episode ends at its rebase, so it has at most one. **It also ends when the account
-   is halted, for any category:** the halt supersedes it, and its start time is cleared.
-   After a restart or a manual resume no episode is open, so a later `REDUCE` starts a new
-   episode with its own 24-hour cool-off and `recovery_frames` confirmations. A restart of the process
-   restores the saved episode start. The 8% and 12% triggers are both measured from the
-   rebased `risk_high`. Each rebase is recorded: time, old and new reference, episode
-   start.
+3. If all hold, it checks whether the account has already recovered: if the current
+   active equity is strictly above 92% of the existing `risk_high`, that is, its
+   drawdown is below the 8% soft limit as the risk engine measures it (a drawdown of
+   exactly 8% is a soft drawdown), the episode is **closed without rebasing** —
+   `risk_high` stays at its current value and is not lowered. This prevents the
+   heal-then-rebase ratchet: repeated partial recoveries can no longer silently erode the
+   reference without the 12% halt ever firing. **(Owner decision 2026-10-02, D7.)** If
+   the drawdown is still at or above 8%, the rebase proceeds: it sets `risk_high` to the
+   current active equity **tentatively** and evaluates the risk engine again. The rebase
+   is committed only if the result is `ALLOW`; otherwise nothing changes and the check
+   repeats on the next frame. *(Wording made consistent 2026-10-05: the decision text said
+   "at or above 92% … (i.e. the drawdown is already under 8%)", and the two halves
+   disagree at exactly 92%. The risk engine treats a drawdown of exactly 8% as soft
+   (`loss >= limit`), so closing there would start a new episode at once, on the same
+   frame; the close therefore needs strictly above 92%. No other change to the decision.)*
+4. The rebase check runs first in the step. After a committed rebase or a no-rebase
+   close, the range-exit and pause recovery rules apply unchanged.
+5. The episode ends at its rebase or its no-rebase close, so it has at most one of
+   either. **It also ends when the account is halted, for any category:** the halt
+   supersedes it, and its start time is cleared. After a restart or a manual resume no
+   episode is open, so a later `REDUCE` starts a new episode with its own 24-hour
+   cool-off and `recovery_frames` confirmations. A restart of the process restores the
+   saved episode start. The 8% and 12% triggers are both measured from the (possibly
+   unchanged) `risk_high`. Each rebase is recorded: time, old and new reference, episode
+   start. A no-rebase close is also recorded: time, equity at close, episode start.
 
 **Hard drawdown (automatic restart).** Only a halt of category `drawdown` restarts
 automatically. `emergency` and `integrity` halts stay latched until an explicit audited
@@ -310,6 +403,22 @@ The state is updated once per completed daily bar, from the previous state and `
 | **Middle** | From any state: `C ≤ SMA200` and `C > SMA50`. | No new grid. An existing grid keeps running: its sells, reentries within the grid and range exit behave as in V0. Reentries are allowed deliberately: they only rebuy levels the grid already sold, inside its existing range, and B's cap bounds the exposure in C. |
 | **Down** | From any state: `C ≤ SMA200` and `C ≤ SMA50`. | No new grid, and a **Down sequence** starts unless one is already running (see below). |
 | **Unavailable** | A daily bar is missing or SMA50/SMA200 is undefined. | Same as Middle: no new grid, and no fill is forced. The two-close count restarts. |
+
+**When SMA50/SMA200 is undefined (owner decision 2026-10-02, D6):** SMA200 requires
+200 consecutive completed daily bars with no gaps. A single missing bar makes SMA200
+undefined for the next 200 days — the window must rebuild from scratch. This is the
+strict rule and it is intentional: averaging over gaps would mean trading on an
+incomplete signal, which is unacceptable for a live feed where a missing bar usually
+indicates a data-source problem. Consequences:
+
+- In registered backtests this cannot happen: the dataset integrity check (P3, §2)
+  rejects any spec whose daily archive has gaps before accepting the run.
+- In a live or paper feed there is no such guard. A single dropped daily bar silences
+  Variant A for up to 200 days. This is the correct fail-closed behaviour: when the
+  signal is uncertain, the bot stays in the Middle state (no new grid, existing grid
+  continues) until the window is clean again.
+- The 200-day consequence is written here so it is not treated as a bug when observed
+  in live operation.
 
 **Down sequence:**
 - **Start:** it starts at the effective time of the first Down classification (`T0`).
@@ -722,7 +831,7 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
 | --- | --- |
 | Variants | V0, A, B, C, D, E, F, G, C+G, H, C+H |
 | Baselines | **Ungated V0** (the replay's `strategy: "ungated"`: V0 without the opportunity gate), for C6 only. It is run everywhere V0 runs and is never eligible for selection. |
-| Fees | **Primary:** Revolut X, maker 0 / taker 0.0009. **Sensitivity** (reported, not used for acceptance): 0.001 / 0.001. |
+| Fees | **Primary:** Revolut X, maker 0 / taker 0.0009. **Sensitivity** (reported, not used for acceptance): 0.001 / 0.001. **Kraken scenario** (reported only, not used for acceptance, owner decision 2026-10-02, D5): maker 0.0025 / taker 0.0040 (Kraken lowest public tier; fee schedule to be verified before first run). Moving to Kraken as the live venue reopens acceptance from scratch under the applicable fee scenario — v1's verdict does not carry over to a different exchange. |
 | Windows and pairs | `verify-2024h1` (ADA, BTC) and `practice-2022` (BTC, XRP, SOL), each extended with daily warm-up (P3). |
 | Intrabar paths | `high_first` and `low_first`, both always reported. No path is chosen after seeing results. |
 | Capital | 100 quote units per run, independent per pair. |
@@ -730,6 +839,30 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
 - **Unchanged inputs:** slippage 0.05%, assumed spread 0.05% and participation 10%.
 - **Reporting:** every attempted run is reported, including invalid runs, halts and zero
   trades.
+
+**Sensitivity schedule (owner decision 2026-10-02, D10 — reported only, not used for
+acceptance):** the following sweeps are pre-registered with their values fixed here,
+before any C1–C6 result is seen. Each sweep varies exactly one parameter from the
+primary run; all other inputs stay at their primary values. Results are reported
+alongside the primary but never used for variant selection or acceptance decisions.
+Choosing these values after seeing results would be tuning; they are fixed now.
+
+| Sensitivity | Parameter | Primary value | Sweep values |
+| --- | --- | --- | --- |
+| Spread | Assumed quoted spread | 0.05% | 0.10%, 0.20% |
+| Participation | Volume participation cap | 10% | 5%, 20% |
+| Missed-fill | Fill trigger: how far a quote must cross a resting limit (`fill_trigger_rate`, D9) | 0.05%, equal to the slippage | 0.02%, 0.10% |
+| Timing | Bar offset (decision delay) | 0 bars | +1 bar, +5 bars |
+
+The fill-trigger setting exists only for this labelled sweep (owner decision 2026-10-05,
+D9): `--fill-trigger` sets it, and `results.json` and the output directory name record
+it. Exits, marks and costs keep the slippage, and every other run leaves the setting
+unset, so its resting fills use the slippage as before.
+
+The fee sensitivity (0.001 / 0.001) and the Kraken scenario are already registered
+above. Together these cover: cost drag (fees, spread), fill realism (participation,
+missed-fill), and execution delay (timing). The path sensitivity (`high_first` /
+`low_first`) is already part of every primary run and requires no separate sweep.
 
 ## 5. Validity and the comparison mask
 
@@ -779,6 +912,19 @@ pair for the other variants.
 
 ## 6. Acceptance and selection (owner decisions, 2026-09-24)
 
+**Economic bar (owner note, 2026-10-02):** passing C1–C6 is a necessary condition, not
+a sufficient one. A return of ~5% over 6 years is approximately 0.8% annualised — worse
+than a savings account and not worth the operational overhead of running a bot. The
+variants need to demonstrate meaningfully positive annualised returns (target: well above
+5% per year) across the binding windows. C1–C6 set the floor for scientific validity;
+economic viability is a separate, higher bar that the owner will assess from the R1
+metric and the raw return figures. Passing both justifies at most the step §8 allows, a
+proposal for paper trading against live Revolut X prices; it never justifies live
+capital directly. A development winner that barely clears C1–C6 is not automatically a
+green light. *(Wording made consistent with §8 on 2026-10-05: the note said passing would
+"justify live deployment" and let the owner decide whether to "proceed to a live pilot",
+which §8 does not allow. The owner's bar itself is unchanged; Codex's review of #163.)*
+
 The owner compared his criteria from this conversation with Bob's proposal
 (`2025-09-25-owner-acceptance-criteria.md`) and chose this combined set. Acceptance is
 judged at the primary fees. A variant passes when **all** of C1–C6 hold across its
@@ -790,9 +936,9 @@ included runs (every included pair, window and path):
 | C2 | **Makes money on the worse path:** for **each** intrabar path separately, the median return across included runs is > 0 after fees; **and** the mean return across all included runs is > 0. All runs have equal weight, and the median of an even count is the mean of the two middle values. | Owner, with Bob's worse-path rule |
 | C3 | **Safer than holding:** in every included run, max total-equity drawdown < that run's buy-and-hold max drawdown (common sampling, P2). A run where buy-and-hold has zero drawdown fails. | Owner (strict) |
 | C4 | **Integrity:** every included run is valid (§5). | Both |
-| C5 | **Minimum activity:** for each included run, its rate = completed cycles (P7) ÷ (evaluation window length in days ÷ 7). The window is `[start of the start month, end of the end month)` in UTC, the same for every run in a dataset, whether or not the run halted. C5 = the arithmetic mean of the per-run rates over all included runs (equal weight), computed exactly (no rounding), and must be **≥ 1**. The ISO-week counter is reported, not scored. The share of bars holding inventory is reported. | Owner's compromise on Bob's 10%-invested rule |
+| C5 | **Minimum activity:** for each included run, its rate = completed cycles (P7) ÷ (evaluation window length in days ÷ 7). The window is `[start of the start month, end of the end month)` in UTC, the same for every run in a dataset, whether or not the run halted. C5 = the arithmetic mean of the per-run rates over all included runs (equal weight), computed exactly (no rounding), and must be **≥ 1**. The ISO-week counter is reported, not scored. The share of bars holding inventory is reported. **C5 and C2 are unchanged for trend-gated variants (owner decision 2026-10-02, D4):** a variant that is idle during downtrends correctly scores zero activity and zero return on those runs; the Down-period readout (D3, above) answers the bounce question separately and is the right diagnostic for that period, not a relaxed criterion. | Owner's compromise on Bob's 10%-invested rule |
 | C6 | **The gate earns its place:** in at least **60%** of included runs, the variant's return ÷ max(max drawdown, 0.1 percentage points) exceeds that of the **ungated V0 baseline** in the same pair, window and path. | Bob |
-| C7 | **Survives the family — adopted in principle, not yet binding.** The owner decided on 2026-09-27 to replace the deflated Sharpe ratio, which has no content on this family ([why](reviews/2026-09-27-claude-dsr-coherence.md)), with a Holm step-down over the disclosed family at family-wise 5%, evaluated on the selected winner only and gating the reserved-window run. The statistic is the one-sided p-value `p = 1 − Φ( SR · √(T_eff − 1) / √(1 − γ3·SR + (γ4 − 1)/4 · SR²) )` on each variant's worse path, using the series, moment conventions and `T_eff` of [draft spec part 3](reviews/2026-09-27-claude-dsr-return-series.md) §8 with `SR0` = 0. **C7 does not gate anything until all three of the following are settled and recorded here** (Codex, 2026-09-27): (a) the return series C7 is computed on — §4 defines two windows, while part 3 requires 25 walk-forward folds whose geometry is still a proposal, and the two give different `T`, `SR` and `T_eff`; (b) the family, since `N_family` = 16–17 and 20–21 (17 and 21 used as working figures, since R1's code state is unknown) are **floors** (unpublished inspected runs are known to exist), and a Holm cutoff from a floor does not control the stated error rate — either the missing trials are accounted for in the register or a conservative budget is preregistered; (c) Codex's and Bob's acknowledgment, since all three agents agreed to the DSR (Bob, PR #123 review, 2026-09-27: "I agree with retiring the frozen DSR in favor of the Holm step-down (C7) once settled", an acknowledgment conditional on C7 being settled; Codex's is owed). **Until C7 is settled and acknowledged, or the owner explicitly waives it in writing, nothing runs on the reserved window.** The owner's decision was that a multiple-testing test gates that run, so an unresolved C7 is a hold on the run, not permission to proceed under six criteria. C1–C6 remain the binding set for development selection in the meantime. | Owner in principle; specification open |
+| C7 | **Survives the family — adopted in principle, not yet binding.** The owner decided on 2026-09-27 to replace the deflated Sharpe ratio, which has no content on this family ([why](reviews/2026-09-27-claude-dsr-coherence.md)), with a Holm step-down over the disclosed family at family-wise 5%, evaluated on the selected winner only and gating the reserved-window run. The statistic is the one-sided p-value `p = 1 − Φ( SR · √(T_eff − 1) / √(1 − γ3·SR + (γ4 − 1)/4 · SR²) )` on each variant's worse path, using the series, moment conventions and `T_eff` of [draft spec part 3](reviews/2026-09-27-claude-dsr-return-series.md) §8 with `SR0` = 0. **C7 does not gate anything until all three of the following are settled and recorded here** (Codex, 2026-09-27): (a) the return series C7 is computed on — §4 defines two windows, while part 3 requires 25 walk-forward folds whose geometry is still a proposal, and the two give different `T`, `SR` and `T_eff`; (b) the family, since `N_family` = 17–18 and 21–22 (18 and 22 used as working figures, since R1's code state is unknown; the coherence record's 16–17 and 20–21 plus V0 on `drawdown-recovery-v2`, which amendment 2 counts as one further registered trial) are **floors** (unpublished inspected runs are known to exist), and a Holm cutoff from a floor does not control the stated error rate — either the missing trials are accounted for in the register or a conservative budget is preregistered; (c) Codex's and Bob's acknowledgment, since all three agents agreed to the DSR (Bob, PR #123 review, 2026-09-27: "I agree with retiring the frozen DSR in favor of the Holm step-down (C7) once settled", an acknowledgment conditional on C7 being settled; Codex's is owed). **Until C7 is settled and acknowledged, or the owner explicitly waives it in writing, nothing runs on the reserved window.** The owner's decision was that a multiple-testing test gates that run, so an unresolved C7 is a hold on the run, not permission to proceed under six criteria. C1–C6 remain the binding set for development selection in the meantime. | Owner in principle; specification open |
 | R1 | **Economics, reported only:** the capital at which the mean monthly return would cover €5/month of hosting (5 ÷ mean monthly return fraction), or "not reachable" if the mean return is ≤ 0. Running on the owner's own PC costs €0 in hosting. | Bob, as information |
 
 *Note on units (added 2026-09-27, clarification only; no criterion changes).* Every
@@ -801,6 +947,32 @@ replay result is in USDT quote units with no EUR conversion
 pair (§4). R1's hosting cost is in euros. R1's arithmetic is sound because a monthly
 return *fraction* has no unit, but it assumes the USDT return equals the EUR return,
 i.e. it ignores EUR/USDT exchange-rate movement over the month.
+
+**Down-period readout (owner decision 2026-10-02, D3 — reported only, not scored):**
+
+Before any variant result is inspected, the following slice is pre-registered. It is
+computed from the same replay data as C1–C6 and reported alongside the scored results,
+but it does not change any criterion, any ranking or any acceptance decision.
+
+- **Purpose:** answer the owner's question "in downtrends, does stepping aside outperform
+  staying in and collecting bounces?"
+- **Days counted:** calendar days on which Variant A's own daily classifier assigns the
+  Down state to the traded pair, per pair separately. Days outside the evaluation window
+  are excluded. Middle, Up, Recovering and Unavailable days are not counted.
+- **Arms compared** (three, per pair and window):
+  - *Ungated V0* — the always-grid baseline (the true "keep gridding" arm; see correction
+    1 in the strategy audit 2026-09-29).
+  - *Gated V0* — V0 with the regime gate active, reported alongside for context.
+  - *Variant A* — the step-aside arm.
+- **Measures reported on Down days only:**
+  - Cumulative return (mark-to-market, fees included) over those days.
+  - Forced-exit P&L broken down by exit reason (`trend_exit`, `range_exit`, `drain`).
+  - Completed buy-and-sell cycles whose sell filled on a Down day.
+  - Regime-label mix (RANGE / BULL / BEAR / TRANSITION / STRESS share) on those days,
+    showing whether Down-state days were also classified as BEAR by the regime detector.
+- **What this readout cannot do:** it is conditioned on the same data used for variant
+  selection and therefore cannot serve as acceptance evidence or change C1–C6 verdicts.
+  It answers the strategic question; it does not add a trial to the family count.
 
 **Selection (deterministic):**
 1. The **eligible set** is the passing variants among V0, A, B, C, E (only after Codex's
@@ -905,6 +1077,13 @@ start it automatically. Before asking, Claude reports:
   cost-sensitivity experiment, not a backtest of Revolut X EUR execution: Revolut X
   prices, spreads, queue positions, depth and post-only behaviour are not simulated.
 - A pass justifies at most a proposal for paper trading against live Revolut X prices.
+- **Wide-spread frames (owner decision 2026-10-05, D8).** A frame whose quoted spread is
+  above the 0.15% eligibility limit is rejected as bad data, and on it the engine runs no
+  risk check, no outside-range clock, no drain and no retry of a halt's liquidation.
+  This stays for v1, and replay cannot reach it: it assumes a constant 0.05% spread. A
+  live or forward paper feed can hold wide spreads for long stretches, keeping falling
+  coins with no exit path, so whether to run the risk checks and forced exits on such
+  frames must be decided before any live or forward paper run.
 
 ## 9. Sources
 

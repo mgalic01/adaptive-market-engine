@@ -136,6 +136,7 @@ def prepare_run(
     *,
     basket: bool = True,
     structure: bool = False,
+    fill_trigger: Decimal | None = None,
 ) -> PreparedRun:
     """The dataset, rules and features of one run, shared by the grid and variant-D jobs
     so that D's warm-up gate is built exactly as V0's.
@@ -144,7 +145,9 @@ def prepare_run(
     ``basket`` the breadth series are not loaded: they change feature values, never
     whether a minute is warmed up (``FeatureEngine.warmed``). ``structure`` gives the
     features the candles of the V2 structure features (SimulationPolicy.structure);
-    without them the features are V0's.
+    without them the features are V0's. ``fill_trigger`` overrides how far a quote must
+    cross a resting limit, for the labelled missed-fill sweep only (D9); None keeps it
+    at the spec's slippage, which exits and marks always pay.
     """
     spec, config = load_spec(spec_path), load_config(config_path)
     manifest = load_manifest(manifest_path(spec_path))
@@ -156,6 +159,7 @@ def prepare_run(
         spec.slippage_rate,
         spec.participation,
         taker,
+        fill_trigger,
     )
     spread = spec.assumed_spread_pct / 100
     pair_hourly = load_hourly(data_dir, manifest, symbol)
@@ -200,16 +204,28 @@ def run_job(
     gated: bool,
     fees: tuple[Decimal, Decimal | None] | None = None,
     policy: SimulationPolicy | None = None,
+    *,
+    fill_trigger: Decimal | None = None,
 ) -> dict[str, Any]:
     """``fees`` is (maker, taker) overriding the spec; taker None means maker.
 
     ``policy`` controls simulation variants; None gives V0 behaviour. When
     ``policy.trend_switch`` is True, the pair's daily bars are required. A variant's
     rows name it, and rows with the V2 structure features carry their feature version.
+    ``fill_trigger`` is the missed-fill sweep's resting-fill trigger (D9, see
+    ``prepare_run``); the rows' ``rules`` then record it.
     """
     structure = policy is not None and policy.structure
     prepared = prepare_run(
-        spec_path, config_path, data_dir, symbol, path_mode, gated, fees, structure=structure
+        spec_path,
+        config_path,
+        data_dir,
+        symbol,
+        path_mode,
+        gated,
+        fees,
+        structure=structure,
+        fill_trigger=fill_trigger,
     )
     run, minutes = prepared.run, load_minutes(data_dir, prepared.manifest, symbol)
     metrics, account = replay(

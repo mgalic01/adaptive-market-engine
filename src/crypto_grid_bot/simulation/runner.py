@@ -81,7 +81,15 @@ GRID_BUDGET_FRACTION = D("0.8")
 # with structure on (the six-signal regime vote and the FTA cap) under the same identity
 # as the V0 accounts before it, so such a database cannot say which semantics produced
 # its history; it is refused rather than reopened under either (Codex review of #160).
-SCHEMA = 8
+# 9 (2026-10-05, engine "drawdown-recovery-v2", owner decisions of 2026-10-02): a soft
+# episode already back under the soft limit when its rebase falls due closes without one
+# (D7); a flat account with no orders and no range exit pending clears its grid bounds
+# and outside-range clock (amendment 2); the clock stands still while halted (amendment
+# 3); and the risk limits compare the balances exactly, so an equity exactly on a limit
+# is on it (moved here from #159, Codex review). Schema-8 accounts ran without these
+# rules, so a saved reference, bounds or clock may hold what they forbid; such a
+# database is refused rather than reopened under them.
+SCHEMA = 9
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"
@@ -336,13 +344,7 @@ class PaperSimulator:
     def _risk_action(self, account: Account, quote: Quote, emergency: bool) -> RiskAction:
         equity = account.equity(quote, self.rules)
         result = self.risk.evaluate(
-            PortfolioSnapshot(
-                float(equity),
-                float(account.day_start),
-                float(account.risk_high),
-                0,
-                emergency=emergency,
-            )
+            PortfolioSnapshot(equity, account.day_start, account.risk_high, 0, emergency=emergency)
         )
         if self.risk_observer is not None:
             self.risk_observer(equity, account.risk_high, account.measure_high, result)
@@ -371,9 +373,7 @@ class PaperSimulator:
         the observer does not see it and the account is untouched."""
         equity = account.equity(quote, self.rules)
         result = self.risk.evaluate(
-            PortfolioSnapshot(
-                float(equity), float(account.day_start), float(equity), 0, emergency=emergency
-            )
+            PortfolioSnapshot(equity, account.day_start, equity, 0, emergency=emergency)
         )
         return result.action == RiskAction.ALLOW
 
@@ -381,26 +381,42 @@ class PaperSimulator:
         self, account: Account, frame: Frame, eligible: bool, report: dict[str, Any]
     ) -> None:
         """Soft drawdown, option C (amendment 1): on each valid frame of an open episode,
-        before any other state change, count the confirmations and commit the rebase once
-        the cool-off has passed. Runs first in the step, after the mark."""
+        before any other state change, count the confirmations and end the episode once
+        the cool-off has passed: closed as it stands if the account has already recovered
+        (D7), otherwise by the rebase. Runs first in the step, after the mark."""
         if not account.episode_since or account.halt:
             return
         quote = frame.quote
         confirmed = eligible and self._tentative_allow(account, quote, frame.signals.emergency)
         account.episode_count = account.episode_count + 1 if confirmed else 0
-        if (
+        if not (
             confirmed
             and account.episode_count >= self.policy.recovery_frames
             and seconds_between(account.episode_since, quote.observed_at)
             >= self.policy.soft_cooloff_seconds
         ):
+            return
+        # D7 (owner decision 2026-10-02): an account already back under the soft limit is
+        # closed without a rebase, so partial recoveries cannot ratchet risk_high down. The
+        # tentative check passed on this frame, so against the existing risk_high only the
+        # drawdown can deny ALLOW, by the risk engine's own exact comparison: a drawdown of
+        # exactly 8% is still soft, and rebases.
+        snapshot = PortfolioSnapshot(account.last_equity, account.day_start, account.risk_high, 0)
+        if self.risk.evaluate(snapshot).action == RiskAction.ALLOW:
+            report["episode_closed"] = {
+                "episode_since": account.episode_since,
+                "closed_at": quote.observed_at,
+                "equity": account.last_equity,
+                "reference": account.risk_high,
+            }
+        else:
             report["rebase"] = {
                 "episode_since": account.episode_since,
                 "old_reference": account.risk_high,
                 "new_reference": account.last_equity,
             }
             account.risk_high = account.last_equity
-            account.episode_since, account.episode_count = "", 0
+        account.episode_since, account.episode_count = "", 0
 
     def _clear_halt(self, account: Account, reason: str) -> None:
         """End the halt of a flat account with no orders and pause it for confirmed
@@ -481,9 +497,33 @@ class PaperSimulator:
             # A daily bar that had not closed at this observation is lookahead: fail closed.
             frame.trend.validate(quote.observed_at)
 
+    def _clear_flat_bounds(self, account: Account, quote: Quote, report: dict[str, Any]) -> None:
+        """Amendment 2 (owner decision 2026-10-02, D15): flat, no orders and no range exit
+        pending, so no grid is left to protect; its bounds and outside-range clock go, so
+        an empty account can no longer time out of a stale band into a range exit and its
+        recentre cooldown. Flat includes a residue below the exchange minimum (``_resolved``;
+        owner decision 2026-10-05). A genuine exit keeps both; range_exit and
+        range_exit_since are already clear here."""
+        if (
+            account.grid_lower
+            and not account.orders
+            and not account.range_exit
+            and self._resolved(account, quote)
+        ):
+            report["bounds_cleared"] = {"lower": account.grid_lower, "upper": account.grid_upper}
+            account.grid_lower = account.grid_upper = ZERO
+            account.outside_seconds, account.outside_last = ZERO, ""
+
     def _track_range(self, account: Account, quote: Quote) -> None:
-        """Accumulate observed outside-range time; call before updating last_observed."""
-        if not account.grid_lower or account.range_exit:
+        """Accumulate observed outside-range time; call before updating last_observed.
+
+        Amendment 3 (owner decision 2026-10-02, D16): while the account is halted,
+        whatever the category, nothing here advances or resets the clock (amendment 2
+        still clears it once the account is flat); a range exit already triggered is
+        not affected. ``outside_last`` keeps the last observation before the halt, so
+        the halted span is never counted: an interval counts only between two
+        consecutive valid observations."""
+        if not account.grid_lower or account.range_exit or account.halt:
             return
         observed = quote.observed_at
         if account.grid_lower <= quote.bid <= account.grid_upper:
@@ -578,6 +618,17 @@ class PaperSimulator:
         day = observed.date().isoformat()
         if account.day != day:
             account.day, account.day_start = day, account.last_equity
+        # A frame that ended early (a transient frame's pause cancelling the last buys)
+        # may have left the account flat: clear it before the clock can run (Codex review
+        # of #163), as the end of this step would have.
+        self._clear_flat_bounds(account, quote, report)
+        was_halted = bool(account.halt)
+        clock = (
+            account.range_exit,
+            account.range_exit_since,
+            account.outside_seconds,
+            account.outside_last,
+        )
         self._track_range(account, quote)
         # A gap or a new ineligible frame breaks the recovery streak.
         if (
@@ -591,6 +642,18 @@ class PaperSimulator:
         report.update(regime=regime.regime.value, opportunity_score=score.score)
         self._rebase(account, frame, score.eligible, report)
         action = self._risk_action(account, quote, frame.signals.emergency)
+        if account.halt and not was_halted and account.range_exit and not clock[0]:
+            # The observation that timed the range out also halted the account. The
+            # halt owns the exit and the clock stands still from it (amendment 3), so
+            # this observation starts no range exit, which would stay pending through
+            # the halt, be counted, and keep amendment 2 from clearing the flat
+            # account's bounds (Codex review of #163).
+            (
+                account.range_exit,
+                account.range_exit_since,
+                account.outside_seconds,
+                account.outside_last,
+            ) = clock
         trend = self._apply_trend(account, frame) if self.policy.trend_switch else None
         if account.halt:
             if account.liquidating:
@@ -727,18 +790,16 @@ class PaperSimulator:
             if account.down_since and not account.orders and self._resolved(account, quote):
                 report["down_sequence_ended"] = account.down_since
                 account.down_since = ""
-                if not account.range_exit:
-                    # The grid this sequence ended left no orders behind; its bounds and
-                    # outside-range clock are obsolete and would otherwise time an empty
-                    # account out into a range exit (Codex, PR #114). A genuine V0 range
-                    # exit in progress is untouched.
-                    account.grid_lower = account.grid_upper = ZERO
-                    account.outside_seconds, account.outside_last = ZERO, ""
+                # The grid this sequence ended left no orders behind: amendment 2, below,
+                # clears its bounds and outside-range clock (Codex's PR #114 fix was this
+                # special case of it).
             report["trend"] = {
                 "state": trend,
                 "day": frame.trend.day if frame.trend is not None else None,
                 "down_since": account.down_since or None,
             }
+        # After this frame's fills, exits, settlement and any new grid.
+        self._clear_flat_bounds(account, quote, report)
         # An order is cancelled if it left the book without completing, so one that
         # filled in part and was then cancelled on this frame is listed too, and so is
         # one its fills placed and a halt then cleared: a completed buy's child sell

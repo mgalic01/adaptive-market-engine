@@ -1,10 +1,59 @@
-"""Fail-closed portfolio risk engine."""
+"""Fail-closed portfolio risk engine.
+
+The limits are compared with the equities exactly, in Decimal: a float conversion of
+the balances could put a drawdown or a daily loss a hair either side of a limit it sits
+on. The reason texts keep their float formatting where a float can hold the base.
+"""
 
 from __future__ import annotations
 
+from decimal import MAX_EMAX, MIN_EMIN, Context, Decimal, localcontext
 from math import isfinite
 
 from crypto_grid_bot.domain import PortfolioSnapshot, RiskAction, RiskDecision
+
+
+def _wide(prec: int) -> Context:
+    """A context for any exponent a Decimal can have, so no balance underflows or
+    overflows (Codex review of #159: 1e-1000119 compared as a 100% loss, 1e1000000
+    raised Overflow)."""
+    return Context(prec=prec, Emin=MIN_EMIN, Emax=MAX_EMAX)
+
+
+# The exponents at which _limit_equity's products stay exact, with room for a limit's
+# digits. A balance beyond them is invalid, as one beyond a float's range always was
+# (Codex review of #159: 1e(MIN_EMIN - 1) rounded the 12% product).
+_EXPONENTS = range(MIN_EMIN + 40, MAX_EMAX - 40)
+
+
+def _exact(value: Decimal | float) -> Decimal | None:
+    """``value`` as an exact Decimal (a float or int converts exactly); None unless finite
+    and within ``_EXPONENTS``."""
+    number = value if isinstance(value, Decimal) else Decimal(value)
+    return number if number.is_finite() and number.adjusted() in _EXPONENTS else None
+
+
+def _percent(base: Decimal, equity: Decimal) -> str:
+    """The reason text's loss percentage, formatted from floats as it always was. A base
+    a float cannot hold (``1e-1000`` becomes 0.0) is formatted in Decimal instead."""
+    as_float = float(base)
+    if as_float == 0 or not isfinite(as_float):
+        with localcontext(_wide(28)):
+            return f"{(base - equity) / base:.2%}"
+    return f"{(as_float - float(equity)) / as_float:.2%}"
+
+
+def _limit_equity(base: Decimal, limit: Decimal) -> Decimal:
+    """The equity at which ``base`` has lost exactly ``limit``: base x (1 - limit), with
+    every digit of the product kept, whatever the size of ``base`` (Codex review of #159:
+    a fixed 120-digit context rounded a 121-digit balance onto a limit)."""
+    # 1 - limit with every digit kept, however small the limit (Codex review of #159:
+    # at the default 28 digits, 1 - 1e-30 rounded to 1).
+    with localcontext(_wide(len(limit.as_tuple().digits) - limit.adjusted() + 1)):
+        keep = 1 - limit
+    digits = len(base.as_tuple().digits) + len(keep.as_tuple().digits)
+    with localcontext(_wide(digits)):
+        return base * keep
 
 
 class RiskEngine:
@@ -20,48 +69,51 @@ class RiskEngine:
             raise ValueError("risk limits must be ordered between zero and one")
         if maximum_data_age_seconds <= 0:
             raise ValueError("maximum data age must be positive")
-        self._daily_loss_pause_pct = daily_loss_pause_pct
-        self._soft_drawdown_pct = soft_drawdown_pct
-        self._hard_drawdown_pct = hard_drawdown_pct
+        # The configured fractions as the exact Decimals they are written as.
+        self._daily_loss_pause_pct = Decimal(str(daily_loss_pause_pct))
+        self._soft_drawdown_pct = Decimal(str(soft_drawdown_pct))
+        self._hard_drawdown_pct = Decimal(str(hard_drawdown_pct))
         self._maximum_data_age_seconds = maximum_data_age_seconds
 
     def evaluate(self, portfolio: PortfolioSnapshot) -> RiskDecision:
-        equities = (portfolio.active_equity, portfolio.day_start_equity, portfolio.high_water_mark)
-        if any(not isfinite(value) or value < 0 for value in equities) or min(equities[1:]) <= 0:
+        equity = _exact(portfolio.active_equity)
+        day_start = _exact(portfolio.day_start_equity)
+        high = _exact(portfolio.high_water_mark)
+        if (
+            equity is None
+            or day_start is None
+            or high is None
+            or equity < 0
+            or min(day_start, high) <= 0
+        ):
             return RiskDecision(RiskAction.PAUSE, ("invalid portfolio equity",))
         if not portfolio.balances_reconciled or not portfolio.orders_reconciled:
             return RiskDecision(
-                RiskAction.PAUSE,
-                ("exchange balances or orders are not reconciled",),
+                RiskAction.PAUSE, ("exchange balances or orders are not reconciled",)
             )
         if not 0 <= portfolio.data_age_seconds <= self._maximum_data_age_seconds:
             return RiskDecision(RiskAction.PAUSE, ("market data age is invalid or stale",))
         if portfolio.emergency:
             return RiskDecision(RiskAction.EXIT, ("emergency flag is active",))
 
-        daily_loss = max(
-            0.0,
-            (portfolio.day_start_equity - portfolio.active_equity) / portfolio.day_start_equity,
-        )
-        drawdown = max(
-            0.0,
-            (portfolio.high_water_mark - portfolio.active_equity) / portfolio.high_water_mark,
-        )
-        if drawdown >= self._hard_drawdown_pct:
+        # loss / base >= limit, compared as equity <= base x (1 - limit) with the product
+        # exact: no division and no rounding, so an equity exactly on a limit is on it.
+        # Both bases are positive (checked above).
+        hard = equity <= _limit_equity(high, self._hard_drawdown_pct)
+        daily = equity <= _limit_equity(day_start, self._daily_loss_pause_pct)
+        soft = equity <= _limit_equity(high, self._soft_drawdown_pct)
+        if hard:
             return RiskDecision(
-                RiskAction.EXIT,
-                (f"hard drawdown reached: {drawdown:.2%}",),
+                RiskAction.EXIT, (f"hard drawdown reached: {_percent(high, equity)}",)
             )
-        if daily_loss >= self._daily_loss_pause_pct:
+        if daily:
             return RiskDecision(
-                RiskAction.PAUSE,
-                (f"daily loss limit reached: {daily_loss:.2%}",),
+                RiskAction.PAUSE, (f"daily loss limit reached: {_percent(day_start, equity)}",)
             )
-        if drawdown >= self._soft_drawdown_pct:
+        if soft:
             # No sizing: the paper engine answers REDUCE with pause and drain (spec v1
             # amendment 1).
             return RiskDecision(
-                RiskAction.REDUCE,
-                (f"soft drawdown reached: {drawdown:.2%}",),
+                RiskAction.REDUCE, (f"soft drawdown reached: {_percent(high, equity)}",)
             )
         return RiskDecision(RiskAction.ALLOW, ("risk checks passed",))
