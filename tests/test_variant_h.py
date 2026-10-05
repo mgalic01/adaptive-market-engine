@@ -406,15 +406,32 @@ class ReplayWiringTests(TestCase):
             replay(self.config, self.run_config, self.minutes, self.engine, H, None)
 
     def test_bars_after_a_halving_report_its_ath_unavailable_until_midnight(self):
-        # Codex review of #165: the 2024 halving falls at 00:09:27 on 2024-04-20. The 50
-        # bars that open from 00:10 to 00:59 have no completed close since it; the 60 bars
-        # before midnight and the 10 from 00:00 to 00:09 still have the 2020 cycle's ATH.
+        # Codex review of #165: the 2024 halving falls at 00:09:27 on 2024-04-20. From the
+        # bar of 00:09, whose last quote is at 00:09:29, to that of 00:59, 51 bars end with
+        # no completed close since it; the 60 bars before midnight and the 9 from 00:00 to
+        # 00:08 still have the 2020 cycle's ATH. The phase turns at the same instant.
         self.at(utc(2024, 4, 20))
         metrics, account = self.run_replay(self.bars, self.minutes)
         self.assertEqual([], check_accounting(self.run_config, metrics, account))
-        self.assertEqual(50, metrics.variant["cycle_ath_unavailable_bars"])
-        # The phase turns at the halving, so the bar of 00:09, ending at 00:09:29, is 0.
+        self.assertEqual(51, metrics.variant["cycle_ath_unavailable_bars"])
         self.assertEqual({"47": 69, "0": 51}, metrics.variant["cycle_phases_by_bar"])
+
+    def test_each_quote_reads_the_signal_at_its_own_instant(self):
+        # Codex review of #165: in the bar of 00:09 on 2024-04-20, the quotes at +0, +9
+        # and +19 s precede the 00:09:27 halving and keep the old cycle's value (2 is not
+        # below 0.50 x 3); the one at +29 s follows it and has no ATH.
+        self.at(utc(2024, 4, 20))
+        seen, real_step = [], PaperSimulator.step
+
+        def recording(simulator, account, frame):
+            seen.append((frame.quote.observed_at[11:19], frame.cycle.discounted))
+            return real_step(simulator, account, frame)
+
+        with patch.object(PaperSimulator, "step", recording):
+            self.run_replay(self.bars, self.minutes)
+        minute = [entry for entry in seen if entry[0].startswith("00:09:")]
+        expected = [("00:09:00", False), ("00:09:09", False), ("00:09:19", False)]
+        self.assertEqual([*expected, ("00:09:29", None)], minute)
 
     def test_grids_only_h3_opened_and_unavailable_aths_are_reported(self):
         # Every candidate scores 0.65. At 00:00 on 2023-06-16 (phase 37) the bar of

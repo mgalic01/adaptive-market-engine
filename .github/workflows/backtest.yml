@@ -15,7 +15,7 @@ on:
           - verify-2024h1
           - full-range-2019-2024
       variant:
-        description: "Spec v1 variant: V0 (baseline), A (daily trend switch; needs daily_warmup_start), B (40% inventory cap), C (A and B), E (volume-confirmed exit), F (order-flow block), G (funding gate; blocks every new grid until the manifest lists funding archives), H (cycle context; needs daily_warmup_start), C+G or C+H"
+        description: "Spec v1 variant: V0 (baseline), A (daily trend switch; needs daily_warmup_start), B (40% inventory cap), C (A and B), E (volume-confirmed exit), F (order-flow block), G (funding gate; refuses to run until the manifest lists the funding archives, kept by the fetch below), H (cycle context; needs daily_warmup_start), C+G or C+H"
         required: false
         default: "V0"
         type: choice

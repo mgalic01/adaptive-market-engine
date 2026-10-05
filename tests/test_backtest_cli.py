@@ -556,3 +556,26 @@ class CodeCommitTests(unittest.TestCase):
         rows = cli._table([v0, variant]).splitlines()[2:]
         self.assertIn("| gated |", rows[0])
         self.assertIn("| gated, variant B |", rows[1])
+
+
+class VariantGRefusalTests(unittest.TestCase):
+    def test_a_g_run_on_a_manifest_without_funding_archives_is_refused(self):
+        # Codex review of #165: such a run blocks every new grid and could be published
+        # as valid. Every committed manifest lacks the archives until P8's entries.
+        spec = jobs.load_spec(Path(SPEC))
+        prepared = jobs.PreparedRun(spec, None, {"files": []}, None, None, None, [])
+        with (
+            patch.object(jobs, "prepare_run", lambda *args, **kwargs: prepared),
+            patch.object(jobs, "replay", None),  # never reached
+            self.assertRaisesRegex(ValueError, "funding archive for every evaluation month"),
+        ):
+            jobs.run_job(
+                Path(SPEC),
+                ROOT / "config/default.toml",
+                Path("data"),
+                "BTCUSDT",
+                "high_first",
+                True,
+                None,
+                SimulationPolicy(funding_gate=True),
+            )

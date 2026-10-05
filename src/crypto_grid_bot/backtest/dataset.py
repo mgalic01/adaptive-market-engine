@@ -453,8 +453,15 @@ def fetch_dataset(
     fetcher: Fetcher = archive_get,
     instruments: InstrumentSource = exchange_filters,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    previous: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """The manifest of the spec's klines, each fetched and verified. ``previous`` is the
+    manifest being refreshed, if any: the funding archives it lists (spec v1 P8, variant
+    G), which the spec does not name, are fetched and verified again and kept after the
+    klines, so a re-fetch never drops them."""
     files = [fetch_file(data_dir, s, i, m, fetcher) for s, i, m in spec.required()]
+    kept = [entry for entry in previous["files"] if is_funding(entry)] if previous else []
+    files += [fetch_funding_file(data_dir, f["symbol"], f["month"], fetcher) for f in kept]
     fetched_at = now().isoformat(timespec="seconds")
     return {
         "schema": MANIFEST_SCHEMA,

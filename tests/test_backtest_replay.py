@@ -2090,11 +2090,24 @@ class VariantGTests(unittest.TestCase):
                 {"kind": "fundingRate", "symbol": "ETHUSDT", "month": month, "status": "ok"},
                 {"symbol": "BTCUSDT", "interval": "1h", "month": month, "status": "ok"},
             ]
-            records = load_funding(data, {"files": files}, "BTCUSDT")
+            records = load_funding(data, {"files": files}, "BTCUSDT", [month])
         self.assertEqual(3, len(records))
         metrics, _ = self.replay(self.minutes[2:], funding=records)
         self.assertEqual(1, metrics.grids_opened)
-        self.assertEqual([], load_funding(Path("."), {"files": []}, "BTCUSDT"))
+
+    def test_a_run_without_funding_for_every_evaluation_month_is_refused(self):
+        # Codex review of #165: G would block every new grid in a month without funding,
+        # a result that says nothing about funding, so the run is refused instead.
+        present = {"kind": "fundingRate", "symbol": "BTCUSDT", "month": "2024-01", "status": "ok"}
+        cases = (
+            ([], "2024-01, 2024-02"),  # every committed manifest until P8's entries
+            ([present], "2024-02"),
+            ([present, present | {"month": "2024-02", "status": "missing"}], "2024-02"),
+            ([present, present | {"month": "2024-02", "symbol": "ETHUSDT"}], "2024-02"),
+        )
+        for files, absent in cases:
+            with self.subTest(files=files), self.assertRaisesRegex(ValueError, absent):
+                load_funding(Path("."), {"files": files}, "BTCUSDT", ["2024-01", "2024-02"])
 
 
 class RuntimeVariantPaperTests(unittest.TestCase):

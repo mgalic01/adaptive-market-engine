@@ -191,8 +191,10 @@ variant's fields are named after it). Notes on each:
   and F no longer blocking), it is ordinary unpaired inventory. At the end of a run a held
   fragment is reported as dust.
 - **G**'s funding archives may be listed in a manifest beside the klines (a `kind` of
-  `fundingRate` and no `interval`) and are checksum-verified like them. No committed
-  manifest lists any yet, so until P8's entries are added, G and C+G block every new grid.
+  `fundingRate` and no `interval`); they are checksum-verified like them, and `fetch`
+  fetches and keeps them. A G or C+G run needs BTCUSDT's archive for every evaluation
+  month and is refused without it, rather than blocking every new grid. No committed
+  manifest lists any yet, so until P8's entries are added, G and C+G cannot run.
 - **H3** relaxes the opportunity-score minimum (0.70 to 0.60) only for the decision to
   open a new grid, while the account holds no grid. A grid that exists is judged by V0's
   minimum, so a grid opened only because of H3 pauses, and drains, at its next frame scored

@@ -434,8 +434,9 @@ class VariantReport:
       the hours its gate was closed, over the evaluated minutes; and the lag from each
       settlement to the first evaluated minute that used it.
     * H: the evaluated bars by phase, by the rule in force and with the ATH unavailable,
-      and the grids opened only because of H3, with their P&L: total equity from opening
-      until the grid ended or was replaced (or the run ended).
+      each as at the bar's last quote, and the grids opened only because of H3, with their
+      P&L: total equity from opening until the grid ended or was replaced (or the run
+      ended).
     """
 
     def __init__(self, policy: SimulationPolicy, funding: Sequence[FundingRecord]) -> None:
@@ -463,9 +464,9 @@ class VariantReport:
         self.h3_grids, self.h3_pnl = 0, ZERO
         self.h3_opened_at: Decimal | None = None  # total equity when the H3 grid opened
 
-    def bar(self, open_ms: int, funding_blocks: bool | None, cycle: CycleSignal | None) -> None:
+    def bar(self, open_ms: int, funding_blocks: bool | None) -> None:
         """One evaluated minute, before its quotes: G's gate and the settlements it
-        uses from this minute on, and H's ATH."""
+        uses from this minute on."""
         if self.gate:
             self.closed_minutes += int(funding_blocks is not False)
             if self.applied is None:  # those usable before the first minute act before it
@@ -473,8 +474,6 @@ class VariantReport:
             count = bisect_right(self.usable_ms, open_ms)
             self.lags_ms += [open_ms - calc for calc in self.calc_ms[self.applied : count]]
             self.applied = count
-        if self.cycle and cycle is not None:
-            self.no_ath += int(cycle.discounted is None)
 
     def frame(
         self,
@@ -546,11 +545,14 @@ class VariantReport:
             if not account.range_exit:
                 self.exit_bid = None
 
-    def bar_end(self, report: dict[str, Any]) -> None:
-        """One evaluated minute, after its quotes: H's phase and rule, from its last."""
+    def bar_end(self, report: dict[str, Any], cycle: CycleSignal | None) -> None:
+        """One evaluated minute, after its quotes: H's phase, rule and ATH, from its last
+        quote's report and signal."""
         if self.cycle and "cycle" in report:
             self.phases[str(report["cycle"]["phase"])] += 1
             self.rules[str(report["cycle"]["rule"])] += 1
+        if self.cycle and cycle is not None:
+            self.no_ath += int(cycle.discounted is None)
 
     def fields(self, last: Quote | None, equity: Decimal) -> dict[str, Any]:
         """The row fields, counting an extension or an H3 grid the run ended in up to its
@@ -681,17 +683,21 @@ def replay(
         epoch = f"{run.symbol}/{kline.open_ms}"
         # Variant A: the state from the last daily bar closed at this minute's start.
         trend = schedule.at(kline.open_ms) if schedule is not None else None
-        # Variants F, G and H likewise read only what was complete, or usable, at this
+        # Variants F and G likewise read only what was complete, or usable, at this
         # minute's start, for all four quotes: F the 15 bars before it, G the funding
-        # records (one usable within the minute counts from the next), H the last daily
-        # bar closed.
+        # records (one usable within the minute counts from the next).
         share = taker_buy_share(flow, kline.open_ms) if flow is not None else None
         funding_blocks = gate.state(kline.open_ms).blocks if gate is not None else None
-        cycle = cycle_schedule.at(kline.open_ms) if cycle_schedule is not None else None
         if reported is not None:
-            reported.bar(kline.open_ms, funding_blocks, cycle)
+            reported.bar(kline.open_ms, funding_blocks)
         report: dict[str, Any] = {}
-        for quote in bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size):
+        cycle: CycleSignal | None = None
+        quotes = bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size)
+        for quote, offset in zip(quotes, POINT_OFFSETS_S, strict=True):
+            # Variant H: the last daily bar closed at the quote's own instant, so a halving
+            # within the minute counts from the first quote after it.
+            if cycle_schedule is not None:
+                cycle = cycle_schedule.at(kline.open_ms + offset * 1000)
             # Depth is re-bounded before every quote from the account at that moment.
             depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
             candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)
@@ -765,7 +771,7 @@ def replay(
         if report.get("reason"):
             metrics.reasons[reason_key(str(report["decision"]), str(report["reason"]))] += 1
         if reported is not None:
-            reported.bar_end(report)
+            reported.bar_end(report, cycle)
         total = metrics.final_equity
         if account.inventory > ZERO:
             metrics.bars_with_inventory += 1
@@ -860,18 +866,32 @@ def load_daily(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kl
     return load_candles(data_dir, manifest, symbol, "1d")
 
 
-def load_funding(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[FundingRecord]:
-    """Variant G's history: the records of every monthly funding archive of the perpetual
-    ``symbol`` the manifest lists as present (spec v1 P8), whose checksums
-    ``verify_dataset`` checks before any replay. A month without one is a gap, which
-    leaves G unavailable there; a manifest without any (every committed one until P8's
-    entries are added) leaves it unavailable throughout, so G then blocks every new grid."""
-    return [
-        record
+def load_funding(
+    data_dir: Path, manifest: dict[str, Any], symbol: str, months: Iterable[str]
+) -> list[FundingRecord]:
+    """Variant G's history: the records of the perpetual ``symbol``'s monthly funding
+    archives the manifest lists as present (spec v1 P8), whose checksums
+    ``verify_dataset`` checks before any replay.
+
+    Every one of ``months``, the run's evaluation months, needs its archive: without
+    one, G would block every new grid that month whatever the funding was, a result
+    that says nothing about funding, so the run is refused instead. Every committed
+    manifest lacks them until P8's entries are added."""
+    present = [
+        entry["month"]
         for entry in manifest["files"]
         if is_funding(entry) and entry["symbol"] == symbol and entry["status"] == "ok"
+    ]
+    if absent := [month for month in months if month not in present]:
+        raise ValueError(
+            f"variant G needs {symbol}'s funding archive for every evaluation month in the "
+            f"manifest (spec v1 P8); it lists none for {', '.join(absent)}"
+        )
+    return [
+        record
+        for month in present
         for record in read_funding_archive(
-            funding_local_path(data_dir, symbol, entry["month"]), symbol, entry["month"]
+            funding_local_path(data_dir, symbol, month), symbol, month
         )
     ]
 
