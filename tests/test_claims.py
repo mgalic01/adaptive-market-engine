@@ -404,6 +404,133 @@ class TargetTest(unittest.TestCase):
             for cmd in ("# <<EOF\ngh pr merge 5\nEOF", "echo hi # <<EOF\ngh pr merge 5"):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a body piped into a shell runs; an arithmetic shift is
+            # no here-document.
+            for cmd in (
+                "cat <<'EOF' | bash\ngh pr merge 5\nEOF",
+                "cat <<EOF | sh -s\ngh pr merge 5\nEOF",
+                "((x << 1))\ngh pr merge 5",
+                "echo $((x << 2))\ngh pr merge 5",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a sourced body runs; an interpreter's body can send
+            # an API merge, and may run more than the scan reads, so its merge word is
+            # refused as well.
+            for cmd in (
+                "source /dev/stdin <<'EOF'\ngh pr merge 5\nEOF",
+                ". /dev/stdin <<'EOF'\ngh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            api = f"https://api.github.com/repos/{REPO}/pulls/5/merge"
+            put = (
+                f"python3 - <<'EOF'\nimport urllib.request as r\n"
+                f"r.urlopen(r.Request('{api}', method='PUT'))\nEOF"
+            )
+            self.assertCountEqual(self.prs(put), [5, None])
+            # Codex review of #159: the legacy `$[...]` is arithmetic too, nested brackets
+            # included.
+            for cmd in ("x=$[x << END ]\ngh pr merge 5", "x=$[a[1] << 2]\ngh pr merge 5"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a reader inside a command substitution still runs the
+            # body; a quoted pipe is no pipeline.
+            self.assertEqual(self.prs("x=$(bash <<'EOF'\ngh pr merge 5\nEOF\n)"), [5])
+            self.assertEqual(find_targets("echo '| bash' <<'EOF'\ngh pr merge 5\nEOF", "."), [])
+            # Codex review of #159: a reader not known to read data runs the body, whatever
+            # shell it is, and one not known to be a shell may run more than the scan
+            # reads, so its merge word is refused too; data readers and gh's own data
+            # stay data.
+            for cmd in (
+                "ash <<'EOF'\ngh pr merge 5\nEOF",
+                "busybox sh <<'EOF'\ngh pr merge 5\nEOF",
+                "ssh host <<'EOF'\ngh pr merge 5\nEOF",
+                "cat <<'EOF' | mksh\ngh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertCountEqual(self.prs(cmd), [5, None])
+            for cmd in (
+                "git commit -F - <<'EOF'\nfix: then gh pr merge 5\nEOF",
+                "gh pr comment 7 -F - <<'EOF'\nplease gh pr merge 5\nEOF",
+                "cat <<'EOF' | grep merge\ngh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+            mutation = "gh api graphql -F query=@- <<'EOF'\nmutation { mergePullRequest }\nEOF"
+            self.assertEqual([t.kind for t in find_targets(mutation, ".")], ["merge"])
+            # Codex review of #159: an interpreter can run anything it reads.
+            run = (
+                "python3 - <<'EOF'\nimport subprocess\n"
+                "subprocess.run(['gh', 'pr', 'merge', '5'])\nEOF"
+            )
+            self.assertIn("merge", [t.kind for t in find_targets(run, ".") if t.unknown])
+            self.assertEqual(find_targets("node - <<'EOF'\nconsole.log(1)\nEOF", "."), [])
+            # Codex review of #159: awk, sed and editors can run commands too; a shell's
+            # input is read exactly, so its echoed words are not refused.
+            for cmd in (
+                "awk -f - <<'EOF'\nBEGIN { system(\"gh pr merge 5\") }\nEOF",
+                "sed -f - x <<'EOF'\n1e gh pr merge 5\nEOF",
+                "vim -es <<'EOF'\n!gh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    unknown = [t.kind for t in find_targets(cmd, ".") if t.unknown]
+                    self.assertEqual(unknown, ["merge"])
+            # A merge the scan reads does not hide one it cannot (`system()` here).
+            hidden = "awk -f - <<'EOF'\nBEGIN { system(\"gh pr merge 5\") }\ngh pr merge 6\nEOF"
+            self.assertCountEqual(self.prs(hidden), [6, None])
+            self.assertEqual(find_targets("bash <<'EOF'\necho merge later\nEOF", "."), [])
+            # Codex review of #159: what a group prints goes to the command around it.
+            for cmd in (
+                "bash < <(cat <<'EOF'\ngh pr merge 5\nEOF\n)",
+                "eval $(cat <<'EOF'\ngh pr merge 5\nEOF\n)",
+                "(cat <<'EOF') | bash\ngh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertIn(5, self.prs(cmd))
+            for cmd in (
+                "x=$(cat <<'EOF'\ngh pr merge 5\nEOF\n)",
+                "(cat <<'EOF') > notes.md\ngh pr merge 5\nEOF",
+                "git commit -q -F - <<'EOF'\nfix: then gh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+            # Codex review of #159: a group closed before the `<<` is an argument of its
+            # stage, a stage before the `<<` never sees the body, and `|&` is a pipe.
+            self.assertEqual(self.prs("bash -s -- <(echo arg) <<'EOF'\ngh pr merge 5\nEOF"), [5])
+            self.assertEqual(self.prs("bash <(cat x | grep y) <<'EOF'\ngh pr merge 5\nEOF"), [5])
+            self.assertEqual(self.prs("cat <<'EOF' |& bash\ngh pr merge 5\nEOF"), [5])
+            self.assertEqual(
+                find_targets("bash -c true | cat <<'EOF'\ngh pr merge 5\nEOF", "."), []
+            )
+            # Codex review of #159: git reads its input as data only in its data commands
+            # and with no setting, which can name a command to run.
+            for cmd in (
+                "git -c alias.x='!sh' x <<'EOF'\ngh pr merge 5\nEOF",
+                "git -c core.editor=vi commit <<'EOF'\ngh pr merge 5\nEOF",
+                "git x <<'EOF'\ngh pr merge 5\nEOF",
+                # Codex review of #159: an environment, an editor and ed can run it too.
+                "GIT_EDITOR='sh -s' git commit <<'EOF'\ngh pr merge 5\nEOF",
+                "git commit <<'EOF'\ngh pr merge 5\nEOF",
+                "git commit -F - -e <<'EOF'\ngh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertCountEqual(self.prs(cmd), [5, None])
+            ed = "patch -e x <<'EOF'\n!gh pr merge 5\nEOF"
+            self.assertIn("merge", [t.kind for t in find_targets(ed, ".") if t.unknown])
+            # Codex review of #159: a function body's opener is not the reader.
+            for cmd in (
+                "f(){ bash <<'EOF'\ngh pr merge 5\nEOF\n}; f",
+                "f() { bash <<'EOF'\ngh pr merge 5\nEOF\n}",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: an argument named like a shell is not the reader.
+            self.assertEqual(find_targets("echo bash <<'EOF'\n(gh pr merge 5)\nEOF", "."), [])
+            # Codex review of #159: a shell elsewhere on the line is not this body's reader.
+            self.assertEqual(
+                find_targets("bash -c true; cat <<'EOF'\n(gh pr merge 5)\nEOF", "."), []
+            )
             # Codex review of #159: a quoted reader name is still the shell that runs it.
             self.assertEqual(self.prs("/bin/'bash' <<'EOF'\ngh pr merge 5\nEOF"), [5])
             # Codex review of #159: two bodies on one line, read in order.
@@ -447,6 +574,178 @@ class TargetTest(unittest.TestCase):
                         [(t.pr, t.unknown) for t in find_targets(cmd, ".")], [(5, None)]
                     )
 
+    def test_git_global_options_with_values(self):
+        # Codex review of #159: the option's value is not the subcommand.
+        with git_stub():
+            for cmd in (
+                "git --git-dir .git push origin claude/a",
+                "git --work-tree . --namespace ns push origin claude/a",
+                "git --git-dir=.git push origin claude/a",
+                "git -c core.pager=cat --config-env x=Y push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+
+    def test_the_repository_selected_by_git_dir_is_checked(self):
+        # Codex review of #159: a push into this repository from another directory.
+        def fake(cwd, *args):
+            ours = "other" not in Path(cwd).as_posix()
+            if args[:2] == ("remote", "get-url"):
+                return f"https://github.com/{REPO}.git" if ours else "https://x/other.git"
+            return "claude/x" if args[:2] == ("rev-parse", "--abbrev-ref") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            for cmd in (
+                "cd /tmp/other && git --git-dir /work/repo/.git push origin claude/a",
+                "cd /tmp/other && git --git-dir=/work/repo/.git push origin claude/a",
+                "cd /tmp/other && GIT_DIR=/work/repo/.git git push origin claude/a",
+                "cd /tmp/other && env GIT_DIR=/work/repo/.git git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    targets = find_targets(cmd, ".")
+                    self.assertEqual([t.branch for t in targets], ["claude/a"])
+            # The other repository's own push is not this repository's.
+            self.assertEqual(find_targets("cd /tmp/other && git push origin claude/a", "."), [])
+
+    def test_env_chdir_selects_the_repository(self):
+        # Codex review of #159: env -C runs the push in this repository.
+        def fake(cwd, *args):
+            ours = "other" not in Path(cwd).as_posix()
+            if args[:2] == ("remote", "get-url"):
+                return f"https://github.com/{REPO}.git" if ours else "https://x/other.git"
+            return "claude/x" if args[:2] == ("rev-parse", "--abbrev-ref") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            for cmd in (
+                "cd /tmp/other && env -C /work/repo git push origin claude/a",
+                "cd /tmp/other && env --chdir=/work/repo git push origin claude/a",
+                "cd /tmp/other && env -u HOME -C /work/repo git push origin claude/a",
+                # Codex review of #159: the directory reaches a shell's commands, and a
+                # bundle of flags can end in -C.
+                "cd /tmp/other && env -C /work/repo bash -c 'git push origin claude/a'",
+                "cd /tmp/other && env -C /work/repo bash <<'EOF'\ngit push origin claude/a\nEOF",
+                "cd /tmp/other && env -iC /work/repo git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual([t.branch for t in find_targets(cmd, ".")], ["claude/a"])
+
+    def test_each_wrapper_consumes_its_own_value_options(self):
+        # Codex review of #159: sudo's values, and `time -p`, which takes none.
+        with git_stub():
+            for cmd in (
+                "sudo --user root git push origin claude/a",
+                "sudo -g wheel -u root git push origin claude/a",
+                "sudo -S -u root git push origin claude/a",
+                "time -p git push origin claude/a",
+                "doas -u root git push origin claude/a",
+                # Codex review of #159: a bundle of flags ending in one that takes a value.
+                "sudo -Eu root git push origin claude/a",
+                "doas -nu root git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+
+        def fake(cwd, *args):
+            ours = "other" not in Path(cwd).as_posix()
+            if args[:2] == ("remote", "get-url"):
+                return f"https://github.com/{REPO}.git" if ours else "https://x/other.git"
+            return "claude/x" if args[:2] == ("rev-parse", "--abbrev-ref") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            for cmd in (
+                "cd /tmp/other && sudo -D /work/repo git push origin claude/a",
+                "cd /tmp/other && sudo --chdir=/work/repo git push origin claude/a",
+                "cd /tmp/other && sudo -u root env -C /work/repo git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual([t.branch for t in find_targets(cmd, ".")], ["claude/a"])
+
+    def test_git_aliases_that_push_are_checked(self):
+        # Codex review of #159: an alias, given with -c or configured, runs a push.
+        calls = []
+
+        def fake(cwd, *args):
+            calls.append(args)
+            if args == ("config", "--get", "alias.p"):
+                return "push"
+            if args == ("config", "--get", "alias.pp"):
+                return "p --force"  # an alias of an alias
+            if args[:2] == ("remote", "get-url"):
+                return f"https://github.com/{REPO}.git"
+            return "claude/x" if args[:2] == ("rev-parse", "--abbrev-ref") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            for cmd in (
+                "git -c alias.q=push q origin claude/a",
+                "git p origin claude/a",
+                "git pp origin claude/a",
+                "git -c 'alias.r=!git push origin claude/a' r",
+                "git send-pack origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual([t.branch for t in find_targets(cmd, ".")], ["claude/a"])
+            calls.clear()
+            self.assertEqual(find_targets("git status && git log -1", "."), [])
+            self.assertFalse([c for c in calls if c[:1] == ("config",)])  # builtins: no lookup
+
+    def test_api_merges_count_only_from_clients_that_send_them(self):
+        # Codex review of #159: a command that only names the API merges nothing.
+        url = f"https://api.github.com/repos/{REPO}/pulls/5/merge"
+        with git_stub():
+            for cmd in ("echo mergePullRequest", f"printf '%s\\n' {url}"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+            for cmd in (
+                f"curl -X PUT {url}",
+                f"sudo curl -X PUT {url}",
+                f"Invoke-RestMethod -Method Put -Uri {url}",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual([t.pr for t in find_targets(cmd, ".")], [5])
+            # Codex review of #159: a versioned interpreter is still one, and its code
+            # may run more than the scan reads, so its merge word counts as unknown too.
+            for cmd in (
+                f"python3.12 -c \"Request('{url}', method='PUT')\"",
+                f"ruby3.2 -e 'put(\"{url}\")'",
+                f"perl5.36 -e 'put(q({url}))'",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertCountEqual([t.pr for t in find_targets(cmd, ".")], [5, None])
+
+    def test_code_a_shell_or_an_interpreter_reads_at_run_time(self):
+        # Codex review of #159: a here-string, an interpreter's inline program and a
+        # shell's standard input are code known only at run time.
+        with git_stub():
+            for cmd in (
+                "bash <<< 'gh pr merge 5'",
+                "bash -s <<< 'gh pr merge 5'",
+                "echo 'gh pr merge 5' | bash",
+                "printf 'gh pr merge 5\\n' | sh -s x",
+                "bash <(echo 'gh pr merge 5')",
+                "source <(echo gh pr merge 5)",
+                ". <(echo gh pr merge 5)",
+                "echo 'gh pr merge 5' | source /dev/stdin",
+                'python3 -c \'import subprocess; subprocess.run(["gh", "pr", "merge", "5"])\'',
+                "echo 'import os; os.system(\"gh pr merge 5\")' | python3",
+                "python3 <<< 'import os; os.system(\"gh pr merge 5\")'",
+                'node -e \'require("child_process").execSync("gh pr merge 5")\'',
+                'deno eval \'Deno.run({cmd: ["gh", "pr", "merge", "5"]})\'',
+            ):
+                with self.subTest(cmd=cmd):
+                    found = find_targets(cmd, ".", posix=True)
+                    self.assertIn("merge", [t.kind for t in found if t.unknown])
+            # A script's name is not its code, a module's flags are not code, and a
+            # shell reading a here-document reads it on its own.
+            for cmd in (
+                "bash scripts/preflight.sh && gh pr merge 5",
+                "python scripts/preflight.py && gh pr merge 5",
+                "python -m pytest -k merge",
+                ". .venv/bin/activate && gh pr merge 5",
+                "cat <<'EOF' | bash\necho hi\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertFalse(any(t.unknown for t in find_targets(cmd, ".", posix=True)))
+
     def test_case_arms_and_function_bodies_are_read(self):
         # Codex review of #159: the command follows a case pattern or a function's name.
         with git_stub():
@@ -463,6 +762,32 @@ class TargetTest(unittest.TestCase):
                 self.branches("case $b in (main|dev) git push origin claude/a;; esac"),
                 ["claude/a"],
             )
+
+    def test_subshells_and_process_substitutions_are_read(self):
+        # Codex review of #159: bash runs what the parentheses hold.
+        with git_stub():
+            for cmd in ("(gh pr merge 5)", "cat <(gh pr merge 5)", "tee >(gh pr merge 5) < x"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            for cmd in (
+                "if true; then (git push origin claude/a); fi",
+                "diff <(git show HEAD) <(git push origin claude/a)",
+                "sudo -R / git push origin claude/a",
+                "sudo --chroot / git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+            # A command substitution is still read once, by substitutions().
+            self.assertEqual(self.prs("echo $(gh pr merge 5)"), [5])
+
+    def test_launchers_run_commands_known_only_at_run_time(self):
+        # Codex review of #159: xargs supplies the PR or branch when it runs.
+        with git_stub():
+            merge = find_targets("printf '5\\n' | xargs gh pr merge", ".")
+            self.assertEqual([(t.kind, bool(t.unknown)) for t in merge], [("merge", True)])
+            push = find_targets("git branch | xargs -I{} git push origin {}", ".")
+            self.assertEqual([(t.kind, bool(t.unknown)) for t in push], [("push", True)])
+            self.assertEqual(find_targets("find . -name '*.py' -print", "."), [])
 
     def test_a_lone_ampersand_ends_a_command(self):
         # Codex review of #159: the shell runs both commands. A redirection is no separator,
@@ -724,6 +1049,38 @@ class HookTest(unittest.TestCase):
                     self.assertIsNone(hook_decision(self.payload(command, tool), own, NOW))
                     free = self.reader([], prs)
                     self.assertIsNone(hook_decision(self.payload(command, tool), free, NOW))
+
+    def test_a_git_alias_line_is_read_although_it_never_says_push(self):
+        # Codex review of #159: the hook's pre-filter let `git p` through unread.
+        prs = [{"number": 141, "head": {"ref": "claude/a", "repo": {"full_name": REPO}}}]
+
+        def fake(cwd, *args):
+            if args == ("config", "--get", "alias.p"):
+                return "push"
+            return f"https://github.com/{REPO}.git" if args[:2] == ("remote", "get-url") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            out = hook_decision(
+                self.payload("git p origin claude/a"), self.reader([claim(tag="Bob")], prs), NOW
+            )
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_the_pre_filter_ignores_case(self):
+        # Codex review of #159: PowerShell runs `Git p` as git.
+        prs = [{"number": 141, "head": {"ref": "claude/a", "repo": {"full_name": REPO}}}]
+
+        def fake(cwd, *args):
+            if args == ("config", "--get", "alias.p"):
+                return "push"
+            return f"https://github.com/{REPO}.git" if args[:2] == ("remote", "get-url") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            out = hook_decision(
+                self.payload("Git p origin claude/a", tool="PowerShell"),
+                self.reader([claim(tag="Bob")], prs),
+                NOW,
+            )
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_github_reporting_another_case_is_still_this_repo(self):
         mixed = {"full_name": "MGalic01/Adaptive-Market-Engine"}

@@ -71,18 +71,25 @@ GRID_BUDGET_FRACTION = D("0.8")
 # account carries the halt's start and category, the episode and the C1(b) reference.
 # Schema 1-5 databases are refused: their halts were final and their state lacks these
 # fields.
-# 7 (2026-10-04, strategy audit #160): V2 market structure is a policy flag, off by
-# default. Code between #150/#151 and this change ran every account with structure on
-# (the six-signal regime vote and the FTA cap) under the same schema-6 identity as the
-# V0 accounts before it, so a schema-6 database cannot say which semantics produced
+# 7 (2026-10-05, code audit #159): the journal records each fill's remaining quantity
+# and lists an order that filled in part and was then cancelled on the same frame as
+# cancelled; a flat frame's no-op settlement is neither counted nor journaled. A
+# schema-6 database holds events in the old shape, so it is refused rather than
+# continued under the new one (Codex review of #159).
+# 8 (2026-10-05, strategy audit #160): V2 market structure is a policy flag, off by
+# default. Code from #150/#151 up to this change, schema 7 included, ran every account
+# with structure on (the six-signal regime vote and the FTA cap) under the same identity
+# as the V0 accounts before it, so such a database cannot say which semantics produced
 # its history; it is refused rather than reopened under either (Codex review of #160).
-# 8 (2026-10-05, engine "drawdown-recovery-v2", owner decisions of 2026-10-02): a soft
+# 9 (2026-10-05, engine "drawdown-recovery-v2", owner decisions of 2026-10-02): a soft
 # episode already back under the soft limit when its rebase falls due closes without one
 # (D7); a flat account with no orders and no range exit pending clears its grid bounds
 # and outside-range clock (amendment 2); the clock stands still while halted (amendment
-# 3). Schema-7 accounts ran without these rules, so a saved reference, bounds or clock may
-# hold what they forbid; such a database is refused rather than reopened under them.
-SCHEMA = 8
+# 3); and the risk limits compare the balances exactly, so an equity exactly on a limit
+# is on it (moved here from #159, Codex review). Schema-8 accounts ran without these
+# rules, so a saved reference, bounds or clock may hold what they forbid; such a
+# database is refused rather than reopened under them.
+SCHEMA = 9
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"

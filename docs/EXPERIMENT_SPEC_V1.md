@@ -103,16 +103,20 @@ common to all:
   cadence (P2).
 - **Versions (amendment 1 and the owner's decisions of 2026-10-02).** "V0" means the
   amended V0: the drawdown recovery of amendment 1 below, with D7 in its step 3, and
-  amendments 2 and 3. It runs on engine `drawdown-recovery-v2` and paper schema 8, which
-  refuses schemas 1–7, because these changes move replay results and the meaning of saved
-  state (`replay.py`'s bump rule; `PAPER_SIMULATION.md`). Each earlier V0 keeps its
+  amendments 2 and 3. It runs on engine `drawdown-recovery-v2` and paper schema 9, which
+  refuses schemas 1–8, because these changes move replay results and the meaning of saved
+  state (`replay.py`'s bump rule; `PAPER_SIMULATION.md`). The same engine version has the
+  risk engine compare the 3%, 8% and 12% limits with the exact balances, not through
+  floats (moved here from #159). Each earlier V0 keeps its
   results and is a registered trial (the
   [coherence record](reviews/2026-09-27-claude-dsr-coherence.md) §3, which superseded
   part 2's count): the pre-amendment V0 (drawdown lockout), whose published results
   (`docs/backtests/verify-2024h1.md` and `fee-levels-2026-09.md`) predate
   `engine_version` and will be labelled pre-amendment when amended results are published
   beside them; and V0 on `drawdown-recovery-v1` (amendment 1 alone, schema 6, assigned
-  2026-09-28), the "fixed V0" of the owner's 2026-09-27 decision and the one extra trial
+  2026-09-28; the code audit's journal correction, schema 7, #159, and the strategy
+  audit's structure flag, schema 8, #160, kept that engine and moved no V0 replay
+  result), the "fixed V0" of the owner's 2026-09-27 decision and the one extra trial
   the coherence record counts, whose results are labelled pre-amendment-2. V0 on
   `drawdown-recovery-v2` is one further registered trial (amendment 2), which C7's
   `N_family` includes. `exit-residue-v1` names the exit fix alone (PR #122); no V0
@@ -145,7 +149,7 @@ feeds the meta-strategy calibration; an inflated count produces the wrong signal
 **Engine impact.** No trading behaviour changes. The reported `range_exits` count
 decreases on runs with halts. Requires an engine version bump so existing results are
 correctly labelled pre-amendment-3 (assigned, together with amendment 2 and D7: engine
-`drawdown-recovery-v2`, paper schema 8). No reruns of already-valid results are required
+`drawdown-recovery-v2`, paper schema 9). No reruns of already-valid results are required
 unless the corrected count would change a C4 verdict (it cannot — C4 is an integrity
 check, not a range-exit threshold).
 
@@ -176,7 +180,7 @@ no range was actually exited.
 **Engine impact.** This changes V0 results (fewer idle periods, more grids on choppy
 windows). It requires an engine version bump and a schema bump if the cleared state
 differs from what an existing persisted account holds (assigned, together with
-amendment 3 and D7: engine `drawdown-recovery-v2`, paper schema 8). All V0 results
+amendment 3 and D7: engine `drawdown-recovery-v2`, paper schema 9). All V0 results
 produced before this amendment are labelled pre-amendment-2 and stay published for
 reference. This amendment is counted as one further registered trial in `N_family` (C7).
 

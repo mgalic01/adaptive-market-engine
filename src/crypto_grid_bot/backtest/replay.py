@@ -704,7 +704,8 @@ VOLUME_DRIFT_TOLERANCE = Decimal("0.001")
 #   soft-drawdown episode already back under the soft limit when its rebase falls due
 #   closes without one; amendment 2 (D15), a flat account with no orders and no range
 #   exit pending clears its grid bounds and outside-range clock at once; amendment 3
-#   (D16), the outside-range clock stands still while halted.
+#   (D16), the outside-range clock stands still while halted; and the 3%, 8% and 12% risk
+#   limits compare the balances exactly, not through floats (moved here from #159).
 ENGINE_VERSION = "drawdown-recovery-v2"
 INTEGRITY_RULES = "drift-tolerance-v1"
 STRICT_INTEGRITY_RULES = "strict-v0"

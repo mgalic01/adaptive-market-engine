@@ -12,6 +12,7 @@ import json
 import multiprocessing
 import os
 import pickle
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,52 @@ class PoolJobReferenceTests(unittest.TestCase):
             [sys.executable, "-c", probe], capture_output=True, text=True, env=env, check=True
         )
         self.assertEqual("True", out.stdout.strip())
+
+    def test_the_identity_is_of_the_source_each_module_compiled(self):
+        # Codex review of #160: CPython's timestamp check accepts a stale .pyc for a source
+        # rewritten with the same size in the same second, and a disk read after the
+        # imports can see other sources than they did. Every module compiles from its
+        # source, the identity hashes those bytes, and a stale package root is refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp, "crypto_grid_bot")
+            shutil.copytree(
+                ROOT / "src" / "crypto_grid_bot",
+                package,
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
+            regime, init = package / "strategy" / "regime.py", package / "__init__.py"
+            regime.write_text(
+                regime.read_text(encoding="utf-8") + 'MARK = "old"\n', encoding="utf-8"
+            )
+            subprocess.run(
+                [sys.executable, "-m", "compileall", "-q", "--invalidation-mode", "timestamp", tmp],
+                check=True,
+            )
+
+            def rewrite(path, old, new):  # same size, same modification time
+                stat, text = path.stat(), path.read_text(encoding="utf-8")
+                path.write_text(text.replace(old, new), encoding="utf-8")
+                os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+            def run(probe):
+                env = {**os.environ, "PYTHONPATH": tmp}
+                return subprocess.run(
+                    [sys.executable, "-c", probe], capture_output=True, text=True, env=env
+                )
+
+            rewrite(regime, 'MARK = "old"', 'MARK = "new"')
+            probe = (
+                "import pathlib, crypto_grid_bot.backtest.jobs as j, "
+                "crypto_grid_bot.strategy.regime as r; "
+                f"p = pathlib.Path({str(regime)!r}); p.write_text(p.read_text() + '#'); "
+                "print(r.MARK, j.source_identity() == j.SOURCE_IDENTITY)"
+            )
+            out = run(probe)
+            self.assertEqual("new True", out.stdout.strip(), out.stderr)
+            rewrite(init, '"0.8.0"', '"0.8.9"')
+            out = run("import crypto_grid_bot")
+            self.assertNotEqual(0, out.returncode)
+            self.assertIn("is not the code that ran", out.stderr)
 
     def test_a_spawned_worker_can_unpickle_every_pool_job(self):
         context = multiprocessing.get_context("spawn")
