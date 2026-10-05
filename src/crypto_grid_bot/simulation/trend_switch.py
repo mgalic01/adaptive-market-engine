@@ -20,10 +20,11 @@ from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal, localcontext
+from decimal import Decimal
 from typing import Protocol
 
-from crypto_grid_bot.simulation.models import ZERO, timestamp
+from crypto_grid_bot.simulation.models import timestamp
+from crypto_grid_bot.strategy.daily_sma import DailyCloses
 
 UP = "up"
 RECOVERING = "recovering"
@@ -39,6 +40,10 @@ LONG_WINDOW = 200
 MINIMUM_DAILY_WARMUP = 200
 # Spec §3 A: the trend deadline is T0 + 24 h; further Down days do not reset it.
 DOWN_DEADLINE_SECONDS = 86_400
+# Variant A's averages are rounded to 50 digits, as they always were; the shared helper's
+# default (60) could tell a close from its average where 50 digits cannot, and so change
+# a state (Codex review of #159).
+SMA_PRECISION = 50
 _EPOCH = date(1970, 1, 1)
 
 
@@ -55,25 +60,6 @@ class DailyBar(Protocol):
 def day_of(day_number: int) -> str:
     """ISO date of the UTC day ``day_number`` days after 1970-01-01."""
     return (_EPOCH + timedelta(days=day_number)).isoformat()
-
-
-def simple_moving_average(
-    closes: Sequence[Decimal | None], end: int, window: int
-) -> Decimal | None:
-    """Mean of the ``window`` daily closes ending at index ``end`` (inclusive).
-
-    None (undefined) unless every one of those days has a close: a missing day inside
-    the window makes the average undefined rather than averaging over the gap.
-    """
-    if window <= 0 or end < 0 or end + 1 < window or end >= len(closes):
-        return None
-    values = closes[end - window + 1 : end + 1]
-    present = [value for value in values if value is not None]
-    if len(present) != window:
-        return None
-    with localcontext() as context:
-        context.prec = 50
-        return sum(present, ZERO) / window
 
 
 def next_state(
@@ -106,7 +92,10 @@ def classify_days(bars: Sequence[DailyBar]) -> list[DailyClassification]:
     SMA200 is defined. The state before that day is Middle.
 
     Every calendar day between the first and last bar is visited; a day without a bar
-    (or with a non-positive close) is missing and classifies as Unavailable.
+    (or with a non-positive close) is missing and classifies as Unavailable. The closes
+    and windows are variant D's (``strategy.daily_sma``), so both variants share one
+    rule: a missing day inside a window leaves its average undefined. The averages keep
+    variant A's own precision (``SMA_PRECISION``).
     """
     numbers: list[int] = []
     for bar in bars:
@@ -117,22 +106,18 @@ def classify_days(bars: Sequence[DailyBar]) -> list[DailyClassification]:
         raise ValueError("daily bars must be strictly increasing, each day at most once")
     if not numbers:
         return []
-    first = numbers[0]
-    closes: list[Decimal | None] = [None] * (numbers[-1] - first + 1)
-    for number, bar in zip(numbers, bars, strict=True):
-        value = bar.close
-        if not isinstance(value, Decimal) or not value.is_finite():
-            raise ValueError("daily closes must be finite Decimals")
-        closes[number - first] = value if value > ZERO else None
+    closes = DailyCloses((bar.open_ms, bar.close) for bar in bars)
     result: list[DailyClassification] = []
     state = MIDDLE
-    for index, close in enumerate(closes):
-        sma200 = simple_moving_average(closes, index, LONG_WINDOW)
+    for number in range(numbers[0], numbers[-1] + 1):
+        day_ms = number * DAY_MS
+        sma200 = closes.sma(day_ms, LONG_WINDOW, precision=SMA_PRECISION)
         if not result and sma200 is None:
             continue  # the machine starts on the first day SMA200 is defined
-        sma50 = simple_moving_average(closes, index, SHORT_WINDOW)
+        close = closes.close(day_ms)
+        sma50 = closes.sma(day_ms, SHORT_WINDOW, precision=SMA_PRECISION)
         state = next_state(state, close, sma50, sma200)
-        result.append(DailyClassification(day_of(first + index), close, sma50, sma200, state))
+        result.append(DailyClassification(day_of(number), close, sma50, sma200, state))
     return result
 
 

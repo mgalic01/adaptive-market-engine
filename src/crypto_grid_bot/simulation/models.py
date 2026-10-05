@@ -10,17 +10,19 @@ from typing import Any
 D = Decimal
 ZERO = D("0")
 ONE = D("1")
+# The largest magnitude any amount may take; built once, as it is on the hot path.
+BOUND = D("1e18")
 
 
 def decimal(value: str) -> Decimal:
     number = D(value)
-    if not number.is_finite() or abs(number) > D("1e18"):
+    if not number.is_finite() or abs(number) > BOUND:
         raise ValueError("number must be finite and bounded")
     return number
 
 
 def nonnegative(value: Decimal) -> None:
-    if not isinstance(value, Decimal) or not value.is_finite() or not ZERO <= value <= D("1e18"):
+    if not isinstance(value, Decimal) or not value.is_finite() or not ZERO <= value <= BOUND:
         raise ValueError("amount must be a finite, bounded, non-negative Decimal")
 
 
@@ -116,6 +118,23 @@ class LimitOrder:
     epoch: str | None = None
 
 
+def validate_grid_links(order: LimitOrder, rules: MarketRules, kind: str) -> None:
+    """The one rule for a grid buy's sell ``target`` and a grid sell's ``reentry`` level,
+    shared by placement (``kind`` "grid") and saved-state validation ("saved")."""
+    if order.target is not None:
+        nonnegative(order.target)
+        if order.side != "buy" or order.target <= order.price or order.target % rules.tick_size:
+            raise ValueError(f"invalid {kind} sell target")
+    if order.reentry is not None:
+        nonnegative(order.reentry)
+        if (
+            order.side != "sell"
+            or not ZERO < order.reentry < order.price
+            or order.reentry % rules.tick_size
+        ):
+            raise ValueError(f"invalid {kind} reentry level")
+
+
 @dataclass(frozen=True)
 class Fill:
     order_id: str
@@ -123,6 +142,8 @@ class Fill:
     price: Decimal
     quantity: Decimal
     fee: Decimal
+    # The order's quantity still resting after this fill; ZERO when it completed it.
+    remaining: Decimal
 
 
 # Spec v1 amendment 1: the four halt categories, set where a halt is raised, never
@@ -315,22 +336,7 @@ class Account:
                 raise ValueError("remaining quantity violates precision")
             if order.epoch is not None and (type(order.epoch) is not str or not order.epoch):
                 raise ValueError("invalid order epoch")
-            if order.target is not None:
-                nonnegative(order.target)
-                if (
-                    order.side != "buy"
-                    or order.target <= order.price
-                    or order.target % rules.tick_size
-                ):
-                    raise ValueError("invalid saved sell target")
-            if order.reentry is not None:
-                nonnegative(order.reentry)
-                if (
-                    order.side != "sell"
-                    or not ZERO < order.reentry < order.price
-                    or order.reentry % rules.tick_size
-                ):
-                    raise ValueError("invalid saved reentry level")
+            validate_grid_links(order, rules, "saved")
         if self.available_quote(rules) < ZERO or self.inventory < self.reserved_base():
             raise ValueError("account is oversubscribed or reserve is being spent")
 

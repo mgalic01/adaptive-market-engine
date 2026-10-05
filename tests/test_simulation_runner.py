@@ -6,9 +6,10 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from crypto_grid_bot.config import load_config
+from crypto_grid_bot.simulation import runner
 from crypto_grid_bot.simulation.demo import demo_frames, run_demo
 from crypto_grid_bot.simulation.models import D, MarketRules
-from crypto_grid_bot.simulation.runner import PaperSimulator
+from crypto_grid_bot.simulation.runner import PaperSimulator, SimulationPolicy
 from crypto_grid_bot.simulation.store import encode
 
 CONFIG = Path(__file__).resolve().parents[1] / "config" / "default.toml"
@@ -270,3 +271,143 @@ class SimulatorTests(TestCase):
             self.assertEqual(self.sim.process(frame), other.process(frame))
         count = self.sim.store.connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         self.assertEqual(len(self.frames), count)
+
+
+class SimcoreAuditTests(TestCase):
+    """Journal and engine fixes from the 2026-10 code audit (sim-core slice)."""
+
+    def setUp(self):
+        self.directory = TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.config = load_config(CONFIG)
+        self.rules = MarketRules()
+        self.frames = demo_frames(1)
+
+    def open(self, name="paper.db", policy=None):
+        simulator = PaperSimulator(
+            Path(self.directory.name) / name, self.config, self.rules, policy=policy
+        )
+        self.addCleanup(simulator.close)
+        return simulator
+
+    def test_an_order_partly_filled_then_cancelled_in_one_frame_is_journalled(self):
+        sim = self.open()
+        sim.process(self.frames[0])
+        top = max(
+            (o for o in sim.store.read().orders.values() if o.side == "buy"),
+            key=lambda o: o.price,
+        )
+        # The price halves inside one frame: the top buy fills only in part (400 of its
+        # quantity, the participation cap), and that fill's mark-to-market loss breaks the
+        # 3% daily-loss limit, so the risk recheck pauses and cancels the rest of the buy.
+        crash = replace(
+            self.frames[1],
+            quote=replace(
+                self.frames[1].quote,
+                bid=D("0.01143"),
+                ask=D("0.01144"),
+                bid_size=D("4000"),
+                ask_size=D("4000"),
+            ),
+        )
+        report = sim.process(crash)
+        (fill,) = report["fills"]
+        self.assertEqual((top.order_id, "400"), (fill["order_id"], fill["quantity"]))
+        self.assertEqual("pause", report["decision"])
+        self.assertIn("daily loss", report["reason"])
+        self.assertNotIn(top.order_id, sim.store.read().orders)
+        # It left the book without completing, so it is cancelled, not silently gone.
+        self.assertIn(top.order_id, report["cancelled"])
+        self.assertEqual(str(top.quantity - D("400")), fill["remaining"])
+
+    def test_a_child_order_placed_and_cleared_in_one_frame_is_journalled(self):
+        # Codex review of #159: every buy completes and places its child sell, then the
+        # fills' mark-to-market loss breaks the 12% hard drawdown and the halt clears
+        # the book. The children left it without completing, so they are cancelled.
+        sim = self.open()
+        sim.process(self.frames[0])
+        crash = replace(
+            self.frames[1],
+            quote=replace(
+                self.frames[1].quote,
+                bid=D("0.0180"),
+                ask=D("0.01801"),
+                bid_size=D("100000000"),
+                ask_size=D("100000000"),
+            ),
+        )
+        report = sim.process(crash)
+        self.assertEqual("halt", report["decision"])
+        buys = [f["order_id"] for f in report["fills"] if f["remaining"] == "0"]
+        self.assertEqual(4, len(buys))
+        self.assertEqual({}, sim.store.read().orders)
+        self.assertEqual(sorted(b + "/sell" for b in buys), report["cancelled"])
+
+    def test_a_completed_order_is_never_listed_as_cancelled(self):
+        sim = self.open()
+        sim.process(self.frames[0])
+        report = sim.process(self.frames[2])  # deep enough for every buy to fill whole
+        completed = {f["order_id"] for f in report["fills"] if f["remaining"] == "0"}
+        self.assertTrue(completed)
+        self.assertFalse(completed & set(report["cancelled"]))
+
+    def test_a_capped_run_journals_capped_on_rejected_frames_too(self):
+        sim = self.open(policy=SimulationPolicy(inventory_cap=D("0.5")))
+        self.assertIn("capped", sim.process(self.frames[0]))
+        stale = replace(
+            self.frames[1],
+            quote=replace(self.frames[1].quote, received_at="2026-01-01T00:02:00+00:00"),
+        )
+        report = sim.process(stale)
+        self.assertEqual("pause", report["decision"])
+        self.assertEqual([], report.get("capped", "absent"))
+        invalid = replace(
+            self.frames[2], candidate=replace(self.frames[2].candidate, symbol="OTHERUSDT")
+        )
+        report = sim.process(invalid)
+        self.assertEqual("halt", report["decision"])
+        self.assertEqual([], report.get("capped", "absent"))
+        # V0 keeps its journal layout: no key at all.
+        self.assertNotIn("capped", self.open("v0.db").process(self.frames[0]))
+
+    def test_a_refused_reentry_reaches_the_step_report(self):
+        sim = self.open()
+        sim.process(self.frames[0])
+        real = runner.match
+        record = {"order_id": "x/reentry/1", "price": D("0.022"), "quantity": D("1")}
+
+        def refusing(*args, **kwargs):
+            fills = real(*args, **kwargs)
+            kwargs["refused"].append(record | {"reason": "order is below minimum notional"})
+            return fills
+
+        with patch("crypto_grid_bot.simulation.runner.match", side_effect=refusing):
+            report = sim.process(self.frames[1])
+        self.assertEqual(
+            [
+                {
+                    **record,
+                    "price": "0.022",
+                    "quantity": "1",
+                    "reason": "order is below minimum notional",
+                }
+            ],
+            report["reentry_refused"],
+        )
+        self.assertNotIn("reentry_refused", sim.process(self.frames[2]))
+
+    def test_a_flat_account_waiting_in_cash_settles_nothing(self):
+        # Too little capital for a grid: every frame is a flat harvest point that used to
+        # run a full no-op settlement, count it and journal an empty allocation.
+        sim = PaperSimulator(
+            Path(self.directory.name) / "small.db", self.config, self.rules, D("10")
+        )
+        self.addCleanup(sim.close)
+        for frame in demo_frames(2):
+            report = sim.process(frame)
+            self.assertIn(report["decision"], ("cash", "hold"))
+            self.assertIsNone(report["allocation"])
+        state = sim.store.read()
+        self.assertEqual(
+            (0, D("10"), D("10")), (state.settlement_count, state.day_start, state.cash)
+        )

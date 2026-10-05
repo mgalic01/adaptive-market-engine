@@ -83,6 +83,57 @@ class PoolJobReferenceTests(unittest.TestCase):
         self.assertEqual({"cross_check_job", "run_job"}, names)
 
 
+class Timeline:
+    """Stand-in pool that logs, in order, each submission and each wait on a result."""
+
+    events: list = []
+
+    def __init__(self, max_workers):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, fn, *args):
+        self.events.append(("submit", args[2]))
+        return Logged(self.events, args[2], {"symbol": args[2], **CLEAN})
+
+
+class Logged:
+    def __init__(self, events, symbol, value):
+        self.events, self.symbol, self.value = events, symbol, value
+
+    def result(self):
+        self.events.append(("result", self.symbol))
+        return self.value
+
+
+class CrossCheckParallelismTests(unittest.TestCase):
+    def test_every_cross_check_is_submitted_before_any_result_is_awaited(self):
+        # Awaiting each check inside the submit loop ran them one at a time on the pool.
+        Timeline.events = []
+        patches = [
+            patch.object(cli, "ProcessPoolExecutor", Timeline),
+            patch.object(cli, "load_manifest", lambda path: {"created_at": "t"}),
+            patch.object(cli, "verify_dataset", lambda *a: None),
+        ]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(0, cli.main(["verify", "--spec", SPEC]))
+        symbols = cli.checked_symbols(load_spec(Path(SPEC)))
+        self.assertGreater(len(symbols), 1)
+        expected = [("submit", s) for s in symbols] + [("result", s) for s in symbols]
+        self.assertEqual(expected, Timeline.events)
+        # Results are still reported in the symbols' order.
+        self.assertEqual(symbols, [c["symbol"] for c in json.loads(out.getvalue())["checks"]])
+
+
 # Runs the package exactly as ``python -m`` does, with spawn forced on every platform.
 DRIVER = """
 import multiprocessing, runpy

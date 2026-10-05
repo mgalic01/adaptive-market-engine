@@ -28,17 +28,16 @@ class RiskEngine:
     def evaluate(self, portfolio: PortfolioSnapshot) -> RiskDecision:
         equities = (portfolio.active_equity, portfolio.day_start_equity, portfolio.high_water_mark)
         if any(not isfinite(value) or value < 0 for value in equities) or min(equities[1:]) <= 0:
-            return RiskDecision(RiskAction.PAUSE, 0.0, ("invalid portfolio equity",))
+            return RiskDecision(RiskAction.PAUSE, ("invalid portfolio equity",))
         if not portfolio.balances_reconciled or not portfolio.orders_reconciled:
             return RiskDecision(
                 RiskAction.PAUSE,
-                0.0,
                 ("exchange balances or orders are not reconciled",),
             )
         if not 0 <= portfolio.data_age_seconds <= self._maximum_data_age_seconds:
-            return RiskDecision(RiskAction.PAUSE, 0.0, ("market data age is invalid or stale",))
+            return RiskDecision(RiskAction.PAUSE, ("market data age is invalid or stale",))
         if portfolio.emergency:
-            return RiskDecision(RiskAction.EXIT, 0.0, ("emergency flag is active",))
+            return RiskDecision(RiskAction.EXIT, ("emergency flag is active",))
 
         daily_loss = max(
             0.0,
@@ -51,19 +50,18 @@ class RiskEngine:
         if drawdown >= self._hard_drawdown_pct:
             return RiskDecision(
                 RiskAction.EXIT,
-                0.0,
                 (f"hard drawdown reached: {drawdown:.2%}",),
             )
         if daily_loss >= self._daily_loss_pause_pct:
             return RiskDecision(
                 RiskAction.PAUSE,
-                0.0,
                 (f"daily loss limit reached: {daily_loss:.2%}",),
             )
         if drawdown >= self._soft_drawdown_pct:
+            # No sizing: the paper engine answers REDUCE with pause and drain (spec v1
+            # amendment 1).
             return RiskDecision(
                 RiskAction.REDUCE,
-                0.25,
                 (f"soft drawdown reached: {drawdown:.2%}",),
             )
-        return RiskDecision(RiskAction.ALLOW, 1.0, ("risk checks passed",))
+        return RiskDecision(RiskAction.ALLOW, ("risk checks passed",))

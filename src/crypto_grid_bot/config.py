@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from math import isfinite
@@ -75,7 +76,7 @@ def load_config(path: str | Path) -> BotConfig:
     config = BotConfig(
         mode=str(bot["mode"]),
         top_n=int(universe["top_n"]),
-        include_assets=tuple(str(asset).upper() for asset in universe["include_assets"]),
+        include_assets=_asset_names(universe["include_assets"]),
         maximum_active_grids=int(universe["maximum_active_grids"]),
         minimum_confidence=float(regime["minimum_confidence"]),
         bull_threshold=float(regime["bull_threshold"]),
@@ -105,6 +106,20 @@ def load_config(path: str | Path) -> BotConfig:
     )
     _validate(config)
     return config
+
+
+def _asset_names(assets: list[str]) -> tuple[str, ...]:
+    """Trim and upper-case each entry: ASCII letters and digits only, each listed once."""
+    names: list[str] = []
+    for asset in assets:
+        # Checked before upper-casing, which can turn non-ASCII letters into ASCII ones.
+        if not re.fullmatch(r"[A-Za-z0-9]+", asset.strip()):
+            raise ConfigurationError(f"include_assets entry {asset!r} is not an asset name")
+        name = asset.strip().upper()
+        if name in names:
+            raise ConfigurationError(f"include_assets lists {name} more than once")
+        names.append(name)
+    return tuple(names)
 
 
 def _validate(config: BotConfig) -> None:

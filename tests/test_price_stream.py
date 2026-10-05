@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import random
 import unittest
 from decimal import Decimal as D
 from pathlib import Path
@@ -14,10 +15,17 @@ from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.market_data.parsing import DataError
 from crypto_grid_bot.market_data.stream import (
     MAX_CONNECTS,
+    SUMMARY_TICK_LIMIT,
+    BookTick,
     PriceBook,
     PriceStream,
+    StreamStopped,
     parse_book_ticker,
+    run_stream,
     stream_url,
+    summarize,
+    summarize_tallies,
+    tally_tick,
 )
 
 SYMBOLS = frozenset({"ADAUSDC"})
@@ -323,3 +331,129 @@ class StreamTests(unittest.TestCase):
         source = Path(stream_module.__file__).read_text(encoding="utf-8")
         for forbidden in ("api.binance.com", "listenKey", "signature", "X-MBX-APIKEY", "/order"):
             self.assertNotIn(forbidden, source)
+
+
+def reference_summary(stream, ticks_in_order, limit):
+    """The pre-tally code, kept verbatim as the oracle: buffer every tick, then reduce."""
+    ticks = {}
+    for tick in ticks_in_order:  # run_stream's former record()
+        series = ticks.setdefault(tick.symbol, [])
+        if len(series) < limit:
+            series.append(tick)
+    symbols = {}
+    for symbol in sorted(stream.book.symbols):  # the former summarize()
+        series = ticks.get(symbol, [])
+        gaps = [b.received_ms - a.received_ms for a, b in zip(series, series[1:], strict=False)]
+        last = series[-1] if series else None
+        symbols[symbol] = {
+            "ticks": len(series),
+            "max_gap_ms": max(gaps) if gaps else None,
+            "last_bid": str(last.bid) if last else None,
+            "last_ask": str(last.ask) if last else None,
+            "last_spread_pct": (
+                str((last.ask - last.bid) / ((last.ask + last.bid) / 2) * 100) if last else None
+            ),
+        }
+    stats = stream.stats
+    return {
+        "mode": "read_only_price_stream",
+        "source": stream_module.STREAM_HOST,
+        "orders_authorized": False,
+        "symbols": symbols,
+        "connects": stats.connects,
+        "disconnects": stats.disconnects,
+        "rotations": stats.rotations,
+        "silences": stats.silences,
+        "messages": stats.messages,
+        "ticks": stats.ticks,
+        "duplicates": stats.duplicates,
+        "invalid": stats.invalid,
+        "stopped_reason": stats.stopped_reason or None,
+        "recent_errors": stats.errors,
+    }
+
+
+def random_ticks(seed, count):
+    """Irregular arrivals: repeats, wall-clock steps back, a symbol the stream lacks."""
+    rng = random.Random(seed)
+    received, ticks = 1_700_000_000_000, []
+    for update_id in range(count):
+        symbol = rng.choice(["ADAUSDC", "BTCUSDC", "BTCUSDC", "ETHUSDC", "XRPUSDC"])
+        received += rng.choice([0, 1, 7, 250, 4000, -30])
+        bid = D(rng.randint(1, 10**6)) / D(10**4)
+        ask = bid + D(rng.randint(1, 500)) / D(10**4)
+        ticks.append(BookTick(symbol, update_id, bid, D("1"), ask, D("2"), received))
+    # DOTUSDC's only gap is negative, so its max_gap_ms is below zero.
+    for update_id, step in ((1, 0), (2, -30)):
+        ticks.append(
+            BookTick("DOTUSDC", update_id, D("5"), D("1"), D("5.01"), D("1"), received + step)
+        )
+    return ticks
+
+
+class SummaryTallyTests(unittest.TestCase):
+    def stream(self):
+        stream = PriceStream(["ADAUSDC", "BTCUSDC", "DOTUSDC", "ETHUSDC", "SOLUSDC"])
+        stream.stats.connects, stream.stats.ticks, stream.stats.errors = 3, 5000, ["x"]
+        stream.stats.stopped_reason = "HTTP 429 on connect; stream stopped"
+        return stream
+
+    def test_running_tallies_match_the_former_buffered_summary(self):
+        stream, ticks = self.stream(), random_ticks(7, 5000)
+        btc = sum(tick.symbol == "BTCUSDC" for tick in ticks)
+        self.assertGreater(btc, 1000)  # so the patched limits below are really reached
+        for limit in (SUMMARY_TICK_LIMIT, 1000, 1):
+            with (
+                self.subTest(limit=limit),
+                patch.object(stream_module, "SUMMARY_TICK_LIMIT", limit),
+            ):
+                tallies = {}
+                for tick in ticks:
+                    tally_tick(tallies, tick)
+                expected = reference_summary(stream, ticks, limit)
+                actual = summarize_tallies(stream, tallies)
+                self.assertEqual(
+                    json.dumps(expected, sort_keys=True), json.dumps(actual, sort_keys=True)
+                )
+                self.assertEqual(min(limit, btc), actual["symbols"]["BTCUSDC"]["ticks"])
+                self.assertEqual(0, actual["symbols"]["SOLUSDC"]["ticks"])
+
+    def test_summarize_of_whole_series_matches_the_former_code(self):
+        stream, ticks = self.stream(), random_ticks(11, 3000)
+        grouped = {}
+        for tick in ticks:
+            grouped.setdefault(tick.symbol, []).append(tick)
+        self.assertEqual(
+            json.dumps(reference_summary(stream, ticks, len(ticks)), sort_keys=True),
+            json.dumps(summarize(stream, grouped), sort_keys=True),
+        )
+
+
+class RunStreamTests(unittest.TestCase):
+    def run_with(self, clock, scripts, seconds):
+        connector = Connector(clock, scripts)
+        with (
+            patch.object(
+                stream_module, "PriceStream", lambda symbols: make_stream(clock, connector, symbols)
+            ),
+            patch.object(stream_module, "SILENCE_SECONDS", 0.01),
+        ):
+            return run_stream(["ADAUSDC"], seconds)
+
+    def test_summary_reports_tallied_ticks(self):
+        scripts = [[message(1), message(2, bid="0.2340"), message(3, bid="0.2300")]]
+        summary = self.run_with(Clock(), scripts, 5)
+        ada = summary["symbols"]["ADAUSDC"]
+        self.assertEqual((3, 1000), (ada["ticks"], ada["max_gap_ms"]))
+        self.assertEqual(("0.2300", "0.2345"), (ada["last_bid"], ada["last_ask"]))
+        self.assertIsNone(summary["stopped_reason"])
+
+    def test_ban_mid_run_keeps_the_collected_summary(self):
+        scripts = [[message(1), message(2), lost()], rejected(429), [message(3)]]
+        with self.assertRaises(StreamStopped) as caught:
+            self.run_with(Clock(), scripts, 60)
+        self.assertIsInstance(caught.exception, FeedError)
+        summary = caught.exception.summary
+        self.assertEqual("HTTP 429 on connect; stream stopped", summary["stopped_reason"])
+        self.assertEqual(2, summary["symbols"]["ADAUSDC"]["ticks"])
+        self.assertEqual((2, 1, 1), (summary["ticks"], summary["connects"], summary["disconnects"]))

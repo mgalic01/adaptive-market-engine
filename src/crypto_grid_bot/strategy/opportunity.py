@@ -1,4 +1,4 @@
-"""Coin eligibility and opportunity ranking."""
+"""Coin eligibility and opportunity scoring."""
 
 from __future__ import annotations
 
@@ -71,15 +71,6 @@ class OpportunityScorer:
             *failures,
         )
         return CandidateScore(candidate.symbol, score, not failures, reasons)
-
-    def rank(
-        self, candidates: list[CandidateMetrics], regime: RegimeAssessment
-    ) -> list[CandidateScore]:
-        return sorted(
-            (self.score(candidate, regime) for candidate in candidates),
-            key=lambda result: result.score,
-            reverse=True,
-        )
 
     @staticmethod
     def _validate(candidate: CandidateMetrics) -> None:

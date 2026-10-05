@@ -64,3 +64,29 @@ class ConfigTests(TestCase):
         config = load_config(DEFAULT)
         self.assertEqual(0.70, config.minimum_input_quality)
         self.assertEqual(0.50, config.range_dispersion_limit)
+
+    def test_include_assets_entries_are_asset_names_listed_once(self) -> None:
+        cases = {
+            '["NIGHT", "AD A"]': "'AD A' is not an asset name",
+            '["NIGHT", "BTC/USDT"]': "'BTC/USDT' is not an asset name",
+            '["NIGHT", ""]': "non-empty list of asset names",
+            '["NIGHT", "ÄDA"]': "is not an asset name",
+            '["NIGHT", "ﬀ"]': "is not an asset name",  # upper-cases to ASCII "FF"
+            '["NIGHT", "NIGHT"]': "lists NIGHT more than once",
+            '["NIGHT", "BTC", " btc "]': "lists BTC more than once",
+        }
+        source = DEFAULT.read_text()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "test.toml"
+            for assets, error in cases.items():
+                with self.subTest(assets=assets):
+                    path.write_text(source.replace('["NIGHT"]', assets), encoding="utf-8")
+                    with self.assertRaisesRegex(ConfigurationError, error):
+                        load_config(path)
+
+    def test_include_assets_are_trimmed_and_upper_cased(self) -> None:
+        self.assertEqual(("NIGHT",), load_config(DEFAULT).include_assets)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "test.toml"
+            path.write_text(DEFAULT.read_text().replace('["NIGHT"]', '[" night ", "1000sats"]'))
+            self.assertEqual(("NIGHT", "1000SATS"), load_config(path).include_assets)

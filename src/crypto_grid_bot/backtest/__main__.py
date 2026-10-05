@@ -196,12 +196,12 @@ def main(argv: list[str] | None = None) -> int:
     jobs = max(1, min(args.jobs, 8))
     with ProcessPoolExecutor(max_workers=jobs) as pool:
         # Chronology is settled before any replay starts; invalid data never replays.
-        cross_checks = [
-            pool.submit(
-                cross_check_job, args.spec, args.data_dir, symbol, args.strict_volume
-            ).result()
+        # Submit every check before waiting on any, so they run in parallel.
+        checks = [
+            pool.submit(cross_check_job, args.spec, args.data_dir, symbol, args.strict_volume)
             for symbol in checked_symbols(spec)
         ]
+        cross_checks = [check.result() for check in checks]
         failures = integrity_failures(cross_checks)
         if args.command == "verify" or failures:
             status = "invalid" if failures else "valid"

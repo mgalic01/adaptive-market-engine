@@ -1,8 +1,8 @@
 """Completed daily bars and their simple moving averages (experiment spec v1, §3).
 
 Pure functions, exact ``Decimal`` arithmetic, no I/O. Variant D uses them for its
-SMA50 signal; variant A needs the same completed-bar timing with SMA50 and SMA200 and
-may reuse this module.
+SMA50 signal; variant A (``simulation.trend_switch``) uses the same closes and averages
+for its SMA50 and SMA200.
 
 Timing (spec v1 §3, "Timing rules common to all"): the daily bar that opens at UTC
 midnight of day ``d`` closes at midnight of ``d + 1``. Its close is used from the
@@ -71,13 +71,14 @@ class DailyCloses:
             values.append(value)
         return values
 
-    def sma(self, day_ms: int, length: int) -> Decimal | None:
-        """Simple moving average of the ``length`` closes ending at ``day_ms``, or None."""
+    def sma(self, day_ms: int, length: int, *, precision: int = _PRECISION) -> Decimal | None:
+        """Simple moving average of the ``length`` closes ending at ``day_ms``, or None,
+        rounded to ``precision`` digits (variant A keeps its own 50)."""
         values = self.window(day_ms, length)
         if values is None:
             return None
         with localcontext() as context:
-            context.prec = _PRECISION
+            context.prec = precision
             return sum(values, ZERO) / length
 
 

@@ -9,13 +9,14 @@ not re-run a package's ``__main__``, so functions defined there by
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from crypto_grid_bot.backtest.dataset import load_manifest, load_spec
+from crypto_grid_bot.backtest.dataset import DatasetSpec, load_manifest, load_spec
 from crypto_grid_bot.backtest.features import FeatureEngine, SeriesFeatures
-from crypto_grid_bot.backtest.klines import month_bounds_ms
+from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.backtest.replay import (
     VOLUME_DRIFT_TOLERANCE,
     RunConfig,
@@ -30,7 +31,7 @@ from crypto_grid_bot.backtest.replay import (
     rules_for,
     summarise,
 )
-from crypto_grid_bot.config import load_config
+from crypto_grid_bot.config import BotConfig, load_config
 from crypto_grid_bot.simulation.runner import SimulationPolicy
 
 
@@ -38,7 +39,19 @@ def manifest_path(spec_path: Path) -> Path:
     return spec_path.with_name(spec_path.stem + ".manifest.json")
 
 
-def run_job(
+@dataclass(frozen=True)
+class PreparedRun:
+    spec: DatasetSpec
+    config: BotConfig
+    manifest: dict[str, Any]
+    run: RunConfig
+    features: FeatureEngine
+    # The pair's daily bars when the spec has daily history (P3), else None: read by
+    # the structure features, variant A's trend switch and variant D.
+    daily: list[Kline] | None
+
+
+def prepare_run(
     spec_path: Path,
     config_path: Path,
     data_dir: Path,
@@ -46,13 +59,15 @@ def run_job(
     path_mode: str,
     gated: bool,
     fees: tuple[Decimal, Decimal | None] | None = None,
-    policy: SimulationPolicy | None = None,
-) -> dict[str, Any]:
-    """``fees`` is (maker, taker) overriding the spec; taker None means maker.
+    *,
+    basket: bool = True,
+) -> PreparedRun:
+    """The dataset, rules and features of one run, shared by the grid and variant-D jobs
+    so that D's warm-up gate is built exactly as V0's.
 
-    ``policy`` controls simulation variants; None gives V0 behaviour (no trend switch).
-    When ``policy.trend_switch`` is True, the pair's daily bars are required and are
-    already loaded as ``pair_daily`` — passed to both ``FeatureEngine`` and ``replay()``.
+    ``fees`` is (maker, taker) overriding the spec; taker None means maker. Without
+    ``basket`` the breadth series are not loaded: they change feature values, never
+    whether a minute is warmed up (``FeatureEngine.warmed``).
     """
     spec, config = load_spec(spec_path), load_config(config_path)
     manifest = load_manifest(manifest_path(spec_path))
@@ -73,9 +88,9 @@ def run_job(
         if spec.market_proxy == symbol
         else SeriesFeatures(spec.market_proxy, load_hourly(data_dir, manifest, spec.market_proxy))
     )
-    basket = [
+    breadth = [
         SeriesFeatures(s, load_hourly(data_dir, manifest, s), full=False)
-        for s in spec.breadth_basket
+        for s in (spec.breadth_basket if basket else ())
     ]
     # V2: pass raw hourly candles for structure.py (needs OHLC; SeriesFeatures discards high/low).
     # Daily bars are loaded only when the spec declares a daily_warmup_start.
@@ -87,7 +102,7 @@ def run_job(
     features = FeatureEngine(
         pair,
         market,
-        basket,
+        breadth,
         range_atr_multiple=config.range_atr_multiple,
         levels=config.maximum_levels,
         minimum_cost_multiple=config.minimum_grid_cost_multiple,
@@ -97,13 +112,29 @@ def run_job(
         daily_bars=pair_daily,
     )
     run = RunConfig(symbol, path_mode, gated, rules, spec.initial_quote, spread)
+    return PreparedRun(spec, config, manifest, run, features, pair_daily)
+
+
+def run_job(
+    spec_path: Path,
+    config_path: Path,
+    data_dir: Path,
+    symbol: str,
+    path_mode: str,
+    gated: bool,
+    fees: tuple[Decimal, Decimal | None] | None = None,
+    policy: SimulationPolicy | None = None,
+) -> dict[str, Any]:
+    """``fees`` is (maker, taker) overriding the spec; taker None means maker.
+
+    ``policy`` controls simulation variants; None gives V0 behaviour (no trend switch).
+    When ``policy.trend_switch`` is True, the pair's daily bars are required; they are
+    the ones ``prepare_run`` already gave the ``FeatureEngine``.
+    """
+    prepared = prepare_run(spec_path, config_path, data_dir, symbol, path_mode, gated, fees)
+    run, minutes = prepared.run, load_minutes(data_dir, prepared.manifest, symbol)
     metrics, account = replay(
-        config,
-        run,
-        load_minutes(data_dir, manifest, symbol),
-        features,
-        policy=policy,
-        daily=pair_daily,
+        prepared.config, run, minutes, prepared.features, policy=policy, daily=prepared.daily
     )
     return summarise(run, metrics, account, check_accounting(run, metrics, account))
 

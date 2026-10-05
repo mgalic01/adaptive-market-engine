@@ -87,8 +87,9 @@ class PortfolioSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class RiskDecision:
+    # No capital multiplier: the paper engine answers REDUCE with pause and drain (spec v1
+    # amendment 1), so there is no partial sizing for a consumer to apply.
     action: RiskAction
-    capital_multiplier: float
     reasons: tuple[str, ...]
 
 

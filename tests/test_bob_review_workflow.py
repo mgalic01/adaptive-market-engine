@@ -20,9 +20,10 @@ def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
 
 
-@pytest.fixture
-def history(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    remote = tmp_path / "remote"
+@pytest.fixture(scope="module")
+def pr_remote(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, dict[str, str]]:
+    """The PR's history, built once per module; each test clones it (``history``)."""
+    remote = tmp_path_factory.mktemp("bob-review") / "remote"
     remote.mkdir()
     git(remote, "init", "-b", "main")
     git(remote, "config", "user.name", "Test")
@@ -39,25 +40,36 @@ def history(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     git(remote, "commit", "-am", "head B")
     later = git(remote, "rev-parse", "HEAD")
     git(remote, "switch", "main")
-    git(remote, "update-ref", "refs/heads/proposal", head)
     (remote / "unrelated.txt").write_text("base advanced\n", encoding="utf-8")
     git(remote, "add", "unrelated.txt")
     git(remote, "commit", "-m", "advance base")
-    current_base = git(remote, "rev-parse", "HEAD")
+    revisions = {
+        "head": head,
+        "later": later,
+        "current_base": git(remote, "rev-parse", "HEAD"),
+        "later_diff": git(remote, "diff", f"{base}...{later}") + "\n",
+    }
+    return remote, revisions
+
+
+@pytest.fixture
+def history(pr_remote: tuple[Path, dict[str, str]], tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    remote, revisions = pr_remote
+    # The gh stub in gather moves proposal to the later head; each test starts before
+    # that move, exactly as on a freshly built remote.
+    git(remote, "update-ref", "refs/heads/proposal", revisions["head"])
     checkout = tmp_path / "checkout"
     git(tmp_path, "clone", str(remote), str(checkout))
     metadata = {
         "title": "Review example",
         "body": "Dummy PR",
         "headRefName": "proposal",
-        "baseRefOid": current_base,
-        "headRefOid": head,
+        "baseRefOid": revisions["current_base"],
+        "headRefOid": revisions["head"],
     }
     (checkout / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    (checkout / "later.sha").write_text(later, encoding="utf-8")
-    (checkout / "later.diff").write_text(
-        git(remote, "diff", f"{base}...{later}") + "\n", encoding="utf-8"
-    )
+    (checkout / "later.sha").write_text(revisions["later"], encoding="utf-8")
+    (checkout / "later.diff").write_text(revisions["later_diff"], encoding="utf-8")
     return checkout, metadata
 
 
@@ -77,7 +89,7 @@ def gather(checkout: Path, *, github_fails: bool = False) -> subprocess.Complete
       if [ "$GITHUB_FAILS" = 1 ]; then return 17; fi
       if [ "$1 $2" = 'pr view' ]; then
         cat metadata.json
-        git -C ../remote update-ref refs/heads/proposal "$(cat later.sha)"
+        git -C "$(git remote get-url origin)" update-ref refs/heads/proposal "$(cat later.sha)"
       elif [ "$1 $2" = 'pr diff' ]; then cat later.diff;
       else return 18; fi
     }
