@@ -529,17 +529,37 @@ def _bundled_value(option: str, opts: set[str]) -> int | None:
     return next((k for k, c in enumerate(option[1:], 1) if f"-{c}" in opts), None)
 
 
-def shell_command(exe: str, args: list[str]) -> str | None:
-    """The command string that `bash -c`, `pwsh -Command` or `cmd /c` runs, or None."""
+def shell_command(exe: str, args: list[str]) -> tuple[str, list[str]] | None:
+    """The command string that `bash -c`, `pwsh -Command` or `cmd /c` runs, with the
+    words a POSIX shell gives its positional parameters ($0, $1...), or None."""
     for i, a in enumerate(args):
         if exe in POSIX_SHELLS and re.fullmatch(r"-[a-z]*c[a-z]*", a):  # -c, -lc, -ec
-            return args[i + 1] if i + 1 < len(args) else None
+            return (args[i + 1], args[i + 2 :]) if i + 1 < len(args) else None
         name = a.lower().lstrip("-/") if a[:1] in ("-", "/") else ""
         if exe in ("pwsh", "powershell") and name and "command".startswith(name):
-            return " ".join(args[i + 1 :])
+            return " ".join(args[i + 1 :]), []
         if exe == "cmd" and a[:1] == "/" and name in ("c", "k"):
-            return " ".join(args[i + 1 :])
+            return " ".join(args[i + 1 :]), []
     return None
+
+
+# A positional parameter of a `sh -c` script, quoted or not: `$1`, `${2}`, or all of
+# them, `$@` and `$*`.
+POSITIONAL_RE = re.compile(r'"\$(?:\{([@*]|\d+)\}|([@*]|\d))"|\$(?:\{([@*]|\d+)\}|([@*]|\d))')
+
+
+def _positional(script: str, params: list[str]) -> str:
+    """``script`` with its positional parameters replaced by the words `sh -c script
+    name args...` gives them: $0 the name, $1... the args, $@ and $* every arg (Codex
+    review of #159: `sh -c '"$@"' _ git push origin x` runs the push)."""
+
+    def words(m: re.Match[str]) -> str:
+        name = next(g for g in m.groups() if g is not None)
+        if name in ("@", "*"):
+            return " ".join(shlex.quote(p) for p in params[1:])
+        return shlex.quote(params[int(name)]) if int(name) < len(params) else ""
+
+    return POSITIONAL_RE.sub(words, script)
 
 
 def substitutions(command: str, quotes: bool = True) -> list[str]:
@@ -847,8 +867,9 @@ def segments(command: str) -> list[str]:
     return parts
 
 
-# A command word known only at run time: a variable.
-RUNTIME_WORD = re.compile(r"\$\{?\w")
+# A command word known only at run time: a variable or a positional parameter, `$1`,
+# `$@` or `$*` (Codex review of #159).
+RUNTIME_WORD = re.compile(r"\$\{?[\w@*]")
 
 
 def _env_dir(words: list[str], cwd: str) -> str:
@@ -944,20 +965,24 @@ def find_targets(
         if exe in ("cd", "set-location", "pushd", "sl") and len(toks) > 1:
             cwd = str(Path(cwd, toks[-1]))
         elif exe == "git":
-            here, rest, aliases = base, toks[1:], {}
-            # The repository is read where -C, --git-dir or GIT_DIR points: git runs fine
-            # inside a git directory (Codex review of #159: `cd other && git --git-dir
-            # <this repo>/.git push` was checked against the other repository).
+            work, git_dir, rest, aliases = base, "", toks[1:], {}
+            # The repository is the git directory that --git-dir or GIT_DIR names, read
+            # from where -C leaves git, or that place itself: git runs fine inside a git
+            # directory (Codex review of #159: `cd other && git --git-dir <this
+            # repo>/.git push` was checked against the other repository, and so was
+            # `git --git-dir <this repo>/.git -C other push`).
             for w in split_words(segment):
                 if w.startswith("GIT_DIR="):
-                    here = str(Path(here, w.split("=", 1)[1]))
+                    git_dir = w.split("=", 1)[1]
                 elif _exe(w) == "git":
                     break
             while rest and rest[0].startswith("-"):
-                if rest[0] in ("-C", "--git-dir") and len(rest) > 1:
-                    here, rest = str(Path(here, rest[1])), rest[2:]
+                if rest[0] == "-C" and len(rest) > 1:
+                    work, rest = str(Path(work, rest[1])), rest[2:]
+                elif rest[0] == "--git-dir" and len(rest) > 1:
+                    git_dir, rest = rest[1], rest[2:]
                 elif rest[0].startswith("--git-dir="):
-                    here, rest = str(Path(here, rest[0].split("=", 1)[1])), rest[1:]
+                    git_dir, rest = rest[0].split("=", 1)[1], rest[1:]
                 elif rest[0] in GIT_VALUE_OPTS and len(rest) > 1:
                     if rest[0] == "-c" and rest[1].startswith("alias."):
                         name, _, value = rest[1][len("alias.") :].partition("=")
@@ -965,11 +990,13 @@ def find_targets(
                     rest = rest[2:]
                 else:
                     rest = rest[1:]
-            # An alias, given with -c or configured, runs what it expands to; a `!` alias
-            # runs its text in a shell (Codex review of #159).
-            for _ in range(MAX_DEPTH):
-                if not rest or rest[0] in GIT_BUILTINS:
-                    break
+            here = str(Path(work, git_dir)) if git_dir else work
+            # An alias, given with -c or configured, runs what it expands to, through any
+            # number of aliases (git stops only at a loop) and past the options one may
+            # begin with; a `!` alias runs its text in a shell (Codex review of #159).
+            seen: set[str] = set()
+            while rest and rest[0] not in GIT_BUILTINS and rest[0] not in seen:
+                seen.add(rest[0])
                 alias = aliases.get(rest[0]) or _git(here, "config", "--get", f"alias.{rest[0]}")
                 if not alias:
                     break
@@ -979,13 +1006,17 @@ def find_targets(
                     rest = []
                 else:
                     rest = [*split_words(alias), *rest[1:]]
+                    while rest and rest[0].startswith("-"):
+                        rest = rest[2:] if rest[0] in GIT_VALUE_OPTS else rest[1:]
             if rest and rest[0] in ("push", "send-pack"):
                 targets.extend(push_targets(rest[1:], here))
         elif exe == "gh":
             targets.extend(_gh_targets(toks[1:], segment, base))
         elif exe in SHELLS:
-            inner = shell_command(exe, toks[1:])
-            if inner is not None:
+            found = shell_command(exe, toks[1:])
+            if found is not None:
+                inner, params = found
+                inner = _positional(inner, params) if params else inner
                 shell = exe in POSIX_SHELLS
                 targets.extend(find_targets(inner, base, depth + 1, posix=shell, root=root))
             else:

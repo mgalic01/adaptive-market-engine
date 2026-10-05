@@ -545,6 +545,22 @@ class TargetTest(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
 
+    def test_positional_parameters_of_a_shell_script(self):
+        # Codex review of #159: `sh -c script name args...` gives its args to $1, $@...
+        with git_stub():
+            for cmd in (
+                "sh -c '\"$@\"' _ git push origin claude/a",
+                "bash -c 'git \"$@\"' _ push origin claude/a",
+                "sh -c '$1 push origin $2' _ git claude/a",
+                "sh -c 'git push origin ${1}' _ claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+            self.assertEqual(self.prs("sh -c '$1 pr merge $2' _ gh 5"), [5])
+            # With no args to read, `"$@"` is a command known only at run time.
+            body = find_targets('f() { "$@"; }; f gh pr merge 5', ".", posix=True)
+            self.assertIn("merge", [t.kind for t in body if t.unknown])
+
     def test_wrapper_options_with_values_and_env_split_strings(self):
         # Codex review of #159: each runs the merge after the wrapper's options.
         with git_stub():
@@ -600,6 +616,9 @@ class TargetTest(unittest.TestCase):
                 "cd /tmp/other && git --git-dir=/work/repo/.git push origin claude/a",
                 "cd /tmp/other && GIT_DIR=/work/repo/.git git push origin claude/a",
                 "cd /tmp/other && env GIT_DIR=/work/repo/.git git push origin claude/a",
+                # Codex review of #159: a later -C moves git, not the repository named.
+                "cd /tmp/other && git --git-dir /work/repo/.git -C /tmp/other push origin claude/a",
+                "git -C /tmp/other --git-dir=/work/repo/.git push origin claude/a",
             ):
                 with self.subTest(cmd=cmd):
                     targets = find_targets(cmd, ".")
@@ -670,6 +689,13 @@ class TargetTest(unittest.TestCase):
                 return "push"
             if args == ("config", "--get", "alias.pp"):
                 return "p --force"  # an alias of an alias
+            chain = {"alias.a": "b", "alias.b": "c", "alias.c": "d", "alias.d": "push"}
+            if args[:2] == ("config", "--get") and args[2] in chain:
+                return chain[args[2]]
+            if args == ("config", "--get", "alias.np"):
+                return "--no-pager push"
+            if args == ("config", "--get", "alias.loop"):
+                return "loop"
             if args[:2] == ("remote", "get-url"):
                 return f"https://github.com/{REPO}.git"
             return "claude/x" if args[:2] == ("rev-parse", "--abbrev-ref") else None
@@ -681,9 +707,14 @@ class TargetTest(unittest.TestCase):
                 "git pp origin claude/a",
                 "git -c 'alias.r=!git push origin claude/a' r",
                 "git send-pack origin claude/a",
+                # Codex review of #159: any number of aliases, and one that begins with
+                # an option.
+                "git a origin claude/a",
+                "git np origin claude/a",
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual([t.branch for t in find_targets(cmd, ".")], ["claude/a"])
+            self.assertEqual(find_targets("git loop origin claude/a", "."), [])  # git refuses
             calls.clear()
             self.assertEqual(find_targets("git status && git log -1", "."), [])
             self.assertFalse([c for c in calls if c[:1] == ("config",)])  # builtins: no lookup
