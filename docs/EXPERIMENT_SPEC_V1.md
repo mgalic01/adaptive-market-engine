@@ -77,8 +77,12 @@ common to all:
   reduction and the hard-drawdown halt. Their recovery is changed in **V0 itself**
   ("Drawdown recovery", below), so every grid variant inherits the changed controls
   identically, and the rule above applies to the controls as amended: no variant delays,
-  suppresses or clears them further. Every other control, including the latched halt for
-  emergency, capital exhaustion and integrity failures, is unchanged.
+  suppresses or clears them further. Every other control is unchanged, except the manual
+  resume of the latched halts, also changed in V0 itself (owner decisions D17 and D18,
+  2026-10-05; "Manual `resume()`", below): emergency and integrity halts still never clear
+  by themselves, but a manual resume that only the drawdown blocks now rebases `risk_high`
+  as the automatic restart does, and a capital-exhaustion halt is refused by name. Replay
+  never resumes, so no backtest result changes.
 
 - **Entry regime gate (owner decision 2026-10-02, D2):** the opportunity score is
   multiplied by a regime factor before being checked against the 0.70 entry minimum.
@@ -104,10 +108,11 @@ common to all:
 - **Versions (amendment 1 and the owner's decisions of 2026-10-02).** "V0" means the
   amended V0: the drawdown recovery of amendment 1 below, with D7 in its step 3, and
   amendments 2 and 3. It runs on engine `drawdown-recovery-v2` and paper schema 9, which
-  refuses schemas 1–8, because these changes move replay results and the meaning of saved
-  state (`replay.py`'s bump rule; `PAPER_SIMULATION.md`). The same engine version has the
-  risk engine compare the 3%, 8% and 12% limits with the exact balances, not through
-  floats (moved here from #159). Each earlier V0 keeps its
+  refuses schemas 1–8 (schema 10 refusing 1–9 since the manual resume of D17 and D18,
+  which moves no replay result), because these changes move replay results and the
+  meaning of saved state (`replay.py`'s bump rule; `PAPER_SIMULATION.md`). The same
+  engine version has the risk engine compare the 3%, 8% and 12% limits with the exact
+  balances, not through floats (moved here from #159). Each earlier V0 keeps its
   results and is a registered trial (the
   [coherence record](reviews/2026-09-27-claude-dsr-coherence.md) §3, which superseded
   part 2's count): the pre-amendment V0 (drawdown lockout), whose published results
@@ -278,13 +283,15 @@ and it catches any later change to `risk_high`'s formula that is not mirrored he
 
 **Hard drawdown (automatic restart).** Only a halt of category `drawdown` restarts
 automatically. `emergency` and `integrity` halts stay latched until an explicit audited
-resume, and `exhaustion` is final (its drawdown is pinned at 1.0), as today. **Stated
-asymmetry, intended:** an `emergency` halt raised at or past 12% stays refused by the
-risk check after the flag clears, while the same account without the flag restarts after
-H. The owner's decision covers the hard-drawdown halt only; the emergency flag is a
-per-frame paper signal that replay never sets (`replay.py`, `emergency=False`); extending
-the restart to cleared emergency halts would be a further owner decision. A `drawdown`
-halt restarts when, on one valid frame:
+resume, and `exhaustion` is final: a manual resume refuses it by name (owner decision D18,
+2026-10-05). **The asymmetry stated here is lifted for the manual resume (owner decision
+D17, 2026-10-05):** an `emergency` halt raised at or past 12% stayed refused by the risk
+check after the flag cleared, while the same account without the flag restarted after H.
+Now, once the flag has cleared, a manual resume rebases `risk_high` as the restart does
+("Manual `resume()`", below). An emergency halt still never restarts by itself: the
+owner's decision covers the hard-drawdown halt only, and the emergency flag is a
+per-frame paper signal that replay never sets (`replay.py`, `emergency=False`). A
+`drawdown` halt restarts when, on one valid frame:
 1. at least **24 hours** (H) of `observed_at` have passed since the halt started;
 2. every precondition of today's `resume()` holds except its risk check: halted, no open
    orders, `account.validate` passes, the frame is valid, and the eligibility check
@@ -296,10 +303,9 @@ halt restarts when, on one valid frame:
    uses. While the liquidation is incomplete, nothing happens. The manual `resume()`
    adopts the same criterion ("Manual `resume()`", below), so no halt of any category can
    be locked by a residue that no exchange will buy. The exact-zero rule of PR #122
-   protected nothing that the risk check does not already protect (an `exhaustion` halt
-   has drawdown 1.0 against the frozen `risk_high` whatever is held), and for `integrity`
-   and `emergency` halts, which are resumable by design, it reproduced the lockout this
-   amendment removes;
+   protected nothing that the other checks do not already protect (an `exhaustion` halt
+   is refused by name, owner decision D18), and for `integrity` and `emergency` halts,
+   which are resumable by design, it reproduced the lockout this amendment removes;
 3. a tentative rebase of `risk_high` to the current active equity (`last_equity` after
    this step's mark) makes the risk result `ALLOW` (daily loss under 3%, no emergency
    flag).
@@ -338,16 +344,34 @@ still judges every run.
 inventory precondition from exact zero (PR #122) to the liquidation-complete criterion of
 precondition 2: refused while `exit_state` is `incomplete`, admitted with a `dust`
 remainder, which stays held and marked and is drained or settled exactly as after today's
-resume. Its risk check is unchanged and is what keeps the final halts final: an
-`exhaustion` halt is refused for good (drawdown 1.0); an `emergency` halt is refused while
-its flag is set and, once the flag clears, resumes only if the frozen drawdown is within
-limits. A held residue is marked to the bid, so it can move the measured drawdown by at
-most one minimum notional against `risk_high` (5 quote units on a 100-unit account; above
-that the residue is sellable and the armed liquidation sells it). That margin is
-accepted: the same account without the flag restarts after 24 hours on a full rebase.
-The refusal text still names the inventory held when the liquidation is incomplete.
-**This reverses a rule PR #122 merged on 2026-09-28 and is a design decision made in this
-amendment, open to the owner's, Bob's and Codex's review.**
+resume. The refusal text still names the inventory held when the liquidation is
+incomplete. **This reverses a rule PR #122 merged on 2026-09-28 and is a design decision
+made in this amendment, open to the owner's, Bob's and Codex's review.**
+
+**The manual resume's risk check (owner decisions D17 and D18, 2026-10-05).**
+- An `exhaustion` halt is refused by name, before any risk check: the active account
+  cannot fund a grid level, so the halt is final (D18). Before, it was refused only when
+  the risk check happened to fail, and was otherwise admitted and halted again on the
+  next frame.
+- An `emergency` or `integrity` halt keeps every precondition above, and an `emergency`
+  halt is refused while its flag is set. If the plain risk check then allows, the
+  resume proceeds as before, with no rebase. If only the drawdown blocks it, soft or hard, at any
+  depth, the resume works like the automatic restart (D17): it needs the tentative
+  `ALLOW` of precondition 3 (no emergency flag, the day's loss under 3%), rebases
+  `risk_high` to the current active equity, and journals that as the restart does
+  (`restart`: halt start, category, reason, old and new reference). This lifts the rule
+  that an emergency halt past 12% stays refused.
+- C1 still measures from the original peak, because the rebase moves only the runtime
+  safety reference `risk_high`.
+- A `drawdown` halt is unchanged: a manual resume applies the plain risk check only, so
+  it cannot bypass the 24-hour automatic restart. Its one margin is a dust residue,
+  marked to the bid, which can move the measured drawdown by at most one minimum notional
+  (5 quote units on a 100-unit account; above that the armed liquidation sells it): a
+  halt taken just past 12% can then be resumed by hand before its restart. That margin
+  is accepted.
+- Replay never resumes and never raises an emergency, so no backtest result changes and
+  the engine stays `drawdown-recovery-v2`. The resume's journal record gained the
+  `restart` entry, so paper schema 10 refuses schemas 1–9.
 
 **Same control, not same effect.** Every grid variant runs these controls identically,
 so the defined control and the baseline are the same in every comparison. Inventory paths
@@ -379,8 +403,13 @@ config values, persisted in the account identity, and fixed for all v1 runs.
   `emergency` halt on an account past 12% is not re-categorised on the next frame; an
   invalid frame during a `drawdown` halt does not make it `integrity`).
 - Manual resume: refused while `exit_state` is `incomplete`; admitted with a `dust`
-  remainder, which stays held and marked; an `exhaustion` halt is refused by the risk check
-  alone; an `emergency` halt is refused while its flag is set.
+  remainder, which stays held and marked; an `emergency` halt is refused while its flag is
+  set. Since D17 and D18: an `exhaustion` halt is refused by name, before any risk check;
+  an `integrity` halt that only the drawdown blocks is admitted, rebased and journaled, at
+  8.28% and at 15.90% below its reference; an `emergency` halt is admitted with a rebase
+  once its flag clears, past 12%; no such resume while the day's loss is 3% or more; a
+  resume the plain risk check allows is unchanged, with no rebase; a manual resume of a
+  `drawdown` halt is unchanged and cannot bypass the automatic restart.
 - Identity: `ENGINE_VERSION` and `SCHEMA` are bumped; a schema-5 database is refused by the
   store and by the resume CLI.
 - Episode across a halt: a soft episode open when a hard halt starts is closed by the

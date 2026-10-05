@@ -16,6 +16,7 @@ from unittest.mock import patch
 from crypto_grid_bot.backtest.dataset import funding_local_path
 from crypto_grid_bot.backtest.features import (
     BASELINE_HOURS,
+    DAY_MS,
     FEATURE_VERSION,
     HOUR_MS,
     STALE_AFTER_MS,
@@ -44,12 +45,21 @@ from crypto_grid_bot.backtest.replay import (
     summarise,
 )
 from crypto_grid_bot.config import load_config
-from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
+from crypto_grid_bot.domain import CandidateMetrics, MarketRegime, MarketSignals, RegimeAssessment
 from crypto_grid_bot.simulation.demo import demo_frames
 from crypto_grid_bot.simulation.execution import exit_state, match, place, reduce_unreserved
-from crypto_grid_bot.simulation.models import Account, LimitOrder, MarketRules, Quote, timestamp
+from crypto_grid_bot.simulation.models import (
+    Account,
+    LimitOrder,
+    MarketRules,
+    Quote,
+    floor_step,
+    timestamp,
+)
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
+from crypto_grid_bot.strategy.grid import GridNotViable
 from crypto_grid_bot.strategy.order_flow import flow_blocked, taker_buy_share
+from crypto_grid_bot.strategy.structure import ResistanceZones, nearest_resistance
 from crypto_grid_bot.strategy.volume_exit import VolumeHistory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -154,6 +164,44 @@ RULES = MarketRules(
     quantity_step=D("0.1"),
     minimum_notional=D("5"),
 )
+# An hour index that opens a UTC day, where the daily resistance of zone_days() appears.
+ZONE_MIDNIGHT = (WARMUP // 24 + 2) * 24
+ZONE_MIDNIGHT_MS = START_MS + ZONE_MIDNIGHT * HOUR_MS
+
+
+def zone_candles():
+    """The pair's hourly candles with a two-hour hole across ZONE_MIDNIGHT_MS: the latest
+    completed candle does not change there while a daily bar does, so a cache keyed on
+    the pair alone would serve the previous day's structure."""
+    hole = (ZONE_MIDNIGHT - 1, ZONE_MIDNIGHT)
+    return [c for i, c in enumerate(hourly(WARMUP + 72)) if i not in hole]
+
+
+def zone_days():
+    """Flat days below fair value, except one high at 1.03 four days before
+    ZONE_MIDNIGHT_MS: the day closing at that midnight is the third after it, which
+    confirms it as a swing high, so a resistance zone above fair value appears exactly
+    then."""
+    rng = random.Random(158)
+    days = []
+    for d in range(-60, 45):
+        open_ms, close = START_MS + d * DAY_MS, 0.97 + rng.uniform(-0.005, 0.005)
+        high = 1.03 if open_ms == ZONE_MIDNIGHT_MS - 4 * DAY_MS else close * 1.005
+        days.append(candle(open_ms, close, high, close * 0.995, close))
+    return days
+
+
+def unseen_days_changed(days, minute):
+    """The ``days`` closed by ``minute``, and the same with every other day changed beyond
+    recognition plus days that do not exist yet: none of that may reach the decision."""
+    completed = [d for d in days if d.open_ms + DAY_MS <= minute]
+    future = [
+        replace(d, high=d.high * 5, low=d.low / 5, close=d.close * 3)
+        for d in days
+        if d.open_ms + DAY_MS > minute
+    ]
+    later = [candle(days[-1].open_ms + k * DAY_MS, 9.0, 9.9, 8.1, 9.5) for k in range(1, 30)]
+    return completed, completed + future + later
 
 
 class FeatureChronologyTests(unittest.TestCase):
@@ -185,23 +233,7 @@ class FeatureChronologyTests(unittest.TestCase):
         # Issue #158-1: the V2 structure features once read every daily bar, including
         # the decision's own unfinished day and later ones. A day may count only once it
         # has closed (open + 1 day <= decision minute), as in TrendSchedule.
-        day = 86_400_000
-        candles = hourly(WARMUP + 72)
-        midnight = (WARMUP // 24 + 2) * 24  # an hour index that opens a UTC day
-        midnight_ms = START_MS + midnight * HOUR_MS
-        # A two-hour hole across that midnight: the pair's latest completed candle does
-        # not change there while a daily bar does, so a cache keyed on the pair alone
-        # would serve the previous day's structure.
-        candles = [c for i, c in enumerate(candles) if i not in (midnight - 1, midnight)]
-        # Flat days below fair value, except one high at 1.03 four days before that
-        # midnight: the day closing at midnight is the third after it, which confirms it
-        # as a swing high, so a resistance zone above fair value appears exactly then.
-        rng = random.Random(158)
-        days = []
-        for d in range(-60, 45):
-            open_ms, close = START_MS + d * day, 0.97 + rng.uniform(-0.005, 0.005)
-            high = 1.03 if open_ms == midnight_ms - 4 * day else close * 1.005
-            days.append(candle(open_ms, close, high, close * 0.995, close))
+        candles, days, midnight_ms = zone_candles(), zone_days(), ZONE_MIDNIGHT_MS
 
         def structure_engine(daily):
             return engine_for(candles, hourly_candles=candles, daily_bars=daily)
@@ -211,23 +243,17 @@ class FeatureChronologyTests(unittest.TestCase):
         minutes = [*range(start, start + 60 * HOUR_MS, 20 * 60_000)]
         minutes += [midnight_ms + k * 60_000 for k in (-1, 0, 1)]
         for minute in sorted(minutes):
-            completed = [d for d in days if d.open_ms + day <= minute]
+            completed, changed = unseen_days_changed(days, minute)
             expected = structure_engine(completed).at(minute)
-            # Days not closed by the decision minute changed beyond recognition, plus
-            # days that do not exist yet: none of it may reach the decision.
-            future = [
-                replace(d, high=d.high * 5, low=d.low / 5, close=d.close * 3)
-                for d in days
-                if d.open_ms + day > minute
-            ]
-            later = [candle(days[-1].open_ms + k * day, 9.0, 9.9, 8.1, 9.5) for k in range(1, 30)]
-            self.assertEqual(expected, structure_engine(completed + future + later).at(minute))
+            self.assertEqual(expected, structure_engine(changed).at(minute))
             self.assertEqual(expected, engine.at(minute), minute)
-        # The completed days are in use, from the minute the confirming day closes.
+        # The completed days are in use, from the minute the confirming day closes: the
+        # nearest resistance above fair value appears then, in reach.
         before, after = engine.at(midnight_ms - 60_000), engine.at(midnight_ms)
         self.assertEqual(before.hour_open_ms, after.hour_open_ms)  # inside the hole
-        self.assertIsNone(before.fta_resistance)
-        self.assertEqual(1.03, after.fta_resistance)
+        self.assertIsNone(nearest_resistance(float(before.fair_value), before.resistance))
+        nearest = nearest_resistance(float(after.fair_value), after.resistance)
+        self.assertEqual((1.03, True), nearest)
 
     def test_stale_hourly_data_zeroes_quality(self):
         candles = hourly(WARMUP)
@@ -313,7 +339,7 @@ class FeatureEfficiencyTests(unittest.TestCase):
             self.assertEqual(self.engine(**structure).at(minute), inputs, minute)
             # The structure inputs are in use, not their unavailable defaults.
             self.assertNotEqual(0.0, inputs.structure_alignment)
-            self.assertIsNotNone(inputs.fta_resistance)
+            self.assertNotEqual((), inputs.resistance)
 
     def test_staleness_inside_an_hour_is_not_served_from_the_cache(self):
         engine = self.engine()
@@ -532,12 +558,12 @@ class ReplayTests(unittest.TestCase):
                 (True, FEATURE_VERSION): ("gated grid (price-only-v1)", "price-only-v1"),
                 (False, FEATURE_VERSION): ("ungated grid baseline", "price-only-v1"),
                 (True, STRUCTURE_FEATURE_VERSION): (
-                    "gated grid (price-only-v1+structure-v1)",
-                    "price-only-v1+structure-v1",
+                    "gated grid (price-only-v1+structure-v2)",
+                    "price-only-v1+structure-v2",
                 ),
                 (False, STRUCTURE_FEATURE_VERSION): (
-                    "ungated grid baseline (price-only-v1+structure-v1)",
-                    "price-only-v1+structure-v1",
+                    "ungated grid baseline (price-only-v1+structure-v2)",
+                    "price-only-v1+structure-v2",
                 ),
             },
             labels,
@@ -1210,136 +1236,224 @@ class SignalsForStructureAlignmentTests(unittest.TestCase):
         self.assertEqual(0.0, signals.structure_alignment)
 
 
-class FtaRegimeGateTests(unittest.TestCase):
-    """F17/F18: _open_grid passes fta_resistance only in RANGE and only under the V2
-    structure policy; full chain."""
+# ---------------------------------------------------------------------------
+# V2 sell targets below resistance (owner decision D19) — 2026-10-05
+# ---------------------------------------------------------------------------
+
+
+class SellAtResistanceTests(unittest.TestCase):
+    """D19: under the V2 structure policy, in a ranging market, each buy level's sell
+    target sits just below the nearest resistance above it (synthetic numbers).
+
+    Fair value 1 and ATR 0.05 give V0's eight levels 0.9, 0.9261, 0.9531, 0.9808, 1.0093,
+    1.0387, 1.0689 and 1.1. The four below the 1.0000 bid are the buy levels, each
+    targeting the next level (``GEOMETRIC``). Costs are 2 x (0.1% + 0.05%) plus the 0.05%
+    spread, so a target must lie at least 1.05% above its buy level.
+    """
+
+    GEOMETRIC = [
+        (D("0.9"), D("0.9261")),
+        (D("0.9261"), D("0.9531")),
+        (D("0.9531"), D("0.9808")),
+        (D("0.9808"), D("1.0093")),
+    ]
+    # A daily zone at 1.03, searched within 0.08: 1.03 x 0.999 floors to 1.0289.
+    RAISED = [*GEOMETRIC[:2], (D("0.9531"), D("1.0289")), (D("0.9808"), D("1.0289"))]
 
     def setUp(self):
-        from crypto_grid_bot.domain import MarketRegime, RegimeAssessment
-
-        self.MarketRegime = MarketRegime
-        self.RegimeAssessment = RegimeAssessment
         self.config = load_config(ROOT / "config/default.toml")
 
-    def _open_grid_regime(self, regime_value, fta_resistance, structure=True):
-        """Open a grid with a specific regime and fta_resistance; return the grid plan used."""
-        import contextlib
-
+    def open_grid(
+        self, resistance, *, structure=True, regime=MarketRegime.RANGE, fair=D(1), atr=D("0.05")
+    ):
+        """A fresh 100-unit account after ``_open_grid`` on one frame at fair value."""
         policy = SimulationPolicy(structure=structure)
-        simulator = PaperSimulator(Path(":memory:"), self.config, RULES, D(100), policy)
-        account = simulator.store.read()
-        simulator.close()
+        self.simulator = PaperSimulator(Path(":memory:"), self.config, RULES, D(100), policy)
+        account = self.simulator.store.read()
+        self.simulator.close()
+        when = datetime.fromtimestamp(START_MS / 1000, UTC)
+        stamp, size = when.isoformat(), D(10**6)
+        quote = Quote(
+            "TESTUSDT/grid", "TESTUSDT", stamp, stamp, fair, fair + D("0.0005"), size, size
+        )
+        signals = MarketSignals(0.0, 0.0, 0.0, 0.0, 0.0, 10.0, observed_at=when)
+        candidate = CandidateMetrics("TESTUSDT", 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.05, 1e9)
+        self.frame = Frame(quote, signals, candidate, fair, atr, resistance=resistance)
+        self.simulator._open_grid(account, self.frame, [], RegimeAssessment(regime, 0, 1, ()))
+        return account
 
-        engine = engine_for(hourly(WARMUP))
-        inputs = engine.at(START_MS + WARMUP * HOUR_MS)
-        when = datetime.fromtimestamp((START_MS + WARMUP * HOUR_MS) / 1000, UTC)
+    @staticmethod
+    def targets(account):
+        return sorted((order.price, order.target) for order in account.orders.values())
 
-        from dataclasses import replace as dc_replace
+    def test_a_target_is_raised_only_to_a_zone_in_reach(self):
+        # The two upper buy levels have the zone at 1.03 in reach (within 0.08) and target
+        # 1.0289, above their geometric targets. It is over 0.08 above the two lower ones,
+        # so it only caps them, and their geometric targets lie below it: they stand.
+        account = self.open_grid((ResistanceZones((1.03,), 0.08),))
+        self.assertEqual(self.RAISED, self.targets(account))
+        # No zone at all: the geometric targets.
+        self.assertEqual(self.GEOMETRIC, self.targets(self.open_grid(())))
 
-        # Force a specific fta_resistance onto the inputs
-        inputs = dc_replace(inputs, fta_resistance=fta_resistance)
+    def test_a_target_is_lowered_to_resistance(self):
+        # A zone at 1.0, within 0.03 of the top buy level only: 1.0 x 0.999 is 0.9990, below
+        # that level's geometric target 1.0093 and still 1.86% above the level.
+        account = self.open_grid((ResistanceZones((1.0,), 0.03),))
+        self.assertEqual([*self.GEOMETRIC[:3], (D("0.9808"), D("0.999"))], self.targets(account))
 
-        signals = signals_for(inputs, when, gated=True)
-        candidate = candidate_for(inputs, "TESTUSDT", 0.05, 1e9, gated=True)
-        quote = bar_quotes(
-            candle(
-                START_MS + WARMUP * HOUR_MS,
-                float(inputs.fair_value),
-                float(inputs.fair_value) * 1.001,
-                float(inputs.fair_value) * 0.999,
-                float(inputs.fair_value),
-            ),
-            "TESTUSDT",
-            "low_first",
-            D("0.0005"),
-            RULES.tick_size,
-        )[0]
-        frame = Frame(
-            quote,
-            signals,
-            candidate,
-            inputs.fair_value,
-            inputs.atr,
-            True,
-            None,
-            None,
-            fta_resistance,
+    def test_a_zone_out_of_reach_caps_a_target_that_would_reach_it(self):
+        # A zone at 1.009, within 0.02 of no buy level, raises nothing, but the top level's
+        # geometric target 1.0093 would sit above it, so it is lowered to 1.0079, just below
+        # (1.009 x 0.999, floored). The lower levels' geometric targets lie below it.
+        account = self.open_grid((ResistanceZones((1.009,), 0.02),))
+        self.assertEqual([*self.GEOMETRIC[:3], (D("0.9808"), D("1.0079"))], self.targets(account))
+        # A zone at 0.99 caps the top level at 0.9890, only 0.84% above it: no buy there.
+        account = self.open_grid((ResistanceZones((0.99,), 0.005),))
+        self.assertEqual(self.GEOMETRIC[:3], self.targets(account))
+
+    def test_a_geometric_target_left_standing_keeps_v0s_rule(self):
+        # ATR 0.0184 rounds the lowest buy pair to 0.9632 and 0.9733, 1.049% apart, short
+        # of the 1.05% costs require, so V0 refuses the whole grid. A zone at 2.0, out of
+        # reach, caps nothing: every geometric target stands, and V2 refuses it alike.
+        far = (ResistanceZones((2.0,), 0.01),)
+        for structure, resistance in ((False, ()), (True, far)):
+            with self.subTest(structure=structure):
+                with self.assertRaises(GridNotViable) as refused:
+                    self.open_grid(resistance, structure=structure, atr=D("0.0184"))
+                self.assertEqual(
+                    "rounded spacing cannot cover conservative costs", str(refused.exception)
+                )
+
+    def test_a_level_whose_target_cannot_clear_costs_gets_no_buy(self):
+        # A zone at 0.985: 0.985 x 0.999 floors to 0.9840, only 0.33% above the top buy
+        # level, which may not target above the zone and cannot profit below it, so it gets
+        # no buy. The next level down targets 0.9840 too, 3.2% above it. Every order is
+        # sized as in V0, a quarter of the budget (80% of the 100 units): the skipped
+        # level's share stays unspent and enlarges no other order.
+        account = self.open_grid((ResistanceZones((0.985,), 0.05),))
+        self.assertEqual([*self.GEOMETRIC[:2], (D("0.9531"), D("0.984"))], self.targets(account))
+        for order in account.orders.values():
+            share = D(80) / 4 / (order.price * (1 + RULES.fee_rate))
+            self.assertEqual(floor_step(share, RULES.quantity_step), order.quantity)
+
+    def test_a_grid_whose_every_level_is_blocked_is_refused_naming_the_resistance(self):
+        # A zone 0.2-0.3% above each buy level: no target below one of them clears costs.
+        blocking = ResistanceZones((0.902, 0.928, 0.955, 0.983), 0.05)
+        with self.assertRaises(GridNotViable) as refused:
+            self.open_grid((blocking,))
+        self.assertEqual(
+            "no buy level can sell below resistance at 0.902, 0.928, 0.955, 0.983 and clear costs",
+            str(refused.exception),
         )
 
-        regime = self.RegimeAssessment(regime_value, 0.5, 0.9, ())
-        # Capture fta passed to builder by patching it
-        captured = {}
-        original_build = simulator.builder.build
+    def test_the_nearest_zone_on_any_timeframe_counts(self):
+        # Daily 1.03 within 0.08, hourly 1.0 within 0.12: every buy level has the nearer
+        # hourly zone in reach and targets 0.9990 just below it, whatever the order of the
+        # timeframes.
+        daily, hourly_zones = ResistanceZones((1.03,), 0.08), ResistanceZones((1.0,), 0.12)
+        below_hourly = [(low, D("0.999")) for low, _ in self.GEOMETRIC]
+        for timeframes in ((daily, hourly_zones), (hourly_zones, daily)):
+            self.assertEqual(below_hourly, self.targets(self.open_grid(timeframes)))
+        # A nearer zone counts at any distance: the daily 1.0 is in reach (within 0.03) of
+        # the top buy level only, but it is the nearest zone above every level, so the
+        # level at 0.9531 keeps its geometric target 0.9808 instead of rising to the hourly
+        # 1.03, which would sit above the daily zone.
+        timeframes = (ResistanceZones((1.0,), 0.03), ResistanceZones((1.03,), 0.08))
+        expected = [*self.GEOMETRIC[:3], (D("0.9808"), D("0.999"))]
+        self.assertEqual(expected, self.targets(self.open_grid(timeframes)))
+        # The features give each timeframe's zones as an engine given only that timeframe.
+        candles, days = zone_candles(), zone_days()
+        both = engine_for(candles, hourly_candles=candles, daily_bars=days)
+        alone = [
+            engine_for(candles, **timeframe).at(ZONE_MIDNIGHT_MS).resistance
+            for timeframe in ({"daily_bars": days}, {"hourly_candles": candles})
+        ]
+        self.assertCountEqual((*alone[0], *alone[1]), both.at(ZONE_MIDNIGHT_MS).resistance)
 
-        def capture_build(**kwargs):
-            captured["fta_resistance"] = kwargs.get("fta_resistance")
-            return original_build(**kwargs)
+    def test_a_zone_without_a_positive_radius_never_raises_but_still_caps(self):
+        # A zero radius (a zero ATR) reaches nothing, so its zone at 1.0 raises no target,
+        # but the top level's geometric target 1.0093 would sit above it and is lowered to
+        # 0.9990. The hourly 1.03 in reach raises nothing either: the zone at 1.0 is nearer.
+        zero = ResistanceZones((1.0,), 0.0)
+        capped = [*self.GEOMETRIC[:3], (D("0.9808"), D("0.999"))]
+        self.assertEqual(capped, self.targets(self.open_grid((zero,))))
+        timeframes = (zero, ResistanceZones((1.03,), 0.08))
+        self.assertEqual(capped, self.targets(self.open_grid(timeframes)))
 
-        simulator.builder.build = capture_build
-        with contextlib.suppress(Exception):
-            simulator._open_grid(account, frame, [], regime)
-        return captured.get("fta_resistance", "NOT_CALLED")
+    def test_a_target_raised_above_the_top_level_widens_the_grid_upper_bound(self):
+        # A zone at 1.15 within 0.2 of the two upper buy levels raises their targets to
+        # 1.1488, above the top level 1.1. A bid on the way there is inside the grid's
+        # range, so the outside-range clock does not start; the lower bound is unchanged.
+        account = self.open_grid((ResistanceZones((1.15,), 0.2),))
+        self.assertEqual((D("0.9"), D("1.1488")), (account.grid_lower, account.grid_upper))
+        rising = replace(self.frame.quote, bid=D("1.12"), ask=D("1.1205"))
+        self.simulator._track_range(account, rising, None, {})  # no H rule, no journal
+        self.assertEqual("", account.outside_last)
 
-    def test_fta_passed_in_range_regime(self):
-        """FTA resistance cap is active when regime is RANGE."""
-        fta = float(engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS).fair_value) * 1.05
-        result = self._open_grid_regime(self.MarketRegime.RANGE, fta)
-        self.assertEqual(fta, result)
+    def test_only_a_ranging_market_sells_below_resistance(self):
+        # The RANGE-only rule is kept, and registered (D20): any other regime keeps V0's
+        # geometric targets.
+        for regime in MarketRegime:
+            with self.subTest(regime=regime):
+                account = self.open_grid((ResistanceZones((1.03,), 0.08),), regime=regime)
+                expected = self.RAISED if regime == MarketRegime.RANGE else self.GEOMETRIC
+                self.assertEqual(expected, self.targets(account))
 
-    def test_fta_suppressed_without_the_structure_policy(self):
-        """V0 (structure off, the default) never caps grid levels, even in RANGE."""
-        fta = float(engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS).fair_value) * 1.05
-        result = self._open_grid_regime(self.MarketRegime.RANGE, fta, structure=False)
-        self.assertIsNone(result)
+    def test_with_structure_off_nothing_changes(self):
+        # V0: the same frame, resistance and all, opens the geometric grid, the budget
+        # shared by all four levels, in the band its levels span.
+        account = self.open_grid((ResistanceZones((1.15,), 0.2),), structure=False)
+        self.assertEqual(self.GEOMETRIC, self.targets(account))
+        self.assertEqual((D("0.9"), D("1.1")), (account.grid_lower, account.grid_upper))
+        for order in account.orders.values():
+            share = D(80) / 4 / (order.price * (1 + RULES.fee_rate))
+            self.assertEqual(floor_step(share, RULES.quantity_step), order.quantity)
+        # A frame without resistance, as every V0 frame is, journals what it did before V2.
+        journal = replace(self.frame, resistance=()).payload()
+        fields = {"quote", "signals", "candidate", "fair_value", "atr", "allow_new_grid"}
+        self.assertEqual(fields, set(journal))
+        self.assertEqual(({"prices": (1.15,), "radius": 0.2},), self.frame.payload()["resistance"])
 
-    def test_fta_suppressed_in_bull_regime(self):
-        """FTA resistance cap is disabled when regime is BULL."""
-        fta = float(engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS).fair_value) * 1.05
-        result = self._open_grid_regime(self.MarketRegime.BULL, fta)
-        self.assertIsNone(result)
+    def test_targets_read_only_days_closed_by_the_decision(self):
+        # The zone at 1.03 is confirmed by the day that closes at ZONE_MIDNIGHT_MS. Changing
+        # the decision's own unfinished day or any later day, or adding days, changes no
+        # target; the day confirming the zone counts once it has closed, not a minute before.
+        candles, days = zone_candles(), zone_days()
 
-    def test_fta_suppressed_in_bear_regime(self):
-        """FTA resistance cap is disabled when regime is BEAR."""
-        fta = float(engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS).fair_value) * 1.05
-        result = self._open_grid_regime(self.MarketRegime.BEAR, fta)
-        self.assertIsNone(result)
+        def targets_at(minute, daily):
+            inputs = engine_for(candles, hourly_candles=candles, daily_bars=daily).at(minute)
+            grid = self.open_grid(inputs.resistance, fair=inputs.fair_value, atr=inputs.atr)
+            return self.targets(grid)
 
-    def test_frame_carries_fta_from_inputs(self):
-        """F18: Inputs.fta_resistance is preserved through Frame construction."""
-        engine = engine_for(hourly(WARMUP))
-        inputs = engine.at(START_MS + WARMUP * HOUR_MS)
-        from dataclasses import replace as dc_replace
+        for minute in (ZONE_MIDNIGHT_MS - 60_000, ZONE_MIDNIGHT_MS + 12 * HOUR_MS):
+            with self.subTest(minute=minute):
+                completed, changed = unseen_days_changed(days, minute)
+                self.assertEqual(targets_at(minute, completed), targets_at(minute, changed))
+        before = targets_at(ZONE_MIDNIGHT_MS - 60_000, days)
+        after = targets_at(ZONE_MIDNIGHT_MS, days)
+        self.assertNotIn(D("1.0289"), {target for _, target in before})
+        self.assertIn(D("1.0289"), {target for _, target in after})
 
-        fta_val = float(inputs.fair_value) * 1.08
-        inputs = dc_replace(inputs, fta_resistance=fta_val)
-        when = datetime.fromtimestamp((START_MS + WARMUP * HOUR_MS) / 1000, UTC)
-        signals = signals_for(inputs, when, gated=True)
-        candidate = candidate_for(inputs, "TESTUSDT", 0.05, 1e9, gated=True)
-        quote = bar_quotes(
-            candle(
-                START_MS + WARMUP * HOUR_MS,
-                float(inputs.fair_value),
-                float(inputs.fair_value) * 1.001,
-                float(inputs.fair_value) * 0.999,
-                float(inputs.fair_value),
-            ),
-            "TESTUSDT",
-            "low_first",
-            D("0.0005"),
-            RULES.tick_size,
-        )[0]
-        frame = Frame(
-            quote,
-            signals,
-            candidate,
-            inputs.fair_value,
-            inputs.atr,
-            True,
-            None,
-            None,
-            inputs.fta_resistance,
-        )
-        self.assertAlmostEqual(fta_val, frame.fta_resistance)
+    def test_replay_carries_the_resistance_to_the_grid(self):
+        # Ungated, so the first frame is a quiet range and opens a grid, three hours after
+        # the zone at 1.03 is confirmed. With structure the top buy level targets 1.0289,
+        # the two lowest target 0.9773 just below the daily zone at 0.9784, and the level at
+        # 0.9726, which that zone leaves no target clearing costs, gets no buy.
+        candles = zone_candles()
+        engine = engine_for(candles, hourly_candles=candles, daily_bars=zone_days())
+        t = ZONE_MIDNIGHT_MS + 3 * HOUR_MS
+        fair = float(engine.at(t).fair_value)
+        minutes = [candle(t + i * 60_000, fair, fair * 1.001, fair * 0.999, fair) for i in range(3)]
+        run = RunConfig("TESTUSDT", "low_first", False, RULES, D(100), D("0.0005"))
+        lows = [D("0.9455"), D("0.959"), D("0.9726"), D("0.9865")]
+        for policy, highs in (
+            (SimulationPolicy(structure=True), [D("0.9773"), D("0.9773"), None, D("1.0289")]),
+            (None, [*lows[1:], D("1.0005")]),  # V0: the geometric next levels
+        ):
+            with self.subTest(policy=policy):
+                _, account = replay(self.config, run, minutes, engine, policy)
+                placed = [(low, high) for low, high in zip(lows, highs, strict=True) if high]
+                self.assertEqual(placed, self.targets(account))
 
 
 def utc_at(ms):

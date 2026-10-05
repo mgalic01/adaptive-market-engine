@@ -12,6 +12,11 @@ Given a sequence of OHLC candles (any timeframe), it:
    higher lows), bearish (lower highs and lower lows), or ranging.
 4. Identifies the *first trouble area* (FTA) above and below the current price — the
    nearest resistance zone above and the nearest support zone below.
+5. Finds the nearest resistance above any price, and whether it is in reach
+   (``nearest_resistance``): V2's grid keeps a buy level's sell target just below it
+   (owner decision D19).
+
+Every V2 rule and parameter is frozen in docs/STRUCTURE_PREREGISTRATION.md.
 
 **Design principles (for reviewers):**
 - Pure functions and immutable dataclasses only. No I/O, no randomness, no state.
@@ -25,17 +30,23 @@ Given a sequence of OHLC candles (any timeframe), it:
 **Mathematical decisions (see agent report for full derivation):**
 - Swing detection: a bar at index ``i`` is a swing high iff
   ``high[i] > max(high[i-n:i])`` and ``high[i] > max(high[i+1:i+n+1])``.
-  Strict inequality on both sides; ties are not swings.
-- Zone clustering: two swing points merge into one zone if their prices differ by less
-  than ``merge_atr`` × ATR. The zone's price is the mean of its members.
+  Strict inequality on both sides; ties are not swings. So equal highs within ``n``
+  bars of each other (a flat top, or a double top that close) give no swing, while
+  equal highs further apart are each a swing; lows likewise. Kept strict by the owner's
+  decision D21 (2026-10-05).
+- Zone clustering: in price order, a swing point joins a zone if it lies less than
+  ``merge_atr`` × ATR above the zone's lowest member, and otherwise starts the next zone.
+  The zone's price is the mean of its members.
 - Zone strength: (mean of linear recency weights) × (1 + log2(test_count)); see
   ``cluster_into_zones``. The mean weight depends only on the member count, so in
   effect strength grows with the number of tests alone. No decision reads it yet.
 - Structural trend: computed from the last ``min_swings`` confirmed swing highs and lows
   separately. Bullish iff the last two swing lows are ascending AND the last two swing
   highs are ascending. Bearish iff both are descending. Ranging otherwise.
-- Multi-timeframe alignment score: mean of per-timeframe scores where BULL=+1,
-  BEAR=-1, RANGE=0, UNKNOWN=0. Weighted by timeframe importance.
+- Multi-timeframe alignment score: the weighted mean of per-timeframe scores (BULL=+1,
+  BEAR=-1, RANGE=0, UNKNOWN=0), weights hourly 0.15, daily 0.35 and weekly 0.50,
+  renormalised over the timeframes supplied. ``features.py`` supplies no weekly bars, so
+  in effect daily counts 0.70 and hourly 0.30.
 
 **References:**
 - Luka Hranjec Jeri's analysis, 2026-09-29 (relayed by owner): FTA concept
@@ -171,6 +182,23 @@ class MultiTimeframeStructure:
     alignment: float  # [-1, +1]
 
 
+@dataclass(frozen=True, slots=True)
+class ResistanceZones:
+    """One timeframe's resistance zone prices, ascending, and its reach: the radius
+    ``max_distance_atr`` × that timeframe's ATR, ``find_fta``'s search radius.
+    """
+
+    prices: tuple[float, ...]
+    radius: float
+
+    @staticmethod
+    def of(structure: TimeframeStructure, max_distance_atr: float) -> ResistanceZones:
+        return ResistanceZones(
+            tuple(zone.price for zone in structure.zones if zone.is_resistance),
+            max_distance_atr * structure.atr,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Thresholds — all parameters explicit, no magic numbers in logic
 # ---------------------------------------------------------------------------
@@ -182,7 +210,8 @@ class StructureParams:
 
     ``swing_n``: bars on each side required to confirm a swing point (default 3).
         Higher = fewer but stronger swings.
-    ``merge_atr``: two swing points within this many ATRs merge into one zone (default 0.5).
+    ``merge_atr``: a swing point less than this many ATRs above a zone's lowest member joins
+        that zone (default 1.0, the owner's decision of 2026-10-05: "within one ATR").
     ``max_distance_atr``: FTA search radius in ATRs (default 5.0).
     ``min_swings``: minimum confirmed swing points needed on each side to classify trend
         (default 2 — need at least two highs and two lows).
@@ -192,7 +221,7 @@ class StructureParams:
     """
 
     swing_n: int = 3
-    merge_atr: float = 0.5
+    merge_atr: float = 1.0
     max_distance_atr: float = 5.0
     min_swings: int = 2
     atr_period: int = 14
@@ -307,7 +336,8 @@ def cluster_into_zones(
 ) -> list[StructureZone]:
     """Group nearby swing points into structural zones.
 
-    Two swings merge if their prices differ by less than ``merge_atr × atr``.
+    In price order, a swing joins the current zone if it lies less than
+    ``merge_atr × atr`` above the zone's lowest member, and otherwise starts the next one.
     Zone price = mean of member prices.
     Zone strength formula:
       Each member i (0=oldest, N-1=most recent, by open time) gets a linear weight:
@@ -430,6 +460,23 @@ def find_fta(
     return StructureLevel(resistance=resistance, support=support)
 
 
+def nearest_resistance(
+    price: float, timeframes: Sequence[ResistanceZones]
+) -> tuple[float, bool] | None:
+    """The nearest resistance zone strictly above ``price`` on any timeframe, at any
+    distance, and whether it is in reach: within its own timeframe's radius, which must
+    be positive (unlike ``find_fta``, a zero ATR reaches nothing). On a tie, a timeframe
+    that reaches the zone decides. None if no timeframe has a zone above ``price``. Zone
+    strength plays no part.
+    """
+    found: list[tuple[float, bool]] = []  # each timeframe's nearest zone, and its reach
+    for zones in timeframes:
+        above = next((zone for zone in zones.prices if zone > price), None)
+        if above is not None:
+            found.append((above, above - price <= zones.radius))
+    return min(found, key=lambda zone: (zone[0], not zone[1]), default=None)
+
+
 # ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
@@ -497,7 +544,8 @@ def analyse_multi_timeframe(
     """Aligned structure across hourly, daily and weekly timeframes.
 
     Any timeframe can be None or empty — it is skipped and its field is None.
-    ``alignment`` weights: weekly 0.5, daily 0.35, hourly 0.15.
+    ``alignment`` weights: weekly 0.50, daily 0.35, hourly 0.15, renormalised over the
+    timeframes present (without weekly bars: daily 0.70, hourly 0.30); 0.0 if none is.
     These reflect that higher timeframes are more authoritative for structural direction.
     """
     if params is None:

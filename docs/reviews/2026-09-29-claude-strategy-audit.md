@@ -145,7 +145,8 @@ wrote them into the spec in `65a7eb0` (PR #156), which the owner confirmed on 20
 that commit is cherry-picked onto `claude/amendments-2026-10` (section (h)), and it also
 adds the owner's economic-bar note to §6, which Bob's handoff (#162) lists under D5. On
 2026-10-05 the owner confirmed D7's wording and decided D8, D9 and D11–D14, each as
-recommended. D17–D21 are still open.
+recommended. Later that day he decided D17, option (a) extended to any depth, and D18,
+option (a) (spec v1 amendment 1, "Manual `resume()`"). D19–D21 were decided the same day; see the table and `docs/STRUCTURE_PREREGISTRATION.md`.
 
 | # | Question, short | Recommendation | Decide before | Owner's decision |
 | --- | --- | --- | --- | --- |
@@ -165,11 +166,11 @@ recommended. D17–D21 are still open.
 | D14 | V0 can put 80% of the account in one buy | No change; that is what B tests | variant selection | **Owner decision 2026-10-05:** no change; variant B tests it |
 | D15 | Old grid bounds kept after going flat (disputed) | Clear them, with a version bump | first variant run | (a): spec amendment 2. **Implemented** (h) |
 | D16 | Range-exit counter inflated during halts | Stop the clock while halted | first variant run | (a): spec amendment 3. **Implemented** (h) |
-| D17 | Halts at 8–12% can never be resumed by hand | Allow a resume with a rebase | any forward paper run | Open |
-| D18 | Exhaustion halt: refused, or final in effect? | Refuse it by category | any forward paper run | Open |
-| D19 | The FTA cap is a hidden entry veto: redefine it? | An explicit, registered veto, or levels re-spaced below the FTA | any V2 run | Open |
-| D20 | The RANGE-only FTA rule was chosen after seeing results | V2 under a spec v2 with registered trials, parameters frozen first | any V2 rerun | Open |
-| D21 | Equal highs (double tops) are invisible to swing detection | Decide on purpose; no change without your decision | any V2 run | Open |
+| D17 | Halts at 8–12% can never be resumed by hand | Allow a resume with a rebase | any forward paper run | **Owner decision 2026-10-05:** (a), extended to any depth: a manual resume that only the drawdown blocks rebases `risk_high` as the automatic restart does (C1 unchanged), which lifts the 12% rule for emergency halts. **Implemented** |
+| D18 | Exhaustion halt: refused, or final in effect? | Refuse it by category | any forward paper run | **Owner decision 2026-10-05:** (a), refused by name before any risk check; the expected-failure test became real tests. **Implemented** |
+| D19 | The FTA cap is a hidden entry veto: redefine it? | An explicit, registered veto, or levels re-spaced below the FTA | any V2 run | **Owner decision 2026-10-05:** build sell-at-resistance, each buy level's sell just below the nearest resistance above it (the owner's 29 September design), registered as a V2 trial; the cap is removed. **Implemented** |
+| D20 | The RANGE-only FTA rule was chosen after seeing results | V2 under a spec v2 with registered trials, parameters frozen first | any V2 rerun | **Owner decision 2026-10-05:** freeze V2 first: every rule and setting pinned in `docs/STRUCTURE_PREREGISTRATION.md`, V2 outside v1's selection, folded into the post-v1 spec v2; zone width 1.0 ATR by the owner. **Implemented** |
+| D21 | Equal highs (double tops) are invisible to swing detection | Decide on purpose; no change without your decision | any V2 run | **Owner decision 2026-10-05:** keep strict, as his own definition says; written down (only flat tops within 3 bars are missed). **Implemented** |
 
 ### D1. Should a grid try fewer levels before giving up?
 

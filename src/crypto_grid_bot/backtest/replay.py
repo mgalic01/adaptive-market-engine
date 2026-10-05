@@ -704,7 +704,7 @@ def replay(
                 True,
                 epoch,
                 trend,
-                inputs.fta_resistance,
+                inputs.resistance,
                 flow_share=share,
                 funding_blocks=funding_blocks,
                 cycle=cycle,

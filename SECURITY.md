@@ -46,8 +46,8 @@ SQLite-aware backup method; do not copy only the main file while its WAL is acti
 Do not manually edit balances or delete event rows to bypass a halt. SQLite is
 local storage, not a tamper-proof exchange ledger. Only a hard-drawdown halt of category
 `drawdown` restarts automatically, after 24 hours and journaled (spec v1 amendment 1,
-`docs/EXPERIMENT_SPEC_V1.md` §3); emergency, capital-exhaustion and integrity halts stay
-latched until an audited resume.
+`docs/EXPERIMENT_SPEC_V1.md` §3); emergency and integrity halts stay latched until an
+audited resume, and a capital-exhaustion halt is final (owner decision D18).
 
 Before live deployment: add live order/balance reconciliation, real exchange
 filters and fee-asset handling, bounded retries, a wall-clock stale-feed watchdog,

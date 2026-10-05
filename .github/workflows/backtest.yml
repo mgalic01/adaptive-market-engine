@@ -31,7 +31,7 @@ on:
           - "C+G"
           - "C+H"
       structure:
-        description: "Enable the V2 market-structure features (off in V0; results labelled +structure-v1)"
+        description: "Enable the V2 market-structure features (off in V0; results labelled +structure-v2)"
         required: false
         default: "false"
         type: choice

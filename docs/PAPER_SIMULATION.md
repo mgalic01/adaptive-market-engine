@@ -1,4 +1,4 @@
-# Paper simulation contract (schema 9)
+# Paper simulation contract (schema 10)
 
 ## Scope and order lifecycle
 
@@ -55,10 +55,10 @@ new net portfolio profit if other holdings have depreciated.
 | Stale/future/out-of-order quote or signal, backward receive clock, excessive spread | Cancel buys; retain sells; no fills or marking from this frame | Two distinct, consecutive fresh eligible observations |
 | Fresh frame with news/candidate veto | Cancel buys, stop replenishment, allow reduce-only sells | Same confirmation rule after eligibility returns |
 | Daily-loss limit or soft drawdown | Cancel buys, manage sells, block new exposure | Risk limits must pass, then confirmed recovery |
-| Invalid numeric/model/symbol input (category `integrity`) | Cancel all orders; latch halt; if a position is held, arm the exit so it is sold on the next valid frame | Explicit audited resume with fresh checks, once the liquidation is complete (a residue below the exchange minimum is admitted) |
+| Invalid numeric/model/symbol input (category `integrity`) | Cancel all orders; latch halt; if a position is held, arm the exit so it is sold on the next valid frame | Explicit audited resume with fresh checks, once the liquidation is complete (a residue below the exchange minimum is admitted), at any drawdown: if only the drawdown blocks it, the resume rebases `risk_high` as the automatic restart does (owner decision D17, below) |
 | Hard drawdown (category `drawdown`) | Cancel orders; latch halt and liquidate using valid event liquidity | **Restarts automatically** 24 hours (`hard_cooloff_seconds`) after the halt began, once the liquidation is complete, the frame is eligible and a rebase of `risk_high` to the current active equity would pass the risk check; journaled as `restart`. A manual resume is refused by the frozen risk check until then. See the note below. |
-| Emergency signal (category `emergency`) | Cancel orders; latch halt and liquidate using valid event liquidity | Resumable **only while the drawdown itself is within limits**: the emergency flag is read from the resume frame, so once it clears and every other limit passes, resume succeeds. An emergency raised at or past the hard-drawdown level stays refused (spec v1 amendment 1 states this asymmetry as intended); it never restarts by itself. |
-| Active capital exhausted (category `exhaustion`) | Cancel orders; latch halt | **Final.** Active equity is zero, so the drawdown is 1.0. The reserve is protected and resume cannot return it to the active account. |
+| Emergency signal (category `emergency`) | Cancel orders; latch halt and liquidate using valid event liquidity | Explicit audited resume once the emergency flag, read from the resume frame, has cleared and the day's loss is under 3%, at any drawdown, as for `integrity` (owner decision D17, below). It never restarts by itself. |
+| Active capital exhausted (category `exhaustion`) | Cancel orders; latch halt | **Final.** A manual resume refuses it by name (owner decision D18, below): the active account cannot fund a grid level, and the protected reserve cannot be returned to it. |
 | Saved accounting invariant failure | Abort the transaction / refuse opening the account | Investigate; resume cannot bypass corruption |
 
 `SimulationPolicy.recovery_frames` defaults to 2 and is persisted in account
@@ -120,26 +120,34 @@ which a test asserts. Replay measures `active_max_drawdown_pct` against it and c
 Risk baselines are preserved through recovery; a realised loss is not erased by
 issuing resume. UTC daily baselines still carry overnight gaps into the risk check.
 
-**A drawdown halt cannot be resumed by hand; it restarts by itself.** `resume()`
-requires the current risk action to be `ALLOW`. Only `_settle` rescales `risk_high`,
-and it never runs while halted; for an exactly flat account active equity cannot change
-either. The measured drawdown is therefore frozen at the value that triggered the halt,
-so a manual resume attempt is refused, and the refusal says so; the automatic restart
-above is what clears it, after the cool-off. **The one margin is a dust residue.** The
-halt admits a remainder below the exchange minimum as liquidation-complete, and that
-remainder stays held and marked to the bid, so it can move the measured drawdown by at
-most one minimum notional against `risk_high` (5 quote units on a 100-unit account;
-above that it is sellable and the armed liquidation sells it). In that corner case a
-halt taken just past 12% whose residue then rallies can pass the risk check and be
-resumed by hand before the restart. The spec accepts this margin (spec v1 amendment 1,
-"Manual `resume()`"). An "active capital exhausted" halt stays final: even if a manual
-resume is admitted (it can be, when a held residue keeps the drawdown under 8%), the
-harvest gate that raised it halts the account again on the next frame.
+**A drawdown halt cannot be resumed by hand; it restarts by itself.** For a `drawdown`
+halt, `resume()` requires the current risk action to be `ALLOW`. Only `_settle` rescales
+`risk_high`, and it never runs while halted; for an exactly flat account active equity
+cannot change either. The measured drawdown is therefore frozen at the value that
+triggered the halt, so a manual resume attempt is refused, and the refusal says so; the
+automatic restart above is what clears it, after the cool-off. **The one margin is a
+dust residue.** The halt admits a remainder below the exchange minimum as
+liquidation-complete, and that remainder stays held and marked to the bid, so it can
+move the measured drawdown by at most one minimum notional against `risk_high` (5 quote
+units on a 100-unit account; above that it is sellable and the armed liquidation sells
+it). In that corner case a halt taken just past 12% whose residue then rallies can pass
+the risk check and be resumed by hand before the restart. The spec accepts this margin
+(spec v1 amendment 1, "Manual `resume()`"). An "active capital exhausted" halt is
+refused by name, before any risk check (owner decision D18, 2026-10-05): the active
+account cannot fund a grid level, so the halt is final. Before D18 a manual resume could
+admit it when a held residue kept the drawdown under 8%, and the harvest gate halted the
+account again on the next frame.
 
-An **emergency** halt is different, and the row above says so: the emergency flag comes
-from the frame passed to `resume()`, not from a frozen baseline, so a halt raised only
-by that flag clears once the flag does. It is final only when the account is also at or
-past the drawdown limit. Do not read "latched" as "unrecoverable" for this one case.
+**Emergency and integrity halts resume at any drawdown** (owner decision D17,
+2026-10-05). After the operator has checked what happened, a manual resume works like
+the automatic restart. If the plain risk check allows, the resume proceeds as before,
+with no rebase. If only the drawdown blocks it, soft or hard, the resume needs the
+restart's tentative `ALLOW` (no emergency flag on the resume frame, the day's loss under
+3%), rebases `risk_high` to the current active equity and journals that as `restart` in
+its record, with the automatic restart's fields. C1 still measures from the original
+peak, because the rebase moves only the runtime safety reference `risk_high`;
+`measure_high` is untouched. This lifts the spec's earlier rule that an emergency halt
+past 12% stays refused. Replay never resumes, so no backtest result changes.
 
 Pausing cancels the remainder of a partially filled buy. Its unpaired inventory
 is sold conservatively on a usable frame, sharing remaining bid capacity with
@@ -157,10 +165,10 @@ sell reserving it.
 **`resume()` uses the same criterion** (spec v1 amendment 1, reversing PR #122's
 exact-zero rule): it is refused while the liquidation is incomplete and admitted with a
 residue below the exchange minimum, which stays held and marked and is drained or
-settled exactly as after any resume. The risk check is what keeps the final halts final:
-a held residue marked to the bid can move the measured drawdown by at most one minimum
-notional against `risk_high`, a margin the amendment accepts, since the same account
-without the emergency flag restarts after 24 hours on a full rebase anyway.
+settled exactly as after any resume. Only for a `drawdown` halt does the residue's
+margin matter: marked to the bid, it can move the measured drawdown by at most one
+minimum notional against `risk_high`, a margin the amendment accepts, since the halt
+restarts after 24 hours on a full rebase anyway.
 
 The residue is never written off and never invented:
 it stays in `inventory`, in `unreserved_inventory` and in the equity mark, and it is
@@ -228,7 +236,9 @@ watchdog: feed-loss handling for real resting orders remains separate work.
 
 The public engine method is `PaperSimulator.resume(frame, event_id=..., reason=...)`.
 It requires a halted, flat account with no orders, fresh valid observations,
-eligible signals and passing risk limits. It logs the prior halt and operator
+eligible signals and passing risk limits, or, for an emergency or integrity halt that
+only the drawdown blocks, the automatic restart's tentative check and rebase (D17); an
+exhaustion halt is refused by name (D18). It logs the prior halt and operator
 reason in the same transactional journal, places no order, and waits for the
 normal recovery confirmations. Repeating the same command ID/payload is idempotent;
 changing its payload is rejected. Inventory or outstanding liquidation must be
@@ -270,7 +280,7 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Only schema 9 databases are accepted; schema 1-8 are rejected, with no
+initial cash. **Only schema 10 databases are accepted; schema 1-9 are rejected, with no
 implicit migration or reset.** Schema 5 (engine `exit-residue-v1`, PR #122) changed the
 exit lifecycle; schema 6 (engine `drawdown-recovery-v1`, spec v1 amendment 1) added the
 halt identity, the episode, the C1(b) reference and the two cool-offs to the saved
@@ -283,10 +293,14 @@ both by V0 code and by code that ran every account with structure on, and their
 identity cannot tell them apart. Schema 9 (engine `drawdown-recovery-v2`, the owner's
 decisions of 2026-10-02) added D7's no-rebase close and amendments 2 and 3, and made
 the risk limits compare the balances exactly: a schema-8 account ran without them, so
-its saved reference, bounds or clock may hold what they forbid. An older database is
-refused rather than silently reinterpreted. Preserve old experiments with the old code,
-or start a clearly separate schema 9 experiment. Never edit identity/state to bypass
-risk history.
+its saved reference, bounds or clock may hold what they forbid. Schema 10 (the owner's
+decisions D17 and D18 of 2026-10-05; the engine is unchanged, since replay never
+resumes) lets a manual resume of an emergency or integrity halt that only the drawdown
+blocks rebase `risk_high` and journal it as `restart`, and refuses an exhaustion halt by
+name: a schema-9 journal holds resumes in the old shape, and may hold an admitted
+exhaustion halt. An older database is refused rather than silently reinterpreted.
+Preserve old experiments with the old code, or start a clearly separate schema 10
+experiment. Never edit identity/state to bypass risk history.
 The frame-gap policy (added in 0.5.1/0.6) is part of saved identity, so experiments
 without that setting are rejected. Use a new database for the new policy; retain
 the original database and matching code for reviewing the old experiment.
@@ -295,7 +309,7 @@ Variants E and F (spec v1 §3) keep account state that is never saved: E's outsi
 episode start and its one decision on the episode, F's buy block and its fragments. A
 saved account would lose that state at every frame, so `PaperSimulator.process` and
 `resume` refuse both: they run in historical replay only. Nothing about saved state
-changed for them, so schema 9 stands; every other variant saves what it saved before.
+changed for them, and every other variant saves what it saved before.
 
 Broad-market input quality has a separate eligibility veto. Low-quality inputs
 remain reported as `TRANSITION`, but `RegimeAssessment.input_quality_ok=False`
@@ -319,7 +333,9 @@ The shallow fixture produced 2 fills on the reviewed code and 100 on the correct
 code. This is a behavioural regression result, not a return forecast or backtest.
 Schema 9 adds tests for D7 (`tests/test_drawdown_recovery.py`) and amendments 2 and 3
 (`tests/test_flat_bounds_and_halt_clock.py`); each one for a new behaviour fails on
-schema 8 code.
+schema 8 code. Schema 10 adds tests for D17 and D18 (`tests/test_drawdown_recovery.py`),
+which replace the expected failure that recorded D18's mismatch; each one for a new
+behaviour fails on schema 9 code.
 
 Historical strategy validation is now the next gate, ahead of universe/news
 integration. See [the plan](BACKTEST_PLAN.md) and [the Claude handoff](reviews/2026-09-24-codex-response.md).
