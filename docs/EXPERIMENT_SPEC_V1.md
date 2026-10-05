@@ -13,6 +13,8 @@ variants yet.** This document fixes what will be built and how it will be judged
 - The matrix runs in two stages: stage 1 on the two current windows, with daily history
   from 2020-05; stage 2 on two long windows (§4). A variant must pass both, and the
   winner is ranked on 2017–2024 (§6).
+- Stage 2 runs on stage 1's strategy code. Only the long-window data handling may land
+  between the stages, and it must leave every stage-1 result byte-identical (§6).
 - Hour-level masking and eight more data rules apply (§5).
 - C2 and the selection use compound annualised returns, and `N_family` grows (§6).
 
@@ -946,7 +948,7 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
 | Variants | V0, A, B, C, D, E, F, G, C+G, H, C+H, V2, C+F+G+H+V2 (the full stack; V2 and the full stack added by the owner's decision of 2026-10-05, §3) |
 | Baselines | **Ungated V0** (the replay's `strategy: "ungated"`: V0 without the opportunity gate), for C6 only. It is run everywhere V0 runs and is never eligible for selection. |
 | Fees | **Primary:** Revolut X, maker 0 / taker 0.0009. **Sensitivity** (reported, not used for acceptance): 0.001 / 0.001. **Kraken scenario** (reported only, not used for acceptance, owner decision 2026-10-02, D5): maker 0.0025 / taker 0.0040 (Kraken lowest public tier; fee schedule to be verified before first run). Moving to Kraken as the live venue reopens acceptance from scratch under the applicable fee scenario — v1's verdict does not carry over to a different exchange. |
-| Windows and pairs | **Stage 1:** `verify-2024h1` (ADA, BTC) and `practice-2022` (BTC, XRP, SOL), each with daily history from 2020-05 (P3, P8; owner decision 2026-10-05). **Stage 2:** `full-range-2017-2024` (BTC, ETH, XRP; evaluation 2019-01 to 2024-12), scored, and `full-range-2019-2024` (BTC, ETH, XRP; evaluation 2019-07 to 2024-12), run and reported only (§5, rule 6). Both stages run the same frozen code (§6, "Two stages"). |
+| Windows and pairs | **Stage 1:** `verify-2024h1` (ADA, BTC) and `practice-2022` (BTC, XRP, SOL), each with daily history from 2020-05 (P3, P8; owner decision 2026-10-05). **Stage 2:** `full-range-2017-2024` (BTC, ETH, XRP; evaluation 2019-01 to 2024-12), scored, and `full-range-2019-2024` (BTC, ETH, XRP; evaluation 2019-07 to 2024-12), run and reported only (§5, rule 6). Both stages run the same strategy code (§6, "Two stages"). |
 | Intrabar paths | `high_first` and `low_first`, both always reported. No path is chosen after seeing results. |
 | Capital | 100 quote units per run, independent per pair. |
 
@@ -968,10 +970,15 @@ development ceiling, and nothing touches 2025 or later.
   Its daily history, from 2018-07 as its comment says, is added with the manifests.
 - **Basket:** the nine symbols of their specs (ADA is omitted), with their documented
   basket exclusions plus DOGEUSDT 2020-02 (§5, rule 5).
-- **Not yet runnable.** They need the repair rule in the archive reader, hour-level
-  masking (§5), Bob's re-fetch with daily and funding archives, and manifests. All of
-  this lands before the freeze, so that no stage-2 input is chosen after a stage-1
-  result is seen.
+- **Not yet runnable.** They need:
+  - the repair rule in the archive reader and hour-level masking (§5);
+  - Bob's re-fetch with daily and funding archives;
+  - manifests.
+
+  This work may land after stage 1, under the conditions in §6, "Two stages". The code
+  must implement exactly the §5 rules and leave every stage-1 result byte-identical. The
+  specs and manifests must follow the rules registered here and are frozen before
+  stage 2 runs.
 - **Warm-up of `full-range-2017-2024`.** Its spec's comment says the 2018-05 and
   2018-06 daily archives are missing. That is wrong:
   - #156's manifest lists all 240 daily entries (BTC, ETH and XRP, 2018-05 to 2024-12)
@@ -985,7 +992,7 @@ development ceiling, and nothing touches 2025 or later.
   - From 2018-06-01 to 2019-01-01 there are 214 completed days, above P3's 200, so the
     warm-up passes.
 - **Changes after today:** a change to either window is made from archive availability
-  alone, before the freeze, and recorded here.
+  alone, under the rules registered here, and recorded here before stage 2 runs.
 - **Sensitivities:** whether the reported-only sensitivities and fee scenarios above
   also run in stage 2 is for the owner to decide later (his decision of 2026-10-05).
   They decide nothing, so the choice cannot move the verdict.
@@ -1281,9 +1288,26 @@ waived by the owner (see its row).
   primary fees, on `full-range-2017-2024` (scored) and `full-range-2019-2024` (reported
   only). Whether the reported-only sensitivities also run there is for the owner to
   decide later (§4).
-  - It uses **identical frozen code**: stage 1's code commit, config and spec version.
-  - Only the dataset specs and manifests differ, and they too are frozen before stage 1
-    runs.
+  - **Same strategy code.** Stage 2 runs on stage 1's strategy code, config and spec
+    version. Between the stages, the only code that may land is the long-window data
+    handling: the repair rule moved into the reader, and the hour-level masking.
+
+    Anything else the long windows need must therefore already be in stage 1's code.
+    That includes G running where no funding archive exists before 2020-01 (§5,
+    rule 9).
+  - **Data-handling conditions.** That code must implement exactly the §5 rules
+    registered here, and it must leave every stage-1 result byte-identical. Re-running
+    stage 1's windows on stage 2's code must reproduce stage 1's `results.json`, apart
+    from the provenance fields `code_commit` and `code_sha256`. Codex and Bob verify
+    this before stage 2 runs.
+  - **Datasets.** The long-window dataset specs and manifests follow the registered
+    rules and are frozen before stage 2 runs. They need not exist before stage 1.
+  - **The owner's decision (2026-10-05):** "Same strategy code", with the option text
+    "Stage 1 runs as soon as the variants and scorer are merged. The masking and repair
+    code lands afterwards. It must follow exactly the rules fixed today, and must leave
+    every stage-1 result byte-identical, which Codex and Bob check. Strategy code is
+    identical in both stages. Early read in about a day."
+  - **Not chosen:** "Same commit, byte for byte".
 - **How the stages combine (owner decision 2026-10-05).** A variant enters the eligible
   set only if it passes C1–C6 in stage 1 (the current windows, as above) **and** in
   stage 2 (2017–2024, judged on its own and not pooled with the current windows).

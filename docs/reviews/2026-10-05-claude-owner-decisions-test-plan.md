@@ -1,13 +1,14 @@
 # Owner decisions on the test plan: one batch with V2 and a full stack, two stages, nine data rules
 
-Index: **Owner decisions, 2026-10-05 (test plan).** Everything runs in one batch. V2 joins v1, reversing D20's "outside v1". A registered full stack, C+F+G+H+V2, runs beside every single variant, and E stays alone. V2's two behaviours beyond V0's restrictions become a fourth named exception. Both current windows get daily history from 2020-05. Claude builds the C1–C6 scorer (#167) and Codex reviews it. #156 closes after #165 merges, and its branch is kept. Two stages, with every rule fixed now: a variant must pass C1–C6 in stage 1 (the current windows) and in stage 2 (full-range-2017-2024, judged on its own). The winner is ranked on 2017–2024, and full-range-2019-2024 is reported only. All nine data rules are accepted (hour-level masking, compound annualised returns, XRP excluded below the tick limit), together with six readings. Spec v1 and the V2 pre-registration are amended. Docs only.
+Index: **Owner decisions, 2026-10-05 (test plan).** Everything runs in one batch. V2 joins v1, reversing D20's "outside v1". A registered full stack, C+F+G+H+V2, runs beside every single variant, and E stays alone. V2's two behaviours beyond V0's restrictions become a fourth named exception. Both current windows get daily history from 2020-05. Claude builds the C1–C6 scorer (#167) and Codex reviews it. #156 closes after #165 merges, and its branch is kept. Two stages, with every rule fixed now: a variant must pass C1–C6 in stage 1 (the current windows) and in stage 2 (full-range-2017-2024, judged on its own). The winner is ranked on 2017–2024, and full-range-2019-2024 is reported only. Stage 2 runs on stage 1's strategy code. Only the long-window data handling may land in between, and it must leave every stage-1 result byte-identical. All nine data rules are accepted (hour-level masking, compound annualised returns, XRP excluded below the tick limit), together with six readings. Spec v1 and the V2 pre-registration are amended. Docs only.
 
 - **Date and author:** 2026-10-05, written by Claude (session `b9db01ca`).
 - **Owner:** answered in Claude's session on 2026-10-05. Approximate times, UTC:
   - about 12:05: test plan, daily data, scorer (decisions 1–3);
   - about 13:15: #156 and the first long-data answer (decisions 4 and 5);
   - about 13:40: two stages and the nine data rules (decisions 5 and 6);
-  - about 14:10: V2's exception, how the stages combine, the six readings (decisions 7–9).
+  - about 14:10: V2's exception, how the stages combine, the six readings (decisions 7–9);
+  - about 14:25: the code each stage runs on (decision 10).
 - **How:** multiple-choice questions. Claude recommended every chosen option except the first long-data answer, which a later answer superseded.
 - **Scope:** this record, the spec v1 amendment (`docs/EXPERIMENT_SPEC_V1.md`, "test-plan amendment") and a dated amendment to `docs/STRUCTURE_PREREGISTRATION.md`. No code, config, dataset spec or manifest changes; separate PRs carry those.
 - **Why now:** the project forbids changing parameters or criteria after seeing results. This record fixes the test plan before any result of the coming batch exists. No market data, backtest result or strategy result was read for it, and none of #156's result reports was opened.
@@ -54,6 +55,10 @@ Index: **Owner decisions, 2026-10-05 (test plan).** Everything runs in one batch
 9. **Six readings.** Claude put to the owner the six readings in its first draft that went beyond his answers.
    - Chosen: **"Accept all six"**, Claude's recommendation.
    - Option text: "Returns are annualised with compounding. V2 and the full stack rank last in the simplicity tie-break, V2 after E and the full stack last. A coin-month over 17% defects has all its hours masked, and the window is kept. Repaired hours in hourly-only warm-up months are masked. Stage-2 sensitivity runs are decided later. The masking and annualisation rules also bind the one-time 2025–26 run."
+10. **The code each stage runs on.** Question: "Stage 2 must not be tuned after stage 1, so its code has to match stage 1's. But the long windows need data-handling code that isn't built yet: the repair rule and outage masking. Which rule?"
+    - Chosen: **"Same strategy code"**, Claude's recommendation.
+    - Option text: "Stage 1 runs as soon as the variants and scorer are merged. The masking and repair code lands afterwards. It must follow exactly the rules fixed today, and must leave every stage-1 result byte-identical, which Codex and Bob check. Strategy code is identical in both stages. Early read in about a day."
+    - It makes decision 5's "stage 2 runs on identical frozen code" precise.
 
 Options the owner did not choose:
 - Test plan: "Full stack only", "Build multi-mode first" and "Keep the current plan".
@@ -64,6 +69,7 @@ Options the owner did not choose:
 - Data rules: "One by one".
 - V2's exceptions: "Make V2 only restrict" and "Take V2 out of v1 again".
 - How the stages combine: "Pool all windows".
+- The code each stage runs on: "Same commit, byte for byte".
 
 ## What follows from each decision
 
@@ -94,8 +100,7 @@ Options the owner did not choose:
 5. **Two stages.**
    - The long windows are registered now, as part of the final verdict (spec §4, §6).
    - Stage 1 gives an early read and names no winner.
-   - Stage 2 runs on identical frozen code.
-   - The freeze waits for the long-window inputs, so that nothing stage 2 uses is chosen after a stage-1 result is seen.
+   - Stage 2 runs on stage 1's strategy code (decision 10).
 6. **Nine data rules.**
    - The rules are in spec §5 (rules 1–6, 8 and 9) and §6 (rule 7, annualised returns).
    - On the current windows they mask nothing, so stage 1 is unaffected.
@@ -103,7 +108,7 @@ Options the owner did not choose:
      - the repair rule in the archive reader;
      - hour-level masking;
      - the masks written into the results;
-     - G must run where funding archives do not exist. #165, as described, refuses G unless the manifest lists funding archives for every evaluation month. The long windows cannot meet that before 2020-01.
+     - G must run where funding archives do not exist. #165, as described, refuses G unless the manifest lists funding archives for every evaluation month. The long windows cannot meet that before 2020-01. By decision 10 this change is not data handling, so it must land before stage 1.
    - Bob's work:
      - the re-fetch with daily and funding archives;
      - the XRP price measurement;
@@ -125,15 +130,24 @@ Options the owner did not choose:
    - **Repaired hours in hourly-only warm-up months** are masked.
    - **Stage-2 sensitivities:** whether stage 2 also runs the reported-only sensitivities is decided later.
    - **The one-time 2025–26 run** is bound by masking rules 1–5 and by annualisation.
+10. **Same strategy code (spec §6, "Two stages").**
+    - **Same strategy code.** Stage 2 runs on stage 1's strategy code, config and spec version. Between the stages, the only code that may land is the long-window data handling: the repair rule moved into the reader, and the hour-level masking.
+    - **Data-handling conditions.** That code must implement exactly the registered §5 rules. It must leave every stage-1 result byte-identical: re-running stage 1's windows on stage 2's code reproduces stage 1's `results.json`, apart from the provenance fields `code_commit` and `code_sha256`. Codex and Bob verify this before stage 2 runs.
+    - **Datasets.** The long-window dataset specs and manifests follow the registered rules and are frozen before stage 2 runs. They need not exist before stage 1.
+    - **Consequence.** Anything else the long windows need must be in stage 1's code. That includes G running where no funding archive exists before 2020-01.
 
 ## Order of work
 
 1. This registration.
 2. #165 (variants E–H) and #167 (the scorer).
-3. The full-test-setup code: the full-stack flag, V2 and the full stack in the scorer, annualised returns and the stage rule, the P8 manifests, and daily history from 2020-05.
-4. The long-window data code, then Bob's fetch and measurements, then the long dataset specs and manifests, including the 2017–2024 warm-up fix below.
-5. The spec v1 freeze, after Codex's review.
-6. Stage 1, then stage 2, on the frozen code.
+3. The full-test-setup code: the full-stack flag, V2 and the full stack in the scorer, annualised returns and the stage rule, G running where funding archives are absent, the P8 manifests, and daily history from 2020-05.
+4. The spec v1 freeze, after Codex's review.
+5. Stage 1, as soon as the variants and the scorer are merged and the spec is frozen. This is the early read.
+6. Between the stages, possibly in parallel with stage 1:
+   - the long-window data code (the repair rule in the reader, and hour-level masking), which Codex and Bob verify leaves every stage-1 result byte-identical;
+   - Bob's fetch and measurements;
+   - the long dataset specs and manifests, including the 2017–2024 warm-up fix below, frozen before stage 2.
+7. Stage 2, on stage 1's strategy code.
 
 ## Correction: the warm-up false alarm
 
@@ -148,7 +162,7 @@ Claude's first draft (local commit `216a1d8`, never pushed) said the 2017–2024
 - **Stage-2 sensitivity runs.** The owner decides later. They are reported only and decide nothing.
 - **The trial count.** The `N_family` floors in spec §6 are working figures, to be settled by the trial register. C7's condition (b) stands, and C7 is not yet binding.
 - **For review, not the owner.** How the full stack's parts combine (spec §3) is Claude's reading of the sections and of the code on main. It was not among the six readings, and it is open to Codex's and Bob's review before the freeze.
-- **Data work before the freeze, with no owner decision needed:**
+- **Data work before stage 2, with no owner decision needed:**
   - the 2017–2024 warm-up fix (above);
   - Bob's XRP measurement;
   - the long windows' masks and the 17% check under these rules.
