@@ -509,10 +509,24 @@ def unwrap(words: list[str]) -> list[str]:
                         value, rest = (words[1] if len(words) > 1 else ""), words[2:]
                     words = [*split_words(value), *rest]
                     break
-                words = words[2:] if words[0] in opts else words[1:]
+                words = words[2:] if _takes_value(words[0], opts) else words[1:]
         else:
             break
     return words
+
+
+def _takes_value(option: str, opts: set[str]) -> bool:
+    """Whether a wrapper's option word takes the next word as its value: one in
+    ``opts``, or a bundle of short flags whose first value option ends it (`sudo -Eu
+    root`; Codex review of #159). A value attached to it (`-uroot`) is in the word."""
+    return option in opts or _bundled_value(option, opts) == len(option) - 1
+
+
+def _bundled_value(option: str, opts: set[str]) -> int | None:
+    """In a bundle of short flags (`-Eu`), the index of the first that takes a value."""
+    if not re.fullmatch(r"-[A-Za-z]{2,}", option):
+        return None
+    return next((k for k, c in enumerate(option[1:], 1) if f"-{c}" in opts), None)
 
 
 def shell_command(exe: str, args: list[str]) -> str | None:
@@ -642,7 +656,8 @@ def _readers(command: str, start: int, end: int, at: int) -> list[list[str]]:
             groups.pop()
         elif c != ")":
             groups.append((c, i + 1))
-    opener, first = groups[-1] if groups else ("", start)
+    opener, region = groups[-1] if groups else ("", start)
+    first = region
     stages: list[tuple[int, int]] = []
     nested: list[str] = []
     i = first
@@ -673,41 +688,47 @@ def _readers(command: str, start: int, end: int, at: int) -> list[list[str]]:
     stages.append((first, i))
     readers = []
     for s, e in stages:
-        if e <= at:
-            continue  # upstream of the `<<`: it never sees the body
+        if e <= at or (s <= at and command[at] == "(" and not command[s:at].strip()):
+            continue  # upstream of the `<<`, or a subshell around it: neither reads it
         words = drop_redirections(split_words(command[s:e]))
         # A function body's opener before its command: `f(){ bash <<EOF`, `f() { bash`.
         while words and re.fullmatch(r"[^\s(){}]*\(\)\{?|[(){}]+", words[0]):
             words = words[1:]
-        # `.` and `source` stay as they are: they run their input.
-        toks = words[:1] if words[:1] in (["."], ["source"]) else unwrap(words)
-        if toks:
-            readers.append(toks)
+        if words[:1] in (["."], ["source"]) or unwrap(words):
+            readers.append(words)
+    if groups:
+        # What the group prints goes to the command around it: `bash < <(cat <<EOF)`,
+        # `eval $(cat <<EOF)` or `(cat <<EOF) | bash` (Codex review of #159).
+        readers += _readers(command, start, end, region - 1)
     return readers
 
 
 # Commands that only read their input as data (git: by its subcommand, below). A
 # here-document read by anything else (a shell under any name, `source`, ssh, a tool not
 # listed) may run it, so its body is read as commands (Codex review of #159: `ash
-# <<'EOF'`, `busybox sh <<'EOF'`). awk (`system()`), sed (`e`) and the pagers (`!`) can
-# run commands, so they are not here (Codex review of #159).
+# <<'EOF'`, `busybox sh <<'EOF'`). awk (`system()`), sed (`e`), the pagers (`!`) and
+# patch (`-e` hands its input to ed) can run commands, so they are not here (Codex
+# review of #159).
 DATA_READERS = {
     "cat", "tee", "echo", "printf", "true", "false", "grep", "egrep", "fgrep",
     "rg", "sort", "uniq", "wc", "head", "tail", "cut", "tr", "jq",
-    "yq", "diff", "patch", "base64", "xxd", "od", "column", "fold",
+    "yq", "diff", "base64", "xxd", "od", "column", "fold",
     "fmt", "nl", "rev", "paste", "comm", "join", "tac", "iconv", "sha256sum",
     "sha1sum", "md5sum", "read", "mapfile", "readarray", "clip", "pbcopy", "xclip",
     "xsel", "wl-copy",
 }  # fmt: skip
-# The git commands that read their input as data: a message, a patch or object input.
-# Any other subcommand may run it, an alias above all (`git -c alias.x='!sh' x <<EOF`),
-# and so may any git given a setting, which can name a command to run: an editor, a
-# pager, an alias, settings included from that very input (Codex review of #159).
+# The git commands that only read their input as data (a patch, objects, refs), and
+# those that do when told to read their message from it (`git commit -F -`) and open
+# no editor. Any other may run it, an alias above all (`git -c alias.x='!sh' x <<EOF`),
+# and so may any git given a setting or an environment, which can name a command to
+# run: an editor (`GIT_EDITOR='sh -s'`), a pager, an alias, settings included from that
+# very input (Codex review of #159).
 GIT_DATA_COMMANDS = {
-    "am", "apply", "cat-file", "check-attr", "check-ignore", "commit", "hash-object",
-    "interpret-trailers", "mktag", "mktree", "notes", "patch-id", "stripspace", "tag",
-    "update-index", "update-ref",
+    "am", "apply", "cat-file", "check-attr", "check-ignore", "hash-object",
+    "interpret-trailers", "mktag", "mktree", "patch-id", "stripspace", "update-index",
+    "update-ref",
 }  # fmt: skip
+GIT_MESSAGE_COMMANDS = {"commit", "notes", "tag"}
 
 
 def _git_reads_data(args: list[str]) -> bool:
@@ -716,14 +737,27 @@ def _git_reads_data(args: list[str]) -> bool:
         if args[0] in ("-c", "--config-env") or args[0].startswith("--config-env="):
             return False
         args = args[2:] if args[0] in (*GIT_VALUE_OPTS, "-C", "--git-dir") else args[1:]
-    return bool(args) and args[0] in GIT_DATA_COMMANDS
+    if not args:
+        return False
+    if args[0] in GIT_DATA_COMMANDS:
+        return True
+    rest = args[1:]
+    stdin = any(
+        re.fullmatch(r"-[A-Za-z]*F-|--file=-", w)
+        or (re.fullmatch(r"-[A-Za-z]*F|--file", w) and rest[i + 1 : i + 2] == ["-"])
+        for i, w in enumerate(rest)
+    )
+    edit = any(w == "--edit" or re.fullmatch(r"-[A-Za-z]*e[A-Za-z]*", w) for w in rest)
+    return args[0] in GIT_MESSAGE_COMMANDS and stdin and not edit
 
 
-def _reader_kind(toks: list[str]) -> str:
+def _reader_kind(words: list[str]) -> str:
     """What a here-document's reader does with it: "shell" (it runs it as commands),
     "interpreter" (python, node...: it can run anything and send API calls), "client"
     (curl, gh: it can send an API merge, and its other input is data), "data" (it only
     reads it) or "run" (anything else, which may run it: awk, sed, vim, ssh...)."""
+    # `.` and `source` stay as they are: they run their input.
+    toks = words[:1] if words[:1] in (["."], ["source"]) else unwrap(words)
     word = toks[0]
     name = _exe(word)
     if word in (".", "source") or name in (*SHELLS, *EVALS):
@@ -733,7 +767,8 @@ def _reader_kind(toks: list[str]) -> str:
     if name == "gh" or CLIENT_VERSION_RE.sub("", name) in HTTP_CLIENTS:
         return "client"
     if name == "git":
-        return "data" if _git_reads_data(toks[1:]) else "run"
+        # Nothing may come before it: an assignment or a wrapper can change what it runs.
+        return "data" if toks == words and _git_reads_data(toks[1:]) else "run"
     return "data" if name in DATA_READERS else "run"
 
 
@@ -833,16 +868,49 @@ def _env_dir(words: list[str], cwd: str) -> str:
         while i < len(words) and (
             words[i].startswith("-") or WRAPPER_NUMBER_RE.fullmatch(words[i])
         ):
-            o = words[i]
-            if chdir and o in chdir and i + 1 < len(words):
+            o, k = words[i], _bundled_value(words[i], opts)
+            if chdir and k is not None and f"-{o[k]}" == chdir[0]:
+                # `env -iC DIR`, its value attached or the next word (Codex review of #159)
+                value = o[k + 1 :] or (words[i + 1] if i + 1 < len(words) else "")
+                cwd, i = str(Path(cwd, value)), i + (1 if o[k + 1 :] else 2)
+            elif chdir and o in chdir and i + 1 < len(words):
                 cwd, i = str(Path(cwd, words[i + 1])), i + 2
             elif chdir and o.startswith(chdir[1] + "="):
                 cwd, i = str(Path(cwd, o.split("=", 1)[1])), i + 1
             elif chdir and o.startswith(chdir[0]) and len(o) > len(chdir[0]):
                 cwd, i = str(Path(cwd, o[len(chdir[0]) :])), i + 1
             else:
-                i += 2 if o in opts else 1
+                i += 2 if _takes_value(o, opts) else 1
     return cwd
+
+
+# Files that are a process's own standard input.
+STDIN_FILES = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
+# An interpreter option followed by its program: python's -c, perl's -e or -lne,
+# node's -e, -p, --eval or --print, ruby's -e, php's -r.
+INLINE_CODE_RE = re.compile(r"-[A-Za-z]*[ceEpr]|--eval|--print")
+
+
+def _run_time_code(exe: str, args: list[str], segment: str, command: str) -> list[Target]:
+    """What a shell without `-c`, `source` or an interpreter runs is text known only
+    at run time: a here-string or an interpreter's inline program (`bash <<< ...`,
+    `python3 -c ...`), or, when it reads its standard input, what the rest of
+    ``command`` feeds it (`echo ... | bash`, `bash <(...)`). A merge or push word in
+    that text counts as unknown; a script's name is not its text (Codex review of
+    #159). A here-document's body is read on its own (heredocs())."""
+    code = segment.partition("<<<")[2]
+    if CLIENT_VERSION_RE.sub("", exe) in INTERPRETERS:
+        inline = [args[i + 1] for i, a in enumerate(args[:-1]) if INLINE_CODE_RE.fullmatch(a)]
+        code = " ".join([code, *inline, *(args[1:] if args[:1] == ["eval"] else [])])
+    found = _unknown(code, f"{exe} runs code known only at run time")
+    stdin = (
+        all(a.startswith("-") for a in args)
+        or any(a in STDIN_FILES for a in args)
+        or (exe in POSIX_SHELLS and "-s" in args)
+    )
+    if not found and stdin and next(_heredoc_operators(segment, 0, len(segment)), None) is None:
+        found = _unknown(command, f"{exe} runs what it reads from its input")
+    return found
 
 
 def find_targets(
@@ -863,6 +931,11 @@ def find_targets(
     targets: list[Target] = []
     for segment in segments(command):
         words = drop_redirections(split_words(segment))
+        if words[:1] == ["source"] or (posix and words[:1] == ["."]):
+            # They run a file, or what they read from their input (`source <(...)`);
+            # PowerShell's `.` runs the command after it, which is read as before.
+            targets.extend(_run_time_code(words[0], words[1:], segment, command))
+            continue
         toks = unwrap(words)
         if not toks:
             continue
@@ -914,9 +987,16 @@ def find_targets(
             inner = shell_command(exe, toks[1:])
             if inner is not None:
                 shell = exe in POSIX_SHELLS
-                targets.extend(find_targets(inner, cwd, depth + 1, posix=shell, root=root))
+                targets.extend(find_targets(inner, base, depth + 1, posix=shell, root=root))
+            else:
+                targets.extend(_run_time_code(exe, toks[1:], segment, command))
         elif exe in LAUNCHERS:
             targets.extend(_unknown(root, f"{exe} runs a command known only at run time"))
+        elif CLIENT_VERSION_RE.sub("", exe) in INTERPRETERS:
+            # An API call that names its PR counts, and so does a merge word in the
+            # code it runs (`subprocess.run(["gh", "pr", "merge", "5"])`).
+            targets.extend(_rest_merge_targets(segment, base, None))
+            targets.extend(_run_time_code(exe, toks[1:], segment, command))
         elif CLIENT_VERSION_RE.sub("", exe) in HTTP_CLIENTS and (
             "/merge" in segment or "mergePullRequest" in segment
         ):
@@ -926,7 +1006,7 @@ def find_targets(
             # `eval "gh pr merge 5"` runs literal text: read it as the command it is
             # (Codex review of #159: `eval 'echo submerged'` was refused as a merge).
             body = " ".join(toks[1:])
-            targets.extend(find_targets(body, cwd, depth + 1, posix=posix, root=root))
+            targets.extend(find_targets(body, base, depth + 1, posix=posix, root=root))
         elif exe in EVALS or ((len(toks) > 1 or posix) and RUNTIME_WORD.match(toks[0])):
             # `eval "$cmd"`, `iex $cmd`, `& $gh pr merge 5`: the text of the whole command
             # line is all there is to go on. A lone `$x` runs nothing in PowerShell (it
@@ -934,9 +1014,12 @@ def find_targets(
             targets.extend(_unknown(root, f"{toks[0]} runs a command known only at run time"))
     inners = substitutions(command)
     for body, quoted, readers in bodies:
-        kinds = {_reader_kind(toks) for toks in readers}
+        kinds = {_reader_kind(words) for words in readers}
         if kinds & {"shell", "run"}:
-            inners.append(body)  # a shell, `source`, ssh or anything unknown may run it
+            # Read as commands, where its reader runs them (`env -C DIR bash <<EOF`): a
+            # shell, `source`, ssh or anything unknown may run it.
+            here = next(_env_dir(w, cwd) for w in readers if _reader_kind(w) in ("shell", "run"))
+            targets.extend(find_targets(body, here, depth + 1, posix=posix, root=root))
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))
         if kinds & {"interpreter", "client"}:
