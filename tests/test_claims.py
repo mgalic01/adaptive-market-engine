@@ -414,6 +414,17 @@ class TargetTest(unittest.TestCase):
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a sourced body runs; an interpreter's body can send
+            # an API merge.
+            api = f"https://api.github.com/repos/{REPO}/pulls/5/merge"
+            for cmd in (
+                "source /dev/stdin <<'EOF'\ngh pr merge 5\nEOF",
+                ". /dev/stdin <<'EOF'\ngh pr merge 5\nEOF",
+                f"python3 - <<'EOF'\nimport urllib.request as r\n"
+                f"r.urlopen(r.Request('{api}', method='PUT'))\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
             # Codex review of #159: a shell elsewhere on the line is not this body's reader.
             self.assertEqual(
                 find_targets("bash -c true; cat <<'EOF'\n(gh pr merge 5)\nEOF", "."), []

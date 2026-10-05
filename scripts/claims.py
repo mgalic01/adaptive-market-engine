@@ -821,8 +821,12 @@ def find_targets(
     inners = substitutions(command)
     for body, quoted, reader in bodies:
         # Shell words, so that `/bin/'bash' <<EOF` is bash (Codex review of #159).
-        if any(_exe(w) in (*SHELLS, *EVALS) for w in split_words(reader)):
-            inners.append(body)  # `bash <<EOF` runs its body
+        words = split_words(reader)
+        if any(w in (".", "source") or _exe(w) in (*SHELLS, *EVALS) for w in words):
+            inners.append(body)  # `bash <<EOF` and `source /dev/stdin <<EOF` run their body
+        elif any(CLIENT_VERSION_RE.sub("", _exe(w)) in HTTP_CLIENTS for w in words):
+            # `python3 - <<EOF` runs its body as a program that can send an API merge.
+            targets.extend(_rest_merge_targets(body, cwd, None))
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))
     for inner in inners:
