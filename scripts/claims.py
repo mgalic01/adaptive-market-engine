@@ -456,6 +456,12 @@ HTTP_CLIENTS = {
     "bun", "ruby", "perl", "php", "pypy", "nodejs", "invoke-restmethod", "invoke-webrequest",
     "irm", "iwr",
 }  # fmt: skip
+# Clients that can run any program, not only send a request.
+INTERPRETERS = {"python", "py", "pypy", "node", "nodejs", "deno", "bun", "ruby", "perl", "php"}
+# Commands that run another command with arguments known only at run time (`printf 5 |
+# xargs gh pr merge`, `find -exec`); a merge or push in their line counts as unknown
+# (Codex review of #159).
+LAUNCHERS = {"xargs", "parallel", "find", "fd", "watch", "entr"}
 # A client's version suffix: `python3.12`, `ruby3.2` and `perl5.36` are python, ruby and
 # perl (Codex review of #159).
 CLIENT_VERSION_RE = re.compile(r"[\d.]+$")
@@ -673,9 +679,12 @@ DATA_READERS = {
 
 
 def _reader_kind(word: str) -> str:
-    """What a here-document's reader does with it: "client" (it can send an API merge,
-    as `gh api` or python can), "data" (it only reads it) or "run" (anything else)."""
+    """What a here-document's reader does with it: "interpreter" (python, node...: it
+    can run anything), "client" (curl, gh: it can send an API merge, and its other
+    input is data), "data" (it only reads it) or "run" (anything else)."""
     name = _exe(word)
+    if CLIENT_VERSION_RE.sub("", name) in INTERPRETERS:
+        return "interpreter"
     if name == "gh" or CLIENT_VERSION_RE.sub("", name) in HTTP_CLIENTS:
         return "client"
     return "data" if name in DATA_READERS and word not in (".", "source") else "run"
@@ -859,6 +868,8 @@ def find_targets(
             if inner is not None:
                 shell = exe in POSIX_SHELLS
                 targets.extend(find_targets(inner, cwd, depth + 1, posix=shell, root=root))
+        elif exe in LAUNCHERS:
+            targets.extend(_unknown(root, f"{exe} runs a command known only at run time"))
         elif CLIENT_VERSION_RE.sub("", exe) in HTTP_CLIENTS and (
             "/merge" in segment or "mergePullRequest" in segment
         ):
@@ -881,8 +892,14 @@ def find_targets(
             inners.append(body)  # a shell, `source`, ssh or anything unknown may run it
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))
-        if "client" in kinds:
-            # `python3 - <<EOF` or `gh api --input -`: a program that can send an API merge.
+        if "interpreter" in kinds:
+            # `python3 - <<EOF` can run anything (`subprocess.run(["gh", ...])`): an API
+            # call that names its PR counts, and otherwise a merge or push word in it is
+            # a command known only at run time (Codex review of #159).
+            sent = _rest_merge_targets(body, cwd, None)
+            targets.extend(sent or _unknown(body, "an interpreter runs this here-document"))
+        elif "client" in kinds:
+            # `gh api --input -`, `curl --data @-`: the body can be an API merge.
             targets.extend(_rest_merge_targets(body, cwd, None))
     for inner in inners:
         targets.extend(find_targets(inner, cwd, depth + 1, posix=posix, root=root))

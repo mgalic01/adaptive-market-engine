@@ -1,4 +1,4 @@
-# Paper simulation contract (schema 6)
+# Paper simulation contract (schema 7)
 
 ## Scope and order lifecycle
 
@@ -231,13 +231,16 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Only schema 6 databases are accepted; schema 1-5 are rejected, with no
+initial cash. **Only schema 7 databases are accepted; schema 1-6 are rejected, with no
 implicit migration or reset.** Schema 5 (engine `exit-residue-v1`, PR #122) changed the
 exit lifecycle; schema 6 (engine `drawdown-recovery-v1`, spec v1 amendment 1) added the
 halt identity, the episode, the C1(b) reference and the two cool-offs to the saved
-state and identity, and made a `drawdown` halt restart. An older database is refused
-rather than silently reinterpreted: its halts were final. Preserve old experiments with
-the old code, or start a clearly separate schema 6 experiment. Never edit identity/state
+state and identity, and made a `drawdown` halt restart. Schema 7 (the code audit, #159)
+corrected the journal: each fill records its remaining quantity, an order that filled
+in part and was cancelled on the same frame is listed as cancelled, and a flat frame's
+no-op settlement is neither counted nor journaled. An older database is refused
+rather than silently reinterpreted. Preserve old experiments with the old code, or
+start a clearly separate schema 7 experiment. Never edit identity/state
 to bypass risk history.
 The frame-gap policy (added in 0.5.1/0.6) is part of saved identity, so experiments
 without that setting are rejected. Use a new database for the new policy; retain

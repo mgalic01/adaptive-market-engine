@@ -71,7 +71,12 @@ GRID_BUDGET_FRACTION = D("0.8")
 # account carries the halt's start and category, the episode and the C1(b) reference.
 # Schema 1-5 databases are refused: their halts were final and their state lacks these
 # fields.
-SCHEMA = 6
+# 7 (2026-10-05, code audit #159): the journal records each fill's remaining quantity
+# and lists an order that filled in part and was then cancelled on the same frame as
+# cancelled; a flat frame's no-op settlement is neither counted nor journaled. A
+# schema-6 database holds events in the old shape, so it is refused rather than
+# continued under the new one (Codex review of #159).
+SCHEMA = 7
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"

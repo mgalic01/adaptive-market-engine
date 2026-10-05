@@ -453,6 +453,13 @@ class TargetTest(unittest.TestCase):
                     self.assertEqual(find_targets(cmd, "."), [])
             mutation = "gh api graphql -F query=@- <<'EOF'\nmutation { mergePullRequest }\nEOF"
             self.assertEqual([t.kind for t in find_targets(mutation, ".")], ["merge"])
+            # Codex review of #159: an interpreter can run anything it reads.
+            run = (
+                "python3 - <<'EOF'\nimport subprocess\n"
+                "subprocess.run(['gh', 'pr', 'merge', '5'])\nEOF"
+            )
+            self.assertIn("merge", [t.kind for t in find_targets(run, ".") if t.unknown])
+            self.assertEqual(find_targets("node - <<'EOF'\nconsole.log(1)\nEOF", "."), [])
             # Codex review of #159: a function body's opener is not the reader.
             for cmd in (
                 "f(){ bash <<'EOF'\ngh pr merge 5\nEOF\n}; f",
@@ -667,6 +674,15 @@ class TargetTest(unittest.TestCase):
                     self.assertEqual(self.branches(cmd), ["claude/a"])
             # A command substitution is still read once, by substitutions().
             self.assertEqual(self.prs("echo $(gh pr merge 5)"), [5])
+
+    def test_launchers_run_commands_known_only_at_run_time(self):
+        # Codex review of #159: xargs supplies the PR or branch when it runs.
+        with git_stub():
+            merge = find_targets("printf '5\\n' | xargs gh pr merge", ".")
+            self.assertEqual([(t.kind, bool(t.unknown)) for t in merge], [("merge", True)])
+            push = find_targets("git branch | xargs -I{} git push origin {}", ".")
+            self.assertEqual([(t.kind, bool(t.unknown)) for t in push], [("push", True)])
+            self.assertEqual(find_targets("find . -name '*.py' -print", "."), [])
 
     def test_a_lone_ampersand_ends_a_command(self):
         # Codex review of #159: the shell runs both commands. A redirection is no separator,
