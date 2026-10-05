@@ -737,7 +737,12 @@ def _writes(words: list[str]) -> set[str]:
                 files.add(os.path.normpath(target))
     toks = unwrap(drop_redirections(words))
     if toks and _exe(toks[0]) == "tee":
-        files |= {os.path.normpath(a) for a in toks[1:] if not a.startswith("-")}
+        # tee opens its files where its wrappers move it (`env -C /tmp tee run`; Codex
+        # review of #159); a redirection is opened by the shell, where the line is.
+        here = _env_dir(drop_redirections(words), ".")
+        files |= {
+            os.path.normpath(os.path.join(here, a)) for a in toks[1:] if not a.startswith("-")
+        }
     return files
 
 

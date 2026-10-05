@@ -494,6 +494,8 @@ class TargetTest(unittest.TestCase):
                 "cat > run <<'EOF'\ngh pr merge 5\nEOF\ncd sub; bash ../run",
                 # Codex review of #159: run where a wrapper moved it.
                 "cat >/tmp/run <<'EOF'\ngh pr merge 5\nEOF\nenv -C /tmp bash run",
+                # ... and a file tee writes where a wrapper moved it.
+                "env -C /tmp tee run <<'EOF' >/dev/null\ngh pr merge 5\nEOF\nbash /tmp/run",
             ):
                 with self.subTest(cmd=cmd):
                     self.assertIn(5, self.prs(cmd))
