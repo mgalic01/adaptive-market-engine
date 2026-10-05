@@ -224,6 +224,8 @@ The rotation experiment should explicitly measure:
 
 # 7. Variant L — Hybrid Spot Trend + Grid
 
+Research extension: [Addendum A — Trend exits and recovery participation](#addendum-a--trend-exits-and-recovery-participation) defines a bounded comparison within L, to be registered when this development stage is reached.
+
 This is the most important conceptual shift.
 
 The system should stop assuming that a grid is always the correct profit engine.
@@ -920,3 +922,67 @@ policy. Record them before execution rather than filling gaps after seeing resul
 
 Publication scope: documentation only. No strategy code, configuration, acceptance
 policy, market data or trading behavior is changed by this roadmap.
+
+## Addendum A — Trend exits and recovery participation
+
+Added 2026-10-05 at the owner's request. **Status: proposed research within Variant L.** Recording this proposal does not authorize implementation, experiments, reserved-data access, changed risk limits or live trading. It does not interrupt the development sequence in §21 and §26.
+
+### Purpose and rationale
+
+Test whether better exit and re-entry rules improve compounded return within the approved drawdown and ruin-risk budget. Avoiding a decline must be assessed alongside recovery missed, switching costs and time in cash. These transitions are already part of the planned hybrid spot strategy, so a bounded comparison belongs within L rather than a new strategy family.
+
+The external [trend-switcher article](https://dimonb19a.hashnode.dev/holding-eth-through-the-2022-crash-lost-52-this-free-bot-ended-at-0-9) and [repository snapshot](https://github.com/dimonb19a/trend-switcher/tree/e59282d6232e541b944ab4a8930333379283ba2c) motivate questions, not performance expectations. Its separate-start windows, stochastic model judgments, unpublished raw ledgers and differences between replay and live halt recovery prevent treating its headline results as validation for our system. Its later continuous-path reconstruction is not a single continuous replay. We are not adopting its code, AI services, execution platform or parameter values through this proposal.
+
+### A1. Verify protective-exit behavior
+
+Before adding strategy logic, trace how existing controls distinguish opening or increasing exposure, cancelling entry orders, reducing exposure and handling uncertain execution or invalid market data.
+
+A restriction on new exposure must not inadvertently block an otherwise valid protective exit. This is not permission to bypass execution safeguards: unresolved orders, stale prices and unknown fills may require reconciliation before another order is safe. Define each halt's permitted actions explicitly.
+
+Deliver a documented state-transition check. If a defect is demonstrated, add targeted regression tests and handle the correction through its own reviewed change. Do not presume a defect or redesign the risk engine without evidence.
+
+### A2. Register a bounded deterministic comparison
+
+Use one frozen baseline, the same eligible data and starting capital, and identical cost and account-risk policies. The L0/L1/L2 labels below are local research labels within Variant L; they do not replace existing variant identifiers.
+
+| Arm | Question | Controlled change |
+| --- | --- | --- |
+| L0 — Planned deterministic trend baseline | How well does the proposed trend engine exit and recover? | Frozen baseline entry, exit and re-entry rules |
+| L1 — Confirmed exit | Does price confirmation reduce false exits enough to compensate for later crash protection? | Change the discretionary trend exit only; retain L0 re-entry |
+| L2 — Recovery-aware re-entry | Does a separate recovery signal improve participation without excessive churn? | Retain L0 exit; change re-entry only |
+
+Evaluate L1 and L2 independently against L0 before registering a combined arm. Emergency and mandatory account-risk exits remain unchanged: confirmation must never delay them.
+
+Candidate mechanisms include a volatility-scaled break of recent structure and persistence across completed bars. A recovery signal may permit entry below the previous sale price; otherwise a prolonged recovery can remain inaccessible. The external rule that buys back only above the last sale can be a separately registered diagnostic comparator, not our default.
+
+Freeze exact thresholds, confirmation periods, warm-up, signal timestamps, the primary objective, allowed tradeoffs and maximum trial count before examining outcomes. Do not import the external 0.9% threshold as an optimum. Repeated judgments on nearly identical inputs are not independent confirmation.
+
+### A3. Require continuous, stateful evaluation
+
+Evaluate permitted development periods continuously across declines, ranges and recoveries. Carry forward inventory, cash, protected profits, equity peaks, risk halts, outstanding orders and strategy state. Segment results by regime for diagnosis, but do not reset into the favorable starting position for each segment or combine separate-start returns as one portfolio.
+
+Use only completed bars available at decision time, realistic execution delays and costs, and the same halt/re-enable policy planned for paper operation. If a replay approximates operator intervention, register and disclose that approximation rather than silently resetting halts. The existing restriction on reserved data remains binding.
+
+### A4. Measure both protection and recovery
+
+Report net compounded return, maximum drawdown on active and total equity, recovery duration, and unrecovered drawdowns. Include bull participation, losses during declines, time in cash after exits, delay to re-entry, switching frequency, fees, slippage and forced-exit losses.
+
+Compare L0/L1/L2 with the relevant frozen grid baseline and buy-and-hold using consistent dates and capital conventions. Check nearby parameter values and higher execution costs under the registered trial budget. Use a fixed, preregistered definition of recovery for diagnostics; do not label turning points retrospectively as signals available to the strategy.
+
+Existing acceptance criteria remain binding. New acceptance policy for a future strategy family requires a separate explicit decision; this addendum does not replace C1–C6 or relax account limits.
+
+### A5. Promotion, rejection and scope
+
+Advance a mechanism only after correctness checks and applicable risk gates pass, and the preregistered objective improves across multiple permitted periods without relying on one fortunate crash exit. Quantify uncertainty and missed upside; do not call an apparent gain robust solely because the aggregate return is higher.
+
+Reject or defer a mechanism if realistic costs erase its advantage, recovery participation deteriorates beyond the registered tolerance, or added complexity brings no reliable benefit. Negative results are retained. An AI component, futures, leverage, cross-chain execution and wider loss limits are outside this comparison.
+
+### A6. Next development handoff
+
+1. Complete and verify the existing foundation before this experiment.
+2. Assign a writer to the protective-exit state-transition check; record evidence and any actual gaps.
+3. When Variant L is scheduled, incorporate L0–L2 into its reviewed preregistration, including numeric gates and the trial budget.
+4. Implement and run only the authorized comparison, preserving continuous state and reproducible provenance.
+5. Keep only mechanisms supported by the evidence; consider a combined arm afterward under a new registered trial.
+
+**Recommendation:** retain this as a scoped addition to Variant L's plan. Its expected benefit is a clearer test of safe exits versus recovery participation, not a promise of higher returns or a reason to accelerate deployment.

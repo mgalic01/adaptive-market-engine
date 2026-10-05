@@ -2,6 +2,12 @@
 
 Index: Documentation-only V2 I–M and V3 futures planning proposal; existing acceptance and paper-only policy preserved; no merge requested.
 
+## Owner-requested addendum
+
+The next documentation batch adds Addendum A, linked from Variant L, for deterministic trend exits and recovery participation. Parent commit: `8aa560cf3edb31a5a1531049a4f727ade377dff5`. L1 changes only discretionary exits, L2 only re-entry, and mandatory risk exits remain unchanged. Continuous-state evaluation, preregistration, rejection rules and existing data/policy restrictions are explicit. External strategy results motivate questions only; no external code was imported.
+
+Validation for this addition: `git diff --check` passed and `python scripts/check_reports.py` returned 0 problems (the same 14 historical unverifiable hashes remain). The addendum anchor and L0/L1/L2 coverage were checked. Documentation only; no performance tests or strategy changes. Implementation remains a future separately authorized task. PR #169 was refreshed and remained open/draft with no active claim before editing.
+
 - Writer: Codex Desktop, 2026-10-05.
 - Branch: `codex/high-performance-crypto-strategy-roadmap`.
 - Base: `c4cfb87c3560131c5b14d0165f6b026c215f9a2d`.
