@@ -94,12 +94,14 @@ common to all:
     - **Eligibility pauses.** Its sixth regime vote (its rules 10 and 11) changes the
       score and the dispersion the regime label is drawn from (`regime.py` L126–135).
       So it can change whether a frame is eligible, and an ineligible frame starts V0's
-      eligibility pause (`runner.py` L721–722). V2 can therefore keep a grid running
-      where V0 would pause it, or pause where V0 would not. The recovery confirmations,
-      the soft-drawdown rebase and the automatic restart wait for eligible frames, so
-      they can come earlier or later.
+      eligibility pause (`runner.py`, the eligibility branch of `PaperSimulator._step`).
+      V2 can therefore keep a grid running where V0 would pause it, or pause where V0
+      would not. Like H3, it can loosen an entry gate (§3 H). The recovery
+      confirmations, the soft-drawdown rebase and the automatic restart wait for
+      eligible frames, so they can come earlier or later.
     - **The range exit's band.** A sell target raised to resistance above the top level
-      becomes the grid's upper bound (its rule 14, step 7; `runner.py` L1139). The
+      becomes the grid's upper bound (its rule 14, step 7; `runner.py`
+      `PaperSimulator._open_grid`). The
       6-hour range exit therefore watches a wider band above the grid.
 
     V2 changes no risk limit and no other control.
@@ -888,8 +890,10 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   opportunity score minimum is lowered by 0.10 (0.70 → 0.60) for **new grids only**.
   - Every other regime, eligibility, liquidity, spread and risk check still applies.
   - H3 never changes a risk limit.
-  - It is the only mechanism in v1 that loosens an entry gate, and it is reported
-    separately (grids opened only because of H3, and their P&L).
+  - It is one of two mechanisms in v1 that can loosen an entry gate. The other is V2's
+    regime vote, under V2's fourth exception (§3 common rule; §3 V2). *(Until the
+    test-plan amendment of 2026-10-05 this line said H3 was the only one.)* H3 is
+    reported separately: grids opened only because of H3, and their P&L.
 - **`m` in [0, 18) or ≥ 48:** no change from V0.
 - **Runs:** H on its own (V0 + H), and **C + H** as a declared interaction.
 - **Reported:** the phase of every evaluated bar, and the H2 and H3 activations.
@@ -911,6 +915,14 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
 - **Data:** V0's, plus daily bars from the dataset's `daily_warmup_start` (its rule 8).
 - **C6 baseline:** the ungated V0, as for every variant. A `--structure` run's ungated
   rows are the ungated V0 baseline.
+- **Reporting of its gate-loosening.** Unlike H3's, it has no separate report: v1
+  requires no count of the grids opened only because of the sixth vote.
+  - Its effect shows only in V2's results beside V0's and the ungated baseline's in the
+    same runs, and in the full stack's interaction reporting.
+  - A separate count would need V0's five-signal label computed beside V2's on every
+    frame.
+  - This is Claude's reading of the spec as it stands, from Codex's review of #168,
+    and it is open to the owner.
 - **Runs:** V2 alone, and inside the full stack.
 
 ### The full stack: C+F+G+H+V2, a declared combination (test-plan amendment, owner decision 2026-10-05)
@@ -934,7 +946,7 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - **At grid open,** V2 first sets each buy level's target and leaves out the levels
     that cannot sell below resistance and clear costs. B's cap then places the remaining
     buys from the highest price down. This is the order `_open_grid` already applies to
-    C with `--structure` (`runner.py` L1112–1139).
+    C with `--structure` (`runner.py` `PaperSimulator._open_grid`).
   - **Exits.** Each part keeps its own exit rules. H2's 2-hour threshold, when active,
     applies to the grid's bounds as V2 sets them. A's same-step labelling ranks the
     combined exits. F's fragment sells use the cancelled buy's target as V2 set it.
@@ -1143,28 +1155,51 @@ existing rules to every replay, not only to walk-forward folds:
 Rules 1–5 and 7 apply to every window v1 replays, including the one-time 2025–26 run
 (§7 applies §5's rules there). The owner confirmed this on 2026-10-05: "The masking and
 annualisation rules also bind the one-time 2025–26 run." Rules 6, 8 and 9 name their
-windows. Two details go beyond the owner's first answer. They are Claude's readings,
-which the owner accepted on 2026-10-05, and each is marked where it stands.
+windows. Several details go beyond the owner's answers. Each is Claude's reading and is
+marked where it stands, either as accepted by the owner on 2026-10-05 or as from a
+review of #168 and open to him.
 
-1. **Hour-level masking.** An hour of a symbol with 1m data (a traded pair, in the
-   evaluation months) enters the replay only if all of these hold:
-   - both its 1m and its 1h archive have it, after the repair rule. The repair rule:
-     a row whose close is off the step boundary, whose open is aligned, and which is the
-     file's last row or whose next row opens at `open + step` or later, gets close
-     `open + step − 1`, in memory only;
-   - it has all 60 minutes (rule 2);
-   - its aggregated minutes match its 1h bar under `drift-tolerance-v1`. If the hour
-     holds a repaired row, the match must be exact (`Decimal(0)`, prices and volume).
+1. **Hour-level masking.** An hour of a traded pair in its evaluation months, where the
+   dataset holds both its 1m and its 1h archive, enters the replay only if all of these
+   hold after the repair rule:
+   - **The repair rule.** A row whose close is off the step boundary, whose open is
+     aligned, and which is the file's last row or whose next row opens at
+     `open + step` or later, gets close `open + step − 1`, in memory only.
+   - **Unique bars.** The 1h archive holds exactly one bar for the hour. The 1m archive
+     holds exactly one bar at each of the hour's 60 expected minute timestamps, and
+     none at any other timestamp within the hour. A duplicate, a missing timestamp or
+     an extra timestamp masks the hour; rule 2 is the missing-minute case. This
+     condition is Claude's reading, from Codex's review of #168, open to the owner.
+   - **A match.** Its aggregated minutes match its 1h bar under `drift-tolerance-v1`.
+     If the hour holds a repaired row, the match must be exact (`Decimal(0)`, prices
+     and volume).
 
    Any other hour is **masked**: its minutes and its 1h bar are dropped, for every
    variant alike. Masking runs before the comparison-mask checks, which then run against
    the post-mask expected set (above).
-   - **Symbol-months with only a 1h archive.** These are every breadth-basket symbol and
-     the traded pairs' hourly warm-up months. An hour there enters only if the archive
-     holds it exactly once and the hour holds no repaired row (rule 5). For the warm-up
-     months this was Claude's reading, for rule 5's reason: no minutes exist to check a
-     repair against. The owner accepted it on 2026-10-05 ("Repaired hours in
-     hourly-only warm-up months are masked").
+   - **The reader.** Today's strict parser (`klines.parse_rows`) rejects a whole archive
+     whose rows are duplicated or out of order. The long-window data PR's reader must
+     instead report the hours those rows fall in for masking and keep the rest of the
+     archive, as this rule requires. An archive that still cannot be read leaves all its
+     hours absent. They are then masked, and the month is excluded under the 17% rule.
+   - **Hours with no minute data.** Two kinds of symbol-month have only a 1h archive:
+     - **Untraded symbols:** breadth-basket members that the window does not trade, in
+       every month. An untraded market proxy is treated the same way. No registered
+       window has one, since BTCUSDT is both proxy and traded in all of them.
+     - **A traded pair's hourly warm-up months,** before `start`.
+
+     There an hour enters only if the 1h archive holds exactly one bar for it and that
+     bar is not a repaired row. A repaired hour is masked, since no minutes exist to
+     check it against. The provenance differs by case:
+     - for untraded basket symbols, this is the owner's rule 5;
+     - for traded pairs' warm-up months, it was Claude's reading, which the owner
+       accepted on 2026-10-05 ("Repaired hours in hourly-only warm-up months are
+       masked");
+     - for an untraded proxy, it is Claude's reading, from Codex's review of #168, open
+       to the owner.
+
+     Traded pairs are also basket members, but their evaluation months always have both
+     archives. Those months follow the conditions above, never this branch.
    - **A masked hour is absent.** Every consumer treats it as it treats a missing hour
      today:
      - hourly indicators skip it, and data quality scores it (strategy audit, D13);
@@ -1192,10 +1227,12 @@ which the owner accepted on 2026-10-05, and each is marked where it stands.
    - A masked span is a gap between observations, so the engine's gap rules apply
      unchanged. Recovery confirmations restart after a gap over
      `maximum_frame_gap_seconds`. The range-exit clock counts no time across a gap and
-     erases none (`runner.py` `_track_range`, L536–564).
+     erases none (`runner.py` `PaperSimulator._track_range`).
    - C1 and C3 sample only replayed quotes (P2), so both skip a masked span alike.
-5. **Basket symbols' repaired hours are masked.** A basket symbol has only its 1h
-   archive (above), so a repaired hour cannot be checked against minutes. DOGEUSDT
+5. **Untraded basket symbols' repaired hours are masked.** An untraded basket symbol has
+   only its 1h archive (rule 1, "Hours with no minute data"), so a repaired hour cannot
+   be checked against minutes. Traded pairs are basket members too, but their evaluation
+   months have minutes and follow rule 1's conditions. DOGEUSDT
    2020-02, which the repair rule cannot rescue (eligibility record, corrections,
    item 2), is excluded as a documented basket absence in the long specs.
 6. **Only `full-range-2017-2024` is scored** in stage 2. `full-range-2019-2024` is run
@@ -1208,7 +1245,8 @@ which the owner accepted on 2026-10-05, and each is marked where it stands.
      - The replay's quote builder (`replay.py` `bar_quotes`) rounds each synthesized bid
        down and each ask up to the tick.
      - On a low-priced bar, that can widen a quote beyond the 0.15% spread limit. The
-       engine then rejects the frame (`runner.py` L507, where `(ask − bid) ÷ ask` is
+       engine then rejects the frame (`runner.py` `PaperSimulator._validate_frame`,
+       where `(ask − bid) ÷ ask` is
        above the limit; §8, D8).
      - A rejected frame makes a run invalid. P4 found the same mechanism for SOL.
    - **The rule.** If Bob's measurement confirms that XRP's price breaks the tick limit
@@ -1242,7 +1280,7 @@ which the owner accepted on 2026-10-05, and each is marked where it stands.
 
 **The current windows.** In `practice-2022` and `verify-2024h1` these rules mask nothing:
 - Both pass the checks the masks replace. Those checks are fatal today
-  (`INTEGRITY_FIELDS`, `backtest/__main__.py` L62–69). Both windows passed them in the
+  (`INTEGRITY_FIELDS` in `backtest/__main__.py`). Both windows passed them in the
   2026-09-24 evidence in the integrity bullet above, which was taken after `8fe0cf8`
   made incomplete hours and missing minutes fatal.
 - None of the 14 months the strict parser rejects (`UNPARSED_MONTHS`, `audit_run.py`)

@@ -169,6 +169,16 @@ Options the owner did not choose:
     - XRP is excluded from a window if any quote that `bar_quotes` synthesizes from the window's replayed 1m bars has a spread above 0.15%. Only the replayed span counts, and one quote is enough.
     - It replaces the earlier "any 1m low below 2/15 USDT" reading. That reading was stronger than the owner's rule: a bar with open and close at 0.14 and a low of 0.13 passes the spread check.
     - The thresholds (about 0.13323 for open/close quotes, about 0.0667 for high/low quotes) are consequences, not the rule.
+- **Codex, three findings at `fc2b833`.** All are Claude's readings, open to the owner.
+  - **V2 also loosens an entry gate** (P2; spec §3 H, §3 V2 and the common rule).
+    - §3 H no longer calls H3 the only gate-loosening mechanism. V2's regime vote, under its fourth exception, is the second.
+    - V2's loosening has no separate report, unlike H3's. Its effect shows only in V2's and the full stack's results beside V0's and the ungated baseline's, in the same runs.
+  - **Unique bars in an admitted hour** (P2; spec §5, rule 1).
+    - Admission needs exactly one 1h bar and exactly one 1m bar at each of the 60 expected minute timestamps. A duplicate, a missing timestamp or an extra timestamp masks the hour.
+    - The strict parser now rejects a whole archive on duplicated or out-of-order rows. The long-window data PR's reader must instead report those hours for masking.
+  - **The 1h-only branch covers untraded symbols only** (P1; spec §5, rules 1 and 5).
+    - That means basket members the window does not trade, and an untraded proxy, which no registered window has. It also covers the traded pairs' hourly warm-up months, as the owner accepted.
+    - Traded pairs' evaluation months always have minutes and follow rule 1's conditions.
 
 ## Correction: the warm-up false alarm
 
@@ -213,7 +223,7 @@ The working figures are 22 and 28. All figures are floors, to be settled by the 
   - the D17–D21 record;
   - the #165 and #167 descriptions;
   - the dataset specs and manifests of both full-range windows on #156's branch `65a7eb0`, and `full-range-2019-2024.toml` on main `2f645fe` (configuration and metadata only).
-- **Code facts cited in the spec,** read at `2f645fe`:
+- **Code facts cited in the spec,** read at `2f645fe`. #165 and #167 have since merged into main and moved these lines, so the spec now cites the methods instead: `PaperSimulator._step`'s eligibility branch, `_open_grid`, `_track_range` and `_validate_frame`. On main `396041f` the eligibility pause goes through #165's `_entry_eligible`, and the claim holds. The facts, with their line numbers at `2f645fe`:
   - an ineligible frame starts a V0 eligibility pause (`runner.py` L721–722);
   - the sixth vote changes the score and the dispersion (`regime.py` L126–135);
   - V2's level filter runs before B's cap (`runner.py` L1112–1139);
