@@ -216,6 +216,9 @@ class TargetTest(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual([t.pr for t in find_targets(cmd, ".")], [141])
             self.assertEqual(find_targets("gh -R other/repo pr merge 141", "."), [])
+            # Codex review of #159: the attached form, `-Rowner/repo`.
+            self.assertEqual(find_targets("gh pr merge 5 -Rother/repo", "."), [])
+            self.assertEqual(find_targets("gh -Rother/repo pr merge 5", "."), [])
             # gh fills {owner}/{repo} from -R or from the checkout's origin.
             placeholder = (
                 "gh api -X PUT repos/{owner}/{repo}/pulls/141/merge -f merge_method=squash"
@@ -545,6 +548,43 @@ class TargetTest(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
 
+    def test_an_attached_repository_flag_from_another_checkout(self):
+        # Codex review of #159: `-R<repo>` names this repository from another one.
+        with git_stub(origin="https://github.com/other/repo.git"):
+            for cmd in (f"gh pr merge -R{REPO} 5", f"gh -R{REPO} pr merge 5"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+
+    def test_a_push_goes_where_git_is_configured_to_send_it(self):
+        # Codex review of #159: push.default=upstream, and the remote's push refspecs.
+        def configured(config):
+            def fake(cwd, *args):
+                if args[:2] == ("rev-parse", "--abbrev-ref"):
+                    return "work"
+                if args[:2] == ("remote", "get-url"):
+                    return f"https://github.com/{REPO}.git"
+                if args[:2] in (("config", "--get"), ("config", "--get-all")):
+                    return config.get(args[2])
+                return None
+
+            return mock.patch.object(claims, "_git", side_effect=fake)
+
+        upstream = {"push.default": "upstream", "branch.work.merge": "refs/heads/claude/a"}
+        mapping = {"remote.origin.push": "refs/heads/work:refs/heads/claude/a"}
+        every = [(None, True)]
+        for config, cmd, expected in (
+            (upstream, "git push", [("claude/a", False)]),
+            (mapping, "git push", [("claude/a", False)]),
+            (mapping, "git push origin work", [("claude/a", False)]),
+            ({"remote.origin.push": "refs/heads/*:refs/heads/*"}, "git push", every),
+            ({"push.default": "matching"}, "git push", every),
+            ({}, "git push origin 'refs/heads/*:refs/heads/*'", every),
+            ({}, "git push", [("work", False)]),
+        ):
+            with self.subTest(cmd=cmd, config=config), configured(config):
+                found = [(t.branch, t.every_branch) for t in find_targets(cmd, ".")]
+                self.assertEqual(found, expected)
+
     def test_positional_parameters_of_a_shell_script(self):
         # Codex review of #159: `sh -c script name args...` gives its args to $1, $@...
         with git_stub():
@@ -625,6 +665,8 @@ class TargetTest(unittest.TestCase):
                 "git -C /tmp/other --git-dir=/work/repo/.git push origin claude/a",
                 # Codex review of #159: GIT_DIR exported earlier on the line.
                 "cd /tmp/other && export GIT_DIR=/work/repo/.git && git push origin claude/a",
+                "cd /tmp/other && GIT_DIR=/work/repo/.git; export GIT_DIR; "
+                "git push origin claude/a",
             ):
                 with self.subTest(cmd=cmd):
                     targets = find_targets(cmd, ".")

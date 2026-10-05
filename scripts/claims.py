@@ -316,6 +316,32 @@ def _branch_of(ref: str, cwd: str) -> str | None:
     return ref.removeprefix("refs/heads/")
 
 
+def _mapped(source: str, remote: str, cwd: str) -> str | None:
+    """Where a `remote.<remote>.push` refspec sends ``source``, or None when none
+    names it."""
+    full = source if source.startswith("refs/") else f"refs/heads/{source}"
+    for spec in (_git(cwd, "config", "--get-all", f"remote.{remote}.push") or "").split():
+        mine, _, theirs = spec.lstrip("+").partition(":")
+        if theirs and mine in (full, source):
+            return theirs
+        if mine.endswith("*") and theirs.endswith("*") and full.startswith(mine[:-1]):
+            return theirs[:-1] + full[len(mine) - 1 :]
+    return None
+
+
+def _default_destination(branch: str, cwd: str) -> str | None:
+    """The remote branch push.default sends the current ``branch`` to: its upstream
+    for `upstream`, every branch (None) for `matching`, else its own name."""
+    mode = (_git(cwd, "config", "--get", "push.default") or "simple").lower()
+    if mode == "matching":
+        return None
+    if mode in ("upstream", "tracking"):
+        merge = _git(cwd, "config", "--get", f"branch.{branch}.merge")
+        if merge:
+            return merge.removeprefix("refs/heads/")
+    return branch
+
+
 def push_targets(args: list[str], cwd: str) -> list[Target]:
     positional: list[str] = []
     every = delete = tags = dry = False
@@ -346,10 +372,20 @@ def push_targets(args: list[str], cwd: str) -> list[Target]:
     if not refspecs:
         if tags:
             return []
-        branch = current_branch(cwd)
-        if branch is None:
-            return [Target("push", unknown="the current branch could not be read")]
-        return [Target("push", branch=branch)]
+        # Where git sends a push with no refspec: the remote's own push refspecs, or
+        # where push.default sends the current branch, which `upstream` can make
+        # another branch than its own name (Codex review of #159).
+        configured = _git(cwd, "config", "--get-all", f"remote.{remote}.push")
+        if configured:
+            refspecs = configured.split()
+        else:
+            branch = current_branch(cwd)
+            if branch is None:
+                return [Target("push", unknown="the current branch could not be read")]
+            destination = _default_destination(branch, cwd)
+            if destination is None:
+                return [Target("push", every_branch=True)]
+            return [Target("push", branch=destination)]
     out = []
     for spec in refspecs:
         if COMPUTED_RE.search(spec):
@@ -357,7 +393,13 @@ def push_targets(args: list[str], cwd: str) -> list[Target]:
             continue
         spec = spec.lstrip("+")
         dst = spec if delete or ":" not in spec else (spec.split(":", 1)[1] or spec.split(":")[0])
+        if ":" not in spec and not delete:
+            # `git push origin work` goes where a remote push refspec maps `work`.
+            dst = _mapped(spec, remote, cwd) or dst
         if dst.startswith("refs/tags/"):
+            continue
+        if "*" in dst:  # a pattern: any branch it matches
+            out.append(Target("push", every_branch=True))
             continue
         branch = _branch_of(dst, cwd)
         out.append(
@@ -971,6 +1013,7 @@ def find_targets(
         return _unknown(root, "a command nested too deep to read")
     command, bodies = heredocs(command)
     targets: list[Target] = []
+    variables: dict[str, str] = {}  # the shell variables the line sets
     exported: dict[str, str] = {}  # what `export` puts in later commands' environment
     for segment in segments(command):
         words = drop_redirections(split_words(segment))
@@ -981,9 +1024,16 @@ def find_targets(
             continue
         toks = unwrap(words)
         if toks[:1] == ["export"]:
-            exported.update(_assignments(toks[1:]))
-        elif not toks:  # a plain assignment changes an exported variable's value
-            exported.update({k: v for k, v in _assignments(words).items() if k in exported})
+            # `export NAME=value`, or `export NAME` of a variable set before it (Codex
+            # review of #159: `GIT_DIR=...; export GIT_DIR; git push`).
+            variables.update(_assignments(toks[1:]))
+            names = (word.partition("=")[0] for word in toks[1:] if not word.startswith("-"))
+            exported.update({n: variables[n] for n in names if n in variables})
+        elif not toks:  # a plain assignment sets a variable, and an exported one's value
+            variables.update(_assignments(words))
+            exported.update(
+                {k: v for k, v in variables.items() if k in exported or k in os.environ}
+            )
         if not toks:
             continue
         exe = _exe(toks[0])
@@ -1138,6 +1188,8 @@ def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
             global_repo, toks = toks[1], toks[2:]
         elif toks[0].startswith("--repo="):
             global_repo, toks = toks[0].split("=", 1)[1], toks[1:]
+        elif toks[0].startswith("-R"):  # attached: `-Rowner/repo` (Codex review of #159)
+            global_repo, toks = toks[0][2:].removeprefix("="), toks[1:]
         else:
             toks = toks[1:]
     if toks[:1] == ["api"]:
@@ -1156,6 +1208,8 @@ def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
             pending = t
         elif t.startswith("--repo="):
             repo_flag = t.split("=", 1)[1]
+        elif t.startswith("-R") and len(t) > 2:  # attached: `-Rowner/repo`
+            repo_flag = t[2:].removeprefix("=")
         elif not t.startswith("-") and arg is None:
             arg = t
     repo_flag = repo_flag if repo_flag is not None else global_repo
