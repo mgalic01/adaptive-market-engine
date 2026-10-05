@@ -137,7 +137,7 @@ Options the owner did not choose:
       - The comparison leaves out only `code_commit`, `code_sha256` and the new mask-report fields. The long-window data PR names those fields, and they must be empty or zero on every stage-1 run.
       - Any other new or renamed field breaks the identity.
       - This comparison rule is a reading (see "Still open").
-    - **Datasets.** The long-window dataset specs and manifests follow the registered rules and are frozen before stage 2 runs. They need not exist before stage 1.
+    - **Datasets.** The long windows' definitions are frozen in spec §4 now, and the long-window data PR's dataset specs must match them exactly. The manifests record Bob's fetch. Both are in place before stage 2 runs, and they need not exist before stage 1.
     - **Consequence.** Anything else the long windows need must be in stage 1's code. That includes G running where no funding archive exists before 2020-01.
 
 ## Order of work
@@ -150,8 +150,16 @@ Options the owner did not choose:
 6. Between the stages, possibly in parallel with stage 1:
    - the long-window data code (the repair rule in the reader, and hour-level masking), which Codex and Bob verify leaves every stage-1 result unchanged, as spec §6 defines it;
    - Bob's fetch and measurements;
-   - the long dataset specs and manifests, including the 2017–2024 warm-up fix below, frozen before stage 2.
+   - the long dataset specs, which must match the values frozen in spec §4, and the manifests from Bob's fetch, in place before stage 2.
 7. Stage 2, on stage 1's strategy code.
+
+## Changes after review on #168
+
+- **Automated review:** three readings, listed under "Still open".
+- **Codex, P1.** The long windows' definitions are now frozen in spec §4: dates, warm-ups, pairs, proxy, basket, pricing inputs and every basket exclusion, ending at the listing hours from #156's manifests.
+  - The permission to change a window after today is removed.
+  - After stage 1, only the mechanical application of registered rules may happen. Any other change is a registration change, allowed only before any stage-1 result exists.
+- **Codex, P2.** The sensitivity family now counts the forward ungated V0 baselines (spec §6, and "The trial count" below).
 
 ## Correction: the warm-up false alarm
 
@@ -159,7 +167,7 @@ Claude's first draft (local commit `216a1d8`, never pushed) said the 2017–2024
 - #156's manifest lists all 240 daily entries of the dataset as `ok`, 80 months each for BTC, ETH and XRP, 2018-05 to 2024-12. That includes 2018-05 and 2018-06. The coordinating Claude session checked this, and it was re-counted for this record.
 - The real constraint is XRP's listing on 2018-05-04. The manifest's own metadata shows XRPUSDT's 2018-05 daily file starting on that day, with 28 of 31 rows. So `daily_warmup_start` and `warmup_start` must be 2018-06.
 - From 2018-06-01 to 2019-01-01 there are 214 completed days, above P3's 200, so the warm-up passes.
-- The dataset-spec fix lands in the long-window data PR, which also corrects the spec's comments and its basket exclusions, dated from 2018-05.
+- The corrected values are frozen in spec §4, with the listing-hour basket exclusions, and the long-window data PR's specs must match them.
 
 ## Still open
 
@@ -171,18 +179,19 @@ Claude's first draft (local commit `216a1d8`, never pushed) said the 2017–2024
 - **The trial count.** The `N_family` floors in spec §6 are working figures, to be settled by the trial register. C7's condition (b) stands, and C7 is not yet binding.
 - **For review, not the owner.** How the full stack's parts combine (spec §3) is Claude's reading of the sections and of the code on main. It was not among the six readings, and it is open to Codex's and Bob's review before the freeze.
 - **Data work before stage 2, with no owner decision needed:**
-  - the 2017–2024 warm-up fix (above);
+  - dataset specs that match spec §4's frozen values;
   - Bob's XRP measurement;
   - the long windows' masks and the 17% check under these rules.
 
 ## The trial count
 
 Spec §6 shows the arithmetic, under the coherence record's rules:
-- **Before:** 6–7 retrospective gated states + V0 on `drawdown-recovery-v1` + V0 on `drawdown-recovery-v2` + 9 forward = 17–18 central. Adding 3 ungated states and D gives 21–22 sensitivity.
-- **With V2 and the full stack:** 19–20 and 23–24.
-- **With at least two of V2's prior configurations:** at least 21–22 and 25–26. These are Bob's 2026-10-01 runs of V2 and of V2 with variant A.
+- **Before:** 6–7 retrospective gated states + V0 on `drawdown-recovery-v1` + V0 on `drawdown-recovery-v2` + 9 forward = 17–18 central. Adding 3 ungated states and D gave 21–22 sensitivity.
+- **With the forward ungated V0 baselines** (Codex on #168): every forward run inspects one. The baseline on `drawdown-recovery-v2` is certain. The one on `drawdown-recovery-v1` counts if its pre-amendment-2 result is inspected. Sensitivity becomes 22–24.
+- **With V2 and the full stack:** 19–20 central and 24–26 sensitivity. Their ungated rows are the ungated V0 baseline, so they add no ungated configuration.
+- **With at least two of V2's prior configurations:** at least 21–22 and 26–28. These are Bob's 2026-10-01 runs of V2 and of V2 with variant A.
 
-The working figures are 22 and 26. All figures are floors, to be settled by the trial register.
+The working figures are 22 and 28. All figures are floors, to be settled by the trial register.
 
 ## What Claude checked
 
@@ -194,7 +203,7 @@ The working figures are 22 and 26. All figures are floors, to be settled by the 
   - `START_HERE.md` §0–§1;
   - the D17–D21 record;
   - the #165 and #167 descriptions;
-  - the dataset specs: `full-range-2019-2024.toml` on main `2f645fe`, and `full-range-2017-2024.toml` with its manifest on #156's branch `65a7eb0` (configuration and metadata only).
+  - the dataset specs and manifests of both full-range windows on #156's branch `65a7eb0`, and `full-range-2019-2024.toml` on main `2f645fe` (configuration and metadata only).
 - **Code facts cited in the spec,** read at `2f645fe`:
   - an ineligible frame starts a V0 eligibility pause (`runner.py` L721–722);
   - the sixth vote changes the score and the dispersion (`regime.py` L126–135);
@@ -206,7 +215,9 @@ The working figures are 22 and 26. All figures are floors, to be settled by the 
   - window lengths: 245, 182, 2,192 and 2,011 days;
   - 214 days from 2018-06-01 to 2019-01-01;
   - XRP's limit: 0.0002 ÷ 0.0015 = 2/15 ≈ 0.1333;
-  - from the 2017–2024 manifest: 240 daily entries, all `ok`, and XRPUSDT 2018-05 with `first_open_ms` 1525392000000 (2018-05-04), 28 rows and `missing_rows` 3.
+  - from the 2017–2024 manifest: 240 daily entries, all `ok`, and XRPUSDT 2018-05 with `first_open_ms` 1525392000000 (2018-05-04), 28 rows and `missing_rows` 3;
+  - from both manifests, the first 1h candles: SOLUSDT 2020-08-11T06:00Z, DOGEUSDT 2019-07-05T12:00Z, LINKUSDT 2019-01-16T10:00Z (374 rows, 370 missing in 2019-01), and TRXUSDT 2018-06-11T11:00Z. BNBUSDT and LTCUSDT are complete from both warm-ups, and TRXUSDT is complete from 2019-01;
+  - from the 2019–2024 manifest: 78 daily entries (2018-07 to 2024-12), all `ok`.
 - **Not checked:**
   - XRP's prices;
   - any mask of the long windows.

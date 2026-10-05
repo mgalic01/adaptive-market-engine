@@ -957,20 +957,76 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
 - **Reporting:** every attempted run is reported, including invalid runs, halts and zero
   trades.
 
-**Stage 2 windows (test-plan amendment, owner decision 2026-10-05).** These are Bob's two
-full-range datasets, as their specs define them today. Both end at 2024-12, the
+**Stage 2 windows: frozen definitions (test-plan amendment, owner decision 2026-10-05;
+frozen after Codex's review of #168).** These are Bob's two full-range datasets. Their
+definitions are frozen here, before any stage-1 result exists. The long-window data
+PR's dataset specs must match these values exactly. Both windows end at 2024-12, the
 development ceiling, and nothing touches 2025 or later.
-- **`full-range-2017-2024`** (`config/datasets/full-range-2017-2024.toml`, on #156's
-  branch at `65a7eb0`): traded BTC, ETH and XRP. Its hourly and daily warm-up start
-  2018-06 (see "Warm-up" below). Its evaluation runs 2019-01 to 2024-12, 2,192 days.
-  **Scored.** Its comments say the evaluation starts in 2018-11. The `start` value,
-  2019-01, governs, and the comment is to be corrected.
-- **`full-range-2019-2024`** (on main at `2f645fe`): traded BTC, ETH and XRP, with
-  hourly warm-up from 2019-01. Its evaluation runs 2019-07 to 2024-12, 2,011 days.
-  **Run and reported, not scored**, because its evaluation lies inside 2017–2024's.
-  Its daily history, from 2018-07 as its comment says, is added with the manifests.
-- **Basket:** the nine symbols of their specs (ADA is omitted), with their documented
-  basket exclusions plus DOGEUSDT 2020-02 (§5, rule 5).
+
+| Field | `full-range-2017-2024` (scored) | `full-range-2019-2024` (reported only) |
+| --- | --- | --- |
+| `start` (evaluation) | 2019-01 | 2019-07 |
+| `end` | 2024-12 | 2024-12 |
+| Evaluation days (C5, annualisation) | 2,192 | 2,011 |
+| `warmup_start` (hourly) | **2018-06** (corrected from 2018-05) | 2019-01 |
+| `daily_warmup_start` | **2018-06** (corrected from 2018-05) | 2018-07 |
+| Completed daily bars before `start` (P3 needs 200) | 214 | 365 |
+| `traded` | BTCUSDT, ETHUSDT, XRPUSDT | BTCUSDT, ETHUSDT, XRPUSDT |
+| `market_proxy` | BTCUSDT | BTCUSDT |
+| `breadth_basket` | BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, DOGEUSDT, LTCUSDT, LINKUSDT, TRXUSDT | the same nine |
+| `initial_quote`, `fee_rate`, `slippage_rate`, `participation`, `assumed_spread_pct` | 100, 0.001 (overridden by the fee scenarios above), 0.0005, 0.10, 0.05 | the same |
+| BTCUSDT funding archives (G) | every month from 2020-01, where they begin (P8) | the same |
+
+Basket exclusions, in the spec's `[[basket_exclusions]]` form (`from` inclusive, `to`
+exclusive, whole UTC hours). Each listing exclusion ends at the symbol's first candle:
+
+| Symbol | `full-range-2017-2024` | `full-range-2019-2024` | Reason |
+| --- | --- | --- | --- |
+| SOLUSDT | 2018-06-01T00:00Z to 2020-08-11T06:00Z | 2019-01-01T00:00Z to 2020-08-11T06:00Z | listing |
+| DOGEUSDT | 2018-06-01T00:00Z to 2019-07-05T12:00Z | 2019-01-01T00:00Z to 2019-07-05T12:00Z | listing |
+| LINKUSDT | 2018-06-01T00:00Z to 2019-01-16T10:00Z | 2019-01-01T00:00Z to 2019-01-16T10:00Z | listing |
+| TRXUSDT | 2018-06-01T00:00Z to 2018-06-11T11:00Z | none: listed before this warm-up | listing |
+| DOGEUSDT | 2020-02-01T00:00Z to 2020-03-01T00:00Z | 2020-02-01T00:00Z to 2020-03-01T00:00Z | §5 rule 5: the repair rule cannot rescue it |
+| BNBUSDT, LTCUSDT | none: complete from this warm-up | none: complete from this warm-up | — |
+
+**Where each value comes from:**
+- **#156's specs at `65a7eb0`** (`config/datasets/full-range-2017-2024.toml` and
+  `full-range-2019-2024.toml`): `start`, `end`, `traded`, `market_proxy`,
+  `breadth_basket` and the five pricing inputs, for both windows, and 2019–2024's
+  `warmup_start` and `daily_warmup_start`.
+  - The 2017–2024 spec's comments and `purpose` say the evaluation starts in 2018-11.
+    Its `start` value, 2019-01, governs.
+- **#156's manifests at `65a7eb0`,** metadata only: `first_open_ms`, `rows`,
+  `missing_rows` and `status`.
+  - **2017–2024's warm-up.** All 240 daily files of 2017–2024 (BTC, ETH and XRP,
+    2018-05 to 2024-12) are `ok`. The spec's comment that the 2018-05 and 2018-06 daily
+    archives are missing is wrong. The constraint is XRP's listing: its 2018-05 files
+    start on 2018-05-04 (daily: 28 of 31 rows; hourly: from 08:00Z), so a window from
+    2018-05 fails P3's every-day check. Hence 2018-06 for both warm-up fields.
+  - **2019–2024's daily warm-up.** All 78 daily files of 2019–2024 (2018-07 to 2024-12)
+    are `ok`.
+  - **Listing hours** are each symbol's first 1h candle: SOLUSDT 2020-08-11T06:00Z,
+    DOGEUSDT 2019-07-05T12:00Z, LINKUSDT 2019-01-16T10:00Z, TRXUSDT
+    2018-06-11T11:00Z. #156's specs ended these exclusions at month starts instead.
+    #156's 2019–2024 spec had no LINKUSDT exclusion, although its manifest shows 370
+    of 2019-01's 744 hours missing, so that exclusion is added.
+  - **No exclusion needed:** BNBUSDT and LTCUSDT are complete from both warm-ups.
+    TRXUSDT is complete from 2019-01, so its exclusion is unneeded in 2019–2024.
+- **Rules registered here:** DOGEUSDT 2020-02 (§5 rule 5), and the funding archives'
+  start (P8).
+- **Computed:** the day counts.
+
+**After stage 1, only the mechanical application of rules already registered may
+happen:**
+- hour masking (§5 rules 1–4);
+- the 17% eligibility rule;
+- the XRP statistic (rule 8);
+- DOGEUSDT 2020-02 (rule 5);
+- the archive statuses from Bob's fetch.
+
+Any other change to these definitions is a registration change. It is allowed only
+before any stage-1 result exists; after that it is not allowed.
+
 - **Not yet runnable.** They need:
   - the repair rule in the archive reader and hour-level masking (§5);
   - Bob's re-fetch with daily and funding archives;
@@ -978,22 +1034,7 @@ development ceiling, and nothing touches 2025 or later.
 
   This work may land after stage 1, under the conditions in §6, "Two stages". The code
   must implement exactly the §5 rules and leave every stage-1 result unchanged, as §6
-  defines it. The specs and manifests must follow the rules registered here and are
-  frozen before stage 2 runs.
-- **Warm-up of `full-range-2017-2024`.** Its spec's comment says the 2018-05 and
-  2018-06 daily archives are missing. That is wrong:
-  - #156's manifest lists all 240 daily entries (BTC, ETH and XRP, 2018-05 to 2024-12)
-    as `ok`.
-  - The constraint is XRP's listing. XRP's 2018-05 daily file starts on 2018-05-04,
-    with 28 of 31 rows (the manifest's `first_open_ms`, `rows` and `missing_rows`), so
-    a daily window from 2018-05 fails P3's every-day check.
-  - So `daily_warmup_start` and `warmup_start` become 2018-06, in the long-window data
-    PR. The same PR corrects the spec's comments and its basket exclusions, which are
-    dated from 2018-05.
-  - From 2018-06-01 to 2019-01-01 there are 214 completed days, above P3's 200, so the
-    warm-up passes.
-- **Changes after today:** a change to either window is made from archive availability
-  alone, under the rules registered here, and recorded here before stage 2 runs.
+  defines it.
 - **Sensitivities:** whether the reported-only sensitivities and fee scenarios above
   also run in stage 2 is for the owner to decide later (his decision of 2026-10-05).
   They decide nothing, so the choice cannot move the verdict.
@@ -1211,7 +1252,7 @@ included runs (every included pair, window and path):
 | C4 | **Integrity:** every included run is valid (§5). | Both |
 | C5 | **Minimum activity:** for each included run, its rate = completed cycles (P7) ÷ (evaluation window length in days ÷ 7). The window is `[start of the start month, end of the end month)` in UTC, the same for every run in a dataset, whether or not the run halted. C5 = the arithmetic mean of the per-run rates over all included runs (equal weight), computed exactly (no rounding), and must be **≥ 1**. The ISO-week counter is reported, not scored. The share of bars holding inventory is reported. **C5 and C2 are unchanged for trend-gated variants (owner decision 2026-10-02, D4):** a variant that is idle during downtrends correctly scores zero activity and zero return on those runs; the Down-period readout (D3, above) answers the bounce question separately and is the right diagnostic for that period, not a relaxed criterion. | Owner's compromise on Bob's 10%-invested rule |
 | C6 | **The gate earns its place:** in at least **60%** of included runs, the variant's return ÷ max(max drawdown, 0.1 percentage points) exceeds that of the **ungated V0 baseline** in the same pair, window and path. | Bob |
-| C7 | **Survives the family — adopted in principle, not yet binding.** The owner decided on 2026-09-27 to replace the deflated Sharpe ratio, which has no content on this family ([why](reviews/2026-09-27-claude-dsr-coherence.md)), with a Holm step-down over the disclosed family at family-wise 5%, evaluated on the selected winner only and gating the reserved-window run. The statistic is the one-sided p-value `p = 1 − Φ( SR · √(T_eff − 1) / √(1 − γ3·SR + (γ4 − 1)/4 · SR²) )` on each variant's worse path, using the series, moment conventions and `T_eff` of [draft spec part 3](reviews/2026-09-27-claude-dsr-return-series.md) §8 with `SR0` = 0. **C7 does not gate anything until all three of the following are settled and recorded here** (Codex, 2026-09-27): (a) the return series C7 is computed on — §4 defines two windows (since the test-plan amendment of 2026-10-05, two stages and four windows), while part 3 requires 25 walk-forward folds whose geometry is still a proposal, and the two give different `T`, `SR` and `T_eff`; (b) the family, since `N_family` = 17–18 and 21–22 (18 and 22 used as working figures, since R1's code state is unknown; the coherence record's 16–17 and 20–21 plus V0 on `drawdown-recovery-v2`, which amendment 2 counts as one further registered trial; since the test-plan amendment of 2026-10-05, 19–20 and 23–24 with V2 and the full stack, and at least 21–22 and 25–26 once V2's prior trials are counted, as "The family after the test-plan amendment" below shows) are **floors** (unpublished inspected runs are known to exist), and a Holm cutoff from a floor does not control the stated error rate — either the missing trials are accounted for in the register or a conservative budget is preregistered; (c) Codex's and Bob's acknowledgment, since all three agents agreed to the DSR (Bob, PR #123 review, 2026-09-27: "I agree with retiring the frozen DSR in favor of the Holm step-down (C7) once settled", an acknowledgment conditional on C7 being settled; Codex's is owed). **Until C7 is settled and acknowledged, or the owner explicitly waives it in writing, nothing runs on the reserved window.** The owner's decision was that a multiple-testing test gates that run, so an unresolved C7 is a hold on the run, not permission to proceed under six criteria. C1–C6 remain the binding set for development selection in the meantime. | Owner in principle; specification open |
+| C7 | **Survives the family — adopted in principle, not yet binding.** The owner decided on 2026-09-27 to replace the deflated Sharpe ratio, which has no content on this family ([why](reviews/2026-09-27-claude-dsr-coherence.md)), with a Holm step-down over the disclosed family at family-wise 5%, evaluated on the selected winner only and gating the reserved-window run. The statistic is the one-sided p-value `p = 1 − Φ( SR · √(T_eff − 1) / √(1 − γ3·SR + (γ4 − 1)/4 · SR²) )` on each variant's worse path, using the series, moment conventions and `T_eff` of [draft spec part 3](reviews/2026-09-27-claude-dsr-return-series.md) §8 with `SR0` = 0. **C7 does not gate anything until all three of the following are settled and recorded here** (Codex, 2026-09-27): (a) the return series C7 is computed on — §4 defines two windows (since the test-plan amendment of 2026-10-05, two stages and four windows), while part 3 requires 25 walk-forward folds whose geometry is still a proposal, and the two give different `T`, `SR` and `T_eff`; (b) the family, since `N_family` = 17–18 and 21–22 (18 and 22 used as working figures, since R1's code state is unknown; the coherence record's 16–17 and 20–21 plus V0 on `drawdown-recovery-v2`, which amendment 2 counts as one further registered trial; since the test-plan amendment of 2026-10-05, 19–20 and 24–26 with V2, the full stack and the forward ungated V0 baselines, which the sensitivity figure 21–22 omitted (Codex, #168), and at least 21–22 and 26–28 once V2's prior trials are counted, as "The family after the test-plan amendment" below shows) are **floors** (unpublished inspected runs are known to exist), and a Holm cutoff from a floor does not control the stated error rate — either the missing trials are accounted for in the register or a conservative budget is preregistered; (c) Codex's and Bob's acknowledgment, since all three agents agreed to the DSR (Bob, PR #123 review, 2026-09-27: "I agree with retiring the frozen DSR in favor of the Holm step-down (C7) once settled", an acknowledgment conditional on C7 being settled; Codex's is owed). **Until C7 is settled and acknowledged, or the owner explicitly waives it in writing, nothing runs on the reserved window.** The owner's decision was that a multiple-testing test gates that run, so an unresolved C7 is a hold on the run, not permission to proceed under six criteria. C1–C6 remain the binding set for development selection in the meantime. | Owner in principle; specification open |
 | R1 | **Economics, reported only:** the capital at which the mean monthly return would cover €5/month of hosting (5 ÷ mean monthly return fraction), or "not reachable" if the mean return is ≤ 0. Running on the owner's own PC costs €0 in hosting. | Bob, as information |
 
 *Note on units (added 2026-09-27, clarification only; no criterion changes).* Every
@@ -1333,8 +1374,11 @@ waived by the owner (see its row).
     - **Why this is a reading.** It is Claude's reading of the owner's
       "byte-identical", from the automated review of #168, and it is open to the owner.
       Taken literally, byte-identity could not hold once the mask-report fields exist.
-  - **Datasets.** The long-window dataset specs and manifests follow the registered
-    rules and are frozen before stage 2 runs. They need not exist before stage 1.
+  - **Datasets.** The long windows' definitions are frozen in §4 now. The long-window
+    data PR's dataset specs must match them exactly, and the manifests record Bob's
+    fetch. Both are in place before stage 2 runs, and they need not exist before
+    stage 1. After stage 1, only the mechanical application of registered rules may
+    change what the windows contain (§4).
   - **The owner's decision (2026-10-05):** "Same strategy code", with the option text
     "Stage 1 runs as soon as the variants and scorer are merged. The masking and repair
     code lands afterwards. It must follow exactly the rules fixed today, and must leave
@@ -1372,12 +1416,27 @@ This counts under the [coherence record](reviews/2026-09-27-claude-dsr-coherence
 | Step | Central | Sensitivity |
 | --- | ---: | ---: |
 | Before (C7 row): 6–7 retrospective gated states + V0 on `drawdown-recovery-v1` + V0 on `drawdown-recovery-v2` + 9 forward (A, B, C, E, F, G, C+G, H, C+H). The sensitivity budget adds 3 ungated retrospective states and D | 17–18 | 21–22 |
-| + 2 forward: V2 and C+F+G+H+V2, both new configurations | 19–20 | 23–24 |
-| + at least 2 prior V2 configurations, now inside v1's family (below) | ≥ 21–22 | ≥ 25–26 |
+| + the forward ungated V0 baselines, which that sensitivity figure omitted (Codex, #168; below) | 17–18 | 22–24 |
+| + 2 forward: V2 and C+F+G+H+V2, both new configurations | 19–20 | 24–26 |
+| + at least 2 prior V2 configurations, now inside v1's family (below) | ≥ 21–22 | ≥ 26–28 |
 
-- **Arithmetic:** 6–7 + 1 + 1 + 9 = 17–18, and + 3 + 1 = 21–22. Adding the two new
-  forward configurations gives 19–20 and 23–24; adding the two prior V2 configurations
-  gives 21–22 and 25–26.
+- **Arithmetic, central:** 6–7 + 1 + 1 + 9 = 17–18. Adding V2 and the full stack gives
+  19–20; adding the two prior V2 configurations gives 21–22.
+- **Arithmetic, sensitivity:** central + 3 ungated retrospective states + D + 1–2 forward
+  ungated baselines.
+  - Before V2: the low end is 17 + 3 + 1 + 1 = 22 and the high end 18 + 3 + 1 + 2 = 24,
+    so 22–24.
+  - With V2 and the full stack: 19–20 + 5–6 = 24–26.
+  - With the two prior V2 configurations: 21–22 + 5–6 = 26–28.
+- **The forward ungated baselines.** Every forward run also runs and inspects the
+  ungated V0 baseline, which is C6's comparison. So each ungated configuration belongs
+  in the sensitivity family, just as its gated counterpart does.
+  - The ungated V0 on `drawdown-recovery-v2` is certain: +1.
+  - The ungated V0 on `drawdown-recovery-v1` counts if its pre-amendment-2 result is
+    inspected: +1, in the high end.
+  - V2 and the full stack add none, since a `--structure` run's ungated rows are the
+    ungated V0 baseline.
+  - The prior V2 runs' ungated rows may add more. The trial register settles it.
 - **Windows and stages add nothing.** The stage-2 windows, like pairs and folds, are data
   fixed before any run, and both stages run one configuration per variant. The daily
   history from 2020-05 is data too.
@@ -1392,7 +1451,7 @@ This counts under the [coherence record](reviews/2026-09-27-claude-dsr-coherence
   - The list cannot say how many more configurations the 2026-09-30 comparison and the
     V0-labelled rows of #150 to #160 add. The trial register must settle it.
 - **Working figures, to be settled by the trial register:** the upper values, as the
-  coherence record sets: **22** central and **26** sensitivity. All of them are floors,
+  coherence record sets: **22** central and **28** sensitivity. All of them are floors,
   so C7's condition (b) still stands, now with more trials to account for.
 
 ## 7. Reserved evaluation (run exactly once)
