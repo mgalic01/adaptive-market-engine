@@ -14,10 +14,12 @@ Test strategy:
 
 from __future__ import annotations
 
+import random
 import unittest
 from dataclasses import dataclass
 
 from crypto_grid_bot.strategy.structure import (
+    ResistanceZones,
     StructuralTrend,
     StructureLevel,
     StructureParams,
@@ -32,6 +34,7 @@ from crypto_grid_bot.strategy.structure import (
     detect_swing_highs,
     detect_swing_lows,
     find_fta,
+    nearest_resistance,
 )
 
 # ---------------------------------------------------------------------------
@@ -419,6 +422,55 @@ class TestFindFTA(unittest.TestCase):
         zones = [self._r(9999.0)]
         fta = find_fta(100.0, zones, [], atr=0.0, max_distance_atr=5.0)
         self.assertIsNotNone(fta.resistance)
+
+
+# ---------------------------------------------------------------------------
+# nearest_resistance (V2 sell targets, owner decision D19)
+# ---------------------------------------------------------------------------
+
+
+class TestNearestResistance(unittest.TestCase):
+    def test_it_is_the_fta_that_analyse_timeframe_finds_for_any_price(self):
+        # find_fta's rule on the zone prices and radius that ResistanceZones carries: the
+        # same answer as the timeframe's own FTA, on a random walk (fixed seed).
+        rng = random.Random(19)
+        bars, price = [], 100.0
+        for i in range(300):
+            price *= 1 + rng.uniform(-0.02, 0.02)
+            bars.append(Bar(i * 3_600_000, price * 1.01, price * 0.99, price))
+        params = StructureParams()
+        found = set()
+        for _ in range(200):
+            current = rng.uniform(0.8, 1.2) * bars[-1].close
+            structure = analyse_timeframe(bars, current, params)
+            fta = structure.fta.resistance
+            zones = ResistanceZones.of(structure, params.max_distance_atr)
+            expected = None if fta is None else fta.price
+            self.assertEqual(expected, nearest_resistance(current, [zones]))
+            found.add(expected is None)
+        self.assertEqual({True, False}, found)  # both outcomes were exercised
+
+    def test_the_first_timeframe_with_a_zone_in_range_wins(self):
+        hourly = ResistanceZones((101.0,), 5.0)
+        # Daily first, though the hourly zone is nearer.
+        self.assertEqual(103.0, nearest_resistance(100.0, [ResistanceZones((103.0,), 5.0), hourly]))
+        # The nearest daily zone is out of range, so the hourly one counts.
+        self.assertEqual(101.0, nearest_resistance(100.0, [ResistanceZones((106.0,), 5.0), hourly]))
+        self.assertIsNone(nearest_resistance(100.0, [ResistanceZones((106.0, 99.0), 5.0)]))
+        self.assertIsNone(nearest_resistance(100.0, []))
+
+    def test_strictly_above_within_the_radius_and_any_distance_at_zero(self):
+        self.assertIsNone(nearest_resistance(100.0, [ResistanceZones((100.0,), 5.0)]))
+        self.assertEqual(105.0, nearest_resistance(100.0, [ResistanceZones((105.0,), 5.0)]))
+        self.assertEqual(9999.0, nearest_resistance(100.0, [ResistanceZones((9999.0,), 0.0)]))
+
+    def test_of_keeps_the_resistance_zones_and_scales_the_radius(self):
+        support = StructureZone(95.0, False, 1.0, 1, 0)
+        resistance = tuple(StructureZone(p, True, 1.5, 2, 0) for p in (104.0, 108.0))
+        structure = TimeframeStructure(
+            StructuralTrend.UNKNOWN, (support, *resistance), StructureLevel(None, None), (), (), 2.0
+        )
+        self.assertEqual(ResistanceZones((104.0, 108.0), 10.0), ResistanceZones.of(structure, 5.0))
 
 
 # ---------------------------------------------------------------------------

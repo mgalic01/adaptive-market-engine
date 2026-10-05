@@ -306,8 +306,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--structure",
         action="store_true",
-        help="enable the V2 market-structure features (structure alignment vote and FTA "
-        "cap; off in V0). Results are labelled " + STRUCTURE_FEATURE_VERSION,
+        help="enable the V2 market-structure features (structure alignment vote and sell "
+        "targets below resistance; off in V0). Results are labelled " + STRUCTURE_FEATURE_VERSION,
     )
     parser.add_argument(
         "--record-commit",

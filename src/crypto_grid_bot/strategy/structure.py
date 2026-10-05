@@ -12,6 +12,10 @@ Given a sequence of OHLC candles (any timeframe), it:
    higher lows), bearish (lower highs and lower lows), or ranging.
 4. Identifies the *first trouble area* (FTA) above and below the current price — the
    nearest resistance zone above and the nearest support zone below.
+5. Finds the nearest resistance above any price (``nearest_resistance``), where V2's
+   grid places a buy level's sell target, just below it (owner decision D19).
+
+Every V2 rule and parameter is frozen in docs/STRUCTURE_PREREGISTRATION.md.
 
 **Design principles (for reviewers):**
 - Pure functions and immutable dataclasses only. No I/O, no randomness, no state.
@@ -25,7 +29,10 @@ Given a sequence of OHLC candles (any timeframe), it:
 **Mathematical decisions (see agent report for full derivation):**
 - Swing detection: a bar at index ``i`` is a swing high iff
   ``high[i] > max(high[i-n:i])`` and ``high[i] > max(high[i+1:i+n+1])``.
-  Strict inequality on both sides; ties are not swings.
+  Strict inequality on both sides; ties are not swings. So equal highs within ``n``
+  bars of each other (a flat top, or a double top that close) give no swing, while
+  equal highs further apart are each a swing; lows likewise. Kept strict by the owner's
+  decision D21 (2026-10-05).
 - Zone clustering: two swing points merge into one zone if their prices differ by less
   than ``merge_atr`` × ATR. The zone's price is the mean of its members.
 - Zone strength: (mean of linear recency weights) × (1 + log2(test_count)); see
@@ -171,6 +178,23 @@ class MultiTimeframeStructure:
     daily: TimeframeStructure | None
     weekly: TimeframeStructure | None
     alignment: float  # [-1, +1]
+
+
+@dataclass(frozen=True, slots=True)
+class ResistanceZones:
+    """One timeframe's resistance zones as ``find_fta`` searches them: the zone prices,
+    ascending, and the search radius, ``max_distance_atr`` × that timeframe's ATR.
+    """
+
+    prices: tuple[float, ...]
+    radius: float
+
+    @staticmethod
+    def of(structure: TimeframeStructure, max_distance_atr: float) -> ResistanceZones:
+        return ResistanceZones(
+            tuple(zone.price for zone in structure.zones if zone.is_resistance),
+            max_distance_atr * structure.atr,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +454,20 @@ def find_fta(
             break  # zones sorted ascending; last below is closest
 
     return StructureLevel(resistance=resistance, support=support)
+
+
+def nearest_resistance(price: float, timeframes: Sequence[ResistanceZones]) -> float | None:
+    """The nearest resistance zone strictly above ``price`` within its timeframe's
+    radius, on the first timeframe that has one; None if none has.
+
+    Each timeframe is searched by ``find_fta``'s rule, so a zero radius (a zero ATR)
+    admits any distance. Zone strength plays no part.
+    """
+    for zones in timeframes:
+        above = next((zone for zone in zones.prices if zone > price), None)
+        if above is not None and (zones.radius == 0 or above - price <= zones.radius):
+            return above
+    return None
 
 
 # ---------------------------------------------------------------------------
