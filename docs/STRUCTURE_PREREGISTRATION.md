@@ -1,14 +1,16 @@
 # V2 market structure: pre-registration
 
 - **Date:** 2026-10-05. **Written by:** Claude. **Decided by:** the owner, decisions
-  D19, D20 and D21 of the [strategy audit](reviews/2026-09-29-claude-strategy-audit.md).
+  D19, D20 and D21 of the [strategy audit](reviews/2026-09-29-claude-strategy-audit.md),
+  and the zone width of 2026-10-05 (rule 2).
 - **What it does:** writes down and freezes every rule and setting of V2, the
   market-structure layer, before any V2 result counts (D20: "Write down and pin every V2
   rule and setting now. V2 results count only after that.").
 - **Status:** V2 is exploratory until this document is merged. This document chooses
   nothing by looking at results: no V2 run was made for it, every setting is the value
-  already in the code, and the one new rule, sell-at-resistance, follows the owner's own
-  description (D19). One rule already in the code was chosen after looking at results,
+  already in the code except the zone width, which the owner set without seeing any
+  result, and the one new rule, sell-at-resistance, follows the owner's own description
+  (D19). One rule already in the code was chosen after looking at results,
   the RANGE-only rule; it is kept and disclosed [below](#the-range-only-rule). The only
   V2 runs behind this change are code checks on synthetic random walks.
 - **Details D19 leaves open** were decided by Claude on 2026-10-05 from the owner's
@@ -47,7 +49,7 @@ label at all.
 | # | Rule or setting | Frozen value | In the code | Source |
 | --- | --- | --- | --- | --- |
 | 1 | Swing points | strict: higher (lower) than **3** bars on each side (`swing_n`) | `StructureParams`, `detect_swing_highs/lows` | #147 (Bob); kept strict by **D21**, below |
-| 2 | Zone merge distance | **0.5** ATR (`merge_atr`) | `StructureParams`, `cluster_into_zones` | #147 |
+| 2 | Zone merge distance | **1.0** ATR (`merge_atr`): in price order, a swing joins a zone if it lies less than 1.0 ATR above the zone's lowest swing, and otherwise starts the next zone; a zone's price is the mean of its swings | `StructureParams`, `cluster_into_zones` | **the owner**, 2026-10-05, following his 29 September record: "Cluster nearby swing points (within one ATR) into zones" |
 | 3 | Resistance search radius | **5.0** ATR of that timeframe (`max_distance_atr`); for a sell target, a radius that is not positive (a zero ATR) offers **no zone** | `StructureParams`, `find_fta`, `nearest_resistance` | #147; no zone at a zero radius: Claude, 2026-10-05 |
 | 4 | Swings needed for a trend | **2** highs and 2 lows (`min_swings`) | `StructureParams`, `classify_structural_trend` | #147 |
 | 5 | Structure ATR | simple mean of the true range over the last **14** bars of that timeframe (`atr_period`) | `StructureParams`, `compute_atr` | #147 |
@@ -67,15 +69,11 @@ multiple, the risk rules and the profit vault (`config/default.toml`), and the f
 slippage of the dataset spec. V2 adds nothing to `config/default.toml`, since that
 file's hash is part of every result's identity.
 
-Two of these values have thin sources:
-- **The 0.5 ATR merge distance** is the value in the code since #147. The owner's
-  requirement record says "within one ATR"; no record says why 0.5 was chosen. It is
-  frozen as implemented: choosing between the two now, after V2 results have been seen,
-  would itself be a choice made after looking. **Open question:** this is put to the
-  owner before any V2 run counts.
-- **The 0.999 buffer** was not derived from data: #148 calls it "a sensible default
-  based on the project's fee scale". It reproduces the owner's example exactly
-  (resistance $0.355, target $0.354).
+The code merged zones within 0.5 ATR until the owner's decision of 2026-10-05.
+
+**The 0.999 buffer** has a thin source: it was not derived from data, and #148 calls it
+"a sensible default based on the project's fee scale". It reproduces the owner's example
+exactly (resistance $0.355, target $0.354).
 
 ## The sell-at-resistance rule (D19)
 

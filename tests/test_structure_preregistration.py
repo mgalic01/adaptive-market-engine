@@ -32,6 +32,7 @@ from crypto_grid_bot.strategy.structure import (
     ResistanceZones,
     StructureParams,
     analyse_multi_timeframe,
+    analyse_timeframe,
     detect_swing_highs,
     detect_swing_lows,
 )
@@ -42,7 +43,7 @@ class StructurePreregistrationTests(unittest.TestCase):
         self.assertEqual(
             {
                 "swing_n": 3,
-                "merge_atr": 0.5,
+                "merge_atr": 1.0,
                 "max_distance_atr": 5.0,
                 "min_swings": 2,
                 "atr_period": 14,
@@ -51,6 +52,18 @@ class StructurePreregistrationTests(unittest.TestCase):
             asdict(StructureParams()),
         )
         self.assertEqual("price-only-v1+structure-v2", features.STRUCTURE_FEATURE_VERSION)
+
+    def test_a_swing_less_than_one_atr_above_a_zones_lowest_swing_joins_it(self):
+        # The owner's zone width (2026-10-05, "within one ATR"). Plain bars make the ATR
+        # exactly 1. Swing highs at 101 and 101.75, 0.75 ATR apart, form one zone; 102.25
+        # starts its own, 1.25 ATR above that zone's lowest swing though 0.5 from 101.75.
+        bars = [Bar(i, 100.5, 99.5, 100.0) for i in range(40)]
+        for index, high in ((5, 101.0), (12, 101.75), (19, 102.25)):
+            bars[index] = replace(bars[index], high=high)
+        structure = analyse_timeframe(bars, 100.0)
+        self.assertEqual(1.0, structure.atr)
+        zones = [(zone.price, zone.test_count) for zone in structure.zones if zone.is_resistance]
+        self.assertEqual([(101.375, 2), (102.25, 1)], zones)
 
     def test_the_inputs_are_completed_bars_only(self):
         # The pair's last 500 completed hourly candles, the daily bars closed by the

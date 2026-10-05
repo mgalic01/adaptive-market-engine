@@ -28,9 +28,10 @@ from crypto_grid_bot.strategy.structure import (
 FEATURE_VERSION = "price-only-v1"
 # Results from runs with the V2 structure features (SimulationPolicy.structure) say so.
 # Bump it whenever a change moves V2 results; V0 results keep their labels.
-#   structure-v2 (2026-10-05, owner decisions D19-D21): sell targets just below the
-#   nearest resistance above each buy level replace the FTA cap; every V2 rule is frozen
-#   in docs/STRUCTURE_PREREGISTRATION.md.
+#   structure-v2 (2026-10-05, owner decisions D19-D21 and the zone width): sell targets
+#   just below the nearest resistance above each buy level replace the FTA cap, and swing
+#   points merge into zones within 1.0 ATR instead of 0.5; every V2 rule is frozen in
+#   docs/STRUCTURE_PREREGISTRATION.md.
 STRUCTURE_FEATURE_VERSION = FEATURE_VERSION + "+structure-v2"
 HOUR_MS = 3_600_000
 DAY_MS = 86_400_000

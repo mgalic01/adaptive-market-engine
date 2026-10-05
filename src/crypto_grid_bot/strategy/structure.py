@@ -33,8 +33,9 @@ Every V2 rule and parameter is frozen in docs/STRUCTURE_PREREGISTRATION.md.
   bars of each other (a flat top, or a double top that close) give no swing, while
   equal highs further apart are each a swing; lows likewise. Kept strict by the owner's
   decision D21 (2026-10-05).
-- Zone clustering: two swing points merge into one zone if their prices differ by less
-  than ``merge_atr`` × ATR. The zone's price is the mean of its members.
+- Zone clustering: in price order, a swing point joins a zone if it lies less than
+  ``merge_atr`` × ATR above the zone's lowest member, and otherwise starts the next zone.
+  The zone's price is the mean of its members.
 - Zone strength: (mean of linear recency weights) × (1 + log2(test_count)); see
   ``cluster_into_zones``. The mean weight depends only on the member count, so in
   effect strength grows with the number of tests alone. No decision reads it yet.
@@ -208,7 +209,8 @@ class StructureParams:
 
     ``swing_n``: bars on each side required to confirm a swing point (default 3).
         Higher = fewer but stronger swings.
-    ``merge_atr``: two swing points within this many ATRs merge into one zone (default 0.5).
+    ``merge_atr``: a swing point less than this many ATRs above a zone's lowest member joins
+        that zone (default 1.0, the owner's decision of 2026-10-05: "within one ATR").
     ``max_distance_atr``: FTA search radius in ATRs (default 5.0).
     ``min_swings``: minimum confirmed swing points needed on each side to classify trend
         (default 2 — need at least two highs and two lows).
@@ -218,7 +220,7 @@ class StructureParams:
     """
 
     swing_n: int = 3
-    merge_atr: float = 0.5
+    merge_atr: float = 1.0
     max_distance_atr: float = 5.0
     min_swings: int = 2
     atr_period: int = 14
@@ -333,7 +335,8 @@ def cluster_into_zones(
 ) -> list[StructureZone]:
     """Group nearby swing points into structural zones.
 
-    Two swings merge if their prices differ by less than ``merge_atr × atr``.
+    In price order, a swing joins the current zone if it lies less than
+    ``merge_atr × atr`` above the zone's lowest member, and otherwise starts the next one.
     Zone price = mean of member prices.
     Zone strength formula:
       Each member i (0=oldest, N-1=most recent, by open time) gets a linear weight:

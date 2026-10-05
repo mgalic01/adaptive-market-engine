@@ -673,7 +673,7 @@ class TestStructureParams(unittest.TestCase):
     def test_defaults_are_valid(self):
         params = StructureParams()
         self.assertEqual(3, params.swing_n)
-        self.assertEqual(0.5, params.merge_atr)
+        self.assertEqual(1.0, params.merge_atr)
         self.assertEqual(5.0, params.max_distance_atr)
         self.assertEqual(2, params.min_swings)
         self.assertEqual(14, params.atr_period)
@@ -702,7 +702,7 @@ class TestStructureParams(unittest.TestCase):
     def test_valid_custom_params(self):
         params = StructureParams(
             swing_n=5,
-            merge_atr=1.0,
+            merge_atr=2.0,
             max_distance_atr=10.0,
             min_swings=3,
             atr_period=7,
