@@ -16,7 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from crypto_grid_bot import SOURCE_HASHES
+from crypto_grid_bot import SOURCE_HASHES, source_hash
 from crypto_grid_bot.backtest.dataset import DatasetSpec, load_manifest, load_spec
 from crypto_grid_bot.backtest.features import (
     FEATURE_VERSION,
@@ -43,18 +43,25 @@ from crypto_grid_bot.config import BotConfig, load_config
 from crypto_grid_bot.simulation.runner import SimulationPolicy
 
 
-def source_identity() -> str:
-    """SHA-256 of this package's Python sources, by path: for each module this process
-    imported, the source it was compiled from (``SOURCE_HASHES``); for any other
-    file, what is on disk now."""
+def source_files() -> dict[str, str]:
+    """This package's Python sources by path from the package root, each with the hash
+    of the source this process compiled (``SOURCE_HASHES``) or, for a file it never
+    imported, of the file on disk now."""
     root = Path(__file__).resolve().parents[1]
-    digest = hashlib.sha256()
+    files = {}
     for path in sorted(root.rglob("*.py")):
         relative = path.relative_to(root)
         module = ".".join((root.name, *relative.with_suffix("").parts))
         source = SOURCE_HASHES.get(module.removesuffix(".__init__"))
-        source = source or hashlib.sha256(path.read_bytes()).hexdigest()
-        digest.update(f"{relative.as_posix()}\0{source}\0".encode())
+        files[relative.as_posix()] = source or source_hash(path.read_bytes())
+    return files
+
+
+def source_identity(files: dict[str, str] | None = None) -> str:
+    """SHA-256 of this package's sources (``source_files()``), by path."""
+    digest = hashlib.sha256()
+    for relative, source in (source_files() if files is None else files).items():
+        digest.update(f"{relative}\0{source}\0".encode())
     return digest.hexdigest()
 
 
@@ -273,4 +280,5 @@ def cross_check_job(
 # checkout that changes, even one that changes back, while a spawned worker loads its
 # code gives that worker another identity (Codex review of #160).
 importlib.import_module("crypto_grid_bot.backtest.trend_benchmark")
-SOURCE_IDENTITY = source_identity()
+SOURCE_FILES = source_files()
+SOURCE_IDENTITY = source_identity(SOURCE_FILES)

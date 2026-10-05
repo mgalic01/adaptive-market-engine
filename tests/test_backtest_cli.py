@@ -511,12 +511,15 @@ class CompletenessTests(unittest.TestCase):
 class CodeCommitTests(unittest.TestCase):
     """Codex review of #160: uncommitted edits to tracked files are recorded."""
 
-    def commit_with(self, porcelain: str) -> str:
+    def commit_with(self, porcelain: str, committed: dict | None = jobs.SOURCE_FILES) -> str:
         def fake_run(args, **kwargs):
             out = "0123abc\n" if "rev-parse" in args else porcelain
             return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
 
-        with patch.object(cli.subprocess, "run", fake_run):
+        with (
+            patch.object(cli.subprocess, "run", fake_run),
+            patch.object(cli, "committed_sources", lambda commit: committed),
+        ):
             return cli.code_commit()
 
     def test_clean_checkout_records_the_commit(self) -> None:
@@ -524,3 +527,28 @@ class CodeCommitTests(unittest.TestCase):
 
     def test_edited_tracked_file_marks_the_commit_dirty(self) -> None:
         self.assertEqual("0123abc+dirty", self.commit_with(" M src/x.py\n"))
+
+    def test_a_commit_whose_sources_were_not_imported_is_dirty(self) -> None:
+        # Codex review of #160: a checkout moved to another clean commit after the
+        # imports leaves no edit to see, but its sources are not the ones running.
+        moved = {**jobs.SOURCE_FILES, "strategy/regime.py": "0" * 64}
+        self.assertEqual("0123abc+dirty", self.commit_with("", moved))
+        self.assertEqual("0123abc+dirty", self.commit_with("", None))  # git cannot read it
+
+    def test_committed_sources_hash_the_tree_as_the_imports_do(self) -> None:
+        tree = cli.committed_sources("HEAD")
+        if tree is None:
+            self.skipTest("no git checkout to read")
+        self.assertIn("backtest/jobs.py", tree)
+        # A source the P8 run pins never changes, so git's copy and the disk agree,
+        # whatever line endings the checkout uses.
+        pinned = ROOT / "src/crypto_grid_bot/market_data/parsing.py"
+        self.assertEqual(jobs.source_hash(pinned.read_bytes()), tree["market_data/parsing.py"])
+
+    def test_the_summary_names_a_variant(self) -> None:
+        # Codex review of #160: summary.md alone tells the variants from V0.
+        v0, variant = good_result("BTCUSDT", "ohlc", True), good_result("BTCUSDT", "ohlc", True)
+        variant["variant"] = "B"
+        rows = cli._table([v0, variant]).splitlines()[2:]
+        self.assertIn("| gated |", rows[0])
+        self.assertIn("| gated, variant B |", rows[1])
