@@ -2223,6 +2223,37 @@ class VariantGTests(unittest.TestCase):
             with self.subTest(files=files), self.assertRaisesRegex(ValueError, absent):
                 load_funding(Path("."), {"files": files}, "BTCUSDT", ["2024-01", "2024-02"])
 
+    def test_months_before_the_archives_begin_need_none_and_g_blocks_there(self):
+        # Spec v1 §5 rule 9: BTCUSDT's funding archives begin in 2020-01, so a long window's
+        # earlier evaluation months need none, and G blocks every new grid there. No
+        # stage-1 window has such a month (automated review of #168).
+        early = ["2019-11", "2019-12"]
+        self.assertEqual([], load_funding(Path("."), {"files": []}, "BTCUSDT", early))
+        metrics, _ = self.replay(self.minutes[:1], funding=[])
+        self.assertEqual(0, metrics.grids_opened)
+        self.assertIn("cash: funding gate: funding high or unavailable", metrics.reasons)
+        # From 2020-01 on every month still needs its archive: a manifest that lists none,
+        # or misses one, is refused, naming only those months.
+        months = [*early, "2020-01", "2020-02"]
+        present = {"kind": "fundingRate", "symbol": "BTCUSDT", "month": "2020-01", "status": "ok"}
+        for files, absent in (([], "for 2020-01, 2020-02$"), ([present], "for 2020-02$")):
+            with self.subTest(files=files), self.assertRaisesRegex(ValueError, absent):
+                load_funding(Path("."), {"files": files}, "BTCUSDT", months)
+        # With both, the archives are read and the earlier months are simply empty.
+        with tempfile.TemporaryDirectory() as temp:
+            data, files = Path(temp), []
+            for month, first in (("2020-01", 1577836800000), ("2020-02", 1580515200000)):
+                path = funding_local_path(data, "BTCUSDT", month)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(path, "w") as archive:
+                    archive.writestr(
+                        f"BTCUSDT-fundingRate-{month}.csv",
+                        f"calc_time,funding_interval_hours,last_funding_rate\n{first},8,0.0001\n",
+                    )
+                files.append(present | {"month": month})
+            records = load_funding(data, {"files": files}, "BTCUSDT", months)
+        self.assertEqual([1577836800000, 1580515200000], [r.calc_time_ms for r in records])
+
 
 class RuntimeVariantPaperTests(unittest.TestCase):
     """E and F keep runtime account state that is never saved, so they run in replay

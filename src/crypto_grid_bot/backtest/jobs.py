@@ -216,9 +216,9 @@ def run_job(
     """``fees`` is (maker, taker) overriding the spec; taker None means maker.
 
     ``policy`` controls simulation variants; None gives V0 behaviour. Variants A and H
-    require the pair's daily bars, and variant G BTCUSDT's funding archives for every
-    evaluation month in the manifest. A variant's rows name it, and rows with the V2
-    structure features carry their feature version.
+    require the pair's daily bars, and variant G BTCUSDT's funding archives in the
+    manifest for every evaluation month from 2020-01, where they begin. A variant's rows
+    name it, and rows with the V2 structure features carry their feature version.
     ``fill_trigger`` is the missed-fill sweep's resting-fill trigger (D9, see
     ``prepare_run``); the rows' ``rules`` then record it.
     """
@@ -236,7 +236,7 @@ def run_job(
     )
     run, minutes = prepared.run, load_minutes(data_dir, prepared.manifest, symbol)
     # Spec v1 §3 G: BTCUSDT's funding gates every pair. A manifest without its funding
-    # archives for every evaluation month refuses a G run (load_funding).
+    # archive for an evaluation month from 2020-01 on refuses a G run (load_funding).
     spec = prepared.spec
     funding = (
         load_funding(data_dir, prepared.manifest, "BTCUSDT", spec.months(spec.start))

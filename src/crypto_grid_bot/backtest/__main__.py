@@ -325,7 +325,8 @@ def main(argv: list[str] | None = None) -> int:
         const="G",
         dest="variant",
         help="enable variant G: BTCUSDT funding-rate gate (spec v1 §3 G); refuses to run "
-        "unless the manifest lists BTCUSDT's funding archive for every evaluation month (P8)",
+        "unless the manifest lists BTCUSDT's funding archive for every evaluation month from "
+        "2020-01, where the archives begin (P8); before then G blocks every new grid",
     )
     variants.add_argument(
         "--variant-h",

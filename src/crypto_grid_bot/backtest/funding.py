@@ -27,6 +27,9 @@ from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.parsing import DataError, symbol_name
 
 HEADER = ("calc_time", "funding_interval_hours", "last_funding_rate")
+# The first month of BTCUSDT's monthly funding archives, the only ones G reads (spec v1
+# P8 and §4). G has no records before it, so it blocks every new grid there (§5 rule 9).
+FIRST_ARCHIVE_MONTH = "2020-01"
 ACCEPTED_INTERVAL_HOURS = frozenset({1, 2, 4, 8})
 HOUR_MS = 3_600_000
 PUBLICATION_ALLOWANCE_MS = 60_000
