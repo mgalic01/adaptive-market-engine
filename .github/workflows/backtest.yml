@@ -15,7 +15,7 @@ on:
           - verify-2024h1
           - full-range-2019-2024
       variant:
-        description: "Spec v1 variant: V0 (baseline), A (daily trend switch; needs daily_warmup_start), B (40% inventory cap), C (A and B), E (volume-confirmed exit), F (order-flow block), G (funding gate; refuses to run until the manifest lists the funding archives, kept by the fetch below), H (cycle context; needs daily_warmup_start), C+G, C+H, or C+F+G+H+V2 (the full stack: C with F, G, H and the V2 structure features, which it turns on itself). V2 alone is V0 with structure true."
+        description: "Spec v1 variant: V0 (baseline), A (daily trend switch; needs daily_warmup_start), B (40% inventory cap), C (A and B), E (volume-confirmed exit), F (order-flow block), G (funding gate; needs the manifest's BTCUSDT funding archives for the evaluation months from 2020-01), H (cycle context; needs daily_warmup_start), C+G, C+H, or C+F+G+H+V2 (the full stack: C with F, G, H and the V2 structure features, which it turns on itself). V2 alone is V0 with structure true."
         required: false
         default: "V0"
         type: choice
@@ -39,6 +39,24 @@ on:
         options:
           - "false"
           - "true"
+      trend_benchmark:
+        description: "Also run variant D, the trend benchmark (spec v1 §3 D). The acceptance scorer reads D from the V0 run's results."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      maker_fee:
+        description: "Maker fee for resting fills; empty keeps the spec's fee. Acceptance runs use the primary fees, maker 0 and taker 0.0009 (spec v1 §4)."
+        required: false
+        default: ""
+        type: string
+      taker_fee:
+        description: "Taker fee for marketable exits; empty means the maker fee."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -68,16 +86,30 @@ jobs:
           python -m crypto_grid_bot.backtest fetch \
             --spec "config/datasets/$SPEC.toml" \
             --data-dir data
+          # The fetch rewrites the manifest with today's exchange filters and time. A run
+          # must use and record the committed manifest, which the acceptance scorer pins,
+          # and a changed tracked file would record the code commit as "+dirty". The run
+          # verifies every downloaded archive against the committed manifest's checksums.
+          manifest="config/datasets/$SPEC.manifest.json"
+          if git ls-files --error-unmatch "$manifest" > /dev/null 2>&1; then
+            git checkout -- "$manifest"
+          fi
 
       # run_nopool.py is the CLI's run with --jobs 1: it verifies the dataset and runs
-      # the integrity cross-checks before any replay, and takes the fees from the spec.
+      # the integrity cross-checks before any replay, and takes the fees from the spec
+      # unless they are given. --record-commit records the code commit and its source
+      # hash in every results.json, which the acceptance scorer requires of every input;
+      # a variant, structure or D run records them anyway.
       - name: Run backtest
         env:
           SPEC: ${{ github.event.inputs.spec }}
           VARIANT: ${{ github.event.inputs.variant }}
           STRUCTURE: ${{ github.event.inputs.structure }}
+          TREND_BENCHMARK: ${{ github.event.inputs.trend_benchmark }}
+          MAKER_FEE: ${{ github.event.inputs.maker_fee }}
+          TAKER_FEE: ${{ github.event.inputs.taker_fee }}
         run: |
-          set -- "$SPEC"
+          set -- "$SPEC" --record-commit
           case "$VARIANT" in
             A) set -- "$@" --variant-a ;;
             B) set -- "$@" --variant-b ;;
@@ -92,6 +124,15 @@ jobs:
           esac
           if [ "$STRUCTURE" = "true" ]; then
             set -- "$@" --structure
+          fi
+          if [ "$TREND_BENCHMARK" = "true" ]; then
+            set -- "$@" --trend-benchmark
+          fi
+          if [ -n "$MAKER_FEE" ]; then
+            set -- "$@" --maker-fee "$MAKER_FEE"
+          fi
+          if [ -n "$TAKER_FEE" ]; then
+            set -- "$@" --taker-fee "$TAKER_FEE"
           fi
           python scripts/run_nopool.py "$@"
 

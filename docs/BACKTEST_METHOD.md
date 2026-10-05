@@ -337,6 +337,10 @@ the frozen inputs, which every run must match:
     them only with `--record-commit`.
   - So run the whole batch with `--record-commit` from one clean checkout of the frozen
     commit, and score it from that same checkout.
+  - The `backtest` workflow passes `--record-commit` on every run. Its `fetch` rewrites
+    the manifest with today's exchange filters, so the workflow then restores the
+    committed manifest: otherwise the commit would read `+dirty` and the manifest would
+    not be the committed one. Its inputs also take D (`trend_benchmark`) and the fees.
 - **The committed files.** `config/default.toml`, and each window's dataset spec and
   manifest in `config/datasets`, must hash to the `config_sha256`, `spec_sha256` and
   `manifest_sha256` each run recorded.
