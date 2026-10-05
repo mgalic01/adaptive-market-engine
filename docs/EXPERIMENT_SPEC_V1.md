@@ -1,10 +1,16 @@
-# Experiment specification v1 (DRAFT for review, not yet frozen)
+# Experiment specification v1 (frozen 2026-10-05)
 
-**Status:** draft by Claude. It becomes frozen only when Codex has reviewed it and the
-owner has confirmed the acceptance criteria in §6. After that, a change requires a new
-version (v2), and results under v1 stay reported. **No strategy code exists for these
-variants yet.** This document fixes what will be built and how it will be judged,
-*before* any variant is run.
+**Status: frozen on 2026-10-05** (owner decision 12,
+[record](reviews/2026-10-05-claude-owner-decisions-test-plan.md), "Later decisions").
+- **The freeze condition is met.** This header made the freeze wait until Codex had
+  reviewed the spec and the owner had confirmed the acceptance criteria in §6. Codex has
+  reviewed every amendment, ending with no findings on #168 and #170. The owner
+  confirmed C1–C6 on 2026-09-24 and amended C2 on 2026-10-05.
+- **From now on,** a change requires a new version (v2), and results under v1 stay
+  reported.
+- **Every variant is implemented on main**, the last of them by #170 (the full stack).
+  Stage 1 runs on these frozen rules, which were fixed before any stage-1 or stage-2
+  result existed.
 
 **Test-plan amendment (amendment 4, owner decisions of 2026-10-05,
 [record](reviews/2026-10-05-claude-owner-decisions-test-plan.md)):**
@@ -735,17 +741,22 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   values are 1, 2, 4 and 8 hours; any other value, or a missing field, makes that
   record's successor unknown, so G is unavailable (below) until three consecutive
   valid records exist again.
-- **Pending P8 evidence (G cannot be frozen until resolved):**
+- **P8 evidence (resolved before the freeze):** each item below records its outcome. The
+  data supports flooring to the hour, and the 60-second publication allowance stays a
+  labelled assumption.
   - **Interval meaning: resolved by convention (2026-09-25, PR #19 discussion).** The
     archives cannot tell whether a record's interval is the interval **to its next**
     settlement or the interval **ending at** it. G therefore uses the
     **uniform-cadence rule** below. It gives the same decision under both readings
     whenever the latest three records agree, and it is unavailable otherwise.
   - **Missing field:** if some archive months have no interval field, the spec is
-    amended before freeze; nothing is assumed.
+    amended before freeze; nothing is assumed. *Outcome:* every month from 2020-01 to
+    2024-12 has the field (Bob's cadence survey, below), so no amendment was needed.
   - **Modelling conventions, not verified facts:** flooring `calc_time` to the hour
     and the 60-second publication allowance are **assumptions**. Bob's report is
-    assessed against them before freeze.
+    assessed against them before freeze. *Outcome:* the survey below supports
+    flooring, and the allowance cannot be verified from archives, so it stays an
+    assumption.
   - **Bob's P8 survey (2026-09-25, `bob/p8-data-survey` `761b2ee`):**
     - Funding archives exist for all 60 months, 2020-01 to 2024-12, with no errors.
     - One sampled month (2022-06) has the header
@@ -769,8 +780,8 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
     - The 60-second publication allowance cannot be verified from archives. It stays a
       labelled assumption.
 - **Timing:** a record becomes usable at `calc_time + 60 s` (a fixed publication
-  allowance, an **assumption** pending P8), at the first valid observation at or after
-  that instant.
+  allowance, an **assumption** P8 could not verify, above), at the first valid
+  observation at or after that instant.
 - **Uniform-cadence rule (latest three):** at an observation at time `t`, take the
   newest usable record `r3` and the two usable records before it, `r1` and `r2`.
   - **Insufficient history:** if fewer than three usable records exist, including at
@@ -945,8 +956,8 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   single variants, run in the same batch, show which parts carry it.
 - **Exceptions:** only its parts', which are H3's and V2's.
 - **How the parts combine.** This is Claude's reading of the sections above and the code
-  on main. It was not among the readings put to the owner, and it is open to Codex's and
-  Bob's review before the freeze, like D19's details.
+  on main. It was not among the readings put to the owner. Codex and Bob reviewed it
+  before the freeze, on #168 and #170, and raised nothing against it.
   - **New grids.** A new grid opens only when every part allows it:
     - A is in Up with no running Down sequence;
     - F's `flow_block` is off;
