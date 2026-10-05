@@ -1122,13 +1122,15 @@ def find_targets(
         if not toks:
             continue
         exe = _exe(toks[0])
+        base = _env_dir(words, cwd)
+        # A file it runs is found where it runs, after a wrapper's directory change
+        # (Codex review of #159: `env -C /tmp bash run`).
         if "/" in toks[0] or "\\" in toks[0]:
-            executed.add(_absolute(cwd, toks[0]))  # `./run`, `/tmp/run`
+            executed.add(_absolute(base, toks[0]))  # `./run`, `/tmp/run`
         if exe in SHELLS or CLIENT_VERSION_RE.sub("", exe) in INTERPRETERS:
-            executed.update(_absolute(cwd, a) for a in toks[1:] if not a.startswith("-"))
+            executed.update(_absolute(base, a) for a in toks[1:] if not a.startswith("-"))
         if exe != "git" and _is_git(exe):
             exe, toks = "git", ["git", exe[4:], *toks[1:]]
-        base = _env_dir(words, cwd)
         if exe in ("cd", "set-location", "pushd", "sl") and len(toks) > 1:
             cwd = str(Path(cwd, toks[-1]))
         elif exe == "git":
