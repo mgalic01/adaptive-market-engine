@@ -426,7 +426,7 @@ WRAPPER_VALUE_OPTS = {
     "sudo": {
         "-u", "--user", "-g", "--group", "-D", "--chdir", "-h", "--host", "-p", "--prompt",
         "-C", "--close-from", "-r", "--role", "-t", "--type", "-T", "--command-timeout",
-        "-U", "--other-user",
+        "-U", "--other-user", "-R", "--chroot", "-a", "--auth-type", "-c", "--login-class",
     },
     "doas": {"-u", "-C"},
 }  # fmt: skip
@@ -648,11 +648,13 @@ def _unknown(text: str, why: str) -> list[Target]:
     ]
 
 
-# Command separators: `&&`, `||`, `;`, a pipe, a newline, and a lone `&` that sends a
-# command to the background (Codex review of #159: `true & gh pr merge 5`). A `&` next to
-# `>` is a redirection (`2>&1`, `&>out`); PowerShell's call operator (`& git push`) leaves
-# an empty segment before its command, which is then read as before.
-SEPARATORS = re.compile(r"&&|\|\||(?<![>&])&(?![&>])|[;|\n]")
+# Command separators: `&&`, `||`, `;`, a pipe, a newline, a lone `&` that sends a
+# command to the background (Codex review of #159: `true & gh pr merge 5`), and the
+# parentheses of a subshell or a process substitution (`(gh pr merge 5)`, `<(git push)`;
+# Codex review of #159). A `&` next to `>` is a redirection (`2>&1`, `&>out`), and the
+# `(` of `$(` stays: substitutions() reads those. PowerShell's call operator (`& git
+# push`) leaves an empty segment before its command, which is then read as before.
+SEPARATORS = re.compile(r"&&|\|\||(?<![>&])&(?![&>])|[;|\n)]|(?<!\$)\(")
 
 
 def segments(command: str) -> list[str]:

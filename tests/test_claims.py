@@ -585,6 +585,23 @@ class TargetTest(unittest.TestCase):
                 ["claude/a"],
             )
 
+    def test_subshells_and_process_substitutions_are_read(self):
+        # Codex review of #159: bash runs what the parentheses hold.
+        with git_stub():
+            for cmd in ("(gh pr merge 5)", "cat <(gh pr merge 5)", "tee >(gh pr merge 5) < x"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            for cmd in (
+                "if true; then (git push origin claude/a); fi",
+                "diff <(git show HEAD) <(git push origin claude/a)",
+                "sudo -R / git push origin claude/a",
+                "sudo --chroot / git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+            # A command substitution is still read once, by substitutions().
+            self.assertEqual(self.prs("echo $(gh pr merge 5)"), [5])
+
     def test_a_lone_ampersand_ends_a_command(self):
         # Codex review of #159: the shell runs both commands. A redirection is no separator,
         # and PowerShell's call operator still works.
