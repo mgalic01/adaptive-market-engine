@@ -1272,6 +1272,19 @@ class SellAtResistanceTests(unittest.TestCase):
         account = self.open_grid((ResistanceZones((0.99,), 0.005),))
         self.assertEqual(self.GEOMETRIC[:3], self.targets(account))
 
+    def test_a_geometric_target_left_standing_keeps_v0s_rule(self):
+        # ATR 0.0184 rounds the lowest buy pair to 0.9632 and 0.9733, 1.049% apart, short
+        # of the 1.05% costs require, so V0 refuses the whole grid. A zone at 2.0, out of
+        # reach, caps nothing: every geometric target stands, and V2 refuses it alike.
+        far = (ResistanceZones((2.0,), 0.01),)
+        for structure, resistance in ((False, ()), (True, far)):
+            with self.subTest(structure=structure):
+                with self.assertRaises(GridNotViable) as refused:
+                    self.open_grid(resistance, structure=structure, atr=D("0.0184"))
+                self.assertEqual(
+                    "rounded spacing cannot cover conservative costs", str(refused.exception)
+                )
+
     def test_a_level_whose_target_cannot_clear_costs_gets_no_buy(self):
         # A zone at 0.985: 0.985 x 0.999 floors to 0.9840, only 0.33% above the top buy
         # level, which may not target above the zone and cannot profit below it, so it gets
