@@ -1065,8 +1065,9 @@ missed-fill), and execution delay (timing). The path sensitivity (`high_first` /
 
 ## 5. Validity and the comparison mask
 
-**Comparison mask, fixed before any variant runs.** For each pair-window, the following
-variant-independent checks are run first:
+**Comparison mask, fixed before any variant runs.** For each pair-window, hour-level
+masking runs first (rules 1, 2 and 5 at the end of this section). The following
+variant-independent checks then run against the post-mask expected set (below):
 - the manifest and checksums;
 - the hourly/minute and daily/hourly cross-checks, and, when the market proxy is not a
   traded pair, the completeness of its hourly bars over warm-up and evaluation (every
@@ -1082,8 +1083,9 @@ variant-independent checks are run first:
   whose open, high, low and close match exactly and whose volume differs by at most
   0.1% of Binance's figure is counted as volume drift, not as a failure. Every other
   difference, and every missing or duplicated bar, stays fatal. *(Since the test-plan
-  amendment of 2026-10-05, a failing hour is masked instead, under the rules at the end
-  of this section. A missing or duplicated daily bar stays fatal.)* The rules' name and
+  amendment of 2026-10-05, a failing hour is masked first and then leaves the expected
+  set, so it no longer fails this check; see "The post-mask expected set", below. A
+  missing or duplicated daily bar stays fatal.)* The rules' name and
   tolerance are written to every `results.json`; `--strict-volume` (`strict-v0`, exact
   volume) stays available as a check. Features read Binance's 1h archive as published,
   so a drifted hour feeds its archive volume (within 0.1% of the minute sum) to the
@@ -1094,8 +1096,25 @@ variant-independent checks are run first:
 - warm-up sufficiency;
 - the availability of sourced exchange filters (P4).
 
-A pair-window that fails any of them is **excluded for every variant alike** and listed
-with the reason. Exclusion is per pair-window: a pair can be excluded from one window
+**The post-mask expected set (test-plan amendment, 2026-10-05).** Some hours are masked
+before the checks run:
+- every hour masked under rule 1, 2 or 5 (below);
+- every hour of a pair-month excluded under the 17% rule.
+
+These hours are removed from the expected set of every check above: the proxy's and the
+basket's hourly completeness, the hourly/minute cross-check and the daily/hourly
+cross-check.
+- **A maskable defect** never fails a check and never excludes a pair-window.
+- **A defect that masking does not cover** fails exactly as before. Examples are a
+  manifest or checksum failure, a missing or duplicated daily bar, a short warm-up, and
+  a missing exchange filter.
+- **Scope.** This applies to every window. The current windows have no masked hours, so
+  nothing changes for them.
+- **Provenance.** This is Claude's reading of the owner's masking rules, from Codex's
+  review of #168, and it is open to the owner.
+
+A pair-window that fails any of them, on the post-mask expected set, is **excluded for
+every variant alike** and listed with the reason. Exclusion is per pair-window: a pair can be excluded from one window
 and kept in another. The mask is written to the results before scoring and cannot
 change afterwards. Every current `practice-2022` SOL pair-window fails the filter check
 unless P4 sources historical filters
@@ -1138,7 +1157,8 @@ which the owner accepted on 2026-10-05, and each is marked where it stands.
      holds a repaired row, the match must be exact (`Decimal(0)`, prices and volume).
 
    Any other hour is **masked**: its minutes and its 1h bar are dropped, for every
-   variant alike.
+   variant alike. Masking runs before the comparison-mask checks, which then run against
+   the post-mask expected set (above).
    - **Symbol-months with only a 1h archive.** These are every breadth-basket symbol and
      the traded pairs' hourly warm-up months. An hour there enters only if the archive
      holds it exactly once and the hour holds no repaired row (rule 5). For the warm-up
@@ -1184,29 +1204,33 @@ which the owner accepted on 2026-10-05, and each is marked where it stands.
 7. **Returns are annualised** in C2 and the selection, so windows of different lengths
    weigh fairly. Raw returns are still reported (§6, "Annualised returns").
 8. **XRP below the tick limit.**
-   - **The mechanism.** XRPUSDT's tick is 0.0001. Below a price of 0.0002 ÷ 0.0015 ≈
-     0.1333, the replay's open and close quotes are two ticks wide after outward
-     rounding (`replay.py` `bar_quotes`). That exceeds the 0.15% spread limit, so the
-     frames are rejected (`runner.py` L507; §8, D8), and a rejected frame makes a run
-     invalid. P4 found the same mechanism for SOL.
-   - **The rule.** If Bob's measurement confirms that XRP's price falls below that
-     level in a window, XRP's pair-window is excluded there for every variant. Otherwise
-     XRP stays.
-   - **The statistic.** This is Claude's reading of the owner's accepted rule, from the
-     automated review of #168, and it is open to the owner. It is fixed before Bob
-     measures.
-     - XRP is excluded from a window if, in any single minute of that window's warm-up
-       or evaluation span, its 1m low is below 2 × tick ÷ maximum spread = 0.0002 ÷
-       0.0015 = 2/15 USDT, about 0.1333.
-     - In warm-up months the dataset holds only 1h bars. There the 1h low stands for
-       the lowest 1m low of its hour.
-     - The test is per window, and one minute is enough, because one such minute can
-       already make frames fail the spread check.
-     - It is conservative. If every 1m low is at or above 2/15, no quote can be
-       rejected this way: the open and close quotes fail only below about 0.1332, and
-       the high and low quotes only below about 0.0667. The warm-up span is stricter
-       than the mechanism needs, since warm-up minutes are not replayed.
-     - Bob's fetch run measures it from the manifests' archives.
+   - **The mechanism.** XRPUSDT's tick is 0.0001.
+     - The replay's quote builder (`replay.py` `bar_quotes`) rounds each synthesized bid
+       down and each ask up to the tick.
+     - On a low-priced bar, that can widen a quote beyond the 0.15% spread limit. The
+       engine then rejects the frame (`runner.py` L507, where `(ask − bid) ÷ ask` is
+       above the limit; §8, D8).
+     - A rejected frame makes a run invalid. P4 found the same mechanism for SOL.
+   - **The rule.** If Bob's measurement confirms that XRP's price breaks the tick limit
+     in a window, XRP's pair-window is excluded there for every variant. Otherwise XRP
+     stays.
+   - **The statistic.** This is Claude's reading of the owner's accepted rule, from
+     Codex's review of #168, and it is open to the owner. It replaces an earlier
+     reading, "any 1m low below 2/15 USDT", which was stronger than the owner's rule.
+     It is fixed before Bob measures.
+     - XRP is excluded from a window if any quote that `bar_quotes` synthesizes from the
+       window's replayed 1m bars has a spread `(ask − bid) ÷ ask` above the 0.15%
+       maximum. The quotes use the dataset's assumed spread and the replay's tick. This
+       is exactly the engine's rejection condition.
+     - Only the replayed span counts: the evaluation months, after masking. Warm-up
+       minutes are not replayed.
+     - One quote is enough, per window.
+     - Both intrabar paths synthesize the same four quotes per bar, only in a different
+       order, so the test does not depend on the path.
+     - Bob's run measures it with the project's own code.
+     - Consequences, not the rule: for prices on the 0.0001 grid, the open and close
+       quotes (two ticks wide) fail below about 0.13323 USDT, and the high and low
+       quotes (one tick wide) fail below about 0.0667.
    - **Effect.** In the long windows the exclusion would leave BTC and ETH, the two-pair
      minimum. Bob measures every window that trades XRP, `practice-2022` included.
 9. **G and H with no data in their early years,** as §3 G and §3 H already provide.

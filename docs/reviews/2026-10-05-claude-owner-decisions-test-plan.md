@@ -111,7 +111,7 @@ Options the owner did not choose:
      - G must run where funding archives do not exist. #165, as described, refuses G unless the manifest lists funding archives for every evaluation month. The long windows cannot meet that before 2020-01. By decision 10 this change is not data handling, so it must land before stage 1.
    - Bob's work:
      - the re-fetch with daily and funding archives;
-     - the XRP price measurement;
+     - the XRP quote-spread measurement (spec §5, rule 8);
      - the 17% check under these rules, which also count incomplete hours.
 7. **V2's fourth exception.**
    - Spec §3's common rule now names four exceptions. There were three before.
@@ -160,6 +160,15 @@ Options the owner did not choose:
   - The permission to change a window after today is removed.
   - After stage 1, only the mechanical application of registered rules may happen. Any other change is a registration change, allowed only before any stage-1 result exists.
 - **Codex, P2.** The sensitivity family now counts the forward ungated V0 baselines (spec §6, and "The trial count" below).
+- **Codex, two more P1s,** from its review of `78647ad`. Both are Claude's readings, open to the owner.
+  - **Masking first, then the checks** (spec §5, "The post-mask expected set").
+    - Every hour masked under rules 1, 2 and 5, and every hour of a pair-month excluded under the 17% rule, leaves the expected set of every comparison-mask check: completeness, the hourly/minute cross-check and the daily cross-check.
+    - So a maskable defect never fails a check or excludes a pair-window. A defect that masking does not cover fails as before.
+    - This holds in every window. The current windows have no masked hours.
+  - **XRP's statistic is the engine's own rejection condition** (spec §5, rule 8).
+    - XRP is excluded from a window if any quote that `bar_quotes` synthesizes from the window's replayed 1m bars has a spread above 0.15%. Only the replayed span counts, and one quote is enough.
+    - It replaces the earlier "any 1m low below 2/15 USDT" reading. That reading was stronger than the owner's rule: a bar with open and close at 0.14 and a low of 0.13 passes the spread check.
+    - The thresholds (about 0.13323 for open/close quotes, about 0.0667 for high/low quotes) are consequences, not the rule.
 
 ## Correction: the warm-up false alarm
 
@@ -173,14 +182,14 @@ Claude's first draft (local commit `216a1d8`, never pushed) said the 2017–2024
 
 - **Three readings from the automated review of #168, open to the owner.** Each is written into the spec as Claude's reading.
   1. The stage-1 identity check leaves out only `code_commit`, `code_sha256` and the new mask-report fields, which must be empty or zero on every stage-1 run (spec §6, "Two stages"). A literal byte-identity could not hold once those fields exist.
-  2. XRP's statistic, fixed before Bob measures: XRP is excluded from a window if any 1m low in its warm-up or evaluation span is below 2/15 USDT (about 0.1333). In warm-up months the 1h low is used (spec §5, rule 8).
+  2. XRP's statistic, fixed before Bob measures. This reading was replaced after Codex's review (see "Changes after review on #168"). XRP is now excluded from a window if any quote synthesized from its replayed 1m bars has a spread above 0.15% (spec §5, rule 8).
   3. The 0.25-point tie band applies to the mean compound-annualised return, and a final equity of 0 or less annualises to −100% (spec §6, "Annualised returns" and selection step 2).
 - **Stage-2 sensitivity runs.** The owner decides later. They are reported only and decide nothing.
 - **The trial count.** The `N_family` floors in spec §6 are working figures, to be settled by the trial register. C7's condition (b) stands, and C7 is not yet binding.
 - **For review, not the owner.** How the full stack's parts combine (spec §3) is Claude's reading of the sections and of the code on main. It was not among the six readings, and it is open to Codex's and Bob's review before the freeze.
 - **Data work before stage 2, with no owner decision needed:**
   - dataset specs that match spec §4's frozen values;
-  - Bob's XRP measurement;
+  - Bob's XRP quote-spread measurement;
   - the long windows' masks and the 17% check under these rules.
 
 ## The trial count
@@ -214,7 +223,7 @@ The working figures are 22 and 28. All figures are floors, to be settled by the 
 - **Computed by script:**
   - window lengths: 245, 182, 2,192 and 2,011 days;
   - 214 days from 2018-06-01 to 2019-01-01;
-  - XRP's limit: 0.0002 ÷ 0.0015 = 2/15 ≈ 0.1333;
+  - XRP's quote bounds for prices on the 0.0001 grid: open/close quotes fail below 2/15 − 0.0001 ≈ 0.13323, high quotes below 1/15 ≈ 0.0667, and low quotes below about 0.06657;
   - from the 2017–2024 manifest: 240 daily entries, all `ok`, and XRPUSDT 2018-05 with `first_open_ms` 1525392000000 (2018-05-04), 28 rows and `missing_rows` 3;
   - from both manifests, the first 1h candles: SOLUSDT 2020-08-11T06:00Z, DOGEUSDT 2019-07-05T12:00Z, LINKUSDT 2019-01-16T10:00Z (374 rows, 370 missing in 2019-01), and TRXUSDT 2018-06-11T11:00Z. BNBUSDT and LTCUSDT are complete from both warm-ups, and TRXUSDT is complete from 2019-01;
   - from the 2019–2024 manifest: 78 daily entries (2018-07 to 2024-12), all `ok`.
