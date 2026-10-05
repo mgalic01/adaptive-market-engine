@@ -434,6 +434,13 @@ class TargetTest(unittest.TestCase):
             # body; a quoted pipe is no pipeline.
             self.assertEqual(self.prs("x=$(bash <<'EOF'\ngh pr merge 5\nEOF\n)"), [5])
             self.assertEqual(find_targets("echo '| bash' <<'EOF'\ngh pr merge 5\nEOF", "."), [])
+            # Codex review of #159: a function body's opener is not the reader.
+            for cmd in (
+                "f(){ bash <<'EOF'\ngh pr merge 5\nEOF\n}; f",
+                "f() { bash <<'EOF'\ngh pr merge 5\nEOF\n}",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
             # Codex review of #159: an argument named like a shell is not the reader.
             self.assertEqual(find_targets("echo bash <<'EOF'\n(gh pr merge 5)\nEOF", "."), [])
             # Codex review of #159: a shell elsewhere on the line is not this body's reader.

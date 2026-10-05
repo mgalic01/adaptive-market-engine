@@ -648,6 +648,10 @@ def _readers(pipeline: str) -> list[str]:
         inner = _quoted(stage)
         cut = max((i + 1 for i, c in enumerate(stage) if c in "(`" and not inner[i]), default=0)
         words = drop_redirections(split_words(stage[cut:]))
+        # A function body's opener before its command: `f(){ bash <<EOF` (Codex review of
+        # #159).
+        while words and set(words[0]) <= set("(){}"):
+            words = words[1:]
         if words and words[0] in (".", "source"):
             out.append(words[0])
         elif toks := unwrap(words):
