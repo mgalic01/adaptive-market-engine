@@ -645,8 +645,8 @@ this PR's own spec edit (§3 B, "remaining quantity") survives. Two additions:
 - Amendments 2 and 3 now name the engine and schema assigned to them.
 
 **Engine** (`runner.py`, and `replay.py` for the label and one count): engine
-`drawdown-recovery-v2`, paper schema 8, so a schema-7 database is refused by the store and
-by the resume command.
+`drawdown-recovery-v2`, paper schema 9 (renumbered from 8 on 2026-10-05, when #159 and #160
+took 7 and 8), so a schema-8 database is refused by the store and by the resume command.
 - **D7.** When an open episode's rebase falls due, the risk engine is asked once more,
   against the unchanged `risk_high`. The tentative check has already passed on that frame,
   so only the drawdown can deny `ALLOW`, by the engine's own exact comparison. If it
@@ -800,7 +800,7 @@ table above:
   prices. It now says so, with a dated note. The owner's bar is unchanged: about 5% over
   six years is not enough, and the target is well above 5% a year.
 - **§3's V0 paragraph** now names engine `drawdown-recovery-v2`, paper schema 8 (refusing
-  1–7) and the decisions of 2026-10-02 (D7, amendments 2 and 3), and lists V0 on
+  1–7; schema 9, refusing 1–8, since #159 and #160 took 7 and 8) and the decisions of 2026-10-02 (D7, amendments 2 and 3), and lists V0 on
   `drawdown-recovery-v1` among the earlier versions, each a registered trial. No other
   engine or schema pin in the spec disagrees.
 - **`N_family` (C7)** is 17–18 and 21–22, with working figures 18 and 22: the coherence
