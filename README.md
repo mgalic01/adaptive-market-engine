@@ -141,9 +141,9 @@ test, not a backtest, EUR conversion, forecast or evidence of profitability.**
 It reads no credentials and needs no network. Running the same command again
 reuses recorded results without duplicating trades or savings. A different
 database path starts a separate simulation; changed account settings are
-rejected against an existing database. The current code uses schema 5 (the exit
-lifecycle fix, engine `exit-residue-v1`) and rejects schema 1-4 experiments; no implicit
-migration or resetting of losses occurs. The
+rejected against an existing database. The current code uses schema 10 (engine
+`drawdown-recovery-v2`; history in `docs/PAPER_SIMULATION.md`) and rejects schema 1-9
+experiments; no implicit migration or resetting of losses occurs. The
 frame-gap policy is part of account identity; start a new database instead of
 reopening an experiment under changed timing rules.
 
@@ -246,8 +246,8 @@ inputs can trigger simulated liquidation, bounded by available liquidity;
 unfilled inventory or dust remains visible. Daily-loss and soft-drawdown pauses cancel buy entries and manage exits. Temporary
 pauses recover after consecutive eligible observations; a hard-drawdown halt of
 category `drawdown` restarts automatically after 24 hours (spec v1 amendment 1,
-`docs/EXPERIMENT_SPEC_V1.md` §3); emergency, capital-exhaustion and integrity halts
-require the audited paper resume checks.
+`docs/EXPERIMENT_SPEC_V1.md` §3); emergency and integrity halts require the audited
+paper resume checks, and a capital-exhaustion halt is final (owner decision D18).
 Resume cannot erase losses. Savings earmarks adjust
 risk baselines proportionally and cannot fund orders.
 
