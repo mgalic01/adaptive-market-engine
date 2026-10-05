@@ -167,6 +167,24 @@ and its baseline needs 720 defined observations. Every dataset includes at least
 two hourly warm-up months before `start`; readiness is still checked from the actual
 available observations, not inferred from the calendar span.
 
+**Variant A's daily bar:** with `--variant-a` or `--variant-c`, each observation reads the
+trend state of the previous UTC day's completed daily bar (`TrendSchedule.at()`,
+`effective_state()`). If that bar is missing, the state is Unavailable, which spec v1 §3 A
+treats as Middle: no new grid, while an existing grid keeps running (its sells, reentries
+and range exit as in V0) and no fill is forced. A missing daily bar inside the window
+therefore blocks new grids, and since SMA200 needs 200 consecutive days (D6), it does so
+for up to 200 days; it is not an error. A registered run cannot reach this state: P3's
+integrity check rejects a daily archive with a gap.
+
+**Variants E to H** (`--variant-e`, `-f`, `-g`, `-h`, `-cg` and `-ch`, spec v1 §3) read only
+what was complete at the decision: E the pair's own hourly and 1m bars, F its 1m bars, G
+the BTCUSDT funding records already usable, and H its daily bars, with the observation's
+own halving phase. No committed manifest lists funding archives until P8's report merges,
+so until then G and C+G block every new grid; H3's all-time high needs daily history from
+the most recent halving, which only P8's extended history provides, so without it H3
+never relaxes an entry. E and F keep account state that is never saved, so they run in
+historical replay only ([PAPER_SIMULATION.md](PAPER_SIMULATION.md)).
+
 The unchanged engine then applies:
 - the regime classifier;
 - the opportunity scorer;
