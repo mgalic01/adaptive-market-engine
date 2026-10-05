@@ -197,8 +197,9 @@ H (each variant's fields are named after it). Notes on each:
   month from 2020-01, where Binance's archives begin, and is refused without one, rather
   than blocking every new grid that month. Months before 2020-01 need none: G has no
   records there, so it is unavailable and blocks every new grid (spec v1 §5 rule 9).
-  `verify-2024h1`'s manifest lists P8's archives for 2023-11 to 2024-06, its warm-up and
-  evaluation months, so G is available from the first evaluated minute.
+  The development manifests list P8's archives for their warm-up and evaluation months
+  (`practice-2022` 2022-04 to 2023-01, `verify-2024h1` 2023-11 to 2024-06), so G is
+  available from the first evaluated minute.
 - **H3** relaxes the opportunity-score minimum (0.70 to 0.60) only for the decision to
   open a new grid, while the account holds no grid. A grid that exists is judged by V0's
   minimum, so a grid opened only because of H3 pauses, and drains, at its next frame scored
