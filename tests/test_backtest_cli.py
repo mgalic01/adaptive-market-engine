@@ -571,7 +571,7 @@ class CodeCommitTests(unittest.TestCase):
 class VariantGRefusalTests(unittest.TestCase):
     def test_a_g_run_on_a_manifest_without_funding_archives_is_refused(self):
         # Codex review of #165: such a run blocks every new grid and could be published
-        # as valid. Every committed manifest lacks the archives until P8's entries.
+        # as valid.
         spec = jobs.load_spec(Path(SPEC))
         prepared = jobs.PreparedRun(spec, None, {"files": []}, None, None, None, [])
         with (

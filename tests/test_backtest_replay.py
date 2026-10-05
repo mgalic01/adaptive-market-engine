@@ -2214,7 +2214,7 @@ class VariantGTests(unittest.TestCase):
         # a result that says nothing about funding, so the run is refused instead.
         present = {"kind": "fundingRate", "symbol": "BTCUSDT", "month": "2024-01", "status": "ok"}
         cases = (
-            ([], "2024-01, 2024-02"),  # every committed manifest until P8's entries
+            ([], "2024-01, 2024-02"),  # a manifest without funding entries
             ([present], "2024-02"),
             ([present, present | {"month": "2024-02", "status": "missing"}], "2024-02"),
             ([present, present | {"month": "2024-02", "symbol": "ETHUSDT"}], "2024-02"),

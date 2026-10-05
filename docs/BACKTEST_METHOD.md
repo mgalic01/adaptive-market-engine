@@ -196,8 +196,9 @@ H (each variant's fields are named after it). Notes on each:
   fetches and keeps them. A run with G needs BTCUSDT's archive for every evaluation
   month from 2020-01, where Binance's archives begin, and is refused without one, rather
   than blocking every new grid that month. Months before 2020-01 need none: G has no
-  records there, so it is unavailable and blocks every new grid (spec v1 §5 rule 9). No
-  committed manifest lists any yet, so until P8's entries are added, G and C+G cannot run.
+  records there, so it is unavailable and blocks every new grid (spec v1 §5 rule 9).
+  `verify-2024h1`'s manifest lists P8's archives for 2023-11 to 2024-06, its warm-up and
+  evaluation months, so G is available from the first evaluated minute.
 - **H3** relaxes the opportunity-score minimum (0.70 to 0.60) only for the decision to
   open a new grid, while the account holds no grid. A grid that exists is judged by V0's
   minimum, so a grid opened only because of H3 pauses, and drains, at its next frame scored
@@ -273,7 +274,7 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
     zero-volume minute, so these are counted directly.
   - when the spec declares daily history, **two different checks** run, because the
     daily window normally starts earlier than the hourly one (`verify-2024h1`: daily
-    from 2023-05, hourly from 2023-11):
+    from 2020-05, hourly from 2023-11):
     - over the **whole daily window**, every UTC day appears exactly once
       (`daily_days_missing`, `_duplicated`), with enough completed days of warm-up
       (`daily_warmup_short`);

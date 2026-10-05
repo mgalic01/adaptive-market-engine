@@ -568,18 +568,18 @@ class FetchTests(unittest.TestCase):
     def test_daily_warmup_start_is_optional_and_validated(self):
         source = (ROOT / "config/datasets/verify-2024h1.toml").read_text()
         spec = load_spec(ROOT / "config/datasets/verify-2024h1.toml")
-        self.assertEqual("2023-05", spec.daily_warmup_start)
-        self.assertIn(("BTCUSDT", "1d", "2023-05"), spec.required())
+        self.assertEqual("2020-05", spec.daily_warmup_start)
+        self.assertIn(("BTCUSDT", "1d", "2020-05"), spec.required())
         without = "\n".join(
             line for line in source.splitlines() if not line.startswith("daily_warmup_start")
         )
         for text, ok in (
             (without, True),
             (
-                source.replace('daily_warmup_start = "2023-05"', 'daily_warmup_start = "2024-02"'),
+                source.replace('daily_warmup_start = "2020-05"', 'daily_warmup_start = "2024-02"'),
                 False,
             ),
-            (source.replace('daily_warmup_start = "2023-05"', "daily_warmup_start = 5"), False),
+            (source.replace('daily_warmup_start = "2020-05"', "daily_warmup_start = 5"), False),
         ):
             with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
                 handle.write(text)
@@ -873,7 +873,7 @@ class ReservedWindowTests(unittest.TestCase):
             ('end = "2024-06"', 'end = "2025-01"'),
             ('end = "2024-06"', 'end = "2026-08"'),
             ('start = "2024-01"\nend = "2024-06"', 'start = "2025-01"\nend = "2025-06"'),
-            ('daily_warmup_start = "2023-05"', 'daily_warmup_start = "2025-01"'),
+            ('daily_warmup_start = "2020-05"', 'daily_warmup_start = "2025-01"'),
         ):
             with self.subTest(new=new), self.assertRaisesRegex(DataError, "reserved window"):
                 load_spec(self._spec_with(old, new))
