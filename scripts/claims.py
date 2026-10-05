@@ -414,26 +414,24 @@ def drop_redirections(words: list[str]) -> list[str]:
 # operators (`& git push`), and wrappers such as `env X=1 git push`.
 PREFIX_WORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "&", "."}
 WRAPPERS = {"env", "timeout", "nohup", "nice", "time", "command", "exec", "sudo", "doas"}
-# Wrapper options that take the next word as their value (env, timeout, nice, exec and
-# GNU time); `env -C sub gh pr merge 5` was read as running `sub` (Codex review of #159).
+# The options that take the next word as their value, per wrapper (Codex review of #159:
+# `env -C sub gh pr merge 5` was read as running `sub`, `sudo --user root git push` as
+# running `root`). Per wrapper, since `time -p` takes none.
 WRAPPER_VALUE_OPTS = {
-    "-u",
-    "--unset",
-    "-C",
-    "--chdir",
-    "-P",
-    "-s",
-    "--signal",
-    "-k",
-    "--kill-after",
-    "-n",
-    "--adjustment",
-    "-a",
-    "-f",
-    "--format",
-    "-o",
-    "--output",
-}
+    "env": {"-u", "--unset", "-C", "--chdir", "-P"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "nice": {"-n", "--adjustment"},
+    "exec": {"-a"},
+    "time": {"-f", "--format", "-o", "--output"},
+    "sudo": {
+        "-u", "--user", "-g", "--group", "-D", "--chdir", "-h", "--host", "-p", "--prompt",
+        "-C", "--close-from", "-r", "--role", "-t", "--type", "-T", "--command-timeout",
+        "-U", "--other-user",
+    },
+    "doas": {"-u", "-C"},
+}  # fmt: skip
+# The options that run a wrapper's command in another directory: (short, long).
+WRAPPER_CHDIR_OPTS = {"env": ("-C", "--chdir"), "sudo": ("-D", "--chdir")}
 # Git's global options that take the next word as their value: `git --git-dir .git push`
 # was read as running the subcommand `.git` (Codex review of #159). -C and --git-dir are
 # handled apart, since they select where the repository is read.
@@ -490,17 +488,18 @@ def unwrap(words: list[str]) -> list[str]:
             words = words[2:]
         elif w.startswith("&"):
             words = [w[1:], *words[1:]]
-        elif _exe(w) in WRAPPERS:
+        elif (wrapper := _exe(w)) in WRAPPERS:
+            opts = WRAPPER_VALUE_OPTS.get(wrapper, set())
             words = words[1:]
             while words and (words[0].startswith("-") or WRAPPER_NUMBER_RE.fullmatch(words[0])):
-                if split := SPLIT_STRING_RE.fullmatch(words[0]):
+                if wrapper == "env" and (split := SPLIT_STRING_RE.fullmatch(words[0])):
                     if split[1]:
                         value, rest = split[1], words[1:]
                     else:
                         value, rest = (words[1] if len(words) > 1 else ""), words[2:]
                     words = [*split_words(value), *rest]
                     break
-                words = words[2:] if words[0] in WRAPPER_VALUE_OPTS else words[1:]
+                words = words[2:] if words[0] in opts else words[1:]
         else:
             break
     return words
@@ -675,21 +674,31 @@ RUNTIME_WORD = re.compile(r"\$\{?\w")
 
 
 def _env_dir(words: list[str], cwd: str) -> str:
-    """The directory a leading `env -C DIR` or `env --chdir=DIR` runs its command in
-    (Codex review of #159: `env -C <this repo> git push` was checked elsewhere)."""
-    for i, w in enumerate(words):
-        if _exe(w) != "env":
+    """The directory the leading wrappers run their command in: `env -C DIR`, `sudo -D DIR`
+    or either's `--chdir` (Codex review of #159: `env -C <this repo> git push` was
+    checked in another repository)."""
+    i = 0
+    while i < len(words):
+        w, name = words[i], _exe(words[i])
+        if w in PREFIX_WORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w):
+            i += 1
             continue
-        rest = words[i + 1 :]
-        while rest and rest[0].startswith("-"):
-            if rest[0] in ("-C", "--chdir") and len(rest) > 1:
-                cwd, rest = str(Path(cwd, rest[1])), rest[2:]
-            elif rest[0].startswith(("--chdir=", "-C")) and rest[0] not in ("-C", "--chdir"):
-                value = rest[0].split("=", 1)[1] if rest[0].startswith("--") else rest[0][2:]
-                cwd, rest = str(Path(cwd, value)), rest[1:]
+        if name not in WRAPPERS:
+            break
+        opts, chdir = WRAPPER_VALUE_OPTS.get(name, set()), WRAPPER_CHDIR_OPTS.get(name)
+        i += 1
+        while i < len(words) and (
+            words[i].startswith("-") or WRAPPER_NUMBER_RE.fullmatch(words[i])
+        ):
+            o = words[i]
+            if chdir and o in chdir and i + 1 < len(words):
+                cwd, i = str(Path(cwd, words[i + 1])), i + 2
+            elif chdir and o.startswith(chdir[1] + "="):
+                cwd, i = str(Path(cwd, o.split("=", 1)[1])), i + 1
+            elif chdir and o.startswith(chdir[0]) and len(o) > len(chdir[0]):
+                cwd, i = str(Path(cwd, o[len(chdir[0]) :])), i + 1
             else:
-                rest = rest[2:] if rest[0] in WRAPPER_VALUE_OPTS else rest[1:]
-        break
+                i += 2 if o in opts else 1
     return cwd
 
 
@@ -867,8 +876,9 @@ def hook_decision(
     if payload.get("tool_name") not in ("Bash", "PowerShell"):
         return None
     command = str((payload.get("tool_input") or {}).get("command") or "")
-    # A git alias need not say "push" (Codex review of #159), so any git command is read.
-    if not any(word in command for word in ("push", "merge", "Merge", "git")):
+    # A git alias need not say "push", and PowerShell runs `Git` as git (Codex review of
+    # #159), so any git command is read, whatever its case.
+    if not any(word in command.lower() for word in ("push", "merge", "git")):
         return None
     cwd = str(payload.get("cwd") or os.getcwd())
     targets = find_targets(command, cwd, posix=payload.get("tool_name") == "Bash")

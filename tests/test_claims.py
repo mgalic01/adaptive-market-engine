@@ -497,6 +497,34 @@ class TargetTest(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual([t.branch for t in find_targets(cmd, ".")], ["claude/a"])
 
+    def test_each_wrapper_consumes_its_own_value_options(self):
+        # Codex review of #159: sudo's values, and `time -p`, which takes none.
+        with git_stub():
+            for cmd in (
+                "sudo --user root git push origin claude/a",
+                "sudo -g wheel -u root git push origin claude/a",
+                "sudo -S -u root git push origin claude/a",
+                "time -p git push origin claude/a",
+                "doas -u root git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.branches(cmd), ["claude/a"])
+
+        def fake(cwd, *args):
+            ours = "other" not in Path(cwd).as_posix()
+            if args[:2] == ("remote", "get-url"):
+                return f"https://github.com/{REPO}.git" if ours else "https://x/other.git"
+            return "claude/x" if args[:2] == ("rev-parse", "--abbrev-ref") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            for cmd in (
+                "cd /tmp/other && sudo -D /work/repo git push origin claude/a",
+                "cd /tmp/other && sudo --chdir=/work/repo git push origin claude/a",
+                "cd /tmp/other && sudo -u root env -C /work/repo git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual([t.branch for t in find_targets(cmd, ".")], ["claude/a"])
+
     def test_git_aliases_that_push_are_checked(self):
         # Codex review of #159: an alias, given with -c or configured, runs a push.
         calls = []
@@ -830,6 +858,23 @@ class HookTest(unittest.TestCase):
         with mock.patch.object(claims, "_git", side_effect=fake):
             out = hook_decision(
                 self.payload("git p origin claude/a"), self.reader([claim(tag="Bob")], prs), NOW
+            )
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_the_pre_filter_ignores_case(self):
+        # Codex review of #159: PowerShell runs `Git p` as git.
+        prs = [{"number": 141, "head": {"ref": "claude/a", "repo": {"full_name": REPO}}}]
+
+        def fake(cwd, *args):
+            if args == ("config", "--get", "alias.p"):
+                return "push"
+            return f"https://github.com/{REPO}.git" if args[:2] == ("remote", "get-url") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            out = hook_decision(
+                self.payload("Git p origin claude/a", tool="PowerShell"),
+                self.reader([claim(tag="Bob")], prs),
+                NOW,
             )
         self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
 
