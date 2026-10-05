@@ -3,13 +3,17 @@
 import math
 import random
 import statistics
+import tempfile
 import unittest
+import zipfile
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from decimal import Decimal as D
 from decimal import getcontext, localcontext
 from pathlib import Path
+from unittest.mock import patch
 
+from crypto_grid_bot.backtest.dataset import funding_local_path
 from crypto_grid_bot.backtest.features import (
     BASELINE_HOURS,
     FEATURE_VERSION,
@@ -20,6 +24,7 @@ from crypto_grid_bot.backtest.features import (
     SeriesFeatures,
     _rolling_median,
 )
+from crypto_grid_bot.backtest.funding import FundingRecord, FundingSignal
 from crypto_grid_bot.backtest.jobs import variant_name, variant_policy
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import (
@@ -32,6 +37,7 @@ from crypto_grid_bot.backtest.replay import (
     check_accounting,
     cross_check_daily,
     cross_check_hourly,
+    load_funding,
     order_requests,
     replay,
     signals_for,
@@ -39,9 +45,12 @@ from crypto_grid_bot.backtest.replay import (
 )
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals
+from crypto_grid_bot.simulation.demo import demo_frames
 from crypto_grid_bot.simulation.execution import match, place, reduce_unreserved
 from crypto_grid_bot.simulation.models import Account, LimitOrder, MarketRules, Quote, timestamp
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
+from crypto_grid_bot.strategy.order_flow import flow_blocked, taker_buy_share
+from crypto_grid_bot.strategy.volume_exit import VolumeHistory
 
 ROOT = Path(__file__).resolve().parents[1]
 START_MS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
@@ -539,10 +548,17 @@ class ReplayTests(unittest.TestCase):
         self.assertIsNone(variant_policy(None))
         self.assertIsNone(variant_name(None))
         self.assertIsNone(variant_name(SimulationPolicy(structure=True)))
+        c = {"trend_switch": True, "inventory_cap": cap}
         for variant, policy in (
             ("A", SimulationPolicy(trend_switch=True)),
             ("B", SimulationPolicy(inventory_cap=cap)),
-            ("C", SimulationPolicy(trend_switch=True, inventory_cap=cap)),
+            ("C", SimulationPolicy(**c)),
+            ("E", SimulationPolicy(volume_exit=True)),
+            ("F", SimulationPolicy(flow_block_entry=True)),
+            ("G", SimulationPolicy(funding_gate=True)),
+            ("H", SimulationPolicy(cycle_gate=True)),
+            ("C+G", SimulationPolicy(**c, funding_gate=True)),
+            ("C+H", SimulationPolicy(**c, cycle_gate=True)),
         ):
             with self.subTest(variant=variant):
                 self.assertEqual(policy, variant_policy(variant))
@@ -552,8 +568,31 @@ class ReplayTests(unittest.TestCase):
                 )
         self.assertEqual(SimulationPolicy(structure=True), variant_policy(None, structure=True))
         self.assertIn("not the spec", variant_name(SimulationPolicy(inventory_cap=D("0.5"))))
-        with self.assertRaises(ValueError):
-            variant_policy("E")
+        for undeclared in ("", "D", "A+G", "E+F", "G+H"):
+            with self.subTest(undeclared=undeclared), self.assertRaises(ValueError):
+                variant_policy(undeclared)
+
+    def test_only_declared_variant_combinations_run(self):
+        # Spec v1 §3 and §4: E and F stand alone; G and H run alone or with C (A and B).
+        cap = D("0.40")
+        for flags in (
+            {"volume_exit": True, "trend_switch": True},
+            {"volume_exit": True, "inventory_cap": cap},
+            {"volume_exit": True, "funding_gate": True},
+            {"flow_block_entry": True, "trend_switch": True},
+            {"flow_block_entry": True, "volume_exit": True},
+            {"funding_gate": True, "trend_switch": True},
+            {"funding_gate": True, "inventory_cap": cap},
+            {"cycle_gate": True, "trend_switch": True},
+            {"cycle_gate": True, "inventory_cap": cap},
+            {"funding_gate": True, "cycle_gate": True},
+            {"funding_gate": True, "cycle_gate": True, "trend_switch": True, "inventory_cap": cap},
+        ):
+            with self.subTest(flags=flags), self.assertRaisesRegex(ValueError, "no variant"):
+                SimulationPolicy(**flags)
+        # The V2 structure flag is not a variant and goes with any of them.
+        self.assertEqual("E", SimulationPolicy(volume_exit=True, structure=True).variant)
+        self.assertEqual("", SimulationPolicy(structure=True).variant)
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -1301,3 +1340,490 @@ class FtaRegimeGateTests(unittest.TestCase):
             inputs.fta_resistance,
         )
         self.assertAlmostEqual(fta_val, frame.fta_resistance)
+
+
+def utc_at(ms):
+    return datetime.fromtimestamp(ms / 1000, UTC)
+
+
+class VolumeExitTests(unittest.TestCase):
+    """Variant E's volume check (spec v1 §3 E), on constructed volumes."""
+
+    HOUR = START_MS + 800 * HOUR_MS  # the hour of t0, still open at t0
+    START = HOUR + 30 * 60_000  # the minute of t0
+    T0 = START + 9_000  # the episode's first outside observation
+    END = START + 6 * HOUR_MS  # the measured minutes open in [START, END)
+
+    def hours(self, volume="30"):
+        return {START_MS + i * HOUR_MS: D(volume) for i in range(820)}
+
+    def minutes(self, volume="1"):
+        return {self.START + i * 60_000: D(volume) for i in range(-60, 420)}
+
+    def check(self, hours=None, minutes=None, observed=None):
+        history = VolumeHistory((hours if hours is not None else self.hours()).items())
+        for open_ms, volume in (minutes if minutes is not None else self.minutes()).items():
+            history.record(open_ms, volume)
+        return history.extends(utc_at(self.T0), utc_at(observed or self.END))
+
+    def test_equality_exits_and_below_extends(self):
+        # A median of 30: the threshold is 2 x 30 x 6 = 360, over 360 measured minutes.
+        self.assertFalse(self.check(minutes=self.minutes("1")))  # 360: equality exits
+        self.assertTrue(self.check(minutes=self.minutes("0.999")))
+        self.assertFalse(self.check(minutes=self.minutes("1.001")))
+
+    def test_missing_or_degenerate_data_is_unavailable(self):
+        hours, minutes = self.hours(), self.minutes("0.999")
+        del hours[self.HOUR - 5 * HOUR_MS]
+        self.assertIsNone(self.check(hours=hours, minutes=minutes))
+        minutes = self.minutes("0.999")
+        del minutes[self.START + 100 * 60_000]
+        self.assertIsNone(self.check(minutes=minutes))
+        self.assertIsNone(self.check(hours=self.hours("0"), minutes=self.minutes("0.999")))
+        # A zero-volume measured minute is valid input: 359 x 1 < 360.
+        minutes = self.minutes()
+        minutes[self.START + 100 * 60_000] = D(0)
+        self.assertTrue(self.check(minutes=minutes))
+
+    def test_the_median_of_720_hours_is_the_mean_of_the_two_middle_ones(self):
+        hours = self.hours()
+        for k in range(720):  # 360 hours of 10 and 360 of 50: a median of 30
+            hours[self.HOUR - (k + 1) * HOUR_MS] = D(10 if k % 2 else 50)
+        self.assertFalse(self.check(hours=hours, minutes=self.minutes("1")))
+        self.assertTrue(self.check(hours=hours, minutes=self.minutes("0.999")))
+
+    def test_no_bar_unfinished_at_t0_or_after_the_span_reaches_the_decision(self):
+        # The hour of t0 and every later one, set far up: any read of them moves the
+        # median of these distinct reference volumes (1 to 720, a threshold of 4,326)
+        # past the measured 4,330.8, which then extends instead of exiting.
+        ranked = self.hours()
+        for k in range(720):
+            ranked[self.HOUR - (k + 1) * HOUR_MS] = D(720 - k)
+        minutes = self.minutes("12.03")
+        self.assertFalse(self.check(hours=ranked, minutes=minutes))
+        later = {o: (D(10**9) if o >= self.HOUR else v) for o, v in ranked.items()}
+        later |= {self.HOUR + k * HOUR_MS: D(10**9) for k in range(40)}
+        self.assertFalse(self.check(hours=later, minutes=minutes))
+        # The minutes from t0 + 6 h on, set far up: any read of them would exit.
+        minutes = self.minutes("0.999")
+        self.assertTrue(self.check(minutes=minutes))
+        after = {o: (D(10**9) if o >= self.END else v) for o, v in minutes.items()}
+        after |= {self.END + k * 60_000: D(10**9) for k in range(600)}
+        self.assertTrue(self.check(minutes=after))
+        # A later decision uses the same span; one before the span has closed has none.
+        self.assertTrue(self.check(minutes=after, observed=self.END + 5 * HOUR_MS))
+        self.assertIsNone(self.check(minutes=after, observed=self.END - 1))
+        # The span's own last minute is read.
+        minutes[self.END - 60_000] = D(2)
+        self.assertFalse(self.check(minutes=minutes))
+
+
+class VariantEReplayTests(unittest.TestCase):
+    """Variant E through replay(): a grid at minute 0, then 10% below its band."""
+
+    def setUp(self):
+        self.config = load_config(ROOT / "config/default.toml")
+        self.candles = hourly(WARMUP)
+        self.engine = engine_for(self.candles)
+        self.t = START_MS + WARMUP * HOUR_MS
+        self.run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+
+    def minutes(self, volume="1000000", taker="500000", later=None):
+        """Minute 0 at fair value, then 800 minutes 10% lower: t0 is minute 1's open, so
+        the measured span is minutes 1 to 360. ``later`` is the volume from minute 361."""
+        fair = float(self.engine.at(self.t).fair_value)
+        low = fair * 0.9
+        bars = [candle(self.t, fair, fair * 1.001, fair * 0.999, fair)]
+        for i in range(1, 801):
+            v, k = (later, "0") if later and i >= 361 else (volume, taker)
+            bars.append(candle(self.t + i * 60_000, low, low * 1.001, low * 0.999, low, v, k))
+        return bars
+
+    def replay(self, minutes, policy=None, hourly=None):
+        metrics, account = replay(
+            self.config,
+            self.run,
+            minutes,
+            self.engine,
+            policy,
+            hourly=self.candles if hourly is None else hourly,
+        )
+        self.assertEqual([], check_accounting(self.run, metrics, account))
+        return metrics, account
+
+    def exit_at(self, minute):
+        return utc_at(self.t + minute * 60_000).isoformat()
+
+    def assertAsV0(self, minutes, outcome, hourly=None):
+        v0, v0_account = self.replay(minutes)
+        e, e_account = self.replay(minutes, SimulationPolicy(volume_exit=True), hourly)
+        self.assertEqual({"volume_exit_checks": {outcome: 1}}, e.variant_counts)
+        self.assertEqual(asdict(v0), asdict(replace(e, variant_counts={})))
+        self.assertEqual(v0_account.to_dict(), e_account.to_dict())
+        self.assertEqual(self.exit_at(361), e_account.range_exit_since)
+
+    def test_low_volume_extends_the_exit_from_6_to_12_hours(self):
+        minutes = self.minutes("1", "0")
+        _, v0 = self.replay(minutes)
+        self.assertEqual(self.exit_at(361), v0.range_exit_since)
+        e, account = self.replay(minutes, SimulationPolicy(volume_exit=True))
+        self.assertEqual({"volume_exit_checks": {"extended": 1}}, e.variant_counts)
+        self.assertEqual(self.exit_at(721), account.range_exit_since)
+        # Volume from t0 + 6 h on, however large, cannot reach the decision.
+        late, late_account = self.replay(
+            self.minutes("1", "0", later="1000000000"), SimulationPolicy(volume_exit=True)
+        )
+        self.assertEqual(e.variant_counts, late.variant_counts)
+        self.assertEqual(self.exit_at(721), late_account.range_exit_since)
+
+    def test_volume_at_or_above_the_threshold_exits_as_v0(self):
+        self.assertAsV0(self.minutes(), "exit")
+
+    def test_a_missing_reference_hour_or_measured_minute_exits_as_v0(self):
+        low = self.minutes("1", "0")
+        gap = [c for c in self.candles if c.open_ms != self.t - 100 * HOUR_MS]
+        self.assertAsV0(low, "unavailable", hourly=gap)
+        self.assertAsV0([b for i, b in enumerate(low) if i != 100], "unavailable")
+
+    def test_v0_ignores_the_hourly_history_and_e_refuses_to_run_without_it(self):
+        minutes = self.minutes("1", "0")
+        v0 = replay(self.config, self.run, minutes, self.engine)
+        with_hourly = replay(self.config, self.run, minutes, self.engine, hourly=self.candles)
+        self.assertEqual(asdict(v0[0]), asdict(with_hourly[0]))
+        self.assertEqual({}, v0[0].variant_counts)
+        with self.assertRaisesRegex(ValueError, "hourly history"):
+            replay(self.config, self.run, minutes, self.engine, SimulationPolicy(volume_exit=True))
+
+
+class OrderFlowTests(unittest.TestCase):
+    """Variant F's taker-buy share and its block (spec v1 §3 F)."""
+
+    MINUTE = START_MS + 100 * 60_000  # the decision's minute
+
+    def bars(self, takers, volume="1000", end=None):
+        """One bar per minute up to ``end`` (default: the decision's minute), oldest first."""
+        end = self.MINUTE if end is None else end
+        first = end - len(takers) * 60_000
+        return [
+            candle(first + i * 60_000, 1, 1, 1, 1, volume=volume, taker=taker)
+            for i, taker in enumerate(takers)
+        ]
+
+    def test_the_share_of_the_fifteen_minutes_before(self):
+        self.assertEqual(D("0.5"), taker_buy_share(self.bars(["500"] * 15), self.MINUTE))
+        self.assertEqual(D("0.4"), taker_buy_share(self.bars(["400"] * 15), self.MINUTE))
+        older = self.bars(["0"] * 5 + ["500"] * 15)  # bars before the fifteen are not read
+        self.assertEqual(D("0.5"), taker_buy_share(older, self.MINUTE))
+
+    def test_a_missing_minute_is_unavailable_and_a_zero_volume_minute_is_not(self):
+        bars = self.bars(["500"] * 15)
+        self.assertIsNone(taker_buy_share(bars[1:], self.MINUTE))  # fourteen
+        self.assertIsNone(taker_buy_share(bars[:7] + bars[8:], self.MINUTE))  # a gap
+        stale = self.bars(["500"] * 15, end=self.MINUTE - 60_000)
+        self.assertIsNone(taker_buy_share(stale, self.MINUTE))  # the latest is missing
+        zero = candle(bars[7].open_ms, 1, 1, 1, 1, volume="0", taker="0")
+        self.assertEqual(D("0.5"), taker_buy_share(bars[:7] + [zero] + bars[8:], self.MINUTE))
+        self.assertIsNone(taker_buy_share(self.bars(["0"] * 15, volume="0"), self.MINUTE))
+        # The decision's own minute is never read: given, it makes the share unavailable.
+        current = candle(self.MINUTE, 1, 1, 1, 1, volume="1000", taker="1000")
+        self.assertIsNone(taker_buy_share([*bars, current], self.MINUTE))
+
+    def test_the_block_turns_on_below_040_and_off_from_045(self):
+        for blocked, share, expected in (
+            (False, D("0.40"), False),  # 0.40 is not below 0.40
+            (True, D("0.40"), True),  # in the band the flag keeps its state
+            (True, D("0.4499"), True),
+            (False, D("0.4499"), False),
+            (True, D("0.45"), False),  # 0.45 turns it off
+            (False, D("0.3999"), True),
+            (False, None, True),  # unavailable blocks
+        ):
+            with self.subTest(blocked=blocked, share=share):
+                self.assertEqual(expected, flow_blocked(blocked, share))
+
+
+class VariantFEngineTests(unittest.TestCase):
+    """Variant F's block in the engine: cancellations, fragments, other pauses."""
+
+    F = SimulationPolicy(flow_block_entry=True)
+
+    def setUp(self):
+        self.config = load_config(ROOT / "config/default.toml")
+        self.simulator = PaperSimulator(Path(":memory:"), self.config, RULES, D(100), self.F)
+        self.account = self.simulator.store.read()
+        self.simulator.close()  # step() uses no store
+        self.inputs = engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS)
+
+    def frames(self, minute, share, candidate=None):
+        """The four frames of a flat minute bar at fair value, ``minute`` after warm-up."""
+        open_ms = START_MS + WARMUP * HOUR_MS + minute * 60_000
+        fair = float(self.inputs.fair_value)
+        bar = candle(open_ms, fair, fair, fair, fair)
+        signals = signals_for(self.inputs, utc_at(open_ms), gated=False)
+        candidate = candidate or candidate_for(self.inputs, "TESTUSDT", 0.05, 1e9, gated=False)
+        return [
+            Frame(
+                quote,
+                signals,
+                candidate,
+                self.inputs.fair_value,
+                self.inputs.atr,
+                True,
+                f"TESTUSDT/{open_ms}",
+                flow_share=share,
+            )
+            for quote in bar_quotes(bar, "TESTUSDT", "low_first", D("0.0005"), RULES.tick_size)
+        ]
+
+    def step(self, frames):
+        return [self.simulator.step(self.account, frame) for frame in frames]
+
+    def partly_filled_buy(self, key, quantity, filled):
+        price = D("1.0000")
+        self.account.cash -= filled * price * (1 + RULES.fee_rate)
+        self.account.inventory += filled
+        self.account.orders[key] = LimitOrder(
+            key, "buy", price, quantity, quantity - filled, target=D("1.1000")
+        )
+
+    def test_a_cancelled_partial_fill_gets_its_sell_and_fragments_wait_for_the_minimum(self):
+        (frame, *_) = self.frames(0, None)
+        # 5 filled at a target of 1.1 is 5.5, above the minimum notional of 5: one sell.
+        self.partly_filled_buy("a/buy/0", D(10), D(5))
+        # 0.1 filled is 0.11 there: it waits as a fragment.
+        self.partly_filled_buy("b/buy/0", D(1), D("0.1"))
+        self.account.validate(RULES)
+        self.simulator._block_buys(self.account, frame)
+        sell = self.account.orders["a/buy/0/fragment"]
+        self.assertEqual(
+            ("sell", D("1.1000"), D(5), D("1.0000"), frame.epoch),
+            (sell.side, sell.price, sell.quantity, sell.reentry, sell.epoch),
+        )
+        self.assertEqual({D("1.1"): D("0.1")}, self.account.flow_fragments)
+        self.assertEqual(["a/buy/0/fragment"], list(self.account.orders))
+        # 4.5 more for the same target: 4.6 x 1.1 = 5.06, so one sell for both.
+        self.partly_filled_buy("c/buy/0", D(5), D("4.5"))
+        self.simulator._block_buys(self.account, frame)
+        self.assertEqual(D("4.6"), self.account.orders["c/buy/0/fragment"].quantity)
+        self.assertEqual({}, self.account.flow_fragments)
+        self.account.validate(RULES)
+
+    def test_fragments_an_exit_has_sold_are_ordinary_inventory_again(self):
+        (frame, *_) = self.frames(0, None)
+        self.account.flow_fragments[D("1.1")] = D(3)  # held by nothing: an exit sold it
+        self.partly_filled_buy("a/buy/0", D(1), D("0.1"))
+        self.simulator._block_buys(self.account, frame)
+        self.assertEqual({D("1.1"): D("0.1")}, self.account.flow_fragments)
+        self.assertFalse(self.account.orders)
+
+    def test_a_block_cancels_every_resting_buy_and_counts_the_cancellations(self):
+        orders = self.account.orders = RequestCountingOrders()
+        opened = self.step(self.frames(0, D("0.5")))
+        self.assertTrue(any(report["opened"] for report in opened))
+        buys = sorted(k for k, o in self.account.orders.items() if o.side == "buy")
+        before = orders.requests
+        (report, *_) = self.step(self.frames(1, D("0.3")))
+        self.assertEqual(len(buys), orders.requests - before)
+        self.assertEqual(buys, report["cancelled"])
+        self.assertFalse(self.account.orders)
+        self.assertTrue(self.account.flow_block)
+
+    def test_the_block_starts_on_and_unblocking_lifts_only_fs_restriction(self):
+        (report, *_) = self.step(self.frames(0, D("0.42")))  # in the band: stays blocked
+        self.assertEqual(
+            ("cash", "order flow: buys blocked"), (report["decision"], report["reason"])
+        )
+        # Unblocked while a V0 eligibility pause is on: the pause stays, and no grid.
+        poor = replace(candidate_for(self.inputs, "TESTUSDT", 0.05, 1e9, gated=False), spread_pct=1)
+        reports = self.step(self.frames(1, D("0.5"), poor))
+        self.assertFalse(self.account.flow_block)
+        self.assertEqual({"pause"}, {r["decision"] for r in reports})
+        self.assertFalse(self.account.orders)
+        # Eligible again: the pause clears after its confirmations, and a grid opens.
+        reports = self.step(self.frames(2, D("0.5")))
+        self.assertTrue(any(r["opened"] for r in reports))
+
+
+class VariantFReplayTests(unittest.TestCase):
+    """Variant F through replay() on synthetic minutes (spec v1 §3 F)."""
+
+    F = SimulationPolicy(flow_block_entry=True)
+
+    def setUp(self):
+        self.config = load_config(ROOT / "config/default.toml")
+        self.engine = engine_for(hourly(WARMUP))
+        self.t = START_MS + WARMUP * HOUR_MS
+        self.fair = float(self.engine.at(self.t).fair_value)
+        self.run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+
+    def minutes(self, count, taker="500000", start=0, price=None):
+        price = price or self.fair
+        return [
+            candle(self.t + i * 60_000, price, price * 1.001, price * 0.999, price, taker=taker)
+            for i in range(start, start + count)
+        ]
+
+    def replay(self, minutes, policy=F):
+        metrics, account = replay(self.config, self.run, minutes, self.engine, policy)
+        self.assertEqual([], check_accounting(self.run, metrics, account))
+        return metrics, account
+
+    def test_f_fails_closed_until_fifteen_minutes_are_known_and_while_the_share_is_low(self):
+        self.assertEqual(0, self.replay(self.minutes(15))[0].grids_opened)
+        self.assertEqual(1, self.replay(self.minutes(16))[0].grids_opened)
+        low, _ = self.replay(self.minutes(30, taker="300000"))
+        self.assertEqual(0, low.grids_opened)
+        self.assertIn("cash: order flow: buys blocked", low.reasons)
+
+    def test_the_current_minute_never_changes_its_own_block_state(self):
+        def seen(minutes):
+            states, real_step = [], PaperSimulator.step
+
+            def recording(simulator, account, frame):
+                report = real_step(simulator, account, frame)
+                states.append((frame.epoch, frame.flow_share, account.flow_block))
+                return report
+
+            with patch.object(PaperSimulator, "step", recording):
+                self.replay(minutes)
+            return states
+
+        base = self.minutes(30)
+        changed = list(base)  # minute 20: ten times the volume, none of it taker-bought
+        changed[20] = replace(base[20], volume=D(10**7), taker_buy_base=D(0))
+        before, after = seen(base), seen(changed)
+        minute_20, minute_21 = slice(80, 84), slice(84, 88)  # four frames per minute
+        self.assertEqual(before[minute_20], after[minute_20])
+        # From the next minute on, the changed bar is part of the share, and blocks.
+        self.assertNotEqual(before[minute_21], after[minute_21])
+        self.assertTrue(all(blocked for _, _, blocked in after[minute_21]))
+
+    def test_a_range_exit_still_happens_while_buys_are_blocked(self):
+        # The grid opens at minute 15; from minute 30 the price is 10% below its band and
+        # the share is low, so F blocks. The range exit still comes 6 h later, as V0's.
+        minutes = self.minutes(30)
+        minutes += self.minutes(400, taker="100000", start=30, price=self.fair * 0.9)
+        _, v0 = self.replay(minutes, None)
+        metrics, account = self.replay(minutes)
+        self.assertEqual(utc_at(self.t + 390 * 60_000).isoformat(), account.range_exit_since)
+        self.assertEqual(v0.range_exit_since, account.range_exit_since)
+        self.assertEqual(1, metrics.range_exits)
+
+
+class VariantGTests(unittest.TestCase):
+    """Variant G through replay(), with constructed funding records (spec v1 §3 G)."""
+
+    G = SimulationPolicy(funding_gate=True)
+
+    def setUp(self):
+        self.config = load_config(ROOT / "config/default.toml")
+        self.engine = engine_for(hourly(WARMUP))
+        self.t = START_MS + WARMUP * HOUR_MS
+        fair = float(self.engine.at(self.t).fair_value)
+        self.minutes = [candle(self.t + i * 60_000, fair, fair, fair, fair) for i in range(30)]
+        self.run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+
+    def signal(self, rate):
+        """Settlements 24, 16 and 8 hours before the first minute, 11 ms past the hour:
+        uniform, and overdue from a minute after it."""
+        hours = (24, 16, 8)
+        return FundingSignal(FundingRecord(self.t - h * HOUR_MS + 11, 8, D(rate)) for h in hours)
+
+    def replay(self, minutes, policy=G, funding=None):
+        metrics, account = replay(
+            self.config, self.run, minutes, self.engine, policy, funding=funding
+        )
+        self.assertEqual([], check_accounting(self.run, metrics, account))
+        return metrics, account
+
+    def test_high_or_unavailable_funding_blocks_a_new_grid(self):
+        for rate, opened in (
+            ("0.001", 0),  # all three above +0.0005
+            ("0.0005", 1),  # exactly +0.0005 is not above it
+            ("-0.001", 1),
+        ):
+            with self.subTest(rate=rate):
+                metrics, _ = self.replay(self.minutes[:1], funding=self.signal(rate))
+                self.assertEqual(opened, metrics.grids_opened)
+        # No history at all is unavailable: G fails closed.
+        metrics, _ = self.replay(self.minutes[:1], funding=FundingSignal([]))
+        self.assertEqual(0, metrics.grids_opened)
+        self.assertIn("cash: funding gate: funding high or unavailable", metrics.reasons)
+        with self.assertRaisesRegex(ValueError, "funding history"):
+            replay(self.config, self.run, self.minutes, self.engine, self.G)
+
+    def test_existing_grids_and_exits_are_unaffected(self):
+        # Clear at minute 0, so the grid opens as in V0; overdue from minute 1, so G
+        # blocks from then on. The grid's fills and its range exit 6 h after leaving the
+        # band are V0's, exactly.
+        low = float(self.engine.at(self.t).fair_value) * 0.9
+        minutes = self.minutes + [
+            candle(self.t + i * 60_000, low, low * 1.001, low * 0.999, low) for i in range(30, 430)
+        ]
+        funding = self.signal("0.0001")
+        self.assertTrue(funding.state(self.t).available)
+        self.assertEqual("overdue", funding.state(self.t + 60_000).reason)
+        v0, v0_account = self.replay(minutes, None)
+        g, g_account = self.replay(minutes, funding=funding)
+        self.assertEqual(asdict(v0), asdict(g))
+        self.assertEqual(v0_account.to_dict(), g_account.to_dict())
+        self.assertEqual(1, g.range_exits)
+
+    def test_funding_archives_load_from_the_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            data = Path(temp)
+            path = funding_local_path(data, "BTCUSDT", "2024-01")
+            path.parent.mkdir(parents=True)
+            rows = "".join(f"{1704067200011 + h * HOUR_MS},8,0.0001\n" for h in (0, 8, 16))
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr(
+                    "BTCUSDT-fundingRate-2024-01.csv",
+                    "calc_time,funding_interval_hours,last_funding_rate\n" + rows,
+                )
+            missing = {"kind": "fundingRate", "symbol": "BTCUSDT", "month": "2024-02"}
+            files = [
+                {"kind": "fundingRate", "symbol": "BTCUSDT", "month": "2024-01", "status": "ok"},
+                missing | {"status": "missing"},
+                {"kind": "fundingRate", "symbol": "ETHUSDT", "month": "2024-01", "status": "ok"},
+                {"symbol": "BTCUSDT", "interval": "1h", "month": "2024-01", "status": "ok"},
+            ]
+            signal = load_funding(data, {"files": files}, "BTCUSDT")
+        usable = 1704067200000 + 16 * HOUR_MS + 60_000  # the third record's publication
+        self.assertFalse(signal.state(usable - 1000).available)
+        self.assertEqual("clear", signal.state(usable).reason)
+        empty = load_funding(Path("."), {"files": []}, "BTCUSDT")
+        self.assertFalse(empty.state(usable).available)
+
+
+class RuntimeVariantPaperTests(unittest.TestCase):
+    """E and F keep runtime account state that is never saved, so they run in replay
+    only (spec v1 §3; docs/PAPER_SIMULATION.md)."""
+
+    def test_a_paper_account_refuses_e_and_f_and_runs_g_and_h(self):
+        config, frame = load_config(ROOT / "config/default.toml"), demo_frames(1)[0]
+        for policy, refused in (
+            (SimulationPolicy(volume_exit=True), True),
+            (SimulationPolicy(flow_block_entry=True), True),
+            (SimulationPolicy(funding_gate=True), False),
+            (SimulationPolicy(cycle_gate=True), False),
+        ):
+            with self.subTest(variant=policy.variant), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp) / "paper.db"
+                simulator = PaperSimulator(path, config, MarketRules(), policy=policy)
+                try:
+                    if refused:
+                        with self.assertRaisesRegex(ValueError, "historical replay only"):
+                            simulator.process(frame)
+                        with self.assertRaisesRegex(ValueError, "historical replay only"):
+                            simulator.resume(frame, event_id="e1", reason="test")
+                    else:
+                        simulator.process(frame)
+                finally:
+                    simulator.close()
+
+    def test_runtime_state_is_never_saved(self):
+        account = Account.start(D(100))
+        saved = set(account.to_dict())
+        account.volume_since, account.volume_extended = "2024-01-01T00:00:00+00:00", True
+        account.flow_block, account.flow_fragments = False, {D("1.1"): D("0.1")}
+        self.assertEqual(saved, set(account.to_dict()))

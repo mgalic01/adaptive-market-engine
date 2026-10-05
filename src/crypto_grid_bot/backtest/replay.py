@@ -23,7 +23,7 @@ Kline-to-quote adapter (the explicit, tested adapter BACKTEST_PLAN.md requires):
 from __future__ import annotations
 
 import re
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -31,8 +31,9 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from pathlib import Path
 from typing import Any, Protocol
 
-from crypto_grid_bot.backtest.dataset import local_path
+from crypto_grid_bot.backtest.dataset import funding_local_path, local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
+from crypto_grid_bot.backtest.funding import FundingSignal, read_funding_archive
 from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
@@ -50,6 +51,9 @@ from crypto_grid_bot.simulation.models import (
 )
 from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
 from crypto_grid_bot.simulation.trend_switch import MINIMUM_DAILY_WARMUP, TrendSchedule
+from crypto_grid_bot.strategy.cycle import CycleSchedule
+from crypto_grid_bot.strategy.order_flow import FLOW_BARS, taker_buy_share
+from crypto_grid_bot.strategy.volume_exit import VolumeHistory
 
 PATH_MODES = ("high_first", "low_first")
 # Scorer context lines that precede its actual failure reasons.
@@ -254,6 +258,10 @@ class Metrics:
     max_exit_blocked_notional: Decimal = ZERO
     final_exit_blocked: str = ""
     final_blocked_notional: Decimal = ZERO
+    # Spec v1 §3 "Reported" counts that only variants E and H keep, by name; empty in any
+    # other run, whose rows keep their exact layout. E: its range-exit decisions by
+    # outcome (extended, exit, unavailable). H: bars by phase and by the rule in force.
+    variant_counts: dict[str, Counter[str]] = field(default_factory=dict)
 
 
 def record_exit_block(metrics: Metrics, blocked: str, notional: Decimal) -> None:
@@ -416,22 +424,51 @@ def replay(
     features: FeatureEngine,
     policy: SimulationPolicy | None = None,
     daily: Sequence[Kline] | None = None,
+    hourly: Sequence[Kline] | None = None,
+    funding: FundingSignal | None = None,
 ) -> tuple[Metrics, Account]:
     """``daily`` is the traded pair's completed 1d history (P3), read only by variant A
-    (``policy.trend_switch``), which refuses to run without it."""
+    (``policy.trend_switch``) and variant H (``policy.cycle_gate``); ``hourly`` is its 1h
+    history, read only by variant E (``policy.volume_exit``); ``funding`` is the BTCUSDT
+    funding history, read only by variant G (``policy.funding_gate``). Each variant
+    refuses to run without its history."""
     schedule: TrendSchedule | None = None
     if policy is not None and policy.trend_switch:
         if daily is None:
             raise ValueError("variant A (trend switch) needs the pair's daily history")
         schedule = TrendSchedule(daily)
+    cycle_schedule: CycleSchedule | None = None
+    if policy is not None and policy.cycle_gate:
+        if daily is None:
+            raise ValueError("variant H (cycle context) needs the pair's daily history")
+        cycle_schedule = CycleSchedule((k.open_ms, k.close) for k in daily)
+    volumes: VolumeHistory | None = None
+    if policy is not None and policy.volume_exit:
+        if hourly is None:
+            raise ValueError("variant E (volume exit) needs the pair's hourly history")
+        volumes = VolumeHistory((k.open_ms, k.volume) for k in hourly)
+    gate: FundingSignal | None = None
+    if policy is not None and policy.funding_gate:
+        if funding is None:
+            raise ValueError("variant G (funding gate) needs the BTCUSDT funding history")
+        gate = funding
+    # Variant F: the bars before the current one, for its 15-minute taker-buy share.
+    flow: deque[Kline] | None = (
+        deque(maxlen=FLOW_BARS) if policy is not None and policy.flow_block_entry else None
+    )
     # ":memory:" gives the simulator an in-memory SQLite store; replay never writes to it.
     simulator = PaperSimulator(Path(":memory:"), config, run.rules, run.initial_quote, policy)
+    simulator.volumes = volumes
     account = simulator.store.read()
     simulator.close()  # step() below uses no store
     if account.orders:
         raise ValueError("replay must start from an empty order book")
     orders = account.orders = RequestCountingOrders()
     metrics = Metrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
+    if volumes is not None:
+        metrics.variant_counts["volume_exit_checks"] = Counter()
+    if cycle_schedule is not None:
+        metrics.variant_counts.update(cycle_phases_by_bar=Counter(), cycle_rules_by_bar=Counter())
 
     def observe_risk(
         equity: Decimal, high: Decimal, reference: Decimal, decision: RiskDecision
@@ -474,6 +511,13 @@ def replay(
         epoch = f"{run.symbol}/{kline.open_ms}"
         # Variant A: the state from the last daily bar closed at this minute's start.
         trend = schedule.at(kline.open_ms) if schedule is not None else None
+        # Variants F, G and H likewise read only what was complete, or usable, at this
+        # minute's start, for all four quotes: F the 15 bars before it, G the funding
+        # records (one usable within the minute counts from the next), H the last daily
+        # bar closed.
+        share = taker_buy_share(flow, kline.open_ms) if flow is not None else None
+        funding_blocks = gate.state(kline.open_ms).blocks if gate is not None else None
+        cycle = cycle_schedule.at(kline.open_ms) if cycle_schedule is not None else None
         report: dict[str, Any] = {}
         for quote in bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size):
             # Depth is re-bounded before every quote from the account at that moment.
@@ -489,6 +533,9 @@ def replay(
                 epoch,
                 trend,
                 inputs.fta_resistance,
+                flow_share=share,
+                funding_blocks=funding_blocks,
+                cycle=cycle,
             )
             since, done = orders.requests, len(orders.completed)
             report = simulator.step(account, frame)
@@ -526,6 +573,8 @@ def replay(
             metrics.rebases += int("rebase" in report)
             metrics.closes += int("episode_closed" in report)
             metrics.restarts += int("restart" in report)
+            if "volume_check" in report:  # variant E's one decision of an episode
+                metrics.variant_counts["volume_exit_checks"][report["volume_check"]] += 1
             if "total_equity" in report:
                 total = Decimal(report["total_equity"])
                 metrics.final_equity = total
@@ -533,11 +582,19 @@ def replay(
                 drawdown = (metrics.peak_equity - total) / metrics.peak_equity
                 metrics.max_drawdown = max(metrics.max_drawdown, drawdown)
             hold.mark(quote)
+        # Variants E and F may read this bar from the next minute on, once it has closed.
+        if volumes is not None:
+            volumes.record(kline.open_ms, kline.volume)
+        if flow is not None:
+            flow.append(kline)
         # Bar-level bookkeeping from the bar's closing quote.
         metrics.regimes[str(report.get("regime", "unavailable"))] += 1
         metrics.decisions[str(report["decision"])] += 1
         if report.get("reason"):
             metrics.reasons[reason_key(str(report["decision"]), str(report["reason"]))] += 1
+        if "cycle" in report:  # variant H
+            metrics.variant_counts["cycle_phases_by_bar"][str(report["cycle"]["phase"])] += 1
+            metrics.variant_counts["cycle_rules_by_bar"][str(report["cycle"]["rule"])] += 1
         total = metrics.final_equity
         if account.inventory > ZERO:
             metrics.bars_with_inventory += 1
@@ -625,6 +682,23 @@ def load_hourly(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[K
 
 def load_daily(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kline]:
     return load_candles(data_dir, manifest, symbol, "1d")
+
+
+def load_funding(data_dir: Path, manifest: dict[str, Any], symbol: str) -> FundingSignal:
+    """Variant G's signal from every verified monthly funding archive of the perpetual
+    ``symbol`` in the manifest (spec v1 P8). A month without one is a gap, which leaves
+    G unavailable there; a manifest without any (every committed one until P8's report
+    merges) leaves it unavailable throughout, so G then blocks every new grid."""
+    return FundingSignal(
+        record
+        for entry in manifest["files"]
+        if entry.get("kind") == "fundingRate"
+        and entry["symbol"] == symbol
+        and entry["status"] == "ok"
+        for record in read_funding_archive(
+            funding_local_path(data_dir, symbol, entry["month"]), symbol, entry["month"]
+        )
+    )
 
 
 DAY_MS = 86_400_000
@@ -885,6 +959,7 @@ def summarise(
         "accounting_problems": problems,
         "rules": {key: str(value) for key, value in run.rules.identity().items()},
         "assumed_spread_pct": str(run.spread * 100),
+        **{name: dict(counts) for name, counts in metrics.variant_counts.items()},
         "hourly_equity": metrics.hourly_equity,
     }
 

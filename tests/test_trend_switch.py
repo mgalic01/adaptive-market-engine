@@ -15,12 +15,19 @@ from unittest import TestCase
 
 from crypto_grid_bot.backtest.features import HOUR_MS, FeatureEngine, SeriesFeatures
 from crypto_grid_bot.backtest.klines import Kline
-from crypto_grid_bot.backtest.replay import RunConfig, check_accounting, replay
+from crypto_grid_bot.backtest.replay import (
+    ENGINE_VERSION,
+    Metrics,
+    RunConfig,
+    check_accounting,
+    replay,
+    summarise,
+)
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.control import decode_frame, resume_paper
 from crypto_grid_bot.simulation.demo import demo_frames
 from crypto_grid_bot.simulation.models import ZERO, Account, MarketRules, floor_step
-from crypto_grid_bot.simulation.runner import PaperSimulator, SimulationPolicy
+from crypto_grid_bot.simulation.runner import SCHEMA, PaperSimulator, SimulationPolicy
 from crypto_grid_bot.simulation.store import encode
 from crypto_grid_bot.simulation.trend_switch import (
     DAY_MS,
@@ -625,8 +632,55 @@ class V0UnchangedTests(TestCase):
         other, (other_identity, other_data) = self.run_demo("signed.db", signed)
         self.assertEqual((reports, identity, data), (other, other_identity, other_data))
         # The persisted policy is exactly the pre-variant field set.
-        unset = {"inventory_cap": None, "trend_switch": False, "structure": False}
+        unset = {
+            "inventory_cap": None,
+            "trend_switch": False,
+            "volume_exit": False,
+            "flow_block_entry": False,
+            "funding_gate": False,
+            "cycle_gate": False,
+            "structure": False,
+        }
         self.assertEqual(asdict(SimulationPolicy()), SimulationPolicy().identity() | unset)
+
+    def test_v0_identity_journal_and_saved_state_keep_their_layout(self):
+        # Variants E-H add policy flags, frame fields and runtime account state, none of
+        # which reaches a V0 account. The schema and the engine version are the current
+        # constants, which no variant moves.
+        policy = {
+            "recovery_frames": 2,
+            "maximum_frame_gap_seconds": 180,
+            "outside_range_seconds": 21600,
+            "recenter_after_exit": True,
+            "recenter_cooldown_seconds": 86400,
+            "soft_cooloff_seconds": 86400,
+            "hard_cooloff_seconds": 86400,
+        }
+        self.assertEqual(policy, SimulationPolicy().identity())
+        frames = demo_frames(3)
+        payload = {"quote", "signals", "candidate", "fair_value", "atr", "allow_new_grid"}
+        self.assertEqual(payload, set(frames[0].payload()))
+        saved = set(Account.start(D(100)).to_dict())
+        self.assertEqual(
+            {
+                *("initial_cash", "cash", "reserve_high", "risk_high", "day_start"),
+                *("inventory", "pending", "secured", "fees", "last_equity", "day"),
+                *("last_observed", "last_received", "halt", "liquidating", "pause"),
+                *("recovery_count", "draining", "range_exit", "range_exit_since"),
+                *("outside_seconds", "outside_last", "grid_lower", "grid_upper"),
+                *("settlement_count", "confirmed_transfers", "cycles", "fill_count"),
+                *("orders", "measure_high", "halt_since", "halt_category"),
+                *("episode_since", "episode_count"),
+            },
+            saved,
+        )
+        _, (identity, data) = self.run_demo("layout.db", frames)
+        identity = json.loads(identity)
+        self.assertEqual((SCHEMA, policy), (identity["schema"], identity["policy"]))
+        self.assertEqual(saved, set(json.loads(data)))
+        run = RunConfig("DEMOUSDT", "high_first", True, MarketRules(), D(100), D("0.0005"))
+        row = summarise(run, Metrics(), Account.start(D(100)), [])
+        self.assertEqual(ENGINE_VERSION, row["engine_version"])
 
 
 def hourly(count, start_ms, amplitude=0.08):

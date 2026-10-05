@@ -33,6 +33,7 @@ from crypto_grid_bot.backtest.replay import (
     cross_check_daily,
     cross_check_hourly,
     load_daily,
+    load_funding,
     load_hourly,
     load_minutes,
     replay,
@@ -40,7 +41,7 @@ from crypto_grid_bot.backtest.replay import (
     summarise,
 )
 from crypto_grid_bot.config import BotConfig, load_config
-from crypto_grid_bot.simulation.runner import SimulationPolicy
+from crypto_grid_bot.simulation.runner import VARIANTS, SimulationPolicy
 
 
 def source_files() -> dict[str, str]:
@@ -86,28 +87,30 @@ def manifest_path(spec_path: Path) -> Path:
 
 
 def variant_policy(variant: str | None, *, structure: bool = False) -> SimulationPolicy | None:
-    """The policy of spec v1 variant ``variant`` ("A", "B" or "C"; None is V0), with the
-    V2 structure features when ``structure``. None when nothing differs from V0, so a V0
-    run takes exactly the path it always has."""
-    if variant not in (None, "A", "B", "C"):
+    """The policy of spec v1 variant ``variant`` (a name in ``VARIANTS``, such as "A" or
+    "C+G"; None is V0), with the V2 structure features when ``structure``. None when
+    nothing differs from V0, so a V0 run takes exactly the path it always has."""
+    if variant is not None and variant not in VARIANTS[1:]:
         raise ValueError(f"unknown variant {variant!r}")
     if variant is None and not structure:
         return None
+    parts = set((variant or "").split("+"))
     return SimulationPolicy(
-        trend_switch=variant in ("A", "C"),
-        inventory_cap=VARIANT_B_INVENTORY_CAP if variant in ("B", "C") else None,
+        trend_switch=bool(parts & {"A", "C"}),
+        inventory_cap=VARIANT_B_INVENTORY_CAP if parts & {"B", "C"} else None,
+        volume_exit="E" in parts,
+        flow_block_entry="F" in parts,
+        funding_gate="G" in parts,
+        cycle_gate="H" in parts,
         structure=structure,
     )
 
 
 def variant_name(policy: SimulationPolicy | None) -> str | None:
     """The spec v1 variant a policy runs, for the result rows; None for V0."""
-    if policy is None:
+    if policy is None or not policy.variant:
         return None
-    trend, cap = policy.trend_switch, policy.inventory_cap
-    if not trend and cap is None:
-        return None
-    name = "C" if trend and cap is not None else "A" if trend else "B"
+    name, cap = policy.variant, policy.inventory_cap
     if cap is not None and cap != VARIANT_B_INVENTORY_CAP:
         name += f" (inventory cap {cap}, not the spec's {VARIANT_B_INVENTORY_CAP})"
     return name
@@ -121,8 +124,10 @@ class PreparedRun:
     run: RunConfig
     features: FeatureEngine
     # The pair's daily bars when the spec has daily history (P3), else None: read by
-    # the structure features, variant A's trend switch and variant D.
+    # the structure features, variant A's trend switch, variant H and variant D.
     daily: list[Kline] | None
+    # The pair's hourly bars, which also feed ``features``: read by variant E.
+    hourly: list[Kline]
 
 
 def prepare_run(
@@ -192,7 +197,7 @@ def prepare_run(
         daily_bars=pair_daily if structure else None,
     )
     run = RunConfig(symbol, path_mode, gated, rules, spec.initial_quote, spread)
-    return PreparedRun(spec, config, manifest, run, features, pair_daily)
+    return PreparedRun(spec, config, manifest, run, features, pair_daily, pair_hourly)
 
 
 def run_job(
@@ -209,9 +214,10 @@ def run_job(
 ) -> dict[str, Any]:
     """``fees`` is (maker, taker) overriding the spec; taker None means maker.
 
-    ``policy`` controls simulation variants; None gives V0 behaviour. When
-    ``policy.trend_switch`` is True, the pair's daily bars are required. A variant's
-    rows name it, and rows with the V2 structure features carry their feature version.
+    ``policy`` controls simulation variants; None gives V0 behaviour. Variants A and H
+    require the pair's daily bars, and variant G reads BTCUSDT's funding archives from
+    the manifest (with none, it blocks every new grid). A variant's rows name it, and
+    rows with the V2 structure features carry their feature version.
     ``fill_trigger`` is the missed-fill sweep's resting-fill trigger (D9, see
     ``prepare_run``); the rows' ``rules`` then record it.
     """
@@ -228,8 +234,22 @@ def run_job(
         fill_trigger=fill_trigger,
     )
     run, minutes = prepared.run, load_minutes(data_dir, prepared.manifest, symbol)
+    # Spec v1 §3 G: BTCUSDT's funding gates every pair. No committed manifest lists
+    # funding archives until P8's report merges, so until then G blocks every new grid.
+    funding = (
+        load_funding(data_dir, prepared.manifest, "BTCUSDT")
+        if policy is not None and policy.funding_gate
+        else None
+    )
     metrics, account = replay(
-        prepared.config, run, minutes, prepared.features, policy=policy, daily=prepared.daily
+        prepared.config,
+        run,
+        minutes,
+        prepared.features,
+        policy=policy,
+        daily=prepared.daily,
+        hourly=prepared.hourly,
+        funding=funding,
     )
     version = STRUCTURE_FEATURE_VERSION if structure else FEATURE_VERSION
     problems = check_accounting(run, metrics, account)

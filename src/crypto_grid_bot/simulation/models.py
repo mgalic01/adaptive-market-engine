@@ -209,6 +209,15 @@ class Account:
     # The open soft-drawdown episode: its start, and its consecutive confirmations.
     episode_since: str = ""
     episode_count: int = 0
+    # Variants E and F (spec v1, sections 3 E and 3 F) only: runtime state that is never
+    # saved (to_dict leaves it out), so both run in historical replay only and a paper
+    # account refuses them (PaperSimulator.process). E: the first observation (t0) of the
+    # running outside-range episode, and whether E extended that episode. F: its buy
+    # block, on at the start (it fails closed), and its fragments by target price.
+    volume_since: str = ""
+    volume_extended: bool = False
+    flow_block: bool = True
+    flow_fragments: dict[Decimal, Decimal] = field(default_factory=dict)
 
     @classmethod
     def start(cls, cash: Decimal) -> Account:
@@ -359,6 +368,8 @@ class Account:
         for key in ("trend_day", "down_since"):
             if not data[key]:
                 del data[key]  # Variant A only: V0 saved state keeps its exact layout.
+        for key in ("volume_since", "volume_extended", "flow_block", "flow_fragments"):
+            del data[key]  # Variants E and F: runtime state, never saved.
         return data
 
     @classmethod
