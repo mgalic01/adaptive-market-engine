@@ -19,6 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from crypto_grid_bot import source_hash
 from crypto_grid_bot.backtest.dataset import (
     DatasetSpec,
     fee_rate,
@@ -31,6 +32,7 @@ from crypto_grid_bot.backtest.dataset import (
 )
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE_VERSION
 from crypto_grid_bot.backtest.jobs import (
+    SOURCE_FILES,
     SOURCE_IDENTITY,
     check_sources,
     cross_check_job,
@@ -140,10 +142,51 @@ def _identity(spec_path: Path, config_path: Path) -> dict[str, str]:
     }
 
 
+def committed_sources(commit: str) -> dict[str, str] | None:
+    """This package's Python sources at ``commit``, hashed as jobs.source_files()
+    hashes the ones this process imported, or None when git cannot read them."""
+    git, root = shutil.which("git"), Path(__file__).resolve().parents[1]
+    if git is None:
+        return None
+    try:
+        listing = subprocess.run(  # nosec B603
+            [git, "ls-tree", "-r", "-z", commit, "."],
+            cwd=root,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        blobs: dict[str, str] = {}
+        for entry in listing.stdout.decode().split("\0"):
+            meta, _, path = entry.partition("\t")
+            if path.endswith(".py") and meta.split()[1:2] == ["blob"]:
+                blobs[path] = meta.split()[2]
+        batch = subprocess.run(  # nosec B603
+            [git, "cat-file", "--batch"],
+            cwd=root,
+            input="".join(f"{blob}\n" for blob in blobs.values()).encode(),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if listing.returncode != 0 or batch.returncode != 0:
+            return None
+        sources, data, at = {}, batch.stdout, 0
+        for path in blobs:  # `<id> blob <size>\n<content>\n`, in the order asked
+            header = data.index(b"\n", at)
+            size = int(data[at:header].split()[2])
+            sources[path] = source_hash(data[header + 1 : header + 1 + size])
+            at = header + size + 2
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+    return sources
+
+
 def code_commit() -> str:
-    """The git commit of this code, with "+dirty" when tracked files differ from it (the
-    commit alone would not be the code that ran; Codex review of #160), or "unknown"
-    outside a git checkout."""
+    """The git commit of this code, with "+dirty" when tracked files differ from it or
+    when its sources are not the ones this process imported, which a checkout moved
+    since the imports would make them: the commit alone would not be the code that ran
+    (Codex reviews of #160). "unknown" outside a git checkout."""
     git = shutil.which("git")
     if git is None:
         return "unknown"
@@ -166,7 +209,8 @@ def code_commit() -> str:
     commit = head.stdout.strip()
     if head.returncode != 0 or not commit or status.returncode != 0:
         return "unknown"
-    return commit + ("+dirty" if status.stdout.strip() else "")
+    clean = not status.stdout.strip() and committed_sources(commit) == SOURCE_FILES
+    return commit + ("" if clean else "+dirty")
 
 
 class InProcess:
@@ -194,8 +238,11 @@ def _table(results: list[dict[str, Any]]) -> str:
         "| --- |",
     ]
     for r in results:
+        # A variant's rows name it, so the table alone tells A, B and C from V0 (Codex
+        # review of #160); a V0 row keeps its exact text.
+        strategy = r["strategy"] + (f", variant {r['variant']}" if "variant" in r else "")
         lines.append(
-            f"| {r['symbol']} | {r['path_mode']} | {r['strategy']} | {r['return_pct']:.2f} | "
+            f"| {r['symbol']} | {r['path_mode']} | {strategy} | {r['return_pct']:.2f} | "
             f"{r['max_drawdown_pct']:.2f} | {r['buy_and_hold_return_pct']:.2f} | "
             f"{r['buy_and_hold_max_drawdown_pct']:.2f} | {Decimal(r['fees']):.2f} | "
             f"{r['buys']}/{r['sells']} | {r['grids_opened']} | {r['range_exits']} | "
