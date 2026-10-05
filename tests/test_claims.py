@@ -623,6 +623,8 @@ class TargetTest(unittest.TestCase):
                 # Codex review of #159: a later -C moves git, not the repository named.
                 "cd /tmp/other && git --git-dir /work/repo/.git -C /tmp/other push origin claude/a",
                 "git -C /tmp/other --git-dir=/work/repo/.git push origin claude/a",
+                # Codex review of #159: GIT_DIR exported earlier on the line.
+                "cd /tmp/other && export GIT_DIR=/work/repo/.git && git push origin claude/a",
             ):
                 with self.subTest(cmd=cmd):
                     targets = find_targets(cmd, ".")
@@ -720,6 +722,11 @@ class TargetTest(unittest.TestCase):
                 "ALIAS=push git --config-env=alias.e=ALIAS e origin claude/a",
                 "export ALIAS=push; git --config-env alias.e=ALIAS e origin claude/a",
                 "git -c ALIAS.Q=push q origin claude/a",
+                # Codex review of #159: the environment at the git command, not after
+                # it; and git's own commands run directly.
+                "ALIAS=push git --config-env=alias.e=ALIAS e origin claude/a; ALIAS=status",
+                "/usr/lib/git-core/git-push origin claude/a",
+                "git-send-pack origin claude/a",
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual([t.branch for t in find_targets(cmd, ".")], ["claude/a"])
