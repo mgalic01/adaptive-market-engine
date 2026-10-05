@@ -1,13 +1,14 @@
 """Variant E of experiment spec v1 (§3 E): the volume check of a volume-confirmed exit.
 
-When V0's 6-hour outside-range timer expires, E compares the base volume of the 1m bars
-that opened in the 6 hours from the minute of the episode's first outside observation
-``t0`` with 2 × the median base volume of the 720 hourly bars before ``t0``'s hour × 6.
-Below it, the exit waits until 12 hours of observed outside time from ``t0``; at or above
-it, the exit happens as in V0. A missing reference hour or measured minute, or a zero
-median, makes the comparison unavailable, and the exit then happens at 6 hours as in V0.
-The engine (``runner.py``) asks once per episode, at its first valid observation past
-6 hours; whenever that is, the measured span stays the same.
+At the first valid observation at or after ``t0 + 6 h``, where ``t0`` is the episode's
+first outside observation, E compares the base volume of the 1m bars that opened in
+``[floor_minute(t0), floor_minute(t0 + 6 h))`` with 2 × the median base volume of the 720
+hourly bars before ``t0``'s hour × 6. Below it, the exit waits until the first valid
+observation at or after ``t0 + 12 h``; at or above it, V0's own range exit applies. A
+missing reference hour or measured minute, or a zero median, makes the comparison
+unavailable, and V0's exit applies then too. Both milestones are on the clock from the
+original ``t0``: a later decision still measures the same span, and the deadline never
+moves. The engine (``runner.py``) asks once per episode.
 
 Pure and Decimal; nothing reads files or the clock.
 """
@@ -21,9 +22,11 @@ from decimal import Decimal, localcontext
 HOUR_MS = 3_600_000
 MINUTE_MS = 60_000
 REFERENCE_HOURS = 720
-MEASURED_MS = 6 * HOUR_MS
-# An extended episode exits at 12 hours of observed outside-range time from t0.
-EXTENDED_SECONDS = 43_200
+# E decides at t0 + 6 h, over the 6 hours of 1m bars from t0's minute, and an extended
+# episode exits at t0 + 12 h.
+DECISION = timedelta(hours=6)
+DEADLINE = timedelta(hours=12)
+MEASURED_MS = DECISION // timedelta(milliseconds=1)
 ZERO = Decimal(0)
 # Exact: sums of bar volumes need far fewer digits than this.
 _PRECISION = 60

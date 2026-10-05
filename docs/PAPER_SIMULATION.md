@@ -292,7 +292,7 @@ without that setting are rejected. Use a new database for the new policy; retain
 the original database and matching code for reviewing the old experiment.
 
 Variants E and F (spec v1 §3) keep account state that is never saved: E's outside-range
-episode start and whether it extended the episode, F's buy block and its fragments. A
+episode start and its one decision on the episode, F's buy block and its fragments. A
 saved account would lose that state at every frame, so `PaperSimulator.process` and
 `resume` refuse both: they run in historical replay only. Nothing about saved state
 changed for them, so schema 9 stands; every other variant saves what it saved before.

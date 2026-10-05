@@ -312,7 +312,9 @@ def liquidate(
     return reduce_unreserved(account, quote, rules, check=check)
 
 
-def exit_state(account: Account, quote: Quote, rules: MarketRules) -> tuple[str, Decimal]:
+def exit_state(
+    account: Account, quote: Quote, rules: MarketRules, held: Decimal = ZERO
+) -> tuple[str, Decimal]:
     """Where the account's exits stand at this quote, from the account itself.
 
     Judged on ``unpaired_inventory``, the same quantity the runner drains, and never on
@@ -325,12 +327,14 @@ def exit_state(account: Account, quote: Quote, rules: MarketRules) -> tuple[str,
       higher price clears it. Reported, not a failure.
     * ``("", 0)``: nothing is owed.
 
-    ``value`` is the unpaired inventory at the exit price.
+    ``value`` is the unpaired inventory at the exit price. ``held`` is the part no exit
+    owes yet, variant F's fragments waiting for their own sell: it is reported with the
+    rest, as dust, and never makes the exit incomplete.
     """
     unpaired = unpaired_inventory(account)
     if unpaired <= ZERO:
         return "", ZERO
     value = exit_price(quote, rules) * unpaired
-    if marketable(unpaired, quote, rules) == ZERO:
+    if marketable(unpaired - held, quote, rules) == ZERO:
         return "dust", value
     return "incomplete", value

@@ -10,15 +10,17 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal as D
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 from crypto_grid_bot.backtest.features import HOUR_MS, FeatureEngine, SeriesFeatures
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import RunConfig, check_accounting, replay
 from crypto_grid_bot.config import load_config
+from crypto_grid_bot.domain import CandidateMetrics
 from crypto_grid_bot.simulation.demo import demo_frames
 from crypto_grid_bot.simulation.models import Account, MarketRules
 from crypto_grid_bot.simulation.runner import PaperSimulator, SimulationPolicy
-from crypto_grid_bot.strategy.cycle import H2, HALVINGS, CycleSchedule, CycleSignal, phase
+from crypto_grid_bot.strategy.cycle import H2, H3, HALVINGS, CycleSchedule, CycleSignal, phase
 from crypto_grid_bot.strategy.daily_sma import DAY_MS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +60,10 @@ def changed(bars, today, factor):
     moved = [(open_ms, close * factor if open_ms >= cut else close) for open_ms, close in bars]
     last = moved[-1][0]
     return moved + [(last + k * DAY_MS, D(9) * factor) for k in range(1, 31)]
+
+
+# Every component 0.65, so a RANGE score of 0.65: below V0's 0.70, not below H3's 0.60.
+MIDDLING = CandidateMetrics("TESTUSDT", 0.65, 0.65, 0.65, 0.65, 0.65, 0.0, 0.04, 1e9)
 
 
 def frame_at(when, cycle, candidate=None):
@@ -240,14 +246,7 @@ class EngineTests(TestCase):
     def test_h3_lowers_the_score_minimum_and_nothing_else(self):
         when = utc(2023, 6, 15, 12)  # phase 37
         discounted, plain = CycleSignal("2023-06-14", False, True), CycleSignal("2023-06-14")
-        middling = replace(  # a score of 0.65: below 0.70, not below 0.60
-            demo_frames(1)[0].candidate,
-            range_quality=0.65,
-            net_grid_edge=0.65,
-            liquidity_quality=0.65,
-            downside_quality=0.65,
-            data_quality=0.65,
-        )
+        middling = replace(MIDDLING, symbol="DEMOUSDT")
         cases = (
             (discounted, middling, "open_grid"),
             (plain, middling, "pause"),
@@ -261,6 +260,29 @@ class EngineTests(TestCase):
         # Without the cycle gate the same frame pauses, as in V0.
         _, (v0,) = self.step_all(None, [frame_at(when, discounted, middling)])
         self.assertEqual("pause", v0["decision"])
+
+    def test_h3_relaxes_only_the_decision_to_open_a_new_grid(self):
+        # Codex review of #165: "for new grids only" (spec v1 §3 H). A flat account at a
+        # score of 0.65 opens a grid, journaled as opened only because of H3.
+        when = utc(2023, 6, 15, 12)  # phase 37
+        discounted = CycleSignal("2023-06-14", False, True)
+        middling = replace(MIDDLING, symbol="DEMOUSDT")
+        _, (opened,) = self.step_all(H, [frame_at(when, discounted, middling)])
+        self.assertEqual("open_grid", opened["decision"])
+        self.assertTrue(opened["cycle"]["h3_only"])
+        # A grid that exists at a score of 0.65 pauses and drains exactly as in V0.
+        frames = [
+            frame_at(when, discounted),  # eligible as in V0: the grid opens
+            frame_at(when + timedelta(seconds=1), discounted, middling),
+        ]
+        h, h_reports = self.step_all(H, frames)
+        v0, v0_reports = self.step_all(None, frames)
+        self.assertEqual(["open_grid", "pause"], [r["decision"] for r in h_reports])
+        self.assertNotIn("h3_only", h_reports[0]["cycle"])
+        self.assertEqual([r["decision"] for r in v0_reports], [r["decision"] for r in h_reports])
+        self.assertEqual(v0.to_dict(), h.to_dict())
+        self.assertTrue(h_reports[1]["cancelled"])  # its buys, cancelled as V0 cancels them
+        self.assertFalse(h.orders)
 
 
 def hourly(count, start_ms):
@@ -286,10 +308,14 @@ class ReplayWiringTests(TestCase):
     WARMUP = 800
 
     def setUp(self):
+        self.at(self.MIDNIGHT)
+
+    def at(self, midnight):
+        """Hourly warm-up and two hours of minutes, 23:00 to 00:59, across ``midnight``."""
         self.config = load_config(ROOT / "config/default.toml")
         rules = MarketRules("TESTUSDT", D("0.0001"), D("0.1"), D("5"))
         self.run_config = RunConfig("TESTUSDT", "high_first", False, rules, D(100), D("0.0005"))
-        start = ms(self.MIDNIGHT) - HOUR_MS
+        start = ms(midnight) - HOUR_MS
         candles = hourly(self.WARMUP, start - self.WARMUP * HOUR_MS)
         series = SeriesFeatures("TESTUSDT", candles)
         basket = [SeriesFeatures(f"B{i}USDT", candles, full=False) for i in range(5)]
@@ -303,7 +329,6 @@ class ReplayWiringTests(TestCase):
             round_trip_cost=0.0035,
         )
         fair = float(self.engine.at(start).fair_value)
-        # 23:00 to 00:59 UTC, across the midnight at which the overextended bar closes.
         self.minutes = [
             Kline(
                 start + i * 60_000,
@@ -314,17 +339,18 @@ class ReplayWiringTests(TestCase):
             )
             for i in range(120)
         ]
-        self.bars = scenario(self.MIDNIGHT.date())
+        self.bars = scenario(midnight.date())
 
-    def run_replay(self, bars, minutes):
-        return replay(self.config, self.run_config, minutes, self.engine, H, daily_klines(bars))
+    def run_replay(self, bars, minutes, policy=H):
+        daily = daily_klines(bars)
+        return replay(self.config, self.run_config, minutes, self.engine, policy, daily)
 
     def test_unclosed_and_future_bars_never_reach_a_decision(self):
         # Until midnight, the overextended bar of 2022-01-15 has not closed.
         before = self.minutes[:60]
         metrics, account = self.run_replay(self.bars, before)
         self.assertEqual([], check_accounting(self.run_config, metrics, account))
-        self.assertEqual({"None": 60}, metrics.variant_counts["cycle_rules_by_bar"])
+        self.assertEqual({"None": 60}, metrics.variant["cycle_rules_by_bar"])
         for factor in (D(1000), D("0.001")):
             with self.subTest(factor=factor):
                 bars = changed(self.bars, self.MIDNIGHT.date() - timedelta(days=1), factor)
@@ -334,8 +360,9 @@ class ReplayWiringTests(TestCase):
         # Across midnight: that bar is used from the minute it closes, and the bars after
         # it, changed beyond recognition, still change nothing.
         across, _ = self.run_replay(self.bars, self.minutes)
-        self.assertEqual({"None": 60, H2: 60}, across.variant_counts["cycle_rules_by_bar"])
-        self.assertEqual({"20": 120}, across.variant_counts["cycle_phases_by_bar"])
+        self.assertEqual({"None": 60, H2: 60}, across.variant["cycle_rules_by_bar"])
+        self.assertEqual({"20": 120}, across.variant["cycle_phases_by_bar"])
+        self.assertEqual(0, across.variant["cycle_ath_unavailable_bars"])
         moved = changed(self.bars, self.MIDNIGHT.date(), D(1000))
         self.assertEqual(asdict(across), asdict(self.run_replay(moved, self.minutes)[0]))
 
@@ -344,6 +371,30 @@ class ReplayWiringTests(TestCase):
         v0 = replay(self.config, self.run_config, self.minutes, self.engine, None, None)
         with_daily = replay(self.config, self.run_config, self.minutes, self.engine, None, daily)
         self.assertEqual(asdict(v0[0]), asdict(with_daily[0]))
-        self.assertEqual({}, v0[0].variant_counts)
+        self.assertEqual({}, v0[0].variant)
         with self.assertRaisesRegex(ValueError, "daily history"):
             replay(self.config, self.run_config, self.minutes, self.engine, H, None)
+
+    def test_grids_only_h3_opened_and_unavailable_aths_are_reported(self):
+        # Every candidate scores 0.65. At 00:00 on 2023-06-16 (phase 37) the bar of
+        # 2023-06-15 closes at 1, below half the ATH of 3: from then H3 opens grids, and
+        # each pauses at its next frame, as V0 pauses a grid scored below 0.70, without a
+        # fill: their P&L is zero. Without H no grid opens at all.
+        self.at(utc(2023, 6, 16))
+        middling = replace(MIDDLING, spread_pct=0.05)
+        with patch("crypto_grid_bot.backtest.replay.candidate_for", lambda *a, **k: middling):
+            h, account = self.run_replay(self.bars, self.minutes)
+            v0, _ = self.run_replay(self.bars, self.minutes, None)
+        self.assertEqual([], check_accounting(self.run_config, h, account))
+        self.assertEqual({"None": 60, H3: 60}, h.variant["cycle_rules_by_bar"])
+        grids = h.variant["cycle_h3_grids"]
+        self.assertEqual((h.grids_opened, D(0)), (grids["opened"], D(grids["pnl"])))
+        self.assertGreater(grids["opened"], 1)
+        self.assertEqual(0, v0.grids_opened)
+        # A daily history that starts after the halving's day has no ATH: H3 never acts.
+        late = [(open_ms, close) for open_ms, close in self.bars[1:]]
+        with patch("crypto_grid_bot.backtest.replay.candidate_for", lambda *a, **k: middling):
+            h, _ = self.run_replay(late, self.minutes)
+        self.assertEqual(120, h.variant["cycle_ath_unavailable_bars"])
+        self.assertEqual({"opened": 0, "pnl": "0"}, h.variant["cycle_h3_grids"])
+        self.assertEqual({"None": 120}, h.variant["cycle_rules_by_bar"])

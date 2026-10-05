@@ -235,7 +235,7 @@ def run_job(
     )
     run, minutes = prepared.run, load_minutes(data_dir, prepared.manifest, symbol)
     # Spec v1 §3 G: BTCUSDT's funding gates every pair. No committed manifest lists
-    # funding archives until P8's report merges, so until then G blocks every new grid.
+    # funding archives until P8's entries are added, so until then G blocks every new grid.
     funding = (
         load_funding(data_dir, prepared.manifest, "BTCUSDT")
         if policy is not None and policy.funding_gate
