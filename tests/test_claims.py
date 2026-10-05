@@ -480,6 +480,23 @@ class TargetTest(unittest.TestCase):
             hidden = "awk -f - <<'EOF'\nBEGIN { system(\"gh pr merge 5\") }\ngh pr merge 6\nEOF"
             self.assertCountEqual(self.prs(hidden), [6, None])
             self.assertEqual(find_targets("bash <<'EOF'\necho merge later\nEOF", "."), [])
+            # Codex review of #159: a group closed before the `<<` is an argument of its
+            # stage, a stage before the `<<` never sees the body, and `|&` is a pipe.
+            self.assertEqual(self.prs("bash -s -- <(echo arg) <<'EOF'\ngh pr merge 5\nEOF"), [5])
+            self.assertEqual(self.prs("bash <(cat x | grep y) <<'EOF'\ngh pr merge 5\nEOF"), [5])
+            self.assertEqual(self.prs("cat <<'EOF' |& bash\ngh pr merge 5\nEOF"), [5])
+            self.assertEqual(
+                find_targets("bash -c true | cat <<'EOF'\ngh pr merge 5\nEOF", "."), []
+            )
+            # Codex review of #159: git reads its input as data only in its data commands
+            # and with no setting, which can name a command to run.
+            for cmd in (
+                "git -c alias.x='!sh' x <<'EOF'\ngh pr merge 5\nEOF",
+                "git -c core.editor=vi commit <<'EOF'\ngh pr merge 5\nEOF",
+                "git x <<'EOF'\ngh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertCountEqual(self.prs(cmd), [5, None])
             # Codex review of #159: a function body's opener is not the reader.
             for cmd in (
                 "f(){ bash <<'EOF'\ngh pr merge 5\nEOF\n}; f",
