@@ -29,6 +29,9 @@ from crypto_grid_bot.backtest.trend_benchmark import STRATEGY as BENCHMARK
 ROOT = Path(__file__).resolve().parents[1]
 SPECS = ROOT / "config" / "datasets"
 FROZEN_CONFIG = sha256_file(ROOT / "config" / "default.toml")
+# A synthetic clean commit. The in-process tests give the scorer this commit as its own,
+# so they do not depend on the state of the checkout they run in.
+FROZEN_COMMIT = "c0ffee" + "0" * 34
 
 
 def run(**changes):
@@ -379,8 +382,10 @@ def document(dataset, rows, **changes):
         "engine_version": ENGINE_VERSION,
         "manifest_created_at": "synthetic",
         "spec_sha256": sha256_file(spec_path),
-        "manifest_sha256": f"manifest of {dataset}",
+        "manifest_sha256": sha256_file(SPECS / f"{dataset}.manifest.json"),
         "config_sha256": FROZEN_CONFIG,
+        "code_commit": FROZEN_COMMIT,
+        "code_sha256": jobs.SOURCE_IDENTITY,
         "integrity_rules": {"version": INTEGRITY_RULES, "volume_drift_tolerance": "0.001"},
         "fees": {"maker": "0", "taker": "0.0009"},
         "valid": not failures,
@@ -434,6 +439,9 @@ class FileTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.tmp = Path(directory.name)
         self.out = self.tmp / "verdict.json"
+        commit = patch.object(score, "code_commit", return_value=FROZEN_COMMIT)
+        commit.start()
+        self.addCleanup(commit.stop)
 
     def write(self, documents):
         paths = []
@@ -583,9 +591,21 @@ class FileTests(unittest.TestCase):
             "maker fee 0.001": rules(fee_rate="0.001"),
             "missed-fill sensitivity": rules(fill_trigger_rate="0.0002"),
             "assumed spread % 0.10": each_row(assumed_spread_pct="0.10"),
-            "changed since they ran": lambda f: f.update(spec_sha256="0" * 64),
+            "not the committed config/datasets/verify-2024h1.toml": lambda f: f.update(
+                spec_sha256="0" * 64
+            ),
+            "not the committed config/datasets/verify-2024h1.manifest.json": lambda f: f.update(
+                manifest_sha256="0" * 64
+            ),
+            "not a clean commit": lambda f: f.update(code_commit=FROZEN_COMMIT + "+dirty"),
+            "code commit None, not a clean commit": lambda f: [
+                f.pop("code_commit"),
+                f.pop("code_sha256"),
+            ],
+            "not the scorer's": lambda f: f.update(code_sha256="0" * 64),
+            "the runs come from": lambda f: f.update(code_commit="1" * 40),
             "not a spec v1 variant": each_row(variant="B (inventory cap 0.5, not the spec's 0.40)"),
-            "not the frozen config/default.toml": lambda f: f.update(config_sha256="tuned"),
+            "not the committed config/default.toml": lambda f: f.update(config_sha256="tuned"),
             "comparison mask differs": lambda f: f["hourly_cross_checks"][0].update(
                 hours_missing=1
             ),
@@ -600,7 +620,24 @@ class FileTests(unittest.TestCase):
         documents = matrix()
         for file in documents.values():
             file["config_sha256"] = "config"  # every file agrees, on the wrong config
-        self.refused(documents.values(), "not the frozen config/default.toml")
+        self.refused(documents.values(), "not the committed config/default.toml")
+
+    def test_a_batch_from_a_uniformly_modified_manifest_is_refused(self) -> None:
+        # Codex's case: every practice-2022 file agrees on one manifest, not the committed.
+        documents = matrix()
+        for (dataset, _), file in documents.items():
+            if dataset == "practice-2022":
+                file["manifest_sha256"] = "1" * 64
+        self.refused(
+            documents.values(), "not the committed config/datasets/practice-2022.manifest.json"
+        )
+
+    def test_the_scorer_must_run_from_the_batchs_own_commit(self) -> None:
+        with patch.object(score, "code_commit", return_value="2" * 40 + "+dirty"):
+            code, _, stderr, _ = self.run_scorer(matrix().values())
+        self.assertEqual(code, 2)
+        self.assertIn(f"the runs come from {FROZEN_COMMIT}; the scorer runs at 2222", stderr)
+        self.assertIn(score.FROZEN_HINT, stderr)
 
     def test_text_digests_are_one_pair_for_either_line_endings(self) -> None:
         lf, crlf = self.tmp / "lf.toml", self.tmp / "crlf.toml"
@@ -618,7 +655,9 @@ class FileTests(unittest.TestCase):
         other = 1 if config[0] == FROZEN_CONFIG else 0
         for (dataset, _), file in documents.items():
             spec = score.text_digests(score.DATASET_SPECS / f"{dataset}.toml")
+            data = score.text_digests(score.DATASET_SPECS / f"{dataset}.manifest.json")
             file["config_sha256"], file["spec_sha256"] = config[other], spec[other]
+            file["manifest_sha256"] = data[other]
         self.assertEqual(self.run_scorer(documents.values())[3]["selection"]["winner"], "A")
 
     def test_a_traded_pairs_own_failure_leaves_the_other_pairs_scored(self) -> None:
@@ -689,7 +728,9 @@ class FileTests(unittest.TestCase):
             (variant, scored.return_pct, scored.max_drawdown_pct), ("V0", F(1), F(1, 10))
         )
 
-    def test_the_module_runs_as_a_command(self) -> None:
+    def test_the_module_runs_as_a_command_and_checks_its_real_commit(self) -> None:
+        # Unpatched, the command reads its own commit from git, which is never the
+        # synthetic one the files record, so the whole batch is refused.
         paths = self.write(matrix().values())
         env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
         command = [sys.executable, "-m", "crypto_grid_bot.backtest.acceptance", *paths]
@@ -699,9 +740,10 @@ class FileTests(unittest.TestCase):
             env=env,
             check=False,
         )
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn(b"winner: A", done.stdout)
-        self.assertEqual(json.loads(self.out.read_text())["selection"]["winner"], "A")
+        self.assertEqual(done.returncode, 2, done.stderr)
+        selection = json.loads(self.out.read_text())["selection"]
+        self.assertEqual((selection["outcome"], selection["winner"]), ("refused", None))
+        self.assertTrue(any("the scorer runs at" in line for line in selection["reasons"]))
 
 
 if __name__ == "__main__":

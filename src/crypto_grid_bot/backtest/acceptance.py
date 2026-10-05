@@ -9,16 +9,18 @@ deterministic selection runs when the inputs are the whole section 4 matrix. A r
 table is printed, and the verdict with every figure behind it is written as JSON.
 
 It runs no backtest and reads no market data: only the results files, and the dataset
-specs and default config committed beside this code, which must hash to the
-``spec_sha256`` and ``config_sha256`` each run recorded. Arithmetic is exact
-(``Fraction``): returns come from the recorded equities, and drawdowns are read exactly
-as the results wrote them.
+specs, manifests and default config committed beside this code, which must hash to the
+``spec_sha256``, ``manifest_sha256`` and ``config_sha256`` each run recorded. Every run
+must also come from this code's own clean commit (``code_commit``, ``code_sha256``).
+Arithmetic is exact (``Fraction``): returns come from the recorded equities, and
+drawdowns are read exactly as the results wrote them.
 
 It fails closed and skips nothing:
 
-* an input that is not an acceptance run (another engine, features, integrity rules,
-  config, fee or sensitivity setting, an unknown variant, a duplicate run, a changed
-  dataset spec) is refused: nothing is scored, and the verdict file says so;
+* an input that is not an acceptance run (another code, engine, features, integrity
+  rules, config, fee or sensitivity setting, an unknown variant, a duplicate run, a
+  changed dataset spec or manifest) is refused: nothing is scored, and the verdict file
+  says so;
 * an invalid run fails its variant's C4 (section 5), and so does a run missing from the
   matrix, which also stops the selection;
 * a pair-window the comparison mask excludes (section 5) is excluded for every variant
@@ -94,12 +96,18 @@ C7_NOTE = (
     "C7 not evaluated: it is not yet settled (spec v1 section 6). It selects nothing, and "
     "the reserved window stays closed until it is settled and passed, or waived."
 )
-# The frozen acceptance inputs (sections 3 and 7): the dataset specs and the default
-# config committed beside this code. Every run must have recorded their hashes, and no
-# command-line path can replace them with tuned copies.
+# The frozen acceptance inputs (sections 3 and 7): this code itself, and the dataset specs,
+# manifests and default config committed beside it. Every run must have recorded their
+# identities, and no command-line path can replace them with tuned copies.
 REPOSITORY = Path(__file__).resolve().parents[3]
 DATASET_SPECS = REPOSITORY / "config" / "datasets"
 ACCEPTANCE_CONFIG = REPOSITORY / "config" / "default.toml"
+# A clean commit as the backtest CLI records it: no "+dirty" and not "unknown".
+_CLEAN_COMMIT = re.compile(r"[0-9a-f]{40}")
+FROZEN_HINT = (
+    "Run the whole batch with --record-commit from one clean checkout of the frozen "
+    "commit, and score it from that same checkout."
+)
 _DATASET_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 Figure = Fraction | int | str
@@ -624,24 +632,11 @@ def runs_of(document: dict[str, Any], window: Window) -> Iterator[tuple[str, Run
         )
 
 
-def manifest_problems(sources: Sequence[Source]) -> list[str]:
-    """The runs of one window must have used one manifest, so one set of data."""
-    return [
-        f"the {name} runs used different manifests"
-        for name in sorted({s.dataset for s in sources})
-        if len({s.document["manifest_sha256"] for s in sources if s.dataset == name}) > 1
-    ]
-
-
 def assess(sources: Sequence[Source], specs: Mapping[str, DatasetSpec]) -> Verdict:
     """Score ``sources`` with the dataset ``specs`` they ran on (``read_frozen``)."""
     windows: dict[str, Window] = {}
     found: dict[str, dict[tuple[str, str, str], Run]] = {}
     problems: list[str] = []
-    try:
-        problems += manifest_problems(sources)
-    except (KeyError, TypeError, AttributeError) as exc:
-        problems.append(f"malformed results ({type(exc).__name__} {exc})")
     for source in sources:
         try:
             problems += [f"{source.path}: {p}" for p in document_problems(source.document)]
@@ -700,44 +695,73 @@ def text_digests(path: Path) -> tuple[str, str]:
     return hashlib.sha256(text).hexdigest(), hashlib.sha256(crlf).hexdigest()
 
 
-def read_frozen(sources: Sequence[Source]) -> dict[str, DatasetSpec]:
+def pinned(path: Path, recorded: set[str], what: str) -> list[str]:
+    """Why the hashes runs recorded for a frozen file are not that committed file's: []
+    when every one is, in either line-ending form."""
+    digests = text_digests(path)
+    unknown = sorted(recorded - set(digests))
+    if not unknown:
+        return []
+    committed = path.relative_to(REPOSITORY).as_posix()
+    return [
+        f"{what} {', '.join(unknown)}, not the committed {committed} "
+        f"(SHA-256 {digests[0]} with LF line endings)"
+    ]
+
+
+def code_problems(sources: Sequence[Source], scorer: Mapping[str, str]) -> list[str]:
+    """Why the runs did not all come from the code that scores them.
+
+    Every run must record a clean commit, the same for all, and the scorer's own source
+    identity (``code_sha256``, which normalises line endings). The scorer must run from
+    that same clean commit. So a run without provenance (a plain V0 run made without
+    ``--record-commit``), from a dirty checkout, or from changed code that kept its version
+    labels is refused.
+    """
+    problems = []
+    for s in sources:
+        commit, code = s.document.get("code_commit"), s.document.get("code_sha256")
+        if not (isinstance(commit, str) and _CLEAN_COMMIT.fullmatch(commit)):
+            problems.append(f"{s.path}: code commit {commit!r}, not a clean commit")
+        if code != scorer["code_sha256"]:
+            problems.append(f"{s.path}: code {code!r}, not the scorer's {scorer['code_sha256']}")
+    commits = sorted({str(s.document.get("code_commit")) for s in sources})
+    if commits != [scorer["code_commit"]]:
+        problems.append(
+            f"the runs come from {', '.join(commits)}; the scorer runs at {scorer['code_commit']}"
+        )
+    return problems
+
+
+def read_frozen(sources: Sequence[Source], scorer: Mapping[str, str]) -> dict[str, DatasetSpec]:
     """Check every run against the frozen inputs, and return each window's dataset spec.
 
-    The default config (section 3, V0: "default config") and each window's dataset spec,
-    as committed beside this code, must hash to the ``config_sha256`` and ``spec_sha256``
-    the run recorded. A batch made with a tuned copy of either is refused, however well
-    its files agree with one another.
+    The runs must come from the code that scores them (``code_problems``). The default
+    config (section 3, V0: "default config"), and each window's dataset spec and manifest,
+    as committed beside this code, must hash to what every run recorded. A batch made with
+    a tuned copy of any of them is refused, however well its files agree.
     """
-    problems, specs = [], {}
+    problems = code_problems(sources, scorer)
+    specs = {}
     try:
-        config = text_digests(ACCEPTANCE_CONFIG)
-        problems += [
-            f"{s.path}: config {s.document['config_sha256']}, not the frozen "
-            f"config/default.toml (SHA-256 {config[0]} with LF line endings); acceptance "
-            "runs use it unchanged"
-            for s in sources
-            if s.document["config_sha256"] not in config
-        ]
+        configs = {str(s.document["config_sha256"]) for s in sources}
+        problems += pinned(ACCEPTANCE_CONFIG, configs, "config")
         for name in sorted({s.dataset for s in sources}):
             if not _DATASET_NAME.fullmatch(name):
                 raise ScoringError(f"invalid dataset name {name!r}")
-            path = DATASET_SPECS / f"{name}.toml"
-            digests = text_digests(path)
-            unknown = sorted(
-                {str(s.document["spec_sha256"]) for s in sources if s.dataset == name}
-                - set(digests)
-            )
-            if unknown:
-                problems.append(
-                    f"{path} (SHA-256 {digests[0]} with LF line endings) is not the spec the "
-                    f"{name} runs recorded ({', '.join(unknown)}): it changed since they ran"
-                )
-            else:
-                specs[name] = load_spec(path)
+            runs = [s.document for s in sources if s.dataset == name]
+            spec = DATASET_SPECS / f"{name}.toml"
+            manifest = DATASET_SPECS / f"{name}.manifest.json"
+            spec_problems = pinned(spec, {str(r["spec_sha256"]) for r in runs}, f"{name}: spec")
+            problems += spec_problems
+            manifests = {str(r["manifest_sha256"]) for r in runs}
+            problems += pinned(manifest, manifests, f"{name}: manifest")
+            if not spec_problems:
+                specs[name] = load_spec(spec)
     except (OSError, KeyError, TypeError, AttributeError, ValueError) as exc:
         raise ScoringError(f"cannot check the frozen inputs ({type(exc).__name__} {exc})") from exc
     if problems:
-        raise ScoringError("\n".join(problems))
+        raise ScoringError("\n".join([*problems, FROZEN_HINT]))
     return specs
 
 
@@ -950,7 +974,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         sources = [read_results(path) for path in args.results]
-        verdict = assess(sources, read_frozen(sources))
+        verdict = assess(sources, read_frozen(sources, scorer))
     except ScoringError as exc:
         write_verdict(args.out, {"scorer": scorer, **unscored("refused", str(exc).splitlines())})
         print(f"Refused; nothing was scored:\n{exc}", file=sys.stderr)

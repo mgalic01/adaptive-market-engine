@@ -276,14 +276,26 @@ PYTHONPATH=src python -m crypto_grid_bot.backtest.acceptance \
 ```
 
 `backtest/acceptance.py` turns the `results.json` files of the §4 matrix into the §6
-verdict. It runs no replay and reads no market data. It reads only those files and the
-frozen inputs committed beside it: the dataset specs in `config/datasets` and
-`config/default.toml`. Every run must have recorded their hashes (`spec_sha256`,
-`config_sha256`), so a batch run on a tuned copy of either is refused, however well its
-files agree. A hash of either line-ending form is accepted, since Git checks the same
-files out with LF on Linux and CRLF on Windows. It prints a table and writes the verdict as JSON, with every figure behind
-it and the scorer's own commit and source hash. The JSON numbers are exact: a decimal
-where it terminates, otherwise `p/q`.
+verdict. It runs no replay and reads no market data. Besides those files it reads only
+the frozen inputs, which every run must match:
+
+- **The code.** Each run must record a clean `code_commit`, the same for every run, and
+  a `code_sha256` equal to the scorer's own source identity. The scorer must run from
+  that same clean commit.
+  - Variant runs and `--trend-benchmark` runs record both anyway. A plain V0 run records
+    them only with `--record-commit`.
+  - So run the whole batch with `--record-commit` from one clean checkout of the frozen
+    commit, and score it from that same checkout.
+- **The committed files.** `config/default.toml`, and each window's dataset spec and
+  manifest in `config/datasets`, must hash to the `config_sha256`, `spec_sha256` and
+  `manifest_sha256` each run recorded.
+  - A batch run on a tuned copy of any of them is refused, however well its files agree.
+  - Either line-ending form is accepted, since Git checks the same files out with LF on
+    Linux and CRLF on Windows.
+
+It prints a table and writes the verdict as JSON, with every figure behind it and the
+scorer's own commit and source hash. The JSON numbers are exact: a decimal where it
+terminates, otherwise `p/q`.
 
 - **Inputs.** Pass one run per variant and window. Every `run` writes the ungated V0
   rows that C6 compares against, and D comes from V0's file (`run --trend-benchmark`).
@@ -292,10 +304,11 @@ where it terminates, otherwise `p/q`.
     integrity rules `drift-tolerance-v1`;
   - the primary fees (maker 0, taker 0.0009) and §4's slippage, participation, spread
     and capital, with no fill trigger;
-  - the frozen config and dataset specs, and one manifest per window.
+  - the frozen code and committed files above.
 
   Anything else is refused with exit code 2, and nothing is scored: a sensitivity run,
-  an unknown variant, the same run twice, or a changed config or dataset spec.
+  an unknown variant, the same run twice, another commit or code, or a changed config,
+  dataset spec or manifest.
 - **The verdict file.** `--out` never keeps an earlier verdict. Until a run finishes it
   holds "not scored", and a refused run leaves "refused" there with the reasons. Neither
   names a winner. `--out` may not be one of the results files.
