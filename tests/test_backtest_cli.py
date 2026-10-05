@@ -1,4 +1,5 @@
-"""R1: integrity failures must invalidate verify/run and never reach replay."""
+"""R1: integrity failures must invalidate verify/run and never reach replay; a traded
+pair's own failure excludes only that pair-window (spec v1 §5)."""
 
 import contextlib
 import io
