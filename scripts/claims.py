@@ -985,6 +985,11 @@ def _command_env(prefix: list[str], exported: dict[str, str], removed: set[str])
     return env
 
 
+def _absolute(cwd: str, path: str) -> str:
+    """``path`` as seen from ``cwd``, normalised, so two spellings of one file match."""
+    return os.path.normpath(os.path.join(cwd, path))
+
+
 def _is_git(word: str) -> bool:
     """`git`, or one of git's own commands run directly (`/usr/lib/git-core/git-push`,
     which pushes without the `git` dispatcher; Codex review of #159)."""
@@ -1075,16 +1080,22 @@ def find_targets(
         return _unknown(root, "a command nested too deep to read")
     command, bodies = heredocs(command)
     targets: list[Target] = []
-    executed: set[str] = set()  # files the line runs: `bash run`, `. ./run`, `./run`
+    # The files the line runs (`bash run`, `. ./run`, `./run`), and the directory each
+    # here-document's command runs in, so that a file written there and run from
+    # elsewhere is the same path (Codex review of #159: `cd /tmp; cat > run <<EOF
+    # ...; bash /tmp/run`).
+    executed: set[str] = set()
+    heredoc_dirs: list[str] = []
     removed: set[str] = set()  # variables the line takes out of the environment
     variables: dict[str, str] = {}  # the shell variables the line sets
     exported: dict[str, str] = {}  # what `export` puts in later commands' environment
     for segment in segments(command):
+        heredoc_dirs += [cwd] * sum(1 for _ in _heredoc_operators(segment, 0, len(segment)))
         words = drop_redirections(split_words(segment))
         if words[:1] == ["source"] or (posix and words[:1] == ["."]):
             # They run a file, or what they read from their input (`source <(...)`);
             # PowerShell's `.` runs the command after it, which is read as before.
-            executed.update(os.path.normpath(w) for w in words[1:2])
+            executed.update(_absolute(cwd, w) for w in words[1:2])
             targets.extend(_run_time_code(words[0], words[1:], segment, command))
             continue
         toks = unwrap(words)
@@ -1112,9 +1123,9 @@ def find_targets(
             continue
         exe = _exe(toks[0])
         if "/" in toks[0] or "\\" in toks[0]:
-            executed.add(os.path.normpath(toks[0]))  # `./run`, `/tmp/run`
+            executed.add(_absolute(cwd, toks[0]))  # `./run`, `/tmp/run`
         if exe in SHELLS or CLIENT_VERSION_RE.sub("", exe) in INTERPRETERS:
-            executed.update(os.path.normpath(a) for a in toks[1:] if not a.startswith("-"))
+            executed.update(_absolute(cwd, a) for a in toks[1:] if not a.startswith("-"))
         if exe != "git" and _is_git(exe):
             exe, toks = "git", ["git", exe[4:], *toks[1:]]
         base = _env_dir(words, cwd)
@@ -1228,9 +1239,10 @@ def find_targets(
             # prints), but runs `$x` in a POSIX shell.
             targets.extend(_unknown(root, f"{toks[0]} runs a command known only at run time"))
     inners = substitutions(command)
-    for body, quoted, readers, written in bodies:
+    for index, (body, quoted, readers, written) in enumerate(bodies):
         kinds = {_reader_kind(words) for words in readers}
-        if written & executed:
+        where = heredoc_dirs[index] if index < len(heredoc_dirs) else cwd
+        if {_absolute(where, path) for path in written} & executed:
             # Written to a file that a later command runs (`cat > run <<EOF ...; bash
             # run`): the body is read as that command's code (Codex review of #159).
             kinds.add("run")

@@ -489,6 +489,9 @@ class TargetTest(unittest.TestCase):
                 "cat > /tmp/run <<'EOF'\ngh pr merge 5\nEOF\nbash /tmp/run",
                 "cat <<'EOF' > run.sh\ngh pr merge 5\nEOF\n. ./run.sh",
                 "tee x.sh <<'EOF' >/dev/null\ngh pr merge 5\nEOF\nchmod +x x.sh && ./x.sh",
+                # Codex review of #159: the same file, written and run from elsewhere.
+                "cd /tmp; cat > run <<'EOF'\ngh pr merge 5\nEOF\nbash /tmp/run",
+                "cat > run <<'EOF'\ngh pr merge 5\nEOF\ncd sub; bash ../run",
             ):
                 with self.subTest(cmd=cmd):
                     self.assertIn(5, self.prs(cmd))
