@@ -267,6 +267,95 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
 - `transient_pauses` counts any frame the engine rejected as stale or out of order;
   with correct chronology it must be 0.
 
+## Acceptance scoring (spec v1 §6)
+
+```bash
+PYTHONPATH=src python -m crypto_grid_bot.backtest.acceptance \
+    data/backtests/verify-2024h1/<stamp>/ data/backtests/practice-2022/<stamp>/ ... \
+    --out data/acceptance/verdict.json
+```
+
+`backtest/acceptance.py` turns the `results.json` files of the §4 matrix into the §6
+verdict. It runs no replay and reads no market data. Besides those files it reads only
+the frozen inputs, which every run must match:
+
+- **The code.** Each run must record a clean `code_commit`, the same for every run, and
+  a `code_sha256` equal to the scorer's own source identity. The scorer must run from
+  that same clean commit.
+  - Variant runs and `--trend-benchmark` runs record both anyway. A plain V0 run records
+    them only with `--record-commit`.
+  - So run the whole batch with `--record-commit` from one clean checkout of the frozen
+    commit, and score it from that same checkout.
+- **The committed files.** `config/default.toml`, and each window's dataset spec and
+  manifest in `config/datasets`, must hash to the `config_sha256`, `spec_sha256` and
+  `manifest_sha256` each run recorded.
+  - A batch run on a tuned copy of any of them is refused, however well its files agree.
+  - Either line-ending form is accepted, since Git checks the same files out with LF on
+    Linux and CRLF on Windows.
+
+It prints a table and writes the verdict as JSON, with every figure behind it and the
+scorer's own commit and source hash. The JSON numbers are exact: a decimal where it
+terminates, otherwise `p/q`.
+
+- **Inputs.** Pass one run per variant and window. Every `run` writes the ungated V0
+  rows that C6 compares against, and D comes from V0's file (`run --trend-benchmark`).
+  Each input must be an acceptance run:
+  - engine `drawdown-recovery-v2`, features `price-only-v1` (no `--structure`) and
+    integrity rules `drift-tolerance-v1`;
+  - the primary fees (maker 0, taker 0.0009) and §4's slippage, participation, spread
+    and capital, with no fill trigger;
+  - the frozen code and committed files above.
+
+  Anything else is refused with exit code 2, and nothing is scored: a sensitivity run,
+  an unknown variant, the same run twice, another commit or code, or a changed config,
+  dataset spec or manifest.
+- **The verdict file.** `--out` never keeps an earlier verdict. Until a run finishes it
+  holds "not scored", and a refused run leaves "refused" there with the reasons. Neither
+  names a winner. `--out` may not be one of the results files.
+- **Comparison mask (§5).** A pair-window is excluded for every variant alike in three
+  cases:
+  - a recorded check fails on the market proxy or on an untraded basket symbol, which
+    feed every pair, so every pair is excluded;
+  - the pair's own minute, hourly or daily check fails, which excludes that pair only,
+    even when it also votes in the basket;
+  - the pair fails the filter check (P4: `practice-2022` SOLUSDT).
+
+  Results exist only where the manifest and checksums passed. Every file of a window
+  must give the same mask. A window left with fewer than 2 included pairs gives
+  "insufficient evidence".
+- **Criteria,** over each variant's included runs (both windows, both paths):
+  - C1: `max_drawdown_pct` and `active_max_drawdown_pct` ≤ 10 in every run, and
+    `hard_drawdown_halts` 0.
+  - C2: each path's median return > 0, and the mean over all runs > 0. The return is
+    exact, from `final_total_equity` ÷ `initial_quote`; `return_pct` is a float.
+  - C3: `max_drawdown_pct` < `buy_and_hold_max_drawdown_pct` in every run.
+  - C4: every run valid. A run is invalid by `run`'s own rule (accounting problems,
+    rejected frames, no evaluation bars, an exit left incomplete), or when its whole
+    file failed, such as a checkout that changed during the run. A run missing from the
+    matrix also fails C4.
+  - C5: the mean of `completed_cycles` × 7 ÷ the spec window's days, at least 1. The
+    window is 182 days for `verify-2024h1` and 245 for `practice-2022`.
+  - C6: in at least 60% of runs, return ÷ max(`max_drawdown_pct`, 0.1) beats the
+    ungated baseline's from the same file. A missing or invalid baseline counts against.
+  - R1, reported only: 5 ÷ the mean monthly return fraction, where a run's monthly
+    return is its window return ÷ the window's calendar months. It is "not reachable" at
+    or below 0.
+- **Verdict.** A variant passes only if all of C1–C6 pass.
+- **Selection.** It runs only over the whole §4 matrix: both windows, all eleven
+  variants and no missing run. Anything less gives "incomplete matrix".
+  - It follows §6 steps 1–5. The means are rounded to 6 decimals, half away from zero,
+    before any comparison, and the 0.25-point tie set is inclusive.
+  - D is never selected. E is not eligible until Codex has reviewed it (`E_ELIGIBLE` in
+    the module).
+  - The outcome is a winner, "no winner", "insufficient evidence" or "incomplete
+    matrix". C7 is not evaluated: it is unsettled and selects nothing.
+- **Limits.**
+  - The drawdowns in `results.json` are floats rounded from exact Decimals. The scorer
+    compares them exactly as written.
+  - The mask is derived here until the runner writes it into the results.
+  - The reserved window cannot be scored yet, because `load_spec` refuses months after
+    2024-12.
+
 ## Known limitations of harness v1
 
 - **Survivorship:** `verify-2024h1` trades BTC and ADA, which still exist today. The
