@@ -6,10 +6,28 @@ version (v2), and results under v1 stay reported. **No strategy code exists for 
 variants yet.** This document fixes what will be built and how it will be judged,
 *before* any variant is run.
 
+**Test-plan amendment (amendment 4, owner decisions of 2026-10-05,
+[record](reviews/2026-10-05-claude-owner-decisions-test-plan.md)):**
+- V2 and a full stack, C+F+G+H+V2, join v1 as registered variants. V2's two behaviours
+  beyond V0's restrictions are a fourth named exception (§3, §4).
+- The matrix runs in two stages: stage 1 on the two current windows, with daily history
+  from 2020-05; stage 2 on two long windows (§4). A variant must pass both, and the
+  winner is ranked on 2017–2024 (§6).
+- Stage 2 runs on stage 1's strategy code. Only the long-window data handling may land
+  between the stages, and it must leave every stage-1 result unchanged. The only
+  exceptions are provenance and the new mask-report fields, which must be empty (§6).
+- Hour-level masking and eight more data rules apply (§5).
+- C2 and the selection use compound annualised returns, and `N_family` grows (§6).
+
+Where the owner accepted a reading of Claude's rather than choosing the words himself,
+the text says so. The full stack's combination order (§3) remains a reading open to
+Codex's and Bob's review. Whether stage 2 also runs the reported-only sensitivities is
+left for the owner to decide later; they decide nothing.
+
 The scope is paper trading and historical replay only. Nothing here authorises live
 trading, API keys or withdrawals. The default risk limits (3% daily pause, 8% soft and
 12% hard drawdown, amended by the drawdown recovery of **amendment 1** in §3), the 50/50
-profit vault and the paper-only boundary are unchanged by every **grid** variant (V0, A, B, C, E, F, G, H, C+G, C+H). The benchmark D is the one
+profit vault and the paper-only boundary are unchanged by every **grid** variant (V0, A, B, C, E, F, G, H, C+G, C+H, V2, C+F+G+H+V2). The benchmark D is the one
 labelled exception (§3 D): it is a replay-only calculation with its own sizing and no
 risk controls or vault, and it never touches persisted paper state.
 
@@ -45,7 +63,7 @@ fills, for both the strategy and buy-and-hold.
 | P5 | Carried nits: `--maker-fee`/`--taker-fee` use `is not None`, so an empty value is rejected; `replay()` asserts the order book is empty before wrapping it for request counting. | Automated reviews on PR #14. |
 | P6 | **P&L reconciliation:** realised P&L by sell type, plus unrealised P&L of the remaining inventory at the final mark, must equal the final total equity minus the initial capital. | Codex (PR #15): attribution must reconcile with the account. |
 | P7 | **Completed-cycle count (for C5):** a completed cycle is a grid sell (a child `…/sell` order placed when its buy filled completely) that itself fills completely. It is reported per run and per week. It is a count only, independent of the P1 P&L-by-exit-reason and the average-cost resting-sell attribution, and neither of those counts cycles. | Codex (PR #16): the metric must be defined before it is promised. |
-| P8 | **Data for G and H:** BTCUSDT funding-rate archives (checksummed, in the manifest), and daily history from the month of the most recent halving before each window (P3 extended: 2020-05 for both development windows, 2024-04 for the reserved window). The halving timestamps are fixed constants in §3 H. | Needed by G and H. |
+| P8 | **Data for G and H:** BTCUSDT funding-rate archives (checksummed, in the manifest), and daily history from the month of the most recent halving before each window (P3 extended: 2020-05 for both development windows, 2024-04 for the reserved window). The halving timestamps are fixed constants in §3 H. **Owner decision 2026-10-05 (test plan):** both development windows take daily history from 2020-05, as planned here. Their dataset specs change in a separate PR, so their fingerprints change and earlier results are not compared directly. The stage-2 windows (§4) cannot meet this row: Binance's archives start in 2017-08, after the 2016 halving, and its funding archives in 2020-01. G and H3 therefore fail closed in those early years (§5, rule 9). | Needed by G and H. |
 
 ## 3. Variants
 
@@ -57,21 +75,45 @@ common to all:
   valid replay observation at or after 00:00:00 UTC** of the next day, never within the
   bar that produced it. A rejected or stale frame never executes a signal; the next
   valid observation does.
-- For every grid variant (V0, A, B, C, E, F, G, H, C+G, C+H), every existing V0 control keeps its trigger
+- For every grid variant (V0, A, B, C, E, F, G, H, C+G, C+H, V2, C+F+G+H+V2), every existing V0 control keeps its trigger
   and deadline: emergency exit, hard-drawdown halt, daily-loss pause, soft-drawdown
   reduction, range exit (6 h), drain and eligibility pauses. **No variant delays,
   suppresses or clears any of them**, and none changes a risk limit, the allocation
   policy or the profit vault. A variant can only add restrictions (fewer buys, an
-  earlier exit) or add an exit with its own deadline. There are exactly **three named
-  exceptions**, each confined to the one control stated:
+  earlier exit) or add an exit with its own deadline. There are exactly **four named
+  exceptions**, each confined to the controls stated. There were three until the owner
+  added V2's on 2026-10-05.
   - **E** may delay the **range exit only**, from 6 h to at most 12 h after `t0`, under
     the rules in §3 E. It never delays any other control.
   - **H3** may lower the **opportunity-score minimum for new grids only**, from 0.70 to
     0.60, under the rules in §3 H. Every other entry check still applies.
   - **D** is a benchmark without these controls (§3 D).
+  - **V2** may move two things that V0 controls read, in either direction. It does so
+    through its frozen rules ([pre-registration](STRUCTURE_PREREGISTRATION.md)), with no
+    change to any control's code:
+    - **Eligibility pauses.** Its sixth regime vote (its rules 10 and 11) changes the
+      score and the dispersion the regime label is drawn from (`regime.py` L126–135).
+      So it can change whether a frame is eligible, and an ineligible frame starts V0's
+      eligibility pause (`runner.py`, the eligibility branch of `PaperSimulator._step`).
+      V2 can therefore keep a grid running where V0 would pause it, or pause where V0
+      would not. Like H3, it can loosen an entry gate (§3 H). The recovery
+      confirmations, the soft-drawdown rebase and the automatic restart wait for
+      eligible frames, so they can come earlier or later.
+    - **The range exit's band.** A sell target raised to resistance above the top level
+      becomes the grid's upper bound (its rule 14, step 7; `runner.py`
+      `PaperSimulator._open_grid`). The
+      6-hour range exit therefore watches a wider band above the grid.
 
-  A declared combination (C+G, C+H) inherits only the exceptions of its parts: C+H
-  inherits H3's, and no combination inherits E's.
+    V2 changes no risk limit and no other control.
+    - **The owner's decision (2026-10-05):** "Name it a 4th exception", with the option
+      text "Record both as V2's named exceptions, in the same way as E's and H3's. V2's
+      frozen rules stay exactly as built and tested; the spec simply states openly what
+      V2 is allowed to do."
+    - **Not chosen:** "Make V2 only restrict" and "Take V2 out of v1 again".
+
+  A declared combination (C+G, C+H, C+F+G+H+V2) inherits only the exceptions of its
+  parts: C+H inherits H3's, the full stack inherits H3's and V2's, and no combination
+  inherits E's.
 
   **Amendment 1 supersedes this rule for two controls only:** the soft-drawdown
   reduction and the hard-drawdown halt. Their recovery is changed in **V0 itself**
@@ -848,26 +890,166 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   opportunity score minimum is lowered by 0.10 (0.70 → 0.60) for **new grids only**.
   - Every other regime, eligibility, liquidity, spread and risk check still applies.
   - H3 never changes a risk limit.
-  - It is the only mechanism in v1 that loosens an entry gate, and it is reported
-    separately (grids opened only because of H3, and their P&L).
+  - It is one of two mechanisms in v1 that can loosen an entry gate. The other is V2's
+    regime vote, under V2's fourth exception (§3 common rule; §3 V2). *(Until the
+    test-plan amendment of 2026-10-05 this line said H3 was the only one.)* H3 is
+    reported separately: grids opened only because of H3, and their P&L.
 - **`m` in [0, 18) or ≥ 48:** no change from V0.
 - **Runs:** H on its own (V0 + H), and **C + H** as a declared interaction.
 - **Reported:** the phase of every evaluated bar, and the H2 and H3 activations.
+
+### V2: market structure (test-plan amendment, owner decision 2026-10-05)
+- **What it is:** V0 with the `--structure` switch. That is the V2 layer frozen in
+  [`STRUCTURE_PREREGISTRATION.md`](STRUCTURE_PREREGISTRATION.md): 15 rules and settings,
+  labelled `price-only-v1+structure-v2`. It adds a sixth regime vote, structure
+  alignment, and sets sell targets just below resistance (D19). Nothing else differs
+  from V0.
+- **Status:** a registered v1 variant, eligible for selection. Earlier on the same day
+  D20 had kept it out of v1. The owner's test-plan decision ("Everything, one batch")
+  reverses that, and the pre-registration records the reversal.
+- **Rules:** the pre-registration's, unchanged. This spec adds no V2 rule. Changing one
+  is a re-registration under that document's "Changing a frozen rule". After any V2
+  result has been seen, such a change is one more trial in `N_family`.
+- **Exceptions:** the fourth named exception of the §3 common rule (above), by the
+  owner's decision of 2026-10-05.
+- **Data:** V0's, plus daily bars from the dataset's `daily_warmup_start` (its rule 8).
+- **C6 baseline:** the ungated V0, as for every variant. A `--structure` run's ungated
+  rows are the ungated V0 baseline.
+- **Reporting of its gate-loosening.** Unlike H3's, it has no separate report: v1
+  requires no count of the grids opened only because of the sixth vote.
+  - Its effect shows only in V2's results beside V0's and the ungated baseline's in the
+    same runs, and in the full stack's interaction reporting.
+  - A separate count would need V0's five-signal label computed beside V2's on every
+    frame.
+  - This is Claude's reading of the spec as it stands, from Codex's review of #168,
+    and it is open to the owner.
+- **Runs:** V2 alone, and inside the full stack.
+
+### The full stack: C+F+G+H+V2, a declared combination (test-plan amendment, owner decision 2026-10-05)
+- **Composition:** V2 (`--structure`) + A (trend switch) + B (inventory cap), together
+  C, + F (order flow) + G (funding) + H (cycle). Each part is exactly as its own section
+  and the pre-registration define it, and no parameter changes.
+- **E is not in it.** E stays a single variant, run alone. No combination inherits its
+  exception.
+- **Reported as an interaction,** like C. It is not claimed as a single mechanism. The
+  single variants, run in the same batch, show which parts carry it.
+- **Exceptions:** only its parts', which are H3's and V2's.
+- **How the parts combine.** This is Claude's reading of the sections above and the code
+  on main. It was not among the readings put to the owner, and it is open to Codex's and
+  Bob's review before the freeze, like D19's details.
+  - **New grids.** A new grid opens only when every part allows it:
+    - A is in Up with no running Down sequence;
+    - F's `flow_block` is off;
+    - G does not block;
+    - H2 does not block;
+    - the entry check passes, with H3 able to relax it and V2's regime vote feeding it.
+  - **At grid open,** V2 first sets each buy level's target and leaves out the levels
+    that cannot sell below resistance and clear costs. B's cap then places the remaining
+    buys from the highest price down. This is the order `_open_grid` already applies to
+    C with `--structure` (`runner.py` `PaperSimulator._open_grid`).
+  - **Exits.** Each part keeps its own exit rules. H2's 2-hour threshold, when active,
+    applies to the grid's bounds as V2 sets them. A's same-step labelling ranks the
+    combined exits. F's fragment sells use the cancelled buy's target as V2 set it.
+- **Data:** the union of its parts' needs: daily bars (A, H, V2), BTCUSDT funding (G)
+  and taker-buy volume (F).
+- **Runs:** like every variant, in every window, on both paths, at the primary fees.
 
 ## 4. Matrix
 
 | Axis | Values |
 | --- | --- |
-| Variants | V0, A, B, C, D, E, F, G, C+G, H, C+H |
+| Variants | V0, A, B, C, D, E, F, G, C+G, H, C+H, V2, C+F+G+H+V2 (the full stack; V2 and the full stack added by the owner's decision of 2026-10-05, §3) |
 | Baselines | **Ungated V0** (the replay's `strategy: "ungated"`: V0 without the opportunity gate), for C6 only. It is run everywhere V0 runs and is never eligible for selection. |
 | Fees | **Primary:** Revolut X, maker 0 / taker 0.0009. **Sensitivity** (reported, not used for acceptance): 0.001 / 0.001. **Kraken scenario** (reported only, not used for acceptance, owner decision 2026-10-02, D5): maker 0.0025 / taker 0.0040 (Kraken lowest public tier; fee schedule to be verified before first run). Moving to Kraken as the live venue reopens acceptance from scratch under the applicable fee scenario — v1's verdict does not carry over to a different exchange. |
-| Windows and pairs | `verify-2024h1` (ADA, BTC) and `practice-2022` (BTC, XRP, SOL), each extended with daily warm-up (P3). |
+| Windows and pairs | **Stage 1:** `verify-2024h1` (ADA, BTC) and `practice-2022` (BTC, XRP, SOL), each with daily history from 2020-05 (P3, P8; owner decision 2026-10-05). **Stage 2:** `full-range-2017-2024` (BTC, ETH, XRP; evaluation 2019-01 to 2024-12), scored, and `full-range-2019-2024` (BTC, ETH, XRP; evaluation 2019-07 to 2024-12), run and reported only (§5, rule 6). Both stages run the same strategy code (§6, "Two stages"). |
 | Intrabar paths | `high_first` and `low_first`, both always reported. No path is chosen after seeing results. |
 | Capital | 100 quote units per run, independent per pair. |
 
 - **Unchanged inputs:** slippage 0.05%, assumed spread 0.05% and participation 10%.
 - **Reporting:** every attempted run is reported, including invalid runs, halts and zero
   trades.
+
+**Stage 2 windows: frozen definitions (test-plan amendment, owner decision 2026-10-05;
+frozen after Codex's review of #168).** These are Bob's two full-range datasets. Their
+definitions are frozen here, before any stage-1 result exists. The long-window data
+PR's dataset specs must match these values exactly. Both windows end at 2024-12, the
+development ceiling, and nothing touches 2025 or later.
+
+| Field | `full-range-2017-2024` (scored) | `full-range-2019-2024` (reported only) |
+| --- | --- | --- |
+| `start` (evaluation) | 2019-01 | 2019-07 |
+| `end` | 2024-12 | 2024-12 |
+| Evaluation days (C5, annualisation) | 2,192 | 2,011 |
+| `warmup_start` (hourly) | **2018-06** (corrected from 2018-05) | 2019-01 |
+| `daily_warmup_start` | **2018-06** (corrected from 2018-05) | 2018-07 |
+| Completed daily bars before `start` (P3 needs 200) | 214 | 365 |
+| `traded` | BTCUSDT, ETHUSDT, XRPUSDT | BTCUSDT, ETHUSDT, XRPUSDT |
+| `market_proxy` | BTCUSDT | BTCUSDT |
+| `breadth_basket` | BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, DOGEUSDT, LTCUSDT, LINKUSDT, TRXUSDT | the same nine |
+| `initial_quote`, `fee_rate`, `slippage_rate`, `participation`, `assumed_spread_pct` | 100, 0.001 (overridden by the fee scenarios above), 0.0005, 0.10, 0.05 | the same |
+| BTCUSDT funding archives (G) | every month from 2020-01, where they begin (P8) | the same |
+
+Basket exclusions, in the spec's `[[basket_exclusions]]` form (`from` inclusive, `to`
+exclusive, whole UTC hours). Each listing exclusion ends at the symbol's first candle:
+
+| Symbol | `full-range-2017-2024` | `full-range-2019-2024` | Reason |
+| --- | --- | --- | --- |
+| SOLUSDT | 2018-06-01T00:00Z to 2020-08-11T06:00Z | 2019-01-01T00:00Z to 2020-08-11T06:00Z | listing |
+| DOGEUSDT | 2018-06-01T00:00Z to 2019-07-05T12:00Z | 2019-01-01T00:00Z to 2019-07-05T12:00Z | listing |
+| LINKUSDT | 2018-06-01T00:00Z to 2019-01-16T10:00Z | 2019-01-01T00:00Z to 2019-01-16T10:00Z | listing |
+| TRXUSDT | 2018-06-01T00:00Z to 2018-06-11T11:00Z | none: listed before this warm-up | listing |
+| DOGEUSDT | 2020-02-01T00:00Z to 2020-03-01T00:00Z | 2020-02-01T00:00Z to 2020-03-01T00:00Z | §5 rule 5: the repair rule cannot rescue it |
+| BNBUSDT, LTCUSDT | none: complete from this warm-up | none: complete from this warm-up | — |
+
+**Where each value comes from:**
+- **#156's specs at `65a7eb0`** (`config/datasets/full-range-2017-2024.toml` and
+  `full-range-2019-2024.toml`): `start`, `end`, `traded`, `market_proxy`,
+  `breadth_basket` and the five pricing inputs, for both windows, and 2019–2024's
+  `warmup_start` and `daily_warmup_start`.
+  - The 2017–2024 spec's comments and `purpose` say the evaluation starts in 2018-11.
+    Its `start` value, 2019-01, governs.
+- **#156's manifests at `65a7eb0`,** metadata only: `first_open_ms`, `rows`,
+  `missing_rows` and `status`.
+  - **2017–2024's warm-up.** All 240 daily files of 2017–2024 (BTC, ETH and XRP,
+    2018-05 to 2024-12) are `ok`. The spec's comment that the 2018-05 and 2018-06 daily
+    archives are missing is wrong. The constraint is XRP's listing: its 2018-05 files
+    start on 2018-05-04 (daily: 28 of 31 rows; hourly: from 08:00Z), so a window from
+    2018-05 fails P3's every-day check. Hence 2018-06 for both warm-up fields.
+  - **2019–2024's daily warm-up.** All 78 daily files of 2019–2024 (2018-07 to 2024-12)
+    are `ok`.
+  - **Listing hours** are each symbol's first 1h candle: SOLUSDT 2020-08-11T06:00Z,
+    DOGEUSDT 2019-07-05T12:00Z, LINKUSDT 2019-01-16T10:00Z, TRXUSDT
+    2018-06-11T11:00Z. #156's specs ended these exclusions at month starts instead.
+    #156's 2019–2024 spec had no LINKUSDT exclusion, although its manifest shows 370
+    of 2019-01's 744 hours missing, so that exclusion is added.
+  - **No exclusion needed:** BNBUSDT and LTCUSDT are complete from both warm-ups.
+    TRXUSDT is complete from 2019-01, so its exclusion is unneeded in 2019–2024.
+- **Rules registered here:** DOGEUSDT 2020-02 (§5 rule 5), and the funding archives'
+  start (P8).
+- **Computed:** the day counts.
+
+**After stage 1, only the mechanical application of rules already registered may
+happen:**
+- hour masking (§5 rules 1–4);
+- the 17% eligibility rule;
+- the XRP statistic (rule 8);
+- DOGEUSDT 2020-02 (rule 5);
+- the archive statuses from Bob's fetch.
+
+Any other change to these definitions is a registration change. It is allowed only
+before any stage-1 result exists; after that it is not allowed.
+
+- **Not yet runnable.** They need:
+  - the repair rule in the archive reader and hour-level masking (§5);
+  - Bob's re-fetch with daily and funding archives;
+  - manifests.
+
+  This work may land after stage 1, under the conditions in §6, "Two stages". The code
+  must implement exactly the §5 rules and leave every stage-1 result unchanged, as §6
+  defines it.
+- **Sensitivities:** whether the reported-only sensitivities and fee scenarios above
+  also run in stage 2 is for the owner to decide later (his decision of 2026-10-05).
+  They decide nothing, so the choice cannot move the verdict.
 
 **Sensitivity schedule (owner decision 2026-10-02, D10 — reported only, not used for
 acceptance):** the following sweeps are pre-registered with their values fixed here,
@@ -895,8 +1077,9 @@ missed-fill), and execution delay (timing). The path sensitivity (`high_first` /
 
 ## 5. Validity and the comparison mask
 
-**Comparison mask, fixed before any variant runs.** For each pair-window, the following
-variant-independent checks are run first:
+**Comparison mask, fixed before any variant runs.** For each pair-window, hour-level
+masking runs first (rules 1, 2 and 5 at the end of this section). The following
+variant-independent checks then run against the post-mask expected set (below):
 - the manifest and checksums;
 - the hourly/minute and daily/hourly cross-checks, and, when the market proxy is not a
   traded pair, the completeness of its hourly bars over warm-up and evaluation (every
@@ -911,7 +1094,10 @@ variant-independent checks are run first:
 - **integrity rules `drift-tolerance-v1`** (owner decision via Bob, 2026-09-24): a bar
   whose open, high, low and close match exactly and whose volume differs by at most
   0.1% of Binance's figure is counted as volume drift, not as a failure. Every other
-  difference, and every missing or duplicated bar, stays fatal. The rules' name and
+  difference, and every missing or duplicated bar, stays fatal. *(Since the test-plan
+  amendment of 2026-10-05, a failing hour is masked first and then leaves the expected
+  set, so it no longer fails this check; see "The post-mask expected set", below. A
+  missing or duplicated daily bar stays fatal.)* The rules' name and
   tolerance are written to every `results.json`; `--strict-volume` (`strict-v0`, exact
   volume) stays available as a check. Features read Binance's 1h archive as published,
   so a drifted hour feeds its archive volume (within 0.1% of the minute sum) to the
@@ -922,8 +1108,25 @@ variant-independent checks are run first:
 - warm-up sufficiency;
 - the availability of sourced exchange filters (P4).
 
-A pair-window that fails any of them is **excluded for every variant alike** and listed
-with the reason. Exclusion is per pair-window: a pair can be excluded from one window
+**The post-mask expected set (test-plan amendment, 2026-10-05).** Some hours are masked
+before the checks run:
+- every hour masked under rule 1, 2 or 5 (below);
+- every hour of a pair-month excluded under the 17% rule.
+
+These hours are removed from the expected set of every check above: the proxy's and the
+basket's hourly completeness, the hourly/minute cross-check and the daily/hourly
+cross-check.
+- **A maskable defect** never fails a check and never excludes a pair-window.
+- **A defect that masking does not cover** fails exactly as before. Examples are a
+  manifest or checksum failure, a missing or duplicated daily bar, a short warm-up, and
+  a missing exchange filter.
+- **Scope.** This applies to every window. The current windows have no masked hours, so
+  nothing changes for them.
+- **Provenance.** This is Claude's reading of the owner's masking rules, from Codex's
+  review of #168, and it is open to the owner.
+
+A pair-window that fails any of them, on the post-mask expected set, is **excluded for
+every variant alike** and listed with the reason. Exclusion is per pair-window: a pair can be excluded from one window
 and kept in another. The mask is written to the results before scoring and cannot
 change afterwards. Every current `practice-2022` SOL pair-window fails the filter check
 unless P4 sources historical filters
@@ -938,6 +1141,150 @@ Otherwise the outcome is "insufficient evidence", not a winner.
 
 An invalid run **fails its variant** (C4). A failure in one variant never removes the
 pair for the other variants.
+
+### Hour-level masking and the long-window data rules (test-plan amendment, owner decisions 2026-10-05)
+
+The owner accepted nine rules together ("Accept all nine";
+[record](reviews/2026-10-05-claude-owner-decisions-test-plan.md)). They apply two
+existing rules to every replay, not only to walk-forward folds:
+- Bob's repair rule ([refined parser rule](reviews/2026-09-26-bob-refined-parser-rule.md));
+- the owner's eligibility rule of 2026-09-28: real defects at most 17% of a pair-month's
+  hours, and an exact `Decimal(0)` match on repaired hours
+  ([record](reviews/2026-09-27-claude-eligibility-thresholds.md)).
+
+Rules 1–5 and 7 apply to every window v1 replays, including the one-time 2025–26 run
+(§7 applies §5's rules there). The owner confirmed this on 2026-10-05: "The masking and
+annualisation rules also bind the one-time 2025–26 run." Rules 6, 8 and 9 name their
+windows. Several details go beyond the owner's answers. Each is Claude's reading and is
+marked where it stands, either as accepted by the owner on 2026-10-05 or as from a
+review of #168 and open to him.
+
+1. **Hour-level masking.** An hour of a traded pair in its evaluation months, where the
+   dataset holds both its 1m and its 1h archive, enters the replay only if all of these
+   hold after the repair rule:
+   - **The repair rule.** A row whose close is off the step boundary, whose open is
+     aligned, and which is the file's last row or whose next row opens at
+     `open + step` or later, gets close `open + step − 1`, in memory only.
+   - **Unique bars.** The 1h archive holds exactly one bar for the hour. The 1m archive
+     holds exactly one bar at each of the hour's 60 expected minute timestamps, and
+     none at any other timestamp within the hour. A duplicate, a missing timestamp or
+     an extra timestamp masks the hour; rule 2 is the missing-minute case. This
+     condition is Claude's reading, from Codex's review of #168, open to the owner.
+   - **A match.** Its aggregated minutes match its 1h bar under `drift-tolerance-v1`.
+     If the hour holds a repaired row, the match must be exact (`Decimal(0)`, prices
+     and volume).
+
+   Any other hour is **masked**: its minutes and its 1h bar are dropped, for every
+   variant alike. Masking runs before the comparison-mask checks, which then run against
+   the post-mask expected set (above).
+   - **The reader.** Today's strict parser (`klines.parse_rows`) rejects a whole archive
+     whose rows are duplicated or out of order. The long-window data PR's reader must
+     instead report the hours those rows fall in for masking and keep the rest of the
+     archive, as this rule requires. An archive that still cannot be read leaves all its
+     hours absent. They are then masked, and the month is excluded under the 17% rule.
+   - **Hours with no minute data.** Two kinds of symbol-month have only a 1h archive:
+     - **Untraded symbols:** breadth-basket members that the window does not trade, in
+       every month. An untraded market proxy is treated the same way. No registered
+       window has one, since BTCUSDT is both proxy and traded in all of them.
+     - **A traded pair's hourly warm-up months,** before `start`.
+
+     There an hour enters only if the 1h archive holds exactly one bar for it and that
+     bar is not a repaired row. A repaired hour is masked, since no minutes exist to
+     check it against. The provenance differs by case:
+     - for untraded basket symbols, this is the owner's rule 5;
+     - for traded pairs' warm-up months, it was Claude's reading, which the owner
+       accepted on 2026-10-05 ("Repaired hours in hourly-only warm-up months are
+       masked");
+     - for an untraded proxy, it is Claude's reading, from Codex's review of #168, open
+       to the owner.
+
+     Traded pairs are also basket members, but their evaluation months always have both
+     archives. Those months follow the conditions above, never this branch.
+   - **A masked hour is absent.** Every consumer treats it as it treats a missing hour
+     today:
+     - hourly indicators skip it, and data quality scores it (strategy audit, D13);
+     - V2 reads the last 500 present hourly candles (its rule 7);
+     - E and F count it as missing data, which makes them unavailable (§3 E, F).
+   - **Eligibility.** A pair-month whose real defects exceed 17% of its expected hours
+     is **excluded**: all its hours are masked, and the window stays. That was Claude's
+     reading of "excluded", as rule 5 uses the word, and the owner accepted it on
+     2026-10-05 ("A coin-month over 17% defects has all its hours masked, and the window
+     is kept"). Real defects are the masked hours
+     other than the open-only convention class (eligibility record, decision 4). The
+     eligibility record found every one of its 772 measured pair-months under 17%. It
+     did not count incomplete hours, so the long-window measurement is repeated under
+     these rules.
+   - **Written before scoring.** Every masked hour and excluded pair-month is listed in
+     the comparison mask, which is written before scoring and never changed (above).
+     Each run reports its masked hours, skipped days (rule 3) and fills after a masked
+     span (rule 4).
+2. **Incomplete hours** (fewer than 60 minutes) are masked, not kept.
+3. **Days.** A day containing a masked hour is skipped in P3's 24-hour daily/hourly
+   cross-check, and the skip is counted. Its official 1d bar is kept, because A's SMA
+   refuses gaps (§3 A, D6). Daily bars are never masked.
+4. **Orders across a masked span** stay open and can fill on the next replayed bar.
+   Those fills are flagged and reported.
+   - A masked span is a gap between observations, so the engine's gap rules apply
+     unchanged. Recovery confirmations restart after a gap over
+     `maximum_frame_gap_seconds`. The range-exit clock counts no time across a gap and
+     erases none (`runner.py` `PaperSimulator._track_range`).
+   - C1 and C3 sample only replayed quotes (P2), so both skip a masked span alike.
+5. **Untraded basket symbols' repaired hours are masked.** An untraded basket symbol has
+   only its 1h archive (rule 1, "Hours with no minute data"), so a repaired hour cannot
+   be checked against minutes. Traded pairs are basket members too, but their evaluation
+   months have minutes and follow rule 1's conditions. DOGEUSDT
+   2020-02, which the repair rule cannot rescue (eligibility record, corrections,
+   item 2), is excluded as a documented basket absence in the long specs.
+6. **Only `full-range-2017-2024` is scored** in stage 2. `full-range-2019-2024` is run
+   and reported, not scored, because its evaluation lies inside 2017–2024's. If it falls
+   short of the minimum evidence (above), that decides nothing.
+7. **Returns are annualised** in C2 and the selection, so windows of different lengths
+   weigh fairly. Raw returns are still reported (§6, "Annualised returns").
+8. **XRP below the tick limit.**
+   - **The mechanism.** XRPUSDT's tick is 0.0001.
+     - The replay's quote builder (`replay.py` `bar_quotes`) rounds each synthesized bid
+       down and each ask up to the tick.
+     - On a low-priced bar, that can widen a quote beyond the 0.15% spread limit. The
+       engine then rejects the frame (`runner.py` `PaperSimulator._validate_frame`,
+       where `(ask − bid) ÷ ask` is
+       above the limit; §8, D8).
+     - A rejected frame makes a run invalid. P4 found the same mechanism for SOL.
+   - **The rule.** If Bob's measurement confirms that XRP's price breaks the tick limit
+     in a window, XRP's pair-window is excluded there for every variant. Otherwise XRP
+     stays.
+   - **The statistic.** This is Claude's reading of the owner's accepted rule, from
+     Codex's review of #168, and it is open to the owner. It replaces an earlier
+     reading, "any 1m low below 2/15 USDT", which was stronger than the owner's rule.
+     It is fixed before Bob measures.
+     - XRP is excluded from a window if any quote that `bar_quotes` synthesizes from the
+       window's replayed 1m bars has a spread `(ask − bid) ÷ ask` above the 0.15%
+       maximum. The quotes use the dataset's assumed spread and the replay's tick. This
+       is exactly the engine's rejection condition.
+     - Only the replayed span counts: the evaluation months, after masking. Warm-up
+       minutes are not replayed.
+     - One quote is enough, per window.
+     - Both intrabar paths synthesize the same four quotes per bar, only in a different
+       order, so the test does not depend on the path.
+     - Bob's run measures it with the project's own code.
+     - Consequences, not the rule: for prices on the 0.0001 grid, the open and close
+       quotes (two ticks wide) fail below about 0.13323 USDT, and the high and low
+       quotes (one tick wide) fail below about 0.0667.
+   - **Effect.** In the long windows the exclusion would leave BTC and ETH, the two-pair
+     minimum. Bob measures every window that trades XRP, `practice-2022` included.
+9. **G and H with no data in their early years,** as §3 G and §3 H already provide.
+   - G is unavailable until three usable funding records exist, and the archives start
+     in 2020-01. Until then it blocks new grids.
+   - H3 needs the ATH since the most recent halving. Binance's daily data starts after
+     the 2016 halving, so H3 cannot act before the 2020-05-11 halving.
+   - H2 needs no ATH and applies as normal.
+
+**The current windows.** In `practice-2022` and `verify-2024h1` these rules mask nothing:
+- Both pass the checks the masks replace. Those checks are fatal today
+  (`INTEGRITY_FIELDS` in `backtest/__main__.py`). Both windows passed them in the
+  2026-09-24 evidence in the integrity bullet above, which was taken after `8fe0cf8`
+  made incomplete hours and missing minutes fatal.
+- None of the 14 months the strict parser rejects (`UNPARSED_MONTHS`, `audit_run.py`)
+  falls in their 1m or 1h months: 2022-04 to 2023-01, and 2023-11 to 2024-06.
 
 ## 6. Acceptance and selection (owner decisions, 2026-09-24)
 
@@ -962,12 +1309,12 @@ included runs (every included pair, window and path):
 | # | Criterion | Source |
 | --- | --- | --- |
 | C1 | **Worst drop,** on two bases in every run. **(a)** The max drawdown of **total equity** (active equity per `Account.equity` plus both reserves) is ≤ **10%** of its running peak. **(b)** The drawdown of **active equity** against the **C1(b) measurement reference** is ≤ **10%**. That reference follows the runtime's reserve-adjusted `risk_high` exactly, including the proportional settlement adjustment and every new active high, but it is never rebased (amendment 1, §3); before amendment 1 the two were the same value. C1(a)'s total-equity peak is a running maximum that is never scaled and never rebased. It is sampled at every pre-fill and post-fill risk evaluation, and **any hard-drawdown halt fails**. Both are measured from peaks, so after growth 10% can exceed 10 quote units. | Owner |
-| C2 | **Makes money on the worse path:** for **each** intrabar path separately, the median return across included runs is > 0 after fees; **and** the mean return across all included runs is > 0. All runs have equal weight, and the median of an even count is the mean of the two middle values. | Owner, with Bob's worse-path rule |
+| C2 | **Makes money on the worse path:** for **each** intrabar path separately, the median return across included runs is > 0 after fees; **and** the mean return across all included runs is > 0. All runs have equal weight, and the median of an even count is the mean of the two middle values. Since 2026-10-05 the returns are annualised ("Annualised returns", below the table). | Owner, with Bob's worse-path rule |
 | C3 | **Safer than holding:** in every included run, max total-equity drawdown < that run's buy-and-hold max drawdown (common sampling, P2). A run where buy-and-hold has zero drawdown fails. | Owner (strict) |
 | C4 | **Integrity:** every included run is valid (§5). | Both |
 | C5 | **Minimum activity:** for each included run, its rate = completed cycles (P7) ÷ (evaluation window length in days ÷ 7). The window is `[start of the start month, end of the end month)` in UTC, the same for every run in a dataset, whether or not the run halted. C5 = the arithmetic mean of the per-run rates over all included runs (equal weight), computed exactly (no rounding), and must be **≥ 1**. The ISO-week counter is reported, not scored. The share of bars holding inventory is reported. **C5 and C2 are unchanged for trend-gated variants (owner decision 2026-10-02, D4):** a variant that is idle during downtrends correctly scores zero activity and zero return on those runs; the Down-period readout (D3, above) answers the bounce question separately and is the right diagnostic for that period, not a relaxed criterion. | Owner's compromise on Bob's 10%-invested rule |
 | C6 | **The gate earns its place:** in at least **60%** of included runs, the variant's return ÷ max(max drawdown, 0.1 percentage points) exceeds that of the **ungated V0 baseline** in the same pair, window and path. | Bob |
-| C7 | **Survives the family — adopted in principle, not yet binding.** The owner decided on 2026-09-27 to replace the deflated Sharpe ratio, which has no content on this family ([why](reviews/2026-09-27-claude-dsr-coherence.md)), with a Holm step-down over the disclosed family at family-wise 5%, evaluated on the selected winner only and gating the reserved-window run. The statistic is the one-sided p-value `p = 1 − Φ( SR · √(T_eff − 1) / √(1 − γ3·SR + (γ4 − 1)/4 · SR²) )` on each variant's worse path, using the series, moment conventions and `T_eff` of [draft spec part 3](reviews/2026-09-27-claude-dsr-return-series.md) §8 with `SR0` = 0. **C7 does not gate anything until all three of the following are settled and recorded here** (Codex, 2026-09-27): (a) the return series C7 is computed on — §4 defines two windows, while part 3 requires 25 walk-forward folds whose geometry is still a proposal, and the two give different `T`, `SR` and `T_eff`; (b) the family, since `N_family` = 17–18 and 21–22 (18 and 22 used as working figures, since R1's code state is unknown; the coherence record's 16–17 and 20–21 plus V0 on `drawdown-recovery-v2`, which amendment 2 counts as one further registered trial) are **floors** (unpublished inspected runs are known to exist), and a Holm cutoff from a floor does not control the stated error rate — either the missing trials are accounted for in the register or a conservative budget is preregistered; (c) Codex's and Bob's acknowledgment, since all three agents agreed to the DSR (Bob, PR #123 review, 2026-09-27: "I agree with retiring the frozen DSR in favor of the Holm step-down (C7) once settled", an acknowledgment conditional on C7 being settled; Codex's is owed). **Until C7 is settled and acknowledged, or the owner explicitly waives it in writing, nothing runs on the reserved window.** The owner's decision was that a multiple-testing test gates that run, so an unresolved C7 is a hold on the run, not permission to proceed under six criteria. C1–C6 remain the binding set for development selection in the meantime. | Owner in principle; specification open |
+| C7 | **Survives the family — adopted in principle, not yet binding.** The owner decided on 2026-09-27 to replace the deflated Sharpe ratio, which has no content on this family ([why](reviews/2026-09-27-claude-dsr-coherence.md)), with a Holm step-down over the disclosed family at family-wise 5%, evaluated on the selected winner only and gating the reserved-window run. The statistic is the one-sided p-value `p = 1 − Φ( SR · √(T_eff − 1) / √(1 − γ3·SR + (γ4 − 1)/4 · SR²) )` on each variant's worse path, using the series, moment conventions and `T_eff` of [draft spec part 3](reviews/2026-09-27-claude-dsr-return-series.md) §8 with `SR0` = 0. **C7 does not gate anything until all three of the following are settled and recorded here** (Codex, 2026-09-27): (a) the return series C7 is computed on — §4 defines two windows (since the test-plan amendment of 2026-10-05, two stages and four windows), while part 3 requires 25 walk-forward folds whose geometry is still a proposal, and the two give different `T`, `SR` and `T_eff`; (b) the family, since `N_family` = 17–18 and 21–22 (18 and 22 used as working figures, since R1's code state is unknown; the coherence record's 16–17 and 20–21 plus V0 on `drawdown-recovery-v2`, which amendment 2 counts as one further registered trial; since the test-plan amendment of 2026-10-05, 19–20 and 24–26 with V2, the full stack and the forward ungated V0 baselines, which the sensitivity figure 21–22 omitted (Codex, #168), and at least 21–22 and 26–28 once V2's prior trials are counted, as "The family after the test-plan amendment" below shows) are **floors** (unpublished inspected runs are known to exist), and a Holm cutoff from a floor does not control the stated error rate — either the missing trials are accounted for in the register or a conservative budget is preregistered; (c) Codex's and Bob's acknowledgment, since all three agents agreed to the DSR (Bob, PR #123 review, 2026-09-27: "I agree with retiring the frozen DSR in favor of the Holm step-down (C7) once settled", an acknowledgment conditional on C7 being settled; Codex's is owed). **Until C7 is settled and acknowledged, or the owner explicitly waives it in writing, nothing runs on the reserved window.** The owner's decision was that a multiple-testing test gates that run, so an unresolved C7 is a hold on the run, not permission to proceed under six criteria. C1–C6 remain the binding set for development selection in the meantime. | Owner in principle; specification open |
 | R1 | **Economics, reported only:** the capital at which the mean monthly return would cover €5/month of hosting (5 ÷ mean monthly return fraction), or "not reachable" if the mean return is ≤ 0. Running on the owner's own PC costs €0 in hosting. | Bob, as information |
 
 *Note on units (added 2026-09-27, clarification only; no criterion changes).* Every
@@ -976,6 +1323,32 @@ replay result is in USDT quote units with no EUR conversion
 pair (§4). R1's hosting cost is in euros. R1's arithmetic is sound because a monthly
 return *fraction* has no unit, but it assumes the USDT return equals the EUR return,
 i.e. it ignores EUR/USDT exchange-rate movement over the month.
+
+**Annualised returns (test-plan amendment, owner decision 2026-10-05, §5 rule 7).** In C2
+and in the selection, each run's return is annualised so that windows of different
+lengths weigh fairly:
+
+`annualised = (final total equity ÷ initial capital)^(365.25 ÷ d) − 1`
+
+- **`d`** is C5's window length in days (`[start of the start month, end of the end
+  month)`, the same for every run in a dataset): 245 for `practice-2022`, 182 for
+  `verify-2024h1`, 2,192 for `full-range-2017-2024` and 2,011 for
+  `full-range-2019-2024`.
+- **Units.** Percentage points are this fraction × 100. Annualising never changes a
+  run's sign.
+- **Final equity of 0 or less.** The annualised return is −100%. The power is undefined
+  there. Spot-only paper equity cannot go negative, but the case is defined anyway.
+- **The tie band.** The selection's 0.25-point band (step 2) applies to the mean of the
+  runs' compound-annualised returns, in percentage points.
+- **Provenance of these two rules.** Both are Claude's readings, from the automated
+  review of #168, and both are open to the owner.
+- **Raw returns** are still reported beside the annualised ones.
+- **Not annualised:** C6 and R1 keep raw returns, since the owner's rule names only C2
+  and the selection.
+- **Decided.** Compounding was Claude's reading of "annualised". The owner accepted it
+  on 2026-10-05: "Returns are annualised with compounding." Simple scaling,
+  `r × 365.25 ÷ d`, was the alternative. The 365.25-day year and `d` are the details of
+  that reading, as written above.
 
 **Down-period readout (owner decision 2026-10-02, D3 — reported only, not scored):**
 
@@ -1005,15 +1378,22 @@ but it does not change any criterion, any ranking or any acceptance decision.
 
 **Selection (deterministic):**
 1. The **eligible set** is the passing variants among V0, A, B, C, E (only after Codex's
-   implementation review, §3 E), F, G, C+G, H and C+H. D is excluded
-   before ranking.
-2. Let `M` be the highest mean return in the eligible set, in percentage points rounded
+   implementation review, §3 E), F, G, C+G, H, C+H, V2 and C+F+G+H+V2 (the last two
+   added 2026-10-05). How the two stages combine into "passing" is set under "Two
+   stages", below. D is excluded before ranking.
+2. Let `M` be the highest mean return in the eligible set, annualised since 2026-10-05
+   ("Annualised returns", above), in percentage points rounded
    to 6 decimals. The **tie set** is every eligible variant with mean return ≥ `M − 0.25`
-   (inclusive).
+   (inclusive). *(Since 2026-10-05, the mean is taken over the runs' compound-annualised
+   returns, and the 0.25-point band applies to that value. This is Claude's reading,
+   from the automated review of #168, and it is open to the owner.)*
 3. Within the tie set, pick the lowest mean total-equity max drawdown, rounded the same
    way.
-4. If still tied, pick the first in the fixed simplicity order V0, A, B, F, G, H, E, C,
-   C+G, C+H.
+4. If still tied, pick the first in the fixed simplicity order V0, A, B, F, G, H, E, V2,
+   C, C+G, C+H, C+F+G+H+V2. *(V2's and the full stack's places were added 2026-10-05.
+   They were Claude's reading, which the owner accepted that day: V2 comes last among
+   the single variants because it changes two things at once, and the full stack comes
+   last because it combines six mechanisms.)*
 5. D **cannot be selected.** C1–C6 are still computed and reported for D, for
    information only, next to the winner.
 6. **C7** selects nothing and does not change the ranking. Once settled it is evaluated
@@ -1024,6 +1404,117 @@ but it does not change any criterion, any ranking or any acceptance decision.
 reserved window, and the report says so. A development winner that passes C1–C6 does not
 by itself open the reserved window: C7 must first be settled and passed, or explicitly
 waived by the owner (see its row).
+
+### Two stages (test-plan amendment, owner decision 2026-10-05)
+
+- **Stage 1** runs the §4 matrix on `practice-2022` and `verify-2024h1`, with daily
+  history from 2020-05. C1–C6 are computed over its included runs as above. Its report
+  is an **early read**: it says which variants pass in stage 1, and it names no winner.
+- **Stage 2** runs every variant, the ungated V0 baseline and D, on both paths at the
+  primary fees, on `full-range-2017-2024` (scored) and `full-range-2019-2024` (reported
+  only). Whether the reported-only sensitivities also run there is for the owner to
+  decide later (§4).
+  - **Same strategy code.** Stage 2 runs on stage 1's strategy code, config and spec
+    version. Between the stages, the only code that may land is the long-window data
+    handling: the repair rule moved into the reader, and the hour-level masking.
+
+    Anything else the long windows need must therefore already be in stage 1's code.
+    That includes G running where no funding archive exists before 2020-01 (§5,
+    rule 9).
+  - **Data-handling conditions.** That code must implement exactly the §5 rules
+    registered here, and it must leave every stage-1 result unchanged. Codex and Bob
+    verify this before stage 2 runs.
+    - **The check.** Re-run stage 1's windows on stage 2's code. The whole of stage 1's
+      `results.json`, every metric, trade and order included, must come out identical,
+      except for the fields below.
+    - **What the comparison leaves out.** Only these fields:
+      - the provenance fields `code_commit` and `code_sha256`;
+      - the new mask-report fields of §5 rule 1 (masked hours, skipped days, fills
+        after a masked span). The long-window data PR names them, and they must be
+        empty or zero on every stage-1 run.
+    - **Any other new or renamed field breaks the identity.**
+    - **Why this is a reading.** It is Claude's reading of the owner's
+      "byte-identical", from the automated review of #168, and it is open to the owner.
+      Taken literally, byte-identity could not hold once the mask-report fields exist.
+  - **Datasets.** The long windows' definitions are frozen in §4 now. The long-window
+    data PR's dataset specs must match them exactly, and the manifests record Bob's
+    fetch. Both are in place before stage 2 runs, and they need not exist before
+    stage 1. After stage 1, only the mechanical application of registered rules may
+    change what the windows contain (§4).
+  - **The owner's decision (2026-10-05):** "Same strategy code", with the option text
+    "Stage 1 runs as soon as the variants and scorer are merged. The masking and repair
+    code lands afterwards. It must follow exactly the rules fixed today, and must leave
+    every stage-1 result byte-identical, which Codex and Bob check. Strategy code is
+    identical in both stages. Early read in about a day."
+  - **Not chosen:** "Same commit, byte for byte".
+- **How the stages combine (owner decision 2026-10-05).** A variant enters the eligible
+  set only if it passes C1–C6 in stage 1 (the current windows, as above) **and** in
+  stage 2 (2017–2024, judged on its own and not pooled with the current windows).
+  Selection steps 2–4 then rank those variants on 2017–2024.
+  - **Why nothing is counted twice.** The current windows' evaluations (2022-06 to
+    2023-01, and 2024-01 to 2024-06) lie inside 2017–2024's (2019-01 to 2024-12).
+    Pooling would count those periods twice: in different runs, but over the same
+    prices.
+  - **Chosen:** "Pass both, rank on long", with the option text "A strategy must pass
+    C1–C6 in stage 1 (the current windows) AND in stage 2 (2017–2024, judged on its
+    own). Among those that pass both, the winner is ranked on 2017–2024. Strict, and
+    nothing is counted twice."
+  - **Not chosen:** "Pool all windows".
+- **Outcomes:**
+  - If 2017–2024 keeps fewer than 2 included pairs, the outcome is "insufficient
+    evidence" (§5), whatever stage 1 shows.
+  - If no variant passes both stages, the outcome is "no winner".
+  - The reserved window's gate is unchanged (C7, §7).
+
+### The family after the test-plan amendment (`N_family`, for C7)
+
+This counts under the [coherence record](reviews/2026-09-27-claude-dsr-coherence.md) §3:
+- A trial is one strategy configuration × declared scenario whose result was, or will
+  be, inspected.
+- A configuration changes when a code or parameter change can alter a decision or a
+  fill.
+- Seeds, intrabar paths, pairs and folds add nothing.
+
+| Step | Central | Sensitivity |
+| --- | ---: | ---: |
+| Before (C7 row): 6–7 retrospective gated states + V0 on `drawdown-recovery-v1` + V0 on `drawdown-recovery-v2` + 9 forward (A, B, C, E, F, G, C+G, H, C+H). The sensitivity budget adds 3 ungated retrospective states and D | 17–18 | 21–22 |
+| + the forward ungated V0 baselines, which that sensitivity figure omitted (Codex, #168; below) | 17–18 | 22–24 |
+| + 2 forward: V2 and C+F+G+H+V2, both new configurations | 19–20 | 24–26 |
+| + at least 2 prior V2 configurations, now inside v1's family (below) | ≥ 21–22 | ≥ 26–28 |
+
+- **Arithmetic, central:** 6–7 + 1 + 1 + 9 = 17–18. Adding V2 and the full stack gives
+  19–20; adding the two prior V2 configurations gives 21–22.
+- **Arithmetic, sensitivity:** central + 3 ungated retrospective states + D + 1–2 forward
+  ungated baselines.
+  - Before V2: the low end is 17 + 3 + 1 + 1 = 22 and the high end 18 + 3 + 1 + 2 = 24,
+    so 22–24.
+  - With V2 and the full stack: 19–20 + 5–6 = 24–26.
+  - With the two prior V2 configurations: 21–22 + 5–6 = 26–28.
+- **The forward ungated baselines.** Every forward run also runs and inspects the
+  ungated V0 baseline, which is C6's comparison. So each ungated configuration belongs
+  in the sensitivity family, just as its gated counterpart does.
+  - The ungated V0 on `drawdown-recovery-v2` is certain: +1.
+  - The ungated V0 on `drawdown-recovery-v1` counts if its pre-amendment-2 result is
+    inspected: +1, in the high end.
+  - V2 and the full stack add none, since a `--structure` run's ungated rows are the
+    ungated V0 baseline.
+  - The prior V2 runs' ungated rows may add more. The trial register settles it.
+- **Windows and stages add nothing.** The stage-2 windows, like pairs and folds, are data
+  fixed before any run, and both stages run one configuration per variant. The daily
+  history from 2020-05 is data too.
+- **Where the rules are ambiguous: the prior V2 trials.**
+  - With V2 inside v1, the V2 runs inspected before its pre-registration merged (its
+    "Prior V2 trials" list) are retrospective configurations of v1's family. Like every
+    retrospective configuration, they enter C7 at `p` = 1.
+  - The rules count distinct configurations, but the list names runs.
+  - At least two are distinct from each other and from every counted configuration:
+    Bob's 2026-10-01 runs of V2 and of V2 with variant A. Both ran on lookahead-era
+    code, before sell-at-resistance replaced the FTA cap.
+  - The list cannot say how many more configurations the 2026-09-30 comparison and the
+    V0-labelled rows of #150 to #160 add. The trial register must settle it.
+- **Working figures, to be settled by the trial register:** the upper values, as the
+  coherence record sets: **22** central and **28** sensitivity. All of them are floors,
+  so C7's condition (b) still stands, now with more trials to account for.
 
 ## 7. Reserved evaluation (run exactly once)
 
@@ -1072,7 +1563,7 @@ surviving pairs, and every exclusion is listed.
 **Owner gate:** this run starts only after the owner explicitly says go in the
 conversation. That go is recorded in the report with its date. Finishing §2–§6 does not
 start it automatically. Before asking, Claude reports:
-- the practice-matrix results;
+- the practice-matrix results of both stages (§6, "Two stages");
 - the winner, or that there is none;
 - the exact code commit, config, dataset specs and manifests to be used, all frozen.
 

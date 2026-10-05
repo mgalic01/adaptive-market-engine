@@ -2,7 +2,8 @@
 
 - **Date:** 2026-10-05. **Written by:** Claude. **Decided by:** the owner, decisions
   D19, D20 and D21 of the [strategy audit](reviews/2026-09-29-claude-strategy-audit.md),
-  and the zone width of 2026-10-05 (rule 2).
+  and the zone width of 2026-10-05 (rule 2). V2's place in v1 comes from the owner's
+  test-plan decision of 2026-10-05 ([amendment](#amendment-2026-10-05-v2-is-part-of-v1)).
 - **What it does:** writes down and freezes every rule and setting of V2, the
   market-structure layer, before any V2 result counts (D20: "Write down and pin every V2
   rule and setting now. V2 results count only after that.").
@@ -38,13 +39,49 @@ label at all.
 
 - **Exploratory until merged.** No V2 result produced before this document is merged is
   evidence (see [prior trials](#prior-v2-trials-disclosed-their-results-do-not-count)).
-- **Not part of v1.** V2 is not a v1 variant and plays no part in v1's selection, so
+- **Not part of v1.** *(Superseded on 2026-10-05 by the
+  [amendment](#amendment-2026-10-05-v2-is-part-of-v1) below; kept as history.)* V2 is
+  not a v1 variant and plays no part in v1's selection, so
   v1's family and its `N_family`
   ([spec v1 §6, C7](EXPERIMENT_SPEC_V1.md#6-acceptance-and-selection-owner-decisions-2026-09-24))
   are unchanged.
-- **Spec v2.** V2 will be folded into the post-v1 spec v2, which is to set how V2 is
+- **Spec v2.** *(Superseded on 2026-10-05 by the same amendment: v1 now judges and
+  counts V2.)* V2 will be folded into the post-v1 spec v2, which is to set how V2 is
   judged and counted. Sell-at-resistance enters it as one registered trial (D19: "A new
   V2 grid design, registered as a trial").
+
+## Amendment, 2026-10-05: V2 is part of v1
+
+- **Decision.** On 2026-10-05 the owner chose "Everything, one batch": "Bring V2 into v1
+  (reversing D20's 'outside v1') and register one 'full stack' combination before any
+  run" ([record](reviews/2026-10-05-claude-owner-decisions-test-plan.md)).
+- **What changes.**
+  - V2, which is V0 with `--structure`, is a registered v1 variant and takes part in v1's
+    selection, judged by spec v1's criteria
+    ([§3, §4 and §6](EXPERIMENT_SPEC_V1.md)). This reverses the "Not part of v1" status
+    set under D20 earlier the same day.
+  - V2 enters v1's `N_family` as one trial: the sell-at-resistance trial that D19
+    registered.
+  - The prior V2 trials below now fall inside v1's family, as retrospective trials whose
+    results still do not count (spec v1 §6, "The family after the test-plan
+    amendment").
+- **The full stack includes V2's rules unchanged.** C+F+G+H+V2 runs V2 exactly as frozen
+  here, with A, B, F, G and H as spec v1 defines them.
+- **What does not change.**
+  - Every frozen rule and setting above stays as it is. `STRUCTURE_FEATURE_VERSION`
+    stays `price-only-v1+structure-v2`, so there is no version bump, and no test
+    changes.
+  - "Exploratory until merged" and the prior-trial list stand.
+- **One consequence for spec v1.** Its §3 common rule lets a variant only add
+  restrictions. Two of the rules above move what a V0 control reads:
+  - the regime vote (rules 10 and 11) can change whether a frame is eligible;
+  - a raised target widens the grid's upper bound (rule 14, step 7).
+
+  So spec v1 names a fourth exception for V2, by the owner's decision of 2026-10-05
+  ("Name it a 4th exception"). The option text: "Record both as V2's named exceptions,
+  in the same way as E's and H3's. V2's frozen rules stay exactly as built and tested;
+  the spec simply states openly what V2 is allowed to do." The exception names
+  consequences of these rules and changes none of them.
 
 ## Frozen rules and settings
 
@@ -185,4 +222,5 @@ pins every value above and the owner's example, so a change fails it;
 fix: amend this document first, dated, with what changed and why; bump
 `STRUCTURE_FEATURE_VERSION`; then update the tests. Results under the old label stay
 reported, and a change made after V2 results have been seen is one more trial in spec
-v2's count.
+v2's count. *(Since the [amendment](#amendment-2026-10-05-v2-is-part-of-v1) of
+2026-10-05, that trial counts in v1's `N_family`.)*
