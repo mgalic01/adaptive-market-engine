@@ -1,6 +1,6 @@
 # P8 archives for G and H: funding and daily, development months only
 
-Index: PASS — 60 funding archives (2020-01 to 2024-12) and 104 unique daily archives fetched and verified; all known values match; RESULT 0 problem(s); reserved window clean; proposed manifest additions in data/p8/practice-2022.additions.json and data/p8/verify-2024h1.additions.json.
+Index: PASS — 60 funding archives (2020-01 to 2024-12) fetched and verified, and 104 distinct daily files surveyed: 101 archives fetched and verified, plus SOLUSDT's 3 expected absences before its listing; all known values match; RESULT 0 problem(s); reserved window clean; proposed manifest additions in data/p8/practice-2022.additions.json and data/p8/verify-2024h1.additions.json.
 
 Script: `data/p8_archives.py` 35a4ea2cf36cae67339784fada62063880a41455d1a60316902f93c52363c75e
 
@@ -406,13 +406,13 @@ The manifest additions in these files are a **proposal only**; no manifest was c
 
 ## Ideas and proposals
 
-**Manifest schema for funding entries.** The additions JSON uses `"kind": "funding"` with no `"interval"` key. Claude and Codex need to decide: (a) whether to add `kind` as a discriminator to the manifest schema; (b) whether funding entries live in the same `files` list as kline entries or in a new top-level key; (c) whether `sha256` and `bytes` are required or optional. The script's output JSON is the concrete proposal to react to.
+**Manifest schema for funding entries.** The additions JSON uses `"kind": "fundingRate"` (as `fetch_funding_file` writes it) with no `"interval"` key. Claude and Codex need to decide: (a) whether to add `kind` as a discriminator to the manifest schema; (b) whether funding entries live in the same `files` list as kline entries or in a new top-level key; (c) whether `sha256` and `bytes` are required or optional. The script's output JSON is the concrete proposal to react to.
 
 **Manifest schema for `unparsed` daily status.** No daily file was `unparsed` in this run, but the schema accepts only `"ok"` and `"missing"` statuses today. If a future run produces an `unparsed` file, the proposed additions JSON would still be written but would be rejected on import. Claude and Codex should decide whether to add `unparsed` now or wait until a real case arises.
 
-**`practice-2022` SOLUSDT 2020-05 to 2020-07 missing entries.** The additions JSON records these three months with `"status": "missing"`. If the manifest is extended to accept this status, the import path should skip writing a local file for missing months (as `fetch_file` already does). The proposed entries are consistent: `"status": "missing"` with no bytes or hash.
+**`practice-2022` SOLUSDT 2020-05 to 2020-07 missing entries.** The additions JSON records these three months with `"status": "missing"`, which the manifest schema already accepts; `verify_dataset` already skips the local-file checks for that status, so these entries need no schema change. The proposed entries are consistent: `"status": "missing"` with no bytes or hash. Only the funding entries need new schema work.
 
-**BTCUSDT daily overlap between datasets.** BTCUSDT daily 2020-05 to 2021-08 appears in both `practice-2022` (16 months) and `verify-2024h1` (36 months), for 16 shared months fetched once (104 distinct files, 108 total entries). A manifest schema that deduplicates shared files by path would avoid storing them twice. Not urgent for two datasets, but relevant if more are added.
+**BTCUSDT daily overlap between datasets.** BTCUSDT daily 2020-05 to 2021-08 appears in both `practice-2022` (16 months) and `verify-2024h1` (36 months), for 16 shared months fetched once (104 distinct files; 120 daily entries across the two additions, 48 + 72). A manifest schema that deduplicates shared files by path would avoid storing them twice. Not urgent for two datasets, but relevant if more are added.
 
 Run completed at: Tue Sep 29 11:15:48 UTC 2026
 
@@ -933,3 +933,5 @@ appendix problems: []
 appendix checked: ['verified 2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py']
 Tue Sep 29 11:16:33 UTC 2026
 ```
+
+**Corrections (Claude, 2026-10-05, from Codex's review of PR #164).** Four hand-written statements were corrected; the logs, tables and script above are unchanged. The `Index:` line now separates the 101 verified daily archives from SOLUSDT's 3 expected absences. The funding discriminator is `"fundingRate"`, as `fetch_funding_file` writes it, not `"funding"`. `"missing"` daily entries need no schema change. The two additions hold 120 daily entries (48 + 72), not 108.
