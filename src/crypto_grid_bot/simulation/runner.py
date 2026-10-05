@@ -56,10 +56,14 @@ from crypto_grid_bot.simulation.trend_switch import (
 from crypto_grid_bot.strategy.grid import GridBuilder, GridNotViable
 from crypto_grid_bot.strategy.opportunity import OpportunityScorer
 from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
+from crypto_grid_bot.strategy.structure import ResistanceZones, nearest_resistance
 
 DEFAULT_CAPITAL = D("100")
 # The share of unprotected quote a new grid may commit; the rest absorbs fees and rounding.
 GRID_BUDGET_FRACTION = D("0.8")
+# V2 (D19): a sell target sits at this fraction of the nearest resistance above its buy
+# level, then floored to the tick: just below it (the owner's example: 0.355 -> 0.354).
+RESISTANCE_TARGET = D("0.999")
 # 5 (2026-09-27, engine "exit-residue-v1"): a residue the exchange filters forbid
 # selling no longer blocks settlement or a new grid, and a validation halt holding
 # inventory arms liquidation. A schema-4 database was written under the old lifecycle,
@@ -89,7 +93,13 @@ GRID_BUDGET_FRACTION = D("0.8")
 # is on it (moved here from #159, Codex review). Schema-8 accounts ran without these
 # rules, so a saved reference, bounds or clock may hold what they forbid; such a
 # database is refused rather than reopened under them.
-SCHEMA = 9
+# 10 (2026-10-05, owner decisions D17 and D18): a manual resume of an emergency or
+# integrity halt that only the drawdown blocks rebases ``risk_high`` as the automatic
+# restart does and journals it as ``restart``; an exhaustion halt is refused by name.
+# Replay never resumes, so the engine stays "drawdown-recovery-v2". A schema-9 journal
+# holds resumes in the old shape, and may hold an admitted exhaustion halt, so it is
+# refused rather than continued under the new rules.
+SCHEMA = 10
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"
@@ -118,9 +128,10 @@ class SimulationPolicy:
     # False = off (V0). The daily state arrives on each Frame as ``trend``.
     trend_switch: bool = False
     # V2 market structure (#147-#151), off by default: the regime vote's sixth signal
-    # ``structure_alignment`` with the trend weight lowered from 0.35 to 0.25, and the
-    # FTA cap on grid levels. Spec v1 section 3: new behaviour sits behind a flag that
-    # defaults to off, so V0 and existing paper accounts are unaffected.
+    # ``structure_alignment`` with the trend weight lowered from 0.35 to 0.25, and sell
+    # targets just below resistance (D19). Spec v1 section 3: new behaviour sits behind a
+    # flag that defaults to off, so V0 and existing paper accounts are unaffected. Every
+    # V2 rule is frozen in docs/STRUCTURE_PREREGISTRATION.md.
     structure: bool = False
     # Spec v1 amendment 1 (owner decision 2026-09-27): the soft-drawdown cool-off before
     # ``risk_high`` may be rebased, and the hard-drawdown cool-off H before a ``drawdown``
@@ -178,8 +189,8 @@ class Frame:
     epoch: str | None = None
     # Variant A only: the daily trend state for this observation (see trend_switch.py).
     trend: TrendSignal | None = None
-    # V2: nearest resistance above current price from structure.py; None when unavailable.
-    fta_resistance: float | None = None
+    # V2: each timeframe's resistance zones (structure.py); () when unavailable.
+    resistance: tuple[ResistanceZones, ...] = ()
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -188,8 +199,8 @@ class Frame:
             del value["epoch"]  # Keeps journals written before this field byte-identical.
         if value["trend"] is None:
             del value["trend"]  # Likewise for journals without variant A.
-        if value["fta_resistance"] is None:
-            del value["fta_resistance"]  # Omit from journals when structure unavailable.
+        if not value["resistance"]:
+            del value["resistance"]  # Omit from journals when structure unavailable.
         return value
 
 
@@ -433,6 +444,22 @@ class PaperSimulator:
         account.down_since = ""  # a flat account has ended any variant A sequence
         self._pause(account, reason)
 
+    def _rebase_halted(self, account: Account, quote: Quote) -> dict[str, Any]:
+        """Rebase a halted account's ``risk_high`` to this frame's active equity and return
+        the ``restart`` journal record: the halt's start, category and reason, and the old
+        and new reference. Shared by the automatic restart and a manual resume that only
+        the drawdown blocks (owner decision D17); never the C1 references (amendment 1)."""
+        reference = account.equity(quote, self.rules)
+        record = {
+            "halt_since": account.halt_since,
+            "category": account.halt_category,
+            "halt": account.halt,
+            "old_reference": account.risk_high,
+            "new_reference": reference,
+        }
+        account.risk_high = reference
+        return record
+
     def _restart(
         self, account: Account, frame: Frame, eligible: bool, report: dict[str, Any]
     ) -> bool:
@@ -458,15 +485,7 @@ class PaperSimulator:
             return False
         if not self._tentative_allow(account, quote, frame.signals.emergency):
             return False
-        reference = account.equity(quote, self.rules)
-        report["restart"] = {
-            "halt_since": account.halt_since,
-            "category": account.halt_category,
-            "halt": account.halt,
-            "old_reference": account.risk_high,
-            "new_reference": reference,
-        }
-        account.risk_high = reference
+        report["restart"] = self._rebase_halted(account, quote)
         self._clear_halt(account, RESTART_PAUSE)
         return True
 
@@ -892,13 +911,20 @@ class PaperSimulator:
             account.validate(self.rules)
             if not account.halt or account.orders:
                 raise ValueError("resume requires a halted, reconciled flat paper account")
+            if account.halt_category == EXHAUSTION:
+                # Owner decision D18 (2026-10-05): refused by name, before any risk check.
+                raise ValueError(
+                    "resume refused: an 'active capital exhausted' halt is final; the active "
+                    "account cannot fund a grid level, and resume cannot return the reserve "
+                    "to it (owner decision D18)"
+                )
             if exit_state(account, frame.quote, self.rules)[0] == "incomplete":
                 # Liquidation-complete, PR #122's criterion (spec v1 amendment 1): a
                 # remainder below the exchange minimum is admitted, stays held and marked,
                 # and is drained or settled as after any resume; inventory the market
-                # would still accept is not. The risk check below is what keeps the final
-                # halts final: a held residue marked to the bid can move the measured
-                # drawdown by at most one minimum notional against risk_high.
+                # would still accept is not. For a drawdown halt the plain risk check
+                # below still decides: a held residue marked to the bid can move the
+                # measured drawdown by at most one minimum notional against risk_high.
                 raise ValueError(
                     "resume requires a flat paper account: "
                     f"{account.inventory} base units are still held, so the exit is "
@@ -910,28 +936,36 @@ class PaperSimulator:
             day = timestamp(frame.quote.observed_at).date().isoformat()
             if account.day != day:
                 account.day, account.day_start = day, account.last_equity
-            if self._risk_action(account, frame.quote, frame.signals.emergency) != RiskAction.ALLOW:
-                raise ValueError(
-                    "resume blocked by current risk limits; baselines are preserved. A flat "
-                    "account's equity cannot move, so its drawdown against risk_high is "
-                    "frozen: a capital-exhaustion halt is final for this account and no "
-                    "repeated resume can clear it; a hard-drawdown halt cannot be resumed by "
-                    "hand and restarts automatically once its cool-off has passed (spec v1 "
-                    "amendment 1). An emergency halt resumes once the emergency signal has "
-                    "cleared and every other limit passes"
-                )
-            previous_halt = account.halt
-            self._clear_halt(account, "operator resume: awaiting confirmed eligible data")
-            account.last_observed = frame.quote.observed_at
-            account.last_received = frame.quote.received_at
-            self._mark(account, frame.quote, self.rules)
-            return {
+            result: dict[str, Any] = {
                 "decision": "resume_pending",
-                "previous_halt": previous_halt,
+                "previous_halt": account.halt,
                 "operator_reason": reason,
                 "fills": [],
                 "opened": [],
             }
+            if self._risk_action(account, frame.quote, frame.signals.emergency) != RiskAction.ALLOW:
+                # Owner decision D17 (2026-10-05): an emergency or integrity halt that only
+                # the drawdown blocks, at any depth, resumes as the automatic restart does;
+                # the tentative check passes exactly when the drawdown is all that refuses.
+                # A drawdown halt still waits for that restart (amendment 1).
+                if account.halt_category == DRAWDOWN or not self._tentative_allow(
+                    account, frame.quote, frame.signals.emergency
+                ):
+                    raise ValueError(
+                        "resume blocked by current risk limits; baselines are preserved. A "
+                        "hard-drawdown halt cannot be resumed by hand: a flat account's "
+                        "drawdown against risk_high is frozen, and the halt restarts "
+                        "automatically once its cool-off has passed (spec v1 amendment 1). An "
+                        "emergency or integrity halt resumes at any drawdown once the "
+                        "emergency signal has cleared and the day's loss is under the daily "
+                        "limit (owner decision D17)"
+                    )
+                result["restart"] = self._rebase_halted(account, frame.quote)
+            self._clear_halt(account, "operator resume: awaiting confirmed eligible data")
+            account.last_observed = frame.quote.observed_at
+            account.last_received = frame.quote.received_at
+            self._mark(account, frame.quote, self.rules)
+            return result
 
         return self.store.transact(
             "control/resume/" + event_id, {"frame": frame.payload(), "reason": reason}, operation
@@ -1050,12 +1084,6 @@ class PaperSimulator:
         spread = (quote.ask - quote.bid) / quote.ask
         cost = 2 * (rules.fee_rate + rules.slippage_rate) + spread
         budget = account.available_quote(rules) * GRID_BUDGET_FRACTION
-        # The FTA cap is V2 behaviour (policy.structure) and applies only in a ranging
-        # market. In trending markets (BULL/BEAR) resistance zones cluster everywhere and
-        # the cap compresses all sell levels to one price, preventing cycle completion.
-        # See backtest comparison 2026-09-30 section 8.4 for the diagnosis.
-        in_range = regime is None or regime.regime == MarketRegime.RANGE
-        fta = frame.fta_resistance if self.policy.structure and in_range else None
         plan = self.builder.build(
             symbol=rules.symbol,
             fair_value=float(frame.fair_value),
@@ -1063,7 +1091,6 @@ class PaperSimulator:
             capital=float(budget),
             min_notional=float(rules.minimum_notional * (ONE + rules.fee_rate)),
             round_trip_cost_pct=float(cost * 100),
-            fta_resistance=fta,
         )
         levels = tuple(floor_step(D(str(level)), rules.tick_size) for level in plan.levels)
         pairs = [
@@ -1073,13 +1100,22 @@ class PaperSimulator:
         ]
         if not pairs or len(set(levels)) != len(levels):
             raise GridNotViable("no distinct, passive buy levels after tick rounding")
+        required = cost * self._minimum_grid_cost_multiple
+        # Sized over every candidate level, so a level V2 skips below resistance leaves its
+        # share unspent: a skip never enlarges the orders that remain.
         per_order = budget / len(pairs)
+        # V2 (policy.structure) sells just below resistance, in a ranging market only: the
+        # owner's source idea targets resistance in consolidation. The RANGE-only rule was
+        # first chosen after seeing development results that were later found invalid
+        # (D20); docs/STRUCTURE_PREREGISTRATION.md registers it with every other V2 rule.
+        if self.policy.structure and (regime is None or regime.regime == MarketRegime.RANGE):
+            pairs = self._below_resistance(pairs, frame.resistance, required)
         orders: list[LimitOrder] = []
         for index, (low, high) in enumerate(pairs):
             quantity = floor_step(per_order / (low * (ONE + rules.fee_rate)), rules.quantity_step)
             if low * quantity < rules.minimum_notional:
                 raise GridNotViable("rounded quantity cannot satisfy minimum notional")
-            if (high - low) / low < cost * self._minimum_grid_cost_multiple:
+            if (high - low) / low < required:
                 raise GridNotViable("rounded spacing cannot cover conservative costs")
             orders.append(
                 LimitOrder(
@@ -1097,10 +1133,48 @@ class PaperSimulator:
                 place(account, order, rules, check=False)
         else:
             orders = self._place_capped(account, quote, orders, capped)
-        account.grid_lower, account.grid_upper = levels[0], levels[-1]
+        # A sell target raised to a resistance above the top level stays inside the range
+        # the outside-range clock watches.
+        targets = [order.target for order in orders if order.target is not None]
+        account.grid_lower, account.grid_upper = levels[0], max([levels[-1], *targets])
         account.outside_seconds, account.outside_last = ZERO, ""
         account.cycles += 1
         return [order.order_id for order in orders]
+
+    def _below_resistance(
+        self,
+        pairs: list[tuple[Decimal, Decimal]],
+        resistance: tuple[ResistanceZones, ...],
+        required: Decimal,
+    ) -> list[tuple[Decimal, Decimal]]:
+        """V2 sell targets (D19), below the nearest known resistance above each buy level
+        (``nearest_resistance``): a zone in reach sets the target just below it, raised or
+        lowered from the geometric next level; one out of reach only lowers the geometric
+        level to there if it would reach it. A target a zone moved that cannot clear costs
+        (spacing below ``required``) gets no buy: it may not sit higher and cannot profit
+        lower. A geometric target left standing keeps V0's rule. Fixed at grid open, from
+        completed bars only."""
+        tick = self.rules.tick_size
+        kept: list[tuple[Decimal, Decimal]] = []
+        blocked: set[Decimal] = set()  # the zones that left a level no buy, to the tick
+        for low, high in pairs:
+            nearest = nearest_resistance(float(low), resistance)
+            if nearest is None:
+                kept.append((low, high))
+                continue
+            zone, in_reach = nearest
+            cap = floor_step(D(str(zone)) * RESISTANCE_TARGET, tick)
+            target = cap if in_reach else min(high, cap)
+            if target != high and (target - low) / low < required:
+                blocked.add(floor_step(D(str(zone)), tick))
+            else:
+                kept.append((low, target))
+        if not kept:
+            zones = ", ".join(str(zone) for zone in sorted(blocked))
+            raise GridNotViable(
+                f"no buy level can sell below resistance at {zones} and clear costs"
+            )
+        return kept
 
     def _place_capped(
         self,

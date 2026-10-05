@@ -38,24 +38,11 @@ class GridBuilder:
         capital: float,
         min_notional: float,
         round_trip_cost_pct: float,
-        fta_resistance: float | None = None,
     ) -> GridPlan:
         """Build a geometric grid plan.
 
         ``capital`` is what the grid may deploy in full; the caller applies any
         utilisation haircut (the paper engine's ``GRID_BUDGET_FRACTION``).
-
-        ``fta_resistance`` is the price of the nearest resistance zone above the
-        grid (from structure.py's find_fta). When supplied and the FTA lies within
-        the grid's upper half (lower < fta_resistance <= upper), the highest grid
-        levels that exceed ``fta_resistance`` are capped at
-        ``fta_resistance * 0.999`` — placing the last sell target just below the
-        resistance wall rather than into it.  The 0.999 factor (0.1% buffer) is
-        deliberately small: it keeps the target actionable and avoids it landing
-        exactly at a known seller cluster where fills are harder to obtain.
-
-        The caller is responsible for computing ``fta_resistance`` from
-        structure.py; grid.py does not import that module.
         """
         if any(not math.isfinite(x) or x <= 0 for x in (fair_value, atr, capital, min_notional)):
             raise GridNotViable("prices, capital, ATR, and minimum notional must be positive")
@@ -84,22 +71,4 @@ class GridBuilder:
             )
 
         levels = tuple(lower * math.pow(ratio, index) for index in range(level_count))
-
-        # FTA resistance cap: if the caller supplies a resistance price that falls
-        # within the grid's upper half (i.e. above the midpoint and at or below
-        # the grid's upper bound), cap any level that would exceed or equal it at
-        # fta_resistance * 0.999.  Levels below fta_resistance are untouched.
-        # We only apply the cap when fta_resistance is strictly inside the grid
-        # (lower < fta_resistance <= upper) to avoid distorting a well-formed grid
-        # on an irrelevant signal.
-        fta_used: float | None = None
-        if (
-            fta_resistance is not None
-            and math.isfinite(fta_resistance)
-            and lower < fta_resistance <= upper
-        ):
-            cap = fta_resistance * 0.999
-            levels = tuple(min(lvl, cap) for lvl in levels)
-            fta_used = fta_resistance
-
-        return GridPlan(symbol, lower, upper, levels, capital, spacing_pct, fta_used)
+        return GridPlan(symbol, lower, upper, levels, capital, spacing_pct)
