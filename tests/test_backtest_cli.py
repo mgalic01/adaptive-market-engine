@@ -87,6 +87,7 @@ class CliIntegrityTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.checks = dict(CLEAN)
+        self.overrides: dict[str, dict] = {}  # one symbol's check fields
         self.result_patch = {}
         self.replays = []
         self.fees = []
@@ -109,7 +110,7 @@ class CliIntegrityTests(unittest.TestCase):
 
     def fake_check(self, spec, data_dir, symbol, strict_volume=False):
         self.strict.append(strict_volume)
-        return {"symbol": symbol, **self.checks}
+        return {"symbol": symbol, **self.checks, **self.overrides.get(symbol, {})}
 
     def fake_run(self, spec, config, data_dir, symbol, mode, gated, fees=None, policy=None):
         self.replays.append(symbol)
@@ -127,7 +128,45 @@ class CliIntegrityTests(unittest.TestCase):
         self.assertEqual(0, self.main("run"))
         self.assertTrue(self.replays)
         (written,) = Path(self.temp.name).rglob("results.json")
-        self.assertTrue(json.loads(written.read_text())["valid"])
+        document = json.loads(written.read_text())
+        self.assertTrue(document["valid"])
+        self.assertNotIn("excluded_pairs", document)  # every check passed: no exclusion
+
+    def test_a_traded_pairs_own_failed_check_excludes_only_that_pair_window(self):
+        # Spec v1 section 5, as for practice-2022's SOLUSDT with daily history from
+        # 2020-05: its P3 presence check fails on the days before its listing. Only that
+        # pair-window is excluded: it is not replayed and has no rows, its failing check
+        # stays in its integrity fields, and BTCUSDT and XRPUSDT run as a valid run.
+        practice = str(ROOT / "config/datasets/practice-2022.toml")
+        daily = {"daily_days_compared": 10} | {field: 0 for field in cli.DAILY_INTEGRITY_FIELDS}
+        self.overrides = {"SOLUSDT": {**daily, "daily_days_missing": 102}}
+        self.assertEqual(0, self.main("verify", "--spec", practice))
+        self.assertEqual(0, self.main("run", "--spec", practice))
+        self.assertEqual({"BTCUSDT", "XRPUSDT"}, set(self.replays))
+        self.assertEqual(8, len(self.replays))  # 2 pairs x 2 paths x gated and ungated
+        (written,) = Path(self.temp.name).rglob("results.json")
+        document = json.loads(written.read_text())
+        self.assertEqual((True, []), (document["valid"], document["failures"]))
+        reasons = ["SOLUSDT: daily_days_missing=102"]
+        self.assertEqual({"SOLUSDT": reasons}, document["excluded_pairs"])
+        (sol,) = [c for c in document["hourly_cross_checks"] if c["symbol"] == "SOLUSDT"]
+        self.assertEqual(102, sol["daily_days_missing"])
+        self.assertEqual({"BTCUSDT", "XRPUSDT"}, {r["symbol"] for r in document["results"]})
+
+    def test_a_failed_check_of_the_market_proxy_still_excludes_every_pair(self):
+        # BTCUSDT is traded too, but as the proxy its hours feed every pair's regime, so
+        # its failure is never its own: nothing replays, whatever the other pairs show.
+        practice = str(ROOT / "config/datasets/practice-2022.toml")
+        for overrides in (
+            {"BTCUSDT": {"hours_missing": 1}},
+            {"BTCUSDT": {"hours_missing": 1}, "SOLUSDT": {"hours_incomplete": 1}},
+        ):
+            with self.subTest(overrides=overrides):
+                self.overrides = overrides
+                self.assertEqual(2, self.main("verify", "--spec", practice))
+                self.assertEqual(2, self.main("run", "--spec", practice))
+                self.assertEqual([], self.replays)
+                self.assertEqual([], list(Path(self.temp.name).rglob("results.json")))
 
     def test_fee_overrides_reach_every_replay_and_the_results(self):
         self.assertEqual(0, self.main("run"))
@@ -395,6 +434,18 @@ class MarketProxyCheckTests(CliIntegrityTests):
     def main(self, command, *extra):
         with contextlib.redirect_stdout(io.StringIO()):
             return cli.main([command, "--spec", str(self.spec), "--out", self.temp.name, *extra])
+
+    def test_a_run_whose_every_pair_is_excluded_replays_nothing(self):
+        # Each traded pair's own check fails while the untraded proxy passes: no pair is
+        # left to replay, so the run fails as before, with every failure reported.
+        self.overrides = {pair: {"hours_missing": 1} for pair in ("ADAUSDT", "BTCUSDT")}
+        self.assertEqual(2, self.main("verify"))
+        self.assertEqual(2, self.main("run"))
+        self.assertEqual([], self.replays)
+        # One of them alone is excluded, and the other pair runs.
+        self.overrides = {"ADAUSDT": {"hours_missing": 1}}
+        self.assertEqual(0, self.main("run"))
+        self.assertEqual({"BTCUSDT"}, set(self.replays))
 
     def test_untraded_proxy_is_checked_but_not_replayed(self):
         self.assertEqual(0, self.main("run"))

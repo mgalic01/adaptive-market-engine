@@ -284,9 +284,15 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
       `_hours_incomplete`). Prices must match exactly; volume within the same 0.1%
       tolerance, reported as `daily_days_volume_drift`. Days before the hourly window
       are checked for presence, never for equality.
-  - Any non-zero count of those fields makes `verify` and `run` exit with code 2, and
-    nothing replays. `hours_volume_drift` and `daily_days_volume_drift` are reported but
-    are not among them.
+  - Any non-zero count of those fields fails its check. `hours_volume_drift` and
+    `daily_days_volume_drift` are reported but are not among them.
+  - A failed check of a traded pair's own data excludes that pair-window only (spec v1
+    §5). The pair is not replayed and has no rows. Its failing check stays in
+    `hourly_cross_checks`, `excluded_pairs` lists it with its failures, and the other
+    pairs run. The exclusion is not among the run's `failures`.
+  - A failed check of the market proxy (traded or not) or of an untraded basket member
+    reaches every pair, and so does an exclusion that leaves no pair. Then `verify` and
+    `run` exit with code 2, and nothing replays.
   - Gaps from a genuine listing or delisting are not exempted yet; such a dataset must
     first declare them explicitly.
 - **Run validity:** accounting problems, rejected frames, zero evaluation bars, or a

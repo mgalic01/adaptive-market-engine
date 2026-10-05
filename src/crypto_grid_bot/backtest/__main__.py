@@ -115,6 +115,20 @@ def integrity_failures(checks: list[dict[str, Any]]) -> list[str]:
     return failures
 
 
+def excluded_pairs(spec: DatasetSpec, checks: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """The traded pairs whose own checks failed, each with its failures. Spec v1 section 5
+    excludes such a pair-window for every variant alike, and the other pairs still run.
+    The market proxy's and the untraded basket members' data reach every pair, so their
+    checks are never one pair's own, even when the proxy is traded."""
+    shared = {spec.market_proxy, *(set(spec.breadth_basket) - set(spec.traded))}
+    excluded: dict[str, list[str]] = {}
+    for pair in spec.traded:
+        own = integrity_failures([c for c in checks if c["symbol"] == pair])
+        if own and pair not in shared:
+            excluded[pair] = own
+    return excluded
+
+
 def result_failures(results: list[dict[str, Any]]) -> list[str]:
     failures = []
     for r in results:
@@ -419,7 +433,14 @@ def main(argv: list[str] | None = None) -> int:
             for symbol in checked_symbols(spec)
         ]
         cross_checks = [check.result() for check in checks]
-        failures = integrity_failures(cross_checks)
+        # Section 5: a traded pair whose own check failed is excluded and not replayed, and
+        # the other pairs run. Any other failure reaches every pair, as does an exclusion
+        # that leaves none: then nothing replays, and every failure is reported.
+        excluded = excluded_pairs(spec, cross_checks)
+        pairs = [pair for pair in spec.traded if pair not in excluded]
+        failures = integrity_failures([c for c in cross_checks if c["symbol"] not in excluded])
+        if failures or not pairs:
+            failures, excluded = integrity_failures(cross_checks), {}
         if args.command == "verify" or failures:
             status = "invalid" if failures else "valid"
             print(
@@ -428,6 +449,7 @@ def main(argv: list[str] | None = None) -> int:
                         "status": status,
                         "integrity_rules": integrity,
                         "failures": failures,
+                        **({"excluded_pairs": excluded} if excluded else {}),
                         "checks": cross_checks,
                     },
                     indent=1,
@@ -453,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
                 # review of #160).
                 policy if gated else None,
             )
-            for s in spec.traded
+            for s in pairs
             for mode in PATH_MODES
             for gated in (True, False)
         ]
@@ -462,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
                 pool.submit(
                     trend_job, args.spec, args.config, args.data_dir, s, mode, (maker, taker)
                 )
-                for s in spec.traded
+                for s in pairs
                 for mode in PATH_MODES
             ]
         results = [f.result() for f in futures]
@@ -509,6 +531,10 @@ def main(argv: list[str] | None = None) -> int:
         # Invalid results are kept for diagnosis but are never performance evidence.
         "valid": not failures,
         "failures": failures,
+        # Present only when a traded pair's own check failed (section 5): that pair-window
+        # is excluded for every variant alike and has no rows, and its failing check stays
+        # in hourly_cross_checks. It is not a failure of the runs that did replay.
+        **({"excluded_pairs": excluded} if excluded else {}),
         "hourly_cross_checks": cross_checks,
         "results": results,
     }
@@ -516,7 +542,8 @@ def main(argv: list[str] | None = None) -> int:
     table = _table(results)
     (out / "summary.md").write_text(table + "\n")
     brief = [{k: v for k, v in r.items() if k != "hourly_equity"} for r in results]
-    print(json.dumps({"out": str(out), "hourly_cross_checks": cross_checks}, indent=1))
+    shown = {"out": str(out), **({"excluded_pairs": excluded} if excluded else {})}
+    print(json.dumps({**shown, "hourly_cross_checks": cross_checks}, indent=1))
     print(table)
     print(json.dumps(brief, indent=1, default=str))
     if failures:
