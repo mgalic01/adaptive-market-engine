@@ -1,4 +1,4 @@
-# Paper simulation contract (schema 7)
+# Paper simulation contract (schema 8)
 
 ## Scope and order lifecycle
 
@@ -239,16 +239,19 @@ asynchronous transfer reconciliation: live transfers will need durable intents,
 exchange IDs, statuses and recovery after uncertain responses.
 
 Saved identity includes schema, policy, configuration, market assumptions and
-initial cash. **Only schema 7 databases are accepted; schema 1-6 are rejected, with no
+initial cash. **Only schema 8 databases are accepted; schema 1-7 are rejected, with no
 implicit migration or reset.** Schema 5 (engine `exit-residue-v1`, PR #122) changed the
 exit lifecycle; schema 6 (engine `drawdown-recovery-v1`, spec v1 amendment 1) added the
 halt identity, the episode, the C1(b) reference and the two cool-offs to the saved
-state and identity, and made a `drawdown` halt restart. Schema 7 (strategy audit, #160)
-made V2 market structure a policy flag that is off by default: schema 6 was written both
-by V0 code and by code that ran every account with structure on, and its identity cannot
-tell them apart. An older database is refused rather than silently reinterpreted.
-Preserve old experiments with the old code, or start a clearly separate schema 7
-experiment. Never edit identity/state to bypass risk history.
+state and identity, and made a `drawdown` halt restart. Schema 7 (the code audit, #159)
+corrected the journal: each fill records its remaining quantity, an order that filled
+in part and was cancelled on the same frame is listed as cancelled, and a flat frame's
+no-op settlement is neither counted nor journaled. Schema 8 (strategy audit, #160) made
+V2 market structure a policy flag that is off by default: schemas 6 and 7 were written
+both by V0 code and by code that ran every account with structure on, and their
+identity cannot tell them apart. An older database is refused rather than silently
+reinterpreted. Preserve old experiments with the old code, or start a clearly separate
+schema 8 experiment. Never edit identity/state to bypass risk history.
 The frame-gap policy (added in 0.5.1/0.6) is part of saved identity, so experiments
 without that setting are rejected. Use a new database for the new policy; retain
 the original database and matching code for reviewing the old experiment.

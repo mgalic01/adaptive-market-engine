@@ -413,27 +413,58 @@ def drop_redirections(words: list[str]) -> list[str]:
 # `then git push`, `! git push` or `{ git push; }`, PowerShell's call and dot-source
 # operators (`& git push`), and wrappers such as `env X=1 git push`.
 PREFIX_WORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "&", "."}
-WRAPPERS = {"env", "timeout", "nohup", "nice", "time", "command", "exec"}
-# Wrapper options that take the next word as their value (env, timeout, nice, exec and
-# GNU time); `env -C sub gh pr merge 5` was read as running `sub` (Codex review of #159).
+WRAPPERS = {"env", "timeout", "nohup", "nice", "time", "command", "exec", "sudo", "doas"}
+# The options that take the next word as their value, per wrapper (Codex review of #159:
+# `env -C sub gh pr merge 5` was read as running `sub`, `sudo --user root git push` as
+# running `root`). Per wrapper, since `time -p` takes none.
 WRAPPER_VALUE_OPTS = {
-    "-u",
-    "--unset",
-    "-C",
-    "--chdir",
-    "-P",
-    "-s",
-    "--signal",
-    "-k",
-    "--kill-after",
-    "-n",
-    "--adjustment",
-    "-a",
-    "-f",
-    "--format",
-    "-o",
-    "--output",
-}
+    "env": {"-u", "--unset", "-C", "--chdir", "-P"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "nice": {"-n", "--adjustment"},
+    "exec": {"-a"},
+    "time": {"-f", "--format", "-o", "--output"},
+    "sudo": {
+        "-u", "--user", "-g", "--group", "-D", "--chdir", "-h", "--host", "-p", "--prompt",
+        "-C", "--close-from", "-r", "--role", "-t", "--type", "-T", "--command-timeout",
+        "-U", "--other-user", "-R", "--chroot", "-a", "--auth-type", "-c", "--login-class",
+    },
+    "doas": {"-u", "-C"},
+}  # fmt: skip
+# The options that run a wrapper's command in another directory: (short, long).
+WRAPPER_CHDIR_OPTS = {"env": ("-C", "--chdir"), "sudo": ("-D", "--chdir")}
+# Git's global options that take the next word as their value: `git --git-dir .git push`
+# was read as running the subcommand `.git` (Codex review of #159). -C and --git-dir are
+# handled apart, since they select where the repository is read.
+GIT_VALUE_OPTS = {"-c", "--work-tree", "--namespace", "--config-env", "--super-prefix"}
+# Git's own commands, which an alias of the same name cannot replace; any other
+# subcommand may be an alias (Codex review of #159: `git -c alias.p=push p` pushed).
+GIT_BUILTINS = {
+    "add", "am", "apply", "archive", "bisect", "blame", "branch", "bundle", "cat-file",
+    "checkout", "cherry", "cherry-pick", "clean", "clone", "commit", "config", "describe",
+    "diff", "difftool", "fetch", "for-each-ref", "format-patch", "fsck", "gc", "grep",
+    "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "maintenance", "merge",
+    "merge-base", "mergetool", "mv", "notes", "pull", "push", "range-diff", "rebase",
+    "reflog", "remote", "repack", "replace", "reset", "restore", "rev-list", "rev-parse",
+    "revert", "rm", "send-pack", "shortlog", "show", "show-ref", "sparse-checkout", "stash",
+    "status", "submodule", "switch", "symbolic-ref", "tag", "update-index", "update-ref",
+    "version", "worktree",
+}  # fmt: skip
+# Clients that can send a REST or GraphQL merge themselves; any other command only names
+# one (Codex review of #159: `echo mergePullRequest` was refused as a merge).
+HTTP_CLIENTS = {
+    "curl", "wget", "http", "https", "xh", "python", "python3", "py", "node", "deno",
+    "bun", "ruby", "perl", "php", "pypy", "nodejs", "invoke-restmethod", "invoke-webrequest",
+    "irm", "iwr",
+}  # fmt: skip
+# Clients that can run any program, not only send a request.
+INTERPRETERS = {"python", "py", "pypy", "node", "nodejs", "deno", "bun", "ruby", "perl", "php"}
+# Commands that run another command with arguments known only at run time (`printf 5 |
+# xargs gh pr merge`, `find -exec`); a merge or push in their line counts as unknown
+# (Codex review of #159).
+LAUNCHERS = {"xargs", "parallel", "find", "fd", "watch", "entr"}
+# A client's version suffix: `python3.12`, `ruby3.2` and `perl5.36` are python, ruby and
+# perl (Codex review of #159).
+CLIENT_VERSION_RE = re.compile(r"[\d.]+$")
 # A `case` arm's pattern word, which the arm's command follows.
 CASE_PATTERN_RE = re.compile(r"\(?[^()]*\)")
 # `env -S 'gh pr merge 5'` (or -S'...', --split-string=...) runs the words of its value.
@@ -467,17 +498,18 @@ def unwrap(words: list[str]) -> list[str]:
             words = words[2:]
         elif w.startswith("&"):
             words = [w[1:], *words[1:]]
-        elif _exe(w) in WRAPPERS:
+        elif (wrapper := _exe(w)) in WRAPPERS:
+            opts = WRAPPER_VALUE_OPTS.get(wrapper, set())
             words = words[1:]
             while words and (words[0].startswith("-") or WRAPPER_NUMBER_RE.fullmatch(words[0])):
-                if split := SPLIT_STRING_RE.fullmatch(words[0]):
+                if wrapper == "env" and (split := SPLIT_STRING_RE.fullmatch(words[0])):
                     if split[1]:
                         value, rest = split[1], words[1:]
                     else:
                         value, rest = (words[1] if len(words) > 1 else ""), words[2:]
                     words = [*split_words(value), *rest]
                     break
-                words = words[2:] if words[0] in WRAPPER_VALUE_OPTS else words[1:]
+                words = words[2:] if words[0] in opts else words[1:]
         else:
             break
     return words
@@ -560,27 +592,110 @@ def _quoted(command: str) -> list[bool]:
 
 def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[str]]:
     """The here-document operators the shell sees in ``command[start:end]``. One inside
-    quotes, escaped or in a comment is text (Codex review of #159: `echo "<<EOF"` and
-    `# <<EOF` each hid the merge on the next line as a body)."""
-    quoted, i = _quoted(command), start
+    quotes, escaped, in a comment or in arithmetic (`((x << 1))` or the legacy
+    `$[x << 1]`, a shift) is not one (Codex review of #159: each hid the merge on the
+    next line as a body)."""
+    quoted, i, arithmetic, legacy = _quoted(command), start, 0, 0
     while i < end:
         if quoted[i]:
             i += 1
+        elif command.startswith("((", i):
+            arithmetic, i = arithmetic + 1, i + 2
+        elif arithmetic and command.startswith("))", i):
+            arithmetic, i = arithmetic - 1, i + 2
+        elif command.startswith("$[", i) or (legacy and command[i] == "["):
+            legacy, i = legacy + 1, i + (2 if command[i] == "$" else 1)
+        elif legacy and command[i] == "]":
+            legacy, i = legacy - 1, i + 1
         elif command[i] == "#" and (i == 0 or command[i - 1] in " \t\n;&|("):
             line_end = command.find("\n", i, end)  # a comment runs to the end of its line
             i = end if line_end < 0 else line_end
-        elif m := HEREDOC_RE.match(command, i, end):
+        elif not arithmetic and not legacy and (m := HEREDOC_RE.match(command, i, end)):
             yield m
             i = m.end()
         else:
             i += 1
 
 
+# Where a pipeline ends on a line: `;`, `&&`, `||` or a lone `&`, but not a pipe, which
+# feeds a here-document into its consumer.
+PIPELINE_ENDS = re.compile(r"&&|\|\||(?<![>&])&(?![&>])|;")
+
+
+def _pipeline(command: str, start: int, end: int, at: int) -> str:
+    """The pipeline of the line ``command[start:end]`` that holds position ``at``."""
+    quoted, left, i = _quoted(command), start, start
+    while i < end:
+        m = None if quoted[i] else PIPELINE_ENDS.match(command, i, end)
+        if not m:
+            i += 1
+        elif m.start() >= at:
+            return command[left : m.start()]
+        else:
+            left = i = m.end()
+    return command[left:end]
+
+
+def _readers(pipeline: str) -> list[str]:
+    """The command of each stage of a here-document's pipeline, parsed into shell words
+    and unwrapped (`/bin/'bash'` is bash, `sudo bash` is bash), so that an argument such
+    as the `bash` of `echo bash <<EOF` is never taken for its reader (Codex review of
+    #159). Stages split at unquoted pipes only, and a stage's command starts after its
+    last unquoted `(`, `$(` or backtick (`x=$(bash <<EOF`). `.` and `source` stay as
+    they are: they run their input."""
+    quoted, stages, start = _quoted(pipeline), [], 0
+    for i, c in enumerate(pipeline):
+        if c == "|" and not quoted[i]:
+            stages.append(pipeline[start:i])
+            start = i + 1
+    stages.append(pipeline[start:])
+    out = []
+    for stage in stages:
+        inner = _quoted(stage)
+        cut = max((i + 1 for i, c in enumerate(stage) if c in "(`" and not inner[i]), default=0)
+        words = drop_redirections(split_words(stage[cut:]))
+        # A function body's opener before its command: `f(){ bash <<EOF` (Codex review of
+        # #159).
+        while words and set(words[0]) <= set("(){}"):
+            words = words[1:]
+        if words and words[0] in (".", "source"):
+            out.append(words[0])
+        elif toks := unwrap(words):
+            out.append(toks[0])
+    return out
+
+
+# Commands that only read their input as data. A here-document read by anything else
+# (a shell under any name, `source`, ssh, a tool not listed) may run it, so its body
+# is read as commands (Codex review of #159: `ash <<'EOF'`, `busybox sh <<'EOF'`).
+DATA_READERS = {
+    "cat", "tee", "git", "echo", "printf", "true", "false", "grep", "egrep", "fgrep",
+    "rg", "sed", "awk", "gawk", "sort", "uniq", "wc", "head", "tail", "cut", "tr", "jq",
+    "yq", "less", "more", "diff", "patch", "base64", "xxd", "od", "column", "fold",
+    "fmt", "nl", "rev", "paste", "comm", "join", "tac", "iconv", "sha256sum",
+    "sha1sum", "md5sum", "read", "mapfile", "readarray", "clip", "pbcopy", "xclip",
+    "xsel", "wl-copy",
+}  # fmt: skip
+
+
+def _reader_kind(word: str) -> str:
+    """What a here-document's reader does with it: "interpreter" (python, node...: it
+    can run anything), "client" (curl, gh: it can send an API merge, and its other
+    input is data), "data" (it only reads it) or "run" (anything else)."""
+    name = _exe(word)
+    if CLIENT_VERSION_RE.sub("", name) in INTERPRETERS:
+        return "interpreter"
+    if name == "gh" or CLIENT_VERSION_RE.sub("", name) in HTTP_CLIENTS:
+        return "client"
+    return "data" if name in DATA_READERS and word not in (".", "source") else "run"
+
+
 def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
     """The command without its here-document bodies, and each body with whether its
-    delimiter is quoted (the shell expands nothing in it) and the text before the `<<`
-    on its line, which names the reader. A body is the reader's input, not commands
-    (Codex review of #159)."""
+    delimiter is quoted (the shell expands nothing in it) and the pipeline of its `<<`,
+    which names its reader: the command it feeds or a shell it is piped into (`cat
+    <<'EOF' | bash`), never another command on the same line. A body is its reader's
+    input, not commands (Codex review of #159)."""
     found: list[tuple[str, bool, str]] = []
     pos = 0
     while (first := next(_heredoc_operators(command, pos, len(command)), None)) is not None:
@@ -603,7 +718,8 @@ def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
                 end = row_end + 1
             else:
                 body, after = command[cursor:], len(command)
-            found.append((body, bool(m.group(2) or m.group(3)), command[line_start : m.start()]))
+            reader = _pipeline(command, line_start, line_end, m.start())
+            found.append((body, bool(m.group(2) or m.group(3)), reader))
             cursor = after
         command, pos = command[: line_end + 1] + command[cursor:], line_end + 1
     return command, found
@@ -626,11 +742,13 @@ def _unknown(text: str, why: str) -> list[Target]:
     ]
 
 
-# Command separators: `&&`, `||`, `;`, a pipe, a newline, and a lone `&` that sends a
-# command to the background (Codex review of #159: `true & gh pr merge 5`). A `&` next to
-# `>` is a redirection (`2>&1`, `&>out`); PowerShell's call operator (`& git push`) leaves
-# an empty segment before its command, which is then read as before.
-SEPARATORS = re.compile(r"&&|\|\||(?<![>&])&(?![&>])|[;|\n]")
+# Command separators: `&&`, `||`, `;`, a pipe, a newline, a lone `&` that sends a
+# command to the background (Codex review of #159: `true & gh pr merge 5`), and the
+# parentheses of a subshell or a process substitution (`(gh pr merge 5)`, `<(git push)`;
+# Codex review of #159). A `&` next to `>` is a redirection (`2>&1`, `&>out`), and the
+# `(` of `$(` stays: substitutions() reads those. PowerShell's call operator (`& git
+# push`) leaves an empty segment before its command, which is then read as before.
+SEPARATORS = re.compile(r"&&|\|\||(?<![>&])&(?![&>])|[;|\n)]|(?<!\$)\(")
 
 
 def segments(command: str) -> list[str]:
@@ -651,6 +769,35 @@ def segments(command: str) -> list[str]:
 RUNTIME_WORD = re.compile(r"\$\{?\w")
 
 
+def _env_dir(words: list[str], cwd: str) -> str:
+    """The directory the leading wrappers run their command in: `env -C DIR`, `sudo -D DIR`
+    or either's `--chdir` (Codex review of #159: `env -C <this repo> git push` was
+    checked in another repository)."""
+    i = 0
+    while i < len(words):
+        w, name = words[i], _exe(words[i])
+        if w in PREFIX_WORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w):
+            i += 1
+            continue
+        if name not in WRAPPERS:
+            break
+        opts, chdir = WRAPPER_VALUE_OPTS.get(name, set()), WRAPPER_CHDIR_OPTS.get(name)
+        i += 1
+        while i < len(words) and (
+            words[i].startswith("-") or WRAPPER_NUMBER_RE.fullmatch(words[i])
+        ):
+            o = words[i]
+            if chdir and o in chdir and i + 1 < len(words):
+                cwd, i = str(Path(cwd, words[i + 1])), i + 2
+            elif chdir and o.startswith(chdir[1] + "="):
+                cwd, i = str(Path(cwd, o.split("=", 1)[1])), i + 1
+            elif chdir and o.startswith(chdir[0]) and len(o) > len(chdir[0]):
+                cwd, i = str(Path(cwd, o[len(chdir[0]) :])), i + 1
+            else:
+                i += 2 if o in opts else 1
+    return cwd
+
+
 def find_targets(
     command: str, cwd: str, depth: int = 0, *, posix: bool = False, root: str | None = None
 ) -> list[Target]:
@@ -668,33 +815,66 @@ def find_targets(
     command, bodies = heredocs(command)
     targets: list[Target] = []
     for segment in segments(command):
-        toks = unwrap(drop_redirections(split_words(segment)))
+        words = drop_redirections(split_words(segment))
+        toks = unwrap(words)
         if not toks:
             continue
         exe = _exe(toks[0])
+        base = _env_dir(words, cwd)
         if exe in ("cd", "set-location", "pushd", "sl") and len(toks) > 1:
             cwd = str(Path(cwd, toks[-1]))
         elif exe == "git":
-            here, rest = cwd, toks[1:]
+            here, rest, aliases = base, toks[1:], {}
+            # The repository is read where -C, --git-dir or GIT_DIR points: git runs fine
+            # inside a git directory (Codex review of #159: `cd other && git --git-dir
+            # <this repo>/.git push` was checked against the other repository).
+            for w in split_words(segment):
+                if w.startswith("GIT_DIR="):
+                    here = str(Path(here, w.split("=", 1)[1]))
+                elif _exe(w) == "git":
+                    break
             while rest and rest[0].startswith("-"):
-                if rest[0] == "-C" and len(rest) > 1:
+                if rest[0] in ("-C", "--git-dir") and len(rest) > 1:
                     here, rest = str(Path(here, rest[1])), rest[2:]
-                elif rest[0] == "-c" and len(rest) > 1:
+                elif rest[0].startswith("--git-dir="):
+                    here, rest = str(Path(here, rest[0].split("=", 1)[1])), rest[1:]
+                elif rest[0] in GIT_VALUE_OPTS and len(rest) > 1:
+                    if rest[0] == "-c" and rest[1].startswith("alias."):
+                        name, _, value = rest[1][len("alias.") :].partition("=")
+                        aliases[name] = value
                     rest = rest[2:]
                 else:
                     rest = rest[1:]
-            if rest and rest[0] == "push":
+            # An alias, given with -c or configured, runs what it expands to; a `!` alias
+            # runs its text in a shell (Codex review of #159).
+            for _ in range(MAX_DEPTH):
+                if not rest or rest[0] in GIT_BUILTINS:
+                    break
+                alias = aliases.get(rest[0]) or _git(here, "config", "--get", f"alias.{rest[0]}")
+                if not alias:
+                    break
+                if alias.startswith("!"):
+                    line = " ".join([alias[1:], *rest[1:]])
+                    targets.extend(find_targets(line, here, depth + 1, posix=True, root=root))
+                    rest = []
+                else:
+                    rest = [*split_words(alias), *rest[1:]]
+            if rest and rest[0] in ("push", "send-pack"):
                 targets.extend(push_targets(rest[1:], here))
         elif exe == "gh":
-            targets.extend(_gh_targets(toks[1:], segment, cwd))
+            targets.extend(_gh_targets(toks[1:], segment, base))
         elif exe in SHELLS:
             inner = shell_command(exe, toks[1:])
             if inner is not None:
                 shell = exe in POSIX_SHELLS
                 targets.extend(find_targets(inner, cwd, depth + 1, posix=shell, root=root))
-        elif "/merge" in segment or "mergePullRequest" in segment:
+        elif exe in LAUNCHERS:
+            targets.extend(_unknown(root, f"{exe} runs a command known only at run time"))
+        elif CLIENT_VERSION_RE.sub("", exe) in HTTP_CLIENTS and (
+            "/merge" in segment or "mergePullRequest" in segment
+        ):
             # curl, python and other clients can call the same REST or GraphQL merge.
-            targets.extend(_rest_merge_targets(segment, cwd, None))
+            targets.extend(_rest_merge_targets(segment, base, None))
         elif exe in EVALS and not any(c in "".join(toks[1:]) for c in "$`\\"):
             # `eval "gh pr merge 5"` runs literal text: read it as the command it is
             # (Codex review of #159: `eval 'echo submerged'` was refused as a merge).
@@ -707,11 +887,20 @@ def find_targets(
             targets.extend(_unknown(root, f"{toks[0]} runs a command known only at run time"))
     inners = substitutions(command)
     for body, quoted, reader in bodies:
-        # Shell words, so that `/bin/'bash' <<EOF` is bash (Codex review of #159).
-        if any(_exe(w) in (*SHELLS, *EVALS) for w in split_words(reader)):
-            inners.append(body)  # `bash <<EOF` runs its body
+        kinds = {_reader_kind(w) for w in _readers(reader)}
+        if "run" in kinds:
+            inners.append(body)  # a shell, `source`, ssh or anything unknown may run it
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))
+        if "interpreter" in kinds:
+            # `python3 - <<EOF` can run anything (`subprocess.run(["gh", ...])`): an API
+            # call that names its PR counts, and otherwise a merge or push word in it is
+            # a command known only at run time (Codex review of #159).
+            sent = _rest_merge_targets(body, cwd, None)
+            targets.extend(sent or _unknown(body, "an interpreter runs this here-document"))
+        elif "client" in kinds:
+            # `gh api --input -`, `curl --data @-`: the body can be an API merge.
+            targets.extend(_rest_merge_targets(body, cwd, None))
     for inner in inners:
         targets.extend(find_targets(inner, cwd, depth + 1, posix=posix, root=root))
     return targets
@@ -796,7 +985,9 @@ def hook_decision(
     if payload.get("tool_name") not in ("Bash", "PowerShell"):
         return None
     command = str((payload.get("tool_input") or {}).get("command") or "")
-    if "push" not in command and "merge" not in command and "Merge" not in command:
+    # A git alias need not say "push", and PowerShell runs `Git` as git (Codex review of
+    # #159), so any git command is read, whatever its case.
+    if not any(word in command.lower() for word in ("push", "merge", "git")):
         return None
     cwd = str(payload.get("cwd") or os.getcwd())
     targets = find_targets(command, cwd, posix=payload.get("tool_name") == "Bash")

@@ -31,7 +31,7 @@ Index: 2026-10-04 code audit of all project code. 11 independent reviewers plus 
   - `Fill` now carries `remaining`.
   - Only fills that completed their order are left out of `cancelled`.
   - The regression test builds the real path: a partial fill pushes the daily loss past 3%, and the risk recheck then cancels the rest of the order.
-- **Exact risk thresholds:** the 3%, 8% and 12% checks now compare exact Decimals instead of float-converted equity. There are boundary tests at exactly 3%, 8% and 12%.
+- **Exact risk thresholds: moved to #163.** Comparing the 3%, 8% and 12% limits exactly, instead of through float-converted equity, changes decisions for an equity exactly on a limit. A semantic change belongs under a new engine identity (Codex review of #159), and #163 already bumps both, to `drawdown-recovery-v2` and schema 8. This PR keeps main's comparisons, so it stays free of behaviour changes.
 - **Journal shape:** a reentry refused by the affordability check is recorded (`reentry_refused`). `capped` is present on every frame of a capped run. A no-op settlement on a flat frame no longer increments `settlement_count` or journals an empty allocation.
 - **Config:** `include_assets` entries are checked as asset names, and duplicates are refused. Options a chosen mode would ignore are rejected instead of silently dropped.
 

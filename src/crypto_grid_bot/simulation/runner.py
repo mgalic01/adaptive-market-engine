@@ -71,12 +71,17 @@ GRID_BUDGET_FRACTION = D("0.8")
 # account carries the halt's start and category, the episode and the C1(b) reference.
 # Schema 1-5 databases are refused: their halts were final and their state lacks these
 # fields.
-# 7 (2026-10-04, strategy audit #160): V2 market structure is a policy flag, off by
-# default. Code between #150/#151 and this change ran every account with structure on
-# (the six-signal regime vote and the FTA cap) under the same schema-6 identity as the
-# V0 accounts before it, so a schema-6 database cannot say which semantics produced
+# 7 (2026-10-05, code audit #159): the journal records each fill's remaining quantity
+# and lists an order that filled in part and was then cancelled on the same frame as
+# cancelled; a flat frame's no-op settlement is neither counted nor journaled. A
+# schema-6 database holds events in the old shape, so it is refused rather than
+# continued under the new one (Codex review of #159).
+# 8 (2026-10-05, strategy audit #160): V2 market structure is a policy flag, off by
+# default. Code from #150/#151 up to this change, schema 7 included, ran every account
+# with structure on (the six-signal regime vote and the FTA cap) under the same identity
+# as the V0 accounts before it, so such a database cannot say which semantics produced
 # its history; it is refused rather than reopened under either (Codex review of #160).
-SCHEMA = 7
+SCHEMA = 8
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"
@@ -331,7 +336,13 @@ class PaperSimulator:
     def _risk_action(self, account: Account, quote: Quote, emergency: bool) -> RiskAction:
         equity = account.equity(quote, self.rules)
         result = self.risk.evaluate(
-            PortfolioSnapshot(equity, account.day_start, account.risk_high, 0, emergency=emergency)
+            PortfolioSnapshot(
+                float(equity),
+                float(account.day_start),
+                float(account.risk_high),
+                0,
+                emergency=emergency,
+            )
         )
         if self.risk_observer is not None:
             self.risk_observer(equity, account.risk_high, account.measure_high, result)
@@ -360,7 +371,9 @@ class PaperSimulator:
         the observer does not see it and the account is untouched."""
         equity = account.equity(quote, self.rules)
         result = self.risk.evaluate(
-            PortfolioSnapshot(equity, account.day_start, equity, 0, emergency=emergency)
+            PortfolioSnapshot(
+                float(equity), float(account.day_start), float(equity), 0, emergency=emergency
+            )
         )
         return result.action == RiskAction.ALLOW
 
