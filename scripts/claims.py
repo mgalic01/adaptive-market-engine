@@ -329,6 +329,18 @@ def _mapped(source: str, remote: str, cwd: str) -> str | None:
     return None
 
 
+def _push_remote(cwd: str) -> str:
+    """The remote `git push` with no repository goes to: the current branch's
+    pushRemote, then remote.pushDefault, then the branch's remote, then origin (Codex
+    review of #159)."""
+    branch = current_branch(cwd)
+    keys = [f"branch.{branch}.pushRemote", "remote.pushDefault", f"branch.{branch}.remote"]
+    for key in keys if branch else ["remote.pushDefault"]:
+        if value := _git(cwd, "config", "--get", key):
+            return value
+    return "origin"
+
+
 def _default_destination(branch: str, cwd: str) -> str | None:
     """The remote branch push.default sends the current ``branch`` to: its upstream
     for `upstream`, every branch (None) for `matching`, else its own name."""
@@ -364,7 +376,7 @@ def push_targets(args: list[str], cwd: str) -> list[Target]:
             positional.append(a)
     if dry:
         return []
-    remote, refspecs = (positional[0], positional[1:]) if positional else ("origin", [])
+    remote, refspecs = (positional[0], positional[1:]) if positional else (_push_remote(cwd), [])
     if not remote_is_ours(remote, cwd):
         return []
     if every:
@@ -393,7 +405,7 @@ def push_targets(args: list[str], cwd: str) -> list[Target]:
             continue
         spec = spec.lstrip("+")
         dst = spec if delete or ":" not in spec else (spec.split(":", 1)[1] or spec.split(":")[0])
-        if ":" not in spec and not delete:
+        if ":" not in spec and not delete and spec not in ("HEAD", "@"):
             # `git push origin work` goes where a remote push refspec maps `work`.
             dst = _mapped(spec, remote, cwd) or dst
         if dst.startswith("refs/tags/"):
@@ -619,15 +631,19 @@ def substitutions(command: str, quotes: bool = True) -> list[str]:
         c = command[i]
         if c == "\\" and quote != "'":
             i += 1  # an escaped quote or backtick is plain text
+        elif quotes and not quote and command.startswith("$'", i):
+            quote, i = "$'", i + 1  # ANSI-C: text, with backslash escapes
+        elif quote == "$'" and c == "'":
+            quote = ""
         elif quotes and c in "'\"" and quote in ("", c):
             quote = "" if quote else c
-        elif quote != "'" and c == "`":
+        elif quote not in ("'", "$'") and c == "`":
             end = command.find("`", i + 1)
             if end < 0:
                 break
             found.append(command[i + 1 : end])
             i = end
-        elif quote != "'" and command.startswith("$(", i):
+        elif quote not in ("'", "$'") and command.startswith("$(", i):
             # Its own quoting starts afresh, and a quoted or escaped parenthesis does not
             # close it (Codex review of #159: `$(eval 'printf ")"; gh pr merge 5')`).
             quoted = _quoted(command[i + 1 :])
@@ -652,7 +668,9 @@ HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(\\?)(['\"]?)([\w.-]+)\3(?=[\s;
 
 def _quoted(command: str) -> list[bool]:
     """Whether the shell reads each character as text: inside quotes, a quote itself, or
-    escaped by a backslash. There `;`, `&`, `|`, `<<` and `#` are no operators."""
+    escaped by a backslash. There `;`, `&`, `|`, `<<` and `#` are no operators. Bash's
+    ANSI-C quotes, `$'...'`, take backslash escapes, `\\'` included (Codex review of
+    #159: `printf %s $'a\\'b'; gh pr merge 5`)."""
     mask = [False] * len(command)
     quote, i = "", 0
     while i < len(command):
@@ -661,7 +679,13 @@ def _quoted(command: str) -> list[bool]:
             mask[i : i + 2] = [True] * len(mask[i : i + 2])
             i += 2
             continue
-        if c in "'\"" and quote in ("", c):
+        if not quote and command.startswith("$'", i):
+            quote, mask[i : i + 2] = "$'", [True, True]
+            i += 2
+            continue
+        if quote == "$'" and c == "'":
+            quote, mask[i] = "", True
+        elif c in "'\"" and quote in ("", c):
             quote = "" if quote else c
             mask[i] = True
         else:
@@ -702,7 +726,22 @@ def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[
 PIPELINE_ENDS = re.compile(r"&&|\|\||(?<![>&|])&(?![&>])|;")
 
 
-def _readers(command: str, start: int, end: int, at: int) -> list[list[str]]:
+def _writes(words: list[str]) -> set[str]:
+    """The files a pipeline stage's words write its output to: `> file`, `>> file`,
+    `>file`, `&> file`, and `tee`'s file arguments."""
+    files = set()
+    for i, word in enumerate(words):
+        if m := re.fullmatch(r"(?:1|&)?>>?\|?(.*)", word):
+            target = m[1] or (words[i + 1] if i + 1 < len(words) else "")
+            if target and not target.startswith("&"):  # `>&2` is a descriptor
+                files.add(os.path.normpath(target))
+    toks = unwrap(drop_redirections(words))
+    if toks and _exe(toks[0]) == "tee":
+        files |= {os.path.normpath(a) for a in toks[1:] if not a.startswith("-")}
+    return files
+
+
+def _readers(command: str, start: int, end: int, at: int) -> tuple[list[list[str]], set[str]]:
     """The commands that read the here-document whose `<<` is at ``at`` on the line
     ``command[start:end]``: the command of the `<<`'s own pipeline stage and of each
     stage after it, which its output feeds (`cat <<'EOF' | bash`); a stage before it
@@ -711,7 +750,8 @@ def _readers(command: str, start: int, end: int, at: int) -> list[list[str]]:
     an argument of its stage, not where a command starts. Each command is parsed into
     shell words and unwrapped (`/bin/'bash'` is bash, `sudo bash` is bash), so that an
     argument such as the `bash` of `echo bash <<EOF` is never taken for its reader.
-    (Codex reviews of #159.)"""
+    Also the files those commands write the body to (`cat > run <<EOF`), which a
+    later command on the line may run. (Codex reviews of #159.)"""
     quoted = _quoted(command)
     groups: list[tuple[str, int]] = []  # the groups open before `at`: opener, text start
     for i in range(start, at):
@@ -752,11 +792,14 @@ def _readers(command: str, start: int, end: int, at: int) -> list[list[str]]:
             first = i + 1
         i += 1
     stages.append((first, i))
-    readers = []
+    readers: list[list[str]] = []
+    written: set[str] = set()
     for s, e in stages:
         if e <= at or (s <= at and command[at] == "(" and not command[s:at].strip()):
             continue  # upstream of the `<<`, or a subshell around it: neither reads it
-        words = drop_redirections(split_words(command[s:e]))
+        raw = split_words(command[s:e])
+        written |= _writes(raw)
+        words = drop_redirections(raw)
         # A function body's opener before its command: `f(){ bash <<EOF`, `f() { bash`.
         while words and re.fullmatch(r"[^\s(){}]*\(\)\{?|[(){}]+", words[0]):
             words = words[1:]
@@ -765,8 +808,9 @@ def _readers(command: str, start: int, end: int, at: int) -> list[list[str]]:
     if groups:
         # What the group prints goes to the command around it: `bash < <(cat <<EOF)`,
         # `eval $(cat <<EOF)` or `(cat <<EOF) | bash` (Codex review of #159).
-        readers += _readers(command, start, end, region - 1)
-    return readers
+        outer, outer_written = _readers(command, start, end, region - 1)
+        readers, written = readers + outer, written | outer_written
+    return readers, written
 
 
 # Commands that only read their input as data (git: by its subcommand, below). A
@@ -838,13 +882,15 @@ def _reader_kind(words: list[str]) -> str:
     return "data" if name in DATA_READERS else "run"
 
 
-def heredocs(command: str) -> tuple[str, list[tuple[str, bool, list[list[str]]]]]:
+def heredocs(
+    command: str,
+) -> tuple[str, list[tuple[str, bool, list[list[str]], set[str]]]]:
     """The command without its here-document bodies, and each body with whether its
     delimiter is quoted (the shell expands nothing in it) and the commands that read
     it (``_readers``): the command it feeds and those its output is piped into (`cat
     <<'EOF' | bash`), never another command on the same line. A body is its readers'
     input, not commands (Codex review of #159)."""
-    found: list[tuple[str, bool, list[list[str]]]] = []
+    found: list[tuple[str, bool, list[list[str]], set[str]]] = []
     pos = 0
     while (first := next(_heredoc_operators(command, pos, len(command)), None)) is not None:
         line_start = command.rfind("\n", 0, first.start()) + 1
@@ -866,8 +912,8 @@ def heredocs(command: str) -> tuple[str, list[tuple[str, bool, list[list[str]]]]
                 end = row_end + 1
             else:
                 body, after = command[cursor:], len(command)
-            readers = _readers(command, line_start, line_end, m.start())
-            found.append((body, bool(m.group(2) or m.group(3)), readers))
+            readers, written = _readers(command, line_start, line_end, m.start())
+            found.append((body, bool(m.group(2) or m.group(3)), readers, written))
             cursor = after
         command, pos = command[: line_end + 1] + command[cursor:], line_end + 1
     return command, found
@@ -921,6 +967,22 @@ def _assignments(words: list[str]) -> dict[str, str]:
             name, _, value = word.partition("=")
             found[name] = value
     return found
+
+
+def _command_env(prefix: list[str], exported: dict[str, str], removed: set[str]) -> dict[str, str]:
+    """A command's environment: the hook's own, what the line exported before it and
+    did not take out, then what its own prefix sets: `env -i` clears it, `env -u NAME`
+    drops NAME, `NAME=value` sets it (Codex review of #159)."""
+    env = {k: v for k, v in {**os.environ, **exported}.items() if k not in removed}
+    for i, w in enumerate(prefix):
+        if w in ("-i", "--ignore-environment") and "env" in map(_exe, prefix[:i]):
+            env = {}
+        elif w in ("-u", "--unset") and i + 1 < len(prefix):
+            env.pop(prefix[i + 1], None)
+        elif w.startswith("--unset="):
+            env.pop(w.split("=", 1)[1], None)
+    env.update(_assignments(prefix))
+    return env
 
 
 def _is_git(word: str) -> bool:
@@ -1013,6 +1075,8 @@ def find_targets(
         return _unknown(root, "a command nested too deep to read")
     command, bodies = heredocs(command)
     targets: list[Target] = []
+    executed: set[str] = set()  # files the line runs: `bash run`, `. ./run`, `./run`
+    removed: set[str] = set()  # variables the line takes out of the environment
     variables: dict[str, str] = {}  # the shell variables the line sets
     exported: dict[str, str] = {}  # what `export` puts in later commands' environment
     for segment in segments(command):
@@ -1020,23 +1084,37 @@ def find_targets(
         if words[:1] == ["source"] or (posix and words[:1] == ["."]):
             # They run a file, or what they read from their input (`source <(...)`);
             # PowerShell's `.` runs the command after it, which is read as before.
+            executed.update(os.path.normpath(w) for w in words[1:2])
             targets.extend(_run_time_code(words[0], words[1:], segment, command))
             continue
         toks = unwrap(words)
-        if toks[:1] == ["export"]:
+        prefix = words[: len(words) - len(toks)]  # what runs the command: wrappers, NAME=v
+        names = [w.partition("=")[0] for w in toks[1:] if not w.startswith("-")]
+        if toks[:1] == ["export"] and "-n" not in toks[1:]:
             # `export NAME=value`, or `export NAME` of a variable set before it (Codex
             # review of #159: `GIT_DIR=...; export GIT_DIR; git push`).
             variables.update(_assignments(toks[1:]))
-            names = (word.partition("=")[0] for word in toks[1:] if not word.startswith("-"))
             exported.update({n: variables[n] for n in names if n in variables})
+            removed.difference_update(names)
+        elif toks[:1] in (["unset"], ["export"]):
+            # `unset NAME` and `export -n NAME` take it out of the environment (Codex
+            # review of #159).
+            for name in names:
+                exported.pop(name, None)
+                if toks[0] == "unset":
+                    variables.pop(name, None)
+            removed.update(names)
         elif not toks:  # a plain assignment sets a variable, and an exported one's value
             variables.update(_assignments(words))
-            exported.update(
-                {k: v for k, v in variables.items() if k in exported or k in os.environ}
-            )
+            inherited = {k for k in os.environ if k not in removed}
+            exported.update({k: v for k, v in variables.items() if k in exported or k in inherited})
         if not toks:
             continue
         exe = _exe(toks[0])
+        if "/" in toks[0] or "\\" in toks[0]:
+            executed.add(os.path.normpath(toks[0]))  # `./run`, `/tmp/run`
+        if exe in SHELLS or CLIENT_VERSION_RE.sub("", exe) in INTERPRETERS:
+            executed.update(os.path.normpath(a) for a in toks[1:] if not a.startswith("-"))
         if exe != "git" and _is_git(exe):
             exe, toks = "git", ["git", exe[4:], *toks[1:]]
         base = _env_dir(words, cwd)
@@ -1053,12 +1131,7 @@ def find_targets(
             # Git's environment: the hook's own, what the line exported before this
             # command, then this command's own assignments; never a later one (Codex
             # review of #159).
-            prefix: list[str] = []
-            for w in split_words(segment):
-                if _is_git(w):
-                    break
-                prefix.append(w)
-            env = {**os.environ, **exported, **_assignments(prefix)}
+            env = _command_env(prefix, exported, removed)
             git_dir = env.get("GIT_DIR", "")
             while rest and rest[0].startswith("-"):
                 if rest[0] == "-C" and len(rest) > 1:
@@ -1120,7 +1193,9 @@ def find_targets(
             if rest and rest[0] in ("push", "send-pack"):
                 targets.extend(push_targets(rest[1:], here))
         elif exe == "gh":
-            targets.extend(_gh_targets(toks[1:], segment, base))
+            # GH_REPO names the repository when no -R does (Codex review of #159).
+            gh_repo = _command_env(prefix, exported, removed).get("GH_REPO")
+            targets.extend(_gh_targets(toks[1:], segment, base, gh_repo))
         elif exe in SHELLS:
             found = shell_command(exe, toks[1:])
             if found is not None:
@@ -1153,12 +1228,17 @@ def find_targets(
             # prints), but runs `$x` in a POSIX shell.
             targets.extend(_unknown(root, f"{toks[0]} runs a command known only at run time"))
     inners = substitutions(command)
-    for body, quoted, readers in bodies:
+    for body, quoted, readers, written in bodies:
         kinds = {_reader_kind(words) for words in readers}
+        if written & executed:
+            # Written to a file that a later command runs (`cat > run <<EOF ...; bash
+            # run`): the body is read as that command's code (Codex review of #159).
+            kinds.add("run")
         if kinds & {"shell", "run"}:
             # Read as commands, where its reader runs them (`env -C DIR bash <<EOF`): a
             # shell, `source`, ssh or anything unknown may run it.
-            here = next(_env_dir(w, cwd) for w in readers if _reader_kind(w) in ("shell", "run"))
+            runners = [w for w in readers if _reader_kind(w) in ("shell", "run")]
+            here = _env_dir(runners[0], cwd) if runners else cwd
             targets.extend(find_targets(body, here, depth + 1, posix=posix, root=root))
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))
@@ -1177,12 +1257,15 @@ def find_targets(
     return targets
 
 
-def _gh_targets(toks: list[str], segment: str, cwd: str) -> list[Target]:
+def _gh_targets(
+    toks: list[str], segment: str, cwd: str, env_repo: str | None = None
+) -> list[Target]:
     """Merges in a `gh` command. The option scan knows which words are option values, so
     a body or subject that reads `-R` or `--repo=...` is never taken for the repository
     (automated review at 3875759: that silently skipped the claim check). A global
-    `-R`/`--repo` before the subcommand counts too (automated review at 987702a)."""
-    global_repo: str | None = None
+    `-R`/`--repo` before the subcommand counts too (automated review at 987702a), and so
+    does ``env_repo``, the command's GH_REPO, when no flag names one."""
+    global_repo: str | None = env_repo
     while toks and toks[0].startswith("-"):
         if toks[0] in ("-R", "--repo") and len(toks) > 1:
             global_repo, toks = toks[1], toks[2:]

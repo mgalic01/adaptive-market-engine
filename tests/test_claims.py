@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import shlex
 import sys
 import unittest
@@ -483,6 +484,18 @@ class TargetTest(unittest.TestCase):
             hidden = "awk -f - <<'EOF'\nBEGIN { system(\"gh pr merge 5\") }\ngh pr merge 6\nEOF"
             self.assertCountEqual(self.prs(hidden), [6, None])
             self.assertEqual(find_targets("bash <<'EOF'\necho merge later\nEOF", "."), [])
+            # Codex review of #159: a body written to a file that the line then runs.
+            for cmd in (
+                "cat > /tmp/run <<'EOF'\ngh pr merge 5\nEOF\nbash /tmp/run",
+                "cat <<'EOF' > run.sh\ngh pr merge 5\nEOF\n. ./run.sh",
+                "tee x.sh <<'EOF' >/dev/null\ngh pr merge 5\nEOF\nchmod +x x.sh && ./x.sh",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertIn(5, self.prs(cmd))
+            notes = "cat > notes.md <<'EOF'\ngh pr merge 5\nEOF\npython scripts/check.py"
+            self.assertEqual(find_targets(notes, "."), [])
+            # Codex review of #159: an ANSI-C quote's escaped quote does not end it.
+            self.assertEqual(self.prs("printf %s $'foo\\'bar'; gh pr merge 5"), [5])
             # Codex review of #159: what a group prints goes to the command around it.
             for cmd in (
                 "bash < <(cat <<'EOF'\ngh pr merge 5\nEOF\n)",
@@ -551,9 +564,19 @@ class TargetTest(unittest.TestCase):
     def test_an_attached_repository_flag_from_another_checkout(self):
         # Codex review of #159: `-R<repo>` names this repository from another one.
         with git_stub(origin="https://github.com/other/repo.git"):
-            for cmd in (f"gh pr merge -R{REPO} 5", f"gh -R{REPO} pr merge 5"):
+            for cmd in (
+                f"gh pr merge -R{REPO} 5",
+                f"gh -R{REPO} pr merge 5",
+                # Codex review of #159: GH_REPO names it too, set or inherited.
+                f"GH_REPO={REPO} gh pr merge 5",
+                f"env GH_REPO={REPO} gh pr merge 5",
+                f"export GH_REPO={REPO}; gh pr merge 5",
+            ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            with mock.patch.dict(os.environ, {"GH_REPO": REPO}):
+                self.assertEqual(self.prs("gh pr merge 5"), [5])
+                self.assertEqual(self.prs("gh pr merge 5 -R other/repo"), [])
 
     def test_a_push_goes_where_git_is_configured_to_send_it(self):
         # Codex review of #159: push.default=upstream, and the remote's push refspecs.
@@ -580,10 +603,40 @@ class TargetTest(unittest.TestCase):
             ({"push.default": "matching"}, "git push", every),
             ({}, "git push origin 'refs/heads/*:refs/heads/*'", every),
             ({}, "git push", [("work", False)]),
+            # Codex review of #159: symbolic HEAD is the current branch, unmapped.
+            (
+                {"remote.origin.push": "refs/heads/*:refs/heads/review/*"},
+                "git push origin HEAD",
+                [("work", False)],
+            ),
         ):
             with self.subTest(cmd=cmd, config=config), configured(config):
                 found = [(t.branch, t.every_branch) for t in find_targets(cmd, ".")]
                 self.assertEqual(found, expected)
+
+    def test_a_push_with_no_repository_goes_to_the_push_remote(self):
+        # Codex review of #159: branch.<name>.pushRemote, then remote.pushDefault.
+        def configured(config):
+            def fake(cwd, *args):
+                if args[:2] == ("rev-parse", "--abbrev-ref"):
+                    return "work"
+                if args[:2] == ("remote", "get-url"):
+                    ours = args[2] == "protected"
+                    return f"https://github.com/{REPO}.git" if ours else "https://x/other.git"
+                if args[:2] in (("config", "--get"), ("config", "--get-all")):
+                    return config.get(args[2])
+                return None
+
+            return mock.patch.object(claims, "_git", side_effect=fake)
+
+        for config in (
+            {"branch.work.pushRemote": "protected"},
+            {"remote.pushDefault": "protected"},
+        ):
+            with self.subTest(config=config), configured(config):
+                self.assertEqual([t.branch for t in find_targets("git push", ".")], ["work"])
+        with configured({}):  # origin is another repository
+            self.assertEqual(find_targets("git push", "."), [])
 
     def test_positional_parameters_of_a_shell_script(self):
         # Codex review of #159: `sh -c script name args...` gives its args to $1, $@...
@@ -667,6 +720,10 @@ class TargetTest(unittest.TestCase):
                 "cd /tmp/other && export GIT_DIR=/work/repo/.git && git push origin claude/a",
                 "cd /tmp/other && GIT_DIR=/work/repo/.git; export GIT_DIR; "
                 "git push origin claude/a",
+                # Codex review of #159: a selector the line unsets, or `env` drops.
+                "GIT_DIR=/tmp/other/.git; export GIT_DIR; unset GIT_DIR; git push origin claude/a",
+                "export GIT_DIR=/tmp/other/.git; env -u GIT_DIR git push origin claude/a",
+                "export GIT_DIR=/tmp/other/.git; env -i git push origin claude/a",
             ):
                 with self.subTest(cmd=cmd):
                     targets = find_targets(cmd, ".")
