@@ -28,6 +28,7 @@ from crypto_grid_bot.backtest.trend_benchmark import STRATEGY as BENCHMARK
 
 ROOT = Path(__file__).resolve().parents[1]
 SPECS = ROOT / "config" / "datasets"
+FROZEN_CONFIG = sha256_file(ROOT / "config" / "default.toml")
 
 
 def run(**changes):
@@ -285,7 +286,7 @@ class MaskTests(unittest.TestCase):
             purpose="test",
             traded=("AAAUSDT", "BBBUSDT"),
             market_proxy="AAAUSDT",
-            breadth_basket=("AAAUSDT", "CCCUSDT"),
+            breadth_basket=("AAAUSDT", "BBBUSDT", "CCCUSDT"),
             warmup_start="2023-01",
             start="2023-03",
             end="2023-04",
@@ -296,7 +297,8 @@ class MaskTests(unittest.TestCase):
             assumed_spread_pct=Decimal("0.05"),
         )
         for symbol, field, excluded in (
-            ("BBBUSDT", "minutes_missing", {"BBBUSDT"}),  # its own minutes: that pair only
+            # A traded pair's own check: that pair only, though it also votes in the basket.
+            ("BBBUSDT", "minutes_missing", {"BBBUSDT"}),
             ("CCCUSDT", "series_hours_missing", {"AAAUSDT", "BBBUSDT"}),  # breadth: every pair
             ("AAAUSDT", "hours_mismatched", {"AAAUSDT", "BBBUSDT"}),  # the proxy: every pair
         ):
@@ -306,6 +308,19 @@ class MaskTests(unittest.TestCase):
                 window = score.window_of(spec, checks)
                 self.assertEqual(set(window.excluded), excluded)
                 self.assertEqual(window.days, 61)
+
+    def test_a_traded_pairs_own_failure_excludes_only_that_pair(self) -> None:
+        # Codex's case: SOLUSDT also votes in practice-2022's basket, and its minute
+        # failure must not take BTCUSDT and XRPUSDT with it.
+        spec = load_spec(SPECS / "practice-2022.toml")
+        checks = clean_checks(spec)
+        next(c for c in checks if c["symbol"] == "SOLUSDT")["minutes_missing"] = 1
+        window = score.window_of(spec, checks)
+        self.assertEqual(window.included, ("BTCUSDT", "XRPUSDT"))
+        self.assertEqual(window.excluded["SOLUSDT"][0], "SOLUSDT: minutes_missing=1")
+        # BTCUSDT is the market proxy, so its own failure excludes every pair.
+        next(c for c in checks if c["symbol"] == "BTCUSDT")["minutes_missing"] = 1
+        self.assertEqual(score.window_of(spec, checks).included, ())
 
     def test_checks_must_be_one_per_checked_symbol(self) -> None:
         spec = load_spec(SPECS / "verify-2024h1.toml")
@@ -365,7 +380,7 @@ def document(dataset, rows, **changes):
         "manifest_created_at": "synthetic",
         "spec_sha256": sha256_file(spec_path),
         "manifest_sha256": f"manifest of {dataset}",
-        "config_sha256": "config",
+        "config_sha256": FROZEN_CONFIG,
         "integrity_rules": {"version": INTEGRITY_RULES, "volume_drift_tolerance": "0.001"},
         "fees": {"maker": "0", "taker": "0.0009"},
         "valid": not failures,
@@ -431,17 +446,18 @@ class FileTests(unittest.TestCase):
     def run_scorer(self, documents):
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code = score.main(
-                [*self.write(documents), "--out", str(self.out), "--specs", str(SPECS)]
-            )
+            code = score.main([*self.write(documents), "--out", str(self.out)])
         verdict = json.loads(self.out.read_text()) if self.out.exists() else None
         return code, stdout.getvalue(), stderr.getvalue(), verdict
 
     def refused(self, documents, reason):
         code, _, stderr, verdict = self.run_scorer(documents)
         self.assertEqual(code, 2)
-        self.assertIsNone(verdict)
         self.assertIn(reason, stderr)
+        self.assertNotIn("variants", verdict)
+        selection = verdict["selection"]
+        self.assertEqual((selection["outcome"], selection["winner"]), ("refused", None))
+        self.assertTrue(any(reason in line for line in selection["reasons"]))
 
     def test_the_whole_matrix_selects_a_winner_and_writes_the_verdict(self) -> None:
         code, text, _, verdict = self.run_scorer(matrix().values())
@@ -567,9 +583,9 @@ class FileTests(unittest.TestCase):
             "maker fee 0.001": rules(fee_rate="0.001"),
             "missed-fill sensitivity": rules(fill_trigger_rate="0.0002"),
             "assumed spread % 0.10": each_row(assumed_spread_pct="0.10"),
-            "the spec changed": lambda f: f.update(spec_sha256="0" * 64),
+            "changed since they ran": lambda f: f.update(spec_sha256="0" * 64),
             "not a spec v1 variant": each_row(variant="B (inventory cap 0.5, not the spec's 0.40)"),
-            "different configs": lambda f: f.update(config_sha256="another config"),
+            "not the frozen config/default.toml": lambda f: f.update(config_sha256="tuned"),
             "comparison mask differs": lambda f: f["hourly_cross_checks"][0].update(
                 hours_missing=1
             ),
@@ -580,6 +596,70 @@ class FileTests(unittest.TestCase):
             with self.subTest(reason):
                 self.refused(changed(change), reason)
 
+    def test_a_batch_on_another_config_is_refused_however_consistent(self) -> None:
+        documents = matrix()
+        for file in documents.values():
+            file["config_sha256"] = "config"  # every file agrees, on the wrong config
+        self.refused(documents.values(), "not the frozen config/default.toml")
+
+    def test_text_digests_are_one_pair_for_either_line_endings(self) -> None:
+        lf, crlf = self.tmp / "lf.toml", self.tmp / "crlf.toml"
+        lf.write_bytes(b'a = "1"' + bytes([10]) + b"b = 2" + bytes([10]))
+        crlf.write_bytes(lf.read_bytes().replace(bytes([10]), bytes([13, 10])))
+        self.assertEqual(score.text_digests(lf), score.text_digests(crlf))
+        self.assertEqual(score.text_digests(lf)[0], sha256_file(lf))
+        self.assertEqual(score.text_digests(lf)[1], sha256_file(crlf))
+
+    def test_either_line_endings_of_the_frozen_files_are_accepted(self) -> None:
+        # Git checks the committed files out with LF on Linux and CRLF on Windows, and a
+        # run records the hash of the bytes it found. Use the form this checkout lacks.
+        documents = matrix()
+        config = score.text_digests(score.ACCEPTANCE_CONFIG)
+        other = 1 if config[0] == FROZEN_CONFIG else 0
+        for (dataset, _), file in documents.items():
+            spec = score.text_digests(score.DATASET_SPECS / f"{dataset}.toml")
+            file["config_sha256"], file["spec_sha256"] = config[other], spec[other]
+        self.assertEqual(self.run_scorer(documents.values())[3]["selection"]["winner"], "A")
+
+    def test_a_traded_pairs_own_failure_leaves_the_other_pairs_scored(self) -> None:
+        documents = matrix()
+        for (dataset, _), file in documents.items():
+            if dataset == "practice-2022":
+                checks = file["hourly_cross_checks"]
+                next(c for c in checks if c["symbol"] == "SOLUSDT")["minutes_missing"] = 1
+        _, _, _, verdict = self.run_scorer(documents.values())
+        pairs = verdict["comparison_mask"]["practice-2022"]["pairs"]
+        self.assertEqual(len(pairs["SOLUSDT"]["reasons"]), 2)  # its minutes, and P4
+        self.assertTrue(pairs["BTCUSDT"]["included"] and pairs["XRPUSDT"]["included"])
+        self.assertEqual(verdict["selection"]["winner"], "A")
+
+    def test_a_refused_rerun_replaces_the_earlier_verdict(self) -> None:
+        documents = matrix()
+        self.assertEqual(self.run_scorer(documents.values())[3]["selection"]["winner"], "A")
+        documents["verify-2024h1", "V0"]["engine_version"] = "drawdown-recovery-v1"
+        self.refused(documents.values(), "engine 'drawdown-recovery-v1'")
+
+    def test_a_run_that_fails_midway_leaves_no_earlier_verdict(self) -> None:
+        paths = self.write(matrix().values())
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(score.main([*paths, "--out", str(self.out)]), 0)
+        with (
+            patch.object(score, "assess", side_effect=RuntimeError("interrupted")),
+            self.assertRaises(RuntimeError),
+        ):
+            score.main([*paths, "--out", str(self.out)])
+        selection = json.loads(self.out.read_text())["selection"]
+        self.assertEqual((selection["outcome"], selection["winner"]), ("not scored", None))
+
+    def test_the_verdict_never_overwrites_an_input(self) -> None:
+        (path,) = self.write([matrix()["verify-2024h1", "V0"]])
+        results = Path(path) / "results.json"
+        before = results.read_bytes()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            score.main([path, "--out", str(results)])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(results.read_bytes(), before)
+
     def test_the_same_run_in_two_inputs_is_refused(self) -> None:
         documents = matrix()
         self.refused([*documents.values(), documents["verify-2024h1", "V0"]], "more than one input")
@@ -589,10 +669,10 @@ class FileTests(unittest.TestCase):
         file.write_text('{"dataset": "verify-2024h1", "x": NaN}')
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
-            code = score.main([str(file), "--out", str(self.out), "--specs", str(SPECS)])
+            code = score.main([str(file), "--out", str(self.out)])
         self.assertEqual(code, 2)
-        self.assertFalse(self.out.exists())
         self.assertIn("non-finite number NaN", stderr.getvalue())
+        self.assertEqual(json.loads(self.out.read_text())["selection"]["outcome"], "refused")
 
     def test_floats_are_read_as_their_decimal_text_and_returns_from_equities(self) -> None:
         file = self.tmp / "results.json"
@@ -614,7 +694,7 @@ class FileTests(unittest.TestCase):
         env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
         command = [sys.executable, "-m", "crypto_grid_bot.backtest.acceptance", *paths]
         done = subprocess.run(
-            [*command, "--out", str(self.out), "--specs", str(SPECS)],
+            [*command, "--out", str(self.out)],
             capture_output=True,
             env=env,
             check=False,

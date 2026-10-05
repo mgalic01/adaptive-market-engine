@@ -8,16 +8,17 @@ included runs (every included pair, window and intrabar path), R1 is reported, a
 deterministic selection runs when the inputs are the whole section 4 matrix. A readable
 table is printed, and the verdict with every figure behind it is written as JSON.
 
-It runs no backtest and reads no market data: only the results files and the dataset
-specs they name, which must hash to the ``spec_sha256`` each run recorded. Arithmetic is
-exact (``Fraction``): returns come from the recorded equities, and drawdowns are read
-exactly as the results wrote them.
+It runs no backtest and reads no market data: only the results files, and the dataset
+specs and default config committed beside this code, which must hash to the
+``spec_sha256`` and ``config_sha256`` each run recorded. Arithmetic is exact
+(``Fraction``): returns come from the recorded equities, and drawdowns are read exactly
+as the results wrote them.
 
 It fails closed and skips nothing:
 
 * an input that is not an acceptance run (another engine, features, integrity rules,
-  fee or sensitivity setting, an unknown variant, a duplicate run, a changed dataset
-  spec) is refused, and nothing is scored;
+  config, fee or sensitivity setting, an unknown variant, a duplicate run, a changed
+  dataset spec) is refused: nothing is scored, and the verdict file says so;
 * an invalid run fails its variant's C4 (section 5), and so does a run missing from the
   matrix, which also stops the selection;
 * a pair-window the comparison mask excludes (section 5) is excluded for every variant
@@ -44,7 +45,7 @@ from crypto_grid_bot.backtest.__main__ import (
     integrity_failures,
     result_failures,
 )
-from crypto_grid_bot.backtest.dataset import DatasetSpec, load_spec, sha256_file
+from crypto_grid_bot.backtest.dataset import DatasetSpec, _write_atomic, load_spec
 from crypto_grid_bot.backtest.features import FEATURE_VERSION
 from crypto_grid_bot.backtest.jobs import SOURCE_IDENTITY
 from crypto_grid_bot.backtest.klines import month_bounds_ms
@@ -93,6 +94,12 @@ C7_NOTE = (
     "C7 not evaluated: it is not yet settled (spec v1 section 6). It selects nothing, and "
     "the reserved window stays closed until it is settled and passed, or waived."
 )
+# The frozen acceptance inputs (sections 3 and 7): the dataset specs and the default
+# config committed beside this code. Every run must have recorded their hashes, and no
+# command-line path can replace them with tuned copies.
+REPOSITORY = Path(__file__).resolve().parents[3]
+DATASET_SPECS = REPOSITORY / "config" / "datasets"
+ACCEPTANCE_CONFIG = REPOSITORY / "config" / "default.toml"
 _DATASET_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 Figure = Fraction | int | str
@@ -466,18 +473,22 @@ def outcome(windows: Sequence[Window], scores: Sequence[VariantScore]) -> Select
 def window_of(spec: DatasetSpec, checks: list[dict[str, Any]]) -> Window:
     """The comparison mask (section 5) from the variant-independent checks a run recorded.
 
-    A pair-window is excluded when a check fails on the pair itself, on the market proxy
-    (its hours feed every pair's regime) or on a breadth-basket symbol (its votes gate
-    every pair), or when the pair fails the filter-availability check (P4). Manifest and
-    checksum failures stop a run before it writes results, so a results file exists only
-    where they passed.
+    A failed check on the market proxy (its hours feed every pair's regime) or on an
+    untraded breadth-basket symbol (its votes gate every pair) excludes every pair. A
+    traded pair's own minute, hourly and daily checks exclude only that pair, even when it
+    also votes in the basket: section 5 makes the shared completeness check one for the
+    untraded symbols. A pair that fails the filter-availability check (P4) is excluded
+    too. Manifest and checksum failures stop a run before it writes results, so a results
+    file exists only where they passed.
     """
     if sorted(check["symbol"] for check in checks) != sorted(checked_symbols(spec)):
         raise ScoringError("the integrity checks are not one per symbol the spec checks")
-    shared = {spec.market_proxy, *spec.breadth_basket}
+    shared = {spec.market_proxy, *(set(spec.breadth_basket) - set(spec.traded))}
+    every_pair = integrity_failures([c for c in checks if c["symbol"] in shared])
     excluded: dict[str, tuple[str, ...]] = {}
     for pair in spec.traded:
-        reasons = integrity_failures([c for c in checks if c["symbol"] in shared | {pair}])
+        own = [c for c in checks if c["symbol"] == pair and pair not in shared]
+        reasons = every_pair + integrity_failures(own)
         if (spec.name, pair) in FILTER_EXCLUSIONS:
             reasons.append(FILTER_EXCLUSIONS[spec.name, pair])
         if reasons:
@@ -613,24 +624,22 @@ def runs_of(document: dict[str, Any], window: Window) -> Iterator[tuple[str, Run
         )
 
 
-def shared_problems(sources: Sequence[Source]) -> list[str]:
-    """Identities every input of one experiment must share."""
-    problems = []
-    if len({s.document["config_sha256"] for s in sources}) > 1:
-        problems.append("the runs used different configs; a config change is another trial")
-    for name in sorted({s.dataset for s in sources}):
-        if len({s.document["manifest_sha256"] for s in sources if s.dataset == name}) > 1:
-            problems.append(f"the {name} runs used different manifests")
-    return problems
+def manifest_problems(sources: Sequence[Source]) -> list[str]:
+    """The runs of one window must have used one manifest, so one set of data."""
+    return [
+        f"the {name} runs used different manifests"
+        for name in sorted({s.dataset for s in sources})
+        if len({s.document["manifest_sha256"] for s in sources if s.dataset == name}) > 1
+    ]
 
 
 def assess(sources: Sequence[Source], specs: Mapping[str, DatasetSpec]) -> Verdict:
-    """Score ``sources`` with the dataset ``specs`` they ran on (``read_specs``)."""
+    """Score ``sources`` with the dataset ``specs`` they ran on (``read_frozen``)."""
     windows: dict[str, Window] = {}
     found: dict[str, dict[tuple[str, str, str], Run]] = {}
     problems: list[str] = []
     try:
-        problems += shared_problems(sources)
+        problems += manifest_problems(sources)
     except (KeyError, TypeError, AttributeError) as exc:
         problems.append(f"malformed results ({type(exc).__name__} {exc})")
     for source in sources:
@@ -681,25 +690,54 @@ def read_results(path: Path) -> Source:
     return Source(file, hashlib.sha256(raw).hexdigest(), document)
 
 
-def read_specs(sources: Sequence[Source], specs_dir: Path) -> dict[str, DatasetSpec]:
-    """The dataset spec of every window, which must be the file each run recorded."""
-    specs = {}
+def text_digests(path: Path) -> tuple[str, str]:
+    """The SHA-256 of a committed text file with LF and with CRLF line endings. Git checks
+    the same commit out either way (``core.autocrlf`` on Windows), and the backtest CLI
+    hashes the bytes it finds, so a run on Linux and one on Windows record different
+    hashes of one file. Line endings change no TOML value."""
+    text = path.read_bytes().replace(b"\r\n", b"\n")
+    crlf = text.replace(b"\n", b"\r\n")
+    return hashlib.sha256(text).hexdigest(), hashlib.sha256(crlf).hexdigest()
+
+
+def read_frozen(sources: Sequence[Source]) -> dict[str, DatasetSpec]:
+    """Check every run against the frozen inputs, and return each window's dataset spec.
+
+    The default config (section 3, V0: "default config") and each window's dataset spec,
+    as committed beside this code, must hash to the ``config_sha256`` and ``spec_sha256``
+    the run recorded. A batch made with a tuned copy of either is refused, however well
+    its files agree with one another.
+    """
+    problems, specs = [], {}
     try:
-        names = sorted({s.dataset for s in sources})
-        for name in names:
+        config = text_digests(ACCEPTANCE_CONFIG)
+        problems += [
+            f"{s.path}: config {s.document['config_sha256']}, not the frozen "
+            f"config/default.toml (SHA-256 {config[0]} with LF line endings); acceptance "
+            "runs use it unchanged"
+            for s in sources
+            if s.document["config_sha256"] not in config
+        ]
+        for name in sorted({s.dataset for s in sources}):
             if not _DATASET_NAME.fullmatch(name):
                 raise ScoringError(f"invalid dataset name {name!r}")
-            path = specs_dir / f"{name}.toml"
-            digest = sha256_file(path)
-            recorded = sorted({s.document["spec_sha256"] for s in sources if s.dataset == name})
-            if recorded != [digest]:
-                raise ScoringError(
-                    f"{path} hashes to {digest}, but the {name} runs recorded "
-                    f"{', '.join(recorded)}: the spec changed since they ran"
+            path = DATASET_SPECS / f"{name}.toml"
+            digests = text_digests(path)
+            unknown = sorted(
+                {str(s.document["spec_sha256"]) for s in sources if s.dataset == name}
+                - set(digests)
+            )
+            if unknown:
+                problems.append(
+                    f"{path} (SHA-256 {digests[0]} with LF line endings) is not the spec the "
+                    f"{name} runs recorded ({', '.join(unknown)}): it changed since they ran"
                 )
-            specs[name] = load_spec(path)
+            else:
+                specs[name] = load_spec(path)
     except (OSError, KeyError, TypeError, AttributeError, ValueError) as exc:
-        raise ScoringError(f"cannot read the dataset specs ({type(exc).__name__} {exc})") from exc
+        raise ScoringError(f"cannot check the frozen inputs ({type(exc).__name__} {exc})") from exc
+    if problems:
+        raise ScoringError("\n".join(problems))
     return specs
 
 
@@ -876,6 +914,19 @@ def render(verdict: Verdict) -> str:
     return "\n".join(lines)
 
 
+def unscored(outcome: str, reasons: Sequence[str]) -> dict[str, Any]:
+    """The verdict of an invocation that scored nothing: no variant and no winner."""
+    return {
+        "scoring": SCORING,
+        "selection": {"outcome": outcome, "winner": None, "reasons": list(reasons)},
+    }
+
+
+def write_verdict(path: Path, document: dict[str, Any]) -> None:
+    """Replace ``path`` in one step: a reader sees the old file or the new one."""
+    _write_atomic(path, (json.dumps(document, indent=1) + "\n").encode())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m crypto_grid_bot.backtest.acceptance",
@@ -885,23 +936,26 @@ def main(argv: list[str] | None = None) -> int:
         "results", type=Path, nargs="+", help="run directories, or their results.json files"
     )
     parser.add_argument("--out", type=Path, required=True, help="where to write the JSON verdict")
-    parser.add_argument(
-        "--specs",
-        type=Path,
-        default=Path("config/datasets"),
-        help="the directory of the dataset specs the runs used (default: config/datasets)",
-    )
     args = parser.parse_args(argv)
+    if args.out.resolve() in {
+        (p / "results.json" if p.is_dir() else p).resolve() for p in args.results
+    }:
+        parser.error("--out must not be one of the results files it scores")
+    # The code that scores, as the backtest CLI records the code that ran.
+    scorer = {"code_commit": code_commit(), "code_sha256": SOURCE_IDENTITY}
+    # Until this run's own verdict replaces it, --out says that nothing was scored, so a
+    # refused, interrupted or failed run never leaves an earlier verdict in its place.
+    write_verdict(
+        args.out, {"scorer": scorer, **unscored("not scored", ["scoring did not finish"])}
+    )
     try:
         sources = [read_results(path) for path in args.results]
-        verdict = assess(sources, read_specs(sources, args.specs))
+        verdict = assess(sources, read_frozen(sources))
     except ScoringError as exc:
+        write_verdict(args.out, {"scorer": scorer, **unscored("refused", str(exc).splitlines())})
         print(f"Refused; nothing was scored:\n{exc}", file=sys.stderr)
         return 2
-    # The code that scored, as the backtest CLI records the code that ran.
-    scorer = {"code_commit": code_commit(), "code_sha256": SOURCE_IDENTITY}
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps({"scorer": scorer, **verdict_json(verdict)}, indent=1) + "\n")
+    write_verdict(args.out, {"scorer": scorer, **verdict_json(verdict)})
     print(render(verdict))
     return 0
 

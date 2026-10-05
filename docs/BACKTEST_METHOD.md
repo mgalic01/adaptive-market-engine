@@ -276,11 +276,14 @@ PYTHONPATH=src python -m crypto_grid_bot.backtest.acceptance \
 ```
 
 `backtest/acceptance.py` turns the `results.json` files of the §4 matrix into the §6
-verdict. It runs no replay and reads no market data, only those files and the dataset
-specs they name (`--specs`, default `config/datasets`). Each spec must hash to the
-`spec_sha256` its runs recorded. It prints a table and writes the verdict as JSON, with
-every figure behind it and the scorer's own commit and source hash. The JSON numbers are
-exact: a decimal where it terminates, otherwise `p/q`.
+verdict. It runs no replay and reads no market data. It reads only those files and the
+frozen inputs committed beside it: the dataset specs in `config/datasets` and
+`config/default.toml`. Every run must have recorded their hashes (`spec_sha256`,
+`config_sha256`), so a batch run on a tuned copy of either is refused, however well its
+files agree. A hash of either line-ending form is accepted, since Git checks the same
+files out with LF on Linux and CRLF on Windows. It prints a table and writes the verdict as JSON, with every figure behind
+it and the scorer's own commit and source hash. The JSON numbers are exact: a decimal
+where it terminates, otherwise `p/q`.
 
 - **Inputs.** Pass one run per variant and window. Every `run` writes the ungated V0
   rows that C6 compares against, and D comes from V0's file (`run --trend-benchmark`).
@@ -289,15 +292,24 @@ exact: a decimal where it terminates, otherwise `p/q`.
     integrity rules `drift-tolerance-v1`;
   - the primary fees (maker 0, taker 0.0009) and §4's slippage, participation, spread
     and capital, with no fill trigger;
-  - one config for all inputs and one manifest per window.
+  - the frozen config and dataset specs, and one manifest per window.
 
   Anything else is refused with exit code 2, and nothing is scored: a sensitivity run,
-  an unknown variant, the same run twice or a changed dataset spec.
-- **Comparison mask (§5).** A pair-window is excluded for every variant alike when a
-  recorded integrity check fails on the pair, the market proxy or a basket symbol, or
-  when it fails the filter check (P4: `practice-2022` SOLUSDT). Results exist only where
-  the manifest and checksums passed. Every file of a window must give the same mask. A
-  window left with fewer than 2 included pairs gives "insufficient evidence".
+  an unknown variant, the same run twice, or a changed config or dataset spec.
+- **The verdict file.** `--out` never keeps an earlier verdict. Until a run finishes it
+  holds "not scored", and a refused run leaves "refused" there with the reasons. Neither
+  names a winner. `--out` may not be one of the results files.
+- **Comparison mask (§5).** A pair-window is excluded for every variant alike in three
+  cases:
+  - a recorded check fails on the market proxy or on an untraded basket symbol, which
+    feed every pair, so every pair is excluded;
+  - the pair's own minute, hourly or daily check fails, which excludes that pair only,
+    even when it also votes in the basket;
+  - the pair fails the filter check (P4: `practice-2022` SOLUSDT).
+
+  Results exist only where the manifest and checksums passed. Every file of a window
+  must give the same mask. A window left with fewer than 2 included pairs gives
+  "insufficient evidence".
 - **Criteria,** over each variant's included runs (both windows, both paths):
   - C1: `max_drawdown_pct` and `active_max_drawdown_pct` ≤ 10 in every run, and
     `hard_drawdown_halts` 0.
