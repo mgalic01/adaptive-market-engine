@@ -154,13 +154,21 @@ class CliIntegrityTests(unittest.TestCase):
         self.assertEqual(102, sol["daily_days_missing"])
         self.assertEqual({"BTCUSDT", "XRPUSDT"}, {r["symbol"] for r in document["results"]})
 
-    def test_a_failed_check_of_the_market_proxy_still_excludes_every_pair(self):
-        # BTCUSDT is traded too, but as the proxy its hours feed every pair's regime, so
-        # its failure is never its own: nothing replays, whatever the other pairs show.
+    def test_a_failure_of_the_market_proxys_hours_still_excludes_every_pair(self):
+        # BTCUSDT is traded too, but as the proxy its hours feed every pair's regime, so a
+        # failure about them is never its own: nothing replays, whatever the other pairs
+        # show. A 1m or 1d bar that disagrees with its hours counts as one, since the
+        # check cannot show which archive is wrong.
+        self.assertLessEqual(
+            cli.PROXY_HOURLY_FIELDS, {*cli.INTEGRITY_FIELDS, *cli.DAILY_INTEGRITY_FIELDS}
+        )
         practice = str(ROOT / "config/datasets/practice-2022.toml")
+        daily = {"daily_days_compared": 10} | {field: 0 for field in cli.DAILY_INTEGRITY_FIELDS}
         for overrides in (
-            {"BTCUSDT": {"hours_missing": 1}},
+            *({"BTCUSDT": {**daily, field: 1}} for field in sorted(cli.PROXY_HOURLY_FIELDS)),
             {"BTCUSDT": {"hours_missing": 1}, "SOLUSDT": {"hours_incomplete": 1}},
+            # Its own daily failure as well does not make the hourly one its own.
+            {"BTCUSDT": {**daily, "daily_days_missing": 1, "hours_mismatched": 1}},
         ):
             with self.subTest(overrides=overrides):
                 self.overrides = overrides
@@ -168,6 +176,32 @@ class CliIntegrityTests(unittest.TestCase):
                 self.assertEqual(2, self.main("run", "--spec", practice))
                 self.assertEqual([], self.replays)
                 self.assertEqual([], list(Path(self.temp.name).rglob("results.json")))
+
+    def test_a_traded_proxys_minute_or_daily_failure_excludes_only_its_pair_window(self):
+        # Codex's review of #170: BTCUSDT's 1m and 1d bars feed only its own runs, so a
+        # failure confined to them excludes BTCUSDT alone. SOLUSDT and XRPUSDT still run,
+        # with BTCUSDT's hours as their market proxy, as a valid run.
+        practice = str(ROOT / "config/datasets/practice-2022.toml")
+        daily = {"daily_days_compared": 10} | {field: 0 for field in cli.DAILY_INTEGRITY_FIELDS}
+        own = {*cli.INTEGRITY_FIELDS, *cli.DAILY_INTEGRITY_FIELDS} - cli.PROXY_HOURLY_FIELDS
+        cases = [({field: 2}, f"BTCUSDT: {field}=2") for field in sorted(own)]
+        cases += [
+            ({"hours_compared": 0}, "BTCUSDT: no hours compared"),
+            ({"daily_days_compared": 0}, "BTCUSDT: no daily bars compared"),
+        ]
+        for fields, reason in cases:
+            with self.subTest(fields=fields):
+                self.replays.clear()
+                self.overrides = {"BTCUSDT": {**daily, **fields}}
+                self.assertEqual(0, self.main("verify", "--spec", practice))
+                self.assertEqual(0, self.main("run", "--spec", practice))
+                self.assertEqual({"SOLUSDT", "XRPUSDT"}, set(self.replays))
+                self.assertEqual(8, len(self.replays))  # 2 pairs x 2 paths x gated and ungated
+                (written,) = Path(self.temp.name).rglob("results.json")
+                document = json.loads(written.read_text())
+                self.assertEqual((True, []), (document["valid"], document["failures"]))
+                self.assertEqual({"BTCUSDT": [reason]}, document["excluded_pairs"])
+                self.assertNotIn("BTCUSDT", {r["symbol"] for r in document["results"]})
 
     def test_fee_overrides_reach_every_replay_and_the_results(self):
         self.assertEqual(0, self.main("run"))

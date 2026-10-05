@@ -48,14 +48,14 @@ on:
           - "false"
           - "true"
       maker_fee:
-        description: "Maker fee for resting fills; empty keeps the spec's fee. Acceptance runs use the primary fees, maker 0 and taker 0.0009 (spec v1 §4)."
+        description: "Maker fee for resting fills. The default is spec v1's primary maker fee (§4), which the acceptance scorer requires; empty keeps the dataset spec's fee."
         required: false
-        default: ""
+        default: "0"
         type: string
       taker_fee:
-        description: "Taker fee for marketable exits; empty means the maker fee."
+        description: "Taker fee for marketable exits. The default is spec v1's primary taker fee (§4), which the acceptance scorer requires; empty means the maker fee."
         required: false
-        default: ""
+        default: "0.0009"
         type: string
 
 permissions:
@@ -96,10 +96,12 @@ jobs:
           fi
 
       # run_nopool.py is the CLI's run with --jobs 1: it verifies the dataset and runs
-      # the integrity cross-checks before any replay, and takes the fees from the spec
-      # unless they are given. --record-commit records the code commit and its source
-      # hash in every results.json, which the acceptance scorer requires of every input;
-      # a variant, structure or D run records them anyway.
+      # the integrity cross-checks before any replay. The fee inputs default to spec v1's
+      # primary fees, so a dispatch left at its defaults writes runs the acceptance scorer
+      # accepts; an emptied input falls back to the dataset spec's fee. --record-commit
+      # records the code commit and its source hash in every results.json, which the
+      # acceptance scorer requires of every input; a variant, structure or D run records
+      # them anyway.
       - name: Run backtest
         env:
           SPEC: ${{ github.event.inputs.spec }}

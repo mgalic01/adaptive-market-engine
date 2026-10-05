@@ -60,8 +60,8 @@ from typing import Any, NamedTuple
 from crypto_grid_bot.backtest.__main__ import (
     checked_symbols,
     code_commit,
-    integrity_failures,
     result_failures,
+    scoped_failures,
 )
 from crypto_grid_bot.backtest.dataset import DatasetSpec, _write_atomic, load_spec
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE_VERSION
@@ -131,10 +131,10 @@ GRID_VARIANTS = ("A", "B", "C", "E", "F", "G", "C+G", "H", "C+H")
 # full stack's carry the engine's FULL_STACK, C+F+G+H. Every other --structure row is
 # refused.
 STRUCTURE_VARIANTS = {None: "V2", FULL_STACK: "C+F+G+H+V2"}
-# Section 3 E and section 6 step 1: E is run and reported but not eligible until Codex
-# has reviewed its implementation and boundary tests. Change this only in the PR that
-# records that review.
-E_ELIGIBLE = False
+# Section 3 E and section 6 step 1: E is eligible only once Codex has reviewed its
+# implementation and boundary tests. Section 3 E records that review: PR #165, clean at
+# 7045b72 on 2026-10-05, with E's code unchanged since.
+E_ELIGIBLE = True
 # Sections 5 and 2 (P4), the filter-availability check: no dated historical filters were
 # found, so every practice-2022 SOLUSDT pair-window fails it, for every variant alike.
 FILTER_EXCLUSIONS = {
@@ -651,7 +651,7 @@ def judge(
 
 
 def selectable(variant: str) -> bool:
-    """Step 1: D never (step 5); E only after Codex's implementation review."""
+    """Step 1: D never (step 5); E only with Codex's implementation review recorded."""
     return variant in SIMPLICITY_ORDER and (variant != "E" or E_ELIGIBLE)
 
 
@@ -760,23 +760,21 @@ def data_rule_exclusions(spec: DatasetSpec, pair: str) -> list[str]:
 def window_of(spec: DatasetSpec, checks: list[dict[str, Any]]) -> Window:
     """The comparison mask (section 5) from the variant-independent checks a run recorded.
 
-    A failed check on the market proxy (its hours feed every pair's regime) or on an
+    A failed check on the market proxy's hours (they feed every pair's regime) or on an
     untraded breadth-basket symbol (its votes gate every pair) excludes every pair. A
-    traded pair's own minute, hourly and daily checks exclude only that pair, even when it
-    also votes in the basket: section 5 makes the shared completeness check one for the
-    untraded symbols. A pair that fails the filter-availability check (P4) is excluded
-    too, and so is one a long-window data rule excludes (``data_rule_exclusions``).
-    Manifest and checksum failures stop a run before it writes results, so a results
-    file exists only where they passed.
+    traded pair's other minute, hourly and daily failures exclude only that pair, even
+    when it is the proxy or votes in the basket (``scoped_failures``): section 5 makes the
+    shared completeness check one for the untraded symbols. A pair that fails the
+    filter-availability check (P4) is excluded too, and so is one a long-window data rule
+    excludes (``data_rule_exclusions``). Manifest and checksum failures stop a run before
+    it writes results, so a results file exists only where they passed.
     """
     if sorted(check["symbol"] for check in checks) != sorted(checked_symbols(spec)):
         raise ScoringError("the integrity checks are not one per symbol the spec checks")
-    shared = {spec.market_proxy, *(set(spec.breadth_basket) - set(spec.traded))}
-    every_pair = integrity_failures([c for c in checks if c["symbol"] in shared])
+    every_pair, own = scoped_failures(spec, checks)
     excluded: dict[str, tuple[str, ...]] = {}
     for pair in spec.traded:
-        own = [c for c in checks if c["symbol"] == pair and pair not in shared]
-        reasons = every_pair + integrity_failures(own)
+        reasons = every_pair + own.get(pair, [])
         if (spec.name, pair) in FILTER_EXCLUSIONS:
             reasons.append(FILTER_EXCLUSIONS[spec.name, pair])
         reasons += data_rule_exclusions(spec, pair)

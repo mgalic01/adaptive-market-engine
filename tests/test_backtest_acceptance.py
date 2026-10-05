@@ -439,11 +439,13 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result.winner, "V0")
         self.assertNotIn("D", result.figures)
 
-    def test_e_is_not_eligible_until_codex_has_reviewed_it(self) -> None:
+    def test_e_is_eligible_since_codex_reviewed_it_and_not_without_that_review(self) -> None:
+        # Section 3 E records Codex's implementation review (#165), so E is eligible.
         scores = [passing("E", 5), passing("V0", 1)]
-        self.assertEqual(score.select(scores).winner, "V0")
-        with patch.object(score, "E_ELIGIBLE", True):
-            self.assertEqual(score.select(scores).winner, "E")
+        self.assertTrue(score.E_ELIGIBLE)
+        self.assertEqual(score.select(scores).winner, "E")
+        with patch.object(score, "E_ELIGIBLE", False):
+            self.assertEqual(score.select(scores).winner, "V0")
 
     def test_a_failing_variant_is_not_eligible(self) -> None:
         unsafe = score.score_variant(
@@ -659,9 +661,42 @@ class MaskTests(unittest.TestCase):
         window = score.window_of(spec, checks)
         self.assertEqual(window.included, ("BTCUSDT", "XRPUSDT"))
         self.assertEqual(window.excluded["SOLUSDT"][0], "SOLUSDT: minutes_missing=1")
-        # BTCUSDT is the market proxy, so its own failure excludes every pair.
-        next(c for c in checks if c["symbol"] == "BTCUSDT")["minutes_missing"] = 1
+        # BTCUSDT is the market proxy, but its minutes feed only its own runs (Codex's
+        # review of #170): a minute failure excludes it alone. One in its hours, which
+        # feed every pair, excludes every pair.
+        btc = next(c for c in checks if c["symbol"] == "BTCUSDT")
+        btc["minutes_missing"] = 1
+        window = score.window_of(spec, checks)
+        self.assertEqual(window.included, ("XRPUSDT",))
+        self.assertEqual(window.excluded["BTCUSDT"], ("BTCUSDT: minutes_missing=1",))
+        btc["hours_missing"] = 1
         self.assertEqual(score.window_of(spec, checks).included, ())
+
+    def test_a_traded_proxys_failure_reaches_every_pair_only_through_its_hours(self) -> None:
+        # verify-2024h1 trades ADAUSDT and BTCUSDT, the market proxy. A failure about the
+        # proxy's hours (including a 1m or 1d bar that disagrees with them) excludes both
+        # pairs. Any other failure of its 1m or 1d bars excludes BTCUSDT alone.
+        spec = load_spec(SPECS / "verify-2024h1.toml")
+        own = {*cli.INTEGRITY_FIELDS, *cli.DAILY_INTEGRITY_FIELDS} - cli.PROXY_HOURLY_FIELDS
+        cases = [(field, {"ADAUSDT", "BTCUSDT"}) for field in sorted(cli.PROXY_HOURLY_FIELDS)]
+        cases += [(field, {"BTCUSDT"}) for field in sorted(own)]
+        for field, excluded in cases:
+            with self.subTest(field):
+                checks = clean_checks(spec)
+                next(c for c in checks if c["symbol"] == "BTCUSDT")[field] = 1
+                window = score.window_of(spec, checks)
+                self.assertEqual(set(window.excluded), excluded)
+                self.assertEqual(window.excluded["BTCUSDT"], (f"BTCUSDT: {field}=1",))
+        for field, reason in (
+            ("hours_compared", "BTCUSDT: no hours compared"),
+            ("daily_days_compared", "BTCUSDT: no daily bars compared"),
+        ):
+            with self.subTest(field):
+                checks = clean_checks(spec)
+                next(c for c in checks if c["symbol"] == "BTCUSDT")[field] = 0
+                window = score.window_of(spec, checks)
+                self.assertEqual(window.included, ("ADAUSDT",))
+                self.assertEqual(window.excluded["BTCUSDT"], (reason,))
 
     def test_checks_must_be_one_per_checked_symbol(self) -> None:
         spec = load_spec(SPECS / "verify-2024h1.toml")
@@ -1232,9 +1267,7 @@ class StageTests(ScorerFiles):
         eligible = selection["eligible"]
         self.assertEqual(eligible["B"]["mean_annualised_return_pct"], "3.084618")
         self.assertEqual(eligible["A"]["mean_annualised_return_pct"], "0.330513")
-        self.assertEqual(
-            list(eligible), ["V0", "A", "B", "F", "G", "H", "V2", "C", "C+G", "C+H", "C+F+G+H+V2"]
-        )
+        self.assertEqual(list(eligible), list(score.SIMPLICITY_ORDER))  # E too (section 3 E)
         self.assertEqual(list(verdict["stages"]), ["stage 1", "stage 2", "stage 2, reported only"])
         reported = verdict["stages"]["stage 2, reported only"]
         self.assertFalse(reported["scored"])
@@ -1264,8 +1297,8 @@ class StageTests(ScorerFiles):
         selection = verdict["selection"]
         self.assertEqual(selection["winner"], "B")
         expected = ["V0", "A", "B", "C", "E", "F", "G", "C+G", "H", "C+H"]
-        self.assertEqual(selection["qualified"], expected)  # E passes but is not eligible
-        self.assertNotIn("E", selection["eligible"])
+        self.assertEqual(selection["qualified"], expected)
+        self.assertIn("E", selection["eligible"])  # eligible since Codex's review (section 3 E)
 
     def test_no_variant_passing_both_stages_is_no_winner(self) -> None:
         returns = {(LONG[0], variant): "-1" for variant in score.VARIANTS}

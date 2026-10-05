@@ -290,9 +290,15 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
     §5). The pair is not replayed and has no rows. Its failing check stays in
     `hourly_cross_checks`, `excluded_pairs` lists it with its failures, and the other
     pairs run. The exclusion is not among the run's `failures`.
-  - A failed check of the market proxy (traded or not) or of an untraded basket member
-    reaches every pair, and so does an exclusion that leaves no pair. Then `verify` and
-    `run` exit with code 2, and nothing replays.
+  - Some failures reach every pair, and so does an exclusion that leaves no pair. Then
+    `verify` and `run` exit with code 2, and nothing replays. Those failures are:
+    - any failure of an untraded market proxy or untraded basket member;
+    - a traded proxy's failure about its 1h bars, which feed every pair
+      (`PROXY_HOURLY_FIELDS`: a missing or duplicated hour, or a 1m or 1d bar that
+      disagrees with its hours).
+
+    A traded proxy's other 1m and 1d failures are its own pair-window's, since those
+    bars feed only its own runs.
   - Gaps from a genuine listing or delisting are not exempted yet; such a dataset must
     first declare them explicitly.
 - **Run validity:** accounting problems, rejected frames, zero evaluation bars, or a
@@ -353,7 +359,9 @@ match:
   - The `backtest` workflow passes `--record-commit` on every run. Its `fetch` rewrites
     the manifest with today's exchange filters, so the workflow then restores the
     committed manifest: otherwise the commit would read `+dirty` and the manifest would
-    not be the committed one. Its inputs also take D (`trend_benchmark`) and the fees.
+    not be the committed one. Its inputs also take D (`trend_benchmark`) and the fees,
+    which default to the primary fees (maker 0, taker 0.0009), so a dispatch left at its
+    defaults writes runs the scorer accepts.
 - **The committed files.** `config/default.toml`, and each window's dataset spec and
   manifest in `config/datasets`, must hash to the `config_sha256`, `spec_sha256` and
   `manifest_sha256` each run recorded.
@@ -417,11 +425,12 @@ decimals (below).
   names a winner. `--out` may not be one of the results files.
 - **Comparison mask (§5).** A pair-window is excluded for every variant alike in three
   cases:
-  - a recorded check fails on the market proxy or on an untraded basket symbol, which
-    feed every pair, so every pair is excluded;
+  - a recorded check fails on the market proxy's hours or on an untraded basket symbol,
+    which feed every pair, so every pair is excluded;
   - the pair's own minute, hourly or daily check fails, which excludes that pair only,
-    even when it also votes in the basket. `run` writes no rows for such a pair-window
-    and lists it under `excluded_pairs`, so its runs are excluded, not missing;
+    even when it is the proxy (except a failure about its hours) or votes in the basket.
+    `run` writes no rows for such a pair-window and lists it under `excluded_pairs`, so
+    its runs are excluded, not missing;
   - the pair fails the filter check (P4: `practice-2022` SOLUSDT).
 
   Results exist only where the manifest and checksums passed. Every file of a window
@@ -478,8 +487,8 @@ decimals (below).
   - Both means are rounded to 6 decimals, half away from zero, before any comparison.
     The 0.25-point tie set is inclusive.
   - The simplicity order is V0, A, B, F, G, H, E, V2, C, C+G, C+H, C+F+G+H+V2.
-  - D is never selected. E is not eligible until Codex has reviewed it (`E_ELIGIBLE` in
-    the module).
+  - D is never selected. E is eligible: spec §3 E records Codex's review of its
+    implementation (`E_ELIGIBLE` in the module).
   - C7 is not evaluated: it is unsettled and selects nothing.
 - **Limits.**
   - The drawdowns in `results.json` are floats rounded from exact Decimals. The scorer

@@ -8,7 +8,8 @@ Index: **Owner decisions, 2026-10-05 (test plan).** Everything runs in one batch
   - about 13:15: #156 and the first long-data answer (decisions 4 and 5);
   - about 13:40: two stages and the nine data rules (decisions 5 and 6);
   - about 14:10: V2's exception, how the stages combine, the six readings (decisions 7–9);
-  - about 14:25: the code each stage runs on (decision 10).
+  - about 14:25: the code each stage runs on (decision 10);
+  - about 18:18, after #168 merged: variant E and the freeze (decisions 11 and 12, under "Later decisions").
 - **How:** multiple-choice questions. Claude recommended every chosen option except the first long-data answer, which a later answer superseded.
 - **Scope:** this record, the spec v1 amendment (`docs/EXPERIMENT_SPEC_V1.md`, "test-plan amendment") and a dated amendment to `docs/STRUCTURE_PREREGISTRATION.md`. No code, config, dataset spec or manifest changes; separate PRs carry those.
 - **Why now:** the project forbids changing parameters or criteria after seeing results. This record fixes the test plan before any result of the coming batch exists. No market data, backtest result or strategy result was read for it, and none of #156's result reports was opened.
@@ -187,6 +188,18 @@ Claude's first draft (local commit `216a1d8`, never pushed) said the 2017–2024
 - The real constraint is XRP's listing on 2018-05-04. The manifest's own metadata shows XRPUSDT's 2018-05 daily file starting on that day, with 28 of 31 rows. So `daily_warmup_start` and `warmup_start` must be 2018-06.
 - From 2018-06-01 to 2019-01-01 there are 214 completed days, above P3's 200, so the warm-up passes.
 - The corrected values are frozen in spec §4, with the listing-hour basket exclusions, and the long-window data PR's specs must match them.
+
+## Later decisions
+
+After #168 merged, the owner answered two more questions in Claude's session, at about 18:18 UTC on 2026-10-05. Claude recommended both chosen options.
+
+11. **Variant E.**
+    - Question: "Variant E (the longer range exit on low volume) may only be picked as the winner 'after Codex has reviewed its implementation and the boundary tests'. Codex reviewed exactly that across #165's five rounds, ending with no findings. Make E selectable?"
+    - Chosen: **"Yes, make E selectable"**. Option text: "The freeze PR records that #165's Codex reviews cover E, and switches the scorer's E flag on. E competes like every other variant."
+    - Where it landed: in #170 instead of the freeze PR, because Codex's review of #170 asked for E to be enabled before the freeze. The substance is unchanged: spec §3 E records the review, and the scorer's `E_ELIGIBLE` is on.
+12. **Freezing spec v1.**
+    - Question: "Freezing spec v1: its header says it becomes frozen 'only when Codex has reviewed it and the owner has confirmed the acceptance criteria in §6'. Codex has reviewed every amendment, ending clean on #168, and you confirmed C1–C6 on 2026-09-24 and amended C2 today. Freeze it once the full-test-setup PR merges, before stage 1?"
+    - Chosen: **"Yes, freeze then"**. Option text: "I open a small PR that marks spec v1 frozen with today's date and replaces the stale 'no strategy code exists' line. From then on any rule change needs a new spec version, and stage 1 runs on the frozen rules."
 
 ## Still open
 
