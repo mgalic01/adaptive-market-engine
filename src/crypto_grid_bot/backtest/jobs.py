@@ -16,7 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from crypto_grid_bot import IMPORT_STAMP, source_stamp
+from crypto_grid_bot import SOURCE_HASHES
 from crypto_grid_bot.backtest.dataset import DatasetSpec, load_manifest, load_spec
 from crypto_grid_bot.backtest.features import (
     FEATURE_VERSION,
@@ -44,12 +44,17 @@ from crypto_grid_bot.simulation.runner import SimulationPolicy
 
 
 def source_identity() -> str:
-    """SHA-256 of this package's Python sources as they are on disk now, by path."""
+    """SHA-256 of this package's Python sources, by path: for each module this process
+    imported, the source it was compiled from (``SOURCE_HASHES``); for any other
+    file, what is on disk now."""
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*.py")):
-        digest.update(path.relative_to(root).as_posix().encode() + b"\0")
-        digest.update(path.read_bytes() + b"\0")
+        relative = path.relative_to(root)
+        module = ".".join((root.name, *relative.with_suffix("").parts))
+        source = SOURCE_HASHES.get(module.removesuffix(".__init__"))
+        source = source or hashlib.sha256(path.read_bytes()).hexdigest()
+        digest.update(f"{relative.as_posix()}\0{source}\0".encode())
     return digest.hexdigest()
 
 
@@ -58,9 +63,9 @@ def check_sources(expected: str) -> None:
     are the CLI's (Codex review of #160). A spawned worker imports the code from disk
     when it starts, so a checkout that changed, even one that changed back, while the
     workers started would otherwise run other code under the recorded commit. The
-    identity compared is the one taken as this module was imported, never a fresh read
-    of the disk, which could already be back to the expected sources; and that import
-    fails if any source was rewritten while the package loaded."""
+    identity compared is the one taken as this module was imported, from the sources
+    the worker compiled, never a fresh read of the disk, which could already be back
+    to the expected sources."""
     if expected != SOURCE_IDENTITY:
         raise RuntimeError("a pool worker's sources differ from the backtest CLI's")
 
@@ -248,12 +253,8 @@ def cross_check_job(
 
 # Every job module is loaded before the sources are hashed, so the identity covers all
 # the code a worker can run; trend_benchmark imports prepare_run from here, so it is
-# loaded last. The hash is of the code this process imported only if no source was
-# rewritten from the package's first import until after the hash: a checkout that
-# changed and changed back while a spawned worker loaded its code leaves new file
-# times, and the import fails, so the CLI or the worker stops before any job runs
-# (Codex review of #160).
+# loaded last. Each one is hashed as compiled (crypto_grid_bot.SOURCE_HASHES), so a
+# checkout that changes, even one that changes back, while a spawned worker loads its
+# code gives that worker another identity (Codex review of #160).
 importlib.import_module("crypto_grid_bot.backtest.trend_benchmark")
 SOURCE_IDENTITY = source_identity()
-if source_stamp() != IMPORT_STAMP:
-    raise ImportError("this package's sources changed while it loaded: rerun on a settled checkout")
