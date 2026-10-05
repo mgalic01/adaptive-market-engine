@@ -537,6 +537,7 @@ class PaperSimulator:
             "allocation": None,
         }
         previous_orders = set(account.orders)
+        placed: set[str] = set()  # orders the fills place on this frame
         capped: list[dict[str, Any]] = []
         if self.policy.inventory_cap is not None:
             # On every frame of a capped run, rejected frames included.
@@ -676,6 +677,7 @@ class PaperSimulator:
                     check=False,
                 )
             ]
+            placed = set(account.orders) - previous_orders  # child sells, reentry buys
             if refused:
                 # A reentry buy the balance or minimum-notional check declined: that level
                 # has left the grid, which the journal must show.
@@ -738,9 +740,12 @@ class PaperSimulator:
                 "down_since": account.down_since or None,
             }
         # An order is cancelled if it left the book without completing, so one that
-        # filled in part and was then cancelled on this frame is listed too.
+        # filled in part and was then cancelled on this frame is listed too, and so is
+        # one its fills placed and a halt then cleared: a completed buy's child sell
+        # (Codex review of #159).
         completed = {fill["order_id"] for fill in report["fills"] if fill["remaining"] == ZERO}
-        report["cancelled"] = sorted(previous_orders - account.orders.keys() - completed)
+        gone = (previous_orders | placed) - account.orders.keys() - completed
+        report["cancelled"] = sorted(gone)
         self._mark(account, quote, self.rules)
         report.update(
             active_equity=account.last_equity,

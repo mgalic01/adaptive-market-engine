@@ -557,6 +557,10 @@ class TargetTest(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.branches(cmd), ["claude/a"])
             self.assertEqual(self.prs("sh -c '$1 pr merge $2' _ gh 5"), [5])
+            # Codex review of #159: a quoted "$*" is one word, the command `gh pr merge 5`,
+            # which does not exist; unquoted, it splits into the merge.
+            self.assertEqual(find_targets("sh -c '\"$*\"' _ gh pr merge 5", "."), [])
+            self.assertEqual(self.prs("sh -c '$*' _ gh pr merge 5"), [5])
             # With no args to read, `"$@"` is a command known only at run time.
             body = find_targets('f() { "$@"; }; f gh pr merge 5', ".", posix=True)
             self.assertIn("merge", [t.kind for t in body if t.unknown])
@@ -711,10 +715,18 @@ class TargetTest(unittest.TestCase):
                 # an option.
                 "git a origin claude/a",
                 "git np origin claude/a",
+                # Codex review of #159: an alias from the environment, and setting
+                # names in any case.
+                "ALIAS=push git --config-env=alias.e=ALIAS e origin claude/a",
+                "export ALIAS=push; git --config-env alias.e=ALIAS e origin claude/a",
+                "git -c ALIAS.Q=push q origin claude/a",
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual([t.branch for t in find_targets(cmd, ".")], ["claude/a"])
             self.assertEqual(find_targets("git loop origin claude/a", "."), [])  # git refuses
+            # One whose variable it cannot read could be any push.
+            hidden = find_targets("git --config-env=alias.e=CLAIMS_TEST_UNSET e", ".")
+            self.assertEqual([(t.kind, t.every_branch) for t in hidden], [("push", True)])
             calls.clear()
             self.assertEqual(find_targets("git status && git log -1", "."), [])
             self.assertFalse([c for c in calls if c[:1] == ("config",)])  # builtins: no lookup
