@@ -77,8 +77,11 @@ label at all.
   - the regime vote (rules 10 and 11) can change whether a frame is eligible;
   - a raised target widens the grid's upper bound (rule 14, step 7).
 
-  So spec v1 names a fourth exception for V2. That is Claude's reading, awaiting the
-  owner's confirmation. It names consequences of these rules and changes none of them.
+  So spec v1 names a fourth exception for V2, by the owner's decision of 2026-10-05
+  ("Name it a 4th exception"). The option text: "Record both as V2's named exceptions,
+  in the same way as E's and H3's. V2's frozen rules stay exactly as built and tested;
+  the spec simply states openly what V2 is allowed to do." The exception names
+  consequences of these rules and changes none of them.
 
 ## Frozen rules and settings
 
