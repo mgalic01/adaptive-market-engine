@@ -414,6 +414,10 @@ class TargetTest(unittest.TestCase):
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            # Codex review of #159: a shell elsewhere on the line is not this body's reader.
+            self.assertEqual(
+                find_targets("bash -c true; cat <<'EOF'\n(gh pr merge 5)\nEOF", "."), []
+            )
             # Codex review of #159: a quoted reader name is still the shell that runs it.
             self.assertEqual(self.prs("/bin/'bash' <<'EOF'\ngh pr merge 5\nEOF"), [5])
             # Codex review of #159: two bodies on one line, read in order.
@@ -574,6 +578,10 @@ class TargetTest(unittest.TestCase):
                 f"curl -X PUT {url}",
                 f"sudo curl -X PUT {url}",
                 f"Invoke-RestMethod -Method Put -Uri {url}",
+                # Codex review of #159: a versioned interpreter is still one.
+                f"python3.12 -c \"Request('{url}', method='PUT')\"",
+                f"ruby3.2 -e 'put(\"{url}\")'",
+                f"perl5.36 -e 'put(q({url}))'",
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual([t.pr for t in find_targets(cmd, ".")], [5])

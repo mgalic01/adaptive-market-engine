@@ -453,8 +453,12 @@ GIT_BUILTINS = {
 # one (Codex review of #159: `echo mergePullRequest` was refused as a merge).
 HTTP_CLIENTS = {
     "curl", "wget", "http", "https", "xh", "python", "python3", "py", "node", "deno",
-    "bun", "ruby", "perl", "php", "invoke-restmethod", "invoke-webrequest", "irm", "iwr",
+    "bun", "ruby", "perl", "php", "pypy", "nodejs", "invoke-restmethod", "invoke-webrequest",
+    "irm", "iwr",
 }  # fmt: skip
+# A client's version suffix: `python3.12`, `ruby3.2` and `perl5.36` are python, ruby and
+# perl (Codex review of #159).
+CLIENT_VERSION_RE = re.compile(r"[\d.]+$")
 # A `case` arm's pattern word, which the arm's command follows.
 CASE_PATTERN_RE = re.compile(r"\(?[^()]*\)")
 # `env -S 'gh pr merge 5'` (or -S'...', --split-string=...) runs the words of its value.
@@ -602,12 +606,31 @@ def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[
             i += 1
 
 
+# Where a pipeline ends on a line: `;`, `&&`, `||` or a lone `&`, but not a pipe, which
+# feeds a here-document into its consumer.
+PIPELINE_ENDS = re.compile(r"&&|\|\||(?<![>&])&(?![&>])|;")
+
+
+def _pipeline(command: str, start: int, end: int, at: int) -> str:
+    """The pipeline of the line ``command[start:end]`` that holds position ``at``."""
+    quoted, left, i = _quoted(command), start, start
+    while i < end:
+        m = None if quoted[i] else PIPELINE_ENDS.match(command, i, end)
+        if not m:
+            i += 1
+        elif m.start() >= at:
+            return command[left : m.start()]
+        else:
+            left = i = m.end()
+    return command[left:end]
+
+
 def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
     """The command without its here-document bodies, and each body with whether its
-    delimiter is quoted (the shell expands nothing in it) and the whole line of its
-    `<<`, which names its reader: the command before it or a shell it is piped into
-    (`cat <<'EOF' | bash`). A body is its reader's input, not commands (Codex review of
-    #159)."""
+    delimiter is quoted (the shell expands nothing in it) and the pipeline of its `<<`,
+    which names its reader: the command it feeds or a shell it is piped into (`cat
+    <<'EOF' | bash`), never another command on the same line. A body is its reader's
+    input, not commands (Codex review of #159)."""
     found: list[tuple[str, bool, str]] = []
     pos = 0
     while (first := next(_heredoc_operators(command, pos, len(command)), None)) is not None:
@@ -630,7 +653,8 @@ def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
                 end = row_end + 1
             else:
                 body, after = command[cursor:], len(command)
-            found.append((body, bool(m.group(2) or m.group(3)), command[line_start:line_end]))
+            reader = _pipeline(command, line_start, line_end, m.start())
+            found.append((body, bool(m.group(2) or m.group(3)), reader))
             cursor = after
         command, pos = command[: line_end + 1] + command[cursor:], line_end + 1
     return command, found
@@ -779,7 +803,9 @@ def find_targets(
             if inner is not None:
                 shell = exe in POSIX_SHELLS
                 targets.extend(find_targets(inner, cwd, depth + 1, posix=shell, root=root))
-        elif exe in HTTP_CLIENTS and ("/merge" in segment or "mergePullRequest" in segment):
+        elif CLIENT_VERSION_RE.sub("", exe) in HTTP_CLIENTS and (
+            "/merge" in segment or "mergePullRequest" in segment
+        ):
             # curl, python and other clients can call the same REST or GraphQL merge.
             targets.extend(_rest_merge_targets(segment, base, None))
         elif exe in EVALS and not any(c in "".join(toks[1:]) for c in "$`\\"):
