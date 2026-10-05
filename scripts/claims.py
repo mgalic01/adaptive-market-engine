@@ -413,7 +413,7 @@ def drop_redirections(words: list[str]) -> list[str]:
 # `then git push`, `! git push` or `{ git push; }`, PowerShell's call and dot-source
 # operators (`& git push`), and wrappers such as `env X=1 git push`.
 PREFIX_WORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "&", "."}
-WRAPPERS = {"env", "timeout", "nohup", "nice", "time", "command", "exec"}
+WRAPPERS = {"env", "timeout", "nohup", "nice", "time", "command", "exec", "sudo", "doas"}
 # Wrapper options that take the next word as their value (env, timeout, nice, exec and
 # GNU time); `env -C sub gh pr merge 5` was read as running `sub` (Codex review of #159).
 WRAPPER_VALUE_OPTS = {
@@ -438,6 +438,25 @@ WRAPPER_VALUE_OPTS = {
 # was read as running the subcommand `.git` (Codex review of #159). -C and --git-dir are
 # handled apart, since they select where the repository is read.
 GIT_VALUE_OPTS = {"-c", "--work-tree", "--namespace", "--config-env", "--super-prefix"}
+# Git's own commands, which an alias of the same name cannot replace; any other
+# subcommand may be an alias (Codex review of #159: `git -c alias.p=push p` pushed).
+GIT_BUILTINS = {
+    "add", "am", "apply", "archive", "bisect", "blame", "branch", "bundle", "cat-file",
+    "checkout", "cherry", "cherry-pick", "clean", "clone", "commit", "config", "describe",
+    "diff", "difftool", "fetch", "for-each-ref", "format-patch", "fsck", "gc", "grep",
+    "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "maintenance", "merge",
+    "merge-base", "mergetool", "mv", "notes", "pull", "push", "range-diff", "rebase",
+    "reflog", "remote", "repack", "replace", "reset", "restore", "rev-list", "rev-parse",
+    "revert", "rm", "send-pack", "shortlog", "show", "show-ref", "sparse-checkout", "stash",
+    "status", "submodule", "switch", "symbolic-ref", "tag", "update-index", "update-ref",
+    "version", "worktree",
+}  # fmt: skip
+# Clients that can send a REST or GraphQL merge themselves; any other command only names
+# one (Codex review of #159: `echo mergePullRequest` was refused as a merge).
+HTTP_CLIENTS = {
+    "curl", "wget", "http", "https", "xh", "python", "python3", "py", "node", "deno",
+    "bun", "ruby", "perl", "php", "invoke-restmethod", "invoke-webrequest", "irm", "iwr",
+}  # fmt: skip
 # A `case` arm's pattern word, which the arm's command follows.
 CASE_PATTERN_RE = re.compile(r"\(?[^()]*\)")
 # `env -S 'gh pr merge 5'` (or -S'...', --split-string=...) runs the words of its value.
@@ -655,6 +674,25 @@ def segments(command: str) -> list[str]:
 RUNTIME_WORD = re.compile(r"\$\{?\w")
 
 
+def _env_dir(words: list[str], cwd: str) -> str:
+    """The directory a leading `env -C DIR` or `env --chdir=DIR` runs its command in
+    (Codex review of #159: `env -C <this repo> git push` was checked elsewhere)."""
+    for i, w in enumerate(words):
+        if _exe(w) != "env":
+            continue
+        rest = words[i + 1 :]
+        while rest and rest[0].startswith("-"):
+            if rest[0] in ("-C", "--chdir") and len(rest) > 1:
+                cwd, rest = str(Path(cwd, rest[1])), rest[2:]
+            elif rest[0].startswith(("--chdir=", "-C")) and rest[0] not in ("-C", "--chdir"):
+                value = rest[0].split("=", 1)[1] if rest[0].startswith("--") else rest[0][2:]
+                cwd, rest = str(Path(cwd, value)), rest[1:]
+            else:
+                rest = rest[2:] if rest[0] in WRAPPER_VALUE_OPTS else rest[1:]
+        break
+    return cwd
+
+
 def find_targets(
     command: str, cwd: str, depth: int = 0, *, posix: bool = False, root: str | None = None
 ) -> list[Target]:
@@ -672,14 +710,16 @@ def find_targets(
     command, bodies = heredocs(command)
     targets: list[Target] = []
     for segment in segments(command):
-        toks = unwrap(drop_redirections(split_words(segment)))
+        words = drop_redirections(split_words(segment))
+        toks = unwrap(words)
         if not toks:
             continue
         exe = _exe(toks[0])
+        base = _env_dir(words, cwd)
         if exe in ("cd", "set-location", "pushd", "sl") and len(toks) > 1:
             cwd = str(Path(cwd, toks[-1]))
         elif exe == "git":
-            here, rest = cwd, toks[1:]
+            here, rest, aliases = base, toks[1:], {}
             # The repository is read where -C, --git-dir or GIT_DIR points: git runs fine
             # inside a git directory (Codex review of #159: `cd other && git --git-dir
             # <this repo>/.git push` was checked against the other repository).
@@ -694,21 +734,38 @@ def find_targets(
                 elif rest[0].startswith("--git-dir="):
                     here, rest = str(Path(here, rest[0].split("=", 1)[1])), rest[1:]
                 elif rest[0] in GIT_VALUE_OPTS and len(rest) > 1:
+                    if rest[0] == "-c" and rest[1].startswith("alias."):
+                        name, _, value = rest[1][len("alias.") :].partition("=")
+                        aliases[name] = value
                     rest = rest[2:]
                 else:
                     rest = rest[1:]
-            if rest and rest[0] == "push":
+            # An alias, given with -c or configured, runs what it expands to; a `!` alias
+            # runs its text in a shell (Codex review of #159).
+            for _ in range(MAX_DEPTH):
+                if not rest or rest[0] in GIT_BUILTINS:
+                    break
+                alias = aliases.get(rest[0]) or _git(here, "config", "--get", f"alias.{rest[0]}")
+                if not alias:
+                    break
+                if alias.startswith("!"):
+                    line = " ".join([alias[1:], *rest[1:]])
+                    targets.extend(find_targets(line, here, depth + 1, posix=True, root=root))
+                    rest = []
+                else:
+                    rest = [*split_words(alias), *rest[1:]]
+            if rest and rest[0] in ("push", "send-pack"):
                 targets.extend(push_targets(rest[1:], here))
         elif exe == "gh":
-            targets.extend(_gh_targets(toks[1:], segment, cwd))
+            targets.extend(_gh_targets(toks[1:], segment, base))
         elif exe in SHELLS:
             inner = shell_command(exe, toks[1:])
             if inner is not None:
                 shell = exe in POSIX_SHELLS
                 targets.extend(find_targets(inner, cwd, depth + 1, posix=shell, root=root))
-        elif "/merge" in segment or "mergePullRequest" in segment:
+        elif exe in HTTP_CLIENTS and ("/merge" in segment or "mergePullRequest" in segment):
             # curl, python and other clients can call the same REST or GraphQL merge.
-            targets.extend(_rest_merge_targets(segment, cwd, None))
+            targets.extend(_rest_merge_targets(segment, base, None))
         elif exe in EVALS and not any(c in "".join(toks[1:]) for c in "$`\\"):
             # `eval "gh pr merge 5"` runs literal text: read it as the command it is
             # (Codex review of #159: `eval 'echo submerged'` was refused as a merge).
@@ -810,7 +867,8 @@ def hook_decision(
     if payload.get("tool_name") not in ("Bash", "PowerShell"):
         return None
     command = str((payload.get("tool_input") or {}).get("command") or "")
-    if "push" not in command and "merge" not in command and "Merge" not in command:
+    # A git alias need not say "push" (Codex review of #159), so any git command is read.
+    if not any(word in command for word in ("push", "merge", "Merge", "git")):
         return None
     cwd = str(payload.get("cwd") or os.getcwd())
     targets = find_targets(command, cwd, posix=payload.get("tool_name") == "Bash")

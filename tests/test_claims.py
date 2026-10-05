@@ -480,6 +480,66 @@ class TargetTest(unittest.TestCase):
             # The other repository's own push is not this repository's.
             self.assertEqual(find_targets("cd /tmp/other && git push origin claude/a", "."), [])
 
+    def test_env_chdir_selects_the_repository(self):
+        # Codex review of #159: env -C runs the push in this repository.
+        def fake(cwd, *args):
+            ours = "other" not in Path(cwd).as_posix()
+            if args[:2] == ("remote", "get-url"):
+                return f"https://github.com/{REPO}.git" if ours else "https://x/other.git"
+            return "claude/x" if args[:2] == ("rev-parse", "--abbrev-ref") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            for cmd in (
+                "cd /tmp/other && env -C /work/repo git push origin claude/a",
+                "cd /tmp/other && env --chdir=/work/repo git push origin claude/a",
+                "cd /tmp/other && env -u HOME -C /work/repo git push origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual([t.branch for t in find_targets(cmd, ".")], ["claude/a"])
+
+    def test_git_aliases_that_push_are_checked(self):
+        # Codex review of #159: an alias, given with -c or configured, runs a push.
+        calls = []
+
+        def fake(cwd, *args):
+            calls.append(args)
+            if args == ("config", "--get", "alias.p"):
+                return "push"
+            if args == ("config", "--get", "alias.pp"):
+                return "p --force"  # an alias of an alias
+            if args[:2] == ("remote", "get-url"):
+                return f"https://github.com/{REPO}.git"
+            return "claude/x" if args[:2] == ("rev-parse", "--abbrev-ref") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            for cmd in (
+                "git -c alias.q=push q origin claude/a",
+                "git p origin claude/a",
+                "git pp origin claude/a",
+                "git -c 'alias.r=!git push origin claude/a' r",
+                "git send-pack origin claude/a",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual([t.branch for t in find_targets(cmd, ".")], ["claude/a"])
+            calls.clear()
+            self.assertEqual(find_targets("git status && git log -1", "."), [])
+            self.assertFalse([c for c in calls if c[:1] == ("config",)])  # builtins: no lookup
+
+    def test_api_merges_count_only_from_clients_that_send_them(self):
+        # Codex review of #159: a command that only names the API merges nothing.
+        url = f"https://api.github.com/repos/{REPO}/pulls/5/merge"
+        with git_stub():
+            for cmd in ("echo mergePullRequest", f"printf '%s\\n' {url}"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+            for cmd in (
+                f"curl -X PUT {url}",
+                f"sudo curl -X PUT {url}",
+                f"Invoke-RestMethod -Method Put -Uri {url}",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual([t.pr for t in find_targets(cmd, ".")], [5])
+
     def test_case_arms_and_function_bodies_are_read(self):
         # Codex review of #159: the command follows a case pattern or a function's name.
         with git_stub():
@@ -757,6 +817,21 @@ class HookTest(unittest.TestCase):
                     self.assertIsNone(hook_decision(self.payload(command, tool), own, NOW))
                     free = self.reader([], prs)
                     self.assertIsNone(hook_decision(self.payload(command, tool), free, NOW))
+
+    def test_a_git_alias_line_is_read_although_it_never_says_push(self):
+        # Codex review of #159: the hook's pre-filter let `git p` through unread.
+        prs = [{"number": 141, "head": {"ref": "claude/a", "repo": {"full_name": REPO}}}]
+
+        def fake(cwd, *args):
+            if args == ("config", "--get", "alias.p"):
+                return "push"
+            return f"https://github.com/{REPO}.git" if args[:2] == ("remote", "get-url") else None
+
+        with mock.patch.object(claims, "_git", side_effect=fake):
+            out = hook_decision(
+                self.payload("git p origin claude/a"), self.reader([claim(tag="Bob")], prs), NOW
+            )
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_github_reporting_another_case_is_still_this_repo(self):
         mixed = {"full_name": "MGalic01/Adaptive-Market-Engine"}
