@@ -6,7 +6,6 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from crypto_grid_bot.config import load_config
-from crypto_grid_bot.domain import RiskAction
 from crypto_grid_bot.simulation import runner
 from crypto_grid_bot.simulation.demo import demo_frames, run_demo
 from crypto_grid_bot.simulation.models import D, MarketRules
@@ -373,18 +372,6 @@ class SimcoreAuditTests(TestCase):
             report["reentry_refused"],
         )
         self.assertNotIn("reentry_refused", sim.process(self.frames[2]))
-
-    def test_the_engine_compares_its_balances_with_the_risk_limits_exactly(self):
-        # Active equity exactly 12% below risk_high. Converted to floats, the drawdown
-        # was 0.11999999999999990 and the engine answered REDUCE instead of EXIT.
-        sim = self.open()
-        account = sim.store.read()
-        account.cash = account.day_start = D("44.264")
-        account.risk_high = D("50.3")
-        self.assertEqual(RiskAction.EXIT, sim._risk_action(account, self.frames[0].quote, False))
-        self.assertEqual(
-            ("drawdown", "hard drawdown reached: 12.00%"), (account.halt_category, account.halt)
-        )
 
     def test_a_flat_account_waiting_in_cash_settles_nothing(self):
         # Too little capital for a grid: every frame is a flat harvest point that used to

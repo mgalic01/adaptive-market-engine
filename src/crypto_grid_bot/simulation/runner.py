@@ -315,7 +315,13 @@ class PaperSimulator:
     def _risk_action(self, account: Account, quote: Quote, emergency: bool) -> RiskAction:
         equity = account.equity(quote, self.rules)
         result = self.risk.evaluate(
-            PortfolioSnapshot(equity, account.day_start, account.risk_high, 0, emergency=emergency)
+            PortfolioSnapshot(
+                float(equity),
+                float(account.day_start),
+                float(account.risk_high),
+                0,
+                emergency=emergency,
+            )
         )
         if self.risk_observer is not None:
             self.risk_observer(equity, account.risk_high, account.measure_high, result)
@@ -344,7 +350,9 @@ class PaperSimulator:
         the observer does not see it and the account is untouched."""
         equity = account.equity(quote, self.rules)
         result = self.risk.evaluate(
-            PortfolioSnapshot(equity, account.day_start, equity, 0, emergency=emergency)
+            PortfolioSnapshot(
+                float(equity), float(account.day_start), float(equity), 0, emergency=emergency
+            )
         )
         return result.action == RiskAction.ALLOW
 

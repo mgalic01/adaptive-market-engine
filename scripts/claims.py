@@ -586,9 +586,10 @@ def _quoted(command: str) -> list[bool]:
 
 def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[str]]:
     """The here-document operators the shell sees in ``command[start:end]``. One inside
-    quotes, escaped, in a comment or in arithmetic (`((x << 1))`, a shift) is not one
-    (Codex review of #159: each hid the merge on the next line as a body)."""
-    quoted, i, arithmetic = _quoted(command), start, 0
+    quotes, escaped, in a comment or in arithmetic (`((x << 1))` or the legacy
+    `$[x << 1]`, a shift) is not one (Codex review of #159: each hid the merge on the
+    next line as a body)."""
+    quoted, i, arithmetic, legacy = _quoted(command), start, 0, 0
     while i < end:
         if quoted[i]:
             i += 1
@@ -596,10 +597,14 @@ def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[
             arithmetic, i = arithmetic + 1, i + 2
         elif arithmetic and command.startswith("))", i):
             arithmetic, i = arithmetic - 1, i + 2
+        elif command.startswith("$[", i) or (legacy and command[i] == "["):
+            legacy, i = legacy + 1, i + (2 if command[i] == "$" else 1)
+        elif legacy and command[i] == "]":
+            legacy, i = legacy - 1, i + 1
         elif command[i] == "#" and (i == 0 or command[i - 1] in " \t\n;&|("):
             line_end = command.find("\n", i, end)  # a comment runs to the end of its line
             i = end if line_end < 0 else line_end
-        elif not arithmetic and (m := HEREDOC_RE.match(command, i, end)):
+        elif not arithmetic and not legacy and (m := HEREDOC_RE.match(command, i, end)):
             yield m
             i = m.end()
         else:
@@ -623,6 +628,21 @@ def _pipeline(command: str, start: int, end: int, at: int) -> str:
         else:
             left = i = m.end()
     return command[left:end]
+
+
+def _readers(pipeline: str) -> list[str]:
+    """The command of each stage of a here-document's pipeline, parsed into shell words
+    and unwrapped (`/bin/'bash'` is bash, `sudo bash` is bash), so that an argument such
+    as the `bash` of `echo bash <<EOF` is never taken for its reader (Codex review of
+    #159). `.` and `source` stay as they are: they run their input."""
+    out = []
+    for stage in pipeline.split("|"):
+        words = drop_redirections(split_words(stage))
+        if words and words[0] in (".", "source"):
+            out.append(words[0])
+        elif toks := unwrap(words):
+            out.append(toks[0])
+    return out
 
 
 def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
@@ -820,8 +840,7 @@ def find_targets(
             targets.extend(_unknown(root, f"{toks[0]} runs a command known only at run time"))
     inners = substitutions(command)
     for body, quoted, reader in bodies:
-        # Shell words, so that `/bin/'bash' <<EOF` is bash (Codex review of #159).
-        words = split_words(reader)
+        words = _readers(reader)
         if any(w in (".", "source") or _exe(w) in (*SHELLS, *EVALS) for w in words):
             inners.append(body)  # `bash <<EOF` and `source /dev/stdin <<EOF` run their body
         elif any(CLIENT_VERSION_RE.sub("", _exe(w)) in HTTP_CLIENTS for w in words):

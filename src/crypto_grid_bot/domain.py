@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from decimal import Decimal
 from enum import StrEnum
 
 
@@ -77,11 +76,9 @@ class CandidateScore:
 
 @dataclass(frozen=True, slots=True)
 class PortfolioSnapshot:
-    # The paper engine passes its exact Decimal balances, which the risk engine compares
-    # with its limits exactly; a float or int is converted exactly.
-    active_equity: Decimal | float
-    day_start_equity: Decimal | float
-    high_water_mark: Decimal | float
+    active_equity: float
+    day_start_equity: float
+    high_water_mark: float
     data_age_seconds: int
     balances_reconciled: bool = True
     orders_reconciled: bool = True
