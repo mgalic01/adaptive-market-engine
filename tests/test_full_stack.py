@@ -1,11 +1,13 @@
 """The full stack C+F+G+H+V2 (spec v1 §3, test-plan amendment of 2026-10-05) end to end.
 
 A synthetic dataset is fetched from a fake archive by the pinned fetch code, with
-BTCUSDT's funding archives in its manifest, and the backtest's own pool job replays it
-with every part on: A and B (together C), F, G, H and the V2 structure features.
-Nothing here is market data or evidence.
+BTCUSDT's funding archives in its manifest. The backtest's own pool job replays it with
+every part on: A and B (together C), F, G, H and the V2 structure features. The backtest
+CLI then runs V0 with D, V2 and the full stack on it, and the acceptance scorer reads the
+results.json files the CLI wrote. Nothing here is market data or evidence.
 """
 
+import contextlib
 import hashlib
 import io
 import math
@@ -15,9 +17,12 @@ import zipfile
 from datetime import UTC, datetime
 from decimal import Decimal as D
 from pathlib import Path
+from unittest.mock import patch
 
 from test_backtest_loaders import FakeArchive
 
+from crypto_grid_bot.backtest import __main__ as cli
+from crypto_grid_bot.backtest import acceptance as score
 from crypto_grid_bot.backtest.dataset import (
     fetch_dataset,
     funding_archive_path,
@@ -31,15 +36,19 @@ from crypto_grid_bot.backtest.features import (
 )
 from crypto_grid_bot.backtest.jobs import run_job, variant_policy
 from crypto_grid_bot.backtest.klines import Kline
+from crypto_grid_bot.backtest.replay import PATH_MODES
+from crypto_grid_bot.simulation.runner import FULL_STACK
 
 ROOT = Path(__file__).resolve().parents[1]
 MINUTE_MS, HOUR_MS, DAY_MS = 60_000, 3_600_000, 86_400_000
 MAY_2023_MS = 1682899200000  # 2023-05-01T00:00:00Z, the daily warm-up start
 DEC_2023_MS = 1701388800000  # 2023-12-01T00:00:00Z, the hourly warm-up start
 JAN_2024_MS = 1704067200000  # 2024-01-01T00:00:00Z, the evaluation start
+TRADED = ("BTCUSDT", "ETHUSDT")
+# The section 4 primary settings, so the scorer takes the runs as acceptance runs.
 SPEC = """name = "full-stack"
 purpose = "full-stack wiring test"
-traded = ["BTCUSDT"]
+traded = ["BTCUSDT", "ETHUSDT"]
 market_proxy = "BTCUSDT"
 breadth_basket = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
 daily_warmup_start = "2023-05"
@@ -107,59 +116,70 @@ def add_funding(archive, first_ms, count):
     return {"kind": "fundingRate", "symbol": "BTCUSDT", "month": month}
 
 
-class FullStackJobTests(unittest.TestCase):
-    """The pool job on one synthetic dataset, built once for the class."""
+def make_dataset(work):
+    """The dataset's spec, manifest and hash-checked archives under ``work``; returns the
+    spec's path. Both traded pairs have the same bars."""
+    hourly = hours(DEC_2023_MS, 744 + 2)
+    engine = FeatureEngine(
+        SeriesFeatures("BTCUSDT", hourly),
+        SeriesFeatures("BTCUSDT", hourly),
+        [SeriesFeatures(f"B{i}USDT", hourly, full=False) for i in range(5)],
+        range_atr_multiple=2.0,
+        levels=8,
+        minimum_cost_multiple=3.0,
+        round_trip_cost=0.0035,
+    )
+    fair = float(engine.at(JAN_2024_MS).fair_value)
+    minutes = [
+        bar(JAN_2024_MS + i * MINUTE_MS, fair, fair * 1.001, fair * 0.999, fair) for i in range(60)
+    ]
+    # Rising daily closes from 2023-05-01, 245 of them before the evaluation, so A is Up.
+    # In 2024-01 the phase is 43 months, in H3's band, not H2's; the halving's bar is not
+    # among the closes, so H3's all-time high is unavailable and it never acts.
+    days = [
+        bar(MAY_2023_MS + i * DAY_MS, *(0.5 + i / 500 + d for d in (0, 0.01, -0.01, 0)))
+        for i in range(245)
+    ]
+    archive = FakeArchive()
+    for pair in TRADED:
+        add_klines(archive, pair, "1m", MINUTE_MS, minutes)
+        add_klines(archive, pair, "1d", DAY_MS, days)
+    # The basket votes with the pair's hours, so breadth is as good as the pair's.
+    for symbol in ("BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"):
+        add_klines(archive, symbol, "1h", HOUR_MS, hourly)
+    # G's settlements up to the evaluation start, so it is available from the start.
+    funding = [add_funding(archive, DEC_2023_MS, 93), add_funding(archive, JAN_2024_MS, 1)]
+    filters = {"base": "BTC", "quote": "USDT", "tick_size": "0.0001"}
+    filters |= {"quantity_step": "0.1", "min_notional": "5"}
+    spec_path = work / "full-stack.toml"
+    spec_path.write_text(SPEC)
+    manifest = fetch_dataset(
+        load_spec(spec_path),
+        work / "data",
+        fetcher=archive,
+        instruments=lambda symbol: filters,
+        previous={"files": funding},
+    )
+    write_manifest(work / "full-stack.manifest.json", manifest)
+    return spec_path
+
+
+class SyntheticDataset(unittest.TestCase):
+    """One synthetic dataset, built once for the class."""
 
     @classmethod
     def setUpClass(cls):
-        hourly = hours(DEC_2023_MS, 744 + 2)
-        engine = FeatureEngine(
-            SeriesFeatures("BTCUSDT", hourly),
-            SeriesFeatures("BTCUSDT", hourly),
-            [SeriesFeatures(f"B{i}USDT", hourly, full=False) for i in range(5)],
-            range_atr_multiple=2.0,
-            levels=8,
-            minimum_cost_multiple=3.0,
-            round_trip_cost=0.0035,
-        )
-        fair = float(engine.at(JAN_2024_MS).fair_value)
-        minutes = [
-            bar(JAN_2024_MS + i * MINUTE_MS, fair, fair * 1.001, fair * 0.999, fair)
-            for i in range(60)
-        ]
-        # Rising daily closes from 2023-05-01, 245 of them before the evaluation, so A is
-        # Up. In 2024-01 the phase is 43 months, in H3's band, not H2's; the halving's bar
-        # is not among the closes, so H3's all-time high is unavailable and it never acts.
-        days = [
-            bar(MAY_2023_MS + i * DAY_MS, *(0.5 + i / 500 + d for d in (0, 0.01, -0.01, 0)))
-            for i in range(245)
-        ]
-        archive = FakeArchive()
-        add_klines(archive, "BTCUSDT", "1m", MINUTE_MS, minutes)
-        add_klines(archive, "BTCUSDT", "1d", DAY_MS, days)
-        # The basket votes with the pair's hours, so breadth is as good as the pair's.
-        for symbol in ("BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"):
-            add_klines(archive, symbol, "1h", HOUR_MS, hourly)
-        # G's settlements up to the evaluation start, so it is available from the start.
-        funding = [add_funding(archive, DEC_2023_MS, 93), add_funding(archive, JAN_2024_MS, 1)]
-        filters = {"base": "BTC", "quote": "USDT", "tick_size": "0.0001"}
-        filters |= {"quantity_step": "0.1", "min_notional": "5"}
         cls.temp = tempfile.TemporaryDirectory()
         cls.work = Path(cls.temp.name)
-        cls.spec_path = cls.work / "full-stack.toml"
-        cls.spec_path.write_text(SPEC)
-        manifest = fetch_dataset(
-            load_spec(cls.spec_path),
-            cls.work / "data",
-            fetcher=archive,
-            instruments=lambda symbol: filters,
-            previous={"files": funding},
-        )
-        write_manifest(cls.work / "full-stack.manifest.json", manifest)
+        cls.spec_path = make_dataset(cls.work)
 
     @classmethod
     def tearDownClass(cls):
         cls.temp.cleanup()
+
+
+class FullStackJobTests(SyntheticDataset):
+    """The pool job, with every part of the full stack on."""
 
     def job(self, gated):
         row = run_job(
@@ -170,7 +190,7 @@ class FullStackJobTests(unittest.TestCase):
             "high_first",
             gated,
             (D("0"), D("0.0009")),
-            variant_policy("C+F+G+H", structure=True),
+            variant_policy(FULL_STACK, structure=True),
         )
         self.assertEqual([], row["accounting_problems"])
         self.assertEqual((60, 0), (row["bars"], row["transient_pauses"]))
@@ -194,6 +214,75 @@ class FullStackJobTests(unittest.TestCase):
         self.assertIn("cash: order flow: buys blocked", row["top_reasons_by_bar"])
         self.assertEqual(1, row["grids_opened"])
         self.assertEqual(0, row["funding_gate_blocked_grids"])
+
+
+# The CLI's pre-run checks, faked: the dataset holds one hour of minutes, which the real
+# hourly/minute check fails for the rest of the month. ETHUSDT's own daily check fails, as
+# SOLUSDT's P3 presence check does in practice-2022, so its pair-window is excluded.
+PAIR_CHECK = {field: 0 for field in (*cli.INTEGRITY_FIELDS, *cli.DAILY_INTEGRITY_FIELDS)}
+PAIR_CHECK |= {"hours_compared": 1, "daily_days_compared": 1}
+BASKET_CHECK = {"role": "breadth_basket", "series_hours_present": 1, "series_hours_excluded": 0}
+BASKET_CHECK |= {field: 0 for field in cli.SERIES_INTEGRITY_FIELDS}
+ETH_EXCLUDED = ("ETHUSDT: daily_days_missing=3",)
+
+
+def checks(spec_path, data_dir, symbol, strict_volume=False):
+    check = {"symbol": symbol, **(PAIR_CHECK if symbol in TRADED else BASKET_CHECK)}
+    if symbol == "ETHUSDT":
+        check["daily_days_missing"] = 3
+    return check
+
+
+class CliToScorerTests(SyntheticDataset):
+    """The results.json files the backtest CLI writes for V0 with D, V2 and the full
+    stack, read by the acceptance scorer's row recognition and comparison mask."""
+
+    def run_cli(self, *flags):
+        out = self.work / "out" / ("".join(flags) or "v0")
+        command = ["run", "--spec", str(self.spec_path), "--data-dir", str(self.work / "data")]
+        command += ["--config", str(ROOT / "config/default.toml"), "--out", str(out)]
+        command += ["--jobs", "1", "--maker-fee", "0", "--taker-fee", "0.0009", *flags]
+        with (
+            patch.object(cli, "cross_check_job", checks),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(0, cli.main(command))
+        (written,) = out.rglob("results.json")
+        return score.read_results(written).document
+
+    def test_the_scorer_reads_v0_d_v2_and_the_full_stack_and_the_excluded_pair(self):
+        spec = load_spec(self.spec_path)
+        windows: dict = {}
+        named: dict = {}
+        found: dict = {}
+        for flags, variants in (
+            (("--record-commit", "--trend-benchmark"), {"V0", "D"}),
+            (("--structure",), {"V2"}),
+            (("--variant-full",), {"C+F+G+H+V2"}),
+        ):
+            with self.subTest(flags=flags):
+                document = self.run_cli(*flags)
+                # An acceptance run, valid, with ETHUSDT excluded and not a failure.
+                self.assertEqual([], score.document_problems(document))
+                self.assertEqual((True, []), (document["valid"], document["failures"]))
+                self.assertEqual({"ETHUSDT": list(ETH_EXCLUDED)}, document["excluded_pairs"])
+                window = score.window_of(spec, document["hourly_cross_checks"])
+                self.assertEqual({"ETHUSDT": ETH_EXCLUDED}, dict(window.excluded))
+                self.assertEqual(windows.setdefault(window.name, window), window)
+                # Every row is recognised, and only the included pair's rows are runs.
+                self.assertEqual(variants, score.variants_in(document))
+                runs = list(score.runs_of(document, window))
+                expected = {(v, "BTCUSDT", path) for v in variants for path in PATH_MODES}
+                self.assertEqual(expected, {(v, r.symbol, r.path) for v, r in runs})
+                named.setdefault(window.name, set()).update(variants)
+                for variant, run in runs:
+                    found.setdefault(variant, {})[run.key] = run
+        # Judged over the window, the excluded pair-window is no variant's missing run.
+        judged = score.judge(score.Stage("synthetic", (spec.name,)), windows, named, found)
+        self.assertEqual(
+            {"V0": (), "D": (), "V2": (), "C+F+G+H+V2": ()},
+            {s.variant: s.missing for s in judged.scores},
+        )
 
 
 if __name__ == "__main__":

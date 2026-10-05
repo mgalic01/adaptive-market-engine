@@ -29,6 +29,7 @@ from crypto_grid_bot.backtest.dataset import DatasetSpec, load_spec, sha256_file
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE_VERSION
 from crypto_grid_bot.backtest.replay import ENGINE_VERSION, INTEGRITY_RULES, PATH_MODES
 from crypto_grid_bot.backtest.trend_benchmark import STRATEGY as BENCHMARK
+from crypto_grid_bot.simulation.runner import FULL_STACK
 
 ROOT = Path(__file__).resolve().parents[1]
 SPECS = ROOT / "config" / "datasets"
@@ -461,8 +462,11 @@ class VariantTests(unittest.TestCase):
         # V2 is V0 with --structure: no variant field. The full stack (--variant-full)
         # names the variant C+F+G+H. Both carry V2's features label.
         self.assertEqual(score.variant_of({"strategy": score.STRUCTURE_GRID}), "V2")
-        full = {"strategy": score.STRUCTURE_GRID, "variant": "C+F+G+H"}
+        full = {"strategy": score.STRUCTURE_GRID, "variant": FULL_STACK}
         self.assertEqual(score.variant_of(full), "C+F+G+H+V2")
+        # The name is the one the engine writes on a full-stack row.
+        policy = jobs.variant_policy(FULL_STACK, structure=True)
+        self.assertEqual(("C+F+G+H", FULL_STACK), (jobs.variant_name(policy), policy.variant))
         self.assertEqual(score.STRUCTURE_GRID, f"gated grid ({STRUCTURE_FEATURE_VERSION})")
 
     def test_other_structure_rows_are_refused(self) -> None:
@@ -471,7 +475,7 @@ class VariantTests(unittest.TestCase):
             for name in ("A", "C", "C+G", "C+H", "E", "C+F+G+H+V2", "V2", "")
         ]
         refused += [
-            {"strategy": score.GRID, "variant": "C+F+G+H"},  # the full stack without V2
+            {"strategy": score.GRID, "variant": FULL_STACK},  # the full stack without V2
             {"strategy": score.GRID, "variant": "V2"},
             {"strategy": f"ungated grid baseline ({STRUCTURE_FEATURE_VERSION})"},
         ]
@@ -675,7 +679,7 @@ STRATEGIES = {
     "V2": score.STRUCTURE_GRID,
     "C+F+G+H+V2": score.STRUCTURE_GRID,
 }
-VARIANT_FIELDS = {"V0": None, "ungated": None, "V2": None, "C+F+G+H+V2": "C+F+G+H"}
+VARIANT_FIELDS = {"V0": None, "ungated": None, "V2": None, "C+F+G+H+V2": FULL_STACK}
 
 
 def row(symbol, path, variant="V0", ret="1", dd=2.0, **changes):

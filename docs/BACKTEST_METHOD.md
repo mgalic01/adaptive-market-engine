@@ -420,7 +420,8 @@ decimals (below).
   - a recorded check fails on the market proxy or on an untraded basket symbol, which
     feed every pair, so every pair is excluded;
   - the pair's own minute, hourly or daily check fails, which excludes that pair only,
-    even when it also votes in the basket;
+    even when it also votes in the basket. `run` writes no rows for such a pair-window
+    and lists it under `excluded_pairs`, so its runs are excluded, not missing;
   - the pair fails the filter check (P4: `practice-2022` SOLUSDT).
 
   Results exist only where the manifest and checksums passed. Every file of a window

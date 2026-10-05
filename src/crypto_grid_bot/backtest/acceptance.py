@@ -69,6 +69,7 @@ from crypto_grid_bot.backtest.jobs import SOURCE_IDENTITY
 from crypto_grid_bot.backtest.klines import month_bounds_ms
 from crypto_grid_bot.backtest.replay import DAY_MS, ENGINE_VERSION, INTEGRITY_RULES, PATH_MODES
 from crypto_grid_bot.backtest.trend_benchmark import STRATEGY as BENCHMARK_STRATEGY
+from crypto_grid_bot.simulation.runner import FULL_STACK
 
 # The name of these scoring rules, recorded in every verdict. Section 7 freezes the
 # scoring before the reserved window, so a change to them gets a new name: the test-plan
@@ -127,8 +128,9 @@ SIMPLICITY_ORDER = ("V0", "A", "B", "F", "G", "H", "E", "V2", "C", "C+G", "C+H",
 GRID_VARIANTS = ("A", "B", "C", "E", "F", "G", "C+G", "H", "C+H")
 # Section 3, V2 and the full stack: the only registered --structure runs, by the variant
 # field of their rows. V2 is V0 with --structure, so its rows carry none, as V0's do; the
-# full stack's carry C+F+G+H. Every other --structure row is refused.
-STRUCTURE_VARIANTS = {None: "V2", "C+F+G+H": "C+F+G+H+V2"}
+# full stack's carry the engine's FULL_STACK, C+F+G+H. Every other --structure row is
+# refused.
+STRUCTURE_VARIANTS = {None: "V2", FULL_STACK: "C+F+G+H+V2"}
 # Section 3 E and section 6 step 1: E is run and reported but not eligible until Codex
 # has reviewed its implementation and boundary tests. Change this only in the PR that
 # records that review.
