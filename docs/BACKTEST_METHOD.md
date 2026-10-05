@@ -309,14 +309,21 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
 ## Acceptance scoring (spec v1 §6)
 
 ```bash
-PYTHONPATH=src python -m crypto_grid_bot.backtest.acceptance \
+# Stage 1, the early read: which variants pass it; no winner is named.
+PYTHONPATH=src python -m crypto_grid_bot.backtest.acceptance --early-read \
     data/backtests/verify-2024h1/<stamp>/ data/backtests/practice-2022/<stamp>/ ... \
-    --out data/acceptance/verdict.json
+    --out data/acceptance/early-read.json
+# The final verdict: both stages' results together.
+PYTHONPATH=src python -m crypto_grid_bot.backtest.acceptance --final \
+    data/backtests/verify-2024h1/<stamp>/ ... data/backtests/full-range-2017-2024/<stamp>/ \
+    ... data/backtests/full-range-2019-2024/<stamp>/ ... --out data/acceptance/verdict.json
 ```
 
 `backtest/acceptance.py` turns the `results.json` files of the §4 matrix into the §6
-verdict. It runs no replay and reads no market data. Besides those files it reads only
-the frozen inputs, which every run must match:
+verdict, in the two stages of spec v1 amendment 4 (§6, "Two stages"). Each verdict
+records its rules as `spec-v1-section-6-amendment-4`. It runs no replay and reads no
+market data. Besides those files it reads only the frozen inputs, which every run must
+match:
 
 - **The code.** Each run must record a clean `code_commit`, the same for every run, and
   a `code_sha256` equal to the scorer's own source identity. The scorer must run from
@@ -331,23 +338,58 @@ the frozen inputs, which every run must match:
   - A batch run on a tuned copy of any of them is refused, however well its files agree.
   - Either line-ending form is accepted, since Git checks the same files out with LF on
     Linux and CRLF on Windows.
+  - Every window of the invocation needs its committed spec and manifest, even with none
+    of its runs in the inputs, and each spec's evaluation window must be the one §6
+    registers: 182 days for `verify-2024h1`, 245 for `practice-2022`, 2,192 for
+    `full-range-2017-2024` and 2,011 for `full-range-2019-2024`.
+  - The stage-2 windows' specs and manifests come with the long-window data PR, and must
+    match the definitions frozen in spec §4. Until they are committed, a final run is
+    refused and says so.
 
 It prints a table and writes the verdict as JSON, with every figure behind it and the
 scorer's own commit and source hash. The JSON numbers are exact: a decimal where it
-terminates, otherwise `p/q`.
+terminates, otherwise `p/q`. An annualised return that is irrational is written to 20
+decimals (below).
 
+- **The stages.**
+  - **Stage 1** is `verify-2024h1` and `practice-2022`, judged together.
+  - **Stage 2** is `full-range-2017-2024`, judged on its own.
+  - `full-range-2019-2024` is run and reported only (§5 rule 6). It is judged like a
+    stage, but decides nothing, not even when it keeps fewer than 2 pairs.
+  - A stage is judged over all its windows or not at all.
+- **`--early-read`** takes stage 1's runs only, and refuses any other window.
+  - It names no winner.
+  - Its outcome is "early read", with the variants that pass C1–C6 in stage 1.
+  - A stage-1 window with fewer than 2 included pairs gives "insufficient evidence" and
+    no list. So does a matrix that is not whole, as "incomplete matrix": a window, a
+    variant or a run missing.
+- **`--final`** takes both stages' runs.
+  - It refuses, with exit code 2 and nothing scored, unless all three matrices are
+    whole: both windows of stage 1, 2017–2024 and 2019–2024, every §4 variant (D
+    included) and no missing run.
+  - Section 5's minimum evidence then applies to every scored window. If stage 1's
+    windows or 2017–2024 keep fewer than 2 included pairs, the outcome is "insufficient
+    evidence".
+  - A variant is eligible only if it passes C1–C6 in stage 1 and in stage 2.
+  - The selection ranks the eligible variants on 2017–2024 alone.
+  - The outcome is a winner or "no winner".
 - **Inputs.** Pass one run per variant and window. Every `run` writes the ungated V0
   rows that C6 compares against, and D comes from V0's file (`run --trend-benchmark`).
   Each input must be an acceptance run:
-  - engine `drawdown-recovery-v2`, features `price-only-v1` (no `--structure`) and
-    integrity rules `drift-tolerance-v1`;
+  - engine `drawdown-recovery-v2` and integrity rules `drift-tolerance-v1`;
+  - features `price-only-v1`, or for V2 and the full stack the `--structure` run's
+    `price-only-v1+structure-v2` on its gated rows, with `price-only-v1` recorded for
+    its ungated V0 baseline rows (`baseline_feature_version`);
+  - V2 is V0 with `--structure`: its gated rows carry no `variant`, as V0's do. The full
+    stack's gated rows carry the variant `C+F+G+H` with that label. Any other
+    `--structure` row is refused, such as C or A with the structure features;
   - the primary fees (maker 0, taker 0.0009) and §4's slippage, participation, spread
     and capital, with no fill trigger;
   - the frozen code and committed files above.
 
   Anything else is refused with exit code 2, and nothing is scored: a sensitivity run,
-  an unknown variant, the same run twice, another commit or code, or a changed config,
-  dataset spec or manifest.
+  an unknown variant or window, the same run twice, another commit or code, or a changed
+  or uncommitted config, dataset spec or manifest.
 - **The verdict file.** `--out` never keeps an earlier verdict. Until a run finishes it
   holds "not scored", and a refused run leaves "refused" there with the reasons. Neither
   names a winner. `--out` may not be one of the results files.
@@ -360,34 +402,62 @@ terminates, otherwise `p/q`.
   - the pair fails the filter check (P4: `practice-2022` SOLUSDT).
 
   Results exist only where the manifest and checksums passed. Every file of a window
-  must give the same mask. A window left with fewer than 2 included pairs gives
-  "insufficient evidence".
-- **Criteria,** over each variant's included runs (both windows, both paths):
+  must give the same mask.
+- **The long-window data rules (§5 rules 1–8) are not applied yet.** They arrive with
+  the long-window data PR, which names the fields of each run's mask report and of Bob's
+  XRP measurement. The hook is `data_rule_exclusions`:
+  - Bob's rule-8 measurement will exclude XRP's pair-window there.
+  - Hour-level masking will run before the checks, which then run on the post-mask
+    expected set, so a maskable defect stops failing them (§5).
+  - The mask report (masked hours, skipped days, fills after a masked span) will join
+    each run in `runs_of`.
+
+  Today a failed hour fails its check, which excludes the pair-window, as in stage 1, and
+  no pair is excluded for its price.
+- **Annualised returns (§6).** C2 and the selection use each run's
+  `(final_total_equity ÷ initial_quote) ^ (365.25 ÷ d) − 1`, where `d` is C5's window in
+  days.
+  - A final equity of 0 or less gives −100%.
+  - The power is exact where it is rational. In the registered windows that is only at a
+    zero return.
+  - Otherwise it is computed in Decimal as `exp(ln(ratio) × 365.25 ÷ d)`, at 60
+    significant digits plus more near a zero return. Each step rounds half-even, and
+    `ln` and `exp` are correctly rounded.
+  - Each figure carries an error bound, set over 60 times the analysed worst case. It is
+    below 10⁻⁵⁰ × (1 + the figure's size) in percentage points.
+  - A decision is taken only when the bounds settle it: C2's comparisons with 0, and the
+    selection's rounding to 6 decimals. The mean or median of the runs' lower and upper
+    bounds encloses the exact mean or median, and the decision must be the same at both
+    ends. A decision the bounds cannot settle refuses the whole scoring, rather than
+    guessing.
+  - Raw returns are reported beside the annualised ones. C6 and R1 keep raw returns.
+- **Criteria,** over each variant's included runs in a stage (every window of it, both
+  paths):
   - C1: `max_drawdown_pct` and `active_max_drawdown_pct` ≤ 10 in every run, and
     `hard_drawdown_halts` 0.
-  - C2: each path's median return > 0, and the mean over all runs > 0. The return is
-    exact, from `final_total_equity` ÷ `initial_quote`; `return_pct` is a float.
+  - C2: each path's median annualised return > 0, and the mean annualised return over
+    all runs > 0. The raw return is exact, from `final_total_equity` ÷ `initial_quote`;
+    `return_pct` is a float.
   - C3: `max_drawdown_pct` < `buy_and_hold_max_drawdown_pct` in every run.
   - C4: every run valid. A run is invalid by `run`'s own rule (accounting problems,
     rejected frames, no evaluation bars, an exit left incomplete), or when its whole
     file failed, such as a checkout that changed during the run. A run missing from the
     matrix also fails C4.
-  - C5: the mean of `completed_cycles` × 7 ÷ the spec window's days, at least 1. The
-    window is 182 days for `verify-2024h1` and 245 for `practice-2022`.
-  - C6: in at least 60% of runs, return ÷ max(`max_drawdown_pct`, 0.1) beats the
+  - C5: the mean of `completed_cycles` × 7 ÷ the spec window's days, at least 1.
+  - C6: in at least 60% of runs, the raw return ÷ max(`max_drawdown_pct`, 0.1) beats the
     ungated baseline's from the same file. A missing or invalid baseline counts against.
   - R1, reported only: 5 ÷ the mean monthly return fraction, where a run's monthly
-    return is its window return ÷ the window's calendar months. It is "not reachable" at
-    or below 0.
-- **Verdict.** A variant passes only if all of C1–C6 pass.
-- **Selection.** It runs only over the whole §4 matrix: both windows, all eleven
-  variants and no missing run. Anything less gives "incomplete matrix".
-  - It follows §6 steps 1–5. The means are rounded to 6 decimals, half away from zero,
-    before any comparison, and the 0.25-point tie set is inclusive.
+    return is its raw window return ÷ the window's calendar months. It is "not
+    reachable" at or below 0.
+- **Verdict.** A variant passes a stage only if all of C1–C6 pass there.
+- **Selection,** in the final run only, over the variants eligible as above:
+  - It follows §6 steps 1–5 on 2017–2024. Step 2 compares mean annualised returns.
+  - Both means are rounded to 6 decimals, half away from zero, before any comparison.
+    The 0.25-point tie set is inclusive.
+  - The simplicity order is V0, A, B, F, G, H, E, V2, C, C+G, C+H, C+F+G+H+V2.
   - D is never selected. E is not eligible until Codex has reviewed it (`E_ELIGIBLE` in
     the module).
-  - The outcome is a winner, "no winner", "insufficient evidence" or "incomplete
-    matrix". C7 is not evaluated: it is unsettled and selects nothing.
+  - C7 is not evaluated: it is unsettled and selects nothing.
 - **Limits.**
   - The drawdowns in `results.json` are floats rounded from exact Decimals. The scorer
     compares them exactly as written.
