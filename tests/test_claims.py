@@ -434,6 +434,25 @@ class TargetTest(unittest.TestCase):
             # body; a quoted pipe is no pipeline.
             self.assertEqual(self.prs("x=$(bash <<'EOF'\ngh pr merge 5\nEOF\n)"), [5])
             self.assertEqual(find_targets("echo '| bash' <<'EOF'\ngh pr merge 5\nEOF", "."), [])
+            # Codex review of #159: a reader not known to read data runs the body, whatever
+            # shell it is; data readers and gh's own data stay data.
+            for cmd in (
+                "ash <<'EOF'\ngh pr merge 5\nEOF",
+                "busybox sh <<'EOF'\ngh pr merge 5\nEOF",
+                "ssh host <<'EOF'\ngh pr merge 5\nEOF",
+                "cat <<'EOF' | mksh\ngh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(self.prs(cmd), [5])
+            for cmd in (
+                "git commit -F - <<'EOF'\nfix: then gh pr merge 5\nEOF",
+                "gh pr comment 7 -F - <<'EOF'\nplease gh pr merge 5\nEOF",
+                "cat <<'EOF' | grep merge\ngh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(find_targets(cmd, "."), [])
+            mutation = "gh api graphql -F query=@- <<'EOF'\nmutation { mergePullRequest }\nEOF"
+            self.assertEqual([t.kind for t in find_targets(mutation, ".")], ["merge"])
             # Codex review of #159: a function body's opener is not the reader.
             for cmd in (
                 "f(){ bash <<'EOF'\ngh pr merge 5\nEOF\n}; f",

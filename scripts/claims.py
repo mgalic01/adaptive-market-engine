@@ -659,6 +659,28 @@ def _readers(pipeline: str) -> list[str]:
     return out
 
 
+# Commands that only read their input as data. A here-document read by anything else
+# (a shell under any name, `source`, ssh, a tool not listed) may run it, so its body
+# is read as commands (Codex review of #159: `ash <<'EOF'`, `busybox sh <<'EOF'`).
+DATA_READERS = {
+    "cat", "tee", "git", "echo", "printf", "true", "false", "grep", "egrep", "fgrep",
+    "rg", "sed", "awk", "gawk", "sort", "uniq", "wc", "head", "tail", "cut", "tr", "jq",
+    "yq", "less", "more", "diff", "patch", "base64", "xxd", "od", "column", "fold",
+    "fmt", "nl", "rev", "paste", "comm", "join", "tac", "iconv", "sha256sum",
+    "sha1sum", "md5sum", "read", "mapfile", "readarray", "clip", "pbcopy", "xclip",
+    "xsel", "wl-copy",
+}  # fmt: skip
+
+
+def _reader_kind(word: str) -> str:
+    """What a here-document's reader does with it: "client" (it can send an API merge,
+    as `gh api` or python can), "data" (it only reads it) or "run" (anything else)."""
+    name = _exe(word)
+    if name == "gh" or CLIENT_VERSION_RE.sub("", name) in HTTP_CLIENTS:
+        return "client"
+    return "data" if name in DATA_READERS and word not in (".", "source") else "run"
+
+
 def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
     """The command without its here-document bodies, and each body with whether its
     delimiter is quoted (the shell expands nothing in it) and the pipeline of its `<<`,
@@ -854,14 +876,14 @@ def find_targets(
             targets.extend(_unknown(root, f"{toks[0]} runs a command known only at run time"))
     inners = substitutions(command)
     for body, quoted, reader in bodies:
-        words = _readers(reader)
-        if any(w in (".", "source") or _exe(w) in (*SHELLS, *EVALS) for w in words):
-            inners.append(body)  # `bash <<EOF` and `source /dev/stdin <<EOF` run their body
-        elif any(CLIENT_VERSION_RE.sub("", _exe(w)) in HTTP_CLIENTS for w in words):
-            # `python3 - <<EOF` runs its body as a program that can send an API merge.
-            targets.extend(_rest_merge_targets(body, cwd, None))
+        kinds = {_reader_kind(w) for w in _readers(reader)}
+        if "run" in kinds:
+            inners.append(body)  # a shell, `source`, ssh or anything unknown may run it
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))
+        if "client" in kinds:
+            # `python3 - <<EOF` or `gh api --input -`: a program that can send an API merge.
+            targets.extend(_rest_merge_targets(body, cwd, None))
     for inner in inners:
         targets.extend(find_targets(inner, cwd, depth + 1, posix=posix, root=root))
     return targets
