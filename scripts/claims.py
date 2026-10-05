@@ -668,10 +668,12 @@ def _readers(pipeline: str) -> list[str]:
 # Commands that only read their input as data. A here-document read by anything else
 # (a shell under any name, `source`, ssh, a tool not listed) may run it, so its body
 # is read as commands (Codex review of #159: `ash <<'EOF'`, `busybox sh <<'EOF'`).
+# awk (`system()`), sed (`e`) and the pagers (`!`) can run commands, so they are not
+# here (Codex review of #159).
 DATA_READERS = {
     "cat", "tee", "git", "echo", "printf", "true", "false", "grep", "egrep", "fgrep",
-    "rg", "sed", "awk", "gawk", "sort", "uniq", "wc", "head", "tail", "cut", "tr", "jq",
-    "yq", "less", "more", "diff", "patch", "base64", "xxd", "od", "column", "fold",
+    "rg", "sort", "uniq", "wc", "head", "tail", "cut", "tr", "jq",
+    "yq", "diff", "patch", "base64", "xxd", "od", "column", "fold",
     "fmt", "nl", "rev", "paste", "comm", "join", "tac", "iconv", "sha256sum",
     "sha1sum", "md5sum", "read", "mapfile", "readarray", "clip", "pbcopy", "xclip",
     "xsel", "wl-copy",
@@ -679,15 +681,18 @@ DATA_READERS = {
 
 
 def _reader_kind(word: str) -> str:
-    """What a here-document's reader does with it: "interpreter" (python, node...: it
-    can run anything), "client" (curl, gh: it can send an API merge, and its other
-    input is data), "data" (it only reads it) or "run" (anything else)."""
+    """What a here-document's reader does with it: "shell" (it runs it as commands),
+    "interpreter" (python, node...: it can run anything and send API calls), "client"
+    (curl, gh: it can send an API merge, and its other input is data), "data" (it only
+    reads it) or "run" (anything else, which may run it: awk, sed, vim, ssh...)."""
     name = _exe(word)
+    if word in (".", "source") or name in (*SHELLS, *EVALS):
+        return "shell"
     if CLIENT_VERSION_RE.sub("", name) in INTERPRETERS:
         return "interpreter"
     if name == "gh" or CLIENT_VERSION_RE.sub("", name) in HTTP_CLIENTS:
         return "client"
-    return "data" if name in DATA_READERS and word not in (".", "source") else "run"
+    return "data" if name in DATA_READERS else "run"
 
 
 def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
@@ -888,19 +893,20 @@ def find_targets(
     inners = substitutions(command)
     for body, quoted, reader in bodies:
         kinds = {_reader_kind(w) for w in _readers(reader)}
-        if "run" in kinds:
+        if kinds & {"shell", "run"}:
             inners.append(body)  # a shell, `source`, ssh or anything unknown may run it
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))
-        if "interpreter" in kinds:
-            # `python3 - <<EOF` can run anything (`subprocess.run(["gh", ...])`): an API
-            # call that names its PR counts, and otherwise a merge or push word in it is
-            # a command known only at run time (Codex review of #159).
-            sent = _rest_merge_targets(body, cwd, None)
-            targets.extend(sent or _unknown(body, "an interpreter runs this here-document"))
-        elif "client" in kinds:
-            # `gh api --input -`, `curl --data @-`: the body can be an API merge.
+        if kinds & {"interpreter", "client"}:
+            # `python3 - <<EOF`, `gh api --input -`: the body can send an API merge.
             targets.extend(_rest_merge_targets(body, cwd, None))
+        if kinds & {"interpreter", "run"}:
+            # A program that runs commands in its own language (`subprocess.run`, awk's
+            # `system()`, vim's `!`) may run more than the scan reads, so a merge or push
+            # word in its input is a command known only at run time, whatever else is
+            # found (Codex review of #159). A shell's input is read exactly, so `bash`
+            # echoing "merge" is not refused.
+            targets.extend(_unknown(body, "a program that can run commands reads this"))
     for inner in inners:
         targets.extend(find_targets(inner, cwd, depth + 1, posix=posix, root=root))
     return targets

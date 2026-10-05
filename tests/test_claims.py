@@ -415,16 +415,20 @@ class TargetTest(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
             # Codex review of #159: a sourced body runs; an interpreter's body can send
-            # an API merge.
-            api = f"https://api.github.com/repos/{REPO}/pulls/5/merge"
+            # an API merge, and may run more than the scan reads, so its merge word is
+            # refused as well.
             for cmd in (
                 "source /dev/stdin <<'EOF'\ngh pr merge 5\nEOF",
                 ". /dev/stdin <<'EOF'\ngh pr merge 5\nEOF",
-                f"python3 - <<'EOF'\nimport urllib.request as r\n"
-                f"r.urlopen(r.Request('{api}', method='PUT'))\nEOF",
             ):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(self.prs(cmd), [5])
+            api = f"https://api.github.com/repos/{REPO}/pulls/5/merge"
+            put = (
+                f"python3 - <<'EOF'\nimport urllib.request as r\n"
+                f"r.urlopen(r.Request('{api}', method='PUT'))\nEOF"
+            )
+            self.assertCountEqual(self.prs(put), [5, None])
             # Codex review of #159: the legacy `$[...]` is arithmetic too, nested brackets
             # included.
             for cmd in ("x=$[x << END ]\ngh pr merge 5", "x=$[a[1] << 2]\ngh pr merge 5"):
@@ -435,7 +439,9 @@ class TargetTest(unittest.TestCase):
             self.assertEqual(self.prs("x=$(bash <<'EOF'\ngh pr merge 5\nEOF\n)"), [5])
             self.assertEqual(find_targets("echo '| bash' <<'EOF'\ngh pr merge 5\nEOF", "."), [])
             # Codex review of #159: a reader not known to read data runs the body, whatever
-            # shell it is; data readers and gh's own data stay data.
+            # shell it is, and one not known to be a shell may run more than the scan
+            # reads, so its merge word is refused too; data readers and gh's own data
+            # stay data.
             for cmd in (
                 "ash <<'EOF'\ngh pr merge 5\nEOF",
                 "busybox sh <<'EOF'\ngh pr merge 5\nEOF",
@@ -443,7 +449,7 @@ class TargetTest(unittest.TestCase):
                 "cat <<'EOF' | mksh\ngh pr merge 5\nEOF",
             ):
                 with self.subTest(cmd=cmd):
-                    self.assertEqual(self.prs(cmd), [5])
+                    self.assertCountEqual(self.prs(cmd), [5, None])
             for cmd in (
                 "git commit -F - <<'EOF'\nfix: then gh pr merge 5\nEOF",
                 "gh pr comment 7 -F - <<'EOF'\nplease gh pr merge 5\nEOF",
@@ -460,6 +466,20 @@ class TargetTest(unittest.TestCase):
             )
             self.assertIn("merge", [t.kind for t in find_targets(run, ".") if t.unknown])
             self.assertEqual(find_targets("node - <<'EOF'\nconsole.log(1)\nEOF", "."), [])
+            # Codex review of #159: awk, sed and editors can run commands too; a shell's
+            # input is read exactly, so its echoed words are not refused.
+            for cmd in (
+                "awk -f - <<'EOF'\nBEGIN { system(\"gh pr merge 5\") }\nEOF",
+                "sed -f - x <<'EOF'\n1e gh pr merge 5\nEOF",
+                "vim -es <<'EOF'\n!gh pr merge 5\nEOF",
+            ):
+                with self.subTest(cmd=cmd):
+                    unknown = [t.kind for t in find_targets(cmd, ".") if t.unknown]
+                    self.assertEqual(unknown, ["merge"])
+            # A merge the scan reads does not hide one it cannot (`system()` here).
+            hidden = "awk -f - <<'EOF'\nBEGIN { system(\"gh pr merge 5\") }\ngh pr merge 6\nEOF"
+            self.assertCountEqual(self.prs(hidden), [6, None])
+            self.assertEqual(find_targets("bash <<'EOF'\necho merge later\nEOF", "."), [])
             # Codex review of #159: a function body's opener is not the reader.
             for cmd in (
                 "f(){ bash <<'EOF'\ngh pr merge 5\nEOF\n}; f",
