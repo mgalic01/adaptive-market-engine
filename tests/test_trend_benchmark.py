@@ -405,7 +405,7 @@ class AccountingTests(unittest.TestCase):
         spec = load_spec(Path(SPEC))
         self.assertEqual([], daily_history_problems(spec))
         with tempfile.TemporaryDirectory() as temp:
-            text = Path(SPEC).read_text().replace('daily_warmup_start = "2023-05"\n', "")
+            text = Path(SPEC).read_text().replace('daily_warmup_start = "2020-05"\n', "")
             path = Path(temp) / "no-daily.toml"
             path.write_text(text)
             (problem,) = daily_history_problems(load_spec(path))

@@ -34,7 +34,12 @@ from typing import Any, Protocol
 
 from crypto_grid_bot.backtest.dataset import funding_local_path, is_funding, local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
-from crypto_grid_bot.backtest.funding import FundingRecord, FundingSignal, read_funding_archive
+from crypto_grid_bot.backtest.funding import (
+    FIRST_ARCHIVE_MONTH,
+    FundingRecord,
+    FundingSignal,
+    read_funding_archive,
+)
 from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
@@ -912,19 +917,22 @@ def load_funding(
     archives the manifest lists as present (spec v1 P8), whose checksums
     ``verify_dataset`` checks before any replay.
 
-    Every one of ``months``, the run's evaluation months, needs its archive: without
-    one, G would block every new grid that month whatever the funding was, a result
-    that says nothing about funding, so the run is refused instead. Every committed
-    manifest lacks them until P8's entries are added."""
+    Every one of ``months``, the run's evaluation months, from ``FIRST_ARCHIVE_MONTH``
+    on needs its archive: without one, G would block every new grid that month whatever
+    the funding was, a result that says nothing about funding, so the run is refused
+    instead. Before that month no archive exists, so none is needed: G is unavailable
+    there, without three usable records, and blocks every new grid (spec v1 §5 rule 9)."""
     present = [
         entry["month"]
         for entry in manifest["files"]
         if is_funding(entry) and entry["symbol"] == symbol and entry["status"] == "ok"
     ]
-    if absent := [month for month in months if month not in present]:
+    expected = [month for month in months if month >= FIRST_ARCHIVE_MONTH]
+    if absent := [month for month in expected if month not in present]:
         raise ValueError(
-            f"variant G needs {symbol}'s funding archive for every evaluation month in the "
-            f"manifest (spec v1 P8); it lists none for {', '.join(absent)}"
+            f"variant G needs {symbol}'s funding archive for every evaluation month from "
+            f"{FIRST_ARCHIVE_MONTH} in the manifest (spec v1 P8); it lists none for "
+            f"{', '.join(absent)}"
         )
     return [
         record

@@ -664,6 +664,16 @@ indicates a data-source problem. Consequences:
   selection. E becomes eligible for selection only after Codex has reviewed its
   implementation and the boundary tests above; until then it is run and reported but
   **not eligible**.
+- **Implementation review, recorded 2026-10-05: E is eligible.**
+  - Codex reviewed E's implementation and the boundary tests above on PR #165, over five
+    rounds.
+  - Its first round found that E's milestones must stay on the clock from the original
+    `t0`, and that was fixed.
+  - Its fifth review, of `7045b72` (merged as `396041f`), found no issues. E's code is
+    unchanged since then.
+  - The owner confirmed the same day that E is selectable
+    ([record](reviews/2026-10-05-claude-owner-decisions-test-plan.md), "Later
+    decisions").
 
 ### F: order-flow entry block
 F blocks new buys only. It is **not** a V0 pause: it never sets `draining`, never
@@ -1132,6 +1142,23 @@ change afterwards. Every current `practice-2022` SOL pair-window fails the filte
 unless P4 sources historical filters
 ([fee-levels-2026-09.md](backtests/fee-levels-2026-09.md), tick-size mismatch).
 
+**Failures that reach every pair-window.** Some data feeds every pair, so a failure in it
+excludes every pair-window of the window:
+- an untraded market proxy's or untraded basket member's failure;
+- a traded market proxy's failure that leaves one of its 1h bars, which feed every
+  pair's features, missing, in doubt or unchecked. That covers:
+  - a missing or duplicated hour;
+  - a 1m or 1d bar that disagrees with its hours, since the check cannot show which
+    archive is wrong;
+  - an hour with no minutes to check it against, or no hour compared at all.
+
+A traded proxy's 1m and 1d bars feed only its own runs. Its other failures therefore
+exclude only its own pair-window: minutes missing inside an hour whose 1h bar they still
+match, and a missing, duplicated or short daily history. Every other traded pair's
+failures are its own too, even when it votes in the basket. *(Owner decision,
+2026-10-05, on the traded proxy's split, which came out of Codex's review of #170;
+[record](reviews/2026-10-05-claude-owner-decisions-test-plan.md), "Later decisions".)*
+
 **Minimum evidence:** each development window must keep at least 2 included pairs.
 Otherwise the outcome is "insufficient evidence", not a winner.
 
@@ -1377,10 +1404,10 @@ but it does not change any criterion, any ranking or any acceptance decision.
   It answers the strategic question; it does not add a trial to the family count.
 
 **Selection (deterministic):**
-1. The **eligible set** is the passing variants among V0, A, B, C, E (only after Codex's
-   implementation review, §3 E), F, G, C+G, H, C+H, V2 and C+F+G+H+V2 (the last two
-   added 2026-10-05). How the two stages combine into "passing" is set under "Two
-   stages", below. D is excluded before ranking.
+1. The **eligible set** is the passing variants among V0, A, B, C, E (eligible since
+   Codex's implementation review, recorded in §3 E), F, G, C+G, H, C+H, V2 and
+   C+F+G+H+V2 (the last two added 2026-10-05). How the two stages combine into
+   "passing" is set under "Two stages", below. D is excluded before ranking.
 2. Let `M` be the highest mean return in the eligible set, annualised since 2026-10-05
    ("Annualised returns", above), in percentage points rounded
    to 6 decimals. The **tie set** is every eligible variant with mean return ≥ `M − 0.25`

@@ -594,9 +594,40 @@ class ReplayTests(unittest.TestCase):
                 )
         self.assertEqual(SimulationPolicy(structure=True), variant_policy(None, structure=True))
         self.assertIn("not the spec", variant_name(SimulationPolicy(inventory_cap=D("0.5"))))
-        for undeclared in ("", "D", "A+G", "E+F", "G+H"):
+        for undeclared in ("", "D", "A+G", "E+F", "G+H", "C+F+G+H+V2", "C+E+F+G+H"):
             with self.subTest(undeclared=undeclared), self.assertRaises(ValueError):
                 variant_policy(undeclared)
+
+    def test_the_full_stack_is_c_f_g_and_h_with_the_structure_features(self):
+        # Spec v1 §3 (test-plan amendment, 2026-10-05): C+F+G+H+V2, which E is not in.
+        full = SimulationPolicy(
+            trend_switch=True,
+            inventory_cap=D("0.40"),
+            flow_block_entry=True,
+            funding_gate=True,
+            cycle_gate=True,
+            structure=True,
+        )
+        self.assertEqual(full, variant_policy("C+F+G+H", structure=True))
+        self.assertEqual("C+F+G+H", full.variant)
+        self.assertEqual("C+F+G+H", variant_name(full))
+        # Its identity adds every part's flag to V0's, and nothing else.
+        added = set(full.identity()) - set(SimulationPolicy().identity())
+        self.assertEqual(
+            {
+                "inventory_cap",
+                "trend_switch",
+                "flow_block_entry",
+                "funding_gate",
+                "cycle_gate",
+                "structure",
+            },
+            added,
+        )
+        self.assertNotIn("volume_exit", full.identity())
+        # Without the structure features it is not the declared combination.
+        with self.assertRaisesRegex(ValueError, "no variant C\\+F\\+G\\+H without"):
+            variant_policy("C+F+G+H")
 
     def test_only_declared_variant_combinations_run(self):
         # Spec v1 §3 and §4: E and F stand alone; G and H run alone or with C (A and B).
@@ -616,6 +647,22 @@ class ReplayTests(unittest.TestCase):
         ):
             with self.subTest(flags=flags), self.assertRaisesRegex(ValueError, "no variant"):
                 SimulationPolicy(**flags)
+        # The full stack is declared with the V2 structure flag only, and exactly as
+        # C+F+G+H: a part missing, E added or C split is refused, structure or not.
+        full = {"trend_switch": True, "inventory_cap": cap, "flow_block_entry": True}
+        full |= {"funding_gate": True, "cycle_gate": True}
+        for flags in (
+            full,
+            {**full, "volume_exit": True, "structure": True},
+            {**full, "trend_switch": False, "structure": True},
+            {**full, "inventory_cap": None, "structure": True},
+            {**full, "flow_block_entry": False, "structure": True},
+            {**full, "funding_gate": False, "structure": True},
+            {**full, "cycle_gate": False, "structure": True},
+        ):
+            with self.subTest(flags=flags), self.assertRaisesRegex(ValueError, "no variant"):
+                SimulationPolicy(**flags)
+        self.assertEqual("C+F+G+H", SimulationPolicy(**full, structure=True).variant)
         # The V2 structure flag is not a variant and goes with any of them.
         self.assertEqual("E", SimulationPolicy(volume_exit=True, structure=True).variant)
         self.assertEqual("", SimulationPolicy(structure=True).variant)
@@ -2167,7 +2214,7 @@ class VariantGTests(unittest.TestCase):
         # a result that says nothing about funding, so the run is refused instead.
         present = {"kind": "fundingRate", "symbol": "BTCUSDT", "month": "2024-01", "status": "ok"}
         cases = (
-            ([], "2024-01, 2024-02"),  # every committed manifest until P8's entries
+            ([], "2024-01, 2024-02"),  # a manifest without funding entries
             ([present], "2024-02"),
             ([present, present | {"month": "2024-02", "status": "missing"}], "2024-02"),
             ([present, present | {"month": "2024-02", "symbol": "ETHUSDT"}], "2024-02"),
@@ -2175,6 +2222,37 @@ class VariantGTests(unittest.TestCase):
         for files, absent in cases:
             with self.subTest(files=files), self.assertRaisesRegex(ValueError, absent):
                 load_funding(Path("."), {"files": files}, "BTCUSDT", ["2024-01", "2024-02"])
+
+    def test_months_before_the_archives_begin_need_none_and_g_blocks_there(self):
+        # Spec v1 §5 rule 9: BTCUSDT's funding archives begin in 2020-01, so a long window's
+        # earlier evaluation months need none, and G blocks every new grid there. No
+        # stage-1 window has such a month (automated review of #168).
+        early = ["2019-11", "2019-12"]
+        self.assertEqual([], load_funding(Path("."), {"files": []}, "BTCUSDT", early))
+        metrics, _ = self.replay(self.minutes[:1], funding=[])
+        self.assertEqual(0, metrics.grids_opened)
+        self.assertIn("cash: funding gate: funding high or unavailable", metrics.reasons)
+        # From 2020-01 on every month still needs its archive: a manifest that lists none,
+        # or misses one, is refused, naming only those months.
+        months = [*early, "2020-01", "2020-02"]
+        present = {"kind": "fundingRate", "symbol": "BTCUSDT", "month": "2020-01", "status": "ok"}
+        for files, absent in (([], "for 2020-01, 2020-02$"), ([present], "for 2020-02$")):
+            with self.subTest(files=files), self.assertRaisesRegex(ValueError, absent):
+                load_funding(Path("."), {"files": files}, "BTCUSDT", months)
+        # With both, the archives are read and the earlier months are simply empty.
+        with tempfile.TemporaryDirectory() as temp:
+            data, files = Path(temp), []
+            for month, first in (("2020-01", 1577836800000), ("2020-02", 1580515200000)):
+                path = funding_local_path(data, "BTCUSDT", month)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(path, "w") as archive:
+                    archive.writestr(
+                        f"BTCUSDT-fundingRate-{month}.csv",
+                        f"calc_time,funding_interval_hours,last_funding_rate\n{first},8,0.0001\n",
+                    )
+                files.append(present | {"month": month})
+            records = load_funding(data, {"files": files}, "BTCUSDT", months)
+        self.assertEqual([1577836800000, 1580515200000], [r.calc_time_ms for r in records])
 
 
 class RuntimeVariantPaperTests(unittest.TestCase):

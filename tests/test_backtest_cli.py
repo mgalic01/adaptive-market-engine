@@ -1,4 +1,5 @@
-"""R1: integrity failures must invalidate verify/run and never reach replay."""
+"""R1: integrity failures must invalidate verify/run and never reach replay; a traded
+pair's own failure excludes only that pair-window (spec v1 §5)."""
 
 import contextlib
 import io
@@ -82,11 +83,17 @@ def good_result(symbol, mode, gated):
     }
 
 
+def failing(field):
+    """A value that fails integrity field ``field``: none compared, or a count above zero."""
+    return {field: 0} if field.endswith("_compared") else {field: 1}
+
+
 class CliIntegrityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.checks = dict(CLEAN)
+        self.overrides: dict[str, dict] = {}  # one symbol's check fields
         self.result_patch = {}
         self.replays = []
         self.fees = []
@@ -109,7 +116,7 @@ class CliIntegrityTests(unittest.TestCase):
 
     def fake_check(self, spec, data_dir, symbol, strict_volume=False):
         self.strict.append(strict_volume)
-        return {"symbol": symbol, **self.checks}
+        return {"symbol": symbol, **self.checks, **self.overrides.get(symbol, {})}
 
     def fake_run(self, spec, config, data_dir, symbol, mode, gated, fees=None, policy=None):
         self.replays.append(symbol)
@@ -127,7 +134,100 @@ class CliIntegrityTests(unittest.TestCase):
         self.assertEqual(0, self.main("run"))
         self.assertTrue(self.replays)
         (written,) = Path(self.temp.name).rglob("results.json")
-        self.assertTrue(json.loads(written.read_text())["valid"])
+        document = json.loads(written.read_text())
+        self.assertTrue(document["valid"])
+        self.assertNotIn("excluded_pairs", document)  # every check passed: no exclusion
+
+    def test_a_traded_pairs_own_failed_check_excludes_only_that_pair_window(self):
+        # Spec v1 section 5, as for practice-2022's SOLUSDT with daily history from
+        # 2020-05: its P3 presence check fails on the days before its listing. Only that
+        # pair-window is excluded: it is not replayed and has no rows, its failing check
+        # stays in its integrity fields, and BTCUSDT and XRPUSDT run as a valid run.
+        practice = str(ROOT / "config/datasets/practice-2022.toml")
+        daily = {"daily_days_compared": 10} | {field: 0 for field in cli.DAILY_INTEGRITY_FIELDS}
+        self.overrides = {"SOLUSDT": {**daily, "daily_days_missing": 102}}
+        self.assertEqual(0, self.main("verify", "--spec", practice))
+        self.assertEqual(0, self.main("run", "--spec", practice))
+        self.assertEqual({"BTCUSDT", "XRPUSDT"}, set(self.replays))
+        self.assertEqual(8, len(self.replays))  # 2 pairs x 2 paths x gated and ungated
+        (written,) = Path(self.temp.name).rglob("results.json")
+        document = json.loads(written.read_text())
+        self.assertEqual((True, []), (document["valid"], document["failures"]))
+        reasons = ["SOLUSDT: daily_days_missing=102"]
+        self.assertEqual({"SOLUSDT": reasons}, document["excluded_pairs"])
+        (sol,) = [c for c in document["hourly_cross_checks"] if c["symbol"] == "SOLUSDT"]
+        self.assertEqual(102, sol["daily_days_missing"])
+        self.assertEqual({"BTCUSDT", "XRPUSDT"}, {r["symbol"] for r in document["results"]})
+
+    def test_a_failure_of_the_market_proxys_hours_still_excludes_every_pair(self):
+        # BTCUSDT is traded too, but as the proxy its hours feed every pair's regime, so a
+        # failure about them is never its own: nothing replays, whatever the other pairs
+        # show. A 1m or 1d bar that disagrees with its hours counts as one, since the
+        # check cannot show which archive is wrong, and so does an hour left unchecked:
+        # one with no minutes, or none compared at all (the automated review of #170).
+        fields = {*cli.INTEGRITY_FIELDS, *cli.DAILY_INTEGRITY_FIELDS, "hours_compared"}
+        self.assertLessEqual(cli.PROXY_HOURLY_FIELDS, fields)
+        self.assertEqual(
+            cli.PROXY_HOURLY_FIELDS,
+            {
+                "hours_compared",
+                "hours_mismatched",
+                "hours_missing",
+                "hours_absent_from_minutes",
+                "hours_absent_from_both",
+                "daily_days_mismatched",
+                "daily_days_hours_incomplete",
+            },
+        )
+        practice = str(ROOT / "config/datasets/practice-2022.toml")
+        daily = {"daily_days_compared": 10} | {field: 0 for field in cli.DAILY_INTEGRITY_FIELDS}
+        shared = sorted(cli.PROXY_HOURLY_FIELDS)
+        for overrides in (
+            *({"BTCUSDT": {**daily, **failing(field)}} for field in shared),
+            {"BTCUSDT": {"hours_missing": 1}, "SOLUSDT": {"hours_incomplete": 1}},
+            # Its own daily failure as well does not make the hourly one its own.
+            {"BTCUSDT": {**daily, "daily_days_missing": 1, "hours_mismatched": 1}},
+        ):
+            with self.subTest(overrides=overrides):
+                self.overrides = overrides
+                self.assertEqual(2, self.main("verify", "--spec", practice))
+                self.assertEqual(2, self.main("run", "--spec", practice))
+                self.assertEqual([], self.replays)
+                self.assertEqual([], list(Path(self.temp.name).rglob("results.json")))
+
+    def test_a_traded_proxys_minute_or_daily_failure_excludes_only_its_pair_window(self):
+        # Codex's review of #170: BTCUSDT's 1m and 1d bars feed only its own runs, so a
+        # failure confined to them excludes BTCUSDT alone. SOLUSDT and XRPUSDT still run,
+        # with BTCUSDT's hours as their market proxy, as a valid run. The minute failures
+        # left here are gaps inside hours whose 1h bar still matched its minutes.
+        practice = str(ROOT / "config/datasets/practice-2022.toml")
+        daily = {"daily_days_compared": 10} | {field: 0 for field in cli.DAILY_INTEGRITY_FIELDS}
+        own = {*cli.INTEGRITY_FIELDS, *cli.DAILY_INTEGRITY_FIELDS} - cli.PROXY_HOURLY_FIELDS
+        self.assertEqual(
+            own,
+            {
+                "minutes_missing",
+                "hours_incomplete",
+                "daily_days_missing",
+                "daily_days_duplicated",
+                "daily_warmup_short",
+            },
+        )
+        cases = [({field: 2}, f"BTCUSDT: {field}=2") for field in sorted(own)]
+        cases += [({"daily_days_compared": 0}, "BTCUSDT: no daily bars compared")]
+        for fields, reason in cases:
+            with self.subTest(fields=fields):
+                self.replays.clear()
+                self.overrides = {"BTCUSDT": {**daily, **fields}}
+                self.assertEqual(0, self.main("verify", "--spec", practice))
+                self.assertEqual(0, self.main("run", "--spec", practice))
+                self.assertEqual({"SOLUSDT", "XRPUSDT"}, set(self.replays))
+                self.assertEqual(8, len(self.replays))  # 2 pairs x 2 paths x gated and ungated
+                (written,) = Path(self.temp.name).rglob("results.json")
+                document = json.loads(written.read_text())
+                self.assertEqual((True, []), (document["valid"], document["failures"]))
+                self.assertEqual({"BTCUSDT": [reason]}, document["excluded_pairs"])
+                self.assertNotIn("BTCUSDT", {r["symbol"] for r in document["results"]})
 
     def test_fee_overrides_reach_every_replay_and_the_results(self):
         self.assertEqual(0, self.main("run"))
@@ -211,6 +311,8 @@ class CliIntegrityTests(unittest.TestCase):
     def test_variant_and_structure_flags_reach_every_replay_and_are_recorded(self):
         cap = Decimal("0.40")
         c = {"trend_switch": True, "inventory_cap": cap}
+        full = {**c, "flow_block_entry": True, "funding_gate": True, "cycle_gate": True}
+        full |= {"structure": True}
         cases = {
             ("--variant-a",): ("-variant-A", SimulationPolicy(trend_switch=True)),
             ("--variant-b",): ("-variant-B", SimulationPolicy(inventory_cap=cap)),
@@ -221,6 +323,12 @@ class CliIntegrityTests(unittest.TestCase):
             ("--variant-h",): ("-variant-H", SimulationPolicy(cycle_gate=True)),
             ("--variant-cg",): ("-variant-C+G", SimulationPolicy(**c, funding_gate=True)),
             ("--variant-ch",): ("-variant-C+H", SimulationPolicy(**c, cycle_gate=True)),
+            # The full stack C+F+G+H+V2: its one flag sets every part, structure included.
+            ("--variant-full",): ("-variant-C+F+G+H-structure", SimulationPolicy(**full)),
+            ("--variant-full", "--structure"): (
+                "-variant-C+F+G+H-structure",
+                SimulationPolicy(**full),
+            ),
             ("--structure",): ("-structure", SimulationPolicy(structure=True)),
             ("--variant-b", "--structure"): (
                 "-variant-B-structure",
@@ -230,6 +338,8 @@ class CliIntegrityTests(unittest.TestCase):
         for flags, (suffix, policy) in cases.items():
             with self.subTest(flags=flags):
                 self.arms.clear()
+                for written in Path(self.temp.name).rglob("results.json"):
+                    written.unlink()  # two cases share a suffix
                 self.assertEqual(0, self.main("run", *flags))
                 # Codex review of #160: the ungated rows stay the ungated V0 baseline.
                 self.assertEqual({(True, policy), (False, None)}, set(self.arms))
@@ -238,7 +348,7 @@ class CliIntegrityTests(unittest.TestCase):
                     json.loads(json.dumps(policy.identity(), default=str)), document["policy"]
                 )
                 self.assertEqual("0123abc", document["code_commit"])
-                structure = "--structure" in flags
+                structure = policy.structure
                 version = STRUCTURE_FEATURE_VERSION if structure else FEATURE_VERSION
                 self.assertEqual(version, document["feature_version"])
                 # Codex review of #160: the ungated V0 rows' version is stated as well.
@@ -385,6 +495,18 @@ class MarketProxyCheckTests(CliIntegrityTests):
     def main(self, command, *extra):
         with contextlib.redirect_stdout(io.StringIO()):
             return cli.main([command, "--spec", str(self.spec), "--out", self.temp.name, *extra])
+
+    def test_a_run_whose_every_pair_is_excluded_replays_nothing(self):
+        # Each traded pair's own check fails while the untraded proxy passes: no pair is
+        # left to replay, so the run fails as before, with every failure reported.
+        self.overrides = {pair: {"hours_missing": 1} for pair in ("ADAUSDT", "BTCUSDT")}
+        self.assertEqual(2, self.main("verify"))
+        self.assertEqual(2, self.main("run"))
+        self.assertEqual([], self.replays)
+        # One of them alone is excluded, and the other pair runs.
+        self.overrides = {"ADAUSDT": {"hours_missing": 1}}
+        self.assertEqual(0, self.main("run"))
+        self.assertEqual({"BTCUSDT"}, set(self.replays))
 
     def test_untraded_proxy_is_checked_but_not_replayed(self):
         self.assertEqual(0, self.main("run"))
@@ -561,7 +683,7 @@ class CodeCommitTests(unittest.TestCase):
 class VariantGRefusalTests(unittest.TestCase):
     def test_a_g_run_on_a_manifest_without_funding_archives_is_refused(self):
         # Codex review of #165: such a run blocks every new grid and could be published
-        # as valid. Every committed manifest lacks the archives until P8's entries.
+        # as valid.
         spec = jobs.load_spec(Path(SPEC))
         prepared = jobs.PreparedRun(spec, None, {"files": []}, None, None, None, [])
         with (

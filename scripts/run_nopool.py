@@ -3,8 +3,9 @@
 Windows Python 3.14 'spawn' pool is slow to start workers; this avoids it entirely.
 It is exactly the backtest CLI's ``run`` with ``--jobs 1``, which runs every job in
 this process: the dataset is verified against its manifest, the hourly and daily
-integrity cross-checks run before any replay, fees come from the spec unless a fee
-flag overrides them, and results are marked valid only when every check passes.
+integrity cross-checks run before any replay (a pair whose own check fails is excluded
+and not replayed, spec v1 §5), fees come from the spec unless a fee flag overrides
+them, and results are marked valid only when every replayed run is.
 Results are written to data/backtests/<spec>/<stamp>/results.json and summary.md.
 
 Usage:
@@ -14,8 +15,8 @@ Usage:
 
 Every flag after the spec name is passed to the CLI (``--variant-a``, ``--variant-b``,
 ``--variant-c``, ``--variant-e``, ``--variant-f``, ``--variant-g``, ``--variant-h``,
-``--variant-cg``, ``--variant-ch``, ``--structure``, ``--trend-benchmark``,
-``--maker-fee`` ...).
+``--variant-cg``, ``--variant-ch``, ``--variant-full``, ``--structure``,
+``--trend-benchmark``, ``--maker-fee`` ...).
 """
 
 import sys

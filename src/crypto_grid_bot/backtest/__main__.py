@@ -49,6 +49,7 @@ from crypto_grid_bot.backtest.replay import (
     VOLUME_DRIFT_TOLERANCE,
 )
 from crypto_grid_bot.backtest.trend_benchmark import trend_job
+from crypto_grid_bot.simulation.runner import FULL_STACK
 
 
 def checked_symbols(spec: DatasetSpec) -> list[str]:
@@ -83,23 +84,51 @@ DAILY_INTEGRITY_FIELDS = (
 )
 
 
-def integrity_failures(checks: list[dict[str, Any]]) -> list[str]:
+# A traded market proxy's failures that leave one of its 1h bars missing, duplicated, in
+# doubt or unchecked. Its 1h bars feed every pair's features; its 1m and 1d bars feed
+# only its own runs. A 1m or 1d bar that disagrees with its hours counts here (the check
+# cannot show which archive is wrong), and so does an hour with no minutes to check it
+# against, or no hour compared at all.
+PROXY_HOURLY_FIELDS = frozenset(
+    {
+        "hours_compared",
+        "hours_mismatched",
+        "hours_missing",
+        "hours_absent_from_minutes",
+        "hours_absent_from_both",
+        "daily_days_mismatched",
+        "daily_days_hours_incomplete",
+    }
+)
+
+
+def integrity_failures(
+    checks: list[dict[str, Any]], keep: Callable[[str, str], bool] | None = None
+) -> list[str]:
     """Chronology/completeness failures. A basket symbol's listing or delisting gap is
-    exempt only where the spec documents it in ``basket_exclusions``."""
+    exempt only where the spec documents it in ``basket_exclusions``. ``keep(symbol,
+    field)`` limits them to the fields it accepts; "no hours compared" is the field
+    ``hours_compared`` (``series_hours_present`` for a series check) and "no daily bars
+    compared" is ``daily_days_compared``."""
+
+    def kept(check: dict[str, Any], field: str) -> bool:
+        return keep is None or keep(check["symbol"], field)
+
     failures = []
     for check in checks:
         series = "role" in check
         fields = SERIES_INTEGRITY_FIELDS if series else INTEGRITY_FIELDS
         failures += [
-            f"{check['symbol']}: {field}={check[field]}" for field in fields if check[field]
+            f"{check['symbol']}: {field}={check[field]}"
+            for field in fields
+            if check[field] and kept(check, field)
         ]
         # A basket symbol documented as absent for the whole window has no hours.
         wholly_excluded = (
             series and check["series_hours_excluded"] and not check["series_hours_missing"]
         )
-        if not check["series_hours_present" if series else "hours_compared"] and not (
-            wholly_excluded
-        ):
+        compared = "series_hours_present" if series else "hours_compared"
+        if not check[compared] and not wholly_excluded and kept(check, compared):
             failures.append(f"{check['symbol']}: no hours compared")
     for check in checks:
         if "daily_days_compared" not in check:
@@ -107,11 +136,35 @@ def integrity_failures(checks: list[dict[str, Any]]) -> list[str]:
         failures += [
             f"{check['symbol']}: {field}={check[field]}"
             for field in DAILY_INTEGRITY_FIELDS
-            if check[field]
+            if check[field] and kept(check, field)
         ]
-        if not check["daily_days_compared"]:
+        if not check["daily_days_compared"] and kept(check, "daily_days_compared"):
             failures.append(f"{check['symbol']}: no daily bars compared")
     return failures
+
+
+def scoped_failures(
+    spec: DatasetSpec, checks: list[dict[str, Any]]
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Spec v1 section 5's integrity failures by the pair-windows they exclude: those of
+    every pair, and each traded pair's own (only pairs that have some).
+
+    An untraded market proxy's or basket member's data reach every pair, and so do a
+    traded proxy's 1h bars (PROXY_HOURLY_FIELDS). Every other failure of a traded pair is
+    its own, even when it votes in the basket: section 5 makes the shared completeness
+    check one for the untraded symbols."""
+
+    def shared(symbol: str, field: str) -> bool:
+        if symbol not in spec.traded:
+            return True
+        return symbol == spec.market_proxy and field in PROXY_HOURLY_FIELDS
+
+    own: dict[str, list[str]] = {}
+    for pair in spec.traded:
+        mine = [c for c in checks if c["symbol"] == pair]
+        if failures := integrity_failures(mine, lambda s, f: not shared(s, f)):
+            own[pair] = failures
+    return integrity_failures(checks, shared), own
 
 
 def result_failures(results: list[dict[str, Any]]) -> list[str]:
@@ -324,7 +377,8 @@ def main(argv: list[str] | None = None) -> int:
         const="G",
         dest="variant",
         help="enable variant G: BTCUSDT funding-rate gate (spec v1 §3 G); refuses to run "
-        "unless the manifest lists BTCUSDT's funding archive for every evaluation month (P8)",
+        "unless the manifest lists BTCUSDT's funding archive for every evaluation month from "
+        "2020-01, where the archives begin (P8); before then G blocks every new grid",
     )
     variants.add_argument(
         "--variant-h",
@@ -350,6 +404,15 @@ def main(argv: list[str] | None = None) -> int:
         help="enable C+H: variant C with the cycle context (spec v1 §3 H), a declared "
         "interaction; requires daily_warmup_start in the spec",
     )
+    variants.add_argument(
+        "--variant-full",
+        action="store_const",
+        const=FULL_STACK,
+        dest="variant",
+        help="enable the full stack C+F+G+H+V2: variant C with F, G and H and the V2 "
+        "structure features, a declared combination (spec v1 §3); sets --structure, and "
+        "requires daily_warmup_start in the spec and G's funding archives",
+    )
     parser.add_argument(
         "--structure",
         action="store_true",
@@ -363,6 +426,8 @@ def main(argv: list[str] | None = None) -> int:
         "variant, --structure or --trend-benchmark run)",
     )
     args = parser.parse_args(argv)
+    # The full stack's flag sets every part of it, V2's structure features included.
+    args.structure = args.structure or args.variant == FULL_STACK
     spec = load_spec(args.spec)
     maker = fee_rate(args.maker_fee, "maker fee") if args.maker_fee is not None else spec.fee_rate
     taker = fee_rate(args.taker_fee, "taker fee") if args.taker_fee is not None else None
@@ -406,7 +471,16 @@ def main(argv: list[str] | None = None) -> int:
             for symbol in checked_symbols(spec)
         ]
         cross_checks = [check.result() for check in checks]
-        failures = integrity_failures(cross_checks)
+        # Section 5: a traded pair whose own check failed is excluded and not replayed, and
+        # the other pairs run. A failure that reaches every pair, or an exclusion that
+        # leaves none, stops the run: nothing replays, and every failure is reported.
+        # Exclusions alone leave the window "valid": they are listed under excluded_pairs,
+        # never among the failures.
+        every, excluded = scoped_failures(spec, cross_checks)
+        pairs = [pair for pair in spec.traded if pair not in excluded]
+        failures = integrity_failures(cross_checks) if every or not pairs else []
+        if failures:
+            excluded = {}
         if args.command == "verify" or failures:
             status = "invalid" if failures else "valid"
             print(
@@ -415,6 +489,7 @@ def main(argv: list[str] | None = None) -> int:
                         "status": status,
                         "integrity_rules": integrity,
                         "failures": failures,
+                        **({"excluded_pairs": excluded} if excluded else {}),
                         "checks": cross_checks,
                     },
                     indent=1,
@@ -440,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
                 # review of #160).
                 policy if gated else None,
             )
-            for s in spec.traded
+            for s in pairs
             for mode in PATH_MODES
             for gated in (True, False)
         ]
@@ -449,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
                 pool.submit(
                     trend_job, args.spec, args.config, args.data_dir, s, mode, (maker, taker)
                 )
-                for s in spec.traded
+                for s in pairs
                 for mode in PATH_MODES
             ]
         results = [f.result() for f in futures]
@@ -496,6 +571,10 @@ def main(argv: list[str] | None = None) -> int:
         # Invalid results are kept for diagnosis but are never performance evidence.
         "valid": not failures,
         "failures": failures,
+        # Present only when a traded pair's own check failed (section 5): that pair-window
+        # is excluded for every variant alike and has no rows, and its failing check stays
+        # in hourly_cross_checks. It is not a failure of the runs that did replay.
+        **({"excluded_pairs": excluded} if excluded else {}),
         "hourly_cross_checks": cross_checks,
         "results": results,
     }
@@ -503,7 +582,8 @@ def main(argv: list[str] | None = None) -> int:
     table = _table(results)
     (out / "summary.md").write_text(table + "\n")
     brief = [{k: v for k, v in r.items() if k != "hourly_equity"} for r in results]
-    print(json.dumps({"out": str(out), "hourly_cross_checks": cross_checks}, indent=1))
+    shown = {"out": str(out), **({"excluded_pairs": excluded} if excluded else {})}
+    print(json.dumps({**shown, "hourly_cross_checks": cross_checks}, indent=1))
     print(table)
     print(json.dumps(brief, indent=1, default=str))
     if failures:
