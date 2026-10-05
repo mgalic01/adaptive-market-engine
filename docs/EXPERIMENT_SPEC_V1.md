@@ -151,11 +151,15 @@ check, not a range-exit threshold).
 
 ### Flat-account bounds clearing (amendment 2, owner decision 2026-10-02, D15)
 
-**Rule:** when the account becomes flat (no inventory, no open orders) and no range-exit
-is pending, the grid bounds (`grid_lower`, `grid_upper`) and all outside-range timers
+**Rule:** when the account becomes flat (no inventory the exchange would accept, and no
+open orders) and no range-exit is pending, the grid bounds (`grid_lower`, `grid_upper`) and all outside-range timers
 (`range_exit`, `range_exit_since`, `outside_seconds`, `outside_last`) are cleared
 immediately. A new grid may open at the very next eligible observation without waiting
 for the stale band's 6-hour outside-range timer or the 24-hour recentre cooldown.
+A residue below the exchange minimum, which no order could sell, counts as flat, as it
+does everywhere else in the engine since PR #122 *(owner decision 2026-10-05: such dust
+cannot be protected or exited, and keeping its stale band would bring back the empty-
+account range exit this amendment removes)*.
 
 **Why.** When a grid sells out completely and no new grid opens (spacing too tight,
 gate closed, pause active), the account previously kept the old band. If price had

@@ -251,12 +251,16 @@ class StrategyRecoveryTests(TestCase):
         self.assertFalse(self.sim.store.read().orders)
 
     def test_invalid_frame_pauses_but_does_not_erase_outside_range_time(self):
+        # Inventory is held, so the pause leaves its sells and the account is not flat.
+        # (A flat account's stale band and clock are cleared instead: amendment 2.)
         self.sim.process(frame(0))
-        self.sim.process(frame(1, "0.02500"))
-        self.assertEqual("pause", self.sim.process(stale(frame(2, "0.02500")))["decision"])
-        self.assertEqual(frame(1).quote.observed_at, self.sim.store.read().outside_last)
+        self.sim.process(frame(1, "0.02196"))  # the buys fill; below the band from here
+        self.assertEqual("pause", self.sim.process(stale(frame(2, "0.02196")))["decision"])
+        state = self.sim.store.read()
+        self.assertGreater(state.inventory, 0)
+        self.assertEqual(frame(1).quote.observed_at, state.outside_last)
         # Two valid outside observations 3 s apart bracket the unusable frame.
-        self.sim.process(frame(4, "0.02500"))
+        self.sim.process(frame(4, "0.02196"))
         self.assertTrue(self.sim.store.read().range_exit)
 
     def test_gap_neither_counts_nor_erases_outside_range_time(self):

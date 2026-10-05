@@ -490,6 +490,23 @@ class PaperSimulator:
             # A daily bar that had not closed at this observation is lookahead: fail closed.
             frame.trend.validate(quote.observed_at)
 
+    def _clear_flat_bounds(self, account: Account, quote: Quote, report: dict[str, Any]) -> None:
+        """Amendment 2 (owner decision 2026-10-02, D15): flat, no orders and no range exit
+        pending, so no grid is left to protect; its bounds and outside-range clock go, so
+        an empty account can no longer time out of a stale band into a range exit and its
+        recentre cooldown. Flat includes a residue below the exchange minimum (``_resolved``;
+        owner decision 2026-10-05). A genuine exit keeps both; range_exit and
+        range_exit_since are already clear here."""
+        if (
+            account.grid_lower
+            and not account.orders
+            and not account.range_exit
+            and self._resolved(account, quote)
+        ):
+            report["bounds_cleared"] = {"lower": account.grid_lower, "upper": account.grid_upper}
+            account.grid_lower = account.grid_upper = ZERO
+            account.outside_seconds, account.outside_last = ZERO, ""
+
     def _track_range(self, account: Account, quote: Quote) -> None:
         """Accumulate observed outside-range time; call before updating last_observed.
 
@@ -593,6 +610,10 @@ class PaperSimulator:
         day = observed.date().isoformat()
         if account.day != day:
             account.day, account.day_start = day, account.last_equity
+        # A frame that ended early (a transient frame's pause cancelling the last buys)
+        # may have left the account flat: clear it before the clock can run (Codex review
+        # of #163), as the end of this step would have.
+        self._clear_flat_bounds(account, quote, report)
         self._track_range(account, quote)
         # A gap or a new ineligible frame breaks the recovery streak.
         if (
@@ -749,21 +770,8 @@ class PaperSimulator:
                 "day": frame.trend.day if frame.trend is not None else None,
                 "down_since": account.down_since or None,
             }
-        if (
-            account.grid_lower
-            and not account.orders
-            and not account.range_exit
-            and self._resolved(account, quote)
-        ):
-            # Amendment 2 (owner decision 2026-10-02, D15): flat, no orders and no range
-            # exit pending, so no grid is left to protect. Its bounds and outside-range
-            # clock go now, after this frame's fills, exits, settlement and any new grid,
-            # so an empty account can no longer time out of a stale band into a range exit
-            # and its recentre cooldown. A genuine exit keeps both; range_exit and
-            # range_exit_since are already clear here.
-            report["bounds_cleared"] = {"lower": account.grid_lower, "upper": account.grid_upper}
-            account.grid_lower = account.grid_upper = ZERO
-            account.outside_seconds, account.outside_last = ZERO, ""
+        # After this frame's fills, exits, settlement and any new grid.
+        self._clear_flat_bounds(account, quote, report)
         # An order is cancelled if it left the book without completing, so one that
         # filled in part and was then cancelled on this frame is listed too.
         completed = {fill["order_id"] for fill in report["fills"] if fill["remaining"] == ZERO}

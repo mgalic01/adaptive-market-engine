@@ -28,6 +28,12 @@ def tight(index, bid):
     return replace(frame(index, bid), atr=D("0.00001"))
 
 
+def wide(index, bid):
+    """A frame whose spread is too wide to trust: a transient frame, which pauses."""
+    current = frame(index, bid)
+    return replace(current, quote=replace(current.quote, ask=D(bid) * D("1.01")))
+
+
 def crossed(index, bid):
     """An invalid frame (bid above ask): an ``integrity`` halt."""
     current = frame(index, bid)
@@ -114,6 +120,23 @@ class FlatBoundsAndHaltClockTests(TestCase):
         self.assertEqual("recenter", report["range_exit_cleared"])
         self.assertFalse(self.sim.process(at_fair_value(32, "0.02196"))["opened"])
         self.assertTrue(self.sim.process(at_fair_value(33, "0.02196"))["opened"])
+
+    def test_a_transient_frame_that_empties_the_account_cannot_time_it_out(self):
+        # Codex review of #163: the pause of a transient frame cancels the last buys and
+        # returns early; the next valid frame must clear the stale band before its clock
+        # runs, or the empty account times out into a range exit and its cooldown.
+        self.sim.process(frame(0))  # buys only, below the price
+        for index in range(1, 10):  # above the band, nothing fills: 8 of 10 seconds
+            self.sim.process(tight(index, "0.02500"))
+        self.assertEqual(D(8), self.state().outside_seconds)
+        report = self.sim.process(wide(10, "0.02500"))
+        state = self.state()
+        self.assertEqual(("pause", D(0), {}), (report["decision"], state.inventory, state.orders))
+        self.assertEqual(BAND, (state.grid_lower, state.grid_upper))  # kept by the early return
+        report = self.sim.process(tight(11, "0.02500"))  # 2 more seconds outside
+        self.assertEqual({"lower": "0.022", "upper": "0.02400"}, report["bounds_cleared"])
+        self.assertFalse(report["range_exit"])
+        self.assertFalse(self.state().range_exit)
 
     def test_a_process_restart_keeps_the_cleared_state(self):
         cleared = self.sell_out_with_no_new_grid()
