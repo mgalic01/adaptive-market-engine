@@ -14,11 +14,11 @@ from unittest.mock import patch
 
 from crypto_grid_bot.backtest.features import HOUR_MS, FeatureEngine, SeriesFeatures
 from crypto_grid_bot.backtest.klines import Kline
-from crypto_grid_bot.backtest.replay import RunConfig, check_accounting, replay
+from crypto_grid_bot.backtest.replay import RunConfig, VariantReport, check_accounting, replay
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.domain import CandidateMetrics
 from crypto_grid_bot.simulation.demo import demo_frames
-from crypto_grid_bot.simulation.models import Account, MarketRules
+from crypto_grid_bot.simulation.models import ZERO, Account, MarketRules, Quote
 from crypto_grid_bot.simulation.runner import PaperSimulator, SimulationPolicy
 from crypto_grid_bot.strategy.cycle import H2, H3, HALVINGS, CycleSchedule, CycleSignal, phase
 from crypto_grid_bot.strategy.daily_sma import DAY_MS
@@ -456,3 +456,62 @@ class ReplayWiringTests(TestCase):
         self.assertEqual(120, h.variant["cycle_ath_unavailable_bars"])
         self.assertEqual({"opened": 0, "pnl": "0"}, h.variant["cycle_h3_grids"])
         self.assertEqual({"None": 120}, h.variant["cycle_rules_by_bar"])
+
+
+class H3PnlTests(TestCase):
+    """The P&L reported for the grids only H3 opened, from constructed frames."""
+
+    RULES = MarketRules("TESTUSDT", D("0.0001"), D("0.1"), D("5"))
+    STAMP = utc(2023, 6, 16).isoformat()
+
+    def step(self, bid, *fills, opened=False, ended=False):
+        """One frame at ``bid`` after ``fills`` of 4 units, each (order ID, side, price,
+        fee); returns its quote and the total equity after it."""
+        account = self.account
+        for _, side, price, fee in fills:
+            sign = 1 if side == "buy" else -1
+            account.inventory += sign * 4
+            account.cash -= sign * 4 * D(price) + D(fee)
+        account.grid_lower = ZERO if ended else D("0.9")
+        quote = Quote("q", "TESTUSDT", self.STAMP, self.STAMP, D(bid), D(bid), D(9), D(9))
+        equity = account.equity(quote, self.RULES) + account.pending + account.secured
+        frame = {
+            "regime": "range",
+            "fills": [
+                {"order_id": order_id, "price": price, "quantity": "4", "fee": fee}
+                for order_id, _, price, fee in fills
+            ],
+            "opened": opened,
+            "cycle": {"h3_only": True} if opened else {},
+        }
+        self.report.frame(frame, account, quote, equity, ZERO)
+        return quote, equity
+
+    def h3_grids(self, sold):
+        """An H3-only grid opens while the account holds a residue of 4, below the
+        minimum, and buys 4 at 1.0 and sells them at 1.05 while the price moves. Then an
+        exit sells the residue and the grid ends, or, unless ``sold``, the run ends with
+        the residue held and the grid open. Returns the H3 grids' row field."""
+        self.account = Account.start(D(100))
+        self.account.cash, self.account.inventory = D(96), D(4)
+        self.report = VariantReport(H, (), self.RULES)
+        self.step("1.0", opened=True)
+        self.step("1.0", ("g/buy/0", "buy", "1.0", "0.004"))
+        self.step("1.15")
+        self.step("1.05", ("g/buy/0/sell", "sell", "1.05", "0.0042"))
+        if sold:
+            self.step("1.3", ("exit/1", "sell", "1.2993", "0.0051972"))
+            last = self.step("1.2", ended=True)
+        else:
+            last = self.step("1.2")
+        return self.report.fields(*last)["cycle_h3_grids"]
+
+    def test_a_residue_held_when_an_h3_grid_opens_is_not_its_pnl(self):
+        # Codex review of #165: the harvest that opens an H3-only grid may leave a residue
+        # below the minimum, whose moves and sale were reported as the grid's P&L. The
+        # grid's P&L is its own round trip's, whatever the residue does.
+        own = 4 * D("1.05") - D("0.0042") - (4 * D("1.0") + D("0.004"))
+        for sold in (True, False):
+            with self.subTest(sold=sold):
+                grids = self.h3_grids(sold)
+                self.assertEqual((1, own), (grids["opened"], D(grids["pnl"])))

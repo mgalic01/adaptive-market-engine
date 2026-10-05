@@ -1000,6 +1000,10 @@ class PaperSimulator:
         if not (sold or account.draining or not account.orders):
             return
         self._cancel_buys(account)
+        # The grid has ended (a range exit or a drain has run its course, or it sold
+        # out): variant F's fragments, all below the minimum here, are ordinary unpaired
+        # inventory from now on, sold once a price makes them sellable (spec v1 §3 F).
+        account.flow_fragments.clear()
         if account.cash - account.pending <= ZERO:
             # Arm the exit for any residue, as the other halt sites do, so the stuck
             # inventory is reported from the next frame rather than only once the risk
@@ -1170,10 +1174,12 @@ class PaperSimulator:
     def held_fragments(self, account: Account) -> Decimal:
         """Variant F's fragments waiting for their target's minimum notional (spec v1 §3
         F), which the ordinary unpaired exit and the end-of-run verdict leave alone. A
-        drain, a range exit and a halt's liquidation sell them like any inventory. What
-        an exit has sold is no longer a fragment, and once their grid has ended (no order
-        left and F no longer blocking, so the account re-centres) the rest is ordinary
-        unpaired inventory: either way the fragments are dropped here."""
+        drain, a range exit and a halt's liquidation sell them like any inventory.
+
+        They belong to their grid and are ordinary unpaired inventory once it ends. The
+        harvest that ends it, after a range exit or a drain, drops them (``_harvest``).
+        They are dropped here when F no longer blocks and no order is left, since the
+        account then re-centres, and when an exit has sold them."""
         fragments = account.flow_fragments
         total = sum(fragments.values(), ZERO)
         if total > unpaired_inventory(account) or not (account.flow_block or account.orders):

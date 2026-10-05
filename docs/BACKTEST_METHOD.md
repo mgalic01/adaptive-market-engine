@@ -178,18 +178,19 @@ integrity check rejects a daily archive with a gap.
 
 **Variants E to H** (`--variant-e`, `-f`, `-g`, `-h`, `-cg` and `-ch`, spec v1 §3) read only
 what was complete at the decision: E the pair's own hourly and 1m bars, F its 1m bars, G
-the BTCUSDT funding records already usable, and H its daily bars, with the observation's
-own halving phase. Their rows add the spec's "Reported" values for E, G and H (each
-variant's fields are named after it). Notes on each:
+the BTCUSDT funding records already usable at the quote, and H its daily bars, with the
+observation's own halving phase. Their rows add the spec's "Reported" values for E, G and
+H (each variant's fields are named after it). Notes on each:
 - **E** keeps its milestones on the clock from the episode's first outside observation
   `t0`, whatever gaps pause V0's accumulated outside time: it decides once, at the first
   valid observation at or after `t0 + 6 h`, and an extended episode exits at the first
   one at or after `t0 + 12 h`. Otherwise V0's own range exit applies unchanged.
 - **F** holds a fragment below the minimum notional for its target's own sell: the
   ordinary drain of unpaired inventory leaves it, while a V0 drain, a range exit and a
-  halt's liquidation sell it like any inventory. Once its grid has ended (no order left
-  and F no longer blocking), it is ordinary unpaired inventory. At the end of a run a held
-  fragment is reported as dust.
+  halt's liquidation sell it like any inventory. Once its grid has ended (harvested after
+  a range exit, a drain or its last sell, or left with no order once F stops blocking, so
+  that the account re-centres), it is ordinary unpaired inventory, which the drain sells
+  once a price makes it sellable. At the end of a run a held fragment is reported as dust.
 - **G**'s funding archives may be listed in a manifest beside the klines (a `kind` of
   `fundingRate` and no `interval`); they are checksum-verified like them, and `fetch`
   fetches and keeps them. A G or C+G run needs BTCUSDT's archive for every evaluation

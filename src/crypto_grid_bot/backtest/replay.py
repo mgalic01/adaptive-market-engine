@@ -60,6 +60,12 @@ PATH_MODES = ("high_first", "low_first")
 # Scorer context lines that precede its actual failure reasons.
 _CONTEXT = ("base quality", "regime fit", "news multiplier")
 POINT_OFFSETS_S = (0, 9, 19, 29)
+# How long each quote's observation stands within its minute: until the next quote, the
+# last until the minute ends.
+POINT_SPANS_MS = tuple(
+    1000 * (end - start)
+    for start, end in zip(POINT_OFFSETS_S, (*POINT_OFFSETS_S[1:], 60), strict=True)
+)
 QUARTER = Decimal("0.25")
 HOUR_MS = 3_600_000
 # Revolut X allows 1,000 order-placement requests per day. Cancellations are counted
@@ -431,20 +437,25 @@ class VariantReport:
       would have had at the bid of the 6-hour mark (a diagnostic only: it ignores fees,
       liquidity and residual inventory).
     * G: the new grids it blocked, one for each run of frames on which it vetoed one;
-      the hours its gate was closed, over the evaluated minutes; and the lag from each
-      settlement to the first evaluated minute that used it.
+      the hours its gate was closed, each quote's state standing until the next quote
+      (the last until its minute ends), over the evaluated minutes; and the lag from
+      each settlement to the first evaluated quote that used it.
     * H: the evaluated bars by phase, by the rule in force and with the ATH unavailable,
       each as at the bar's last quote, and the grids opened only because of H3, with their
       P&L: total equity from opening until the grid ended or was replaced (or the run
-      ended).
+      ended), with the residue the account held at opening set aside, as it is not the
+      grid's: its mark, and its proceeds once an exit sells it (exits sell it first).
     """
 
-    def __init__(self, policy: SimulationPolicy, funding: Sequence[FundingRecord]) -> None:
+    def __init__(
+        self, policy: SimulationPolicy, funding: Sequence[FundingRecord], rules: MarketRules
+    ) -> None:
         self.volume, self.gate, self.cycle = (
             policy.volume_exit,
             policy.funding_gate,
             policy.cycle_gate,
         )
+        self.rules = rules
         self.checks: Counter[str] = Counter()
         self.extra = timedelta(0)
         # E's running extension: (t0, its 6-hour mark, the bid there); then the bid of
@@ -455,24 +466,27 @@ class VariantReport:
         records = sorted(funding, key=lambda record: record.calc_time_ms)
         self.calc_ms = [record.calc_time_ms for record in records]
         self.usable_ms = [record.usable_ms for record in records]
-        self.applied: int | None = None  # records in effect at the previous minute
+        self.applied: int | None = None  # records in effect at the previous quote
         self.lags_ms: list[int] = []
-        self.blocked_grids, self.vetoing, self.closed_minutes = 0, False, 0
+        self.blocked_grids, self.vetoing, self.closed_ms = 0, False, 0
         self.phases: Counter[str] = Counter()
-        self.rules: Counter[str] = Counter()
+        self.cycle_rules: Counter[str] = Counter()
         self.no_ath = 0
         self.h3_grids, self.h3_pnl = 0, ZERO
-        self.h3_opened_at: Decimal | None = None  # total equity when the H3 grid opened
+        # The open H3 grid's own total equity at opening, without the residue the account
+        # held then, which counts as sold at each exit's proceeds; and what is left of it.
+        self.h3_base: Decimal | None = None
+        self.h3_residue = ZERO
 
-    def bar(self, open_ms: int, funding_blocks: bool | None) -> None:
-        """One evaluated minute, before its quotes: G's gate and the settlements it
-        uses from this minute on."""
+    def observation(self, at_ms: int, span_ms: int, funding_blocks: bool | None) -> None:
+        """One evaluated quote, before its frame: G's gate, closed or not for the
+        ``span_ms`` its observation stands, and the settlements it uses from it on."""
         if self.gate:
-            self.closed_minutes += int(funding_blocks is not False)
-            if self.applied is None:  # those usable before the first minute act before it
-                self.applied = bisect_left(self.usable_ms, open_ms)
-            count = bisect_right(self.usable_ms, open_ms)
-            self.lags_ms += [open_ms - calc for calc in self.calc_ms[self.applied : count]]
+            self.closed_ms += span_ms * int(funding_blocks is not False)
+            if self.applied is None:  # those usable before the first quote act before it
+                self.applied = bisect_left(self.usable_ms, at_ms)
+            count = bisect_right(self.usable_ms, at_ms)
+            self.lags_ms += [at_ms - calc for calc in self.calc_ms[self.applied : count]]
             self.applied = count
 
     def frame(
@@ -495,12 +509,34 @@ class VariantReport:
             self.blocked_grids += int(vetoed and not self.vetoing)
             self.vetoing = vetoed
         if self.cycle:
-            if self.h3_opened_at is not None and (report["opened"] or not account.grid_lower):
-                self.h3_pnl += equity - self.h3_opened_at
-                self.h3_opened_at = None
-            if report["cycle"].get("h3_only"):
-                self.h3_grids += 1
-                self.h3_opened_at = equity
+            with localcontext() as context:
+                context.prec = 50  # the simulator's precision: these sums are exact
+                self._h3(report, account, quote, equity)
+
+    def _h3(self, report: dict[str, Any], account: Account, quote: Quote, equity: Decimal) -> None:
+        """H3's grids: the residue an exit sells, the P&L of a grid that ended or was
+        replaced, and a grid opened only because of H3."""
+        if self.h3_base is not None:
+            for fill in report["fills"]:
+                if self.h3_residue and str(fill["order_id"]).startswith("exit/"):
+                    quantity = Decimal(fill["quantity"])
+                    sold = min(self.h3_residue, quantity)
+                    fee = Decimal(fill["fee"]) * sold / quantity
+                    self.h3_base += sold * Decimal(fill["price"]) - fee
+                    self.h3_residue -= sold
+            if report["opened"] or not account.grid_lower:
+                self.h3_pnl += self._h3_pnl(self.h3_base, quote, equity)
+                self.h3_base = None
+        if report["cycle"].get("h3_only"):
+            # The harvest that opened it left only a residue no order could sell.
+            self.h3_grids += 1
+            self.h3_residue = account.inventory
+            self.h3_base = equity - self.h3_residue * unit_mark(quote, self.rules)
+
+    def _h3_pnl(self, base: Decimal, quote: Quote, equity: Decimal) -> Decimal:
+        """The open H3 grid's P&L at ``quote``: total equity, less the residue left at its
+        mark, less the grid's own equity at opening (``base``)."""
+        return equity - self.h3_residue * unit_mark(quote, self.rules) - base
 
     def _volume(
         self,
@@ -550,7 +586,7 @@ class VariantReport:
         quote's report and signal."""
         if self.cycle and "cycle" in report:
             self.phases[str(report["cycle"]["phase"])] += 1
-            self.rules[str(report["cycle"]["rule"])] += 1
+            self.cycle_rules[str(report["cycle"]["rule"])] += 1
         if self.cycle and cycle is not None:
             self.no_ath += int(cycle.discounted is None)
 
@@ -559,8 +595,10 @@ class VariantReport:
         last quote."""
         if self.extension is not None and last is not None:
             self.extra += timestamp(last.observed_at) - self.extension[1]
-        if self.h3_opened_at is not None:
-            self.h3_pnl += equity - self.h3_opened_at
+        if self.h3_base is not None and last is not None:
+            with localcontext() as context:
+                context.prec = 50
+                self.h3_pnl += self._h3_pnl(self.h3_base, last, equity)
         fields: dict[str, Any] = {}
         if self.volume:
             fields["volume_exit_checks"] = dict(self.checks)
@@ -573,7 +611,7 @@ class VariantReport:
         if self.gate:
             lags = [lag / 1000 for lag in self.lags_ms]
             fields["funding_gate_blocked_grids"] = self.blocked_grids
-            fields["funding_gate_blocked_hours"] = self.closed_minutes / 60
+            fields["funding_gate_blocked_hours"] = self.closed_ms / HOUR_MS
             fields["funding_gate_lag_seconds"] = {
                 "settlements": len(lags),
                 "min": min(lags, default=None),
@@ -582,7 +620,7 @@ class VariantReport:
             }
         if self.cycle:
             fields["cycle_phases_by_bar"] = dict(self.phases)
-            fields["cycle_rules_by_bar"] = dict(self.rules)
+            fields["cycle_rules_by_bar"] = dict(self.cycle_rules)
             fields["cycle_ath_unavailable_bars"] = self.no_ath
             fields["cycle_h3_grids"] = {"opened": self.h3_grids, "pnl": str(self.h3_pnl)}
         return fields
@@ -628,7 +666,7 @@ def replay(
         deque(maxlen=FLOW_BARS) if policy is not None and policy.flow_block_entry else None
     )
     reported = (
-        VariantReport(policy, funding or ())
+        VariantReport(policy, funding or (), run.rules)
         if policy is not None and (policy.volume_exit or policy.funding_gate or policy.cycle_gate)
         else None
     )
@@ -683,21 +721,22 @@ def replay(
         epoch = f"{run.symbol}/{kline.open_ms}"
         # Variant A: the state from the last daily bar closed at this minute's start.
         trend = schedule.at(kline.open_ms) if schedule is not None else None
-        # Variants F and G likewise read only what was complete, or usable, at this
-        # minute's start, for all four quotes: F the 15 bars before it, G the funding
-        # records (one usable within the minute counts from the next).
+        # Variant F likewise reads only the bars complete at this minute's start, for all
+        # four quotes: the 15 before it.
         share = taker_buy_share(flow, kline.open_ms) if flow is not None else None
-        funding_blocks = gate.state(kline.open_ms).blocks if gate is not None else None
-        if reported is not None:
-            reported.bar(kline.open_ms, funding_blocks)
         report: dict[str, Any] = {}
         cycle: CycleSignal | None = None
         quotes = bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size)
-        for quote, offset in zip(quotes, POINT_OFFSETS_S, strict=True):
-            # Variant H: the last daily bar closed at the quote's own instant, so a halving
-            # within the minute counts from the first quote after it.
+        for quote, offset, span in zip(quotes, POINT_OFFSETS_S, POINT_SPANS_MS, strict=True):
+            # Variants G and H at the quote's own instant: G the funding records usable by
+            # then, H the last daily bar closed, so a record usable, or a halving, within
+            # the minute counts from the first quote after it.
+            at_ms = kline.open_ms + offset * 1000
+            funding_blocks = gate.state(at_ms).blocks if gate is not None else None
             if cycle_schedule is not None:
-                cycle = cycle_schedule.at(kline.open_ms + offset * 1000)
+                cycle = cycle_schedule.at(at_ms)
+            if reported is not None:
+                reported.observation(at_ms, span, funding_blocks)
             # Depth is re-bounded before every quote from the account at that moment.
             depth = depth_multiple(inputs.minute_quote_volume, account, run.rules, quote.bid)
             candidate = candidate_for(inputs, run.symbol, spread_pct, depth, gated=run.gated)

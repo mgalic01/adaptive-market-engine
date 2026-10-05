@@ -1781,11 +1781,12 @@ class VariantFEngineTests(unittest.TestCase):
         self.simulator.close()  # step() uses no store
         self.inputs = engine_for(hourly(WARMUP)).at(START_MS + WARMUP * HOUR_MS)
 
-    def frames(self, minute, share, candidate=None):
-        """The four frames of a flat minute bar at fair value, ``minute`` after warm-up."""
+    def frames(self, minute, share, candidate=None, price=None):
+        """The four frames of a flat minute bar at ``price`` (default: fair value),
+        ``minute`` after warm-up."""
         open_ms = START_MS + WARMUP * HOUR_MS + minute * 60_000
-        fair = float(self.inputs.fair_value)
-        bar = candle(open_ms, fair, fair, fair, fair)
+        level = float(self.inputs.fair_value) if price is None else price
+        bar = candle(open_ms, level, level, level, level)
         signals = signals_for(self.inputs, utc_at(open_ms), gated=False)
         candidate = candidate or candidate_for(self.inputs, "TESTUSDT", 0.05, 1e9, gated=False)
         return [
@@ -1865,6 +1866,47 @@ class VariantFEngineTests(unittest.TestCase):
         self.assertEqual([("drain", D(6))], self.exits(reports))
         self.assertEqual({}, self.account.flow_fragments)
         self.assertTrue(any(report["opened"] for report in reports))
+
+    def test_a_fragment_a_range_exit_left_is_drained_once_sellable(self):
+        # Codex review of #165: a range exit, its liquidation done, ended the grid with
+        # only a fragment below the minimum left, while F still blocks. The harvest after
+        # it makes the fragment ordinary unpaired inventory: the drain sells it once a
+        # price makes it sellable, F blocking or not.
+        (frame, *_) = self.frames(0, None)
+        self.partly_filled_buy("a/buy/0", D(10), D("4.5"))  # 4.5 x 1.1 = 4.95: a fragment
+        self.simulator._block_buys(self.account, frame)
+        account, fair = self.account, self.inputs.fair_value
+        account.flow_block, account.range_exit = True, True
+        account.range_exit_since = frame.quote.observed_at
+        account.grid_lower, account.grid_upper = fair * D("0.95"), fair * D("1.05")
+        self.assertEqual({D("1.1"): D("4.5")}, account.flow_fragments)
+        reports = self.step(self.frames(1, D("0.3")))  # back inside: the exit ends
+        self.assertEqual(([], False), (self.exits(reports), account.range_exit))
+        self.assertEqual({}, account.flow_fragments)
+        # 4.5 at an exit price above 5 / 4.5 is sellable.
+        reports = self.step(self.frames(2, D("0.3"), price=1.13))
+        self.assertEqual([("drain", D("4.5"))], self.exits(reports))
+        self.assertTrue(account.flow_block)
+
+    def test_the_harvest_that_replaces_a_grid_drops_its_fragments(self):
+        # F has stopped blocking when the grid's last sell fills, and the harvest cancels
+        # the reentry buy that sell placed and opens the next grid in the same step: the
+        # old grid's fragment is ordinary inventory, not the new grid's.
+        (frame, *_) = self.frames(0, None)
+        self.partly_filled_buy("a/buy/0", D(1), D("0.1"))  # 0.1 x 1.1 = 0.11: a fragment
+        price = (self.inputs.fair_value * D("0.99")).quantize(RULES.tick_size)
+        reentry = (price * D("0.98")).quantize(RULES.tick_size)
+        self.account.cash -= 6 * price
+        self.account.inventory += 6
+        self.account.orders["b/sell/0"] = LimitOrder(
+            "b/sell/0", "sell", price, D(6), D(6), None, reentry
+        )
+        low = float(self.inputs.fair_value) * 0.97
+        self.step(self.frames(0, D("0.3"), price=low))  # blocked, the sell above the bid
+        self.assertEqual({D("1.1"): D("0.1")}, self.account.flow_fragments)
+        reports = self.step(self.frames(1, D("0.5")))
+        self.assertTrue(any(report["opened"] for report in reports))
+        self.assertEqual({}, self.account.flow_fragments)
 
     def test_a_cancelled_partial_fill_gets_its_sell_and_fragments_wait_for_the_minimum(self):
         (frame, *_) = self.frames(0, None)
@@ -2068,6 +2110,31 @@ class VariantGTests(unittest.TestCase):
         self.assertEqual(empty, metrics.variant["funding_gate_lag_seconds"])
         v0, _ = self.replay(self.minutes, None)
         self.assertEqual({}, v0.variant)
+
+    def test_a_record_usable_within_a_minute_counts_from_the_next_quote(self):
+        # Codex review of #165: the third settlement, 45 s before the first minute, is
+        # usable 15 s into it. The quotes at +0 and +9 s precede that, so G is unavailable
+        # and blocks the grid the flat account wants; from +19 s G is clear and the grid
+        # opens, not a minute later. The lag is 64 s, and the gate was closed 19 s.
+        records = [*self.records("0.0001", (17, 9)), FundingRecord(self.t - 45_000, 8, D("0.0001"))]
+        seen, real_step = [], PaperSimulator.step
+
+        def recording(simulator, account, frame):
+            report = real_step(simulator, account, frame)
+            seen.append(
+                (frame.quote.observed_at[11:19], frame.funding_blocks, bool(report["opened"]))
+            )
+            return report
+
+        with patch.object(PaperSimulator, "step", recording):
+            metrics, _ = self.replay(self.minutes[:2], funding=records)
+        expected = [("08:00:00", True, False), ("08:00:09", True, False)]
+        expected += [("08:00:19", False, True), ("08:00:29", False, False)]
+        self.assertEqual(expected, seen[:4])
+        self.assertEqual(1, metrics.variant["funding_gate_blocked_grids"])
+        self.assertEqual(19 / 3600, metrics.variant["funding_gate_blocked_hours"])
+        lag = {"settlements": 1, "min": 64.0, "mean": 64.0, "max": 64.0}
+        self.assertEqual(lag, metrics.variant["funding_gate_lag_seconds"])
 
     def test_a_manifests_funding_archives_reach_the_gate(self):
         # Records settled 16 h, 8 h and 0 h before the first minute, in the archive of
