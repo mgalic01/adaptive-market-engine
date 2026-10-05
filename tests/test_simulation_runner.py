@@ -320,6 +320,29 @@ class SimcoreAuditTests(TestCase):
         self.assertIn(top.order_id, report["cancelled"])
         self.assertEqual(str(top.quantity - D("400")), fill["remaining"])
 
+    def test_a_child_order_placed_and_cleared_in_one_frame_is_journalled(self):
+        # Codex review of #159: every buy completes and places its child sell, then the
+        # fills' mark-to-market loss breaks the 12% hard drawdown and the halt clears
+        # the book. The children left it without completing, so they are cancelled.
+        sim = self.open()
+        sim.process(self.frames[0])
+        crash = replace(
+            self.frames[1],
+            quote=replace(
+                self.frames[1].quote,
+                bid=D("0.0180"),
+                ask=D("0.01801"),
+                bid_size=D("100000000"),
+                ask_size=D("100000000"),
+            ),
+        )
+        report = sim.process(crash)
+        self.assertEqual("halt", report["decision"])
+        buys = [f["order_id"] for f in report["fills"] if f["remaining"] == "0"]
+        self.assertEqual(4, len(buys))
+        self.assertEqual({}, sim.store.read().orders)
+        self.assertEqual(sorted(b + "/sell" for b in buys), report["cancelled"])
+
     def test_a_completed_order_is_never_listed_as_cancelled(self):
         sim = self.open()
         sim.process(self.frames[0])
