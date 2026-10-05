@@ -89,7 +89,13 @@ GRID_BUDGET_FRACTION = D("0.8")
 # is on it (moved here from #159, Codex review). Schema-8 accounts ran without these
 # rules, so a saved reference, bounds or clock may hold what they forbid; such a
 # database is refused rather than reopened under them.
-SCHEMA = 9
+# 10 (2026-10-05, owner decisions D17 and D18): a manual resume of an emergency or
+# integrity halt that only the drawdown blocks rebases ``risk_high`` as the automatic
+# restart does and journals it as ``restart``; an exhaustion halt is refused by name.
+# Replay never resumes, so the engine stays "drawdown-recovery-v2". A schema-9 journal
+# holds resumes in the old shape, and may hold an admitted exhaustion halt, so it is
+# refused rather than continued under the new rules.
+SCHEMA = 10
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"
@@ -433,6 +439,22 @@ class PaperSimulator:
         account.down_since = ""  # a flat account has ended any variant A sequence
         self._pause(account, reason)
 
+    def _rebase_halted(self, account: Account, quote: Quote) -> dict[str, Any]:
+        """Rebase a halted account's ``risk_high`` to this frame's active equity and return
+        the ``restart`` journal record: the halt's start, category and reason, and the old
+        and new reference. Shared by the automatic restart and a manual resume that only
+        the drawdown blocks (owner decision D17); never the C1 references (amendment 1)."""
+        reference = account.equity(quote, self.rules)
+        record = {
+            "halt_since": account.halt_since,
+            "category": account.halt_category,
+            "halt": account.halt,
+            "old_reference": account.risk_high,
+            "new_reference": reference,
+        }
+        account.risk_high = reference
+        return record
+
     def _restart(
         self, account: Account, frame: Frame, eligible: bool, report: dict[str, Any]
     ) -> bool:
@@ -458,15 +480,7 @@ class PaperSimulator:
             return False
         if not self._tentative_allow(account, quote, frame.signals.emergency):
             return False
-        reference = account.equity(quote, self.rules)
-        report["restart"] = {
-            "halt_since": account.halt_since,
-            "category": account.halt_category,
-            "halt": account.halt,
-            "old_reference": account.risk_high,
-            "new_reference": reference,
-        }
-        account.risk_high = reference
+        report["restart"] = self._rebase_halted(account, quote)
         self._clear_halt(account, RESTART_PAUSE)
         return True
 
@@ -892,13 +906,20 @@ class PaperSimulator:
             account.validate(self.rules)
             if not account.halt or account.orders:
                 raise ValueError("resume requires a halted, reconciled flat paper account")
+            if account.halt_category == EXHAUSTION:
+                # Owner decision D18 (2026-10-05): refused by name, before any risk check.
+                raise ValueError(
+                    "resume refused: an 'active capital exhausted' halt is final; the active "
+                    "account cannot fund a grid level, and resume cannot return the reserve "
+                    "to it (owner decision D18)"
+                )
             if exit_state(account, frame.quote, self.rules)[0] == "incomplete":
                 # Liquidation-complete, PR #122's criterion (spec v1 amendment 1): a
                 # remainder below the exchange minimum is admitted, stays held and marked,
                 # and is drained or settled as after any resume; inventory the market
-                # would still accept is not. The risk check below is what keeps the final
-                # halts final: a held residue marked to the bid can move the measured
-                # drawdown by at most one minimum notional against risk_high.
+                # would still accept is not. For a drawdown halt the plain risk check
+                # below still decides: a held residue marked to the bid can move the
+                # measured drawdown by at most one minimum notional against risk_high.
                 raise ValueError(
                     "resume requires a flat paper account: "
                     f"{account.inventory} base units are still held, so the exit is "
@@ -910,28 +931,36 @@ class PaperSimulator:
             day = timestamp(frame.quote.observed_at).date().isoformat()
             if account.day != day:
                 account.day, account.day_start = day, account.last_equity
-            if self._risk_action(account, frame.quote, frame.signals.emergency) != RiskAction.ALLOW:
-                raise ValueError(
-                    "resume blocked by current risk limits; baselines are preserved. A flat "
-                    "account's equity cannot move, so its drawdown against risk_high is "
-                    "frozen: a capital-exhaustion halt is final for this account and no "
-                    "repeated resume can clear it; a hard-drawdown halt cannot be resumed by "
-                    "hand and restarts automatically once its cool-off has passed (spec v1 "
-                    "amendment 1). An emergency halt resumes once the emergency signal has "
-                    "cleared and every other limit passes"
-                )
-            previous_halt = account.halt
-            self._clear_halt(account, "operator resume: awaiting confirmed eligible data")
-            account.last_observed = frame.quote.observed_at
-            account.last_received = frame.quote.received_at
-            self._mark(account, frame.quote, self.rules)
-            return {
+            result: dict[str, Any] = {
                 "decision": "resume_pending",
-                "previous_halt": previous_halt,
+                "previous_halt": account.halt,
                 "operator_reason": reason,
                 "fills": [],
                 "opened": [],
             }
+            if self._risk_action(account, frame.quote, frame.signals.emergency) != RiskAction.ALLOW:
+                # Owner decision D17 (2026-10-05): an emergency or integrity halt that only
+                # the drawdown blocks, at any depth, resumes as the automatic restart does;
+                # the tentative check passes exactly when the drawdown is all that refuses.
+                # A drawdown halt still waits for that restart (amendment 1).
+                if account.halt_category == DRAWDOWN or not self._tentative_allow(
+                    account, frame.quote, frame.signals.emergency
+                ):
+                    raise ValueError(
+                        "resume blocked by current risk limits; baselines are preserved. A "
+                        "hard-drawdown halt cannot be resumed by hand: a flat account's "
+                        "drawdown against risk_high is frozen, and the halt restarts "
+                        "automatically once its cool-off has passed (spec v1 amendment 1). An "
+                        "emergency or integrity halt resumes at any drawdown once the "
+                        "emergency signal has cleared and the day's loss is under the daily "
+                        "limit (owner decision D17)"
+                    )
+                result["restart"] = self._rebase_halted(account, frame.quote)
+            self._clear_halt(account, "operator resume: awaiting confirmed eligible data")
+            account.last_observed = frame.quote.observed_at
+            account.last_received = frame.quote.received_at
+            self._mark(account, frame.quote, self.rules)
+            return result
 
         return self.store.transact(
             "control/resume/" + event_id, {"frame": frame.payload(), "reason": reason}, operation

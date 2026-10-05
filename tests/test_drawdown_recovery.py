@@ -6,13 +6,11 @@ confirmation count, which is why every rebase and restart below needs two consec
 eligible frames after the jump.
 """
 
-from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-import pytest
 from test_backtest_replay import HOUR_MS, RULES, START_MS, WARMUP, candle, engine_for, hourly
 from test_strategy_recovery import at_fair_value, frame, stale
 
@@ -127,6 +125,20 @@ class DrawdownRecoveryTests(TestCase):
         self.assertEqual("drawdown", state.halt_category)
         self.assertEqual(D(486), state.inventory)
         self.assertEqual("dust", exit_state(state, frame(2, "0.01000").quote, self.sim.rules)[0])
+        return state
+
+    def integrity_halt(self, bid):
+        """decline(), then a crossed quote (bid above ask) on day 5: an ``integrity`` halt,
+        whose armed liquidation sells everything on the next frame at ``bid``. That leaves
+        the account 6.67% below its reference of 100 at 0.02060, 8.28% at 0.02015 (the
+        strategy audit's D17 reproduction), 9.49% at 0.01980, 3.05% below the day's start,
+        and 15.90% at 0.01800."""
+        self.decline()
+        crossed = frame(5 * DAY + 2, "0.02015")
+        self.sim.process(replace(crossed, quote=replace(crossed.quote, ask=D("0.01915"))))
+        self.sim.process(frame(5 * DAY + 3, bid))
+        state = self.state()
+        self.assertEqual(("integrity", D(0)), (state.halt_category, state.inventory))
         return state
 
     def fresh(self, name):
@@ -643,30 +655,135 @@ class DrawdownRecoveryTests(TestCase):
         result = self.sim.resume(frame(3), event_id="flag-cleared", reason="test")
         self.assertEqual("resume_pending", result["decision"])
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "spec/code mismatch: amendment 1 says an exhaustion halt is refused by the "
-            "risk check alone (drawdown pinned at 1.0), but the harvest gate, the only "
-            "exhaustion site, runs only when the risk check has not halted the account, "
-            "so every exhaustion halt starts under 12% drawdown and resume()'s unchanged "
-            "risk check admits it when under 8%; the account then re-halts as exhaustion "
-            "on its next frame, so the halt is final in effect but not refused"
-        ),
-    )
-    def test_a_manual_resume_of_an_exhaustion_halt_is_refused_by_the_risk_check(self):
-        self.exhaustion()
-        with self.assertRaisesRegex(ValueError, "risk limits"):
-            self.sim.resume(frame(DAY), event_id="exhausted", reason="test")
+    # -- D17 and D18: the manual resume (owner decisions 2026-10-05) -------------------
 
-    def test_an_exhaustion_halt_stays_final_whatever_a_manual_resume_does(self):
-        # Refused (the spec) or admitted (the engine today, see above): the account
-        # never trades again, because the next frame's harvest gate halts it again.
+    def test_a_manual_resume_of_an_exhaustion_halt_is_refused_by_name(self):
+        # D18. The risk check allows here, so before it the halt was admitted, and the
+        # next frame's harvest halted the account again: final in effect, never refused.
         self.exhaustion()
-        with suppress(ValueError):
+        before = encode(self.state().to_dict())
+        with self.assertRaisesRegex(ValueError, "'active capital exhausted' halt is final"):
             self.sim.resume(frame(DAY), event_id="exhausted", reason="test")
+        self.assertEqual(before, encode(self.state().to_dict()))
+
+    def test_an_exhaustion_halt_is_refused_before_any_risk_check_and_stays_final(self):
+        # On the halt's own day the risk check would refuse for the daily loss; the
+        # refusal still names the exhaustion, and the account never trades again.
+        self.exhaustion()
+        with self.assertRaisesRegex(ValueError, "exhausted' halt is final"):
+            self.sim.resume(frame(1), event_id="same-day", reason="test")
         self.assertEqual("halt", self.sim.process(frame(DAY + 1))["decision"])
         self.assertEqual("exhaustion", self.state().halt_category)
+
+    def test_a_resume_refused_only_by_the_drawdown_rebases_as_the_restart_does(self):
+        # D17. Before it, this halt, 8.28% below the reference, was refused for good.
+        halted = self.integrity_halt("0.02015")
+        before = halted.to_dict()
+        result = self.sim.resume(frame(6 * DAY, "0.02015"), event_id="fixed", reason="test")
+        state = self.state()
+        self.assertEqual(
+            {
+                "halt_since": halted.halt_since,
+                "category": "integrity",
+                "halt": halted.halt,
+                "old_reference": "100",
+                "new_reference": str(state.last_equity),
+            },
+            result["restart"],
+        )
+        self.assertEqual(("", state.last_equity), (state.halt, state.risk_high))
+        # Only the restart's fields change, beyond the day roll and the mark; C1 still
+        # measures from the original peak.
+        after = state.to_dict()
+        changed = {key for key in before if before[key] != after.get(key)}
+        self.assertLessEqual(changed, RESTART_FIELDS | STEP_FIELDS, changed)
+        for key in ("measure_high", "reserve_high", "pending", "secured", "cash", "inventory"):
+            self.assertEqual(before[key], after[key], key)
+        # Journaled: after a process restart the same command replays its recorded result.
+        self.restart_process()
+        self.assertEqual(
+            result, self.sim.resume(frame(6 * DAY, "0.02015"), event_id="fixed", reason="test")
+        )
+        # The normal confirmations apply before the account trades again.
+        self.assertEqual(
+            "pause", self.sim.process(at_fair_value(6 * DAY + 1, "0.02015"))["decision"]
+        )
+        self.assertEqual(
+            "open_grid", self.sim.process(at_fair_value(6 * DAY + 2, "0.02015"))["decision"]
+        )
+
+    def test_a_resume_refused_only_by_the_drawdown_rebases_at_any_depth(self):
+        halted = self.integrity_halt("0.01800")  # 15.90% below: past the 12% hard limit
+        self.assertLess(halted.last_equity, D(88))
+        result = self.sim.resume(frame(6 * DAY, "0.01800"), event_id="deep", reason="test")
+        state = self.state()
+        self.assertEqual(
+            ("100", str(state.last_equity)),
+            (result["restart"]["old_reference"], result["restart"]["new_reference"]),
+        )
+        self.assertEqual((state.last_equity, D(100)), (state.risk_high, state.measure_high))
+
+    def test_an_emergency_halt_resumes_with_a_rebase_once_the_flag_clears_past_12_percent(self):
+        self.sim.process(frame(0))
+        self.sim.process(frame(1, "0.02196"))
+        self.sim.process(emergency(frame(2, "0.01000")))  # 44% down, liquidated at once
+        before = encode(self.state().to_dict())
+        with self.assertRaises(ValueError):
+            self.sim.resume(emergency(frame(DAY + 1, "0.01000")), event_id="set", reason="test")
+        self.assertEqual(before, encode(self.state().to_dict()))
+        result = self.sim.resume(frame(DAY + 1, "0.01000"), event_id="cleared", reason="test")
+        state = self.state()
+        self.assertEqual(
+            {
+                "halt_since": frame(2).quote.observed_at,
+                "category": "emergency",
+                "halt": "emergency flag is active",
+                "old_reference": "100",
+                "new_reference": str(state.last_equity),
+            },
+            result["restart"],
+        )
+        self.assertEqual((state.last_equity, D(100)), (state.risk_high, state.measure_high))
+
+    def test_no_rebased_resume_while_the_daily_loss_is_3_percent_or_more(self):
+        halted = self.integrity_halt("0.01980")
+        self.assertGreaterEqual(
+            (halted.day_start - halted.last_equity) / halted.day_start, D("0.03")
+        )
+        before = encode(halted.to_dict())
+        with self.assertRaisesRegex(ValueError, "risk limits"):
+            self.sim.resume(frame(5 * DAY + 4, "0.01980"), event_id="same-day", reason="test")
+        self.assertEqual(before, encode(self.state().to_dict()))
+        # The next UTC day starts from the halt's equity, so the loss is under 3% again.
+        result = self.sim.resume(frame(6 * DAY, "0.01980"), event_id="next-day", reason="test")
+        self.assertEqual(str(self.state().risk_high), result["restart"]["new_reference"])
+
+    def test_a_resume_the_risk_check_allows_is_unchanged_and_rebases_nothing(self):
+        halted = self.integrity_halt("0.02060")  # 6.67% below the reference
+        result = self.sim.resume(frame(5 * DAY + 4, "0.02060"), event_id="fixed", reason="test")
+        self.assertEqual(
+            {
+                "decision": "resume_pending",
+                "previous_halt": halted.halt,
+                "operator_reason": "test",
+                "fills": [],
+                "opened": [],
+            },
+            result,
+        )
+        state = self.state()
+        self.assertEqual(("", D(100), D(100)), (state.halt, state.risk_high, state.measure_high))
+
+    def test_a_manual_resume_of_a_drawdown_halt_is_unchanged_and_cannot_bypass_the_restart(self):
+        # Amendment 1: only the automatic restart clears this halt, after 24 hours. Both
+        # tries fall on a later UTC day, where the restart's tentative check would pass.
+        self.halt()
+        for index in (DAY + 1, 2 * DAY):  # before the 24 hours, then after them
+            before = encode(self.state().to_dict())
+            with self.assertRaisesRegex(ValueError, "frozen.*restarts automatically"):
+                self.sim.resume(frame(index, "0.01000"), event_id=f"try/{index}", reason="test")
+            self.assertEqual(before, encode(self.state().to_dict()))
+        self.assertIn("restart", self.sim.process(frame(2 * DAY + 1, "0.01000")))
 
     # -- episode across a halt -------------------------------------------------------
 

@@ -498,14 +498,14 @@ class StrategyRecoveryTests(TestCase):
     def test_older_schema_databases_are_not_silently_reinterpreted(self):
         row = self.sim.store.connection.execute("SELECT identity FROM state").fetchone()[0]
         identity = json.loads(row)
-        self.assertEqual(9, identity["schema"])
+        self.assertEqual(10, identity["schema"])
         # 4 is in the list: a database written before "exit-residue-v1" ran under the old
         # lifecycle, where a residue blocked settlement and a validation halt armed no
         # exit, so reopening it here would mix two semantics in one event history. 6 is
         # too (the journal's old shape, #159), and 7: it was written with V2 structure
         # always on, as was 6 since #150/#151. So is 8: it ran without D7 and amendments
-        # 2 and 3 ("drawdown-recovery-v2").
-        for old in (1, 2, 3, 4, 5, 6, 7, 8):
+        # 2 and 3 ("drawdown-recovery-v2"). And 9: its resumes ran without D17 and D18.
+        for old in (1, 2, 3, 4, 5, 6, 7, 8, 9):
             identity["schema"] = old
             self.sim.store.connection.execute("UPDATE state SET identity=?", (encode(identity),))
             with self.subTest(schema=old), self.assertRaisesRegex(ValueError, "settings differ"):
@@ -808,6 +808,6 @@ class PanelFixTests(TestCase):
         )
         path = Path(self.temp.name) / "frame.json"
         path.write_text(encode(recent.payload()))
-        with self.assertRaisesRegex(ValueError, "paper schema 9"):
+        with self.assertRaisesRegex(ValueError, "paper schema 10"):
             resume_paper(self.path, self.config, path, event_id="cli", reason="reviewed")
         self.sim = None  # the tampered database cannot be reopened; nothing left to close
