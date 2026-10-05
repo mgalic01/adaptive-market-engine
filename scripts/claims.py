@@ -509,10 +509,24 @@ def unwrap(words: list[str]) -> list[str]:
                         value, rest = (words[1] if len(words) > 1 else ""), words[2:]
                     words = [*split_words(value), *rest]
                     break
-                words = words[2:] if words[0] in opts else words[1:]
+                words = words[2:] if _takes_value(words[0], opts) else words[1:]
         else:
             break
     return words
+
+
+def _takes_value(option: str, opts: set[str]) -> bool:
+    """Whether a wrapper's option word takes the next word as its value: one in
+    ``opts``, or a bundle of short flags whose first value option ends it (`sudo -Eu
+    root`; Codex review of #159). A value attached to it (`-uroot`) is in the word."""
+    return option in opts or _bundled_value(option, opts) == len(option) - 1
+
+
+def _bundled_value(option: str, opts: set[str]) -> int | None:
+    """In a bundle of short flags (`-Eu`), the index of the first that takes a value."""
+    if not re.fullmatch(r"-[A-Za-z]{2,}", option):
+        return None
+    return next((k for k, c in enumerate(option[1:], 1) if f"-{c}" in opts), None)
 
 
 def shell_command(exe: str, args: list[str]) -> str | None:
@@ -618,85 +632,153 @@ def _heredoc_operators(command: str, start: int, end: int) -> Iterator[re.Match[
 
 
 # Where a pipeline ends on a line: `;`, `&&`, `||` or a lone `&`, but not a pipe, which
-# feeds a here-document into its consumer.
-PIPELINE_ENDS = re.compile(r"&&|\|\||(?<![>&])&(?![&>])|;")
+# feeds a here-document into its consumer, nor bash's `|&`, a pipe that adds stderr.
+PIPELINE_ENDS = re.compile(r"&&|\|\||(?<![>&|])&(?![&>])|;")
 
 
-def _pipeline(command: str, start: int, end: int, at: int) -> str:
-    """The pipeline of the line ``command[start:end]`` that holds position ``at``."""
-    quoted, left, i = _quoted(command), start, start
+def _readers(command: str, start: int, end: int, at: int) -> list[list[str]]:
+    """The commands that read the here-document whose `<<` is at ``at`` on the line
+    ``command[start:end]``: the command of the `<<`'s own pipeline stage and of each
+    stage after it, which its output feeds (`cat <<'EOF' | bash`); a stage before it
+    never sees the body. The pipeline is the one in the innermost group still open at
+    the `<<` (`x=$(bash <<EOF`), and a group closed before it, such as `<(echo arg)`, is
+    an argument of its stage, not where a command starts. Each command is parsed into
+    shell words and unwrapped (`/bin/'bash'` is bash, `sudo bash` is bash), so that an
+    argument such as the `bash` of `echo bash <<EOF` is never taken for its reader.
+    (Codex reviews of #159.)"""
+    quoted = _quoted(command)
+    groups: list[tuple[str, int]] = []  # the groups open before `at`: opener, text start
+    for i in range(start, at):
+        c = command[i]
+        if quoted[i] or c not in "()`":
+            continue
+        if groups and (groups[-1][0], c) in (("(", ")"), ("`", "`")):
+            groups.pop()
+        elif c != ")":
+            groups.append((c, i + 1))
+    opener, region = groups[-1] if groups else ("", start)
+    first = region
+    stages: list[tuple[int, int]] = []
+    nested: list[str] = []
+    i = first
     while i < end:
-        m = None if quoted[i] else PIPELINE_ENDS.match(command, i, end)
-        if not m:
-            i += 1
-        elif m.start() >= at:
-            return command[left : m.start()]
-        else:
-            left = i = m.end()
-    return command[left:end]
-
-
-def _readers(pipeline: str) -> list[str]:
-    """The command of each stage of a here-document's pipeline, parsed into shell words
-    and unwrapped (`/bin/'bash'` is bash, `sudo bash` is bash), so that an argument such
-    as the `bash` of `echo bash <<EOF` is never taken for its reader (Codex review of
-    #159). Stages split at unquoted pipes only, and a stage's command starts after its
-    last unquoted `(`, `$(` or backtick (`x=$(bash <<EOF`). `.` and `source` stay as
-    they are: they run their input."""
-    quoted, stages, start = _quoted(pipeline), [], 0
-    for i, c in enumerate(pipeline):
-        if c == "|" and not quoted[i]:
-            stages.append(pipeline[start:i])
-            start = i + 1
-    stages.append(pipeline[start:])
-    out = []
-    for stage in stages:
-        inner = _quoted(stage)
-        cut = max((i + 1 for i, c in enumerate(stage) if c in "(`" and not inner[i]), default=0)
-        words = drop_redirections(split_words(stage[cut:]))
-        # A function body's opener before its command: `f(){ bash <<EOF` (Codex review of
-        # #159).
-        while words and set(words[0]) <= set("(){}"):
+        c = command[i]
+        m = None if quoted[i] or nested else PIPELINE_ENDS.match(command, i, end)
+        if quoted[i]:
+            pass
+        elif nested:
+            if (nested[-1], c) in (("(", ")"), ("`", "`")):
+                nested.pop()
+            elif c in "(`":
+                nested.append(c)
+        elif m or c == ")" or (c == "`" and opener == "`"):
+            # The pipeline ends: at a separator, or where its group closes (an unmatched
+            # `)` before the `<<` ends a `case` pattern).
+            if i >= at:
+                break
+            stages, first = [], m.end() if m else i + 1
+            i = first
+            continue
+        elif c in "(`":
+            nested.append(c)
+        elif c == "|":
+            stages.append((first, i))
+            first = i + 1
+        i += 1
+    stages.append((first, i))
+    readers = []
+    for s, e in stages:
+        if e <= at or (s <= at and command[at] == "(" and not command[s:at].strip()):
+            continue  # upstream of the `<<`, or a subshell around it: neither reads it
+        words = drop_redirections(split_words(command[s:e]))
+        # A function body's opener before its command: `f(){ bash <<EOF`, `f() { bash`.
+        while words and re.fullmatch(r"[^\s(){}]*\(\)\{?|[(){}]+", words[0]):
             words = words[1:]
-        if words and words[0] in (".", "source"):
-            out.append(words[0])
-        elif toks := unwrap(words):
-            out.append(toks[0])
-    return out
+        if words[:1] in (["."], ["source"]) or unwrap(words):
+            readers.append(words)
+    if groups:
+        # What the group prints goes to the command around it: `bash < <(cat <<EOF)`,
+        # `eval $(cat <<EOF)` or `(cat <<EOF) | bash` (Codex review of #159).
+        readers += _readers(command, start, end, region - 1)
+    return readers
 
 
-# Commands that only read their input as data. A here-document read by anything else
-# (a shell under any name, `source`, ssh, a tool not listed) may run it, so its body
-# is read as commands (Codex review of #159: `ash <<'EOF'`, `busybox sh <<'EOF'`).
+# Commands that only read their input as data (git: by its subcommand, below). A
+# here-document read by anything else (a shell under any name, `source`, ssh, a tool not
+# listed) may run it, so its body is read as commands (Codex review of #159: `ash
+# <<'EOF'`, `busybox sh <<'EOF'`). awk (`system()`), sed (`e`), the pagers (`!`) and
+# patch (`-e` hands its input to ed) can run commands, so they are not here (Codex
+# review of #159).
 DATA_READERS = {
-    "cat", "tee", "git", "echo", "printf", "true", "false", "grep", "egrep", "fgrep",
-    "rg", "sed", "awk", "gawk", "sort", "uniq", "wc", "head", "tail", "cut", "tr", "jq",
-    "yq", "less", "more", "diff", "patch", "base64", "xxd", "od", "column", "fold",
+    "cat", "tee", "echo", "printf", "true", "false", "grep", "egrep", "fgrep",
+    "rg", "sort", "uniq", "wc", "head", "tail", "cut", "tr", "jq",
+    "yq", "diff", "base64", "xxd", "od", "column", "fold",
     "fmt", "nl", "rev", "paste", "comm", "join", "tac", "iconv", "sha256sum",
     "sha1sum", "md5sum", "read", "mapfile", "readarray", "clip", "pbcopy", "xclip",
     "xsel", "wl-copy",
 }  # fmt: skip
+# The git commands that only read their input as data (a patch, objects, refs), and
+# those that do when told to read their message from it (`git commit -F -`) and open
+# no editor. Any other may run it, an alias above all (`git -c alias.x='!sh' x <<EOF`),
+# and so may any git given a setting or an environment, which can name a command to
+# run: an editor (`GIT_EDITOR='sh -s'`), a pager, an alias, settings included from that
+# very input (Codex review of #159).
+GIT_DATA_COMMANDS = {
+    "am", "apply", "cat-file", "check-attr", "check-ignore", "hash-object",
+    "interpret-trailers", "mktag", "mktree", "patch-id", "stripspace", "update-index",
+    "update-ref",
+}  # fmt: skip
+GIT_MESSAGE_COMMANDS = {"commit", "notes", "tag"}
 
 
-def _reader_kind(word: str) -> str:
-    """What a here-document's reader does with it: "interpreter" (python, node...: it
-    can run anything), "client" (curl, gh: it can send an API merge, and its other
-    input is data), "data" (it only reads it) or "run" (anything else)."""
+def _git_reads_data(args: list[str]) -> bool:
+    """Whether `git` with ``args`` only reads its input as data."""
+    while args and args[0].startswith("-"):
+        if args[0] in ("-c", "--config-env") or args[0].startswith("--config-env="):
+            return False
+        args = args[2:] if args[0] in (*GIT_VALUE_OPTS, "-C", "--git-dir") else args[1:]
+    if not args:
+        return False
+    if args[0] in GIT_DATA_COMMANDS:
+        return True
+    rest = args[1:]
+    stdin = any(
+        re.fullmatch(r"-[A-Za-z]*F-|--file=-", w)
+        or (re.fullmatch(r"-[A-Za-z]*F|--file", w) and rest[i + 1 : i + 2] == ["-"])
+        for i, w in enumerate(rest)
+    )
+    edit = any(w == "--edit" or re.fullmatch(r"-[A-Za-z]*e[A-Za-z]*", w) for w in rest)
+    return args[0] in GIT_MESSAGE_COMMANDS and stdin and not edit
+
+
+def _reader_kind(words: list[str]) -> str:
+    """What a here-document's reader does with it: "shell" (it runs it as commands),
+    "interpreter" (python, node...: it can run anything and send API calls), "client"
+    (curl, gh: it can send an API merge, and its other input is data), "data" (it only
+    reads it) or "run" (anything else, which may run it: awk, sed, vim, ssh...)."""
+    # `.` and `source` stay as they are: they run their input.
+    toks = words[:1] if words[:1] in (["."], ["source"]) else unwrap(words)
+    word = toks[0]
     name = _exe(word)
+    if word in (".", "source") or name in (*SHELLS, *EVALS):
+        return "shell"
     if CLIENT_VERSION_RE.sub("", name) in INTERPRETERS:
         return "interpreter"
     if name == "gh" or CLIENT_VERSION_RE.sub("", name) in HTTP_CLIENTS:
         return "client"
-    return "data" if name in DATA_READERS and word not in (".", "source") else "run"
+    if name == "git":
+        # Nothing may come before it: an assignment or a wrapper can change what it runs.
+        return "data" if toks == words and _git_reads_data(toks[1:]) else "run"
+    return "data" if name in DATA_READERS else "run"
 
 
-def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
+def heredocs(command: str) -> tuple[str, list[tuple[str, bool, list[list[str]]]]]:
     """The command without its here-document bodies, and each body with whether its
-    delimiter is quoted (the shell expands nothing in it) and the pipeline of its `<<`,
-    which names its reader: the command it feeds or a shell it is piped into (`cat
-    <<'EOF' | bash`), never another command on the same line. A body is its reader's
+    delimiter is quoted (the shell expands nothing in it) and the commands that read
+    it (``_readers``): the command it feeds and those its output is piped into (`cat
+    <<'EOF' | bash`), never another command on the same line. A body is its readers'
     input, not commands (Codex review of #159)."""
-    found: list[tuple[str, bool, str]] = []
+    found: list[tuple[str, bool, list[list[str]]]] = []
     pos = 0
     while (first := next(_heredoc_operators(command, pos, len(command)), None)) is not None:
         line_start = command.rfind("\n", 0, first.start()) + 1
@@ -718,8 +800,8 @@ def heredocs(command: str) -> tuple[str, list[tuple[str, bool, str]]]:
                 end = row_end + 1
             else:
                 body, after = command[cursor:], len(command)
-            reader = _pipeline(command, line_start, line_end, m.start())
-            found.append((body, bool(m.group(2) or m.group(3)), reader))
+            readers = _readers(command, line_start, line_end, m.start())
+            found.append((body, bool(m.group(2) or m.group(3)), readers))
             cursor = after
         command, pos = command[: line_end + 1] + command[cursor:], line_end + 1
     return command, found
@@ -786,16 +868,49 @@ def _env_dir(words: list[str], cwd: str) -> str:
         while i < len(words) and (
             words[i].startswith("-") or WRAPPER_NUMBER_RE.fullmatch(words[i])
         ):
-            o = words[i]
-            if chdir and o in chdir and i + 1 < len(words):
+            o, k = words[i], _bundled_value(words[i], opts)
+            if chdir and k is not None and f"-{o[k]}" == chdir[0]:
+                # `env -iC DIR`, its value attached or the next word (Codex review of #159)
+                value = o[k + 1 :] or (words[i + 1] if i + 1 < len(words) else "")
+                cwd, i = str(Path(cwd, value)), i + (1 if o[k + 1 :] else 2)
+            elif chdir and o in chdir and i + 1 < len(words):
                 cwd, i = str(Path(cwd, words[i + 1])), i + 2
             elif chdir and o.startswith(chdir[1] + "="):
                 cwd, i = str(Path(cwd, o.split("=", 1)[1])), i + 1
             elif chdir and o.startswith(chdir[0]) and len(o) > len(chdir[0]):
                 cwd, i = str(Path(cwd, o[len(chdir[0]) :])), i + 1
             else:
-                i += 2 if o in opts else 1
+                i += 2 if _takes_value(o, opts) else 1
     return cwd
+
+
+# Files that are a process's own standard input.
+STDIN_FILES = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
+# An interpreter option followed by its program: python's -c, perl's -e or -lne,
+# node's -e, -p, --eval or --print, ruby's -e, php's -r.
+INLINE_CODE_RE = re.compile(r"-[A-Za-z]*[ceEpr]|--eval|--print")
+
+
+def _run_time_code(exe: str, args: list[str], segment: str, command: str) -> list[Target]:
+    """What a shell without `-c`, `source` or an interpreter runs is text known only
+    at run time: a here-string or an interpreter's inline program (`bash <<< ...`,
+    `python3 -c ...`), or, when it reads its standard input, what the rest of
+    ``command`` feeds it (`echo ... | bash`, `bash <(...)`). A merge or push word in
+    that text counts as unknown; a script's name is not its text (Codex review of
+    #159). A here-document's body is read on its own (heredocs())."""
+    code = segment.partition("<<<")[2]
+    if CLIENT_VERSION_RE.sub("", exe) in INTERPRETERS:
+        inline = [args[i + 1] for i, a in enumerate(args[:-1]) if INLINE_CODE_RE.fullmatch(a)]
+        code = " ".join([code, *inline, *(args[1:] if args[:1] == ["eval"] else [])])
+    found = _unknown(code, f"{exe} runs code known only at run time")
+    stdin = (
+        all(a.startswith("-") for a in args)
+        or any(a in STDIN_FILES for a in args)
+        or (exe in POSIX_SHELLS and "-s" in args)
+    )
+    if not found and stdin and next(_heredoc_operators(segment, 0, len(segment)), None) is None:
+        found = _unknown(command, f"{exe} runs what it reads from its input")
+    return found
 
 
 def find_targets(
@@ -816,6 +931,11 @@ def find_targets(
     targets: list[Target] = []
     for segment in segments(command):
         words = drop_redirections(split_words(segment))
+        if words[:1] == ["source"] or (posix and words[:1] == ["."]):
+            # They run a file, or what they read from their input (`source <(...)`);
+            # PowerShell's `.` runs the command after it, which is read as before.
+            targets.extend(_run_time_code(words[0], words[1:], segment, command))
+            continue
         toks = unwrap(words)
         if not toks:
             continue
@@ -867,9 +987,16 @@ def find_targets(
             inner = shell_command(exe, toks[1:])
             if inner is not None:
                 shell = exe in POSIX_SHELLS
-                targets.extend(find_targets(inner, cwd, depth + 1, posix=shell, root=root))
+                targets.extend(find_targets(inner, base, depth + 1, posix=shell, root=root))
+            else:
+                targets.extend(_run_time_code(exe, toks[1:], segment, command))
         elif exe in LAUNCHERS:
             targets.extend(_unknown(root, f"{exe} runs a command known only at run time"))
+        elif CLIENT_VERSION_RE.sub("", exe) in INTERPRETERS:
+            # An API call that names its PR counts, and so does a merge word in the
+            # code it runs (`subprocess.run(["gh", "pr", "merge", "5"])`).
+            targets.extend(_rest_merge_targets(segment, base, None))
+            targets.extend(_run_time_code(exe, toks[1:], segment, command))
         elif CLIENT_VERSION_RE.sub("", exe) in HTTP_CLIENTS and (
             "/merge" in segment or "mergePullRequest" in segment
         ):
@@ -879,28 +1006,32 @@ def find_targets(
             # `eval "gh pr merge 5"` runs literal text: read it as the command it is
             # (Codex review of #159: `eval 'echo submerged'` was refused as a merge).
             body = " ".join(toks[1:])
-            targets.extend(find_targets(body, cwd, depth + 1, posix=posix, root=root))
+            targets.extend(find_targets(body, base, depth + 1, posix=posix, root=root))
         elif exe in EVALS or ((len(toks) > 1 or posix) and RUNTIME_WORD.match(toks[0])):
             # `eval "$cmd"`, `iex $cmd`, `& $gh pr merge 5`: the text of the whole command
             # line is all there is to go on. A lone `$x` runs nothing in PowerShell (it
             # prints), but runs `$x` in a POSIX shell.
             targets.extend(_unknown(root, f"{toks[0]} runs a command known only at run time"))
     inners = substitutions(command)
-    for body, quoted, reader in bodies:
-        kinds = {_reader_kind(w) for w in _readers(reader)}
-        if "run" in kinds:
-            inners.append(body)  # a shell, `source`, ssh or anything unknown may run it
+    for body, quoted, readers in bodies:
+        kinds = {_reader_kind(words) for words in readers}
+        if kinds & {"shell", "run"}:
+            # Read as commands, where its reader runs them (`env -C DIR bash <<EOF`): a
+            # shell, `source`, ssh or anything unknown may run it.
+            here = next(_env_dir(w, cwd) for w in readers if _reader_kind(w) in ("shell", "run"))
+            targets.extend(find_targets(body, here, depth + 1, posix=posix, root=root))
         elif not quoted:
             inners.extend(substitutions(body, quotes=False))
-        if "interpreter" in kinds:
-            # `python3 - <<EOF` can run anything (`subprocess.run(["gh", ...])`): an API
-            # call that names its PR counts, and otherwise a merge or push word in it is
-            # a command known only at run time (Codex review of #159).
-            sent = _rest_merge_targets(body, cwd, None)
-            targets.extend(sent or _unknown(body, "an interpreter runs this here-document"))
-        elif "client" in kinds:
-            # `gh api --input -`, `curl --data @-`: the body can be an API merge.
+        if kinds & {"interpreter", "client"}:
+            # `python3 - <<EOF`, `gh api --input -`: the body can send an API merge.
             targets.extend(_rest_merge_targets(body, cwd, None))
+        if kinds & {"interpreter", "run"}:
+            # A program that runs commands in its own language (`subprocess.run`, awk's
+            # `system()`, vim's `!`) may run more than the scan reads, so a merge or push
+            # word in its input is a command known only at run time, whatever else is
+            # found (Codex review of #159). A shell's input is read exactly, so `bash`
+            # echoing "merge" is not refused.
+            targets.extend(_unknown(body, "a program that can run commands reads this"))
     for inner in inners:
         targets.extend(find_targets(inner, cwd, depth + 1, posix=posix, root=root))
     return targets
