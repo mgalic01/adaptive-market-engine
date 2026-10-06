@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from decimal import ROUND_DOWN, Decimal, localcontext
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from crypto_grid_bot.simulation.uptrend import UptrendPosition
 
 D = Decimal
 ZERO = D("0")
@@ -155,6 +158,19 @@ class Fill:
     remaining: Decimal
 
 
+# Spec v2's mode switcher: the Account fields that are runtime state only (``to_dict``).
+RUNTIME_MODE_FIELDS = (
+    "mode",
+    "range_decisions",
+    "decision_hour_ms",
+    "uptrend",
+    "uptrend_stopped_ms",
+    "risk_recovery",
+    "risk_recovery_count",
+    "mode_switches",
+    "winding_down",
+)
+
 # Spec v1 amendment 1: the four halt categories, set where a halt is raised, never
 # inferred from its text. Only ``drawdown`` restarts automatically.
 HALT_CATEGORIES = ("", "drawdown", "emergency", "exhaustion", "integrity")
@@ -219,6 +235,25 @@ class Account:
     volume_check: str = ""
     flow_block: bool = True
     flow_fragments: dict[Decimal, Decimal] = field(default_factory=dict)
+    # Spec v2's mode switcher (``SimulationPolicy.mode_switch``) only: runtime state, never
+    # saved either, so it too runs in replay only (spec v2 section 1, "Scope").
+    # ``mode`` is "cash", "grid" or "uptrend"; ``mode_switches`` counts each assignment that
+    # changed it. ``range_decisions`` counts the consecutive hourly decisions whose regime was
+    # RANGE, and ``decision_hour_ms`` is the UTC hour (its open, in ms) last decided, -1 before
+    # any. ``uptrend`` is the uptrend entry or position, and ``uptrend_stopped_ms`` the
+    # observation (ms) at which the last trailing-stop exit first triggered. ``risk_recovery``
+    # holds a new uptrend entry after a risk drain or a restart until ``risk_recovery_count``
+    # reaches the policy's recovery frames (section 7). ``winding_down``: the mode left Grid
+    # while the grid's orders still rest, so the grid places no buy (section 6).
+    mode: str = "cash"
+    range_decisions: int = 0
+    decision_hour_ms: int = -1
+    uptrend: UptrendPosition | None = None
+    uptrend_stopped_ms: int | None = None
+    risk_recovery: bool = False
+    risk_recovery_count: int = 0
+    mode_switches: int = 0
+    winding_down: bool = False
 
     @classmethod
     def start(cls, cash: Decimal) -> Account:
@@ -371,6 +406,8 @@ class Account:
                 del data[key]  # Variant A only: V0 saved state keeps its exact layout.
         for key in ("volume_since", "volume_check", "flow_block", "flow_fragments"):
             del data[key]  # Variants E and F: runtime state, never saved.
+        for key in RUNTIME_MODE_FIELDS:
+            del data[key]  # Spec v2's mode switcher: runtime state, never saved.
         return data
 
     @classmethod

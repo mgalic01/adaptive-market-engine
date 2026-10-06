@@ -61,7 +61,7 @@ from crypto_grid_bot.backtest.replay import (
     summarise,
 )
 from crypto_grid_bot.config import BotConfig, load_config
-from crypto_grid_bot.simulation.runner import VARIANTS, SimulationPolicy
+from crypto_grid_bot.simulation.runner import MODE_SWITCH, VARIANTS, SimulationPolicy
 
 
 def source_files() -> dict[str, str]:
@@ -144,6 +144,9 @@ def variant_policy(variant: str | None, *, structure: bool = False) -> Simulatio
     a V0 run takes exactly the path it always has."""
     if variant is not None and variant not in VARIANTS[1:]:
         raise ValueError(f"unknown variant {variant!r}")
+    if variant == MODE_SWITCH:
+        # Registered, but not yet a job: refused, never run as V0 under its name.
+        raise ValueError("variant MS (spec v2's mode switcher) has no backtest job yet")
     if variant is None and not structure:
         return None
     parts = set((variant or "").split("+"))

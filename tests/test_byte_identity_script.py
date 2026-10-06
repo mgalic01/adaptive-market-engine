@@ -17,7 +17,7 @@ import pytest
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.demo import demo_frames
 from crypto_grid_bot.simulation.models import MarketRules
-from crypto_grid_bot.simulation.runner import VARIANTS, PaperSimulator
+from crypto_grid_bot.simulation.runner import MODE_SWITCH, VARIANTS, PaperSimulator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -186,8 +186,11 @@ def test_the_step_trace_wrapper_forwards_any_arguments_and_finds_the_account_by_
 
 
 def test_the_run_table_covers_every_registered_variant() -> None:
-    # A newly registered variant must be added to the runs, or this fails.
-    assert {run.variant for run in byte_identity.RUNS if run.variant} == set(VARIANTS[1:])
+    # A newly registered v1 variant must be added to the runs, or this fails. Spec v2's mode
+    # switcher ("MS") is new code with no baseline on main to equal, so it is not one of them:
+    # the check is that V0 and every v1 variant stay byte-identical (spec v2 section 9).
+    v1 = set(VARIANTS[1:]) - {MODE_SWITCH}
+    assert {run.variant for run in byte_identity.RUNS if run.variant} == v1
 
 
 def test_run_names_are_unique() -> None:

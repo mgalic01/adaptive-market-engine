@@ -339,8 +339,9 @@ def order_requests(
     orders: RequestCountingOrders, since: int, fills: Sequence[dict[str, Any]]
 ) -> int:
     """Requests sent during one step: book operations since ``since`` plus marketable
-    exits, which are placed and filled at once without entering the book."""
-    exits = sum(1 for fill in fills if str(fill["order_id"]).startswith("exit/"))
+    exits, and spec v2's marketable uptrend buys, which are placed and filled at once
+    without entering the book."""
+    exits = sum(1 for fill in fills if str(fill["order_id"]).startswith(("exit/", "uptrend/")))
     return orders.requests - since + exits
 
 
