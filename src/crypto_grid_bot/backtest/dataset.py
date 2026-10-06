@@ -20,7 +20,6 @@ import os
 import re
 import tempfile
 import tomllib
-import zlib
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -31,6 +30,7 @@ from typing import Any, cast
 from crypto_grid_bot.backtest.funding import read_funding_archive
 from crypto_grid_bot.backtest.klines import (
     INTERVAL_MS,
+    UNDECODABLE,
     month_bounds_ms,
     read_archive,
     read_archive_repaired,
@@ -404,21 +404,27 @@ def _kline_entry(symbol: str, interval: str, month: str) -> dict[str, Any]:
     }
 
 
-def fetch_file(
+def _stored_kline(
     data_dir: Path, symbol: str, interval: str, month: str, fetcher: Fetcher
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], Path, str | None]:
+    """A kline archive's entry identity, its local path and its published SHA-256, once
+    ``_fetch_verified`` has stored it (None when Binance does not publish it)."""
     development_month(month)  # refuse the reserved window before any network or cache access
     path = archive_path(symbol, interval, month)
     entry = _kline_entry(symbol, interval, month)
     target = local_path(data_dir, symbol, interval, month)
-    expected = _fetch_verified(path, target, fetcher)
-    if expected is None:
-        return {**entry, "status": "missing"}
+    return entry, target, _fetch_verified(path, target, fetcher)
+
+
+def _strict_entry(
+    entry: dict[str, Any], target: Path, expected: str, symbol: str, interval: str, month: str
+) -> dict[str, Any]:
+    """The ok entry of a stored, verified archive that ``read_archive`` parses."""
     try:
         _, stats = read_archive(target, symbol, interval, month)
     except DataError as exc:
         # Only this boundary is safe for an audit to inspect as unparsed content.
-        # Checksum, missing-body and hash failures above must never reach that path.
+        # Checksum, missing-body and hash failures before it must never reach that path.
         raise ArchiveParseError(str(exc)) from exc
     return {
         **entry,
@@ -429,10 +435,19 @@ def fetch_file(
     }
 
 
-# What a hash-verified archive's strict parse can end in. ``fetch_file`` converts a DataError
-# into ``ArchiveParseError``; ``zlib.error`` and ``EOFError`` come from a corrupt deflate
-# stream, which ``read_member`` lets through and ``fetch_file`` does not convert.
-_UNPARSED = (ArchiveParseError, zlib.error, EOFError)
+def fetch_file(
+    data_dir: Path, symbol: str, interval: str, month: str, fetcher: Fetcher
+) -> dict[str, Any]:
+    entry, target, expected = _stored_kline(data_dir, symbol, interval, month, fetcher)
+    if expected is None:
+        return {**entry, "status": "missing"}
+    return _strict_entry(entry, target, expected, symbol, interval, month)
+
+
+# What the strict parse of a stored, verified archive can end in: ``_strict_entry`` converts
+# a DataError into ``ArchiveParseError`` and lets ``read_member``'s decoding failures through.
+# A FeedError is a RuntimeError too, which is why only the parse is ever caught with these.
+_UNPARSED = (ArchiveParseError, *UNDECODABLE)
 
 
 def _fetch_kline(
@@ -446,18 +461,17 @@ def _fetch_kline(
     reason. The entry of an archive that parses strictly is ``fetch_file``'s, unchanged.
     The fallback is here and not in ``fetch_file``, which the audit relies on to raise. A
     daily bar is never masked, so a daily archive that fails its parse stays fatal; so does
-    any failure to download or verify one, which is not an ``_UNPARSED`` error.
+    any failure to download or verify one, which happens before the parse is tried.
     """
+    entry, target, expected = _stored_kline(data_dir, symbol, interval, month, fetcher)
+    if expected is None:
+        return {**entry, "status": "missing"}
     try:
-        return fetch_file(data_dir, symbol, interval, month, fetcher)
+        return _strict_entry(entry, target, expected, symbol, interval, month)
     except _UNPARSED:
         if interval not in ("1m", "1h"):
             raise
-    # The archive is stored and matches its published checksum: ``_fetch_verified`` never
-    # opens the content, so only the strict parse can have raised.
-    target = local_path(data_dir, symbol, interval, month)
-    entry = _kline_entry(symbol, interval, month)
-    stored = {"sha256": sha256_file(target), "bytes": target.stat().st_size}
+    stored = {"sha256": expected, "bytes": target.stat().st_size}
     read = read_archive_repaired(target, symbol, interval, month)
     if read.unreadable:
         return {**entry, "status": "unreadable", **stored, "reason": read.unreadable}

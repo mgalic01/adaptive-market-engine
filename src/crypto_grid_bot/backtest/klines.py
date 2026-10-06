@@ -69,28 +69,46 @@ def month_bounds_ms(month: str) -> tuple[int, int]:
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
 
-def _time(raw: str, *, closing: bool) -> tuple[int, str]:
+def _timestamp(raw: str, *, closing: bool) -> tuple[int, str, bool]:
+    """A timestamp in ms, its unit, and whether it is exact in that unit.
+
+    Open times end in 000 us and close times in 999 us; anything else is not a
+    millisecond-aligned candle boundary. A millisecond timestamp is always exact.
+    """
     if not raw.isascii() or not raw.isdigit() or len(raw) > 17:
         raise DataError("timestamp must be a bounded unsigned integer")
     value = int(raw)
     if value >= MICROSECOND_FLOOR:
-        # Open times end in 000 us and close times in 999 us; anything else is not a
-        # millisecond-aligned candle boundary.
-        if value % 1000 != (999 if closing else 0):
-            raise DataError("microsecond timestamp is not a candle boundary")
-        return value // 1000, "us"
-    return value, "ms"
+        return value // 1000, "us", value % 1000 == (999 if closing else 0)
+    return value, "ms", True
 
 
-def _row_times(row: list[str], line_number: int) -> tuple[int, int, str]:
-    """A row's open time, close time (both ms) and their unit, or DataError."""
+def _time(raw: str, *, closing: bool) -> tuple[int, str]:
+    value, unit, exact = _timestamp(raw, closing=closing)
+    if not exact:
+        raise DataError("microsecond timestamp is not a candle boundary")
+    return value, unit
+
+
+def _row_times(
+    row: list[str], line_number: int, *, exact_close: bool = True
+) -> tuple[int, int, str, bool]:
+    """A row's open time, close time (both ms), their unit and whether the close is exact.
+
+    With ``exact_close`` (``parse_rows``), a microsecond close must end in 999 us. Without
+    it (the repairing reader), a close off that boundary comes back marked inexact: the
+    repair rule, not the parser, decides the row. Every other check is DataError either way.
+    """
     if len(row) != 12:
         raise DataError(f"line {line_number}: expected 12 columns (no header allowed)")
     open_ms, open_unit = _time(row[0], closing=False)
-    close_ms, close_unit = _time(row[6], closing=True)
+    if exact_close:
+        (close_ms, close_unit), exact = _time(row[6], closing=True), True
+    else:
+        close_ms, close_unit, exact = _timestamp(row[6], closing=True)
     if open_unit != close_unit:
         raise DataError(f"line {line_number}: mixed timestamp units in one row")
-    return open_ms, close_ms, open_unit
+    return open_ms, close_ms, open_unit, exact
 
 
 def _check_candle(
@@ -150,7 +168,7 @@ def parse_rows(text: str, interval: str, month: str) -> tuple[list[Kline], FileS
     gaps = 0
     previous: int | None = None
     for line_number, row in enumerate(csv.reader(io.StringIO(text)), start=1):
-        open_ms, close_ms, unit = _row_times(row, line_number)
+        open_ms, close_ms, unit, _ = _row_times(row, line_number)
         units.add(unit)
         _check_candle(line_number, open_ms, close_ms, interval, start_ms, end_ms)
         if previous is not None:
@@ -173,6 +191,13 @@ def read_archive(
 
 
 _MEMBER_MONTH = re.compile(r"-(\d{4}-\d{2})\.csv$")
+
+# What ``read_member`` lets through, besides its DataError, when a stored archive's member
+# cannot be decoded: ``zlib.error`` and ``EOFError`` from a corrupt deflate stream, and
+# ``RuntimeError`` from an encrypted member, whose subclass ``NotImplementedError`` is a
+# compression method zipfile cannot read. A missing file is an ``OSError``, not one of them.
+UNDECODABLE = (zlib.error, EOFError, RuntimeError)
+_UNREADABLE = (DataError, *UNDECODABLE)
 
 
 def read_member(path: Path, expected_member: str) -> str:
@@ -283,16 +308,17 @@ def _rows_with_next_open(text: str) -> Iterator[tuple[int, list[str], int, int |
         yield (*pending, None)
 
 
-def _repairable(open_ms: int, close_ms: int, following: int | None, step: int) -> bool:
+def _repairable(open_ms: int, close_ms: int, exact: bool, following: int | None, step: int) -> bool:
     """The refined rule of ``audit.fix_closes`` (PR #65), adopted by spec v1 section 5 rule 1.
 
     A row's close is repaired to ``open + step - 1`` when it is off the boundary, the open
     is aligned, and the row is the file's last or its next row in file order opens at
-    ``open + step`` or later (adjacent included). ``audit`` imports this module, so the
-    rule is restated here, not imported.
+    ``open + step`` or later (adjacent included). A microsecond close that does not end in
+    999 us (``exact`` False) is off the boundary even when its millisecond is right.
+    ``audit`` imports this module, so the rule is restated here, not imported.
     """
     return (
-        close_ms != open_ms + step - 1
+        (not exact or close_ms != open_ms + step - 1)
         and open_ms % step == 0
         and (following is None or following >= open_ms + step)
     )
@@ -322,8 +348,10 @@ def parse_rows_repaired(text: str, interval: str, month: str) -> RepairedRead:
                 masked.update((_hour_of(open_ms), _hour_of(bars[-1].open_ms)))
                 continue
             try:
-                _, close_ms, unit = _row_times(row, line_number)
-                repair = _repairable(open_ms, close_ms, following, step)
+                _, close_ms, unit, exact = _row_times(row, line_number, exact_close=False)
+                repair = _repairable(open_ms, close_ms, exact, following, step)
+                if not (repair or exact):
+                    raise DataError(f"line {line_number}: microsecond close is not a boundary")
                 close_ms = open_ms + step - 1 if repair else close_ms
                 _check_candle(line_number, open_ms, close_ms, interval, start_ms, end_ms)
                 bar = _row_bar(row, line_number, open_ms)
@@ -346,18 +374,17 @@ def read_archive_repaired(path: Path, symbol: str, interval: str, month: str) ->
     """``parse_rows_repaired`` of the archive's single CSV member.
 
     An archive that ``read_member`` cannot open or decode is unreadable, not an error: a
-    ``DataError``, or ``zlib.error`` or ``EOFError`` from a corrupt deflate stream, which
-    ``read_member`` lets through. A missing file still raises, as does a bad symbol, a
-    month outside the development window or an interval other than 1m and 1h: those are the
-    caller's errors, as in ``read_archive``. Daily archives keep ``read_archive``: a daily
-    bar is never masked.
+    ``DataError``, or one of ``UNDECODABLE``. A missing file still raises, as does a bad
+    symbol, a month outside the development window or an interval other than 1m and 1h:
+    those are the caller's errors, as in ``read_archive``. Daily archives keep
+    ``read_archive``: a daily bar is never masked.
     """
     symbol_name(symbol)
     development_month(month)
     _repairing_step(interval)
     try:
         text = read_member(path, f"{symbol}-{interval}-{month}.csv")
-    except (DataError, zlib.error, EOFError) as exc:
+    except _UNREADABLE as exc:
         return _unreadable(_why(exc), interval, month)
     return parse_rows_repaired(text, interval, month)
 

@@ -83,18 +83,40 @@ def unreadable_open_rows(start_ms, count, *, step):
     return "\n".join(lines) + "\n"
 
 
+def patched_zip(symbol, interval, month, content, *, method=None, flag_bits=0):
+    """A stored zip of one member whose headers then claim compression ``method`` and carry
+    ``flag_bits``: zipfile cannot write such a member, yet a checksum would pass it."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr(f"{symbol}-{interval}-{month}.csv", content)
+    data = bytearray(buffer.getvalue())
+    central = data.rfind(b"PK\x01\x02")
+    if method is not None:
+        data[8:10] = method.to_bytes(2, "little")  # the local header's compression method
+        data[central + 10 : central + 12] = method.to_bytes(2, "little")  # the central's
+    for start in (6, central + 8):  # the general-purpose flags of both headers
+        flags = int.from_bytes(data[start : start + 2], "little") | flag_bits
+        data[start : start + 2] = flags.to_bytes(2, "little")
+    return bytes(data)
+
+
 def undecodable_zip(symbol, interval, month):
     """A zip whose member is flagged deflate over a garbage stream: reading it raises
     ``zlib.error``, which ``read_member`` lets through."""
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
-        archive.writestr(f"{symbol}-{interval}-{month}.csv", b"\x01\x00\x00\x00\x00")
-    data = bytearray(buffer.getvalue())
-    deflate = zipfile.ZIP_DEFLATED.to_bytes(2, "little")
-    data[8:10] = deflate  # the local header's compression method
-    central = data.rfind(b"PK\x01\x02")
-    data[central + 10 : central + 12] = deflate  # and the central directory's
-    return bytes(data)
+    return patched_zip(
+        symbol, interval, month, b"\x01\x00\x00\x00\x00", method=zipfile.ZIP_DEFLATED
+    )
+
+
+def encrypted_zip(symbol, interval, month, text):
+    """A zip whose member is flagged encrypted: opening it raises ``RuntimeError``."""
+    return patched_zip(symbol, interval, month, text, flag_bits=0x1)
+
+
+def unsupported_zip(symbol, interval, month, text):
+    """A zip whose member claims implode (method 6), which zipfile cannot read: opening it
+    raises ``NotImplementedError``, a subclass of ``RuntimeError``."""
+    return patched_zip(symbol, interval, month, text, method=6)
 
 
 class FakeArchive:
@@ -401,7 +423,10 @@ class FetchTests(unittest.TestCase):
     def test_unreadable_archive_is_recorded_not_fatal(self):
         # An archive that cannot be read at all is recorded, with its checksum and why, and
         # every hour of it is absent. That includes a deflate stream that fails with
-        # zlib.error, which the strict reader lets escape, and an EOFError from reading.
+        # zlib.error, which the strict reader lets escape, and an EOFError from reading;
+        # and (Codex review of #186) an encrypted member, a RuntimeError, and a compression
+        # method zipfile cannot read, a NotImplementedError.
+        valid = minute_rows(JAN_2024_MS, 3)
         cases = {
             "not a zip": ("1m", "2024-01", b"not a zip", "invalid zip"),
             "garbage deflate stream": (
@@ -409,6 +434,18 @@ class FetchTests(unittest.TestCase):
                 "2023-12",
                 undecodable_zip("ADAUSDT", "1h", "2023-12"),
                 "",  # zlib's own message, which this test does not pin
+            ),
+            "an encrypted member": (
+                "1m",
+                "2024-01",
+                encrypted_zip("ADAUSDT", "1m", "2024-01", valid),
+                "encrypted",
+            ),
+            "an unsupported compression method": (
+                "1h",
+                "2024-01",
+                unsupported_zip("ADAUSDT", "1h", "2024-01", minute_rows(JAN_2024_MS, 3)),
+                "compression method",
             ),
             "an open that is not a number": (
                 "1h",
@@ -454,19 +491,46 @@ class FetchTests(unittest.TestCase):
         # A daily bar is never masked (spec v1 section 5 rule 3), so there is no repairing a
         # daily archive: its failure is the fetch's, as before.
         day = 86_400_000
+        daily = row(JAN_2024_MS, step=day) + "\n"
         cases = {
             "truncated close": (truncated_close_rows(JAN_2024_MS, 3, step=day), ArchiveParseError),
             "not a zip": (b"not a zip", ArchiveParseError),
             "garbage deflate stream": (undecodable_zip("ADAUSDT", "1d", "2024-01"), zlib.error),
+            "an encrypted member": (encrypted_zip("ADAUSDT", "1d", "2024-01", daily), RuntimeError),
+            "an unsupported compression method": (
+                unsupported_zip("ADAUSDT", "1d", "2024-01", daily),
+                NotImplementedError,
+            ),
         }
         for label, (content, error) in cases.items():
-            with self.subTest(case=label), self.assertRaises(error):
+            with self.subTest(case=label), self.assertRaises(error) as raised:
                 self.tiny_dataset({("1d", "2024-01"): content})
+            self.assertIs(error, type(raised.exception))
         with (
             patch("crypto_grid_bot.backtest.klines.read_member", side_effect=EOFError()),
             self.assertRaises(EOFError),
         ):
-            self.tiny_dataset({("1d", "2024-01"): row(JAN_2024_MS, step=day) + "\n"})
+            self.tiny_dataset({("1d", "2024-01"): daily})
+
+    def test_a_download_failure_is_never_read_as_an_unparsed_archive(self):
+        # A FeedError is a RuntimeError, as an encrypted member's error is; only the strict
+        # parse of a stored, verified archive may fall back to the repairing reader. Here
+        # the cached file is stale and the download of its replacement fails: the fetch
+        # fails, and the stale file is neither read nor recorded.
+        spec, _ = self.tiny_dataset()
+        path = archive_path("ADAUSDT", "1m", "2024-01")
+        stale = local_path(self.data, "ADAUSDT", "1m", "2024-01")
+        stale.write_bytes(encrypted_zip("ADAUSDT", "1m", "2024-01", minute_rows(JAN_2024_MS, 3)))
+        served = self.archive
+
+        def failing(requested):
+            if requested == path:
+                raise FeedError("connection reset")
+            return served(requested)
+
+        self.archive = failing
+        with self.assertRaisesRegex(FeedError, "connection reset"):
+            self.refetch(spec)
 
     def test_a_checksum_failure_is_never_recorded_as_unreadable(self):
         # Only a hash-verified archive that fails its parse is repaired or recorded. One that
@@ -571,12 +635,23 @@ class FetchTests(unittest.TestCase):
                 with self.assertRaisesRegex(ArchiveParseError, why) as raised:
                     fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
                 self.assertIsInstance(raised.exception.__cause__, DataError)
-        # What escapes the strict parse as a zlib.error or an EOFError keeps escaping.
-        self.archive.add_body(
-            "ADAUSDT", "1m", "2024-01", undecodable_zip("ADAUSDT", "1m", "2024-01")
-        )
-        with self.assertRaises(zlib.error):
-            fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
+        # What escapes the strict parse as a zlib.error, an EOFError, a RuntimeError or a
+        # NotImplementedError keeps escaping.
+        valid = minute_rows(JAN_2024_MS, 3)
+        escaping = {
+            "garbage deflate stream": (undecodable_zip("ADAUSDT", "1m", "2024-01"), zlib.error),
+            "an encrypted member": (encrypted_zip("ADAUSDT", "1m", "2024-01", valid), RuntimeError),
+            "an unsupported compression method": (
+                unsupported_zip("ADAUSDT", "1m", "2024-01", valid),
+                NotImplementedError,
+            ),
+        }
+        for label, (body, error) in escaping.items():
+            with self.subTest(case=label):
+                self.archive.add_body("ADAUSDT", "1m", "2024-01", body)
+                with self.assertRaises(error) as raised:
+                    fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
+                self.assertIs(error, type(raised.exception))
         with (
             patch("crypto_grid_bot.backtest.klines.read_member", side_effect=EOFError()),
             self.assertRaises(EOFError),
