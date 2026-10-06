@@ -7,9 +7,17 @@ record): the data-handling code that lands between the stages must leave every s
 result identical. The re-run is stage 1's 24 workflow runs (2 datasets x 12 inputs) on the
 code that merges the long-window data handling; this script compares its ``results.json``
 files with stage 1's downloads. It reads JSON only, and needs neither the engine nor the
-data.
+data. ``json.loads`` keeps the last of a key repeated within one object, so an earlier
+duplicate in a file is never seen.
 
-**Inventory first.** Each ``results.json`` under either directory (found at any depth) is
+**The two sides must be two places.** Both arguments are resolved first (``..`` and symbolic
+links followed). The inventory fails when they are the same directory, or when either lies inside
+the other: a re-run kept under the stage-1 directory, or the reverse, is found from both sides and
+would be compared with itself. It fails too when one ``results.json`` is reached from both sides
+whatever the directories, as through a symbolic link to a stage-1 file. A hard link is a second
+name for the same data, not a path that resolves to it, and is not detected.
+
+**Inventory next.** Each ``results.json`` under either directory (found at any depth) is
 keyed by ``(dataset, policy, structure)``:
 
 * ``dataset`` is the file's ``dataset``;
@@ -100,9 +108,14 @@ def key_of(document: Any) -> Key:
             if "policy" in document
             else "V0"
         )
-        structure = any(STRUCTURE_MARK in row["strategy"] for row in rows)
+        labels = [row["strategy"] for row in rows]
     except (KeyError, TypeError) as error:
         raise ValueError(f"not a results.json of the backtest CLI ({error!r})") from None
+    for label in labels:
+        # ``in`` also answers for a list or a dict, so a label must be text.
+        if not isinstance(label, str):
+            raise ValueError(f"not a results.json of the backtest CLI (strategy {label!r})")
+    structure = any(STRUCTURE_MARK in label for label in labels)
     if not isinstance(dataset, str):
         raise ValueError(f"not a results.json of the backtest CLI (dataset {dataset!r})")
     return Key(dataset, policy, structure)
@@ -129,6 +142,27 @@ def scan(root: Path, side: str) -> tuple[dict[Key, list[Path]], list[str]]:
     if not found and not problems:
         problems.append(f"{side}: no results.json under {root}")
     return found, problems
+
+
+def overlap_problems(stage1: Path, rerun: Path) -> list[str]:
+    """Why the two arguments are not two places: the same directory, or one inside the other,
+    compared after ``resolve`` so ``..`` and symbolic links cannot hide it."""
+    first, second = stage1.resolve(), rerun.resolve()
+    if first == second:
+        return [f"stage 1 and the re-run are the same directory: {first}"]
+    if second.is_relative_to(first):
+        return [f"the re-run directory {second} is inside stage 1's directory {first}"]
+    if first.is_relative_to(second):
+        return [f"stage 1's directory {first} is inside the re-run directory {second}"]
+    return []
+
+
+def shared_files(stage1: dict[Key, list[Path]], rerun: dict[Key, list[Path]]) -> list[Path]:
+    """Each results.json that both sides reach, as its resolved path: a file compared with
+    itself proves nothing."""
+    first = {path.resolve() for paths in stage1.values() for path in paths}
+    second = {path.resolve() for paths in rerun.values() for path in paths}
+    return sorted(first & second)
 
 
 def inventory_problems(
@@ -229,11 +263,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="fail the inventory unless each side holds N results.json files (stage 1: 24)",
     )
     args = parser.parse_args(argv)
-    stage1, problems = scan(args.stage1, STAGE1)
-    rerun, rerun_problems = scan(args.rerun, RERUN)
-    problems += rerun_problems
-    if stage1 and rerun:  # an unreadable side is already explained; its keys are not "missing"
-        problems += inventory_problems(stage1, rerun, args.expect)
+    if args.expect is not None and args.expect < 1:
+        parser.error("--expect must be at least 1")
+    problems = overlap_problems(args.stage1, args.rerun)
+    stage1: dict[Key, list[Path]] = {}
+    rerun: dict[Key, list[Path]] = {}
+    if not problems:  # nested or equal directories: scanning them would only repeat the files
+        stage1, problems = scan(args.stage1, STAGE1)
+        rerun, rerun_problems = scan(args.rerun, RERUN)
+        problems += rerun_problems
+        if stage1 and rerun:  # an unreadable side is already explained; its keys are not "missing"
+            problems += inventory_problems(stage1, rerun, args.expect)
+            problems += [
+                f"the same file is reached from both sides: {path}"
+                for path in shared_files(stage1, rerun)
+            ]
     if problems:
         for problem in problems:
             print(f"  {problem}", file=sys.stderr, flush=True)

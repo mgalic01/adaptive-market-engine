@@ -585,6 +585,9 @@ def test_a_missing_directory_fails(tmp_path: Path, capsys: pytest.CaptureFixture
         ('{"dataset": "d"}', "not a results.json"),
         ('{"dataset": "d", "results": [{"symbol": "BTCUSDT"}]}', "not a results.json"),
         ('{"dataset": 7, "results": []}', "not a results.json"),
+        # A list or a dict also answers ``"+structure" in label``: the label must be a string.
+        ('{"dataset": "d", "results": [{"strategy": ["+structure"]}]}', "not a results.json"),
+        ('{"dataset": "d", "results": [{"strategy": {"+structure": 1}}]}', "not a results.json"),
     ],
 )
 def test_a_file_that_cannot_be_keyed_fails_naming_it(
@@ -636,6 +639,158 @@ def test_the_key_names_the_dataset_policy_and_flag() -> None:
     assert str(stage1_identity.key_of(document("practice-2022", "A"))).startswith(
         'practice-2022 | {"'
     )
+
+
+def test_a_strategy_label_must_be_a_string() -> None:
+    for label in (["gated grid +structure"], {"+structure": 1}, 7, None):
+        doc = document("practice-2022")
+        doc["results"][0]["strategy"] = label
+        with pytest.raises(ValueError, match="not a results.json"):
+            stage1_identity.key_of(doc)
+
+
+def test_every_rows_label_is_checked_not_only_up_to_the_first_structure_label() -> None:
+    doc = document("practice-2022", None, True)
+    assert "+structure" in doc["results"][0]["strategy"]  # the first row already sets the flag
+    doc["results"][-1]["strategy"] = ["a list"]
+    with pytest.raises(ValueError, match="not a results.json"):
+        stage1_identity.key_of(doc)
+
+
+# --- --expect must be positive ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-24"])
+def test_expect_below_one_is_rejected(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    with pytest.raises(SystemExit) as stop:
+        stage1_identity.main([str(tmp_path / "a"), str(tmp_path / "b"), f"--expect={value}"])
+    assert stop.value.code == 2
+    assert "--expect must be at least 1" in capsys.readouterr().err
+
+
+# --- one directory on both sides, or one inside the other --------------------------------
+
+
+def run_on(
+    capsys: pytest.CaptureFixture[str], stage1: Path | str, rerun: Path | str, *options: str
+) -> Result:
+    code = stage1_identity.main([str(stage1), str(rerun), *options])
+    captured = capsys.readouterr()
+    return Result(code, captured.out, captured.err)
+
+
+@pytest.mark.parametrize("spelling", ["same", "dotdot"])
+def test_the_same_directory_on_both_sides_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], spelling: str
+) -> None:
+    write_side(tmp_path / "both", stage1_documents(), nested=True)
+    other = tmp_path / "both" if spelling == "same" else tmp_path / "both" / DATASETS[0] / ".."
+    result = run_on(capsys, tmp_path / "both", other)
+    assert result.code == 1, result.everything
+    assert result.lines == ["INVENTORY DIFFERS"]
+    shared = (tmp_path / "both").resolve()
+    assert result.err.splitlines() == [f"  stage 1 and the re-run are the same directory: {shared}"]
+
+
+def test_a_rerun_inside_the_stage_1_directory_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Every file lives in the inner directory: both sides see the same files, once each.
+    write_side(tmp_path / "outer" / "inner", stage1_documents(), nested=True)
+    result = run_on(capsys, tmp_path / "outer", tmp_path / "outer" / "inner")
+    assert result.code == 1, result.everything
+    assert result.lines == ["INVENTORY DIFFERS"]
+    outer, inner = (tmp_path / "outer").resolve(), (tmp_path / "outer" / "inner").resolve()
+    assert result.err.splitlines() == [
+        f"  the re-run directory {inner} is inside stage 1's directory {outer}"
+    ]
+
+
+def test_stage_1_inside_the_rerun_directory_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_side(tmp_path / "outer" / "inner", stage1_documents(), nested=True)
+    result = run_on(capsys, tmp_path / "outer" / "inner", tmp_path / "outer")
+    assert result.code == 1, result.everything
+    assert result.lines == ["INVENTORY DIFFERS"]
+    outer, inner = (tmp_path / "outer").resolve(), (tmp_path / "outer" / "inner").resolve()
+    assert result.err.splitlines() == [
+        f"  stage 1's directory {inner} is inside the re-run directory {outer}"
+    ]
+
+
+def test_sibling_directories_with_a_common_prefix_are_not_nested(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage1 = stage1_documents()
+    write_side(tmp_path / "run", stage1, nested=True)
+    write_side(tmp_path / "run-2", rerun_of(stage1))
+    result = run_on(capsys, tmp_path / "run", tmp_path / "run-2")
+    assert result.code == 0, result.everything
+    assert result.lines[-1] == "ALL IDENTICAL"
+
+
+def test_a_file_reached_from_both_sides_is_found_through_any_spelling(tmp_path: Path) -> None:
+    write_side(tmp_path / "s", stage1_documents())
+    first = tmp_path / "s" / "r0" / "results.json"
+    alias = tmp_path / "s" / "r1" / ".." / "r0" / "results.json"
+    other = tmp_path / "s" / "r2" / "results.json"
+    k = stage1_identity.key_of(stage1_identity.load(first))
+    k2 = stage1_identity.key_of(stage1_identity.load(other))
+    both = stage1_identity.shared_files({k: [first], k2: [other]}, {k: [alias]})
+    assert both == [first.resolve()]
+    assert stage1_identity.shared_files({k: [first]}, {k2: [other]}) == []
+
+
+def symlinks_available(tmp_path: Path) -> bool:
+    probe = tmp_path / "probe"
+    try:
+        probe.symlink_to(tmp_path.parent, target_is_directory=True)
+    except OSError:  # Windows without the privilege
+        return False
+    probe.unlink()
+    return True
+
+
+def test_a_symlinked_results_file_reached_from_both_sides_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    if not symlinks_available(tmp_path):
+        pytest.skip("symbolic links are not available here")
+    stage1 = stage1_documents()
+    write_side(tmp_path / "stage1", stage1, nested=True)
+    write_side(tmp_path / "rerun", rerun_of(stage1))
+    real = next((tmp_path / "stage1").rglob("results.json"))
+    wanted = stage1_identity.key_of(stage1_identity.load(real))
+    # Replace the re-run file of the same key by a link to the stage-1 file.
+    victim = next(
+        p
+        for p in (tmp_path / "rerun").rglob("results.json")
+        if stage1_identity.key_of(stage1_identity.load(p)) == wanted
+    )
+    victim.unlink()
+    victim.symlink_to(real)
+    result = run_main(tmp_path, capsys)
+    assert result.code == 1, result.everything
+    assert result.lines == ["INVENTORY DIFFERS"]
+    assert result.err.splitlines() == [
+        f"  the same file is reached from both sides: {real.resolve()}"
+    ]
+
+
+def test_a_symlink_to_the_stage_1_directory_is_the_same_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    if not symlinks_available(tmp_path):
+        pytest.skip("symbolic links are not available here")
+    write_side(tmp_path / "stage1", stage1_documents(), nested=True)
+    (tmp_path / "alias").symlink_to(tmp_path / "stage1", target_is_directory=True)
+    result = run_on(capsys, tmp_path / "stage1", tmp_path / "alias")
+    assert result.code == 1, result.everything
+    shared = (tmp_path / "stage1").resolve()
+    assert result.err.splitlines() == [f"  stage 1 and the re-run are the same directory: {shared}"]
 
 
 # --- run as a script --------------------------------------------------------------------
