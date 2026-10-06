@@ -285,7 +285,7 @@ Every criterion applies over the included runs of the scored window:
 - Always-grid is v1's F, an existing configuration run on a new window.
 
 **Prior exposure (disclosed):**
-- v1's stage-1 results (2022 and 2024H1) informed this design: F in grid mode, and the risk budget. Both windows lie inside 2019–2024.
+- v1's stage-1 results (2022 and 2024H1) informed this design: F in grid mode, the risk budget, and C5's bar (below). Both windows lie inside 2019–2024.
 - The V2-era runs of 2026-09-30 covered parts of 2022–2024 (2022-06 to 2023-02, and 2023-10 to 2024-12), and Claude saw their figures in the owner's proposal. Those runs are invalid because of the lookahead fixed in #160.
 - #137's runs on the development data informed the deferral of shorting.
 - **Where the thresholds come from:**
@@ -298,7 +298,10 @@ Every criterion applies over the included runs of the scored window:
     - the Bollinger width for squeezes.
   - **Standard indicator conventions:** period 14 for RSI, ATR, ADX and ±DI; ADX 20 as the line between trend and range; and Bollinger 20 at 2σ.
   - **Claude's design choices:** the 720-hour (30-day) width median as the squeeze reference, 3 × ATR, 4%, 60%, 24 hours, and C5's 12 round trips a year (§11, decisions 6 and 7).
-- **What 2019–2024 results informed.** No threshold was fitted to any result. v1's stage-1 results (above) shaped two choices only qualitatively: F's block in grid mode, and sizing the trend position to the risk budget after D's 40% drawdowns.
+- **What 2019–2024 results informed.** v1's stage-1 results (above) informed three choices:
+  - two qualitatively: F's block in grid mode, and sizing the trend position to the risk budget after D's 40% drawdowns;
+  - and C5's lower bar, which was set with the full stack's C5 result known (next bullet).
+  No v2 result exists yet, so no v2 threshold was tuned against one.
 - **C5's bar was set after v1's results were seen.** In v1's stage 1, the full stack, which had the smallest drawdowns, failed v1's C5 at 0.69 completed cycles a week ([report](backtests/2026-10-06-spec-v1-stage-1.md)). C5's 12 round trips a year, one a month and about a quarter of v1's bar, was chosen with that result known.
   - It is a relaxation of a criterion made after a result. The owner approved it (§11, decision 6), and it is disclosed here.
   - Grid cycles alone can pass it (C5).
