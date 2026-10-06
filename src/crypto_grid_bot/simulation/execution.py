@@ -1,20 +1,22 @@
 """Conservative limit fills with shared volume budgets and quote-denominated fees.
 
-Resting limit fills pay the maker fee; marketable exits pay the taker fee.
+Resting limit fills pay the maker fee; marketable exits, and the uptrend's marketable
+buy (``market_buy``), pay the taker fee.
 
 Each entry point validates the quote and the whole account first by default. The paper
 engine passes ``check=False``: it validates the frame's quote first thing in its step
 and the whole account at every frame boundary (``PaperSimulator.step``, and
 ``StateStore.transact`` before saving and on every read), so the per-call checks would
 only repeat work on a state validated moments before. ``place``'s checks of the new
-order itself always run.
+order itself always run. ``market_buy`` takes no ``check``: its caller validates the
+quote and the account, as the paper engine does every frame.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal, localcontext
 from typing import Any
 
 from crypto_grid_bot.simulation.models import (
@@ -29,6 +31,12 @@ from crypto_grid_bot.simulation.models import (
     nonnegative,
     validate_grid_links,
 )
+
+# The simulator settles fills at precision 50 (``PaperSimulator.step``), and the trend
+# benchmark prices and sizes its buys at the same precision. The market buy below runs at
+# this one precision whatever the ambient context is, so a quantity sized at one precision
+# is never settled at another.
+_PRECISION = 50
 
 
 def place(account: Account, order: LimitOrder, rules: MarketRules, *, check: bool = True) -> None:
@@ -192,6 +200,20 @@ def exit_price(quote: Quote, rules: MarketRules) -> Decimal:
     return floor_step(quote.bid * (ONE - rules.slippage_rate), rules.tick_size)
 
 
+def buy_price(quote: Quote, rules: MarketRules) -> Decimal:
+    """The price a marketable buy would pay at this ask: ``ask * (1 + slippage)``, rounded
+    up to the tick, against the buyer, as ``exit_price`` rounds a sell down.
+
+    The same rule as ``trend_benchmark.buy_price`` (variant D), at the same precision.
+    """
+    with localcontext() as context:
+        context.prec = _PRECISION
+        ticks = (quote.ask * (ONE + rules.slippage_rate) / rules.tick_size).to_integral_value(
+            rounding=ROUND_CEILING
+        )
+        return ticks * rules.tick_size
+
+
 def marketable(quantity: Decimal, quote: Quote, rules: MarketRules) -> Decimal:
     """``quantity`` if the market filters would accept selling it at this bid, else ZERO.
 
@@ -310,6 +332,83 @@ def liquidate(
     if account.orders:
         raise ValueError("cancel resting orders before liquidation")
     return reduce_unreserved(account, quote, rules, check=check)
+
+
+@dataclass(frozen=True)
+class BuyResult:
+    """One marketable-buy attempt: the fill, or if nothing filled, exactly why.
+
+    ``refusal`` is "" when the buy filled, and otherwise one of two reasons the caller
+    reads differently (spec v2 section 5):
+
+    * ``budget`` - what is left of the cash cap, the risk allowance or the account's own
+      spendable cash buys less than the minimum notional at this price. No later quote
+      at this price can change that, so the entry ends.
+    * ``depth`` - only the participation limit on this quote's ask size keeps the buy
+      below the minimum notional. A deeper ask may allow it, so the entry waits for the
+      next quote.
+    """
+
+    fill: Fill | None
+    refusal: str
+
+
+def market_buy(
+    account: Account,
+    quote: Quote,
+    rules: MarketRules,
+    *,
+    cash_left: Decimal,
+    risk_left: Decimal,
+    stop: Decimal,
+) -> BuyResult:
+    """Buy at the ask, marketable, at the taker fee, bounded by three limits (spec v2 section 5).
+
+    ``cash_left`` is what remains of the entry's cash cap and ``risk_left`` of its risk
+    allowance, the loss at ``stop`` before fees. The quantity is the least of:
+
+    * depth: the participation limit on the ask size;
+    * cash: ``min(cash_left, account.available_quote)`` at the all-in unit cost
+      ``price * (1 + taker fee)``. The account's own spendable cash bounds it as well,
+      since dust or held fragments can leave less than the cap, and a buy never drives
+      ``account.cash`` below zero;
+    * risk: ``risk_left`` at the loss per unit ``price - stop``.
+
+    Each quotient is floored to the lot step and then lowered one step at a time while it
+    still overshoots its limit, a quotient having been rounded up at the last digit
+    (``trend_benchmark.entry_quantity``'s guard). So no fill uses more than what is left
+    of either limit. A limit that is negative, by a last digit, bounds the quantity at
+    zero or below, which is refused as ``budget``.
+
+    The caller validates the quote and the account, as the paper engine does at every
+    frame; and calls this only with a buy price above ``stop``, which a stop-out check on
+    the same quote's bid guarantees. A price at or below it leaves the risk bound no loss
+    per unit to divide by, so it raises rather than sizing a buy without one.
+    """
+    with localcontext() as context:
+        context.prec = _PRECISION
+        price = buy_price(quote, rules)
+        loss = price - stop
+        if loss <= ZERO:
+            raise ValueError("a buy must be priced above its stop")
+        step = rules.quantity_step
+        depth = floor_step(quote.ask_size * rules.participation, step)
+        spendable = min(cash_left, account.available_quote(rules))
+        unit_cost = price * (ONE + rules.taker_fee)
+        by_cash = floor_step(spendable / unit_cost, step)
+        while by_cash > ZERO and by_cash * unit_cost > spendable:
+            by_cash -= step
+        by_risk = floor_step(risk_left / loss, step)
+        while by_risk > ZERO and by_risk * loss > risk_left:
+            by_risk -= step
+        affordable = min(by_cash, by_risk)
+        if price * affordable < rules.minimum_notional:
+            return BuyResult(None, "budget")
+        quantity = min(depth, affordable)
+        if price * quantity < rules.minimum_notional:
+            return BuyResult(None, "depth")
+        order = LimitOrder("uptrend/buy/" + quote.event_id, "buy", price, quantity, quantity)
+        return BuyResult(_apply_fill(account, order, quantity, price, rules.taker_fee), "")
 
 
 def exit_state(
