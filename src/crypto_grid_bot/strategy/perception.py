@@ -146,9 +146,14 @@ def _bar(kline: Kline) -> Bar:
     return Bar(kline.open_ms, kline.high, kline.low, kline.close)
 
 
-def _require_increasing(name: str, klines: Sequence[Kline]) -> None:
-    for i in range(1, len(klines)):
-        if klines[i].open_ms <= klines[i - 1].open_ms:
+def _require_increasing(name: str, klines: Sequence[Kline], step_ms: int) -> None:
+    """Open times must be strictly increasing and aligned to the bar length: the point-in-time
+    lookup lands on multiples of ``step_ms``, so an unaligned bar would never be read as due
+    and could be read as the latest closed one."""
+    for i, kline in enumerate(klines):
+        if kline.open_ms % step_ms:
+            raise ValueError(f"{name} open times must be multiples of {step_ms} ms (index {i})")
+        if i and kline.open_ms <= klines[i - 1].open_ms:
             raise ValueError(f"{name} open times must be strictly increasing (index {i})")
 
 
@@ -161,9 +166,10 @@ class Perception:
     """Precomputed three-timeframe series, read at any minute with ``at``."""
 
     def __init__(self, hourly: Sequence[Kline], daily: Sequence[Kline]) -> None:
-        """``hourly`` and ``daily`` are the klines that exist, in strictly increasing open time."""
-        _require_increasing("hourly", hourly)
-        _require_increasing("daily", daily)
+        """``hourly`` and ``daily`` are the klines that exist, in strictly increasing open time,
+        each open a multiple of its bar length (UTC hours and days, as Binance publishes them)."""
+        _require_increasing("hourly", hourly, _HOUR_MS)
+        _require_increasing("daily", daily, _DAY_MS)
 
         hourly_bars = [_bar(k) for k in hourly]
         hourly_closes = [bar.close for bar in hourly_bars]
