@@ -64,6 +64,8 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 | Bollinger width | 1h | (upper − lower) ÷ middle of the 20-bar band at 2 population standard deviations |
 | Width median | 1h | the median of the last 720 completed 1h widths (30 days) |
 
+**Zero cases.** RSI is 50 when the average gain and the average loss are both 0. ±DI are 0 when the smoothed true range is 0, and DX is 0 when +DI + −DI is 0, as in V0's hourly ADX (`backtest/features.py`).
+
 **Gaps and availability.** v2 follows the convention of V0's hourly features (spec v1, D13), so that one masked hour, such as an exchange outage, does not blank a 30-day median for a month.
 - **Skipping gaps:** each timeframe's indicators are computed over the bars that exist, in time order. A missing or masked bar is skipped, not filled, and every recursion continues with the next bar that exists. A true range uses the previous existing bar's close.
 - **Minimum bars,** counted over the bars that exist since the data starts:
@@ -126,14 +128,14 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 
 **Entry:**
 - **When:** an entry starts only at a decision's own observation (§4), when that decision sets the mode to Uptrend, the pair is flat (§6) and the risk action is ALLOW (§7).
-  - If any of these fails there, or `d ≤ 0` (below), no entry starts before the next decision, which may try again.
+  - If any of these fails there, or `s ≤ 0` (below), no entry starts before the next decision, which may try again.
   - So a pair that becomes flat between decisions waits for the next one.
 - **How:** marketable buys at the taker fee, priced as variant D's: the ask × (1 + slippage), rounded up to the tick. Each is bounded by the participation limit on the ask size and by the exchange's precision.
 
 **Budget, set once when the entry starts:**
-- `budget = min(0.60 × active capital, 0.04 × active equity ÷ d)`, in USDT.
-- `d` = (p − initial stop) ÷ p, where p is the first entry quote's buy price.
-- **No entry starts when d ≤ 0,** that is, when the price is at or below the initial stop. That is not a stop-out, so no pause starts.
+- `budget = min(0.60 × active capital, 0.04 × active equity ÷ s)`, in USDT.
+- `s`, the stop distance, = (p − initial stop) ÷ p, where p is the first entry quote's buy price. (C5's `d` is the window's length in days, as in v1.)
+- **No entry starts when s ≤ 0,** that is, when the price is at or below the initial stop. That is not a stop-out, so no pause starts.
 - Active capital and active equity are spec v1's (the vault excluded).
 - A stop-out therefore costs about 4% of active equity before fees and slippage.
 - **A gap can cost more.** A price gap through the stop loses more than that, and C1 can fail on such a gap even with the 12% hard stop behind it. That is an expected failure mode, not a defect.
@@ -142,14 +144,15 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 - The entry buys at each quote until one of these ends it:
   - its budget is spent;
   - what remains buys less than the minimum notional;
-  - an exit (below) or a risk event (§7).
+  - an exit (below), or any risk action other than ALLOW (§7). Under a risk drain, what was bought is sold.
 - The budget and the stop stay as set when the entry started. The position is whatever was bought.
 - If the stop is reached during the entry, the entry ends and exit 1 sells what was bought.
 
 **The trailing stop:**
 - **Value:** the highest daily close since entry, minus 3 × ATR(14) on daily bars.
-- **First value:** set from the last completed daily close before entry and that day's ATR.
-- **Updates:** at each daily close, the stop becomes the larger of its previous value and (the highest daily close since entry − 3 × that day's ATR). It never moves down.
+- **First value:** `c0 − 3 × ATR`, where `c0` is the last completed daily close before entry and the ATR is that day's. The highest close starts at `c0`, so "since entry" includes it.
+- **Updates:** at each daily close, the highest close becomes the larger of itself and that close. The stop becomes the larger of its previous value and (the highest close − 3 × that day's ATR). It never moves down, and a shrinking ATR can raise it without a new high.
+- **Daily closes missed in a gap.** If one or more daily closes pass with no quote, they are processed in order at the first quote after them, after that quote's stop check. A close whose daily state is not Up ends the processing with exit 2. Each other close updates the highest close and the stop.
 
 **Exits.** Each one sells the whole position with marketable sells under the participation limit, and the remainder below the minimum notional stays as dust, as in v1:
 1. **The stop is reached:** the bid at an available minute's quote is at or below the stop.
@@ -200,11 +203,14 @@ Without this, every sell would re-create a buy, and the grid would never end.
 Risk events act exactly as in v1, in every mode, and win over the mode selector:
 - **New uptrend entries need a risk action of ALLOW,** as V0's new grids do. A soft-drawdown REDUCE, a PAUSE or an EXIT blocks them. So do a daily-loss pause, a halt, a hard stop and an emergency.
 - **A daily-loss PAUSE or a soft-drawdown REDUCE drains the account to flat, as in v1** (`PaperSimulator._pause`).
-  - The uptrend position is sold under the participation limit, and any entry stops.
+  - The uptrend position is sold under the participation limit, and any entry stops at once.
   - The position ends when it is sold, or when what remains is dust.
-  - The mode is decided afresh at the first decision after the pause clears.
-- **The hard stop and emergency exits** liquidate everything, which ends any uptrend position and entry.
-- **While halted,** the mode is Cash. After a restart, the mode is decided afresh at the next decision.
+- **Recovery before a new entry.** After such a drain, and after a restart from a halt, a new uptrend entry also waits for v1's recovery confirmations: `recovery_frames` (2) consecutive valid observations whose risk action is ALLOW. A frame gap restarts the count, as in v1.
+  - V0's grid eligibility is not part of this count, because it belongs to the grid. New grids keep v1's own recovery, which needs it.
+  - Decisions continue during the recovery, but no uptrend entry starts before it ends.
+  - v1's own rules still end a soft-drawdown episode and allow the automatic restart after a hard stop, and both need V0's eligibility (amendment 1). So the uptrend engine can wait on V0's eligibility through them.
+- **The hard stop and emergency exits** liquidate everything. The halt ends any uptrend position and entry at once, so no uptrend state survives it.
+- **While halted,** the mode is Cash. After a restart, the mode is decided afresh at the next decision, and an entry waits for the recovery above.
 
 ## 8. Evaluation
 
