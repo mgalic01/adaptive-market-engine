@@ -4,8 +4,10 @@
 [record](reviews/2026-10-05-claude-owner-decisions-test-plan.md), "Later decisions").
 - **The freeze condition is met.** This header made the freeze wait until Codex had
   reviewed the spec and the owner had confirmed the acceptance criteria in §6.
-  - **Codex's reviews.** Codex reviewed amendments 2 and 3 on #163, amendment 4 on #168
-    and the later spec edits on #170, each ending with no findings. Amendment 1 (#124)
+  - **Codex's reviews.** Codex approved the consolidated v1 draft on #16 (final review
+    at `9678365`, [record](reviews/2026-09-25-codex-pr16-final-review.md)). It reviewed
+    amendments 2 and 3 on #163, amendment 4 on #168 and the later spec edits on #170,
+    each ending with no findings. Amendment 1 (#124)
     went in while Codex was unavailable, and its review stayed owed (#134). Codex
     Desktop gave it before the freeze, as the owner required (decision 14): it reviewed
     amendment 1's text, code and tests at #171's head `c7a45f4` and found no issues
@@ -13,8 +15,10 @@
   - **The owner's criteria.** The owner confirmed C1–C6 on 2026-09-24 and amended C2
     on 2026-10-05.
   - **No open readings.** Every reading the spec had left open to the owner is now the
-    owner's decision (decisions 13 and 15–22). Only whether stage 2 also runs the
-    reported-only sensitivities is left for later, and those decide nothing.
+    owner's decision (decisions 13 and 15–22). The one choice left open to review, not
+    running the un-amended fixed V0, is settled at the freeze: v1 does not run it (§3,
+    V0). Only whether stage 2 also runs the reported-only sensitivities is left for
+    later, and those decide nothing.
 - **From now on,** a change requires a new version (v2), and results under v1 stay
   reported.
 - **Every variant is implemented on main**, the last of them by #170 (the full stack).
@@ -185,7 +189,8 @@ common to all:
   `N_family` includes. `exit-residue-v1` names the exit fix alone (PR #122); no V0
   result on it has been run or inspected. Running the un-amended fixed V0 is not planned,
   a choice made here and open to review; if it is ever run and inspected it is one
-  further trial and `N_family` gains one more.
+  further trial and `N_family` gains one more. *Settled at the freeze (2026-10-06):* v1
+  does not run it, so it adds no trial (Codex's review of #171).
 
 ### Range-exit clock paused during halts (amendment 3, owner decision 2026-10-02, D16)
 
