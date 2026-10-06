@@ -1,34 +1,37 @@
-# The reported long window: spec v1 section 4's frozen definition, run and reported only
-# (section 5 rule 6), never scored. Evaluation 2019-07 to 2024-12 (2,011 days). Nothing at
-# or after 2025-01 is read: the reserved window stays untouched (spec v1 section 7).
+# The scored long window: spec v1 section 4's frozen definition, which spec v2 section 8
+# applies. Evaluation 2019-01 to 2024-12 (2,192 days). Nothing at or after 2025-01 is
+# read: the reserved window stays untouched (spec v1 section 7).
 #
-# Hourly warm-up from 2019-01. Daily warm-up from 2018-07, which gives 365 completed daily
-# bars before the evaluation start, and P3 needs 200.
+# The name is #156's, whose dataset reached back to 2017. The warm-up is 2018-06 for
+# both hourly and daily bars: XRPUSDT's archives start on 2018-05-04, so a 2018-05
+# window fails the every-day check of P3. 2018-06 gives 214 completed daily bars before
+# the evaluation start, and P3 needs 200.
 #
 # Traded pairs: BTCUSDT, ETHUSDT, XRPUSDT. BTCUSDT is also the market proxy.
 #
 # Basket exclusions (from inclusive, to exclusive, whole UTC hours). Each listing
-# exclusion starts with this window's warm-up and ends at the symbol's first 1h candle;
-# section 4 lists them, with their reasons, in a table:
-#   SOLUSDT 2020-08-11T06:00Z, DOGEUSDT 2019-07-05T12:00Z, LINKUSDT 2019-01-16T10:00Z.
-# DOGEUSDT 2020-02 is section 5 rule 5. TRXUSDT, BNBUSDT and LTCUSDT are complete from
-# the warm-up. ADA is not in the basket.
+# exclusion ends at the symbol's first 1h candle; section 4 lists them, with their
+# reasons, in a table:
+#   SOLUSDT 2020-08-11T06:00Z, DOGEUSDT 2019-07-05T12:00Z, LINKUSDT 2019-01-16T10:00Z,
+#   TRXUSDT 2018-06-11T11:00Z.
+# DOGEUSDT 2020-02 is section 5 rule 5. BNBUSDT and LTCUSDT are complete from the
+# warm-up. ADA is not in the basket.
 #
 # BTCUSDT's funding archives (variant G) are listed in the manifest, not here: they
 # begin in 2020-01.
 #
 # These values are frozen by spec v1 section 4.
-name = "full-range-2019-2024"
-purpose = "reported long window (spec v1 section 4)"
+name = "full-range-2017-2024"
+purpose = "scored long window (spec v1 section 4, spec v2 section 8)"
 traded = ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
 market_proxy = "BTCUSDT"
 breadth_basket = [
   "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
   "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
 ]
-daily_warmup_start = "2018-07"
-warmup_start = "2019-01"
-start = "2019-07"
+daily_warmup_start = "2018-06"
+warmup_start = "2018-06"
+start = "2019-01"
 end = "2024-12"
 initial_quote = "100"
 # Default fee (Binance base rate); the fee scenarios override it with --maker-fee/--taker-fee.
@@ -39,21 +42,27 @@ assumed_spread_pct = "0.05"
 
 [[basket_exclusions]]
 symbol = "SOLUSDT"
-from = "2019-01-01T00:00Z"
+from = "2018-06-01T00:00Z"
 to = "2020-08-11T06:00Z"
 reason = "listing: SOLUSDT's first 1h candle is 2020-08-11T06:00Z"
 
 [[basket_exclusions]]
 symbol = "DOGEUSDT"
-from = "2019-01-01T00:00Z"
+from = "2018-06-01T00:00Z"
 to = "2019-07-05T12:00Z"
 reason = "listing: DOGEUSDT's first 1h candle is 2019-07-05T12:00Z"
 
 [[basket_exclusions]]
 symbol = "LINKUSDT"
-from = "2019-01-01T00:00Z"
+from = "2018-06-01T00:00Z"
 to = "2019-01-16T10:00Z"
 reason = "listing: LINKUSDT's first 1h candle is 2019-01-16T10:00Z"
+
+[[basket_exclusions]]
+symbol = "TRXUSDT"
+from = "2018-06-01T00:00Z"
+to = "2018-06-11T11:00Z"
+reason = "listing: TRXUSDT's first 1h candle is 2018-06-11T11:00Z"
 
 [[basket_exclusions]]
 symbol = "DOGEUSDT"

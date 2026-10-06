@@ -11,20 +11,40 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from crypto_grid_bot import SOURCE_HASHES, source_hash
-from crypto_grid_bot.backtest.dataset import DatasetSpec, load_manifest, load_spec
+from crypto_grid_bot.backtest.dataset import (
+    DatasetSpec,
+    is_funding,
+    load_manifest,
+    load_spec,
+    local_path,
+)
 from crypto_grid_bot.backtest.features import (
     FEATURE_VERSION,
     STRUCTURE_FEATURE_VERSION,
     FeatureEngine,
     SeriesFeatures,
 )
-from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
+from crypto_grid_bot.backtest.klines import (
+    Kline,
+    RepairedRead,
+    month_bounds_ms,
+    parse_rows_repaired,
+    read_archive_repaired,
+)
+from crypto_grid_bot.backtest.masking import (
+    MonthMask,
+    apply_seventeen_percent,
+    hourly_only_month_mask,
+    masked_days,
+    traded_month_mask,
+)
 from crypto_grid_bot.backtest.replay import (
     VOLUME_DRIFT_TOLERANCE,
     RunConfig,
@@ -86,6 +106,37 @@ def manifest_path(spec_path: Path) -> Path:
     return spec_path.with_name(spec_path.stem + ".manifest.json")
 
 
+# One mask per symbol (``SymbolMask.mask``); None loads with today's strict reader.
+Masks = Mapping[str, frozenset[int] | None]
+
+
+def exclusion_ranges(spec: DatasetSpec, symbol: str) -> list[tuple[int, int]]:
+    """The symbol's documented absences (``[[basket_exclusions]]``) as [start, end) ms."""
+    return [(e.start_ms, e.end_ms) for e in spec.basket_exclusions if e.symbol == symbol]
+
+
+def evaluation_bounds_ms(spec: DatasetSpec) -> tuple[int, int]:
+    """The evaluation months, ``start`` to ``end``, as [start, end) ms."""
+    return month_bounds_ms(spec.start)[0], month_bounds_ms(spec.end)[1]
+
+
+def hourly_window(spec: DatasetSpec) -> tuple[int, int]:
+    """The hourly warm-up and the evaluation months as [start, end) ms: the span the hourly
+    series checks and the daily/hourly check compare (``cross_check_job``)."""
+    return month_bounds_ms(spec.warmup_start)[0], evaluation_bounds_ms(spec)[1]
+
+
+def skipped_days_for_masks(spec: DatasetSpec, masked: frozenset[int]) -> int:
+    """How many days the pair's daily/hourly check skips for its ``masked`` hours (spec v1
+    §5 rule 3): the days holding a masked hour inside ``hourly_window``, exactly as
+    ``cross_check_job`` counts them in ``daily_days_skipped_for_masks``. Zero without daily
+    history (no ``daily_warmup_start``), since there is then no daily check."""
+    if not spec.daily_warmup_start:
+        return 0
+    start, end = hourly_window(spec)
+    return sum(1 for day in masked_days(masked) if start <= day < end)
+
+
 def variant_policy(variant: str | None, *, structure: bool = False) -> SimulationPolicy | None:
     """The policy of spec v1 variant ``variant`` (a name in ``VARIANTS``, such as "A" or
     "C+G"; None is V0), with the V2 structure features when ``structure``; the full
@@ -143,6 +194,7 @@ def prepare_run(
     basket: bool = True,
     structure: bool = False,
     fill_trigger: Decimal | None = None,
+    masks: Masks | None = None,
 ) -> PreparedRun:
     """The dataset, rules and features of one run, shared by the grid and variant-D jobs
     so that D's warm-up gate is built exactly as V0's.
@@ -154,6 +206,13 @@ def prepare_run(
     without them the features are V0's. ``fill_trigger`` overrides how far a quote must
     cross a resting limit, for the labelled missed-fill sweep only (D9); None keeps it
     at the spec's slippage, which exits and marks always pay.
+
+    ``masks`` maps a symbol to its mask (``mask_job``). Each symbol's mask applies to its
+    hourly bars: the pair's, the market proxy's and every basket member's, so the features
+    and ``hourly`` are post-mask. A symbol mapped to None, or absent, loads with today's
+    strict reader; a set, even an empty one, loads with the repairing reader and drops its
+    masked hours and documented absences (``replay.load_candles``). Daily bars are never
+    masked.
     """
     spec, config = load_spec(spec_path), load_config(config_path)
     manifest = load_manifest(manifest_path(spec_path))
@@ -168,16 +227,22 @@ def prepare_run(
         fill_trigger,
     )
     spread = spec.assumed_spread_pct / 100
-    pair_hourly = load_hourly(data_dir, manifest, symbol)
+    chosen = masks or {}
+
+    def hourly_of(s: str) -> list[Kline]:
+        return load_hourly(
+            data_dir, manifest, s, mask=chosen.get(s), excluded=exclusion_ranges(spec, s)
+        )
+
+    pair_hourly = hourly_of(symbol)
     pair = SeriesFeatures(symbol, pair_hourly)
     market = (
         pair
         if spec.market_proxy == symbol
-        else SeriesFeatures(spec.market_proxy, load_hourly(data_dir, manifest, spec.market_proxy))
+        else SeriesFeatures(spec.market_proxy, hourly_of(spec.market_proxy))
     )
     breadth = [
-        SeriesFeatures(s, load_hourly(data_dir, manifest, s), full=False)
-        for s in (spec.breadth_basket if basket else ())
+        SeriesFeatures(s, hourly_of(s), full=False) for s in (spec.breadth_basket if basket else ())
     ]
     # Daily bars are loaded only when the spec declares a daily_warmup_start.
     pair_daily = (
@@ -212,6 +277,7 @@ def run_job(
     policy: SimulationPolicy | None = None,
     *,
     fill_trigger: Decimal | None = None,
+    masks: Masks | None = None,
 ) -> dict[str, Any]:
     """``fees`` is (maker, taker) overriding the spec; taker None means maker.
 
@@ -220,7 +286,12 @@ def run_job(
     manifest for every evaluation month from 2020-01, where they begin. A variant's rows
     name it, and rows with the V2 structure features carry their feature version.
     ``fill_trigger`` is the missed-fill sweep's resting-fill trigger (D9, see
-    ``prepare_run``); the rows' ``rules`` then record it.
+    ``prepare_run``); the rows' ``rules`` then record it. ``masks`` is every symbol's
+    mask (see ``prepare_run``); the pair's also drops the minutes of its masked hours and
+    documented absences before the replay. None, or a pair it does not name, reads the
+    minutes exactly as today. The pair's own mask, and no other symbol's, is reported in
+    its row (spec v1 §5 rule 1): ``masked_hours``, ``days_skipped_for_masks`` and
+    ``fills_after_masked_span``, each only when non-zero (``replay.mask_report``).
     """
     structure = policy is not None and policy.structure
     prepared = prepare_run(
@@ -233,16 +304,25 @@ def run_job(
         fees,
         structure=structure,
         fill_trigger=fill_trigger,
+        masks=masks,
     )
-    run, minutes = prepared.run, load_minutes(data_dir, prepared.manifest, symbol)
+    spec, run = prepared.spec, prepared.run
+    mask = (masks or {}).get(symbol)
+    minutes = load_minutes(
+        data_dir,
+        prepared.manifest,
+        symbol,
+        mask=mask,
+        excluded=exclusion_ranges(spec, symbol),
+    )
     # Spec v1 §3 G: BTCUSDT's funding gates every pair. A manifest without its funding
     # archive for an evaluation month from 2020-01 on refuses a G run (load_funding).
-    spec = prepared.spec
     funding = (
         load_funding(data_dir, prepared.manifest, "BTCUSDT", spec.months(spec.start))
         if policy is not None and policy.funding_gate
         else None
     )
+    masked = mask or frozenset()
     metrics, account = replay(
         prepared.config,
         run,
@@ -252,6 +332,9 @@ def run_job(
         daily=prepared.daily,
         hourly=prepared.hourly,
         funding=funding,
+        window=evaluation_bounds_ms(spec),
+        masked=masked,
+        days_skipped_for_masks=skipped_days_for_masks(spec, masked),
     )
     version = STRUCTURE_FEATURE_VERSION if structure else FEATURE_VERSION
     problems = check_accounting(run, metrics, account)
@@ -263,25 +346,45 @@ def run_job(
 
 
 def cross_check_job(
-    spec_path: Path, data_dir: Path, symbol: str, strict_volume: bool = False
+    spec_path: Path,
+    data_dir: Path,
+    symbol: str,
+    strict_volume: bool = False,
+    *,
+    mask: frozenset[int] | None = None,
+    config_path: Path | None = None,
 ) -> dict[str, Any]:
+    """The symbol's pre-run checks, as one record, which the CLI writes whole.
+
+    ``mask`` is the symbol's ``SymbolMask.mask``. With a mask, the bars load with the
+    repairing reader less the masked hours and documented absences, and every check runs
+    on the post-mask expected set (spec v1 §5): the masked hours leave it, and the daily
+    check skips each day that holds one and counts it. The record then gains only
+    ``daily_days_skipped_for_masks``, when non-zero; no mask enters it. With None, the
+    record is today's. ``config_path`` is reserved for the tick-limit test (spec v1 §5
+    rule 8) and is not read yet.
+    """
     tolerance = Decimal(0) if strict_volume else VOLUME_DRIFT_TOLERANCE
     spec, manifest = load_spec(spec_path), load_manifest(manifest_path(spec_path))
-    hourly = load_hourly(data_dir, manifest, symbol)
-    window = (month_bounds_ms(spec.start)[0], month_bounds_ms(spec.end)[1])
+    # Only an untraded basket symbol may have documented absences; the proxy and the
+    # traded pairs must be complete (load_spec refuses an exclusion naming one of them).
+    excluded = exclusion_ranges(spec, symbol)
+    masked = mask or frozenset()
+    hourly = load_hourly(data_dir, manifest, symbol, mask=mask, excluded=excluded)
+    window = evaluation_bounds_ms(spec)
     if symbol in spec.traded:
-        minutes = load_minutes(data_dir, manifest, symbol)
-        result = {"symbol": symbol, **cross_check_hourly(minutes, hourly, window, tolerance)}
+        minutes = load_minutes(data_dir, manifest, symbol, mask=mask, excluded=excluded)
+        result = {
+            "symbol": symbol,
+            **cross_check_hourly(minutes, hourly, window, tolerance, masked=masked),
+        }
     else:
-        # No minute data: check the hours over warm-up and evaluation. Only a basket
-        # symbol may have documented absences; the proxy must be complete.
+        # No minute data: check the hours over warm-up and evaluation.
         proxy = symbol == spec.market_proxy
-        excluded = [(e.start_ms, e.end_ms) for e in spec.basket_exclusions if e.symbol == symbol]
-        hourly_window = (month_bounds_ms(spec.warmup_start)[0], window[1])
         result = {
             "symbol": symbol,
             "role": "market_proxy" if proxy else "breadth_basket",
-            **check_hourly_series(hourly, hourly_window, excluded),
+            **check_hourly_series(hourly, hourly_window(spec), excluded, masked=masked),
         }
     if spec.daily_warmup_start and symbol in {*spec.traded, spec.market_proxy}:
         daily = load_daily(data_dir, manifest, symbol)
@@ -289,11 +392,79 @@ def cross_check_job(
             daily,
             hourly,
             (month_bounds_ms(spec.daily_warmup_start)[0], window[1]),
-            (month_bounds_ms(spec.warmup_start)[0], window[1]),
+            hourly_window(spec),
             window[0],
             tolerance,
+            masked_days=masked_days(masked),
         )
     return result
+
+
+@dataclass(frozen=True)
+class SymbolMask:
+    """One symbol's mask (spec v1 §5 rules 1, 2 and 5, and the 17% rule).
+
+    ``mask`` is None when every 1m and 1h archive of the symbol in the window reads with
+    nothing repaired, dropped or untrusted and no hour is masked: the symbol then loads
+    with today's strict reader. Otherwise it is every masked hour, possibly none, and the
+    symbol loads with the repairing reader. ``months`` is the per-month table, for the
+    comparison mask and ``mask-report``.
+    """
+
+    symbol: str
+    mask: frozenset[int] | None
+    months: tuple[MonthMask, ...]
+
+
+def _untouched(read: RepairedRead) -> bool:
+    """Whether the repairing reader repaired, dropped and distrusted nothing, so that the
+    strict reader gives the same bars and statistics. Every dropped row puts its hour in
+    ``masked_hours``, so an empty ``masked_hours`` means that no row was dropped."""
+    return not (read.repaired or read.masked_hours or read.unreadable)
+
+
+def mask_job(spec_path: Path, data_dir: Path, symbol: str) -> SymbolMask:
+    """The symbol's mask over the window, read month by month with the repairing reader.
+
+    A traded pair's evaluation months are masked from both archives (rules 1 and 2), and
+    its hourly warm-up months from the 1h archive alone, as every month of an untraded
+    proxy or basket symbol is (rules 1 and 5). Each month uses the symbol's own documented
+    absences, and then the 17% rule. A month the manifest does not list as ok gives no
+    read: no bars, so its expected hours are masked. Only one month's bars are held at a
+    time.
+    """
+    spec, manifest = load_spec(spec_path), load_manifest(manifest_path(spec_path))
+    exclusions = [e for e in spec.basket_exclusions if e.symbol == symbol]
+    listed = {
+        (entry["interval"], entry["month"])
+        for entry in manifest["files"]
+        if not is_funding(entry) and entry["symbol"] == symbol and entry["status"] == "ok"
+    }
+    evaluation = set(spec.months(spec.start)) if symbol in spec.traded else set()
+    untouched = True
+    months = []
+
+    def read(interval: str, month: str) -> RepairedRead:
+        nonlocal untouched
+        if (interval, month) not in listed:
+            return parse_rows_repaired("", interval, month)  # no read: no bars
+        result = read_archive_repaired(
+            local_path(data_dir, symbol, interval, month), symbol, interval, month
+        )
+        untouched = untouched and _untouched(result)
+        return result
+
+    for month in spec.months():
+        hourly = read("1h", month)
+        if month in evaluation:
+            month_mask = traded_month_mask(read("1m", month), hourly, month, exclusions)
+        else:
+            month_mask = hourly_only_month_mask(hourly, month, exclusions)
+        month_mask = apply_seventeen_percent(month_mask)
+        untouched = untouched and not month_mask.masked
+        months.append(month_mask)
+    masked = frozenset().union(*(m.masked for m in months))
+    return SymbolMask(symbol, None if untouched else masked, tuple(months))
 
 
 # Every job module is loaded before the sources are hashed, so the identity covers all

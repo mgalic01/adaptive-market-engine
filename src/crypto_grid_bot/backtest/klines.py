@@ -214,8 +214,9 @@ class RepairedRead:
     ``stats`` are ``parse_rows``'s, computed over the kept ``bars`` (equal to the strict
     parser's when no row was dropped). ``repaired`` holds the opens of kept rows whose
     close time was repaired. ``masked_hours`` holds the opens of the hours that contain an
-    untrusted row: the row is dropped, but its hour is the caller's to mask, and it may lie
-    outside the month for a row outside the month. ``unreadable`` is "" when the archive
+    untrusted row; the row is dropped, and each of those hours inside the month is the
+    caller's to mask. The hour of a row outside the month lies outside the month and never
+    counts; the row is dropped. ``unreadable`` is "" when the archive
     could be read, else why not; the archive then has no bars and no masked hours, so all
     its hours are absent.
     """
