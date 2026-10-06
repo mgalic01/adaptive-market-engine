@@ -326,7 +326,8 @@ def step_trace() -> Iterator[StepTrace]:
     """Wrap ``PaperSimulator.step`` so that every step taken inside the block is traced.
     The wrapper forwards whatever arguments it is given and finds the account among them
     by the name ``step`` gives it, so a change to ``step``'s other parameters, or to how a
-    caller passes them, cannot break the check."""
+    caller passes them, does not break the check. Renaming or removing the ``account``
+    parameter still fails every traced step at once, with a ``KeyError``."""
     trace = StepTrace()
     original = PaperSimulator.step
     signature = inspect.signature(original)
