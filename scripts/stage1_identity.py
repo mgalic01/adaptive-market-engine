@@ -1,6 +1,6 @@
 """Stage-1 identity check: a re-run of stage 1 must leave every results.json unchanged.
 
-    python scripts/stage1_identity.py <stage-1 results dir> <re-run results dir>
+    python scripts/stage1_identity.py <stage-1 results dir> <re-run results dir> [--expect N]
 
 Spec v1 section 6, "Two stages" (owner decision 2026-10-05; decision 18 in the test-plan
 record): the data-handling code that lands between the stages must leave every stage-1
@@ -22,19 +22,22 @@ it, so the path is not part of the key. The two key sets must be equal, with no 
 on one key on either side, and every file must be readable as a backtest ``results.json``.
 Otherwise the check fails before it compares anything, naming each missing, extra or
 duplicate key and each unreadable file, so a re-run that lost a download cannot pass on
-the files that remain. An empty side fails too. The script does not assume 24 files: it
-prints the count, which a person checks against stage 1's 24.
+the files that remain. An empty side fails too. The script does not assume a count unless
+told: it prints the count, and ``--expect N`` fails the inventory when either side holds
+other than N files, naming each count. Stage 1 had 24 (``--expect 24``); without the
+flag, a download set and a re-run that lost the same file alike would still match.
 
 **Then each pair.** The two documents must be equal once the top-level ``code_commit`` and
 ``code_sha256`` are set aside: every value, with its JSON type (``1`` is not ``1.0``), and
 every field and list item, in list order. The order of a document's keys is not compared.
 Nothing else is exempt: not ``spec_sha256``, ``manifest_sha256`` or ``config_sha256``, and
-not a nested field of the same name. The mask-report fields of spec v1 section 5, rule 1
-(``MASK_FIELDS``) fail wherever they appear, at any depth and on either side, whatever
-their value: stage 1 predates them, and the plan has a run write each one only when it is
-non-empty or non-zero (Plan 2, Global Constraints), so a clean stage-1 re-run has none.
-Spec section 6 leaves them out of the comparison as long as they are empty or zero; this
-check does not leave them out, and fails on any, as the plan's "no new mask field" says.
+not a nested field of the same name. The six fields the long-window plan adds (spec v1
+section 5 rules 1, 3 and 8; ``MASK_FIELDS``) fail wherever they appear, at any depth and
+on either side, whatever their value: stage 1 predates them, and the plan has a run write
+each one only when it is non-empty or non-zero (Plan 2, Global Constraints), so a clean
+stage-1 re-run has none. Spec section 6 leaves them out of the comparison as long as they
+are empty or zero; this check does not leave them out, and fails on any, as the plan's
+"no new mask field" says.
 
 Prints ``<key> IDENTICAL|DIFFERENT`` for each pair, with what differs indented beneath a
 different pair (at most ``MAX_SHOWN`` lines and a count of the rest), and then ``ALL
@@ -128,8 +131,11 @@ def scan(root: Path, side: str) -> tuple[dict[Key, list[Path]], list[str]]:
     return found, problems
 
 
-def inventory_problems(stage1: dict[Key, list[Path]], rerun: dict[Key, list[Path]]) -> list[str]:
-    """Duplicate keys on either side, and the keys on one side only."""
+def inventory_problems(
+    stage1: dict[Key, list[Path]], rerun: dict[Key, list[Path]], expect: int | None = None
+) -> list[str]:
+    """Duplicate keys on either side, the keys on one side only, and with ``expect`` a
+    side that does not hold that many files."""
     problems = [
         f"two files with one key in {side}: {key}: {', '.join(map(str, paths))}"
         for side, found in ((STAGE1, stage1), (RERUN, rerun))
@@ -144,6 +150,12 @@ def inventory_problems(stage1: dict[Key, list[Path]], rerun: dict[Key, list[Path
         f"extra in the re-run: {key} ({rerun[key][0]})"
         for key in sorted(rerun.keys() - stage1.keys())
     ]
+    if expect is not None:
+        problems += [
+            f"expected {expect} results.json files in {side}, found {len(found)}"
+            for side, found in ((STAGE1, stage1), (RERUN, rerun))
+            if len(found) != expect
+        ]
     return problems
 
 
@@ -210,12 +222,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("stage1", type=Path, help="directory of stage 1's results.json files")
     parser.add_argument("rerun", type=Path, help="directory of the re-run's results.json files")
+    parser.add_argument(
+        "--expect",
+        type=int,
+        metavar="N",
+        help="fail the inventory unless each side holds N results.json files (stage 1: 24)",
+    )
     args = parser.parse_args(argv)
     stage1, problems = scan(args.stage1, STAGE1)
     rerun, rerun_problems = scan(args.rerun, RERUN)
     problems += rerun_problems
     if stage1 and rerun:  # an unreadable side is already explained; its keys are not "missing"
-        problems += inventory_problems(stage1, rerun)
+        problems += inventory_problems(stage1, rerun, args.expect)
     if problems:
         for problem in problems:
             print(f"  {problem}", file=sys.stderr, flush=True)

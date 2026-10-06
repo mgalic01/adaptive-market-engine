@@ -31,7 +31,8 @@ Document = dict[str, Any]
 DATASETS = ("practice-2022", "verify-2024h1")
 # Stage 1's inputs per dataset: V0 (no policy key), variants, and the V2 structure runs.
 INPUTS = [(None, False), ("A", False), ("C+G", False), (None, True), (FULL_STACK, True)]
-# The six fields spec v1 section 5 rule 1 adds; the controller's ruling names them.
+# The six fields the long-window plan adds (spec v1 section 5 rules 1, 3 and 8); the
+# controller's ruling names them.
 MASK_FIELDS = (
     "masked_hours",
     "days_skipped_for_masks",
@@ -125,9 +126,9 @@ class Result(NamedTuple):
         return f"{self.out}{self.err}"
 
 
-def run_main(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Result:
+def run_main(tmp_path: Path, capsys: pytest.CaptureFixture[str], *options: str) -> Result:
     """The script on ``tmp_path``'s ``stage1`` and ``rerun`` directories."""
-    code = stage1_identity.main([str(tmp_path / "stage1"), str(tmp_path / "rerun")])
+    code = stage1_identity.main([str(tmp_path / "stage1"), str(tmp_path / "rerun"), *options])
     captured = capsys.readouterr()
     return Result(code, captured.out, captured.err)
 
@@ -137,11 +138,12 @@ def check(
     stage1: list[Document],
     rerun: list[Document],
     capsys: pytest.CaptureFixture[str],
+    *options: str,
 ) -> Result:
     """Write the two sides, one results.json per document, and run the script on them."""
     write_side(tmp_path / "stage1", stage1, nested=True)
     write_side(tmp_path / "rerun", rerun)
-    return run_main(tmp_path, capsys)
+    return run_main(tmp_path, capsys, *options)
 
 
 def key(doc: Document) -> str:
@@ -498,6 +500,44 @@ def test_a_duplicate_names_both_files(tmp_path: Path, capsys: pytest.CaptureFixt
     assert result.code == 1
     assert str(tmp_path / "rerun" / "r0" / "results.json") in result.err
     assert str(tmp_path / "rerun" / "r10" / "results.json") in result.err
+
+
+# --- --expect N: the count is asserted only when asked ----------------------------------
+
+
+def test_expect_passes_when_the_count_matches(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage1 = stage1_documents()
+    result = check(tmp_path, stage1, rerun_of(stage1), capsys, "--expect", "10")
+    assert result.code == 0, result.everything
+    assert result.lines[-1] == "ALL IDENTICAL"
+    assert result.err == ""
+
+
+@pytest.mark.parametrize(
+    ("lost", "expect"),
+    [
+        (1, 10),  # both sides lost the same file: equal key sets, but 9 is not 10
+        (0, 11),  # nothing lost, but the caller expected one more than exists
+    ],
+)
+def test_expect_fails_when_the_count_differs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], lost: int, expect: int
+) -> None:
+    stage1 = stage1_documents()
+    rerun = rerun_of(stage1)
+    for _ in range(lost):
+        stage1.pop(3)
+        rerun.pop(3)  # the same file: the key sets stay equal
+    present = len(stage1)
+    result = check(tmp_path, stage1, rerun, capsys, "--expect", str(expect))
+    assert result.code == 1, result.everything
+    assert result.err.splitlines() == [
+        f"  expected {expect} results.json files in stage 1, found {present}",
+        f"  expected {expect} results.json files in the re-run, found {present}",
+    ]
+    assert result.lines == ["INVENTORY DIFFERS"]  # nothing was compared
 
 
 # --- an inventory that cannot be read fails, and so does an empty one ------------------
