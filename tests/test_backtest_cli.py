@@ -215,15 +215,18 @@ class CliIntegrityTests(unittest.TestCase):
         )
         cases = [({field: 2}, f"BTCUSDT: {field}=2") for field in sorted(own)]
         cases += [({"daily_days_compared": 0}, "BTCUSDT: no daily bars compared")]
-        for fields, reason in cases:
+        for number, (fields, reason) in enumerate(cases):
             with self.subTest(fields=fields):
+                # A run's directory is stamped to the second, so each case writes to its own
+                # output: cases that straddle a second must not leave two results.json here.
+                out = Path(self.temp.name) / f"case{number}"
                 self.replays.clear()
                 self.overrides = {"BTCUSDT": {**daily, **fields}}
                 self.assertEqual(0, self.main("verify", "--spec", practice))
-                self.assertEqual(0, self.main("run", "--spec", practice))
+                self.assertEqual(0, self.main("run", "--spec", practice, "--out", str(out)))
                 self.assertEqual({"SOLUSDT", "XRPUSDT"}, set(self.replays))
                 self.assertEqual(8, len(self.replays))  # 2 pairs x 2 paths x gated and ungated
-                (written,) = Path(self.temp.name).rglob("results.json")
+                (written,) = out.rglob("results.json")
                 document = json.loads(written.read_text())
                 self.assertEqual((True, []), (document["valid"], document["failures"]))
                 self.assertEqual({"BTCUSDT": [reason]}, document["excluded_pairs"])
