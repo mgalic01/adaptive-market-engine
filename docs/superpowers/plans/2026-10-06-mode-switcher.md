@@ -19,7 +19,7 @@
 - **V0 and every v1 variant stay byte-identical** (spec v2 §9). All new behaviour sits behind `SimulationPolicy.mode_switch`:
   - `Frame.perception` defaults to `None` and is dropped from `Frame.payload()` when `None`;
   - the new `Account` fields are runtime-only and never saved (`to_dict`).
-  - After each task, the controller's `scratchpad/runall.sh` (Claude's session scratchpad, not the repository) reproduces main's V0, A, B and C SHA-256s on its three synthetic datasets, `sb-up`, `sb-down` and `sb-nod` (Task 5, step 4). The `--structure` runs are identical apart from provenance.
+  - After each task, `python scripts/byte_identity.py check` (Task 0) reproduces main's baseline SHA-256s for V0, the two `--structure` runs, and A, B and C. It runs on three synthetic datasets built from a fake archive, with no network, so any reviewer can run it.
 - **Replay-only.** `PaperSimulator.process` refuses a paper account whose policy has `mode_switch`, as it refuses E and F.
 - **Exact thresholds** (spec v2 §3–§5):
 
@@ -29,7 +29,7 @@
   | Trend states | ADX ≥ 20 for Up and Down; < 20 for Range |
   | Grid | RSI 35 ≤ r ≤ 65; 1h ADX < 20; width ≤ median; 4 consecutive RANGE decisions |
   | Uptrend | daily RSI < 75 |
-  | Uptrend engine | risk 0.04; cap 0.60; stop 3 × daily ATR; re-entry pause 86 400 s after a stop-out only |
+  | Uptrend engine | risk 0.04; cap 0.60; stop 3 × daily ATR; re-entry pause 86 400 000 ms (24 h, exactly 24 h allowed) after a stop-out only |
 
 - **Point-in-time.** A bar of length L that opens at `o` is visible only at times `t ≥ o + L`. At time `t`, the bar that should have closed last opens at `t // L * L − L`.
 - **Gaps** (spec v2 §3). Indicators run over the bars that exist, skipping missing and masked bars without resetting. A timeframe is unavailable when its should-have-closed-last bar is absent, or when a needed indicator lacks its minimum bars.
@@ -45,6 +45,29 @@
 5. **The daily bar missing at a daily close while holding.** No new bar arrives, so the snapshot keeps the old `d1_open_ms`. Exit 2 still fires at the day boundary (fail closed). This path is defensive: a missing daily bar excludes the pair-window (spec v2 §3), so no included run reaches it. Pinned in Task 5, `test_unavailable_daily_state_triggers_trend_fade_exit`.
 
 ---
+
+### Task 0: The byte-identity check, in the repository
+
+**Files:**
+- Create: `scripts/byte_identity.py`
+- Create: `scripts/byte_identity_baseline.json`
+- Test: `tests/test_byte_identity_script.py`
+
+**Interfaces:**
+- **Produces:** `python scripts/byte_identity.py check`, which prints one line per run (`<run> <sha256> IDENTICAL|DIFFERENT`), then `ALL IDENTICAL` or `SOME DIFFER`, and exits 0 only when all match. `python scripts/byte_identity.py record` rewrites the baseline file from the current tree.
+- **The runs** (the controller's scratchpad harness, `strat_bytecheck.py` with `btmerge_bytecheck.py`'s `FakeArchive`, ported):
+  - **three synthetic datasets,** built through `dataset.fetch_dataset` from a fake archive, with no network, in a temporary directory. The price is the harness's random walk × `exp(drift × days since the start)`. `up` has drift 0, `down` has drift −0.004 per day, and `nod` has drift 0 and no daily history;
+  - **deterministic archives:** each zip entry gets a fixed `ZipInfo` date (1980-01-01 00:00:00). The scratchpad's `FakeArchive` stamps the wall-clock time, so its archives, manifests and `results.json` change with every build;
+  - **the CLI runs:** `main()` in-process, with the process pool replaced by an inline executor, on `up`, `down` and `nod`, and with `--structure` on `up` and `down`;
+  - **the variant runs:** A on `up`, B on `up` and C on `down`, through `run_job(policy=...)` for all four path and gated cases. `results` maps `<variant>-<path>-<gated|ungated>` to the row, with its `"variant"` key dropped;
+  - **the hashes cover the engine's output only:** SHA-256 over `json.dumps(document, sort_keys=True, default=str)`, with the identity keys `spec_sha256`, `manifest_sha256`, `config_sha256`, `code_commit` and `code_sha256` set aside wherever they appear.
+- **The baseline:** recorded with `record` from main, at the commit this task branches from, before any v2 code. The controller also checks once that the port's engine output equals the scratchpad harness's on main, with the same keys set aside. The scratchpad's own whole-file hashes (`bdb47225…` and the rest) cannot carry over, because its archives were stamped at build time.
+
+- [ ] **Step 1: Write the failing test** `test_byte_identity_dataset_builder_is_deterministic`: building the `nod` dataset twice in two temporary directories gives byte-identical archives and manifests.
+- [ ] **Step 2: Run it.** Expected: FAIL, the script does not exist yet.
+- [ ] **Step 3: Port the harness** into `scripts/byte_identity.py`. It must pass `ruff`, `mypy` and `bandit` like the rest of `scripts/`.
+- [ ] **Step 4: Run `python scripts/byte_identity.py record` on main's code, then `check`.** Expected: `ALL IDENTICAL`. The controller then compares the port's engine output with the scratchpad harness's on main (the step above).
+- [ ] **Step 5: Commit** `test: byte-identity check for V0 and the v1 variants, in the repository`.
 
 ### Task 1: Gap-aware indicators
 
@@ -177,7 +200,7 @@ def test_rolling_median_skips_none_and_averages_even_middle():
 - [ ] **Step 4: Run `pytest tests/test_mode_selector.py -v`.** Expected: PASS.
 - [ ] **Step 5: Commit** `feat: spec v2 mode selector with every threshold pinned`.
 
-*Open Tasks 1–3 as one PR (spec §9 steps 3–4) to Codex and Bob.*
+*Open Tasks 0–3 as one PR (spec §9 steps 3–4) to Codex and Bob.*
 
 ### Task 4: Market buy and the uptrend arithmetic
 
@@ -189,7 +212,7 @@ def test_rolling_median_skips_none_and_averages_even_middle():
 **Interfaces:**
 - **Produces, in `execution.py`:**
   - `buy_price(quote: Quote, rules: MarketRules) -> Decimal`: ask × (1 + slippage), rounded up to the tick, the same rule as `trend_benchmark.buy_price`;
-  - `market_buy(account: Account, quote: Quote, rules: MarketRules, *, budget: Decimal) -> Fill | None`. Its quantity is `min(floor_step(ask_size × participation), floor_step(budget ÷ (price × (1 + taker))))`. It returns `None` when the price × quantity is below the minimum notional. The fill is applied with `_apply_fill` under order id `"uptrend/buy/" + quote.event_id` at the taker fee.
+  - `market_buy(account: Account, quote: Quote, rules: MarketRules, *, budget: Decimal) -> Fill | None`. Its quantity is `min(floor_step(ask_size × participation), affordable)`, where `affordable = floor_step(budget ÷ (price × (1 + taker)))`, lowered one `quantity_step` at a time while `affordable × price × (1 + taker) > budget`. That is `trend_benchmark.entry_quantity`'s guard against a quotient rounded up at the last digit. It returns `None` when the price × quantity is below the minimum notional. The fill is applied with `_apply_fill` under order id `"uptrend/buy/" + quote.event_id` at the taker fee.
 - **Produces, in `uptrend.py`:**
   - `RISK_FRACTION = D("0.04")`, `CAPITAL_CAP = D("0.60")`, `ATR_MULTIPLE = D(3)`;
   - `entry_budget(active_capital: Decimal, active_equity: Decimal, price: Decimal, stop: Decimal) -> Decimal | None`, which is `None` when the stop distance `s <= 0`;
@@ -215,12 +238,44 @@ def test_buy_price_matches_trend_benchmark(quote, rules):
     assert execution.buy_price(quote, rules) == trend_benchmark.buy_price(quote, rules)
 
 
-def test_market_buy_bounds():
-    # participation bound, budget bound, minimum notional -> None, fee = taker * notional
-    ...  # assert each with a fixture Quote/MarketRules and exact quantities
-```
+RULES = MarketRules(
+    symbol="BTCUSDT",
+    tick_size=D("0.01"),
+    quantity_step=D("0.001"),
+    minimum_notional=D("5"),
+    fee_rate=D("0"),
+    slippage_rate=D("0"),
+    participation=D("0.10"),
+    taker_fee_rate=D("0.0009"),
+)
+T0 = "2024-01-01T00:00:00+00:00"
 
-  Write the `...` as three explicit cases with exact quantities. Use `rules.participation = D("0.10")`, `ask_size = D(5)`, `quantity_step = D("0.001")`, and a budget of 40 USDT.
+
+def quote(ask_size):
+    return Quote("e1", "BTCUSDT", T0, T0, D("99.99"), D("100"), D(5), ask_size)
+
+
+def test_market_buy_bounds():
+    # The price is 100 and the all-in unit cost 100.09.
+    # Participation: 2 x 0.10 = 0.2 is below the budget's 40 / 100.09 -> 0.399.
+    fill = execution.market_buy(Account.start(D(100)), quote(D(2)), RULES, budget=D(40))
+    assert (fill.price, fill.quantity, fill.fee) == (D(100), D("0.2"), D("0.018"))
+    # Budget: 5 x 0.10 = 0.5 is above 0.399.
+    fill = execution.market_buy(Account.start(D(100)), quote(D(5)), RULES, budget=D(40))
+    assert (fill.quantity, fill.fee) == (D("0.399"), D("0.03591"))
+    # Minimum notional: 4 / 100.09 -> 0.039, and 0.039 x 100 = 3.9 < 5.
+    assert execution.market_buy(Account.start(D(100)), quote(D(5)), RULES, budget=D(4)) is None
+
+
+def test_market_buy_never_spends_more_than_its_budget():
+    # 1E-55 below 0.4 x 100.09: the quotient rounds up to 0.4 at precision 50,
+    # and 0.4 would cost 40.036, so the guard lowers it to 0.399.
+    with localcontext() as context:
+        context.prec = 80
+        budget = D("40.036") - D("1E-55")
+    fill = execution.market_buy(Account.start(D(100)), quote(D(5)), RULES, budget=budget)
+    assert fill.quantity == D("0.399")
+```
 - [ ] **Step 2: Run `pytest tests/test_uptrend.py -v`.** Expected: FAIL.
 - [ ] **Step 3: Implement both modules.** `trend_benchmark.py` is not modified, which keeps D byte-identical.
 - [ ] **Step 4: Run `pytest tests/test_uptrend.py tests/test_trend_benchmark*.py -v`.** Expected: PASS.
@@ -251,13 +306,13 @@ def test_market_buy_bounds():
     - `uptrend: UptrendPosition | None = None`;
     - `uptrend_stopped_ms: int | None = None`, set at the observation where exit 1 first triggers;
     - `risk_recovery: bool = False` and `risk_recovery_count: int = 0`. The flag is set when `_risk_action` pauses on PAUSE or REDUCE, and when `_clear_halt` restarts the account. It is cleared after `policy.recovery_frames` consecutive valid frames whose action is ALLOW, counted without V0's eligibility. Any other action, a transient frame, or a frame gap over `maximum_frame_gap_seconds` resets the count (spec v2 §7, "Recovery before a new entry");
-    - `winding_down: bool = False`, set when the mode leaves Grid with grid orders open, and cleared once the grid has ended.
+    - `winding_down: bool = False`, set when the mode leaves Grid with grid orders open. It is cleared once the grid has ended, or when a decision sets the mode back to Grid first, which lifts the wind-down as F's block lifts (spec v2 §6, "Returning to Grid before it ends").
   - **The halt transition:** whenever `_step` reaches its halt branch with uptrend state, it ends that state before the liquidation: `account.uptrend = None`, `account.mode = "cash"` and `winding_down = False`. v1's liquidation then sells everything (spec v2 §7).
   - **`PaperSimulator._decide_mode(account, frame, regime) -> None`,** run at the first frame of each new UTC hour whenever the account is not halted, in the range-exit branch too, so that v1's re-centring cooldown holds back only new grids (spec v2 §6). It:
     - updates `range_decisions`, resetting it when the previous decision hour is not `hour − 1`;
     - holds the mode while `account.uptrend` exists;
     - otherwise sets `account.mode = select_mode(...)`, and marks this frame as a decision frame;
-    - sets `winding_down` when the mode leaves Grid with grid orders open.
+    - sets `winding_down` when the mode leaves Grid with grid orders open, and clears it when a decision returns to Grid before the grid has ended.
   - **`PaperSimulator._uptrend_step(account, frame, action) -> None`,** run on every frame while the account is not halted, after `_decide_mode` and before the branch's own selling. It updates the recovery count, then works through a held position, then the entry, in this order:
     1. **Exit 1:** `bid <= stop`, recording `uptrend_stopped_ms` at the first trigger.
     2. **Every daily close not yet processed:** each point in `d1_points` after the one at `stop_day_ms`, up to `d1_index`, in order. A point whose state is not UP exits 2 and ends the processing. Each other point sets `highest_close = max(highest_close, point.close)`, then `stop = trailed_stop(stop, highest_close, point.atr)`, and moves `stop_day_ms` to it. Usually that is one point, at the first frame after midnight. After a quote gap, it is every close the gap crossed (spec v2 §5).
@@ -290,6 +345,7 @@ def test_market_buy_bounds():
   - `test_stop_exit_then_24h_reentry_pause`
   - `test_grid_to_uptrend_winds_down_without_reentry_and_waits_until_flat`
   - `test_grid_to_cash_winds_down_without_reentry`
+  - `test_return_to_grid_lifts_the_wind_down`: after one hour out of Grid and a return, a filled sell creates its re-entry buy again, and the buys cancelled during the wind-down are not restored
   - `test_no_new_grid_unless_mode_is_grid`
   - `test_daily_loss_pause_and_soft_reduce_drain_the_uptrend_position_to_flat`
   - `test_risk_drain_ends_a_partial_entry_at_once`: a PAUSE mid-entry stops the buys on that frame, and the drain sells what was bought
@@ -304,7 +360,7 @@ def test_market_buy_bounds():
 - [ ] **Step 3: Implement the fields, the policy validation and the three methods,** then hook them into `_step` as listed in Interfaces. When `mode_switch` is off, no existing line's behaviour changes.
 - [ ] **Step 4: Run all the tests and the byte checks:**
   - `pytest -q`. Expected: every test passes.
-  - `sh scratchpad/runall.sh <tree> ms5 sb-up:cli sb-down:cli sb-nod:cli sb-up:cli:--structure sb-down:cli:--structure sb-up:A sb-up:B sb-down:C`. Expected: each run equals main's baseline SHA-256: `sb-up:cli` `bdb47225…`, `sb-down:cli` `d70ac015…` and `sb-nod:cli` `09f6abe1…` (V0), `sb-up:A` `3001a0e9…`, `sb-up:B` `2089da3d…` and `sb-down:C` `f5c8c6b1…`. The two `--structure` runs match main's apart from provenance (`cmp163.py`).
+  - `python scripts/byte_identity.py check` (Task 0). Expected: `ALL IDENTICAL`, meaning that every V0, `--structure`, A, B and C run equals main's recorded baseline.
 - [ ] **Step 5: Commit** `feat: spec v2 mode switcher in the paper simulator (replay only)`.
 
 *Open Tasks 4–5 as one PR (spec §9 step 5).*
@@ -324,6 +380,8 @@ def test_market_buy_bounds():
 - **Produces:**
   - **In `replay()`:** when `policy.mode_switch`, it raises `ValueError("the mode switcher needs the pair's hourly and daily history")` if either is missing, builds `Perception(hourly, daily)` once, and passes `perception=perception.at(kline.open_ms)` on every frame.
   - **`Metrics` fields,** filled only for MS: `mode_minutes: Counter[str]`, `mode_switches: int`, `uptrend_trades: int`, `uptrend_stops: int`, `uptrend_fades: int`.
+    - `uptrend_trades` counts completed round trips for C5 (spec v2 §8): one per position, when it ends after an exit (Task 5, step 6, dust included), or at a halt once the liquidation has sold it. A position still held or entering at the end is not counted.
+    - `uptrend_stops` and `uptrend_fades` count exits 1 and 2 when they trigger. They are reported only.
   - **In `summarise`:** MS rows carry `row["variant"] = "MS"` and `row["modes"] = {"minutes": {...}, "switches": n, "uptrend_trades": n, "stops": n, "fades": n, "grid_cycles": metrics.completed_cycles}`.
   - **The end of the run:** for MS, `held` is F's held fragments, as today, plus `simulator.uptrend_held(account)`. So a run ending in a blocked grid keeps F's exemption, a held position or an entry in progress is not owed, and an exit or risk drain under way is owed, as in v1 (spec v2 §6).
   - **`row["modes"]["buy_and_hold_final"]`:** `str(metrics.hold_final)`, so the scorer can end the last month exactly (Task 7).
@@ -333,13 +391,13 @@ def test_market_buy_bounds():
   - `test_mode_switch_cli_maps_to_policy`, in the CLI suite with the fake `run_job`.
   - `test_rising_market_enters_uptrend_and_trails_out`, on synthetic hourly, daily and minute bars, 300 days of steady rise and then a 15% drop. It asserts one uptrend trade, a stop exit, and `row["modes"]["stops"] == 1`.
   - `test_flat_market_runs_grids_in_grid_mode`, which asserts `grid_cycles > 0` and Uptrend minutes of 0.
-  - `test_run_ending_in_uptrend_is_valid_and_marked_at_exit_value` (Review Focus 2), which asserts `valid`, the absence of any "incomplete" failure, and final equity = cash + quantity × the exit mark.
+  - `test_run_ending_in_uptrend_is_valid_and_marked_at_exit_value` (Review Focus 2), which asserts `valid`, the absence of any "incomplete" failure, final equity = cash + quantity × the exit mark, and `row["modes"]["uptrend_trades"] == 0`.
   - `test_run_ending_in_a_blocked_grid_keeps_f_fragments_held`: an MS run that ends in Grid mode with F fragments is not incomplete.
   - `test_run_ending_mid_exit_is_incomplete_as_in_v1`: an exit 1 whose sells the participation limit has not finished by the end leaves the run incomplete.
   - `test_every_variant_choice_maps_to_a_cli_flag`, in `tests/test_backtest_workflow.py`: it loads `backtest.yml` with `yaml`, and asserts that every `variant` choice except V0 has a case arm, and that MS's arm adds `--mode-switch`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement the wiring and the reporting,** and write the method doc's section. It covers what an MS row records, and how to run the mode switcher with `--mode-switch`.
-- [ ] **Step 4: Run `pytest -q` and the byte checks of Task 5, step 4.** Expected: everything passes, with the same SHA-256s.
+- [ ] **Step 4: Run `pytest -q` and `python scripts/byte_identity.py check`.** Expected: everything passes, and `ALL IDENTICAL`.
 - [ ] **Step 5: Commit** `feat: wire the mode switcher into replay, rows and the CLI`.
 
 ### Task 7: The spec v2 scorer
@@ -353,6 +411,7 @@ def test_market_buy_bounds():
 - **Produces:**
   - `SCORING = "spec-v2-section-8"`, `ROUND_TRIPS_PER_YEAR = 12`, `GATE_SHARE = Fraction(3, 5)`, and `SCORED = ("full-range-2017-2024",)`, with `REPORTED = ("practice-2022", "verify-2024h1")`;
   - `round_trips(row: dict[str, Any]) -> int`, which is `row["modes"]["grid_cycles"] + row["modes"]["uptrend_trades"]`;
+  - **the expected matrix:** every included pair of the scored window (`window_of`) × both paths. Each MS key with no row is passed to `integrity` as missing, so C4 fails, as v1's scorer treats a missing run. Each F key with no row counts against C6 (above);
   - `activity_v2(runs: Sequence[Run], trips: Mapping[str, int]) -> Criterion`, where each run's rate is `Fraction(trips[run.label]) * YEAR_DAYS / run.days` and the mean is exact;
   - `earns_its_place(ms: Sequence[Run], always_grid: Mapping[tuple[str, str], Run]) -> Criterion`:
     - a run passes only when its `return_pct` is > 0 (annualising keeps the sign) and its annualised ratio, `gate_ratio(run.annualised.value, run.max_drawdown_pct)`, beats F's, computed the same way, in the same pair and path;
@@ -372,6 +431,7 @@ def test_market_buy_bounds():
 
 - [ ] **Step 1: Write the failing tests:**
   - `test_activity_threshold_inclusive`: exactly 12 round trips a year passes, and 11.99 fails.
+  - `test_a_missing_ms_run_fails_c4`: a results set with exactly one MS pair and path missing fails C4, and the missing key is named.
   - `test_gate_needs_positive_return_and_beats_always_grid`
   - `test_gate_uses_annualised_returns_and_counts_a_missing_or_invalid_always_grid_against`, with `days = 2192`:
     - the run returns 10% with a 5% drawdown, and F returns 20% with 9.9%;

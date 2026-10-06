@@ -122,7 +122,7 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 
 **Entering versus staying.** The rules above decide which mode a pair *enters*.
 - **An uptrend position:** once the pair holds one, the pair stays in Uptrend until one of §5's exits has finished. The selector does not re-decide its mode in between, so a 4h state that stops being Up does not by itself sell the position.
-- **An open grid:** it continues by v1's rules when the mode leaves Grid. Only new grids need the Grid conditions.
+- **An open grid:** when the mode leaves Grid, it winds down (§6). It keeps its resting sells, places no buy, and ends by v1's own exits. If the mode returns to Grid first, it resumes. Only new grids need the Grid conditions.
 
 ## 5. The uptrend engine
 
@@ -162,7 +162,7 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 3. **The risk layer acts** (§7).
 
 **After an exit:**
-- After a stop-out (exit 1), Uptrend cannot be entered for 24 hours. The pause runs from the observation at which exit 1 first triggers, however many observations its sells then take.
+- After a stop-out (exit 1), Uptrend cannot be entered for 24 hours. The pause runs from the observation at which exit 1 first triggers, however many observations its sells then take. A decision exactly 24 hours later may enter again.
 - After a trend fade (exit 2), there is no pause, because re-entry already needs the daily state to be Up again.
 
 ## 6. Switching modes
@@ -193,6 +193,8 @@ Otherwise only §5's exits and §7's risk events sell it.
 
 Without this, every sell would re-create a buy, and the grid would never end.
 
+**Returning to Grid before it ends.** If a decision sets the mode back to Grid while the grid is still winding down, the wind-down lifts, as F's block lifts. Re-entry buys resume as its sells fill, and the cancelled buys are not restored. So a one-hour move out of Grid suspends the grid's buying, and does not end the grid.
+
 **Grid → Uptrend, in detail:**
 - **No forced sale.** The winding-down grid ends only by v1's own exits: its resting sells filling, or v1's range exit after 6 hours outside the band. The switch itself sells nothing.
 - **The entry can be late, or missed.** The uptrend entry starts only at a decision where the pair is flat and the mode is still Uptrend.
@@ -220,7 +222,9 @@ Risk events act exactly as in v1, in every mode, and win over the mode selector:
 - v1's `practice-2022` and `verify-2024h1` are run as a sanity check, and reported only.
 
 **What is run:**
-- **Pairs:** BTCUSDT, ETHUSDT and XRPUSDT, as frozen in spec v1 §4. XRP stays in unless its actual-quotes test excludes it (decision 16).
+- **Pairs:**
+  - In `full-range-2017-2024`: BTCUSDT, ETHUSDT and XRPUSDT, as frozen in spec v1 §4. XRP stays in unless its actual-quotes test excludes it (decision 16).
+  - The two sanity windows keep their own frozen v1 pairs: BTCUSDT, SOLUSDT and XRPUSDT in `practice-2022`, and ADAUSDT and BTCUSDT in `verify-2024h1`.
 - **Paths:** both.
 - **Capital:** 100 USDT per pair-run, as in v1.
 
@@ -267,10 +271,16 @@ Every criterion applies over the included runs of the scored window:
 - The V2-era runs of 2026-09-30 covered parts of 2022–2024 (2022-06 to 2023-02, and 2023-10 to 2024-12), and Claude saw their figures in the owner's proposal. Those runs are invalid because of the lookahead fixed in #160.
 - #137's runs on the development data informed the deferral of shorting.
 - **Where the thresholds come from:**
-  - **The owner's 2026-09-30 proposal:** the Grid row's RSI 35–65, ADX < 20, four RANGE hours, and the 4h and daily conditions.
-  - **Standard indicator conventions:** period 14, ADX 20, RSI 75, and Bollinger 20 at 2σ.
-  - **Design choices:** 3 × ATR, 4%, 60% and 24 hours.
-  - None was derived from 2019–2024 results.
+  - **The owner's 2026-09-30 proposal** ([record](reviews/2026-09-30-owner-v2-master-strategy-proposal.md)):
+    - its fast grid's 1h RSI(14) of 35–65 and ADX below 20;
+    - its slow grid's four consecutive RANGE hours;
+    - its multi-timeframe gate, in which the 1h, 4h and daily views must agree;
+    - the daily RSI(14) of 75 as the overbought line (its Mode C);
+    - SMA20 and SMA50 as trend direction (V0's features, which it lists);
+    - the Bollinger width for squeezes.
+  - **Standard indicator conventions:** period 14 for RSI, ATR, ADX and ±DI; ADX 20 as the line between trend and range; and Bollinger 20 at 2σ.
+  - **Claude's design choices:** the 720-hour (30-day) width median as the squeeze reference, 3 × ATR, 4%, 60% and 24 hours. They stand in the written draft the owner approved (§11, decision 7).
+- **What 2019–2024 results informed.** No threshold was fitted to any result. v1's stage-1 results (above) shaped two choices only qualitatively: F's block in grid mode, and sizing the trend position to the risk budget after D's 40% drawdowns.
 - 2025–26 has not been downloaded or replayed. Claude has read public reports of its BTC regime (spec v1 §7).
 - **Consequence:** 2019–2024 is a development window, not an untouched one. The reserved window is the clean test.
 
