@@ -25,14 +25,16 @@ dates and attributes in the zip archives. A run that differs between two builds 
 defect in this script, not noise.
 
 ``check`` prints one line per run, ``<run> <sha256> IDENTICAL|DIFFERENT``, then
-``ALL IDENTICAL`` or ``SOME DIFFER``, and exits 0 only when every run matches; the
-differences of a run that does not match go to stderr. A check is 15 runs of four
-replays each: about 45 minutes on one core, about 20 with ``--jobs 4`` on four cores (the
-outcomes are the same). The baseline is recorded from main before any code that is meant to change a
-run's output; if main moves first, record it again on the new merge base. It was recorded
-on CPython 3.14 on Windows: the engine's features are floats, so another platform's
-libm could in principle move a last digit, and a failure that appears only there is to
-be told apart from a change in the code by running ``check`` on the recording platform.
+``ALL IDENTICAL`` or ``SOME DIFFER``, and exits 0 only when every run matches. A run the
+baseline lists but this script no longer makes prints ``<run> - DIFFERENT``, the hash
+field a placeholder. What differs in a run that does not match goes to stderr. A check
+is 15 runs of four replays each: about 45 minutes on one core, about 20 with ``--jobs 4``
+on four cores (the outcomes are the same). The baseline is recorded from main before any
+code that is meant to change a run's output; if main moves first, record it again on the
+new merge base. It was recorded on CPython 3.14 on Windows: the engine's features are
+floats, so another platform's libm could in principle move a last digit, and a failure
+that appears only there is to be told apart from a change in the code by running
+``check`` on the recording platform.
 
 The functions below are importable: each run function returns its output document, not
 only a hash, so two trees' (or two harnesses') documents can be compared directly.
@@ -43,6 +45,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import inspect
 import io
 import json
 import math
@@ -73,7 +76,7 @@ from crypto_grid_bot.backtest.dataset import (  # noqa: E402
 )
 from crypto_grid_bot.backtest.replay import PATH_MODES  # noqa: E402
 from crypto_grid_bot.simulation.models import Account  # noqa: E402
-from crypto_grid_bot.simulation.runner import FULL_STACK, Frame, PaperSimulator  # noqa: E402
+from crypto_grid_bot.simulation.runner import FULL_STACK, PaperSimulator  # noqa: E402
 
 BASELINE = Path(__file__).with_name("byte_identity_baseline.json")
 CONFIG = ROOT / "config" / "default.toml"
@@ -198,10 +201,9 @@ class FakeArchive:
         self.objects: dict[str, bytes] = {}
 
     def add(self, path: str, text: str) -> None:
-        member = path.rsplit("/", 1)[1].removesuffix(".zip") + ".csv"
-        body = zip_member(member, text)
-        self.objects[path] = body
         name = path.rsplit("/", 1)[1]
+        body = zip_member(name.removesuffix(".zip") + ".csv", text)
+        self.objects[path] = body
         self.objects[path + ".CHECKSUM"] = f"{hashlib.sha256(body).hexdigest()}  {name}".encode()
 
     def __call__(self, path: str) -> bytes | None:
@@ -321,13 +323,17 @@ class StepTrace:
 
 @contextlib.contextmanager
 def step_trace() -> Iterator[StepTrace]:
-    """Wrap ``PaperSimulator.step`` so that every step taken inside the block is traced."""
+    """Wrap ``PaperSimulator.step`` so that every step taken inside the block is traced.
+    The wrapper forwards whatever arguments it is given and finds the account among them
+    by the name ``step`` gives it, so a change to ``step``'s other parameters, or to how a
+    caller passes them, cannot break the check."""
     trace = StepTrace()
     original = PaperSimulator.step
+    signature = inspect.signature(original)
 
-    def step(self: PaperSimulator, account: Account, frame: Frame) -> dict[str, Any]:
-        report = original(self, account, frame)
-        trace.record(self, account, report)
+    def step(self: PaperSimulator, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        report: dict[str, Any] = original(self, *args, **kwargs)
+        trace.record(self, signature.bind(self, *args, **kwargs).arguments["account"], report)
         return report
 
     with mock.patch.object(PaperSimulator, "step", step):
@@ -392,7 +398,8 @@ class Run:
     variant: str | None = None
     structure: bool = False
 
-    def execute(self, work: Path) -> dict[str, Any]:
+    def replay(self, work: Path) -> dict[str, Any]:
+        """The run's output document, from a replay on the dataset in ``work``."""
         if self.variant is None:
             return run_cli(work, work / "out" / self.name, self.flags)
         return run_variant(work, self.variant, structure=self.structure)
@@ -438,7 +445,7 @@ class Outcome:
 def execute(run: Run, work: Path) -> Outcome:
     """Replay ``run`` on the dataset in ``work`` under a step trace."""
     with step_trace() as trace:
-        document = run.execute(work)
+        document = run.replay(work)
     if not trace.steps:
         raise RuntimeError(f"{run.name}: the step trace saw no step; it is not attached")
     return Outcome(run.name, document, document_sha256(document), trace.hexdigest(), trace.steps)

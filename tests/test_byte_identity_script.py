@@ -1,8 +1,9 @@
 """The byte-identity check (scripts/byte_identity.py) builds the same data every time.
 
-Only the dataset builder and the pure helpers are tested here: a full ``check`` replays
-dozens of runs and takes minutes, so it is run by hand (``python scripts/byte_identity.py
-check``) and not by the suite.
+Only the dataset builder, the step trace and the output contract of ``check`` and
+``record`` (with the runs replaced by fixed outcomes) are tested here: a full ``check``
+replays 15 runs and takes the better part of an hour, so it is run by hand
+(``python scripts/byte_identity.py check``) and not by the suite.
 """
 
 import json
@@ -16,7 +17,7 @@ import pytest
 from crypto_grid_bot.config import load_config
 from crypto_grid_bot.simulation.demo import demo_frames
 from crypto_grid_bot.simulation.models import MarketRules
-from crypto_grid_bot.simulation.runner import PaperSimulator
+from crypto_grid_bot.simulation.runner import VARIANTS, PaperSimulator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -162,6 +163,38 @@ def test_the_step_trace_wrapper_traces_a_real_simulator_and_changes_nothing() ->
     assert trace.steps == 8
 
 
+def test_the_step_trace_wrapper_forwards_any_arguments_and_finds_the_account_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, object, object, int]] = []
+
+    def step(self: object, account: object, frame: object, *, scale: int = 1) -> dict[str, Any]:
+        calls.append((self, account, frame, scale))
+        return {"fills": [fill()], "exit_reason": "range_exit"}
+
+    # A step with another parameter, called with the account as a keyword.
+    monkeypatch.setattr(PaperSimulator, "step", step)
+    simulator, account = object(), SimpleNamespace(orders={})
+    with byte_identity.step_trace() as trace:
+        report = PaperSimulator.step(simulator, account=account, frame="frame", scale=2)
+    assert report == {"fills": [fill()], "exit_reason": "range_exit"}
+    assert calls == [(simulator, account, "frame", 2)]
+    assert trace.steps == 1
+    reference = byte_identity.StepTrace()
+    reference.record(simulator, account, report)
+    assert trace.hexdigest() == reference.hexdigest()
+
+
+def test_the_run_table_covers_every_registered_variant() -> None:
+    # A newly registered variant must be added to the runs, or this fails.
+    assert {run.variant for run in byte_identity.RUNS if run.variant} == set(VARIANTS[1:])
+
+
+def test_run_names_are_unique() -> None:
+    names = [run.name for run in byte_identity.RUNS]
+    assert len(set(names)) == len(names)
+
+
 def test_a_run_is_identical_only_when_document_trace_and_step_count_all_match() -> None:
     outcome = byte_identity.Outcome("run", {}, "doc", "trace", 5)
     recorded = {"sha256": "doc", "trace_sha256": "trace", "steps": 5}
@@ -176,6 +209,154 @@ def test_a_run_is_identical_only_when_document_trace_and_step_count_all_match() 
         "step trace differs",
         "step count differs",
     ]
+
+
+def outcome(name: str, letter: str, steps: int = 3) -> Any:
+    """A run's outcome with made-up digests (a letter repeated to 64 hex digits)."""
+    return byte_identity.Outcome(name, {}, letter * 64, letter.upper() * 64, steps)
+
+
+@pytest.fixture
+def baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The path ``check`` and ``record`` use for the baseline, in a temporary directory."""
+    path = tmp_path / "baseline.json"
+    monkeypatch.setattr(byte_identity, "BASELINE", path)
+    return path
+
+
+def baseline_of(*outcomes: Any, format: int = 1) -> str:
+    runs = {o.name: o.entry() for o in outcomes}
+    return json.dumps({"format": format, "runs": runs})
+
+
+def make_runs(monkeypatch: pytest.MonkeyPatch, *outcomes: Any) -> None:
+    """Replace the replays by fixed outcomes: no run executes."""
+    monkeypatch.setattr(byte_identity, "outcomes", lambda root, workers=1: iter(outcomes))
+
+
+def test_check_prints_a_line_per_run_and_exits_zero_when_every_run_matches(
+    baseline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, b = outcome("run-a", "a"), outcome("run-b", "b")
+    baseline.write_text(baseline_of(a, b))
+    make_runs(monkeypatch, a, b)
+    assert byte_identity.check(1) == 0
+    printed = capsys.readouterr()
+    assert printed.out.splitlines() == [
+        f"run-a {'a' * 64} IDENTICAL",
+        f"run-b {'b' * 64} IDENTICAL",
+        "ALL IDENTICAL",
+    ]
+    assert printed.err == ""
+
+
+def test_check_exits_one_and_says_what_differs_when_a_run_does_not_match(
+    baseline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, b = outcome("run-a", "a"), outcome("run-b", "b")
+    baseline.write_text(baseline_of(a, b))
+    # run-a's trace moved and its document did not; the line shows the document's hash.
+    moved = byte_identity.Outcome("run-a", {}, a.sha256, "c" * 64, a.steps)
+    make_runs(monkeypatch, moved, b)
+    assert byte_identity.check(1) == 1
+    printed = capsys.readouterr()
+    assert printed.out.splitlines() == [
+        f"run-a {'a' * 64} DIFFERENT",
+        f"run-b {'b' * 64} IDENTICAL",
+        "SOME DIFFER",
+    ]
+    assert printed.err.splitlines() == ["  run-a: step trace differs"]
+
+
+def test_check_fails_a_run_the_baseline_does_not_list(
+    baseline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, extra = outcome("run-a", "a"), outcome("run-new", "n")
+    baseline.write_text(baseline_of(a))
+    make_runs(monkeypatch, a, extra)
+    assert byte_identity.check(1) == 1
+    printed = capsys.readouterr()
+    assert printed.out.splitlines() == [
+        f"run-a {'a' * 64} IDENTICAL",
+        f"run-new {'n' * 64} DIFFERENT",
+        "SOME DIFFER",
+    ]
+    assert printed.err.splitlines() == ["  run-new: not in the baseline"]
+
+
+def test_check_fails_a_baseline_run_the_script_no_longer_makes_with_a_placeholder_hash(
+    baseline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, gone, also = outcome("run-a", "a"), outcome("run-old", "o"), outcome("run-ancient", "z")
+    baseline.write_text(baseline_of(a, gone, also))
+    make_runs(monkeypatch, a)
+    assert byte_identity.check(1) == 1
+    printed = capsys.readouterr()
+    # Still three fields, the hash a dash; sorted by name, after the runs made.
+    assert printed.out.splitlines() == [
+        f"run-a {'a' * 64} IDENTICAL",
+        "run-ancient - DIFFERENT",
+        "run-old - DIFFERENT",
+        "SOME DIFFER",
+    ]
+    assert printed.err.splitlines() == [
+        "  run-ancient: not run by this script",
+        "  run-old: not run by this script",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (None, "run `record` first"),
+        (baseline_of(format=2), "is not format 1"),
+    ],
+)
+def test_check_without_a_usable_baseline_exits_with_a_message_and_replays_nothing(
+    baseline: Path, monkeypatch: pytest.MonkeyPatch, text: str | None, message: str
+) -> None:
+    if text is not None:
+        baseline.write_text(text)
+
+    def replay_nothing(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("no run may start without a baseline")
+
+    monkeypatch.setattr(byte_identity, "outcomes", replay_nothing)
+    with pytest.raises(SystemExit) as stopped:
+        byte_identity.check(1)
+    assert isinstance(stopped.value.code, str)
+    assert message in stopped.value.code
+    assert str(baseline) in stopped.value.code
+
+
+def test_record_writes_every_run_in_order_and_check_then_accepts_it(
+    baseline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    b, a = outcome("run-b", "b"), outcome("run-a", "a")
+    make_runs(monkeypatch, b, a)
+    assert byte_identity.record(1) == 0
+    recorded = json.loads(baseline.read_text(encoding="utf-8"))
+    assert recorded["format"] == 1
+    assert recorded["runs"] == {"run-b": b.entry(), "run-a": a.entry()}
+    assert list(recorded["runs"]) == ["run-b", "run-a"]
+    capsys.readouterr()
+    assert byte_identity.check(1) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "ALL IDENTICAL"
+
+
+def test_main_runs_the_named_command_with_the_jobs_asked_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        byte_identity, "check", lambda workers: calls.append(("check", workers)) or 0
+    )
+    monkeypatch.setattr(
+        byte_identity, "record", lambda workers: calls.append(("record", workers)) or 0
+    )
+    assert byte_identity.main(["check", "--jobs", "3"]) == 0
+    assert byte_identity.main(["record"]) == 0
+    assert calls == [("check", 3), ("record", 1)]
 
 
 def test_the_recorded_baseline_covers_exactly_the_runs_the_script_makes() -> None:
