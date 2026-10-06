@@ -14,6 +14,7 @@ on:
           - practice-2022
           - verify-2024h1
           - full-range-2019-2024
+          - full-range-2017-2024
       variant:
         description: "Spec v1 variant: V0 (baseline), A (daily trend switch; needs daily_warmup_start), B (40% inventory cap), C (A and B), E (volume-confirmed exit), F (order-flow block), G (funding gate; needs the manifest's BTCUSDT funding archives for the evaluation months from 2020-01), H (cycle context; needs daily_warmup_start), C+G, C+H, or C+F+G+H+V2 (the full stack: C with F, G, H and the V2 structure features, which it turns on itself). V2 alone is V0 with structure true."
         required: false
@@ -78,6 +79,24 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
+
+      # A registered long window is scored against its committed manifest, which pins every
+      # archive's checksum. Before that manifest exists, the fetch below would write an
+      # untracked one and the run would use it: a long, unpinned run the acceptance scorer
+      # refuses. So a full-range dispatch stops here, before any fetch, until it is committed.
+      - name: Require a committed manifest for a registered long window
+        env:
+          SPEC: ${{ github.event.inputs.spec }}
+        run: |
+          case "$SPEC" in
+            full-range-*)
+              manifest="config/datasets/$SPEC.manifest.json"
+              if ! git ls-files --error-unmatch "$manifest" > /dev/null 2>&1; then
+                echo "::error::$SPEC is a registered long window; dispatch it once $manifest is committed."
+                exit 1
+              fi
+              ;;
+          esac
 
       - name: Fetch data
         env:
