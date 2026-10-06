@@ -274,6 +274,11 @@ class Metrics:
     # Spec v1 §3's "Reported" values of variants E, G and H, as row fields
     # (``VariantReport``); empty in any other run, whose rows keep their exact layout.
     variant: dict[str, Any] = field(default_factory=dict)
+    # Spec v1 §5 rule 1's per-run mask report (``MaskCounts``); zero in a run with no mask,
+    # whose rows keep their exact layout.
+    masked_hours: int = 0
+    days_skipped_for_masks: int = 0
+    fills_after_masked_span: int = 0
 
 
 def record_exit_block(metrics: Metrics, blocked: str, notional: Decimal) -> None:
@@ -409,6 +414,58 @@ def _record_fills(
             else:
                 metrics.grid_sell_pnl += pnl
     return exits
+
+
+class MaskCounts(Protocol):
+    """Spec v1 §5 rule 1's per-run mask report, which the grid replay and variant D both
+    keep (``Metrics``, ``TrendMetrics``): "Each run reports its masked hours, skipped days
+    (rule 3) and fills after a masked span (rule 4)"."""
+
+    masked_hours: int
+    days_skipped_for_masks: int
+    fills_after_masked_span: int
+
+
+def mask_report(counts: MaskCounts) -> dict[str, int]:
+    """The mask report's row fields, each only when non-zero, so that a run with no mask
+    keeps its exact row (spec v1 §6: the stage-1 identity check lets these fields differ
+    only as empty or zero)."""
+    fields = {
+        "masked_hours": counts.masked_hours,
+        "days_skipped_for_masks": counts.days_skipped_for_masks,
+        "fills_after_masked_span": counts.fills_after_masked_span,
+    }
+    return {key: value for key, value in fields.items() if value}
+
+
+class MaskedSpans:
+    """The pair's masked hours as a replay meets them (spec v1 §5 rules 1 and 4).
+
+    ``hours`` is the number of masked hours inside the evaluation ``window`` [start, end).
+    ``first_after(open_ms)``, called once for each replayed minute in time order, says
+    whether that minute is the first after a masked span: a masked hour lies after the
+    previous replayed minute's hour and before this minute's, or is the hour just before
+    this minute's. A gap that no masked hour explains, such as feature warm-up or minutes
+    missing without a mask, is not a masked span, and a run's first replayed minute has no
+    minute before it.
+    """
+
+    def __init__(self, masked: frozenset[int], window: tuple[int, int] | None) -> None:
+        if masked and window is None:
+            raise ValueError("masked hours are reported against the evaluation window")
+        start, end = window or (0, 0)
+        self.hours = sum(1 for hour in masked if start <= hour < end)
+        self._masked = masked
+        self._sorted = sorted(masked)
+        self._previous: int | None = None
+
+    def first_after(self, open_ms: int) -> bool:
+        hour = open_ms // HOUR_MS * HOUR_MS
+        previous, self._previous = self._previous, hour
+        if previous is None or hour == previous:
+            return False
+        between = bisect_left(self._sorted, hour) - bisect_left(self._sorted, previous + HOUR_MS)
+        return between > 0 or hour - HOUR_MS in self._masked
 
 
 class BuyAndHold:
@@ -641,12 +698,25 @@ def replay(
     daily: Sequence[Kline] | None = None,
     hourly: Sequence[Kline] | None = None,
     funding: Sequence[FundingRecord] | None = None,
+    *,
+    window: tuple[int, int] | None = None,
+    masked: frozenset[int] = frozenset(),
+    days_skipped_for_masks: int = 0,
 ) -> tuple[Metrics, Account]:
     """``daily`` is the traded pair's completed 1d history (P3), read only by variant A
     (``policy.trend_switch``) and variant H (``policy.cycle_gate``); ``hourly`` is its 1h
     history, read only by variant E (``policy.volume_exit``); ``funding`` is the BTCUSDT
     funding records, read only by variant G (``policy.funding_gate``). Each variant
-    refuses to run without its history."""
+    refuses to run without its history.
+
+    ``window`` is the evaluation window [start, end) in ms; ``masked`` is the pair's own
+    masked hours, whose minutes the caller has already dropped; ``days_skipped_for_masks``
+    is how many days the pair's daily/hourly check skips for them, which the caller counts
+    (``jobs.skipped_days_for_masks``). They change no decision: the metrics report the
+    masked hours inside ``window`` and the fills on the first replayed minute after a masked
+    span (spec v1 §5 rules 1 and 4; ``MaskedSpans``). A mask needs the window. With no mask
+    the replay is exactly as without these arguments."""
+    spans = MaskedSpans(masked, window) if masked else None
     schedule: TrendSchedule | None = None
     if policy is not None and policy.trend_switch:
         if daily is None:
@@ -685,6 +755,8 @@ def replay(
         raise ValueError("replay must start from an empty order book")
     orders = account.orders = RequestCountingOrders()
     metrics = Metrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
+    metrics.masked_hours = spans.hours if spans is not None else 0
+    metrics.days_skipped_for_masks = days_skipped_for_masks
 
     def observe_risk(
         equity: Decimal, high: Decimal, reference: Decimal, decision: RiskDecision
@@ -719,6 +791,8 @@ def replay(
             metrics.first_bar_ms = kline.open_ms
         metrics.bars += 1
         metrics.last_bar_ms = kline.open_ms
+        # Rule 4: orders stay open across a masked span; this minute's fills are flagged.
+        after_span = spans is not None and spans.first_after(kline.open_ms)
         bar_time = datetime.fromtimestamp(kline.open_ms / 1000, UTC)
         signals = signals_for(inputs, bar_time, gated=run.gated)
         # A flat history has zero ATR, which the engine rejects as corrupt input. The
@@ -772,6 +846,8 @@ def replay(
                 year, week, _ = timestamp(quote.observed_at).isocalendar()
                 metrics.cycles_by_week[f"{year}-W{week:02d}"] += cycles
             metrics.frames += 1
+            if after_span:
+                metrics.fills_after_masked_span += len(report["fills"])
             exit_pnl = _record_fills(metrics, report["fills"], report.get("exit_reason"))
             # Only frames that attempted an exit carry the key. A rejected or halting
             # frame attempted none, and must not reset the streak or count as cleared.
@@ -1314,6 +1390,7 @@ def summarise(
         "rules": {key: str(value) for key, value in run.rules.identity().items()},
         "assumed_spread_pct": str(run.spread * 100),
         **metrics.variant,
+        **mask_report(metrics),
         "hourly_equity": metrics.hourly_equity,
     }
 

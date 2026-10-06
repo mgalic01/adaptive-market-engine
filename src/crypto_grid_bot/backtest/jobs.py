@@ -115,6 +115,28 @@ def exclusion_ranges(spec: DatasetSpec, symbol: str) -> list[tuple[int, int]]:
     return [(e.start_ms, e.end_ms) for e in spec.basket_exclusions if e.symbol == symbol]
 
 
+def evaluation_window(spec: DatasetSpec) -> tuple[int, int]:
+    """The evaluation months, ``start`` to ``end``, as [start, end) ms."""
+    return month_bounds_ms(spec.start)[0], month_bounds_ms(spec.end)[1]
+
+
+def hourly_window(spec: DatasetSpec) -> tuple[int, int]:
+    """The hourly warm-up and the evaluation months as [start, end) ms: the span the hourly
+    series checks and the daily/hourly check compare (``cross_check_job``)."""
+    return month_bounds_ms(spec.warmup_start)[0], evaluation_window(spec)[1]
+
+
+def skipped_days_for_masks(spec: DatasetSpec, masked: frozenset[int]) -> int:
+    """How many days the pair's daily/hourly check skips for its ``masked`` hours (spec v1
+    §5 rule 3): the days holding a masked hour inside ``hourly_window``, exactly as
+    ``cross_check_job`` counts them in ``daily_days_skipped_for_masks``. Zero without daily
+    history (no ``daily_warmup_start``), since there is then no daily check."""
+    if not spec.daily_warmup_start:
+        return 0
+    start, end = hourly_window(spec)
+    return sum(1 for day in masked_days(masked) if start <= day < end)
+
+
 def variant_policy(variant: str | None, *, structure: bool = False) -> SimulationPolicy | None:
     """The policy of spec v1 variant ``variant`` (a name in ``VARIANTS``, such as "A" or
     "C+G"; None is V0), with the V2 structure features when ``structure``; the full
@@ -267,7 +289,9 @@ def run_job(
     ``prepare_run``); the rows' ``rules`` then record it. ``masks`` is every symbol's
     mask (see ``prepare_run``); the pair's also drops the minutes of its masked hours and
     documented absences before the replay. None, or a pair it does not name, reads the
-    minutes exactly as today.
+    minutes exactly as today. The pair's own mask, and no other symbol's, is reported in
+    its row (spec v1 §5 rule 1): ``masked_hours``, ``days_skipped_for_masks`` and
+    ``fills_after_masked_span``, each only when non-zero (``replay.mask_report``).
     """
     structure = policy is not None and policy.structure
     prepared = prepare_run(
@@ -283,11 +307,12 @@ def run_job(
         masks=masks,
     )
     spec, run = prepared.spec, prepared.run
+    mask = (masks or {}).get(symbol)
     minutes = load_minutes(
         data_dir,
         prepared.manifest,
         symbol,
-        mask=(masks or {}).get(symbol),
+        mask=mask,
         excluded=exclusion_ranges(spec, symbol),
     )
     # Spec v1 §3 G: BTCUSDT's funding gates every pair. A manifest without its funding
@@ -297,6 +322,7 @@ def run_job(
         if policy is not None and policy.funding_gate
         else None
     )
+    masked = mask or frozenset()
     metrics, account = replay(
         prepared.config,
         run,
@@ -306,6 +332,9 @@ def run_job(
         daily=prepared.daily,
         hourly=prepared.hourly,
         funding=funding,
+        window=evaluation_window(spec),
+        masked=masked,
+        days_skipped_for_masks=skipped_days_for_masks(spec, masked),
     )
     version = STRUCTURE_FEATURE_VERSION if structure else FEATURE_VERSION
     problems = check_accounting(run, metrics, account)
@@ -342,7 +371,7 @@ def cross_check_job(
     excluded = exclusion_ranges(spec, symbol)
     masked = mask or frozenset()
     hourly = load_hourly(data_dir, manifest, symbol, mask=mask, excluded=excluded)
-    window = (month_bounds_ms(spec.start)[0], month_bounds_ms(spec.end)[1])
+    window = evaluation_window(spec)
     if symbol in spec.traded:
         minutes = load_minutes(data_dir, manifest, symbol, mask=mask, excluded=excluded)
         result = {
@@ -352,11 +381,10 @@ def cross_check_job(
     else:
         # No minute data: check the hours over warm-up and evaluation.
         proxy = symbol == spec.market_proxy
-        hourly_window = (month_bounds_ms(spec.warmup_start)[0], window[1])
         result = {
             "symbol": symbol,
             "role": "market_proxy" if proxy else "breadth_basket",
-            **check_hourly_series(hourly, hourly_window, excluded, masked=masked),
+            **check_hourly_series(hourly, hourly_window(spec), excluded, masked=masked),
         }
     if spec.daily_warmup_start and symbol in {*spec.traded, spec.market_proxy}:
         daily = load_daily(data_dir, manifest, symbol)
@@ -364,7 +392,7 @@ def cross_check_job(
             daily,
             hourly,
             (month_bounds_ms(spec.daily_warmup_start)[0], window[1]),
-            (month_bounds_ms(spec.warmup_start)[0], window[1]),
+            hourly_window(spec),
             window[0],
             tolerance,
             masked_days=masked_days(masked),

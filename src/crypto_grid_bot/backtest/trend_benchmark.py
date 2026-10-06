@@ -40,16 +40,24 @@ from pathlib import Path
 from typing import Any
 
 from crypto_grid_bot.backtest.dataset import DatasetSpec
-from crypto_grid_bot.backtest.jobs import Masks, exclusion_ranges, prepare_run
+from crypto_grid_bot.backtest.jobs import (
+    Masks,
+    evaluation_window,
+    exclusion_ranges,
+    prepare_run,
+    skipped_days_for_masks,
+)
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import (
     DAILY_REQUEST_BUDGET,
     POINT_OFFSETS_S,
     BuyAndHold,
+    MaskedSpans,
     RunConfig,
     bar_quotes,
     journal_fill,
     load_minutes,
+    mask_report,
     utc_iso,
 )
 from crypto_grid_bot.simulation.execution import exit_price
@@ -225,6 +233,10 @@ class TrendMetrics:
     # Every fill with the time of the observation that produced it. D trades a few
     # times per signal change, so this stays small; it is not written to results.json.
     fills: list[tuple[str, TrendFill]] = field(default_factory=list)
+    # Spec v1 §5 rule 1's per-run mask report, as the grid replay's (replay.MaskCounts).
+    masked_hours: int = 0
+    days_skipped_for_masks: int = 0
+    fills_after_masked_span: int = 0
 
 
 def _journal(metrics: TrendMetrics, fill: TrendFill, observed_at: str) -> None:
@@ -246,14 +258,26 @@ def replay_trend(
     minutes: Iterable[Kline],
     closes: DailyCloses,
     evaluated: Callable[[int], bool],
+    *,
+    window: tuple[int, int] | None = None,
+    masked: frozenset[int] = frozenset(),
+    days_skipped_for_masks: int = 0,
 ) -> tuple[TrendMetrics, TrendAccount]:
     """Replay D over ``minutes``. ``evaluated(open_ms)`` is False for a minute the grid
     replay skips as warm-up; D skips it too, so both share the first evaluated bar and
     the equity schedule. ``run.gated`` is not used by D.
+
+    ``window``, ``masked`` and ``days_skipped_for_masks`` are the grid replay's
+    (``replay.replay``): they change nothing D does, and its metrics report the pair's
+    masked hours inside ``window`` and the fills on the first replayed minute after a
+    masked span (spec v1 §5 rules 1 and 4). A mask needs the window.
     """
+    spans = MaskedSpans(masked, window) if masked else None
     rules = run.rules
     account = TrendAccount(cash=run.initial_quote)
     metrics = TrendMetrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
+    metrics.masked_hours = spans.hours if spans is not None else 0
+    metrics.days_skipped_for_masks = days_skipped_for_masks
     signals: dict[int, bool | None] = {}
     hold: BuyAndHold | None = None
     last_hour = -1
@@ -267,6 +291,7 @@ def replay_trend(
             metrics.first_bar_ms = kline.open_ms
         metrics.bars += 1
         metrics.last_bar_ms = kline.open_ms
+        after_span = spans is not None and spans.first_after(kline.open_ms)
         quotes = bar_quotes(kline, run.symbol, run.path_mode, run.spread, rules.tick_size)
         for quote, offset in zip(quotes, POINT_OFFSETS_S, strict=True):
             quote.validate(rules)
@@ -296,6 +321,7 @@ def replay_trend(
                     metrics.exits_ended_with_dust += 1
             if fill is not None:
                 _journal(metrics, fill, quote.observed_at)
+                metrics.fills_after_masked_span += int(after_span)
             metrics.frames += 1
             # P2: total equity after this quote's fills; buy-and-hold at the same quote.
             with localcontext() as context:
@@ -415,6 +441,7 @@ def summarise_trend(
         "accounting_problems": problems,
         "rules": {key: str(value) for key, value in run.rules.identity().items()},
         "assumed_spread_pct": str(run.spread * 100),
+        **mask_report(metrics),
         "hourly_equity": metrics.hourly_equity,
     }
 
@@ -440,7 +467,8 @@ def trend_job(
     lives outside ``__main__``). ``fees`` is (maker, taker); D pays only the taker fee,
     which defaults to the maker fee exactly as for the grid runs. ``masks`` is every
     symbol's mask, as for ``jobs.run_job``: the pair's and the proxy's shape the warm-up
-    gate, and the pair's drops its masked minutes, so no masked minute reaches D."""
+    gate, and the pair's drops its masked minutes, so no masked minute reaches D. The
+    pair's own mask is reported in D's row, as in the grid rows."""
     # V0's warm-up gate, built by the grid job's own setup: FeatureEngine.at is None
     # exactly when the pair's or the market proxy's latest completed hour is not ready
     # (FeatureEngine.warmed). The basket changes only the values, never that gate, so it
@@ -460,13 +488,23 @@ def trend_job(
     problems = daily_history_problems(spec)
     # The pair's daily bars, loaded by prepare_run whenever the spec has daily history.
     closes = DailyCloses((k.open_ms, k.close) for k in prepared.daily or ())
+    mask = (masks or {}).get(symbol)
     minutes = load_minutes(
         data_dir,
         manifest,
         symbol,
-        mask=(masks or {}).get(symbol),
+        mask=mask,
         excluded=exclusion_ranges(spec, symbol),
     )
-    metrics, account = replay_trend(run, minutes, closes, prepared.features.warmed)
+    masked = mask or frozenset()
+    metrics, account = replay_trend(
+        run,
+        minutes,
+        closes,
+        prepared.features.warmed,
+        window=evaluation_window(spec),
+        masked=masked,
+        days_skipped_for_masks=skipped_days_for_masks(spec, masked),
+    )
     problems += check_trend_accounting(run, metrics, account)
     return summarise_trend(run, metrics, account, problems)

@@ -719,10 +719,10 @@ class MaskedConsumersTests(RunDataset):
         seen = {}
         real = trend_benchmark.replay_trend
 
-        def capture(run, minutes, closes, warmed):
+        def capture(run, minutes, closes, warmed, **reported):
             minutes = list(minutes)
             seen["minutes"], seen["gate"] = [k.open_ms for k in minutes], warmed.__self__
-            return real(run, minutes, closes, warmed)
+            return real(run, minutes, closes, warmed, **reported)
 
         for pair in RUN_TRADED:
             with self.subTest(variant="D", pair=pair):
