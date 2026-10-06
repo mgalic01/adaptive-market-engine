@@ -42,7 +42,7 @@ from typing import Any
 from crypto_grid_bot.backtest.dataset import DatasetSpec
 from crypto_grid_bot.backtest.jobs import (
     Masks,
-    evaluation_window,
+    evaluation_bounds_ms,
     exclusion_ranges,
     prepare_run,
     skipped_days_for_masks,
@@ -234,6 +234,10 @@ class TrendMetrics:
     # times per signal change, so this stays small; it is not written to results.json.
     fills: list[tuple[str, TrendFill]] = field(default_factory=list)
     # Spec v1 §5 rule 1's per-run mask report, as the grid replay's (replay.MaskCounts).
+    # Rule 4 flags the fills of orders resting across a masked span. D sends only
+    # marketable orders, which fill at once and never rest, so its
+    # fills_after_masked_span stays 0 and D's rows never carry it; the field keeps D on
+    # the grid rows' rule (replay.mask_report).
     masked_hours: int = 0
     days_skipped_for_masks: int = 0
     fills_after_masked_span: int = 0
@@ -269,14 +273,15 @@ def replay_trend(
 
     ``window``, ``masked`` and ``days_skipped_for_masks`` are the grid replay's
     (``replay.replay``): they change nothing D does, and its metrics report the pair's
-    masked hours inside ``window`` and the fills on the first replayed minute after a
-    masked span (spec v1 §5 rules 1 and 4). A mask needs the window.
+    masked hours inside ``window`` and the skipped days (spec v1 §5 rules 1 and 3). A mask
+    needs the window. Rule 4's fills after a masked span are fills of orders resting
+    across it, and D has none (``TrendMetrics``), so it counts none.
     """
-    spans = MaskedSpans(masked, window) if masked else None
+    masked_spans = MaskedSpans(masked, window) if masked else None
     rules = run.rules
     account = TrendAccount(cash=run.initial_quote)
     metrics = TrendMetrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
-    metrics.masked_hours = spans.hours if spans is not None else 0
+    metrics.masked_hours = masked_spans.hours if masked_spans is not None else 0
     metrics.days_skipped_for_masks = days_skipped_for_masks
     signals: dict[int, bool | None] = {}
     hold: BuyAndHold | None = None
@@ -291,7 +296,6 @@ def replay_trend(
             metrics.first_bar_ms = kline.open_ms
         metrics.bars += 1
         metrics.last_bar_ms = kline.open_ms
-        after_span = spans is not None and spans.first_after(kline.open_ms)
         quotes = bar_quotes(kline, run.symbol, run.path_mode, run.spread, rules.tick_size)
         for quote, offset in zip(quotes, POINT_OFFSETS_S, strict=True):
             quote.validate(rules)
@@ -321,7 +325,6 @@ def replay_trend(
                     metrics.exits_ended_with_dust += 1
             if fill is not None:
                 _journal(metrics, fill, quote.observed_at)
-                metrics.fills_after_masked_span += int(after_span)
             metrics.frames += 1
             # P2: total equity after this quote's fills; buy-and-hold at the same quote.
             with localcontext() as context:
@@ -502,7 +505,7 @@ def trend_job(
         minutes,
         closes,
         prepared.features.warmed,
-        window=evaluation_window(spec),
+        window=evaluation_bounds_ms(spec),
         masked=masked,
         days_skipped_for_masks=skipped_days_for_masks(spec, masked),
     )

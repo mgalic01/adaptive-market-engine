@@ -441,19 +441,19 @@ def mask_report(counts: MaskCounts) -> dict[str, int]:
 class MaskedSpans:
     """The pair's masked hours as a replay meets them (spec v1 §5 rules 1 and 4).
 
-    ``hours`` is the number of masked hours inside the evaluation ``window`` [start, end).
-    ``first_after(open_ms)``, called once for each replayed minute in time order, says
-    whether that minute is the first after a masked span: a masked hour lies after the
-    previous replayed minute's hour and before this minute's, or is the hour just before
-    this minute's. A gap that no masked hour explains, such as feature warm-up or minutes
-    missing without a mask, is not a masked span, and a run's first replayed minute has no
-    minute before it.
+    ``hours`` is the number of masked hours inside the evaluation ``window`` [start, end),
+    which a mask needs. ``first_after(open_ms)``, called once for each replayed minute in
+    time order, says whether that minute is the first after a masked span: a masked hour
+    lies after the previous replayed minute's hour and before this minute's, or is the
+    hour just before this minute's. A gap that no masked hour explains, such as feature
+    warm-up or minutes missing without a mask, is not a masked span, and a run's first
+    replayed minute has no minute before it.
     """
 
     def __init__(self, masked: frozenset[int], window: tuple[int, int] | None) -> None:
-        if masked and window is None:
+        if window is None:
             raise ValueError("masked hours are reported against the evaluation window")
-        start, end = window or (0, 0)
+        start, end = window
         self.hours = sum(1 for hour in masked if start <= hour < end)
         self._masked = masked
         self._sorted = sorted(masked)
@@ -713,10 +713,12 @@ def replay(
     masked hours, whose minutes the caller has already dropped; ``days_skipped_for_masks``
     is how many days the pair's daily/hourly check skips for them, which the caller counts
     (``jobs.skipped_days_for_masks``). They change no decision: the metrics report the
-    masked hours inside ``window`` and the fills on the first replayed minute after a masked
-    span (spec v1 §5 rules 1 and 4; ``MaskedSpans``). A mask needs the window. With no mask
-    the replay is exactly as without these arguments."""
-    spans = MaskedSpans(masked, window) if masked else None
+    masked hours inside ``window`` and, on the first replayed minute after a masked span
+    (``MaskedSpans``), the fills of the orders that were resting when the span began (spec
+    v1 §5 rules 1 and 4: "Orders across a masked span stay open and can fill on the next
+    replayed bar. Those fills are flagged and reported."). A mask needs the window. With
+    no mask the replay is exactly as without these arguments."""
+    masked_spans = MaskedSpans(masked, window) if masked else None
     schedule: TrendSchedule | None = None
     if policy is not None and policy.trend_switch:
         if daily is None:
@@ -755,7 +757,7 @@ def replay(
         raise ValueError("replay must start from an empty order book")
     orders = account.orders = RequestCountingOrders()
     metrics = Metrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
-    metrics.masked_hours = spans.hours if spans is not None else 0
+    metrics.masked_hours = masked_spans.hours if masked_spans is not None else 0
     metrics.days_skipped_for_masks = days_skipped_for_masks
 
     def observe_risk(
@@ -791,8 +793,12 @@ def replay(
             metrics.first_bar_ms = kline.open_ms
         metrics.bars += 1
         metrics.last_bar_ms = kline.open_ms
-        # Rule 4: orders stay open across a masked span; this minute's fills are flagged.
-        after_span = spans is not None and spans.first_after(kline.open_ms)
+        # Rule 4: orders stay open across a masked span. On the first minute after one, the
+        # fills of the orders resting since before it are flagged; an order placed in this
+        # minute is not (a resting limit cannot fill in its own bar anyway, and a
+        # marketable exit never enters the book).
+        after_span = masked_spans is not None and masked_spans.first_after(kline.open_ms)
+        resting = frozenset(account.orders) if after_span else frozenset()
         bar_time = datetime.fromtimestamp(kline.open_ms / 1000, UTC)
         signals = signals_for(inputs, bar_time, gated=run.gated)
         # A flat history has zero ATR, which the engine rejects as corrupt input. The
@@ -846,8 +852,10 @@ def replay(
                 year, week, _ = timestamp(quote.observed_at).isocalendar()
                 metrics.cycles_by_week[f"{year}-W{week:02d}"] += cycles
             metrics.frames += 1
-            if after_span:
-                metrics.fills_after_masked_span += len(report["fills"])
+            if resting:
+                metrics.fills_after_masked_span += sum(
+                    1 for fill in report["fills"] if str(fill["order_id"]) in resting
+                )
             exit_pnl = _record_fills(metrics, report["fills"], report.get("exit_reason"))
             # Only frames that attempted an exit carry the key. A rejected or halting
             # frame attempted none, and must not reset the streak or count as cleared.

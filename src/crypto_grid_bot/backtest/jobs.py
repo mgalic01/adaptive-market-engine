@@ -115,7 +115,7 @@ def exclusion_ranges(spec: DatasetSpec, symbol: str) -> list[tuple[int, int]]:
     return [(e.start_ms, e.end_ms) for e in spec.basket_exclusions if e.symbol == symbol]
 
 
-def evaluation_window(spec: DatasetSpec) -> tuple[int, int]:
+def evaluation_bounds_ms(spec: DatasetSpec) -> tuple[int, int]:
     """The evaluation months, ``start`` to ``end``, as [start, end) ms."""
     return month_bounds_ms(spec.start)[0], month_bounds_ms(spec.end)[1]
 
@@ -123,7 +123,7 @@ def evaluation_window(spec: DatasetSpec) -> tuple[int, int]:
 def hourly_window(spec: DatasetSpec) -> tuple[int, int]:
     """The hourly warm-up and the evaluation months as [start, end) ms: the span the hourly
     series checks and the daily/hourly check compare (``cross_check_job``)."""
-    return month_bounds_ms(spec.warmup_start)[0], evaluation_window(spec)[1]
+    return month_bounds_ms(spec.warmup_start)[0], evaluation_bounds_ms(spec)[1]
 
 
 def skipped_days_for_masks(spec: DatasetSpec, masked: frozenset[int]) -> int:
@@ -332,7 +332,7 @@ def run_job(
         daily=prepared.daily,
         hourly=prepared.hourly,
         funding=funding,
-        window=evaluation_window(spec),
+        window=evaluation_bounds_ms(spec),
         masked=masked,
         days_skipped_for_masks=skipped_days_for_masks(spec, masked),
     )
@@ -371,7 +371,7 @@ def cross_check_job(
     excluded = exclusion_ranges(spec, symbol)
     masked = mask or frozenset()
     hourly = load_hourly(data_dir, manifest, symbol, mask=mask, excluded=excluded)
-    window = evaluation_window(spec)
+    window = evaluation_bounds_ms(spec)
     if symbol in spec.traded:
         minutes = load_minutes(data_dir, manifest, symbol, mask=mask, excluded=excluded)
         result = {

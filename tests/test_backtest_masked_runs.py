@@ -7,9 +7,12 @@ check):
 
 * ``masked_hours``: the pair's masked hours inside the evaluation window;
 * ``days_skipped_for_masks``: the days the pair's daily/hourly check skips for them;
-* ``fills_after_masked_span``: the fills on the first replayed minute after a masked span.
-  A gap that no masked hour explains, from feature warm-up or from missing data, is not a
-  masked span.
+* ``fills_after_masked_span``: on the first replayed minute after a masked span, the fills
+  of the orders that were resting when the span began (rule 4: "Orders across a masked
+  span stay open and can fill on the next replayed bar. Those fills are flagged and
+  reported."). An order placed after the span is not counted, so D, which never rests an
+  order, counts none. A gap that no masked hour explains, from feature warm-up or from
+  missing data, is not a masked span.
 
 Synthetic data only (``test_backtest_masked_checks``' DOGEUSDT window and
 ``test_trend_benchmark``'s daily closes): no network, nothing after 2024-12, and nothing
@@ -21,6 +24,8 @@ import shutil
 import tempfile
 import unittest
 from collections import Counter, defaultdict
+from dataclasses import replace
+from decimal import Decimal as D
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,7 +35,7 @@ from test_trend_benchmark import RUN, SWITCHING, E, always, flat
 from crypto_grid_bot.backtest.jobs import cross_check_job, prepare_run, run_job
 from crypto_grid_bot.backtest.replay import MaskedSpans, load_minutes, replay
 from crypto_grid_bot.backtest.trend_benchmark import replay_trend, summarise_trend, trend_job
-from crypto_grid_bot.simulation.models import timestamp
+from crypto_grid_bot.simulation.models import LimitOrder, timestamp
 from crypto_grid_bot.simulation.runner import PaperSimulator
 
 CONFIG, MAR_2020, APR_2020 = mc.CONFIG, mc.MAR_2020, mc.APR_2020
@@ -88,6 +93,10 @@ class StepTrace:
     def __exit__(self, *exc):
         self._patch.stop()
 
+    def resting_fills(self, minute, before):
+        """The fills at ``minute`` of orders that were in the book after ``before``."""
+        return sum(1 for order_id in self.filled[minute] if order_id in self.books[before])
+
 
 class MaskedRunTests(mc.RunDataset):
     def run_eth(self, masks, spec_path=None):
@@ -105,24 +114,70 @@ class MaskedRunTests(mc.RunDataset):
         return trend_job(self.spec_path, CONFIG, self.data, "ETHUSDT", "high_first", masks=masks)
 
     def test_fill_after_a_masked_span_is_flagged(self):
+        # An order resting across the span fills on the first replayed minute after it:
+        # counted. Every fill there is of an order that was resting after the last replayed
+        # minute before the span (rule 4: orders stay open across it).
         masked_hour = MAR_2020 + 3 * HOUR_MS
-        after = masked_hour + HOUR_MS  # the first replayed minute after the span
+        after, before = masked_hour + HOUR_MS, masked_hour - MINUTE_MS
         with StepTrace() as trace:
             row = self.run_eth({"ETHUSDT": frozenset({masked_hour})})
         self.assertEqual([], row["accounting_problems"])
         self.assertGreater(trace.fills[after], 0, "the fixture fills right after the span")
+        self.assertEqual(trace.fills[after], trace.resting_fills(after, before))
         self.assertEqual(trace.fills[after], row["fills_after_masked_span"])
-        # Rule 4: those orders stayed open across the span. Each was resting after the last
-        # replayed minute before it.
-        self.assertLessEqual(set(trace.filled[after]), trace.books[masked_hour - MINUTE_MS])
         # Two spans: only each span's first replayed minute counts, not the fills after it.
         first, second = MAR_2020 + 2 * HOUR_MS, MAR_2020 + 5 * HOUR_MS
         with StepTrace() as trace:
             row = self.run_eth({"ETHUSDT": frozenset({first, second})})
-        flagged = trace.fills[first + HOUR_MS] + trace.fills[second + HOUR_MS]
+        flagged = trace.resting_fills(first + HOUR_MS, first - MINUTE_MS)
+        flagged += trace.resting_fills(second + HOUR_MS, second - MINUTE_MS)
         self.assertGreater(flagged, 0)
         self.assertEqual(flagged, row["fills_after_masked_span"])
         self.assertLess(flagged, sum(n for minute, n in trace.fills.items() if minute > first))
+
+    def test_an_order_placed_after_the_span_is_not_counted(self):
+        # The engine never fills a resting limit in the bar that placed it, and its
+        # marketable exits never enter the book, so this replay runs on a scripted step: an
+        # order resting since before the masked hour and an order placed on the first
+        # quote after it both fill in that minute. Only the first is counted.
+        masked_hour = MAR_2020 + 3 * HOUR_MS
+        before, after = masked_hour - MINUTE_MS, masked_hour + HOUR_MS
+        masks = {"ETHUSDT": frozenset({masked_hour})}
+        prepared = prepare_run(
+            self.spec_path, CONFIG, self.data, "ETHUSDT", "high_first", False, masks=masks
+        )
+        minutes = load_minutes(self.data, prepared.manifest, "ETHUSDT", mask=masks["ETHUSDT"])
+
+        def buy(order_id):
+            return LimitOrder(order_id, "buy", D(1), D(1), D(1))
+
+        def filled(account, order_id):
+            account.orders[order_id] = replace(account.orders[order_id], remaining=D(0))
+            del account.orders[order_id]
+            return {"order_id": order_id, "side": "buy", "price": "1", "quantity": "1", "fee": "0"}
+
+        def scripted(simulator, account, frame):
+            _, open_ms, index = frame.quote.event_id.split("/")
+            fills = []
+            if (int(open_ms), index) == (before, "0"):
+                account.orders["resting"] = buy("resting")
+            elif (int(open_ms), index) == (after, "0"):
+                fills.append(filled(account, "resting"))
+                account.orders["placed"] = buy("placed")
+            elif (int(open_ms), index) == (after, "2"):
+                fills.append(filled(account, "placed"))
+            return {"fills": fills, "opened": False, "decision": "hold"}
+
+        with patch.object(PaperSimulator, "step", scripted):
+            metrics, _ = replay(
+                prepared.config,
+                prepared.run,
+                minutes,
+                prepared.features,
+                window=WINDOW,
+                masked=masks["ETHUSDT"],
+            )
+        self.assertEqual((2, 1), (metrics.buys, metrics.fills_after_masked_span))
 
     def test_a_gap_no_masked_hour_explains_is_not_a_masked_span(self):
         # Hour 3 is masked; hour 6 is a gap too, left by feature warm-up (features.at None)
@@ -160,10 +215,9 @@ class MaskedRunTests(mc.RunDataset):
                     )
                 self.assertEqual(int(gap == "warm-up") * 60, metrics.warmup_bars)
                 self.assertGreater(trace.fills[hole + HOUR_MS], 0, "it fills after the gap")
-                self.assertGreater(trace.fills[masked_hour + HOUR_MS], 0)
-                self.assertEqual(
-                    trace.fills[masked_hour + HOUR_MS], metrics.fills_after_masked_span
-                )
+                flagged = trace.resting_fills(masked_hour + HOUR_MS, masked_hour - MINUTE_MS)
+                self.assertGreater(flagged, 0)
+                self.assertEqual(flagged, metrics.fills_after_masked_span)
                 self.assertEqual(1, metrics.masked_hours)
 
     def test_unmasked_run_rows_gain_no_field(self):
@@ -232,8 +286,9 @@ class MaskedRunTests(mc.RunDataset):
         self.assertEqual((0, 0, []), (row["buys"], row["sells"], row["accounting_problems"]))
         self.assertEqual({"masked_hours": 3, "days_skipped_for_masks": 3}, mask_fields(row))
         # D's replay: hold during day E, so D buys at its first quote; cash during E+1, so it
-        # sells at the first quote after a span masked across midnight. Only the sell is
-        # flagged; with the same gap unmasked, nothing is.
+        # sells at the first quote after a span masked across midnight. That sell is a
+        # marketable order placed after the span, not one resting across it (D never rests
+        # an order), so it is not counted, and D's row never carries the fill field.
         minutes = [flat(E + i * MINUTE_MS, "1") for i in range(3)]
         minutes += [flat(E + DAY_MS + 2 * HOUR_MS + i * MINUTE_MS, "1") for i in range(3)]
         window = (E, E + 3 * DAY_MS)
@@ -245,10 +300,9 @@ class MaskedRunTests(mc.RunDataset):
             [("2024-03-01T00:00:00+00:00", "buy"), ("2024-03-02T02:00:00+00:00", "sell")],
             [(at, fill.side) for at, fill in metrics.fills],
         )
-        self.assertEqual((2, 2, 1), mask_counts(metrics))
+        self.assertEqual((2, 2, 0), mask_counts(metrics))
         d_row = summarise_trend(RUN, metrics, account, [])
-        expected = {"masked_hours": 2, "days_skipped_for_masks": 2, "fills_after_masked_span": 1}
-        self.assertEqual(expected, mask_fields(d_row))
+        self.assertEqual({"masked_hours": 2, "days_skipped_for_masks": 2}, mask_fields(d_row))
         elsewhere = frozenset({E + 2 * DAY_MS + 5 * HOUR_MS})  # in the window, not the gap
         metrics, account = replay_trend(
             RUN, minutes, SWITCHING, always, window=window, masked=elsewhere
@@ -285,6 +339,14 @@ class MaskedSpansTests(unittest.TestCase):
             (h[7] + 59 * MINUTE_MS, False),
         ]
         self.assertEqual(replayed, [(at, spans.first_after(at)) for at, _ in replayed])
+
+    def test_a_masked_hour_earlier_in_the_gap_is_a_span(self):
+        # Previous replayed hour 1, hour 2 masked, hour 3 unmasked but not replayed (warm-up
+        # or missing minutes), next replayed hour 4: hour 2 lies inside the gap, though the
+        # hour just before hour 4 is not masked.
+        h = [MAR_2020 + i * HOUR_MS for i in range(5)]
+        spans = MaskedSpans(frozenset({h[2]}), WINDOW)
+        self.assertEqual([False, True], [spans.first_after(h[1]), spans.first_after(h[4])])
 
     def test_a_gap_with_no_masked_hour_is_not_a_span(self):
         spans = MaskedSpans(frozenset({MAR_2020 + 9 * HOUR_MS}), WINDOW)
