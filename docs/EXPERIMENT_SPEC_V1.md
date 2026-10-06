@@ -1,6 +1,6 @@
 # Experiment specification v1 (frozen 2026-10-06)
 
-**Status: frozen on 2026-10-06** (owner decision 12,
+**Status: frozen on 2026-10-06**, the day #171 merged (owner decision 12,
 [record](reviews/2026-10-05-claude-owner-decisions-test-plan.md), "Later decisions").
 - **The freeze condition is met.** This header made the freeze wait until Codex had
   reviewed the spec and the owner had confirmed the acceptance criteria in §6.
@@ -19,6 +19,12 @@
     running the un-amended fixed V0, is settled at the freeze: v1 does not run it (§3,
     V0). Only whether stage 2 also runs the reported-only sensitivities is left for
     later, and those decide nothing.
+  - **Open by design, gating only the reserved-window run.** C7 is adopted in principle
+    but not yet binding (§6): its return series, its family and Codex's acknowledgment
+    are still owed. The `N_family` floors are working figures that the trial register
+    will settle (§6). Neither gates stage 1, stage 2 or the development selection,
+    which C1–C6 decide. Until C7 is settled or the owner waives it in writing, nothing
+    runs on the reserved window.
 - **From now on,** a change requires a new version (v2), and results under v1 stay
   reported.
 - **Every variant is implemented on main**, the last of them by #170 (the full stack).
@@ -1592,7 +1598,7 @@ unseen regime:
 - Failures on it are recorded as they are. No variant is retuned and rerun on the same
   window, and a failed attempt is never replaced or reused as a fresh evaluation.
 
-**Prior exposure record (as of this draft):**
+**Prior exposure record (as of the freeze, 2026-10-06):**
 - **Seen in chat:** Claude read public reports of the 2025–26 BTC regime (the peak on
   2025-10-06, the roughly 50% decline and the June 2026 low).
 - **Not done:** no 2025–26 archive data has been downloaded, and no 2025–26 replay,

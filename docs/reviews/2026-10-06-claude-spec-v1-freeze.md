@@ -1,6 +1,6 @@
 # Spec v1 freeze: the evidence for every status claim
 
-Index: **Claude: spec v1 freeze (#171), 2026-10-06.** The evidence behind the frozen spec's status block. Codex's final review of the v1 draft on #16, its final verdicts on #163, #168 and #170, and Codex Desktop's review of amendment 1 at #171's head, owed since #124 (#134). The owner's confirmations of C1–C6 and C2. The owner's decisions 12–22, which leave no reading open. Codex found the gaps that decisions 14–22 closed.
+Index: **Claude: spec v1 freeze (#171), 2026-10-06.** The evidence behind the frozen spec's status block. Codex's final review of the v1 draft on #16, its final verdicts on #163, #168 and #170, and Codex Desktop's review of amendment 1 at #171's head, owed since #124 (#134). The owner's confirmations of C1–C6 and C2. The owner's decisions 12–22, which leave no reading open. C7 and the trial count stay open by design, and gate only the reserved-window run. Codex found the gaps that decisions 14–22 closed.
 
 - **Date and author:** 2026-10-06, written by Claude (session `b9db01ca`).
 - **PR:** #171, which freezes `docs/EXPERIMENT_SPEC_V1.md` as the owner decided on 2026-10-05 (decision 12 in the [test-plan record](2026-10-05-claude-owner-decisions-test-plan.md), "Later decisions").
@@ -50,6 +50,8 @@ Every passage that called a rule "Claude's reading, open to the owner" now cites
 **One choice left "open to review", not to the owner.** §3 V0 said that running the un-amended fixed V0 was not planned, a choice open to review. Codex's review of #171 at `0a456f1` asked for it to be settled. It is settled at the freeze as planned: v1 does not run it, so it adds no trial to `N_family`.
 
 Only whether stage 2 also runs the reported-only sensitivities is left for later, and those decide nothing.
+
+**Open by design, gating only the reserved-window run.** C7 is adopted in principle but not yet binding (spec §6): its return series, its family and Codex's acknowledgment are still owed. The `N_family` floors are working figures that the trial register will settle. Neither gates stage 1, stage 2 or the development selection, which C1–C6 decide. Until C7 is settled or the owner waives it in writing, nothing runs on the reserved window (the automated review of #171 at `bad767e` asked for these to be named).
 
 ## How the gaps were found
 
