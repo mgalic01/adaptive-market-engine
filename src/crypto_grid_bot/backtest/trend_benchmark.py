@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from crypto_grid_bot.backtest.dataset import DatasetSpec
-from crypto_grid_bot.backtest.jobs import prepare_run
+from crypto_grid_bot.backtest.jobs import Masks, exclusion_ranges, prepare_run
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import (
     DAILY_REQUEST_BUDGET,
@@ -433,23 +433,40 @@ def trend_job(
     symbol: str,
     path_mode: str,
     fees: tuple[Decimal, Decimal | None] | None = None,
+    *,
+    masks: Masks | None = None,
 ) -> dict[str, Any]:
     """One D run, for the backtest CLI's process pool (see ``jobs`` on why pool work
     lives outside ``__main__``). ``fees`` is (maker, taker); D pays only the taker fee,
-    which defaults to the maker fee exactly as for the grid runs."""
+    which defaults to the maker fee exactly as for the grid runs. ``masks`` is every
+    symbol's mask, as for ``jobs.run_job``: the pair's and the proxy's shape the warm-up
+    gate, and the pair's drops its masked minutes, so no masked minute reaches D."""
     # V0's warm-up gate, built by the grid job's own setup: FeatureEngine.at is None
     # exactly when the pair's or the market proxy's latest completed hour is not ready
     # (FeatureEngine.warmed). The basket changes only the values, never that gate, so it
     # is not loaded, and D evaluates V0's minutes.
     prepared = prepare_run(
-        spec_path, config_path, data_dir, symbol, path_mode, False, fees, basket=False
+        spec_path,
+        config_path,
+        data_dir,
+        symbol,
+        path_mode,
+        False,
+        fees,
+        basket=False,
+        masks=masks,
     )
     spec, manifest, run = prepared.spec, prepared.manifest, prepared.run
     problems = daily_history_problems(spec)
     # The pair's daily bars, loaded by prepare_run whenever the spec has daily history.
     closes = DailyCloses((k.open_ms, k.close) for k in prepared.daily or ())
-    metrics, account = replay_trend(
-        run, load_minutes(data_dir, manifest, symbol), closes, prepared.features.warmed
+    minutes = load_minutes(
+        data_dir,
+        manifest,
+        symbol,
+        mask=(masks or {}).get(symbol),
+        excluded=exclusion_ranges(spec, symbol),
     )
+    metrics, account = replay_trend(run, minutes, closes, prepared.features.warmed)
     problems += check_trend_accounting(run, metrics, account)
     return summarise_trend(run, metrics, account, problems)

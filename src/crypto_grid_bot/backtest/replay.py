@@ -40,9 +40,10 @@ from crypto_grid_bot.backtest.funding import (
     FundingSignal,
     read_funding_archive,
 )
-from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
+from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive, read_archive_repaired
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
+from crypto_grid_bot.market_data.parsing import DataError
 from crypto_grid_bot.simulation.execution import exit_state
 from crypto_grid_bot.simulation.inventory_cap import mark as unit_mark
 from crypto_grid_bot.simulation.models import (
@@ -889,21 +890,83 @@ def _read_month(data_dir: Path, symbol: str, interval: str, month: str) -> list[
     return rows
 
 
-def load_candles(
-    data_dir: Path, manifest: dict[str, Any], symbol: str, interval: str
+def _read_month_masked(
+    data_dir: Path,
+    symbol: str,
+    interval: str,
+    month: str,
+    mask: frozenset[int],
+    excluded: Sequence[tuple[int, int]],
 ) -> list[Kline]:
-    """Every verified candle of the pair at one interval, sorted by open time."""
+    """The month's bars from the repairing reader (spec v1 §5 rule 1), less every bar in a
+    masked hour and every bar inside a documented ``excluded`` [start, end) range.
+
+    The manifest lists the archive as ok, so an archive the reader cannot read is not
+    masked here: it raises, fail-closed, as the strict reader does. Only a manifest entry
+    that is not ok gives no bars, and ``_archive_months`` never lists one."""
+    read = read_archive_repaired(
+        local_path(data_dir, symbol, interval, month), symbol, interval, month
+    )
+    if read.unreadable:
+        raise DataError(
+            f"{symbol} {interval} {month}: the manifest lists the archive as ok, but it is "
+            f"unreadable: {read.unreadable}"
+        )
+    bars = [kline for kline in read.bars if kline.open_ms // HOUR_MS * HOUR_MS not in mask]
+    if excluded:
+        bars = [k for k in bars if not any(a <= k.open_ms < b for a, b in excluded)]
+    return bars
+
+
+def _month_bars(
+    data_dir: Path,
+    symbol: str,
+    interval: str,
+    month: str,
+    mask: frozenset[int] | None,
+    excluded: Sequence[tuple[int, int]],
+) -> list[Kline]:
+    """Today's strict read when ``mask`` is None; the masked read otherwise."""
+    if mask is None:
+        return _read_month(data_dir, symbol, interval, month)
+    return _read_month_masked(data_dir, symbol, interval, month, mask, excluded)
+
+
+def load_candles(
+    data_dir: Path,
+    manifest: dict[str, Any],
+    symbol: str,
+    interval: str,
+    *,
+    mask: frozenset[int] | None = None,
+    excluded: Sequence[tuple[int, int]] = (),
+) -> list[Kline]:
+    """Every verified candle of the pair at one interval, sorted by open time.
+
+    With ``mask`` None, the strict reader, which refuses an archive with a repaired or
+    dropped row, and nothing is dropped: ``excluded`` is not read. With a mask, even an
+    empty one, 1m and 1h archives are read by the repairing reader, and every bar in a
+    masked hour or inside an ``excluded`` [start, end) range, the symbol's documented
+    absences, is dropped (spec v1 §4 and §5). Daily bars are never masked (rule 3): the
+    repairing reader refuses them."""
     candles = [
         kline
         for month in _archive_months(manifest, symbol, interval)
-        for kline in _read_month(data_dir, symbol, interval, month)
+        for kline in _month_bars(data_dir, symbol, interval, month, mask, excluded)
     ]
     candles.sort(key=lambda k: k.open_ms)
     return candles
 
 
-def load_hourly(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kline]:
-    return load_candles(data_dir, manifest, symbol, "1h")
+def load_hourly(
+    data_dir: Path,
+    manifest: dict[str, Any],
+    symbol: str,
+    *,
+    mask: frozenset[int] | None = None,
+    excluded: Sequence[tuple[int, int]] = (),
+) -> list[Kline]:
+    return load_candles(data_dir, manifest, symbol, "1h", mask=mask, excluded=excluded)
 
 
 def load_daily(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kline]:
@@ -953,6 +1016,8 @@ def cross_check_daily(
     hourly_window: tuple[int, int],
     evaluation_start_ms: int,
     volume_tolerance: Decimal | None = None,
+    *,
+    masked_days: frozenset[int] = frozenset(),
 ) -> dict[str, int]:
     """Spec v1 P3: daily bars must be complete, unique and agree with their hours.
 
@@ -960,6 +1025,12 @@ def cross_check_daily(
     must appear exactly once. Over ``hourly_window`` each day must also equal the
     aggregation of its 24 unique contiguous 1h bars (an OHLCV match alone cannot show
     missing hours). The warm-up count is completed days before the evaluation start.
+
+    ``masked_days`` are the day opens that hold a masked hour (spec v1 §5 rule 3): each in
+    ``hourly_window`` is skipped in the 24-hour comparison and counted in
+    ``daily_days_skipped_for_masks``, a key written only when non-zero. Its official 1d
+    bar still counts: daily bars are never masked, so a missing or duplicated one stays
+    a failure.
     """
     opens = [k.open_ms for k in daily]
     present = set(opens)
@@ -969,8 +1040,11 @@ def cross_check_daily(
         if hourly_window[0] <= kline.open_ms < hourly_window[1]:
             by_day.setdefault(kline.open_ms // DAY_MS * DAY_MS, []).append(kline)
     official = {k.open_ms: k for k in daily}
-    compared = mismatched = incomplete = drift = 0
+    compared = mismatched = incomplete = drift = skipped = 0
     for day in range(hourly_window[0], hourly_window[1], DAY_MS):
+        if day in masked_days:
+            skipped += 1
+            continue
         hours = by_day.get(day, [])
         if len({h.open_ms for h in hours}) != 24 or len(hours) != 24:
             incomplete += 1
@@ -984,7 +1058,7 @@ def cross_check_daily(
         mismatched += int(outcome == "mismatch")
         drift += int(outcome == "drift")
     warmup = sum(1 for o in opens if o + DAY_MS <= evaluation_start_ms)
-    return {
+    result = {
         "daily_days_compared": compared,
         "daily_days_mismatched": mismatched,
         "daily_days_volume_drift": drift,
@@ -994,12 +1068,26 @@ def cross_check_daily(
         "daily_warmup_days": warmup,
         "daily_warmup_short": int(warmup < MINIMUM_DAILY_WARMUP),
     }
+    if skipped:  # Written only when non-zero, so an unmasked record is today's.
+        result["daily_days_skipped_for_masks"] = skipped
+    return result
 
 
-def load_minutes(data_dir: Path, manifest: dict[str, Any], symbol: str) -> Iterator[Kline]:
-    """The pair's 1m bars in time order, read lazily one month archive at a time."""
+def load_minutes(
+    data_dir: Path,
+    manifest: dict[str, Any],
+    symbol: str,
+    *,
+    mask: frozenset[int] | None = None,
+    excluded: Sequence[tuple[int, int]] = (),
+) -> Iterator[Kline]:
+    """The pair's 1m bars in time order, read lazily one month archive at a time.
+
+    ``mask`` and ``excluded`` as for ``load_candles``: None reads strictly and drops
+    nothing; a mask reads with the repairing reader and drops the masked hours' minutes
+    and those inside ``excluded``."""
     for month in sorted(_archive_months(manifest, symbol, "1m")):
-        yield from _read_month(data_dir, symbol, "1m", month)
+        yield from _month_bars(data_dir, symbol, "1m", month, mask, excluded)
 
 
 # Owner decision (2026-09-24): Binance archives sometimes disagree on volume only. With
@@ -1048,13 +1136,21 @@ def cross_check_hourly(
     hourly: Sequence[Kline],
     window: tuple[int, int],
     volume_tolerance: Decimal | None = None,
+    *,
+    masked: frozenset[int] = frozenset(),
 ) -> dict[str, int]:
     """Compare 1m bars aggregated to hours against Binance's own 1h archive.
 
     ``window`` is the [start, end) span the minute archives cover. Official hours in
     it with no minute data at all are counted too, so a wholly missing hour cannot
     pass the check silently.
+
+    ``masked`` hours leave the expected set (spec v1 §5, "The post-mask expected set"):
+    their minutes and 1h bars are set aside, and none of them is counted anywhere.
     """
+    if masked:
+        minutes = (k for k in minutes if k.open_ms // HOUR_MS * HOUR_MS not in masked)
+        hourly = [k for k in hourly if k.open_ms // HOUR_MS * HOUR_MS not in masked]
     official = {k.open_ms: k for k in hourly}
     compared = mismatched = missing = drift = 0
     per_hour: dict[int, int] = {}
@@ -1078,7 +1174,9 @@ def cross_check_hourly(
         drift += int(outcome == "drift")
     in_window = range(window[0], window[1], HOUR_MS)
     absent = sum(1 for o in official if window[0] <= o < window[1] and o not in seen)
-    absent_both = sum(1 for o in in_window if o not in official and o not in seen)
+    absent_both = sum(
+        1 for o in in_window if o not in official and o not in seen and o not in masked
+    )
     # An exact OHLCV match cannot reveal missing zero-volume minutes, so count them.
     incomplete = [
         60 - n for hour, n in per_hour.items() if window[0] <= hour < window[1] and n < 60
@@ -1099,17 +1197,27 @@ def check_hourly_series(
     hourly: Sequence[Kline],
     window: tuple[int, int],
     excluded: Sequence[tuple[int, int]] = (),
+    *,
+    masked: frozenset[int] = frozenset(),
 ) -> dict[str, int]:
     """Completeness of an hourly series with no minute data behind it (an untraded market
     proxy or breadth-basket symbol): every hour in the [start, end) ``window`` exactly
-    once, except hours inside a documented ``excluded`` [start, end) range."""
-    opens = [k.open_ms for k in hourly if window[0] <= k.open_ms < window[1]]
+    once, except hours inside a documented ``excluded`` [start, end) range and
+    ``masked`` hours, which leave the expected set (spec v1 §5, "The post-mask expected
+    set"): a masked hour's bars are set aside, and it is never missing."""
+    opens = [
+        k.open_ms
+        for k in hourly
+        if window[0] <= k.open_ms < window[1] and k.open_ms // HOUR_MS * HOUR_MS not in masked
+    ]
     present = set(opens)
     hours = range(window[0], window[1], HOUR_MS)
     documented = {h for h in hours if any(a <= h < b for a, b in excluded)}
     return {
         "series_hours_present": len(present),
-        "series_hours_missing": sum(1 for h in hours if h not in present and h not in documented),
+        "series_hours_missing": sum(
+            1 for h in hours if h not in present and h not in documented and h not in masked
+        ),
         "series_hours_duplicated": len(opens) - len(present),
         "series_hours_excluded": len(documented),
     }
