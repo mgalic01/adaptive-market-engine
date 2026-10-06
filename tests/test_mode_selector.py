@@ -60,6 +60,16 @@ UPTREND_BASE = dataclasses.replace(
     d1_rsi=D(60),
 )
 
+# The same Uptrend snapshot with 1h inputs present that no Grid row would accept.
+UPTREND_WITH_1H = dataclasses.replace(
+    UPTREND_BASE,
+    h1_available=True,
+    h1_rsi=D(99),
+    h1_adx=D(99),
+    h1_width=D(9),
+    h1_width_median=D(1),
+)
+
 NO_1H = {
     "h1_available": False,
     "h1_rsi": None,
@@ -145,6 +155,20 @@ def test_grid_1h_width_may_equal_its_median(width: D, expected: Mode) -> None:
 @pytest.mark.parametrize(("count", "expected"), [(3, Mode.CASH), (4, Mode.GRID), (5, Mode.GRID)])
 def test_grid_needs_four_consecutive_range_decisions(count: int, expected: Mode) -> None:
     assert grid(range_decisions=count) is expected
+
+
+@pytest.mark.parametrize(
+    ("regime", "expected"),
+    [
+        (MarketRegime.RANGE, Mode.GRID),
+        (MarketRegime.BULL, Mode.CASH),
+        (MarketRegime.BEAR, Mode.CASH),
+        (MarketRegime.TRANSITION, Mode.CASH),
+        (MarketRegime.STRESS, Mode.CASH),
+    ],
+)
+def test_grid_needs_this_decisions_regime_to_be_range(regime: MarketRegime, expected: Mode) -> None:
+    assert grid(regime=regime, range_decisions=4) is expected
 
 
 @pytest.mark.parametrize(
@@ -253,15 +277,7 @@ def test_uptrend_with_no_stop_out_is_not_paused() -> None:
 
 def test_uptrend_does_not_read_the_1h_inputs() -> None:
     # The 1h inputs are the Grid row's alone (spec v2 §4, Cash): hostile values change nothing.
-    present = dataclasses.replace(
-        UPTREND_BASE,
-        h1_available=True,
-        h1_rsi=D(99),
-        h1_adx=D(99),
-        h1_width=D(9),
-        h1_width_median=D(1),
-    )
-    assert uptrend(present) is Mode.UPTREND
+    assert uptrend(UPTREND_WITH_1H) is Mode.UPTREND
 
 
 # Cash
@@ -280,5 +296,8 @@ def test_an_unavailable_4h_or_daily_state_is_cash(
 
 
 def test_a_missing_1h_timeframe_blocks_grid_but_not_uptrend() -> None:
+    # Both snapshots start with the 1h inputs present, so removing them is a real change.
+    assert grid(dataclasses.replace(GRID_BASE, h1_available=True)) is Mode.GRID
     assert grid(dataclasses.replace(GRID_BASE, **NO_1H)) is Mode.CASH
-    assert uptrend(dataclasses.replace(UPTREND_BASE, **NO_1H)) is Mode.UPTREND
+    assert uptrend(UPTREND_WITH_1H) is Mode.UPTREND
+    assert uptrend(dataclasses.replace(UPTREND_WITH_1H, **NO_1H)) is Mode.UPTREND

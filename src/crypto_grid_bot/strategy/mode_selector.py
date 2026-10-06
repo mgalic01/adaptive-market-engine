@@ -45,20 +45,24 @@ def select_mode(
        ``UPTREND_RSI_MAX``; ``input_quality_ok`` and a regime that is neither BEAR nor STRESS;
        and no pause, meaning ``stopped_at_ms`` is None or at least ``REENTRY_PAUSE_MS`` before
        ``now_ms``. The 1h inputs are not read.
-    3. ``GRID``: ``range_decisions`` at least ``RANGE_DECISIONS``; the 4h state Range or
-       Unclear; the daily state Up, Range or Unclear; the 1h timeframe available, with its RSI
-       from ``GRID_RSI_LOW`` to ``GRID_RSI_HIGH`` inclusive, its ADX below ``ADX_RANGE`` and its
-       width at most its median.
+    3. ``GRID``: this decision's regime is RANGE and ``range_decisions`` is at least
+       ``RANGE_DECISIONS``; the 4h state Range or Unclear; the daily state Up, Range or Unclear;
+       the 1h timeframe available, with its RSI from ``GRID_RSI_LOW`` to ``GRID_RSI_HIGH``
+       inclusive, its ADX below ``ADX_RANGE`` and its width at most its median.
     4. Otherwise ``CASH``.
 
     ``range_decisions`` counts the consecutive hourly decisions, this one included, whose regime
-    was RANGE. ``input_quality_ok`` is the classifier's ``RegimeAssessment.input_quality_ok``.
+    was RANGE. ``input_quality_ok`` is the classifier's ``RegimeAssessment.input_quality_ok``. A
+    RANGE regime already implies it, so Grid does not check it separately.
+
+    The function cannot see a halt. The caller forces ``CASH`` while the account is halted
+    (spec v2 §4 and §7).
     """
     if TrendState.UNAVAILABLE in (snapshot.h4_state, snapshot.d1_state):
         return Mode.CASH
     if _uptrend(snapshot, regime, input_quality_ok, now_ms, stopped_at_ms):
         return Mode.UPTREND
-    if _grid(snapshot, range_decisions):
+    if _grid(snapshot, regime, range_decisions):
         return Mode.GRID
     return Mode.CASH
 
@@ -82,7 +86,7 @@ def _uptrend(
     )
 
 
-def _grid(snapshot: Snapshot, range_decisions: int) -> bool:
+def _grid(snapshot: Snapshot, regime: MarketRegime, range_decisions: int) -> bool:
     if (
         not snapshot.h1_available
         or snapshot.h1_rsi is None
@@ -92,7 +96,8 @@ def _grid(snapshot: Snapshot, range_decisions: int) -> bool:
     ):
         return False
     return (
-        range_decisions >= RANGE_DECISIONS
+        regime is MarketRegime.RANGE
+        and range_decisions >= RANGE_DECISIONS
         and snapshot.h4_state in (TrendState.RANGE, TrendState.UNCLEAR)
         and snapshot.d1_state in (TrendState.UP, TrendState.RANGE, TrendState.UNCLEAR)
         and GRID_RSI_LOW <= snapshot.h1_rsi <= GRID_RSI_HIGH
