@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
+from crypto_grid_bot.backtest.jobs import variant_policy
 from crypto_grid_bot.backtest.replay import (
     Metrics,
     RequestCountingOrders,
@@ -41,6 +42,7 @@ from crypto_grid_bot.simulation.models import LimitOrder, MarketRules, Quote
 from crypto_grid_bot.simulation.runner import VARIANTS, Frame, PaperSimulator, SimulationPolicy
 from crypto_grid_bot.simulation.store import encode
 from crypto_grid_bot.simulation.uptrend import UptrendPosition
+from crypto_grid_bot.strategy.mode_selector import Mode
 from crypto_grid_bot.strategy.perception import DailyPoint, Snapshot, TrendState
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1077,3 +1079,159 @@ def test_halt_in_grid_mode_sets_cash_and_no_grid_opens_before_a_decision():
     # own recovery has allowed a grid since 09:41.
     assert [entry for entry in opened if entry[3]] == [(12, 0, "grid", True)]
     assert all(mode == "cash" for hour, _, mode, _ in opened if hour < 12)
+
+
+# --- Review fix round 1 ---------------------------------------------------------------------
+
+
+def invalid(item: Frame) -> Frame:
+    """The same frame with another market's candidate: an integrity halt."""
+    return replace(item, candidate=replace(CANDIDATE, symbol="ETHUSDT"))
+
+
+def test_variant_policy_refuses_ms_until_it_is_wired():
+    # "MS" is a registered variant name, but the backtest jobs do not build its policy yet,
+    # so asking for it fails loudly instead of running V0 under its name.
+    with pytest.raises(ValueError, match="mode switcher"):
+        variant_policy("MS")
+
+
+def test_resume_refuses_mode_switch(tmp_path):
+    simulator = PaperSimulator(tmp_path / "paper.db", CONFIG, RULES, D(100), MS)
+    try:
+        with pytest.raises(ValueError, match="mode switcher runs in historical replay only"):
+            simulator.resume(frame(at(1, 10)), event_id="r1", reason="operator")
+    finally:
+        simulator.close()
+
+
+def test_an_entering_position_without_allow_breaks_an_invariant():
+    # A refusing action, or a recovery, always ends an entry earlier (a drain begins exit 3,
+    # EXIT halts, and no position survives a restart); meeting one here is a defect.
+    run = Run()
+    account = run.account
+    account.mode, account.decision_hour_ms = "uptrend", at(1, 10)
+    account.uptrend = UptrendPosition(
+        cash_cap=D(60),
+        risk_allowance=D(4),
+        stop=D(97),
+        highest_close=D(100),
+        stop_day_ms=DAY0,
+        entered_at=iso(at(1, 10)),
+    )
+    account.risk_recovery = True
+    with pytest.raises(RuntimeError, match="entering uptrend position"):
+        run.step(frame(at(1, 10, 30), ask="100"))
+
+
+def test_entry_reads_the_decision_not_the_report():
+    # The report's "mode_decision" is output only: the decision reaches the entry as an
+    # argument.
+    run = Run()
+    item = frame(at(1, 10), ask="100")
+    report: dict[str, Any] = {"fills": [], "mode_decision": "uptrend"}
+    run.sim._uptrend_step(run.account, item, RiskAction.ALLOW, report, decided=None)
+    assert run.account.uptrend is None and report["fills"] == []
+    report = {"fills": []}
+    run.sim._uptrend_step(run.account, item, RiskAction.ALLOW, report, decided=Mode.UPTREND)
+    assert run.account.uptrend is not None and bought(report) == [D("0.599")]
+
+
+def test_range_exit_drops_sold_fragments_and_labels_the_last_chunk_as_the_uptrend_exit():
+    run = Run()
+    account = run.account
+    # F's two held fragments (0.06, sellable together) leave the pair flat but keep an old
+    # grid's band, which the price has left.
+    account.cash -= D("6")
+    account.inventory = D("0.06")
+    account.flow_fragments = {D("101"): D("0.03"), D("102"): D("0.03")}
+    account.grid_lower, account.grid_upper = D("90"), D("95")
+    report = run.step(frame(at(1, 10), ask="100", share=None))
+    assert bought(report) == [D("0.563")]  # 0.60 x 94 = 56.4 of cash cap
+    run.step(frame(at(1, 10, 1), ask="100", share=None))
+    position = account.uptrend
+    assert position is not None and position.phase == "holding"
+    # The band times out while the position is held: the range exit sells the fragments only.
+    account.range_exit, account.range_exit_since = True, iso(at(1, 10, 2))
+    account.pause, account.draining = "outside-range timeout: exit to cash", True
+    report = run.step(frame(at(1, 10, 2), bid="100", share=None))
+    assert (sold(report), report["exit_reason"]) == ([D("0.06")], "range_exit")
+    assert account.flow_fragments == {}  # sold, so no longer booked as held
+    # The stop then fires, and the pending range exit's liquidation sells the position in
+    # three chunks, every one of them the uptrend exit's, the last included.
+    labels = []
+    for minute in (3, 4, 5):
+        report = run.step(frame(at(1, 10, minute), bid="96.99", bid_size="2", share=None))
+        labels.append((report["exit_reason"], sold(report), "uptrend_ended" in report))
+    assert labels == [
+        ("uptrend_stop", [D("0.2")], False),
+        ("uptrend_stop", [D("0.2")], False),
+        ("uptrend_stop", [D("0.163")], True),
+    ]
+    assert (account.uptrend, account.inventory) == (None, 0)
+
+
+def test_range_exit_sells_an_exiting_position_under_its_uptrend_label():
+    run = Run()
+    position = entered(run)
+    account = run.account
+    account.range_exit, account.range_exit_since = True, iso(at(1, 10, 2))
+    account.grid_lower, account.grid_upper = D("90"), D("95")
+    report = run.step(frame(at(1, 10, 2), bid="96.99"))  # the stop: exit 1
+    assert (report["uptrend_exit"], position.phase) == ("stop", "exiting")
+    assert (sold(report), report["exit_reason"]) == ([D("0.599")], "uptrend_stop")
+    assert report["uptrend_ended"] and account.uptrend is None
+
+
+def test_invalid_frame_halt_ends_an_empty_entry_at_once():
+    run = Run()
+    run.step(frame(at(1, 10), ask="100", ask_size="0.4"))  # too thin to buy
+    assert run.account.uptrend is not None and run.account.uptrend.quantity == 0
+    report = run.step(invalid(frame(at(1, 10, 1), ask="100")))
+    assert (report["decision"], run.account.halt_category, run.account.mode) == (
+        "halt",
+        "integrity",
+        "cash",
+    )
+    assert (report["uptrend_exit"], report.get("uptrend_abandoned")) == ("risk", True)
+    assert run.account.uptrend is None
+
+
+def test_invalid_frame_halt_of_a_held_position_sells_it_next():
+    run = Run()
+    position = entered(run)
+    report = run.step(invalid(frame(at(1, 10, 2), bid="100")))
+    assert (report["decision"], report["uptrend_exit"], run.account.mode) == (
+        "halt",
+        "risk",
+        "cash",
+    )
+    # The invalid frame's quote prices nothing: the position waits, exiting, for a valid one.
+    assert run.account.uptrend is position and position.phase == "exiting"
+    assert run.account.liquidating and sold(report) == []
+    report = run.step(frame(at(1, 10, 3), bid="100"))
+    assert (sold(report), report["exit_reason"], report["uptrend_ended"]) == (
+        [D("0.599")],
+        "uptrend_risk",
+        True,
+    )
+    assert run.account.uptrend is None
+
+
+def test_lookahead_daily_perception_fails_closed():
+    points = days((100, 1), (100, 1))
+    sound = snapshot(at(1, 10), points)
+    assert (sound.d1_index, sound.d1_open_ms) == (0, DAY0)
+    for bad in (
+        replace(sound, d1_index=1, d1_open_ms=DAY0 + DAY),  # day 1 closes at day 2's midnight
+        replace(sound, d1_open_ms=DAY0 + DAY),  # disagrees with the point it names
+        replace(sound, d1_index=None),  # likewise
+        replace(sound, d1_index=2, d1_open_ms=DAY0 + 2 * DAY),  # no such point
+    ):
+        run = Run()
+        report = run.step(replace(frame(at(1, 10), ask="100", points=points), perception=bad))
+        assert (report["decision"], run.account.halt_category) == ("halt", "integrity")
+        assert "daily" in report["reason"] and bought(report) == []
+    run = Run()
+    report = run.step(frame(at(1, 10), ask="100", points=points))
+    assert report["decision"] != "halt" and len(bought(report)) == 1

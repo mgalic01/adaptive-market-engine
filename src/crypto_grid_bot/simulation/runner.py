@@ -156,6 +156,7 @@ DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustio
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _HOUR_MS = 3_600_000
+_DAY_MS = 24 * _HOUR_MS
 
 
 def _epoch_ms(observed_at: str) -> int:
@@ -685,7 +686,7 @@ class PaperSimulator:
         if self.policy.cycle_gate and frame.cycle is not None:
             frame.cycle.validate(observed)  # likewise for variant H's daily values
         if self.policy.mode_switch:
-            self._snapshot(frame)  # the mode switcher cannot run without its perception
+            self._check_perception(self._snapshot(frame), observed_at=quote.observed_at)
 
     def _clear_flat_bounds(self, account: Account, quote: Quote, report: dict[str, Any]) -> None:
         """Amendment 2 (owner decision 2026-10-02, D15): flat, no orders and no range exit
@@ -836,6 +837,10 @@ class PaperSimulator:
                 exit_requested=account.inventory != ZERO,
                 report=report,
             )
+            if self.policy.mode_switch:
+                # An entry that bought nothing ends with the halt; a position waits for the
+                # next valid frame's liquidation, since this frame's quote prices nothing.
+                self._finish_uptrend(account, None, report)
             report.update(decision="halt", reason=str(exc), cancelled=sorted(previous_orders))
             return report
 
@@ -907,9 +912,10 @@ class PaperSimulator:
             if self.policy.mode_switch:
                 # Spec v2 section 6: decisions go on through v1's re-centring cooldown, which
                 # holds back new grids only, so the uptrend entry may start here.
-                if self._decide_mode(account, frame, regime):
-                    report["mode_decision"] = account.mode
-                self._uptrend_step(account, frame, action, report)
+                decided = self._decide_mode(account, frame, regime)
+                if decided is not None:
+                    report["mode_decision"] = decided.value  # journal only
+                self._uptrend_step(account, frame, action, report, decided=decided)
             held = self.uptrend_held(account)
             if self.policy.mode_switch and held > ZERO:
                 # The range exit leaves the uptrend position alone (section 6), and sells
@@ -921,6 +927,7 @@ class PaperSimulator:
                         reduce_unreserved(account, quote, self.rules, maximum=bound, check=False),
                         "range_exit",
                     )
+                    self.held_fragments(account)  # drop F's fragments if this sale sold them
             else:
                 self._record_exit(
                     report,
@@ -959,9 +966,10 @@ class PaperSimulator:
             if self.policy.mode_switch:
                 # Spec v2 sections 4 and 5: the hourly decision, then the uptrend entry, before
                 # this branch's own selling.
-                if self._decide_mode(account, frame, regime):
-                    report["mode_decision"] = account.mode
-                self._uptrend_step(account, frame, action, report)
+                decided = self._decide_mode(account, frame, regime)
+                if decided is not None:
+                    report["mode_decision"] = decided.value  # journal only
+                self._uptrend_step(account, frame, action, report, decided=decided)
             eligible = self._entry_eligible(account, frame, regime, score, cycle)
             h3_only = eligible and not score.eligible
             if not eligible:
@@ -1323,10 +1331,15 @@ class PaperSimulator:
         They belong to their grid and are ordinary unpaired inventory once it ends. The
         harvest that ends it, after a range exit or a drain, drops them (``_harvest``).
         They are dropped here when F no longer blocks and no order is left, since the
-        account then re-centres, and when an exit has sold them."""
+        account then re-centres, and when an exit has sold them. Under spec v2's mode
+        switcher an uptrend position held beside them is not grid inventory, so it is left
+        out of what they are compared with, and a range exit that sold them drops them."""
         fragments = account.flow_fragments
         total = sum(fragments.values(), ZERO)
-        if total > unpaired_inventory(account) or not (account.flow_block or account.orders):
+        unpaired = unpaired_inventory(account)
+        if self.policy.mode_switch:
+            unpaired -= self.uptrend_held(account)
+        if total > unpaired or not (account.flow_block or account.orders):
             fragments.clear()
             return ZERO
         return ZERO if account.draining else total
@@ -1374,6 +1387,22 @@ class PaperSimulator:
         if frame.perception is None:
             raise ValueError("the mode switcher needs a perception snapshot on every frame")
         return frame.perception
+
+    @staticmethod
+    def _check_perception(snapshot: Snapshot, *, observed_at: str) -> None:
+        """Fail closed on a perception that reads a daily bar not yet closed at this
+        observation (lookahead), or whose latest daily bar and its open time disagree. The
+        uptrend engine walks ``d1_points`` up to ``d1_index``, so an index a day ahead would
+        read a future close."""
+        index, points = snapshot.d1_index, snapshot.d1_points
+        if index is None:
+            if snapshot.d1_open_ms is not None:
+                raise ValueError("the perception names a daily bar but no daily point")
+            return
+        if not 0 <= index < len(points) or points[index].open_ms != snapshot.d1_open_ms:
+            raise ValueError("the perception's latest daily point and its open time disagree")
+        if points[index].open_ms + _DAY_MS > _epoch_ms(observed_at):
+            raise ValueError("the perception reads a daily bar that had not closed (lookahead)")
 
     @staticmethod
     def _set_mode(account: Account, mode: str) -> None:
@@ -1445,9 +1474,10 @@ class PaperSimulator:
         rest = unpaired_inventory(account) - self.held_fragments(account)
         return marketable(rest, quote, self.rules) == ZERO
 
-    def _decide_mode(self, account: Account, frame: Frame, regime: RegimeAssessment) -> bool:
+    def _decide_mode(self, account: Account, frame: Frame, regime: RegimeAssessment) -> Mode | None:
         """Section 4's hourly decision, at the first valid frame of an account not halted at
-        or after each UTC hour boundary; True when this frame made one (it then reports it).
+        or after each UTC hour boundary: the mode this frame decided, or None when it made no
+        decision.
 
         While an uptrend position exists the pair stays in Uptrend and nothing is decided
         ("Entering versus staying"); the hour is still taken and the RANGE count restarts,
@@ -1459,12 +1489,12 @@ class PaperSimulator:
         observed = _epoch_ms(frame.quote.observed_at)
         hour = observed // _HOUR_MS * _HOUR_MS
         if hour <= account.decision_hour_ms:
-            return False
+            return None
         consecutive = account.decision_hour_ms == hour - _HOUR_MS
         account.decision_hour_ms = hour
         if account.uptrend is not None:
             account.range_decisions = 0
-            return False
+            return None
         if regime.regime == MarketRegime.RANGE:
             account.range_decisions = account.range_decisions + 1 if consecutive else 1
         else:
@@ -1483,7 +1513,7 @@ class PaperSimulator:
             account.winding_down = False
         elif was_grid and account.orders:
             account.winding_down = True
-        return True
+        return mode
 
     def _uptrend_exits(self, account: Account, frame: Frame, report: dict[str, Any]) -> None:
         """Section 5's exits 1 and 2 at a valid frame of an account not halted, after the mark
@@ -1527,10 +1557,17 @@ class PaperSimulator:
             self._end_entry(account, position, report)  # a close ended an entry with nothing
 
     def _uptrend_step(
-        self, account: Account, frame: Frame, action: RiskAction, report: dict[str, Any]
+        self,
+        account: Account,
+        frame: Frame,
+        action: RiskAction,
+        report: dict[str, Any],
+        *,
+        decided: Mode | None,
     ) -> None:
         """Section 5's entry, after this frame's decision and before the branch's own selling,
-        and section 7's recovery count.
+        and section 7's recovery count. ``decided`` is the mode this frame's decision set, or
+        None when the frame made none (``_decide_mode``).
 
         The count: after a risk drain or a restart, ``recovery_frames`` consecutive valid
         frames whose action is ALLOW end the recovery, V0's eligibility aside (a transient
@@ -1554,7 +1591,7 @@ class PaperSimulator:
         position = account.uptrend
         if position is None:
             if (
-                report.get("mode_decision") != Mode.UPTREND.value
+                decided is not Mode.UPTREND
                 or action != RiskAction.ALLOW
                 or account.risk_recovery
                 or not self._flat(account, quote)
@@ -1581,8 +1618,14 @@ class PaperSimulator:
         if position.phase != "entering":
             return
         if action != RiskAction.ALLOW or account.risk_recovery:
-            self._end_entry(account, position, report)  # a risk drain has already begun exit 3
-            return
+            # Cannot happen: on an account not halted, a refusing action other than EXIT is a
+            # drain, which made the position "exiting" (``_risk_action``); EXIT halts, and the
+            # halt branch never comes here; and the recovery starts only at a drain or at a
+            # restart, which no position survives. So an entry meeting either is a defect.
+            raise RuntimeError(
+                f"an entering uptrend position met risk action {action} "
+                f"(recovery {account.risk_recovery}): a drain or a halt should have ended it"
+            )
         result = market_buy(
             account,
             quote,
@@ -1600,7 +1643,9 @@ class PaperSimulator:
         elif result.refusal == "budget":
             self._end_entry(account, position, report)
 
-    def _finish_uptrend(self, account: Account, quote: Quote, report: dict[str, Any]) -> None:
+    def _finish_uptrend(
+        self, account: Account, quote: Quote | None, report: dict[str, Any]
+    ) -> None:
         """End an exiting position once what remains of it is zero or below the minimum
         notional, after the frame's selling (the unpaired exit, the range-exit sale or the
         halt's liquidation), leaving any remainder as dust, as in v1. A position that bought
@@ -1608,13 +1653,17 @@ class PaperSimulator:
         nothing reports ``uptrend_abandoned``, which is not a trade (section 5).
 
         What remains is the position's quantity, at most: the sales take it out of the
-        unpaired inventory, F's held fragments set aside, as the end-of-run verdict does."""
+        unpaired inventory, F's held fragments set aside, as the end-of-run verdict does.
+        Without a quote (an invalid frame's halt) only an entry that bought nothing can end."""
         position = account.uptrend
         if position is None or position.phase != "exiting":
             return
-        rest = min(position.quantity, unpaired_inventory(account) - self.held_fragments(account))
-        if marketable(rest, quote, self.rules) > ZERO:
-            return
+        if position.quantity > ZERO:
+            if quote is None:
+                return
+            pool = unpaired_inventory(account) - self.held_fragments(account)
+            if marketable(min(position.quantity, pool), quote, self.rules) > ZERO:
+                return
         account.uptrend = None
         report["uptrend_ended" if position.spent > ZERO else "uptrend_abandoned"] = True
 
