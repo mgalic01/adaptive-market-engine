@@ -7,8 +7,8 @@
 **Architecture:**
 - **A repairing reader** returns an archive's bars and statistics together with the hours it could not trust, instead of rejecting the whole archive.
 - **A pure masking module** decides, month by month, which hours enter the replay: rules 1, 2 and 5, the 17% coin-month rule, and the days that rule 3 skips.
-- **Every consumer gets the masks:** the cross-check phase computes one mask per symbol, and the CLI passes the whole `{symbol: mask}` map to every run. `prepare_run` applies it to the pair, the proxy and every basket series, and variant D's minutes use it too.
-- **The CLI** writes the comparison mask before any run starts, and applies XRP's actual-quotes test.
+- **Every consumer gets the masks:** a mask phase computes one mask per symbol before the cross-checks, and the CLI passes the whole `{symbol: mask}` map to the checks and to every run. `prepare_run` applies it to the pair, the proxy and every basket series, and variant D's minutes use it too.
+- **The CLI** computes the comparison mask before the first job, writes it into `results.json`, and applies XRP's actual-quotes test.
 - **The data:** the frozen dataset specs, Bob's re-fetch with a compact digest, the manifest, and a stage-1 identity check before any v2 run.
 
 **Tech Stack:** Python 3.12, `decimal`, pytest, ruff, mypy, bandit. No new dependencies.
@@ -26,7 +26,7 @@
 - **Order with Plan 1:**
   - Plan 1's Task 0, the byte check, merges first, because this plan's checks use it.
   - This plan applies masks inside `prepare_run`, so Plan 1's `Perception` reads post-mask hourly bars without any change to Plan 1.
-  - Whichever plan merges second rebases onto the other in `replay.py`, `jobs.py` and `__main__.py`.
+  - Whichever plan merges second rebases onto the other in `replay.py`, `jobs.py`, `__main__.py` and `.github/workflows/backtest.yml`.
   - MS rows carry this plan's per-run mask fields, like every row.
 - **Byte identity:** `python scripts/byte_identity.py check` (Plan 1, Task 0) stays `ALL IDENTICAL` after every task.
 - **Exactness:** `Decimal` throughout; `drift-tolerance-v1` (`replay.compare_bars`) for matches, and `Decimal(0)` for any hour holding a repaired row.
@@ -54,7 +54,7 @@
 - **Produces:**
   - `RepairedRead`, a frozen dataclass:
     - `bars: list[Kline]`;
-    - `stats: FileStats`, equal to the strict parser's when nothing is repaired or dropped;
+    - `stats: FileStats`, as `parse_rows` computes them, over the kept rows; equal to the strict parser's when nothing is repaired or dropped;
     - `repaired: frozenset[int]`, the opens of repaired rows;
     - `masked_hours: frozenset[int]`, the opens of the hours with an untrusted row;
     - `unreadable: str`, "" when the archive could be read, else the reason;
@@ -97,24 +97,27 @@
     - `open_only: frozenset[int]`: the masked hours whose two bars are complete and whose `differing_fields(aggregated, official, tol) == ("open",)`, where `tol` is `VOLUME_DRIFT_TOLERANCE`, or `Decimal(0)` for a repaired hour, as the eligibility record measured. Hourly-only months have none;
     - `excluded: bool`, set by the 17% rule;
   - `traded_month_mask(minutes: RepairedRead, hourly: RepairedRead, month: str, exclusions: Sequence[BasketExclusion]) -> MonthMask`, for a traded pair's evaluation month (rules 1 and 2). An expected hour enters only if:
+    - it is in neither read's `masked_hours` (an untrusted row, Task 1). Such an hour is masked first, with the reason "untrusted row", because the reader keeps one copy of a duplicated or out-of-order row;
     - exactly one 1h bar exists;
     - exactly one 1m bar exists at each of its 60 minute opens, and none elsewhere in it;
     - and the aggregated minutes match the 1h bar under `drift-tolerance-v1`, or exactly (`Decimal(0)`, prices and volume) when either archive repaired a row in that hour.
     Every other expected hour is masked, with its reason;
-  - `hourly_only_month_mask(hourly: RepairedRead, month: str, exclusions: Sequence[BasketExclusion]) -> MonthMask`, for untraded basket symbols, an untraded proxy, and traded pairs' hourly warm-up months (rule 1, "Hours with no minute data", and rule 5). An expected hour enters only if exactly one 1h bar exists and it is not a repaired row;
+  - `hourly_only_month_mask(hourly: RepairedRead, month: str, exclusions: Sequence[BasketExclusion]) -> MonthMask`, for untraded basket symbols, an untraded proxy, and traded pairs' hourly warm-up months (rule 1, "Hours with no minute data", and rule 5). An expected hour enters only if it is not in `masked_hours`, exactly one 1h bar exists and it is not a repaired row;
   - `SEVENTEEN = Fraction(17, 100)`, and `apply_seventeen_percent(month: MonthMask) -> MonthMask`. A month is excluded when its real defects, its masked hours other than `open_only`, are more than 17% of its expected hours. An excluded month has all its expected hours masked;
+  - `real_defect_share(month: MonthMask) -> Fraction | None`: the real defects ÷ the expected hours, or `None` when the month has no expected hours. A whole month inside documented exclusions has none, such as SOLUSDT's months before 2020-08, or DOGEUSDT 2020-02 (rule 5). Such a month counts nothing toward the 17% rule and is never excluded; any bars its archives hold are dropped by the loaders as a documented absence (Task 3), not masked. `apply_seventeen_percent` compares the share with `SEVENTEEN` only when it is not `None`, so nothing divides by zero;
   - `masked_days(masked: Iterable[int]) -> frozenset[int]`, the UTC day opens that contain a masked hour (rule 3).
-- **Hours inside a documented exclusion** are neither expected nor fed to the features. They stay absent, as today.
+- **Hours inside a documented exclusion** are neither expected nor fed to the features. A loader given a mask also drops every bar inside the symbol's `[[basket_exclusions]]` ranges (Task 3), so DOGEUSDT 2020-02's bars, its repaired hour included, never reach the breadth features. Those hours are not masked hours: they stay out of the 17% count and out of the comparison mask. Today's loaders feed every bar of an `ok` archive; the listing exclusions are absent today only because no bars exist before a listing, and no stage-1 spec has an exclusion.
 
 - [ ] **Step 1: Write the failing tests:**
   - `test_clean_hour_enters_and_incomplete_hour_is_masked`: 60 matching minutes enter; 59 minutes mask the hour (rule 2).
   - `test_repaired_hour_needs_an_exact_match` (Review Focus 2): a repaired hour whose volume differs by 0.05% is masked, and the same hour unrepaired enters as drift.
-  - `test_extra_minute_or_second_hourly_bar_masks_the_hour`
+  - `test_extra_minute_or_second_hourly_bar_masks_the_hour`, built through `parse_rows_repaired`, not hand-built reads: a duplicated minute and a duplicated hourly row each mask their hour, although the reader kept one copy of each.
   - `test_hourly_only_symbol_masks_repaired_hours` (rule 5)
   - `test_seventeen_percent_rule_boundary_listing_and_open_only` (Review Focus 4):
     - in a 700-hour expected month, 119 real defects (exactly 17%) keep it, and 120 exclude it;
     - open-only hours do not count toward either;
     - in SOLUSDT 2020-08, the 246 hours before listing are not expected, so they do not count.
+  - `test_month_with_no_expected_hours_is_kept`: SOLUSDT 2019-03, wholly before listing, and DOGEUSDT 2020-02, wholly inside rule 5's exclusion, each have no expected hours, a share of `None`, no masked hour, and are not excluded. DOGEUSDT 2020-02's bars are dropped by the loader (Task 3), not masked.
   - `test_open_only_hours_are_identified`
   - `test_masked_days_cover_each_masked_hours_day`
   - `test_audit_still_uses_the_same_helpers`: `audit`'s outputs on its existing fixtures are unchanged.
@@ -127,27 +130,36 @@
 
 **Files:**
 - Modify: `src/crypto_grid_bot/backtest/replay.py`: `load_candles`, `load_minutes`, `cross_check_hourly`, `cross_check_daily` and `check_hourly_series`
-- Modify: `src/crypto_grid_bot/backtest/jobs.py`: `prepare_run`, `run_job` and `cross_check_job`
+- Modify: `src/crypto_grid_bot/backtest/jobs.py`: `prepare_run`, `run_job` and `cross_check_job`, and a new `mask_job`
 - Modify: `src/crypto_grid_bot/backtest/trend_benchmark.py`: `trend_job`, which passes the masks through
 - Test: `tests/test_backtest_masked_checks.py`
 
 **Interfaces:**
 - **Consumes:** Tasks 1 and 2.
 - **Produces:**
-  - **`load_candles(..., mask: frozenset[int] | None = None)` and `load_minutes(..., mask=...)`:**
-    - with `mask=None`, exactly today's strict loading, which refuses an archive with repaired or dropped rows. So only callers carrying a mask admit repaired data, and every stage-1 run reads as before;
-    - with a mask, they read 1m and 1h archives with `read_archive_repaired` and drop every bar in a masked hour;
+  - **`load_candles(..., mask: frozenset[int] | None = None, excluded: Sequence[tuple[int, int]] = ())` and `load_minutes(..., mask=..., excluded=...)`.** `excluded` is the symbol's documented exclusion ranges in ms, as `cross_check_job` already builds them from `spec.basket_exclusions`:
+    - with `mask=None`, exactly today's strict loading, which refuses an archive with repaired or dropped rows, and drops nothing. So only callers carrying a mask admit repaired data, and every stage-1 run reads as before;
+    - with a mask, they read 1m and 1h archives with `read_archive_repaired`, drop every bar in a masked hour, and drop every bar inside `excluded`, a documented absence (spec v1 §4), so DOGEUSDT 2020-02's bars never load. Neither stage-1 spec has an exclusion;
     - **fail-closed, as today:** an archive the manifest lists as `ok` that reads as unreadable raises `DataError` (`tests/test_backtest_loaders.py:115-131`). Only manifest status `"unreadable"` (Task 7) gives no bars, which `_archive_months` already ensures;
   - **the three cross-checks** take the masked hours and remove them from the expected set (spec v1 §5, "The post-mask expected set"). `cross_check_daily` takes the masked days from its caller, skips each, and counts it in `daily_days_skipped_for_masks`, a key it writes only when non-zero (rule 3);
-  - **`cross_check_job`** computes every symbol's masks month by month (Task 2): the pair, the proxy and each basket member. It returns `masks: {symbol: sorted masked hours}` and the per-month table, both written only when non-empty;
-  - **`run_job(..., masks: Mapping[str, Sequence[int]] = {})` and `trend_job(..., masks=...)`.** `prepare_run` applies each symbol's mask to the pair's hourly bars, to the proxy's series and to every basket member's series. So `prepared.hourly` is post-mask, which Plan 1's `Perception` reads. D's minutes use the pair's mask, and D's rows carry Task 4's fields.
+  - **`mask_job(spec_path: Path, data_dir: Path, symbol: str) -> SymbolMask`,** a new job in `jobs.py`, which the CLI runs for every checked symbol before the cross-checks: the pair, the proxy and each basket member. It reads the symbol's 1m and 1h archives with the repaired reader, month by month (Task 2). `SymbolMask` is a frozen dataclass:
+    - `symbol: str`;
+    - `mask: frozenset[int] | None`: `None` when the symbol's repaired reads repair, drop and mask nothing and no hour is masked; otherwise every masked hour;
+    - `months: tuple[MonthMask, ...]`: the per-month table, for the comparison mask and `mask-report` (Task 5).
+  - **`cross_check_job(..., mask: frozenset[int] | None = None)` keeps its return value:** the same record as today, which the CLI writes whole under `hourly_cross_checks`. With a mask, the record's checks run on the post-mask expected set. The record gains only `daily_days_skipped_for_masks`, and Task 6's `tick_limit_quotes`, each written only when non-zero. No mask and no per-month table ever enter the record;
+  - **`run_job(..., masks: Mapping[str, frozenset[int] | None] | None = None)` and `trend_job(..., masks=...)`.** `prepare_run` applies each symbol's mask to the pair's hourly bars, to the proxy's series and to every basket member's series. So `prepared.hourly` is post-mask, which Plan 1's `Perception` reads. D's minutes use the pair's mask, and D's rows carry Task 4's fields;
+  - **`None` and an empty mask differ:**
+    - a symbol mapped to `None`, or absent, loads with today's strict reader;
+    - a symbol mapped to a set, even an empty one, loads with the repaired reader and drops the set's hours.
+    Task 5's CLI passes each `SymbolMask.mask` as it is. A clean symbol gets `None`, so stage-1 runs take today's exact path, and Task 10's re-run proves it. Only a symbol with a masked hour, a repaired row or a dropped row gets a set.
 - **With no masks,** every function behaves byte for byte as today.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `test_no_mask_changes_nothing`: each check and loader with no mask equals today's on the existing fixtures.
+  - `test_no_mask_changes_nothing`: each check and loader with no mask equals today's on the existing fixtures. On a clean window, every `SymbolMask.mask` is `None`, and every cross-check record equals today's, keys and values.
   - `test_masked_hour_leaves_the_expected_set`: a masked hour with no minutes fails no check.
   - `test_daily_check_skips_and_counts_masked_days`: the day is skipped and counted, and its official 1d bar stays in use.
   - `test_masks_reach_the_proxy_the_basket_and_variant_d` (Review Focus 3)
+  - `test_documented_exclusion_bars_are_dropped_with_a_mask`: DOGEUSDT 2020-02's bars, its repaired hour included, are absent from every pair's breadth series, February counts no masked hour, and with `mask=None` the same archive loads whole, as today.
   - `test_ok_archive_that_is_unreadable_still_raises`
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
@@ -161,10 +173,11 @@
 - Test: `tests/test_backtest_masked_runs.py`
 
 **Interfaces:**
+- **Consumes:** `replay(..., masked: frozenset[int] = frozenset())` and `trend_benchmark`'s run gain this parameter, holding the pair's own mask, which `run_job` and `trend_job` take from the `masks` map (Task 3). The proxy's and the basket's masks shape the features and are not reported per run. Plan 1 rebases onto this signature.
 - **Produces,** on every row, D's and MS's included, each field written only when non-zero (spec v1 §5 rule 1, "Each run reports"):
-  - `masked_hours`: the run's masked evaluation hours;
-  - `days_skipped_for_masks` (rule 3);
-  - `fills_after_masked_span`: fills on the first replayed bar after a masked span (rule 4). Orders stay open across the span, and the engine's own gap rules apply unchanged.
+  - `masked_hours`: the number of hours in `masked` inside the evaluation window `[start, end)`;
+  - `days_skipped_for_masks`: `masked_days(masked)` inside the daily check's hourly window (rule 3);
+  - `fills_after_masked_span`: fills on the first replayed minute whose previous replayed minute is separated from it by a masked hour (rule 4). A gap from feature warm-up (`features.at` returning None) is not a masked span. Orders stay open across the span, and the engine's own gap rules apply unchanged.
 
 - [ ] **Step 1: Write the failing tests:** `test_fill_after_a_masked_span_is_flagged`, and `test_unmasked_run_rows_gain_no_field`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
@@ -177,20 +190,22 @@
 ### Task 5: The comparison mask, written before scoring
 
 **Files:**
-- Modify: `src/crypto_grid_bot/backtest/__main__.py`: the `run` command and a new `mask-report` command
+- Modify: `src/crypto_grid_bot/backtest/__main__.py`: the cross-check phase that `verify` and `run` share, and a new `mask-report` command
 - Test: `tests/test_backtest_cli.py`, `tests/test_backtest_acceptance.py`
 
 **Interfaces:**
 - **Produces:**
-  - **`results.json["comparison_mask"]`,** written before any run starts, and only when its content is non-empty: a masked hour, an excluded month or a breach of XRP's test. It holds, per symbol, the masked hours as merged `[from, to)` ISO ranges with their reasons, and the excluded pair-months. The CLI passes the `{symbol: mask}` map to every run;
+  - **`results.json["comparison_mask"]`,** computed before the first job is submitted, printed by `verify`, and included in the single `results.json` the CLI writes at the end (`__main__.py` writes it once, after every run; no early file), only when its content is non-empty: a masked hour, an excluded month or a breach of XRP's test. It holds, per symbol, the masked hours as merged `[from, to)` ISO ranges with their reasons, and the excluded pair-months, built from the `SymbolMask`s (Task 3). The CLI runs `mask_job` for every checked symbol first, then passes each symbol's mask to its cross-check and the `{symbol: mask}` map to every run. `verify` shares this phase, and prints the comparison mask under the same rule;
   - **`python -m crypto_grid_bot.backtest mask-report --spec X --data-dir data`,** which prints JSON without replaying:
-    - the comparison mask;
-    - for each symbol-month: the expected hours, the masked hours, the open-only hours, the real-defect share, and whether it is excluded;
+    - the comparison mask, and per symbol whether its mask is `None`, with its repaired, dropped and masked counts (Task 10 reads these);
+    - for each symbol-month: the expected hours, the masked hours, the open-only hours, the real-defect share (`null` for a month with no expected hours), and whether it is excluded;
     - XRP's test statistic, the widest quote spread found, whether or not it breaches.
-- **`acceptance.py` is unchanged,** as Plan 1 also requires. Masked hours never exclude a pair-window. The one exclusion these rules add, XRP's (Task 6), reaches the scorer through the cross-checks that `window_of` already reads.
+- **`acceptance.py`'s code is unchanged,** as Plan 1 also requires. Task 6 updates one docstring and one comment there, and nothing else.
+  - Masked hours never exclude a pair-window. The one exclusion these rules add, XRP's (Task 6), reaches the scorer through the cross-checks that `window_of` already reads.
+  - No criterion uses Task 4's per-run mask fields. Spec v1 §5 asks each run to report them (rules 1 and 4), and `results.json` carries them. So `runs_of` and `run_json` stay as they are, and Plan 1's `acceptance_v2` does not read them either.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `test_mask_is_written_before_runs_and_only_when_non_empty`;
+  - `test_mask_is_computed_before_the_first_job_and_written_only_when_non_empty`: with the fake pool, the comparison mask exists before `run_job` is first called, and a clean window writes no `comparison_mask` key;
   - `test_mask_report_prints_shares_without_replaying`;
   - `test_window_of_is_unchanged_without_the_new_keys`, a synthetic `window_of` test on cross-checks that carry none of the new keys. The real stage-1 check is Task 10: stage 1's files are not in the repository, and the scorer pins its own code.
 - [ ] **Step 2: Run them.** Expected: FAIL.
@@ -201,22 +216,33 @@
 ### Task 6: XRP's actual-quotes test
 
 **Files:**
-- Modify: `src/crypto_grid_bot/backtest/masking.py`; `jobs.cross_check_job`; `__main__.py`'s `INTEGRITY_FIELDS`
+- Modify: `src/crypto_grid_bot/backtest/masking.py`; `jobs.cross_check_job`, which gains `config_path: Path` (the CLI passes `args.config`, and `mask-report` takes `--config`), since it has no config today; `__main__.py`'s `integrity_failures`
+- Modify: `src/crypto_grid_bot/backtest/acceptance.py`: `data_rule_exclusions`'s docstring and the comment in `runs_of`, nothing else
 - Test: `tests/test_masking.py`, `tests/test_backtest_cli.py`, `tests/test_backtest_acceptance.py`
 
 **Interfaces:**
-- **Produces:** `widest_spread_pct(minutes: Iterable[Kline], symbol: str, spread: Decimal, tick: Decimal) -> Decimal`, the largest `(ask − bid) ÷ ask × 100` over every quote that `replay.bar_quotes(kline, symbol, "high_first", spread, tick)` synthesizes. Both paths give the same four quotes, so one path suffices. A breach is `widest_spread_pct(...) > limit_pct`: the engine's own condition (`runner.py`, `_validate_frame`).
-- **The rule** (spec v1 §5 rule 8, decision 16): for XRPUSDT only, over the window's replayed minutes, which are the evaluation months after masking, with the dataset's assumed spread, the manifest's tick and `config/default.toml`'s `maximum_spread_pct`. It is computed month by month, like the masks.
+- **Produces:** `widest_spread_pct(minutes: Iterable[Kline], symbol: str, spread: Decimal, tick: Decimal) -> Decimal`, the largest spread in percent over every quote that `replay.bar_quotes(kline, symbol, "high_first", spread, tick)` synthesizes. Both paths give the same four quotes, so one path suffices. Beside it, `tick_limit_quotes(minutes, symbol, spread, tick, limit: Decimal) -> int`, the number of those quotes with a spread above `limit`, which the cross-check record carries. Both are computed only when `symbol == "XRPUSDT" and symbol in spec.traded`; in `verify-2024h1` XRP is a basket member only, with no minutes, and nothing is computed.
+- **Units and arithmetic, as the replay and the engine already use them:**
+  - `spread` is `RunConfig.spread`, the fraction `spec.assumed_spread_pct / 100` that `jobs.prepare_run` computes (`jobs.py:170`) and the replay passes to `bar_quotes`. `tick` is `run.rules.tick_size`, as `replay.py:734` passes it;
+  - each quote's spread is `(quote.ask - quote.bid) / quote.ask * 100`, in that order, as `src/crypto_grid_bot/simulation/runner.py:590` computes it;
+  - the limit is `Decimal(str(config.maximum_spread_pct))`, as `PaperSimulator` converts the float (`src/crypto_grid_bot/simulation/runner.py:336`);
+  - a breach is a spread `> limit`, the engine's own condition (`_validate_frame`, `runner.py:591`). A quote exactly at the limit passes.
+- **The rule** (spec v1 §5 rule 8, decision 16): for XRPUSDT only, over the window's replayed minutes, which are the evaluation months after masking, with the dataset's assumed spread, the manifest's tick and `config/default.toml`'s `maximum_spread_pct`. It is computed month by month, like the masks: `cross_check_job` computes it for XRPUSDT on the minutes that XRP's mask leaves, and `mask-report` prints the same statistic.
 - **Only a breach writes anything** into `results.json`. A pass writes nothing, so `practice-2022`, whose XRP passes, keeps its stage-1 identity. A breach excludes XRP's pair-window for every variant, through the existing machinery:
   - XRP's cross-check record gains `tick_limit_quotes`, the number of quotes above the limit, written only when non-zero;
-  - `__main__.INTEGRITY_FIELDS` gains that field, read as 0 when absent, so `scoped_failures` makes it XRP's own failure. `excluded_pairs["XRPUSDT"]` then names it, and `acceptance.window_of` excludes the same pair-window, with `acceptance.py` unchanged;
+  - `__main__.py` gains `QUOTE_INTEGRITY_FIELDS = ("tick_limit_quotes",)`, which `integrity_failures` reads on a traded pair's check with `check.get(field, 0)`. The existing `INTEGRITY_FIELDS`, `SERIES_INTEGRITY_FIELDS` and `DAILY_INTEGRITY_FIELDS` keep their direct `check[field]` lookups, so a stage-1 record missing one of those fields still raises, as today. `scoped_failures` makes `tick_limit_quotes` XRP's own failure, since XRP is traded and is not the market proxy. `excluded_pairs["XRPUSDT"]` then names it, and `acceptance.window_of` excludes the same pair-window, with `acceptance.py`'s code unchanged;
   - the comparison mask records the breach.
+- **`acceptance.py`'s two stale texts are updated.** `data_rule_exclusions`'s docstring, and the comment in `runs_of`, foresaw this PR naming the fields. They now say:
+  - rule 8 reaches the scorer through the cross-check record's `tick_limit_quotes` and `scoped_failures`, so `data_rule_exclusions` stays empty;
+  - the per-run mask fields are reported in each row and scored by no criterion.
+  `data_rule_exclusions` still returns `[]`.
 
 - [ ] **Step 1: Write the failing tests:**
   - `test_one_wide_quote_excludes_xrp_and_a_pass_writes_nothing` (Review Focus 5). Warm-up minutes do not count;
-  - `test_quotes_at_the_limit_pass`;
+  - `test_quotes_at_the_limit_pass`: the limit comes from the engine itself, a `PaperSimulator`'s `_maximum_spread_pct` built from `config/default.toml`. A bar whose widest quote equals it exactly passes, and one tick lower on the bid breaches;
+  - `test_stage_1_checks_still_need_every_existing_field`: a pair check missing `hours_missing` still raises `KeyError` in `integrity_failures`, and one missing `tick_limit_quotes` does not;
   - `test_practice_2022_xrp_passes`, on a synthetic copy of its tick and spread;
-  - `test_scorer_excludes_the_same_xrp_window`: `acceptance.window_of` on a results file with `tick_limit_quotes` excludes XRP's pair-window, and no XRP run is then expected.
+  - `test_scorer_excludes_the_same_xrp_window`: `acceptance.window_of` on a results file with `tick_limit_quotes` excludes XRP's pair-window, and no XRP run is then expected. It replaces `test_the_long_window_data_rules_are_not_applied_yet` (`tests/test_backtest_acceptance.py:604-618`), whose name and comment would otherwise be false.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run `pytest -q` and `python scripts/byte_identity.py check`.** Expected: PASS, and `ALL IDENTICAL`.
@@ -225,19 +251,21 @@
 ### Task 7: Repairable and unreadable archives in a fetch
 
 **Files:**
-- Modify: `src/crypto_grid_bot/backtest/dataset.py`: `fetch_dataset` and `verify_dataset`
+- Modify: `src/crypto_grid_bot/backtest/dataset.py`: `fetch_dataset`, `verify_dataset` and `_validate_manifest`
 - Test: `tests/test_backtest_data.py`
 
 **Interfaces:**
 - **Produces:** for 1m and 1h archives, a fallback in `fetch_dataset`, not in `fetch_file`, which `audit_run._fetch` and `tests/test_backtest_audit.py:258-283` rely on to raise `ArchiveParseError`. When `fetch_file` raises it after the archive downloaded and verified against its checksum, `fetch_dataset` reads the stored file with `read_archive_repaired`:
   - an unreadable archive gets status `"unreadable"`, with its reason;
   - any other archive gets status `"ok"`, with the repaired read's `FileStats`. #156's manifest of this window lists 108 such archives, from 2018-07 to 2023-03, and the first is the sixth file `required()` lists.
+- **`_validate_manifest`** accepts status `"unreadable"` beside `ok` and `missing` (`dataset.py:545-546` refuses any other status today); `sha256` is required for `ok` and `unreadable`, and a non-empty `reason` for `unreadable`. It runs inside `load_manifest` (`dataset.py:487-493`), which `verify`, `prepare_run` and `cross_check_job` all call, so without this no consumer could load the new manifest.
 - **`verify_dataset`** accepts `"unreadable"` with its SHA-256. The loaders give no bars for it, so its hours are absent, then masked, and they count toward the 17% rule (spec v1 §5 rule 1, "The reader").
 - **A strictly valid archive's entry is unchanged,** so refetching a stage-1 window gives the same manifest.
 
 - [ ] **Step 1: Write the failing tests:**
   - `test_truncated_close_archive_is_fetched_as_ok_with_repaired_stats`;
   - `test_unreadable_archive_is_recorded_not_fatal`;
+  - `test_manifest_with_an_unreadable_entry_loads_and_verifies`: `load_manifest` and `verify_dataset` accept it, and an unknown status is still refused;
   - `test_valid_archive_entry_is_unchanged`;
   - `test_fetch_file_still_raises_for_the_audit`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
@@ -252,6 +280,7 @@
 **Files:**
 - Create: `config/datasets/full-range-2017-2024.toml`
 - Modify: `config/datasets/full-range-2019-2024.toml`, to spec v1 §4's values. v2 does not run it, but a committed spec under a frozen name must not contradict §4.
+- Modify: `.github/workflows/backtest.yml`: `full-range-2017-2024` in the `spec` input's options, so that the owner's Actions path can dispatch the scored window once its manifest is committed
 - Test: `tests/test_full_range_specs.py`
 
 **Interfaces:**
@@ -269,9 +298,10 @@
 
 - [ ] **Step 1: Write the failing tests:**
   - `test_full_range_2017_2024_matches_spec_v1_section_4`: every field and exclusion above, and `required()` lists 1,164 kline files (216 1m, 711 1h and 237 1d);
-  - `test_full_range_2019_2024_matches_spec_v1_section_4`.
+  - `test_full_range_2019_2024_matches_spec_v1_section_4`;
+  - `test_every_dataset_spec_is_a_workflow_choice`: it loads `backtest.yml` with `yaml.safe_load`, and asserts that the set of the `spec` input's options equals the set of names of the committed `config/datasets/*.toml` files (the YAML order is not sorted). PyYAML reads the `on:` key as `True`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Write the spec files.**
+- [ ] **Step 3: Write the spec files, and add the workflow choice.**
 - [ ] **Step 4: Run `pytest -q`.** Expected: PASS.
 - [ ] **Step 5: Commit** `data: the frozen full-range dataset specs`.
 
@@ -283,20 +313,29 @@
 - Later, from Bob's report: `config/datasets/full-range-2017-2024.manifest.json`
 
 **Interfaces:**
-- **`scripts/fetch_full_range.py <data-dir>`:**
-  - copies the committed spec into `<data-dir>`, so that every write lands under the git-ignored `data/`. Bob's workflow refuses any change outside a new `docs/reviews/*-bob-*.md` (`bob-task.yml:305-309`);
-  - calls `fetch_dataset(..., instruments=...)` with the BTCUSDT, ETHUSDT and XRPUSDT filters taken from the committed `config/datasets/long-bull-bear-2022.manifest.json`, so no request goes to `data-api.binance.vision`, which Bob's prompt forbids (`bob-task.yml:228-233`);
+- **`scripts/fetch_full_range.py <data-dir> [--spec PATH]`,** the committed `full-range-2017-2024.toml` by default:
+  - copies the spec into `<data-dir>`, so that every write lands under the git-ignored `data/`. Bob's workflow refuses any change outside a new `docs/reviews/*-bob-*.md` (`bob-task.yml:305-309`);
+  - calls `fetch_dataset(..., instruments=...)` with the BTCUSDT, ETHUSDT and XRPUSDT filters taken from the committed `config/datasets/long-bull-bear-2022.manifest.json`, so no request goes to `data-api.binance.vision`, which Bob's prompt forbids (`bob-task.yml:228-233`). The copied filters keep that manifest's `fetched_at` (`fetch_dataset` would stamp them with now, `dataset.py:471-476`; the script restores them), and the manifest PR notes the copy. The fetcher is wrapped with bounded retries for `FeedError` only, as `audit_run._fetch` retries, since `archive_get` has none and one transient failure in about 2,450 requests would end the run; a checksum failure is never retried;
   - fetches BTCUSDT's funding archives for 2020-01 to 2024-12 with `fetch_funding_file`, from `data.binance.vision`, so the manifest matches spec v1 §4;
-  - then runs `verify` and `mask-report` on that copy.
+  - **assembles and writes the manifest.** `fetch_dataset` returns the kline manifest as a dictionary, and each `fetch_funding_file` call returns one entry. So the script appends the 60 funding entries after the kline entries, where `fetch_dataset` puts the funding entries it keeps. It then writes the result with `write_manifest` (an atomic write) to `manifest_path` of the copied spec, before anything reads it;
+  - then runs `verify` and `mask-report` on that copy. Both load the manifest from disk.
 - **Bob's report:**
-  - a compact digest table, one row per archive: path, SHA-256, status and `FileStats`. It stays under `validate_bob_artifact.py`'s 200,000-byte limit; #156's full manifest was 529,180 bytes;
-  - the `mask-report` output.
-  Claude rebuilds the manifest from the digest, checks each SHA-256 against Binance's `.CHECKSUM` files, and commits it in a reviewed PR, as with P8.
-- **Stop conditions:** a checksum mismatch; any request to another host; any month after 2024-12; a pair-window left with fewer than 2 included pairs.
+  - **a compact digest,** which the script prints: a header with the manifest's `created_at`; one row per kline archive with its file name (not the path), SHA-256, status, `bytes`, and `FileStats` only where they differ from a complete month (rows = expected rows, no gaps, first and last opens at the month's bounds, units `ms`), else the word `full`; one row per funding archive with its name, SHA-256, `bytes` and record count. A full-path table with every `FileStats` field would be about 230 KB, over `validate_bob_artifact.py`'s 200,000-byte limit (`REPORT_MAX_BYTES`), and the publish step would reject the whole run; this form is about 130 KB;
+  - **`mask-report`'s summary only:** its totals, every symbol-month with a masked hour or an exclusion, and XRP's line. The full JSON stays under `<data-dir>`, and the report prints its SHA-256;
+  - the script prints the report's byte count. Above 190,000 bytes Bob stops and reports the count instead.
+  Bob's fetch has already checked each archive against Binance's `.CHECKSUM` (`fetch_file`'s rule), and a mismatch stops the run. Claude rebuilds the manifest from the digest, which carries each SHA-256, and checks the digest against the SHA-256 that Bob's report prints for it, as with P8. Claude makes no request to Binance. The manifest is committed in a reviewed PR.
+- **Stop conditions:**
+  - a checksum mismatch; any request to another host; any month after 2024-12; a pair-window left with fewer than 2 included pairs;
+  - `mask-report` excludes any symbol-month under the 17% rule. The eligibility record measured every symbol-month of this window that has expected hours under 17% (its 772 measured pair-months; the one unusable month here, DOGEUSDT 2020-02, has no expected hours), so an exclusion contradicts it. Bob stops and reports it. It is a signal to report, and no rule is tuned to it.
 - **Order:** the task file's PR merges only after Tasks 1–7 are on main. A merge that adds a task file starts Bob at once (`bob-task.yml:5-6`), and Bob needs `mask-report` and the new fetch statuses.
-- **The manifest PR,** and a test there, assert all 1,164 kline entries and all 60 funding entries.
+- **The manifest PR,** and a test there, assert all 1,164 kline entries and all 60 funding entries. The test also pins Task 7's fallback. #156's manifest left 108 archives `unparsed`: 82 1h and 26 1m, from 2018-07 to 2023-03. Each must appear with the status and the full `FileStats` that Bob's digest reports, written into the test, not only counted. The rebuilt manifest carries each entry's `bytes` and the run's `created_at`, from the digest's rows and header.
 
-- [ ] **Step 1: Write the failing test** `test_fetch_full_range_writes_only_under_data_and_uses_committed_filters`. It runs the script against a fake fetcher, and asserts that no file outside `<data-dir>` changes, that no request goes to another host, and that all 60 funding months are fetched.
+- [ ] **Step 1: Write the failing test** `test_fetch_full_range_writes_only_under_data_and_uses_committed_filters`. It runs the script with `--spec` on a one-month synthetic spec (the same symbols, basket and pricing; one evaluation month and its warm-up), against a fake fetcher that serves complete synthetic archives with matching `.CHECKSUM`s, plus one funding month. The committed spec's 1,164 archives cannot be synthesized complete in a unit test, and incomplete ones would mask every hour and make `verify` exit 2. It asserts:
+  - no file outside `<data-dir>` changes, and no request goes to another host;
+  - every funding month the spec covers is fetched (the committed spec's 60 are the script's default list);
+  - the manifest exists under `<data-dir>` before `verify` and `mask-report` run, holds every kline entry `required()` lists and the funding entries, and keeps the copied filters' `fetched_at`;
+  - `verify` prints `"valid"` and `mask-report` prints its JSON;
+  - a transient `FeedError` on one request is retried and the run completes; a checksum mismatch is not retried and stops it.
 - [ ] **Step 2: Run it.** Expected: FAIL.
 - [ ] **Step 3: Write the script and the task file.** The task file holds the steps, the stop conditions, the report's format and the self-check from `BOB_PRACTICE.md`.
 - [ ] **Step 4: Run `pytest -q`.** Expected: PASS.
@@ -313,6 +352,7 @@
 **Interfaces:**
 - **Produces:** `python scripts/stage1_identity.py <stage-1 results dir> <re-run results dir>`. It pairs each `results.json` by dataset, policy and path, and prints `IDENTICAL` or the differing keys for each pair. It exits 0 only when every pair is identical apart from `code_commit` and `code_sha256`, and no new mask field appears (decision 18).
 - **The re-run:** stage 1's 24 workflow runs at the commit that merges Tasks 1–7, compared with stage 1's downloads. Dispatching them needs the owner's go.
+- **What it proves.** Identical `results.json` files prove that the engine's output is unchanged. They cannot show by themselves which reader ran: a phantom repair that still matches exactly would change no bar and write no key, since `Kline` does not store the close timestamp the repair rewrites. So the script's companion check is `mask-report` on `practice-2022` and `verify-2024h1`, with no replay, which must print `None` for every symbol's mask and zero repaired, dropped and masked counts (Task 5). Together they show that every stage-1 symbol took today's strict path and that the repaired reader finds nothing to repair in stage 1's archives.
 
 - [ ] **Step 1: Write the failing tests:** `test_identical_apart_from_fingerprints_passes`, `test_any_other_difference_fails`, and `test_a_new_mask_field_fails`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
