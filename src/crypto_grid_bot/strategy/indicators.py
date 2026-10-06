@@ -25,9 +25,9 @@ from dataclasses import dataclass
 from decimal import Decimal, localcontext
 
 _PRECISION = 50
-ZERO = Decimal(0)
-HUNDRED = Decimal(100)
-NEUTRAL_RSI = Decimal(50)
+_ZERO = Decimal(0)
+_HUNDRED = Decimal(100)
+_NEUTRAL_RSI = Decimal(50)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +56,7 @@ def sma(closes: Sequence[Decimal], length: int) -> list[Decimal | None]:
     with localcontext() as context:
         context.prec = _PRECISION
         for i in range(length - 1, len(closes)):
-            values[i] = sum(closes[i - length + 1 : i + 1], ZERO) / length
+            values[i] = sum(closes[i - length + 1 : i + 1], _ZERO) / length
     return values
 
 
@@ -73,16 +73,16 @@ def wilder_rsi(closes: Sequence[Decimal], period: int = 14) -> list[Decimal | No
         return values
     with localcontext() as context:
         context.prec = _PRECISION
-        gains = [max(closes[i] - closes[i - 1], ZERO) for i in range(1, len(closes))]
-        losses = [max(closes[i - 1] - closes[i], ZERO) for i in range(1, len(closes))]
-        gain = sum(gains[:period], ZERO) / period
-        loss = sum(losses[:period], ZERO) / period
+        gains = [max(closes[i] - closes[i - 1], _ZERO) for i in range(1, len(closes))]
+        losses = [max(closes[i - 1] - closes[i], _ZERO) for i in range(1, len(closes))]
+        gain = sum(gains[:period], _ZERO) / period
+        loss = sum(losses[:period], _ZERO) / period
         for i in range(period, len(closes)):
             if i > period:
                 gain = (gain * (period - 1) + gains[i - 1]) / period
                 loss = (loss * (period - 1) + losses[i - 1]) / period
             total = gain + loss
-            values[i] = HUNDRED * gain / total if total else NEUTRAL_RSI
+            values[i] = _HUNDRED * gain / total if total else _NEUTRAL_RSI
     return values
 
 
@@ -99,7 +99,7 @@ def wilder_atr(bars: Sequence[Bar], period: int = 14) -> list[Decimal | None]:
     with localcontext() as context:
         context.prec = _PRECISION
         ranges = [_true_range(bars[i], bars[i - 1].close) for i in range(1, len(bars))]
-        atr = sum(ranges[:period], ZERO) / period
+        atr = sum(ranges[:period], _ZERO) / period
         values[period] = atr
         for i in range(period + 1, len(bars)):
             atr = (atr * (period - 1) + ranges[i - 1]) / period
@@ -129,16 +129,16 @@ def wilder_adx(
         return adx_values, plus_values, minus_values
     with localcontext() as context:
         context.prec = _PRECISION
-        tr, plus, minus = [ZERO] * n, [ZERO] * n, [ZERO] * n
+        tr, plus, minus = [_ZERO] * n, [_ZERO] * n, [_ZERO] * n
         for i in range(1, n):
             up = bars[i].high - bars[i - 1].high
             down = bars[i - 1].low - bars[i].low
-            plus[i] = up if up > down and up > 0 else ZERO
-            minus[i] = down if down > up and down > 0 else ZERO
+            plus[i] = up if up > down and up > 0 else _ZERO
+            minus[i] = down if down > up and down > 0 else _ZERO
             tr[i] = _true_range(bars[i], bars[i - 1].close)
-        s_tr = sum(tr[1 : period + 1], ZERO)
-        s_plus = sum(plus[1 : period + 1], ZERO)
-        s_minus = sum(minus[1 : period + 1], ZERO)
+        s_tr = sum(tr[1 : period + 1], _ZERO)
+        s_plus = sum(plus[1 : period + 1], _ZERO)
+        s_minus = sum(minus[1 : period + 1], _ZERO)
         dx: list[Decimal] = []
         adx: Decimal | None = None
         for i in range(period, n):
@@ -146,12 +146,12 @@ def wilder_adx(
                 s_tr += tr[i] - s_tr / period
                 s_plus += plus[i] - s_plus / period
                 s_minus += minus[i] - s_minus / period
-            plus_di = HUNDRED * s_plus / s_tr if s_tr else ZERO
-            minus_di = HUNDRED * s_minus / s_tr if s_tr else ZERO
+            plus_di = _HUNDRED * s_plus / s_tr if s_tr else _ZERO
+            minus_di = _HUNDRED * s_minus / s_tr if s_tr else _ZERO
             total = plus_di + minus_di
-            dx.append(HUNDRED * abs(plus_di - minus_di) / total if total else ZERO)
+            dx.append(_HUNDRED * abs(plus_di - minus_di) / total if total else _ZERO)
             if len(dx) == period:
-                adx = sum(dx, ZERO) / period
+                adx = sum(dx, _ZERO) / period
             elif adx is not None:
                 adx = (adx * (period - 1) + dx[-1]) / period
             plus_values[i], minus_values[i] = plus_di, minus_di
@@ -169,15 +169,16 @@ def bollinger_width(
     ``None`` where the middle is 0.
     """
     _positive("length", length)
+    _positive("deviations", deviations)
     values: list[Decimal | None] = [None] * len(closes)
     with localcontext() as context:
         context.prec = _PRECISION
         for i in range(length - 1, len(closes)):
             window = closes[i - length + 1 : i + 1]
-            middle = sum(window, ZERO) / length
+            middle = sum(window, _ZERO) / length
             if not middle:
                 continue
-            variance = sum(((close - middle) ** 2 for close in window), ZERO) / length
+            variance = sum(((close - middle) ** 2 for close in window), _ZERO) / length
             values[i] = 2 * deviations * variance.sqrt() / middle
     return values
 

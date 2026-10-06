@@ -98,7 +98,7 @@ def test_series_shorter_than_the_minimum_give_only_none():
     assert wilder_atr(bars) == [None] * 14
     assert wilder_adx(bars) == ([None] * 14,) * 3
     assert sma(closes[:4], 5) == [None] * 4
-    assert bollinger_width(closes[:19]) == [None] * 14
+    assert bollinger_width([D(i + 1) for i in range(19)]) == [None] * 19  # needs 20
     assert wilder_rsi([]) == [] and wilder_adx([]) == ([], [], [])
 
 
@@ -171,6 +171,26 @@ def test_adx_and_di_recursions_by_hand_with_period_two():
     assert adx[3] == D(25) and adx[4] == D("12.5")
 
 
+def test_rsi_with_period_one_is_the_latest_change_alone():
+    # The seed is the first change and the recursion keeps nothing of the earlier ones.
+    rsi = wilder_rsi([D(10), D(11), D(10), D(10), D(12)], period=1)
+    assert rsi == [None, D(100), D(0), D(50), D(100)]
+
+
+def test_adx_with_period_one_starts_at_index_one_and_is_each_bars_dx():
+    # (high, low, close): bar 1 moves up, bar 2 is an inside-equal bar, bar 3 moves down.
+    rows = [(10, 8, 9), (12, 9, 11), (12, 9, 10), (11, 7, 8)]
+    bars = [Bar(i, D(h), D(low), D(c)) for i, (h, low, c) in enumerate(rows)]
+    adx, plus_di, minus_di = wilder_adx(bars, period=1)
+    assert adx[0] is None and plus_di[0] is None and minus_di[0] is None
+    assert adx[1:] == [D(100), D(0), D(100)]  # ADX is first defined at 2 × 1 − 1 = 1
+    places = D("0.0000001")
+    assert plus_di[1].quantize(places) == (D(200) / 3).quantize(places)  # 100 × 2 ÷ TR 3
+    assert minus_di[1] == D(0)
+    assert plus_di[2] == D(0) and minus_di[2] == D(0)  # no movement, a true range of 3
+    assert plus_di[3] == D(0) and minus_di[3] == D(50)  # 100 × 2 ÷ TR 4
+
+
 def test_downtrend_mirrors_the_perfect_uptrend():
     bars = [Bar(i, D(200 - i), D(199 - i), D("199.5") - i) for i in range(40)]
     adx, plus_di, minus_di = wilder_adx(bars)
@@ -179,22 +199,42 @@ def test_downtrend_mirrors_the_perfect_uptrend():
     assert adx[27] == D(100)
 
 
-def test_adx_matches_v0_float_implementation_on_a_long_series():
+def _random_walk(count: int) -> tuple[list[Bar], list[Kline]]:
+    """The same seeded pseudo-random OHLC series as Bars and as V0's Klines."""
     rng = random.Random(2026)
     price, bars, klines = D(100), [], []
-    for i in range(400):
+    for i in range(count):
         price += D(rng.randint(-300, 320)) / D(100)
         high, low = price + D(rng.randint(0, 150)) / D(100), price - D(rng.randint(0, 150)) / D(100)
         close = low + (high - low) * D(rng.randint(0, 100)) / D(100)
         bars.append(Bar(i, high, low, close))
         klines.append(Kline(i, close, high, low, close, D(1), D(1), D(0)))
+    return bars, klines
+
+
+def test_adx_matches_v0_float_implementation_on_a_long_series():
+    bars, klines = _random_walk(400)
     adx, _, _ = wilder_adx(bars)
     v0 = SeriesFeatures("TEST", klines).adx14
     assert all(v is None for v in adx[:27]) and all(v is None for v in v0[:27])
     for i in range(27, 400):  # 373 values, from the 28th bar
         assert adx[i] is not None and v0[i] is not None
         assert float(adx[i]) == pytest.approx(v0[i], abs=1e-9)
-    assert all(D(0) <= v <= D(100) for v in adx[27:] if v is not None)
+
+
+def test_adx_stays_within_zero_and_one_hundred_and_reaches_both_bounds_exactly():
+    # V0 clamps its float ADX to [0, 100]; exact Decimal arithmetic needs no clamp, because
+    # DX = 100 × |+DI − −DI| ÷ (+DI + −DI) cannot pass 100 and every ADX is an average of DX.
+    perfect = [Bar(i, D(100 + i), D(99 + i), D("99.5") + i) for i in range(60)]
+    adx, _, _ = wilder_adx(perfect)
+    assert all(v == D(100) for v in adx[27:])  # exactly 100, never above
+    flat = [Bar(i, D(5), D(5), D(5)) for i in range(60)]
+    adx, _, _ = wilder_adx(flat)
+    assert all(v == D(0) for v in adx[27:])  # exactly 0, never below
+    bars, _ = _random_walk(400)
+    adx, plus_di, minus_di = wilder_adx(bars)
+    assert all(v is not None and D(0) <= v <= D(100) for v in adx[27:])
+    assert all(v is not None and D(0) <= v <= D(100) for v in plus_di[14:] + minus_di[14:])
 
 
 def test_sma_equal_closes_and_exact_division():
@@ -244,10 +284,12 @@ def test_rolling_median_drops_the_oldest_of_equal_values():
         lambda: wilder_atr([], period=0),
         lambda: wilder_adx([], period=0),
         lambda: bollinger_width([D(1)], length=0),
+        lambda: bollinger_width([D(1)], deviations=0),
+        lambda: bollinger_width([D(1)], deviations=-2),
         lambda: rolling_median([D(1)], 0),
     ],
 )
-def test_non_positive_lengths_are_rejected(call):
+def test_non_positive_parameters_are_rejected(call):
     with pytest.raises(ValueError):
         call()
 
