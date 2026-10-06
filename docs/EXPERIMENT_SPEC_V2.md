@@ -51,7 +51,7 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 - **1m:** Binance's archives, for fills, and for variant F's order-flow share (spec v1 §3 F), which the grid keeps.
 - **1h:** Binance's archives.
 - **4h:** built from four consecutive 1h bars aligned to 00:00, 04:00, … UTC. A 4h bar exists only if all four hours are present and unmasked. Otherwise it is missing.
-- **1d:** Binance's archives, cross-checked as in spec v1 P3.
+- **1d:** Binance's archives, cross-checked as in spec v1 P3. Each daily bar is used as delivered, because daily bars are never masked (spec v1 §5, rule 3). So a masked hour inside a day leaves that day's daily bar, and the daily state, in use. A missing or duplicated daily bar excludes the pair-window, as in v1 (§5).
 
 **The indicators.** Each is computed on completed bars only. Wilder smoothing applies wherever the standard definition uses it.
 
@@ -81,7 +81,11 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 
 - **Unavailable:** a timeframe is **unavailable** at time *t* if either holds:
   - the bar that should have closed last before *t* is missing or masked (the bar opening at ⌊t ÷ L⌋ × L − L, for a bar of length L);
-  - any indicator that a rule reads lacks its minimum bars.
+  - any of the timeframe's inputs lacks its minimum bars.
+- **The inputs:**
+  - A 4h or daily trend state reads all of close, SMA20, SMA50, ADX(14), +DI and −DI, even where the matching row needs fewer. For example, a daily ADX with its 28 bars but an SMA50 without its 50 gives Unavailable, not Range.
+  - The 1h timeframe's inputs are RSI(14), ADX(14), the Bollinger width and the width median (§4, Grid).
+  - The Uptrend row also needs the daily RSI(14) and ATR(14) (§4).
 
 **The 1h regime** is V0's existing classifier (`strategy/regime.py`, `price-only-v1`). Its labels are RANGE, BULL, BEAR, TRANSITION and STRESS.
 
@@ -121,7 +125,9 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 ## 5. The uptrend engine
 
 **Entry:**
-- **When:** at the first valid quote after a decision that sets the mode to Uptrend, provided the pair is flat (§6) and the risk action is ALLOW (§7).
+- **When:** an entry starts only at a decision's own observation (§4), when that decision sets the mode to Uptrend, the pair is flat (§6) and the risk action is ALLOW (§7).
+  - If any of these fails there, or `d ≤ 0` (below), no entry starts before the next decision, which may try again.
+  - So a pair that becomes flat between decisions waits for the next one.
 - **How:** marketable buys at the taker fee, priced as variant D's: the ask × (1 + slippage), rounded up to the tick. Each is bounded by the participation limit on the ask size and by the exchange's precision.
 
 **Budget, set once when the entry starts:**
@@ -148,7 +154,7 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 **Exits.** Each one sells the whole position with marketable sells under the participation limit, and the remainder below the minimum notional stays as dust, as in v1:
 1. **The stop is reached:** the bid at an available minute's quote is at or below the stop.
    - A missing or masked minute has no quote, so there is no check until the next quote, whose check comes first.
-   - A data gap does not force an exit by itself. v1's frame-gap rule still makes the next frame transient, which blocks entries.
+   - A data gap does not force an exit by itself, and it does not stop an entry in progress. v1's frame-gap rule only restarts the recovery confirmations (spec v1 §5, rule 4).
 2. **The trend fades:** at a daily close, the daily state is no longer Up. Unavailable counts as no longer Up, so this exit fails closed.
 3. **The risk layer acts** (§7).
 
@@ -166,7 +172,8 @@ There is one engine per pair at a time. A new mode's engine starts only once the
 
 Otherwise only §5's exits and §7's risk events sell it.
 - **After it is sold,** the account is flat, and v1's settlement and profit vault apply exactly as after a grid. The vault is never traded.
-- **At the end of the window,** a position still held is valued at v1's exit mark, as `Account.equity` values all inventory. It is a position, not an exit owed, so it does not make the run invalid. The same holds for a held position's dust.
+- **At the end of the window,** a position still held is valued at v1's exit mark, as `Account.equity` values all inventory. That is the same mark at which C1 and C3 sample equity (spec v1 P2). It is a position, not an exit owed, so it does not make the run invalid. The same holds for a held position's dust, and for an entry still in progress.
+- **An exit under way at the end** is different. Once one of §5's exits or a risk drain (§7) has started, the position is an exit owed, as v1 treats inventory it is draining. If the market would still take what remains, the run ends incomplete and is invalid (spec v1 §5).
 
 | From → to | What happens |
 | --- | --- |
@@ -186,7 +193,7 @@ Without this, every sell would re-create a buy, and the grid would never end.
 **Grid → Uptrend, in detail:**
 - **No forced sale.** The winding-down grid ends only by v1's own exits: its resting sells filling, or v1's range exit after 6 hours outside the band. The switch itself sells nothing.
 - **The entry can be late, or missed.** The uptrend entry starts only at a decision where the pair is flat and the mode is still Uptrend.
-- **The cooldown is the grid's alone.** v1's re-centring cooldown after a range exit applies to new grids only, not to the uptrend entry.
+- **The cooldown is the grid's alone.** v1's re-centring cooldown after a range exit applies to new grids only, not to the uptrend entry. Decisions continue during it, so the uptrend entry may start once the pair is flat, and the range exit then leaves the position alone (above).
 
 ## 7. Risk events
 
@@ -223,20 +230,22 @@ Every criterion applies over the included runs of the scored window:
 
 | # | Criterion |
 | --- | --- |
-| C1 | As spec v1: maximum drawdown ≤ 10% on total and on active equity in every included run, and no hard-drawdown halt. |
+| C1 | As spec v1, C1(a) and C1(b): maximum drawdown ≤ 10% on total and on active equity in every included run. Any hard-drawdown halt (v1's 12% hard stop) fails C1, even though the automatic restart after 24 hours (§2) lets the run continue. |
 | C2 | As spec v1: for each path, the median annualised return > 0, and the mean annualised return > 0. |
 | C3 | As spec v1: in every included run, the maximum total-equity drawdown is below that run's buy-and-hold maximum drawdown, under common sampling. |
 | C4 | As spec v1: every included run is valid. |
-| C5 | **Activity:** the mean, over included runs, of completed round trips per 365.25 days is ≥ 12. A round trip is either a completed grid cycle (spec v1 P7) or a completed uptrend trade, an entry whose exit has finished. Both kinds count alike, so grid cycles alone can meet C5. That is intended: C5 checks that the bot trades, not which mode does. Round trips by mode are a required readout. |
-| C6 | **Earns its place:** in at least 60% of included runs, the run's annualised return ÷ max(its maximum drawdown, 0.1 percentage points) exceeds both always-grid's in the same pair and path, and cash's, which is 0. A run beats cash only with a positive return, so its comparison with always-grid only matters among positive returns. |
+| C5 | **Activity:** each run's rate is its completed round trips × 365.25 ÷ `d`, where `d` is the evaluation window's length in days, as in spec v1 §6 (2,192 for `full-range-2017-2024`). The mean of the rates over included runs, computed exactly, is ≥ 12. A round trip is either a completed grid cycle (spec v1 P7) or a completed uptrend trade, an entry whose exit has finished. Both kinds count alike, so grid cycles alone can meet C5. That is intended: C5 checks that the bot trades, not which mode does. Round trips by mode are a required readout. |
+| C6 | **Earns its place:** in at least 60% of included runs, the run's annualised return ÷ max(its maximum total-equity drawdown, 0.1 percentage points) exceeds both always-grid's in the same pair and path, and cash's, which is 0. The return is compound-annualised as in C2. That differs from v1's C6, which kept raw returns (spec v1 §6, "Annualised returns"); the draft the owner approved (§11, decision 7) already used annualised returns here. Annualising never changes a return's sign, so a run beats cash only with a positive return, in either form, and its comparison with always-grid only matters among positive returns. A run whose always-grid run is missing or invalid cannot show that it beats it, so it counts against C6, as v1's scorer counts a missing or invalid baseline. |
 
 **Reported, not gating:**
 - **Upside capture:** over the calendar months in which buy-and-hold's return is positive, the sum of the run's monthly returns divided by the sum of buy-and-hold's.
+  - A month's return runs from the first equity sample at or after its start to the first at or after the next month's start. The first month starts from the initial capital, and the last ends at the final equity.
+  - The run and buy-and-hold use the same samples (spec v1 P2). A month with no sample of its own then has a zero return, and the movement across it falls in the month before.
 - **Behaviour:** the share of time in each mode, the number of mode switches, round trips by mode, and the uptrend stops and fades.
 - **Comparators:** D and buy-and-hold.
 - **R1, economics, as spec v1 §6:** the capital at which the mean monthly return would cover €5 a month of hosting.
 
-**Annualising:** compound, as in spec v1 §6.
+**Annualising:** compound, as in spec v1 §6, in C2 and C6. R1 uses raw returns, as in v1, and upside capture uses raw monthly returns.
 
 **Outcome:**
 - The mode switcher **passes** v2 only if C1–C6 all pass.
