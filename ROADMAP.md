@@ -44,11 +44,22 @@ Continue broader infrastructure only if the results justify it.
 Status (v0.8): harness v1 is implemented and verified on two pairs over a development
 window ([method](docs/BACKTEST_METHOD.md), [report](docs/backtests/verify-2024h1.md)).
 The owner confirmed the acceptance criteria (C1–C6) on 2026-09-24
-([record](docs/reviews/2026-09-24-owner-decisions-confirmed.md)); spec v1 is still a draft
-and is not yet frozen. The reserved window is the **last** step, not the next one. In
-order (spec v1 §§2-7): freeze spec v1, build and review the §2 prerequisites, implement
-the variants, run the development practice matrix, and select a winner deterministically
-under C1-C6. The one-use reserved run needs two more things: **C7 settled and passed, or
+([record](docs/reviews/2026-09-24-owner-decisions-confirmed.md)). Spec v1 was frozen on
+2026-10-06 (owner decision 12,
+[record](docs/reviews/2026-10-05-claude-owner-decisions-test-plan.md)), with its §2
+prerequisites and every variant on main. The reserved window is the **last** step, not
+the next one. In order (spec v1 §§4-6):
+1. stage 1 of the development matrix, on the two current windows;
+2. stage 2, on the long windows (2017–2024 scored, 2019–2024 reported only), once every
+   one of its inputs is in place (§4, §6 "Two stages"):
+   - the long-window data code, shown by Codex and Bob to leave every stage-1 result
+     identical (§6);
+   - Bob's re-fetch of the long windows' archives, and his XRP quote-spread measurement;
+   - dataset specs that match §4's frozen definitions, and manifests that record the
+     re-fetch;
+3. a winner selected deterministically under C1–C6.
+
+The one-use reserved run needs two more things: **C7 settled and passed, or
 explicitly waived by the owner** (its return series, its trial family and the other
 agents' agreement are all open), and the owner's go. If no variant passes, v1 ends with
 "no winner" and nothing runs on that window.
