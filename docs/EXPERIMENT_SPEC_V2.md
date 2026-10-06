@@ -146,7 +146,9 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 **Partial fills:**
 - The entry buys at each quote until one of these ends it:
   - what is left of the cash cap, or of the risk allowance, buys less than the minimum notional at that quote's price;
+  - a daily close: the position then holds what was bought, and the close is processed as for any held position. So the stop never trails while the entry is still buying;
   - an exit (below), or any risk action other than ALLOW (§7). Under a risk drain, what was bought is sold.
+- **Each buy is also bounded by the cash the account can spend,** as any v1 buy is. Dust or held fragments can leave less than the cash cap.
 - **Thin depth is not an end.** A quote whose participation limit alone allows less than the minimum notional buys nothing, and the entry waits for the next quote.
 - The two limits and the stop stay as set when the entry started. The position is whatever was bought.
 - If the stop is reached during the entry, the entry ends and exit 1 sells what was bought.
