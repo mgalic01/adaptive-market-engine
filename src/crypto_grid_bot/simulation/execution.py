@@ -8,7 +8,8 @@ engine passes ``check=False``: it validates the frame's quote first thing in its
 and the whole account at every frame boundary (``PaperSimulator.step``, and
 ``StateStore.transact`` before saving and on every read), so the per-call checks would
 only repeat work on a state validated moments before. ``place``'s checks of the new
-order itself always run.
+order itself always run. ``market_buy`` takes no ``check``: its caller validates the
+quote and the account, as the paper engine does every frame.
 """
 
 from __future__ import annotations
