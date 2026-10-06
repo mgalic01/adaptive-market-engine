@@ -161,6 +161,44 @@ class CriterionTests(unittest.TestCase):
         elsewhere = run(window="practice-2022", return_pct=F(-50), days=245, months=8)
         self.assertFalse(v2.earns_its_place([candidate], {elsewhere.key: elsewhere}).passed)
 
+    def test_an_exact_tie_with_always_grid_does_not_exceed_and_an_unsettled_one_refuses(
+        self,
+    ) -> None:
+        # 10% over 2,192 days annualises to an irrational value, whose error bounds can
+        # never settle a tie. The raw figures do: a tie does not exceed, and is not refused.
+        tied = run()
+        self.assertGreater(tied.annualised.bound, 0)
+        c6 = v2.earns_its_place([run()], {tied.key: tied})
+        self.assertFalse(c6.passed)
+        self.assertIn("does not exceed always-grid's", c6.failing[0])
+        # Differences far inside the bounds, settled by the raw figures: the same floored
+        # drawdown and a higher return, or the same return and a lower floored drawdown.
+        tiny = F(1, 10**70)
+        cases = {
+            "higher return": (run(return_pct=10 + tiny), run(), True),
+            "lower return": (run(return_pct=10 - tiny), run(), False),
+            "lower drawdown": (run(max_drawdown_pct=2 - tiny), run(), True),
+            "higher drawdown": (run(max_drawdown_pct=2 + tiny), run(), False),
+            "both ahead": (run(return_pct=10 + tiny, max_drawdown_pct=2 - tiny), run(), True),
+            # Both drawdowns are below the 0.1-point floor, so the floored ones tie.
+            "both floored": (run(max_drawdown_pct=F(1, 20)), run(max_drawdown_pct=F(2, 25)), False),
+        }
+        for name, (candidate, always_grid, passes) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(v2.exceeds_exactly(candidate, always_grid), passes)
+                c6 = v2.earns_its_place([candidate], {always_grid.key: always_grid})
+                self.assertEqual(c6.passed, passes)
+        # A higher return with a higher drawdown is ordered only by the annualised
+        # values, and where their bounds cannot settle it, nothing is scored.
+        close = run(return_pct=10 + tiny, max_drawdown_pct=2 + tiny)
+        self.assertIsNone(v2.exceeds_exactly(close, run()))
+        with self.assertRaisesRegex(score.ScoringError, "C6's comparison .* cannot be decided"):
+            v2.earns_its_place([close], {close.key: run()})
+        # Runs of different lengths, or a run without a positive return, are never
+        # ordered by the raw figures alone.
+        self.assertIsNone(v2.exceeds_exactly(run(), run(days=1461)))
+        self.assertIsNone(v2.exceeds_exactly(run(return_pct=F(0)), run(return_pct=F(-5))))
+
     def test_gate_share_boundary(self) -> None:
         keys = [(pair, path) for pair in ("BTCUSDT", "ETHUSDT", "XRPUSDT") for path in PATH_MODES]
         always_grid = [run(symbol=s, path=p, return_pct=F(1)) for s, p in keys[:5]]
@@ -634,6 +672,27 @@ class FileTests(ScorerFiles):
                 file = documents[name, "MS"]
                 file["results"] = [r for r in file["results"] if r["strategy"] != BENCHMARK]
                 self.refused(documents.values(), f"D {name} BTCUSDT high_first: missing")
+
+    def test_the_modes_times_must_cover_the_window(self) -> None:
+        # Each share of time is of the whole window, so an MS row's times must be counts
+        # for the selector's modes only, summing to the window's registered length.
+        length = score.REGISTERED_DAYS[FULL] * DAY_MS
+        for change, reason in (
+            (
+                lambda t: t.update(cash=t["cash"] - 1),
+                f"the modes' times sum to {length - 1} ms, not {FULL}'s {length}",
+            ),
+            (lambda t: t.update(cash=t["cash"] + 1), f"the modes' times sum to {length + 1} ms"),
+            (lambda t: t.update(short=0), "modes.time_ms is not a time for each of cash, grid"),
+            (lambda t: t.update(cash=-1, grid=t["grid"] + t["cash"] + 1), "not a count: -1"),
+        ):
+            with self.subTest(reason):
+                documents = self.files()
+                change(documents[FULL, "MS"]["results"][0]["modes"]["time_ms"])
+                self.refused(documents.values(), reason)
+        documents = self.files()
+        documents[FULL, "MS"]["results"][0]["modes"]["time_ms"] = [length, 0, 0]
+        self.refused(documents.values(), "modes.time_ms is not a time for each of cash, grid")
 
     def test_inconsistent_comparison_masks_are_refused(self) -> None:
         documents = self.files()

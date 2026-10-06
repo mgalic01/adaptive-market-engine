@@ -14,9 +14,10 @@ reported only (``REPORTED``). The criteria:
   trades) per 365.25-day year of the window, with a mean of at least 12, exactly;
 * C6: in at least 60% of runs the run's return is positive, so it beats cash, and its
   compound-annualised return / max(drawdown, 0.1 points) exceeds always-grid's in the
-  same window, pair and path. Each comparison is decided only where the annualising
-  error bounds settle it, as C2's are. A missing or invalid always-grid run counts
-  against.
+  same window, pair and path. Where the two runs' raw returns and floored drawdowns
+  order their exact ratios, that order decides, so an exact tie does not exceed;
+  otherwise a comparison is decided only where the annualising error bounds settle it,
+  as C2's are. A missing or invalid always-grid run counts against.
 
 Reported, deciding nothing: upside capture, the mode readouts (the share of time in each
 mode, the mode switches, the round trips by mode, the uptrend stops and fades), D,
@@ -78,6 +79,7 @@ from crypto_grid_bot.backtest.__main__ import code_commit, result_failures
 from crypto_grid_bot.backtest.acceptance import (
     C7_NOTE,
     FROZEN_HINT,
+    GATE_FLOOR_PCT,
     NUMBERS_NOTE,
     PRIMARY,
     REGISTERED_DAYS,
@@ -301,6 +303,30 @@ def annualised_ratio(run: Run) -> tuple[Fraction, Fraction, Fraction]:
     )
 
 
+def exceeds_exactly(run: Run, grid: Run) -> bool | None:
+    """Whether ``run``'s exact annualised ratio exceeds always-grid's (``grid``'s), where
+    their raw returns and floored drawdowns alone settle it; None where only the
+    annualised values can, or where ``run``'s return is not above 0 or the two runs'
+    days differ.
+
+    Over the same days, annualising is non-decreasing in the return, and increasing above
+    -100%. With ``run``'s return above 0, its annualised return is above 0, and above
+    always-grid's whenever its raw return is above always-grid's. So its ratio is at most
+    always-grid's when its return is at most always-grid's and its floored drawdown at
+    least always-grid's, and above it when its return is at least always-grid's and its
+    floored drawdown at most always-grid's, one of them strictly. An exact tie in both,
+    which no error bound can settle, does not exceed."""
+    if run.return_pct <= 0 or run.days != grid.days:
+        return None
+    drawdown = max(run.max_drawdown_pct, GATE_FLOOR_PCT)
+    grid_drawdown = max(grid.max_drawdown_pct, GATE_FLOOR_PCT)
+    if run.return_pct <= grid.return_pct and drawdown >= grid_drawdown:
+        return False
+    if run.return_pct >= grid.return_pct and drawdown <= grid_drawdown:
+        return True
+    return None
+
+
 def earns_its_place(
     ms: Sequence[Run], always_grid: Mapping[tuple[str, str, str], Run]
 ) -> Criterion:
@@ -310,8 +336,10 @@ def earns_its_place(
 
     * Annualising keeps a return's sign, so a run beats cash only with a raw return above
       0, which is exact.
-    * The comparison with always-grid is decided with ``certain`` over the interval the
-      two annualised returns' bounds give. A comparison they cannot settle refuses the
+    * The comparison with always-grid is decided exactly where the two runs' raw returns
+      and floored drawdowns order their ratios (``exceeds_exactly``), so an exact tie does
+      not exceed. Otherwise it is decided with ``certain`` over the interval the two
+      annualised returns' bounds give, and a comparison they cannot settle refuses the
       scoring, as C2's do.
     * A missing or invalid always-grid run cannot show that the run beats it, so it counts
       against. ``Run.ratio`` is raw, spec v1's C6, so it is not used."""
@@ -330,7 +358,10 @@ def earns_its_place(
             low, value, high = annualised_ratio(run)
             grid_low, grid_value, grid_high = annualised_ratio(grid)
             what = f"C6's comparison with always-grid in {run.label}"
-            if not certain(positive, low - grid_high, high - grid_low, what):
+            exceeds = exceeds_exactly(run, grid)
+            if exceeds is None:
+                exceeds = certain(positive, low - grid_high, high - grid_low, what)
+            if not exceeds:
                 failing.append(
                     f"{run.label}: annualised ratio {exact(written(value))} does not exceed "
                     f"always-grid's {exact(written(grid_value))}"
