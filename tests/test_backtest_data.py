@@ -42,6 +42,7 @@ from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.market_data.parsing import DataError
 
 ROOT = Path(__file__).resolve().parents[1]
+BZIP2, LZMA = zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA
 DEC_2023_MS = 1701388800000  # 2023-12-01T00:00:00Z
 JAN_2024_MS = 1704067200000  # 2024-01-01T00:00:00Z
 JAN_2025_MS = 1735689600000  # 2025-01-01T00:00:00Z
@@ -111,6 +112,21 @@ def undecodable_zip(symbol, interval, month):
 def encrypted_zip(symbol, interval, month, text):
     """A zip whose member is flagged encrypted: opening it raises ``RuntimeError``."""
     return patched_zip(symbol, interval, month, text, flag_bits=0x1)
+
+
+def corrupt_zip(symbol, interval, month, text, method):
+    """A zip of ``text`` compressed by ``method``, its compressed stream then damaged: a
+    checksum would pass it, and reading it fails in the decompressor (bzip2 with an
+    ``OSError`` that has no errno, LZMA with ``lzma.LZMAError``)."""
+    member = f"{symbol}-{interval}-{month}.csv"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", method) as archive:
+        archive.writestr(member, text)
+    data = bytearray(buffer.getvalue())
+    start = 30 + len(member) + 4  # past the local header and the stream's first four bytes
+    for index in range(start, start + 20):
+        data[index] ^= 0xFF
+    return bytes(data)
 
 
 def unsupported_zip(symbol, interval, month, text):
@@ -447,6 +463,18 @@ class FetchTests(unittest.TestCase):
                 unsupported_zip("ADAUSDT", "1h", "2024-01", minute_rows(JAN_2024_MS, 3)),
                 "compression method",
             ),
+            "a corrupt bzip2 stream": (
+                "1h",
+                "2023-12",
+                corrupt_zip("ADAUSDT", "1h", "2023-12", minute_rows(DEC_2023_MS, 60), BZIP2),
+                "Invalid data stream",
+            ),
+            "a corrupt LZMA stream": (
+                "1m",
+                "2024-01",
+                corrupt_zip("ADAUSDT", "1m", "2024-01", minute_rows(JAN_2024_MS, 60), LZMA),
+                "",  # lzma's own message, which this test does not pin
+            ),
             "an open that is not a number": (
                 "1h",
                 "2024-01",
@@ -500,6 +528,10 @@ class FetchTests(unittest.TestCase):
             "an unsupported compression method": (
                 unsupported_zip("ADAUSDT", "1d", "2024-01", daily),
                 NotImplementedError,
+            ),
+            "a corrupt bzip2 stream": (
+                corrupt_zip("ADAUSDT", "1d", "2024-01", daily * 40, BZIP2),
+                OSError,
             ),
         }
         for label, (content, error) in cases.items():

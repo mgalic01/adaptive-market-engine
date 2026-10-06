@@ -7,6 +7,7 @@ refined rule, pinned here by a direct comparison with it.
 
 import csv
 import io
+import lzma
 import random
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ from unittest.mock import patch
 
 from test_backtest_data import (
     JAN_2024_MS,
+    corrupt_zip,
     encrypted_zip,
     make_zip,
     minute_rows,
@@ -431,18 +433,28 @@ class UnreadableTests(unittest.TestCase):
                 read_archive(path, "ADAUSDT", "1m", MONTH)
             self.assertUnreadable(read_archive_repaired(path, "ADAUSDT", "1m", MONTH))
 
-    def test_an_encrypted_or_unsupported_member_is_unreadable_not_an_error(self):
+    def test_every_undecodable_member_is_unreadable_not_an_error(self):
         # Codex review of #186: a checksum-valid archive whose member is encrypted (zipfile
         # raises RuntimeError) or compressed by a method zipfile cannot read (its subclass
         # NotImplementedError) is spec v1 section 5 rule 1's archive that cannot be read:
-        # its hours are absent and masked, not fatal to mask_job. The strict readers still
+        # its hours are absent and masked, not fatal to mask_job. So is a corrupt bzip2 or
+        # LZMA stream, as a corrupt deflate stream already was. The strict readers still
         # raise.
         text = minute_rows(JAN_2024_MS, 3)
+        longer = minute_rows(JAN_2024_MS, 60)
         cases = {
             "encrypted member": (encrypted_zip("ADAUSDT", "1m", MONTH, text), RuntimeError),
             "unsupported compression": (
                 unsupported_zip("ADAUSDT", "1m", MONTH, text),
                 NotImplementedError,
+            ),
+            "corrupt bzip2 stream": (
+                corrupt_zip("ADAUSDT", "1m", MONTH, longer, zipfile.ZIP_BZIP2),
+                OSError,
+            ),
+            "corrupt LZMA stream": (
+                corrupt_zip("ADAUSDT", "1m", MONTH, longer, zipfile.ZIP_LZMA),
+                lzma.LZMAError,
             ),
         }
         with tempfile.TemporaryDirectory() as temp:
@@ -454,6 +466,16 @@ class UnreadableTests(unittest.TestCase):
                         read_archive(path, "ADAUSDT", "1m", MONTH)
                     self.assertIs(error, type(raised.exception))
                     self.assertUnreadable(read_archive_repaired(path, "ADAUSDT", "1m", MONTH))
+
+    def test_a_file_system_error_still_raises(self):
+        # An OSError with an errno is the file system's, not the archive's: a denied open
+        # must not turn a month's hours into masked ones.
+        denied = PermissionError(13, "Permission denied")
+        with (
+            patch("crypto_grid_bot.backtest.klines.read_member", side_effect=denied),
+            self.assertRaises(PermissionError),
+        ):
+            read_archive_repaired(Path("a.zip"), "ADAUSDT", "1m", MONTH)
 
     def test_an_eof_while_reading_is_unreadable_and_a_missing_file_still_raises(self):
         with patch("crypto_grid_bot.backtest.klines.read_member", side_effect=EOFError()):

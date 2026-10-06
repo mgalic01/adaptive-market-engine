@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import io
+import lzma
 import re
 import zipfile
 import zlib
@@ -193,11 +194,19 @@ def read_archive(
 _MEMBER_MONTH = re.compile(r"-(\d{4}-\d{2})\.csv$")
 
 # What ``read_member`` lets through, besides its DataError, when a stored archive's member
-# cannot be decoded: ``zlib.error`` and ``EOFError`` from a corrupt deflate stream, and
-# ``RuntimeError`` from an encrypted member, whose subclass ``NotImplementedError`` is a
-# compression method zipfile cannot read. A missing file is an ``OSError``, not one of them.
-UNDECODABLE = (zlib.error, EOFError, RuntimeError)
-_UNREADABLE = (DataError, *UNDECODABLE)
+# cannot be decoded: ``zlib.error``, ``lzma.LZMAError`` and ``EOFError`` from a corrupt
+# deflate or LZMA stream, and ``RuntimeError`` from an encrypted member, whose subclass
+# ``NotImplementedError`` is a compression method zipfile cannot read. A corrupt bzip2
+# stream raises an ``OSError`` instead, which ``undecodable`` tells from the file system's.
+UNDECODABLE = (zlib.error, lzma.LZMAError, EOFError, RuntimeError)
+
+
+def undecodable(exc: BaseException) -> bool:
+    """Whether ``exc``, raised by ``read_member`` on a stored archive, says that its member
+    cannot be decoded: one of ``UNDECODABLE``, or an ``OSError`` without an errno, as
+    bzip2's "Invalid data stream" is. An ``OSError`` with an errno (a missing file, a
+    denied open) is the file system's error, not the archive's."""
+    return isinstance(exc, UNDECODABLE) or (isinstance(exc, OSError) and exc.errno is None)
 
 
 def read_member(path: Path, expected_member: str) -> str:
@@ -374,9 +383,9 @@ def read_archive_repaired(path: Path, symbol: str, interval: str, month: str) ->
     """``parse_rows_repaired`` of the archive's single CSV member.
 
     An archive that ``read_member`` cannot open or decode is unreadable, not an error: a
-    ``DataError``, or one of ``UNDECODABLE``. A missing file still raises, as does a bad
-    symbol, a month outside the development window or an interval other than 1m and 1h:
-    those are the caller's errors, as in ``read_archive``. Daily archives keep
+    ``DataError``, or what ``undecodable`` accepts. A missing file still raises, as does a
+    bad symbol, a month outside the development window or an interval other than 1m and
+    1h: those are the caller's errors, as in ``read_archive``. Daily archives keep
     ``read_archive``: a daily bar is never masked.
     """
     symbol_name(symbol)
@@ -384,7 +393,11 @@ def read_archive_repaired(path: Path, symbol: str, interval: str, month: str) ->
     _repairing_step(interval)
     try:
         text = read_member(path, f"{symbol}-{interval}-{month}.csv")
-    except _UNREADABLE as exc:
+    except DataError as exc:
+        return _unreadable(_why(exc), interval, month)
+    except Exception as exc:
+        if not undecodable(exc):
+            raise
         return _unreadable(_why(exc), interval, month)
     return parse_rows_repaired(text, interval, month)
 

@@ -30,10 +30,10 @@ from typing import Any, cast
 from crypto_grid_bot.backtest.funding import read_funding_archive
 from crypto_grid_bot.backtest.klines import (
     INTERVAL_MS,
-    UNDECODABLE,
     month_bounds_ms,
     read_archive,
     read_archive_repaired,
+    undecodable,
 )
 from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.client import FeedError, PublicClient, https_connection
@@ -444,12 +444,6 @@ def fetch_file(
     return _strict_entry(entry, target, expected, symbol, interval, month)
 
 
-# What the strict parse of a stored, verified archive can end in: ``_strict_entry`` converts
-# a DataError into ``ArchiveParseError`` and lets ``read_member``'s decoding failures through.
-# A FeedError is a RuntimeError too, which is why only the parse is ever caught with these.
-_UNPARSED = (ArchiveParseError, *UNDECODABLE)
-
-
 def _fetch_kline(
     data_dir: Path, symbol: str, interval: str, month: str, fetcher: Fetcher
 ) -> dict[str, Any]:
@@ -468,8 +462,12 @@ def _fetch_kline(
         return {**entry, "status": "missing"}
     try:
         return _strict_entry(entry, target, expected, symbol, interval, month)
-    except _UNPARSED:
-        if interval not in ("1m", "1h"):
+    except Exception as exc:
+        # Only the strict parse is in this try: ``_strict_entry`` converts a DataError into
+        # ArchiveParseError and lets ``read_member``'s decoding failures through. A FeedError
+        # is a RuntimeError too, so a download failure must never get here.
+        unparsed = isinstance(exc, ArchiveParseError) or undecodable(exc)
+        if not unparsed or interval not in ("1m", "1h"):
             raise
     stored = {"sha256": expected, "bytes": target.stat().st_size}
     read = read_archive_repaired(target, symbol, interval, month)
