@@ -1,7 +1,7 @@
 # Experiment specification v2: the spot mode switcher (DRAFT, not yet frozen)
 
 **Status:** a draft by Claude, from the owner's design decisions of 2026-10-06 (recorded in §11).
-- **When it freezes:** in its own PR, once this draft's reviews by Codex and Bob are clean, and with the owner's go. The owner approved the draft on 2026-10-06 (§11, decision 7). The freeze also comes before any code that could be tuned to results, and before any v2 run.
+- **When it freezes:** in its own PR, once this draft's reviews by Codex and Bob are clean. The owner approved the draft on 2026-10-06 (§11, decision 7), and gave the go to freeze it once the reviews are clean (decision 8). The freeze also comes before any code that could be tuned to results, and before any v2 run.
 - **After the freeze:** a change requires a new version.
 - **Scope:** historical replay only. Nothing here authorises live trading, API keys or withdrawals.
   - The mode switcher's runtime state is not saved, and neither is variant F's. So, like v1's E and F, it runs in replay, and a persisted paper account refuses it.
@@ -153,7 +153,10 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 - **First value:** `c0 − 3 × ATR`, where `c0` is the last completed daily close before entry and the ATR is that day's. The highest close starts at `c0`, so "since entry" includes it.
 - **Updates:** at each daily close, the highest close becomes the larger of itself and that close. The stop becomes the larger of its previous value and (the highest close − 3 × that day's ATR). It never moves down, and a shrinking ATR can raise it without a new high.
 - **When a close takes effect:** at the first quote after it. That quote is checked against the stop as it stood, then the close is processed, and a raised stop is checked against the same quote again.
-- **Daily closes missed in a gap.** If one or more daily closes pass with no quote, they are processed in order at the first quote after them, in the same way. A close whose daily state is not Up ends the processing with exit 2. Each other close updates the highest close and the stop.
+- **Daily closes missed in a gap.** If one or more daily closes pass with no quote, they are processed in order at the first quote after them, one at a time:
+  - a close whose daily state is not Up ends the processing with exit 2;
+  - each other close updates the highest close and the stop, and the quote is checked against that stop before the next close is processed.
+  So the first exit, a stop or a fade, ends the processing.
 
 **Exits.** Each one sells the whole position with marketable sells under the participation limit, and the remainder below the minimum notional stays as dust, as in v1:
 1. **The stop is reached:** the bid at an available minute's quote is at or below the stop.
@@ -173,7 +176,7 @@ There is one engine per pair at a time. A new mode's engine starts only once the
 
 **Flat.** A pair is flat when it has no resting order and holds nothing the market would still buy. Any remainder is dust below the exchange's minimum, as in v1's test for a resolved account (`PaperSimulator._resolved`). This covers every leftover:
 - A grid that is winding down is not flat while any of its orders rest.
-- v1's dust, and F's held fragments below the minimum, do not stop a pair being flat once its grid's orders are gone.
+- v1's dust does not stop a pair being flat once its grid's orders are gone. Nor do F's held fragments, even when together they exceed the minimum, because v1's unpaired exit exempts them while F holds them (spec v1 §3 F).
 
 **The uptrend position is not grid inventory.** v1 sells any inventory without a resting sell on every frame, and an uptrend position has none. So the position is left out of that per-frame exit, out of the range exit and out of the grid settlement. It is also left out of the draining that v1's pauses start, with one exception:
 - **A risk drain sells it.** A pause or reduction the risk engine sets (a daily-loss PAUSE, or a soft-drawdown REDUCE) drains the account to flat, exactly as in v1, so the position is sold (§7).
@@ -327,7 +330,7 @@ Later specs will cover these. Each needs its own owner decision:
 
 ## 11. Owner decisions (2026-10-06, in Claude's session)
 
-Each was a multiple-choice question, and Claude recommended every chosen option except the approach (B).
+Each was a multiple-choice question, and Claude recommended every chosen option except the approach (B) and the PR's shape (decision 8).
 1. **The first piece.** Question: "Which piece should spec v2 cover first? (The others follow as their own specs.)". Chosen: **"Spot mode switcher"**.
 2. **The risk budget.** Question: "What risk budget should v2 be judged against? (Catching uptrends means holding coins through pullbacks.)". Chosen: **"Keep v1's limits"**.
 3. **The test periods.** Question: "Which market periods should v2 be developed and judged on? (The 2025-26 window stays reserved for one final test either way.)". Chosen: **"Long windows 2019-2024"**.
@@ -337,3 +340,4 @@ Each was a multiple-choice question, and Claude recommended every chosen option 
    - **C5's bar.** Section 4 set the new C5 as "on average at least 12 completed round trips a year (grid cycles plus uptrend trades), so a bot that just sits in cash can't pass". v1's C5 needs about 52 a year (1 completed cycle a week). §8, C5, gives the reason for the lower bar. Section 4 did not set out the comparison with v1.
 7. **This written draft.** The owner reviewed it and approved it on 2026-10-06: "its all good". The owner added that the work is agile: if the mode switcher does not work, a later spec will adapt it or try something new. Within this spec, the registered rules stay fixed once it is frozen.
    - **What the draft already held,** and later rounds kept: C6 on annualised returns (§8). The review rounds of PR #174 since then clarified the rules and closed gaps, and changed no threshold that the owner approved.
+8. **The freeze.** Question: "Do you give your go to freeze spec v2 once its reviews are clean? It locks in C5 at 12 round trips a year (v1 had about 52) and C6 on annualised returns." Chosen: **"Yes, freeze when clean"**. The owner also chose to keep this spec and its build plan in one PR until Codex's review is clean ("Keep current approach"). Claude had recommended splitting them, so that the spec could freeze sooner.
