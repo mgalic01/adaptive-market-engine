@@ -80,6 +80,24 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
+      # A registered long window is scored against its committed manifest, which pins every
+      # archive's checksum. Before that manifest exists, the fetch below would write an
+      # untracked one and the run would use it: a long, unpinned run the acceptance scorer
+      # refuses. So a full-range dispatch stops here, before any fetch, until it is committed.
+      - name: Require a committed manifest for a registered long window
+        env:
+          SPEC: ${{ github.event.inputs.spec }}
+        run: |
+          case "$SPEC" in
+            full-range-*)
+              manifest="config/datasets/$SPEC.manifest.json"
+              if ! git ls-files --error-unmatch "$manifest" > /dev/null 2>&1; then
+                echo "::error::$SPEC is a registered long window; dispatch it once $manifest is committed."
+                exit 1
+              fi
+              ;;
+          esac
+
       - name: Fetch data
         env:
           SPEC: ${{ github.event.inputs.spec }}
