@@ -61,7 +61,12 @@
   - **the CLI runs:** `main()` in-process, with the process pool replaced by an inline executor, on `up`, `down` and `nod`, and with `--structure` on `up` and `down`. The `up` and `down` V0 runs add `--trend-benchmark`, so variant D is checked too;
   - **the variant runs:** every registered v1 variant, so that a change to a shared path cannot pass unseen. A, B, E, F, G, H, C+G and C+H run on `up`; C runs on `down`; and the full stack (`C+F+G+H` with the structure features) runs on `up`. Each goes through `run_job(policy=jobs.variant_policy(name, structure=...))` for all four path and gated cases. `results` maps `<variant>-<path>-<gated|ungated>` to the row, with its `"variant"` key dropped;
   - **funding for G:** G, C+G and the full stack refuse a manifest without BTCUSDT's funding archive for an evaluation month from 2020-01 (`load_funding`). So the fake archive adds one synthetic funding month, 2024-01, in the format `load_funding` reads, and the datasets' manifests list it;
-  - **the hashes cover the engine's output only:** SHA-256 over `json.dumps(document, sort_keys=True, default=str)`, with the identity keys `spec_sha256`, `manifest_sha256`, `config_sha256`, `code_commit` and `code_sha256` set aside wherever they appear.
+  - **the hashes cover the engine's output only:** SHA-256 over `json.dumps(document, sort_keys=True, default=str)`, with the identity keys `spec_sha256`, `manifest_sha256`, `config_sha256`, `code_commit` and `code_sha256` set aside wherever they appear;
+  - **and every execution, not only the totals.** `summarise` writes aggregates, so a change that moved, reordered or relabelled fills could keep every row and still print `ALL IDENTICAL`. So the harness wraps `PaperSimulator.step` in every run. After each step it records, in order:
+    - each fill in the returned report (order id, side, price, quantity and fee);
+    - the report's `exit_reason`;
+    - the account's resting orders (id, side, price and remaining quantity).
+    Each run's trace gets its own SHA-256 in the baseline, beside the run's own hash.
 - **The baseline:** recorded with `record` from main, at the commit this task branches from, before any v2 code. If main moves before the PR merges, it is re-recorded on the new merge base. The controller also checks once that the port's engine output equals the scratchpad harness's on main, with the same keys set aside. The scratchpad's own whole-file hashes (`bdb47225…` and the rest) cannot carry over, because its archives were stamped at build time.
 
 - [ ] **Step 1: Write the failing test** `test_byte_identity_dataset_builder_is_deterministic`: building the `nod` dataset twice in two temporary directories gives byte-identical archives and manifests.
@@ -196,7 +201,7 @@ def test_rolling_median_skips_none_and_averages_even_middle():
   - **The regime:** BEAR and STRESS block `UPTREND`. TRANSITION does not, but `input_quality_ok=False` does.
   - **Daily inputs:** `d1_atr` None blocks `UPTREND`.
   - **The pause:** `stopped_at_ms = now − 86_399_999` blocks `UPTREND`, and `now − 86_400_000` allows it.
-  - **Unavailable states:** `h4_state` or `d1_state` `UNAVAILABLE` gives `CASH` from both base snapshots, and `h1_available` False gives `CASH`.
+  - **Unavailable states:** `h4_state` or `d1_state` `UNAVAILABLE` gives `CASH` from both base snapshots. `h1_available` False gives `CASH` from the Grid base snapshot, and still allows `UPTREND` from the Uptrend one, since the 1h inputs are the Grid row's alone (spec v2 §4, Cash).
   - **Grid's states:** `h4_state` UNCLEAR and RANGE both allow `GRID`, and UP and DOWN do not. `d1_state` UP, RANGE and UNCLEAR allow `GRID`, and DOWN does not.
 - [ ] **Step 2: Run `pytest tests/test_mode_selector.py -v`.** Expected: FAIL, the module does not exist yet.
 - [ ] **Step 3: Implement `select_mode`,** checking Uptrend first, then Grid, otherwise Cash, exactly per spec v2 §4.
@@ -215,21 +220,27 @@ def test_rolling_median_skips_none_and_averages_even_middle():
 **Interfaces:**
 - **Produces, in `execution.py`:**
   - `buy_price(quote: Quote, rules: MarketRules) -> Decimal`: ask × (1 + slippage), rounded up to the tick, the same rule as `trend_benchmark.buy_price`;
-  - `market_buy(account: Account, quote: Quote, rules: MarketRules, *, budget: Decimal) -> Fill | None`. Its quantity is `min(floor_step(ask_size × participation), affordable)`, where `affordable = floor_step(budget ÷ (price × (1 + taker)))`, lowered one `quantity_step` at a time while `affordable × price × (1 + taker) > budget`. That is `trend_benchmark.entry_quantity`'s guard against a quotient rounded up at the last digit. It returns `None` when the price × quantity is below the minimum notional. The fill is applied with `_apply_fill` under order id `"uptrend/buy/" + quote.event_id` at the taker fee.
+  - `BuyResult`, a frozen dataclass: `fill: Fill | None`, and `refusal: str`. The refusal is `""` when filled; `"budget"` when what is left of the cash cap or the risk allowance buys less than the minimum notional at this price, so the entry ends; and `"depth"` when only the participation limit keeps the buy below it, so the entry waits for the next quote (spec v2 §5);
+  - `market_buy(account: Account, quote: Quote, rules: MarketRules, *, cash_left: Decimal, risk_left: Decimal, stop: Decimal) -> BuyResult`, called only with a buy price above `stop`. Its quantity is the least of three bounds:
+    - depth: `floor_step(ask_size × participation)`;
+    - cash: `floor_step(cash_left ÷ (price × (1 + taker)))`, lowered one `quantity_step` at a time while `quantity × price × (1 + taker) > cash_left`. That is `trend_benchmark.entry_quantity`'s guard against a quotient rounded up at the last digit;
+    - risk: `floor_step(risk_left ÷ (price − stop))`, the loss at the stop before fees.
+    The refusal is `"budget"` when price × the smaller of the cash and risk bounds is below the minimum notional, else `"depth"` when price × the depth bound is. The fill is applied with `_apply_fill` under order id `"uptrend/buy/" + quote.event_id` at the taker fee.
 - **Produces, in `uptrend.py`:**
   - `RISK_FRACTION = D("0.04")`, `CAPITAL_CAP = D("0.60")`, `ATR_MULTIPLE = D(3)`;
-  - `entry_budget(active_capital: Decimal, active_equity: Decimal, price: Decimal, stop: Decimal) -> Decimal | None`, which is `None` when the stop distance `s <= 0`;
+  - `entry_limits(active_capital: Decimal, active_equity: Decimal) -> tuple[Decimal, Decimal]`: the cash cap `0.60 × active_capital` and the risk allowance `0.04 × active_equity`, set once when the entry starts;
+  - `stop_distance(price: Decimal, stop: Decimal) -> Decimal`, `(price − stop) ÷ price`. No entry starts when it is ≤ 0;
   - `initial_stop(close: Decimal, atr: Decimal) -> Decimal`;
   - `trailed_stop(stop: Decimal, highest_close: Decimal, atr: Decimal) -> Decimal`, which is `max(stop, highest_close − 3 × atr)`;
-  - `UptrendPosition`, a mutable dataclass: `budget`, `spent` (the USDT paid, taker fees included, which the budget bounds, as `market_buy`'s affordability guard counts them), `exit_reason: str` ("" until an exit begins; Task 5), `quantity`, `stop`, `highest_close: Decimal`, `stop_day_ms: int`, `entered_at: str`, `phase: str`. The phase is one of `"entering"`, `"holding"` and `"exiting"`. `highest_close` starts at `c0`, the last completed daily close before entry, and `stop` at `initial_stop(c0, that day's ATR)` (spec v2 §5).
+  - `UptrendPosition`, a mutable dataclass: `cash_cap` and `risk_allowance` (the two limits); `spent` (the USDT paid, taker fees included, against the cash cap); `risk_used` (the sum of each buy's quantity × (price − stop), against the risk allowance); `exit_reason: str` ("" until an exit begins; Task 5); `quantity`, `stop`, `highest_close: Decimal`, `stop_day_ms: int`, `entered_at: str`, `phase: str`. The phase is one of `"entering"`, `"holding"` and `"exiting"`. `highest_close` starts at `c0`, the last completed daily close before entry, and `stop` at `initial_stop(c0, that day's ATR)` (spec v2 §5).
 
 - [ ] **Step 1: Write the failing tests:**
 
 ```python
-def test_entry_budget_risk_bound_and_cap():
-    assert entry_budget(D(100), D(100), D(100), D(90)) == D(40)  # 0.04*100/0.1
-    assert entry_budget(D(100), D(100), D(100), D(99)) == D(60)  # cap 0.60*100
-    assert entry_budget(D(100), D(100), D(100), D(100)) is None  # s <= 0
+def test_entry_limits_and_stop_distance():
+    assert entry_limits(D(100), D(100)) == (D(60), D(4))  # 0.60 x 100 and 0.04 x 100
+    assert stop_distance(D(100), D(90)) == D("0.1")
+    assert stop_distance(D(100), D(100)) == D(0)  # s <= 0: no entry
 
 
 def test_trailed_stop_never_moves_down():
@@ -250,8 +261,14 @@ RULES = MarketRules(
 T0 = "2024-01-01T00:00:00+00:00"
 
 
-def quote(ask_size):
-    return Quote("e1", "BTCUSDT", T0, T0, D("99.99"), D("100"), D(5), ask_size)
+def quote(ask_size, ask=D("100")):
+    return Quote("e1", "BTCUSDT", T0, T0, ask - D("0.01"), ask, D(5), ask_size)
+
+
+def buy(ask_size, *, cash, risk, stop, ask=D("100")):
+    account = Account.start(D(100))
+    q = quote(ask_size, ask)
+    return execution.market_buy(account, q, RULES, cash_left=cash, risk_left=risk, stop=stop)
 
 
 def test_buy_price_matches_trend_benchmark():
@@ -260,25 +277,42 @@ def test_buy_price_matches_trend_benchmark():
 
 
 def test_market_buy_bounds():
-    # The price is 100 and the all-in unit cost 100.09.
-    # Participation: 2 x 0.10 = 0.2 is below the budget's 40 / 100.09 -> 0.399.
-    fill = execution.market_buy(Account.start(D(100)), quote(D(2)), RULES, budget=D(40))
-    assert (fill.price, fill.quantity, fill.fee) == (D(100), D("0.2"), D("0.018"))
-    # Budget: 5 x 0.10 = 0.5 is above 0.399.
-    fill = execution.market_buy(Account.start(D(100)), quote(D(5)), RULES, budget=D(40))
-    assert (fill.quantity, fill.fee) == (D("0.399"), D("0.03591"))
-    # Minimum notional: 4 / 100.09 -> 0.039, and 0.039 x 100 = 3.9 < 5.
-    assert execution.market_buy(Account.start(D(100)), quote(D(5)), RULES, budget=D(4)) is None
+    # The price is 100 and the all-in unit cost 100.09. Risk 100 at stop 50 allows 2.
+    # Depth: 2 x 0.10 = 0.2 is below the cash bound's 40 / 100.09 -> 0.399.
+    result = buy(D(2), cash=D(40), risk=D(100), stop=D(50))
+    assert (result.fill.price, result.fill.quantity, result.fill.fee) == (
+        D(100),
+        D("0.2"),
+        D("0.018"),
+    )
+    # Cash: 5 x 0.10 = 0.5 is above 0.399.
+    result = buy(D(5), cash=D(40), risk=D(100), stop=D(50))
+    assert (result.fill.quantity, result.fill.fee) == (D("0.399"), D("0.03591"))
+    # Risk: 2 left at stop 90 allows 2 / 10 = 0.2, below the cash bound's 0.399.
+    assert buy(D(5), cash=D(40), risk=D(2), stop=D(90)).fill.quantity == D("0.2")
 
 
-def test_market_buy_never_spends_more_than_its_budget():
+def test_market_buy_refusals_tell_depth_from_budget():
+    # Budget: 4 / 100.09 -> 0.039, and 0.039 x 100 = 3.9 < 5, so the entry ends.
+    result = buy(D(5), cash=D(4), risk=D(100), stop=D(50))
+    assert (result.fill, result.refusal) == (None, "budget")
+    # Depth: 0.4 x 0.10 = 0.04, and 0.04 x 100 = 4 < 5, with budget to spare: it waits.
+    result = buy(D("0.4"), cash=D(40), risk=D(100), stop=D(50))
+    assert (result.fill, result.refusal) == (None, "depth")
+
+
+def test_a_later_buy_at_a_higher_price_buys_less():
+    # Stop 90 with 2 of the risk allowance left: at 120 that allows 2 / 30 -> 0.066.
+    assert buy(D(50), cash=D(40), risk=D(2), stop=D(90), ask=D(120)).fill.quantity == D("0.066")
+
+
+def test_market_buy_never_spends_more_than_its_cash():
     # 1E-55 below 0.4 x 100.09: the quotient rounds up to 0.4 at precision 50,
     # and 0.4 would cost 40.036, so the guard lowers it to 0.399.
     with localcontext() as context:
         context.prec = 80
-        budget = D("40.036") - D("1E-55")
-    fill = execution.market_buy(Account.start(D(100)), quote(D(5)), RULES, budget=budget)
-    assert fill.quantity == D("0.399")
+        cash = D("40.036") - D("1E-55")
+    assert buy(D(5), cash=cash, risk=D(100), stop=D(50)).fill.quantity == D("0.399")
 ```
 - [ ] **Step 2: Run `pytest tests/test_uptrend.py -v`.** Expected: FAIL.
 - [ ] **Step 3: Implement both modules.** `trend_benchmark.py` is not modified, which keeps D byte-identical.
@@ -314,22 +348,22 @@ def test_market_buy_never_spends_more_than_its_budget():
     - `uptrend_stopped_ms: int | None = None`, set at the observation where exit 1 first triggers;
     - `risk_recovery: bool = False` and `risk_recovery_count: int = 0`. The flag is set when `_risk_action` pauses on PAUSE or REDUCE, and when `_clear_halt` restarts the account. It is cleared after `policy.recovery_frames` consecutive valid frames whose action is ALLOW, counted without V0's eligibility (spec v2 §7, "Recovery before a new entry"). `_uptrend_step` adds to the count on ALLOW and resets it on any other action. The other two resets sit where `_step` already sees those events, since `_uptrend_step` runs too late for them: the TransientFrame branch, beside `episode_count = 0`, and the frame-gap test, beside `recovery_count = episode_count = 0`;
     - `winding_down: bool = False`, set when the mode leaves Grid with grid orders open. It is cleared once the grid has ended, or when a decision sets the mode back to Grid first, which lifts the wind-down as F's block lifts (spec v2 §6, "Returning to Grid before it ends").
-  - **The halt transition:** on every frame that reaches `_step`'s halt branch, before the liquidation, `account.mode = "cash"` and `winding_down = False`, whether or not a position exists. Otherwise a halt in Grid mode would keep Grid through the restart, and a grid could open before any decision (spec v2 §7: "While halted, the mode is Cash"). A position's phase becomes `"exiting"`, so it never buys again. v1's liquidation then sells everything, and `_finish_uptrend`, which also runs in the halt branch after the liquidation, ends the position only once the liquidation has sold it. `_restart` requires a finished liquidation, so no position survives a restart.
+  - **The halt transition runs inside `PaperSimulator._halt`,** the one path every halt starts through: the halt branch, the post-fill `_risk_action`, an exhaustion halt in `_harvest`, and the invalid-frame handler. When `mode_switch` is on, it sets `account.mode = "cash"` and `winding_down = False`, whether or not a position exists, and the same frame's reporting sees Cash. Otherwise a halt in Grid mode would keep Grid through the restart, and a grid could open before any decision (spec v2 §7: "While halted, the mode is Cash"). A position's phase becomes `"exiting"`, with `exit_reason` "risk" unless an exit had already begun, so it never buys again, and a halt on a run's last frame leaves it an exit owed. v1's liquidation then sells everything, and `_finish_uptrend`, which also runs in the halt branch after the liquidation, ends the position only once the liquidation has sold it. `_restart` requires a finished liquidation, so no position survives a restart.
   - **A risk drain ends the position:** when `_risk_action` starts a drain (PAUSE or REDUCE) while a position exists, its phase becomes `"exiting"`, whatever it was. The drain's unpaired exit then sells it, and `_finish_uptrend` ends it. Without this, a sold position would stay `"holding"`, hold the mode, and keep `_resolved` False for good.
   - **Exit 3's label:** a risk drain or a halt sets `report["uptrend_exit"] = "risk"` only when no uptrend exit has started yet. A stop or fade whose own sale trips the post-fill risk check keeps its label, and the drain still sells whatever remains.
   - **`_step`'s main branch extends `report["fills"]`** with `match`'s fills, where it assigns them today, so the uptrend buys appended earlier in the frame survive. The list is empty at that point in every v1 run, so nothing changes there, as the byte check confirms.
   - **`PaperSimulator._decide_mode(account, frame, regime) -> None`,** run at the first valid frame at or after each UTC hour boundary, whenever the account is not halted (spec v2 §4). A transient frame returns from `_step` before this hook, so it neither decides nor touches `range_decisions` or `decision_hour_ms`. The hook runs in the range-exit branch too, so that v1's re-centring cooldown holds back only new grids (spec v2 §6). It:
-    - updates `range_decisions`, resetting it when the previous decision hour is not `hour − 1`;
-    - holds the mode while `account.uptrend` exists;
-    - otherwise sets `account.mode = select_mode(...)`, and marks this frame as a decision frame;
+    - **while `account.uptrend` exists, returns at once:** the held position keeps the mode, and no decision is made (spec v2 §4, "Entering versus staying"). So it touches neither `range_decisions` nor `decision_hour_ms`, and the first decision after the position ends restarts the RANGE count;
+    - otherwise updates `range_decisions`, resetting it when the previous decision hour is not `hour − 1`;
+    - sets `account.mode = select_mode(...)`, and marks this frame as a decision frame;
     - sets `winding_down` when the mode leaves Grid with grid orders open, and clears it when a decision returns to Grid before the grid has ended.
   - **`PaperSimulator._uptrend_step(account, frame, action, report) -> None`,** run on every frame while the account is not halted, after `_decide_mode` and before the branch's own selling. Each uptrend buy is appended to `report["fills"]` as `asdict(fill)`, so replay's `_record_fills`, the accounting reconciliation and the journal see it as they see any fill. An exit that triggers sets `report["uptrend_exit"]` to `"stop"`, `"fade"` or `"risk"`. It updates the recovery count, then works through a held position, then the entry, in this order:
     1. **Exit 1:** `bid <= stop`, recording `uptrend_stopped_ms` at the first trigger.
     2. **Every daily close not yet processed, one at a time:** each point in `d1_points` after the one at `stop_day_ms`, up to `d1_index`, in order. A point whose state is not UP exits 2. Each other point sets `highest_close = max(highest_close, point.close)`, then `stop = trailed_stop(stop, highest_close, point.atr)`, and moves `stop_day_ms` to it. The quote's bid is then checked against that stop (exit 1) before the next point. The first exit ends the processing, so a stop raised by an earlier missed close is not lost to a later fade (spec v2 §5, "Daily closes missed in a gap"). Usually that is one point, at the first frame after midnight. After a quote gap, it is every close the gap crossed.
     3. **Exit 2 whenever `d1_state` is UNAVAILABLE:** the daily bar due is missing, so no new point arrives, and `d1_open_ms` keeps the old value.
     4. **The entry, if no exit has started.**
-       - **A new entry starts only on a decision frame** whose decision set Uptrend, with `action == RiskAction.ALLOW`, `risk_recovery` False, a non-transient frame and a flat pair. Flat is spec v2 §6's definition: no resting order (`not account.orders`), and nothing marketable once F's held fragments are set aside. The test is `marketable(unpaired_inventory(account) − held_fragments(account), quote, rules) == 0`, so dust does not block it, nor do several fragments whose sum exceeds the minimum, as v1's unpaired exit exempts them. Otherwise, or when `entry_budget` is `None`, or when the quote's bid is at or below the initial stop, nothing starts before the next decision (spec v2 §5, "When"). The bid test matters because `s` uses the buy price, which is above the bid by the spread and slippage.
-       - **A started entry continues** on later quotes only while its budget lasts, the action is ALLOW and `risk_recovery` is False. Any other action ends the entry. Under a risk drain, the phase is already `"exiting"` (above), so the drain sells what was bought.
+       - **A new entry starts only on a decision frame** whose decision set Uptrend, with `action == RiskAction.ALLOW`, `risk_recovery` False, a non-transient frame and a flat pair. Flat is spec v2 §6's definition: no resting order (`not account.orders`), and nothing marketable once F's held fragments are set aside. The test is `marketable(unpaired_inventory(account) − held_fragments(account), quote, rules) == 0`, so dust does not block it, nor do several fragments whose sum exceeds the minimum, as v1's unpaired exit exempts them. Otherwise, or when `stop_distance(buy price, initial stop) ≤ 0`, or when the quote's bid is at or below the initial stop, nothing starts before the next decision (spec v2 §5, "When"). The bid test matters because `s` uses the buy price, which is above the bid by the spread and slippage. A started entry takes its two limits from `entry_limits` once.
+       - **A started entry buys on each quote, the first included,** with `market_buy(..., cash_left = cash_cap − spent, risk_left = risk_allowance − risk_used, stop)`, while the action is ALLOW and `risk_recovery` is False. A `"budget"` refusal ends the entry, and the position holds what was bought. A `"depth"` refusal buys nothing, and the entry waits for the next quote. Any other action ends the entry. Under a risk drain, the phase is already `"exiting"` (above), so the drain sells what was bought.
     5. **On an exit,** it sets `phase = "exiting"`. v1's own selling then sells the position, since `uptrend_held` no longer holds it back: the per-frame unpaired exit, or the range-exit branch's sale. The position stores its reason, `exit_reason`, set once when the exit begins (`"stop"`, `"fade"` or `"risk"`). Every sale of it, over as many quotes as the participation limit needs, is journaled as `"uptrend_" + exit_reason` in `_record_exit`, not as a grid's `"drain"` or `"range_exit"`, until `_finish_uptrend` ends the position. So `realised_exit_pnl_by_reason` keeps the two apart, and `report["uptrend_exit"]` is set only on the frame where the exit begins, so each exit counts once.
   - **`PaperSimulator._finish_uptrend(account, quote, report) -> None`,** run at the end of every `_step` that reaches a branch, after that branch's selling (the unpaired exit, the range-exit sale, or the halt's liquidation). When the phase is `"exiting"` and what remains is zero or below the minimum notional, it ends the position (`account.uptrend = None`) and leaves any remainder as dust, as in v1. It sets `report["uptrend_ended"] = True` when the position bought something (`spent > 0`), and `report["uptrend_abandoned"] = True` when it bought nothing, which is not a trade (spec v2 §5). So a sale that completes on a frame, the last frame of a run included, ends the position in that frame.
   - **`PaperSimulator.uptrend_held(account) -> Decimal`:** the position's quantity while its phase is `"entering"` or `"holding"`, and otherwise ZERO, so that an exit or a risk drain (which sets `"exiting"`) sells it as v1 drains. It is public, like `held_fragments`, because Task 6 reads it. It is subtracted in two places:
@@ -344,7 +378,8 @@ def test_market_buy_never_spends_more_than_its_budget():
 - [ ] **Step 1: Write the failing tests,** with frames built from stub `Snapshot`s and `Quote`s, one test per spec v2 §5–§7 rule:
   - `test_policy_mode_switch_requires_f_alone_and_is_named_ms`
   - `test_payload_without_perception_is_unchanged`, a byte-level comparison with `Frame.payload()` before the change
-  - `test_cash_to_uptrend_enters_with_budget_and_initial_stop`, for example a daily close of 100, ATR 2, stop 94 and budget `min(60, 0.04 × equity ÷ 0.06)`
+  - `test_cash_to_uptrend_enters_with_its_limits_and_initial_stop`: with a daily close of 100, ATR 2 and equity 100, the stop is 94, the cash cap 60 and the risk allowance 4. A deep quote at 100 buys 0.599: the cash bound (60 ÷ 100.09) binds before the risk bound (4 ÷ 6 → 0.666)
+  - `test_thin_depth_waits_and_an_exhausted_budget_ends_the_entry`
   - `test_entry_continues_across_quotes_under_participation`
   - `test_uptrend_buys_are_in_the_report_and_reconcile`: a two-quote entry puts both buys in `report["fills"]`, and replay's accounting check passes with their notional and fees counted
   - `test_uptrend_buys_count_as_order_requests`: a three-quote entry adds three requests to that day's count
@@ -383,6 +418,8 @@ def test_market_buy_never_spends_more_than_its_budget():
   - `test_exit_reason_labels_every_sale_until_the_end`: a stop whose sale takes three quotes, the bid recovering above the stop in between, is journaled as `"uptrend_stop"` on all three, and `uptrend_stops` counts 1
   - `test_stop_reason_survives_a_post_fill_drain`: a stop whose sale trips the daily-loss pause keeps `uptrend_exit == "stop"`
   - `test_range_decisions_reset_after_a_missing_hour`
+  - `test_no_range_decisions_while_holding`: after an exit that follows six RANGE-classified holding hours, Grid still needs four fresh consecutive RANGE decisions
+  - `test_post_fill_halt_on_the_last_quote_owes_the_exit`: a hard stop that the post-fill risk check raises on a run's final quote sets Cash at once, and leaves the position `"exiting"`, an exit owed
   - `test_paper_account_refuses_mode_switch`
 - [ ] **Step 2: Run `pytest tests/test_mode_switch_runner.py -v`.** Expected: FAIL.
 - [ ] **Step 3: Implement the fields, the policy validation and the three methods,** then hook them into `_step` as listed in Interfaces. When `mode_switch` is off, no existing line's behaviour changes.

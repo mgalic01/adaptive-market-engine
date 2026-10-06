@@ -113,7 +113,7 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 | --- | --- |
 | **Uptrend** | daily state Up; 4h state Up; V0's classifier reports its inputs as sound (`input_quality_ok`), and its regime is neither BEAR nor STRESS; daily RSI(14) < 75, with the daily RSI and ATR(14) available; no trailing-stop exit in the last 24 hours (§5) |
 | **Grid** | V0's classifier gives RANGE at this hour's decision and at the decisions of the 3 hours before it, which must be consecutive (an hour without a decision, such as a masked one, restarts the count); the 4h state is Range or Unclear; the daily state is Up, Range or Unclear; the 1h timeframe is available, with 1h RSI(14) between 35 and 65 inclusive, 1h ADX(14) < 20, and the 1h Bollinger width ≤ its median |
-| **Cash** | otherwise, including any Unavailable state or unavailable input, warm-up not complete, or a halt |
+| **Cash** | otherwise: a row fails when its 4h or daily state is Unavailable, or when an input it reads is unavailable. The 1h inputs are the Grid row's alone, so they never block Uptrend. Cash also holds while warm-up is incomplete, and during a halt |
 
 **What each mode allows:**
 - **Grid:** new grids may open, but only when V0's own checks, F's block and the risk layer also allow.
@@ -133,19 +133,22 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 - **How:** marketable buys at the taker fee, priced as variant D's: the ask × (1 + slippage), rounded up to the tick. Each is bounded by the participation limit on the ask size and by the exchange's precision.
 
 **Budget, set once when the entry starts:**
-- `budget = min(0.60 × active capital, 0.04 × active equity ÷ s)`, in USDT.
-- `s`, the stop distance, = (p − initial stop) ÷ p, where p is the first entry quote's buy price. (C5's `d` is the window's length in days, as in v1.)
+- **Two limits:**
+  - a cash cap of `0.60 × active capital`, in USDT;
+  - a risk allowance of `0.04 × active equity`: the most the entry may lose if the stop is reached, before fees and slippage.
+- **Each buy is bounded by both.** A buy of quantity q at buy price p uses q × p × (1 + taker fee) of the cash cap, and q × (p − stop) of the risk allowance. It may use no more than what is left of either. So a later buy at a higher price, which would lose more per unit at the same stop, buys less.
+- **For an entry filled at one price,** this is `min(0.60 × active capital, 0.04 × active equity ÷ s)` in USDT, before fees. Here `s`, the stop distance, is (p − initial stop) ÷ p, where p is the first entry quote's buy price. (C5's `d` is the window's length in days, as in v1.)
 - **No entry starts when s ≤ 0,** that is, when the price is at or below the initial stop, **or when the quote's bid is at or below the initial stop,** since exit 1 would then fire at once. Neither is a stop-out, so no pause starts.
 - Active capital and active equity are spec v1's (the vault excluded).
-- A stop-out therefore costs about 4% of active equity before fees and slippage.
+- A stop-out therefore costs at most about 4% of active equity before fees and slippage, however many quotes the entry took.
 - **A gap can cost more.** A price gap through the stop loses more than that, and C1 can fail on such a gap even with the 12% hard stop behind it. That is an expected failure mode, not a defect.
 
 **Partial fills:**
 - The entry buys at each quote until one of these ends it:
-  - its budget is spent;
-  - what remains buys less than the minimum notional;
+  - what is left of the cash cap, or of the risk allowance, buys less than the minimum notional at that quote's price;
   - an exit (below), or any risk action other than ALLOW (§7). Under a risk drain, what was bought is sold.
-- The budget and the stop stay as set when the entry started. The position is whatever was bought.
+- **Thin depth is not an end.** A quote whose participation limit alone allows less than the minimum notional buys nothing, and the entry waits for the next quote.
+- The two limits and the stop stay as set when the entry started. The position is whatever was bought.
 - If the stop is reached during the entry, the entry ends and exit 1 sells what was bought.
 
 **The trailing stop:**
