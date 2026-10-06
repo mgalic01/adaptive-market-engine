@@ -6,8 +6,10 @@
   reviewed the spec and the owner had confirmed the acceptance criteria in §6.
   - **Codex's reviews.** Codex reviewed amendments 2 and 3 on #163, amendment 4 on #168
     and the later spec edits on #170, each ending with no findings. Amendment 1 (#124)
-    went in while Codex was unavailable, and its review stayed owed (#134). Codex gave
-    it on #171, before the freeze, as the owner required (decision 14).
+    went in while Codex was unavailable, and its review stayed owed (#134). Codex
+    Desktop gave it before the freeze, as the owner required (decision 14): it reviewed
+    amendment 1's text, code and tests at #171's head `c7a45f4` and found no issues
+    ([verdict](https://github.com/mgalic01/adaptive-market-engine/issues/134#issuecomment-6012217278)).
   - **The owner's criteria.** The owner confirmed C1–C6 on 2026-09-24 and amended C2
     on 2026-10-05.
   - **No open readings.** Every reading the spec had left open to the owner is now the
@@ -405,7 +407,8 @@ incomplete. **This reverses a rule PR #122 merged on 2026-09-28 and is a design 
 made in this amendment, open to the owner's, Bob's and Codex's review.** *Outcome before
 the freeze:* Bob reviewed it on #124, the owner accepted it on 2026-10-06 (decision 19
 in the [test-plan record](reviews/2026-10-05-claude-owner-decisions-test-plan.md)), and Codex
-reviewed it on #171, as the owner required before the freeze (decision 14).
+Desktop reviewed it at #171's head `c7a45f4` and found no issues, as the owner required
+before the freeze (decision 14).
 
 **The manual resume's risk check (owner decisions D17 and D18, 2026-10-05).**
 - An `exhaustion` halt is refused by name, before any risk check: the active account

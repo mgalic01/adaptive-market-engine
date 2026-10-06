@@ -260,11 +260,11 @@ Claude told the owner both, and asked these questions. Where a question allowed 
 
 ## Still open
 
-- **Decided since (2026-10-05 and 2026-10-06, decisions 13–22 above):**
+- **Settled since (2026-10-05 and 2026-10-06, decisions 13–22 above):**
   - the three readings from the automated review of #168, which this section listed: the stage-1 identity check (decision 18), XRP's statistic (decision 16), and the tie band with a final equity of 0 or less annualising to −100% (decision 17);
   - every other reading the spec left open to the owner (decisions 15 and 19–22);
-  - how the full stack's parts combine (spec §3), which was open to Codex's and Bob's review: they reviewed it on #168 and #170 and raised nothing against it.
-- **Amendment 1's Codex review** (decision 14): requested on #171 and #134. The freeze waits for it.
+  - how the full stack's parts combine (spec §3), which was open to Codex's and Bob's review: they reviewed it on #168 and #170 and raised nothing against it;
+  - amendment 1's Codex review (decision 14): Codex Desktop reviewed amendment 1's text, its code (`runner.py`, `models.py`) and its tests at #171's head `c7a45f4` on 2026-10-06, and found no issues: ["AMENDMENT 1: NO ISSUES at c7a45f42f937e0d5be0021a7d64f2ea4d07809b3"](https://github.com/mgalic01/adaptive-market-engine/issues/134#issuecomment-6012217278).
 - **Stage-2 sensitivity runs.** The owner decides later. They are reported only and decide nothing.
 - **The trial count.** The `N_family` floors in spec §6 are working figures, to be settled by the trial register. C7's condition (b) stands, and C7 is not yet binding.
 - **Data work before stage 2, with no owner decision needed:**
