@@ -19,6 +19,15 @@ with the pinned implementation before preregistration.
 
 ### Current planning update — 2026-10-06
 
+The complete chat research is consolidated in
+[External research and build decisions](EXTERNAL_RESEARCH_AND_BUILD_DECISIONS.md):
+OpenTraderWorld, trend-switcher, the Reddit survey, the 416-strategy collection,
+Jesse, MDRAP and FenixAI. It records pinned evidence, limitations, dependencies,
+build/adapt/defer decisions and a bounded implementation sequence. That companion
+clarifies that research UI and reliability work can proceed independently without
+changing the frozen strategy experiment. It does not supersede the strategy order
+in Addendum B or authorize live execution.
+
 [Addendum B](#addendum-b--profit-focused-spot-and-futures-research-plan) assesses
 OpenTraderWorld's strategy examples and sets the updated recommended sequence.
 Main was refreshed to `2f51a3c89b1548af1087f0796500b3adb2c8b4d0`: spec v1 ended
