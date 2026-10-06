@@ -4,6 +4,9 @@ committed dataset spec can be dispatched from the backtest workflow."""
 from __future__ import annotations
 
 import calendar
+import os
+import shutil
+import subprocess  # nosec B404: runs the workflow's own guard step and git in a temp repo
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -141,3 +144,50 @@ def test_every_dataset_spec_is_a_workflow_choice() -> None:
     options = workflow[True]["workflow_dispatch"]["inputs"]["spec"]["options"]
     assert len(options) == len(set(options))
     assert set(options) == {path.stem for path in DATASETS.glob("*.toml")}
+
+
+def _guard_step() -> tuple[list[str], str]:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["run"]["steps"]
+    names = [step.get("name", "") for step in steps]
+    guard = next(s for s in steps if s.get("name", "").startswith("Require a committed manifest"))
+    return names, guard["run"]
+
+
+def _run_guard(script: str, repo: Path, spec: str) -> int:
+    shell = shutil.which("bash")
+    assert shell, "bash (Git Bash on Windows) is required to run the workflow step"
+    env = {**os.environ, "SPEC": spec}
+    return subprocess.run(  # nosec B603: a fixed shell running the workflow's own step
+        [shell, "-c", script], cwd=repo, env=env, capture_output=True, check=False
+    ).returncode
+
+
+def test_a_registered_long_window_needs_its_committed_manifest_before_any_fetch(
+    tmp_path: Path,
+) -> None:
+    """Codex's P2 on #183: before Task 9 commits a full-range manifest, the fetch step
+    would write an untracked one and the run would use it. The guard stops a full-range
+    dispatch first; an exploratory window without a committed manifest still runs."""
+    names, script = _guard_step()
+    guard = next(i for i, name in enumerate(names) if name.startswith("Require a committed"))
+    assert guard < names.index("Fetch data")
+
+    git = shutil.which("git")
+    assert git
+    subprocess.run([git, "init", "-q"], cwd=tmp_path, check=True)  # nosec B603
+    manifests = tmp_path / "config" / "datasets"
+    manifests.mkdir(parents=True)
+    for name in ("full-range-2017-2024", "full-range-2019-2024"):
+        assert (DATASETS / f"{name}.toml").is_file()
+        assert _run_guard(script, tmp_path, name) == 1  # no manifest at all
+
+    scored = manifests / "full-range-2017-2024.manifest.json"
+    scored.write_text("{}\n", encoding="utf-8")
+    assert _run_guard(script, tmp_path, "full-range-2017-2024") == 1  # written, not committed
+    subprocess.run(  # nosec B603
+        [git, "add", str(scored.relative_to(tmp_path))], cwd=tmp_path, check=True
+    )
+    assert _run_guard(script, tmp_path, "full-range-2017-2024") == 0
+    assert _run_guard(script, tmp_path, "full-range-2019-2024") == 1
+    assert _run_guard(script, tmp_path, "long-recovery-2023-2024") == 0  # exploratory
