@@ -1,7 +1,7 @@
 # Experiment specification v2: the spot mode switcher (DRAFT, not yet frozen)
 
 **Status:** a draft by Claude, from the owner's design decisions of 2026-10-06 (recorded in §11).
-- **When it freezes:** only after the owner has reviewed this text, and Codex and Bob have reviewed it. The freeze also comes before any code that could be tuned to results, and before any v2 run.
+- **When it freezes:** in its own PR, once this draft's reviews by Codex and Bob are clean, and with the owner's go. The owner approved the draft on 2026-10-06 (§11, decision 7). The freeze also comes before any code that could be tuned to results, and before any v2 run.
 - **After the freeze:** a change requires a new version.
 - **Scope:** historical replay only. Nothing here authorises live trading, API keys or withdrawals.
   - The mode switcher's runtime state is not saved, and neither is variant F's. So, like v1's E and F, it runs in replay, and a persisted paper account refuses it.
@@ -135,7 +135,7 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 **Budget, set once when the entry starts:**
 - `budget = min(0.60 × active capital, 0.04 × active equity ÷ s)`, in USDT.
 - `s`, the stop distance, = (p − initial stop) ÷ p, where p is the first entry quote's buy price. (C5's `d` is the window's length in days, as in v1.)
-- **No entry starts when s ≤ 0,** that is, when the price is at or below the initial stop. That is not a stop-out, so no pause starts.
+- **No entry starts when s ≤ 0,** that is, when the price is at or below the initial stop, **or when the quote's bid is at or below the initial stop,** since exit 1 would then fire at once. Neither is a stop-out, so no pause starts.
 - Active capital and active equity are spec v1's (the vault excluded).
 - A stop-out therefore costs about 4% of active equity before fees and slippage.
 - **A gap can cost more.** A price gap through the stop loses more than that, and C1 can fail on such a gap even with the 12% hard stop behind it. That is an expected failure mode, not a defect.
@@ -163,7 +163,7 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 3. **The risk layer acts** (§7).
 
 **After an exit:**
-- After a stop-out (exit 1), Uptrend cannot be entered for 24 hours. The pause runs from the observation at which exit 1 first triggers, however many observations its sells then take. A decision exactly 24 hours later may enter again. The pause starts even when the entry had bought nothing yet, because the stop was still reached.
+- After a stop-out (exit 1), Uptrend cannot be entered for 24 hours. The pause runs from the observation at which exit 1 first triggers, however many observations its sells then take. A decision may enter again when `now − trigger ≥ 24 hours` (86,400,000 ms), so exactly 24 hours later it may. The pause starts even when the entry had bought nothing yet, because the stop was still reached.
 - **An entry that bought nothing** ends as soon as an exit, a risk event or a halt ends it. It is not a trade, so C5 does not count it (§8).
 - After a trend fade (exit 2), there is no pause, because re-entry already needs the daily state to be Up again.
 
@@ -223,7 +223,7 @@ Risk events act exactly as in v1, in every mode, and win over the mode selector:
 ## 8. Evaluation
 
 **The window:**
-- Spec v1's frozen `full-range-2017-2024` definition, with evaluation from 2019-01 to 2024-12 and warm-up from 2018-06 (214 days).
+- Spec v1's frozen `full-range-2017-2024` definition, with evaluation from 2019-01 to 2024-12 and warm-up from 2018-06 (214 days). The name is #156's, whose dataset reached back to 2017. Spec v1 §4 set the warm-up at 2018-06 because XRPUSDT's data starts on 2018-05-04, so 2019-01 is the first evaluation month.
 - Its dataset spec and manifests must exist first (§9, step 2).
 - v1's `practice-2022` and `verify-2024h1` are run as a sanity check, and reported only.
 
@@ -251,7 +251,7 @@ Every criterion applies over the included runs of the scored window:
 | C3 | As spec v1: in every included run, the maximum total-equity drawdown is below that run's buy-and-hold maximum drawdown, under common sampling. |
 | C4 | As spec v1: every included run is valid. |
 | C5 | **Activity:** each run's rate is its completed round trips × 365.25 ÷ `d`, where `d` is the evaluation window's length in days, as in spec v1 §6 (2,192 for `full-range-2017-2024`). The mean of the rates over included runs, computed exactly, is ≥ 12. A round trip is either a completed grid cycle (spec v1 P7) or a completed uptrend trade: an entry that bought something, and whose exit has finished. Both kinds count alike, so grid cycles alone can meet C5. That is intended: C5 checks that the bot trades, not which mode does. Round trips by mode are a required readout. **This bar is lower than v1's.** v1's C5 needs a mean of at least 1 completed cycle a week, about 52 a year (spec v1 §6). The mode switcher waits in Cash whenever its rules are not clearly met, and an uptrend trade can last weeks. So a weekly bar would mostly measure the grid's share of the time, not whether the bot trades. 12 a year, one a month, still fails a bot that only waits in cash (§11, decision 6). |
-| C6 | **Earns its place:** in at least 60% of included runs, the run's ratio exceeds both always-grid's in the same pair and path, and cash's, which is 0. The ratio is the annualised return in percent ÷ max(the maximum total-equity drawdown in percent, 0.1), in the units of v1's scorer (`acceptance.gate_ratio`). For example, 5% a year with a 2% drawdown scores 2.5, and with a 0.05% drawdown it scores 5 ÷ 0.1 = 50. The return is compound-annualised as in C2, which differs from v1's C6: it kept raw returns (spec v1 §6, "Annualised returns"; §11, decision 7). An annualised return is computed within a stated error bound. A comparison that the bounds cannot settle is not scored, rather than guessed, as v1's scorer treats C2 (`acceptance.certain`). Annualising never changes a return's sign, so a run beats cash only with a positive return, in either form, and its comparison with always-grid only matters among positive returns. A run whose always-grid run is missing or invalid cannot show that it beats it, so it counts against C6, as v1's scorer counts a missing or invalid baseline. |
+| C6 | **Earns its place:** in at least 60% of included runs, the run's ratio exceeds both always-grid's in the same pair and path, and cash's, which is 0. The ratio is the annualised return in percent ÷ max(the maximum total-equity drawdown in percent, 0.1), in the units of v1's scorer (`acceptance.gate_ratio`). For example, 5% a year with a 2% drawdown scores 2.5, and with a 0.05% drawdown it scores 5 ÷ 0.1 = 50. The return is compound-annualised as in C2, which differs from v1's C6: it kept raw returns (spec v1 §6, "Annualised returns"; §11, decision 7). An annualised return is computed as v1's scorer computes C2's (`acceptance.annualise`): in `Decimal` at 60 significant digits, with the error bound that function states. A comparison that the bounds cannot settle is not scored, rather than guessed, as v1's scorer treats C2 (`acceptance.certain`). Annualising never changes a return's sign, so a run beats cash only with a positive return, in either form, and its comparison with always-grid only matters among positive returns. A run whose always-grid run is missing or invalid cannot show that it beats it, so it counts against C6, as v1's scorer counts a missing or invalid baseline. |
 
 **Reported, not gating:**
 - **Upside capture:** over the calendar months in which buy-and-hold's return is positive, the sum of the run's monthly returns divided by the sum of buy-and-hold's.
@@ -313,7 +313,7 @@ Each step is its own PR, reviewed by Codex and Bob, and merged only when both ar
    - the scorer's new C5 and C6, and upside capture;
    - the evaluation runs, from one frozen commit.
 
-V0 and every v1 variant must stay byte-identical throughout. The mode switcher runs only behind its own flag.
+V0 and every v1 variant must stay byte-identical throughout. The mode switcher runs only behind its own flag. The check of byte identity ships with step 3, as a script any reviewer can run.
 
 ## 10. Not in v2
 

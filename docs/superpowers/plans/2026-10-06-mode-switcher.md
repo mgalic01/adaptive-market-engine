@@ -221,7 +221,7 @@ def test_rolling_median_skips_none_and_averages_even_middle():
   - `entry_budget(active_capital: Decimal, active_equity: Decimal, price: Decimal, stop: Decimal) -> Decimal | None`, which is `None` when the stop distance `s <= 0`;
   - `initial_stop(close: Decimal, atr: Decimal) -> Decimal`;
   - `trailed_stop(stop: Decimal, highest_close: Decimal, atr: Decimal) -> Decimal`, which is `max(stop, highest_close − 3 × atr)`;
-  - `UptrendPosition`, a mutable dataclass: `budget`, `spent`, `quantity`, `stop`, `highest_close: Decimal`, `stop_day_ms: int`, `entered_at: str`, `phase: str`. The phase is one of `"entering"`, `"holding"` and `"exiting"`. `highest_close` starts at `c0`, the last completed daily close before entry, and `stop` at `initial_stop(c0, that day's ATR)` (spec v2 §5).
+  - `UptrendPosition`, a mutable dataclass: `budget`, `spent` (the USDT paid, taker fees included, which the budget bounds, as `market_buy`'s affordability guard counts them), `quantity`, `stop`, `highest_close: Decimal`, `stop_day_ms: int`, `entered_at: str`, `phase: str`. The phase is one of `"entering"`, `"holding"` and `"exiting"`. `highest_close` starts at `c0`, the last completed daily close before entry, and `stop` at `initial_stop(c0, that day's ATR)` (spec v2 §5).
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -329,7 +329,7 @@ def test_market_buy_never_spends_more_than_its_budget():
     3. **Exit 2 whenever `d1_state` is UNAVAILABLE:** the daily bar due is missing, so no new point arrives, and `d1_open_ms` keeps the old value.
     3b. **Exit 1 again** if steps 2–3 raised the stop and no exit has started: the same quote's bid against the raised stop (spec v2 §5, "When a close takes effect").
     4. **The entry, if no exit has started.**
-       - **A new entry starts only on a decision frame** whose decision set Uptrend, with `action == RiskAction.ALLOW`, `risk_recovery` False, a non-transient frame and a flat pair. Flat is spec v2 §6's definition: no resting order (`not account.orders`) and nothing the market would buy (`not exitable(account, quote, rules)`), so dust and F's fragments below the minimum do not block it. Otherwise, or when `entry_budget` is `None`, nothing starts before the next decision (spec v2 §5, "When").
+       - **A new entry starts only on a decision frame** whose decision set Uptrend, with `action == RiskAction.ALLOW`, `risk_recovery` False, a non-transient frame and a flat pair. Flat is spec v2 §6's definition: no resting order (`not account.orders`) and nothing the market would buy (`not exitable(account, quote, rules)`), so dust and F's fragments below the minimum do not block it. Otherwise, or when `entry_budget` is `None`, or when the quote's bid is at or below the initial stop, nothing starts before the next decision (spec v2 §5, "When"). The bid test matters because `s` uses the buy price, which is above the bid by the spread and slippage.
        - **A started entry continues** on later quotes only while its budget lasts, the action is ALLOW and `risk_recovery` is False. Any other action ends the entry. Under a risk drain, the phase is already `"exiting"` (above), so the drain sells what was bought.
     5. **On an exit,** it sets `phase = "exiting"`. v1's own selling then sells the position, since `uptrend_held` no longer holds it back: the per-frame unpaired exit, or the range-exit branch's sale. That sale is journaled as `"uptrend_stop"`, `"uptrend_fade"` or `"uptrend_risk"` in `_record_exit`, not as a grid's `"drain"` or `"range_exit"`, so `realised_exit_pnl_by_reason` keeps the two apart.
   - **`PaperSimulator._finish_uptrend(account, quote, report) -> None`,** run at the end of every `_step` that reaches a branch, after that branch's selling (the unpaired exit, the range-exit sale, or the halt's liquidation). When the phase is `"exiting"` and what remains is zero or below the minimum notional, it ends the position (`account.uptrend = None`) and leaves any remainder as dust, as in v1. It sets `report["uptrend_ended"] = True` when the position bought something (`spent > 0`), and `report["uptrend_abandoned"] = True` when it bought nothing, which is not a trade (spec v2 §5). So a sale that completes on a frame, the last frame of a run included, ends the position in that frame.
@@ -354,6 +354,7 @@ def test_market_buy_never_spends_more_than_its_budget():
   - `test_entry_starts_only_on_a_decision_frame`: a grid that becomes flat mid-hour enters at the next decision and not before; an attempt refused at a decision (`s <= 0`, or REDUCE) does not retry before the next one
   - `test_uptrend_enters_during_a_range_exit_cooldown_which_leaves_it_alone`
   - `test_no_entry_when_price_at_or_below_initial_stop`
+  - `test_no_entry_when_the_spread_straddles_the_initial_stop`: the buy price is above the stop and the bid at it, so nothing is bought, and no pause starts
   - `test_staying_in_uptrend_when_4h_turns_range`
   - `test_trailing_stop_starts_its_high_at_the_pre_entry_close`: `c0` = 100 with ATR 2 gives the stop 94. The next daily close, 99 with ATR 1, keeps the high at 100 and raises the stop to 97, where a high counted from entry only would give 96.
   - `test_trend_fade_exit_at_daily_close`
@@ -377,6 +378,7 @@ def test_market_buy_never_spends_more_than_its_budget():
   - `test_stop_pause_runs_from_the_first_trigger`
   - `test_drain_and_range_exit_leave_the_uptrend_position_alone` (Review Focus 3)
   - `test_hard_stop_clears_uptrend_and_restart_redecides` (Review Focus 4): a halt during an entry sets Cash and the position's phase to `"exiting"` before the liquidation. The position ends, with `uptrend_ended`, only once the liquidation has sold it. After the restart, the first decision is fresh, and no buy resumes from the old budget
+  - `test_halt_before_any_fill_abandons_the_entry`: a halt during an entry that bought nothing ends it with `uptrend_abandoned` and no trade, and clears `account.uptrend`
   - `test_raised_stop_is_checked_on_the_same_quote`: the first quote after a daily close is above the old stop but below the raised one. Exit 1 fires on that quote
   - `test_stop_reason_survives_a_post_fill_drain`: a stop whose sale trips the daily-loss pause keeps `uptrend_exit == "stop"`
   - `test_range_decisions_reset_after_a_missing_hour`
@@ -404,10 +406,11 @@ def test_market_buy_never_spends_more_than_its_budget():
 - **Consumes:** Task 5, `Perception` (Task 2), and the pair's hourly and daily bars that `prepare_run` already loads.
 - **Produces:**
   - **In `replay()`:** when `policy.mode_switch`, it raises `ValueError("the mode switcher needs the pair's hourly and daily history")` if either is missing, builds `Perception(hourly, daily)` once, and passes `perception=perception.at(kline.open_ms)` on every frame.
-  - **`Metrics` fields,** filled only for MS: `mode_minutes: Counter[str]`, `mode_switches: int`, `uptrend_trades: int`, `uptrend_stops: int`, `uptrend_fades: int`.
+  - **`Metrics` fields,** filled only for MS: `mode_ms: Counter[str]`, `mode_switches: int`, `uptrend_trades: int`, `uptrend_stops: int`, `uptrend_fades: int`.
+    - `mode_ms` is weighted by duration: each quote adds its own span (`POINT_SPANS_MS`, the replay's 9, 10, 10 and 31 seconds) to the mode in force after that quote's step. So a change of mode within a minute, a halt's included, is weighted by the time it held. The share of time in each mode (spec v2 §8) is computed from it.
     - `uptrend_trades` counts completed round trips for C5 (spec v2 §8): one for each frame whose report has `uptrend_ended`, never `uptrend_abandoned`. `_finish_uptrend` sets it when an exit's sale, a risk drain's or a halt's liquidation has sold a position that bought something (dust included; Task 5). A position still held or entering at the end is not counted, and neither is one whose halt liquidation is unfinished. An exit that completes on the run's last frame is counted.
     - `uptrend_stops` and `uptrend_fades` count the reports whose `uptrend_exit` is `"stop"` or `"fade"`. They are reported only.
-  - **In `summarise`:** MS rows carry their own strategy, `row["strategy"] = MODE_SWITCH_STRATEGY` (a new constant, `"mode switcher (spec-v2)"`), never v1's `gated grid (...)` label. They also carry `row["variant"] = "MS"` and `row["modes"] = {"minutes": {...}, "switches": n, "uptrend_trades": n, "stops": n, "fades": n, "grid_cycles": metrics.completed_cycles}`.
+  - **In `summarise`:** MS rows carry their own strategy, `row["strategy"] = MODE_SWITCH_STRATEGY` (a new constant, `"mode switcher (spec-v2)"`), never v1's `gated grid (...)` label. They also carry `row["variant"] = "MS"` and `row["modes"] = {"time_ms": {...}, "switches": n, "uptrend_trades": n, "stops": n, "fades": n, "grid_cycles": metrics.completed_cycles}`.
   - **The end of the run:** for MS, `held` is F's held fragments, as today, plus `simulator.uptrend_held(account)`. So a run ending in a blocked grid keeps F's exemption, a held position or an entry in progress is not owed, and an exit or risk drain under way is owed, as in v1 (spec v2 §6).
     - **The row's exit fields leave the held position out.** `exit_state` values all unpaired inventory, so a held position would show as `final_exit_blocked: "dust"`, with its whole value as `final_unsellable_notional`. For MS rows, those two fields are computed on the unpaired inventory without `uptrend_held(account)`: `""` and 0 when nothing else is unpaired. The position goes in `row["modes"]["held_at_end"] = {"quantity": ..., "value": ...}`, at the exit mark.
   - **`row["modes"]["buy_and_hold_final"]`:** `str(metrics.hold_final)`, so the scorer can end the last month exactly (Task 7).
@@ -416,7 +419,8 @@ def test_market_buy_never_spends_more_than_its_budget():
 - [ ] **Step 1: Write the failing tests:**
   - `test_mode_switch_cli_maps_to_policy`, in the CLI suite with the fake `run_job`.
   - `test_rising_market_enters_uptrend_and_trails_out`, on synthetic hourly, daily and minute bars: 300 days of a rise with down days, alternating +3% and −1.5% a day so that the daily RSI stays below 75, then a 15% drop. A steady rise would hold the daily RSI at 100 and never allow Uptrend. It asserts one uptrend trade, a stop exit, `row["modes"]["stops"] == 1`, and `accounting_problems == []`.
-  - `test_flat_market_runs_grids_in_grid_mode`, which asserts `grid_cycles > 0` and Uptrend minutes of 0.
+  - `test_flat_market_runs_grids_in_grid_mode`, which asserts `grid_cycles > 0` and no Uptrend time.
+  - `test_mode_time_is_weighted_by_quote_spans`: a mode change during the third quote's step of a minute adds 19 seconds (9 + 10) to the old mode and 41 seconds (10 + 31) to the new one.
   - `test_run_ending_in_uptrend_is_valid_and_marked_at_exit_value` (Review Focus 2), which asserts `valid`, the absence of any "incomplete" failure, final equity = cash + quantity × the exit mark, `row["modes"]["uptrend_trades"] == 0`, `final_exit_blocked` empty, and the position in `held_at_end`.
   - `test_run_ending_in_a_blocked_grid_keeps_f_fragments_held`: an MS run that ends in Grid mode with F fragments is not incomplete.
   - `test_run_ending_mid_exit_is_incomplete_as_in_v1`: an exit 1 whose sells the participation limit has not finished by the end leaves the run incomplete.
@@ -436,7 +440,7 @@ def test_market_buy_never_spends_more_than_its_budget():
 - Test: `tests/test_acceptance_v2.py`
 
 **Interfaces:**
-- **Consumes:** `acceptance.py`'s `read_results`, `annualise`, `gate_ratio`, `certain`, `YEAR_DAYS`, `mean`, `median`, `worst_drop`, `makes_money`, `safer_than_holding`, `integrity`, `economics` (R1, reported), `window_of`, `document_problems`, `primary_problems`, `code_problems`, `pinned`, `Run` and `ScoringError`; MS rows and F rows from Task 6.
+- **Consumes:** `acceptance.py`'s `read_results`, `annualise`, `gate_ratio`, `certain`, `YEAR_DAYS`, `mean`, `median`, `worst_drop`, `makes_money`, `safer_than_holding`, `integrity`, `economics` (R1, reported), `window_of`, `document_problems`, `primary_problems`, `code_problems`, `pinned`, `MINIMUM_PAIRS`, `thin_windows`, `Run` and `ScoringError`; MS rows and F rows from Task 6.
 - **The same input checks as v1's scorer,** since `acceptance.runs_of` cannot build MS runs (`variant_of` raises on them):
   - `document_problems` on every input: engine, features, integrity rules, and `valid` agreeing with `failures`;
   - `primary_problems` on every MS and F row: maker 0, taker 0.0009, slippage, participation, spread and capital, and no fill trigger. A run at other fees is refused, not scored;
@@ -447,7 +451,8 @@ def test_market_buy_never_spends_more_than_its_budget():
   - `SCORING = "spec-v2-section-8"`, `ROUND_TRIPS_PER_YEAR = 12`, `GATE_SHARE = Fraction(3, 5)`, and `SCORED = ("full-range-2017-2024",)`, with `REPORTED = ("practice-2022", "verify-2024h1")`;
   - `round_trips(row: dict[str, Any]) -> int`, which is `row["modes"]["grid_cycles"] + row["modes"]["uptrend_trades"]`;
   - **the expected matrix:** every included pair of the scored window (`window_of`) × both paths. Each MS key with no row is passed to `integrity` as missing, so C4 fails, as v1's scorer treats a missing run. Each F key with no row counts against C6 (above);
-  - **the reported windows are required too:** for each `REPORTED` window, every included pair × both paths must have its MS, F and D rows, or the CLI refuses the input set. So spec v2 §8's sanity runs and its D comparator cannot silently drop out. They gate nothing;
+  - **D is required in every window, and so are the reported windows:** the scored window needs D rows for every included pair × both paths, beside its MS and F rows. Each `REPORTED` window needs all three, or the CLI refuses the input set. So spec v2 §8's sanity runs and its D comparator cannot silently drop out. Neither gates anything;
+  - **minimum evidence:** a scored window that keeps fewer than `MINIMUM_PAIRS` (2) included pairs gives "insufficient evidence", never a pass, through v1's `thin_windows` (spec v1 §5, carried over in full by spec v2 §2);
   - `activity_v2(runs: Sequence[Run], trips: Mapping[str, int]) -> Criterion`, where each run's rate is `Fraction(trips[run.label]) * YEAR_DAYS / run.days` and the mean is exact;
   - `earns_its_place(ms: Sequence[Run], always_grid: Mapping[tuple[str, str], Run]) -> Criterion`:
     - a run passes only when its `return_pct` is > 0 (annualising keeps the sign) and its annualised ratio, `gate_ratio(run.annualised.value, run.max_drawdown_pct)`, beats F's, computed the same way, in the same pair and path;
@@ -468,7 +473,8 @@ def test_market_buy_never_spends_more_than_its_budget():
 - [ ] **Step 1: Write the failing tests:**
   - `test_activity_threshold_inclusive`: exactly 12 round trips a year passes, and 11.99 fails.
   - `test_a_missing_ms_run_fails_c4`: a results set with exactly one MS pair and path missing fails C4, and the missing key is named.
-  - `test_reported_windows_must_be_complete`: an input set with complete full-range files but no `verify-2024h1` rows, or no D rows, is refused.
+  - `test_reported_windows_must_be_complete`: an input set with complete full-range files but no `verify-2024h1` rows, or with no D rows in either the scored or a reported window, is refused.
+  - `test_one_included_pair_is_insufficient_evidence`: a scored window whose data checks leave one included pair gives "insufficient evidence", even when that pair's MS runs would pass C1–C6.
   - `test_gate_needs_positive_return_and_beats_always_grid`
   - `test_gate_uses_annualised_returns_and_counts_a_missing_or_invalid_always_grid_against`, with `days = 2192`:
     - the run returns 10% with a 5% drawdown, and F returns 20% with 9.9%;
