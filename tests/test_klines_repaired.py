@@ -7,14 +7,25 @@ refined rule, pinned here by a direct comparison with it.
 
 import csv
 import io
+import lzma
+import random
 import tempfile
 import unittest
 import zipfile
 import zlib
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from test_backtest_data import JAN_2024_MS, make_zip, minute_rows, row
+from test_backtest_data import (
+    JAN_2024_MS,
+    corrupt_zip,
+    encrypted_zip,
+    make_zip,
+    minute_rows,
+    row,
+    unsupported_zip,
+)
 from test_backtest_loaders import hour_rows
 
 from crypto_grid_bot.backtest.audit import fix_closes
@@ -44,6 +55,37 @@ def with_field(text, index, value):
     fields = text.split(",")
     fields[index] = value
     return ",".join(fields)
+
+
+def us_row(open_ms, close_us=None):
+    """A valid microsecond row, its close time (in microseconds) overridden if given."""
+    text = row(open_ms, us=True)
+    return text if close_us is None else with_field(text, 6, str(close_us))
+
+
+def random_minute_rows(rng, count):
+    """``count`` minute rows with strictly increasing opens: (open ms, close ms) pairs.
+
+    Some opens are off their minute, some follow an aligned row inside its own minute (so
+    they block its repair), some leave gaps; some closes are off the boundary.
+    """
+    pairs = []
+    minute = 0
+    for index in range(count):
+        previous = pairs[-1][0] if pairs else None
+        if previous is not None and previous % MIN == 0 and rng.random() < 0.1:
+            open_ms = previous + rng.randrange(1, MIN)
+        else:
+            minute += rng.choice((1, 1, 1, 2, 5)) if index else 0
+            open_ms = JAN_2024_MS + minute * MIN
+            if rng.random() < 0.1:
+                open_ms += rng.randrange(1, MIN)
+        close_ms = open_ms + MIN - 1
+        if rng.random() < 0.3:
+            while close_ms == open_ms + MIN - 1:
+                close_ms = open_ms + rng.randrange(-MIN, 2 * MIN)
+        pairs.append((open_ms, close_ms))
+    return pairs
 
 
 def text_of(*lines):
@@ -186,6 +228,63 @@ class RepairRuleTests(unittest.TestCase):
         self.assertEqual(frozenset({JAN_2024_MS}), result.repaired)
         self.assertEqual(frozenset({JAN_2024_MS + 2 * HOUR}), result.masked_hours)
         self.assertEqual([JAN_2024_MS, JAN_2024_MS + HOUR], opens(result))
+
+    def test_random_rows_are_repaired_as_the_refined_rule_says_in_both_units(self):
+        # Codex review of #186: a truncated microsecond close must reach the repair rule,
+        # not be refused by the parser first. The same random rows, in milliseconds and in
+        # microseconds (a close on its boundary ends in 999 us, any other close in some other
+        # number of microseconds), are repaired exactly where audit.fix_closes repairs them,
+        # every other untrusted row masks its hour, and both units read the same bars.
+        rng = random.Random(186)
+        pairs = random_minute_rows(rng, 2_000)
+        ms_lines, us_lines = [], []
+        for open_ms, close_ms in pairs:
+            on_boundary = close_ms == open_ms + MIN - 1
+            close_us = (open_ms + MIN) * 1000 - 1 if on_boundary else close_ms * 1000
+            if not on_boundary:
+                close_us += rng.randrange(999)  # 0 to 998 us: never the boundary's 999
+            ms_lines.append(csv_row(open_ms, close_ms))
+            us_lines.append(us_row(open_ms, close_us))
+        in_ms = parse_rows_repaired(text_of(*ms_lines), "1m", MONTH)
+        in_us = parse_rows_repaired(text_of(*us_lines), "1m", MONTH)
+        fixed = fix_closes(list(csv.reader(io.StringIO(text_of(*ms_lines)))), "1m", "refined")[1]
+        self.assertEqual(fixed, sorted(in_ms.repaired))
+        self.assertEqual(fixed, sorted(in_us.repaired))
+        untrusted = {
+            open_ms - open_ms % HOUR
+            for open_ms, close_ms in pairs
+            if open_ms % MIN or (close_ms != open_ms + MIN - 1 and open_ms not in fixed)
+        }
+        self.assertEqual(frozenset(untrusted), in_ms.masked_hours)
+        self.assertEqual(frozenset(untrusted), in_us.masked_hours)
+        self.assertEqual(in_ms.bars, in_us.bars)
+        self.assertEqual(replace(in_ms.stats, timestamp_units=("us",)), in_us.stats)
+        # The draw exercises every branch: repairs, blocked repairs and unaligned opens.
+        blocked = [o for o, c in pairs if o % MIN == 0 and c != o + MIN - 1 and o not in fixed]
+        self.assertTrue(fixed and blocked and any(o % MIN for o, _ in pairs))
+
+    def test_a_microsecond_close_in_the_right_millisecond_is_still_off_its_boundary(self):
+        # A close of open + step - 1 ms that does not end in 999 us is off its boundary,
+        # though its millisecond is right: it is repaired where the rule allows, its hour is
+        # masked where the rule does not, and it is never kept as it stands.
+        repaired, blocked = JAN_2024_MS, JAN_2024_MS + HOUR
+        text = text_of(
+            us_row(repaired, (repaired + MIN - 1) * 1000 + 500),
+            us_row(repaired + MIN),
+            us_row(blocked, (blocked + MIN - 1) * 1000),
+            us_row(blocked + 30_000),  # inside the step: blocks the repair, and is unaligned
+            us_row(blocked + 2 * MIN),
+        )
+        with self.assertRaisesRegex(DataError, "not a candle boundary"):
+            parse_rows(text, "1m", MONTH)
+        result = parse_rows_repaired(text, "1m", MONTH)
+        self.assertEqual("", result.unreadable)
+        self.assertEqual(frozenset({repaired}), result.repaired)
+        self.assertEqual(frozenset({blocked}), result.masked_hours)
+        self.assertEqual([repaired, repaired + MIN, blocked + 2 * MIN], opens(result))
+        self.assertEqual(("us",), result.stats.timestamp_units)
+        # The repair touches the close time only: the strict parser reads the same bar.
+        self.assertEqual(parse_rows(us_row(repaired) + "\n", "1m", MONTH)[0][0], result.bars[0])
 
 
 class UntrustedRowTests(unittest.TestCase):
@@ -333,6 +432,50 @@ class UnreadableTests(unittest.TestCase):
             with self.assertRaises(zlib.error):
                 read_archive(path, "ADAUSDT", "1m", MONTH)
             self.assertUnreadable(read_archive_repaired(path, "ADAUSDT", "1m", MONTH))
+
+    def test_every_undecodable_member_is_unreadable_not_an_error(self):
+        # Codex review of #186: a checksum-valid archive whose member is encrypted (zipfile
+        # raises RuntimeError) or compressed by a method zipfile cannot read (its subclass
+        # NotImplementedError) is spec v1 section 5 rule 1's archive that cannot be read:
+        # its hours are absent and masked, not fatal to mask_job. So is a corrupt bzip2 or
+        # LZMA stream, as a corrupt deflate stream already was. The strict readers still
+        # raise.
+        text = minute_rows(JAN_2024_MS, 3)
+        longer = minute_rows(JAN_2024_MS, 60)
+        cases = {
+            "encrypted member": (encrypted_zip("ADAUSDT", "1m", MONTH, text), RuntimeError),
+            "unsupported compression": (
+                unsupported_zip("ADAUSDT", "1m", MONTH, text),
+                NotImplementedError,
+            ),
+            "corrupt bzip2 stream": (
+                corrupt_zip("ADAUSDT", "1m", MONTH, longer, zipfile.ZIP_BZIP2),
+                OSError,
+            ),
+            "corrupt LZMA stream": (
+                corrupt_zip("ADAUSDT", "1m", MONTH, longer, zipfile.ZIP_LZMA),
+                lzma.LZMAError,
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            for label, (body, error) in cases.items():
+                with self.subTest(case=label):
+                    path = Path(temp) / f"{label.replace(' ', '-')}.zip"
+                    path.write_bytes(body)
+                    with self.assertRaises(error) as raised:
+                        read_archive(path, "ADAUSDT", "1m", MONTH)
+                    self.assertIs(error, type(raised.exception))
+                    self.assertUnreadable(read_archive_repaired(path, "ADAUSDT", "1m", MONTH))
+
+    def test_a_file_system_error_still_raises(self):
+        # An OSError with an errno is the file system's, not the archive's: a denied open
+        # must not turn a month's hours into masked ones.
+        denied = PermissionError(13, "Permission denied")
+        with (
+            patch("crypto_grid_bot.backtest.klines.read_member", side_effect=denied),
+            self.assertRaises(PermissionError),
+        ):
+            read_archive_repaired(Path("a.zip"), "ADAUSDT", "1m", MONTH)
 
     def test_an_eof_while_reading_is_unreadable_and_a_missing_file_still_raises(self):
         with patch("crypto_grid_bot.backtest.klines.read_member", side_effect=EOFError()):
