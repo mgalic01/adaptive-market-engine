@@ -59,6 +59,21 @@ prerequisites and every variant on main.
   Stage 2's long-window data work moves into v2: masking per spec §5, Bob's re-fetch,
   the XRP measurement, and the long dataset specs and manifests.
 
+**Spec v2, the spot mode switcher, is frozen** (2026-10-06,
+[spec](docs/EXPERIMENT_SPEC_V2.md), PR #174 and its freezing PR). Each pair, every hour,
+chooses Grid (v1's grid with F's block), Uptrend (one long position with a trailing stop)
+or Cash, under v1's unchanged risk limits.
+- **Next, the build:** the implementation plan
+  ([plan](docs/superpowers/plans/2026-10-06-mode-switcher.md)), in four reviewed PRs, and
+  the long-window data (the reader's repair rule and masking, Bob's re-fetch, the XRP
+  measurement, the dataset specs and manifests), which will get its own plan: proposed
+  in PR #176, not yet merged.
+- **Then the evaluation** on `full-range-2017-2024`, from one frozen commit, against
+  spec v2 §8: C1–C4 as in v1, C5 at 12 round trips a year, and C6 against always-grid
+  and cash.
+- **The reserved 2025–26 window** stays closed unless v2 passes, C7 is settled or waived,
+  and the owner gives the go.
+
 ## 3. Read-only market-data shadow mode (partly implemented; expansion deferred)
 
 Milestone 3a adds a GET-only public-data collector, validated closed hourly candles,

@@ -27,10 +27,15 @@ is why results are not tuned after the fact and why the criteria are fixed in ad
 the whole point is an answer we can trust, including an unwelcome one.
 
 **The bridge between the two** is the untouched 2025–26 window, judged against the
-acceptance criteria the owner chose. **The binding set is C1–C6 in
+acceptance criteria the owner chose. **For the current experiment, spec v2 (the mode
+switcher), the binding set is C1–C6 in
+[`EXPERIMENT_SPEC_V2.md` §8](EXPERIMENT_SPEC_V2.md#8-evaluation)**: C1–C4 as in v1, C5 and
+C6 adapted to the mode switcher. Read that table, not a summary of it. C7 (spec v1 §6)
+still gates the reserved run until it is settled or waived in writing. **Spec v1's binding
+set was C1–C6 in
 [`EXPERIMENT_SPEC_V1.md` §6](EXPERIMENT_SPEC_V1.md#6-acceptance-and-selection-owner-decisions-2026-09-24)**;
-read that table, not a summary of it. In short, across every included pair, window and
-intrabar path:
+v1 ended with no winner on 2026-10-06, and that set governs only v1's results. In short,
+spec v1's criteria, across every included pair, window and intrabar path:
 
 | | Criterion (§6 is authoritative) |
 | --- | --- |

@@ -1,8 +1,12 @@
-# Experiment specification v2: the spot mode switcher (DRAFT, not yet frozen)
+# Experiment specification v2: the spot mode switcher (frozen 2026-10-06)
 
-**Status:** a draft by Claude, from the owner's design decisions of 2026-10-06 (recorded in §11).
-- **When it freezes:** in its own PR, once this draft's reviews by Codex and Bob are clean. The owner approved the draft on 2026-10-06 (§11, decision 7), and gave the go to freeze it once the reviews are clean (decision 8). The freeze also comes before any code that could be tuned to results, and before any v2 run.
-- **After the freeze:** a change requires a new version.
+**Status:** frozen on 2026-10-06. Claude wrote it from the owner's design decisions of that day (§11).
+- **How it was frozen:**
+  - The owner approved the draft (§11, decision 7), and gave the go to freeze it once its reviews were clean (decision 8).
+  - PR #174 settled every finding of 13 review rounds. At its final head, `1672f60`, Codex reported no finding, Bob reported NO ISSUES, and CI passed.
+  - The freezing PR adds the automated review's last required fix at that head: the disclosure that C5's bar was set after v1's results were seen (§8, "Prior exposure"), and the owner's exception to the no-tuning rule for that bar (§11, decision 9). It merges only when Codex, Bob and CI are clean on it.
+- **Before any build:** the freeze comes before any code that could be tuned to results, and before any v2 run.
+- **After the freeze:** a change requires a new version. The freeze covers this file only. The build plan may still change, and where the two differ, this spec rules (§9, step 1).
 - **Scope:** historical replay only. Nothing here authorises live trading, API keys or withdrawals.
   - The mode switcher's runtime state is not saved, and neither is variant F's. So, like v1's E and F, it runs in replay, and a persisted paper account refuses it.
   - Running it as a paper account needs that state saved, with a schema change. That is a separate step before any forward paper test (§10).
@@ -140,7 +144,7 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 - **For an entry filled at one price,** this is `min(0.60 × active capital, 0.04 × active equity ÷ s)` in USDT, before fees. Here `s`, the stop distance, is (p − initial stop) ÷ p, where p is the first entry quote's buy price. (C5's `d` is the window's length in days, as in v1.)
 - **No entry starts when s ≤ 0,** that is, when the price is at or below the initial stop, **or when the quote's bid is at or below the initial stop,** since exit 1 would then fire at once. Neither is a stop-out, so no pause starts.
 - Active capital and active equity are spec v1's (the vault excluded).
-- A stop-out therefore costs at most about 4% of active equity before fees and slippage, however many quotes the entry took.
+- A stop-out therefore costs at most about 4% of active equity before fees and slippage, however many quotes the entry took. On a fast fall within one day, the 3% daily-loss pause can drain the position before the stop is reached (§7), and the loss is then smaller.
 - **A gap can cost more.** A price gap through the stop loses more than that, and C1 can fail on such a gap even with the 12% hard stop behind it. That is an expected failure mode, not a defect.
 
 **Partial fills:**
@@ -281,7 +285,7 @@ Every criterion applies over the included runs of the scored window:
 - Always-grid is v1's F, an existing configuration run on a new window.
 
 **Prior exposure (disclosed):**
-- v1's stage-1 results (2022 and 2024H1) informed this design: F in grid mode, and the risk budget. Both windows lie inside 2019–2024.
+- v1's stage-1 results (2022 and 2024H1) informed this design: F in grid mode, the risk budget, and C5's bar (below). Both windows lie inside 2019–2024.
 - The V2-era runs of 2026-09-30 covered parts of 2022–2024 (2022-06 to 2023-02, and 2023-10 to 2024-12), and Claude saw their figures in the owner's proposal. Those runs are invalid because of the lookahead fixed in #160.
 - #137's runs on the development data informed the deferral of shorting.
 - **Where the thresholds come from:**
@@ -294,14 +298,21 @@ Every criterion applies over the included runs of the scored window:
     - the Bollinger width for squeezes.
   - **Standard indicator conventions:** period 14 for RSI, ATR, ADX and ±DI; ADX 20 as the line between trend and range; and Bollinger 20 at 2σ.
   - **Claude's design choices:** the 720-hour (30-day) width median as the squeeze reference, 3 × ATR, 4%, 60%, 24 hours, and C5's 12 round trips a year (§11, decisions 6 and 7).
-- **What 2019–2024 results informed.** No threshold was fitted to any result. v1's stage-1 results (above) shaped two choices only qualitatively: F's block in grid mode, and sizing the trend position to the risk budget after D's 40% drawdowns.
+- **What 2019–2024 results informed.** v1's stage-1 results (above) informed three choices:
+  - two qualitatively: F's block in grid mode, and sizing the trend position to the risk budget after D's 40% drawdowns;
+  - and C5's lower bar, which was set with the full stack's C5 result known (next bullet).
+  No v2 result exists yet, so no v2 threshold was tuned against one.
+- **C5's bar was set after v1's results were seen.** In v1's stage 1, the full stack, which had the smallest drawdowns, failed v1's C5 at 0.69 completed cycles a week ([report](backtests/2026-10-06-spec-v1-stage-1.md)). C5's 12 round trips a year, one a month and about a quarter of v1's bar, was chosen with that result known.
+  - It is a relaxation of a criterion made after a result, which START_HERE's rule "No tuning after seeing results" forbids without an exception. The owner approved the bar (§11, decision 6) and, on 2026-10-06, granted an exception to that rule **on record** for C5's bar alone (§11, decision 9), as spec v1 §3 records for the drawdown controls. It is disclosed here, and v1's results stay published beside v2's.
+  - Grid cycles alone can pass it (C5).
+  - C1–C4, and C6's 60% share, are v1's, unchanged. C6's comparator is v1's F (always-grid), because F is the grid this spec uses, and F was stage 1's best grid.
 - 2025–26 has not been downloaded or replayed. Claude has read public reports of its BTC regime (spec v1 §7).
 - **Consequence:** 2019–2024 is a development window, not an untouched one. The reserved window is the clean test.
 
 ## 9. Build order
 
 Each step is its own PR, reviewed by Codex and Bob, and merged only when both are clean and the PR's checks pass:
-1. **This spec,** reviewed and frozen.
+1. **This spec,** reviewed and frozen. The freeze covers this file only. The build plan (`docs/superpowers/plans/2026-10-06-mode-switcher.md`) may still change during the build, and its changes are not spec changes. Where the two differ, this spec rules.
 2. **Long-window data:**
    - the reader with the repair rule and hour-level masking (spec v1 §5);
    - Bob's re-fetch of the long window's archives;
@@ -342,7 +353,8 @@ Each was a multiple-choice question, and Claude recommended every chosen option 
 4. **The success test.** Question: "How should v2 decide whether the mode switcher works?". Chosen: **"Adapt v1's criteria"**.
 5. **The approach.** Question: "Which approach should the v2 mode switcher take?". Chosen: **"B: multi-timeframe gate"** (Claude had recommended A, reusing v1's parts).
 6. **The design sections.** The owner approved sections 1–4 of the design as presented: the pieces, the mode rules and thresholds, the uptrend sizing and exits with the transitions, and the testing with the criteria and build order. §3–§9 write them out.
-   - **C5's bar.** Section 4 set the new C5 as "on average at least 12 completed round trips a year (grid cycles plus uptrend trades), so a bot that just sits in cash can't pass". v1's C5 needs about 52 a year (1 completed cycle a week). §8, C5, gives the reason for the lower bar. Section 4 did not set out the comparison with v1.
+   - **C5's bar.** Section 4 set the new C5 as "on average at least 12 completed round trips a year (grid cycles plus uptrend trades), so a bot that just sits in cash can't pass". v1's C5 needs about 52 a year (1 completed cycle a week). §8, C5, gives the reason for the lower bar. Section 4 did not set out the comparison with v1. The lower bar was chosen after v1's stage-1 results were known, including the full stack's C5 failure at 0.69 cycles a week (§8, "Prior exposure").
 7. **This written draft.** The owner reviewed it and approved it on 2026-10-06: "its all good". The owner added that the work is agile: if the mode switcher does not work, a later spec will adapt it or try something new. Within this spec, the registered rules stay fixed once it is frozen.
    - **What the draft already held,** and later rounds kept: C6 on annualised returns (§8). The review rounds of PR #174 since then clarified the rules and closed gaps, and changed no threshold that the owner approved.
 8. **The freeze.** Question: "Do you give your go to freeze spec v2 once its reviews are clean? It locks in C5 at 12 round trips a year (v1 had about 52) and C6 on annualised returns." Chosen: **"Yes, freeze when clean"**. The owner also chose to keep this spec and its build plan in one PR until Codex's review is clean ("Keep current approach"). Claude had recommended splitting them, so that the spec could freeze sooner.
+9. **The exception for C5's bar.** Codex's review of the freezing PR (#175) found that decision 8 approved the number but did not name the exception that START_HERE's rule "No tuning after seeing results" requires. Question: "Codex (#175) asks for your explicit decision: spec v2's C5 bar of 12 round trips a year was set after v1's results were seen, which START_HERE's "no tuning after seeing results" rule forbids unless you grant an exception on record, as you did for the drawdown controls on 2026-09-27. Your earlier "freeze when clean" approved the number but did not name the exception. Which do you choose?" Chosen: **"Grant the exception on record"**, over "Restore v1's bar (52 a year)". So C5's bar stays at 12 round trips a year, under an exception to the no-tuning rule granted on record for that bar alone (§8, "Prior exposure"). Claude recommended the chosen option: 12 a year already fails a bot that waits in cash, which is C5's purpose, and a weekly bar would measure the grid's share of the time rather than the design.
