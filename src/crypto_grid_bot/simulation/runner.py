@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
@@ -24,9 +25,12 @@ from crypto_grid_bot.portfolio.profit_vault import ProfitVault, ProfitVaultState
 from crypto_grid_bot.risk.engine import RiskEngine
 from crypto_grid_bot.simulation.execution import (
     Reduction,
+    buy_price,
     exit_state,
     exitable,
     liquidate,
+    market_buy,
+    marketable,
     match,
     place,
     reduce_unreserved,
@@ -55,6 +59,13 @@ from crypto_grid_bot.simulation.trend_switch import (
     effective_state,
     starts_down_sequence,
 )
+from crypto_grid_bot.simulation.uptrend import (
+    UptrendPosition,
+    entry_limits,
+    initial_stop,
+    stop_distance,
+    trailed_stop,
+)
 from crypto_grid_bot.strategy.cycle import (
     H2,
     H2_OUTSIDE_RANGE_SECONDS,
@@ -64,8 +75,10 @@ from crypto_grid_bot.strategy.cycle import (
     phase,
 )
 from crypto_grid_bot.strategy.grid import GridBuilder, GridNotViable
+from crypto_grid_bot.strategy.mode_selector import Mode, select_mode
 from crypto_grid_bot.strategy.opportunity import OpportunityScorer
 from crypto_grid_bot.strategy.order_flow import flow_blocked
+from crypto_grid_bot.strategy.perception import Snapshot, TrendState
 from crypto_grid_bot.strategy.regime import RegimeClassifier, thresholds_from_config
 from crypto_grid_bot.strategy.structure import ResistanceZones, nearest_resistance
 from crypto_grid_bot.strategy.volume_exit import DEADLINE as VOLUME_DEADLINE
@@ -118,8 +131,10 @@ SCHEMA = 10
 # alone; G and H run alone or with C as the declared interactions C+G and C+H. The full
 # stack C+F+G+H+V2 (test-plan amendment, owner decision 2026-10-05) is C+F+G+H with the
 # V2 structure flag, and is declared only with it. V2 alone is V0 with that flag.
+# Spec v2's mode switcher, "MS", runs with F's block and nothing else.
 FULL_STACK = "C+F+G+H"
-VARIANTS = ("", "A", "B", "C", "E", "F", "G", "H", "C+G", "C+H", FULL_STACK)
+MODE_SWITCH = "MS"
+VARIANTS = ("", "A", "B", "C", "E", "F", "G", "H", "C+G", "C+H", FULL_STACK, MODE_SWITCH)
 # The policy's on/off flags: each is off in V0, and left out of the identity when off.
 POLICY_FLAGS = (
     "trend_switch",
@@ -128,6 +143,7 @@ POLICY_FLAGS = (
     "funding_gate",
     "cycle_gate",
     "structure",
+    "mode_switch",
 )
 # Why a variant's own rule forbids a new grid (spec v1 §3), journaled with the variant.
 ENTRY_VETOES = {
@@ -138,6 +154,14 @@ ENTRY_VETOES = {
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_HOUR_MS = 3_600_000
+
+
+def _epoch_ms(observed_at: str) -> int:
+    """An observation's time in whole milliseconds since the Unix epoch, without a float."""
+    delta = timestamp(observed_at) - _EPOCH
+    return (delta.days * 86_400 + delta.seconds) * 1000 + delta.microseconds // 1000
 
 
 class TransientFrame(ValueError):
@@ -188,6 +212,10 @@ class SimulationPolicy:
     # halt restarts. Both are part of the account identity and fixed for all v1 runs.
     soft_cooloff_seconds: int = 86400
     hard_cooloff_seconds: int = 86400
+    # Spec v2 (docs/EXPERIMENT_SPEC_V2.md, sections 4-7): the mode switcher, which chooses
+    # Grid (V0's grid with F's block), Uptrend or Cash each hour. Its runtime state is never
+    # saved, so it runs in replay only. False = off (V0 and every v1 variant).
+    mode_switch: bool = False
 
     def __post_init__(self) -> None:
         if type(self.recovery_frames) is not int or not 2 <= self.recovery_frames <= 100:
@@ -213,6 +241,13 @@ class SimulationPolicy:
         for name in ("soft_cooloff_seconds", "hard_cooloff_seconds"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        others = [name for name in POLICY_FLAGS if name not in ("mode_switch", "flow_block_entry")]
+        if self.mode_switch and (
+            not self.flow_block_entry
+            or self.inventory_cap is not None
+            or any(getattr(self, name) for name in others)
+        ):
+            raise ValueError("spec v2's mode switcher runs with F's block and nothing else")
         if self.variant not in VARIANTS:
             raise ValueError(f"spec v1 declares no variant {self.variant}")
         if self.variant == FULL_STACK and not self.structure:
@@ -220,7 +255,10 @@ class SimulationPolicy:
 
     @property
     def variant(self) -> str:
-        """The spec v1 variant this policy runs, such as "C+G"; "" for V0."""
+        """The spec v1 variant this policy runs, such as "C+G"; "" for V0; "MS" for spec v2's
+        mode switcher."""
+        if self.mode_switch:
+            return MODE_SWITCH
         trend, cap = self.trend_switch, self.inventory_cap is not None
         added = (self.volume_exit, self.flow_block_entry, self.funding_gate, self.cycle_gate)
         names = ["C" if trend and cap else "A" if trend else "B" if cap else ""]
@@ -260,6 +298,9 @@ class Frame:
     funding_blocks: bool | None = None
     # Variant H only: the daily values of the latest completed daily bar (cycle.py).
     cycle: CycleSignal | None = None
+    # Spec v2's mode switcher only: the three timeframes as they stand at this observation
+    # (perception.py, completed bars only); None when it is off.
+    perception: Snapshot | None = None
 
     def payload(self) -> dict[str, Any]:
         value = asdict(self)
@@ -270,9 +311,9 @@ class Frame:
             del value["trend"]  # Likewise for journals without variant A.
         if not value["resistance"]:
             del value["resistance"]  # Omit from journals when structure unavailable.
-        for name in ("flow_share", "funding_blocks", "cycle"):
+        for name in ("flow_share", "funding_blocks", "cycle", "perception"):
             if value[name] is None:
-                del value[name]  # Likewise for journals without variants F, G and H.
+                del value[name]  # Likewise for journals without variants F, G, H and MS.
         return value
 
 
@@ -348,8 +389,11 @@ class PaperSimulator:
         )
 
     def _refuse_runtime_variants(self) -> None:
-        """Variants E and F keep account state that is never saved (``Account.to_dict``),
-        so a persisted account would lose it at every frame: they run in replay only."""
+        """Variants E and F, and spec v2's mode switcher, keep account state that is never
+        saved (``Account.to_dict``), so a persisted account would lose it at every frame: they
+        run in replay only."""
+        if self.policy.mode_switch:
+            raise ValueError("spec v2's mode switcher runs in historical replay only")
         if self.policy.volume_exit or self.policy.flow_block_entry:
             raise ValueError("variants E and F run in historical replay only")
 
@@ -375,21 +419,28 @@ class PaperSimulator:
             del account.orders[key]
         return cancelled
 
-    @staticmethod
     def _halt(
+        self,
         account: Account,
         reason: str,
         *,
         category: str,
         observed: str,
         exit_requested: bool = False,
+        report: dict[str, Any] | None = None,
     ) -> None:
         """Halt, or keep halted. The start, category and reason are captured once, on the
         transition from not halted to halted, and no later call changes them (spec v1
         amendment 1: an ``integrity`` or ``emergency`` halt past 12% is never
         re-categorised as ``drawdown``, and an invalid frame during a ``drawdown`` halt
         does not make it ``integrity``). Later calls may still clear orders and arm the
-        exit. A halt of any category ends an open soft-drawdown episode."""
+        exit. A halt of any category ends an open soft-drawdown episode.
+
+        Under spec v2's mode switcher, every halt starts here, so here the mode becomes Cash
+        (section 7: "While halted, the mode is Cash"), and the same frame reports it; a grid
+        winding down has lost its orders. An uptrend entry or position starts exit 3 unless an
+        exit has begun: it never buys again, the liquidation sells it, and ``_finish_uptrend``
+        ends it once that has sold it (a halt on a run's last frame leaves an exit owed)."""
         account.orders.clear()
         if not account.halt:
             account.halt = reason
@@ -399,6 +450,11 @@ class PaperSimulator:
         account.pause = ""
         account.recovery_count = 0
         account.liquidating = account.liquidating or exit_requested
+        if self.policy.mode_switch:
+            self._set_mode(account, Mode.CASH.value)
+            account.winding_down = False
+            if account.uptrend is not None:
+                self._begin_exit(account.uptrend, "risk", report)
 
     @staticmethod
     def _halt_time(account: Account, quote: Quote) -> str:
@@ -427,7 +483,15 @@ class PaperSimulator:
         buy's child sell will pair, and it is never True while ``exit_state`` is
         ``incomplete``. Keeping them distinct is what stops a partly filled buy being
         drained out from under its own child sell.
+
+        Under spec v2's mode switcher, an uptrend entry or position that is still entering or
+        holding is never resolved, whatever its size, so no harvest settles or moves the
+        reserves while it is held (section 6). Its dust ends only in its exit
+        (``_finish_uptrend``).
         """
+        position = account.uptrend
+        if self.policy.mode_switch and position is not None and position.phase != "exiting":
+            return False
         return not account.reserved_base() and not exitable(account, quote, self.rules)
 
     def _pause(self, account: Account, reason: str) -> None:
@@ -436,7 +500,18 @@ class PaperSimulator:
         account.recovery_count = 0
         account.draining = True
 
-    def _risk_action(self, account: Account, quote: Quote, emergency: bool) -> RiskAction:
+    def _risk_action(
+        self,
+        account: Account,
+        quote: Quote,
+        emergency: bool,
+        report: dict[str, Any] | None = None,
+    ) -> RiskAction:
+        """Evaluate the risk limits and act: EXIT halts, any other refusal pauses and drains.
+
+        Under spec v2's mode switcher a drain (PAUSE or REDUCE) is a risk drain (section 7): it
+        sells the uptrend position, so the position starts exit 3 unless an exit has begun,
+        whatever its phase, and a new entry then waits for the recovery confirmations."""
         equity = account.equity(quote, self.rules)
         result = self.risk.evaluate(
             PortfolioSnapshot(equity, account.day_start, account.risk_high, 0, emergency=emergency)
@@ -452,6 +527,7 @@ class PaperSimulator:
                 category=EMERGENCY if emergency else DRAWDOWN,
                 observed=quote.observed_at,
                 exit_requested=True,
+                report=report,
             )
         elif result.action != RiskAction.ALLOW and not account.halt:
             self._pause(account, "; ".join(result.reasons))
@@ -459,6 +535,10 @@ class PaperSimulator:
                 # The first REDUCE outside an episode starts one (amendment 1, soft
                 # drawdown, item 1); its cool-off runs from this observation.
                 account.episode_since, account.episode_count = quote.observed_at, 0
+            if self.policy.mode_switch:
+                account.risk_recovery, account.risk_recovery_count = True, 0
+                if account.uptrend is not None:
+                    self._begin_exit(account.uptrend, "risk", report)
         return result.action
 
     def _tentative_allow(self, account: Account, quote: Quote, emergency: bool) -> bool:
@@ -527,6 +607,9 @@ class PaperSimulator:
         account.outside_seconds, account.outside_last = ZERO, ""
         account.down_since = ""  # a flat account has ended any variant A sequence
         self._pause(account, reason)
+        if self.policy.mode_switch:
+            # Spec v2 section 7: a new uptrend entry waits for the recovery confirmations.
+            account.risk_recovery, account.risk_recovery_count = True, 0
 
     def _rebase_halted(self, account: Account, quote: Quote) -> dict[str, Any]:
         """Rebase a halted account's ``risk_high`` to this frame's active equity and return
@@ -601,6 +684,8 @@ class PaperSimulator:
             frame.trend.validate(quote.observed_at)
         if self.policy.cycle_gate and frame.cycle is not None:
             frame.cycle.validate(observed)  # likewise for variant H's daily values
+        if self.policy.mode_switch:
+            self._snapshot(frame)  # the mode switcher cannot run without its perception
 
     def _clear_flat_bounds(self, account: Account, quote: Quote, report: dict[str, Any]) -> None:
         """Amendment 2 (owner decision 2026-10-02, D15): flat, no orders and no range exit
@@ -730,6 +815,8 @@ class PaperSimulator:
             if not account.halt:
                 self._pause(account, str(exc))
             account.episode_count = 0  # a TransientFrame breaks the confirmations
+            if self.policy.mode_switch:
+                account.risk_recovery_count = 0  # and the uptrend entry's (spec v2 section 7)
             report.update(
                 decision="halt" if account.halt else "pause",
                 reason=account.halt or account.pause,
@@ -747,6 +834,7 @@ class PaperSimulator:
                 category=INTEGRITY,
                 observed=self._halt_time(account, quote),
                 exit_requested=account.inventory != ZERO,
+                report=report,
             )
             report.update(decision="halt", reason=str(exc), cancelled=sorted(previous_orders))
             return report
@@ -775,11 +863,17 @@ class PaperSimulator:
             > self.policy.maximum_frame_gap_seconds
         ):
             account.recovery_count = account.episode_count = 0
+            if self.policy.mode_switch:
+                account.risk_recovery_count = 0  # spec v2 section 7: as in v1
         account.last_observed, account.last_received = quote.observed_at, quote.received_at
         self._mark(account, quote, self.rules)
         report.update(regime=regime.regime.value, opportunity_score=score.score)
         self._rebase(account, frame, score.eligible, report)
-        action = self._risk_action(account, quote, frame.signals.emergency)
+        if self.policy.mode_switch and not account.halt:
+            # Spec v2 section 5: a stop or a fade already true on this quote is recorded
+            # before the risk layer acts on it, so a drain or a halt keeps its label.
+            self._uptrend_exits(account, frame, report)
+        action = self._risk_action(account, quote, frame.signals.emergency, report)
         if account.halt and not was_halted and account.range_exit and not clock[0]:
             # The observation that timed the range out also halted the account. The
             # halt owns the exit and the clock stands still from it (amendment 3), so
@@ -799,7 +893,9 @@ class PaperSimulator:
         if account.halt:
             if account.liquidating:
                 self._record_exit(
-                    report, liquidate(account, quote, self.rules, check=False), "liquidation"
+                    report,
+                    liquidate(account, quote, self.rules, check=False),
+                    self._exit_label(account, "liquidation"),
                 )
             # Preconditions read after the liquidation attempt, so a restart can happen
             # on the frame that completes it. Its settlement and any new grid follow on
@@ -808,9 +904,29 @@ class PaperSimulator:
             if account.halt:
                 report.update(decision="halt", reason=account.halt)
         elif account.range_exit:
-            self._record_exit(
-                report, liquidate(account, quote, self.rules, check=False), "range_exit"
-            )
+            if self.policy.mode_switch:
+                # Spec v2 section 6: decisions go on through v1's re-centring cooldown, which
+                # holds back new grids only, so the uptrend entry may start here.
+                if self._decide_mode(account, frame, regime):
+                    report["mode_decision"] = account.mode
+                self._uptrend_step(account, frame, action, report)
+            held = self.uptrend_held(account)
+            if self.policy.mode_switch and held > ZERO:
+                # The range exit leaves the uptrend position alone (section 6), and sells
+                # only what else is held; a bound of zero would make reduce_unreserved raise.
+                bound = account.inventory - held
+                if bound > ZERO:
+                    self._record_exit(
+                        report,
+                        reduce_unreserved(account, quote, self.rules, maximum=bound, check=False),
+                        "range_exit",
+                    )
+            else:
+                self._record_exit(
+                    report,
+                    liquidate(account, quote, self.rules, check=False),
+                    self._exit_label(account, "range_exit"),
+                )
             back_inside = account.grid_lower <= quote.bid <= account.grid_upper
             cooled = (
                 self.policy.recenter_after_exit
@@ -840,6 +956,12 @@ class PaperSimulator:
                 account.grid_lower = account.grid_upper = ZERO
                 report["range_exit_cleared"] = "returned inside" if back_inside else "recenter"
         else:
+            if self.policy.mode_switch:
+                # Spec v2 sections 4 and 5: the hourly decision, then the uptrend entry, before
+                # this branch's own selling.
+                if self._decide_mode(account, frame, regime):
+                    report["mode_decision"] = account.mode
+                self._uptrend_step(account, frame, action, report)
             eligible = self._entry_eligible(account, frame, regime, score, cycle)
             h3_only = eligible and not score.eligible
             if not eligible:
@@ -859,34 +981,39 @@ class PaperSimulator:
             )
             if trend_due:
                 account.orders.clear()
-            if self._buys_blocked(account):
+            if self._buys_blocked(account) or self._winding_down(account):
                 self._block_buys(account, frame)  # before matching, so none can fill
             refused: list[dict[str, Any]] = []
-            report["fills"] = [
-                asdict(fill)
-                for fill in match(
-                    account,
-                    quote,
-                    self.rules,
-                    # A running variant A Down sequence places no new buy (reentries too),
-                    # and neither does variant F's block.
-                    recycle=not account.pause
-                    and not account.draining
-                    and frame.allow_new_grid
-                    and not account.down_since
-                    and not self._buys_blocked(account),
-                    epoch=frame.epoch,
-                    reentry_quantity=(
-                        None
-                        if self.policy.inventory_cap is None
-                        else lambda order_id, price, quantity: self._cap(
-                            account, quote, capped, order_id, price, quantity
-                        )
-                    ),
-                    refused=refused,
-                    check=False,
-                )
-            ]
+            # Extended, not assigned: an uptrend buy may already be in the list (spec v2); in
+            # every v1 run it is empty here.
+            report["fills"].extend(
+                [
+                    asdict(fill)
+                    for fill in match(
+                        account,
+                        quote,
+                        self.rules,
+                        # A running variant A Down sequence places no new buy (reentries too),
+                        # and neither does variant F's block, nor a grid winding down (spec v2).
+                        recycle=not account.pause
+                        and not account.draining
+                        and frame.allow_new_grid
+                        and not account.down_since
+                        and not self._buys_blocked(account)
+                        and not self._winding_down(account),
+                        epoch=frame.epoch,
+                        reentry_quantity=(
+                            None
+                            if self.policy.inventory_cap is None
+                            else lambda order_id, price, quantity: self._cap(
+                                account, quote, capped, order_id, price, quantity
+                            )
+                        ),
+                        refused=refused,
+                        check=False,
+                    )
+                ]
+            )
             placed = set(account.orders) - previous_orders  # child sells, reentry buys
             if refused:
                 # A reentry buy the balance or minimum-notional check declined: that level
@@ -901,6 +1028,8 @@ class PaperSimulator:
             unpaired = unpaired_inventory(account)
             if self.policy.flow_block_entry:
                 unpaired -= self.held_fragments(account)
+            if self.policy.mode_switch:
+                unpaired -= self.uptrend_held(account)  # spec v2 section 6: not grid inventory
             if unpaired > ZERO:
                 consumed = sum(
                     (D(fill["quantity"]) for fill in report["fills"] if fill["side"] == "sell"),
@@ -917,12 +1046,19 @@ class PaperSimulator:
                         check=False,
                     ),
                     # Same-step labelling (spec v1, section 3 A): drain outranks trend_exit.
-                    "drain" if account.draining or not trend_due else "trend_exit",
+                    self._exit_label(
+                        account, "drain" if account.draining or not trend_due else "trend_exit"
+                    ),
                 )
 
+        if self.policy.mode_switch:
+            # After the branch's selling: an uptrend exit that has sold the position ends it.
+            self._finish_uptrend(account, quote, report)
+            if account.winding_down and not account.orders:
+                account.winding_down = False  # the grid has ended (spec v2 section 6)
         # Recheck risk after any fills, but never reuse this event's liquidity for an exit.
         if report["fills"]:
-            self._risk_action(account, quote, frame.signals.emergency)
+            self._risk_action(account, quote, frame.signals.emergency, report)
         # Buys may still rest here, so _resolved (whole unreserved inventory) is the
         # stricter gate: a partly filled buy's inventory blocks the harvest until its own
         # child sell has paired it. See _resolved.
@@ -1019,12 +1155,15 @@ class PaperSimulator:
                 category=EXHAUSTION,
                 observed=quote.observed_at,
                 exit_requested=account.inventory != ZERO,
+                report=report,
             )
             return
         report["allocation"] = self._settle(account, quote)
         account.draining = False
         if account.pause or account.range_exit or not frame.allow_new_grid:
             return
+        if self.policy.mode_switch and account.mode != Mode.GRID.value:
+            return  # spec v2 section 4: a new grid opens in Grid mode only
         if trend is not None and (trend != UP or account.down_since):
             # Variant A: a new grid needs Up and no running Down sequence.
             report.update(
@@ -1222,6 +1361,262 @@ class PaperSimulator:
                 held -= quantity
             if held:
                 fragments[target] = held
+
+    # --- Spec v2's mode switcher (docs/EXPERIMENT_SPEC_V2.md, sections 4-7) -----------------
+    # Every method below runs only when ``policy.mode_switch`` is on: the account's mode,
+    # its hourly decision, the uptrend engine and its exits. The uptrend position is not grid
+    # inventory: v1's per-frame exit, range exit, settlement and grid drains leave it alone
+    # (``uptrend_held``, ``_resolved``), and only its own exits and the risk layer sell it.
+
+    @staticmethod
+    def _snapshot(frame: Frame) -> Snapshot:
+        """The frame's perception, which the mode switcher cannot run without."""
+        if frame.perception is None:
+            raise ValueError("the mode switcher needs a perception snapshot on every frame")
+        return frame.perception
+
+    @staticmethod
+    def _set_mode(account: Account, mode: str) -> None:
+        """Every assignment of the mode goes through here, so ``mode_switches`` counts each
+        change of it, a halt's included; a decision that keeps the mode is not a switch."""
+        if account.mode != mode:
+            account.mode = mode
+            account.mode_switches += 1
+
+    def _winding_down(self, account: Account) -> bool:
+        """Whether a grid is winding down (section 6): it places no buy, as under F's block."""
+        return self.policy.mode_switch and account.winding_down
+
+    def uptrend_held(self, account: Account) -> Decimal:
+        """The uptrend position's quantity while it is entering or holding, which v1's own
+        selling leaves alone; ZERO otherwise. Once its exit has begun (a stop, a fade, a risk
+        drain or a halt), v1's selling sells it as v1 drains. Public, like
+        ``held_fragments``: the end-of-run verdict reads it too."""
+        position = account.uptrend
+        if position is None or position.phase not in ("entering", "holding"):
+            return ZERO
+        return position.quantity
+
+    def _exit_label(self, account: Account, reason: str) -> str:
+        """The journal label of an exit's sale: ``reason``, or ``"uptrend_" + exit_reason``
+        while an uptrend position is exiting, until ``_finish_uptrend`` ends it, so the
+        realised P&L by reason keeps the two apart."""
+        position = account.uptrend
+        if self.policy.mode_switch and position is not None and position.phase == "exiting":
+            return "uptrend_" + position.exit_reason
+        return reason
+
+    @staticmethod
+    def _begin_exit(position: UptrendPosition, reason: str, report: dict[str, Any] | None) -> None:
+        """Begin the position's exit, unless one has begun: it never buys again, its reason
+        ("stop", "fade" or "risk") is set once, and only the frame it begins on reports it,
+        so each exit counts once."""
+        if position.phase == "exiting":
+            return
+        position.phase, position.exit_reason = "exiting", reason
+        if report is not None:
+            report["uptrend_exit"] = reason
+
+    def _stop_out(
+        self, account: Account, position: UptrendPosition, quote: Quote, report: dict[str, Any]
+    ) -> None:
+        """Exit 1: the 24-hour re-entry pause runs from this, its first trigger (section 5),
+        whatever the entry had bought."""
+        account.uptrend_stopped_ms = _epoch_ms(quote.observed_at)
+        self._begin_exit(position, "stop", report)
+
+    @staticmethod
+    def _end_entry(account: Account, position: UptrendPosition, report: dict[str, Any]) -> None:
+        """The entry stops buying: the position holds what it bought (section 5, "Partial
+        fills"). An entry that bought nothing holds nothing, so it ends here, as an entry an
+        exit ends would: no position and no trade."""
+        if position.quantity > ZERO:
+            position.phase = "holding"
+        else:
+            account.uptrend = None
+            report["uptrend_abandoned"] = True
+
+    def _flat(self, account: Account, quote: Quote) -> bool:
+        """Section 6's flat: no resting order, and nothing the market would still buy once
+        F's held fragments are set aside, as v1's unpaired exit sets them aside. Dust is flat,
+        and so are several fragments that together exceed the minimum."""
+        if account.orders:
+            return False
+        rest = unpaired_inventory(account) - self.held_fragments(account)
+        return marketable(rest, quote, self.rules) == ZERO
+
+    def _decide_mode(self, account: Account, frame: Frame, regime: RegimeAssessment) -> bool:
+        """Section 4's hourly decision, at the first valid frame of an account not halted at
+        or after each UTC hour boundary; True when this frame made one (it then reports it).
+
+        While an uptrend position exists the pair stays in Uptrend and nothing is decided
+        ("Entering versus staying"); the hour is still taken and the RANGE count restarts,
+        so a position that ends later in the hour leaves the next decision to the next hour,
+        which counts RANGE hours afresh. Otherwise the count goes on only from the hour
+        before, and the mode is ``select_mode``'s. Leaving Grid with the grid's orders
+        resting winds the grid down; a decision back to Grid lifts that, as F's block lifts.
+        """
+        observed = _epoch_ms(frame.quote.observed_at)
+        hour = observed // _HOUR_MS * _HOUR_MS
+        if hour <= account.decision_hour_ms:
+            return False
+        consecutive = account.decision_hour_ms == hour - _HOUR_MS
+        account.decision_hour_ms = hour
+        if account.uptrend is not None:
+            account.range_decisions = 0
+            return False
+        if regime.regime == MarketRegime.RANGE:
+            account.range_decisions = account.range_decisions + 1 if consecutive else 1
+        else:
+            account.range_decisions = 0
+        mode = select_mode(
+            self._snapshot(frame),
+            regime.regime,
+            regime.input_quality_ok,
+            account.range_decisions,
+            observed,
+            account.uptrend_stopped_ms,
+        )
+        was_grid = account.mode == Mode.GRID.value
+        self._set_mode(account, mode.value)
+        if mode is Mode.GRID:
+            account.winding_down = False
+        elif was_grid and account.orders:
+            account.winding_down = True
+        return True
+
+    def _uptrend_exits(self, account: Account, frame: Frame, report: dict[str, Any]) -> None:
+        """Section 5's exits 1 and 2 at a valid frame of an account not halted, after the mark
+        and before the pre-fill risk check, so a stop or a fade already true on this quote is
+        recorded first and exit 3 then keeps its label:
+
+        1. exit 1 when the bid is at or below the stop;
+        2. each daily close not yet processed, in order: the points after ``stop_day_ms`` up
+           to ``d1_index``, usually one at the first frame after midnight, and every close a
+           quote gap crossed. An entry still buying ends at the first. A close that is not Up
+           is exit 2; any other raises the highest close and trails the stop, and the bid is
+           checked against that stop before the next. The first exit ends the processing;
+        3. exit 2 whenever the daily bar due is missing (``d1_state`` UNAVAILABLE), which
+           step 2 cannot see, since no point arrives (it fails closed).
+        """
+        position = account.uptrend
+        if position is None or position.phase == "exiting":
+            return
+        quote, snapshot = frame.quote, self._snapshot(frame)
+        if quote.bid <= position.stop:
+            self._stop_out(account, position, quote, report)
+            return
+        if snapshot.d1_index is not None:
+            points = snapshot.d1_points
+            start = bisect_right(points, position.stop_day_ms, key=lambda point: point.open_ms)
+            for point in points[start : snapshot.d1_index + 1]:
+                if position.phase == "entering":
+                    position.phase = "holding"  # the stop never trails while the entry buys
+                if point.state != TrendState.UP or point.atr is None:
+                    self._begin_exit(position, "fade", report)
+                    break
+                position.highest_close = max(position.highest_close, point.close)
+                position.stop = trailed_stop(position.stop, position.highest_close, point.atr)
+                position.stop_day_ms = point.open_ms
+                if quote.bid <= position.stop:
+                    self._stop_out(account, position, quote, report)
+                    break
+        if position.phase != "exiting" and snapshot.d1_state == TrendState.UNAVAILABLE:
+            self._begin_exit(position, "fade", report)
+        if position.phase == "holding" and position.quantity == ZERO:
+            self._end_entry(account, position, report)  # a close ended an entry with nothing
+
+    def _uptrend_step(
+        self, account: Account, frame: Frame, action: RiskAction, report: dict[str, Any]
+    ) -> None:
+        """Section 5's entry, after this frame's decision and before the branch's own selling,
+        and section 7's recovery count.
+
+        The count: after a risk drain or a restart, ``recovery_frames`` consecutive valid
+        frames whose action is ALLOW end the recovery, V0's eligibility aside (a transient
+        frame or a frame gap restarts it, in ``_step``).
+
+        An entry starts only on a decision frame that chose Uptrend, with ALLOW, no recovery
+        and a flat pair, when the buy price is above the initial stop (``s > 0``) and the bid
+        is too; otherwise nothing starts before the next decision, and nothing is stopped
+        out. It takes its limits once, and buys on each quote, the first included, while the
+        action is ALLOW: a "budget" refusal ends it, holding what it bought; a "depth" one
+        waits for the next quote. Each buy goes in the report's fills, as any fill does.
+        """
+        if account.risk_recovery:
+            if action == RiskAction.ALLOW:
+                account.risk_recovery_count += 1
+                if account.risk_recovery_count >= self.policy.recovery_frames:
+                    account.risk_recovery, account.risk_recovery_count = False, 0
+            else:
+                account.risk_recovery_count = 0
+        quote, rules = frame.quote, self.rules
+        position = account.uptrend
+        if position is None:
+            if (
+                report.get("mode_decision") != Mode.UPTREND.value
+                or action != RiskAction.ALLOW
+                or account.risk_recovery
+                or not self._flat(account, quote)
+            ):
+                return
+            snapshot = self._snapshot(frame)
+            close, atr, day_ms = snapshot.d1_close, snapshot.d1_atr, snapshot.d1_open_ms
+            if close is None or atr is None or day_ms is None:
+                return  # unreachable: Uptrend needs the daily close and ATR
+            stop = initial_stop(close, atr)
+            if stop_distance(buy_price(quote, rules), stop) <= ZERO or quote.bid <= stop:
+                return
+            cash_cap, risk_allowance = entry_limits(
+                account.cash - account.pending, account.equity(quote, rules)
+            )
+            position = account.uptrend = UptrendPosition(
+                cash_cap=cash_cap,
+                risk_allowance=risk_allowance,
+                stop=stop,
+                highest_close=close,
+                stop_day_ms=day_ms,
+                entered_at=quote.observed_at,
+            )
+        if position.phase != "entering":
+            return
+        if action != RiskAction.ALLOW or account.risk_recovery:
+            self._end_entry(account, position, report)  # a risk drain has already begun exit 3
+            return
+        result = market_buy(
+            account,
+            quote,
+            rules,
+            cash_left=position.cash_cap - position.spent,
+            risk_left=position.risk_allowance - position.risk_used,
+            stop=position.stop,
+        )
+        fill = result.fill
+        if fill is not None:
+            position.quantity += fill.quantity
+            position.spent += fill.price * fill.quantity + fill.fee
+            position.risk_used += fill.quantity * (fill.price - position.stop)
+            report["fills"].append(asdict(fill))
+        elif result.refusal == "budget":
+            self._end_entry(account, position, report)
+
+    def _finish_uptrend(self, account: Account, quote: Quote, report: dict[str, Any]) -> None:
+        """End an exiting position once what remains of it is zero or below the minimum
+        notional, after the frame's selling (the unpaired exit, the range-exit sale or the
+        halt's liquidation), leaving any remainder as dust, as in v1. A position that bought
+        something reports ``uptrend_ended``, a completed trade (section 8, C5); one that bought
+        nothing reports ``uptrend_abandoned``, which is not a trade (section 5).
+
+        What remains is the position's quantity, at most: the sales take it out of the
+        unpaired inventory, F's held fragments set aside, as the end-of-run verdict does."""
+        position = account.uptrend
+        if position is None or position.phase != "exiting":
+            return
+        rest = min(position.quantity, unpaired_inventory(account) - self.held_fragments(account))
+        if marketable(rest, quote, self.rules) > ZERO:
+            return
+        account.uptrend = None
+        report["uptrend_ended" if position.spent > ZERO else "uptrend_abandoned"] = True
 
     def _settle(self, account: Account, quote: Quote) -> dict[str, Any] | None:
         # An unsellable residue is left out of the allocation base, which understates

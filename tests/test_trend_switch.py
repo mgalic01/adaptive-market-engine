@@ -640,6 +640,7 @@ class V0UnchangedTests(TestCase):
             "funding_gate": False,
             "cycle_gate": False,
             "structure": False,
+            "mode_switch": False,
         }
         self.assertEqual(asdict(SimulationPolicy()), SimulationPolicy().identity() | unset)
 
