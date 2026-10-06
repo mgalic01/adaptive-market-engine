@@ -17,6 +17,7 @@ import csv
 import io
 import re
 import zipfile
+import zlib
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -238,6 +239,11 @@ def _hour_of(open_ms: int) -> int:
     return open_ms - open_ms % INTERVAL_MS["1h"]
 
 
+def _why(exc: Exception) -> str:
+    """The reason an archive is unreadable; never empty, since "" would mean readable."""
+    return str(exc) or type(exc).__name__
+
+
 def _unreadable(reason: str, interval: str, month: str) -> RepairedRead:
     """An archive that could not be read: no bars, no rows to mask, every hour absent."""
     step = _repairing_step(interval)
@@ -294,13 +300,13 @@ def _repairable(open_ms: int, close_ms: int, following: int | None, step: int) -
 def parse_rows_repaired(text: str, interval: str, month: str) -> RepairedRead:
     """Read a 1m or 1h archive, keeping the rows it can trust (spec v1 section 5, rule 1).
 
-    Each row gets ``parse_rows``'s checks. A row whose close is off the boundary is
-    repaired, in memory only, under the refined rule. Any other row that ``parse_rows``
-    would reject is dropped and its hour reported in ``masked_hours``, and so is the hour of
-    the last kept row when this row's open is not after it (a duplicate or an out-of-order
-    row): the reader keeps one copy, and the caller still masks the hour. The row after a
-    dropped one is judged against the last kept row. A row whose open cannot be read has
-    no hour to mask, so the whole archive is unreadable.
+    A row whose open is not after the last kept row's (a duplicate or an out-of-order row)
+    is dropped whatever else is wrong with it, and both its hour and the last kept row's hour
+    are masked: the reader keeps one copy, and under-masking is the unsafe direction. Every
+    other row gets ``parse_rows``'s checks. A close off the boundary is repaired, in memory
+    only, under the refined rule; any other row ``parse_rows`` would reject is dropped and
+    its hour masked. The row after a dropped one is judged against the last kept row. A row
+    whose open cannot be read has no hour to mask, so the whole archive is unreadable.
     """
     step = _repairing_step(interval)
     start_ms, end_ms = month_bounds_ms(month)
@@ -311,14 +317,14 @@ def parse_rows_repaired(text: str, interval: str, month: str) -> RepairedRead:
     gaps = 0
     try:
         for line_number, row, open_ms, following in _rows_with_next_open(text):
+            if bars and open_ms <= bars[-1].open_ms:
+                masked.update((_hour_of(open_ms), _hour_of(bars[-1].open_ms)))
+                continue
             try:
                 _, close_ms, unit = _row_times(row, line_number)
                 repair = _repairable(open_ms, close_ms, following, step)
                 close_ms = open_ms + step - 1 if repair else close_ms
                 _check_candle(line_number, open_ms, close_ms, interval, start_ms, end_ms)
-                if bars and open_ms <= bars[-1].open_ms:
-                    masked.add(_hour_of(bars[-1].open_ms))
-                    raise DataError(f"line {line_number}: candles are duplicated or out of order")
                 bar = _row_bar(row, line_number, open_ms)
             except DataError:
                 masked.add(_hour_of(open_ms))
@@ -330,7 +336,7 @@ def parse_rows_repaired(text: str, interval: str, month: str) -> RepairedRead:
             if repair:
                 repaired.add(open_ms)
     except (DataError, csv.Error) as exc:
-        return _unreadable(str(exc), interval, month)
+        return _unreadable(_why(exc), interval, month)
     stats = _file_stats(bars, units, gaps, step, start_ms, end_ms)
     return RepairedRead(bars, stats, frozenset(repaired), frozenset(masked), "")
 
@@ -338,18 +344,20 @@ def parse_rows_repaired(text: str, interval: str, month: str) -> RepairedRead:
 def read_archive_repaired(path: Path, symbol: str, interval: str, month: str) -> RepairedRead:
     """``parse_rows_repaired`` of the archive's single CSV member.
 
-    An archive that ``read_member`` cannot open or decode is unreadable, not an error. A
-    bad symbol, a month outside the development window or an interval other than 1m and 1h
-    is the caller's error and raises, as it does in ``read_archive``. Daily archives keep
-    ``read_archive``: a daily bar is never masked.
+    An archive that ``read_member`` cannot open or decode is unreadable, not an error: a
+    ``DataError``, or ``zlib.error`` or ``EOFError`` from a corrupt deflate stream, which
+    ``read_member`` lets through. A missing file still raises, as does a bad symbol, a
+    month outside the development window or an interval other than 1m and 1h: those are the
+    caller's errors, as in ``read_archive``. Daily archives keep ``read_archive``: a daily
+    bar is never masked.
     """
     symbol_name(symbol)
     development_month(month)
     _repairing_step(interval)
     try:
         text = read_member(path, f"{symbol}-{interval}-{month}.csv")
-    except DataError as exc:
-        return _unreadable(str(exc), interval, month)
+    except (DataError, zlib.error, EOFError) as exc:
+        return _unreadable(_why(exc), interval, month)
     return parse_rows_repaired(text, interval, month)
 
 

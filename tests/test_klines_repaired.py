@@ -10,7 +10,9 @@ import io
 import tempfile
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
+from unittest.mock import patch
 
 from test_backtest_data import JAN_2024_MS, make_zip, minute_rows, row
 from test_backtest_loaders import hour_rows
@@ -21,6 +23,7 @@ from crypto_grid_bot.backtest.klines import (
     parse_rows_repaired,
     read_archive,
     read_archive_repaired,
+    read_member,
 )
 from crypto_grid_bot.market_data.parsing import DataError
 
@@ -95,14 +98,21 @@ class SameBothWaysTests(unittest.TestCase):
 class RepairRuleTests(unittest.TestCase):
     def test_repair_rule_matches_the_refined_rule(self):
         # Review Focus 1. The cases mirror tests/test_backtest_audit.py: a truncated
-        # close before an adjacent row (2021-12, 2019-06) and before a gap are repaired;
-        # an unaligned open, and a next row opening before open + step, are not.
-        hours = [JAN_2024_MS + n * HOUR for n in range(5)]
+        # close before an adjacent row (2021-12, 2019-06) and before a gap are repaired,
+        # and so are a close at or past open + step and a close before the open; an
+        # unaligned open, and a next row opening before open + step, are not.
+        hours = [JAN_2024_MS + n * HOUR for n in range(9)]
         adjacent = hours[0]  # truncated; the next row opens exactly open + step
         gapped = hours[1] + 5 * MIN  # truncated; the next row opens two steps later
         unaligned = hours[2] + 14_789  # never repaired, whatever follows
         early = hours[3] + 10 * MIN  # truncated; the next row opens at its own open
-        last = hours[4]  # the file's last row, close open + step - 2
+        past = hours[4]  # close at open + step, one millisecond past the boundary
+        backwards = hours[5]  # close one millisecond before the open
+        shadowed = hours[6] + 5 * MIN  # truncated; its raw next row is dropped (below)
+        dropped_next = shadowed + MIN + 14_789  # unaligned, one step later: dropped
+        blocked = hours[7] + 5 * MIN  # truncated; its raw next row opens within the step
+        blocker = blocked + 14_789  # unaligned, dropped, yet it blocks the repair above
+        last = hours[8]  # the file's last row, close open + step - 2
         text = text_of(
             csv_row(adjacent, adjacent + 30_000),
             csv_row(adjacent + MIN),
@@ -111,19 +121,47 @@ class RepairRuleTests(unittest.TestCase):
             csv_row(unaligned, hours[2] + MIN),
             csv_row(early, early + 41_646),
             csv_row(early),
+            csv_row(past, past + MIN),
+            csv_row(past + MIN),
+            csv_row(backwards, backwards - 1),
+            csv_row(backwards + MIN),
+            csv_row(shadowed, shadowed + 20_000),
+            csv_row(dropped_next),
+            csv_row(blocked, blocked + 20_000),
+            csv_row(blocker),
+            csv_row(blocked + MIN),
             csv_row(last, last + MIN - 2),
         )
         result = parse_rows_repaired(text, "1m", MONTH)
         self.assertEqual("", result.unreadable)
-        self.assertEqual(frozenset({adjacent, gapped, last}), result.repaired)
-        self.assertEqual(frozenset({hours[2], hours[3]}), result.masked_hours)
-        # The unaligned row and the truncated row before its duplicate are dropped; the
-        # duplicate, judged against the last kept row, is kept (its hour is masked).
+        # `following` is the raw next row in file order, as in audit.fix_closes, whether or
+        # not that row is kept: `shadowed` is repaired although its next row is dropped,
+        # and `blocked` is not, because its dropped next row opens before open + step.
         self.assertEqual(
-            [adjacent, adjacent + MIN, gapped, gapped + 2 * MIN, early, last], opens(result)
+            frozenset({adjacent, gapped, past, backwards, shadowed, last}), result.repaired
+        )
+        self.assertEqual(frozenset({hours[2], hours[3], hours[6], hours[7]}), result.masked_hours)
+        # The unaligned rows, the truncated row before its duplicate and `blocked` are
+        # dropped; the duplicate, judged against the last kept row, is kept.
+        self.assertEqual(
+            [
+                adjacent,
+                adjacent + MIN,
+                gapped,
+                gapped + 2 * MIN,
+                early,
+                past,
+                past + MIN,
+                backwards,
+                backwards + MIN,
+                shadowed,
+                blocked + MIN,
+                last,
+            ],
+            opens(result),
         )
         self.assertEqual(
-            (6, adjacent, last, ("ms",)),
+            (12, adjacent, last, ("ms",)),
             (
                 result.stats.rows,
                 result.stats.first_open_ms,
@@ -183,8 +221,36 @@ class UntrustedRowTests(unittest.TestCase):
         self.assertEqual(frozenset({JAN_2024_MS, JAN_2024_MS + HOUR}), result.masked_hours)
         self.assertEqual([JAN_2024_MS + m * MIN for m in range(120) if m != 59], opens(result))
 
+    def test_an_out_of_order_row_masks_both_hours_whatever_else_is_wrong(self):
+        # The last kept row is in hour 1 and the bad row opens before it, in hour 0 (or
+        # before the month). Both hours are masked even where another check would have
+        # rejected the row first, and the row is dropped, never reported repaired.
+        hour_0, hour_1 = JAN_2024_MS, JAN_2024_MS + HOUR
+        kept = hour_1 + 5 * MIN
+        cases = {
+            "valid row": (csv_row(hour_0 + MIN), hour_0),
+            "unaligned open": (row(hour_0 + 14_789), hour_0),
+            "outside the month": (row(JAN_2024_MS - MIN), JAN_2024_MS - HOUR),
+            "malformed close": (with_field(csv_row(hour_0 + MIN), 6, "abc"), hour_0),
+            "too few columns": (",".join(csv_row(hour_0 + MIN).split(",")[:5]), hour_0),
+            "inconsistent OHLC": (row(hour_0 + MIN, h="0.95"), hour_0),
+            # Its close would be repaired: its next row opens two hours later.
+            "truncated close": (csv_row(hour_0 + MIN, hour_0 + MIN + 5), hour_0),
+        }
+        for name, (bad, hour) in cases.items():
+            with self.subTest(case=name):
+                text = text_of(csv_row(kept), bad, csv_row(JAN_2024_MS + 2 * HOUR))
+                result = parse_rows_repaired(text, "1m", MONTH)
+                self.assertEqual("", result.unreadable)
+                self.assertEqual(frozenset({hour, hour_1}), result.masked_hours)
+                self.assertEqual(frozenset(), result.repaired)
+                self.assertEqual([kept, JAN_2024_MS + 2 * HOUR], opens(result))
+
     def test_other_untrusted_rows_mask_only_their_hour(self):
-        # Each bad row sits between two good ones, in hours 0 and 2.
+        # Each bad row sits between two good ones, in hours 0 and 2, except the rows before
+        # the month: after an in-month row they would also be out of order, which masks
+        # that row's hour too (the test above), so they come first and only the month rule
+        # applies.
         middle = JAN_2024_MS + HOUR
         us_open = row(middle, us=True).replace(str(middle * 1000), str(middle * 1000 + 999), 1)
         cases = {
@@ -202,9 +268,11 @@ class UntrustedRowTests(unittest.TestCase):
                 JAN_2024_MS - HOUR,
             ),
         }
+        first = {"outside the month", "truncated close outside the month"}
         for name, (bad, hour) in cases.items():
             with self.subTest(case=name):
-                text = text_of(csv_row(JAN_2024_MS), bad, csv_row(JAN_2024_MS + 2 * HOUR))
+                lines = [csv_row(JAN_2024_MS), bad, csv_row(JAN_2024_MS + 2 * HOUR)]
+                text = text_of(*([bad, lines[0], lines[2]] if name in first else lines))
                 with self.assertRaises(DataError):
                     parse_rows(text, "1m", MONTH)
                 result = parse_rows_repaired(text, "1m", MONTH)
@@ -245,6 +313,33 @@ class UnreadableTests(unittest.TestCase):
             result = read_archive_repaired(junk, "ADAUSDT", "1m", MONTH)
             self.assertUnreadable(result)
             self.assertIn("invalid zip", result.unreadable)
+
+    def test_an_undecodable_member_is_unreadable_not_an_error(self):
+        # A member flagged deflate whose stream is garbage: read_member lets zlib's error
+        # through (the strict readers still raise it); the repairing reader reports it.
+        name = f"ADAUSDT-1m-{MONTH}.csv"
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "garbage.zip"
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+                archive.writestr(name, b"\x01\x00\x00\x00\x00")  # a stored block, bad lengths
+            data = bytearray(path.read_bytes())
+            deflate = zipfile.ZIP_DEFLATED.to_bytes(2, "little")
+            data[8:10] = deflate  # the local header's compression method
+            central = data.rfind(b"PK\x01\x02")
+            data[central + 10 : central + 12] = deflate  # and the central directory's
+            path.write_bytes(data)
+            with self.assertRaises(zlib.error):
+                read_member(path, name)
+            with self.assertRaises(zlib.error):
+                read_archive(path, "ADAUSDT", "1m", MONTH)
+            self.assertUnreadable(read_archive_repaired(path, "ADAUSDT", "1m", MONTH))
+
+    def test_an_eof_while_reading_is_unreadable_and_a_missing_file_still_raises(self):
+        with patch("crypto_grid_bot.backtest.klines.read_member", side_effect=EOFError()):
+            result = read_archive_repaired(Path("a.zip"), "ADAUSDT", "1m", MONTH)
+        self.assertUnreadable(result)  # the reason is never empty, which would mean readable
+        with tempfile.TemporaryDirectory() as temp, self.assertRaises(FileNotFoundError):
+            read_archive_repaired(Path(temp) / "missing.zip", "ADAUSDT", "1m", MONTH)
 
     def test_malformed_open_makes_the_archive_unreadable(self):
         good = csv_row(JAN_2024_MS)
