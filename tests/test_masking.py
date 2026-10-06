@@ -197,6 +197,27 @@ class HourEntryTests(unittest.TestCase):
         hourly_only = hourly_only_month_mask(hand_read(two_hourly), MONTH, exclusions)
         self.assertEqual({h[0]: "extra hourly bar"}, hourly_only.reasons)
 
+    def test_a_missing_minute_is_an_incomplete_hour_whatever_else_the_hour_holds(self):
+        # Rule 2: fewer than 60 distinct minutes on the grid is an incomplete hour, even
+        # when a duplicate or an off-grid bar brings the hour's bar count back to 60.
+        h = [hour(i) for i in range(2)]
+        official = [official_kline(h[0]), official_kline(h[1])]
+        valid = minute_klines(h[0])
+        gap = valid[:30] + valid[31:]  # minute 30 is missing
+        duplicate, off_grid = valid[10], minute_klines(h[0] + 45 * MIN + 1_000, count=1)[0]
+        cases = {
+            "59 valid": (gap, "incomplete hour"),
+            "59 valid and a duplicate": ([*gap, duplicate], "incomplete hour"),
+            "59 valid and an off-grid bar": ([*gap, off_grid], "incomplete hour"),
+            "60 valid and a duplicate": ([*valid, duplicate], "extra minute bars"),
+            "60 valid and an off-grid bar": ([*valid, off_grid], "extra minute bars"),
+        }
+        for name, (bars, reason) in cases.items():
+            with self.subTest(case=name):
+                minutes = hand_read([*bars, *minute_klines(h[1])])
+                mask = traded_month_mask(minutes, hand_read(official), MONTH, around(h[0], 2))
+                self.assertEqual({h[0]: reason}, mask.reasons)
+
     def test_untrusted_hours_outside_the_month_or_its_exclusions_never_count(self):
         # A masked row can sit before the month (out of order) or outside it, and a
         # documented exclusion's hours are not the month's. Only expected hours mask.
@@ -279,6 +300,26 @@ class SeventeenPercentTests(unittest.TestCase):
                 self.assertEqual(Fraction(defects, 700), real_defect_share(month))
                 self.check_boundary(month, defects, excluded=defects == 120)
 
+        # SOLUSDT 2020-08 lists at 2020-08-11 06:00: its 246 earlier hours are not expected,
+        # so they do not count. Counted among 744 hours they would exclude the month alone.
+        month_start, month_end = month_bounds_ms("2020-08")
+        listing = [
+            BasketExclusion("SOLUSDT", month_bounds_ms("2017-08")[0], SOL_LISTING, "listing")
+        ]
+        listed = list(range(SOL_LISTING, month_end, HOUR))
+        self.assertEqual(246, (SOL_LISTING - month_start) // HOUR)
+        complete = hand_read([official_kline(h) for h in listed])
+        sol = hourly_only_month_mask(complete, "2020-08", listing)
+        self.assertEqual(frozenset(listed), sol.expected)
+        self.assertEqual(498, len(sol.expected))
+        self.assertEqual(frozenset(), sol.masked)
+        self.assertEqual(Fraction(0), real_defect_share(sol))
+        self.assertFalse(apply_seventeen_percent(sol).excluded)
+        unlisted = hourly_only_month_mask(complete, "2020-08", [])
+        self.assertEqual(744, len(unlisted.expected))
+        self.assertEqual(246, len(unlisted.defects))  # the 246 hours would be defects
+        self.assertTrue(apply_seventeen_percent(unlisted).excluded)
+
     def traded_month_with_open_only(self, hours, exclusions, defects, open_only):
         minutes: list[Kline] = []
         official: list[Kline] = []
@@ -301,22 +342,28 @@ class SeventeenPercentTests(unittest.TestCase):
         self.assertEqual(excluded, kept.excluded)
         if not excluded:
             self.assertEqual(month.masked, kept.masked)
+            self.assertEqual(month.reasons, kept.reasons)
             return
         self.assertEqual(month.expected, kept.masked)
         self.assertEqual(700, len(kept.masked))
         self.assertEqual(defects, len(kept.defects))  # still the share that excluded it
         self.assertEqual(Fraction(defects, 700), real_defect_share(kept))
-        for field in ("month", "expected", "defects", "repaired", "open_only", "reasons"):
+        for field in ("month", "expected", "defects", "repaired", "open_only"):
             self.assertEqual(getattr(month, field), getattr(kept, field), field)
-        self.assertIsNot(month.reasons, kept.reasons)
+        # Every hour has a reason: the earlier ones stay, the newly masked get the rule's.
+        self.assertEqual(kept.masked, frozenset(kept.reasons))
+        for hour_ms, reason in kept.reasons.items():
+            self.assertEqual(month.reasons.get(hour_ms, "month excluded (17% rule)"), reason)
+        self.assertEqual(
+            700 - len(month.masked), list(kept.reasons.values()).count("month excluded (17% rule)")
+        )
         self.assertFalse(month.excluded)  # the input is not changed
+        self.assertEqual(month.masked, frozenset(month.reasons))
 
     def test_hours_before_listing_do_not_count_toward_the_rule(self):
-        # SOLUSDT 2020-08 lists at 2020-08-11 06:00: 246 of the month's 744 hours are not
-        # expected, so 84 defects are 16.9% of 498 hours and 85 are 17.07%. Counted among
-        # 744 hours, the 246 would exclude the month before any defect did.
-        month_start, month_end = month_bounds_ms("2020-08")
-        self.assertEqual(246, (SOL_LISTING - month_start) // HOUR)
+        # SOLUSDT 2020-08 (246 of its 744 hours precede the listing, as the Review Focus 4
+        # test shows): 84 defects are 16.9% of the 498 expected hours and 85 are 17.07%.
+        month_end = month_bounds_ms("2020-08")[1]
         listing = [
             BasketExclusion("SOLUSDT", month_bounds_ms("2017-08")[0], SOL_LISTING, "listing")
         ]
@@ -325,13 +372,8 @@ class SeventeenPercentTests(unittest.TestCase):
             with self.subTest(defects=defects):
                 present = hand_read([official_kline(h) for h in listed[: len(listed) - defects]])
                 mask = hourly_only_month_mask(present, "2020-08", listing)
-                self.assertEqual(frozenset(listed), mask.expected)
                 self.assertEqual(Fraction(defects, 498), real_defect_share(mask))
                 self.assertEqual(excluded, apply_seventeen_percent(mask).excluded)
-                unexcluded = hourly_only_month_mask(present, "2020-08", [])
-                self.assertEqual(744, len(unexcluded.expected))
-                self.assertEqual(246 + defects, len(unexcluded.defects))
-                self.assertTrue(apply_seventeen_percent(unexcluded).excluded)
 
     def test_month_with_no_expected_hours_is_kept(self):
         # SOLUSDT 2019-03 is wholly before the listing; DOGEUSDT 2020-02 is wholly inside

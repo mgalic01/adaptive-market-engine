@@ -53,6 +53,7 @@ INCOMPLETE_HOUR = "incomplete hour"
 EXTRA_MINUTE_BARS = "extra minute bars"
 OPEN_ONLY = "open-only difference"
 UNCHECKED_REPAIR = "repaired hour with no minutes to check it"
+MONTH_EXCLUDED = "month excluded (17% rule)"
 
 
 def expected_hours(first_hour_ms: int, month: str) -> range:
@@ -115,7 +116,8 @@ class MonthMask:
     """The mask of one symbol-month; every hour is an ``int`` ms open.
 
     ``expected`` is the month's hours minus the documented exclusions. ``masked`` is a subset
-    of it, and ``reasons`` says why each masked hour is (a readout, not a decision).
+    of it, and ``reasons`` says why each masked hour is, one entry per masked hour (a readout,
+    not a decision).
     ``defects`` are the masked hours other than ``open_only``, found when the mask was built:
     the 17% rule masks the whole month without changing them, so an excluded month still
     reports the share that excluded it. ``repaired`` are the expected hours that hold a
@@ -146,6 +148,19 @@ def _expected(month: str, exclusions: Sequence[BasketExclusion]) -> frozenset[in
 def _minute_opens(hour: int) -> list[int]:
     """The 60 minute opens an hour must hold, once each."""
     return list(range(hour, hour + HOUR_MS, MINUTE_MS))
+
+
+def _minute_problem(hour: int, bars: Sequence[Kline]) -> str | None:
+    """Why ``bars`` are not the hour's 60 minutes, each exactly once; None when they are.
+
+    A minute with no bar makes the hour incomplete (rule 2), whatever else the hour holds.
+    With all 60 present, any bar off the minute grid or a second bar at one open is extra.
+    """
+    opens = [bar.open_ms for bar in bars]
+    grid = _minute_opens(hour)
+    if opens == grid:
+        return None
+    return INCOMPLETE_HOUR if set(grid) - set(opens) else EXTRA_MINUTE_BARS
 
 
 def _by_hour(bars: Iterable[Kline]) -> dict[int, list[Kline]]:
@@ -214,8 +229,8 @@ def traded_month_mask(
             reasons[hour] = _ABSENCE_REASONS[statuses[hour]]
         elif len(official[hour]) != 1:
             reasons[hour] = EXTRA_HOURLY_BAR
-        elif [bar.open_ms for bar in minute_bars[hour]] != _minute_opens(hour):
-            reasons[hour] = INCOMPLETE_HOUR if len(minute_bars[hour]) < 60 else EXTRA_MINUTE_BARS
+        elif (problem := _minute_problem(hour, minute_bars[hour])) is not None:
+            reasons[hour] = problem
         else:
             tolerance = Decimal(0) if hour in held else VOLUME_DRIFT_TOLERANCE
             fields = differing_fields(
@@ -268,14 +283,16 @@ def real_defect_share(month: MonthMask) -> Fraction | None:
 def apply_seventeen_percent(month: MonthMask) -> MonthMask:
     """The month, excluded (every expected hour masked) if real defects exceed 17%.
 
-    Exactly 17% keeps it. ``defects``, ``open_only``, ``repaired`` and ``reasons`` are copied
-    unchanged, so the excluded month still reports why; ``reasons`` covers only the hours that
-    were masked before the rule, and ``excluded`` says the rest of the month is masked too.
+    Exactly 17% keeps it. ``defects``, ``open_only`` and ``repaired`` are copied unchanged, so
+    the excluded month still reports the share that excluded it. Every hour the rule newly
+    masks gets the reason ``MONTH_EXCLUDED``, and the earlier reasons stay as they were, so
+    ``reasons`` always covers exactly the masked hours.
     """
     share = real_defect_share(month)
     if share is None or share <= SEVENTEEN:
         return month
-    return replace(month, masked=month.expected, reasons=dict(month.reasons), excluded=True)
+    reasons = {hour: month.reasons.get(hour, MONTH_EXCLUDED) for hour in sorted(month.expected)}
+    return replace(month, masked=month.expected, reasons=reasons, excluded=True)
 
 
 def masked_days(masked: Iterable[int]) -> frozenset[int]:
