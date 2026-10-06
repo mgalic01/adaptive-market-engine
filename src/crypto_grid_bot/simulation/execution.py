@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import ROUND_CEILING, Decimal, localcontext
+from fractions import Fraction
 from typing import Any
 
 from crypto_grid_bot.simulation.models import (
@@ -66,11 +67,23 @@ def place(account: Account, order: LimitOrder, rules: MarketRules, *, check: boo
     account.orders[order.order_id] = order
 
 
+def _notional_and_fee(
+    price: Decimal, quantity: Decimal, fee_rate: Decimal
+) -> tuple[Decimal, Decimal]:
+    """What a fill is worth and what it costs, as ``_apply_fill`` settles it.
+
+    Taken by ``market_buy``'s affordability guard as well, so the cost the guard checks is
+    the very figure the account is debited: two associations of the same product round
+    apart by an ulp at the working precision.
+    """
+    notional = price * quantity
+    return notional, notional * fee_rate
+
+
 def _apply_fill(
     account: Account, order: LimitOrder, quantity: Decimal, price: Decimal, fee_rate: Decimal
 ) -> Fill:
-    notional = price * quantity
-    fee = notional * fee_rate
+    notional, fee = _notional_and_fee(price, quantity, fee_rate)
     if order.side == "buy":
         account.cash -= notional + fee
         account.inventory += quantity
@@ -377,8 +390,13 @@ def market_buy(
     Each quotient is floored to the lot step and then lowered one step at a time while it
     still overshoots its limit, a quotient having been rounded up at the last digit
     (``trend_benchmark.entry_quantity``'s guard). So no fill uses more than what is left
-    of either limit. A limit that is negative, by a last digit, bounds the quantity at
-    zero or below, which is refused as ``budget``.
+    of either limit. The guards compare what the fill uses, not the estimate that sized
+    it: the depth against the exact product ``ask_size * participation``, which rounds up
+    across a lot boundary at precision 50 when the participation has enough digits; the
+    cash against the debit exactly as ``_apply_fill`` computes it (the notional plus the
+    fee on it), which can round an ulp above ``quantity * unit cost``. A limit that is
+    negative, by a last digit, bounds the quantity at zero or below, which is refused as
+    ``budget``.
 
     The caller validates the quote and the account, as the paper engine does at every
     frame; and calls this only with a buy price above ``stop``, which a stop-out check on
@@ -393,10 +411,20 @@ def market_buy(
             raise ValueError("a buy must be priced above its stop")
         step = rules.quantity_step
         depth = floor_step(quote.ask_size * rules.participation, step)
+        # The product, and the quotient inside ``floor_step``, round at the working
+        # precision and can land on a lot boundary the exact depth is just below.
+        depth_limit = Fraction(quote.ask_size) * Fraction(rules.participation)
+        while depth > ZERO and Fraction(depth) > depth_limit:
+            depth -= step
         spendable = min(cash_left, account.available_quote(rules))
         unit_cost = price * (ONE + rules.taker_fee)
         by_cash = floor_step(spendable / unit_cost, step)
-        while by_cash > ZERO and by_cash * unit_cost > spendable:
+        # The estimate above rounds. The guard prices a quantity as ``_apply_fill`` debits it:
+        # the same notional and fee, added.
+        while by_cash > ZERO:
+            notional, fee = _notional_and_fee(price, by_cash, rules.taker_fee)
+            if notional + fee <= spendable:
+                break
             by_cash -= step
         by_risk = floor_step(risk_left / loss, step)
         while by_risk > ZERO and by_risk * loss > risk_left:
