@@ -65,7 +65,9 @@ chooses Grid (v1's grid with F's block), Uptrend (one long position with a trail
 or Cash, under v1's unchanged risk limits.
 - **Next, the build:** the implementation plan
   ([plan](docs/superpowers/plans/2026-10-06-mode-switcher.md)), in four reviewed PRs, and
-  the long-window data, which has its own plan.
+  the long-window data (the reader's repair rule and masking, Bob's re-fetch, the XRP
+  measurement, the dataset specs and manifests), which will get its own plan: proposed
+  in PR #176, not yet merged.
 - **Then the evaluation** on `full-range-2017-2024`, from one frozen commit, against
   spec v2 §8: C1–C4 as in v1, C5 at 12 round trips a year, and C6 against always-grid
   and cash.
