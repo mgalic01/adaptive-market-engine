@@ -407,7 +407,11 @@ def test_market_buy_never_spends_more_than_its_budget():
 - **Produces:**
   - **In `replay()`:** when `policy.mode_switch`, it raises `ValueError("the mode switcher needs the pair's hourly and daily history")` if either is missing, builds `Perception(hourly, daily)` once, and passes `perception=perception.at(kline.open_ms)` on every frame.
   - **`Metrics` fields,** filled only for MS: `mode_ms: Counter[str]`, `mode_switches: int`, `uptrend_trades: int`, `uptrend_stops: int`, `uptrend_fades: int`.
-    - `mode_ms` is weighted by duration: each quote adds its own span (`POINT_SPANS_MS`, the replay's 9, 10, 10 and 31 seconds) to the mode in force after that quote's step. So a change of mode within a minute, a halt's included, is weighted by the time it held. The share of time in each mode (spec v2 §8) is computed from it.
+    - `mode_ms` is weighted by elapsed time. Each quote adds the time from its own observation to the next replayed quote's to the mode in force after that quote's step:
+      - within a minute, that is its own span (`POINT_SPANS_MS`, the replay's 9, 10, 10 and 31 seconds);
+      - across a masked or missing span, it is the whole gap, because the mode held before a gap stays in force through it;
+      - the run's last quote adds its own span.
+      So a change of mode within a minute, a halt's included, is weighted by the time it held. The modes' times sum to the run's elapsed time, and the share of time in each mode (spec v2 §8) is computed from them.
     - `uptrend_trades` counts completed round trips for C5 (spec v2 §8): one for each frame whose report has `uptrend_ended`, never `uptrend_abandoned`. `_finish_uptrend` sets it when an exit's sale, a risk drain's or a halt's liquidation has sold a position that bought something (dust included; Task 5). A position still held or entering at the end is not counted, and neither is one whose halt liquidation is unfinished. An exit that completes on the run's last frame is counted.
     - `uptrend_stops` and `uptrend_fades` count the reports whose `uptrend_exit` is `"stop"` or `"fade"`. They are reported only.
   - **In `summarise`:** MS rows carry their own strategy, `row["strategy"] = MODE_SWITCH_STRATEGY` (a new constant, `"mode switcher (spec-v2)"`), never v1's `gated grid (...)` label. They also carry `row["variant"] = "MS"` and `row["modes"] = {"time_ms": {...}, "switches": n, "uptrend_trades": n, "stops": n, "fades": n, "grid_cycles": metrics.completed_cycles}`.
@@ -421,6 +425,7 @@ def test_market_buy_never_spends_more_than_its_budget():
   - `test_rising_market_enters_uptrend_and_trails_out`, on synthetic hourly, daily and minute bars: 300 days of a rise with down days, alternating +3% and −1.5% a day so that the daily RSI stays below 75, then a 15% drop. A steady rise would hold the daily RSI at 100 and never allow Uptrend. It asserts one uptrend trade, a stop exit, `row["modes"]["stops"] == 1`, and `accounting_problems == []`.
   - `test_flat_market_runs_grids_in_grid_mode`, which asserts `grid_cycles > 0` and no Uptrend time.
   - `test_mode_time_is_weighted_by_quote_spans`: a mode change during the third quote's step of a minute adds 19 seconds (9 + 10) to the old mode and 41 seconds (10 + 31) to the new one.
+  - `test_mode_time_counts_a_masked_gap_to_the_mode_before_it`: a three-hour masked span adds three hours to the mode in force before it, and the modes' times sum to the run's elapsed time.
   - `test_run_ending_in_uptrend_is_valid_and_marked_at_exit_value` (Review Focus 2), which asserts `valid`, the absence of any "incomplete" failure, final equity = cash + quantity × the exit mark, `row["modes"]["uptrend_trades"] == 0`, `final_exit_blocked` empty, and the position in `held_at_end`.
   - `test_run_ending_in_a_blocked_grid_keeps_f_fragments_held`: an MS run that ends in Grid mode with F fragments is not incomplete.
   - `test_run_ending_mid_exit_is_incomplete_as_in_v1`: an exit 1 whose sells the participation limit has not finished by the end leaves the run incomplete.
@@ -440,12 +445,13 @@ def test_market_buy_never_spends_more_than_its_budget():
 - Test: `tests/test_acceptance_v2.py`
 
 **Interfaces:**
-- **Consumes:** `acceptance.py`'s `read_results`, `annualise`, `gate_ratio`, `certain`, `YEAR_DAYS`, `mean`, `median`, `worst_drop`, `makes_money`, `safer_than_holding`, `integrity`, `economics` (R1, reported), `window_of`, `document_problems`, `primary_problems`, `code_problems`, `pinned`, `MINIMUM_PAIRS`, `thin_windows`, `Run` and `ScoringError`; MS rows and F rows from Task 6.
+- **Consumes:** `acceptance.py`'s `read_results`, `annualise`, `gate_ratio`, `certain`, `YEAR_DAYS`, `mean`, `median`, `worst_drop`, `makes_money`, `safer_than_holding`, `integrity`, `economics` (R1, reported), `window_of`, `document_problems`, `primary_problems`, `code_problems`, `pinned`, `MINIMUM_PAIRS`, `thin_windows`, `REGISTERED_DAYS`, `evaluation_window`, `Run` and `ScoringError`; MS rows and F rows from Task 6.
 - **The same input checks as v1's scorer,** since `acceptance.runs_of` cannot build MS runs (`variant_of` raises on them):
   - `document_problems` on every input: engine, features, integrity rules, and `valid` agreeing with `failures`;
   - `primary_problems` on every MS and F row: maker 0, taker 0.0009, slippage, participation, spread and capital, and no fill trigger. A run at other fees is refused, not scored;
   - each `Run`'s problems built as `runs_of` builds them, with the file's general failures, so a file-level failure makes its runs invalid (C4);
-  - the pins: `code_problems`, and `pinned` for the config and for each `SCORED` and `REPORTED` window's spec and manifest. `read_frozen`'s `INVOCATIONS` are v1's stages, so they are not used.
+  - the pins: `code_problems`, and `pinned` for the config and for each `SCORED` and `REPORTED` window's spec and manifest. `read_frozen`'s `INVOCATIONS` are v1's stages, so they are not used;
+  - **the registered windows,** which `read_frozen` would otherwise check: each `SCORED` and `REPORTED` window's spec must have its registered evaluation months and length. `full-range-2017-2024` runs 2019-01 to 2024-12, `practice-2022` 2022-06 to 2023-01, and `verify-2024h1` 2024-01 to 2024-06. The day counts come from v1's `REGISTERED_DAYS` (2,192, 245 and 182), and `evaluation_window` must reproduce them. A spec whose hash matches but whose window differs is refused, never scored under the registered name.
 - **`MODE_SWITCH_STRATEGY` must not start with "gated grid":** `feature_problems` refuses gated rows whose strategy starts with it but is not V0's.
 - **Produces:**
   - `SCORING = "spec-v2-section-8"`, `ROUND_TRIPS_PER_YEAR = 12`, `GATE_SHARE = Fraction(3, 5)`, and `SCORED = ("full-range-2017-2024",)`, with `REPORTED = ("practice-2022", "verify-2024h1")`;
@@ -474,6 +480,7 @@ def test_market_buy_never_spends_more_than_its_budget():
   - `test_activity_threshold_inclusive`: exactly 12 round trips a year passes, and 11.99 fails.
   - `test_a_missing_ms_run_fails_c4`: a results set with exactly one MS pair and path missing fails C4, and the missing key is named.
   - `test_reported_windows_must_be_complete`: an input set with complete full-range files but no `verify-2024h1` rows, or with no D rows in either the scored or a reported window, is refused.
+  - `test_a_wrong_window_is_refused`: a `full-range-2017-2024` spec that starts in 2019-02, and so lasts 2,161 days, is refused.
   - `test_one_included_pair_is_insufficient_evidence`: a scored window whose data checks leave one included pair gives "insufficient evidence", even when that pair's MS runs would pass C1–C6.
   - `test_gate_needs_positive_return_and_beats_always_grid`
   - `test_gate_uses_annualised_returns_and_counts_a_missing_or_invalid_always_grid_against`, with `days = 2192`:

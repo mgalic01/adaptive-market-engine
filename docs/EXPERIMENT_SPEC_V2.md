@@ -163,7 +163,7 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 3. **The risk layer acts** (§7).
 
 **After an exit:**
-- After a stop-out (exit 1), Uptrend cannot be entered for 24 hours. The pause runs from the observation at which exit 1 first triggers, however many observations its sells then take. A decision may enter again when `now − trigger ≥ 24 hours` (86,400,000 ms), so exactly 24 hours later it may. The pause starts even when the entry had bought nothing yet, because the stop was still reached.
+- After a stop-out (exit 1), Uptrend cannot be entered for 24 hours. The pause runs from the observation at which exit 1 first triggers, however many observations its sells then take. A decision may enter again when `now − trigger ≥ 24 hours` (86,400,000 ms), so exactly 24 hours later it may. The pause starts even when the entry had bought nothing yet, because the stop was still reached. A refused start is different: when no entry starts at all, because `s ≤ 0` or the bid is already at or below the initial stop ("Budget", above), nothing is stopped out, and no pause starts.
 - **An entry that bought nothing** ends as soon as an exit, a risk event or a halt ends it. It is not a trade, so C5 does not count it (§8).
 - After a trend fade (exit 2), there is no pause, because re-entry already needs the daily state to be Up again.
 
