@@ -29,8 +29,11 @@ the whole point is an answer we can trust, including an unwelcome one.
 **The bridge between the two** is the untouched 2025–26 window, judged against the
 acceptance criteria the owner chose. **The binding set is C1–C6 in
 [`EXPERIMENT_SPEC_V1.md` §6](EXPERIMENT_SPEC_V1.md#6-acceptance-and-selection-owner-decisions-2026-09-24)**;
-read that table, not a summary of it. In short, across every included pair, window and
-intrabar path:
+read that table, not a summary of it. **This table is spec v1's.** v1 ended with no winner
+on 2026-10-06. The current experiment, spec v2 (the mode switcher), keeps C1–C4 and adapts
+C5 and C6: read
+[`EXPERIMENT_SPEC_V2.md` §8](EXPERIMENT_SPEC_V2.md#8-evaluation) for it. In short, spec
+v1's criteria, across every included pair, window and intrabar path:
 
 | | Criterion (§6 is authoritative) |
 | --- | --- |
