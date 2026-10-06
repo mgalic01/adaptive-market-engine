@@ -1,6 +1,7 @@
 """Network-free tests for archive parsing, checksum verification and manifests."""
 
 import contextlib
+import csv
 import hashlib
 import io
 import json
@@ -127,6 +128,24 @@ def corrupt_zip(symbol, interval, month, text, method):
     for index in range(start, start + 20):
         data[index] ^= 0xFF
     return bytes(data)
+
+
+def compressed_zip(symbol, interval, month, text, method):
+    """A sound zip of ``text`` whose one member is compressed by ``method``."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", method) as archive:
+        archive.writestr(f"{symbol}-{interval}-{month}.csv", text)
+    return buffer.getvalue()
+
+
+def over_limit_rows(start_ms, count, *, step):
+    """Valid rows but for the second one's last field, longer than ``csv.field_size_limit()``:
+    csv's reader raises ``csv.Error`` on it, not the parser's ``DataError``."""
+    lines = [row(start_ms + i * step, step=step) for i in range(count)]
+    fields = lines[1].split(",")
+    fields[-1] = "0" * (csv.field_size_limit() + 1)
+    lines[1] = ",".join(fields)
+    return "\n".join(lines) + "\n"
 
 
 def unsupported_zip(symbol, interval, month, text):
@@ -543,6 +562,50 @@ class FetchTests(unittest.TestCase):
             self.assertRaises(EOFError),
         ):
             self.tiny_dataset({("1d", "2024-01"): daily})
+
+    def test_an_errno_less_os_error_is_unreadable_only_from_a_bzip2_member(self):
+        # Codex review of #189: the fetch's fallback takes an errno-less OSError as an
+        # undecodable stream only from a bzip2 member, as read_archive_repaired does. The
+        # same failure while reading a deflate member fails the fetch.
+        member = "ADAUSDT-1m-2024-01.csv"
+        failure = OSError("Invalid data stream")
+        read = zipfile.ZipExtFile.read
+
+        def failing(source, *args):
+            if source.name == member:
+                raise failure
+            return read(source, *args)
+
+        valid = minute_rows(JAN_2024_MS, 3)
+        deflated = compressed_zip("ADAUSDT", "1m", "2024-01", valid, zipfile.ZIP_DEFLATED)
+        bzipped = compressed_zip("ADAUSDT", "1m", "2024-01", valid, BZIP2)
+        with patch.object(zipfile.ZipExtFile, "read", failing):
+            with self.assertRaises(OSError) as raised:
+                self.tiny_dataset({("1m", "2024-01"): deflated})
+            self.assertIs(failure, raised.exception)
+            spec, manifest = self.tiny_dataset({("1m", "2024-01"): bzipped})
+        entry = self.kline_entry(manifest, "1m", "2024-01")
+        self.assertEqual(("unreadable", "Invalid data stream"), (entry["status"], entry["reason"]))
+        verify_dataset(spec, manifest, self.data)
+
+    def test_a_csv_error_reaches_the_fallback_and_fetch_file_still_raises_it(self):
+        # Codex review of #189: csv's reader raises csv.Error, not DataError, on a field over
+        # csv.field_size_limit(). The fetch's fallback takes it as it takes a failed parse: a
+        # 1m archive is recorded unreadable, and a daily archive's still fails the fetch.
+        # fetch_file still raises it unchanged, for the audit.
+        minutes = over_limit_rows(JAN_2024_MS, 3, step=60_000)
+        spec, manifest = self.tiny_dataset({("1m", "2024-01"): minutes})
+        entry = self.kline_entry(manifest, "1m", "2024-01")
+        self.assertEqual("unreadable", entry["status"])
+        self.assertIn("field larger than field limit", entry["reason"])
+        verify_dataset(spec, manifest, self.data)
+        with self.assertRaises(csv.Error) as raised:
+            fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
+        self.assertIs(csv.Error, type(raised.exception))
+        days = over_limit_rows(JAN_2024_MS, 3, step=86_400_000)
+        with self.assertRaises(csv.Error) as raised:
+            self.tiny_dataset({("1d", "2024-01"): days})
+        self.assertIs(csv.Error, type(raised.exception))
 
     def test_a_download_failure_is_never_read_as_an_unparsed_archive(self):
         # A FeedError is a RuntimeError, as an encrypted member's error is; only the strict

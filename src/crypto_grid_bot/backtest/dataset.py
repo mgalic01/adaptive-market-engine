@@ -13,6 +13,7 @@ when not.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import http.client
 import json
@@ -30,6 +31,7 @@ from typing import Any, cast
 from crypto_grid_bot.backtest.funding import read_funding_archive
 from crypto_grid_bot.backtest.klines import (
     INTERVAL_MS,
+    member_compression,
     month_bounds_ms,
     read_archive,
     read_archive_repaired,
@@ -464,9 +466,13 @@ def _fetch_kline(
         return _strict_entry(entry, target, expected, symbol, interval, month)
     except Exception as exc:
         # Only the strict parse is in this try: ``_strict_entry`` converts a DataError into
-        # ArchiveParseError and lets ``read_member``'s decoding failures through. A FeedError
-        # is a RuntimeError too, so a download failure must never get here.
-        unparsed = isinstance(exc, ArchiveParseError) or undecodable(exc)
+        # ArchiveParseError and lets ``read_member``'s decoding failures through, and csv's
+        # own ``csv.Error`` (a field over ``csv.field_size_limit()``), which ``parse_rows``
+        # does not convert (Codex review of #189). A FeedError is a RuntimeError too, so a
+        # download failure must never get here.
+        unparsed = isinstance(exc, ArchiveParseError | csv.Error) or undecodable(
+            exc, member_compression(target)
+        )
         if not unparsed or interval not in ("1m", "1h"):
             raise
     stored = {"sha256": expected, "bytes": target.stat().st_size}
