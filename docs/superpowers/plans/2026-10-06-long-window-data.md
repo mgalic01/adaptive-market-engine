@@ -59,12 +59,12 @@
     - `masked_hours: frozenset[int]`, the opens of the hours with an untrusted row;
     - `unreadable: str`, "" when the archive could be read, else the reason;
   - `parse_rows_repaired(text: str, interval: str, month: str) -> RepairedRead`, for `1m` and `1h` only;
-  - `read_archive_repaired(path: Path, symbol: str, interval: str, month: str) -> RepairedRead`. An archive that `read_member` cannot open or decode gives `unreadable`, with no bars.
+  - `read_archive_repaired(path: Path, symbol: str, interval: str, month: str) -> RepairedRead`. An archive that `read_member` cannot open or decode, or that holds a row whose open cannot be read (below), gives `unreadable`, with no bars.
 - **The repair rule,** exactly as spec v1 §5 rule 1 and `audit.fix_closes`'s refined rule (`audit.py:186-188`). A row gets close `open + step − 1`, in memory only, when:
   - its close is off the step boundary;
   - its open is aligned (`open % step == 0`);
   - and it is the file's last row, or its next row in file order opens at `open + step` or later, an adjacent row included.
-- **Untrusted rows:** a row that would make `parse_rows` raise for any other reason masks the hour its open falls in, and is dropped. That covers a duplicated open, an open not after the previous row's (both rows' hours are masked), an unaligned open, a close whose next row opens before `open + step`, a malformed field, and a row outside the month.
+- **Untrusted rows:** a row that would make `parse_rows` raise for any other reason masks the hour its open falls in, and is dropped. That covers a duplicated open, an open not after the previous row's (both rows' hours are masked), an unaligned open, a close whose next row opens before `open + step`, a malformed field other than the open, and a row outside the month. **A row whose open cannot be read** (a missing column 0, or a value that is not an integer timestamp) has no hour to mask: it makes the whole archive `unreadable`, with the reason. Its hours are then absent, masked, and counted toward the 17% rule (spec v1 §5 rule 1, "The reader").
 - **Daily archives** keep the strict `read_archive`: daily bars are never masked, and a missing or duplicated daily bar stays fatal (spec v1 §5).
 - **The strict path is unchanged.** `parse_rows`, `read_archive` and `fetch_file` keep their behaviour, which `audit_run._fetch` and `tests/test_backtest_audit.py` rely on.
 
@@ -73,6 +73,7 @@
   - `test_repair_rule_matches_the_refined_rule` (Review Focus 1). Three rows are repaired: a last row with close `open + step − 2`, a row whose next row opens exactly `open + step`, and a row whose next row opens two steps later. Two are not, and each masks its hour: an unaligned open, and a row whose next row opens before `open + step`. The cases mirror `tests/test_backtest_audit.py`'s refined-rule cases (2019-06 and 2021-12).
   - `test_duplicate_and_out_of_order_rows_mask_only_their_hours`: a 1m archive with one duplicated minute and one out-of-order minute masks exactly those minutes' hours, and keeps every other bar.
   - `test_unreadable_archive_has_no_bars`: a zip with two members gives `unreadable` and no bars.
+  - `test_malformed_open_makes_the_archive_unreadable`: a row with a non-numeric open, and a row with too few columns, each give `unreadable` with a reason and no bars; a row with a malformed close masks only its hour.
 - [ ] **Step 2: Run `pytest tests/test_klines_repaired.py -v`.** Expected: FAIL, the functions do not exist yet.
 - [ ] **Step 3: Implement** `RepairedRead`, `parse_rows_repaired` and `read_archive_repaired`, reusing `parse_rows`'s field checks row by row.
 - [ ] **Step 4: Run the new tests and `pytest -q`.** Expected: PASS.
@@ -223,7 +224,7 @@
 - Test: `tests/test_masking.py`, `tests/test_backtest_cli.py`, `tests/test_backtest_acceptance.py`
 
 **Interfaces:**
-- **Produces:** `widest_spread_pct(minutes: Iterable[Kline], symbol: str, spread: Decimal, tick: Decimal) -> Decimal`, the largest spread in percent over every quote that `replay.bar_quotes(kline, symbol, "high_first", spread, tick)` synthesizes. Both paths give the same four quotes, so one path suffices. Beside it, `tick_limit_quotes(minutes, symbol, spread, tick, limit: Decimal) -> int`, the number of those quotes with a spread above `limit`, which the cross-check record carries. Both are computed only when `symbol == "XRPUSDT" and symbol in spec.traded`; in `verify-2024h1` XRP is a basket member only, with no minutes, and nothing is computed.
+- **Produces:** `widest_spread_pct(minutes: Iterable[Kline], symbol: str, spread: Decimal, tick: Decimal) -> Decimal`, the largest spread in percent over every quote that `replay.bar_quotes(kline, symbol, "high_first", spread, tick)` synthesizes. Both paths give the same four quotes, so one path suffices. Beside it, `tick_limit_quotes(minutes, symbol, spread, tick, limit: Decimal) -> int`, the number of those quotes with a spread above `limit`, which the cross-check record carries. Both are computed only when `symbol == "XRPUSDT" and symbol in spec.traded`; in `verify-2024h1` XRP is a basket member only, with no minutes, and nothing is computed. `load_minutes` returns a one-shot iterator, which `cross_check_hourly` exhausts, so `cross_check_job` computes the statistic in a second `load_minutes(...)` call, with the pair's mask, after the cross-check. The two functions take an `Iterable` and iterate it once; the tests pass a one-shot iterator, not a list, so a function that iterates twice fails.
 - **Units and arithmetic, as the replay and the engine already use them:**
   - `spread` is `RunConfig.spread`, the fraction `spec.assumed_spread_pct / 100` that `jobs.prepare_run` computes (`jobs.py:170`) and the replay passes to `bar_quotes`. `tick` is `run.rules.tick_size`, as `replay.py:734` passes it;
   - each quote's spread is `(quote.ask - quote.bid) / quote.ask * 100`, in that order, as `src/crypto_grid_bot/simulation/runner.py:590` computes it;
@@ -240,7 +241,7 @@
   `data_rule_exclusions` still returns `[]`.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `test_one_wide_quote_excludes_xrp_and_a_pass_writes_nothing` (Review Focus 5). Warm-up minutes do not count;
+  - `test_one_wide_quote_excludes_xrp_and_a_pass_writes_nothing` (Review Focus 5). Warm-up minutes do not count. It runs through `cross_check_job` with `load_minutes` patched to return one-shot iterators and count its calls: the cross-check's counts and the XRP statistic are both right, from two calls;
   - `test_quotes_at_the_limit_pass`: the limit comes from the engine itself, a `PaperSimulator`'s `_maximum_spread_pct` built from `config/default.toml`. A bar whose widest quote equals it exactly passes, and one tick lower on the bid breaches;
   - `test_stage_1_checks_still_need_every_existing_field`: a pair check missing `hours_missing` still raises `KeyError` in `integrity_failures`, and one missing `tick_limit_quotes` does not;
   - `test_practice_2022_xrp_passes`, on a synthetic copy of its tick and spread;
@@ -323,7 +324,7 @@
   - then runs `verify` and `mask-report` on that copy. Both load the manifest from disk;
   - **the reported window's manifest too.** The frozen v1 scorer's `read_frozen` requires every registered stage-2 window's spec and manifest (`acceptance.py:1058-1076`), and `full-range-2019-2024` is registered as reported-only. Its files are a subset of `full-range-2017-2024`'s: 1m from 2019-07, 1h from 2019-01, 1d from 2018-07, the same nine symbols and the same 60 funding months. So the script then runs `fetch_dataset` for the second spec on the same `<data-dir>`, with the first manifest as `previous` so the funding entries are kept. `_fetch_verified` reuses a stored file whose SHA-256 matches (`dataset.py:378`), so only `.CHECKSUM` requests go out. The script asserts that every entry equals the first manifest's entry for the same file, writes the second manifest, and runs `verify` on it.
 - **Bob's report:**
-  - **a compact digest,** which the script prints: a header with the manifest's `created_at`; one row per kline archive with its file name (not the path), SHA-256, status, `bytes`, and `FileStats` only where they differ from a complete month (rows = expected rows, no gaps, first and last opens at the month's bounds, units `ms`), else the word `full`; a `missing` archive's row carries its name and `missing` only, as `fetch_file` writes such an entry with no `sha256`, `bytes` or `FileStats` (the pre-listing months of SOL, DOGE and LINK are expected `missing`); one row per funding archive with its name, SHA-256, `bytes` and record count. The header also carries the second manifest's `created_at` and both manifest files' SHA-256: Claude rebuilds both from the one digest, the second as the subset its spec's `required()` selects, and must reproduce both hashes. A full-path table with every `FileStats` field would be about 230 KB, over `validate_bob_artifact.py`'s 200,000-byte limit (`REPORT_MAX_BYTES`), and the publish step would reject the whole run; this form is about 130 KB;
+  - **a compact digest,** which the script prints: a header with the manifest's `created_at`; one row per kline archive with its file name (not the path), SHA-256, status, `bytes`, and `FileStats` only where they differ from a complete month (rows = expected rows, no gaps, first and last opens at the month's bounds, units `ms`), else the word `full`; a `missing` archive's row carries its name and `missing` only, as `fetch_file` writes such an entry with no `sha256`, `bytes` or `FileStats` (the pre-listing months of SOL, DOGE and LINK are expected `missing`); an `unreadable` archive's row carries its name, SHA-256, `bytes`, `unreadable` and its reason, which `_validate_manifest` requires (Task 7); one row per funding archive with its name, SHA-256, `bytes` and record count. The header also carries the second manifest's `created_at` and both manifest files' SHA-256: Claude rebuilds both from the one digest, the second as the subset its spec's `required()` selects, and must reproduce both hashes. A full-path table with every `FileStats` field would be about 230 KB, over `validate_bob_artifact.py`'s 200,000-byte limit (`REPORT_MAX_BYTES`), and the publish step would reject the whole run; this form is about 130 KB;
   - **`mask-report`'s summary only:** its totals, every symbol-month with a masked hour or an exclusion, and XRP's line. The full JSON stays under `<data-dir>`, and the report prints its SHA-256;
   - the script prints the report's byte count. Above 190,000 bytes Bob stops and reports the count instead.
   Bob's fetch has already checked each archive against Binance's `.CHECKSUM` (`fetch_file`'s rule), and a mismatch stops the run. Claude rebuilds the manifest from the digest, which carries each SHA-256, and checks the digest against the SHA-256 that Bob's report prints for it, as with P8. Claude makes no request to Binance. The manifest is committed in a reviewed PR.
@@ -340,6 +341,7 @@
   - `verify` prints `"valid"` and `mask-report` prints its JSON;
   - a transient `FeedError` on one request is retried and the run completes; a checksum mismatch is not retried and stops it;
   - a 404 for a pre-listing kline month gives a `missing` row with name and status only, and the rebuilt entry equals the manifest's;
+  - a checksum-valid archive with two zip members gives an `unreadable` row with its reason, and the rebuilt entry equals the manifest's and passes `_validate_manifest`;
   - a 404 for a funding month stops the script before any manifest is written, naming the month;
   - the second spec's manifest (a one-month synthetic `--reported-spec` whose files are a subset) is written with no archive re-downloaded, every entry equal to the first manifest's, and `verify` accepts it.
 - [ ] **Step 2: Run it.** Expected: FAIL.
@@ -356,11 +358,11 @@
 - Test: `tests/test_stage1_identity_script.py`
 
 **Interfaces:**
-- **Produces:** `python scripts/stage1_identity.py <stage-1 results dir> <re-run results dir>`. It pairs each `results.json` by dataset, policy and path, and prints `IDENTICAL` or the differing keys for each pair. It exits 0 only when every pair is identical apart from `code_commit` and `code_sha256`, and no new mask field appears (decision 18).
+- **Produces:** `python scripts/stage1_identity.py <stage-1 results dir> <re-run results dir>`. It keys each `results.json` by dataset, policy and path. The two key sets must be equal and hold no duplicate: a file missing on either side, an extra file, or two files with one key fails the check before any comparison, naming the keys, so a rerun that lost a download cannot pass on the files that remain. It then prints `IDENTICAL` or the differing keys for each pair, and exits 0 only when the inventories match and every pair is identical apart from `code_commit` and `code_sha256`, with no new mask field (decision 18).
 - **The re-run:** stage 1's 24 workflow runs at the commit that merges Tasks 1–7, compared with stage 1's downloads. Dispatching them needs the owner's go.
 - **What it proves.** Identical `results.json` files prove that the engine's output is unchanged. They cannot show by themselves which reader ran: a phantom repair that still matches exactly would change no bar and write no key, since `Kline` does not store the close timestamp the repair rewrites. So the script's companion check is `mask-report` on `practice-2022` and `verify-2024h1`, with no replay, which must print `None` for every symbol's mask and zero repaired, dropped and masked counts (Task 5). Together they show that every stage-1 symbol took today's strict path and that the repaired reader finds nothing to repair in stage 1's archives.
 
-- [ ] **Step 1: Write the failing tests:** `test_identical_apart_from_fingerprints_passes`, `test_any_other_difference_fails`, and `test_a_new_mask_field_fails`.
+- [ ] **Step 1: Write the failing tests:** `test_identical_apart_from_fingerprints_passes`, `test_any_other_difference_fails`, `test_a_new_mask_field_fails`, and `test_missing_extra_or_duplicate_file_fails` (one file absent on one side, one extra, and two files with one key, each failing with the key named).
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run `pytest -q`.** Expected: PASS.
