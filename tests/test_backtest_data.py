@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 import zipfile
+import zlib
 from dataclasses import replace
 from decimal import Decimal as D
 from functools import partial
@@ -41,6 +42,7 @@ from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.market_data.parsing import DataError
 
 ROOT = Path(__file__).resolve().parents[1]
+DEC_2023_MS = 1701388800000  # 2023-12-01T00:00:00Z
 JAN_2024_MS = 1704067200000  # 2024-01-01T00:00:00Z
 JAN_2025_MS = 1735689600000  # 2025-01-01T00:00:00Z
 
@@ -64,6 +66,37 @@ def make_zip(symbol, interval, month, text):
     return buffer.getvalue()
 
 
+def truncated_close_rows(start_ms, count, *, step):
+    """Valid rows but for the last one's close, cut off its boundary (spec v1 section 5 rule 1
+    repairs it: nothing follows)."""
+    lines = [row(start_ms + i * step, step=step) for i in range(count)]
+    fields = lines[-1].split(",")
+    fields[6] = str(int(fields[0]) + 30_000)
+    lines[-1] = ",".join(fields)
+    return "\n".join(lines) + "\n"
+
+
+def unreadable_open_rows(start_ms, count, *, step):
+    """Valid rows but for the second one's open time, which is not a number: no hour to mask."""
+    lines = [row(start_ms + i * step, step=step) for i in range(count)]
+    lines[1] = ",".join(["abc", *lines[1].split(",")[1:]])
+    return "\n".join(lines) + "\n"
+
+
+def undecodable_zip(symbol, interval, month):
+    """A zip whose member is flagged deflate over a garbage stream: reading it raises
+    ``zlib.error``, which ``read_member`` lets through."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr(f"{symbol}-{interval}-{month}.csv", b"\x01\x00\x00\x00\x00")
+    data = bytearray(buffer.getvalue())
+    deflate = zipfile.ZIP_DEFLATED.to_bytes(2, "little")
+    data[8:10] = deflate  # the local header's compression method
+    central = data.rfind(b"PK\x01\x02")
+    data[central + 10 : central + 12] = deflate  # and the central directory's
+    return bytes(data)
+
+
 class FakeArchive:
     """Serves zips and CHECKSUM files by archive path; unknown paths are 404."""
 
@@ -73,6 +106,10 @@ class FakeArchive:
 
     def add(self, symbol, interval, month, text, *, checksum=None):
         body = make_zip(symbol, interval, month, text)
+        self.add_body(symbol, interval, month, body, checksum=checksum)
+
+    def add_body(self, symbol, interval, month, body, *, checksum=None):
+        """Serve ``body`` as the archive, whatever it is, under its own SHA-256."""
         path = archive_path(symbol, interval, month)
         digest = checksum or hashlib.sha256(body).hexdigest()
         self.objects[path] = body
@@ -251,8 +288,18 @@ class FetchTests(unittest.TestCase):
         fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
         self.assertEqual(2, self.archive.requests.count(zip_path))
 
-    def tiny_dataset(self):
-        """A one-pair, two-month dataset, fetched from the fake archive: (spec, manifest)."""
+    FILTERS = {"tick_size": "0.0001", "quantity_step": "0.1", "min_notional": "5"}
+
+    def refetch(self, spec):
+        return fetch_dataset(
+            spec, self.data, fetcher=self.archive, instruments=lambda symbol: self.FILTERS
+        )
+
+    def tiny_dataset(self, replacing=None):
+        """A one-pair, two-month dataset, fetched from the fake archive: (spec, manifest).
+
+        ``replacing`` maps (interval, month) to the text or the zip bytes the archive serves
+        for that file instead of its three valid rows; a 1d key adds that daily archive."""
         spec = replace(
             load_spec(ROOT / "config/datasets/verify-2024h1.toml"),
             traded=("ADAUSDT",),
@@ -262,22 +309,54 @@ class FetchTests(unittest.TestCase):
             start="2024-01",
             end="2024-01",
         )
+        served = {}
         for interval in ("1m", "1h"):
-            for month, start in (("2023-12", 1701388800000), ("2024-01", JAN_2024_MS)):
+            for month, start in (("2023-12", DEC_2023_MS), ("2024-01", JAN_2024_MS)):
                 step = 60_000 if interval == "1m" else 3_600_000
-                text = "\n".join(row(start + i * step, step=step) for i in range(3)) + "\n"
-                self.archive.add("ADAUSDT", interval, month, text)
-        manifest = fetch_dataset(
-            spec,
-            self.data,
-            fetcher=self.archive,
-            instruments=lambda symbol: {
-                "tick_size": "0.0001",
-                "quantity_step": "0.1",
-                "min_notional": "5",
-            },
+                served[interval, month] = (
+                    "\n".join(row(start + i * step, step=step) for i in range(3)) + "\n"
+                )
+        for (interval, month), content in (served | (replacing or {})).items():
+            add = self.archive.add_body if isinstance(content, bytes) else self.archive.add
+            add("ADAUSDT", interval, month, content)
+        return spec, self.refetch(spec)
+
+    @staticmethod
+    def kline_entry(manifest, interval, month):
+        (entry,) = (
+            f
+            for f in manifest["files"]
+            if (f.get("kind"), f["symbol"], f.get("interval"), f["month"])
+            == (None, "ADAUSDT", interval, month)
         )
-        return spec, manifest
+        return entry
+
+    def published(self, interval, month):
+        """The SHA-256 and size of the archive the fake serves for ADAUSDT's file."""
+        body = self.archive.objects[archive_path("ADAUSDT", interval, month)]
+        return hashlib.sha256(body).hexdigest(), len(body)
+
+    def stats_entry(self, interval, month, start, step, rows, **fields):
+        """The manifest entry of an ADAUSDT archive that parsed to ``rows`` rows from
+        ``start``, expected to hold the whole month at ``step``, with its trailing gap."""
+        sha256, size = self.published(interval, month)
+        expected = 44_640 if interval == "1m" else 744  # a 31-day month
+        return {
+            "symbol": "ADAUSDT",
+            "interval": interval,
+            "month": month,
+            "url": f"https://data.binance.vision{archive_path('ADAUSDT', interval, month)}",
+            "status": "ok",
+            "sha256": sha256,
+            "bytes": size,
+            "rows": rows,
+            "expected_rows": expected,
+            "missing_rows": expected - rows,
+            "gaps": 1,
+            "first_open_ms": start,
+            "last_open_ms": start + (rows - 1) * step,
+            "timestamp_units": ("ms",),
+        } | fields
 
     def test_manifest_round_trip_and_tamper_detection(self):
         spec, manifest = self.tiny_dataset()
@@ -288,6 +367,221 @@ class FetchTests(unittest.TestCase):
             verify_dataset(spec, manifest, self.data)
         with self.assertRaisesRegex(DataError, "do not match"):
             verify_dataset(replace(spec, end="2024-02"), manifest, self.data)
+
+    def test_truncated_close_archive_is_fetched_as_ok_with_repaired_stats(self):
+        # Spec v1 section 5 rule 1: a close off its boundary on a row that nothing follows
+        # is repaired by the reader, and a duplicated row is dropped with its hour masked;
+        # neither is fatal. The fetch records the archive as ok with the stats of the
+        # repaired read (over the rows it kept), under a strictly valid archive's keys.
+        hour = 3_600_000
+        duplicated = "\n".join(row(JAN_2024_MS + i * hour, step=hour) for i in (0, 1, 1, 2))
+        cases = {
+            "a truncated 1m close": (
+                ("1m", "2024-01", JAN_2024_MS, 60_000),
+                truncated_close_rows(JAN_2024_MS, 3, step=60_000),
+            ),
+            "a truncated 1h close": (
+                ("1h", "2023-12", DEC_2023_MS, hour),
+                truncated_close_rows(DEC_2023_MS, 3, step=hour),
+            ),
+            "a duplicated 1h row": (("1h", "2024-01", JAN_2024_MS, hour), duplicated + "\n"),
+        }
+        for label, ((interval, month, start, step), text) in cases.items():
+            with self.subTest(case=label):
+                spec, manifest = self.tiny_dataset({(interval, month): text})
+                strict = local_path(self.data, "ADAUSDT", interval, month)
+                with self.assertRaises(DataError):  # so the strict reader refuses it
+                    read_archive(strict, "ADAUSDT", interval, month)
+                self.assertEqual(
+                    self.stats_entry(interval, month, start, step, 3),
+                    self.kline_entry(manifest, interval, month),
+                )
+                verify_dataset(spec, manifest, self.data)
+
+    def test_unreadable_archive_is_recorded_not_fatal(self):
+        # An archive that cannot be read at all is recorded, with its checksum and why, and
+        # every hour of it is absent. That includes a deflate stream that fails with
+        # zlib.error, which the strict reader lets escape, and an EOFError from reading.
+        cases = {
+            "not a zip": ("1m", "2024-01", b"not a zip", "invalid zip"),
+            "garbage deflate stream": (
+                "1h",
+                "2023-12",
+                undecodable_zip("ADAUSDT", "1h", "2023-12"),
+                "",  # zlib's own message, which this test does not pin
+            ),
+            "an open that is not a number": (
+                "1h",
+                "2024-01",
+                unreadable_open_rows(JAN_2024_MS, 3, step=3_600_000),
+                "open time",
+            ),
+        }
+        for label, (interval, month, content, why) in cases.items():
+            with self.subTest(case=label):
+                spec, manifest = self.tiny_dataset({(interval, month): content})
+                entry = self.kline_entry(manifest, interval, month)
+                sha256, size = self.published(interval, month)
+                self.assertEqual(
+                    {
+                        "symbol": "ADAUSDT",
+                        "interval": interval,
+                        "month": month,
+                        "url": "https://data.binance.vision"
+                        + archive_path("ADAUSDT", interval, month),
+                        "status": "unreadable",
+                        "sha256": sha256,
+                        "bytes": size,
+                    },
+                    {k: v for k, v in entry.items() if k != "reason"},
+                )
+                self.assertTrue(entry["reason"])
+                self.assertIn(why, entry["reason"])
+                verify_dataset(spec, manifest, self.data)
+                path = self.data / "fetched.manifest.json"
+                write_manifest(path, manifest)
+                self.assertEqual(json.loads(json.dumps(manifest)), load_manifest(path))
+                self.assertEqual(manifest["files"], self.refetch(spec)["files"])  # cached
+        with patch("crypto_grid_bot.backtest.klines.read_member", side_effect=EOFError()):
+            spec, manifest = self.tiny_dataset()
+        statuses = [f["status"] for f in manifest["files"]]
+        self.assertEqual(3, statuses.count("unreadable"))  # 1m 2024-01 and 1h in both months
+        self.assertEqual(len(statuses) - 3, statuses.count("missing"))  # the daily archives
+        self.assertEqual("EOFError", self.kline_entry(manifest, "1m", "2024-01")["reason"])
+        verify_dataset(spec, manifest, self.data)
+
+    def test_a_daily_archive_that_fails_its_parse_stays_fatal(self):
+        # A daily bar is never masked (spec v1 section 5 rule 3), so there is no repairing a
+        # daily archive: its failure is the fetch's, as before.
+        day = 86_400_000
+        cases = {
+            "truncated close": (truncated_close_rows(JAN_2024_MS, 3, step=day), ArchiveParseError),
+            "not a zip": (b"not a zip", ArchiveParseError),
+            "garbage deflate stream": (undecodable_zip("ADAUSDT", "1d", "2024-01"), zlib.error),
+        }
+        for label, (content, error) in cases.items():
+            with self.subTest(case=label), self.assertRaises(error):
+                self.tiny_dataset({("1d", "2024-01"): content})
+        with (
+            patch("crypto_grid_bot.backtest.klines.read_member", side_effect=EOFError()),
+            self.assertRaises(EOFError),
+        ):
+            self.tiny_dataset({("1d", "2024-01"): row(JAN_2024_MS, step=day) + "\n"})
+
+    def test_a_checksum_failure_is_never_recorded_as_unreadable(self):
+        # Only a hash-verified archive that fails its parse is repaired or recorded. One that
+        # fails its checksum stays the fetch's error, even when its content is repairable.
+        spec, _ = self.tiny_dataset(
+            {("1m", "2024-01"): truncated_close_rows(JAN_2024_MS, 3, step=60_000)}
+        )
+        path = archive_path("ADAUSDT", "1m", "2024-01")
+        self.archive.objects[path + ".CHECKSUM"] = f"{'0' * 64}  {path.rsplit('/', 1)[1]}".encode()
+        with self.assertRaisesRegex(DataError, "SHA-256") as raised:
+            self.refetch(spec)
+        self.assertNotIsInstance(raised.exception, ArchiveParseError)
+
+    def test_manifest_with_an_unreadable_entry_loads_and_verifies(self):
+        # The entry is the one a fetch writes for a 1h archive that cannot be read, here
+        # made by hand from a valid one so that the validation is tested on its own.
+        spec, valid = self.tiny_dataset()
+        archive = self.kline_entry(valid, "1h", "2023-12")
+        entry = {k: archive[k] for k in ("symbol", "interval", "month", "url", "sha256", "bytes")}
+        entry |= {"status": "unreadable", "reason": "invalid zip archive"}
+        manifest = valid | {"files": [entry if f is archive else f for f in valid["files"]]}
+        path = self.data / "unreadable.manifest.json"
+        write_manifest(path, manifest)
+        self.assertEqual(json.loads(json.dumps(manifest)), load_manifest(path))
+        verify_dataset(spec, manifest, self.data)
+
+        def with_entry(changed):
+            files = [changed if f is entry else f for f in manifest["files"]]
+            return manifest | {"files": files}
+
+        bad = {
+            "an unknown status": (entry | {"status": "downloaded"}, "status is invalid"),
+            "no checksum": ({k: v for k, v in entry.items() if k != "sha256"}, "checksum"),
+            "a malformed checksum": (entry | {"sha256": "z" * 64}, "checksum"),
+            "no reason": ({k: v for k, v in entry.items() if k != "reason"}, "reason"),
+            "an empty reason": (entry | {"reason": ""}, "reason"),
+            "a blank reason": (entry | {"reason": "  "}, "reason"),
+            "a reason that is no string": (entry | {"reason": 5}, "reason"),
+        }
+        for label, (changed, message) in bad.items():
+            with self.subTest(case=label):
+                path.write_text(json.dumps(with_entry(changed)), encoding="utf-8")
+                with self.assertRaisesRegex(DataError, message):
+                    load_manifest(path)
+                with self.assertRaisesRegex(DataError, message):
+                    verify_dataset(spec, with_entry(changed), self.data)
+        # Only a 1m or 1h kline archive can be unreadable: a daily one is fatal to fetch, and
+        # so is a funding archive's parse failure; no manifest may say otherwise.
+        daily = self.kline_entry(manifest, "1d", "2024-01")
+        unreadable = {"status": "unreadable", "sha256": "a" * 64, "reason": "invalid zip archive"}
+        funding = {"kind": "fundingRate", "symbol": "BTCUSDT", "month": "2024-01"} | unreadable
+        wrong_kind = {
+            "a daily archive": [daily | unreadable if f is daily else f for f in manifest["files"]],
+            "a funding archive": [*manifest["files"], funding],
+        }
+        for label, files in wrong_kind.items():
+            with self.subTest(case=label):
+                path.write_text(json.dumps(manifest | {"files": files}), encoding="utf-8")
+                with self.assertRaisesRegex(DataError, "1m or 1h"):
+                    load_manifest(path)
+                with self.assertRaisesRegex(DataError, "1m or 1h"):
+                    verify_dataset(spec, manifest | {"files": files}, self.data)
+        # The checksum is still checked against the stored file.
+        local_path(self.data, "ADAUSDT", "1h", "2023-12").write_bytes(b"tampered")
+        with self.assertRaisesRegex(DataError, "checksum"):
+            verify_dataset(spec, manifest, self.data)
+        local_path(self.data, "ADAUSDT", "1h", "2023-12").unlink()
+        with self.assertRaisesRegex(DataError, "missing local archive"):
+            verify_dataset(spec, manifest, self.data)
+
+    def test_valid_archive_entry_is_unchanged(self):
+        # Refetching a window whose archives all parse strictly gives the manifest it gave
+        # before this change: no reason, no new key, the same stats.
+        spec, manifest = self.tiny_dataset()
+        cases = (
+            ("1m", "2024-01", JAN_2024_MS, 60_000),
+            ("1h", "2023-12", DEC_2023_MS, 3_600_000),
+            ("1h", "2024-01", JAN_2024_MS, 3_600_000),
+        )
+        for interval, month, start, step in cases:
+            with self.subTest(file=(interval, month)):
+                entry = self.kline_entry(manifest, interval, month)
+                self.assertEqual(self.stats_entry(interval, month, start, step, 3), entry)
+                self.assertEqual(
+                    entry, fetch_file(self.data, "ADAUSDT", interval, month, self.archive)
+                )
+        self.assertEqual(manifest["files"], self.refetch(spec)["files"])
+        self.assertNotIn("unreadable", {f["status"] for f in manifest["files"]})
+
+    def test_fetch_file_still_raises_for_the_audit(self):
+        # The audit inspects an archive that fails its strict parse as unparsed content
+        # (audit_run._fetch catches ArchiveParseError), so the fallback is fetch_dataset's
+        # and fetch_file raises exactly as before.
+        cases = {
+            "truncated close": (truncated_close_rows(JAN_2024_MS, 3, step=60_000), "line 3"),
+            "not a zip": (b"not a zip", "invalid zip"),
+        }
+        for label, (content, why) in cases.items():
+            with self.subTest(case=label):
+                add = self.archive.add_body if isinstance(content, bytes) else self.archive.add
+                add("ADAUSDT", "1m", "2024-01", content)
+                with self.assertRaisesRegex(ArchiveParseError, why) as raised:
+                    fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
+                self.assertIsInstance(raised.exception.__cause__, DataError)
+        # What escapes the strict parse as a zlib.error or an EOFError keeps escaping.
+        self.archive.add_body(
+            "ADAUSDT", "1m", "2024-01", undecodable_zip("ADAUSDT", "1m", "2024-01")
+        )
+        with self.assertRaises(zlib.error):
+            fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
+        with (
+            patch("crypto_grid_bot.backtest.klines.read_member", side_effect=EOFError()),
+            self.assertRaises(EOFError),
+        ):
+            fetch_file(self.data, "ADAUSDT", "1m", "2024-01", self.archive)
 
     def test_funding_archives_are_optional_and_verified_like_klines(self):
         # Codex review of #165: G's archives (spec v1 P8) must pass verification. The
