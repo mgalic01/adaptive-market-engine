@@ -323,6 +323,21 @@ def test_non_increasing_open_times_are_rejected(which, shape):
             Perception([], klines)
 
 
+@pytest.mark.parametrize("which", ["hourly", "daily"])
+def test_unaligned_open_times_are_rejected(which):
+    # A daily bar opening 1 ms after midnight would be read as the latest closed bar
+    # while the aligned due bar is present (Task 2's review); refuse it at construction.
+    step = H1 if which == "hourly" else DAY
+    klines = walk(5, step, seed=1)
+    bar = klines[3]
+    klines[3] = kline(bar.open_ms + 1, bar.open, bar.high, bar.low, bar.close)
+    with pytest.raises(ValueError, match=f"{which} open times must be multiples"):
+        if which == "hourly":
+            Perception(klines, [])
+        else:
+            Perception([], klines)
+
+
 def test_at_is_a_lookup_over_series_computed_once(monkeypatch):
     p = Perception(walk(800, H1, seed=4), climb(70, DAY, D(1)))
     expected = p.at(790 * H1)
