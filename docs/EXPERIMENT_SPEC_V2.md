@@ -3,7 +3,9 @@
 **Status:** a draft by Claude, from the owner's design decisions of 2026-10-06 (recorded in §11).
 - **When it freezes:** only after the owner has reviewed this text, and Codex and Bob have reviewed it. The freeze also comes before any code that could be tuned to results, and before any v2 run.
 - **After the freeze:** a change requires a new version.
-- **Scope:** paper trading and historical replay only. Nothing here authorises live trading, API keys or withdrawals.
+- **Scope:** historical replay only. Nothing here authorises live trading, API keys or withdrawals.
+  - The mode switcher's runtime state is not saved, and neither is variant F's. So, like v1's E and F, it runs in replay, and a persisted paper account refuses it.
+  - Running it as a paper account needs that state saved, with a schema change. That is a separate step before any forward paper test (§10).
 - **Spec v1:** it stays frozen as the record of its own experiment. [Spec v1](EXPERIMENT_SPEC_V1.md) ended on 2026-10-06 with no winner ([report](backtests/2026-10-06-spec-v1-stage-1.md)).
 
 **Names.** In v1, "V2" was the market-structure variant. This document is **spec v2**, and the strategy it tests is **the mode switcher**.
@@ -46,7 +48,7 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 ## 3. Perception: three timeframes
 
 **The bars:**
-- **1m:** Binance's archives, for fills only.
+- **1m:** Binance's archives, for fills, and for variant F's order-flow share (spec v1 §3 F), which the grid keeps.
 - **1h:** Binance's archives.
 - **4h:** built from four consecutive 1h bars aligned to 00:00, 04:00, … UTC. A 4h bar exists only if all four hours are present and unmasked. Otherwise it is missing.
 - **1d:** Binance's archives, cross-checked as in spec v1 P3.
@@ -62,18 +64,36 @@ These carry over unchanged, as frozen in spec v1 at `f144510`:
 | Bollinger width | 1h | (upper − lower) ÷ middle of the 20-bar band at 2 population standard deviations |
 | Width median | 1h | the median of the last 720 completed 1h widths (30 days) |
 
-An indicator whose history is short, or contains a missing or masked bar inside its lookback, is **unavailable**.
+**Gaps and availability.** v2 follows the convention of V0's hourly features (spec v1, D13), so that one masked hour, such as an exchange outage, does not blank a 30-day median for a month.
+- **Skipping gaps:** each timeframe's indicators are computed over the bars that exist, in time order. A missing or masked bar is skipped, not filled, and every recursion continues with the next bar that exists. A true range uses the previous existing bar's close.
+- **Minimum bars,** counted over the bars that exist since the data starts:
+
+  | Indicator | Minimum | First value |
+  | --- | --- | --- |
+  | SMA20 | 20 bars | |
+  | SMA50 | 50 bars | |
+  | RSI(14) | 15 bars | seeded with the mean gain and mean loss of its first 14 changes |
+  | ATR(14) | 15 bars | seeded with the mean of its first 14 true ranges |
+  | ±DI | 15 bars | from Wilder sums seeded over their first 14 values |
+  | ADX(14) | 28 bars | seeded with the mean of its first 14 DX values |
+  | Bollinger width | 20 bars | |
+  | Width median | 720 widths | the median uses the last 720 widths that exist |
+
+- **Unavailable:** a timeframe is **unavailable** at time *t* if either holds:
+  - the bar that should have closed last before *t* is missing or masked (the bar opening at ⌊t ÷ L⌋ × L − L, for a bar of length L);
+  - any indicator that a rule reads lacks its minimum bars.
 
 **The 1h regime** is V0's existing classifier (`strategy/regime.py`, `price-only-v1`). Its labels are RANGE, BULL, BEAR, TRANSITION and STRESS.
 
-**The 4h and daily trend states:**
+**The 4h and daily trend states.** Unavailable is checked first, and it always means Cash (§4).
 
 | State | All of these |
 | --- | --- |
+| **Unavailable** | the timeframe is unavailable (above) |
 | **Up** | close > SMA50; SMA20 > SMA50; ADX(14) ≥ 20; +DI > −DI |
 | **Down** | close < SMA50; SMA20 < SMA50; ADX(14) ≥ 20; −DI > +DI |
 | **Range** | ADX(14) < 20 |
-| **Unclear** | anything else, including any unavailable input |
+| **Unclear** | anything else |
 
 ## 4. The mode selector
 
@@ -85,9 +105,9 @@ An indicator whose history is short, or contains a missing or masked bar inside 
 
 | Mode | All of these must hold |
 | --- | --- |
-| **Uptrend** | daily state Up; 4h state Up; the 1h regime is neither BEAR nor STRESS; daily RSI(14) < 75; no trailing-stop exit in the last 24 hours (§5) |
-| **Grid** | the 1h regime is RANGE at each of the last 4 completed hours; the 4h state is neither Up nor Down; the daily state is not Down; 1h RSI(14) between 35 and 65 inclusive; 1h ADX(14) < 20; 1h Bollinger width ≤ its 720-hour median |
-| **Cash** | otherwise, including any unavailable input, warm-up not complete, or a halt |
+| **Uptrend** | daily state Up; 4h state Up; V0's classifier reports its inputs as sound (`input_quality_ok`), and its regime is neither BEAR nor STRESS; daily RSI(14) < 75, with the daily RSI and ATR(14) available; no trailing-stop exit in the last 24 hours (§5) |
+| **Grid** | V0's classifier gives RANGE at this hour's decision and at the decisions of the 3 hours before it, which must be consecutive (an hour without a decision, such as a masked one, restarts the count); the 4h state is Range or Unclear; the daily state is Up, Range or Unclear; the 1h timeframe is available, with 1h RSI(14) between 35 and 65 inclusive, 1h ADX(14) < 20, and the 1h Bollinger width ≤ its median |
+| **Cash** | otherwise, including any Unavailable state or unavailable input, warm-up not complete, or a halt |
 
 **What each mode allows:**
 - **Grid:** new grids may open, but only when V0's own checks, F's block and the risk layer also allow.
@@ -101,14 +121,24 @@ An indicator whose history is short, or contains a missing or masked bar inside 
 ## 5. The uptrend engine
 
 **Entry:**
-- **When:** at the first valid quote after a decision that sets the mode to Uptrend, provided the pair is flat (§6).
-- **How:** one marketable buy at the taker fee, bounded by the participation limit and the exchange's precision, as variant D's execution does.
+- **When:** at the first valid quote after a decision that sets the mode to Uptrend, provided the pair is flat (§6) and the risk action is ALLOW (§7).
+- **How:** marketable buys at the taker fee, priced as variant D's: the ask × (1 + slippage), rounded up to the tick. Each is bounded by the participation limit on the ask size and by the exchange's precision.
 
-**Size:**
-- `size = min(0.60 × active capital, 0.04 × active equity ÷ d)`.
-- `d` = (entry price − initial stop) ÷ entry price.
+**Budget, set once when the entry starts:**
+- `budget = min(0.60 × active capital, 0.04 × active equity ÷ d)`, in USDT.
+- `d` = (p − initial stop) ÷ p, where p is the first entry quote's buy price.
+- **No entry starts when d ≤ 0,** that is, when the price is at or below the initial stop. That is not a stop-out, so no pause starts.
 - Active capital and active equity are spec v1's (the vault excluded).
 - A stop-out therefore costs about 4% of active equity before fees and slippage.
+- **A gap can cost more.** A price gap through the stop loses more than that, and C1 can fail on such a gap even with the 12% hard stop behind it. That is an expected failure mode, not a defect.
+
+**Partial fills:**
+- The entry buys at each quote until one of these ends it:
+  - its budget is spent;
+  - what remains buys less than the minimum notional;
+  - an exit (below) or a risk event (§7).
+- The budget and the stop stay as set when the entry started. The position is whatever was bought.
+- If the stop is reached during the entry, the entry ends and exit 1 sells what was bought.
 
 **The trailing stop:**
 - **Value:** the highest daily close since entry, minus 3 × ATR(14) on daily bars.
@@ -116,31 +146,58 @@ An indicator whose history is short, or contains a missing or masked bar inside 
 - **Updates:** at each daily close, the stop becomes the larger of its previous value and (the highest daily close since entry − 3 × that day's ATR). It never moves down.
 
 **Exits.** Each one sells the whole position with marketable sells under the participation limit, and the remainder below the minimum notional stays as dust, as in v1:
-1. **The stop is reached:** the bid at any minute's quote is at or below the stop.
-2. **The trend fades:** at a daily close, the daily state is no longer Up.
+1. **The stop is reached:** the bid at an available minute's quote is at or below the stop.
+   - A missing or masked minute has no quote, so there is no check until the next quote, whose check comes first.
+   - A data gap does not force an exit by itself. v1's frame-gap rule still makes the next frame transient, which blocks entries.
+2. **The trend fades:** at a daily close, the daily state is no longer Up. Unavailable counts as no longer Up, so this exit fails closed.
 3. **The risk layer acts** (§7).
 
-**After a stop-out:** after exit 1, Uptrend cannot be entered for 24 hours.
+**After an exit:**
+- After a stop-out (exit 1), Uptrend cannot be entered for 24 hours. The pause runs from the observation at which exit 1 first triggers, however many observations its sells then take.
+- After a trend fade (exit 2), there is no pause, because re-entry already needs the daily state to be Up again.
 
 ## 6. Switching modes
 
 There is one engine per pair at a time. A new mode's engine starts only once the pair is flat.
 
+**The uptrend position is not grid inventory.** v1 sells any inventory without a resting sell on every frame, and an uptrend position has none. So the position is left out of that per-frame exit, out of the range exit and out of the grid settlement. It is also left out of the draining that v1's pauses start, with one exception:
+- **A risk drain sells it.** A pause or reduction the risk engine sets (a daily-loss PAUSE, or a soft-drawdown REDUCE) drains the account to flat, exactly as in v1, so the position is sold (§7).
+- **Other pauses do not.** V0's grid-eligibility pause and a transient frame's pause belong to the grid and the data, so they never sell it.
+
+Otherwise only §5's exits and §7's risk events sell it.
+- **After it is sold,** the account is flat, and v1's settlement and profit vault apply exactly as after a grid. The vault is never traded.
+- **At the end of the window,** a position still held is valued at v1's exit mark, as `Account.equity` values all inventory. It is a position, not an exit owed, so it does not make the run invalid. The same holds for a held position's dust.
+
 | From → to | What happens |
 | --- | --- |
 | Cash → Uptrend | the uptrend engine enters |
 | Cash → Grid | a grid may open under §4 |
-| Grid → Uptrend | the grid's unfilled buys are cancelled, its resting sells stay, and v1's range exit sells whatever remains; the uptrend entry waits until the pair is flat |
-| Grid → Cash | no new grids; the open grid finishes by v1's exits |
+| Grid → Uptrend | the grid winds down (below); see also "Grid → Uptrend, in detail" |
+| Grid → Cash | the grid winds down (below) |
 | Uptrend → Grid or Cash | only after one of §5's exits has sold the position (§4, "Entering versus staying"); the new mode starts at the next decision once the pair is flat |
+
+**A grid winding down.** When the mode leaves Grid, for Uptrend or for Cash, the open grid places no buy of any kind until it has ended, as variant F's block does (spec v1 §3 F):
+- resting buys are cancelled;
+- no re-entry buy is created when one of its sells fills;
+- its resting sells stay.
+
+Without this, every sell would re-create a buy, and the grid would never end.
+
+**Grid → Uptrend, in detail:**
+- **No forced sale.** The winding-down grid ends only by v1's own exits: its resting sells filling, or v1's range exit after 6 hours outside the band. The switch itself sells nothing.
+- **The entry can be late, or missed.** The uptrend entry starts only at a decision where the pair is flat and the mode is still Uptrend.
+- **The cooldown is the grid's alone.** v1's re-centring cooldown after a range exit applies to new grids only, not to the uptrend entry.
 
 ## 7. Risk events
 
 Risk events act exactly as in v1, in every mode, and win over the mode selector:
-- **A soft-drawdown reduction** sells part of whatever is held, including the uptrend position.
-- **A daily-loss pause, halt, hard stop or emergency** blocks every new entry.
-- **The hard stop and emergency exits** also liquidate everything.
-- **While halted,** the mode is Cash.
+- **New uptrend entries need a risk action of ALLOW,** as V0's new grids do. A soft-drawdown REDUCE, a PAUSE or an EXIT blocks them. So do a daily-loss pause, a halt, a hard stop and an emergency.
+- **A daily-loss PAUSE or a soft-drawdown REDUCE drains the account to flat, as in v1** (`PaperSimulator._pause`).
+  - The uptrend position is sold under the participation limit, and any entry stops.
+  - The position ends when it is sold, or when what remains is dust.
+  - The mode is decided afresh at the first decision after the pause clears.
+- **The hard stop and emergency exits** liquidate everything, which ends any uptrend position and entry.
+- **While halted,** the mode is Cash. After a restart, the mode is decided afresh at the next decision.
 
 ## 8. Evaluation
 
@@ -154,11 +211,11 @@ Risk events act exactly as in v1, in every mode, and win over the mode selector:
 - **Paths:** both.
 - **Capital:** 100 USDT per pair-run, as in v1.
 
-**Comparators, run under the same rules:**
-- **Always-grid:** v1's variant F, eligible for grids whenever V0 allows.
+**Comparators.** These run on the same data, paths, timing and fees as the mode switcher:
+- **Always-grid:** v1's variant F, eligible for grids whenever V0 allows, with v1's risk layer.
 - **Buy-and-hold.**
 - **Cash.**
-- **Variant D,** reported only.
+- **Variant D,** reported only. It keeps its frozen exemption from the risk layer and the vault (spec v1 §3 D).
 
 ### Acceptance (owner decision: "Adapt v1's criteria")
 
@@ -170,13 +227,14 @@ Every criterion applies over the included runs of the scored window:
 | C2 | As spec v1: for each path, the median annualised return > 0, and the mean annualised return > 0. |
 | C3 | As spec v1: in every included run, the maximum total-equity drawdown is below that run's buy-and-hold maximum drawdown, under common sampling. |
 | C4 | As spec v1: every included run is valid. |
-| C5 | **Activity:** the mean, over included runs, of completed round trips per 365.25 days is ≥ 12. A round trip is either a completed grid cycle (spec v1 P7) or a completed uptrend trade, an entry whose exit has finished. |
-| C6 | **Earns its place:** in at least 60% of included runs, the run's annualised return ÷ max(its maximum drawdown, 0.1 percentage points) exceeds both always-grid's in the same pair and path, and cash's, which is 0. |
+| C5 | **Activity:** the mean, over included runs, of completed round trips per 365.25 days is ≥ 12. A round trip is either a completed grid cycle (spec v1 P7) or a completed uptrend trade, an entry whose exit has finished. Both kinds count alike, so grid cycles alone can meet C5. That is intended: C5 checks that the bot trades, not which mode does. Round trips by mode are a required readout. |
+| C6 | **Earns its place:** in at least 60% of included runs, the run's annualised return ÷ max(its maximum drawdown, 0.1 percentage points) exceeds both always-grid's in the same pair and path, and cash's, which is 0. A run beats cash only with a positive return, so its comparison with always-grid only matters among positive returns. |
 
 **Reported, not gating:**
 - **Upside capture:** over the calendar months in which buy-and-hold's return is positive, the sum of the run's monthly returns divided by the sum of buy-and-hold's.
 - **Behaviour:** the share of time in each mode, the number of mode switches, round trips by mode, and the uptrend stops and fades.
 - **Comparators:** D and buy-and-hold.
+- **R1, economics, as spec v1 §6:** the capital at which the mean monthly return would cover €5 a month of hosting.
 
 **Annualising:** compound, as in spec v1 §6.
 
@@ -193,6 +251,11 @@ Every criterion applies over the included runs of the scored window:
 - v1's stage-1 results (2022 and 2024H1) informed this design: F in grid mode, and the risk budget. Both windows lie inside 2019–2024.
 - The V2-era runs of 2026-09-30 covered parts of 2022–2024 (2022-06 to 2023-02, and 2023-10 to 2024-12), and Claude saw their figures in the owner's proposal. Those runs are invalid because of the lookahead fixed in #160.
 - #137's runs on the development data informed the deferral of shorting.
+- **Where the thresholds come from:**
+  - **The owner's 2026-09-30 proposal:** the Grid row's RSI 35–65, ADX < 20, four RANGE hours, and the 4h and daily conditions.
+  - **Standard indicator conventions:** period 14, ADX 20, RSI 75, and Bollinger 20 at 2σ.
+  - **Design choices:** 3 × ATR, 4%, 60% and 24 hours.
+  - None was derived from 2019–2024 results.
 - 2025–26 has not been downloaded or replayed. Claude has read public reports of its BTC regime (spec v1 §7).
 - **Consequence:** 2019–2024 is a development window, not an untouched one. The reserved window is the clean test.
 
@@ -228,7 +291,8 @@ Later specs will cover these. Each needs its own owner decision:
 - the separate fast-grid and slow-grid modes (the owner's Modes A and B of 2026-09-30);
 - the cycle-based position hold (Mode C), and external signals: Fear & Greed, open interest;
 - a capital allocator across modes or pairs;
-- any change to the risk limits.
+- any change to the risk limits;
+- running the mode switcher as a persisted paper account, which needs its state and F's saved with a schema change (§1, Scope).
 
 ## 11. Owner decisions (2026-10-06, in Claude's session)
 
