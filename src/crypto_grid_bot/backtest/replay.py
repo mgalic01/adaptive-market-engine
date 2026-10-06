@@ -899,11 +899,14 @@ def _read_month_masked(
     excluded: Sequence[tuple[int, int]],
 ) -> list[Kline]:
     """The month's bars from the repairing reader (spec v1 §5 rule 1), less every bar in a
-    masked hour and every bar inside a documented ``excluded`` [start, end) range.
+    masked hour, every bar in an hour the reader distrusts (``masked_hours``) and every
+    bar inside a documented ``excluded`` [start, end) range.
 
-    The manifest lists the archive as ok, so an archive the reader cannot read is not
-    masked here: it raises, fail-closed, as the strict reader does. Only a manifest entry
-    that is not ok gives no bars, and ``_archive_months`` never lists one."""
+    ``mask_job``'s masks already hold every distrusted hour of the month; dropping them
+    here too keeps the reader's kept copy of a duplicated row out of a load whose mask was
+    made by hand. The manifest lists the archive as ok, so an archive the reader cannot
+    read is not masked here: it raises, fail-closed, as the strict reader does. Only a
+    manifest entry that is not ok gives no bars, and ``_archive_months`` never lists one."""
     read = read_archive_repaired(
         local_path(data_dir, symbol, interval, month), symbol, interval, month
     )
@@ -912,7 +915,8 @@ def _read_month_masked(
             f"{symbol} {interval} {month}: the manifest lists the archive as ok, but it is "
             f"unreadable: {read.unreadable}"
         )
-    bars = [kline for kline in read.bars if kline.open_ms // HOUR_MS * HOUR_MS not in mask]
+    dropped = mask | read.masked_hours
+    bars = [kline for kline in read.bars if kline.open_ms // HOUR_MS * HOUR_MS not in dropped]
     if excluded:
         bars = [k for k in bars if not any(a <= k.open_ms < b for a, b in excluded)]
     return bars
@@ -946,9 +950,9 @@ def load_candles(
     With ``mask`` None, the strict reader, which refuses an archive with a repaired or
     dropped row, and nothing is dropped: ``excluded`` is not read. With a mask, even an
     empty one, 1m and 1h archives are read by the repairing reader, and every bar in a
-    masked hour or inside an ``excluded`` [start, end) range, the symbol's documented
-    absences, is dropped (spec v1 §4 and §5). Daily bars are never masked (rule 3): the
-    repairing reader refuses them."""
+    masked hour, in an hour the reader distrusts, or inside an ``excluded`` [start, end)
+    range, the symbol's documented absences, is dropped (spec v1 §4 and §5). Daily bars
+    are never masked (rule 3): the repairing reader refuses them."""
     candles = [
         kline
         for month in _archive_months(manifest, symbol, interval)

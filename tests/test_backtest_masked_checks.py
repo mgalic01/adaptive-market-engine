@@ -334,6 +334,7 @@ def dirty_series_inputs():
 
 
 # --- Golden outputs, captured from the code before this change (fa432f7) -----------------
+# Built on test_backtest_loaders.LoaderTests.setUp's fixture: editing that fixture moves these.
 GOLDEN_LOADERS = {
     "minutes BTCUSDT": (6, "108b9ced82b70fb8"),
     "minutes ETHUSDT": (5, "2e0626693f767bb2"),
@@ -873,6 +874,26 @@ class MaskedConsumersTests(RunDataset):
         )
         self.assertEqual(symbol_mask, pickle.loads(pickle.dumps(symbol_mask)))
 
+    def test_an_ok_archive_that_is_unreadable_masks_its_month_and_its_check_raises(self):
+        # Decision 5: the manifest lists BNBUSDT 1h 2020-01 as ok, but the stored zip holds
+        # two members, so the repairing reader calls it unreadable. mask_job counts it as
+        # not clean (no bars: January is masked and excluded); the cross-check that then
+        # loads it with that mask fails closed.
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            shutil.copytree(self.data, work / "data")
+            shutil.copy(self.spec_path, work / self.spec_path.name)
+            write_manifest(work / "doge-window.manifest.json", manifest_of(self.spec_path))
+            spec_path, data = work / self.spec_path.name, work / "data"
+            with zipfile.ZipFile(local_path(data, "BNBUSDT", "1h", "2020-01"), "w") as archive:
+                archive.writestr("BNBUSDT-1h-2020-01.csv", "")
+                archive.writestr("extra.csv", "")
+            symbol_mask = mask_job(spec_path, data, "BNBUSDT")
+            self.assertEqual(frozenset(hours_between(JAN_2020, FEB_2020)), symbol_mask.mask)
+            self.assertTrue(symbol_mask.months[0].excluded)
+            with self.assertRaises(DataError):
+                cross_check_job(spec_path, data, "BNBUSDT", mask=symbol_mask.mask)
+
 
 class UnreadableArchiveTests(unittest.TestCase):
     def test_ok_archive_that_is_unreadable_still_raises(self):
@@ -905,6 +926,19 @@ class UnreadableArchiveTests(unittest.TestCase):
         local_path(data, "BTCUSDT", "1m", "2024-01").unlink()
         with self.assertRaises(OSError):
             list(load_minutes(data, manifest, "BTCUSDT", mask=frozenset()))
+
+    def test_a_masked_load_drops_the_readers_untrusted_hours(self):
+        # A hand-made mask that omits an untrusted hour: the reader keeps one copy of a
+        # duplicated row, and the masked load still drops that hour. The strict reader
+        # refuses the archive.
+        data, manifest = loader_fixture(self)
+        rows = loaders.hour_rows(loaders.JAN_2024_MS, 2).splitlines()
+        write_local(data, "BTCUSDT", "1h", "2024-01", "\n".join([rows[0], *rows]) + "\n")
+        with self.assertRaises(DataError):
+            load_hourly(data, manifest, "BTCUSDT")
+        opens = [k.open_ms for k in load_hourly(data, manifest, "BTCUSDT", mask=frozenset())]
+        feb = loaders.FEB_2024_MS
+        self.assertEqual([loaders.JAN_2024_MS + HOUR_MS, feb, feb + HOUR_MS], opens)
 
 
 if __name__ == "__main__":
