@@ -239,3 +239,4 @@ Each was a multiple-choice question, and Claude recommended every chosen option 
 4. **The success test.** Question: "How should v2 decide whether the mode switcher works?". Chosen: **"Adapt v1's criteria"**.
 5. **The approach.** Question: "Which approach should the v2 mode switcher take?". Chosen: **"B: multi-timeframe gate"** (Claude had recommended A, reusing v1's parts).
 6. **The design sections.** The owner approved sections 1–4 of the design as presented: the pieces, the mode rules and thresholds, the uptrend sizing and exits with the transitions, and the testing with the criteria and build order. §3–§9 write them out.
+7. **This written draft.** The owner reviewed it and approved it on 2026-10-06: "its all good". The owner added that the work is agile: if the mode switcher does not work, a later spec will adapt it or try something new. Within this spec, the registered rules stay fixed once it is frozen.
