@@ -8,6 +8,7 @@ which the entry reads differently: "budget" ends it, "depth" waits for the next 
 from __future__ import annotations
 
 import copy
+import random
 from dataclasses import replace
 from decimal import Decimal as D
 from decimal import localcontext
@@ -132,6 +133,109 @@ def test_market_buy_never_spends_more_than_its_cash():
         context.prec = 80
         cash = D("40.036") - D("1E-55")
     assert buy(D(5), cash=cash, risk=D(100), stop=D(50)).fill.quantity == D("0.399")
+
+
+# Prices, fees and cash of many digits, where ``quantity * (price * (1 + fee))`` and the
+# settlement's ``price * quantity + price * quantity * fee`` round apart at precision 50.
+WIDE_PRICE = D("1579.754323194875749118625276")
+WIDE_FEE = D("0.000189555979711471049746507529170")
+WIDE_RULES = replace(RULES, tick_size=D("1E-25"), taker_fee_rate=WIDE_FEE)
+
+
+def wide_quote(price=WIDE_PRICE):
+    return Quote("e1", "BTCUSDT", T0, T0, price - D("0.01"), price, D(1000), D(1000))
+
+
+def old_guard_cost(price, fee, quantity):
+    """What the guard once compared with the spendable cash: quantity times the unit cost."""
+    with localcontext() as context:
+        context.prec = 50
+        return quantity * (price * (D(1) + fee))
+
+
+def settled_cost(price, fee, quantity):
+    """What ``_apply_fill`` debits for a buy."""
+    with localcontext() as context:
+        context.prec = 50
+        notional = price * quantity
+        return notional + notional * fee
+
+
+def test_the_cash_guard_matches_what_the_settlement_debits():
+    # The old guard's cost for 0.323 sits one ulp below the debit, and the account holds
+    # exactly the guard's figure: 0.323 would have left cash at about -1E-47.
+    cash = D("510.35736934867990057002040786864911967454996632773")
+    quantity = D("0.323")
+    assert old_guard_cost(WIDE_PRICE, WIDE_FEE, quantity) <= cash
+    assert cash < settled_cost(WIDE_PRICE, WIDE_FEE, quantity)
+    account = Account.start(cash)
+    result = execution.market_buy(
+        account, wide_quote(), WIDE_RULES, cash_left=D(1000), risk_left=D(10**6), stop=D(1)
+    )
+    assert result.fill.quantity == D("0.322")
+    assert account.cash >= 0
+
+
+def test_a_fill_never_spends_more_than_the_cash_cap_at_the_precision_limit():
+    # The cash cap, not the account, is the binding limit here: what is debited from the
+    # account stays within it, to the last digit.
+    cap = D("510.35736934867990057002040786864911967454996632773")
+    account = Account.start(D(1000))
+    result = execution.market_buy(
+        account, wide_quote(), WIDE_RULES, cash_left=cap, risk_left=D(10**6), stop=D(1)
+    )
+    assert result.fill.quantity == D("0.322")
+    with localcontext() as context:
+        context.prec = 200
+        assert D(1000) - account.cash <= cap
+
+
+def test_the_cash_bound_holds_over_a_sweep_of_wide_inputs():
+    # Each draw hands the buy exactly the old guard's cost for a quantity, the figure the
+    # settlement can exceed by an ulp: cash never goes below zero, and the quantity never
+    # exceeds that quantity.
+    rng = random.Random(7)
+    digits = "0123456789"
+    for _ in range(300):
+        price = D(
+            "1" + "".join(rng.choices(digits, k=3)) + "." + "".join(rng.choices(digits, k=25))
+        )
+        fee = D("0.000" + "".join(rng.choices(digits, k=30)))
+        quantity = D("0.001") * rng.randint(100, 900)
+        cash = old_guard_cost(price, fee, quantity)
+        account = Account.start(cash)
+        result = execution.market_buy(
+            account,
+            wide_quote(price),
+            replace(WIDE_RULES, taker_fee_rate=fee),
+            cash_left=D(1000),
+            risk_left=D(10**6),
+            stop=D(1),
+        )
+        assert result.fill is not None and result.fill.quantity <= quantity
+        assert account.cash >= 0
+
+
+def test_the_depth_bound_never_rounds_up_across_a_lot():
+    # Codex's example: 1 x a 60-digit participation just below 0.1 is below 0.1 exactly,
+    # but the product rounds up to 0.1 at precision 50, a whole lot. The exact bound is
+    # under one lot, so nothing fills; budget and the minimum notional would allow it.
+    rules = replace(RULES, quantity_step=D("0.1"), participation=D("0.0" + "9" * 60))
+    account = Account.start(D(100))
+    before = copy.deepcopy(account)
+    result = execution.market_buy(
+        account, quote(D(1)), rules, cash_left=D(40), risk_left=D(100), stop=D(50)
+    )
+    assert (result.fill, result.refusal) == (None, "depth")
+    assert account == before
+
+
+def test_the_depth_bound_still_fills_a_whole_lot_when_the_product_is_exact():
+    rules = replace(RULES, quantity_step=D("0.1"), participation=D("0.1"))
+    result = execution.market_buy(
+        Account.start(D(100)), quote(D(1)), rules, cash_left=D(40), risk_left=D(100), stop=D(50)
+    )
+    assert result.fill.quantity == D("0.1")
 
 
 def test_the_spec_constants():
