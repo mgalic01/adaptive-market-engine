@@ -45,13 +45,18 @@ Status (v0.8): harness v1 is implemented and verified on two pairs over a develo
 window ([method](docs/BACKTEST_METHOD.md), [report](docs/backtests/verify-2024h1.md)).
 The owner confirmed the acceptance criteria (C1–C6) on 2026-09-24
 ([record](docs/reviews/2026-09-24-owner-decisions-confirmed.md)). Spec v1 was frozen on
-2026-10-05 (owner decision 12,
+2026-10-06 (owner decision 12,
 [record](docs/reviews/2026-10-05-claude-owner-decisions-test-plan.md)), with its §2
 prerequisites and every variant on main. The reserved window is the **last** step, not
 the next one. In order (spec v1 §§4-6):
 1. stage 1 of the development matrix, on the two current windows;
-2. stage 2, on the long windows (2017–2024 scored, 2019–2024 reported only), once
-   their long-window data handling lands;
+2. stage 2, on the long windows (2017–2024 scored, 2019–2024 reported only), once every
+   one of its inputs is in place (§4, §6 "Two stages"):
+   - the long-window data code, shown by Codex and Bob to leave every stage-1 result
+     identical (§6);
+   - Bob's re-fetch of the long windows' archives, and his XRP quote-spread measurement;
+   - dataset specs that match §4's frozen definitions, and manifests that record the
+     re-fetch;
 3. a winner selected deterministically under C1–C6.
 
 The one-use reserved run needs two more things: **C7 settled and passed, or

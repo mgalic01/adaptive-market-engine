@@ -1,11 +1,18 @@
-# Experiment specification v1 (frozen 2026-10-05)
+# Experiment specification v1 (frozen 2026-10-06)
 
-**Status: frozen on 2026-10-05** (owner decision 12,
+**Status: frozen on 2026-10-06** (owner decision 12,
 [record](reviews/2026-10-05-claude-owner-decisions-test-plan.md), "Later decisions").
 - **The freeze condition is met.** This header made the freeze wait until Codex had
-  reviewed the spec and the owner had confirmed the acceptance criteria in §6. Codex has
-  reviewed every amendment, ending with no findings on #168 and #170. The owner
-  confirmed C1–C6 on 2026-09-24 and amended C2 on 2026-10-05.
+  reviewed the spec and the owner had confirmed the acceptance criteria in §6.
+  - **Codex's reviews.** Codex reviewed amendments 2 and 3 on #163, amendment 4 on #168
+    and the later spec edits on #170, each ending with no findings. Amendment 1 (#124)
+    went in while Codex was unavailable, and its review stayed owed (#134). Codex gave
+    it on #171, before the freeze, as the owner required (decision 14).
+  - **The owner's criteria.** The owner confirmed C1–C6 on 2026-09-24 and amended C2
+    on 2026-10-05.
+  - **No open readings.** Every reading the spec had left open to the owner is now the
+    owner's decision (decisions 13 and 15–22). Only whether stage 2 also runs the
+    reported-only sensitivities is left for later, and those decide nothing.
 - **From now on,** a change requires a new version (v2), and results under v1 stay
   reported.
 - **Every variant is implemented on main**, the last of them by #170 (the full stack).
@@ -395,7 +402,10 @@ precondition 2: refused while `exit_state` is `incomplete`, admitted with a `dus
 remainder, which stays held and marked and is drained or settled exactly as after today's
 resume. The refusal text still names the inventory held when the liquidation is
 incomplete. **This reverses a rule PR #122 merged on 2026-09-28 and is a design decision
-made in this amendment, open to the owner's, Bob's and Codex's review.**
+made in this amendment, open to the owner's, Bob's and Codex's review.** *Outcome before
+the freeze:* Bob reviewed it on #124, the owner accepted it on 2026-10-06 (decision 19
+in the [test-plan record](reviews/2026-10-05-claude-owner-decisions-test-plan.md)), and Codex
+reviewed it on #171, as the owner required before the freeze (decision 14).
 
 **The manual resume's risk check (owner decisions D17 and D18, 2026-10-05).**
 - An `exhaustion` halt is refused by name, before any risk check: the active account
@@ -944,7 +954,7 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - A separate count would need V0's five-signal label computed beside V2's on every
     frame.
   - This is Claude's reading of the spec as it stands, from Codex's review of #168,
-    and it is open to the owner.
+    which the owner accepted on 2026-10-06 (decision 21 in the test-plan record).
 - **Runs:** V2 alone, and inside the full stack.
 
 ### The full stack: C+F+G+H+V2, a declared combination (test-plan amendment, owner decision 2026-10-05)
@@ -1145,7 +1155,8 @@ cross-check.
 - **Scope.** This applies to every window. The current windows have no masked hours, so
   nothing changes for them.
 - **Provenance.** This is Claude's reading of the owner's masking rules, from Codex's
-  review of #168, and it is open to the owner.
+  review of #168, which the owner accepted on 2026-10-05 (decision 15 in the
+  [test-plan record](reviews/2026-10-05-claude-owner-decisions-test-plan.md)).
 
 A pair-window that fails any of them, on the post-mask expected set, is **excluded for
 every variant alike** and listed with the reason. Exclusion is per pair-window: a pair can be excluded from one window
@@ -1195,8 +1206,9 @@ Rules 1–5 and 7 apply to every window v1 replays, including the one-time 2025�
 (§7 applies §5's rules there). The owner confirmed this on 2026-10-05: "The masking and
 annualisation rules also bind the one-time 2025–26 run." Rules 6, 8 and 9 name their
 windows. Several details go beyond the owner's answers. Each is Claude's reading and is
-marked where it stands, either as accepted by the owner on 2026-10-05 or as from a
-review of #168 and open to him.
+marked where it stands: either as accepted by the owner on 2026-10-05, or as from a
+review of #168 and since accepted by him (decisions 15, 16, 20 and 22 in the test-plan
+record).
 
 1. **Hour-level masking.** An hour of a traded pair in its evaluation months, where the
    dataset holds both its 1m and its 1h archive, enters the replay only if all of these
@@ -1208,7 +1220,8 @@ review of #168 and open to him.
      holds exactly one bar at each of the hour's 60 expected minute timestamps, and
      none at any other timestamp within the hour. A duplicate, a missing timestamp or
      an extra timestamp masks the hour; rule 2 is the missing-minute case. This
-     condition is Claude's reading, from Codex's review of #168, open to the owner.
+     condition is Claude's reading, from Codex's review of #168, which the owner accepted
+     on 2026-10-06 (decision 20 in the test-plan record).
    - **A match.** Its aggregated minutes match its 1h bar under `drift-tolerance-v1`.
      If the hour holds a repaired row, the match must be exact (`Decimal(0)`, prices
      and volume).
@@ -1234,8 +1247,8 @@ review of #168 and open to him.
      - for traded pairs' warm-up months, it was Claude's reading, which the owner
        accepted on 2026-10-05 ("Repaired hours in hourly-only warm-up months are
        masked");
-     - for an untraded proxy, it is Claude's reading, from Codex's review of #168, open
-       to the owner.
+     - for an untraded proxy, it is Claude's reading, from Codex's review of #168, which
+       the owner accepted on 2026-10-06 (decision 22 in the test-plan record).
 
      Traded pairs are also basket members, but their evaluation months always have both
      archives. Those months follow the conditions above, never this branch.
@@ -1292,7 +1305,8 @@ review of #168 and open to him.
      in a window, XRP's pair-window is excluded there for every variant. Otherwise XRP
      stays.
    - **The statistic.** This is Claude's reading of the owner's accepted rule, from
-     Codex's review of #168, and it is open to the owner. It replaces an earlier
+     Codex's review of #168, which the owner accepted on 2026-10-06 (decision 16 in the
+     test-plan record). It replaces an earlier
      reading, "any 1m low below 2/15 USDT", which was stronger than the owner's rule.
      It is fixed before Bob measures.
      - XRP is excluded from a window if any quote that `bar_quotes` synthesizes from the
@@ -1380,7 +1394,8 @@ lengths weigh fairly:
 - **The tie band.** The selection's 0.25-point band (step 2) applies to the mean of the
   runs' compound-annualised returns, in percentage points.
 - **Provenance of these two rules.** Both are Claude's readings, from the automated
-  review of #168, and both are open to the owner.
+  review of #168, which the owner accepted on 2026-10-06 (decision 17 in the test-plan
+  record).
 - **Raw returns** are still reported beside the annualised ones.
 - **Not annualised:** C6 and R1 keep raw returns, since the owner's rule names only C2
   and the selection.
@@ -1425,7 +1440,8 @@ but it does not change any criterion, any ranking or any acceptance decision.
    to 6 decimals. The **tie set** is every eligible variant with mean return ≥ `M − 0.25`
    (inclusive). *(Since 2026-10-05, the mean is taken over the runs' compound-annualised
    returns, and the 0.25-point band applies to that value. This is Claude's reading,
-   from the automated review of #168, and it is open to the owner.)*
+   from the automated review of #168, which the owner accepted on 2026-10-06, decision 17
+   in the test-plan record.)*
 3. Within the tie set, pick the lowest mean total-equity max drawdown, rounded the same
    way.
 4. If still tied, pick the first in the fixed simplicity order V0, A, B, F, G, H, E, V2,
@@ -1473,7 +1489,8 @@ waived by the owner (see its row).
         empty or zero on every stage-1 run.
     - **Any other new or renamed field breaks the identity.**
     - **Why this is a reading.** It is Claude's reading of the owner's
-      "byte-identical", from the automated review of #168, and it is open to the owner.
+      "byte-identical", from the automated review of #168, which the owner accepted on
+      2026-10-06 (decision 18 in the test-plan record).
       Taken literally, byte-identity could not hold once the mask-report fields exist.
   - **Datasets.** The long windows' definitions are frozen in §4 now. The long-window
     data PR's dataset specs must match them exactly, and the manifests record Bob's
