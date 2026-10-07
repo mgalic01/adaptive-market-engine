@@ -36,7 +36,9 @@ each job (one symbol's mask or check, one pair's replay on one path) as it start
 finishes, as `k/N`, with its own time and the time since the command began, as `H:MM:SS`.
 For example, `progress: [1:12:03] replay 3/8 done BTCUSDT high_first MS in 0:41:10`. With a
 process pool (`--jobs` above 1) every job of a phase starts at once and its time runs from
-its submission. The lines are never part of the results: stdout, `results.json` and
+its submission. A job or a phase that raises is reported as `failed ... after H:MM:SS`
+before the exception goes on as before, and a phase's `done` line follows its last job's.
+The lines are never part of the results: stdout, `results.json` and
 `summary.md` are exactly what they would be without them, and the clock behind them is read
 nowhere else. Filter a log with `grep '^progress: '`.
 

@@ -12,6 +12,7 @@ import re
 import sys
 import tempfile
 import threading
+import traceback
 import unittest
 from concurrent.futures import Future
 from pathlib import Path
@@ -112,10 +113,24 @@ class ProgressTests(unittest.TestCase):
             pass
         self.assertEqual("replay start (8 jobs)", texts(self.err.getvalue())[0])
 
-    def test_a_phase_that_raises_does_not_claim_to_be_done(self):
-        with self.assertRaises(ZeroDivisionError), Progress(self.clock).phase("replay", 1):
+    def test_a_phase_that_raises_says_so_and_does_not_claim_to_be_done(self):
+        progress = Progress(self.clock)
+        with self.assertRaises(ZeroDivisionError), progress.phase("replay", 1):
+            self.clock.advance(125)
             1 / 0  # noqa: B018
-        self.assertEqual(["replay start (1 job)"], texts(self.err.getvalue()))
+        self.assertEqual(
+            [
+                "progress: [0:00:00] replay start (1 job)",
+                "progress: [0:02:05] replay failed after 0:02:05",
+            ],
+            self.err.getvalue().splitlines(),
+        )
+
+    def test_a_phase_that_raises_raises_the_same_exception(self):
+        error = RuntimeError("worker died")
+        with self.assertRaises(RuntimeError) as caught, Progress(self.clock).phase("replay"):
+            raise error
+        self.assertIs(error, caught.exception)
 
     def test_a_job_is_numbered_by_submission_and_again_by_completion(self):
         # Three jobs submitted together finish in the order 2, 3, 1: the done lines count
@@ -163,6 +178,151 @@ class ProgressTests(unittest.TestCase):
             pool.futures[0].cancel()
         self.assertIn("replay 1/1 failed gone after", self.err.getvalue())
 
+    def test_an_in_process_job_that_raises_is_reported_failed_and_the_exception_propagates(self):
+        # The in-process executor runs the job inside submit and raises from it, so no
+        # future exists for a callback: the stage reports the failure itself, then lets the
+        # exception go on unchanged, as it did before there were progress lines.
+        error = RuntimeError("the replay broke")
+
+        def broken():
+            self.clock.advance(41 * 60 + 10)
+            raise error
+
+        progress = Progress(self.clock)
+        with self.assertRaises(RuntimeError) as caught, progress.phase("replay", 2) as stage:
+            stage.submit(cli.InProcess(), "BTCUSDT high_first MS", lambda: None)
+            stage.submit(cli.InProcess(), "BTCUSDT low_first MS", broken)
+        self.assertIs(error, caught.exception)
+        self.assertEqual(
+            [
+                "progress: [0:00:00] replay start (2 jobs)",
+                "progress: [0:00:00] replay 1/2 start BTCUSDT high_first MS",
+                "progress: [0:00:00] replay 1/2 done BTCUSDT high_first MS in 0:00:00",
+                "progress: [0:00:00] replay 2/2 start BTCUSDT low_first MS",
+                "progress: [0:41:10] replay 2/2 failed BTCUSDT low_first MS after 0:41:10",
+                "progress: [0:41:10] replay failed after 0:41:10",
+            ],
+            self.err.getvalue().splitlines(),
+        )
+
+    def test_the_traceback_of_a_failed_in_process_job_ends_in_the_job(self):
+        def broken():
+            raise ValueError("inside the job")
+
+        try:
+            with Progress(self.clock).phase("replay", 1) as stage:
+                stage.submit(cli.InProcess(), "a", broken)
+        except ValueError as error:  # assertRaises would strip the traceback
+            frames = [f.name for f in traceback.extract_tb(error.__traceback__)]
+        else:
+            self.fail("the job's exception was swallowed")
+        self.assertEqual("broken", frames[-1])
+        self.assertEqual(["submit", "submit", "broken"], frames[-3:])
+
+    def test_an_interrupted_in_process_job_is_reported_and_interrupted_as_before(self):
+        def interrupted():
+            raise KeyboardInterrupt
+
+        with (
+            self.assertRaises(KeyboardInterrupt),
+            Progress(self.clock).phase("replay", 1) as stage,
+        ):
+            stage.submit(cli.InProcess(), "a", interrupted)
+        self.assertIn("replay 1/1 failed a after 0:00:00", self.err.getvalue())
+
+    def test_the_phase_ends_after_the_last_done_line_when_the_callbacks_trail_the_result(self):
+        # Future.set_result wakes the threads waiting in result() before it runs the done
+        # callbacks, so the caller can leave the phase before the last job's line is
+        # printed. Here the thread that finishes the future is held in a callback that runs
+        # ahead of the stage's, after result() has been released: the phase may end only
+        # once the stage's callback has printed.
+        entered, go, submitted = threading.Event(), threading.Event(), threading.Event()
+        pool = _TrailingPool(entered, go)
+
+        def run():
+            with Progress(self.clock).phase("replay", 1) as stage:
+                future = stage.submit(pool, "one", lambda: None)
+                submitted.set()
+                future.result()
+
+        runner = threading.Thread(target=run)
+        runner.start()
+        self.assertTrue(submitted.wait(10))
+        finisher = threading.Thread(target=pool.futures[0].set_result, args=(1,))
+        finisher.start()
+        self.assertTrue(entered.wait(10))  # result() is released; the callbacks have not run
+        runner.join(0.3)
+        self.assertTrue(runner.is_alive(), "the phase ended before the job's done line")
+        self.assertNotIn("replay done", self.err.getvalue())
+        go.set()
+        finisher.join(10)
+        runner.join(10)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(
+            [
+                "replay start (1 job)",
+                "replay 1/1 start one",
+                "replay 1/1 done one in T",
+                "replay done in T",
+            ],
+            texts(self.err.getvalue()),
+        )
+
+    def test_a_cancelled_or_failed_job_is_reported_so_the_phase_still_ends(self):
+        pool = _Pool(hold=True)
+        finished = threading.Event()
+
+        def run():
+            with Progress(self.clock).phase("replay", 3) as stage:
+                for label in ("good", "bad", "gone"):
+                    stage.submit(pool, label, lambda: None)
+                pool.finish(0)
+                pool.fail(1, RuntimeError("worker died"))
+                pool.futures[2].cancel()
+            finished.set()
+
+        runner = threading.Thread(target=run)
+        runner.start()
+        self.assertTrue(finished.wait(10), "the phase never ended")
+        runner.join(10)
+        self.assertEqual(
+            [
+                "replay start (3 jobs)",
+                "replay 1/3 start good",
+                "replay 2/3 start bad",
+                "replay 3/3 start gone",
+                "replay 1/3 done good in T",
+                "replay 2/3 failed bad after T",
+                "replay 3/3 failed gone after T",
+                "replay done in T",
+            ],
+            texts(self.err.getvalue()),
+        )
+
+    def test_a_phase_that_raises_does_not_wait_for_jobs_that_have_not_finished(self):
+        # On the exception path the phase reports its failure and re-raises at once; a job
+        # still running reports itself when it ends, if it ever does.
+        pool = _Pool(hold=True)
+        raised = []
+
+        def run():
+            try:
+                with Progress(self.clock).phase("replay", 1) as stage:
+                    stage.submit(pool, "still running", lambda: None)
+                    raise RuntimeError("another job failed")
+            except RuntimeError as error:
+                raised.append(error)
+
+        runner = threading.Thread(target=run)
+        runner.start()
+        runner.join(10)
+        self.assertFalse(runner.is_alive(), "the phase waited for a job that never ended")
+        self.assertEqual(1, len(raised))
+        self.assertEqual(
+            ["replay start (1 job)", "replay 1/1 start still running", "replay failed after T"],
+            texts(self.err.getvalue()),
+        )
+
     def test_lines_from_two_threads_never_interleave(self):
         progress = Progress(self.clock)
 
@@ -208,6 +368,24 @@ class ProgressTests(unittest.TestCase):
             path.name for path in package.glob("*.py") if "monotonic" in path.read_text("utf-8")
         }
         self.assertEqual({"progress.py"}, readers)
+
+
+class _TrailingPool:
+    """A pool whose futures run a hold ahead of the stage's done callback, as the thread that
+    finishes a real future may be held after it has woken the threads waiting in result()."""
+
+    def __init__(self, entered, go):
+        self.entered, self.go, self.futures = entered, go, []
+
+    def submit(self, fn, /, *args):
+        future = Future()
+        future.add_done_callback(self.hold)  # added first, so it runs first
+        self.futures.append(future)
+        return future
+
+    def hold(self, future):
+        self.entered.set()
+        self.go.wait(10)
 
 
 class _Pool:
@@ -329,6 +507,39 @@ class FakeCliTests(unittest.TestCase):
             ],
             texts(stderr),
         )
+
+    def test_a_replay_that_raises_in_process_is_reported_and_the_cli_raises_as_before(self):
+        calls = []
+
+        def breaking_run(spec, config, data_dir, symbol, mode, gated, fees=None, policy=None, **kw):
+            calls.append((symbol, mode, gated))
+            if len(calls) == 3:
+                raise RuntimeError("the replay broke")
+            return base.good_result(symbol, mode, gated)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        argv = ["run", "--spec", SPEC, "--out", self.temp.name, "--jobs", "1"]
+        with (
+            patch.object(cli, "run_job", breaking_run),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+            self.assertRaisesRegex(RuntimeError, "the replay broke"),
+        ):
+            cli.main(argv)
+        labels = self.replay_labels()
+        found = texts(stderr.getvalue())
+        self.assertEqual(
+            [
+                "replay 2/8 done " + labels[1] + " in T",
+                "replay 3/8 start " + labels[2],
+                "replay 3/8 failed " + labels[2] + " after T",
+                "replay failed after T",
+            ],
+            found[found.index("replay 2/8 done " + labels[1] + " in T") :],
+        )
+        self.assertEqual(3, len(calls))  # the run stopped at the failure, as it always did
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual([], list(Path(self.temp.name).rglob("results.json")))
 
     def test_a_pool_reports_the_same_lines(self):
         _, _, in_process = self.run_cli("run", out=str(Path(self.temp.name) / "a"))
