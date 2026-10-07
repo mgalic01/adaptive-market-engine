@@ -7,9 +7,11 @@ approving it) or the owner's go. Bob reports in `docs/reviews/YYYY-MM-DD-bob-<to
 **Running a task on GitHub:** Bob starts **automatically when a PR that adds a new task
 file is merged into `main`**, so a task PR is merged only after review. To run a task
 again, or one merged before automation existed, the owner comments
-`/bob-run docs/tasks/<file>.md` on any issue or PR, or uses "Run workflow" on
-**IBM Bob task run** in the Actions tab. Bob runs on a Linux machine, and the report
-arrives as a PR ([rules](../AGENT_HANDOFF.md)).
+`/bob-run docs/tasks/<file>.md <full commit SHA>` on any issue or PR, or uses "Run
+workflow" on **IBM Bob task run** in the Actions tab with the task path and that SHA.
+The SHA is a commit `main` has been at; Bob runs the task as it is in that commit (for
+an automatic run, the merge commit), not as `main` is when the run starts. Bob runs on
+a Linux machine, and the report arrives as a PR ([rules](../AGENT_HANDOFF.md)).
 
 | Task | Status |
 | --- | --- |
