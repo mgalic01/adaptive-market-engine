@@ -612,16 +612,62 @@ def test_stop_exit_then_24h_reentry_pause():
     assert report["mode_decision"] == "uptrend" and len(bought(report)) == 1
 
 
-def test_stop_before_any_fill_ends_the_entry_and_starts_the_pause():
+def test_stop_before_any_fill_ends_the_entry_and_starts_no_pause():
+    # Owner ruling 2026-10-07 ("Only if it bought something"): an entry stopped out before it
+    # bought anything ends as abandoned, and starts no 24-hour re-entry pause.
     run = Run()
     run.step(frame(at(1, 10), ask="100", ask_size="0.4"))  # too thin to buy
     assert run.account.uptrend is not None and run.account.uptrend.quantity == 0
     report = run.step(frame(at(1, 10, 1), bid="96.99"))
     assert (report["uptrend_exit"], report.get("uptrend_abandoned")) == ("stop", True)
     assert "uptrend_ended" not in report and run.account.uptrend is None
-    assert run.account.uptrend_stopped_ms == at(1, 10, 1)
+    assert run.account.uptrend_stopped_ms is None
     report = run.step(frame(at(1, 11), ask="100"))
+    assert report["mode_decision"] == "uptrend" and len(bought(report)) == 1
+
+
+def test_an_empty_entry_stopped_at_a_daily_close_leaves_no_pause():
+    """Owner ruling 2026-10-07 ("Only if it bought something"): a stop-out of an entry that
+    bought nothing starts no re-entry pause, so the next decision that qualifies enters."""
+    run = Run()
+    points = days((100, 1), (110, 1))
+    run.step(frame(at(1, 10), ask="100", ask_size="0.4", points=points))  # too thin to buy
+    position = run.account.uptrend
+    assert position is not None and (position.phase, position.quantity) == ("entering", 0)
+    # Day 1's close of 110 trails the stop to 110 - 3 = 107. The first quote after it, at 105,
+    # is above the entry's stop of 97 but below the trailed one.
+    report = run.step(frame(at(2, 0, 1), bid="105", points=points))
+    assert (position.stop, report["uptrend_exit"], report.get("uptrend_abandoned")) == (
+        D(107),
+        "stop",
+        True,
+    )
+    assert "uptrend_ended" not in report and run.account.uptrend is None
+    assert run.account.uptrend_stopped_ms is None
+    # The next hour's decision enters, an hour after the stop, above the new stop of 107.
+    report = run.step(frame(at(2, 1), ask="112", points=points))
+    assert report["mode_decision"] == "uptrend" and len(bought(report)) == 1
+    assert report["mode_reasons"]["uptrend_failures"] == []
+
+
+def test_a_stop_out_after_any_fill_still_pauses_24_hours():
+    """Owner ruling 2026-10-07: a stop-out of a position that bought anything, however little,
+    starts the 24-hour re-entry pause exactly as before, and exactly 24 hours on it may enter."""
+    run = Run()
+    points = days((100, 1), (100, 1))
+    # 10% of an ask size of 0.6 buys 0.06, 6 USDT: one fill, and the entry is still buying.
+    report = run.step(frame(at(1, 10), ask="100", ask_size="0.6", points=points))
+    position = run.account.uptrend
+    assert bought(report) == [D("0.06")] and position is not None
+    assert position.phase == "entering"
+    report = run.step(frame(at(1, 12), bid="96.99", points=points))
+    assert (report["uptrend_exit"], report["uptrend_ended"]) == ("stop", True)
+    assert run.account.uptrend_stopped_ms == at(1, 12)
+    report = run.step(frame(at(2, 11, 59, 59), ask="100", points=points))  # a second short
     assert (report["mode_decision"], bought(report)) == ("cash", [])
+    assert report["mode_reasons"]["uptrend_failures"] == ["reentry_pause"]
+    report = run.step(frame(at(2, 12), ask="100", points=points))  # exactly 24 hours: it may
+    assert report["mode_decision"] == "uptrend" and len(bought(report)) == 1
 
 
 def test_stop_pause_runs_from_the_first_trigger():

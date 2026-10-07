@@ -268,6 +268,10 @@ long position with a trailing stop) or Cash.
 - **Perception** (spec v2 §3): built once from the pair's hourly and daily bars that the run
   already loads, after the mask. Each minute reads one snapshot, at its own start, and its
   four quotes share it, since they see the same completed bars.
+- **The re-entry pause** (spec v2 §5): a trailing-stop exit starts the 24-hour pause only if
+  the position bought something, dust included. An entry stopped before it bought anything
+  ends as abandoned and starts no pause, so the next decision that qualifies may enter
+  (owner ruling, 2026-10-07).
 - **D:** spec v2's scorer reads D from the MS run's results, so `--trend-benchmark` goes on
   the MS runs only, one per window.
 
@@ -316,7 +320,7 @@ number.
   on its own, so one decision can fail several.
   - Uptrend: `h4_or_d1_unavailable`, `d1_rsi_or_atr_missing`, `d1_not_up`, `h4_not_up`,
     `d1_rsi_overbought` (daily RSI ≥ 75), `input_quality`, `regime_bear_or_stress` and
-    `reentry_pause`.
+    `reentry_pause` (within 24 hours of a stop-out of a position that bought something).
   - Grid: `h4_or_d1_unavailable`, `h1_unavailable` (any 1h input missing),
     `regime_not_range`, `range_decisions_below_4`, `h4_not_range_or_unclear`,
     `d1_not_up_range_or_unclear`, `h1_rsi_outside_35_65`, `h1_adx_20_or_above` and

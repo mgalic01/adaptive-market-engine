@@ -1,9 +1,9 @@
 """The spec v2 §4 mode selector: which mode a pair may enter at an hourly decision.
 
 ``select_mode`` is a pure function of its arguments. It keeps no state and reads no clock: the
-caller counts the consecutive RANGE decisions and remembers when the last trailing-stop exit
-triggered. Entering is decided here. Staying (an uptrend position, a grid winding down) is not, and
-it belongs to the engines (§4, "Entering versus staying").
+caller counts the consecutive RANGE decisions and remembers when the last trailing-stop exit of a
+position that bought something triggered. Entering is decided here. Staying (an uptrend position,
+a grid winding down) is not, and it belongs to the engines (§4, "Entering versus staying").
 
 ``explain_mode`` reports why: the same decision with every Uptrend and Grid condition that does not
 hold, as fixed codes. It is for the report only (spec v2 §8, "Reported, not gating: Behaviour"),
@@ -24,7 +24,7 @@ GRID_RSI_HIGH = Decimal(65)
 ADX_RANGE = Decimal(20)  # Grid needs the 1h ADX(14) strictly below this
 UPTREND_RSI_MAX = Decimal(75)  # Uptrend needs the daily RSI(14) strictly below this
 RANGE_DECISIONS = 4  # consecutive hourly RANGE decisions, the current one included
-REENTRY_PAUSE_MS = 86_400_000  # 24 h after a trailing-stop exit triggers
+REENTRY_PAUSE_MS = 86_400_000  # 24 h after a trailing-stop exit of an entry that bought something
 
 
 class Mode(StrEnum):
