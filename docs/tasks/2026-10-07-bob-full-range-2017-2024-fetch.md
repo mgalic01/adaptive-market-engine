@@ -117,8 +117,8 @@ request, that the code and inputs are the ones reviewed here:
   verify and mask-report read. Step 2 copies the block below out of this file:
 
 ```text
-452d7214119fa0ac883c960922e53d63439e26839a560202f0144863c241b022  scripts/fetch_full_range.py
-2aed6594ad18aa42eea473cf9341862963c53f1fb409bf0d7a3574380db7c962  tests/test_fetch_full_range.py
+83f8fc3f22f86461fcaca21ddf921610be31b8c8b3bce8930a7740bc24d5978e  scripts/fetch_full_range.py
+744731426e39e5c28df55bf9a307dbd7bf366a1da51be142eca1946f3d82fcf4  tests/test_fetch_full_range.py
 f4216524de089988a15fbddd72a9625a737f41be5a8dcb4bed6a36ccf8e0addb  config/datasets/full-range-2017-2024.toml
 8dad70041f4423706b0eeba272595fb24af74cb83713b6316abb68e5a40dafcb  config/datasets/full-range-2019-2024.toml
 349ce104be44d28d918b22dc99dd611f56d174011b50cb144393a97940c72374  config/datasets/long-bull-bear-2022.manifest.json
@@ -127,7 +127,12 @@ f4216524de089988a15fbddd72a9625a737f41be5a8dcb4bed6a36ccf8e0addb  config/dataset
 
 If the tree hash differs, `git status` lists a change under `src`, or any `sha256sum` line
 says `FAILED`, stop before Step 3 and report by the pin-failure path in "Stop conditions",
-which runs no script. **Any change under `src` on `main` before
+which runs no script.
+
+This file cannot pin itself, and the runner reads it as `main` has it when the job starts.
+So the pinned script checks it: Step 4's `start` reads this file's text, all of it but the
+pin block above, and starts nothing unless its SHA-256 is the one the reviewed script
+holds. It then prints `NOT STARTED: the task file ... is not the reviewed text`, a stop. **Any change under `src` on `main` before
 this file merges changes the tree hash, so the pins must be updated in its PR before the
 owner's go.**
 
@@ -172,7 +177,7 @@ success is a stop (see "Stop conditions").
    python scripts/fetch_full_range.py tail data/full-range-tests.log
    ```
 
-   The last line must report `25 passed`. Add no `-q`: `pyproject.toml` already passes
+   The last line must report `26 passed`. Add no `-q`: `pyproject.toml` already passes
    one, and a second one hides that line.
 4. The run: about 3,600 requests to data.binance.vision, `verify` on both windows and
    `mask-report` on the scored one. Expect about an hour; the job allows 240 minutes.
@@ -365,7 +370,7 @@ success is a stop (see "Stop conditions").
 ## Validity checks (all must hold for a valid run)
 
 1. Step 2: the pinned tree hash, an empty `git status`, `6 pins` and six `OK` lines.
-2. Step 3: `25 passed`.
+2. Step 3: `26 passed`.
 3. Step 4: `wait` prints `DONE exit=0`, and the run log's last line is
    `RESULT 0 problem(s)`, which the script prints only when all of these hold:
    - `FUNDING 60 of 60 months ok`;

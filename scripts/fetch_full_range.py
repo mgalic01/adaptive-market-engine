@@ -165,6 +165,12 @@ REPORTED_SPEC = DATASETS / "full-range-2019-2024.toml"
 # The committed exchange filters of BTCUSDT, ETHUSDT and XRPUSDT, with their fetched_at.
 FILTERS = DATASETS / "long-bull-bear-2022.manifest.json"
 CONFIG = ROOT / "config" / "default.toml"
+TASK = ROOT / "docs" / "tasks" / "2026-10-07-bob-full-range-2017-2024-fetch.md"
+# The reviewed task file's text, read as task_digest reads it. Bob's workflow checks out main
+# as it is when the job starts, so a later edit to the task would otherwise run unnoticed
+# (Codex's review of #193); start refuses any other text. The pin block, which holds this
+# script's own SHA-256, is left out of the digest, so the two pins do not refer in a circle.
+TASK_SHA256 = "20141d0eb0a4bbd5e6deb66dc1970e4b00a35c24bf8dbe790fd11f4624715660"
 FUNDING_SYMBOL = "BTCUSDT"  # variant G reads it for every pair (spec v1 section 3 G)
 ATTEMPTS = 4
 # The bytes of run logs and digest the report takes as text; above it, append-results
@@ -818,9 +824,28 @@ def _detached() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
+def task_digest(path: Path) -> str:
+    """The SHA-256 of the task file with LF line ends and the lines of its pin block (the
+    ``text`` block under "## Pinned inputs") left out."""
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    head, rest = text.split("## Pinned inputs", 1)
+    before, block = rest.split(FENCE + "text\n", 1)
+    after = block.split(FENCE, 1)[1]
+    kept = head + "## Pinned inputs" + before + FENCE + "text\n" + FENCE + after
+    return hashlib.sha256(kept.encode("utf-8")).hexdigest()
+
+
 def start(arguments: list[str]) -> int:
-    """Launch the run (the same options as a foreground run) as a detached child, once."""
+    """Launch the run (the same options as a foreground run) as a detached child, once, and
+    only from the reviewed task text (``TASK_SHA256``)."""
     args = _parser().parse_args(arguments)  # a mistyped option fails here, not in the child
+    digest = task_digest(TASK)
+    if digest != TASK_SHA256:
+        print(
+            f"NOT STARTED: the task file {TASK.name} is not the reviewed text (its SHA-256 "
+            f"without the pin block is {digest}); report it, and start nothing"
+        )
+        return 1
     data_dir: Path = args.data_dir
     files = run_files(data_dir)
     if files.exit.exists():

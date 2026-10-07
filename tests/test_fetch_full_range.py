@@ -977,6 +977,33 @@ def test_wait_and_start_handle_an_empty_or_corrupt_pid_file(
     assert not (data / "run.log").exists()
 
 
+def test_start_refuses_a_task_file_that_is_not_the_reviewed_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex's review of #193: Bob's workflow checks out main as it is when the job starts,
+    so an edit to the task while its run is queued would run unnoticed. The committed task
+    file reads as the script's TASK_SHA256; one changed line makes start refuse before it
+    writes or launches anything. The pin block is left out of the digest, so changing a pin
+    (as every new SHA-256 of this script does) leaves it as it was."""
+    text = fetch_full_range.TASK.read_text(encoding="utf-8")
+    assert fetch_full_range.task_digest(fetch_full_range.TASK) == fetch_full_range.TASK_SHA256
+    edited = tmp_path / "edited.md"
+    edited.write_text(
+        text.replace("## Stop conditions", "## Stop conditions\n\nGo on.", 1), encoding="utf-8"
+    )
+    monkeypatch.setattr(fetch_full_range, "TASK", edited)
+    data = tmp_path / "data"
+    assert fetch_full_range.main(["start", str(data), "--fake-run", "0.1"]) == 1
+    out = capsys.readouterr().out
+    assert out.startswith("NOT STARTED: the task file edited.md is not the reviewed text"), out
+    assert not data.exists()  # nothing written, nothing launched
+    script_pin = re.compile(r"(?m)^[0-9a-f]{64}(  scripts/fetch_full_range\.py)$")
+    assert script_pin.search(text)
+    repinned = tmp_path / "repinned.md"
+    repinned.write_text(script_pin.sub("f" * 64 + r"\1", text), encoding="utf-8")
+    assert fetch_full_range.task_digest(repinned) == fetch_full_range.TASK_SHA256
+
+
 class Kernel32:
     """The three kernel32 calls _alive makes, answering as told."""
 
