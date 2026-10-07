@@ -411,6 +411,13 @@ def cross_check_job(
     ``daily_days_skipped_for_masks``, when non-zero; no mask enters it. With None, the
     record is today's.
 
+    Whatever the mask, the daily check also excuses the volume, and only the volume, of a
+    documented Binance defect day (``DOCUMENTED_DAILY_DEFECTS``, owner decision 14) whose
+    prices agree with its hours, and counts it in ``daily_days_volume_excused``; and it
+    names any mismatched day in ``daily_mismatched_days``. Each key is written only when
+    non-zero or non-empty, so a window whose hourly span holds neither, as every stage-1
+    window, keeps today's record.
+
     XRPUSDT, where the spec trades it, also takes the actual-quotes test (spec v1 §5 rule 8):
     over the minutes the replay plays, the evaluation months after masking, the number of
     synthesized quotes whose spread exceeds the config's ``maximum_spread_pct``. The record

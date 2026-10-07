@@ -392,8 +392,59 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
       `_hours_incomplete`). Prices must match exactly; volume within the same 0.1%
       tolerance, reported as `daily_days_volume_drift`. Days before the hourly window
       are checked for presence, never for equality.
-  - Any non-zero count of those fields fails its check. `hours_volume_drift` and
-    `daily_days_volume_drift` are reported but are not among them.
+    - when a day mismatches, the record also names it: `daily_mismatched_days` lists
+      every mismatched day as `YYYY-MM-DD`, in date order. The key is written only when
+      the list is not empty, so a passing record keeps its layout.
+    - **A documented defect day has its volume excused, and only its volume.** The day
+      goes through the completeness check and the official-bar lookup like any other,
+      and counts in `daily_days_compared`. Its open, high, low and close are then
+      compared with its 24 hours' exactly, for every symbol and whatever
+      `--strict-volume` says:
+      - if they are equal, the day counts in `daily_days_volume_excused`, whatever its
+        volume, and as neither a mismatch nor drift;
+      - if any price differs, the day is a mismatch, as on any other day: it counts in
+        `daily_days_mismatched` and is named in `daily_mismatched_days`, and its pair
+        fails;
+      - missing hours make it incomplete, and a missing or duplicated 1d bar fails, as
+        on any other day. A listed day that holds a masked hour takes the masked path
+        (rule 3) first, unchanged.
+
+      `daily_days_volume_excused` is written only when non-zero, and it is not an
+      integrity failure field. An excused day counts as compared because its prices
+      were compared, and so that every mismatched day, the listed one included, is
+      among the compared days.
+      - The list is `DOCUMENTED_DAILY_DEFECTS` in `backtest/replay.py`. It holds one day,
+        **2021-01-21**. On that day the official 1d bars have about 2% less volume than
+        the sum of their 24 official 1h bars: BTCUSDT 2.4% (131803.182926 against
+        135004.076658) and DOGEUSDT 1.7%, with identical prices for both. Bob's defect
+        calendar documented this on 2026-09-26 ([its "Day-Level Defects"
+        section](reviews/2026-09-26-bob-hourly-defect-calendar.md)), before any
+        2019-2024 result existed. It lists the day as a mismatch for each of its 10
+        pairs, but shows the figures only for those two.
+      - In `full-range-2017-2024`, `verify` reported one mismatched day under the 0.1%
+        tolerance for each of BTCUSDT, ETHUSDT and XRPUSDT. XRPUSDT is excluded by its
+        quote test anyway (rule 8), so no pair would have been left. `verify` reported
+        counts only; the record now names the days (`daily_mismatched_days`), so the
+        next `verify` shows whether 2021-01-21 was the only one.
+      - The owner granted the exception on 2026-10-07, on record, to spec v1 §5 rule 3
+        and P3 ([decision
+        14](reviews/2026-10-07-claude-v2-decisions-after-first-read.md)). The grant
+        rests on the prices agreeing exactly and on the mode switcher never reading
+        daily volume (it does read daily prices). The check is narrower than the
+        option's words, which skipped the day: it still compares the prices, so every
+        `verify` checks the grant's premise for each pair. No strategy rule changes,
+        and spec v1 and v2 stay frozen.
+      - The day is in the hourly window of `full-range-2017-2024` (from 2018-06) and of
+        `full-range-2019-2024` (from 2019-01), so the exception reaches both, and also
+        spec v1's stage-2 scoring of `full-range-2017-2024`. That changes nothing in
+        practice: every v1 variant failed stage 1, so v1's stage 2 decides nothing
+        ([stage 1's record](backtests/2026-10-06-spec-v1-stage-1.md)).
+      - Stage 1's windows hold the day in their daily window but not in their hourly
+        window, so it is never compared there, and their records carry neither new key.
+  - Any non-zero count of those fields fails its check. `hours_volume_drift`,
+    `daily_days_volume_drift`, `daily_days_skipped_for_masks` and
+    `daily_days_volume_excused` are reported but are not among them, and
+    `daily_mismatched_days` only names what `daily_days_mismatched` counts.
   - A failed check of a traded pair's own data excludes that pair-window only (spec v1
     §5). The pair is not replayed and has no rows. Its failing check stays in
     `hourly_cross_checks`, `excluded_pairs` lists it with its failures, and the other
@@ -634,6 +685,13 @@ decimals (below).
     check;
   - each run's mask report (`masked_hours`, `days_skipped_for_masks` and
     `fills_after_masked_span`) is in its row and scored by no criterion.
+  - the daily check's volume excuse for a documented defect day (owner decision 14,
+    under "Verification in every run") reaches the scorer only as
+    `daily_days_volume_excused` in the pair's cross-check record, a count that
+    excludes nothing. A price difference that day is a mismatch, which excludes the
+    pair as any failed check does. `daily_mismatched_days` only names the days a
+    failed check counts. Both scorers read neither key, so neither changes a
+    comparison mask.
 
   A defect that masking does not cover, such as a missing or duplicated daily bar or a
   short warm-up, still fails its check and excludes the pair-window, as in stage 1.
