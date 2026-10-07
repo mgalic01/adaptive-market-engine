@@ -29,6 +29,19 @@ API. `verify` and `run` are offline. `run` refuses to start unless every local f
 matches the committed manifest's SHA-256. Results go to `data/backtests/<dataset>/<UTC
 time>/` (`results.json` and `summary.md`), which is not committed.
 
+`run`, `verify` and `mask-report` print progress lines on stderr, flushed as they happen and
+prefixed `progress: `, so a long run shows what stage it is at: each phase as it starts and
+ends (manifest verification, the hour masks, the integrity cross-checks, the replay), and
+each job (one symbol's mask or check, one pair's replay on one path) as it starts and as it
+finishes, as `k/N`, with its own time and the time since the command began, as `H:MM:SS`.
+For example, `progress: [1:12:03] replay 3/8 done BTCUSDT high_first MS in 0:41:10`. With a
+process pool (`--jobs` above 1) every job of a phase starts at once and its time runs from
+its submission. A job or a phase that raises is reported as `failed ... after H:MM:SS`
+before the exception goes on as before, and a phase's `done` line follows its last job's.
+The lines are never part of the results: stdout, `results.json` and
+`summary.md` are exactly what they would be without them, and the clock behind them is read
+nowhere else. Filter a log with `grep '^progress: '`.
+
 ## Data
 
 - **Source:** Binance monthly spot kline archives (`data/spot/monthly/klines/<SYMBOL>/<1m|1h|1d>/`).

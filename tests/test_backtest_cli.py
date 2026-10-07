@@ -62,11 +62,23 @@ CLEAN = {
 
 
 class Done:
+    """A finished future: the CLI reads its result, and reports the job done through the
+    callback it adds, which a finished future calls at once."""
+
     def __init__(self, value):
         self.value = value
 
     def result(self):
         return self.value
+
+    def add_done_callback(self, callback):
+        callback(self)
+
+    def cancelled(self):
+        return False
+
+    def exception(self):
+        return None
 
 
 class Inline:
