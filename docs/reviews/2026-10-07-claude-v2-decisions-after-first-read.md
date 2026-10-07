@@ -3,14 +3,14 @@
 Index: **Owner decisions, 2026-10-07.** After the mode switcher lost money in all 8 sanity-window runs, the owner chose to continue to the scored 2019-2024 window with reporting-only decision-reason instrumentation. Three cases are settled without changing a registered rule: a restart decides at the next valid frame; an empty entry's stop-out keeps starting the pause, as spec v2 §5 says; a window whose market proxy is masked whole fails closed. Decision 14 is an exception on record to a frozen data rule: the daily check skips 2021-01-21, a documented Binance volume defect, and counts the skip.
 
 - **Date and author:** 2026-10-07, written by Claude (session `b9db01ca`).
-- **Owner:** gave the choices below in Claude's session on 2026-10-07: decisions 10 to 13 between about 08:00 and 10:00 UTC, and decision 14 later that day, after Bob's fetch of `full-range-2017-2024`.
+- **Owner:** gave the choices below in Claude's session on 2026-10-07: decisions 10 to 13 between about 08:00 and 10:00 UTC, and decision 14 at about 11:50 UTC, after Bob's fetch of `full-range-2017-2024`.
 - **Why a separate record:** [spec v2](../EXPERIMENT_SPEC_V2.md) is frozen, and its status block says that a change requires a new version. Its §11 lists decisions 1 to 9, given up to the freeze. These five come after the freeze, so they are recorded here, numbered on from §11 for reference. None of decisions 10 to 13 changes the spec's text or a registered rule. Decision 14 is an exception on record to a frozen data rule of spec v1, and changes neither spec's text.
 - **Context:** the first read ran the mode switcher on spec v2's two sanity windows, `practice-2022` and `verify-2024h1`, at main `552c32c`. It lost money in all 8 runs, so C2 and C6 failed there, and in BTCUSDT's 2024H1 it stayed out of a 61% rise. These windows are reported only (spec v2 §8), so the read decides nothing. The formal verdict comes from `full-range-2017-2024`.
 
 ## The decisions
 
 10. **Continue to the scored window, with decision reasons recorded.** Claude offered three options: finish the pre-registered 2019-2024 test, add decision-reason instrumentation first, or stop v2. The owner chose: **"go merge 193 once reviews are clear, add decision-reason instrumentation first"**.
-    - Merging #193 started Bob's fetch of `full-range-2017-2024`. Its first run lost its report (#195), and the fix (#196) is merged; the re-run waits on the owner's `/bob-run`.
+    - Merging #193 started Bob's fetch of `full-range-2017-2024`. Its first run lost its report (#195), and the fix (#196) is merged; the owner started the re-run with `/bob-run` (run 37605943947), and it completed (#198).
     - The instrumentation is reporting only. Each mode-switcher row gains `modes.decisions`, which holds:
       - the decisions by mode;
       - every condition that kept Uptrend or Grid out at each hourly decision;
