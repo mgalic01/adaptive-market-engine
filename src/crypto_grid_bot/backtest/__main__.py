@@ -231,10 +231,13 @@ def masked_ranges(months: Sequence[MonthMask]) -> list[dict[str, str]]:
 
 
 def comparison_mask(masks: Sequence[SymbolMask]) -> dict[str, Any]:
-    """Spec v1 section 5's comparison mask, fixed from the symbols' masks before any check
+    """Spec v1 section 5's comparison mask from the symbols' masks, built before any check
     or run: for each symbol with a masked hour, its masked hours (``masked_ranges``) and the
-    months the 17% rule excludes. Empty when no hour is masked, as in every stage-1 window;
-    an empty mask is written nowhere, so those windows' outputs keep their exact layout."""
+    months the 17% rule excludes. Rule 8's breach is the one entry no mask can give: XRPUSDT's
+    check finds it, so ``with_quote_breaches`` adds it after the cross-checks, before any
+    replay, and the mask is complete before anything replays or is scored. Empty when no hour
+    is masked and nothing breaches, as in every stage-1 window; an empty mask is written
+    nowhere, so those windows' outputs keep their exact layout."""
     mask: dict[str, Any] = {}
     for symbol_mask in masks:
         ranges = masked_ranges(symbol_mask.months)
@@ -603,8 +606,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     with executor as pool:
         # Spec v1 section 5: hour-level masking runs first, for every checked symbol, and
-        # the comparison mask is fixed from it before any check or run. Every mask is
-        # submitted before any is awaited, so they run in parallel, as the checks do.
+        # the comparison mask is built from it before any check or run (rule 8's breach
+        # joins it after the checks, before any replay). Every mask is submitted before any
+        # is awaited, so they run in parallel, as the checks do.
         symbols = checked_symbols(spec)
         pending = [pool.submit(mask_job, args.spec, args.data_dir, s) for s in symbols]
         symbol_masks = [symbol_mask.result() for symbol_mask in pending]
@@ -627,6 +631,10 @@ def main(argv: list[str] | None = None) -> int:
                 mask = with_quote_breaches(mask, {QUOTE_TESTED_SYMBOL: quote["tick_limit_quotes"]})
             print(json.dumps(mask_report(spec, symbol_masks, mask, quote), indent=1))
             return 0
+        # The month tables (every month's expected hours) served only the comparison mask and
+        # the map; only the masked hours go on, so a long window's tables do not outlive this
+        # phase (the plan: "only sets of masked hours are kept").
+        del pending, symbol_masks
         # Chronology is settled before any replay starts; invalid data never replays.
         # Submit every check before waiting on any, so they run in parallel. Each check
         # runs on its symbol's post-mask expected set; a symbol whose mask is None (every
@@ -762,7 +770,8 @@ def main(argv: list[str] | None = None) -> int:
         # in hourly_cross_checks. It is not a failure of the runs that did replay.
         **({"excluded_pairs": excluded} if excluded else {}),
         # Spec v1 section 5: every masked hour and excluded pair-month, fixed before any
-        # check or run. Present only when an hour is masked, so a window with no mask (every
+        # check or run, and rule 8's breach, added after the checks and before any replay.
+        # Present only when it is non-empty, so a window with no mask and no breach (every
         # stage-1 window) keeps its exact layout.
         **({"comparison_mask": mask} if mask else {}),
         "hourly_cross_checks": cross_checks,

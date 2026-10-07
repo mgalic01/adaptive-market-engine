@@ -398,11 +398,10 @@ def read_archive_repaired(path: Path, symbol: str, interval: str, month: str) ->
     """``parse_rows_repaired`` of the archive's single CSV member.
 
     An archive that ``read_member`` cannot open or decode is unreadable, not an error: a
-    ``DataError``, or what ``undecodable`` accepts given the member's compression method.
-    A missing file still raises, as does a
-    bad symbol, a month outside the development window or an interval other than 1m and
-    1h: those are the caller's errors, as in ``read_archive``. Daily archives keep
-    ``read_archive``: a daily bar is never masked.
+    ``DataError``, or what ``undecodable`` accepts given the member's compression method. A
+    missing file still raises, as does a bad symbol, a month outside the development window
+    or an interval other than 1m and 1h: those are the caller's errors, as in
+    ``read_archive``. Daily archives keep ``read_archive``: a daily bar is never masked.
     """
     symbol_name(symbol)
     development_month(month)

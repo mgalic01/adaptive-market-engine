@@ -760,9 +760,12 @@ def window_of(spec: DatasetSpec, checks: list[dict[str, Any]]) -> Window:
     traded pair's other minute, hourly and daily failures exclude only that pair, even
     when it is the proxy or votes in the basket (``scoped_failures``): section 5 makes the
     shared completeness check one for the untraded symbols. A pair that fails the
-    filter-availability check (P4) is excluded too, and so is one a long-window data rule
-    excludes (``data_rule_exclusions``). Manifest and checksum failures stop a run before
-    it writes results, so a results file exists only where they passed.
+    filter-availability check (P4) is excluded too. Rule 8 (XRP where a replayed quote
+    breaks the tick limit) reaches this function through the cross-check record's
+    ``tick_limit_quotes``, which ``scoped_failures`` makes XRP's own failure; no data rule
+    excludes a pair through ``data_rule_exclusions``, which stays empty. Manifest and
+    checksum failures stop a run before it writes results, so a results file exists only
+    where they passed.
     """
     if sorted(check["symbol"] for check in checks) != sorted(checked_symbols(spec)):
         raise ScoringError("the integrity checks are not one per symbol the spec checks")

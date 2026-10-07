@@ -234,8 +234,9 @@ def checks(spec_path, data_dir, symbol, strict_volume=False, *, config_path=None
 
 
 def no_mask(spec_path, data_dir, symbol):
-    """The dataset is deliberately short (an hour of minutes), and its checks are made up
-    (``checks``), so no hour of it is masked either: every symbol loads as it always has."""
+    """A made-up mask, like the made-up checks (``checks``): None for every symbol, so the
+    suite stays on the clean path it was written for. The real ``mask_job`` would mask
+    almost the whole evaluation month, since the dataset holds only an hour of minutes."""
     return SymbolMask(symbol, None, ())
 
 

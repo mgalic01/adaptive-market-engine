@@ -2,12 +2,16 @@
 pair's own failure excludes only that pair-window (spec v1 §5)."""
 
 import contextlib
+import gc
 import io
 import json
+import math
 import subprocess
 import sys
 import tempfile
 import unittest
+import weakref
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -15,9 +19,15 @@ from unittest.mock import patch
 import test_backtest_masked_checks as masked_checks
 
 from crypto_grid_bot.backtest import __main__ as cli
+from crypto_grid_bot.backtest import acceptance as score
 from crypto_grid_bot.backtest import jobs
 from crypto_grid_bot.backtest.dataset import fetch_dataset, load_spec, local_path, write_manifest
-from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE_VERSION
+from crypto_grid_bot.backtest.features import (
+    FEATURE_VERSION,
+    STRUCTURE_FEATURE_VERSION,
+    FeatureEngine,
+    SeriesFeatures,
+)
 from crypto_grid_bot.backtest.klines import Kline, aggregate, month_bounds_ms
 from crypto_grid_bot.backtest.masking import (
     HOUR_MS,
@@ -345,6 +355,31 @@ class CliIntegrityTests(unittest.TestCase):
             out = str(Path(self.temp.name) / "swept")
             self.assertEqual(0, self.main("run", "--fill-trigger", "0.0002", "--out", out))
         self.assertEqual([(Decimal("0.0002"), masks)] * 8, swept)
+
+    def test_the_month_tables_do_not_outlive_the_mask_phase(self):
+        # Task 5's review: each SymbolMask's month tables (every month's expected hours,
+        # tens of MB over a long window) serve only the comparison mask and the map of
+        # masked hours. None is still held when the first run starts; only the masked
+        # hours go on.
+        tables = []
+
+        def fake_mask(spec, data_dir, symbol):
+            month = month_mask("2024-02", {FEB_3: NO_MINUTE_BARS})
+            symbol_mask = jobs.SymbolMask(symbol, month.masked, (month,))
+            tables.append(weakref.ref(symbol_mask))
+            return symbol_mask
+
+        held = []
+
+        def fake_run(*args, masks):
+            gc.collect()
+            held.append(sum(table() is not None for table in tables))
+            return self.fake_run(*args)
+
+        with patch.object(cli, "mask_job", fake_mask), patch.object(cli, "run_job", fake_run):
+            self.assertEqual(0, self.main("run"))
+        self.assertTrue(tables)
+        self.assertEqual([0] * 8, held)
 
     def test_a_traded_pairs_own_failed_check_excludes_only_that_pair_window(self):
         # Spec v1 section 5, as for practice-2022's SOLUSDT with daily history from
@@ -1028,6 +1063,152 @@ class MaskReportTests(unittest.TestCase):
         )
 
 
+MASKED_RUN_SPEC = (
+    """name = "masked-run"
+purpose = "masked CLI run test"
+traded = ["BTCUSDT"]
+market_proxy = "BTCUSDT"
+breadth_basket = ["BTCUSDT"]
+daily_warmup_start = "2019-06"
+warmup_start = "2020-01"
+start = "2020-03"
+end = "2020-03"
+"""
+    + masked_checks.COMMON
+)
+MAR_2020, APR_2020 = masked_checks.MAR_2020, masked_checks.APR_2020
+RUN_MINUTE_MS, DAY_MS = masked_checks.MINUTE_MS, masked_checks.DAY_MS
+# A row's mask report (spec v1 section 5 rules 1, 3 and 4), each field written when non-zero.
+MASK_ROW_FIELDS = {"masked_hours", "days_skipped_for_masks", "fills_after_masked_span"}
+# The evaluation hour whose minutes the masked-run window leaves out: 2020-03-01T03:00Z.
+MASKED_RUN_HOUR = MAR_2020 + 3 * HOUR_MS
+# Its replayed span: March's first eight hours, less the masked one.
+MASKED_RUN_SPAN = 8
+
+
+def build_masked_run(work):
+    """A one-pair window whose replay spans one masked evaluation hour, under ``work``;
+    returns the spec's path.
+
+    BTCUSDT's hourly warm-up (2020-01 and 2020-02) is the masked-checks tests' daily sine,
+    and its daily history from 2019-06 is long enough for P3. In March, as in those tests'
+    DOGEUSDT window, its first eight hours of minutes oscillate around the fair value, so
+    the ungated grid fills, and here their 1h bars aggregate them. The 03:00 hour has no
+    minutes, so it is masked (rule 2).
+
+    Every later March hour has its 60 minutes and a 1h bar whose open alone differs from
+    them: an open-only hour, which is masked but not counted by the 17% rule. So the month
+    is kept, and the replay is the eight hours less the masked one, not a whole month of
+    minutes, which would take minutes of replay per run."""
+    sine = masked_checks.sine_bar
+    hourly = [k for k in masked_checks.sine_hours() if k.open_ms < MAR_2020]
+    features = FeatureEngine(
+        SeriesFeatures("BTCUSDT", hourly),
+        SeriesFeatures("BTCUSDT", hourly),
+        [SeriesFeatures(f"B{i}USDT", hourly, full=False) for i in range(5)],
+        range_atr_multiple=2.0,
+        levels=8,
+        minimum_cost_multiple=3.0,
+        round_trip_cost=0.0035,
+    )
+    fair = float(features.at(MAR_2020).fair_value)
+    minutes = []
+    for i in range(MASKED_RUN_SPAN * 60):
+        mid = fair * (1 + 0.03 * math.sin(2 * math.pi * i / 90))
+        minutes.append(sine(MAR_2020 + i * RUN_MINUTE_MS, mid, mid * 1.003, mid * 0.997, mid))
+    hourly += aggregate(minutes)
+    for hour in range(MAR_2020 + MASKED_RUN_SPAN * HOUR_MS, APR_2020, HOUR_MS):
+        quiet = [
+            sine(hour + i * RUN_MINUTE_MS, fair, fair * 1.001, fair * 0.999, fair)
+            for i in range(60)
+        ]
+        minutes += quiet
+        (official,) = aggregate(quiet)
+        hourly.append(replace(official, open=Decimal(str(round(fair * 1.0005, 6)))))
+    first_day = masked_checks.ms(2019, 6)
+    days = [sine(first_day + i * DAY_MS, 1.0, 1.01, 0.99, 1.0) for i in range(214)]
+    days += aggregate(hourly, DAY_MS)  # 2019-06-01 to 2019-12-31, then the hourly window's
+    archive = masked_checks.loaders.FakeArchive()
+    kept = [k for k in minutes if k.open_ms // HOUR_MS * HOUR_MS != MASKED_RUN_HOUR]
+    masked_checks.add_bars(archive, "BTCUSDT", "1m", RUN_MINUTE_MS, kept)
+    masked_checks.add_bars(archive, "BTCUSDT", "1h", HOUR_MS, hourly)
+    masked_checks.add_bars(archive, "BTCUSDT", "1d", DAY_MS, days)
+    spec_path = work / "masked-run.toml"
+    spec_path.write_text(MASKED_RUN_SPEC)
+    manifest = fetch_dataset(
+        load_spec(spec_path),
+        work / "data",
+        fetcher=archive,
+        instruments=lambda symbol: masked_checks.RUN_FILTERS,
+    )
+    write_manifest(work / "masked-run.manifest.json", manifest)
+    return spec_path
+
+
+class MaskedRunTests(unittest.TestCase):
+    def test_a_masked_run_writes_its_mask_and_the_scorer_reads_it(self):
+        # One CLI run with the real jobs, nothing faked (Task 5's review): the masked hour
+        # and the open-only hours reach results.json's comparison mask, the cross-check runs
+        # on the post-mask expected set, each row reports its masked hours, skipped days and
+        # (the ungated grid's, which rests orders across the span) fills after the span,
+        # and the acceptance scorer reads the document as an acceptance run.
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            spec_path = build_masked_run(work)
+            argv = ["run", "--spec", str(spec_path), "--data-dir", str(work / "data")]
+            argv += ["--config", str(ROOT / "config/default.toml"), "--out", str(work / "out")]
+            argv += ["--jobs", "1"]
+            argv += ["--maker-fee", "0", "--taker-fee", "0.0009"]  # section 4's primaries
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, cli.main(argv))
+            (written,) = (work / "out").rglob("results.json")
+            document = score.read_results(written).document
+            spec = load_spec(spec_path)
+        self.assertEqual(
+            {
+                "BTCUSDT": {
+                    "masked": [
+                        {
+                            "from": "2020-03-01T03:00Z",
+                            "to": "2020-03-01T04:00Z",
+                            "reason": "no minute bars",
+                        },
+                        {
+                            "from": "2020-03-01T08:00Z",
+                            "to": "2020-04-01T00:00Z",
+                            "reason": "open-only difference",
+                        },
+                    ],
+                    "excluded_months": [],
+                }
+            },
+            document["comparison_mask"],
+        )
+        (check,) = document["hourly_cross_checks"]
+        self.assertEqual(MASKED_RUN_SPAN - 1, check["hours_compared"])
+        self.assertEqual(31, check["daily_days_skipped_for_masks"])  # every March day
+        masked = 744 - (MASKED_RUN_SPAN - 1)
+        for row in document["results"]:
+            with self.subTest(row=(row["path_mode"], row["strategy"])):
+                fills = {} if score.variant_of(row) else {"fills_after_masked_span": 1}
+                self.assertEqual(
+                    {"masked_hours": masked, "days_skipped_for_masks": 31, **fills},
+                    {k: row[k] for k in row.keys() & MASK_ROW_FIELDS},
+                )
+                self.assertEqual((MASKED_RUN_SPAN - 1) * 60, row["bars"])  # no masked minute
+        self.assertEqual((True, []), (document["valid"], document["failures"]))
+        self.assertEqual([], score.document_problems(document))
+        window = score.window_of(spec, document["hourly_cross_checks"])
+        self.assertEqual((("BTCUSDT",), {}), (window.included, dict(window.excluded)))
+        self.assertEqual(
+            [("V0", path, (), "") for path in ("high_first", "low_first")],
+            sorted(
+                (variant, run.path, run.problems, run.baseline_problem)
+                for variant, run in score.runs_of(document, window)
+            ),
+        )
+
+
 CLEAN_FIELDS = dict.fromkeys(cli.INTEGRITY_FIELDS, 0)
 
 
@@ -1309,7 +1490,8 @@ class XrpArchivesTests(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = cli.main([*argv, "--jobs", "1", *extra])
-        return code, json.loads(out.getvalue().split("\n}\n")[0] + "\n}")
+        # verify and mask-report each print one JSON document, and nothing else.
+        return code, json.loads(out.getvalue())
 
     def test_verify_excludes_xrp_for_a_breach_and_writes_nothing_for_a_pass(self):
         def checks(report):

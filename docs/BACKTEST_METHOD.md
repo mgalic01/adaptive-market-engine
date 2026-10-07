@@ -514,9 +514,11 @@ decimals (below).
 
   Results exist only where the manifest and checksums passed. Every file of a window
   must give the same mask.
-- **The long-window data rules (§5 rules 1–8)** are applied by `verify` and `run` (see
-  "Hour masks, XRP's quote test and `mask-report`"). The scorer needs no hook for them, so
-  `data_rule_exclusions` stays empty:
+- **The long-window data rules.** `verify` and `run` apply §5 rules 1–3, 5 and 8, and
+  `run`'s replays rule 4 (see "Hour masks, XRP's quote test and `mask-report`"). Rules 6
+  and 7 are the scorer's own: only `full-range-2017-2024` is scored in stage 2, and C2 and
+  the selection use annualised returns (below). The scorer needs no hook for the CLI's
+  rules, so `data_rule_exclusions` stays empty:
   - hour masking runs before the checks, which run on the post-mask expected set, so a
     maskable defect no longer fails them (§5);
   - rule 8 reaches the scorer as `tick_limit_quotes` in XRPUSDT's cross-check record, which

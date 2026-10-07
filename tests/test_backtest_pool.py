@@ -285,9 +285,19 @@ class SpawnedCliTests(unittest.TestCase):
             command, capture_output=True, text=True, env=env, timeout=300, check=False
         )
         self.assertNotIn("BrokenProcessPool", done.stderr)
-        # The synthetic archives are deliberately incomplete, so verify reports them
-        # invalid (2); what matters is that every check ran in a spawned worker.
+        # What matters is that every mask and every check ran in a spawned worker, each
+        # check with its symbol's mask (a pickled partial holding a frozenset). The
+        # synthetic archives hold three hours a month, so every month's defects exceed 17%
+        # and the 17% rule masks every hour: no hour is left to compare, and verify reports
+        # the window invalid (2), with the masks in its comparison mask.
         self.assertEqual(2, done.returncode, done.stderr)
         report = json.loads(done.stdout)
         self.assertEqual("invalid", report["status"])
         self.assertEqual(["BTCUSDT", "ETHUSDT"], [c["symbol"] for c in report["checks"]])
+        self.assertEqual(
+            ["BTCUSDT: no hours compared", "ETHUSDT: no hours compared"], report["failures"]
+        )
+        self.assertEqual(
+            {symbol: ["2023-12", "2024-01"] for symbol in ("BTCUSDT", "ETHUSDT")},
+            {s: entry["excluded_months"] for s, entry in report["comparison_mask"].items()},
+        )
