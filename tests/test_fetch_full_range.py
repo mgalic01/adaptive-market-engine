@@ -892,7 +892,9 @@ def test_start_runs_the_script_detached_and_wait_reports_done(
     background(monkeypatch, 60)
     data = tmp_path / "data"
     assert fetch_full_range.main(["wait", str(data)]) == 1
-    assert capsys.readouterr().out.startswith("NOT STARTED")
+    not_started = capsys.readouterr().out.splitlines()
+    assert not_started[0].startswith("NOT STARTED")
+    assert not_started[-1] == fetch_full_range.NEXT_NOT_STARTED
     assert fetch_full_range.main(["start", str(data), "--fake-run", "0.2"]) == 0
     pid = int((data / "run.pid").read_text(encoding="utf-8"))
     log, exit_file = (data / "run.log").as_posix(), (data / "run.exit").as_posix()
@@ -959,6 +961,30 @@ def test_wait_reports_a_run_gone_without_an_exit_file_and_start_runs_once_more(
     assert capsys.readouterr().out.splitlines()[0] == "DONE exit=0"
 
 
+def test_a_second_gone_names_the_report_and_start_refuses_a_third_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex's P1 on #196: Step 4 allows one restart. After it, a GONE names the report,
+    not another start, and start refuses a third attempt before it moves or launches
+    anything."""
+    background(monkeypatch, 60)
+    data = tmp_path / "data"
+    data.mkdir()
+    ended = subprocess.Popen([sys.executable, "-c", "pass"])  # nosec B603: a fixed command
+    ended.wait()
+    (data / "run-1.log").write_text("PLAN first attempt\n", encoding="utf-8")
+    (data / "run.pid").write_text(f"{ended.pid}\n", encoding="utf-8")
+    (data / "run.log").write_text("PLAN second attempt\n", encoding="utf-8")
+    assert fetch_full_range.main(["wait", str(data)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith(f"GONE pid {ended.pid}: ")
+    assert lines[-1] == fetch_full_range.NEXT_GONE_AGAIN
+    assert fetch_full_range.main(["start", str(data), "--fake-run", "0.1"]) == 1
+    assert "was already restarted once" in capsys.readouterr().out
+    assert (data / "run.log").read_text(encoding="utf-8") == "PLAN second attempt\n"
+    assert not (data / "run-2.log").exists()
+
+
 def test_wait_and_start_handle_an_empty_or_corrupt_pid_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -970,11 +996,13 @@ def test_wait_and_start_handle_an_empty_or_corrupt_pid_file(
     assert fetch_full_range.main(["wait", str(data)]) == 1
     assert capsys.readouterr().out == (
         f"NOT STARTED: {pid.as_posix()} is still empty; latest: no output yet\n"
+        f"{fetch_full_range.NEXT_STILL_EMPTY}\n"
     )
     pid.write_text("garbage\n", encoding="utf-8")
     assert fetch_full_range.main(["wait", str(data)]) == 1
     assert capsys.readouterr().out == (
         f"UNREADABLE: {pid.as_posix()} holds 'garbage', not a process id\n"
+        f"{fetch_full_range.NEXT_REPORT}\n"
     )
     assert fetch_full_range.main(["start", str(data), "--fake-run", "0.1"]) == 1
     assert capsys.readouterr().out == (

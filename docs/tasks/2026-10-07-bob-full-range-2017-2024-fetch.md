@@ -118,8 +118,8 @@ request, that the code and inputs are the ones reviewed here:
   verify and mask-report read. Step 2 copies the block below out of this file:
 
 ```text
-1620cdc652f930c34090c548031d95fbfad5cf88ebe46f65267c5cd0f96fc6e4  scripts/fetch_full_range.py
-efff6820f8fd2f89d9feb42bd17e2558ea22b0039d90d98c1adae9a6c0ba37d4  tests/test_fetch_full_range.py
+c41005ef04d10efdc72bb03033947e65e54116d18318973b41171b77fcc81dbd  scripts/fetch_full_range.py
+e44a5cc4f9394f079ca69c619af15ac985d2823255a87614e4ed05c5e3b43dc5  tests/test_fetch_full_range.py
 f4216524de089988a15fbddd72a9625a737f41be5a8dcb4bed6a36ccf8e0addb  config/datasets/full-range-2017-2024.toml
 8dad70041f4423706b0eeba272595fb24af74cb83713b6316abb68e5a40dafcb  config/datasets/full-range-2019-2024.toml
 349ce104be44d28d918b22dc99dd611f56d174011b50cb144393a97940c72374  config/datasets/long-bull-bear-2022.manifest.json
@@ -178,7 +178,7 @@ success is a stop (see "Stop conditions").
    python scripts/fetch_full_range.py tail data/full-range-tests.log
    ```
 
-   The last line must report `26 passed`. Add no `-q`: `pyproject.toml` already passes
+   The last line must report `27 passed`. Add no `-q`: `pyproject.toml` already passes
    one, and a second one hides that line.
 4. The run: about 3,600 requests to data.binance.vision, `verify` on both windows and
    `mask-report` on the scored one. Expect about an hour; the job allows 240 minutes.
@@ -197,8 +197,9 @@ success is a stop (see "Stop conditions").
    python scripts/fetch_full_range.py wait data/full-range
    ```
 
-   It returns within about 9 minutes, with exit status 0 in each case below, and its last
-   line always starts `NEXT:` and names the next step. It prints one of:
+   It returns within about 9 minutes. Every outcome, these three and any error, ends with a
+   line starting `NEXT:` that names the next step: follow it, whatever the exit status.
+   The three run states exit 0, and it prints one of:
    - `RUNNING pid <n>; latest: <the log's last line>`: run the same `wait` again. The log
      stays quiet for long stretches: after `FUNDING`, nothing comes until the whole scored
      fetch is done.
@@ -211,7 +212,8 @@ success is a stop (see "Stop conditions").
      (the script writes the exit file even after a traceback). Run the same `start` once
      more, unchanged: stored archives are reused while their checksum matches, so only
      `.CHECKSUM` requests repeat, and the first attempt's log is kept as
-     `data/full-range/run-1.log`. Then `wait` again. If it is lost a second time, stop and
+     `data/full-range/run-1.log`. Then `wait` again. That is the only restart: if it is lost
+     a second time, `wait`'s `NEXT:` line says so, `start` refuses a third attempt, and you
      write the report with what exists (Steps 5 and 6).
 
    **Never end your session before Step 6 has written the report and you have given your
@@ -380,7 +382,7 @@ success is a stop (see "Stop conditions").
 ## Validity checks (all must hold for a valid run)
 
 1. Step 2: the pinned tree hash, an empty `git status`, `6 pins` and six `OK` lines.
-2. Step 3: `26 passed`.
+2. Step 3: `27 passed`.
 3. Step 4: `wait` prints `DONE exit=0`, and the run log's last line is
    `RESULT 0 problem(s)`, which the script prints only when all of these hold:
    - `FUNDING 60 of 60 months ok`;

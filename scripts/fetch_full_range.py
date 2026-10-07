@@ -170,7 +170,7 @@ TASK = ROOT / "docs" / "tasks" / "2026-10-07-bob-full-range-2017-2024-fetch.md"
 # as it is when the job starts, so a later edit to the task would otherwise run unnoticed
 # (Codex's review of #193); start refuses any other text. The pin block, which holds this
 # script's own SHA-256, is left out of the digest, so the two pins do not refer in a circle.
-TASK_SHA256 = "5dce48317dde6c3960054cfe726564dce184c072b2adab5ed1815ff55804bdf4"
+TASK_SHA256 = "d1f00b9570ef77d5817a59ea79d13cc020e4cf73b24df0a1a7425e1e1a78423b"
 FUNDING_SYMBOL = "BTCUSDT"  # variant G reads it for every pair (spec v1 section 3 G)
 ATTEMPTS = 4
 # The bytes of run logs and digest the report takes as text; above it, append-results
@@ -191,8 +191,25 @@ NEXT_DONE = (
     "Step 6, and end with your signed final message. DONE is never the end of the task."
 )
 NEXT_GONE = (
-    "NEXT: run Step 4's start once more, unchanged, then wait again. If wait says GONE a "
-    "second time, write the report (Steps 5 and 6) with what exists."
+    "NEXT: run Step 4's start once more, unchanged, then wait again. This is the only "
+    "restart: a second GONE means writing the report (Steps 5 and 6) with what exists."
+)
+NEXT_GONE_AGAIN = (
+    "NEXT: the run was lost a second time. Do not start it again: write the report "
+    "(Steps 5 and 6) with what exists, and end with your signed final message."
+)
+# The outcomes of wait that are not a run state; each still names its next step.
+NEXT_REPORT = (
+    "NEXT: start nothing more. Write the report (Steps 5 and 6) with what exists, quoting "
+    "this output, and end with your signed final message."
+)
+NEXT_NOT_STARTED = (
+    "NEXT: if Step 4's start has not run, run it now; if it has, start nothing and write "
+    "the report (Steps 5 and 6) with what exists."
+)
+NEXT_STILL_EMPTY = (
+    "NEXT: run the same wait once more. If it says this again, start nothing and write the "
+    "report (Steps 5 and 6) with what exists."
 )
 NEXT_RUNNING = "NEXT: run the same wait again."
 RECORD = "_run"  # the hidden subcommand of the child that start launches
@@ -871,6 +888,13 @@ def start(arguments: list[str]) -> int:
         print(f"NOT STARTED: the run in {data_dir.as_posix()} is still running")
         return 1
     data_dir.mkdir(parents=True, exist_ok=True)
+    if files.log.exists() and (data_dir / "run-1.log").exists():
+        # Step 4 allows one restart: a third attempt would fetch everything a third time.
+        print(
+            f"NOT STARTED: the run in {data_dir.as_posix()} was already restarted once. "
+            f"{NEXT_GONE_AGAIN.removeprefix('NEXT: ')}"
+        )
+        return 1
     if files.log.exists():  # an earlier attempt that was lost (wait said GONE): keep its log
         attempt = 1
         while (data_dir / f"run-{attempt}.log").exists():
@@ -904,6 +928,7 @@ def wait(arguments: list[str]) -> int:
     files = run_files(data_dir)
     if not files.pid.exists() and not files.exit.exists():
         print(f"NOT STARTED: no run in {data_dir.as_posix()}")
+        print(NEXT_NOT_STARTED)
         return 1
     deadline = time.monotonic() + WAIT_SECONDS
     while True:
@@ -917,11 +942,13 @@ def wait(arguments: list[str]) -> int:
             pid = _pid(files.pid)
         except ValueError as exc:
             print(f"UNREADABLE: {exc}")
+            print(NEXT_REPORT)
             return 1
         latest = (_lines(files.log) or ["no output yet"])[-1]
         if pid is None:  # start has launched the child and not yet written its pid
             if time.monotonic() >= deadline:
                 print(f"NOT STARTED: {files.pid.as_posix()} is still empty; latest: {latest}")
+                print(NEXT_STILL_EMPTY)
                 return 1
             time.sleep(POLL_SECONDS)
             continue
@@ -929,7 +956,8 @@ def wait(arguments: list[str]) -> int:
             if files.exit.exists():  # it ended between the two looks
                 continue
             print(f"GONE pid {pid}: no process and no exit file; latest: {latest}")
-            print(NEXT_GONE)
+            restarted = (data_dir / "run-1.log").exists()
+            print(NEXT_GONE_AGAIN if restarted else NEXT_GONE)
             return 0  # an expected outcome with its own next step, not a failed command
         if time.monotonic() >= deadline:
             print(f"RUNNING pid {pid}; latest: {latest}")
