@@ -13,6 +13,7 @@ arrives as a PR ([rules](../AGENT_HANDOFF.md)).
 
 | Task | Status |
 | --- | --- |
+| [Fetch full-range-2017-2024 and its manifests](2026-10-07-bob-full-range-2017-2024-fetch.md) | **Awaiting the owner's go:** merging this task file starts Bob's fetch (about 3,600 requests to data.binance.vision, 2017-2024 only); the manifests follow in their own reviewed PR from Bob's digest. |
 | [Structure-aware features backtest comparison](2026-09-29-bob-structure-backtest-comparison.md) | **Done:** task file merged in PR #149; report in [`docs/reviews/2026-09-30-bob-v2-backtest-comparison.md`](../reviews/2026-09-30-bob-v2-backtest-comparison.md). Critical finding F1 (structure_alignment silently zeroed) fixed in PR #154. |
 | [P8 archives for G and H, development months only](2026-09-27-bob-p8-funding-archives.md) | **Done:** run 36560170480; [report](../reviews/2026-09-27-bob-p8-funding-archives.md) merged in PR #164 (closing #133). Not to be rerun: its pins describe that run, and a new fetch needs a new task file. The manifest entries it proposes are added separately, in a reviewed code PR. |
 | [Combined defect census, 2017-08 to 2024-12](2026-09-27-bob-combined-defect-census.md) | **Queued:** starts when merged (owner's go 2026-09-27). Re-runs the hourly calendar on expected hours with the per-hour exchange-wide rule, so the 14 outages merge into the event census ([why](../reviews/2026-09-27-claude-defect-calendar-corrections.md)). |
