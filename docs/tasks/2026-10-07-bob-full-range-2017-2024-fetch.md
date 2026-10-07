@@ -1,11 +1,12 @@
 # Task for Bob: fetch full-range-2017-2024 and full-range-2019-2024, stage 2's long windows
 
-- **Status: awaiting the owner's go.** Merging this file into `main` starts the run:
-  bob-task.yml runs a task file as soon as a merge adds it. So it merges only on the
-  owner's go, after review, and after Tasks 1 to 7 of the long-window data plan are on
-  `main` (they are, at `370229d`: the repairing reader, hour masks, the damaged-archive
-  fetch, `mask-report` and XRP's quote test). Before that go, the pins must still hold:
-  any change under `src` on `main` since `370229d` means updating them first (see
+- **Status: to be run again with the owner's `/bob-run`.** The owner gave the go on
+  2026-10-07, and the file merged in #193. Its first run (37591538301) passed the pins and
+  the tests and started the fetch, then ended Bob's session after a `wait`, with no report
+  (issue #195), so nothing was published. Step 4 now says that DONE is never the end of the
+  task. Editing this file does not start a run: the owner comments
+  `/bob-run docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md`. Before that, the pins
+  must still hold: any change under `src` on `main` means updating them first (see
   "Pinned inputs").
 - **Written by:** Claude, 2026-10-07, as Task 9 of the long-window data plan. Spec v1 §4
   says the two stage-2 windows are not yet runnable until "Bob's re-fetch with daily and
@@ -117,8 +118,8 @@ request, that the code and inputs are the ones reviewed here:
   verify and mask-report read. Step 2 copies the block below out of this file:
 
 ```text
-83f8fc3f22f86461fcaca21ddf921610be31b8c8b3bce8930a7740bc24d5978e  scripts/fetch_full_range.py
-744731426e39e5c28df55bf9a307dbd7bf366a1da51be142eca1946f3d82fcf4  tests/test_fetch_full_range.py
+c41005ef04d10efdc72bb03033947e65e54116d18318973b41171b77fcc81dbd  scripts/fetch_full_range.py
+e44a5cc4f9394f079ca69c619af15ac985d2823255a87614e4ed05c5e3b43dc5  tests/test_fetch_full_range.py
 f4216524de089988a15fbddd72a9625a737f41be5a8dcb4bed6a36ccf8e0addb  config/datasets/full-range-2017-2024.toml
 8dad70041f4423706b0eeba272595fb24af74cb83713b6316abb68e5a40dafcb  config/datasets/full-range-2019-2024.toml
 349ce104be44d28d918b22dc99dd611f56d174011b50cb144393a97940c72374  config/datasets/long-bull-bear-2022.manifest.json
@@ -177,7 +178,7 @@ success is a stop (see "Stop conditions").
    python scripts/fetch_full_range.py tail data/full-range-tests.log
    ```
 
-   The last line must report `26 passed`. Add no `-q`: `pyproject.toml` already passes
+   The last line must report `27 passed`. Add no `-q`: `pyproject.toml` already passes
    one, and a second one hides that line.
 4. The run: about 3,600 requests to data.binance.vision, `verify` on both windows and
    `mask-report` on the scored one. Expect about an hour; the job allows 240 minutes.
@@ -196,18 +197,29 @@ success is a stop (see "Stop conditions").
    python scripts/fetch_full_range.py wait data/full-range
    ```
 
-   It returns within about 9 minutes and prints one of:
+   It returns within about 9 minutes. Every outcome, these three and any error, ends with a
+   line starting `NEXT:` that names the next step: follow it, whatever the exit status.
+   The three run states exit 0, and it prints one of:
    - `RUNNING pid <n>; latest: <the log's last line>`: run the same `wait` again. The log
      stays quiet for long stretches: after `FUNDING`, nothing comes until the whole scored
      fetch is done.
-   - `DONE exit=<status>`, then the log's last lines: the run has ended. Read
-     `data/full-range/run.log` in full with your file-reading tool, then go to Step 5.
+   - `DONE exit=<status>`, then the log's last lines: the run has ended, and **the report
+     is not written yet. DONE is never the end of the task:** go straight on to Step 5 in
+     this session, then Step 6, and end with your signed final message. Do not read
+     `data/full-range/run.log` whole (it is long): Steps 5 and 6 take what they need from
+     it through the script.
    - `GONE pid <n>: no process and no exit file; ...`: the run was lost without ending
      (the script writes the exit file even after a traceback). Run the same `start` once
      more, unchanged: stored archives are reused while their checksum matches, so only
      `.CHECKSUM` requests repeat, and the first attempt's log is kept as
-     `data/full-range/run-1.log`. Then `wait` again. If it is lost a second time, stop and
-     report.
+     `data/full-range/run-1.log`. Then `wait` again. That is the only restart: if it is lost
+     a second time, `wait`'s `NEXT:` line says so, `start` refuses a third attempt, and you
+     write the report with what exists (Steps 5 and 6).
+
+   **Never end your session before Step 6 has written the report and you have given your
+   signed final message,** whatever a command prints. The first run of this task (run
+   37591538301, issue #195) ended right after a `wait`, with no report, and its work was
+   lost.
 
    `start` refuses while a run is alive, and after one has ended, so it cannot start a
    second run by mistake. Say in 6b how many waits it took, and whether `start` ran twice.
@@ -370,7 +382,7 @@ success is a stop (see "Stop conditions").
 ## Validity checks (all must hold for a valid run)
 
 1. Step 2: the pinned tree hash, an empty `git status`, `6 pins` and six `OK` lines.
-2. Step 3: `26 passed`.
+2. Step 3: `27 passed`.
 3. Step 4: `wait` prints `DONE exit=0`, and the run log's last line is
    `RESULT 0 problem(s)`, which the script prints only when all of these hold:
    - `FUNDING 60 of 60 months ok`;
