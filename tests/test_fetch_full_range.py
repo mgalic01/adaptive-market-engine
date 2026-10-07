@@ -1,0 +1,710 @@
+"""Bob's long-window fetch (scripts/fetch_full_range.py), against a fake archive host.
+
+Long-window data plan, Task 9. The committed spec's 1,164 archives cannot be synthesized
+complete in a unit test, and incomplete ones would mask every hour and make ``verify`` exit
+2. So the script runs with ``--spec`` and ``--reported-spec`` on two small synthetic specs
+with the committed specs' traded pairs, proxy, basket and pricing: one evaluation month,
+2023-02, with its hourly and daily warm-ups. The second spec's files are a subset of the
+first's, as ``full-range-2019-2024``'s are of ``full-range-2017-2024``'s. A fake host serves
+complete, flat synthetic archives under matching ``.CHECKSUM`` files, and one BTCUSDT
+funding month. Nothing touches the network, nothing is dated after 2024-12, and nothing
+here is market data or evidence.
+
+The synthetic data has three features of the real fetch: SOLUSDT has no archive before its
+(synthetic) listing, so its warm-up months are 404s and ``missing``; LINKUSDT's first
+hourly archive holds two zip members, so it is checksum-valid and ``unreadable``; both lie
+inside the spec's documented basket absences, so ``verify`` still passes.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import io
+import json
+import sys
+import zipfile
+from dataclasses import dataclass, field
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from crypto_grid_bot.backtest import dataset
+from crypto_grid_bot.backtest.dataset import (
+    archive_path,
+    funding_archive_path,
+    is_funding,
+    load_manifest,
+    load_spec,
+    local_path,
+)
+from crypto_grid_bot.backtest.jobs import manifest_path
+from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
+from crypto_grid_bot.market_data.client import FeedError
+from crypto_grid_bot.market_data.parsing import DataError
+
+ROOT = Path(__file__).resolve().parents[1]
+DATASETS = ROOT / "config" / "datasets"
+SCRIPT = ROOT / "scripts" / "fetch_full_range.py"
+sys.path.insert(0, str(SCRIPT.parent))
+
+import fetch_full_range  # noqa: E402
+
+MINUTE_MS, HOUR_MS, DAY_MS = 60_000, 3_600_000, 86_400_000
+TRADED = ("BTCUSDT", "ETHUSDT", "XRPUSDT")
+BASKET = (
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    "TRXUSDT",
+)
+EVALUATION = "2023-02"
+HOURLY_MONTHS = ("2022-12", "2023-01", "2023-02")
+DAILY_MONTHS = tuple(f"2022-{m:02d}" for m in range(6, 13)) + ("2023-01", "2023-02")
+# Flat prices: XRPUSDT at 1.0 keeps its synthesized quotes inside the 0.15% spread limit
+# (bid 0.9997, ask 1.0003), so rule 8's test passes; the others are on a 0.01 tick.
+PRICES = {"BTCUSDT": "100", "ETHUSDT": "100", "XRPUSDT": "1"}
+PRICING = """initial_quote = "100"
+fee_rate = "0.001"
+slippage_rate = "0.0005"
+participation = "0.10"
+assumed_spread_pct = "0.05"
+"""
+SYMBOLS = """traded = ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
+market_proxy = "BTCUSDT"
+breadth_basket = [
+  "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+  "DOGEUSDT", "LTCUSDT", "LINKUSDT", "TRXUSDT",
+]
+"""
+# 245 completed daily bars before 2023-02 (P3 needs 200); hourly warm-up 2022-12 and 2023-01.
+SCORED_SPEC = (
+    'name = "synthetic-scored"\n'
+    'purpose = "fetch_full_range test: one evaluation month"\n'
+    + SYMBOLS
+    + 'daily_warmup_start = "2022-06"\n'
+    'warmup_start = "2022-12"\n'
+    'start = "2023-02"\n'
+    'end = "2023-02"\n'
+    + PRICING
+    + """
+[[basket_exclusions]]
+symbol = "SOLUSDT"
+from = "2022-12-01T00:00Z"
+to = "2023-02-01T00:00Z"
+reason = "synthetic listing: no SOLUSDT archive before 2023-02"
+
+[[basket_exclusions]]
+symbol = "LINKUSDT"
+from = "2022-12-01T00:00Z"
+to = "2023-01-01T00:00Z"
+reason = "synthetic: LINKUSDT's 2022-12 archive holds two members"
+"""
+)
+# The subset: 214 completed daily bars before 2023-02, hourly warm-up 2023-01 only.
+REPORTED_SPEC = (
+    'name = "synthetic-reported"\n'
+    'purpose = "fetch_full_range test: the reported subset"\n'
+    + SYMBOLS
+    + 'daily_warmup_start = "2022-07"\n'
+    'warmup_start = "2023-01"\n'
+    'start = "2023-02"\n'
+    'end = "2023-02"\n'
+    + PRICING
+    + """
+[[basket_exclusions]]
+symbol = "SOLUSDT"
+from = "2023-01-01T00:00Z"
+to = "2023-02-01T00:00Z"
+reason = "synthetic listing: no SOLUSDT archive before 2023-02"
+"""
+)
+TRANSIENT = archive_path("ETHUSDT", "1h", "2023-01")  # fails once in the happy run
+MISSING = ("SOLUSDT", "1h", "2022-12")
+UNREADABLE = ("LINKUSDT", "1h", "2022-12")
+FUNDING = funding_archive_path("BTCUSDT", EVALUATION)
+
+
+def flat_bars(start_ms: int, end_ms: int, step: int, price: str) -> list[Kline]:
+    """Flat bars at ``price``; the volumes scale with the bar's minutes, so every hour is
+    the exact aggregate of its minutes and every day of its hours."""
+    p, minutes = Decimal(price), step // MINUTE_MS
+    volume = Decimal(10 * minutes)
+    taker = Decimal(4 * minutes)
+    return [Kline(t, p, p, p, p, volume, volume * p, taker) for t in range(start_ms, end_ms, step)]
+
+
+def csv_text(bars: list[Kline], step: int) -> str:
+    """Binance's 12-column CSV rows of ``bars``, each closing on its boundary."""
+    return "".join(
+        f"{k.open_ms},{k.open},{k.high},{k.low},{k.close},{k.volume},{k.open_ms + step - 1},"
+        f"{k.quote_volume},10,{k.taker_buy_base},{k.taker_buy_base * k.close},0\n"
+        for k in bars
+    )
+
+
+def zip_of(*members: tuple[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, text in members:
+            archive.writestr(name, text)
+    return buffer.getvalue()
+
+
+def serve(objects: dict[str, bytes], path: str, body: bytes, checksum: str | None = None) -> None:
+    """Publish ``body`` at ``path`` with its .CHECKSUM, Binance's two-space format."""
+    objects[path] = body
+    digest = checksum or hashlib.sha256(body).hexdigest()
+    objects[path + ".CHECKSUM"] = f"{digest}  {path.rsplit('/', 1)[1]}".encode()
+
+
+def kline_archive(symbol: str, interval: str, month: str, step: int) -> bytes:
+    start, end = month_bounds_ms(month)
+    text = csv_text(flat_bars(start, end, step, PRICES.get(symbol, "10")), step)
+    return zip_of((f"{symbol}-{interval}-{month}.csv", text))
+
+
+@pytest.fixture(scope="module")
+def archives() -> dict[str, bytes]:
+    """Every object the fake host publishes, by archive path."""
+    objects: dict[str, bytes] = {}
+    for symbol in BASKET:
+        for month in HOURLY_MONTHS:
+            if symbol == "SOLUSDT" and month != EVALUATION:
+                continue  # not published before its synthetic listing: a 404
+            start, end = month_bounds_ms(month)
+            text = csv_text(flat_bars(start, end, HOUR_MS, PRICES.get(symbol, "10")), HOUR_MS)
+            # LINKUSDT's first month holds a second member: checksum-valid, but unreadable.
+            extra = [("README.txt", "second\n")] if (symbol, "1h", month) == UNREADABLE else []
+            body = zip_of((f"{symbol}-1h-{month}.csv", text), *extra)
+            serve(objects, archive_path(symbol, "1h", month), body)
+    for symbol in TRADED:
+        serve(
+            objects,
+            archive_path(symbol, "1m", EVALUATION),
+            kline_archive(symbol, "1m", EVALUATION, MINUTE_MS),
+        )
+        for month in DAILY_MONTHS:
+            serve(
+                objects,
+                archive_path(symbol, "1d", month),
+                kline_archive(symbol, "1d", month, DAY_MS),
+            )
+    start, end = month_bounds_ms(EVALUATION)
+    funding = "calc_time,funding_interval_hours,last_funding_rate\n" + "".join(
+        f"{t},8,0.0001\n" for t in range(start, end, 8 * HOUR_MS)
+    )
+    serve(objects, FUNDING, zip_of((f"BTCUSDT-fundingRate-{EVALUATION}.csv", funding)))
+    return objects
+
+
+class Host:
+    """A fake data.binance.vision: objects by path, None (a 404) otherwise. It records every
+    request, and raises FeedError the first time each path in ``fail_once`` is requested."""
+
+    def __init__(self, objects: dict[str, bytes], fail_once: set[str]) -> None:
+        self.objects = objects
+        self.fail_once = set(fail_once)
+        self.requests: list[str] = []
+
+    def __call__(self, path: str) -> bytes | None:
+        self.requests.append(path)
+        if path in self.fail_once:
+            self.fail_once.discard(path)
+            raise FeedError(f"synthetic transport failure for {path}")
+        return self.objects.get(path)
+
+
+def snapshot(roots: list[Path], skip: Path) -> dict[str, str]:
+    """Every file under ``roots`` except those under ``skip``, with its SHA-256."""
+    return {
+        str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+        for root in roots
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and skip not in path.parents
+    }
+
+
+@dataclass
+class Run:
+    """What one run of the script did."""
+
+    code: int | None  # None when main raised
+    error: Exception | None
+    out: str
+    data: Path
+    scored: Path
+    reported: Path
+    host: Host
+    sleeps: list[float]
+    # (command, spec path, whether its manifest existed) for each backtest CLI call
+    cli_calls: list[tuple[str, Path, bool]] = field(default_factory=list)
+    # (dataset, index of its first request, index after its last) for each fetch_dataset
+    fetches: list[tuple[str, int, int]] = field(default_factory=list)
+    before: dict[str, str] = field(default_factory=dict)
+    after: dict[str, str] = field(default_factory=dict)
+
+    def manifest(self, name: str) -> dict[str, Any]:
+        return load_manifest(self.data / f"{name}.manifest.json")
+
+    def fetched(self, name: str) -> list[str]:
+        (first, end) = next((a, b) for n, a, b in self.fetches if n == name)
+        return self.host.requests[first:end]
+
+
+def run_script(tmp: Path, objects: dict[str, bytes], fail_once: set[str] | None = None) -> Run:
+    """The script's ``main`` with the fake host, from an empty working directory, with every
+    network route of the fetch code replaced by an error."""
+    specs, data, cwd = tmp / "specs", tmp / "data", tmp / "cwd"
+    specs.mkdir()
+    cwd.mkdir()
+    scored, reported = specs / "synthetic-scored.toml", specs / "synthetic-reported.toml"
+    scored.write_text(SCORED_SPEC, encoding="utf-8")
+    reported.write_text(REPORTED_SPEC, encoding="utf-8")
+    run = Run(None, None, "", data, scored, reported, Host(objects, fail_once or set()), [])
+    real_cli, real_fetch = fetch_full_range.backtest_cli.main, fetch_full_range.fetch_dataset
+
+    def spy_cli(argv: list[str]) -> int:
+        spec = Path(argv[argv.index("--spec") + 1])
+        run.cli_calls.append((argv[0], spec, manifest_path(spec).is_file()))
+        return real_cli(argv)
+
+    def spy_fetch(spec: Any, data_dir: Path, **kwargs: Any) -> dict[str, Any]:
+        first = len(run.host.requests)
+        try:
+            return real_fetch(spec, data_dir, **kwargs)
+        finally:
+            run.fetches.append((spec.name, first, len(run.host.requests)))
+
+    def no_network(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the fetch code tried to reach the network")
+
+    roots = [tmp, ROOT / "config"]
+    run.before = snapshot(roots, data)
+    out = io.StringIO()
+    argv = [str(data), "--spec", str(scored), "--reported-spec", str(reported), "--jobs", "1"]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(cwd)
+        patch.setattr(fetch_full_range.backtest_cli, "main", spy_cli)
+        patch.setattr(fetch_full_range, "fetch_dataset", spy_fetch)
+        for name in ("https_connection", "PublicClient", "exchange_filters", "archive_get"):
+            patch.setattr(dataset, name, no_network)
+        with contextlib.redirect_stdout(out):
+            try:
+                run.code = fetch_full_range.main(argv, fetcher=run.host, sleep=run.sleeps.append)
+            except Exception as exc:
+                run.error = exc
+    run.out = out.getvalue()
+    run.after = snapshot(roots, data)
+    return run
+
+
+@pytest.fixture(scope="module")
+def happy(archives: dict[str, bytes], tmp_path_factory: pytest.TempPathFactory) -> Run:
+    """The whole run, with one transient transport failure on the way."""
+    return run_script(tmp_path_factory.mktemp("happy"), archives, {TRANSIENT})
+
+
+def identity(entry: dict[str, Any]) -> tuple[str, str, str]:
+    return (entry.get("kind") or entry["interval"], entry["symbol"], entry["month"])
+
+
+def file_name(symbol: str, interval: str, month: str) -> str:
+    return archive_path(symbol, interval, month).rsplit("/", 1)[1]
+
+
+def digest_row(run: Run, name: str) -> str:
+    digest = (run.data / "synthetic-scored.digest.txt").read_text(encoding="utf-8")
+    (row,) = [line for line in digest.splitlines() if line.split(" ", 1)[0] == name]
+    return row
+
+
+def committed_filters() -> dict[str, Any]:
+    filters = load_manifest(DATASETS / "long-bull-bear-2022.manifest.json")["instruments"]
+    return {symbol: filters[symbol] for symbol in TRADED}
+
+
+def test_the_synthetic_specs_have_the_committed_symbols_basket_and_pricing(tmp_path: Path) -> None:
+    committed = load_spec(DATASETS / "full-range-2017-2024.toml")
+    for text in (SCORED_SPEC, REPORTED_SPEC):
+        path = tmp_path / "spec.toml"
+        path.write_text(text, encoding="utf-8")
+        spec = load_spec(path)
+        for name in ("traded", "market_proxy", "breadth_basket", "initial_quote", "fee_rate"):
+            assert getattr(spec, name) == getattr(committed, name)
+        for name in ("slippage_rate", "participation", "assumed_spread_pct"):
+            assert getattr(spec, name) == getattr(committed, name)
+        assert spec.months(spec.start) == [EVALUATION]
+
+
+def test_fetch_full_range_writes_only_under_data_and_uses_committed_filters(happy: Run) -> None:
+    assert (happy.code, happy.error) == (0, None), happy.out
+    assert happy.out.splitlines()[-1] == "RESULT 0 problem(s)"
+    # No file outside <data-dir> changed, none was added (the working directory stays
+    # empty), and the committed specs and manifests are untouched.
+    assert happy.after == happy.before
+    # Every request is a canonical archive or checksum path of the first spec's plan, for
+    # archive_get's fixed host; nothing else was asked for.
+    scored = load_spec(happy.scored)
+    planned = {archive_path(*f) for f in scored.required()} | {FUNDING}
+    planned |= {path + ".CHECKSUM" for path in planned}
+    assert set(happy.host.requests) <= planned
+    # Every funding month the spec covers is fetched: the evaluation months from 2020-01.
+    assert {FUNDING, FUNDING + ".CHECKSUM"} <= set(happy.host.requests)
+    # The specs are copied into <data-dir>, and each manifest is written next to its copy
+    # before verify and mask-report read it from there.
+    for spec in (happy.scored, happy.reported):
+        assert (happy.data / spec.name).read_bytes() == spec.read_bytes()
+    assert happy.cli_calls == [
+        ("verify", happy.data / "synthetic-scored.toml", True),
+        ("mask-report", happy.data / "synthetic-scored.toml", True),
+        ("verify", happy.data / "synthetic-reported.toml", True),
+    ]
+    manifest = happy.manifest("synthetic-scored")
+    klines = [identity(e) for e in manifest["files"] if not is_funding(e)]
+    assert klines == [(i, s, m) for s, i, m in scored.required()]
+    funding = [e for e in manifest["files"] if is_funding(e)]
+    assert [(e["month"], e["status"], e["records"]) for e in funding] == [(EVALUATION, "ok", 84)]
+    assert manifest["files"][-1] == funding[0]  # after the klines, where fetch_dataset keeps them
+    # The committed filters, their fetched_at included: no exchangeInfo request was made.
+    assert manifest["instruments"] == committed_filters()
+    # verify prints "valid", and mask-report prints its JSON; both are kept under <data-dir>.
+    verified = json.loads((happy.data / "synthetic-scored.verify.json").read_text("utf-8"))
+    assert verified["status"] == "valid"
+    assert "VERIFY synthetic-scored exit 0 status valid" in happy.out
+    report = json.loads((happy.data / "synthetic-scored.mask-report.json").read_text("utf-8"))
+    assert set(report) == {"dataset", "comparison_mask", "xrp_quote_test", "symbols", "totals"}
+    assert (report["dataset"], report["totals"]["excluded_months"]) == ("synthetic-scored", 0)
+    assert report["xrp_quote_test"]["breaches"] is False
+    assert "MASK totals" in happy.out
+    assert "MASK XRPUSDT quote test" in happy.out
+
+
+def test_the_committed_specs_are_the_default_plan() -> None:
+    assert fetch_full_range.SCORED_SPEC == DATASETS / "full-range-2017-2024.toml"
+    assert fetch_full_range.REPORTED_SPEC == DATASETS / "full-range-2019-2024.toml"
+    assert fetch_full_range.FILTERS == DATASETS / "long-bull-bear-2022.manifest.json"
+    scored = load_spec(fetch_full_range.SCORED_SPEC)
+    reported = load_spec(fetch_full_range.REPORTED_SPEC)
+    months = fetch_full_range.funding_months(scored)
+    assert (len(months), months[0], months[-1]) == (60, "2020-01", "2024-12")
+    assert fetch_full_range.funding_months(reported) == months
+    assert len(scored.required()) == 1164
+    assert len(reported.required()) == 1080
+    assert set(reported.required()) <= set(scored.required())
+    assert set(fetch_full_range.committed_filters(fetch_full_range.FILTERS)) >= set(TRADED)
+
+
+def test_a_transient_feed_error_is_retried_and_the_run_completes(happy: Run) -> None:
+    assert happy.code == 0
+    assert happy.fetched("synthetic-scored").count(TRANSIENT) == 2
+    assert happy.sleeps == [1]
+    assert f"RETRY attempt 1 of 4 for {TRANSIENT}: synthetic transport failure" in happy.out
+
+
+def test_a_checksum_mismatch_is_not_retried_and_stops_the_run(
+    archives: dict[str, bytes], tmp_path: Path
+) -> None:
+    objects = dict(archives)
+    path = archive_path("BTCUSDT", "1m", EVALUATION)
+    serve(objects, path, objects[path], checksum="0" * 64)
+    run = run_script(tmp_path, objects)
+    assert isinstance(run.error, DataError)
+    assert "does not match Binance's published SHA-256" in str(run.error)
+    assert run.host.requests.count(path) == 1
+    assert run.sleeps == []
+    assert not list(run.data.glob("*.manifest.json"))
+    assert not local_path(run.data, "BTCUSDT", "1m", EVALUATION).exists()
+
+
+def test_a_missing_funding_month_stops_before_any_manifest_is_written(
+    archives: dict[str, bytes], tmp_path: Path
+) -> None:
+    objects = {p: b for p, b in archives.items() if not p.startswith(FUNDING)}
+    run = run_script(tmp_path, objects)
+    assert (run.code, run.error) == (1, None)
+    assert f"FUNDING {EVALUATION} missing" in run.out
+    stop = [line for line in run.out.splitlines() if line.startswith("STOP")]
+    assert len(stop) == 1 and EVALUATION in stop[0]
+    assert not list(run.data.glob("*.manifest.json"))
+    assert run.fetches == []  # no kline was requested
+    assert run.out.splitlines()[-1] == "RESULT 1 problem(s)"
+
+
+def test_a_pre_listing_404_is_a_missing_row_that_rebuilds(happy: Run) -> None:
+    name = file_name(*MISSING)
+    assert digest_row(happy, name) == f"{name} missing"
+    rebuilt = fetch_full_range.rebuild(
+        (happy.data / "synthetic-scored.digest.txt").read_text("utf-8"),
+        load_spec(happy.scored),
+        load_spec(happy.reported),
+        committed_filters(),
+    )
+    (entry,) = [
+        e
+        for e in happy.manifest("synthetic-scored")["files"]
+        if identity(e) == ("1h", "SOLUSDT", "2022-12")
+    ]
+    assert entry["status"] == "missing"
+    assert [e for e in rebuilt[0]["files"] if identity(e) == identity(entry)] == [entry]
+
+
+def test_a_two_member_archive_is_an_unreadable_row_that_rebuilds(happy: Run) -> None:
+    files = happy.manifest("synthetic-scored")["files"]
+    (entry,) = [e for e in files if identity(e) == ("1h", "LINKUSDT", "2022-12")]
+    reason = "archive must contain exactly LINKUSDT-1h-2022-12.csv"
+    assert (entry["status"], entry["reason"]) == ("unreadable", reason)
+    name = file_name(*UNREADABLE)
+    assert digest_row(happy, name) == (
+        f'{name} {entry["sha256"]} unreadable {entry["bytes"]} "{reason}"'
+    )
+    scored, reported = load_spec(happy.scored), load_spec(happy.reported)
+    digest = (happy.data / "synthetic-scored.digest.txt").read_text("utf-8")
+    first, second = fetch_full_range.rebuild(digest, scored, reported, committed_filters())
+    assert [e for e in first["files"] if identity(e) == identity(entry)] == [entry]
+    dataset._validate_manifest(first)
+    dataset._validate_manifest(second)
+    # The digest rebuilds both manifests whole, as the script checks byte for byte.
+    assert first == happy.manifest("synthetic-scored")
+    assert second == happy.manifest("synthetic-reported")
+    assert "rebuilds both manifests byte for byte: True" in happy.out
+
+
+def test_the_reported_manifest_is_a_subset_with_nothing_downloaded_again(happy: Run) -> None:
+    first, second = happy.manifest("synthetic-scored"), happy.manifest("synthetic-reported")
+    reported = load_spec(happy.reported)
+    klines = [identity(e) for e in second["files"] if not is_funding(e)]
+    assert klines == [(i, s, m) for s, i, m in reported.required()]
+    by_file = {identity(e): e for e in first["files"]}
+    assert all(entry == by_file[identity(entry)] for entry in second["files"])
+    assert [e for e in second["files"] if is_funding(e)] == [
+        e for e in first["files"] if is_funding(e)
+    ]
+    # Only .CHECKSUM requests, besides the archive of a file Binance does not publish (its
+    # checksum is a 404, so _fetch_verified asks for the archive too): no stored archive is
+    # downloaded again.
+    missing = {
+        archive_path(e["symbol"], e["interval"], e["month"])
+        for e in second["files"]
+        if e["status"] == "missing"
+    }
+    assert missing == {archive_path("SOLUSDT", "1h", "2023-01")}
+    requests = happy.fetched("synthetic-reported")
+    assert {p for p in requests if not p.endswith(".CHECKSUM")} == missing
+    assert len([p for p in requests if p.endswith(".CHECKSUM")]) == len(second["files"])
+    verified = json.loads((happy.data / "synthetic-reported.verify.json").read_text("utf-8"))
+    assert verified["status"] == "valid"
+    assert "every entry equals synthetic-scored's: True" in happy.out
+
+
+def test_the_digest_rows_name_each_file_and_only_what_differs_from_a_complete_month() -> None:
+    feb_start, feb_end = month_bounds_ms("2023-02")
+    base = {
+        "symbol": "BTCUSDT",
+        "interval": "1h",
+        "month": "2023-02",
+        "url": "https://data.binance.vision" + archive_path("BTCUSDT", "1h", "2023-02"),
+        "status": "ok",
+        "sha256": "a" * 64,
+        "bytes": 41234,
+        "rows": 672,
+        "expected_rows": 672,
+        "missing_rows": 0,
+        "gaps": 0,
+        "first_open_ms": feb_start,
+        "last_open_ms": feb_end - HOUR_MS,
+        "timestamp_units": ["ms"],
+    }
+    row = fetch_full_range.digest_row
+    assert row(base) == f"BTCUSDT-1h-2023-02.zip {'a' * 64} ok 41234 full"
+    partial = {
+        **base,
+        "rows": 670,
+        "missing_rows": 2,
+        "gaps": 1,
+        "first_open_ms": feb_start + 2 * HOUR_MS,
+    }
+    assert row(partial) == (
+        f"BTCUSDT-1h-2023-02.zip {'a' * 64} ok 41234 rows=670 gaps=1 "
+        f"first_open_ms={feb_start + 2 * HOUR_MS}"
+    )
+    mixed = {**base, "timestamp_units": ["ms", "us"]}
+    assert row(mixed).endswith(' ok 41234 timestamp_units=["ms","us"]')
+    empty = {
+        **base,
+        "rows": 0,
+        "missing_rows": 672,
+        "gaps": 1,
+        "first_open_ms": None,
+        "last_open_ms": None,
+        "timestamp_units": [],
+    }
+    assert row(empty).endswith(
+        " rows=0 gaps=1 first_open_ms=null last_open_ms=null timestamp_units=[]"
+    )
+    identity_only = {k: base[k] for k in ("symbol", "interval", "month", "url")}
+    assert row({**identity_only, "status": "missing"}) == "BTCUSDT-1h-2023-02.zip missing"
+    unreadable = {
+        **identity_only,
+        "status": "unreadable",
+        "sha256": "b" * 64,
+        "bytes": 9,
+        "reason": 'bad "zip"\n',
+    }
+    assert row(unreadable) == f'BTCUSDT-1h-2023-02.zip {"b" * 64} unreadable 9 "bad \\"zip\\"\\n"'
+    funding = {
+        "kind": "fundingRate",
+        "symbol": "BTCUSDT",
+        "month": "2020-01",
+        "url": "https://data.binance.vision" + funding_archive_path("BTCUSDT", "2020-01"),
+        "status": "ok",
+        "sha256": "c" * 64,
+        "bytes": 2817,
+        "records": 93,
+    }
+    assert row(funding) == f"BTCUSDT-fundingRate-2020-01.zip {'c' * 64} ok 2817 records=93"
+    for entry in (
+        base,
+        partial,
+        mixed,
+        empty,
+        unreadable,
+        {**identity_only, "status": "missing"},
+        funding,
+    ):
+        assert fetch_full_range.entry_of(row(entry)) == entry
+
+
+def full_size_manifests() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Both committed windows' manifests as a real fetch could write them, for the digest's
+    size: every archive has a SHA-256 and a byte count of its interval's typical width (7
+    digits for 1m, 5 for 1h, 4 for 1d and funding). The pre-listing months of SOLUSDT,
+    DOGEUSDT and LINKUSDT are missing, the four listing months are partial, and 108 more
+    archives (82 1h and 26 1m, as #156's unparsed ones) differ from a complete month in
+    every field but the units, the longest row the format writes."""
+    scored = load_spec(fetch_full_range.SCORED_SPEC)
+    reported = load_spec(fetch_full_range.REPORTED_SPEC)
+    listing = {"SOLUSDT": "2020-08", "DOGEUSDT": "2019-07", "LINKUSDT": "2019-01"}
+    listing["TRXUSDT"] = "2018-06"
+    required = scored.required()
+    missing = {f for f in required if f[1] == "1h" and f[2] < listing.get(f[0], "0000-00")}
+    partial = {f for f in required if f[1] == "1h" and f[2] == listing.get(f[0])}
+    hourly = [f for f in required if f[1] == "1h" and f not in missing | partial]
+    minute = [f for f in required if f[1] == "1m"]
+    damaged = set(hourly[::8][:82]) | set(minute[::8][:26])
+    assert (len(missing), len(partial), len(damaged)) == (46, 4, 108)
+    width = {"1m": 2_345_678, "1h": 45_678, "1d": 2_345}
+    files = []
+    for number, (symbol, interval, month) in enumerate(required):
+        entry: dict[str, Any] = {
+            "symbol": symbol,
+            "interval": interval,
+            "month": month,
+            "url": "https://data.binance.vision" + archive_path(symbol, interval, month),
+        }
+        if (symbol, interval, month) in missing:
+            files.append({**entry, "status": "missing"})
+            continue
+        start, end = month_bounds_ms(month)
+        step = {"1m": MINUTE_MS, "1h": HOUR_MS, "1d": DAY_MS}[interval]
+        rows = (end - start) // step
+        stats = {"rows": rows, "gaps": 0, "first_open_ms": start, "last_open_ms": end - step}
+        if (symbol, interval, month) in partial | damaged:
+            stats = {
+                "rows": rows - 17,
+                "gaps": 3,
+                "first_open_ms": start + step,
+                "last_open_ms": end - 2 * step,
+            }
+        files.append(
+            {
+                **entry,
+                "status": "ok",
+                "sha256": hashlib.sha256(f"{symbol}{interval}{month}".encode()).hexdigest(),
+                "bytes": width[interval] + number,
+                "expected_rows": rows,
+                "missing_rows": rows - stats["rows"],
+                "timestamp_units": ["ms"],
+                **stats,
+            }
+        )
+    funding = [
+        {
+            "kind": "fundingRate",
+            "symbol": "BTCUSDT",
+            "month": month,
+            "url": "https://data.binance.vision" + funding_archive_path("BTCUSDT", month),
+            "status": "ok",
+            "sha256": hashlib.sha256(month.encode()).hexdigest(),
+            "bytes": 2_800 + number,
+            "records": 93,
+        }
+        for number, month in enumerate(fetch_full_range.funding_months(scored))
+    ]
+    by_file = {(e["symbol"], e["interval"], e["month"]): e for e in files}
+    filters = committed_filters()
+
+    def manifest(spec: Any, kline: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "schema": 1,
+            "dataset": spec.name,
+            "source": "https://data.binance.vision",
+            "created_at": "2026-10-08T12:34:56+00:00",
+            "instruments": filters,
+            "files": kline + funding,
+        }
+
+    return manifest(scored, files), manifest(reported, [by_file[f] for f in reported.required()])
+
+
+def test_a_full_size_digest_rebuilds_both_manifests_and_fits_the_report() -> None:
+    first, second = full_size_manifests()
+    assert (len(first["files"]), len(second["files"])) == (1164 + 60, 1080 + 60)
+    hashes = {first["dataset"]: "d" * 64, second["dataset"]: "e" * 64}
+    digest = fetch_full_range.digest_text(first, second, hashes)
+    scored = load_spec(fetch_full_range.SCORED_SPEC)
+    reported = load_spec(fetch_full_range.REPORTED_SPEC)
+    assert fetch_full_range.rebuild(digest, scored, reported, committed_filters()) == (
+        first,
+        second,
+    )
+    lines = digest.splitlines()
+    assert len(lines) == 3 + 1164 + 60
+    assert lines[1] == (
+        f"manifest full-range-2017-2024 created_at 2026-10-08T12:34:56+00:00 files 1224 "
+        f"sha256 {'d' * 64}"
+    )
+    # Well inside the 190,000 bytes above which Bob stops (validate_bob_artifact.py rejects
+    # a report over 200,000), with room for the run log and the hand-written passages.
+    assert len(digest.encode("utf-8")) < 150_000
+
+
+def test_requests_outside_the_plan_are_refused_and_retries_are_bounded() -> None:
+    planned = archive_path("BTCUSDT", "1h", "2024-12")
+    outages: list[str] = []
+
+    def down(path: str) -> bytes | None:
+        outages.append(path)
+        raise FeedError("down")
+
+    sleeps: list[float] = []
+    lines: list[str] = []
+    requests = fetch_full_range.Requests(down, {planned}, sleeps.append, lines.append)
+    with pytest.raises(FeedError):
+        requests(planned)
+    assert (outages, sleeps) == ([planned] * 4, [1, 2, 4])
+    assert [line.split(":")[0] for line in lines] == [
+        f"RETRY attempt {n} of 4 for {planned}" for n in (1, 2, 3, 4)
+    ]
+    for path in (archive_path("BTCUSDT", "1h", "2025-01"), "/data/spot/monthly/klines/BTCUSDT/1h/"):
+        with pytest.raises(fetch_full_range.OutOfScope):
+            requests(path)
+    assert outages == [planned] * 4  # a refused path never reaches the fetcher
+    assert requests.paths == [planned] * 4
