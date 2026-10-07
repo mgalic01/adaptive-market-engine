@@ -12,6 +12,7 @@ import json
 import multiprocessing
 import os
 import pickle
+import re
 import shutil
 import subprocess
 import sys
@@ -215,6 +216,15 @@ class Logged:
         self.events.append(("result", *self.job))
         return self.value
 
+    def add_done_callback(self, callback):
+        callback(self)  # a finished future calls it at once; the timeline logs results only
+
+    def cancelled(self):
+        return False
+
+    def exception(self):
+        return None
+
 
 class CrossCheckParallelismTests(unittest.TestCase):
     def test_every_cross_check_is_submitted_before_any_result_is_awaited(self):
@@ -301,3 +311,21 @@ class SpawnedCliTests(unittest.TestCase):
             {symbol: ["2023-12", "2024-01"] for symbol in ("BTCUSDT", "ETHUSDT")},
             {s: entry["excluded_months"] for s, entry in report["comparison_mask"].items()},
         )
+        # The progress lines of a real pool, on stderr and never on stdout (parsed above as
+        # the one report): each mask and each check is reported started as it is submitted
+        # and done as its future finishes, in whatever order the workers finish them.
+        self.assertNotIn("progress:", done.stdout)
+        lines = "\n".join(x for x in done.stderr.splitlines() if x.startswith("progress: "))
+        stamp = r"^progress: \[\d+:\d\d:\d\d\] "
+        for phase in ("mask", "cross-check"):
+            wanted = [
+                rf"{phase} start \(2 jobs\)",
+                rf"{phase} done in \d+:\d\d:\d\d",
+                *(rf"{phase} \d/2 start {symbol}" for symbol in ("BTCUSDT", "ETHUSDT")),
+                *(
+                    rf"{phase} \d/2 done {symbol} in \d+:\d\d:\d\d"
+                    for symbol in ("BTCUSDT", "ETHUSDT")
+                ),
+            ]
+            for pattern in wanted:
+                self.assertRegex(lines, re.compile(stamp + pattern + "$", re.M))
