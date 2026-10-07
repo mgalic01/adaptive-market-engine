@@ -428,9 +428,11 @@ class Inline:
 
     def submit(self, fn, *args):
         self.submitted.append((fn, args))
-        if fn.__name__ == "mask_job":
+        # A check is submitted as a partial binding its config (and its symbol's mask).
+        name = getattr(fn, "func", fn).__name__
+        if name == "mask_job":
             return Done(SymbolMask(args[2], None, ()))
-        if fn.__name__ == "cross_check_job":
+        if name == "cross_check_job":
             return Done({"symbol": args[2], **CLEAN})
         if fn is trend_job:
             return Done({**good_result(args[3], args[4], False), "variant": "D"})

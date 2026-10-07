@@ -32,8 +32,14 @@ ROOT = Path(__file__).resolve().parents[1]
 DEC_2023_MS = 1701388800000  # 2023-12-01T00:00:00Z
 
 
+def job_of(submitted):
+    """The job function behind a submitted callable: the CLI submits every cross-check as a
+    ``functools.partial`` that binds keywords (the config, and the symbol's mask)."""
+    return getattr(submitted, "func", submitted)
+
+
 class Recorder:
-    """Stand-in for ProcessPoolExecutor that records every function submitted."""
+    """Stand-in for ProcessPoolExecutor that records every callable submitted."""
 
     submitted: list = []
 
@@ -48,9 +54,9 @@ class Recorder:
 
     def submit(self, fn, *args):
         self.submitted.append(fn)
-        if fn.__name__ == "mask_job":
+        if job_of(fn).__name__ == "mask_job":
             return Done(SymbolMask(args[2], None, ()))
-        if fn.__name__ == "cross_check_job":
+        if job_of(fn).__name__ == "cross_check_job":
             return Done({"symbol": args[2], **CLEAN})
         return Done(good_result(*args[3:6]))
 
@@ -71,7 +77,7 @@ class PoolJobReferenceTests(unittest.TestCase):
             self.addCleanup(item.stop)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(0, cli.main(["run", "--spec", SPEC, "--out", self.temp.name]))
-        self.jobs = {fn.__name__: fn for fn in Recorder.submitted}
+        self.jobs = {job_of(fn).__name__: job_of(fn) for fn in Recorder.submitted}
 
     def test_every_pool_job_is_defined_outside_a_main_module(self):
         # mask_job runs in the pool too, before any check (spec v1 section 5).
@@ -80,6 +86,11 @@ class PoolJobReferenceTests(unittest.TestCase):
             with self.subTest(job=name):
                 self.assertNotEqual("__main__", fn.__module__.rpartition(".")[2])
                 self.assertIs(fn, pickle.loads(pickle.dumps(fn)))
+        # What the pool pickles is the submitted callable itself, a partial for a check.
+        for submitted in Recorder.submitted:
+            restored = pickle.loads(pickle.dumps(submitted))
+            self.assertIs(job_of(submitted), job_of(restored))
+            self.assertEqual(getattr(submitted, "keywords", {}), getattr(restored, "keywords", {}))
 
     def test_a_spawned_worker_refuses_other_sources(self):
         # Codex review of #160: the initializer runs in the worker before any job.
@@ -189,9 +200,9 @@ class Timeline:
         return False
 
     def submit(self, fn, *args):
-        job = (fn.__name__, args[2])
+        job = (job_of(fn).__name__, args[2])
         self.events.append(("submit", *job))
-        if fn.__name__ == "mask_job":
+        if job_of(fn).__name__ == "mask_job":
             return Logged(self.events, job, SymbolMask(args[2], None, ()))
         return Logged(self.events, job, {"symbol": args[2], **CLEAN})
 

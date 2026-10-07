@@ -740,20 +740,15 @@ def evaluation_window(spec: DatasetSpec) -> tuple[int, int]:
 
 def data_rule_exclusions(spec: DatasetSpec, pair: str) -> list[str]:
     """Section 5's long-window data rules that exclude a pair-window for every variant
-    alike: XRP where a replayed quote breaks the tick limit (rule 8), by Bob's
-    measurement.
+    alike, through a hook of their own. None does, so this is empty:
 
-    They arrive with the long-window data PR, which names the fields that record that
-    measurement and each run's mask report (rules 1-4: masked hours, skipped days, fills
-    after a masked span). Until then nothing is excluded here and no hour is masked: a
-    failed hour fails its integrity check, which excludes its pair-window in
-    ``window_of``, as in stage 1. When they land:
-
-    * the measurement plugs in here;
+    * rule 8, XRP where a replayed quote breaks the tick limit, reaches the scorer through
+      the cross-check record's ``tick_limit_quotes`` and ``scoped_failures``, which make it
+      XRP's own failure, so ``window_of`` excludes the pair-window as it does any failed
+      check;
     * masking runs before the checks, which then run on the post-mask expected set, so a
       maskable defect stops failing them in ``integrity_failures`` (section 5, "The
-      post-mask expected set"), and ``window_of`` keeps its rules;
-    * the mask report joins ``Run`` and ``run_json`` in ``runs_of``."""
+      post-mask expected set"), and ``window_of`` keeps its rules."""
     return []
 
 
@@ -912,8 +907,7 @@ def runs_of(document: dict[str, Any], window: Window) -> Iterator[tuple[str, Run
             if not invalid:
                 ratio = gate_ratio(return_pct(baseline), number(baseline["max_drawdown_pct"]))
         # Section 5 rules 1-4: each run's mask report (masked hours, skipped days, fills
-        # after a masked span) joins the Run here, under the names the long-window data PR
-        # gives it (``data_rule_exclusions``).
+        # after a masked span) is reported in each row and scored by no criterion.
         yield (
             variant,
             Run(

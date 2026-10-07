@@ -16,9 +16,9 @@ import test_backtest_masked_checks as masked_checks
 
 from crypto_grid_bot.backtest import __main__ as cli
 from crypto_grid_bot.backtest import jobs
-from crypto_grid_bot.backtest.dataset import local_path
+from crypto_grid_bot.backtest.dataset import fetch_dataset, load_spec, local_path, write_manifest
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE_VERSION
-from crypto_grid_bot.backtest.klines import month_bounds_ms
+from crypto_grid_bot.backtest.klines import Kline, aggregate, month_bounds_ms
 from crypto_grid_bot.backtest.masking import (
     HOUR_MS,
     INCOMPLETE_HOUR,
@@ -27,6 +27,7 @@ from crypto_grid_bot.backtest.masking import (
     MonthMask,
     apply_seventeen_percent,
 )
+from crypto_grid_bot.backtest.replay import cross_check_hourly
 from crypto_grid_bot.market_data.parsing import DataError
 from crypto_grid_bot.simulation.runner import SimulationPolicy
 
@@ -176,6 +177,10 @@ MASKED_WINDOW_COMPARISON_MASK = {
 }
 
 
+# The comparison mask of a window whose only entry is XRPUSDT's breach of two quotes.
+QUOTE_BREACH_MASK = {"XRPUSDT": {"masked": [], "excluded_months": [], "tick_limit_quotes": 2}}
+
+
 class CliIntegrityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -192,6 +197,8 @@ class CliIntegrityTests(unittest.TestCase):
         self.verified = []
         self.symbol_masks: dict[str, jobs.SymbolMask] = {}  # every other symbol's is None
         self.events = []  # each job and the comparison mask, in the order they happen
+        self.configs = []  # the config every check was given
+        self.quote = None  # what XRPUSDT's statistic job returns (mask-report)
         comparison_mask = cli.comparison_mask
 
         def recorded_comparison_mask(masks):
@@ -207,6 +214,7 @@ class CliIntegrityTests(unittest.TestCase):
             patch.object(cli, "mask_job", self.fake_mask),
             patch.object(cli, "comparison_mask", recorded_comparison_mask),
             patch.object(cli, "cross_check_job", self.fake_check),
+            patch.object(cli, "quote_test_job", self.fake_quote),
             patch.object(cli, "run_job", self.fake_run),
         ]
         for item in patches:
@@ -217,10 +225,25 @@ class CliIntegrityTests(unittest.TestCase):
         self.events.append(("mask", symbol))
         return self.symbol_masks.get(symbol, jobs.SymbolMask(symbol, None, ()))
 
-    def fake_check(self, spec, data_dir, symbol, strict_volume=False, *, mask=NOT_PASSED):
+    def fake_check(
+        self,
+        spec,
+        data_dir,
+        symbol,
+        strict_volume=False,
+        *,
+        mask=NOT_PASSED,
+        config_path=NOT_PASSED,
+    ):
         self.events.append(("check", symbol, mask))
         self.strict.append(strict_volume)
+        self.configs.append(config_path)
         return {"symbol": symbol, **self.checks, **self.overrides.get(symbol, {})}
+
+    def fake_quote(self, spec, data_dir, config_path, mask):
+        self.events.append(("quote", mask))
+        self.configs.append(config_path)
+        return self.quote
 
     def fake_run(
         self,
@@ -343,6 +366,120 @@ class CliIntegrityTests(unittest.TestCase):
         (sol,) = [c for c in document["hourly_cross_checks"] if c["symbol"] == "SOLUSDT"]
         self.assertEqual(102, sol["daily_days_missing"])
         self.assertEqual({"BTCUSDT", "XRPUSDT"}, {r["symbol"] for r in document["results"]})
+
+    def test_an_xrp_quote_breach_excludes_its_pair_window_and_enters_the_comparison_mask(self):
+        # Spec v1 section 5 rule 8: XRPUSDT's cross-check records tick_limit_quotes only when
+        # a replayed quote breaks the spread limit. The record is XRP's own failure, which
+        # excludes its pair-window for every variant (no rows, an excluded_pairs entry, the
+        # window still valid), and the comparison mask records the breach beside the mask the
+        # hours gave it. A pass writes nothing anywhere.
+        practice = str(ROOT / "config/datasets/practice-2022.toml")
+        self.assertEqual(0, self.main("verify", "--spec", practice))
+        self.assertNotIn("comparison_mask", json.loads(self.printed))
+        self.assertNotIn("excluded_pairs", json.loads(self.printed))
+        self.assertEqual(0, self.main("run", "--spec", practice, "--out", self.temp.name + "/pass"))
+        (written,) = Path(self.temp.name, "pass").rglob("results.json")
+        document = json.loads(written.read_text())
+        self.assertFalse({"comparison_mask", "excluded_pairs"} & set(document))
+        self.assertEqual(
+            {"BTCUSDT", "SOLUSDT", "XRPUSDT"}, {r["symbol"] for r in document["results"]}
+        )
+        self.assertFalse(any("tick_limit_quotes" in c for c in document["hourly_cross_checks"]))
+        # The breach, and XRP's hours masked as well.
+        july = month_bounds_ms("2022-07")[0]
+        self.symbol_masks = {
+            "XRPUSDT": symbol_mask(
+                "XRPUSDT",
+                month_mask("2022-07", {july + h * HOUR_MS: NO_MINUTE_BARS for h in range(3)}),
+            )
+        }
+        self.overrides = {"XRPUSDT": {"tick_limit_quotes": 7}}
+        reason = ["XRPUSDT: tick_limit_quotes=7"]
+        mask = {
+            "XRPUSDT": {
+                "masked": [
+                    {
+                        "from": "2022-07-01T00:00Z",
+                        "to": "2022-07-01T03:00Z",
+                        "reason": "no minute bars",
+                    }
+                ],
+                "excluded_months": [],
+                "tick_limit_quotes": 7,
+            }
+        }
+        self.assertEqual(0, self.main("verify", "--spec", practice))
+        printed = json.loads(self.printed)
+        self.assertEqual(
+            ({"XRPUSDT": reason}, mask), (printed["excluded_pairs"], printed["comparison_mask"])
+        )
+        self.replays.clear()
+        self.assertEqual(
+            0, self.main("run", "--spec", practice, "--out", self.temp.name + "/breach")
+        )
+        self.assertEqual({"BTCUSDT", "SOLUSDT"}, set(self.replays))
+        (written,) = Path(self.temp.name, "breach").rglob("results.json")
+        document = json.loads(written.read_text())
+        self.assertEqual((True, []), (document["valid"], document["failures"]))
+        self.assertEqual({"XRPUSDT": reason}, document["excluded_pairs"])
+        self.assertEqual(mask, document["comparison_mask"])
+        self.assertEqual({"BTCUSDT", "SOLUSDT"}, {r["symbol"] for r in document["results"]})
+        (xrp,) = [c for c in document["hourly_cross_checks"] if c["symbol"] == "XRPUSDT"]
+        self.assertEqual(7, xrp["tick_limit_quotes"])
+        # With no hour masked, the breach is the whole mask.
+        self.symbol_masks = {}
+        self.assertEqual(0, self.main("verify", "--spec", practice))
+        quotes = {"XRPUSDT": {"masked": [], "excluded_months": [], "tick_limit_quotes": 7}}
+        self.assertEqual(quotes, json.loads(self.printed)["comparison_mask"])
+
+    def test_every_check_is_given_the_config(self):
+        # Rule 8 reads config/default.toml's maximum_spread_pct in XRPUSDT's check, so the
+        # CLI passes --config to every check, masked or not.
+        self.assertEqual(0, self.main("verify"))
+        self.assertEqual({Path("config/default.toml")}, set(self.configs))
+        self.configs.clear()
+        self.symbol_masks = MASKED_WINDOW
+        self.assertEqual(0, self.main("verify", "--config", "other.toml"))
+        symbols = cli.checked_symbols(jobs.load_spec(Path(self.spec)))
+        self.assertEqual([Path("other.toml")] * len(symbols), self.configs)
+
+    def test_mask_report_prints_xrps_statistic_only_where_xrp_is_traded(self):
+        # Ruling: mask-report prints rule 8's statistic, the same one the cross-check
+        # records, when XRPUSDT is traded, run on XRP's own mask; elsewhere the key is null
+        # and no statistic is computed. Its comparison mask carries the breach, as a run's.
+        self.assertEqual(0, self.main("mask-report"))
+        report = json.loads(self.printed)
+        self.assertIsNone(report["xrp_quote_test"])
+        self.assertNotIn("quote", [e[0] for e in self.events])
+        practice = str(ROOT / "config/datasets/practice-2022.toml")
+        passing = {
+            "maximum_spread_pct": "0.15",
+            "widest_spread_pct": "0.0999",
+            "tick_limit_quotes": 0,
+            "breaches": False,
+        }
+        breach = {
+            **passing,
+            "widest_spread_pct": "0.1998",
+            "tick_limit_quotes": 2,
+            "breaches": True,
+        }
+        xrp_mask = symbol_mask("XRPUSDT", month_mask("2022-07", {}))
+        for quote, comparison in ((passing, {}), (breach, QUOTE_BREACH_MASK)):
+            with self.subTest(quote=quote):
+                self.events.clear()
+                self.quote, self.symbol_masks = quote, {"XRPUSDT": xrp_mask}
+                self.assertEqual(0, self.main("mask-report", "--spec", practice))
+                report = json.loads(self.printed)
+                self.assertEqual(quote, report["xrp_quote_test"])
+                self.assertEqual(comparison, report["comparison_mask"])
+                # One statistic job, after every mask and before any other job, which is
+                # given XRPUSDT's own mask and the config.
+                self.assertEqual("comparison mask", self.events[-2][0])
+                self.assertEqual(("quote", xrp_mask.mask), self.events[-1])
+                self.assertEqual([Path("config/default.toml")], self.configs[-1:])
+        self.assertEqual(0, self.main("mask-report", "--spec", practice, "--config", "x.toml"))
+        self.assertEqual(Path("x.toml"), self.configs[-1])
 
     def test_a_failure_of_the_market_proxys_hours_still_excludes_every_pair(self):
         # BTCUSDT is traded too, but as the proxy its hours feed every pair's regime, so a
@@ -674,12 +811,24 @@ class MarketProxyCheckTests(CliIntegrityTests):
         self.proxy_checks = dict(PROXY_CLEAN)
         self.checked = []
 
-    def fake_check(self, spec, data_dir, symbol, strict_volume=False, *, mask=NOT_PASSED):
+    def fake_check(
+        self,
+        spec,
+        data_dir,
+        symbol,
+        strict_volume=False,
+        *,
+        mask=NOT_PASSED,
+        config_path=NOT_PASSED,
+    ):
         self.checked.append(symbol)
         if symbol == "ETHUSDT":
             self.events.append(("check", symbol, mask))
+            self.configs.append(config_path)
             return {"symbol": symbol, **self.proxy_checks}
-        return super().fake_check(spec, data_dir, symbol, strict_volume, mask=mask)
+        return super().fake_check(
+            spec, data_dir, symbol, strict_volume, mask=mask, config_path=config_path
+        )
 
     def test_a_run_whose_every_pair_is_excluded_replays_nothing(self):
         # Each traded pair's own check fails while the untraded proxy passes: no pair is
@@ -745,12 +894,24 @@ class MarketProxyCheckTests(CliIntegrityTests):
 class BasketCheckTests(MarketProxyCheckTests):
     """Breadth-basket inputs are validated; only documented absences are exempt."""
 
-    def fake_check(self, spec, data_dir, symbol, strict_volume=False, *, mask=NOT_PASSED):
+    def fake_check(
+        self,
+        spec,
+        data_dir,
+        symbol,
+        strict_volume=False,
+        *,
+        mask=NOT_PASSED,
+        config_path=NOT_PASSED,
+    ):
         if symbol == "DOGEUSDT":
             self.checked.append(symbol)
             self.events.append(("check", symbol, mask))
+            self.configs.append(config_path)
             return {"symbol": symbol, **self.basket_check}
-        return super().fake_check(spec, data_dir, symbol, strict_volume, mask=mask)
+        return super().fake_check(
+            spec, data_dir, symbol, strict_volume, mask=mask, config_path=config_path
+        )
 
     def setUp(self):
         super().setUp()
@@ -844,6 +1005,7 @@ class MaskReportTests(unittest.TestCase):
         self.assertEqual(
             {
                 "dataset": "doge-window",
+                "xrp_quote_test": None,  # XRPUSDT is not traded here
                 "comparison_mask": {
                     "BTCUSDT": {"masked": march, "excluded_months": ["2020-03"]},
                     "ETHUSDT": {"masked": march, "excluded_months": ["2020-03"]},
@@ -864,6 +1026,331 @@ class MaskReportTests(unittest.TestCase):
             },
             report,
         )
+
+
+CLEAN_FIELDS = dict.fromkeys(cli.INTEGRITY_FIELDS, 0)
+
+
+class QuoteIntegrityTests(unittest.TestCase):
+    def test_stage_1_checks_still_need_every_existing_field(self):
+        # tick_limit_quotes is read with a default, since only a breach writes it; every
+        # other integrity field keeps its direct lookup, so a stage-1 record that lacks one
+        # still raises, as before.
+        pair = {"symbol": "XRPUSDT", "hours_compared": 10, **CLEAN_FIELDS}
+        self.assertEqual([], cli.integrity_failures([pair]))
+        for field in (*cli.INTEGRITY_FIELDS, "hours_compared"):
+            with self.subTest(field=field), self.assertRaises(KeyError):
+                cli.integrity_failures([{k: v for k, v in pair.items() if k != field}])
+        daily = {"daily_days_compared": 10, **dict.fromkeys(cli.DAILY_INTEGRITY_FIELDS, 0)}
+        self.assertEqual([], cli.integrity_failures([pair | daily]))
+        for field in cli.DAILY_INTEGRITY_FIELDS:
+            with self.subTest(field=field), self.assertRaises(KeyError):
+                cli.integrity_failures([pair | {k: v for k, v in daily.items() if k != field}])
+        series = {"symbol": "ETHUSDT", **PROXY_CLEAN, "role": "breadth_basket"}
+        for field in cli.SERIES_INTEGRITY_FIELDS:
+            with self.subTest(field=field), self.assertRaises(KeyError):
+                cli.integrity_failures([{k: v for k, v in series.items() if k != field}])
+        # The new field is read on a traded pair's check, and a zero is no failure.
+        self.assertEqual(("tick_limit_quotes",), cli.QUOTE_INTEGRITY_FIELDS)
+        self.assertEqual([], cli.integrity_failures([{**pair, "tick_limit_quotes": 0}]))
+        self.assertEqual(
+            ["XRPUSDT: tick_limit_quotes=3"],
+            cli.integrity_failures([{**pair, "tick_limit_quotes": 3}]),
+        )
+
+    def test_a_quote_breach_is_the_xrp_pairs_own_failure(self):
+        # XRP is traded and is not the market proxy, so scoped_failures makes the record
+        # its own, and no other pair's, with no code beyond the field's name.
+        spec = jobs.load_spec(ROOT / "config/datasets/practice-2022.toml")
+        daily = {"daily_days_compared": 10} | dict.fromkeys(cli.DAILY_INTEGRITY_FIELDS, 0)
+        checks = []
+        for symbol in cli.checked_symbols(spec):
+            if symbol in spec.traded:
+                checks.append({"symbol": symbol, "hours_compared": 10, **CLEAN_FIELDS, **daily})
+            else:
+                checks.append({"symbol": symbol, **PROXY_CLEAN, "role": "breadth_basket"})
+        self.assertEqual(([], {}), cli.scoped_failures(spec, checks))
+        next(c for c in checks if c["symbol"] == "XRPUSDT")["tick_limit_quotes"] = 4
+        self.assertEqual(
+            ([], {"XRPUSDT": ["XRPUSDT: tick_limit_quotes=4"]}), cli.scoped_failures(spec, checks)
+        )
+
+
+XRP_WINDOW = """name = "xrp-window"
+purpose = "synthetic: rule 8's statistic through cross_check_job"
+traded = ["BTCUSDT", "XRPUSDT"]
+market_proxy = "BTCUSDT"
+breadth_basket = ["BTCUSDT", "XRPUSDT"]
+warmup_start = "2024-01"
+start = "2024-02"
+end = "2024-02"
+initial_quote = "100"
+fee_rate = "0.001"
+slippage_rate = "0.0005"
+participation = "0.10"
+assumed_spread_pct = "0.05"
+"""
+XRP_NOT_TRADED = XRP_WINDOW.replace('traded = ["BTCUSDT", "XRPUSDT"]', 'traded = ["BTCUSDT"]')
+MINUTE_MS = 60_000
+FEB_1, FEB_END = month_bounds_ms("2024-02")
+CONFIG = ROOT / "config/default.toml"
+
+
+def flat_minutes(first_ms, count, price="1"):
+    """``count`` minutes from ``first_ms``, each open, high, low and close at ``price``."""
+    p = Decimal(price)
+    return [
+        Kline(first_ms + i * MINUTE_MS, p, p, p, p, Decimal(10), 10 * p, Decimal(4))
+        for i in range(count)
+    ]
+
+
+class XrpQuoteJobTests(unittest.TestCase):
+    """Spec v1 section 5 rule 8 through ``cross_check_job`` and ``quote_test_job``, on
+    synthetic minutes: ``load_minutes`` returns one-shot iterators, as the real one does,
+    and counts its calls."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.spec = Path(self.temp.name) / "xrp-window.toml"
+        self.spec.write_text(XRP_WINDOW)
+        self.calls = []
+        # Three evaluation hours at 1.0 and the last hour before them, which is warm-up and
+        # never replayed; no quote of them is wide.
+        self.warm_up = FEB_1 - HOUR_MS
+        self.minutes = flat_minutes(self.warm_up, 60) + flat_minutes(FEB_1, 180)
+        manifest = {"instruments": {s: {"tick_size": "0.0001"} for s in ("BTCUSDT", "XRPUSDT")}}
+        for item in (
+            patch.object(jobs, "load_manifest", lambda path: manifest),
+            patch.object(jobs, "load_minutes", self.load_minutes),
+            patch.object(jobs, "load_hourly", self.load_hourly),
+        ):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def kept(self, mask):
+        return [
+            k for k in self.minutes if mask is None or k.open_ms // HOUR_MS * HOUR_MS not in mask
+        ]
+
+    def load_minutes(self, data_dir, manifest, symbol, *, mask=None, excluded=()):
+        self.calls.append((symbol, mask, list(excluded)))
+        return iter(self.kept(mask))  # one pass only
+
+    def load_hourly(self, data_dir, manifest, symbol, *, mask=None, excluded=()):
+        return list(aggregate(self.kept(mask)))
+
+    def widen(self, minute, price="0.1"):
+        """Replace the minute of ``self.minutes`` that opens at ``minute`` by a flat bar at a
+        price whose open and close quotes are wide: at 0.1 with a 0.0001 tick they are
+        0.0999 / 0.1001, 0.1998%."""
+        index = next(i for i, k in enumerate(self.minutes) if k.open_ms == minute)
+        self.minutes[index] = flat_minutes(minute, 1, price)[0]
+
+    def check(self, symbol="XRPUSDT", **keywords):
+        return jobs.cross_check_job(self.spec, Path("data"), symbol, config_path=CONFIG, **keywords)
+
+    def hourly_counts(self, mask=None):
+        """What the cross-check alone gives, from fresh iterators."""
+        window = jobs.evaluation_bounds_ms(jobs.load_spec(self.spec))
+        hourly = list(aggregate(self.kept(mask)))
+        return cross_check_hourly(iter(self.kept(mask)), hourly, window, masked=mask or frozenset())
+
+    def test_one_wide_quote_excludes_xrp_and_a_pass_writes_nothing(self):
+        # A pass: no key. The cross-check reads the minutes, and the statistic reads them
+        # again in a second call, since the first exhausted its iterator.
+        passed = self.check()
+        self.assertEqual({"symbol": "XRPUSDT", **self.hourly_counts()}, passed)
+        self.assertEqual(4, passed["hours_compared"])
+        self.assertEqual(["XRPUSDT", "XRPUSDT"], [call[0] for call in self.calls])
+        # One wide minute in the evaluation months: its open and close quotes breach, so the
+        # record counts two, and everything the cross-check counts is as it was. A wide
+        # minute in the warm-up hour is not replayed and counts nothing.
+        self.widen(FEB_1 + 90 * MINUTE_MS)
+        self.widen(self.warm_up + 5 * MINUTE_MS)
+        self.calls.clear()
+        breached = self.check()
+        self.assertEqual(2, breached.pop("tick_limit_quotes"))
+        self.assertEqual({"symbol": "XRPUSDT", **self.hourly_counts()}, breached)
+        self.assertEqual(2, len(self.calls))
+        # The window is [start, end): the last minute of the month is in it, the next out.
+        self.minutes = flat_minutes(self.warm_up, 60) + flat_minutes(FEB_1, 180)
+        self.minutes += flat_minutes(FEB_END - MINUTE_MS, 1, "0.1")
+        self.assertEqual(2, self.check()["tick_limit_quotes"])
+        self.minutes[-1] = flat_minutes(FEB_END, 1, "0.1")[0]
+        self.assertNotIn("tick_limit_quotes", self.check())
+
+    def test_the_statistic_is_taken_on_the_minutes_the_mask_leaves(self):
+        # Month by month, like the masks: a wide quote inside a masked hour is not replayed.
+        # Both passes read the pair's mask, and its documented absences.
+        wide = FEB_1 + 90 * MINUTE_MS
+        self.widen(wide)
+        mask = frozenset({wide // HOUR_MS * HOUR_MS})
+        record = self.check(mask=mask)
+        self.assertEqual({"symbol": "XRPUSDT", **self.hourly_counts(mask)}, record)
+        self.assertEqual([("XRPUSDT", mask, [])] * 2, self.calls)
+        self.calls.clear()
+        self.assertEqual(2, self.check(mask=frozenset())["tick_limit_quotes"])
+        self.assertEqual([("XRPUSDT", frozenset(), [])] * 2, self.calls)
+
+    def test_it_is_computed_for_xrp_only_and_only_where_xrp_is_traded(self):
+        # BTCUSDT's minutes are read once, whatever they hold; with XRP a basket member only
+        # (as in verify-2024h1) none of XRP's minutes is read at all.
+        self.widen(FEB_1 + 90 * MINUTE_MS)
+        self.assertNotIn("tick_limit_quotes", self.check("BTCUSDT"))
+        self.assertEqual(["BTCUSDT"], [call[0] for call in self.calls])
+        self.spec.write_text(XRP_NOT_TRADED)
+        self.calls.clear()
+        record = self.check("XRPUSDT")
+        self.assertEqual(("breadth_basket", []), (record["role"], self.calls))
+        self.assertNotIn("tick_limit_quotes", record)
+
+    def test_xrp_needs_the_config_and_a_call_without_it_still_works_for_others(self):
+        # Without maximum_spread_pct the test cannot run, and a pass would be a guess.
+        with self.assertRaises(ValueError):
+            jobs.cross_check_job(self.spec, Path("data"), "XRPUSDT")
+        alone = jobs.cross_check_job(self.spec, Path("data"), "BTCUSDT")
+        self.assertEqual({"symbol": "BTCUSDT", **self.hourly_counts()}, alone)
+
+    def test_the_statistic_job_gives_what_mask_report_prints(self):
+        # One pass: the widest spread in percent, the count above the limit, the limit and
+        # whether it breaches, on the minutes of the evaluation months after masking.
+        self.widen(FEB_1 + 90 * MINUTE_MS)
+        self.widen(self.warm_up + 5 * MINUTE_MS)
+        breach = {
+            "maximum_spread_pct": "0.15",
+            "widest_spread_pct": str(Decimal("0.0002") / Decimal("0.1001") * 100),
+            "tick_limit_quotes": 2,
+            "breaches": True,
+        }
+        self.assertEqual(breach, jobs.quote_test_job(self.spec, Path("data"), CONFIG, None))
+        self.assertEqual([("XRPUSDT", None, [])], self.calls)
+        masked = jobs.quote_test_job(self.spec, Path("data"), CONFIG, frozenset({FEB_1 + HOUR_MS}))
+        calm = Decimal("0.0006") / Decimal("1.0003") * 100  # 1.0: bid 0.9997, ask 1.0003
+        self.assertEqual(
+            {
+                **breach,
+                "widest_spread_pct": str(calm),
+                "tick_limit_quotes": 0,
+                "breaches": False,
+            },
+            masked,
+        )
+        self.spec.write_text(XRP_NOT_TRADED)
+        self.calls.clear()
+        self.assertIsNone(jobs.quote_test_job(self.spec, Path("data"), CONFIG, None))
+        self.assertEqual([], self.calls)
+
+
+XRP_ARCHIVES = (
+    """name = "xrp-archives"
+purpose = "rule 8 through the real readers"
+traded = ["BTCUSDT", "XRPUSDT"]
+market_proxy = "BTCUSDT"
+breadth_basket = ["BTCUSDT", "XRPUSDT"]
+warmup_start = "2023-01"
+start = "2023-02"
+end = "2023-02"
+"""
+    + masked_checks.COMMON
+)
+XRP_FILTERS = {
+    "BTCUSDT": {"base": "BTC", "quote": "USDT", "tick_size": "0.01"},
+    "XRPUSDT": {"base": "XRP", "quote": "USDT", "tick_size": "0.0001"},
+}
+for _filters in XRP_FILTERS.values():
+    _filters |= {"quantity_step": "0.0001", "min_notional": "5"}
+
+
+def build_xrp_archives(work, wide_minute=None):
+    """The spec, manifest and archives of a window that trades BTCUSDT (flat at 100) and
+    XRPUSDT (flat at 1.0) through February 2023, under ``work``; returns the spec's path.
+    ``wide_minute`` makes that minute of February XRPUSDT's flat 0.1, whose open and close
+    quotes are wide. Every hour is the aggregate of its minutes, so every check passes."""
+    jan, feb, mar = (month_bounds_ms(m)[0] for m in ("2023-01", "2023-02", "2023-03"))
+    archive = masked_checks.loaders.FakeArchive()
+    for symbol, price in (("BTCUSDT", "100"), ("XRPUSDT", "1")):
+        minutes = flat_minutes(feb, (mar - feb) // MINUTE_MS, price)
+        if symbol == "XRPUSDT" and wide_minute is not None:
+            minutes[wide_minute] = flat_minutes(feb + wide_minute * MINUTE_MS, 1, "0.1")[0]
+        warm_up = flat_minutes(jan, (feb - jan) // MINUTE_MS, price)
+        hourly = [*aggregate(warm_up), *aggregate(minutes)]
+        masked_checks.add_bars(archive, symbol, "1m", MINUTE_MS, minutes)
+        masked_checks.add_bars(archive, symbol, "1h", HOUR_MS, hourly)
+    Path(work).mkdir(parents=True, exist_ok=True)
+    spec_path = Path(work) / "xrp-archives.toml"
+    spec_path.write_text(XRP_ARCHIVES)
+    manifest = fetch_dataset(
+        load_spec(spec_path),
+        Path(work) / "data",
+        fetcher=archive,
+        instruments=lambda symbol: XRP_FILTERS[symbol],
+    )
+    write_manifest(Path(work) / "xrp-archives.manifest.json", manifest)
+    return spec_path
+
+
+class XrpArchivesTests(unittest.TestCase):
+    """Rule 8 end to end on synthetic archives: the real readers, masks, checks and CLI, with
+    no fake job. One window passes; in the other XRPUSDT has one flat minute at 0.1, in the
+    middle of February."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.passing = build_xrp_archives(Path(cls.temp.name, "pass"))
+        cls.breaching = build_xrp_archives(Path(cls.temp.name, "breach"), wide_minute=20_000)
+
+    def invoke(self, command, spec, *extra):
+        data = spec.parent / "data"
+        argv = [command, "--spec", str(spec), "--data-dir", str(data), "--config", str(CONFIG)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cli.main([*argv, "--jobs", "1", *extra])
+        return code, json.loads(out.getvalue().split("\n}\n")[0] + "\n}")
+
+    def test_verify_excludes_xrp_for_a_breach_and_writes_nothing_for_a_pass(self):
+        def checks(report):
+            return {c["symbol"]: c for c in report["checks"]}
+
+        code, report = self.invoke("verify", self.passing)
+        self.assertEqual((0, "valid"), (code, report["status"]))
+        self.assertFalse({"excluded_pairs", "comparison_mask"} & set(report))
+        self.assertFalse(any("tick_limit_quotes" in c for c in report["checks"]))
+        passed = checks(report)["XRPUSDT"]
+        self.assertEqual(672, passed["hours_compared"])  # 28 days
+        code, report = self.invoke("verify", self.breaching)
+        self.assertEqual((0, "valid"), (code, report["status"]))
+        self.assertEqual({"XRPUSDT": ["XRPUSDT: tick_limit_quotes=2"]}, report["excluded_pairs"])
+        breach = {"masked": [], "excluded_months": [], "tick_limit_quotes": 2}
+        self.assertEqual({"XRPUSDT": breach}, report["comparison_mask"])
+        # The record carries the count and everything else the cross-check counts, as for a
+        # pass; no other symbol's does.
+        found = checks(report)
+        self.assertEqual(2, found["XRPUSDT"].pop("tick_limit_quotes"))
+        self.assertEqual(passed, found["XRPUSDT"])
+        self.assertNotIn("tick_limit_quotes", found["BTCUSDT"])
+
+    def test_mask_report_prints_the_same_statistic(self):
+        calm = Decimal("0.0006") / Decimal("1.0003") * 100  # 1.0: bid 0.9997, ask 1.0003
+        wide = Decimal("0.0002") / Decimal("0.1001") * 100  # 0.1: bid 0.0999, ask 0.1001
+        for spec, widest, quotes in ((self.passing, calm, 0), (self.breaching, wide, 2)):
+            with self.subTest(quotes=quotes):
+                code, report = self.invoke("mask-report", spec)
+                self.assertEqual(0, code)
+                self.assertEqual(
+                    {
+                        "maximum_spread_pct": "0.15",
+                        "widest_spread_pct": str(widest),
+                        "tick_limit_quotes": quotes,
+                        "breaches": bool(quotes),
+                    },
+                    report["xrp_quote_test"],
+                )
+                self.assertEqual(bool(quotes), "XRPUSDT" in report["comparison_mask"])
+                self.assertTrue(report["symbols"]["XRPUSDT"]["mask_is_none"])
 
 
 class HourlySeriesTests(unittest.TestCase):

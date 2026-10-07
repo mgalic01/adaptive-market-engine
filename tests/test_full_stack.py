@@ -226,7 +226,7 @@ BASKET_CHECK |= {field: 0 for field in cli.SERIES_INTEGRITY_FIELDS}
 ETH_EXCLUDED = ("ETHUSDT: daily_days_missing=3",)
 
 
-def checks(spec_path, data_dir, symbol, strict_volume=False):
+def checks(spec_path, data_dir, symbol, strict_volume=False, *, config_path=None):
     check = {"symbol": symbol, **(PAIR_CHECK if symbol in TRADED else BASKET_CHECK)}
     if symbol == "ETHUSDT":
         check["daily_days_missing"] = 3

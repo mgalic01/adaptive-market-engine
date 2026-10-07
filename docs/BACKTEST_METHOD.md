@@ -334,6 +334,80 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
 - `transient_pauses` counts any frame the engine rejected as stale or out of order;
   with correct chronology it must be 0.
 
+## Hour masks, XRP's quote test and `mask-report` (spec v1 §5)
+
+```bash
+PYTHONPATH=src python -m crypto_grid_bot.backtest mask-report --spec config/datasets/practice-2022.toml
+```
+
+`verify` and `run` start with a mask phase, before any check or replay. For every symbol
+the spec checks (the traded pairs, the market proxy and the breadth basket) the repairing
+reader reads each month's archives and decides which hours enter (§5 rules 1, 2 and 5, and
+the 17% rule). The checks and the replays then run on what the masks leave. `mask-report`
+runs that phase alone, after verifying the dataset's files, and prints JSON. It runs no
+check and no replay and writes nothing. It takes `--spec`, `--data-dir` and `--config`.
+
+- **What it prints.**
+  - `comparison_mask`: the comparison mask, exactly as `results.json` would carry it (next
+    bullet).
+  - `symbols`: per symbol, `mask_is_none`, three counts and its months.
+    - `mask_is_none` is true when the symbol loads with the strict reader, as it did before
+      masks existed. Every stage-1 symbol must show true, with zero counts.
+    - The counts are of **expected hours, not rows**. `repaired_hours` hold a repaired row,
+      `dropped_hours` hold a row the reader dropped (masked as an untrusted row), and
+      `masked_hours` are masked for any reason. A repaired or dropped row inside a
+      documented absence counts in none of them, though it still makes the symbol's mask a
+      set.
+    - Each month gives `expected_hours`, `masked_hours`, `open_only_hours`,
+      `real_defect_share` and `excluded`. The share is the exact fraction the 17% rule
+      compares, as text (null for a month wholly inside documented absences, which the rule
+      never excludes). `excluded` is the rule's verdict.
+  - `totals`: the symbols with a mask, the three counts, and the excluded months.
+  - `xrp_quote_test`: XRPUSDT's rule-8 test (below), or null when the spec does not trade
+    XRPUSDT.
+- **The comparison mask in `results.json`.** `verify`'s output, `run`'s output and
+  `results.json` carry `comparison_mask` only when it is not empty, so a window with no
+  masked hour (every stage-1 window) keeps its exact layout. Per symbol with a masked hour
+  it lists:
+  - `masked`: its masked hours as `[from, to)` ranges of whole UTC hours, in the form of
+    `[[basket_exclusions]]`, each with its reason. Consecutive hours masked for one reason
+    merge into one range, across a month's end too;
+  - `excluded_months`: the months the 17% rule excludes;
+  - for XRPUSDT after a rule-8 breach, `tick_limit_quotes` (below).
+
+  The masks are fixed before any check or replay. The one entry they cannot give is
+  XRPUSDT's breach, which needs the replayed quotes: it joins after XRPUSDT's check and
+  before any replay, so the file is complete before scoring.
+
+  This is not the scorer's key of the same name. The acceptance verdict has its own
+  `comparison_mask`, which holds each window's pair inclusion (per pair, whether it is
+  included and why not, with the window's evaluation days and months and whether it meets
+  the minimum evidence). The two share only a name: the results file's is about hours, the
+  verdict's about pair-windows.
+- **XRP's actual-quotes test (§5 rule 8).** Where the spec trades XRPUSDT, its check takes
+  one more test, on the minutes the replay plays: the evaluation months after masking, not
+  the warm-up.
+  - It synthesizes every quote with `bar_quotes`, with the dataset's assumed spread and
+    the manifest's tick, and takes each quote's spread as `(ask − bid) ÷ ask × 100`, the
+    engine's own arithmetic. A quote above `maximum_spread_pct` in `config/default.toml`
+    (0.15) is a breach, as the engine's frame validation rejects it; a quote exactly at the
+    limit passes. Both intrabar paths give the same four quotes, so the test does not
+    depend on the path.
+  - A pass writes nothing, so `practice-2022`, whose XRP passes, keeps its stage-1 layout.
+  - A breach adds `tick_limit_quotes`, the number of quotes above the limit, to XRPUSDT's
+    record in `hourly_cross_checks`. That is XRP's own failure: its pair-window is excluded
+    for every variant, listed under `excluded_pairs` with no rows, as for any pair's failed
+    check. The comparison mask records it too.
+  - `mask-report` prints the same statistic in `xrp_quote_test`, on XRPUSDT's own mask,
+    from one read of the minutes: `maximum_spread_pct`, `widest_spread_pct` (the largest
+    spread over every quote), `tick_limit_quotes` and `breaches`. Its comparison mask
+    carries the breach as a run's does.
+  - Where XRPUSDT is only a basket member (`verify-2024h1`) it has no minutes, and nothing
+    is computed.
+- **Reading time.** On a long window `verify` and `run` read the 1m archives twice before
+  any replay: in the mask phase and again in the checks. XRPUSDT's are read a third time
+  for rule 8. A slow `verify` on such a window is reading, not hung.
+
 ## Acceptance scoring (spec v1 §6)
 
 ```bash
@@ -431,25 +505,28 @@ decimals (below).
   cases:
   - a recorded check fails on the market proxy's hours or on an untraded basket symbol,
     which feed every pair, so every pair is excluded;
-  - the pair's own minute, hourly or daily check fails, which excludes that pair only,
-    even when it is the proxy (except a failure about its hours) or votes in the basket.
-    `run` writes no rows for such a pair-window and lists it under `excluded_pairs`, so
-    its runs are excluded, not missing;
+  - the pair's own minute, hourly or daily check fails, or XRPUSDT's quote test finds a
+    breach (§5 rule 8, above), which excludes that pair only, even when it is the proxy
+    (except a failure about its hours) or votes in the basket. `run` writes no rows for
+    such a pair-window and lists it under `excluded_pairs`, so its runs are excluded, not
+    missing;
   - the pair fails the filter check (P4: `practice-2022` SOLUSDT).
 
   Results exist only where the manifest and checksums passed. Every file of a window
   must give the same mask.
-- **The long-window data rules (§5 rules 1–8) are not applied yet.** They arrive with
-  the long-window data PR, which names the fields of each run's mask report and of Bob's
-  XRP measurement. The hook is `data_rule_exclusions`:
-  - Bob's rule-8 measurement will exclude XRP's pair-window there.
-  - Hour-level masking will run before the checks, which then run on the post-mask
-    expected set, so a maskable defect stops failing them (§5).
-  - The mask report (masked hours, skipped days, fills after a masked span) will join
-    each run in `runs_of`.
+- **The long-window data rules (§5 rules 1–8)** are applied by `verify` and `run` (see
+  "Hour masks, XRP's quote test and `mask-report`"). The scorer needs no hook for them, so
+  `data_rule_exclusions` stays empty:
+  - hour masking runs before the checks, which run on the post-mask expected set, so a
+    maskable defect no longer fails them (§5);
+  - rule 8 reaches the scorer as `tick_limit_quotes` in XRPUSDT's cross-check record, which
+    makes it XRP's own failure, so `window_of` excludes the pair-window like any failed
+    check;
+  - each run's mask report (`masked_hours`, `days_skipped_for_masks` and
+    `fills_after_masked_span`) is in its row and scored by no criterion.
 
-  Today a failed hour fails its check, which excludes the pair-window, as in stage 1, and
-  no pair is excluded for its price.
+  A defect that masking does not cover, such as a missing or duplicated daily bar or a
+  short warm-up, still fails its check and excludes the pair-window, as in stage 1.
 - **Annualised returns (§6).** C2 and the selection use each run's
   `(final_total_equity ÷ initial_quote) ^ (365.25 ÷ d) − 1`, where `d` is C5's window in
   days.

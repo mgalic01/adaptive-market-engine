@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -39,10 +39,13 @@ from crypto_grid_bot.backtest.klines import (
     read_archive_repaired,
 )
 from crypto_grid_bot.backtest.masking import (
+    QUOTE_TESTED_SYMBOL,
     MonthMask,
     apply_seventeen_percent,
     hourly_only_month_mask,
     masked_days,
+    quote_test,
+    tick_limit_quotes,
     traded_month_mask,
 )
 from crypto_grid_bot.backtest.replay import (
@@ -345,6 +348,44 @@ def run_job(
     return row
 
 
+def quoted(spec: DatasetSpec, symbol: str) -> bool:
+    """Whether XRPUSDT's actual-quotes test (spec v1 §5 rule 8) applies to ``symbol``: it is
+    XRPUSDT and the spec trades it. In ``verify-2024h1`` XRP is a basket member only, has no
+    minutes, and nothing is computed."""
+    return symbol == QUOTE_TESTED_SYMBOL and symbol in spec.traded
+
+
+def quote_limits(
+    spec: DatasetSpec, manifest: dict[str, Any], config_path: Path | None, symbol: str
+) -> tuple[Decimal, Decimal, Decimal]:
+    """The spread, tick and limit of the quote test, as the replay and the engine take them:
+    the spread ``prepare_run`` gives ``RunConfig`` (the spec's percent as a fraction), the
+    manifest's tick (``rules_for``) and ``maximum_spread_pct`` from the config, in percent,
+    as ``PaperSimulator`` converts it. Refuses without a config: a test that cannot read its
+    limit must not pass."""
+    if config_path is None:
+        raise ValueError(f"{symbol}'s quote test (spec v1 §5 rule 8) needs the config path")
+    limit = Decimal(str(load_config(config_path).maximum_spread_pct))
+    tick = Decimal(manifest["instruments"][symbol]["tick_size"])
+    return spec.assumed_spread_pct / 100, tick, limit
+
+
+def replayed_minutes(
+    spec: DatasetSpec,
+    manifest: dict[str, Any],
+    data_dir: Path,
+    symbol: str,
+    mask: frozenset[int] | None,
+) -> Iterator[Kline]:
+    """The pair's 1m bars as the replay plays them: the evaluation months, after the pair's
+    mask and documented absences. A minute before ``start`` is warm-up and not played."""
+    start, end = evaluation_bounds_ms(spec)
+    minutes = load_minutes(
+        data_dir, manifest, symbol, mask=mask, excluded=exclusion_ranges(spec, symbol)
+    )
+    return (kline for kline in minutes if start <= kline.open_ms < end)
+
+
 def cross_check_job(
     spec_path: Path,
     data_dir: Path,
@@ -361,8 +402,15 @@ def cross_check_job(
     on the post-mask expected set (spec v1 §5): the masked hours leave it, and the daily
     check skips each day that holds one and counts it. The record then gains only
     ``daily_days_skipped_for_masks``, when non-zero; no mask enters it. With None, the
-    record is today's. ``config_path`` is reserved for the tick-limit test (spec v1 §5
-    rule 8) and is not read yet.
+    record is today's.
+
+    XRPUSDT, where the spec trades it, also takes the actual-quotes test (spec v1 §5 rule 8):
+    over the minutes the replay plays, the evaluation months after masking, the number of
+    synthesized quotes whose spread exceeds the config's ``maximum_spread_pct``. The record
+    gains ``tick_limit_quotes`` only when that is non-zero, so a pass leaves it as it was.
+    That needs ``config_path``, and XRPUSDT's check refuses to run without it. The minutes
+    are read a second time for it, with the pair's mask: the cross-check exhausts the first
+    read (``load_minutes`` returns a one-shot iterator).
     """
     tolerance = Decimal(0) if strict_volume else VOLUME_DRIFT_TOLERANCE
     spec, manifest = load_spec(spec_path), load_manifest(manifest_path(spec_path))
@@ -373,11 +421,16 @@ def cross_check_job(
     hourly = load_hourly(data_dir, manifest, symbol, mask=mask, excluded=excluded)
     window = evaluation_bounds_ms(spec)
     if symbol in spec.traded:
+        limits = quote_limits(spec, manifest, config_path, symbol) if quoted(spec, symbol) else None
         minutes = load_minutes(data_dir, manifest, symbol, mask=mask, excluded=excluded)
         result = {
             "symbol": symbol,
             **cross_check_hourly(minutes, hourly, window, tolerance, masked=masked),
         }
+        if limits is not None:
+            replayed = replayed_minutes(spec, manifest, data_dir, symbol, mask)
+            if breaches := tick_limit_quotes(replayed, symbol, *limits):
+                result["tick_limit_quotes"] = breaches
     else:
         # No minute data: check the hours over warm-up and evaluation.
         proxy = symbol == spec.market_proxy
@@ -398,6 +451,30 @@ def cross_check_job(
             masked_days=masked_days(masked),
         )
     return result
+
+
+def quote_test_job(
+    spec_path: Path, data_dir: Path, config_path: Path, mask: frozenset[int] | None
+) -> dict[str, Any] | None:
+    """XRPUSDT's actual-quotes test as ``mask-report`` prints it, from one read of the minutes
+    the replay plays with ``mask`` (XRPUSDT's ``SymbolMask.mask``): the limit, the widest
+    synthesized spread in percent, how many quotes exceed the limit and whether any does.
+    None where the spec does not trade XRPUSDT, and then nothing is read. It is the statistic
+    ``cross_check_job`` records, so the two cannot differ."""
+    spec, manifest = load_spec(spec_path), load_manifest(manifest_path(spec_path))
+    symbol = QUOTE_TESTED_SYMBOL
+    if not quoted(spec, symbol):
+        return None
+    spread, tick, limit = quote_limits(spec, manifest, config_path, symbol)
+    found = quote_test(
+        replayed_minutes(spec, manifest, data_dir, symbol, mask), symbol, spread, tick, limit
+    )
+    return {
+        "maximum_spread_pct": str(limit),
+        "widest_spread_pct": str(found.widest_spread_pct),
+        "tick_limit_quotes": found.tick_limit_quotes,
+        "breaches": found.breached,
+    }
 
 
 @dataclass(frozen=True)

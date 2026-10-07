@@ -16,7 +16,7 @@ from pathlib import Path
 from test_backtest_data import JAN_2024_MS, row
 
 from crypto_grid_bot.backtest import audit, masking
-from crypto_grid_bot.backtest.dataset import BasketExclusion
+from crypto_grid_bot.backtest.dataset import BasketExclusion, load_manifest, load_spec
 from crypto_grid_bot.backtest.klines import (
     FileStats,
     Kline,
@@ -29,10 +29,17 @@ from crypto_grid_bot.backtest.masking import (
     apply_seventeen_percent,
     hourly_only_month_mask,
     masked_days,
+    quote_test,
     real_defect_share,
+    tick_limit_quotes,
     traded_month_mask,
+    widest_spread_pct,
 )
+from crypto_grid_bot.backtest.replay import PATH_MODES, bar_quotes, rules_for
+from crypto_grid_bot.config import load_config
+from crypto_grid_bot.simulation.runner import PaperSimulator
 
+ROOT = Path(__file__).resolve().parents[1]
 MIN = 60_000
 HOUR = 3_600_000
 DAY = 86_400_000
@@ -470,6 +477,139 @@ class MaskedDaysTests(unittest.TestCase):
         self.assertEqual(frozenset(), masked_days(()))
         mask = hourly_only_month_mask(hand_read([]), MONTH, around(hour(5), 2))
         self.assertEqual(frozenset({JAN}), masked_days(mask.masked))
+
+
+# Spec v1 section 5 rule 8, with the pricing of practice-2022's XRPUSDT: the tick of its
+# manifest and the 0.05% spread of its spec.
+XRP_TICK, XRP_SPREAD = D("0.0001"), D("0.0005")
+
+
+def quote_bar(n, open_, high, low, close):
+    """The minute bar ``n`` minutes into the month with these prices (``Decimal`` text)."""
+    return Kline(JAN + n * MIN, D(open_), D(high), D(low), D(close), D("10"), D("11"), D("4"))
+
+
+def flat_bar(n, price):
+    return quote_bar(n, price, price, price, price)
+
+
+def spread_pct(quote):
+    """The engine's rejection test, as ``PaperSimulator._validate_frame`` computes it."""
+    return (quote.ask - quote.bid) / quote.ask * 100
+
+
+def engine_limit():
+    """The spread limit the engine itself enforces, from the committed default config."""
+    config = load_config(ROOT / "config/default.toml")
+    instrument = {"tick_size": "0.0001", "quantity_step": "0.1", "min_notional": "5"}
+    rules = rules_for("XRPUSDT", instrument, D("0"), D("0.0005"), D("0.1"))
+    simulator = PaperSimulator(Path(":memory:"), config, rules)
+    limit = simulator._maximum_spread_pct
+    simulator.close()
+    return limit
+
+
+class QuoteSpreadTests(unittest.TestCase):
+    def test_widest_spread_and_the_limit_count_come_from_bar_quotes(self):
+        # At 0.1 USDT the bid rounds down and the ask up to the 0.0001 tick: the open and
+        # close quotes (0.0999 / 0.1001) are two ticks wide, 0.1998%, the high and the low
+        # one tick wide. Each function takes a one-shot iterator and reads it once: one
+        # that read its minutes twice would see none the second time.
+        widest = D("0.0002") / D("0.1001") * 100
+        one = iter([flat_bar(0, "0.1")])
+        self.assertEqual(widest, widest_spread_pct(one, "XRPUSDT", XRP_SPREAD, XRP_TICK))
+        limit = D("0.15")
+        bars = (flat_bar(i, "0.1") for i in range(3))
+        self.assertEqual(6, tick_limit_quotes(bars, "XRPUSDT", XRP_SPREAD, XRP_TICK, limit))
+        # At 1 USDT every quote stays under 0.06%.
+        calm = (flat_bar(i, "1") for i in range(3))
+        self.assertEqual(0, tick_limit_quotes(calm, "XRPUSDT", XRP_SPREAD, XRP_TICK, limit))
+        self.assertEqual(0, widest_spread_pct(iter(()), "XRPUSDT", XRP_SPREAD, XRP_TICK))
+        self.assertEqual(0, tick_limit_quotes(iter(()), "XRPUSDT", XRP_SPREAD, XRP_TICK, limit))
+
+    def test_the_statistic_is_the_replays_whichever_the_path(self):
+        # Both intrabar paths synthesize the same four quotes in another order, so the
+        # statistic can take either: what the functions give is what each path's quotes
+        # give, computed directly from ``bar_quotes``.
+        bars = [
+            quote_bar(0, "0.2000", "0.2010", "0.1990", "0.2005"),
+            quote_bar(1, "0.1500", "0.1520", "0.1480", "0.1490"),
+            quote_bar(2, "0.1340", "0.1350", "0.1330", "0.1345"),
+        ]
+        limit = D("0.1")
+        for path in PATH_MODES:
+            with self.subTest(path=path):
+                spreads = [
+                    spread_pct(q)
+                    for bar in bars
+                    for q in bar_quotes(bar, "XRPUSDT", path, XRP_SPREAD, XRP_TICK)
+                ]
+                over = sum(s > limit for s in spreads)
+                self.assertGreater(over, 0)
+                self.assertLess(over, len(spreads))
+                self.assertEqual(
+                    max(spreads), widest_spread_pct(iter(bars), "XRPUSDT", XRP_SPREAD, XRP_TICK)
+                )
+                self.assertEqual(
+                    over, tick_limit_quotes(iter(bars), "XRPUSDT", XRP_SPREAD, XRP_TICK, limit)
+                )
+
+    def test_quote_test_gives_both_figures_from_one_pass(self):
+        bars = (flat_bar(i, price) for i, price in enumerate(["1", "0.1", "1"]))
+        found = quote_test(bars, "XRPUSDT", XRP_SPREAD, XRP_TICK, D("0.15"))
+        self.assertEqual((D("0.0002") / D("0.1001") * 100, 2), tuple(found))
+        self.assertTrue(found.breached)
+        clean = quote_test(iter([flat_bar(0, "1")]), "XRPUSDT", XRP_SPREAD, XRP_TICK, D("0.15"))
+        self.assertEqual(0, clean.tick_limit_quotes)
+        self.assertFalse(clean.breached)
+
+    def test_quotes_at_the_limit_pass(self):
+        # The limit is the engine's own (a PaperSimulator's, from config/default.toml), and a
+        # breach is a spread above it. With the spread set to the limit and a tick of
+        # 0.0001, a bar whose high is 2.0000 gives that quote bid 1.9970 and ask 2.0000:
+        # (ask - bid) / ask * 100 is exactly 0.15, and the bar's other quotes are narrower,
+        # so it passes. A bar whose high is 1.99999 keeps the ask at 2.0000 but floors the
+        # bid to 1.9969, one tick lower: 0.155%, a breach.
+        limit = engine_limit()
+        self.assertEqual(D("0.15"), limit)
+        spread = limit / 100
+        at_limit = quote_bar(0, "1.9990", "2.0000", "1.9990", "1.9990")
+        quotes = bar_quotes(at_limit, "XRPUSDT", "high_first", spread, XRP_TICK)
+        self.assertEqual(limit, max(spread_pct(q) for q in quotes))
+        self.assertEqual(limit, widest_spread_pct(iter([at_limit]), "XRPUSDT", spread, XRP_TICK))
+        self.assertEqual(0, tick_limit_quotes(iter([at_limit]), "XRPUSDT", spread, XRP_TICK, limit))
+        wider = quote_bar(0, "1.9990", "1.99999", "1.9990", "1.9990")
+        (high,) = [
+            q
+            for q in bar_quotes(wider, "XRPUSDT", "high_first", spread, XRP_TICK)
+            if (q.bid, q.ask) == (D("1.9969"), D("2.0000"))
+        ]
+        self.assertGreater(spread_pct(high), limit)
+        self.assertEqual(1, tick_limit_quotes(iter([wider]), "XRPUSDT", spread, XRP_TICK, limit))
+
+    def test_practice_2022_xrp_passes(self):
+        # Practice-2022 trades XRPUSDT at its manifest's tick, 0.0001, with its spec's 0.05%
+        # spread. XRP's lowest 2022 price, about 0.28 USDT, is far above the 0.13323 below
+        # which the open and close quotes fail, so no quote of bars from 0.28 to 1.0 breaches
+        # and nothing is excluded. The mechanism is there below it: 0.1332 breaches, 0.1333
+        # does not.
+        spec = load_spec(ROOT / "config/datasets/practice-2022.toml")
+        manifest = load_manifest(ROOT / "config/datasets/practice-2022.manifest.json")
+        tick = D(manifest["instruments"]["XRPUSDT"]["tick_size"])
+        spread = spec.assumed_spread_pct / 100
+        self.assertEqual((D("0.0001"), D("0.0005")), (tick, spread))
+        limit = engine_limit()
+        bars = []
+        for i in range(1000):
+            price = D("0.28") + D(i) * D("0.0007")
+            bars.append(
+                quote_bar(i, price, price + D("0.0009"), price - D("0.0004"), price + D("0.0003"))
+            )
+        self.assertEqual(0, tick_limit_quotes(iter(bars), "XRPUSDT", spread, tick, limit))
+        self.assertLess(widest_spread_pct(iter(bars), "XRPUSDT", spread, tick), limit)
+        below, above = flat_bar(0, "0.1332"), flat_bar(0, "0.1333")
+        self.assertEqual(2, tick_limit_quotes(iter([below]), "XRPUSDT", spread, tick, limit))
+        self.assertEqual(0, tick_limit_quotes(iter([above]), "XRPUSDT", spread, tick, limit))
 
 
 class AuditSharesTheHelpersTests(unittest.TestCase):

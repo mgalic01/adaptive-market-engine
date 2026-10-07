@@ -13,7 +13,7 @@ import argparse
 import json
 import shutil
 import subprocess  # nosec B404
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -41,11 +41,14 @@ from crypto_grid_bot.backtest.jobs import (
     cross_check_job,
     manifest_path,
     mask_job,
+    quote_test_job,
+    quoted,
     run_job,
     variant_policy,
 )
 from crypto_grid_bot.backtest.masking import (
     HOUR_MS,
+    QUOTE_TESTED_SYMBOL,
     UNTRUSTED_ROW,
     MonthMask,
     real_defect_share,
@@ -81,6 +84,11 @@ INTEGRITY_FIELDS = (
 
 # Checks on an untraded market proxy or basket symbol (hourly data only).
 SERIES_INTEGRITY_FIELDS = ("series_hours_missing", "series_hours_duplicated")
+
+
+# A traded pair's actual-quotes test (spec v1 section 5 rule 8): the check carries the field
+# only when a replayed quote breaks the spread limit, so it is read with a default of 0.
+QUOTE_INTEGRITY_FIELDS = ("tick_limit_quotes",)
 
 
 # Present only when the spec declares daily_warmup_start (spec v1 P3).
@@ -132,6 +140,12 @@ def integrity_failures(
             for field in fields
             if check[field] and kept(check, field)
         ]
+        if not series:
+            failures += [
+                f"{check['symbol']}: {field}={check[field]}"
+                for field in QUOTE_INTEGRITY_FIELDS
+                if check.get(field, 0) and kept(check, field)
+            ]
         # A basket symbol documented as absent for the whole window has no hours.
         wholly_excluded = (
             series and check["series_hours_excluded"] and not check["series_hours_missing"]
@@ -230,6 +244,30 @@ def comparison_mask(masks: Sequence[SymbolMask]) -> dict[str, Any]:
     return mask
 
 
+def with_quote_breaches(mask: dict[str, Any], counts: Mapping[str, int]) -> dict[str, Any]:
+    """The comparison mask with XRPUSDT's actual-quotes breach (spec v1 section 5 rule 8):
+    each symbol in ``counts`` with a non-zero ``tick_limit_quotes`` gains it in its entry,
+    beside its masked hours, or an entry holding only it. A pass changes nothing, so a window
+    that passes keeps its layout. It is the one entry no mask can give, since it needs the
+    replayed quotes, which the symbol's check takes after the masks; it joins the mask before
+    any replay or scoring."""
+    result = dict(mask)
+    for symbol, quotes in counts.items():
+        if quotes:
+            entry = {"masked": [], "excluded_months": [], **mask.get(symbol, {})}
+            result[symbol] = {**entry, "tick_limit_quotes": quotes}
+    return result
+
+
+def check_job(mask: frozenset[int] | None, config: Path) -> Callable[..., dict[str, Any]]:
+    """``cross_check_job`` as the pool receives it for one symbol: bound to the config, which
+    XRPUSDT's actual-quotes test reads, and to the symbol's mask only when it has one, so a
+    symbol whose mask is None (every stage-1 symbol) is checked as before masks existed."""
+    if mask is None:
+        return partial(cross_check_job, config_path=config)
+    return partial(cross_check_job, mask=mask, config_path=config)
+
+
 def _month_report(month: MonthMask) -> dict[str, Any]:
     share = real_defect_share(month)
     return {
@@ -248,11 +286,17 @@ MASK_COUNTS = ("repaired_hours", "dropped_hours", "masked_hours")
 
 
 def mask_report(
-    spec: DatasetSpec, masks: Sequence[SymbolMask], mask: dict[str, Any]
+    spec: DatasetSpec,
+    masks: Sequence[SymbolMask],
+    mask: dict[str, Any],
+    quote: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """``mask-report``'s document, from the symbols' masks and their comparison ``mask``
-    alone, with no check and no replay. Per symbol: whether its mask is None, so that it
-    loads with today's strict reader (every stage-1 symbol must), its counts and its months.
+    """``mask-report``'s document, from the symbols' masks, their comparison ``mask`` and
+    XRPUSDT's actual-quotes ``quote`` test (``jobs.quote_test_job``), with no check and no
+    replay. Per symbol: whether its mask is None, so that it loads with today's strict reader
+    (every stage-1 symbol must), its counts and its months. ``xrp_quote_test`` is the test's
+    result where the spec trades XRPUSDT and null elsewhere; ``mask`` already carries its
+    breach, as a run's does.
 
     The counts are of expected hours: ``repaired_hours`` hold a repaired row,
     ``dropped_hours`` a row the reader dropped (masked as an untrusted row) and
@@ -273,7 +317,13 @@ def mask_report(
         **{count: sum(s[count] for s in symbols.values()) for count in MASK_COUNTS},
         "excluded_months": sum(month.excluded for m in masks for month in m.months),
     }
-    return {"dataset": spec.name, "comparison_mask": mask, "symbols": symbols, "totals": totals}
+    return {
+        "dataset": spec.name,
+        "comparison_mask": mask,
+        "xrp_quote_test": quote,
+        "symbols": symbols,
+        "totals": totals,
+    }
 
 
 def _identity(spec_path: Path, config_path: Path) -> dict[str, str]:
@@ -559,19 +609,32 @@ def main(argv: list[str] | None = None) -> int:
         pending = [pool.submit(mask_job, args.spec, args.data_dir, s) for s in symbols]
         symbol_masks = [symbol_mask.result() for symbol_mask in pending]
         mask = comparison_mask(symbol_masks)
-        if args.command == "mask-report":
-            print(json.dumps(mask_report(spec, symbol_masks, mask), indent=1))
-            return 0
         masks = {symbol_mask.symbol: symbol_mask.mask for symbol_mask in symbol_masks}
+        if args.command == "mask-report":
+            # Rule 8's statistic, on XRPUSDT's own mask: the same one its check records.
+            quote = (
+                pool.submit(
+                    quote_test_job,
+                    args.spec,
+                    args.data_dir,
+                    args.config,
+                    masks[QUOTE_TESTED_SYMBOL],
+                ).result()
+                if quoted(spec, QUOTE_TESTED_SYMBOL)
+                else None
+            )
+            if quote is not None:
+                mask = with_quote_breaches(mask, {QUOTE_TESTED_SYMBOL: quote["tick_limit_quotes"]})
+            print(json.dumps(mask_report(spec, symbol_masks, mask, quote), indent=1))
+            return 0
         # Chronology is settled before any replay starts; invalid data never replays.
         # Submit every check before waiting on any, so they run in parallel. Each check
         # runs on its symbol's post-mask expected set; a symbol whose mask is None (every
-        # stage-1 symbol) is checked exactly as before masks existed.
+        # stage-1 symbol) is checked exactly as before masks existed. Every check gets the
+        # config, which XRPUSDT's actual-quotes test reads (spec v1 section 5 rule 8).
         checks = [
             pool.submit(
-                cross_check_job
-                if masks[symbol] is None
-                else partial(cross_check_job, mask=masks[symbol]),
+                check_job(masks[symbol], args.config),
                 args.spec,
                 args.data_dir,
                 symbol,
@@ -580,6 +643,11 @@ def main(argv: list[str] | None = None) -> int:
             for symbol in symbols
         ]
         cross_checks = [check.result() for check in checks]
+        # Rule 8's breach is found by XRPUSDT's check, after the masks, and joins the mask
+        # here, before any replay or scoring.
+        mask = with_quote_breaches(
+            mask, {check["symbol"]: check.get("tick_limit_quotes", 0) for check in cross_checks}
+        )
         # Section 5: a traded pair whose own check failed is excluded and not replayed, and
         # the other pairs run. A failure that reaches every pair, or an exclusion that
         # leaves none, stops the run: nothing replays, and every failure is reported.
