@@ -1,10 +1,10 @@
 # Task for Bob: fetch full-range-2017-2024 and full-range-2019-2024, stage 2's long windows
 
-- **Status: queued.** Merging this file into `main` starts the run: bob-task.yml runs a
-  task file as soon as a merge adds it. So it merges only on the owner's go, after review,
-  and after Tasks 1 to 7 of the long-window data plan are on `main` (they are, at
-  `370229d`: the repairing reader, hour masks, the damaged-archive fetch, `mask-report` and
-  XRP's quote test).
+- **Status: awaiting the owner's go.** Merging this file into `main` starts the run:
+  bob-task.yml runs a task file as soon as a merge adds it. So it merges only on the
+  owner's go, after review, and after Tasks 1 to 7 of the long-window data plan are on
+  `main` (they are, at `370229d`: the repairing reader, hour masks, the damaged-archive
+  fetch, `mask-report` and XRP's quote test).
 - **Written by:** Claude, 2026-10-07, as Task 9 of the long-window data plan. Spec v1 §4
   says the two stage-2 windows are not yet runnable until "Bob's re-fetch with daily and
   funding archives" and their manifests exist.
@@ -64,13 +64,17 @@ defines the digest's format. In short:
 3. **The scored manifest.** `fetch_dataset`, with the committed filters, whose
    `fetched_at` is then restored. The funding entries follow the klines, and
    `write_manifest` writes the file.
-4. **Its checks.** `verify` and `mask-report` read that manifest from disk. Their full
-   JSON stays under `data/full-range/`; the run log prints a summary of each.
-5. **The reported manifest.** `fetch_dataset` again, with the scored manifest as
+4. **The reported manifest.** `fetch_dataset` again, with the scored manifest as
    `previous`, so its funding entries are kept. Every entry must equal the scored
-   manifest's entry for the same file. Then `verify` on it.
-6. **The digest:** `data/full-range/full-range-2017-2024.digest.txt`. The script rebuilds
-   both manifests from it and compares them with the written ones, byte for byte.
+   manifest's entry for the same file.
+5. **The digest:** `data/full-range/full-range-2017-2024.digest.txt`, written as soon as
+   both manifests are, before any check runs, so that no later failure can lose it. The
+   script rebuilds both manifests from it and compares them with the written ones, byte
+   for byte.
+6. **The checks.** `verify` on both windows and `mask-report` on the scored one, each
+   reading its manifest from disk. Their full JSON stays under `data/full-range/`; the
+   run log prints a summary of each. A check that raises is a `PROBLEM` naming it, with
+   its traceback in the log, and the next check still runs.
 
 How the limits hold in code:
 - Every request goes through the script's `Requests`. It passes only the planned archive
@@ -87,6 +91,8 @@ How the limits hold in code:
   `RETRY` line. A fourth failure is a traceback.
 - A checksum mismatch is never retried. `fetch_file`'s rule raises a `DataError`, and the
   run ends with a traceback.
+- The `REQUESTS` line, and `data/full-range/requests.txt`, are written even when the run
+  ends in a traceback.
 
 ## Pinned inputs
 
@@ -97,8 +103,8 @@ any line says `FAILED`, stop before Step 3 and report. Step 2 copies the 16 line
 block out of this file, byte for byte:
 
 ```text
-df00aab3de98d1117aa85f5c847795384a715c8ebed558769131749dc7e1dbfd  scripts/fetch_full_range.py
-85c2f5e1714e7e479fa6a41a48ff89c647ddfe03ef2fefdc942b9515debf87b4  tests/test_fetch_full_range.py
+1d7b18d8cd9f5b8cdd6d2e196b4a765abc63873ad853e37384160749d4eb9b78  scripts/fetch_full_range.py
+d11db8eb0ef2ad691bd04b3b96cef5da0b381e3ac86ec9bae2227755cf6bb3b2  tests/test_fetch_full_range.py
 f4216524de089988a15fbddd72a9625a737f41be5a8dcb4bed6a36ccf8e0addb  config/datasets/full-range-2017-2024.toml
 8dad70041f4423706b0eeba272595fb24af74cb83713b6316abb68e5a40dafcb  config/datasets/full-range-2019-2024.toml
 349ce104be44d28d918b22dc99dd611f56d174011b50cb144393a97940c72374  config/datasets/long-bull-bear-2022.manifest.json
@@ -125,7 +131,7 @@ and its output go into the report.
    `sha256sum` line must end in `OK`, and the last line must be `exit 0`:
 
    ```text
-   sed -n '100,115p' docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md > data/full-range-pins.txt
+   sed -n '106,121p' docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md > data/full-range-pins.txt
    wc -l data/full-range-pins.txt
    sha256sum -c data/full-range-pins.txt; echo "exit $?"
    ```
@@ -137,15 +143,32 @@ and its output go into the report.
    tail -n 3 data/full-range-tests.log
    ```
 
-   It must print `exit 0`, and the log's last line must report `13 passed`. (Add no `-q`:
+   It must print `exit 0`, and the log's last line must report `15 passed`. (Add no `-q`:
    `pyproject.toml` already passes one, and a second one hides that line.)
 4. The run: about 3,600 requests to data.binance.vision, `verify` on both windows and
    `mask-report` on the scored one. Expect about an hour; the job allows 240 minutes.
+   That is longer than any single command on record here (about 19 minutes), so it runs
+   in the background, and you wait for it in steps of at most 10 minutes. Start it once:
 
    ```text
-   python scripts/fetch_full_range.py data/full-range > data/full-range-run.log 2>&1; echo "exit $?"
-   cat data/full-range-run.log
+   setsid nohup sh -c 'python scripts/fetch_full_range.py data/full-range > data/full-range-run.log 2>&1; echo "exit $?" > data/full-range-exit.txt' > /dev/null 2>&1 &
    ```
+
+   Then wait. This command only reads files; it returns after at most 10 minutes, or as
+   soon as the run has ended:
+
+   ```text
+   for i in $(seq 60); do [ -f data/full-range-exit.txt ] && break; sleep 10; done; tail -n 2 data/full-range-run.log; cat data/full-range-exit.txt 2>/dev/null || echo "still running"
+   ```
+
+   Repeat the wait until it prints an `exit` line, then `cat data/full-range-run.log`.
+   Never start the run a second time while `data/full-range-exit.txt` does not exist: the
+   first one is still working, and its log stays empty for long stretches (the first
+   lines after `FUNDING` come only when the whole scored fetch is done). If the wait
+   command itself is cut off by your tool, run it again. Only if the run is gone with no
+   exit file (`pgrep -f scripts/fetch_full_range.py` prints nothing), start it once more
+   unchanged: stored archives are reused while their checksum matches, so only
+   `.CHECKSUM` requests repeat. Say so in 6b.
 
 5. The hashes of what the run wrote, the sizes, and the reserved-window file check:
 
@@ -172,6 +195,17 @@ and its output go into the report.
 
    - **After 6a, never write or edit the report with a file tool.** It holds the
      verbatim run log and digest, and rewriting them by hand would change them.
+
+   **Keep the report under 200,000 bytes.** `validate_bob_artifact.py` refuses a larger
+   report, and then nothing is published. The run log and the digest can take up to
+   190,000 of them, so the hand-written passages get about 8,000 bytes in all: about
+   3,000 for 6a (its 16 `OK` lines included), 2,000 for 6b and 3,000 for 6e. Keep them
+   short this way:
+   - quote only the part of a log line that shows the result (self-check 1 in
+     `docs/BOB_PRACTICE.md`), for example `exit 0 status valid; failures 0`, never a
+     whole long line: every line is already in the run log above;
+   - copy no table, list or log line a second time;
+   - run `wc -c` on each passage file before you append it.
 
    **What is appended by command.** The run log and the digest go in byte for byte, each
    under its own heading in a `text` fence, with this command, giving the heading and the
@@ -200,17 +234,21 @@ and its output go into the report.
 
    **6b. Steps 4 and 5, by hand** (about 15 lines). Write to `data/fr-6b.md`, then append
    it with the command at the top of Step 6: a `## Steps 4 and 5` section with the Step 4
-   command and its `exit` line, and each Step 5 command with its full output.
+   commands, how many waits it took, the `exit` line of `data/full-range-exit.txt`, and
+   each Step 5 command with its full output.
 
    **6c. The run log, by command:** the command above, with the heading `Run log` and
    `data/full-range-run.log`. The run log holds every summary this task asks for: the
    `PLAN`, `FILTERS`, `FUNDING`, `RETRY`, `KLINES`, `MANIFEST`, `VERIFY`, `MASK`,
-   `COMPARE`, `DIGEST`, `REQUESTS`, `REPORT`, `STOP`, `PROBLEM` and `RESULT` lines, and a
-   traceback if the run ended in one. Do not copy any of them again.
+   `COMPARE`, `DIGEST`, `REQUESTS`, `REPORT`, `STOP`, `PROBLEM` and `RESULT` lines, the
+   traceback of any check that raised, and a traceback if the run ended in one. Do not
+   copy any of them again.
 
-   **6d. The digest, by command, then its check.** Only when the run log has a `REPORT`
-   line whose total is at most 190,000 bytes. Otherwise skip 6d: 6e states the count
-   instead, and the run counts as stopped.
+   **6d. The digest, by command, then its check.** Whenever the run log has a `DIGEST`
+   line and a `REPORT` line whose total is at most 190,000 bytes, whatever `PROBLEM`
+   lines the run printed: the digest is what rebuilds the manifests. Without a `DIGEST`
+   line (a `STOP` before it, or a traceback), skip 6d. With a `REPORT` total over
+   190,000, skip 6d too: 6e gives the count, and the run counts as stopped.
    1. Append it: the command above, with the heading `Digest` and
       `data/full-range/full-range-2017-2024.digest.txt`.
    2. Print the check command for it, with its line numbers filled in:
@@ -263,6 +301,16 @@ and its output go into the report.
       complete when the first ends with the two lines `check_reports: 0 problem(s)` and
       `exit 0`, and the count is below 200,000 (`validate_bob_artifact.py` rejects a
       larger report). Quote those lines in your final message.
+   4. **If the count is 200,000 or more,** the report would be refused. Write it again
+      without the digest; do not cut or edit it by hand (self-check 10: the report is
+      final text):
+      - move it aside: `mv docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md data/fr-oversize.md`;
+      - redo 6a to 6f in order, from the same files, but skip 6d;
+      - in 6e, give the oversize count (`wc -c data/fr-oversize.md`), the SHA-256 of the
+        run log and of the digest (Step 5 and the `DIGEST` line), the counts from the
+        `KLINES` and `MANIFEST` lines, the stop reason ("the report with the digest held
+        N bytes, over 200,000"), and that a second run is needed to deliver the digest;
+      - run 3 again; the new count must be below 200,000.
 
    `data/fr-checks.log` must contain these lines, in any order the checker chooses, plus
    one `date -u` line:
@@ -279,9 +327,9 @@ and its output go into the report.
 ## Validity checks (all must hold for a valid run)
 
 1. Step 2: 16 `OK` lines and `exit 0`.
-2. Step 3: `exit 0` and `13 passed`.
-3. Step 4: `exit 0` and the last line `RESULT 0 problem(s)`, which the script prints only
-   when all of these hold:
+2. Step 3: `exit 0` and `15 passed`.
+3. Step 4: `exit 0` in `data/full-range-exit.txt`, and the run log's last line
+   `RESULT 0 problem(s)`, which the script prints only when all of these hold:
    - `FUNDING 60 of 60 months ok`;
    - both `VERIFY` lines say `exit 0 status valid`, and the scored window's keeps at
      least 2 of the 3 pairs. The reported window's count is reported only: below 2, it
@@ -289,6 +337,7 @@ and its output go into the report.
    - `MASK symbol-months` lists no month with `excluded True`;
    - `COMPARE full-range-2019-2024: ... every entry equals full-range-2017-2024's: True`;
    - `DIGEST ... rebuilds both manifests byte for byte: True`;
+   - no check raised;
    - `REPORT ... ` at most 190,000 bytes.
 4. Step 4: the `REQUESTS` line says `latest month 2024-12; after 2024-12: 0`, and there
    is no `OutOfScope` and no traceback.
@@ -312,7 +361,20 @@ as above:
 
 ## Stop conditions
 
-Stop, keep everything, and report what you have, with the full error, if:
+There are two kinds of stop:
+- **The run ended with a `RESULT` line** (`data/full-range-exit.txt` says `exit 0` or
+  `exit 1`). Complete Steps 5 and 6 in full, the digest included (6d) whenever the log
+  has a `DIGEST` line, whatever the `PROBLEM` lines say: a 17% exclusion, a
+  scored-window pair shortfall, `verify` not valid, or a check that raised. (A `STOP`
+  comes before the digest, so there is none to append.) The script writes the digest as
+  soon as both manifests exist, before any check runs, and the digest is what rebuilds
+  the manifests, so it must reach the report. Only the size limits (6d and 6f.4) keep it
+  out. "Stop" then means: no rerun, no change and no workaround.
+- **Anything else** (a pin, the tests, a traceback with no `RESULT` line): stop where
+  you are. Keep everything, and write the report with what you have, by the same steps:
+  6a, 6b, 6c if a run log exists, 6e and 6f, with the full error.
+
+Report each of these:
 - any pin in Step 2 says `FAILED`, or the tests in Step 3 fail;
 - a checksum mismatches or is missing: a traceback naming "does not match Binance's
   published SHA-256", "unexpected checksum file", "published without a checksum" or "has
@@ -333,7 +395,10 @@ Stop, keep everything, and report what you have, with the full error, if:
   1, "Eligibility"), so an exclusion is new evidence against it. Report it as a signal: no
   rule is tuned to it;
 - the `REPORT` line's total is over 190,000 bytes: append the run log but not the digest,
-  and give the count in the results;
+  and give the count in the results; the same if the final report reaches 200,000 bytes
+  (6f.4). Either way, say that a second run is needed to deliver the digest;
+- a check that raised (a `PROBLEM` line naming `verify` or `mask-report` and the
+  exception; its traceback is in the run log);
 - the run ends with `RESULT` other than `0 problem(s)`: report every `PROBLEM` line,
   facts only; do not rerun with changes or work around it;
 - anything asks for a login or key, or anything else is unexpected.
@@ -343,5 +408,6 @@ Stop, keep everything, and report what you have, with the full error, if:
 [`docs/BOB_PRACTICE.md`](../BOB_PRACTICE.md), "Before you finish", all eleven items: apply
 items 1, 2 and 4 to 11 to each hand-written passage before you append it; item 3 is
 Step 6f. From 6d on, change nothing already in the report; an error found later goes in
-your final message. Every count in the report is printed by the script or by a command
-you ran.
+your final message. The one exception is 6f.4: a report of 200,000 bytes or more is
+written again, whole, without the digest. Every count in the report is printed by the
+script or by a command you ran.

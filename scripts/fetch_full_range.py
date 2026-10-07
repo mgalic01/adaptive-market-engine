@@ -3,7 +3,7 @@
     python scripts/fetch_full_range.py <data-dir> [--spec PATH] [--reported-spec PATH]
         [--jobs N]
 
-Task:docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md (long-window data plan, Task
+Task: docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md (long-window data plan, Task
 9). IBM Bob runs it on a GitHub Actions machine: Bob is the only actor allowed to reach
 data.binance.vision. Every file it writes lands under ``<data-dir>``, which the task puts
 in the git-ignored ``data/``, since bob-task.yml refuses any change but Bob's new report.
@@ -31,18 +31,22 @@ What it does, in order (spec v1 sections 4 and 5; P8 for the funding archives):
    filters with the current time, so their committed ``fetched_at`` is restored. The
    funding entries go after the klines, where ``fetch_dataset`` keeps a manifest's funding
    entries, and ``write_manifest`` writes the whole atomically before anything reads it.
-4. **Its checks.** ``verify`` and ``mask-report`` (the backtest CLI, in this process) load
-   that manifest from disk. Their JSON stays under ``<data-dir>``. The log prints
-   verify's status, failures and excluded pairs, and mask-report's totals, every
-   symbol-month with a masked hour or an exclusion, and XRPUSDT's actual-quotes line.
-5. **The reported manifest.** ``fetch_dataset`` for the reported spec on the same
+4. **The reported manifest.** ``fetch_dataset`` for the reported spec on the same
    ``<data-dir>``, with the scored manifest as ``previous``, so its funding entries are
    kept. A stored archive whose SHA-256 matches its .CHECKSUM is reused, so only .CHECKSUM
    requests go out, besides the archive request of a file Binance does not publish. Every
    entry must equal the scored manifest's for the same file; only then is the manifest
-   written and verified.
-6. **The digest** of both manifests (format below). The script rebuilds both manifests
-   from it (``rebuild``) and compares them with the written ones byte for byte.
+   written.
+5. **The digest** of both manifests (format below), written as soon as both manifests are,
+   so that no later failure can lose it: it is what rebuilds them. The script rebuilds
+   both manifests from it (``rebuild``) and compares them with the written ones byte for
+   byte.
+6. **The checks.** ``verify`` on both windows and ``mask-report`` on the scored one (the
+   backtest CLI, in this process), each loading its manifest from disk. Their JSON stays
+   under ``<data-dir>``. The log prints verify's status, failures and excluded pairs, and
+   mask-report's totals, every symbol-month with a masked hour or an exclusion, and
+   XRPUSDT's actual-quotes line. A check that raises is a problem naming it, with its
+   traceback in the log; the next check still runs.
 
 Every request goes through ``Requests``. Only the planned archive and .CHECKSUM paths
 pass; any other raises ``OutOfScope`` before the fetcher is called. A ``FeedError`` (a
@@ -50,15 +54,16 @@ transport failure, or an HTTP status other than 200 and 404) is retried with bac
 to ``ATTEMPTS`` attempts, as ``audit_run._fetch`` retries: ``archive_get`` retries
 nothing, and one transient failure in about 2,450 requests would end the run. A checksum
 mismatch is a ``DataError`` raised after the request has returned, so it is never retried
-and ends the run with a traceback.
+and ends the run with a traceback. The ``REQUESTS`` line (the count, the host, the latest
+month) and ``<data-dir>/requests.txt`` are written even then.
 
 The log ends with one ``PROBLEM`` line per problem and ``RESULT <n> problem(s)``; the exit
-status is 0 only with none. The problems: a stop (``STOP`` line), verify not valid, a
-scored window left with fewer than 2 included pairs, a symbol-month that mask-report
-excludes under the 17% rule, a digest that does not rebuild both manifests, and a run log
-and digest over ``REPORT_LIMIT`` bytes together. The reported window's included pairs are
-logged, but too few of them is no problem: that window decides nothing (spec v1 section 5
-rule 6).
+status is 0 only with none. The problems: a stop (``STOP`` line), a check that raised,
+verify not valid, a scored window left with fewer than 2 included pairs, a symbol-month
+that mask-report excludes under the 17% rule, a digest that does not rebuild both
+manifests, and a run log and digest over ``REPORT_LIMIT`` bytes together. The reported
+window's included pairs are logged, but too few of them is no problem: that window
+decides nothing (spec v1 section 5 rule 6).
 
 **The digest, format v1:** one line each, its fields separated by single spaces.
 
@@ -90,6 +95,7 @@ import re
 import shutil
 import sys
 import time
+import traceback
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -542,9 +548,9 @@ def mask_report(
     log(f"MASK symbol-months with a masked hour or an exclusion: {len(months)}")
     for symbol, month in months:
         log(
-            f"MASK {symbol} {month['month']} masked {month['masked_hours']} of "
-            f"{month['expected_hours']}, open-only {month['open_only_hours']}, share "
-            f"{month['real_defect_share']}, excluded {month['excluded']}"
+            f"MASK {symbol} {month['month']} masked {month['masked_hours']}/"
+            f"{month['expected_hours']} open-only {month['open_only_hours']} share "
+            f"{month['real_defect_share']} excluded {month['excluded']}"
         )
     excluded = [f"{symbol} {month['month']}" for symbol, month in months if month["excluded"]]
     if excluded:
@@ -557,7 +563,7 @@ def mask_report(
 def fetch(
     plan: Plan, args: argparse.Namespace, requests: Requests, log: Log, problems: list[str]
 ) -> Path:
-    """Steps 2 to 6 of the module docstring; the digest's path."""
+    """Steps 2 to 5 of the module docstring; the digest's path."""
     data_dir: Path = args.data_dir
     funding = [
         fetch_funding_file(data_dir, FUNDING_SYMBOL, month, requests)
@@ -583,8 +589,6 @@ def fetch(
     restore_filters(scored, plan.filters)
     scored["files"] += funding
     first = written(plan.scored, plan.scored_copy, scored, log)
-    verify(plan.scored, plan.scored_copy, data_dir, args.jobs, log, problems, scored=True)
-    mask_report(plan.scored, plan.scored_copy, data_dir, args.jobs, log, problems)
 
     reported = fetch_dataset(
         plan.reported, data_dir, fetcher=requests, instruments=instruments, previous=first
@@ -603,7 +607,6 @@ def fetch(
             f"is not written: {', '.join(differing)}"
         )
     second = written(plan.reported, plan.reported_copy, reported, log)
-    verify(plan.reported, plan.reported_copy, data_dir, args.jobs, log, problems, scored=False)
 
     hashes = {
         plan.scored.name: sha256_file(manifest_path(plan.scored_copy)),
@@ -626,6 +629,39 @@ def fetch(
     if not same:
         problems.append("the digest does not rebuild both manifests byte for byte")
     return digest
+
+
+def checks(plan: Plan, args: argparse.Namespace, log: Log, problems: list[str]) -> None:
+    """Step 6 of the module docstring, after the digest is written. A check that raises is
+    a problem naming it, with its traceback in the log, and the next check still runs."""
+    data_dir: Path = args.data_dir
+    steps: list[tuple[str, DatasetSpec, Callable[[], None]]] = [
+        (
+            "verify",
+            plan.scored,
+            lambda: verify(
+                plan.scored, plan.scored_copy, data_dir, args.jobs, log, problems, scored=True
+            ),
+        ),
+        (
+            "mask-report",
+            plan.scored,
+            lambda: mask_report(plan.scored, plan.scored_copy, data_dir, args.jobs, log, problems),
+        ),
+        (
+            "verify",
+            plan.reported,
+            lambda: verify(
+                plan.reported, plan.reported_copy, data_dir, args.jobs, log, problems, scored=False
+            ),
+        ),
+    ]
+    for command, spec, step in steps:
+        try:
+            step()
+        except Exception as exc:
+            log(traceback.format_exc().rstrip())
+            problems.append(f"{command} of {spec.name} raised {type(exc).__name__}: {exc}")
 
 
 def log_requests(requests: Requests, data_dir: Path, log: Log) -> None:
@@ -665,14 +701,19 @@ def main(
     requests: Requests | None = None
     digest: Path | None = None
     try:
-        plan = make_plan(args, log)
-        requests = Requests(fetcher, plan.paths, sleep, log)
-        digest = fetch(plan, args, requests, log, problems)
-    except Stop as stop:
-        log(f"STOP {stop}")
-        problems.append(f"the run stopped: {stop}")
-    if requests is not None:
-        log_requests(requests, args.data_dir, log)
+        try:
+            plan = make_plan(args, log)
+            requests = Requests(fetcher, plan.paths, sleep, log)
+            digest = fetch(plan, args, requests, log, problems)
+            checks(plan, args, log, problems)
+        except Stop as stop:
+            log(f"STOP {stop}")
+            problems.append(f"the run stopped: {stop}")
+    finally:
+        # Even after a traceback (a checksum failure, a lasting FeedError, OutOfScope), the
+        # log must say how many requests went out, and to which months.
+        if requests is not None:
+            log_requests(requests, args.data_dir, log)
     if digest is not None:
         size = digest.stat().st_size
         total = log.bytes + size

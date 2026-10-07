@@ -246,6 +246,8 @@ class Run:
     sleeps: list[float]
     # (command, spec path, whether its manifest existed) for each backtest CLI call
     cli_calls: list[tuple[str, Path, bool]] = field(default_factory=list)
+    # whether the digest file existed when each backtest CLI call started
+    digest_before_cli: list[bool] = field(default_factory=list)
     # (dataset, index of its first request, index after its last) for each fetch_dataset
     fetches: list[tuple[str, int, int]] = field(default_factory=list)
     # (dataset, whether it is the scored window) for each verify the script runs
@@ -261,9 +263,16 @@ class Run:
         return self.host.requests[first:end]
 
 
-def run_script(tmp: Path, objects: dict[str, bytes], fail_once: set[str] | None = None) -> Run:
+def run_script(
+    tmp: Path,
+    objects: dict[str, bytes],
+    fail_once: set[str] | None = None,
+    *,
+    cli_error: bool = False,
+) -> Run:
     """The script's ``main`` with the fake host, from an empty working directory, with every
-    network route of the fetch code replaced by an error."""
+    network route of the fetch code replaced by an error. With ``cli_error`` every backtest
+    CLI call (verify, mask-report) raises instead of running."""
     specs, data, cwd = tmp / "specs", tmp / "data", tmp / "cwd"
     specs.mkdir()
     cwd.mkdir()
@@ -277,6 +286,9 @@ def run_script(tmp: Path, objects: dict[str, bytes], fail_once: set[str] | None 
     def spy_cli(argv: list[str]) -> int:
         spec = Path(argv[argv.index("--spec") + 1])
         run.cli_calls.append((argv[0], spec, manifest_path(spec).is_file()))
+        run.digest_before_cli.append((data / "synthetic-scored.digest.txt").is_file())
+        if cli_error:
+            raise RuntimeError(f"synthetic {argv[0]} failure")
         return real_cli(argv)
 
     def spy_verify(spec: Any, *args: Any, scored: bool) -> None:
@@ -393,6 +405,10 @@ def test_fetch_full_range_writes_only_under_data_and_uses_committed_filters(happ
     assert report["xrp_quote_test"]["breaches"] is False
     assert "MASK totals" in happy.out
     assert "MASK XRPUSDT quote test" in happy.out
+    # The digest is written once both manifests are, before any check can fail.
+    assert happy.digest_before_cli == [True, True, True]
+    order = [line.split(" ", 1)[0] for line in happy.out.splitlines()]
+    assert order.index("DIGEST") < order.index("VERIFY") < order.index("MASK")
 
 
 def test_the_committed_specs_are_the_default_plan() -> None:
@@ -430,6 +446,44 @@ def test_a_checksum_mismatch_is_not_retried_and_stops_the_run(
     assert run.sleeps == []
     assert not list(run.data.glob("*.manifest.json"))
     assert not local_path(run.data, "BTCUSDT", "1m", EVALUATION).exists()
+    # The traceback still leaves the request count and list behind (a finally).
+    (requests,) = [line for line in run.out.splitlines() if line.startswith("REQUESTS ")]
+    assert requests.startswith(f"REQUESTS {len(run.host.requests)} to data.binance.vision")
+    listed = (run.data / "requests.txt").read_text(encoding="utf-8").splitlines()
+    assert listed == run.host.requests
+    assert "RESULT" not in run.out
+
+
+def test_a_check_that_raises_keeps_the_digest_and_is_a_problem(
+    archives: dict[str, bytes], tmp_path: Path
+) -> None:
+    """An exception inside verify or mask-report (the backtest CLI) must not lose the
+    digest, which is what rebuilds the manifests: it is written before the checks run, and
+    each failed check is a PROBLEM naming the step and the exception."""
+    run = run_script(tmp_path, archives, cli_error=True)
+    assert (run.code, run.error) == (1, None), run.out
+    assert [(command, spec.name) for command, spec, _ in run.cli_calls] == [
+        ("verify", "synthetic-scored.toml"),
+        ("mask-report", "synthetic-scored.toml"),
+        ("verify", "synthetic-reported.toml"),
+    ]
+    digest = run.data / "synthetic-scored.digest.txt"
+    assert run.digest_before_cli == [True, True, True]
+    sha256 = hashlib.sha256(digest.read_bytes()).hexdigest()
+    (line,) = [line for line in run.out.splitlines() if line.startswith("DIGEST ")]
+    assert f"sha256 {sha256}; rebuilds both manifests byte for byte: True" in line
+    lines = run.out.splitlines()
+    assert [line for line in lines if line.startswith("PROBLEM ")] == [
+        "PROBLEM verify of synthetic-scored raised RuntimeError: synthetic verify failure",
+        "PROBLEM mask-report of synthetic-scored raised RuntimeError: synthetic mask-report "
+        "failure",
+        "PROBLEM verify of synthetic-reported raised RuntimeError: synthetic verify failure",
+    ]
+    assert any(line.startswith("REQUESTS ") for line in lines)
+    assert any(line.startswith("REPORT ") for line in lines)
+    assert lines[-1] == "RESULT 3 problem(s)"
+    # Each failure's traceback is in the log, for the report.
+    assert run.out.count("Traceback (most recent call last):") == 3
 
 
 def test_a_missing_funding_month_stops_before_any_manifest_is_written(
@@ -512,6 +566,39 @@ def test_the_reported_manifest_is_a_subset_with_nothing_downloaded_again(happy: 
     assert "every entry equals synthetic-scored's: True" in happy.out
     # Only the scored window's pair shortfall can stop the run (spec v1 section 5 rule 6).
     assert happy.verified == [("synthetic-scored", True), ("synthetic-reported", False)]
+
+
+def test_mask_report_summary_lists_each_masked_month_and_flags_an_exclusion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec_path = tmp_path / "synthetic-scored.toml"
+    spec_path.write_text(SCORED_SPEC, encoding="utf-8")
+    hours = {"expected_hours": 672, "open_only_hours": 0, "excluded": False}
+    clean = {**hours, "month": "2023-01", "masked_hours": 0, "real_defect_share": "0"}
+    masked = {**hours, "month": "2023-02", "masked_hours": 3, "real_defect_share": "1/224"}
+    excluded = {**masked, "masked_hours": 672, "real_defect_share": "1/4", "excluded": True}
+    report = {
+        "dataset": "synthetic-scored",
+        "comparison_mask": {},
+        "xrp_quote_test": None,
+        "symbols": {"BTCUSDT": {"months": [clean, masked]}, "BNBUSDT": {"months": [excluded]}},
+        "totals": {"symbols_with_a_mask": 2, "masked_hours": 675, "excluded_months": 1},
+    }
+    monkeypatch.setattr(fetch_full_range, "cli", lambda *args: (0, json.dumps(report)))
+    lines: list[str] = []
+    problems: list[str] = []
+    spec = load_spec(spec_path)
+    fetch_full_range.mask_report(spec, spec_path, tmp_path, 1, lines.append, problems)
+    assert lines[1:] == [
+        "MASK totals symbols_with_a_mask=2 masked_hours=675 excluded_months=1",
+        "MASK XRPUSDT quote test: not run, XRPUSDT is not traded",
+        "MASK symbol-months with a masked hour or an exclusion: 2",
+        "MASK BTCUSDT 2023-02 masked 3/672 open-only 0 share 1/224 excluded False",
+        "MASK BNBUSDT 2023-02 masked 672/672 open-only 0 share 1/4 excluded True",
+    ]
+    assert problems == [
+        "mask-report excludes 1 symbol-month(s) under the 17% rule: BNBUSDT 2023-02"
+    ]
 
 
 def test_too_few_pairs_is_a_problem_in_the_scored_window_only(
