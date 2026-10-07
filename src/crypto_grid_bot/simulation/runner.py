@@ -1454,12 +1454,9 @@ class PaperSimulator:
     def _stop_out(
         self, account: Account, position: UptrendPosition, quote: Quote, report: dict[str, Any]
     ) -> None:
-        """Exit 1. If the position bought anything, dust included, the 24-hour re-entry pause
-        runs from this, its first trigger (section 5). An entry stopped before it bought
-        anything starts no pause (owner ruling, 2026-10-07): it ends as abandoned
-        (``_finish_uptrend``), and the next decision that qualifies may enter."""
-        if position.spent > ZERO:
-            account.uptrend_stopped_ms = _epoch_ms(quote.observed_at)
+        """Exit 1: the 24-hour re-entry pause runs from this, its first trigger (section 5),
+        whatever the entry had bought."""
+        account.uptrend_stopped_ms = _epoch_ms(quote.observed_at)
         self._begin_exit(position, "stop", report)
 
     @staticmethod

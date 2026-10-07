@@ -241,8 +241,7 @@ class Account:
     # changed it. ``range_decisions`` counts the consecutive hourly decisions whose regime was
     # RANGE, and ``decision_hour_ms`` is the UTC hour (its open, in ms) last decided, -1 before
     # any. ``uptrend`` is the uptrend entry or position, and ``uptrend_stopped_ms`` the
-    # observation (ms) at which the last trailing-stop exit of a position that bought
-    # something first triggered; an entry that bought nothing sets none. ``risk_recovery``
+    # observation (ms) at which the last trailing-stop exit first triggered. ``risk_recovery``
     # holds a new uptrend entry after a risk drain or a restart until ``risk_recovery_count``
     # reaches the policy's recovery frames (section 7). ``winding_down``: the mode left Grid
     # while the grid's orders still rest, so the grid places no buy (section 6).

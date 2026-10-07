@@ -524,8 +524,7 @@ def test_entry_that_bought_nothing_counts_no_round_trip() -> None:
     assert steps[0].report["mode_decision"] == UPTREND and metrics.buys == 0
     (stopped,) = [s.report for s in steps if s.report.get("uptrend_exit") == "stop"]
     assert stopped.get("uptrend_abandoned") and not stopped.get("uptrend_ended")
-    # Nor does it start the re-entry pause (owner ruling, 2026-10-07).
-    assert account.uptrend is None and account.uptrend_stopped_ms is None
+    assert account.uptrend is None and account.uptrend_stopped_ms is not None
     assert (metrics.uptrend_trades, metrics.uptrend_stops, metrics.uptrend_fades) == (0, 0, 0)
     assert row["modes"]["uptrend_trades"] == 0 and row["modes"]["stops"] == 0
 
