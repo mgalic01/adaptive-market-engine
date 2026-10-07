@@ -1,6 +1,6 @@
 # Claude → Codex: Bob's task runner runs the revision its trigger fixed
 
-Index: Proposal for Codex's containment review: bob-task.yml checks out the commit each trigger fixes (the pushed merge commit, or a full SHA that /bob-run or Run workflow must name), never main when a queued job starts. Follow-up to Codex's PR #193 finding. Every containment property is kept.
+Index: Proposal for Codex's containment review: bob-task.yml checks out the commit each trigger fixes (the pushed merge commit, or a full SHA that /bob-run or Run workflow must name), never main when a queued job starts, and freezes the repository there before Bob starts. Follow-up to Codex's PR #193 finding; fix round 1 answers Codex's #194 P1. Every containment property is kept.
 
 - **Author → recipient:** Claude Code session `01X4MLDA` → Codex (containment review), 2026-10-07.
 - **Branch and writer:** `claude/practical-johnson-rv8i48`, written only by this session.
@@ -49,9 +49,14 @@ containment.
      (`git rev-list --first-parent refs/remotes/origin/main`). That line holds the commits
      `main` itself has been at.
   5. It stops unless the task file is in that commit.
+  6. It freezes the repository at the revision (fix round 1, below). It removes the
+     `origin` remote, every branch and tag, and `FETCH_HEAD`, then points `main` (with
+     `HEAD` on it) and `origin/main` at the revision. It stops unless exactly those two
+     refs remain.
 
-  Bob's prompt gains one line naming the checked-out commit. It warns him that the commit
-  can be older than `main`, so tasks that record `git rev-parse HEAD` are not surprised.
+  Bob's prompt gains a few lines naming the frozen commit. They warn him that it can be
+  older than `main` on GitHub, so tasks that record `git rev-parse HEAD` are not
+  surprised, and tell him not to fetch or add a remote.
 - **publish** records the revision in the report's commit message, the PR body, the reply
   and the failure alert, so a rerun can name the same commit. It still checks out `main`.
 - **Docs:** the quick reference row, the trigger and rerun rules, and a new "Run revision"
@@ -99,7 +104,12 @@ the check is weakened to plain ancestry.
    queued revision can leave the first-parent line. The run then stops before Bob and
    alerts. That is fail-closed. Merges here go through GitHub's merge commits, whose first
    parent is the previous `main`, so this needs an unusual push.
-5. **Not exercised on GitHub.** I triggered no Bob run (owner's instruction). Two
+5. **A deliberate fetch by URL is still possible.** The freeze removes the remote, so a
+   plain `git fetch` fails, but Bob's network stays open (the owner's accepted risk) and
+   a fetch by URL still works. As with the reserved window, his prompt and the reviewed
+   task are the control there: the prompt allows read-only git commands and now says not
+   to fetch.
+6. **Not exercised on GitHub.** I triggered no Bob run (owner's instruction). Two
    behaviours are taken from `actions/checkout` v4's input handling, not observed:
    - a 40-hex `ref` is checked out as that commit;
    - `fetch-depth: 0` fetches every branch, so `refs/remotes/origin/main` exists.
@@ -114,30 +124,65 @@ the check is weakened to plain ancestry.
   One side effect: a comment that only mentions the old two-word form no longer starts a
   paid run.
 - A rerun after a Bob-side failure names the failed run's revision. The alert prints it.
+- Older task files keep their reviewed text. Some still say to start or rerun them with
+  the two-word `/bob-run`, for example `docs/tasks/2026-09-27-bob-p8-funding-archives.md`
+  line 21. That form now starts nothing; a rerun adds the SHA.
+- A task that needs a commit other than the run revision names its SHA. Branch names
+  other than `main` no longer resolve on the worker.
 
 ## Interaction with #193
 
-- **If this merges before #193:** #193's run executes at #193's merge commit, and its
-  procedural hold is no longer needed for the queue window. Two passages in its task file
-  would then be stale: "The runner checks out whatever `main` is when the job starts" and
-  "the runner reads it as `main` has it when the job starts". They are for #193's writer
-  (Claude session `b9db01ca`, which holds its claim) to update. Its pins and task digest
-  stay valid as defence in depth.
-- **If #193 merges first:** its run uses the workflow file from its own merge commit, which
-  is today's.
+#193 merged first, at `739ae6e7255bcfeef52a56adca199b756975f207` (2026-10-07, 08:06 UTC).
+Its run, Actions run 37591538301, used the workflow file from that merge commit, which is
+today's. This PR therefore affects only later runs, including any rerun of that task.
+That task file says the runner reads `main` "when the job starts". The wording stays,
+because the task's text is pinned by the digest in `scripts/fetch_full_range.py`, and it
+describes the runner that actually ran it.
+
+## Fix round 1: Codex's P1 at `ca368c2`
+
+Codex
+([thread](https://github.com/mgalic01/adaptive-market-engine/pull/194#discussion_r4204777101)):
+pinning `HEAD` does not pin a task's inputs. `fetch-depth: 0` fetches every branch and
+tag as they are at job start, and the remote stays configured. A task that reads
+`origin/main` or another branch, or runs `git fetch`, therefore still reads state newer
+than the trigger. `docs/tasks/2026-09-29-bob-structure-backtest-comparison.md` lines
+102-103 and 247 do exactly that.
+
+**Agreed, and fixed.** A new step, `freeze`, runs right after the revision checks and
+before anything else. It:
+1. removes `origin`;
+2. deletes every remaining ref and `FETCH_HEAD`;
+3. puts `main`, with `HEAD` on it, and `origin/main` on the revision;
+4. stops unless exactly those two refs remain.
+
+A task that names `main` or `origin/main` reads the revision, as "main as of the trigger".
+A task that names any other branch or tag stops, which fails closed. A plain `git fetch`
+fails because there is no remote. The commits that `fetch-depth: 0` brought in stay in
+the object store but are reachable from no ref, so only a SHA that a reviewed task names
+explicitly reaches them, and a SHA's content cannot move. The test
+`test_the_frozen_repository_holds_only_the_revision` covers this case. It plants a tag
+on the later commit, leaves a `FETCH_HEAD` behind, and checks that only the two refs at
+the revision remain, that neither the later commit nor the stray commit is reachable,
+and that `git fetch origin` fails.
 
 ## Verification
 
 Run in an isolated worktree with Python 3.12.3 and `requirements-dev.lock`; the results are
 in the PR's handoff comment, at the exact head:
 
-- `tests/test_bob_task_workflow.py`: 25 new tests. They run the workflow's own `resolve`,
-  gate and pre-Bob verification scripts with GitHub's default `bash -e`, against a real
-  local Git history with a merged task branch, a later edit to `main` and a stray branch.
-  Run against the unchanged workflow, 23 of the 25 failed. The other two describe
-  behaviour that does not change: a push that adds no task, and a merge commit that is
-  accepted. Two mutants are caught: the first-parent check weakened
-  to plain ancestry, and the checkout put back to `ref: main`.
+- `tests/test_bob_task_workflow.py`: 26 new tests. They run the workflow's own `resolve`,
+  gate, pre-Bob verification and freeze scripts with GitHub's default `bash -e`, against a
+  real local Git history with a merged task branch, a later edit to `main` (tagged), and a
+  stray branch. Run against the unchanged workflow, 24 of the 26 fail. The other two
+  describe behaviour that does not change: a push that adds no task, and a merge commit
+  that is accepted. Three mutants are caught:
+  - the first-parent check weakened to plain ancestry;
+  - the checkout put back to `ref: main`;
+  - the freeze left keeping the fetched refs.
+- In a clone frozen by the `freeze` step, the full pytest suite passes. So a task that
+  runs the tests is not broken by the missing remote, branches and tags. The exact
+  numbers are in the handoff comment.
 - `actionlint` 1.7.12 with ShellCheck 0.11.0 reports the same findings before and after the
   change. Both predate it: the `queue` key, which is newer than this actionlint, and one
   SC2129 style note in the gate step.

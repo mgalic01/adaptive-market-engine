@@ -10,9 +10,10 @@ name: IBM Bob task run
 #   repository owner. Without the SHA nothing runs;
 # - "Run workflow" by the repository owner, with the task path and the full commit SHA.
 # The worker checks out the run revision, never "main when the job starts", and stops
-# before Bob unless main has been at that commit (main's first-parent line). So a commit
-# merged while a run waits in the bob-task queue cannot change what the run reads
-# (Codex's review of PR #193).
+# before Bob unless main has been at that commit (main's first-parent line). It then
+# freezes the repository there: main and origin/main name the revision, and no other
+# branch, tag or remote is left. So a commit merged while a run waits in the bob-task
+# queue cannot change what the run reads (Codex's reviews of PRs #193 and #194).
 # The comment keyword is not "@bob", so the read-only review workflow does not also fire.
 #
 # Containment (Codex's audit, 2026-09-25): Bob's commands and the repository-write token
@@ -194,6 +195,29 @@ jobs:
           test -f "$TASK" || { echo "$TASK is not in $REVISION"; exit 1; }
           echo "Running $TASK at $REVISION"
 
+      # fetch-depth 0 fetched every branch and tag as they are at job start, and those
+      # can be newer than the trigger (Codex, PR #194). Bob sees the run revision only:
+      # main and origin/main name it, and no other branch, tag, FETCH_HEAD or remote
+      # is left to read or fetch from.
+      - name: Freeze the repository at the run revision
+        id: freeze
+        if: steps.gate.outputs.ok == 'true'
+        env:
+          REVISION: ${{ steps.gate.outputs.revision }}
+        run: |
+          git remote remove origin
+          git for-each-ref --format='%(refname)' > "$RUNNER_TEMP/refs.txt"
+          while IFS= read -r ref; do git update-ref -d "$ref"; done < "$RUNNER_TEMP/refs.txt"
+          rm -f "$(git rev-parse --git-path FETCH_HEAD)"
+          git checkout --quiet -B main "$REVISION"
+          git update-ref refs/remotes/origin/main "$REVISION"
+          git for-each-ref --format='%(objectname) %(refname)' | tee "$RUNNER_TEMP/refs-left.txt"
+          printf '%s refs/heads/main\n%s refs/remotes/origin/main\n' "$REVISION" "$REVISION" \
+            > "$RUNNER_TEMP/refs-expected.txt"
+          cmp -s "$RUNNER_TEMP/refs-expected.txt" "$RUNNER_TEMP/refs-left.txt" \
+            || { echo "Refs other than the run revision remain"; exit 1; }
+          test -z "$(git remote)" && test "$(git rev-parse HEAD)" = "$REVISION"
+
       - uses: actions/setup-python@v5
         if: steps.gate.outputs.ok == 'true'
         with:
@@ -273,8 +297,10 @@ jobs:
           file on a GitHub Actions machine at the owner's request.
 
           Task file (your instructions): $TASK
-          Checked out (detached): commit $REVISION, the revision this run was started
-          for. It can be older than main; that is intended.
+          The repository is frozen at commit $REVISION, the revision this run was
+          started for: main and origin/main point to it, and no other branch, tag or
+          remote exists. It can be older than main on GitHub; that is intended. Do not
+          fetch or add a remote.
           Read docs/START_HERE.md step 0 (what the project is for) and step 1 (the rules
           that override everything) first, then the task file, and follow the task
           exactly. Step 0 is context for judging your results, not licence to widen the

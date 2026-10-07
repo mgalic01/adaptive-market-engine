@@ -85,6 +85,7 @@ def remote(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, dict[str, st
     (root / TASK).write_text("edited after the merge\n", encoding="utf-8")
     git(root, "commit", "-am", "later edit")
     revisions["later"] = git(root, "rev-parse", "HEAD")
+    git(root, "tag", "later-tag")
     git(root, "switch", "-c", "stray", revisions["base"])
     (root / "docs/tasks").mkdir(parents=True, exist_ok=True)
     (root / TASK).write_text("never reviewed\n", encoding="utf-8")
@@ -210,9 +211,11 @@ def test_the_worker_checks_out_the_gate_revision_and_never_main() -> None:
     assert checkouts[0]["with"]["ref"] == "${{ steps.gate.outputs.revision }}"
     assert checkouts[0]["with"]["persist-credentials"] is False
     names = [s.get("id") or s.get("uses") or s.get("name") for s in jobs["bob-task"]["steps"]]
-    # The revision is verified after the checkout and before Bob starts.
+    # The revision is verified right after the checkout, the repository is then frozen
+    # at it, and only then does Bob start.
     assert names.index("exists") == names.index(checkouts[0]["uses"]) + 1
-    assert names.index("exists") < names.index("bob")
+    assert names.index("freeze") == names.index("exists") + 1
+    assert names.index("freeze") < names.index("bob")
 
 
 def verify(checkout: Path, head: str, revision: str) -> tuple[int, str]:
@@ -250,3 +253,38 @@ def test_the_worker_stops_before_bob_on(
     code, log = verify(checkout, rev[head], rev[revision])
     assert code != 0
     assert message in log
+
+
+# --- the worker: frozen at the revision, so moving refs cannot reach Bob -------------
+
+
+def test_the_frozen_repository_holds_only_the_revision(
+    remote: tuple[Path, dict[str, str]], checkout: Path
+) -> None:
+    """fetch-depth 0 fetched every branch and tag as at job start; none may reach Bob."""
+    _, rev = remote
+    git(checkout, "fetch", "--quiet", "origin", "stray")  # leaves a FETCH_HEAD behind
+    code, log = verify(checkout, rev["merge"], rev["merge"])
+    assert code == 0, log
+    code, _, log = run_step(step("bob-task", "freeze")["run"], checkout, {"REVISION": rev["merge"]})
+    assert code == 0, log
+    refs = git(checkout, "for-each-ref", "--format=%(objectname) %(refname)").splitlines()
+    assert refs == [f"{rev['merge']} refs/heads/main", f"{rev['merge']} refs/remotes/origin/main"]
+    assert git(checkout, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert git(checkout, "rev-parse", "origin/main") == rev["merge"]
+    assert git(checkout, "remote") == ""
+    reachable = git(checkout, "rev-list", "--all").splitlines()
+    assert rev["later"] not in reachable  # the commit merged while the run waited
+    assert rev["stray"] not in reachable
+    for name in ("FETCH_HEAD", "later-tag", "origin/stray", "origin/task"):
+        found = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", "--verify", "--quiet", name],
+            capture_output=True,
+            check=False,
+        )
+        assert found.returncode != 0, name
+    fetched = subprocess.run(
+        ["git", "-C", str(checkout), "fetch", "origin"], capture_output=True, check=False
+    )
+    assert fetched.returncode != 0
+    assert (checkout / TASK).read_text(encoding="utf-8") == "reviewed\n"
