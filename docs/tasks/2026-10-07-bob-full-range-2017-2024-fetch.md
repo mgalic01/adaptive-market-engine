@@ -133,11 +133,12 @@ and its output go into the report.
 3. The script's tests, offline (a fake host; about a minute):
 
    ```text
-   python -m pytest -q -p no:cacheprovider tests/test_fetch_full_range.py > data/full-range-tests.log 2>&1; echo "exit $?"
+   python -m pytest -p no:cacheprovider tests/test_fetch_full_range.py > data/full-range-tests.log 2>&1; echo "exit $?"
    tail -n 3 data/full-range-tests.log
    ```
 
-   It must print `exit 0`, and the log's last line must report `12 passed`.
+   It must print `exit 0`, and the log's last line must report `12 passed`. (Add no `-q`:
+   `pyproject.toml` already passes one, and a second one hides that line.)
 4. The run: about 3,600 requests to data.binance.vision, `verify` on both windows and
    `mask-report` on the scored one. Expect about an hour; the job allows 240 minutes.
 
