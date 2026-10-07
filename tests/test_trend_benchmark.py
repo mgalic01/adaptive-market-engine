@@ -22,7 +22,7 @@ from test_backtest_replay import HOUR_MS, START_MS, WARMUP, candle, engine_for, 
 
 from crypto_grid_bot.backtest import __main__ as cli
 from crypto_grid_bot.backtest.dataset import fetch_dataset, load_spec, write_manifest
-from crypto_grid_bot.backtest.jobs import run_job
+from crypto_grid_bot.backtest.jobs import SymbolMask, run_job
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import RunConfig, bar_quotes, replay
 from crypto_grid_bot.backtest.trend_benchmark import (
@@ -428,6 +428,8 @@ class Inline:
 
     def submit(self, fn, *args):
         self.submitted.append((fn, args))
+        if fn.__name__ == "mask_job":
+            return Done(SymbolMask(args[2], None, ()))
         if fn.__name__ == "cross_check_job":
             return Done({"symbol": args[2], **CLEAN})
         if fn is trend_job:

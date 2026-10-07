@@ -34,7 +34,7 @@ from crypto_grid_bot.backtest.features import (
     FeatureEngine,
     SeriesFeatures,
 )
-from crypto_grid_bot.backtest.jobs import run_job, variant_policy
+from crypto_grid_bot.backtest.jobs import SymbolMask, run_job, variant_policy
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import PATH_MODES
 from crypto_grid_bot.simulation.runner import FULL_STACK
@@ -233,6 +233,12 @@ def checks(spec_path, data_dir, symbol, strict_volume=False):
     return check
 
 
+def no_mask(spec_path, data_dir, symbol):
+    """The dataset is deliberately short (an hour of minutes), and its checks are made up
+    (``checks``), so no hour of it is masked either: every symbol loads as it always has."""
+    return SymbolMask(symbol, None, ())
+
+
 class CliToScorerTests(SyntheticDataset):
     """The results.json files the backtest CLI writes for V0 with D, V2 and the full
     stack, read by the acceptance scorer's row recognition and comparison mask."""
@@ -243,6 +249,7 @@ class CliToScorerTests(SyntheticDataset):
         command += ["--config", str(ROOT / "config/default.toml"), "--out", str(out)]
         command += ["--jobs", "1", "--maker-fee", "0", "--taker-fee", "0.0009", *flags]
         with (
+            patch.object(cli, "mask_job", no_mask),
             patch.object(cli, "cross_check_job", checks),
             contextlib.redirect_stdout(io.StringIO()),
         ):

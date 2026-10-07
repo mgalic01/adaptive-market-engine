@@ -1,9 +1,10 @@
-"""Historical replay commands: fetch, verify and run. Offline except ``fetch``.
+"""Historical replay commands: fetch, verify, run and mask-report. Offline except ``fetch``.
 
     python -m crypto_grid_bot.backtest fetch  --spec config/datasets/verify-2024h1.toml
     python -m crypto_grid_bot.backtest verify --spec config/datasets/verify-2024h1.toml
     python -m crypto_grid_bot.backtest run    --spec config/datasets/verify-2024h1.toml \\
         --config config/default.toml
+    python -m crypto_grid_bot.backtest mask-report --spec config/datasets/verify-2024h1.toml
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import argparse
 import json
 import shutil
 import subprocess  # nosec B404
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -35,11 +36,19 @@ from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE
 from crypto_grid_bot.backtest.jobs import (
     SOURCE_FILES,
     SOURCE_IDENTITY,
+    SymbolMask,
     check_sources,
     cross_check_job,
     manifest_path,
+    mask_job,
     run_job,
     variant_policy,
+)
+from crypto_grid_bot.backtest.masking import (
+    HOUR_MS,
+    UNTRUSTED_ROW,
+    MonthMask,
+    real_defect_share,
 )
 from crypto_grid_bot.backtest.replay import (
     ENGINE_VERSION,
@@ -188,6 +197,85 @@ def result_failures(results: list[dict[str, Any]]) -> list[str]:
     return failures
 
 
+def hour_text(open_ms: int) -> str:
+    """An hour's open as ``YYYY-MM-DDTHH:00Z``, the form of ``[[basket_exclusions]]``."""
+    return datetime.fromtimestamp(open_ms // 1000, UTC).strftime("%Y-%m-%dT%H:00Z")
+
+
+def masked_ranges(months: Sequence[MonthMask]) -> list[dict[str, str]]:
+    """A symbol's masked hours as ``[from, to)`` ranges of whole UTC hours, the form of
+    ``[[basket_exclusions]]``, each with its reason. Consecutive hours masked for one reason
+    merge into one range, across a month's end too."""
+    reasons = {hour: month.reasons[hour] for month in months for hour in month.masked}
+    spans: list[tuple[int, int, str]] = []
+    for hour in sorted(reasons):
+        if spans and spans[-1][1:] == (hour, reasons[hour]):
+            spans[-1] = (spans[-1][0], hour + HOUR_MS, reasons[hour])
+        else:
+            spans.append((hour, hour + HOUR_MS, reasons[hour]))
+    return [{"from": hour_text(a), "to": hour_text(b), "reason": why} for a, b, why in spans]
+
+
+def comparison_mask(masks: Sequence[SymbolMask]) -> dict[str, Any]:
+    """Spec v1 section 5's comparison mask, fixed from the symbols' masks before any check
+    or run: for each symbol with a masked hour, its masked hours (``masked_ranges``) and the
+    months the 17% rule excludes. Empty when no hour is masked, as in every stage-1 window;
+    an empty mask is written nowhere, so those windows' outputs keep their exact layout."""
+    mask: dict[str, Any] = {}
+    for symbol_mask in masks:
+        ranges = masked_ranges(symbol_mask.months)
+        excluded = [month.month for month in symbol_mask.months if month.excluded]
+        if ranges or excluded:
+            mask[symbol_mask.symbol] = {"masked": ranges, "excluded_months": excluded}
+    return mask
+
+
+def _month_report(month: MonthMask) -> dict[str, Any]:
+    share = real_defect_share(month)
+    return {
+        "month": month.month,
+        "expected_hours": len(month.expected),
+        "masked_hours": len(month.masked),
+        "open_only_hours": len(month.open_only),
+        # Exact, as the 17% rule compares it (``Fraction(text)`` reads it back); null for a
+        # month with no expected hour, which the rule never excludes.
+        "real_defect_share": None if share is None else str(share),
+        "excluded": month.excluded,
+    }
+
+
+MASK_COUNTS = ("repaired_hours", "dropped_hours", "masked_hours")
+
+
+def mask_report(
+    spec: DatasetSpec, masks: Sequence[SymbolMask], mask: dict[str, Any]
+) -> dict[str, Any]:
+    """``mask-report``'s document, from the symbols' masks and their comparison ``mask``
+    alone, with no check and no replay. Per symbol: whether its mask is None, so that it
+    loads with today's strict reader (every stage-1 symbol must), its counts and its months.
+
+    The counts are of expected hours: ``repaired_hours`` hold a repaired row,
+    ``dropped_hours`` a row the reader dropped (masked as an untrusted row) and
+    ``masked_hours`` are masked for any reason. A repaired or dropped row inside a documented
+    absence counts in none of them, though it still makes the symbol's mask a set."""
+    symbols: dict[str, Any] = {}
+    for symbol_mask in masks:
+        months = symbol_mask.months
+        symbols[symbol_mask.symbol] = {
+            "mask_is_none": symbol_mask.mask is None,
+            "repaired_hours": sum(len(m.repaired) for m in months),
+            "dropped_hours": sum(m.reasons[h] == UNTRUSTED_ROW for m in months for h in m.masked),
+            "masked_hours": sum(len(m.masked) for m in months),
+            "months": [_month_report(m) for m in months],
+        }
+    totals = {
+        "symbols_with_a_mask": sum(m.mask is not None for m in masks),
+        **{count: sum(s[count] for s in symbols.values()) for count in MASK_COUNTS},
+        "excluded_months": sum(month.excluded for m in masks for month in m.months),
+    }
+    return {"dataset": spec.name, "comparison_mask": mask, "symbols": symbols, "totals": totals}
+
+
 def _identity(spec_path: Path, config_path: Path) -> dict[str, str]:
     return {
         "spec_sha256": sha256_file(spec_path),
@@ -308,7 +396,7 @@ def _table(results: list[dict[str, Any]]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m crypto_grid_bot.backtest")
-    parser.add_argument("command", choices=("fetch", "verify", "run"))
+    parser.add_argument("command", choices=("fetch", "verify", "run", "mask-report"))
     parser.add_argument("--spec", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=Path("config/default.toml"))
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
@@ -464,11 +552,32 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     with executor as pool:
+        # Spec v1 section 5: hour-level masking runs first, for every checked symbol, and
+        # the comparison mask is fixed from it before any check or run. Every mask is
+        # submitted before any is awaited, so they run in parallel, as the checks do.
+        symbols = checked_symbols(spec)
+        pending = [pool.submit(mask_job, args.spec, args.data_dir, s) for s in symbols]
+        symbol_masks = [symbol_mask.result() for symbol_mask in pending]
+        mask = comparison_mask(symbol_masks)
+        if args.command == "mask-report":
+            print(json.dumps(mask_report(spec, symbol_masks, mask), indent=1))
+            return 0
+        masks = {symbol_mask.symbol: symbol_mask.mask for symbol_mask in symbol_masks}
         # Chronology is settled before any replay starts; invalid data never replays.
-        # Submit every check before waiting on any, so they run in parallel.
+        # Submit every check before waiting on any, so they run in parallel. Each check
+        # runs on its symbol's post-mask expected set; a symbol whose mask is None (every
+        # stage-1 symbol) is checked exactly as before masks existed.
         checks = [
-            pool.submit(cross_check_job, args.spec, args.data_dir, symbol, args.strict_volume)
-            for symbol in checked_symbols(spec)
+            pool.submit(
+                cross_check_job
+                if masks[symbol] is None
+                else partial(cross_check_job, mask=masks[symbol]),
+                args.spec,
+                args.data_dir,
+                symbol,
+                args.strict_volume,
+            )
+            for symbol in symbols
         ]
         cross_checks = [check.result() for check in checks]
         # Section 5: a traded pair whose own check failed is excluded and not replayed, and
@@ -490,16 +599,25 @@ def main(argv: list[str] | None = None) -> int:
                         "integrity_rules": integrity,
                         "failures": failures,
                         **({"excluded_pairs": excluded} if excluded else {}),
+                        # Present only when an hour is masked, as in results.json.
+                        **({"comparison_mask": mask} if mask else {}),
                         "checks": cross_checks,
                     },
                     indent=1,
                 )
             )
             return 2 if failures else 0
-        # A sensitivity run's fill trigger reaches every grid replay (D9). Without the flag
-        # each job is submitted exactly as before. D places no resting order, so the
-        # trigger cannot change it.
-        grid_job = run_job if fill is None else partial(run_job, fill_trigger=fill)
+        # A sensitivity run's fill trigger reaches every grid replay (D9), and the masks
+        # reach every run, D's included, once any symbol has one (a set, even an empty one,
+        # loads with the repairing reader). Without either, each job is submitted exactly as
+        # before. D places no resting order, so the trigger cannot change it.
+        masked = any(symbol_mask is not None for symbol_mask in masks.values())
+        options: dict[str, Any] = {
+            **({"fill_trigger": fill} if fill is not None else {}),
+            **({"masks": masks} if masked else {}),
+        }
+        grid_job = partial(run_job, **options) if options else run_job
+        benchmark_job = partial(trend_job, masks=masks) if masked else trend_job
         futures = [
             pool.submit(
                 grid_job,
@@ -522,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.trend_benchmark:
             futures += [
                 pool.submit(
-                    trend_job, args.spec, args.config, args.data_dir, s, mode, (maker, taker)
+                    benchmark_job, args.spec, args.config, args.data_dir, s, mode, (maker, taker)
                 )
                 for s in pairs
                 for mode in PATH_MODES
@@ -575,6 +693,10 @@ def main(argv: list[str] | None = None) -> int:
         # is excluded for every variant alike and has no rows, and its failing check stays
         # in hourly_cross_checks. It is not a failure of the runs that did replay.
         **({"excluded_pairs": excluded} if excluded else {}),
+        # Spec v1 section 5: every masked hour and excluded pair-month, fixed before any
+        # check or run. Present only when an hour is masked, so a window with no mask (every
+        # stage-1 window) keeps its exact layout.
+        **({"comparison_mask": mask} if mask else {}),
         "hourly_cross_checks": cross_checks,
         "results": results,
     }
@@ -582,7 +704,11 @@ def main(argv: list[str] | None = None) -> int:
     table = _table(results)
     (out / "summary.md").write_text(table + "\n")
     brief = [{k: v for k, v in r.items() if k != "hourly_equity"} for r in results]
-    shown = {"out": str(out), **({"excluded_pairs": excluded} if excluded else {})}
+    shown = {
+        "out": str(out),
+        **({"excluded_pairs": excluded} if excluded else {}),
+        **({"comparison_mask": mask} if mask else {}),
+    }
     print(json.dumps({**shown, "hourly_cross_checks": cross_checks}, indent=1))
     print(table)
     print(json.dumps(brief, indent=1, default=str))

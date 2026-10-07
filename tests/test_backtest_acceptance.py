@@ -617,6 +617,34 @@ class MaskTests(unittest.TestCase):
         window = score.window_of(spec, checks)
         self.assertEqual(window.excluded, {"XRPUSDT": ("XRPUSDT: hours_incomplete=1",)})
 
+    def test_window_of_is_unchanged_without_the_new_keys(self) -> None:
+        # Spec v1 section 6, decision 18: the long-window data code leaves acceptance.py's
+        # code as it is. On cross-checks that carry none of the fields that code adds, as
+        # every stage-1 record does, window_of gives each stage-1 window its pairs and its
+        # exclusions exactly as before. A day the daily check skips for a mask is a count,
+        # not a failure: it excludes nothing. Stage 1's own files are not in the
+        # repository; the stage-1 identity check (scripts/stage1_identity.py) reads them.
+        added = {"daily_days_skipped_for_masks", "tick_limit_quotes"}
+        sol = (score.FILTER_EXCLUSIONS["practice-2022", "SOLUSDT"],)
+        for name, days, included, excluded in (
+            ("verify-2024h1", 182, ("ADAUSDT", "BTCUSDT"), {}),
+            ("practice-2022", 245, ("BTCUSDT", "XRPUSDT"), {"SOLUSDT": sol}),
+        ):
+            with self.subTest(name):
+                spec = load_spec(SPECS / f"{name}.toml")
+                checks = clean_checks(spec)
+                self.assertFalse(added & {field for check in checks for field in check})
+                window = score.window_of(spec, checks)
+                self.assertEqual(
+                    score.Window(name, spec.traded, excluded, days, len(spec.months(spec.start))),
+                    window,
+                )
+                self.assertEqual(included, window.included)
+                for check in checks:
+                    if "daily_days_compared" in check:
+                        check["daily_days_skipped_for_masks"] = 3
+                self.assertEqual(window, score.window_of(spec, checks))
+
     def test_practice_2022_sol_fails_the_filter_check_for_every_variant(self) -> None:
         spec = load_spec(SPECS / "practice-2022.toml")
         window = score.window_of(spec, clean_checks(spec))

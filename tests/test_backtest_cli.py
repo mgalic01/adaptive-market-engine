@@ -12,9 +12,21 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+import test_backtest_masked_checks as masked_checks
+
 from crypto_grid_bot.backtest import __main__ as cli
 from crypto_grid_bot.backtest import jobs
+from crypto_grid_bot.backtest.dataset import local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE_VERSION
+from crypto_grid_bot.backtest.klines import month_bounds_ms
+from crypto_grid_bot.backtest.masking import (
+    HOUR_MS,
+    INCOMPLETE_HOUR,
+    NO_HOURLY_BAR,
+    NO_MINUTE_BARS,
+    MonthMask,
+    apply_seventeen_percent,
+)
 from crypto_grid_bot.market_data.parsing import DataError
 from crypto_grid_bot.simulation.runner import SimulationPolicy
 
@@ -24,6 +36,9 @@ import run_nopool  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = str(ROOT / "config/datasets/verify-2024h1.toml")
+# What a fake job records for a keyword the CLI did not pass: a clean window must submit
+# every job exactly as before masks existed.
+NOT_PASSED = "not passed"
 CLEAN = {
     "hours_compared": 10,
     "hours_mismatched": 0,
@@ -88,10 +103,84 @@ def failing(field):
     return {field: 0} if field.endswith("_compared") else {field: 1}
 
 
+def month_mask(month, reasons):
+    """The ``MonthMask`` of ``month``, every hour expected, whose masked hours are ``reasons``'s
+    (hour -> reason, every one a real defect) before the 17% rule, which then applies."""
+    start, end = month_bounds_ms(month)
+    masked = frozenset(reasons)
+    found = MonthMask(
+        month,
+        frozenset(range(start, end, HOUR_MS)),
+        masked,
+        dict(reasons),
+        masked,
+        frozenset(),
+        frozenset(),
+        False,
+    )
+    return apply_seventeen_percent(found)
+
+
+def symbol_mask(symbol, *months):
+    return jobs.SymbolMask(symbol, frozenset().union(*(m.masked for m in months)), months)
+
+
+FEB_2024, MAR_2024 = month_bounds_ms("2024-02")[0], month_bounds_ms("2024-03")[0]
+FEB_3 = FEB_2024 + 2 * 24 * HOUR_MS
+# verify-2024h1's masks in the comparison-mask test: ADAUSDT's masked hours, among them two
+# that cross a month's end; BTCUSDT's six days without minutes in February, over 17% of it,
+# which exclude the month; DOGEUSDT's mask, a set with no hour in it (a repaired row only).
+# Every other symbol's mask is None.
+MASKED_WINDOW = {
+    "ADAUSDT": symbol_mask(
+        "ADAUSDT",
+        month_mask(
+            "2024-02",
+            {
+                FEB_3 + 5 * HOUR_MS: INCOMPLETE_HOUR,
+                FEB_3 + 6 * HOUR_MS: INCOMPLETE_HOUR,
+                FEB_3 + 7 * HOUR_MS: NO_MINUTE_BARS,
+                FEB_3 + 9 * HOUR_MS: INCOMPLETE_HOUR,
+                MAR_2024 - HOUR_MS: NO_HOURLY_BAR,
+            },
+        ),
+        month_mask("2024-03", {MAR_2024: NO_HOURLY_BAR}),
+    ),
+    "BTCUSDT": symbol_mask(
+        "BTCUSDT",
+        month_mask("2024-02", {FEB_2024 + h * HOUR_MS: NO_MINUTE_BARS for h in range(6 * 24)}),
+    ),
+    "DOGEUSDT": symbol_mask("DOGEUSDT", month_mask("2024-02", {})),
+}
+MASKED_WINDOW_COMPARISON_MASK = {
+    "ADAUSDT": {
+        "masked": [
+            {"from": "2024-02-03T05:00Z", "to": "2024-02-03T07:00Z", "reason": "incomplete hour"},
+            {"from": "2024-02-03T07:00Z", "to": "2024-02-03T08:00Z", "reason": "no minute bars"},
+            {"from": "2024-02-03T09:00Z", "to": "2024-02-03T10:00Z", "reason": "incomplete hour"},
+            {"from": "2024-02-29T23:00Z", "to": "2024-03-01T01:00Z", "reason": "no hourly bar"},
+        ],
+        "excluded_months": [],
+    },
+    "BTCUSDT": {
+        "masked": [
+            {"from": "2024-02-01T00:00Z", "to": "2024-02-07T00:00Z", "reason": "no minute bars"},
+            {
+                "from": "2024-02-07T00:00Z",
+                "to": "2024-03-01T00:00Z",
+                "reason": "month excluded (17% rule)",
+            },
+        ],
+        "excluded_months": ["2024-02"],
+    },
+}
+
+
 class CliIntegrityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        self.spec = SPEC
         self.checks = dict(CLEAN)
         self.overrides: dict[str, dict] = {}  # one symbol's check fields
         self.result_patch = {}
@@ -101,12 +190,22 @@ class CliIntegrityTests(unittest.TestCase):
         self.policies = []
         self.arms = []
         self.verified = []
+        self.symbol_masks: dict[str, jobs.SymbolMask] = {}  # every other symbol's is None
+        self.events = []  # each job and the comparison mask, in the order they happen
+        comparison_mask = cli.comparison_mask
+
+        def recorded_comparison_mask(masks):
+            self.events.append(("comparison mask",))
+            return comparison_mask(masks)
+
         patches = [
             patch.object(cli, "ProcessPoolExecutor", Inline),
             patch.object(cli, "load_manifest", lambda path: {"created_at": "t"}),
             patch.object(cli, "verify_dataset", lambda *a: self.verified.append(a)),
             patch.object(cli, "code_commit", lambda: "0123abc"),
             patch.object(cli, "_identity", lambda *a: {}),
+            patch.object(cli, "mask_job", self.fake_mask),
+            patch.object(cli, "comparison_mask", recorded_comparison_mask),
             patch.object(cli, "cross_check_job", self.fake_check),
             patch.object(cli, "run_job", self.fake_run),
         ]
@@ -114,11 +213,29 @@ class CliIntegrityTests(unittest.TestCase):
             item.start()
             self.addCleanup(item.stop)
 
-    def fake_check(self, spec, data_dir, symbol, strict_volume=False):
+    def fake_mask(self, spec, data_dir, symbol):
+        self.events.append(("mask", symbol))
+        return self.symbol_masks.get(symbol, jobs.SymbolMask(symbol, None, ()))
+
+    def fake_check(self, spec, data_dir, symbol, strict_volume=False, *, mask=NOT_PASSED):
+        self.events.append(("check", symbol, mask))
         self.strict.append(strict_volume)
         return {"symbol": symbol, **self.checks, **self.overrides.get(symbol, {})}
 
-    def fake_run(self, spec, config, data_dir, symbol, mode, gated, fees=None, policy=None):
+    def fake_run(
+        self,
+        spec,
+        config,
+        data_dir,
+        symbol,
+        mode,
+        gated,
+        fees=None,
+        policy=None,
+        *,
+        masks=NOT_PASSED,
+    ):
+        self.events.append(("run", symbol, masks))
         self.replays.append(symbol)
         self.fees.append(fees)
         self.policies.append(policy)
@@ -126,8 +243,12 @@ class CliIntegrityTests(unittest.TestCase):
         return {**good_result(symbol, mode, gated), **self.result_patch}
 
     def main(self, command, *extra):
-        with contextlib.redirect_stdout(io.StringIO()):
-            return cli.main([command, "--spec", SPEC, "--out", self.temp.name, *extra])
+        """The CLI's exit code; what it printed is kept in ``self.printed``."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cli.main([command, "--spec", str(self.spec), "--out", self.temp.name, *extra])
+        self.printed = out.getvalue()
+        return code
 
     def test_clean_data_verifies_and_runs(self):
         self.assertEqual(0, self.main("verify"))
@@ -137,6 +258,70 @@ class CliIntegrityTests(unittest.TestCase):
         document = json.loads(written.read_text())
         self.assertTrue(document["valid"])
         self.assertNotIn("excluded_pairs", document)  # every check passed: no exclusion
+
+    def test_mask_is_computed_before_the_first_job_and_written_only_when_non_empty(self):
+        # Spec v1 section 5: masking runs first, for every checked symbol, and the
+        # comparison mask is fixed before any check or run. Each check then takes its own
+        # symbol's mask, and every run the whole map. A clean window (every mask None, as
+        # in stage 1) takes today's exact path: each job is submitted as before, and
+        # neither verify nor results.json carries a comparison mask.
+        symbols = cli.checked_symbols(jobs.load_spec(Path(self.spec)))
+        self.assertEqual(0, self.main("verify"))
+        self.assertNotIn("comparison_mask", json.loads(self.printed))
+        self.assertEqual(0, self.main("run", "--out", str(Path(self.temp.name) / "clean")))
+        (clean,) = Path(self.temp.name, "clean").rglob("results.json")
+        self.assertNotIn("comparison_mask", json.loads(clean.read_text()))
+        self.assertEqual({NOT_PASSED}, {e[2] for e in self.events if e[0] in ("check", "run")})
+        # A masked window: the same mask in verify, in mask-report and in results.json.
+        self.symbol_masks = MASKED_WINDOW
+        masks = {s: MASKED_WINDOW[s].mask if s in MASKED_WINDOW else None for s in symbols}
+        self.assertEqual(0, self.main("verify"))
+        self.assertEqual(MASKED_WINDOW_COMPARISON_MASK, json.loads(self.printed)["comparison_mask"])
+        self.events.clear()
+        self.assertEqual(0, self.main("mask-report"))
+        report = json.loads(self.printed)
+        self.assertEqual(MASKED_WINDOW_COMPARISON_MASK, report["comparison_mask"])
+        # No check and no run.
+        self.assertEqual(["mask"] * len(symbols) + ["comparison mask"], [e[0] for e in self.events])
+        self.events.clear()
+        self.assertEqual(0, self.main("run", "--out", str(Path(self.temp.name) / "masked")))
+        self.assertEqual(
+            ["mask"] * len(symbols) + ["comparison mask"] + ["check"] * len(symbols) + ["run"] * 8,
+            [e[0] for e in self.events],
+        )
+        self.assertEqual(symbols, [e[1] for e in self.events if e[0] == "mask"])
+        # A symbol whose mask is None is checked as before; a set, even an empty one, is
+        # passed to its check.
+        self.assertEqual(
+            [(s, NOT_PASSED if masks[s] is None else masks[s]) for s in symbols],
+            [e[1:] for e in self.events if e[0] == "check"],
+        )
+        self.assertEqual([masks] * 8, [e[2] for e in self.events if e[0] == "run"])
+        (written,) = Path(self.temp.name, "masked").rglob("results.json")
+        document = json.loads(written.read_text())
+        self.assertEqual(MASKED_WINDOW_COMPARISON_MASK, document["comparison_mask"])
+        # Variant D's runs take the map too.
+        seen = []
+
+        def fake_trend(spec, config, data_dir, symbol, mode, fees=None, *, masks=NOT_PASSED):
+            seen.append(masks)
+            return {**good_result(symbol, mode, True), "strategy": "trend benchmark D"}
+
+        with patch.object(cli, "trend_job", fake_trend):
+            out = str(Path(self.temp.name) / "benchmark")
+            self.assertEqual(0, self.main("run", "--trend-benchmark", "--out", out))
+        self.assertEqual([masks] * 4, seen)  # two pairs, two paths
+        # So do the missed-fill sweep's runs, with their trigger.
+        swept = []
+
+        def fake_run(*args, fill_trigger=None, masks=NOT_PASSED):
+            swept.append((fill_trigger, masks))
+            return self.fake_run(*args)
+
+        with patch.object(cli, "run_job", fake_run):
+            out = str(Path(self.temp.name) / "swept")
+            self.assertEqual(0, self.main("run", "--fill-trigger", "0.0002", "--out", out))
+        self.assertEqual([(Decimal("0.0002"), masks)] * 8, swept)
 
     def test_a_traded_pairs_own_failed_check_excludes_only_that_pair_window(self):
         # Spec v1 section 5, as for practice-2022's SOLUSDT with daily history from
@@ -489,15 +674,12 @@ class MarketProxyCheckTests(CliIntegrityTests):
         self.proxy_checks = dict(PROXY_CLEAN)
         self.checked = []
 
-    def fake_check(self, spec, data_dir, symbol, strict_volume=False):
+    def fake_check(self, spec, data_dir, symbol, strict_volume=False, *, mask=NOT_PASSED):
         self.checked.append(symbol)
         if symbol == "ETHUSDT":
+            self.events.append(("check", symbol, mask))
             return {"symbol": symbol, **self.proxy_checks}
-        return super().fake_check(spec, data_dir, symbol, strict_volume)
-
-    def main(self, command, *extra):
-        with contextlib.redirect_stdout(io.StringIO()):
-            return cli.main([command, "--spec", str(self.spec), "--out", self.temp.name, *extra])
+        return super().fake_check(spec, data_dir, symbol, strict_volume, mask=mask)
 
     def test_a_run_whose_every_pair_is_excluded_replays_nothing(self):
         # Each traded pair's own check fails while the untraded proxy passes: no pair is
@@ -563,11 +745,12 @@ class MarketProxyCheckTests(CliIntegrityTests):
 class BasketCheckTests(MarketProxyCheckTests):
     """Breadth-basket inputs are validated; only documented absences are exempt."""
 
-    def fake_check(self, spec, data_dir, symbol, strict_volume=False):
+    def fake_check(self, spec, data_dir, symbol, strict_volume=False, *, mask=NOT_PASSED):
         if symbol == "DOGEUSDT":
             self.checked.append(symbol)
+            self.events.append(("check", symbol, mask))
             return {"symbol": symbol, **self.basket_check}
-        return super().fake_check(spec, data_dir, symbol, strict_volume)
+        return super().fake_check(spec, data_dir, symbol, strict_volume, mask=mask)
 
     def setUp(self):
         super().setUp()
@@ -586,6 +769,101 @@ class BasketCheckTests(MarketProxyCheckTests):
     def test_a_basket_member_documented_absent_for_the_whole_window_passes(self):
         self.basket_check |= {"series_hours_present": 0, "series_hours_excluded": 24}
         self.assertEqual(0, self.main("verify"))
+
+
+def month_row(month, expected, masked=0, share="0", excluded=False):
+    return {
+        "month": month,
+        "expected_hours": expected,
+        "masked_hours": masked,
+        "open_only_hours": 0,
+        "real_defect_share": share,
+        "excluded": excluded,
+    }
+
+
+class MaskReportTests(unittest.TestCase):
+    def test_mask_report_prints_shares_without_replaying(self):
+        # mask-report prints the masks of a synthetic window as mask_job computes them, with
+        # no check and no replay: the masked-checks tests' DOGEUSDT window. Its traded pairs
+        # have minutes for March's first eight hours only, which do not match their hours,
+        # so every March hour is masked and the 17% rule excludes the month. BNBUSDT and
+        # DOGEUSDT read with nothing masked, so their masks are None, and DOGEUSDT 2020-02,
+        # wholly inside its documented absence, has no expected hour and no share.
+        with tempfile.TemporaryDirectory() as temp:
+            spec, data = masked_checks.build_run(Path(temp)), Path(temp) / "data"
+            argv = ["mask-report", "--spec", str(spec), "--data-dir", str(data), "--jobs", "1"]
+            out = io.StringIO()
+            with (
+                patch.object(cli, "cross_check_job", None),  # never reached
+                patch.object(cli, "run_job", None),
+                patch.object(cli, "trend_job", None),
+                contextlib.redirect_stdout(out),
+            ):
+                self.assertEqual(0, cli.main(argv))
+            report = json.loads(out.getvalue())
+            # The dataset is verified first, as for verify and run.
+            local_path(data, "BNBUSDT", "1h", "2020-01").write_bytes(b"tampered")
+            with (
+                self.assertRaisesRegex(DataError, "checksum"),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                cli.main(argv)
+        march = [
+            {
+                "from": "2020-03-01T00:00Z",
+                "to": "2020-03-01T08:00Z",
+                "reason": "mismatch on open+high+low+close+volume",
+            },
+            {"from": "2020-03-01T08:00Z", "to": "2020-04-01T00:00Z", "reason": "no minute bars"},
+        ]
+        traded = {
+            "mask_is_none": False,
+            "repaired_hours": 0,
+            "dropped_hours": 0,
+            "masked_hours": 744,
+            "months": [
+                month_row("2020-01", 744),
+                month_row("2020-02", 696),
+                month_row("2020-03", 744, 744, "1", True),
+            ],
+        }
+        untraded = {
+            "mask_is_none": True,
+            "repaired_hours": 0,
+            "dropped_hours": 0,
+            "masked_hours": 0,
+            "months": [
+                month_row("2020-01", 744),
+                month_row("2020-02", 696),
+                month_row("2020-03", 744),
+            ],
+        }
+        doge = {**untraded, "months": [*untraded["months"]]}
+        doge["months"][1] = month_row("2020-02", 0, share=None)
+        self.assertEqual(
+            {
+                "dataset": "doge-window",
+                "comparison_mask": {
+                    "BTCUSDT": {"masked": march, "excluded_months": ["2020-03"]},
+                    "ETHUSDT": {"masked": march, "excluded_months": ["2020-03"]},
+                },
+                "symbols": {
+                    "BTCUSDT": traded,
+                    "ETHUSDT": traded,
+                    "BNBUSDT": untraded,
+                    "DOGEUSDT": doge,
+                },
+                "totals": {
+                    "symbols_with_a_mask": 2,
+                    "repaired_hours": 0,
+                    "dropped_hours": 0,
+                    "masked_hours": 1488,
+                    "excluded_months": 2,
+                },
+            },
+            report,
+        )
 
 
 class HourlySeriesTests(unittest.TestCase):

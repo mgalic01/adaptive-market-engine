@@ -26,6 +26,7 @@ from test_backtest_loaders import JAN_2024_MS, FakeArchive, hour_rows, minute_ro
 
 from crypto_grid_bot.backtest import __main__ as cli
 from crypto_grid_bot.backtest.dataset import fetch_dataset, load_spec, write_manifest
+from crypto_grid_bot.backtest.jobs import SymbolMask
 
 ROOT = Path(__file__).resolve().parents[1]
 DEC_2023_MS = 1701388800000  # 2023-12-01T00:00:00Z
@@ -47,6 +48,8 @@ class Recorder:
 
     def submit(self, fn, *args):
         self.submitted.append(fn)
+        if fn.__name__ == "mask_job":
+            return Done(SymbolMask(args[2], None, ()))
         if fn.__name__ == "cross_check_job":
             return Done({"symbol": args[2], **CLEAN})
         return Done(good_result(*args[3:6]))
@@ -71,7 +74,8 @@ class PoolJobReferenceTests(unittest.TestCase):
         self.jobs = {fn.__name__: fn for fn in Recorder.submitted}
 
     def test_every_pool_job_is_defined_outside_a_main_module(self):
-        self.assertEqual({"cross_check_job", "run_job"}, set(self.jobs))
+        # mask_job runs in the pool too, before any check (spec v1 section 5).
+        self.assertEqual({"mask_job", "cross_check_job", "run_job"}, set(self.jobs))
         for name, fn in self.jobs.items():
             with self.subTest(job=name):
                 self.assertNotEqual("__main__", fn.__module__.rpartition(".")[2])
@@ -166,11 +170,12 @@ class PoolJobReferenceTests(unittest.TestCase):
         context = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(1, mp_context=context) as pool:
             names = {pool.submit(getattr, fn, "__qualname__").result() for fn in self.jobs.values()}
-        self.assertEqual({"cross_check_job", "run_job"}, names)
+        self.assertEqual({"mask_job", "cross_check_job", "run_job"}, names)
 
 
 class Timeline:
-    """Stand-in pool that logs, in order, each submission and each wait on a result."""
+    """Stand-in pool that logs, in order, each submission and each wait on a result, with
+    the job's name and its symbol."""
 
     events: list = []
 
@@ -184,22 +189,26 @@ class Timeline:
         return False
 
     def submit(self, fn, *args):
-        self.events.append(("submit", args[2]))
-        return Logged(self.events, args[2], {"symbol": args[2], **CLEAN})
+        job = (fn.__name__, args[2])
+        self.events.append(("submit", *job))
+        if fn.__name__ == "mask_job":
+            return Logged(self.events, job, SymbolMask(args[2], None, ()))
+        return Logged(self.events, job, {"symbol": args[2], **CLEAN})
 
 
 class Logged:
-    def __init__(self, events, symbol, value):
-        self.events, self.symbol, self.value = events, symbol, value
+    def __init__(self, events, job, value):
+        self.events, self.job, self.value = events, job, value
 
     def result(self):
-        self.events.append(("result", self.symbol))
+        self.events.append(("result", *self.job))
         return self.value
 
 
 class CrossCheckParallelismTests(unittest.TestCase):
     def test_every_cross_check_is_submitted_before_any_result_is_awaited(self):
-        # Awaiting each check inside the submit loop ran them one at a time on the pool.
+        # Awaiting each check inside the submit loop ran them one at a time on the pool. The
+        # masks come first, submitted the same way, since each check takes its symbol's.
         Timeline.events = []
         patches = [
             patch.object(cli, "ProcessPoolExecutor", Timeline),
@@ -214,7 +223,10 @@ class CrossCheckParallelismTests(unittest.TestCase):
             self.assertEqual(0, cli.main(["verify", "--spec", SPEC]))
         symbols = cli.checked_symbols(load_spec(Path(SPEC)))
         self.assertGreater(len(symbols), 1)
-        expected = [("submit", s) for s in symbols] + [("result", s) for s in symbols]
+        expected = []
+        for job in ("mask_job", "cross_check_job"):
+            expected += [("submit", job, s) for s in symbols]
+            expected += [("result", job, s) for s in symbols]
         self.assertEqual(expected, Timeline.events)
         # Results are still reported in the symbols' order.
         self.assertEqual(symbols, [c["symbol"] for c in json.loads(out.getvalue())["checks"]])
