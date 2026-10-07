@@ -301,6 +301,49 @@ holds spec v2 §8's readouts:
 The position's sales are labelled `uptrend_stop`, `uptrend_fade` or `uptrend_risk` in
 `realised_exit_pnl_by_reason`.
 
+**Why each decision went as it did** (`modes.decisions`). This block is reporting only. No
+criterion reads it, and the run never reads it back, so it changes no decision and no other
+number.
+- **Outcomes.** Each UTC hour has at most one:
+  - `made`: a decision.
+  - `skipped_holding`: an uptrend position existed, so nothing was decided (spec v2 §4,
+    "Entering versus staying").
+  - `halted`: a halt held the decision back, and Cash was forced. If the automatic restart
+    ends the halt within the hour, that hour decides after all and counts as `made`.
+  - An hour with no valid frame (masked, missing or transient) has no outcome.
+- **The codes.** `by_mode` counts the decisions made by the mode chosen. Every condition of
+  the Uptrend and Grid rows (§4) that does not hold is a code, and each condition is checked
+  on its own, so one decision can fail several.
+  - Uptrend: `h4_or_d1_unavailable`, `d1_rsi_or_atr_missing`, `d1_not_up`, `h4_not_up`,
+    `d1_rsi_overbought` (daily RSI ≥ 75), `input_quality`, `regime_bear_or_stress` and
+    `reentry_pause`.
+  - Grid: `h4_or_d1_unavailable`, `h1_unavailable` (any 1h input missing),
+    `regime_not_range`, `range_decisions_below_4`, `h4_not_range_or_unclear`,
+    `d1_not_up_range_or_unclear`, `h1_rsi_outside_35_65`, `h1_adx_20_or_above` and
+    `h1_width_above_median`.
+  - An Unavailable 4h or daily state is `h4_or_d1_unavailable` alone: the not-Up and
+    not-Range codes are for an available state. A threshold is checked only on a value that
+    is present.
+- **`uptrend_blocked_by` and `grid_blocked_by`** count, over the decisions where that mode
+  was not chosen, how many listed each code. A decision can list several, so they do not sum
+  to the decisions.
+- **`uptrend_sole_blocker` and `grid_sole_blocker`** count only the decisions where exactly
+  one condition failed: each would have met the row but for that one rule. Read them as
+  "which single rule kept the mode out". A code that is frequent under `blocked_by` but rare
+  as a sole blocker failed alongside others, so relaxing it alone would change few of those
+  hours.
+  - A decision that is not RANGE restarts the RANGE count, so `regime_not_range` always comes
+    with `range_decisions_below_4`. `range_decisions_below_4` alone means RANGE, but for fewer
+    than four consecutive decisions.
+  - Uptrend is checked first, so an Uptrend decision also lists Grid's failures, at least
+    `h4_not_range_or_unclear`.
+- **`by_month`:** each UTC month `YYYY-MM` with an outcome, with its `made`,
+  `skipped_holding`, `halted`, `by_mode`, `uptrend_blocked_by` and `uptrend_sole_blocker`. It
+  answers questions such as "why no entry during that month's rally".
+- **Format:** integers only, with every mapping's keys sorted. `by_mode` lists every mode,
+  and a code that never counted is left out. Each decision's own record is in that frame's
+  report as `mode_reasons`, which replay counts and does not save.
+
 **The end of a run** (spec v2 §6):
 - A position still held, or an entry still buying, is not an exit owed, so the run stays
   valid. `final_exit_blocked` and `final_unsellable_notional` leave it out, so they are null

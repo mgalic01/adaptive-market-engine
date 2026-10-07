@@ -75,7 +75,7 @@ from crypto_grid_bot.strategy.cycle import (
     phase,
 )
 from crypto_grid_bot.strategy.grid import GridBuilder, GridNotViable
-from crypto_grid_bot.strategy.mode_selector import Mode, select_mode
+from crypto_grid_bot.strategy.mode_selector import Mode, explain_mode, select_mode
 from crypto_grid_bot.strategy.opportunity import OpportunityScorer
 from crypto_grid_bot.strategy.order_flow import flow_blocked
 from crypto_grid_bot.strategy.perception import Snapshot, TrendState
@@ -153,6 +153,9 @@ ENTRY_VETOES = {
 }
 # The four halt categories (spec v1 amendment 1); only ``drawdown`` restarts by itself.
 DRAWDOWN, EMERGENCY, EXHAUSTION, INTEGRITY = "drawdown", "emergency", "exhaustion", "integrity"
+# Spec v2's mode switcher: what became of an hour's decision, in a frame's ``mode_reasons``
+# (reporting only): made, skipped while an uptrend position exists, or held back by a halt.
+DECISION_MADE, DECISION_SKIPPED_HOLDING, DECISION_HALTED = "made", "skipped_holding", "halted"
 RESTART_PAUSE = "automatic restart after drawdown halt: awaiting confirmed eligible data"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _HOUR_MS = 3_600_000
@@ -896,6 +899,8 @@ class PaperSimulator:
             account.flow_block = flow_blocked(account.flow_block, frame.flow_share)
         h3_only = False  # whether only variant H3's relaxed score made this frame eligible
         if account.halt:
+            if self.policy.mode_switch:
+                self._report_halted_hour(account, frame, report)
             if account.liquidating:
                 self._record_exit(
                     report,
@@ -912,7 +917,7 @@ class PaperSimulator:
             if self.policy.mode_switch:
                 # Spec v2 section 6: decisions go on through v1's re-centring cooldown, which
                 # holds back new grids only, so the uptrend entry may start here.
-                decided = self._decide_mode(account, frame, regime)
+                decided = self._decide_mode(account, frame, regime, report)
                 if decided is not None:
                     report["mode_decision"] = decided.value  # journal only
                 self._uptrend_step(account, frame, action, report, decided=decided)
@@ -966,7 +971,7 @@ class PaperSimulator:
             if self.policy.mode_switch:
                 # Spec v2 sections 4 and 5: the hourly decision, then the uptrend entry, before
                 # this branch's own selling.
-                decided = self._decide_mode(account, frame, regime)
+                decided = self._decide_mode(account, frame, regime, report)
                 if decided is not None:
                     report["mode_decision"] = decided.value  # journal only
                 self._uptrend_step(account, frame, action, report, decided=decided)
@@ -1474,7 +1479,9 @@ class PaperSimulator:
         rest = unpaired_inventory(account) - self.held_fragments(account)
         return marketable(rest, quote, self.rules) == ZERO
 
-    def _decide_mode(self, account: Account, frame: Frame, regime: RegimeAssessment) -> Mode | None:
+    def _decide_mode(
+        self, account: Account, frame: Frame, regime: RegimeAssessment, report: dict[str, Any]
+    ) -> Mode | None:
         """Section 4's hourly decision, at the first valid frame of an account not halted at
         or after each UTC hour boundary: the mode this frame decided, or None when it made no
         decision.
@@ -1485,6 +1492,11 @@ class PaperSimulator:
         which counts RANGE hours afresh. Otherwise the count goes on only from the hour
         before, and the mode is ``select_mode``'s. Leaving Grid with the grid's orders
         resting winds the grid down; a decision back to Grid lifts that, as F's block lifts.
+
+        The frame that takes the hour reports what became of it in ``report["mode_reasons"]``:
+        the decision with ``explain_mode``'s reasons, or the skip while holding. That is output
+        only (spec v2 §8, "Behaviour"): nothing reads it back, and the mode is
+        ``select_mode``'s alone.
         """
         observed = _epoch_ms(frame.quote.observed_at)
         hour = observed // _HOUR_MS * _HOUR_MS
@@ -1494,19 +1506,36 @@ class PaperSimulator:
         account.decision_hour_ms = hour
         if account.uptrend is not None:
             account.range_decisions = 0
+            report["mode_reasons"] = {"hour_ms": hour, "outcome": DECISION_SKIPPED_HOLDING}
             return None
         if regime.regime == MarketRegime.RANGE:
             account.range_decisions = account.range_decisions + 1 if consecutive else 1
         else:
             account.range_decisions = 0
+        snapshot = self._snapshot(frame)
         mode = select_mode(
-            self._snapshot(frame),
+            snapshot,
             regime.regime,
             regime.input_quality_ok,
             account.range_decisions,
             observed,
             account.uptrend_stopped_ms,
         )
+        explained = explain_mode(
+            snapshot,
+            regime.regime,
+            regime.input_quality_ok,
+            account.range_decisions,
+            observed,
+            account.uptrend_stopped_ms,
+        )
+        report["mode_reasons"] = {  # journal only
+            "hour_ms": hour,
+            "outcome": DECISION_MADE,
+            "mode": mode.value,
+            "uptrend_failures": list(explained.uptrend_failures),
+            "grid_failures": list(explained.grid_failures),
+        }
         was_grid = account.mode == Mode.GRID.value
         self._set_mode(account, mode.value)
         if mode is Mode.GRID:
@@ -1514,6 +1543,16 @@ class PaperSimulator:
         elif was_grid and account.orders:
             account.winding_down = True
         return mode
+
+    @staticmethod
+    def _report_halted_hour(account: Account, frame: Frame, report: dict[str, Any]) -> None:
+        """A valid frame of a halted account, in an hour not yet decided: the halt holds the
+        hour's decision back, and its Cash is forced (section 4). Reported on each such frame,
+        output only; replay counts the hour once, and not at all if the halt ends within it
+        and a later frame of the hour decides after all (``ModeDecisions``)."""
+        hour = _epoch_ms(frame.quote.observed_at) // _HOUR_MS * _HOUR_MS
+        if hour > account.decision_hour_ms:
+            report["mode_reasons"] = {"hour_ms": hour, "outcome": DECISION_HALTED}
 
     def _uptrend_exits(self, account: Account, frame: Frame, report: dict[str, Any]) -> None:
         """Section 5's exits 1 and 2 at a valid frame of an account not halted, after the mark
