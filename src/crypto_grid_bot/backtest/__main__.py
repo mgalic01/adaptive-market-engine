@@ -61,7 +61,7 @@ from crypto_grid_bot.backtest.replay import (
     VOLUME_DRIFT_TOLERANCE,
 )
 from crypto_grid_bot.backtest.trend_benchmark import trend_job
-from crypto_grid_bot.simulation.runner import FULL_STACK
+from crypto_grid_bot.simulation.runner import FULL_STACK, MODE_SWITCH
 
 
 def checked_symbols(spec: DatasetSpec) -> list[str]:
@@ -553,6 +553,15 @@ def main(argv: list[str] | None = None) -> int:
         help="enable the full stack C+F+G+H+V2: variant C with F, G and H and the V2 "
         "structure features, a declared combination (spec v1 §3); sets --structure, and "
         "requires daily_warmup_start in the spec and G's funding archives",
+    )
+    variants.add_argument(
+        "--mode-switch",
+        action="store_const",
+        const=MODE_SWITCH,
+        dest="variant",
+        help="run spec v2's mode switcher: per pair and hour, V0's grid with F's block, an "
+        "uptrend position with a trailing stop, or cash (docs/EXPERIMENT_SPEC_V2.md); "
+        "requires daily_warmup_start in the spec, and takes no other variant or --structure",
     )
     parser.add_argument(
         "--structure",

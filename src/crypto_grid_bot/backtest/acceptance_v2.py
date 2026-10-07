@@ -122,7 +122,13 @@ from crypto_grid_bot.backtest.acceptance import (
 from crypto_grid_bot.backtest.dataset import DatasetSpec, load_spec
 from crypto_grid_bot.backtest.features import FEATURE_VERSION
 from crypto_grid_bot.backtest.jobs import SOURCE_IDENTITY
-from crypto_grid_bot.backtest.replay import DAY_MS, ENGINE_VERSION, INTEGRITY_RULES, PATH_MODES
+from crypto_grid_bot.backtest.replay import (
+    DAY_MS,
+    ENGINE_VERSION,
+    INTEGRITY_RULES,
+    MODE_SWITCH_STRATEGY,
+    PATH_MODES,
+)
 
 # The name of these scoring rules, recorded in every verdict.
 SCORING = "spec-v2-section-8"
@@ -159,9 +165,9 @@ REGISTRATIONS = {
     ),
 }
 
-# The rows (the module docstring lists them). The MS rows' labels: the strategy must not
-# start with "gated grid", which spec v1's feature check reserves for its own grids.
-MODE_SWITCH_STRATEGY = "mode switcher (spec-v2)"
+# The rows (the module docstring lists them). The MS rows' labels: the strategy, which replay
+# writes (``replay.MODE_SWITCH_STRATEGY``), must not start with "gated grid", which spec v1's
+# feature check reserves for its own grids.
 MODE_SWITCH = "MS"
 ROLES = (MODE_SWITCH, "F", "D")  # the candidate, always-grid (C6) and D (reported)
 HOURLY_EQUITY = "hourly_equity"

@@ -44,7 +44,7 @@ from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive, read
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
 from crypto_grid_bot.market_data.parsing import DataError
-from crypto_grid_bot.simulation.execution import exit_state
+from crypto_grid_bot.simulation.execution import exit_price, exit_state, unpaired_inventory
 from crypto_grid_bot.simulation.inventory_cap import mark as unit_mark
 from crypto_grid_bot.simulation.models import (
     ONE,
@@ -56,10 +56,13 @@ from crypto_grid_bot.simulation.models import (
     floor_step,
     timestamp,
 )
-from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
+from crypto_grid_bot.simulation.runner import MODE_SWITCH, Frame, PaperSimulator, SimulationPolicy
 from crypto_grid_bot.simulation.trend_switch import MINIMUM_DAILY_WARMUP, TrendSchedule
+from crypto_grid_bot.simulation.uptrend import UptrendPosition
 from crypto_grid_bot.strategy.cycle import CycleSchedule, CycleSignal
+from crypto_grid_bot.strategy.mode_selector import Mode
 from crypto_grid_bot.strategy.order_flow import FLOW_BARS, taker_buy_share
+from crypto_grid_bot.strategy.perception import Perception
 from crypto_grid_bot.strategy.volume_exit import VolumeHistory
 
 PATH_MODES = ("high_first", "low_first")
@@ -77,6 +80,9 @@ HOUR_MS = 3_600_000
 # Revolut X allows 1,000 order-placement requests per day. Cancellations are counted
 # too, which is conservative if the exchange meters them separately.
 DAILY_REQUEST_BUDGET = 1000
+# The strategy of spec v2's mode-switcher rows, never v1's "gated grid (...)", which spec
+# v1's scorer reads as one of its own grids.
+MODE_SWITCH_STRATEGY = "mode switcher (spec-v2)"
 
 
 @dataclass(frozen=True)
@@ -279,6 +285,19 @@ class Metrics:
     masked_hours: int = 0
     days_skipped_for_masks: int = 0
     fills_after_masked_span: int = 0
+    # Spec v2 §8's behaviour readouts, filled only in a mode-switcher run (``mode_switch``),
+    # whose rows alone carry them (``modes_report``): the time in each mode in ms, weighted
+    # by elapsed time over the evaluation window; the changes of mode, as the account counts
+    # them; the completed uptrend round trips (C5), and the stops and fades among their exits;
+    # and the uptrend position still held at the end, which is not an exit owed (section 6):
+    # its quantity and its value at the exit mark.
+    mode_switch: bool = False
+    mode_ms: Counter[str] = field(default_factory=Counter)
+    mode_switches: int = 0
+    uptrend_trades: int = 0
+    uptrend_stops: int = 0
+    uptrend_fades: int = 0
+    held_at_end: tuple[Decimal, Decimal] = (ZERO, ZERO)
 
 
 def record_exit_block(metrics: Metrics, blocked: str, notional: Decimal) -> None:
@@ -339,8 +358,9 @@ def order_requests(
     orders: RequestCountingOrders, since: int, fills: Sequence[dict[str, Any]]
 ) -> int:
     """Requests sent during one step: book operations since ``since`` plus marketable
-    exits, which are placed and filled at once without entering the book."""
-    exits = sum(1 for fill in fills if str(fill["order_id"]).startswith("exit/"))
+    exits, and spec v2's marketable uptrend buys, which are placed and filled at once
+    without entering the book."""
+    exits = sum(1 for fill in fills if str(fill["order_id"]).startswith(("exit/", "uptrend/")))
     return orders.requests - since + exits
 
 
@@ -436,6 +456,69 @@ def mask_report(counts: MaskCounts) -> dict[str, int]:
         "fills_after_masked_span": counts.fills_after_masked_span,
     }
     return {key: value for key, value in fields.items() if value}
+
+
+def record_uptrend(
+    metrics: Metrics, report: dict[str, Any], position: UptrendPosition | None
+) -> None:
+    """Count one frame's completed uptrend trade (spec v2 §8, C5), and its exit if that was a
+    stop or a fade (reported only). A trade is a position that bought something and whose exit
+    has sold it, on the frame that reports ``uptrend_ended``. An entry that bought nothing
+    reports ``uptrend_abandoned`` instead and counts nothing, its stop included.
+
+    ``position`` is the one held before the frame, which is the one the frame ended. A position
+    never ends on the frame its entry starts on: that frame checks exits 1 and 2 before the
+    entry starts, and only an exiting position ends (``PaperSimulator._finish_uptrend``), before
+    the frame's last risk check and harvest, which could begin an exit. Its exit reason was set
+    once, when the exit began."""
+    if not report.get("uptrend_ended"):
+        return
+    if position is None:
+        raise RuntimeError("a frame ended an uptrend trade that was not held before it")
+    metrics.uptrend_trades += 1
+    metrics.uptrend_stops += int(position.exit_reason == "stop")
+    metrics.uptrend_fades += int(position.exit_reason == "fade")
+
+
+def exit_fields(
+    account: Account, quote: Quote, rules: MarketRules, held: Decimal, position: Decimal
+) -> tuple[str, Decimal]:
+    """A row's end-of-run exit fields, ``final_exit_blocked`` and ``final_unsellable_notional``
+    (``execution.exit_state``). ``held`` is variant F's held fragments, reported as dust and
+    never owed. ``position`` is spec v2's uptrend position while it is still held or entering
+    (``PaperSimulator.uptrend_held``), which is neither an exit owed nor grid inventory (section
+    6): the verdict leaves it out as it leaves F's fragments, and both fields are of the rest of
+    the unpaired inventory, so a run that holds nothing else ends with "" and 0. Without a
+    position, the fields are exactly ``exit_state``'s."""
+    if not position:
+        return exit_state(account, quote, rules, held)
+    rest = unpaired_inventory(account) - position
+    if rest <= ZERO:
+        return "", ZERO
+    blocked, _ = exit_state(account, quote, rules, held + position)
+    return blocked, exit_price(quote, rules) * rest
+
+
+def modes_report(metrics: Metrics) -> dict[str, Any]:
+    """A mode-switcher row's own fields (spec v2 §8): its variant, and its readouts under
+    ``modes``. Empty in any other run, whose rows keep their exact layout. The grid's
+    completed cycles are not copied in: C5 and the readout take them from the row's own
+    ``completed_cycles``, so the two counts can never disagree."""
+    if not metrics.mode_switch:
+        return {}
+    quantity, value = metrics.held_at_end
+    return {
+        "variant": MODE_SWITCH,
+        "modes": {
+            "time_ms": {mode.value: metrics.mode_ms[mode.value] for mode in sorted(Mode)},
+            "switches": metrics.mode_switches,
+            "uptrend_trades": metrics.uptrend_trades,
+            "stops": metrics.uptrend_stops,
+            "fades": metrics.uptrend_fades,
+            "held_at_end": {"quantity": str(quantity), "value": str(value)},
+            "buy_and_hold_final": str(metrics.hold_final),
+        },
+    }
 
 
 class MaskedSpans:
@@ -706,8 +789,10 @@ def replay(
     """``daily`` is the traded pair's completed 1d history (P3), read only by variant A
     (``policy.trend_switch``) and variant H (``policy.cycle_gate``); ``hourly`` is its 1h
     history, read only by variant E (``policy.volume_exit``); ``funding`` is the BTCUSDT
-    funding records, read only by variant G (``policy.funding_gate``). Each variant
-    refuses to run without its history.
+    funding records, read only by variant G (``policy.funding_gate``). Spec v2's mode
+    switcher (``policy.mode_switch``) reads both ``daily`` and ``hourly``, through its
+    perception, and measures its time in each mode over ``window``. Each variant refuses to
+    run without its history.
 
     ``window`` is the evaluation window [start, end) in ms; ``masked`` is the pair's own
     masked hours, whose minutes the caller has already dropped; ``days_skipped_for_masks``
@@ -748,6 +833,19 @@ def replay(
         if policy is not None and (policy.volume_exit or policy.funding_gate or policy.cycle_gate)
         else None
     )
+    # Spec v2's mode switcher: its perception of the pair's three timeframes (section 3), built
+    # once, and the evaluation window [start, end) over which its time in each mode is measured.
+    perception: Perception | None = None
+    start_ms = end_ms = 0
+    if policy is not None and policy.mode_switch:
+        if hourly is None or daily is None:
+            raise ValueError("the mode switcher needs the pair's hourly and daily history")
+        if window is None:
+            raise ValueError("the mode switcher's time in each mode needs the evaluation window")
+        if not run.gated:
+            raise ValueError("the mode switcher runs gated; a run's ungated rows are V0's baseline")
+        start_ms, end_ms = window
+        perception = Perception(hourly, daily)
     # ":memory:" gives the simulator an in-memory SQLite store; replay never writes to it.
     simulator = PaperSimulator(Path(":memory:"), config, run.rules, run.initial_quote, policy)
     simulator.volumes = volumes
@@ -759,6 +857,10 @@ def replay(
     metrics = Metrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
     metrics.masked_hours = masked_spans.hours if masked_spans is not None else 0
     metrics.days_skipped_for_masks = days_skipped_for_masks
+    metrics.mode_switch = perception is not None
+    # Spec v2 §8: the mode in force, since ``mode_since`` (ms). Every account starts in Cash,
+    # which so holds from the evaluation's start to the first replayed quote.
+    mode, mode_since = account.mode, start_ms
 
     def observe_risk(
         equity: Decimal, high: Decimal, reference: Decimal, decision: RiskDecision
@@ -791,6 +893,8 @@ def replay(
                 raise ValueError("variant A needs 200 completed daily bars before evaluation")
             hold = BuyAndHold(run, kline)
             metrics.first_bar_ms = kline.open_ms
+        if perception is not None and not start_ms <= kline.open_ms <= end_ms - 60_000:
+            raise ValueError("the mode switcher's minutes must lie inside the evaluation window")
         metrics.bars += 1
         metrics.last_bar_ms = kline.open_ms
         # Rule 4: orders stay open across a masked span. On the first minute after one, the
@@ -810,6 +914,11 @@ def replay(
         # Variant F likewise reads only the bars complete at this minute's start, for all
         # four quotes: the 15 before it.
         share = taker_buy_share(flow, kline.open_ms) if flow is not None else None
+        # Spec v2's mode switcher likewise: the three timeframes as they stand at this minute's
+        # start, one snapshot for all four quotes, whose completed bars are the same. Never a
+        # later time in the minute: the minute's end can be the next day's start, where the day
+        # just ending would count as closed before the minute's quotes were observed.
+        snapshot = perception.at(kline.open_ms) if perception is not None else None
         report: dict[str, Any] = {}
         cycle: CycleSignal | None = None
         quotes = bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size)
@@ -839,10 +948,20 @@ def replay(
                 flow_share=share,
                 funding_blocks=funding_blocks,
                 cycle=cycle,
+                perception=snapshot,
             )
             since, done = orders.requests, len(orders.completed)
+            if perception is not None:
+                # Spec v2 §8: the time since the previous quote, or since the evaluation's
+                # start, goes to the mode in force after that quote's step: its own span within
+                # a minute, the whole gap across a masked or missing span.
+                metrics.mode_ms[mode] += at_ms - mode_since
+                position = account.uptrend  # the uptrend trade this frame can end
             report = simulator.step(account, frame)
             last_quote = quote
+            if perception is not None:
+                mode, mode_since = account.mode, at_ms
+                record_uptrend(metrics, report, position)
             metrics.requests_by_day[quote.observed_at[:10]] += order_requests(
                 orders, since, report["fills"]
             )
@@ -914,11 +1033,25 @@ def replay(
     if hold is not None:
         metrics.hold_final, metrics.hold_max_drawdown = hold.value, hold.max_drawdown
     if last_quote is not None:
-        # Variant F's held fragments are reported as dust, never as an exit owed.
+        # Variant F's held fragments are reported as dust, never as an exit owed, and spec v2's
+        # uptrend position still held or entering is not owed either (section 6): it is
+        # reported apart, valued at the exit mark, as equity values it. An exit or a risk drain
+        # under way is owed, as in v1.
         held = simulator.held_fragments(account) if flow is not None else ZERO
-        metrics.final_exit_blocked, metrics.final_blocked_notional = exit_state(
-            account, last_quote, run.rules, held
+        position_held = simulator.uptrend_held(account) if perception is not None else ZERO
+        metrics.final_exit_blocked, metrics.final_blocked_notional = exit_fields(
+            account, last_quote, run.rules, held, position_held
         )
+        if position_held:
+            with localcontext() as context:
+                context.prec = 50  # the simulator's precision, at which equity marks it
+                value = position_held * unit_mark(last_quote, run.rules)
+            metrics.held_at_end = (position_held, value)
+    if perception is not None:
+        # The last mode stays in force to the evaluation's end. The account counted each
+        # change of mode, a halt's Cash included, as it happened.
+        metrics.mode_ms[mode] += end_ms - mode_since
+        metrics.mode_switches = account.mode_switches
     if reported is not None:
         metrics.variant = reported.fields(last_quote, metrics.final_equity)
     return metrics, account
@@ -1324,9 +1457,12 @@ def summarise(
     feature_version: str = FEATURE_VERSION,
 ) -> dict[str, Any]:
     """``feature_version`` names the features the run used (STRUCTURE_FEATURE_VERSION
-    under SimulationPolicy.structure); a V0 row keeps its exact labels."""
+    under SimulationPolicy.structure); a V0 row keeps its exact labels. A mode-switcher row
+    carries its own strategy, its variant and its readouts (``modes_report``)."""
     initial = run.initial_quote
-    if run.gated:
+    if metrics.mode_switch:
+        strategy = MODE_SWITCH_STRATEGY
+    elif run.gated:
         strategy = f"gated grid ({feature_version})"
     elif feature_version == FEATURE_VERSION:
         strategy = "ungated grid baseline"
@@ -1399,6 +1535,7 @@ def summarise(
         "assumed_spread_pct": str(run.spread * 100),
         **metrics.variant,
         **mask_report(metrics),
+        **modes_report(metrics),
         "hourly_equity": metrics.hourly_equity,
     }
 

@@ -717,6 +717,23 @@ class CliIntegrityTests(unittest.TestCase):
                     baseline, {k: v for k, v in document.items() if k == "baseline_feature_version"}
                 )
 
+    def test_mode_switch_cli_maps_to_policy(self):
+        # Spec v2's mode switcher: its flag builds its one policy, F's block and nothing else,
+        # for the gated rows, and the ungated rows stay the V0 baseline. It runs on V0's
+        # features, and it is not a v1 variant, so it takes no other variant's flag.
+        ms = SimulationPolicy(mode_switch=True, flow_block_entry=True)
+        self.assertEqual(0, self.main("run", "--mode-switch"))
+        self.assertEqual({(True, ms), (False, None)}, set(self.arms))
+        document = self.documents()["-variant-MS"]
+        self.assertEqual(json.loads(json.dumps(ms.identity(), default=str)), document["policy"])
+        self.assertEqual("0123abc", document["code_commit"])
+        self.assertEqual(FEATURE_VERSION, document["feature_version"])
+        self.assertNotIn("baseline_feature_version", document)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.main("run", "--mode-switch", "--variant-f")
+        with self.assertRaisesRegex(ValueError, "F's block and nothing else"):
+            self.main("run", "--mode-switch", "--structure")
+
     def test_the_commit_is_taken_before_any_check_or_replay(self):
         # Codex review of #160: a commit read after the run could name other code.
         seen = []

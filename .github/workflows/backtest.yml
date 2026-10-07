@@ -16,7 +16,7 @@ on:
           - full-range-2019-2024
           - full-range-2017-2024
       variant:
-        description: "Spec v1 variant: V0 (baseline), A (daily trend switch; needs daily_warmup_start), B (40% inventory cap), C (A and B), E (volume-confirmed exit), F (order-flow block), G (funding gate; needs the manifest's BTCUSDT funding archives for the evaluation months from 2020-01), H (cycle context; needs daily_warmup_start), C+G, C+H, or C+F+G+H+V2 (the full stack: C with F, G, H and the V2 structure features, which it turns on itself). V2 alone is V0 with structure true."
+        description: "Spec v1 variant: V0 (baseline), A (daily trend switch; needs daily_warmup_start), B (40% inventory cap), C (A and B), E (volume-confirmed exit), F (order-flow block), G (funding gate; needs the manifest's BTCUSDT funding archives for the evaluation months from 2020-01), H (cycle context; needs daily_warmup_start), C+G, C+H, or C+F+G+H+V2 (the full stack: C with F, G, H and the V2 structure features, which it turns on itself). V2 alone is V0 with structure true. Or MS, spec v2's mode switcher (Grid with F's block, Uptrend or Cash; needs daily_warmup_start; structure false)."
         required: false
         default: "V0"
         type: choice
@@ -32,6 +32,7 @@ on:
           - "C+G"
           - "C+H"
           - "C+F+G+H+V2"
+          - "MS"
       structure:
         description: "Enable the V2 market-structure features (off in V0; results labelled +structure-v2)"
         required: false
@@ -41,7 +42,7 @@ on:
           - "false"
           - "true"
       trend_benchmark:
-        description: "Also run variant D, the trend benchmark (spec v1 §3 D). The acceptance scorer reads D from the V0 run's results."
+        description: "Also run variant D, the trend benchmark (spec v1 §3 D). Spec v1's acceptance scorer reads D from the V0 run's results. Spec v2's scorer reads it from the MS run's, so set it on the MS runs only, one per window: it refuses a V0 run's file, and a second D row for a pair and path."
         required: false
         default: "false"
         type: choice
@@ -142,6 +143,7 @@ jobs:
             C+G) set -- "$@" --variant-cg ;;
             C+H) set -- "$@" --variant-ch ;;
             C+F+G+H+V2) set -- "$@" --variant-full ;;
+            MS) set -- "$@" --mode-switch ;;
           esac
           if [ "$STRUCTURE" = "true" ]; then
             set -- "$@" --structure

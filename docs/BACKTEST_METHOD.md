@@ -246,6 +246,69 @@ The unchanged engine then applies:
   into a range exit;
 - the 50/50 reserve with transfers batched at 10 quote units.
 
+## The mode switcher (spec v2)
+
+```bash
+PYTHONPATH=src python -m crypto_grid_bot.backtest run --spec config/datasets/practice-2022.toml \
+    --maker-fee 0 --taker-fee 0.0009 --mode-switch --trend-benchmark --record-commit
+```
+
+`--mode-switch` runs [spec v2](EXPERIMENT_SPEC_V2.md)'s mode switcher on the gated rows. Per
+pair and hour it chooses Grid (V0's grid with variant F's order-flow block), Uptrend (a single
+long position with a trailing stop) or Cash.
+- **The run:**
+  - Its policy is F's block and nothing else, so the flag takes no other variant flag and no
+    `--structure`. It runs on V0's features (`price-only-v1`) and V0's engine.
+  - It needs the pair's daily bars, so the spec must declare `daily_warmup_start`.
+  - The ungated rows stay V0's ungated baseline, as in every run.
+  - Its directory name ends in `-variant-MS`, and `results.json` records its policy and the
+    code commit.
+  - Like E and F, its state is never saved, so it runs in historical replay only.
+  - In the `backtest` workflow, choose the variant `MS`.
+- **Perception** (spec v2 §3): built once from the pair's hourly and daily bars that the run
+  already loads, after the mask. Each minute reads one snapshot, at its own start, and its
+  four quotes share it, since they see the same completed bars.
+- **D:** spec v2's scorer reads D from the MS run's results, so `--trend-benchmark` goes on
+  the MS runs only, one per window.
+
+**What an MS row records.** Its gated rows carry every v1 field, the strategy
+`mode switcher (spec-v2)` (never v1's `gated grid (...)`), and the variant `MS`. `modes`
+holds spec v2 §8's readouts:
+- `time_ms`: the milliseconds in `cash`, `grid` and `uptrend`, weighted by elapsed time.
+  - Each quote counts from its own observation to the next replayed quote's, toward the mode
+    in force after its step. Within a minute that is 9, 10, 10 or 31 seconds. Across a masked
+    or missing span it is the whole gap, since the mode held before a gap stays in force
+    through it.
+  - Before the first quote the mode is Cash, as every account starts. After the last quote,
+    the last mode holds until the evaluation window ends.
+  - So the three sum to the window's length, and a change of mode within a minute, a halt's
+    Cash included, is weighted by the time it held.
+- `switches`: every change of mode, whatever caused it: a decision, or a halt's Cash. The
+  initial Cash is not a switch, and neither is a decision that keeps the mode.
+- `uptrend_trades`: the completed uptrend round trips that C5 counts. Each is a position that
+  bought something and whose exit has sold it, leaving at most dust, on any quote up to the
+  run's last.
+  - An entry that bought nothing is not a trade.
+  - Nor is a position still held, entering or exiting at the end.
+  - The grid's round trips stay in `completed_cycles`, and are not copied here.
+- `stops` and `fades`: how many of those trades exit 1 (the trailing stop) or exit 2 (the trend
+  fade) ended. An entry stopped before it bought anything counts no stop. Reported only.
+- `held_at_end`: the uptrend position still held or entering at the end: its quantity, and its
+  value at v1's exit mark, as equity values it.
+- `buy_and_hold_final`: buy-and-hold's final value as an exact decimal, so that the scorer can
+  end the last month exactly.
+
+The position's sales are labelled `uptrend_stop`, `uptrend_fade` or `uptrend_risk` in
+`realised_exit_pnl_by_reason`.
+
+**The end of a run** (spec v2 §6):
+- A position still held, or an entry still buying, is not an exit owed, so the run stays
+  valid. `final_exit_blocked` and `final_unsellable_notional` leave it out, so they are null
+  and 0 when nothing else is unpaired. The position is in `held_at_end` instead.
+- An exit or a risk drain under way at the end is owed, as in v1. While the market would
+  still take what remains, the run ends `incomplete` and is invalid.
+- F's held fragments keep their exemption, as in v1.
+
 ## Baselines
 
 Every run uses the same capital, window, fee, slippage and assumed spread:
