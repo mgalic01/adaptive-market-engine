@@ -1061,6 +1061,24 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual([], check_accounting(run, metrics, account))  # includes P6
         return metrics, account
 
+    def test_exit_reasons_reconcile_within_the_simulators_rounding(self):
+        # The full-range formal runs (2026-10-07): each reason's exit P&L and the exit total
+        # are summed at the simulator's precision (50 digits), fill by fill, so with two
+        # reasons the two sums round differently, here by 1e-46. An exact comparison failed
+        # every such run; the tolerance is the P&L reconciliation's (P6), 1e-18.
+        minutes = self.flat(0, 60, self.fair) + self.flat(60, 540, self.fair * 0.95)
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        metrics, account = replay(self.config, run, minutes, self.engine)
+        total = metrics.exit_pnl_by_reason["range_exit"]
+        metrics.exit_pnl_by_reason = {"range_exit": total + D("1e-45"), "liquidation": D("-9e-46")}
+        self.assertEqual([], check_accounting(run, metrics, account))
+        # A real gap still fails.
+        metrics.exit_pnl_by_reason = {"range_exit": total, "liquidation": D("-0.000001")}
+        self.assertEqual(
+            ["exit P&L by reason does not sum to the exit total"],
+            check_accounting(run, metrics, account),
+        )
+
     def test_range_exit_losses_are_labelled_and_reconcile(self):
         minutes = self.flat(0, 60, self.fair) + self.flat(60, 540, self.fair * 0.95)
         metrics, _ = self.run_replay(minutes)

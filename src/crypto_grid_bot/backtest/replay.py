@@ -1201,7 +1201,12 @@ def check_accounting(run: RunConfig, metrics: Metrics, account: Account) -> list
             change = metrics.final_equity - run.initial_quote
             if abs(realised + unrealised - change) > Decimal("1e-18"):
                 problems.append(f"P&L reconciliation failed: {realised} + {unrealised} != {change}")
-            if sum(metrics.exit_pnl_by_reason.values(), ZERO) != metrics.exit_pnl:
+            # Each reason's sum and the total are accumulated fill by fill at the
+            # simulator's precision (50 digits), so with two reasons or more they round
+            # differently, far below 1e-18 (the full-range formal runs of 2026-10-07 differ
+            # by about 1e-46); P6's tolerance applies.
+            by_reason = sum(metrics.exit_pnl_by_reason.values(), ZERO)
+            if abs(by_reason - metrics.exit_pnl) > Decimal("1e-18"):
                 problems.append("exit P&L by reason does not sum to the exit total")
     return problems
 
