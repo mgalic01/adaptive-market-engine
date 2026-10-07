@@ -7,7 +7,8 @@
   - **Spec v2 §8:** the mode switcher passes only if C1–C6 all pass. So it fails, and the reserved 2025–26 window stays closed. C7 was not evaluated, because it is not settled and it selects nothing.
 - **The return was positive.** Over the six years it made +30.13% / +30.29% on BTCUSDT and +36.08% / +36.89% on ETHUSDT (the `high_first` / `low_first` paths), a median annualised return of about 4.9%.
   - It beat always-grid (variant F) and cash in all 4 runs. Always-grid made −1.80% / −0.00% on BTCUSDT and −38.57% / −35.01% on ETHUSDT.
-  - Buy-and-hold made +2,419.60% on BTCUSDT and +2,430.53% on ETHUSDT. Upside capture was 0.06 and 0.045.
+  - Buy-and-hold made +2,419.60% on BTCUSDT and +2,430.53% on ETHUSDT. As a share of that six-year rise, the mode switcher's return is about 1.2% on BTCUSDT (30.13 of 2,419.60) and 1.5% on ETHUSDT (36.08 of 2,430.53).
+  - Spec v2's registered upside capture is a different, monthly measure: over the months in which buy-and-hold rose, the run's summed monthly returns divided by buy-and-hold's (§8). It is 0.0605 on BTCUSDT and 0.045 on ETHUSDT.
 - **The sanity windows** (`practice-2022`, `verify-2024h1`) are reported only and decide nothing (spec v2 §8). The mode switcher lost money in all 8 of their runs, as in the first read (decisions 10–13).
 - **The owner's decision on what follows is pending.** Claude reported the verdict on 2026-10-07 at about 21:20 UTC, with two options: close v2, or register a v3 aimed at the weaknesses below. This record is amended when the owner decides.
 
@@ -85,7 +86,7 @@ In sets 1 and 2, each full-range results file marks itself `valid: false`. All f
 | ETHUSDT | low_first | 11.01% | 2020-02-15 | 2020-07-23 | 11.38% | 81.88% | 9 | 0 |
 
 - **BTCUSDT's drawdown was a slow decline over 3¾ years, not a crash.** Its equity peaked on 2021-02-21 and reached its low on 2024-11-07, while BTCUSDT itself rose.
-- **The 12% hard stop never fired, because the risk layer's peak moves.** The runtime risk layer measures drawdown from `risk_high`, and spec v1's amendment 1 lets a soft-drawdown recovery rebase `risk_high` downward. Here that happened 10 times on BTCUSDT and 9 times on ETHUSDT.
+- **The 12% hard stop never fired, and the risk layer's peak was lowered 10 times on BTCUSDT and 9 times on ETHUSDT.** The runtime risk layer measures drawdown from `risk_high`, and spec v1's amendment 1 lets a soft-drawdown recovery rebase `risk_high` downward. The runs record the rebases and that no halt fired. That the halt would have fired without the rebases is an inference, not something the runs record.
 - **C1 never rebases** (spec v1's C1 row and amendment 1, §3). C1(a) measures total equity from a running peak that is never scaled or rebased. C1(b) measures active equity against a reference that follows `risk_high` except for its rebases. The runtime risk layer and C1 differ by design, and this run is the case where they part: the risk layer's own peak was lowered 10 times on BTCUSDT, while C1 kept measuring from 2021-02-21.
 - **ETHUSDT's worst drawdown, 11.02%, came in 2020,** from 2020-02-15 to 2020-07-23, which takes in the March 2020 crash. It exceeds the limit by about one point.
 
@@ -110,7 +111,7 @@ Each year runs from its first hour's equity, or the previous year's last, to its
 
 - **On BTCUSDT, nearly all the gain came in 2019–2020.** From 2021 to 2024 the mode switcher lost a net 12%, while buy-and-hold more than tripled.
 - **ETHUSDT's gain is spread more evenly.**
-- **In the two bear years,** 2022 for BTCUSDT and 2022 for ETHUSDT, the mode switcher lost 7.2% and 4.7%, where buy-and-hold lost 64% and 68%.
+- **In 2022, the bear year for both pairs,** the mode switcher lost 7.2% on BTCUSDT and 4.7% on ETHUSDT, where buy-and-hold lost 64% and 68%.
 
 ### Grid cycles by ISO year (mode switcher, `high_first`)
 
@@ -137,7 +138,7 @@ Nothing is held at the end of any run, so the sources sum exactly to each run's 
 
 ### Time in each mode, and what kept Uptrend out
 
-| Pair (both paths) | Cash | Grid | Uptrend | Switches | Uptrend trades | Stops | Fades | Round trips (grid + uptrend) | Upside capture |
+| Pair (both paths) | Cash | Grid | Uptrend | Switches | Uptrend trades | Stops | Fades | Round trips (grid + uptrend) | Upside capture (registered, monthly) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | BTCUSDT | 70.28% | 2.90% | 26.82% | 413 | 48 | 12 | 17 | 31 + 48 | 0.0605 |
 | ETHUSDT | 71.85% | 2.36% | 25.79% | 416 | 51 | 12 | 18 | 43–45 + 51 | 0.045 |
@@ -178,7 +179,7 @@ Both windows fail C2 and C6 there, and `practice-2022` fails C5 as well. These a
 - **A caution for any v3:** `full-range-2017-2024` has now been seen. A v3 tested on the same years is not an out-of-sample test there, so it needs a fixed trial register (#169's Addendum B2), and only the reserved window could confirm it.
 - **Two findings for a v3:**
   - the drawdown came from a slow decline that the rebasing risk layer never stopped;
-  - the mode switcher captured about 5% of buy-and-hold's rise, mostly through exits the risk layer began.
+  - the mode switcher's six-year return was about 1.2% (BTCUSDT) and 1.5% (ETHUSDT) of buy-and-hold's rise, with a registered monthly upside capture of 0.06 and 0.045. Most of its gain was realised through exits the risk layer began.
 - **Proposed to the owner as a task:** #169's Addendum A1, a check that a halt blocking new exposure never blocks a protective exit (#202). It is related, since `uptrend_risk` exits are exactly the risk layer's.
 - **Merged during this run:**
   - #201: the backtest workflow runs a pool of 4;
