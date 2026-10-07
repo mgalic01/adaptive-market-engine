@@ -255,17 +255,19 @@ def test_the_worker_stops_before_bob_on(
     assert message in log
 
 
-# --- the worker: frozen at the revision, so moving refs cannot reach Bob -------------
+# --- the worker: frozen at the revision, so nothing newer can reach Bob --------------
 
 
-def test_the_frozen_repository_holds_only_the_revision(
+def test_the_frozen_repository_holds_only_the_revision_history(
     remote: tuple[Path, dict[str, str]], checkout: Path
 ) -> None:
-    """fetch-depth 0 fetched every branch and tag as at job start; none may reach Bob."""
+    """fetch-depth 0 fetched every branch, tag and object as at job start; none of what
+    is newer than the revision may reach Bob, by ref or by searching .git (Codex, #194)."""
     _, rev = remote
     git(checkout, "fetch", "--quiet", "origin", "stray")  # leaves a FETCH_HEAD behind
     code, log = verify(checkout, rev["merge"], rev["merge"])
     assert code == 0, log
+    assert git(checkout, "cat-file", "-t", rev["later"]) == "commit"  # fetched, before
     code, _, log = run_step(step("bob-task", "freeze")["run"], checkout, {"REVISION": rev["merge"]})
     assert code == 0, log
     refs = git(checkout, "for-each-ref", "--format=%(objectname) %(refname)").splitlines()
@@ -273,9 +275,17 @@ def test_the_frozen_repository_holds_only_the_revision(
     assert git(checkout, "symbolic-ref", "HEAD") == "refs/heads/main"
     assert git(checkout, "rev-parse", "origin/main") == rev["merge"]
     assert git(checkout, "remote") == ""
-    reachable = git(checkout, "rev-list", "--all").splitlines()
-    assert rev["later"] not in reachable  # the commit merged while the run waited
-    assert rev["stray"] not in reachable
+    # Codex's reproduction: fsck lists unreachable commits, and git show reads them.
+    assert "unreachable" not in git(checkout, "fsck", "--unreachable", "--no-reflogs")
+    for gone in ("later", "stray"):
+        found = subprocess.run(
+            ["git", "-C", str(checkout), "cat-file", "-e", rev[gone]],
+            capture_output=True,
+            check=False,
+        )
+        assert found.returncode != 0, gone
+    # The merged branch's own commits are the revision's history, so they stay.
+    assert git(checkout, "cat-file", "-t", rev["inside_branch"]) == "commit"
     for name in ("FETCH_HEAD", "later-tag", "origin/stray", "origin/task"):
         found = subprocess.run(
             ["git", "-C", str(checkout), "rev-parse", "--verify", "--quiet", name],

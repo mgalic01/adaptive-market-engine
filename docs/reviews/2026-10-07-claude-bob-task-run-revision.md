@@ -49,14 +49,17 @@ containment.
      (`git rev-list --first-parent refs/remotes/origin/main`). That line holds the commits
      `main` itself has been at.
   5. It stops unless the task file is in that commit.
-  6. It freezes the repository at the revision (fix round 1, below). It removes the
-     `origin` remote, every branch and tag, and `FETCH_HEAD`, then points `main` (with
-     `HEAD` on it) and `origin/main` at the revision. It stops unless exactly those two
-     refs remain.
+  6. It freezes the repository at the revision (fix rounds 1 and 2, below):
+     - it removes the `origin` remote, every branch and tag, and `FETCH_HEAD`;
+     - it points `main` (with `HEAD` on it) and `origin/main` at the revision;
+     - it expires the reflogs and purges every unreachable object (`git gc --prune=now`);
+     - it stops unless exactly those two refs remain and every object left is reachable
+       from the revision.
 
   Bob's prompt gains a few lines naming the frozen commit. They warn him that it can be
   older than `main` on GitHub, so tasks that record `git rev-parse HEAD` are not
-  surprised, and tell him not to fetch or add a remote.
+  surprised. They also say the repository holds that commit's history and nothing else,
+  and that he must not fetch or add a remote.
 - **publish** records the revision in the report's commit message, the PR body, the reply
   and the failure alert, so a rerun can name the same commit. It still checks out `main`.
 - **Docs:** the quick reference row, the trigger and rerun rules, and a new "Run revision"
@@ -109,7 +112,14 @@ the check is weakened to plain ancestry.
    a fetch by URL still works. As with the reserved window, his prompt and the reviewed
    task are the control there: the prompt allows read-only git commands and now says not
    to fetch.
-6. **Not exercised on GitHub.** I triggered no Bob run (owner's instruction). Two
+6. **A task can use only the run revision and its history.** The purge (fix round 2)
+   removes every other commit. So a task can no longer compare against an unmerged
+   branch, as `docs/tasks/2026-09-29-bob-structure-backtest-comparison.md` did. Whatever
+   a task needs must be merged to `main` first, and then it is reviewed content. The
+   only repository code that reads git objects is the backtest CLI (`code_commit` and
+   `committed_sources` in `src/crypto_grid_bot/backtest/__main__.py`). It reads
+   `HEAD`'s tree, which is the revision, so the purge does not affect it.
+7. **Not exercised on GitHub.** I triggered no Bob run (owner's instruction). Two
    behaviours are taken from `actions/checkout` v4's input handling, not observed:
    - a 40-hex `ref` is checked out as that commit;
    - `fetch-depth: 0` fetches every branch, so `refs/remotes/origin/main` exists.
@@ -127,8 +137,8 @@ the check is weakened to plain ancestry.
 - Older task files keep their reviewed text. Some still say to start or rerun them with
   the two-word `/bob-run`, for example `docs/tasks/2026-09-27-bob-p8-funding-archives.md`
   line 21. That form now starts nothing; a rerun adds the SHA.
-- A task that needs a commit other than the run revision names its SHA. Branch names
-  other than `main` no longer resolve on the worker.
+- A task can use only the run revision and its history (limit 6). Branch names other
+  than `main` no longer resolve on the worker, and newer commits are not in `.git`.
 
 ## Interaction with #193
 
@@ -158,13 +168,44 @@ before anything else. It:
 
 A task that names `main` or `origin/main` reads the revision, as "main as of the trigger".
 A task that names any other branch or tag stops, which fails closed. A plain `git fetch`
-fails because there is no remote. The commits that `fetch-depth: 0` brought in stay in
-the object store but are reachable from no ref, so only a SHA that a reviewed task names
-explicitly reaches them, and a SHA's content cannot move. The test
-`test_the_frozen_repository_holds_only_the_revision` covers this case. It plants a tag
-on the later commit, leaves a `FETCH_HEAD` behind, and checks that only the two refs at
-the revision remain, that neither the later commit nor the stray commit is reachable,
-and that `git fetch origin` fails.
+fails because there is no remote. Round 1 still left the fetched objects in `.git`;
+fix round 2 purges them.
+
+## Fix round 2: Codex's P1 and the automated review at `536348a`
+
+Both reviewers found the same gap at `536348a`: the freeze removed refs, not objects.
+- **Codex**
+  ([thread](https://github.com/mgalic01/adaptive-market-engine/pull/194#discussion_r4204996666),
+  P1) reproduced it. The read-only `git fsck --unreachable --no-reflogs` lists the
+  newer commits, and `git show` reads them, with no fetch and no SHA known in advance.
+- **The automated review**
+  ([comment](https://github.com/mgalic01/adaptive-market-engine/pull/194#issuecomment-6034545026),
+  `CHANGES NEEDED`) raised it as a required fix, with pruning as the first remedy.
+
+**Agreed, and fixed by purging.** After the refs are reset, `freeze` runs
+`git reflog expire --expire=now --expire-unreachable=now --all` and
+`git gc --prune=now`. It then compares every object in `.git`
+(`git cat-file --batch-all-objects`) with the objects reachable from the revision
+(`git rev-list --objects`), and stops unless the two sets are equal. `.git` therefore
+holds the revision's history and nothing else. The cost is limit 6: a task can no longer
+use a commit outside that history.
+
+The test is now `test_the_frozen_repository_holds_only_the_revision_history`. It:
+- plants a tag on the later commit and leaves a `FETCH_HEAD` behind;
+- checks that the later commit is in `.git` before the freeze;
+- checks after the freeze that `git fsck --unreachable --no-reflogs` reports nothing,
+  that neither the later commit nor the stray one exists as an object, and that the
+  merged branch's own commits, which are the revision's history, remain;
+- checks that only the two refs remain and that `git fetch origin` fails.
+
+Two mutants are caught. Without `git gc`, the step's own object check fails. Without both
+the `gc` and that check, the test fails on Codex's `fsck` reproduction.
+
+The automated review's nits are also handled:
+- the handbook paragraph is re-wrapped;
+- [the task index](../tasks/README.md) notes that older task files give the two-word
+  form, which now starts nothing;
+- a no-SHA comment staying silent remains question 3 below.
 
 ## Verification
 
@@ -176,13 +217,15 @@ in the PR's handoff comment, at the exact head:
   real local Git history with a merged task branch, a later edit to `main` (tagged), and a
   stray branch. Run against the unchanged workflow, 24 of the 26 fail. The other two
   describe behaviour that does not change: a push that adds no task, and a merge commit
-  that is accepted. Three mutants are caught:
+  that is accepted. Five mutants are caught:
   - the first-parent check weakened to plain ancestry;
   - the checkout put back to `ref: main`;
-  - the freeze left keeping the fetched refs.
+  - the freeze left keeping the fetched refs;
+  - the freeze without `git gc`;
+  - the freeze without `git gc` and without its own object check.
 - In a clone frozen by the `freeze` step, the full pytest suite passes. So a task that
-  runs the tests is not broken by the missing remote, branches and tags. The exact
-  numbers are in the handoff comment.
+  runs the tests is not broken by the missing remote, branches, tags and objects. The
+  exact numbers are in the handoff comment.
 - `actionlint` 1.7.12 with ShellCheck 0.11.0 reports the same findings before and after the
   change. Both predate it: the `queue` key, which is newer than this actionlint, and one
   SC2129 style note in the gate step.
@@ -196,6 +239,8 @@ in the PR's handoff comment, at the exact head:
 3. A `/bob-run` without a SHA is silent, consistent with today's malformed-path handling.
    Should it alert instead? An alert would also fire on comments that merely discuss the
    command.
+4. Does the freeze leave any route by which state newer than the trigger reaches Bob,
+   other than a deliberate fetch by URL (limit 5)?
 
 **Revert:** revert the merge commit. Nothing persisted depends on this change, and the old
 two-word `/bob-run` returns.

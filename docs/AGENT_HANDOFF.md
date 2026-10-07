@@ -794,10 +794,12 @@ Credits are limited, so every agent works on demand, not by polling:
     worker stops unless `main` has been at that commit (`git log --first-parent main`:
     a merge or a push to `main`, not a commit from inside a merged branch) and the task
     file is in it. It then freezes the repository at that commit: `main` and
-    `origin/main` name it, and no other branch, tag or remote is left (Codex's review of
-    PR #194). A commit merged while a run waits in the `bob-task` queue therefore
-    cannot change what the run reads. A task that needs another commit names its SHA. The revision is in the report's commit and PR,
-    the reply and any failure alert. The publisher still works from a clean checkout of
+    `origin/main` name it, no other branch, tag or remote is left, and every object
+    outside the commit's history is purged (Codex's reviews of PR #194). A commit merged
+    while a run waits in the `bob-task` queue therefore cannot change what the run
+    reads, and a task can use only the run revision and its history: anything else it
+    needs is merged to `main` first. The revision is in the report's commit and PR, the
+    reply and any failure alert. The publisher still works from a clean checkout of
     `main`.
   - **Containment** (reworked after Codex's audit, 2026-09-25):
     - Bob runs on a **worker** machine with a read-only token and no write permission.
