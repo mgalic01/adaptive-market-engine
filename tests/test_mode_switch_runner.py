@@ -1127,6 +1127,24 @@ def test_halt_in_grid_mode_sets_cash_and_no_grid_opens_before_a_decision():
     assert all(mode == "cash" for hour, _, mode, _ in opened if hour < 12)
 
 
+def test_a_restart_mid_hour_decides_at_the_next_valid_frame():
+    """Owner ruling 2026-10-07, "Restart: decide at once": when a halt clears mid-hour, the
+    first valid frame after it decides, in that same hour; the mode switcher does not wait for
+    the next hour boundary. The frame that restarts was halted, and decides nothing itself."""
+    run = Run()
+    points = days((100, 1), (100, 1))
+    run.step(frame(at(1, 9), bid="100", h4=RANGE, points=points))  # 09:00 decided
+    run.account.risk_high = D("120")  # an earlier high: a hard stop at the next quote
+    run.step(frame(at(1, 9, 30), bid="100", h4=RANGE, points=points))
+    assert run.account.halt_category == "drawdown"
+    report = run.step(frame(at(2, 9, 32), bid="100", h4=RANGE, points=points))
+    assert "restart" in report and not run.account.halt and "mode_decision" not in report
+    assert run.account.decision_hour_ms == at(1, 9)
+    report = run.step(frame(at(2, 9, 33), ask="100", points=points))  # 27 minutes before 10:00
+    assert report["mode_decision"] == "uptrend" and report["mode_reasons"]["outcome"] == "made"
+    assert run.account.decision_hour_ms == at(2, 9)
+
+
 # --- Review fix round 1 ---------------------------------------------------------------------
 
 
