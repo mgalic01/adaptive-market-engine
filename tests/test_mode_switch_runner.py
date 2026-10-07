@@ -1081,6 +1081,24 @@ def test_halt_in_grid_mode_sets_cash_and_no_grid_opens_before_a_decision():
     assert all(mode == "cash" for hour, _, mode, _ in opened if hour < 12)
 
 
+def test_a_restart_mid_hour_decides_at_the_next_valid_frame():
+    """Owner ruling 2026-10-07, "Restart: decide at once": when a halt clears mid-hour, the
+    first valid frame after it decides, in that same hour; the mode switcher does not wait for
+    the next hour boundary. The frame that restarts was halted, and decides nothing itself."""
+    run = Run()
+    points = days((100, 1), (100, 1))
+    run.step(frame(at(1, 9), bid="100", h4=RANGE, points=points))  # 09:00 decided
+    run.account.risk_high = D("120")  # an earlier high: a hard stop at the next quote
+    run.step(frame(at(1, 9, 30), bid="100", h4=RANGE, points=points))
+    assert run.account.halt_category == "drawdown"
+    report = run.step(frame(at(2, 9, 32), bid="100", h4=RANGE, points=points))
+    assert "restart" in report and not run.account.halt and "mode_decision" not in report
+    assert run.account.decision_hour_ms == at(1, 9)
+    report = run.step(frame(at(2, 9, 33), ask="100", points=points))  # 27 minutes before 10:00
+    assert report["mode_decision"] == "uptrend" and report["mode_reasons"]["outcome"] == "made"
+    assert run.account.decision_hour_ms == at(2, 9)
+
+
 # --- Review fix round 1 ---------------------------------------------------------------------
 
 
@@ -1237,3 +1255,72 @@ def test_lookahead_daily_perception_fails_closed():
     run = Run()
     report = run.step(frame(at(1, 10), ask="100", points=points))
     assert report["decision"] != "halt" and len(bought(report)) == 1
+
+
+# --- Why each decision went as it did (reporting only) ------------------------------------------
+
+
+def test_each_decision_reports_its_reasons():
+    run = Run()
+    # V0's classifier reads the quiet market as RANGE: the first RANGE hour, and the 4h state Up.
+    report = run.step(frame(at(1, 10), ask="100"))
+    assert report["mode_reasons"] == {
+        "hour_ms": at(1, 10),
+        "outcome": "made",
+        "mode": "uptrend",
+        "uptrend_failures": [],
+        "grid_failures": ["range_decisions_below_4", "h4_not_range_or_unclear"],
+    }
+    assert "mode_reasons" not in run.step(frame(at(1, 10, 1), ask="100"))  # the hour is decided
+    run = Run()
+    report = run.step(frame(at(1, 9), h4=DOWN))
+    assert report["mode_reasons"] == {
+        "hour_ms": at(1, 9),
+        "outcome": "made",
+        "mode": "cash",
+        "uptrend_failures": ["h4_not_up"],
+        "grid_failures": ["range_decisions_below_4", "h4_not_range_or_unclear"],
+    }
+
+
+def test_a_decision_skipped_while_holding_is_its_own_outcome():
+    run = Run()
+    entered(run)
+    report = run.step(frame(at(1, 11), bid="100", h4=RANGE))
+    assert report["mode_reasons"] == {"hour_ms": at(1, 11), "outcome": "skipped_holding"}
+    assert "mode_reasons" not in run.step(frame(at(1, 11, 1), bid="100", h4=RANGE))
+
+
+def halted_hours(policy: SimulationPolicy) -> list[dict[str, Any]]:
+    """A RANGE decision at 09:00, a hard stop at 09:30, an invalid frame at 11:00, and the
+    restart 24 hours on, at 09:32 the next day, then a frame in that same hour."""
+    run = Run(policy)
+    points = days((100, 1), (100, 1))
+    run.step(frame(at(1, 9), bid="100", h4=RANGE, points=points))
+    run.account.risk_high = D("120")  # an earlier high: a hard stop at the next quote
+    run.step(frame(at(1, 9, 30), bid="100", h4=RANGE, points=points))
+    assert run.account.halt_category == "drawdown"
+    run.step(frame(at(1, 10), bid="100", h4=RANGE, points=points))
+    run.step(frame(at(1, 10, 1), bid="100", h4=RANGE, points=points))
+    run.step(invalid(frame(at(1, 11), bid="100", h4=RANGE, points=points)))
+    assert "restart" in run.step(frame(at(2, 9, 32), bid="100", h4=RANGE, points=points))
+    run.step(frame(at(2, 9, 40), bid="100", h4=RANGE, points=points))
+    return run.reports
+
+
+def test_hours_held_back_by_a_halt_are_their_own_outcome():
+    decided, stopped, *halted, invalid_frame, restart, after = [
+        report.get("mode_reasons") for report in halted_hours(MS)
+    ]
+    assert decided is not None and decided["outcome"] == "made"
+    assert stopped is None  # 09:00 was decided before the halt
+    # Each valid frame of a halted account in an hour not yet decided carries it: replay counts
+    # the hour once. An invalid frame decides nothing and carries nothing.
+    assert halted == [{"hour_ms": at(1, 10), "outcome": "halted"}] * 2
+    assert invalid_frame is None
+    # The restart's frame was halted; the next frame decides the same hour after all.
+    assert restart == {"hour_ms": at(2, 9), "outcome": "halted"}
+    assert after is not None and (after["hour_ms"], after["outcome"]) == (at(2, 9), "made")
+    # v1's runs never carry it.
+    v1 = halted_hours(SimulationPolicy(flow_block_entry=True))
+    assert not any("mode_reasons" in report for report in v1)

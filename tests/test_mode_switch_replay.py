@@ -16,6 +16,9 @@ code. Nothing here is market data or evidence.
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 import math
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -41,6 +44,7 @@ from crypto_grid_bot.backtest.replay import (
     MODE_SWITCH_STRATEGY,
     POINT_SPANS_MS,
     Metrics,
+    ModeDecisions,
     RunConfig,
     bar_quotes,
     check_accounting,
@@ -48,6 +52,7 @@ from crypto_grid_bot.backtest.replay import (
     summarise,
 )
 from crypto_grid_bot.config import load_config
+from crypto_grid_bot.domain import RiskAction, RiskDecision
 from crypto_grid_bot.simulation import runner
 from crypto_grid_bot.simulation.execution import exit_state
 from crypto_grid_bot.simulation.inventory_cap import mark
@@ -542,6 +547,7 @@ def test_ms_rows_carry_their_own_strategy() -> None:
         "fades",
         "held_at_end",
         "buy_and_hold_final",
+        "decisions",
     }
     # Its grid cycles stay in the row's own completed_cycles, never copied into the readouts.
     assert "completed_cycles" not in ms_row["modes"]
@@ -614,6 +620,229 @@ def test_each_minute_reads_one_snapshot_at_its_start() -> None:
         snapshots = [p for event, p in seen if event.split("/")[1] == str(open_ms)]
         assert len(snapshots) == 4 and all(p is snapshots[0] for p in snapshots)
         assert snapshots[0] == perception.at(open_ms)
+
+
+# Why each decision went as it did (``modes.decisions``, reporting only).
+
+
+@contextmanager
+def forced_exit(event_id: str) -> Iterator[None]:
+    """A hard stop on the quote named: that quote's first risk evaluation says EXIT, as a 12%
+    drawdown would, so the account halts (category drawdown) and restarts 24 hours later."""
+    real = PaperSimulator.step
+
+    def step(simulator: PaperSimulator, account: Account, frame: Any) -> dict[str, Any]:
+        if frame.quote.event_id != event_id:
+            return real(simulator, account, frame)
+        evaluate = simulator.risk.evaluate
+        pending = [RiskDecision(RiskAction.EXIT, ("forced hard stop",))]
+
+        def forced(portfolio: Any) -> RiskDecision:
+            return pending.pop() if pending else evaluate(portfolio)
+
+        simulator.risk.evaluate = forced  # type: ignore[method-assign]
+        try:
+            return real(simulator, account, frame)
+        finally:
+            del simulator.risk.evaluate
+
+    with patch.object(PaperSimulator, "step", step):
+        yield
+
+
+@cache
+def flat_run() -> tuple[dict[str, Any], list[Step]]:
+    """The flat market's first twelve hours from FLAT_DAY, every frame recorded."""
+    market, t = flat_market(), at(FLAT_DAY)
+    with recorded() as steps:
+        _, _, row = run_ms(market, market.minutes(t, t + 12 * HOUR), (t, t + 12 * HOUR))
+    return row, steps
+
+
+HALT = at(FLAT_DAY, 5, 10)  # the hard stop's minute, in the flat market's sixth Grid-able hour
+
+
+@cache
+def halted_run() -> tuple[dict[str, Any], list[Step]]:
+    """The flat market for 33 hours from FLAT_DAY, with a hard stop on HALT's second quote and
+    so the restart 24 hours later, every frame recorded."""
+    market, t = flat_market(), at(FLAT_DAY)
+    end = t + 33 * HOUR
+    with recorded() as steps, forced_exit(quote_id(HALT, 1)):
+        _, _, row = run_ms(market, market.minutes(t, end), (t, end))
+    return row, steps
+
+
+def reasons_of(steps: list[Step]) -> list[dict[str, Any]]:
+    return [step.report["mode_reasons"] for step in steps if "mode_reasons" in step.report]
+
+
+def integers_with_sorted_keys(value: Any) -> bool:
+    """Whether every leaf is an int (never a bool or a float) and every mapping's keys are
+    sorted, so that a row's block is deterministic."""
+    if isinstance(value, dict):
+        return list(value) == sorted(value) and all(
+            integers_with_sorted_keys(v) for v in value.values()
+        )
+    return type(value) is int
+
+
+def made(hour: int, mode: str, uptrend: list[str], grid: list[str]) -> dict[str, Any]:
+    return {
+        "hour_ms": hour,
+        "outcome": "made",
+        "mode": mode,
+        "uptrend_failures": uptrend,
+        "grid_failures": grid,
+    }
+
+
+def test_decisions_count_each_hour_once_by_month_and_by_sole_blocker() -> None:
+    jan = int(datetime(2024, 1, 31, 22, tzinfo=UTC).timestamp()) * 1000
+    feb = jan + 2 * HOUR  # 2024-02-01 00:00 UTC
+    decisions = ModeDecisions()
+    for record in (
+        made(jan, CASH, ["d1_rsi_overbought"], ["h4_not_range_or_unclear"]),
+        {"hour_ms": jan + HOUR, "outcome": "halted"},
+        {"hour_ms": jan + HOUR, "outcome": "halted"},  # a later frame of the same hour
+        {"hour_ms": feb, "outcome": "halted"},
+        made(feb, GRID, ["d1_not_up", "h4_not_up"], []),  # the halt ended within the hour
+        made(feb + HOUR, UPTREND, [], ["h1_unavailable", "h4_not_range_or_unclear"]),
+        {"hour_ms": feb + 2 * HOUR, "outcome": "skipped_holding"},
+    ):
+        decisions.record(record)
+    block = decisions.report()
+    assert block == {
+        "by_mode": {CASH: 1, GRID: 1, UPTREND: 1},
+        "by_month": {
+            "2024-01": {
+                "by_mode": {CASH: 1, GRID: 0, UPTREND: 0},
+                "halted": 1,
+                "made": 1,
+                "skipped_holding": 0,
+                "uptrend_blocked_by": {"d1_rsi_overbought": 1},
+                "uptrend_sole_blocker": {"d1_rsi_overbought": 1},
+            },
+            "2024-02": {
+                "by_mode": {CASH: 0, GRID: 1, UPTREND: 1},
+                "halted": 0,
+                "made": 2,
+                "skipped_holding": 1,
+                "uptrend_blocked_by": {"d1_not_up": 1, "h4_not_up": 1},
+                "uptrend_sole_blocker": {},
+            },
+        },
+        # Over the decisions where that mode was not chosen: Uptrend's Grid reasons count.
+        "grid_blocked_by": {"h1_unavailable": 1, "h4_not_range_or_unclear": 2},
+        "grid_sole_blocker": {"h4_not_range_or_unclear": 1},
+        "halted": 1,
+        "made": 3,
+        "skipped_holding": 1,
+        "uptrend_blocked_by": {"d1_not_up": 1, "d1_rsi_overbought": 1, "h4_not_up": 1},
+        "uptrend_sole_blocker": {"d1_rsi_overbought": 1},
+    }
+    assert integers_with_sorted_keys(block)
+    assert ModeDecisions().report()["by_month"] == {}
+    with pytest.raises(RuntimeError, match="decided twice"):
+        decisions.record({"hour_ms": feb + 2 * HOUR, "outcome": "skipped_holding"})
+
+
+def test_rows_record_each_hours_decision_and_why() -> None:
+    row, steps = flat_run()
+    decisions, t = row["modes"]["decisions"], at(FLAT_DAY)
+    reasons = reasons_of(steps)
+    # One decision an hour, each the mode the simulator applied.
+    assert [r["hour_ms"] for r in reasons] == [t + h * HOUR for h in range(12)]
+    assert [r["mode"] for r in reasons] == [
+        step.report["mode_decision"] for step in steps if "mode_decision" in step.report
+    ]
+    assert (decisions["made"], decisions["skipped_holding"], decisions["halted"]) == (12, 0, 0)
+    assert decisions["by_mode"] == {
+        mode: sum(r["mode"] == mode for r in reasons) for mode in (CASH, GRID, UPTREND)
+    }
+    assert decisions["by_mode"] == {CASH: 3, GRID: 9, UPTREND: 0}
+    # The first three hours are RANGE, but not yet for four consecutive decisions, and Grid's
+    # other conditions hold: that rule alone kept Grid out. Uptrend's two are the flat states.
+    assert [r["grid_failures"] for r in reasons[:3]] == [["range_decisions_below_4"]] * 3
+    assert decisions["grid_blocked_by"] == {"range_decisions_below_4": 3}
+    assert decisions["grid_sole_blocker"] == {"range_decisions_below_4": 3}
+    assert decisions["uptrend_blocked_by"] == {"d1_not_up": 12, "h4_not_up": 12}
+    assert decisions["uptrend_sole_blocker"] == {}
+    assert decisions["by_month"] == {
+        "2023-03": {
+            "by_mode": {CASH: 3, GRID: 9, UPTREND: 0},
+            "halted": 0,
+            "made": 12,
+            "skipped_holding": 0,
+            "uptrend_blocked_by": {"d1_not_up": 12, "h4_not_up": 12},
+            "uptrend_sole_blocker": {},
+        }
+    }
+    assert integers_with_sorted_keys(decisions)
+
+
+def test_halted_hours_count_once_and_the_restart_hour_as_decided() -> None:
+    row, steps = halted_run()
+    assert (row["hard_drawdown_halts"], row["drawdown_restarts"]) == (1, 1)
+    decisions, t = row["modes"]["decisions"], at(FLAT_DAY)
+    # Decided from 00:00 to 05:00, the hard stop at 05:10, halted from 06:00 to the restart 24
+    # hours on, whose hour decides once the halt has ended, as do the three after it.
+    halted = {r["hour_ms"] for r in reasons_of(steps) if r["outcome"] == "halted"}
+    assert halted == {t + h * HOUR for h in range(6, 30)}
+    restarted = next(i for i, step in enumerate(steps) if "restart" in step.report)
+    assert steps[restarted].quote.observed_at.startswith("2023-03-13T05:10")
+    assert (decisions["made"], decisions["halted"], decisions["skipped_holding"]) == (10, 23, 0)
+    assert decisions["by_month"]["2023-03"]["halted"] == 23
+
+
+def test_rows_record_the_hours_skipped_while_holding_and_the_pause_after() -> None:
+    _, _, _, row, steps = rising_run()
+    decisions = row["modes"]["decisions"]
+    # Every hour has its outcome: the entry's decision, the hours held, then Cash.
+    hours = (at(RISE_DAYS + 2) - ENTRY) // HOUR
+    assert len({r["hour_ms"] for r in reasons_of(steps)}) == hours
+    assert decisions["made"] + decisions["skipped_holding"] == hours
+    assert decisions["skipped_holding"] > 0 and decisions["by_mode"][UPTREND] == 1
+    # The run ends within 24 hours of the stop, so the pause is among each later decision's
+    # reasons, with the fall's 4h state and regime.
+    assert decisions["uptrend_blocked_by"]["reentry_pause"] == decisions["by_mode"][CASH] > 0
+
+
+# The SHA-256 of the three runs above, every frame's report and the row, recorded on main at
+# 739ae6e before the decision reasons existed. With the reasons set aside, nothing moved.
+NUMBERS_BEFORE_REASONS = "6db23ef73694c9063c80ba0660993aa8be28544566c83193b8f2466cfcb6ffc4"
+
+
+def canonical(value: Any) -> Any:
+    """``value`` in a form JSON writes the same way on any platform: a float to 6 significant
+    digits, so a last-digit difference in a platform's libm cannot move the digest."""
+    if isinstance(value, float):
+        return format(value, ".6g")
+    if isinstance(value, dict):
+        return {str(key): canonical(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [canonical(item) for item in value]
+    return value
+
+
+def numbers_digest(runs: list[tuple[dict[str, Any], list[dict[str, Any]]]]) -> str:
+    """The SHA-256 of each run's row without ``modes.decisions`` and its frames' reports without
+    ``mode_reasons``."""
+    payload = []
+    for row, reports in runs:
+        row = copy.deepcopy(row)
+        row["modes"].pop("decisions", None)
+        frames = [{k: v for k, v in report.items() if k != "mode_reasons"} for report in reports]
+        payload.append({"row": row, "reports": frames})
+    text = json.dumps(canonical(payload), sort_keys=True, default=str)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_the_reasons_change_no_decision_and_no_number() -> None:
+    _, _, _, rising_row, rising_steps = rising_run()
+    runs = [(rising_row, rising_steps), flat_run(), halted_run()]
+    digest = numbers_digest([(row, [step.report for step in steps]) for row, steps in runs])
+    assert digest == NUMBERS_BEFORE_REASONS
 
 
 class RunJobTests(mc.RunDataset):
