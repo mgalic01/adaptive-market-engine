@@ -140,13 +140,15 @@ def skipped_days_for_masks(spec: DatasetSpec, masked: frozenset[int]) -> int:
 def variant_policy(variant: str | None, *, structure: bool = False) -> SimulationPolicy | None:
     """The policy of spec v1 variant ``variant`` (a name in ``VARIANTS``, such as "A" or
     "C+G"; None is V0), with the V2 structure features when ``structure``; the full
-    stack, "C+F+G+H", is declared only with them. None when nothing differs from V0, so
-    a V0 run takes exactly the path it always has."""
+    stack, "C+F+G+H", is declared only with them. "MS" is spec v2's mode switcher, which
+    runs with F's block and nothing else. None when nothing differs from V0, so a V0 run
+    takes exactly the path it always has."""
     if variant is not None and variant not in VARIANTS[1:]:
         raise ValueError(f"unknown variant {variant!r}")
     if variant == MODE_SWITCH:
-        # Registered, but not yet a job: refused, never run as V0 under its name.
-        raise ValueError("variant MS (spec v2's mode switcher) has no backtest job yet")
+        # SimulationPolicy refuses the mode switcher with anything more, so V2's structure
+        # features are refused here too.
+        return SimulationPolicy(mode_switch=True, flow_block_entry=True, structure=structure)
     if variant is None and not structure:
         return None
     parts = set((variant or "").split("+"))
@@ -286,8 +288,10 @@ def run_job(
 
     ``policy`` controls simulation variants; None gives V0 behaviour. Variants A and H
     require the pair's daily bars, and variant G BTCUSDT's funding archives in the
-    manifest for every evaluation month from 2020-01, where they begin. A variant's rows
-    name it, and rows with the V2 structure features carry their feature version.
+    manifest for every evaluation month from 2020-01, where they begin. Spec v2's mode
+    switcher requires the pair's daily and hourly bars, and measures its time in each mode
+    over the evaluation window passed to the replay. A variant's rows name it, and rows
+    with the V2 structure features carry their feature version.
     ``fill_trigger`` is the missed-fill sweep's resting-fill trigger (D9, see
     ``prepare_run``); the rows' ``rules`` then record it. ``masks`` is every symbol's
     mask (see ``prepare_run``); the pair's also drops the minutes of its masked hours and

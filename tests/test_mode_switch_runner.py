@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-from crypto_grid_bot.backtest.jobs import variant_policy
+from crypto_grid_bot.backtest.jobs import variant_name, variant_policy
 from crypto_grid_bot.backtest.replay import (
     Metrics,
     RequestCountingOrders,
@@ -1089,11 +1089,13 @@ def invalid(item: Frame) -> Frame:
     return replace(item, candidate=replace(CANDIDATE, symbol="ETHUSDT"))
 
 
-def test_variant_policy_refuses_ms_until_it_is_wired():
-    # "MS" is a registered variant name, but the backtest jobs do not build its policy yet,
-    # so asking for it fails loudly instead of running V0 under its name.
-    with pytest.raises(ValueError, match="mode switcher"):
-        variant_policy("MS")
+def test_variant_policy_builds_the_one_mode_switch_policy():
+    # "MS" is a backtest job (Task 6): its policy is F's block and nothing else, and its rows
+    # name it. With V2's structure features it is no declared policy, so it is refused.
+    assert variant_policy("MS") == MS
+    assert variant_name(MS) == "MS"
+    with pytest.raises(ValueError, match="F's block and nothing else"):
+        variant_policy("MS", structure=True)
 
 
 def test_resume_refuses_mode_switch(tmp_path):
