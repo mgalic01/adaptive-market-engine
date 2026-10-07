@@ -4,6 +4,7 @@
         [--jobs N]
     python scripts/fetch_full_range.py start <data-dir> [the same options]
     python scripts/fetch_full_range.py wait <data-dir>
+    python scripts/fetch_full_range.py <report tool> ...   (see "The report tools")
 
 Task: docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md (long-window data plan, Task
 9). IBM Bob runs it on a GitHub Actions machine: Bob is the only actor allowed to reach
@@ -24,6 +25,17 @@ log from an earlier attempt is kept as ``run-<n>.log``. ``wait`` returns within
 ``WAIT_SECONDS`` and prints ``DONE exit=<status>`` with the log's last lines, ``RUNNING``
 with its latest line, or ``GONE`` when the process has vanished without an exit file.
 Without a subcommand, the run happens in the foreground, as the tests run it.
+
+**The report tools.** For the same reason, every step of the task that a shell utility
+would do is a subcommand: ``now`` (the UTC clock), ``tail``, ``exists``, ``measure``
+(file sizes and the reserved-window file check), ``size``, ``set-aside`` (a move),
+``append`` (a hand-written passage, or a file in a ``text`` fence), ``append-results``
+and ``check-log``. ``append-results`` appends every run log (earlier, lost attempts first)
+and the digest, within ``REPORT_LIMIT`` bytes: as text when they fit, else the digest,
+then the logs too, compressed (zlib, then base64), each with the raw file's SHA-256 and
+the exact ``python -c`` command that decodes it (``DECODE``). It then reads each block
+back from the report and checks that it gives the file's bytes. So the digest reaches the
+report whatever its size.
 
 What it does, in order (spec v1 sections 4 and 5; P8 for the funding archives):
 
@@ -74,10 +86,11 @@ month) and ``<data-dir>/requests.txt`` are written even then.
 The log ends with one ``PROBLEM`` line per problem and ``RESULT <n> problem(s)``; the exit
 status is 0 only with none. The problems: a stop (``STOP`` line), a check that raised,
 verify not valid, a scored window left with fewer than 2 included pairs, a symbol-month
-that mask-report excludes under the 17% rule, a digest that does not rebuild both
-manifests, and a run log and digest over ``REPORT_LIMIT`` bytes together. The reported
-window's included pairs are logged, but too few of them is no problem: that window
-decides nothing (spec v1 section 5 rule 6).
+that mask-report excludes under the 17% rule, and a digest that does not rebuild both
+manifests. The reported window's included pairs are logged, but too few of them is no
+problem: that window decides nothing (spec v1 section 5 rule 6). The ``REPORT`` line gives
+the run log's and digest's bytes; above ``REPORT_LIMIT`` the report takes the digest
+compressed, which is no problem either.
 
 **The digest, format v1:** one line each, its fields separated by single spaces.
 
@@ -102,7 +115,9 @@ the committed filters.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -112,6 +127,7 @@ import subprocess  # nosec B404
 import sys
 import time
 import traceback
+import zlib
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -151,9 +167,11 @@ FILTERS = DATASETS / "long-bull-bear-2022.manifest.json"
 CONFIG = ROOT / "config" / "default.toml"
 FUNDING_SYMBOL = "BTCUSDT"  # variant G reads it for every pair (spec v1 section 3 G)
 ATTEMPTS = 4
-# Bob stops above this many bytes of run log and digest: validate_bob_artifact.py rejects
-# a report over 200,000 bytes, and the hand-written passages need the rest.
+# The bytes of run logs and digest the report takes as text; above it, append-results
+# compresses them. validate_bob_artifact.py rejects a report over REPORT_MAX_BYTES, and the
+# hand-written passages need the rest.
 REPORT_LIMIT = 190_000
+REPORT_MAX_BYTES = 200_000  # validate_bob_artifact.py's REPORT_MAX_BYTES
 MINIMUM_PAIRS = 2  # spec v1 section 5, "Minimum evidence"
 # start and wait (the module docstring): one wait returns within about 9 minutes, under the
 # 10 the task allows a command, and looks for the exit file every 10 seconds.
@@ -165,6 +183,20 @@ RECORD = "_run"  # the hidden subcommand of the child that start launches
 # runs: Popen would then warn that it is still running (ResourceWarning).
 _LAUNCHED: list[subprocess.Popen[bytes]] = []
 STILL_ACTIVE = 259  # GetExitCodeProcess of a Windows process that has not ended
+FENCE = chr(96) * 3  # a Markdown code fence
+WRAP = 76  # the width of a compressed block's lines
+# An archive or checksum file of the reserved window, as bob-task.yml looks for one.
+RESERVED_NAME = re.compile(r"-20(2[5-9]|[3-9][0-9])-[0-9]{2}\.(zip|csv|zip\.CHECKSUM)$")
+# The command that decodes a compressed block of a report, given the report, the block's
+# heading and an output file: standalone, so a reader needs neither this script nor its
+# version. It splits the section as _block does.
+DECODE = (
+    r"""python -c "import base64, sys, zlib; from pathlib import Path; """
+    r"""t = Path(sys.argv[1]).read_text(encoding='utf-8'); """
+    r"""t = t.split('\n## ' + sys.argv[2] + '\n', 1)[1]; """
+    r"""b = t.split('\x60\x60\x60text\n')[2].split('\x60\x60\x60')[0]; """
+    r'''Path(sys.argv[3]).write_bytes(zlib.decompress(base64.b64decode(''.join(b.split()))))"'''
+)
 # The statistics a digest row gives where they differ from a complete month's.
 STATS = ("rows", "gaps", "first_open_ms", "last_open_ms", "timestamp_units")
 _KLINE_NAME = re.compile(r"([A-Z0-9]{2,24})-(1m|1h|1d)-(\d{4}-\d{2})\.zip")
@@ -768,6 +800,17 @@ def _lines(path: Path) -> list[str]:
     return [line for line in path.read_text("utf-8", "replace").splitlines() if line.strip()]
 
 
+def _pid(path: Path) -> int | None:
+    """The pid in a run's pid file; None while there is none yet (no file, or an empty one,
+    as between start's launch and its write). ValueError for anything but a number."""
+    text = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+    if not text:
+        return None
+    if not text.isdigit():
+        raise ValueError(f"{path.as_posix()} holds {text[:40]!r}, not a process id")
+    return int(text)
+
+
 def _detached() -> dict[str, Any]:
     """Popen's arguments that let the child outlive the command that started it."""
     if sys.platform == "win32":
@@ -783,7 +826,12 @@ def start(arguments: list[str]) -> int:
     if files.exit.exists():
         print(f"NOT STARTED: the run in {data_dir.as_posix()} has ended ({files.exit.as_posix()})")
         return 1
-    if files.pid.exists() and _alive(int(files.pid.read_text(encoding="utf-8"))):
+    try:
+        pid = _pid(files.pid)
+    except ValueError as exc:
+        print(f"NOT STARTED: {exc}; report it, and start nothing")
+        return 1
+    if pid is not None and _alive(pid):
         print(f"NOT STARTED: the run in {data_dir.as_posix()} is still running")
         return 1
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -828,8 +876,18 @@ def wait(arguments: list[str]) -> int:
             for line in _lines(files.log)[-TAIL_LINES:]:
                 print(line)
             return 0
-        pid = int(files.pid.read_text(encoding="utf-8"))
+        try:
+            pid = _pid(files.pid)
+        except ValueError as exc:
+            print(f"UNREADABLE: {exc}")
+            return 1
         latest = (_lines(files.log) or ["no output yet"])[-1]
+        if pid is None:  # start has launched the child and not yet written its pid
+            if time.monotonic() >= deadline:
+                print(f"NOT STARTED: {files.pid.as_posix()} is still empty; latest: {latest}")
+                return 1
+            time.sleep(POLL_SECONDS)
+            continue
         if not _alive(pid):
             if files.exit.exists():  # it ended between the two looks
                 continue
@@ -861,19 +919,251 @@ def record(arguments: list[str], *, fetcher: Fetcher, sleep: Callable[[float], N
     return code
 
 
+# --- The report tools (the module docstring): what Bob runs instead of shell utilities ----
+
+
+def _utc() -> str:
+    """The time as the shell's UTC clock prints it."""
+    return time.strftime("%a %b %d %H:%M:%S UTC %Y", time.gmtime())
+
+
+def now(arguments: list[str]) -> int:
+    argparse.ArgumentParser(prog="fetch_full_range.py now").parse_args(arguments)
+    print(_utc())
+    return 0
+
+
+def tail(arguments: list[str]) -> int:
+    """A file's last lines."""
+    parser = argparse.ArgumentParser(prog="fetch_full_range.py tail")
+    parser.add_argument("file", type=Path)
+    parser.add_argument("--lines", type=int, default=3)
+    args = parser.parse_args(arguments)
+    for line in args.file.read_text("utf-8", "replace").splitlines()[-args.lines :]:
+        print(line)
+    return 0
+
+
+def exists(arguments: list[str]) -> int:
+    """Whether each path exists (BOB_PRACTICE self-check 2); exit 1 if any does not."""
+    parser = argparse.ArgumentParser(prog="fetch_full_range.py exists")
+    parser.add_argument("paths", type=Path, nargs="+")
+    paths = parser.parse_args(arguments).paths
+    for path in paths:
+        print(f"{'EXISTS' if path.exists() else 'MISSING'} {path.as_posix()}")
+    return 0 if all(path.exists() for path in paths) else 1
+
+
+def measure(arguments: list[str]) -> int:
+    """The bytes of each run log and digest in a run's data dir, and every file under a tree
+    named as an archive of the reserved window (2025-01 or later); exit 1 if there is one."""
+    parser = argparse.ArgumentParser(prog="fetch_full_range.py measure")
+    parser.add_argument("run_dir", type=Path)
+    parser.add_argument("tree", type=Path)
+    args = parser.parse_args(arguments)
+    for path in [
+        *sorted(args.run_dir.glob("run*.log")),
+        *sorted(args.run_dir.glob("*.digest.txt")),
+    ]:
+        print(f"SIZE {path.stat().st_size} {path.as_posix()}")
+    reserved = sorted(
+        path for path in args.tree.rglob("*") if path.is_file() and RESERVED_NAME.search(path.name)
+    )
+    for path in reserved:
+        print(f"RESERVED {path.as_posix()}")
+    print(f"RESERVED-WINDOW FILES {len(reserved)}")
+    return 1 if reserved else 0
+
+
+def size(arguments: list[str]) -> int:
+    """A report's bytes against validate_bob_artifact.py's limit; exit 1 at or over it."""
+    parser = argparse.ArgumentParser(prog="fetch_full_range.py size")
+    parser.add_argument("report", type=Path)
+    report: Path = parser.parse_args(arguments).report
+    count = report.stat().st_size
+    verdict = "under" if count < REPORT_MAX_BYTES else "AT OR OVER"
+    print(f"SIZE {count} {report.as_posix()}: {verdict} the {REPORT_MAX_BYTES}-byte limit")
+    return 0 if count < REPORT_MAX_BYTES else 1
+
+
+def set_aside(arguments: list[str]) -> int:
+    """Move a file (a report too large to publish) to a new path that does not exist yet."""
+    parser = argparse.ArgumentParser(prog="fetch_full_range.py set-aside")
+    parser.add_argument("source", type=Path)
+    parser.add_argument("target", type=Path)
+    args = parser.parse_args(arguments)
+    if args.target.exists():
+        print(f"NOT MOVED: {args.target.as_posix()} exists")
+        return 1
+    count = args.source.stat().st_size
+    args.source.replace(args.target)
+    print(f"SET ASIDE {args.source.as_posix()} -> {args.target.as_posix()}, {count} bytes")
+    return 0
+
+
+def _text_section(title: str, data: bytes) -> str:
+    text = data.decode("utf-8")
+    return (
+        f"\n## {title}\n\n{FENCE}text\n{text}{'' if text.endswith(chr(10)) else chr(10)}{FENCE}\n"
+    )
+
+
+def packed(data: bytes) -> str:
+    """``data`` compressed (zlib, level 9) and base64-encoded, in lines of ``WRAP``."""
+    text = base64.b64encode(zlib.compress(data, 9)).decode("ascii")
+    return "".join(text[at : at + WRAP] + "\n" for at in range(0, len(text), WRAP))
+
+
+def unpacked(block: str) -> bytes:
+    return zlib.decompress(base64.b64decode("".join(block.split())))
+
+
+def _packed_section(title: str, data: bytes, source: Path) -> str:
+    digest = hashlib.sha256(data).hexdigest()
+    return (
+        f"\n## {title}\n\n"
+        f"{source.name}, {len(data)} bytes, SHA-256 {digest}, is too large for this report as "
+        "text, so it is compressed (zlib, then base64) below. To get its bytes back, give the "
+        "report, this heading and an output file to:\n\n"
+        f'{FENCE}text\n{DECODE} REPORT "{title}" OUTPUT\n{FENCE}\n\n'
+        f"{FENCE}text\n{packed(data)}{FENCE}\n"
+    )
+
+
+def _block(report: str, title: str, packed_form: bool) -> str:
+    """The fenced block of a section appended by append-results, as ``DECODE`` finds it."""
+    section = report.split(f"\n## {title}\n", 1)[1]
+    return section.split(f"{FENCE}text\n")[2 if packed_form else 1].split(FENCE)[0]
+
+
+def _results(run_dir: Path) -> list[tuple[str, Path]]:
+    """(heading, file) for every run log, earlier attempts first, then the digest."""
+    earlier = sorted(
+        (int(path.stem.removeprefix("run-")), path)
+        for path in run_dir.glob("run-*.log")
+        if path.stem.removeprefix("run-").isdigit()
+    )
+    found = [(f"Run log, attempt {n} (lost)", path) for n, path in earlier]
+    if run_files(run_dir).log.exists():
+        found.append(("Run log", run_files(run_dir).log))
+    found += [("Digest", path) for path in sorted(run_dir.glob("*.digest.txt"))]
+    return found
+
+
+def append_results(arguments: list[str]) -> int:
+    """Append every run log and the digest to the report, within ``--limit`` bytes: as text
+    when they fit, else the digest compressed, else everything compressed. Each block is
+    then read back from the report and checked against its file."""
+    parser = argparse.ArgumentParser(prog="fetch_full_range.py append-results")
+    parser.add_argument("report", type=Path)
+    parser.add_argument("run_dir", type=Path)
+    parser.add_argument("--limit", type=int, default=REPORT_LIMIT)
+    parser.add_argument("--compressed", action="store_true", help="compress everything")
+    args = parser.parse_args(arguments)
+    found = [(title, path, path.read_bytes()) for title, path in _results(args.run_dir)]
+    if not found:
+        print(f"NOT APPENDED: no run log or digest in {args.run_dir.as_posix()}")
+        return 1
+    choices = [(True, True)] if args.compressed else [(False, False), (False, True), (True, True)]
+    for logs_packed, digest_packed in choices:
+        sections = []
+        for title, path, data in found:
+            pack = digest_packed if title == "Digest" else logs_packed
+            heading = f"{title} (zlib, base64)" if pack else title
+            built = _packed_section(heading, data, path) if pack else _text_section(heading, data)
+            sections.append((heading, path, data, pack, built))
+        total = sum(len(section[4].encode("utf-8")) for section in sections)
+        if total <= args.limit:
+            break
+    else:
+        print(f"NOT APPENDED: even compressed, they take {total} bytes, over {args.limit}")
+        return 1
+    with args.report.open("a", encoding="utf-8", newline="\n") as report:
+        report.write("".join(section[4] for section in sections))
+    written = args.report.read_bytes().decode("utf-8")  # exact bytes: no newline translation
+    good = True
+    for heading, path, data, pack, built in sections:
+        block = _block(written, heading, pack)
+        expected = data if data.endswith(b"\n") or pack else data + b"\n"
+        back = unpacked(block) if pack else block.encode("utf-8")
+        same = back == expected
+        good = good and same
+        form = "compressed" if pack else "text"
+        print(
+            f"APPENDED {heading}: {form}, {len(built.encode('utf-8'))} bytes; "
+            f"{path.as_posix()} sha256 {hashlib.sha256(data).hexdigest()}; reads back: {same}"
+        )
+    print(f"APPENDED {total} bytes in all (limit {args.limit})")
+    return 0 if good else 1
+
+
+def append(arguments: list[str]) -> int:
+    """Append a hand-written passage to the report, or with ``--heading`` a file in a text
+    fence under that heading."""
+    parser = argparse.ArgumentParser(prog="fetch_full_range.py append")
+    parser.add_argument("report", type=Path)
+    parser.add_argument("file", type=Path)
+    parser.add_argument("--heading")
+    args = parser.parse_args(arguments)
+    data = args.file.read_bytes()
+    if args.heading:
+        added = _text_section(args.heading, data)
+    else:
+        text = data.decode("utf-8")
+        added = "\n" + text + ("" if text.endswith("\n") else "\n")
+    with args.report.open("a", encoding="utf-8", newline="\n") as report:
+        report.write(added)
+    print(f"APPENDED {args.file.as_posix()}: {len(added.encode('utf-8'))} bytes")
+    return 0
+
+
+def check_log(arguments: list[str]) -> int:
+    """The checks file of the report: git status's lines, then check_reports.py's without
+    its UNVERIFIABLE lines (about other reports, and naming scripts next to hashes, which
+    would read as pins here), then the time."""
+    parser = argparse.ArgumentParser(prog="fetch_full_range.py check-log")
+    parser.add_argument("status", type=Path)
+    parser.add_argument("check_reports_log", type=Path)
+    parser.add_argument("out", type=Path)
+    args = parser.parse_args(arguments)
+    lines = args.status.read_text(encoding="utf-8").splitlines()
+    lines += [
+        line
+        for line in args.check_reports_log.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("check_reports: UNVERIFIABLE ")
+    ]
+    lines.append(_utc())
+    args.out.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    print(f"WROTE {args.out.as_posix()}: {len(lines)} lines")
+    return 0
+
+
+TOOLS: dict[str, Callable[[list[str]], int]] = {
+    "start": start,
+    "wait": wait,
+    "now": now,
+    "tail": tail,
+    "exists": exists,
+    "measure": measure,
+    "size": size,
+    "set-aside": set_aside,
+    "append": append,
+    "append-results": append_results,
+    "check-log": check_log,
+}
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     fetcher: Fetcher = archive_get,
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
-    """``start`` or ``wait`` (the background run), or the run itself in the foreground."""
+    """A subcommand (the background run's, or a report tool), or the run in the foreground."""
     arguments = list(sys.argv[1:] if argv is None else argv)
     command = arguments[0] if arguments else ""
-    if command == "start":
-        return start(arguments[1:])
-    if command == "wait":
-        return wait(arguments[1:])
+    if command in TOOLS:
+        return TOOLS[command](arguments[1:])
     if command == RECORD:
         return record(arguments[1:], fetcher=fetcher, sleep=sleep)
     return run(arguments, fetcher=fetcher, sleep=sleep)
@@ -913,14 +1203,13 @@ def run(
         if requests is not None:
             log_requests(requests, args.data_dir, log)
     if digest is not None:
-        size = digest.stat().st_size
-        total = log.bytes + size
+        digest_bytes = digest.stat().st_size
+        total = log.bytes + digest_bytes
+        form = "as text" if total <= REPORT_LIMIT else "compressed (append-results)"
         log(
-            f"REPORT run log {log.bytes} bytes before this line and digest {size} bytes: "
-            f"{total} bytes (the task stops above {REPORT_LIMIT})"
+            f"REPORT run log {log.bytes} bytes before this line and digest {digest_bytes} "
+            f"bytes: {total} bytes; the report takes them {form} (limit {REPORT_LIMIT})"
         )
-        if total > REPORT_LIMIT:
-            problems.append(f"the run log and digest hold {total} bytes, over {REPORT_LIMIT}")
     for problem in problems:
         log(f"PROBLEM {problem}")
     log(f"RESULT {len(problems)} problem(s)")

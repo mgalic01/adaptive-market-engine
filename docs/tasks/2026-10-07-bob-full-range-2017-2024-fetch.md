@@ -4,7 +4,9 @@
   bob-task.yml runs a task file as soon as a merge adds it. So it merges only on the
   owner's go, after review, and after Tasks 1 to 7 of the long-window data plan are on
   `main` (they are, at `370229d`: the repairing reader, hour masks, the damaged-archive
-  fetch, `mask-report` and XRP's quote test).
+  fetch, `mask-report` and XRP's quote test). Before that go, the pins must still hold:
+  any change under `src` on `main` since `370229d` means updating them first (see
+  "Pinned inputs").
 - **Written by:** Claude, 2026-10-07, as Task 9 of the long-window data plan. Spec v1 §4
   says the two stage-2 windows are not yet runnable until "Bob's re-fetch with daily and
   funding archives" and their manifests exist.
@@ -78,7 +80,10 @@ defines the digest's format. In short:
 
 Step 4 runs all of this in the background through the script itself: `start` launches
 it as a detached child process, and `wait` reports on it, so that no single command
-lasts more than about 9 minutes and none needs more than `python`.
+lasts more than about 9 minutes and none needs more than `python`. From Step 3 on, the
+script also does for the report what shell utilities would: the clock, a file's last
+lines, sizes, the reserved-window check, appending to the report and moving it. Its
+docstring lists these report tools.
 
 How the limits hold in code:
 - Every request goes through the script's `Requests`. It passes only the planned archive
@@ -100,60 +105,79 @@ How the limits hold in code:
 
 ## Pinned inputs
 
-The runner checks out whatever `main` is when the job starts. So Step 2 compares the
-SHA-256 of 16 files with the values reviewed here: the script and its test as this task's
-PR adds them, and the specs, filters, config and data code as they are at `370229d`. If
-any line says `FAILED`, stop before Step 3 and report. Step 2 copies the 16 lines of this
-block out of this file, byte for byte:
+The runner checks out whatever `main` is when the job starts. So Step 2 checks, before any
+request, that the code and inputs are the ones reviewed here:
+- **The whole package, by its git tree.** `git rev-parse HEAD:src` must print exactly
+  `96de9766551d478883f3451bcaae261f165fd3d4`, the tree of `src` at `370229d`. That covers
+  every module the run can import, not only the data path: `dataset`, `jobs`, `replay`,
+  `masking`, `klines`, `funding`, `config`, `features`, `simulation/runner` and the rest.
+  `git status` must also show no local change under `src`.
+- **Six files by SHA-256:** the script and its test as this task's PR adds them, the two
+  dataset specs, the committed filters, and `config/default.toml`, whose spread limit
+  verify and mask-report read. Step 2 copies the block below out of this file:
 
 ```text
-667410f175ad2b4b1d9c132543a23d06f27244296f4a1caf0747ba711637a5cf  scripts/fetch_full_range.py
-643f05ba508eddd0a7aeb5f44faea1ef0f5e83c1a0ae49ce22e55a9175422a14  tests/test_fetch_full_range.py
+452d7214119fa0ac883c960922e53d63439e26839a560202f0144863c241b022  scripts/fetch_full_range.py
+11b11b234c42bbca1b6458c29d8d434a88a6cd3714d4826a5218c9d40d226fb1  tests/test_fetch_full_range.py
 f4216524de089988a15fbddd72a9625a737f41be5a8dcb4bed6a36ccf8e0addb  config/datasets/full-range-2017-2024.toml
 8dad70041f4423706b0eeba272595fb24af74cb83713b6316abb68e5a40dafcb  config/datasets/full-range-2019-2024.toml
 349ce104be44d28d918b22dc99dd611f56d174011b50cb144393a97940c72374  config/datasets/long-bull-bear-2022.manifest.json
 17e7cfc750a31c0f53b0c4be5b8aae8dc99c355bbf49de27c9c6fed53003344f  config/default.toml
-4e6396273a22f3877a2ced8d571a2cab9cbb258eb569abebbf5e0785e1e0ab72  src/crypto_grid_bot/backtest/__main__.py
-1f392f769210b589c579b3c53b1f775e392ab78928d64a70cf37e39cd78a2716  src/crypto_grid_bot/backtest/dataset.py
-9c7ad730491111889bc465487ef700ffd972d0d0706f6ed98c86129bcf0caa04  src/crypto_grid_bot/backtest/funding.py
-757dd3f7bd4f93b0f316c69e1e22577b8fa8744f40e41d703974e7fb2af4f30e  src/crypto_grid_bot/backtest/jobs.py
-901607255a5b064f107addaa74189bc149e08e6b3b7fd52884fe59ccaf768b10  src/crypto_grid_bot/backtest/klines.py
-9e2395fb606f04b34d16ae4c0f6e8a280ded31abf9d9dbd59d9dd11a95a2d96f  src/crypto_grid_bot/backtest/masking.py
-fd6527ce5f3d16c43bfd2e7634ea1425ec0fca9b071f5b264c07d01baeaaaefd  src/crypto_grid_bot/backtest/replay.py
-9843a785195095233a375563a18628721dca8f05f1a28e7ba4e76ec5124ca533  src/crypto_grid_bot/backtest/window.py
-c6ee5a25a1572957c1115bb56cdab2c5ba714d56d26036b59b6246e1dd8c97a7  src/crypto_grid_bot/market_data/client.py
-5dfb8e837b24e38a95beefccc4efddcc10571f786ee5b563e8f3a60e0bd587c9  src/crypto_grid_bot/market_data/parsing.py
 ```
+
+If the tree hash differs, `git status` lists a change under `src`, or any `sha256sum` line
+says `FAILED`, stop before Step 3 and report. **Any change under `src` on `main` before
+this file merges changes the tree hash, so the pins must be updated in its PR before the
+owner's go.**
 
 ## Steps
 
-Run every command from the repository root, in this order. Step 6 says how each command
-and its output go into the report.
+Run every command from the repository root, in this order, and no other command.
+bob-task.yml allows `python`, the project's CLIs, `pytest`, `sha256sum` and read-only
+`git`, so every command below is one of those:
+- Steps 1 and 2 run before the script is checked, so they use only `python -c`, `git`
+  and `sha256sum`.
+- From Step 3 on, the script's own subcommands do what shell utilities would.
 
-1. `date -u`, `git rev-parse HEAD`, `python --version`, and then `mkdir -p data`.
-2. The pins, from the block in "Pinned inputs" above. `wc -l` must print 16, every
-   `sha256sum` line must end in `OK`, and the last line must be `exit 0`:
+Your tool shows each command's exit status: a non-zero status where this task expects
+success is a stop (see "Stop conditions").
+
+1. The clock, the commit, the Python version, and the `data` directory:
 
    ```text
-   sed -n '110,125p' docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md > data/full-range-pins.txt
-   wc -l data/full-range-pins.txt
-   sha256sum -c data/full-range-pins.txt; echo "exit $?"
+   python -c "import time; print(time.strftime('%a %b %d %H:%M:%S UTC %Y', time.gmtime()))"
+   git rev-parse HEAD
+   python --version
+   python -c "import pathlib; pathlib.Path('data').mkdir(exist_ok=True); print('data ready')"
+   ```
+
+2. The pins (see "Pinned inputs"). These four commands must print, in order:
+   - the tree hash given there;
+   - nothing at all;
+   - `6 pins`;
+   - six lines that each end in `OK`.
+
+   ```text
+   git rev-parse HEAD:src
+   git status --porcelain --untracked-files=no -- src
+   python -c "from pathlib import Path; t = Path('docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md').read_text(encoding='utf-8'); b = t.split('## Pinned inputs', 1)[1].split('\x60\x60\x60text\n', 1)[1].split('\x60\x60\x60', 1)[0]; Path('data/full-range-pins.txt').write_text(b, encoding='utf-8', newline='\n'); print(len(b.splitlines()), 'pins')"
+   sha256sum -c data/full-range-pins.txt
    ```
 
 3. The script's tests, offline (a fake host; about a minute):
 
    ```text
-   python -m pytest -p no:cacheprovider tests/test_fetch_full_range.py > data/full-range-tests.log 2>&1; echo "exit $?"
-   tail -n 3 data/full-range-tests.log
+   python -m pytest -p no:cacheprovider tests/test_fetch_full_range.py > data/full-range-tests.log 2>&1
+   python scripts/fetch_full_range.py tail data/full-range-tests.log
    ```
 
-   It must print `exit 0`, and the log's last line must report `18 passed`. (Add no `-q`:
-   `pyproject.toml` already passes one, and a second one hides that line.)
+   The last line must report `24 passed`. Add no `-q`: `pyproject.toml` already passes
+   one, and a second one hides that line.
 4. The run: about 3,600 requests to data.binance.vision, `verify` on both windows and
    `mask-report` on the scored one. Expect about an hour; the job allows 240 minutes.
    That is longer than any single command on record here (about 19 minutes), so the
    script runs itself in the background, and you wait for it in steps of under 10
-   minutes, with `python` only. Start it once:
+   minutes. Start it once:
 
    ```text
    python scripts/fetch_full_range.py start data/full-range
@@ -171,7 +195,7 @@ and its output go into the report.
      stays quiet for long stretches: after `FUNDING`, nothing comes until the whole scored
      fetch is done.
    - `DONE exit=<status>`, then the log's last lines: the run has ended. Read
-     `data/full-range/run.log` in full, then go to Step 5.
+     `data/full-range/run.log` in full with your file-reading tool, then go to Step 5.
    - `GONE pid <n>: no process and no exit file; ...`: the run was lost without ending
      (the script writes the exit file even after a traceback). Run the same `start` once
      more, unchanged: stored archives are reused while their checksum matches, so only
@@ -182,50 +206,46 @@ and its output go into the report.
    `start` refuses while a run is alive, and after one has ended, so it cannot start a
    second run by mistake. Say in 6b how many waits it took, and whether `start` ran twice.
 
-5. The hashes of what the run wrote, the sizes, and the reserved-window file check:
+5. The hashes of everything the run wrote, every log included, then the sizes and the
+   reserved-window file check:
 
    ```text
-   sha256sum data/full-range-tests.log data/full-range/run.* data/full-range/*.toml data/full-range/*.json data/full-range/*.txt
-   wc -c data/full-range/run.log data/full-range/full-range-2017-2024.digest.txt
-   find data -type f | grep -cE -- '-20(2[5-9]|[3-9][0-9])-[0-9]{2}\.(zip|csv|zip\.CHECKSUM)$'
+   sha256sum data/full-range-tests.log data/full-range/run*.log data/full-range/run.exit data/full-range/*.toml data/full-range/*.json data/full-range/*.txt
+   python scripts/fetch_full_range.py measure data/full-range data
    ```
 
-   The `grep -c` must print `0` (its exit status is then 1, which is expected).
-6. Write the report `docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md` in **six
-   steps, 6a to 6f, in this order**. Complete each step before starting the next.
+   The second command prints the bytes of every run log and of the digest. The run logs
+   are `run.log`, and one `run-<n>.log` for each lost attempt. Then it prints
+   `RESERVED-WINDOW FILES 0`; any other count is a stop.
+6. Write the report `docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md` in **five
+   steps, 6a to 6e, in this order**. Complete each step before starting the next.
 
-   **What you write by hand.** Only three short passages (6a, 6b and 6e, each under about
-   50 lines) and the two-line digest check in 6d.
+   **What you write by hand.** Only three short passages: 6a, 6b and 6d.
    - Create the report in 6a with your file-writing tool: the file is new and short.
-   - For 6b, 6d and 6e, write the passage to its own new file (`data/fr-6b.md`,
-     `data/fr-6d.md`, `data/fr-6e.md`), then append it with this command, giving the
-     file name as the argument:
+   - For 6b and 6d, write the passage to its own new file (`data/fr-6b.md`,
+     `data/fr-6d.md`), then append it with this command, giving the passage's file:
 
      ```text
-     python -c "import sys; from pathlib import Path; t = Path(sys.argv[1]).read_text(encoding='utf-8'); f = Path('docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md').open('a', encoding='utf-8', newline='\n'); f.write('\n' + t + ('' if t.endswith('\n') else '\n')); f.close()" data/fr-6b.md
+     python scripts/fetch_full_range.py append docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md data/fr-6b.md
      ```
 
    - **After 6a, never write or edit the report with a file tool.** It holds the
-     verbatim run log and digest, and rewriting them by hand would change them.
+     verbatim run logs and digest, and rewriting them by hand would change them.
 
    **Keep the report under 200,000 bytes.** `validate_bob_artifact.py` refuses a larger
-   report, and then nothing is published. The run log and the digest can take up to
-   190,000 of them, so the hand-written passages get about 8,000 bytes in all: about
-   3,000 for 6a (its 16 `OK` lines included), 2,000 for 6b and 3,000 for 6e. Keep them
-   short this way:
+   report, and then nothing is published.
+   - **The run logs and the digest** take at most 190,000 bytes: 6c compresses them when
+     they would take more.
+   - **The hand-written passages** get about 8,000 bytes in all: about 3,000 for 6a (its
+     six `OK` lines included), 2,000 for 6b and 3,000 for 6d.
+
+   Keep the passages short this way:
    - quote only the part of a log line that shows the result (self-check 1 in
      `docs/BOB_PRACTICE.md`), for example `exit 0 status valid; failures 0`, never a
-     whole long line: every line is already in the run log above;
+     whole long line: every line is already in the run log;
    - copy no table, list or log line a second time;
-   - run `wc -c` on each passage file before you append it.
-
-   **What is appended by command.** The run log and the digest go in byte for byte, each
-   under its own heading in a `text` fence, with this command, giving the heading and the
-   file as the arguments:
-
-   ```text
-   python -c "import sys; from pathlib import Path; h, t = sys.argv[1], Path(sys.argv[2]).read_text(encoding='utf-8'); f = Path('docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md').open('a', encoding='utf-8', newline='\n'); f.write('\n## ' + h + '\n\n\x60\x60\x60text\n' + t + ('' if t.endswith('\n') else '\n') + '\x60\x60\x60\n'); f.close()" "Run log" data/full-range/run.log
-   ```
+   - check each passage file's bytes before you append it, for example with
+     `python scripts/fetch_full_range.py size data/fr-6b.md`.
 
    **Rules for everything you write by hand:**
    - **Only append.** Nothing is ever inserted above text that is already in the report.
@@ -239,46 +259,40 @@ and its output go into the report.
    **6a. Header and Steps 1 to 3, by hand** (about 40 lines). Create the report with:
    - the `# ` title as the first line;
    - one `Index: ` line within the first 20 lines, giving the outcome in one line;
-   - the commit, the Python version and `date -u` at the start;
-   - a `## Steps 1 to 3` section with each command and its output: Step 1's, Step 2's 16
-     `OK` lines and its `exit` line, and Step 3's `exit` line and the tests log's last
-     line.
+   - the commit, the Python version and the clock at the start;
+   - a `## Steps 1 to 3` section with each command and its output: Step 1's, Step 2's
+     tree hash, empty status, `6 pins` and six `OK` lines, and the last line of Step 3.
 
    **6b. Steps 4 and 5, by hand** (about 15 lines). Write to `data/fr-6b.md`, then append
-   it with the command at the top of Step 6: a `## Steps 4 and 5` section with the Step 4
-   commands, the `STARTED` line, how many waits it took, the `DONE` line, and each Step 5
-   command with its full output.
+   it with the command above. It is a `## Steps 4 and 5` section with:
+   - the Step 4 commands, the `STARTED` line, how many waits it took, and the `DONE` line;
+   - each Step 5 command with its full output.
 
-   **6c. The run log, by command:** the command above, with the heading `Run log` and
-   `data/full-range/run.log`. The run log holds every summary this task asks for: the
-   `PLAN`, `FILTERS`, `FUNDING`, `RETRY`, `KLINES`, `MANIFEST`, `VERIFY`, `MASK`,
-   `COMPARE`, `DIGEST`, `REQUESTS`, `REPORT`, `STOP`, `PROBLEM` and `RESULT` lines, the
-   traceback of any check that raised, and a traceback if the run ended in one. Do not
-   copy any of them again.
+   **6c. The run logs and the digest, by command:**
 
-   **6d. The digest, by command, then its check.** Whenever the run log has a `DIGEST`
-   line and a `REPORT` line whose total is at most 190,000 bytes, whatever `PROBLEM`
-   lines the run printed: the digest is what rebuilds the manifests. Without a `DIGEST`
-   line (a `STOP` before it, or a traceback), skip 6d. With a `REPORT` total over
-   190,000, skip 6d too: 6e gives the count, and the run counts as stopped.
-   1. Append it: the command above, with the heading `Digest` and
-      `data/full-range/full-range-2017-2024.digest.txt`.
-   2. Print the check command for it, with its line numbers filled in:
+   ```text
+   python scripts/fetch_full_range.py append-results docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md data/full-range
+   ```
 
-      ```text
-      python -c "from pathlib import Path; L = Path('docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md').read_text(encoding='utf-8').split('\n'); F = [i for i, l in enumerate(L, 1) if l.startswith('\x60\x60\x60')]; print(f\"sed -n '{F[-2] + 1},{F[-1] - 1}p' docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md | sha256sum\")"
-      ```
+   It appends every run log, then the digest, each under its own heading in a `text`
+   fence: a lost attempt's log first (`Run log, attempt 1 (lost)`), then `Run log`, then
+   `Digest`.
+   - **Compression.** If together they would pass 190,000 bytes, it compresses the digest
+     (zlib, then base64), and the logs too if that is still not enough. Each compressed
+     block comes with its file's SHA-256 and the exact command that decodes it.
+   - **Checks.** It then reads every block back from the report. It prints one `APPENDED
+     ...; reads back: True` line for each block, then the total. Any `False`, or a
+     `NOT APPENDED` line, is a stop.
+   - **The digest always goes in,** whatever the `PROBLEM` lines say (see "Stop
+     conditions"). Only a run with no digest file has none: one that ended with a `STOP`
+     before the digest, or with a traceback.
+   - Do not copy any appended line again.
 
-   3. Run the command it prints. It must print the SHA-256 of the run log's `DIGEST`
-      line, which Step 5 printed for the digest file too.
-   4. Write two lines to `data/fr-6d.md`, that command and its output, then append the
-      file with the command at the top of Step 6.
-
-   **6e. Results and ideas, by hand** (under about 50 lines). Write to `data/fr-6e.md`,
-   then append it with the command at the top of Step 6:
+   **6d. Results and ideas, by hand** (under about 50 lines). Write to `data/fr-6d.md`,
+   then append it with the command above:
    - A `## Results` section:
-     - the `RESULT` line, and for each validity check below whether it holds, quoting
-       the log line that shows it;
+     - the `RESULT` line, and for each validity check below whether it holds, quoting the
+       part of the log line that shows it;
      - both `KLINES` lines, with each window's `missing` count against the 46 and 25
        expected above;
      - both `VERIFY` lines, and every excluded pair with its reason. An XRPUSDT exclusion
@@ -287,49 +301,60 @@ and its output go into the report.
        below two, the script logs a `VERIFY ... keeps` line and goes on (§5 rule 6);
      - the `MASK totals` line, XRPUSDT's quote-test line and the number of symbol-months
        listed;
-     - the `REQUESTS` line, the `find` count from Step 5, and the `REPORT` line;
+     - the `REQUESTS` line, Step 5's `RESERVED-WINDOW FILES` count, and the `REPORT`
+       line;
+     - for each block 6c appended, whether it went in as text or compressed, and that it
+       reads back;
      - the SHA-256 of the digest and of both manifests, from the `DIGEST` and `MANIFEST`
        lines;
      - the plain statement that this run commits no manifest: Claude rebuilds both from
        the digest in a reviewed PR.
    - A `## Ideas and proposals` section. Check each idea against the run log first.
      Questions for Claude and Codex go here, not in the results.
-   - `date -u` at the end of the run.
+   - The clock at the end of the run, from `python scripts/fetch_full_range.py now`.
 
-   **6f. The checks, by command.**
-   1. Run the checker, with its output in one file:
+   **6e. The checks, by command.**
+   1. Gather the checks into one file, then append it as the final section:
 
       ```text
-      ( git status --porcelain --untracked-files=all; python scripts/check_reports.py > data/fr-check-reports.log 2>&1; s=$?; grep -v '^check_reports: UNVERIFIABLE ' data/fr-check-reports.log; echo "exit $s"; date -u ) > data/fr-checks.log 2>&1
+      git status --porcelain --untracked-files=all > data/fr-git-status.txt
+      python scripts/check_reports.py > data/fr-check-reports.log 2>&1
+      python scripts/fetch_full_range.py check-log data/fr-git-status.txt data/fr-check-reports.log data/fr-checks.log
+      python scripts/fetch_full_range.py append docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md data/fr-checks.log --heading Checks
       ```
 
-      The `UNVERIFIABLE` lines are left out on purpose. They are about other reports,
-      and they name other scripts in backticks next to hashes. Copied into this report,
-      they would read as pins and fail the checker.
-   2. Append a final `## Checks` section with that file, byte for byte: the command above
-      with the heading `Checks` and `data/fr-checks.log`.
-   3. Run `python scripts/check_reports.py; echo "exit $?"` and then
-      `wc -c docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md`. The report is
-      complete when the first ends with the two lines `check_reports: 0 problem(s)` and
-      `exit 0`, and the count is below 200,000 (`validate_bob_artifact.py` rejects a
-      larger report). Quote those lines in your final message.
-   4. **If the count is 200,000 or more,** the report would be refused. Write it again
-      without the digest; do not cut or edit it by hand (self-check 10: the report is
-      final text):
-      - move it aside: `mv docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md data/fr-oversize.md`;
-      - redo 6a to 6f in order, from the same files, but skip 6d;
-      - in 6e, give the oversize count (`wc -c data/fr-oversize.md`), the SHA-256 of the
-        run log and of the digest (Step 5 and the `DIGEST` line), the counts from the
-        `KLINES` and `MANIFEST` lines, the stop reason ("the report with the digest held
-        N bytes, over 200,000"), and that a second run is needed to deliver the digest;
-      - run 3 again; the new count must be below 200,000.
+      `check-log` leaves out the checker's `UNVERIFIABLE` lines on purpose. They are about
+      other reports, and they name other scripts in backticks next to hashes. Copied into
+      this report, they would read as pins and fail the checker.
+   2. Then:
 
-   `data/fr-checks.log` must contain these lines, in any order the checker chooses, plus
-   one `date -u` line:
+      ```text
+      python scripts/check_reports.py
+      python scripts/fetch_full_range.py size docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md
+      ```
+
+      The report is complete when the first ends with `check_reports: 0 problem(s)` and
+      the second says `under the 200000-byte limit`. Quote both lines in your final
+      message.
+   3. **If the second says `AT OR OVER`,** the report would be refused. Write it again
+      with the logs and digest compressed; do not cut or edit it by hand (self-check 10:
+      the report is final text):
+
+      ```text
+      python scripts/fetch_full_range.py set-aside docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md data/fr-oversize.md
+      ```
+
+      - Redo 6a to 6e in order, from the same files, but add `--compressed` to the 6c
+        command.
+      - In 6d, give the oversize count from the `SET ASIDE` line, and say that the logs
+        and the digest are compressed in this report.
+      - Then run 2 again. The digest, in its compressed form, is still in the report.
+
+   `data/fr-checks.log` must contain these lines, in any order the checker chooses, and a
+   clock line at the end:
    - `?? docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md` (git status, nothing
      else);
-   - `check_reports: 0 problem(s)`;
-   - `exit 0`.
+   - `check_reports: 0 problem(s)`.
 
    Other `check_reports:` lines about other reports are expected: their `verified` and
    `corrected` lines, and the counts of stated hashes and script mentions. A line of this
@@ -338,8 +363,8 @@ and its output go into the report.
 
 ## Validity checks (all must hold for a valid run)
 
-1. Step 2: 16 `OK` lines and `exit 0`.
-2. Step 3: `exit 0` and `18 passed`.
+1. Step 2: the pinned tree hash, an empty `git status`, `6 pins` and six `OK` lines.
+2. Step 3: `24 passed`.
 3. Step 4: `wait` prints `DONE exit=0`, and the run log's last line is
    `RESULT 0 problem(s)`, which the script prints only when all of these hold:
    - `FUNDING 60 of 60 months ok`;
@@ -349,45 +374,45 @@ and its output go into the report.
    - `MASK symbol-months` lists no month with `excluded True`;
    - `COMPARE full-range-2019-2024: ... every entry equals full-range-2017-2024's: True`;
    - `DIGEST ... rebuilds both manifests byte for byte: True`;
-   - no check raised;
-   - `REPORT ... ` at most 190,000 bytes.
+   - no check raised.
 4. Step 4: the `REQUESTS` line says `latest month 2024-12; after 2024-12: 0`, and there
    is no `OutOfScope` and no traceback.
-5. Step 5: the `find | grep -c` count is `0`.
-6. Step 6: the digest check in 6d prints the `DIGEST` line's SHA-256, and
-   `data/fr-checks.log` holds the lines listed at the end of Step 6.
+5. Step 5: `RESERVED-WINDOW FILES 0`.
+6. Step 6: every `APPENDED` line of 6c ends `reads back: True`, and `data/fr-checks.log`
+   holds the lines listed at the end of Step 6.
 
 ## What to report
 
-`docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md`, written in steps 6a to 6f
+`docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md`, written in steps 6a to 6e
 as above:
-- the commit, the Python version, and `date -u` at the start and the end;
-- every command with its output, the long ones appended verbatim;
-- the run log (6c) and the digest (6d), verbatim, each once;
-- the results (6e): the `RESULT` line and each validity check; the `KLINES`, `VERIFY`,
-  `MASK`, `REQUESTS` and `REPORT` lines; the digest's and both manifests' SHA-256; and
-  the statement that this run commits no manifest;
-- the checks (6f);
-- **Ideas and proposals** (6e, separate from the results), each checked against the run
+- the commit, the Python version, and the clock at the start and the end;
+- every command with its output, the long ones appended by command;
+- every run log and the digest (6c), each once, as text or compressed;
+- the results (6d): the `RESULT` line and each validity check; the `KLINES`, `VERIFY`,
+  `MASK`, `REQUESTS` and `REPORT` lines; how each block went in; the digest's and both
+  manifests' SHA-256; and the statement that this run commits no manifest;
+- the checks (6e);
+- **Ideas and proposals** (6d, separate from the results), each checked against the run
   log first.
 
 ## Stop conditions
 
 There are two kinds of stop:
-- **The run ended with a `RESULT` line** (`wait` printed `DONE exit=0` or `DONE exit=1`,
-  and the log's last line is `RESULT`). Complete Steps 5 and 6 in full, the digest included (6d) whenever the log
-  has a `DIGEST` line, whatever the `PROBLEM` lines say: a 17% exclusion, a
-  scored-window pair shortfall, `verify` not valid, or a check that raised. (A `STOP`
-  comes before the digest, so there is none to append.) The script writes the digest as
-  soon as both manifests exist, before any check runs, and the digest is what rebuilds
-  the manifests, so it must reach the report. Only the size limits (6d and 6f.4) keep it
-  out. "Stop" then means: no rerun, no change and no workaround.
-- **Anything else** (a pin, the tests, a traceback with no `RESULT` line): stop where
-  you are. Keep everything, and write the report with what you have, by the same steps:
-  6a, 6b, 6c if a run log exists, 6e and 6f, with the full error.
+- **The run ended with a `RESULT` line.** `wait` printed `DONE exit=0` or
+  `DONE exit=1`, and the log's last line is `RESULT`.
+  - Complete Steps 5 and 6 in full, 6c included, whatever the `PROBLEM` lines say: a 17%
+    exclusion, a scored-window pair shortfall, `verify` not valid, or a check that raised.
+  - The script writes the digest as soon as both manifests exist, before any check runs.
+    The digest is what rebuilds the manifests, so it always reaches the report, compressed
+    when it must be. (A `STOP` comes before the digest, so then there is none.)
+  - "Stop" then means: no rerun, no change and no workaround.
+- **Anything else** (a pin, the tests, a traceback with no `RESULT` line): stop where you
+  are. Keep everything, and write the report with what you have, by the same steps: 6a,
+  6b, 6c if a run log exists, 6d and 6e, with the full error.
 
 Report each of these:
-- any pin in Step 2 says `FAILED`, or the tests in Step 3 fail;
+- the tree hash differs, `git status` lists a change under `src`, any pin says `FAILED`,
+  or the tests in Step 3 fail;
 - a checksum mismatches or is missing: a traceback naming "does not match Binance's
   published SHA-256", "unexpected checksum file", "published without a checksum" or "has
   a checksum but no archive";
@@ -401,26 +426,31 @@ Report each of these:
   with fewer than 2 included pairs. A shortfall in the reported window,
   `full-range-2019-2024`, is not a stop: spec v1 §5 rule 6 says it decides nothing.
   Report its count in the results and go on;
-- `mask-report` excludes any symbol-month under the 17% rule. The eligibility record found
-  every one of its 772 measured pair-months under 17%. The one unusable month here,
-  DOGEUSDT 2020-02, has no expected hours, since both specs document it as an absence.
-  That record did not count incomplete hours, which this run's masks do (spec v1 §5 rule
-  1, "Eligibility"), so an exclusion is new evidence against it. Report it as a signal: no
-  rule is tuned to it;
-- the `REPORT` line's total is over 190,000 bytes: append the run log but not the digest,
-  and give the count in the results; the same if the final report reaches 200,000 bytes
-  (6f.4). Either way, say that a second run is needed to deliver the digest;
+- `mask-report` excludes any symbol-month under the 17% rule.
+  - The eligibility record found every one of its 772 measured pair-months under 17%.
+  - The one unusable month here, DOGEUSDT 2020-02, has no expected hours, since both
+    specs document it as an absence.
+  - That record did not count incomplete hours, which this run's masks do (spec v1 §5
+    rule 1, "Eligibility"). So an exclusion is new evidence against the record. Report
+    it as a signal: no rule is tuned to it;
 - a check that raised (a `PROBLEM` line naming `verify` or `mask-report` and the
   exception; its traceback is in the run log);
+- 6c prints `NOT APPENDED`, or a block that does not read back;
 - the run ends with `RESULT` other than `0 problem(s)`: report every `PROBLEM` line,
   facts only; do not rerun with changes or work around it;
 - anything asks for a login or key, or anything else is unexpected.
 
 ## Self-check before your final message
 
-[`docs/BOB_PRACTICE.md`](../BOB_PRACTICE.md), "Before you finish", all eleven items: apply
-items 1, 2 and 4 to 11 to each hand-written passage before you append it; item 3 is
-Step 6f. From 6d on, change nothing already in the report; an error found later goes in
-your final message. The one exception is 6f.4: a report of 200,000 bytes or more is
-written again, whole, without the digest. Every count in the report is printed by the
+[`docs/BOB_PRACTICE.md`](../BOB_PRACTICE.md), "Before you finish", all eleven items:
+- apply items 1, 2 and 4 to 11 to each hand-written passage before you append it;
+- item 3 is Step 6e.
+
+Where that file names a shell command, use the script instead:
+- for the clock (item 8), `python scripts/fetch_full_range.py now`;
+- for a path check (item 2), `python scripts/fetch_full_range.py exists PATH ...`.
+
+From 6c on, change nothing already in the report; an error found later goes in your final
+message. The one exception is 6e.3: a report of 200,000 bytes or more is written again,
+whole, with the logs and digest compressed. Every count in the report is printed by the
 script or by a command you ran.

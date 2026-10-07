@@ -22,6 +22,10 @@ import contextlib
 import hashlib
 import io
 import json
+import os
+import re
+import shlex
+import socket
 import subprocess  # nosec B404: a stand-in child
 import sys
 import time
@@ -29,6 +33,7 @@ import zipfile
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -207,6 +212,24 @@ def archives() -> dict[str, bytes]:
     return objects
 
 
+def refuse_network(*args: object, **kwargs: object) -> None:
+    raise AssertionError("a test of fetch_full_range tried to reach the network")
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No test here can reach any host, and none writes in the working directory: the fetch
+    code's connection, the exchange client and the socket layer raise, and each test runs
+    from its own temporary directory. During this suite's development a test run against a
+    stale copy of the script fell through to a real fetch; with this, such a run fails at
+    its first request instead."""
+    monkeypatch.setattr(dataset, "https_connection", refuse_network)
+    monkeypatch.setattr(dataset, "PublicClient", refuse_network)
+    monkeypatch.setattr(socket.socket, "connect", refuse_network)
+    monkeypatch.setattr(socket, "create_connection", refuse_network)
+    monkeypatch.chdir(tmp_path)
+
+
 class Host:
     """A fake data.binance.vision: objects by path, None (a 404) otherwise. It records every
     request, and raises FeedError the first time each path in ``fail_once`` is requested."""
@@ -318,6 +341,8 @@ def run_script(
         patch.setattr(fetch_full_range, "verify", spy_verify)
         for name in ("https_connection", "PublicClient", "exchange_filters", "archive_get"):
             patch.setattr(dataset, name, no_network)
+        patch.setattr(socket.socket, "connect", refuse_network)
+        patch.setattr(socket, "create_connection", refuse_network)
         with contextlib.redirect_stdout(out):
             try:
                 run.code = fetch_full_range.main(argv, fetcher=run.host, sleep=run.sleeps.append)
@@ -925,3 +950,295 @@ def test_wait_reports_a_run_gone_without_an_exit_file_and_start_runs_once_more(
     assert (data / "run-1.log").read_text(encoding="utf-8") == "PLAN first attempt\n"
     assert fetch_full_range.main(["wait", str(data)]) == 0
     assert capsys.readouterr().out.splitlines()[0] == "DONE exit=0"
+
+
+def test_wait_and_start_handle_an_empty_or_corrupt_pid_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    background(monkeypatch, 0.3)
+    data = tmp_path / "data"
+    data.mkdir()
+    pid = data / "run.pid"
+    pid.write_text("", encoding="utf-8")  # start has launched the child, not yet written it
+    assert fetch_full_range.main(["wait", str(data)]) == 1
+    assert capsys.readouterr().out == (
+        f"NOT STARTED: {pid.as_posix()} is still empty; latest: no output yet\n"
+    )
+    pid.write_text("garbage\n", encoding="utf-8")
+    assert fetch_full_range.main(["wait", str(data)]) == 1
+    assert capsys.readouterr().out == (
+        f"UNREADABLE: {pid.as_posix()} holds 'garbage', not a process id\n"
+    )
+    assert fetch_full_range.main(["start", str(data), "--fake-run", "0.1"]) == 1
+    assert capsys.readouterr().out == (
+        f"NOT STARTED: {pid.as_posix()} holds 'garbage', not a process id; report it, and "
+        "start nothing\n"
+    )
+    assert not (data / "run.log").exists()
+
+
+class Kernel32:
+    """The three kernel32 calls _alive makes, answering as told."""
+
+    def __init__(self, handle: int, answered: int, code: int) -> None:
+        self.handle, self.answered, self.code = handle, answered, code
+        self.calls: list[tuple[object, ...]] = []
+
+    def OpenProcess(self, access: int, inherit: bool, pid: int) -> int:  # noqa: N802
+        self.calls.append(("OpenProcess", access, inherit, pid))
+        return self.handle
+
+    def GetExitCodeProcess(self, handle: int, code: SimpleNamespace) -> int:  # noqa: N802
+        self.calls.append(("GetExitCodeProcess", handle))
+        code.value = self.code
+        return self.answered
+
+    def CloseHandle(self, handle: int) -> None:  # noqa: N802
+        self.calls.append(("CloseHandle", handle))
+
+
+def test_alive_asks_windows_for_the_exit_code_and_never_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The win32 branch, on any host: ctypes and sys.platform are stand-ins. On Windows,
+    os.kill(pid, 0) would end the process, so _alive must never call it there."""
+    assert fetch_full_range._alive(os.getpid())  # this host's own branch
+    monkeypatch.setattr(fetch_full_range, "sys", SimpleNamespace(platform="win32"))
+
+    def no_signal(*args: object) -> None:
+        pytest.fail("os.kill was called on Windows")
+
+    monkeypatch.setattr(fetch_full_range.os, "kill", no_signal)
+    cases = [
+        (0, 1, 259, False),  # no such process: OpenProcess gives no handle
+        (7, 1, 259, True),  # STILL_ACTIVE
+        (7, 1, 0, False),  # ended, with exit code 0
+        (7, 0, 259, False),  # GetExitCodeProcess failed
+    ]
+    for handle, answered, code, alive in cases:
+        kernel32 = Kernel32(handle, answered, code)
+        stand_in = SimpleNamespace(
+            windll=SimpleNamespace(kernel32=kernel32),
+            c_ulong=lambda: SimpleNamespace(value=None),
+            byref=lambda value: value,
+        )
+        monkeypatch.setitem(sys.modules, "ctypes", stand_in)
+        assert fetch_full_range._alive(4242) is alive, (handle, answered, code)
+        assert kernel32.calls[0] == ("OpenProcess", 0x1000, False, 4242)
+        # A handle that was opened is always closed.
+        assert (("CloseHandle", handle) in kernel32.calls) is bool(handle)
+
+
+# The files append-results publishes, in its order: lost attempts first.
+NAMES = ["run-1.log", "run.log", "full-range-2017-2024.digest.txt"]
+
+
+def run_dir_with_results(tmp_path: Path, digest: bytes) -> Path:
+    run_dir = tmp_path / "data" / "full-range"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run-1.log").write_bytes(b"PLAN first attempt, lost\n")  # LF, as on Linux
+    (run_dir / "run.log").write_bytes(b"PLAN second attempt\nRESULT 0 problem(s)\n")
+    (run_dir / "full-range-2017-2024.digest.txt").write_bytes(digest)
+    return run_dir
+
+
+def decoded(report: Path, title: str, out: Path) -> bytes:
+    """Run the report's own decode command (DECODE), as a reader would."""
+    word, flag, code = shlex.split(fetch_full_range.DECODE)
+    assert (word, flag) == ("python", "-c")
+    subprocess.run(  # nosec B603: the script's fixed decode command
+        [sys.executable, "-c", code, str(report), title, str(out)], check=True
+    )
+    return out.read_bytes()
+
+
+def test_append_results_appends_every_log_and_the_digest_bounded_to_the_limit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first, second = full_size_manifests()
+    hashes = {first["dataset"]: "d" * 64, second["dataset"]: "e" * 64}
+    digest = fetch_full_range.digest_text(first, second, hashes).encode("utf-8")
+    run_dir = run_dir_with_results(tmp_path, digest)
+    titles = ["Run log, attempt 1 (lost)", "Run log", "Digest"]
+
+    def appended(limit: int | None, *extra: str) -> tuple[int, str, list[str]]:
+        report = tmp_path / f"report-{limit}-{len(extra)}.md"
+        report.write_text("# Title\n", encoding="utf-8")
+        limits = [] if limit is None else ["--limit", str(limit)]
+        code = fetch_full_range.main(["append-results", str(report), str(run_dir), *limits, *extra])
+        return code, report.read_text(encoding="utf-8"), capsys.readouterr().out.splitlines()
+
+    # Everything fits as text: every log, earlier attempts first, then the digest.
+    code, text, lines = appended(None)
+    assert code == 0
+    assert [text.index(f"\n## {title}\n") for title in titles] == sorted(
+        text.index(f"\n## {title}\n") for title in titles
+    )
+    for title, name in zip(titles, NAMES, strict=True):
+        block = fetch_full_range._block(text, title, False)
+        assert block.encode("utf-8") == (run_dir / name).read_bytes()
+    assert all(line.endswith("reads back: True") for line in lines[:3]), lines
+    assert lines[3].startswith("APPENDED ") and lines[3].endswith("(limit 190000)")
+    # Over the limit: the logs stay text and the digest is compressed, with its SHA-256 and
+    # a decode command that gives back its exact bytes.
+    code, text, lines = appended(100_000)
+    assert code == 0
+    assert "\n## Digest (zlib, base64)\n" in text and "\n## Run log\n" in text
+    assert f"SHA-256 {hashlib.sha256(digest).hexdigest()}" in text
+    assert (
+        decoded(tmp_path / "report-100000-0.md", "Digest (zlib, base64)", tmp_path / "d1") == digest
+    )
+    assert len(text.encode("utf-8")) < 100_000
+    # Forced (the oversize fallback): everything compressed, each decoding to its file.
+    code, text, lines = appended(None, "--compressed")
+    assert code == 0
+    for title, name in zip(titles, NAMES, strict=True):
+        out = tmp_path / name
+        got = decoded(tmp_path / "report-None-1.md", f"{title} (zlib, base64)", out)
+        assert got == (run_dir / name).read_bytes()
+    # Too small even compressed: nothing is appended.
+    code, text, lines = appended(1_000)
+    assert (code, text) == (1, "# Title\n")
+    assert lines[-1].startswith("NOT APPENDED: even compressed")
+
+
+def test_a_full_size_digest_compressed_fits_comfortably() -> None:
+    first, second = full_size_manifests()
+    hashes = {first["dataset"]: "d" * 64, second["dataset"]: "e" * 64}
+    digest = fetch_full_range.digest_text(first, second, hashes).encode("utf-8")
+    assert fetch_full_range.unpacked(fetch_full_range.packed(digest)) == digest
+    section = fetch_full_range._packed_section(
+        "Digest (zlib, base64)", digest, Path("full-range-2017-2024.digest.txt")
+    )
+    # About 77 KB against about 131 KB of text (zlib; lzma would give about 59 KB): room
+    # within the 190,000 bytes for a long run log, and the passages.
+    assert len(section.encode("utf-8")) < 80_000
+    assert max(len(line) for line in fetch_full_range.packed(digest).splitlines()) == 76
+
+
+def test_the_report_tools_do_what_the_task_used_shell_utilities_for(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = fetch_full_range.main
+    run_dir = run_dir_with_results(tmp_path, b"digest row\n")
+    assert run(["now"]) == 0
+    assert re.fullmatch(r"\w{3} \w{3} \d{2} \d{2}:\d{2}:\d{2} UTC \d{4}\n", capsys.readouterr().out)
+    assert run(["tail", str(run_dir / "run.log"), "--lines", "1"]) == 0
+    assert capsys.readouterr().out == "RESULT 0 problem(s)\n"
+    missing = run_dir / "absent.txt"
+    assert run(["exists", str(run_dir / "run.log"), str(missing)]) == 1
+    assert capsys.readouterr().out == (
+        f"EXISTS {(run_dir / 'run.log').as_posix()}\nMISSING {missing.as_posix()}\n"
+    )
+    tree = tmp_path / "data"
+    assert run(["measure", str(run_dir), str(tree)]) == 0
+    sizes = [line.split(" ", 2) for line in capsys.readouterr().out.splitlines()]
+    assert [name for _, _, name in sizes[:3]] == [
+        (run_dir / "run-1.log").as_posix(),
+        (run_dir / "run.log").as_posix(),
+        (run_dir / "full-range-2017-2024.digest.txt").as_posix(),
+    ]
+    assert sizes[0][:2] == ["SIZE", str((run_dir / "run-1.log").stat().st_size)]
+    assert sizes[3] == ["RESERVED-WINDOW", "FILES", "0"]
+    late = tree / "binance" / "BTCUSDT-1h-2025-01.zip.CHECKSUM"
+    late.parent.mkdir()
+    late.write_text("x", encoding="utf-8")
+    assert run(["measure", str(run_dir), str(tree)]) == 1
+    assert capsys.readouterr().out.splitlines()[-2:] == [
+        f"RESERVED {late.as_posix()}",
+        "RESERVED-WINDOW FILES 1",
+    ]
+    report = tmp_path / "report.md"
+    report.write_text("# Title\n", encoding="utf-8")
+    passage = tmp_path / "passage.md"
+    passage.write_text("## Results\n\nshort", encoding="utf-8")
+    assert run(["append", str(report), str(passage)]) == 0
+    assert run(["append", str(report), str(run_dir / "run.log"), "--heading", "Run log"]) == 0
+    assert report.read_text(encoding="utf-8") == (
+        "# Title\n\n## Results\n\nshort\n"
+        "\n## Run log\n\n```text\nPLAN second attempt\nRESULT 0 problem(s)\n```\n"
+    )
+    capsys.readouterr()
+    assert run(["size", str(report)]) == 0
+    count = report.stat().st_size
+    assert capsys.readouterr().out == (
+        f"SIZE {count} {report.as_posix()}: under the 200000-byte limit\n"
+    )
+    big = tmp_path / "big.md"
+    big.write_bytes(b"x" * 200_000)
+    assert run(["size", str(big)]) == 1
+    aside = tmp_path / "aside.md"
+    assert run(["set-aside", str(big), str(aside)]) == 0
+    assert (not big.exists(), aside.stat().st_size) == (True, 200_000)
+    report.write_text("# Title\n", encoding="utf-8")
+    assert run(["set-aside", str(report), str(aside)]) == 1  # never over an existing file
+    status, log, out = tmp_path / "status.txt", tmp_path / "check.log", tmp_path / "checks.log"
+    status.write_text("?? docs/reviews/x-bob-y.md\n", encoding="utf-8")
+    log.write_text(
+        "check_reports: verified a.md:b.py\ncheck_reports: UNVERIFIABLE c.md:data/d.py e - f\n"
+        "check_reports: 0 problem(s)\n",
+        encoding="utf-8",
+    )
+    assert run(["check-log", str(status), str(log), str(out)]) == 0
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[:3] == [
+        "?? docs/reviews/x-bob-y.md",
+        "check_reports: verified a.md:b.py",
+        "check_reports: 0 problem(s)",
+    ]
+    assert re.fullmatch(r"\w{3} \w{3} \d{2} \d{2}:\d{2}:\d{2} UTC \d{4}", lines[3])
+
+
+TASK_FILE = ROOT / "docs" / "tasks" / "2026-10-07-bob-full-range-2017-2024-fetch.md"
+# bob-task.yml's prompt: "python, the installed project CLIs, pytest, sha256sum and read-only
+# git commands"; the project CLIs run as python -m.
+ALLOWED_COMMANDS = {"python", "pytest", "sha256sum", "git"}
+READ_ONLY_GIT = {"rev-parse", "show", "ls-files", "diff", "log", "cat-file", "status"}
+SEPARATORS = {";", "&&", "||", "|", "&", "(", ")"}
+SHELL_UTILITIES = {
+    "date", "mkdir", "sed", "wc", "tail", "head", "find", "grep", "mv", "cp", "rm", "cat",
+    "echo", "ls", "sleep", "nohup", "setsid", "pgrep", "sh", "bash", "test", "touch", "awk",
+    "xargs", "tee", "env", "printenv", "set",
+}  # fmt: skip
+FENCED = re.compile(r"^ *```text\n(.*?)^ *```$", re.S | re.M)
+
+
+def task_commands() -> list[tuple[str, list[str]]]:
+    """(line, words) for every command in the task file's fenced blocks, split at the shell's
+    separators; a line of the pin block is a SHA-256 and a path, not a command."""
+    found = []
+    for block in FENCED.findall(TASK_FILE.read_text(encoding="utf-8")):
+        for raw in block.splitlines():
+            line = raw.strip()
+            if not line or re.fullmatch(r"[0-9a-f]{64}  \S+", line):
+                continue
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            words: list[str] = []
+            for token in [*lexer, ";"]:
+                if token in SEPARATORS:
+                    if words:
+                        found.append((line, words))
+                    words = []
+                else:
+                    words.append(token)
+    return found
+
+
+def test_the_task_file_asks_bob_only_for_commands_his_prompt_allows() -> None:
+    """Codex's P1 on #193: bob-task.yml's rules override everything else Bob reads, and a
+    task that cannot be done as written makes him stop, so every command in the task must be
+    one the prompt allows."""
+    found = task_commands()
+    assert len(found) >= 20, found  # the blocks were found
+    for line, words in found:
+        assert words[0] in ALLOWED_COMMANDS, line
+        if words[0] == "git":
+            assert words[1] in READ_ONLY_GIT, line
+        for shell in ("$(", "<<", "`"):
+            assert shell not in line, line
+    # Commands named in the prose are held to it too: none is a shell utility.
+    prose = FENCED.sub("", TASK_FILE.read_text(encoding="utf-8"))
+    for span in re.findall(r"`([^`\n]+)`", prose):
+        words = span.split()
+        assert not words or words[0] not in SHELL_UTILITIES, span
