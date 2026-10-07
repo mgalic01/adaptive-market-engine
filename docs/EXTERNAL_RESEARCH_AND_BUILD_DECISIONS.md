@@ -222,6 +222,82 @@ platform, API account, paid service or external runtime was added through this w
 
 ## Bounded implementation sequence and completion criteria
 
+### Follow-up: validation and portfolio admission (2026-10-07)
+
+The owner requested that the following two assessments join this planning reference.
+They add reporting and risk-design requirements, not new strategy parameters or
+changes to the frozen experiment.
+
+The [ML pipeline post-mortem](https://www.reddit.com/r/algotradingcrypto/comments/1wzhi3g/research_i_spent_6_months_building_an_ml_pipeline/)
+is useful as a warning about aggregate metrics and directional bias. Its title calls
+the 71% loss a production result, while the body attributes it to a holdout test;
+without supporting records it is not a verified live loss. No reproducible code or
+complete experiment record was supplied in the inspected post. Do not adopt its
+unsupported universal train/test Sharpe-gap thresholds as acceptance criteria.
+
+Expanding-window training is not inherently invalid or leaky; rolling-window
+training is not automatically stricter. Choose the training/retraining policy before
+outcomes and match deployment information availability. If comparing policies, count
+them as registered trials. [TimeSeriesSplit documentation](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+describes chronological splitting with expanding training sets and optional gaps.
+Fit preprocessing and feature selection within each training fold, as explained in
+the [leakage guidance](https://scikit-learn.org/stable/common_pitfalls.html).
+
+For future ML, enforce outcome-availability timestamps: a 12-hour return label may
+enter training only when that outcome is complete and available at the fit cutoff.
+Purge training labels overlapping the evaluation boundary; derive the separation
+from actual label intervals and data delays rather than a universal bar count.
+Use common chronological cutoffs across assets, and retain trial/model/data identity.
+Neither a small Sharpe gap nor a high hit rate establishes profitability.
+
+Proposed reporting addition: for each predefined chronological period and regime,
+show net return, drawdown, trade count, turnover/costs, time invested, long/short
+exposure and each side's P&L contribution. Compare cash, buy-and-hold, the relevant
+frozen baseline and exposure-aware controls on identical periods. Mark small samples
+and uncertainty. Diagnostic hindsight regime labels must never become decision-time
+features. Display aggregate and period results together so a favorable interval
+cannot conceal persistent losses or an effectively always-long strategy.
+
+The [portfolio-risk discussion](https://www.reddit.com/r/algotradingcrypto/comments/1wzqx2q/how_do_you_manage_portfoliolevel_risk_when/)
+raises correlated altcoin signals, BTC sensitivity and the risk of overfitting an
+overlay. No answers were visible when inspected; it is a research question, not a
+validated solution. Our proposed response is a portfolio admission check extending
+the roadmap's shared spot/futures supervisor.
+
+Before admitting an order, evaluate the portfolio after worst-case pending fills:
+
+1. Combined spot/futures gross and net exposure using consistent equity denominators.
+2. Same-asset and correlated-group concentration, including correlated long positions
+   that appear diversified only because their symbols differ.
+3. Incremental portfolio loss under predefined price, spread, funding and liquidity
+   stresses; stops are not guaranteed execution prices during gaps.
+4. Remaining collateral, maintenance requirements and liquidation buffers. Low net
+   exposure does not remove gross, basis, funding or venue risk.
+5. Freshness and reconciliation of account, order and market state. Unknown state
+   blocks new exposure; risk-reducing actions retain their explicit safe workflow.
+
+Reserve risk capacity atomically when accepting intents so concurrent signals cannot
+each consume the same remaining budget. Release or reconcile reservations on fills,
+cancellation and restart; include partial fills. A reported flat state must be verified.
+
+Start with transparent fixed caps and predefined stress scenarios. Introduce BTC-beta
+or covariance-based allocation only under a bounded comparison against that simple
+baseline. Estimate using information available then, define insufficient-history and
+stale-estimate fallbacks, and stress correlations rising together. An uncertain low
+correlation estimate must not automatically justify extra leverage. Predeclare numeric
+limits and scenario severity rather than tuning them to selected historical crashes.
+
+Acceptance fixtures should cover correlated entries across symbols, spot plus a
+same-asset futures long, offsetting positions with large gross exposure, concurrent
+pending intents, partial fills, stale accounts, funding shocks and gap-through-stop
+events. Reports must reconcile to the ledger. Evaluate risk reduction together with
+net return, rejected opportunities and utilization, avoiding a trivial always-flat
+overlay. These requirements belong in the future multi-asset/futures design and
+research reporting; they do not assert that today's single-asset engine implements
+them or authorize a new ML subsystem, data access, live trading or wider loss limits.
+
+### Delivery order
+
 This supplements Addendum B's strategy sequence. Infrastructure does not need to
 wait for an alpha result when it directly supports the experiment; optional UI
 must not delay the frozen v2 build. Tasks below remain proposals for assignment.

@@ -44,3 +44,13 @@ are posted with the containing commit on PR #169. Main risk is treating research
 recommendations as implemented capabilities or trading authorization; the document
 explicitly separates those states. No runtime/security fix or profitability validation
 is claimed. PR #177 retains the separate offline probe. No merge requested.
+
+## 2026-10-07 follow-up
+
+Owner requested the ML post-mortem and portfolio-risk discussion assessments in
+PR #169. Added linked sources, evidence caveats, chronological exposure reporting,
+label-availability and fold-local preprocessing requirements, and portfolio admission
+checks covering pending intents, correlated exposure, stresses and margin. No new
+numeric limits, strategy implementation or frozen-spec changes. Current source
+claims distinguish proposed requirements from implemented behavior. Documentation
+formatting and report checks are recorded in the exact-head PR handoff.
