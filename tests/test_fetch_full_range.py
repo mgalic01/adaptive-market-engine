@@ -899,7 +899,10 @@ def test_start_runs_the_script_detached_and_wait_reports_done(
     assert capsys.readouterr().out == f"STARTED pid {pid}; log {log}; exit file {exit_file}\n"
     assert fetch_full_range.main(["wait", str(data)]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert (lines[0], lines[-1]) == ("DONE exit=0", "RESULT 0 problem(s)")
+    assert (lines[0], lines[-2]) == ("DONE exit=0", "RESULT 0 problem(s)")
+    # Issue #195: the last line names the next step, so DONE never reads as the end.
+    assert lines[-1] == fetch_full_range.NEXT_DONE
+    assert "DONE is never the end of the task" in lines[-1]
     assert (data / "run.exit").read_text(encoding="utf-8") == "0\n"
     # A run that has ended is never started again in the same data dir.
     assert fetch_full_range.main(["start", str(data), "--fake-run", "0.2"]) == 1
@@ -916,8 +919,9 @@ def test_wait_returns_running_within_its_limit_then_done_with_the_exit_code(
     began = time.monotonic()
     assert fetch_full_range.main(["wait", str(data)]) == 0
     assert time.monotonic() - began < 3.5  # it returns at its limit, not when the run ends
-    (line,) = capsys.readouterr().out.splitlines()
+    line, next_step = capsys.readouterr().out.splitlines()
     assert line.startswith("RUNNING pid ")
+    assert next_step == fetch_full_range.NEXT_RUNNING
     assert line.endswith("latest: FAKE run: 4.0 s") or line.endswith("latest: no output yet")
     # A second start while the first runs is refused.
     assert fetch_full_range.main(["start", str(data), "--fake-run", "0.2"]) == 1
@@ -927,7 +931,8 @@ def test_wait_returns_running_within_its_limit_then_done_with_the_exit_code(
     lines = capsys.readouterr().out.splitlines()
     # A run that ends in a traceback still writes its exit file: DONE, not GONE.
     assert lines[0] == "DONE exit=1"
-    assert lines[-1] == "RuntimeError: fake run failure"
+    assert lines[-2] == "RuntimeError: fake run failure"
+    assert lines[-1] == fetch_full_range.NEXT_DONE
 
 
 def test_wait_reports_a_run_gone_without_an_exit_file_and_start_runs_once_more(
@@ -940,9 +945,11 @@ def test_wait_reports_a_run_gone_without_an_exit_file_and_start_runs_once_more(
     ended.wait()
     (data / "run.pid").write_text(f"{ended.pid}\n", encoding="utf-8")
     (data / "run.log").write_text("PLAN first attempt\n", encoding="utf-8")
-    assert fetch_full_range.main(["wait", str(data)]) == 1
+    # GONE has its own next step, so it exits 0: a non-zero status would read as a stop.
+    assert fetch_full_range.main(["wait", str(data)]) == 0
     assert capsys.readouterr().out == (
         f"GONE pid {ended.pid}: no process and no exit file; latest: PLAN first attempt\n"
+        f"{fetch_full_range.NEXT_GONE}\n"
     )
     # start runs it once more, unchanged, and keeps the first attempt's log.
     assert fetch_full_range.main(["start", str(data), "--fake-run", "0.2"]) == 0

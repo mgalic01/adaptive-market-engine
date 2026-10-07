@@ -170,7 +170,7 @@ TASK = ROOT / "docs" / "tasks" / "2026-10-07-bob-full-range-2017-2024-fetch.md"
 # as it is when the job starts, so a later edit to the task would otherwise run unnoticed
 # (Codex's review of #193); start refuses any other text. The pin block, which holds this
 # script's own SHA-256, is left out of the digest, so the two pins do not refer in a circle.
-TASK_SHA256 = "20141d0eb0a4bbd5e6deb66dc1970e4b00a35c24bf8dbe790fd11f4624715660"
+TASK_SHA256 = "5dce48317dde6c3960054cfe726564dce184c072b2adab5ed1815ff55804bdf4"
 FUNDING_SYMBOL = "BTCUSDT"  # variant G reads it for every pair (spec v1 section 3 G)
 ATTEMPTS = 4
 # The bytes of run logs and digest the report takes as text; above it, append-results
@@ -184,6 +184,17 @@ MINIMUM_PAIRS = 2  # spec v1 section 5, "Minimum evidence"
 WAIT_SECONDS = 540.0
 POLL_SECONDS = 10.0
 TAIL_LINES = 5
+# wait's last line names the next step. Run 37591538301 (issue #195) ended Bob's session
+# right after a wait, with no report, so no outcome leaves the next step to inference.
+NEXT_DONE = (
+    "NEXT: the run has ended and the report is not written yet. Go on to Step 5 now, then "
+    "Step 6, and end with your signed final message. DONE is never the end of the task."
+)
+NEXT_GONE = (
+    "NEXT: run Step 4's start once more, unchanged, then wait again. If wait says GONE a "
+    "second time, write the report (Steps 5 and 6) with what exists."
+)
+NEXT_RUNNING = "NEXT: run the same wait again."
 RECORD = "_run"  # the hidden subcommand of the child that start launches
 # The children start launched, kept so that this process never collects one while it
 # runs: Popen would then warn that it is still running (ResourceWarning).
@@ -900,6 +911,7 @@ def wait(arguments: list[str]) -> int:
             print(f"DONE exit={files.exit.read_text(encoding='utf-8').strip()}")
             for line in _lines(files.log)[-TAIL_LINES:]:
                 print(line)
+            print(NEXT_DONE)
             return 0
         try:
             pid = _pid(files.pid)
@@ -917,9 +929,11 @@ def wait(arguments: list[str]) -> int:
             if files.exit.exists():  # it ended between the two looks
                 continue
             print(f"GONE pid {pid}: no process and no exit file; latest: {latest}")
-            return 1
+            print(NEXT_GONE)
+            return 0  # an expected outcome with its own next step, not a failed command
         if time.monotonic() >= deadline:
             print(f"RUNNING pid {pid}; latest: {latest}")
+            print(NEXT_RUNNING)
             return 0
         time.sleep(POLL_SECONDS)
 
