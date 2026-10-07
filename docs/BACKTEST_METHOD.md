@@ -308,8 +308,9 @@ number.
   - `made`: a decision.
   - `skipped_holding`: an uptrend position existed, so nothing was decided (spec v2 §4,
     "Entering versus staying").
-  - `halted`: a halt held the decision back, and Cash was forced. If the automatic restart
-    ends the halt within the hour, that hour decides after all and counts as `made`.
+  - `halted`: a halt held the decision back, and Cash was forced. The frame that restarts
+    the account decides nothing; if a later valid frame of the same hour decides, that hour
+    counts as `made` instead.
   - An hour with no valid frame (masked, missing or transient) has no outcome.
 - **The codes.** `by_mode` counts the decisions made by the mode chosen. Every condition of
   the Uptrend and Grid rows (§4) that does not hold is a code, and each condition is checked
@@ -321,9 +322,10 @@ number.
     `regime_not_range`, `range_decisions_below_4`, `h4_not_range_or_unclear`,
     `d1_not_up_range_or_unclear`, `h1_rsi_outside_35_65`, `h1_adx_20_or_above` and
     `h1_width_above_median`.
-  - An Unavailable 4h or daily state is `h4_or_d1_unavailable` alone: the not-Up and
-    not-Range codes are for an available state. A threshold is checked only on a value that
-    is present.
+  - An Unavailable 4h or daily state gives `h4_or_d1_unavailable`, never the not-Up or
+    not-Range codes, which are for an available state. A missing daily bar also leaves the
+    daily RSI and ATR missing, so Uptrend lists `d1_rsi_or_atr_missing` beside it, and
+    neither is then a sole blocker. A threshold is checked only on a value that is present.
 - **`uptrend_blocked_by` and `grid_blocked_by`** count, over the decisions where that mode
   was not chosen, how many listed each code. A decision can list several, so they do not sum
   to the decisions.

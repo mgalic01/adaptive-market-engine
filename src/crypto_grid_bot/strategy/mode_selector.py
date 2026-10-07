@@ -113,7 +113,9 @@ def _grid(snapshot: Snapshot, regime: MarketRegime, range_decisions: int) -> boo
 
 # Why a decision went as it did (``explain_mode``): one code for each condition of section 4's
 # Uptrend and Grid rows. The not-Up and not-Range codes are for an available state; an
-# Unavailable 4h or daily state is ``H4_OR_D1_UNAVAILABLE`` alone, in both rows.
+# Unavailable 4h or daily state gives ``H4_OR_D1_UNAVAILABLE`` and never those, in both rows.
+# A missing daily bar also leaves the daily RSI and ATR missing, so Uptrend then lists
+# ``D1_RSI_OR_ATR_MISSING`` beside it.
 H4_OR_D1_UNAVAILABLE = "h4_or_d1_unavailable"
 D1_RSI_OR_ATR_MISSING = "d1_rsi_or_atr_missing"
 D1_NOT_UP = "d1_not_up"
