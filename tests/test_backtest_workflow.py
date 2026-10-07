@@ -28,3 +28,16 @@ def test_every_variant_choice_maps_to_a_cli_flag() -> None:
     assert len(choices) == len(set(choices))
     assert set(choices) - {"V0"} == set(arms)
     assert arms["MS"] == "--mode-switch"
+
+
+def test_the_run_step_runs_the_cli_in_a_pool_of_four() -> None:
+    # One job at a time, a full-range run exceeds the hosted runner's 6-hour job limit;
+    # tests/test_backtest_pool.py shows a pool writes the results one job writes.
+    steps = _workflow()["jobs"]["run"]["steps"]
+    (script,) = [step["run"] for step in steps if step.get("name") == "Run backtest"]
+    assert script.splitlines()[0].strip() == "set -- --record-commit"
+    command = (
+        'python -m crypto_grid_bot.backtest run --spec "config/datasets/$SPEC.toml" "$@" --jobs 4'
+    )
+    assert script.rstrip().splitlines()[-1].strip() == command
+    assert "run_nopool" not in script

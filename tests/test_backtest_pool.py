@@ -329,3 +329,30 @@ class SpawnedCliTests(unittest.TestCase):
             ]
             for pattern in wanted:
                 self.assertRegex(lines, re.compile(stamp + pattern + "$", re.M))
+
+
+class PoolSizeTests(unittest.TestCase):
+    """The backtest workflow runs the CLI with ``--jobs 4``, one job per CPU of the hosted
+    runner. A pool must write exactly the results that one in-process job writes. The mode
+    switcher's run with D submits every kind of replay job (the gated and ungated V0 rows,
+    the mode switcher's and D's), so it stands for the workflow's runs; V0 with D and F
+    were checked the same way when the workflow moved to a pool."""
+
+    def test_a_pool_of_four_writes_the_results_of_one_job(self):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        self.addCleanup(sys.path.remove, str(ROOT / "scripts"))
+        import byte_identity
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        work = root / "up"
+        byte_identity.build_dataset(work, "up")
+        runs = {"MS+D": ("--mode-switch", "--trend-benchmark")}
+        for name, flags in runs.items():
+            with self.subTest(run=name):
+                one = byte_identity.run_cli(work, root / f"{name}-1", flags)
+                # run_cli passes --jobs 1 before the flags; the last --jobs wins.
+                pool = byte_identity.run_cli(work, root / f"{name}-4", (*flags, "--jobs", "4"))
+                self.assertTrue(one["results"])
+                self.assertEqual(byte_identity.set_aside(one), byte_identity.set_aside(pool), name)
