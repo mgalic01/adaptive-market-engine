@@ -194,6 +194,59 @@ def build_clean(work, *, skip_hour=None):
     return spec_path
 
 
+# --- The clean window's layout two years earlier, holding 2021-01-21 (decision 14) --------
+DEFECT_SPEC = (
+    """name = "defect-window"
+purpose = "documented daily defect test"
+traded = ["ETHUSDT"]
+market_proxy = "BTCUSDT"
+breadth_basket = ["ETHUSDT", "BNBUSDT"]
+daily_warmup_start = "2020-12"
+warmup_start = "2021-01"
+start = "2021-02"
+end = "2021-02"
+"""
+    + COMMON
+)
+DEFECT_DAY = ms(2021, 1, 21)  # DOCUMENTED_DAILY_DEFECTS' one day
+
+
+def build_defect_window(work):
+    """``build_clean``'s window over 2020-12 to 2021-02, so that the hourly window holds
+    2021-01-21, with every bar consistent except two official 1d bars of that day. Both
+    have 2.4% less volume than their 24 hours, as Bob's calendar found BTCUSDT's; ETHUSDT's
+    high is also 0.01 above its hours'. Returns the spec's path."""
+    dec, jan, feb, mar = ms(2020, 12), ms(2021, 1), ms(2021, 2), ms(2021, 3)
+    archive = loaders.FakeArchive()
+    for seed, (symbol, base) in enumerate(zip(CLEAN_SYMBOLS, (D(100), D(200), D(50)), strict=True)):
+        hourly = walk(jan, (feb - jan) // HOUR_MS, HOUR_MS, base, seed)
+        if symbol == "ETHUSDT":
+            minutes = walk(feb, (mar - feb) // MINUTE_MS, MINUTE_MS, base, seed)
+            hourly += aggregate(minutes)
+            add_bars(archive, symbol, "1m", MINUTE_MS, minutes)
+        else:
+            hourly += walk(feb, (mar - feb) // HOUR_MS, HOUR_MS, base, seed + 3)
+        add_bars(archive, symbol, "1h", HOUR_MS, hourly)
+        if symbol != "BNBUSDT":
+            days = walk(dec, 31, DAY_MS, base, seed) + list(aggregate(hourly, DAY_MS))
+            for i, day in enumerate(days):
+                if day.open_ms == DEFECT_DAY:
+                    days[i] = replace(day, volume=day.volume * D("0.976"))
+                    if symbol == "ETHUSDT":
+                        days[i] = replace(days[i], high=day.high + D("0.01"))
+            add_bars(archive, symbol, "1d", DAY_MS, days)
+    spec_path = work / "defect-window.toml"
+    spec_path.write_text(DEFECT_SPEC)
+    manifest = fetch_dataset(
+        load_spec(spec_path),
+        work / "data",
+        fetcher=archive,
+        instruments=lambda symbol: CLEAN_FILTERS,
+    )
+    write_manifest(work / "defect-window.manifest.json", manifest)
+    return spec_path
+
+
 # --- A window around DOGEUSDT 2020-02, a documented basket absence ------------------------
 RUN_SPEC = (
     """name = "doge-window"
@@ -667,6 +720,27 @@ class MaskedChecksTests(unittest.TestCase):
         self.assertEqual(whole, prepared.daily)
         self.assertIn(SKIPPED_HOUR // DAY_MS * DAY_MS, [k.open_ms for k in prepared.daily])
         self.assertNotIn(SKIPPED_HOUR, [k.open_ms for k in prepared.hourly])
+
+
+class DocumentedDailyDefectJobTests(unittest.TestCase):
+    """Owner decision 14 through ``cross_check_job``, on a synthetic window holding
+    2021-01-21: the day's volume is excused, its prices are still compared."""
+
+    def test_the_job_excuses_the_volume_and_still_compares_the_prices(self):
+        with tempfile.TemporaryDirectory() as temp:
+            spec_path = build_defect_window(Path(temp))
+            data = spec_path.parent / "data"
+            records = {s: cross_check_job(spec_path, data, s) for s in CLEAN_SYMBOLS}
+        # The window has build_clean's shape (2021-02 has 2023-02's 28 days), so each
+        # record is that window's golden record, but for the defect day. BTCUSDT's prices
+        # agree with its hours, so only its volume differs: excused and counted, the day
+        # still compared, and nothing fails that did not fail before.
+        excused = {"daily_days_volume_excused": 1}
+        self.assertEqual(GOLDEN_CLEAN_CHECKS["BTCUSDT"] | excused, records["BTCUSDT"])
+        # ETHUSDT's high differs too: a mismatch, named, as on any other day.
+        named = {"daily_days_mismatched": 1, "daily_mismatched_days": ["2021-01-21"]}
+        self.assertEqual(GOLDEN_CLEAN_CHECKS["ETHUSDT"] | named, records["ETHUSDT"])
+        self.assertEqual(GOLDEN_CLEAN_CHECKS["BNBUSDT"], records["BNBUSDT"])
 
 
 class RunDataset(unittest.TestCase):

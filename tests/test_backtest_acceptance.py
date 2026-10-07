@@ -677,11 +677,11 @@ class MaskTests(unittest.TestCase):
                 self.assertEqual(window, score.window_of(spec, checks))
 
     def test_window_of_reads_the_documented_daily_defect_keys_as_before(self) -> None:
-        # Owner decision 14 (2026-10-07): the daily check skips 2021-01-21 and counts it in
-        # daily_days_skipped_documented, and a record with a mismatch names its days in
-        # daily_mismatched_days. window_of reads only the integrity fields, so neither key
-        # changes a window: the skip is a count, and a mismatch excludes its pair through
-        # daily_days_mismatched alone, as before.
+        # Owner decision 14 (2026-10-07): the daily check excuses 2021-01-21's volume, its
+        # prices agreeing, and counts it in daily_days_volume_excused, and a record with a
+        # mismatch names its days in daily_mismatched_days. window_of reads only the
+        # integrity fields, so neither key changes a window: the excuse is a count, and a
+        # mismatch excludes its pair through daily_days_mismatched alone, as before.
         for name in ("verify-2024h1", "practice-2022"):
             with self.subTest(name):
                 spec = load_spec(SPECS / f"{name}.toml")
@@ -689,7 +689,7 @@ class MaskTests(unittest.TestCase):
                 window = score.window_of(spec, checks)
                 for check in checks:
                     if "daily_days_compared" in check:
-                        check["daily_days_skipped_documented"] = 1
+                        check["daily_days_volume_excused"] = 1
                 self.assertEqual(window, score.window_of(spec, checks))
                 xrp = next(c for c in checks if c["symbol"] == "XRPUSDT")
                 if "daily_days_compared" not in xrp:

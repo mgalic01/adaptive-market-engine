@@ -1345,22 +1345,23 @@ DAY_MS = 86_400_000
 
 
 # Owner decision 14 (2026-10-07), an exception on record to spec v1 §5 rule 3 and P3:
-# days, as UTC dates, whose official 1d bar disagrees with its 24 official 1h bars through
-# a defect of Binance's archive that was documented before any result that reads the day
-# existed. For every symbol, ``cross_check_daily`` skips each in its 24-hour comparison
-# and counts it, as it skips a day holding a masked hour; the day's 1d bar is kept, and
-# must still be present exactly once.
+# days, as UTC dates, whose official 1d bar disagrees in volume with its 24 official 1h
+# bars through a defect of Binance's archive that was documented before any result that
+# reads the day existed. For every symbol, ``cross_check_daily`` excuses only the volume
+# of such a day: it still compares the day's prices with its hours, exactly, and counts
+# the excuse. The rest of the check treats the day as any other.
 DOCUMENTED_DAILY_DEFECTS: dict[str, str] = {
     "2021-01-21": (
-        "every pair's official 1d bar has about 2.4% less volume than its 24 official 1h "
-        "bars, with prices identical (docs/reviews/2026-09-26-bob-hourly-defect-calendar.md, "
-        "Day-Level Defects); skipped by the owner's exception of 2026-10-07, decision 14 in "
+        "the official 1d bars have about 2% less volume than their 24 official 1h bars "
+        "(BTCUSDT 2.4%, DOGEUSDT 1.7%, with identical prices; "
+        "docs/reviews/2026-09-26-bob-hourly-defect-calendar.md, Day-Level Defects); the "
+        "volume alone is excused by the owner's exception of 2026-10-07, decision 14 in "
         "docs/reviews/2026-10-07-claude-v2-decisions-after-first-read.md"
     ),
 }
 
 
-def utc_date(open_ms: int) -> str:
+def _utc_date(open_ms: int) -> str:
     """The UTC date of ``open_ms`` as ``YYYY-MM-DD``."""
     return datetime.fromtimestamp(open_ms // 1000, UTC).strftime("%Y-%m-%d")
 
@@ -1388,12 +1389,15 @@ def cross_check_daily(
     bar still counts: daily bars are never masked, so a missing or duplicated one stays
     a failure.
 
-    A day in ``DOCUMENTED_DAILY_DEFECTS`` is skipped the same way, by date, and counted in
-    ``daily_days_skipped_documented``, a key written only when non-zero; a listed day that
-    also holds a masked hour counts as masked. A day that mismatches is named in
-    ``daily_mismatched_days``, in date order, a key written only when one does. A window
-    whose hourly span holds no listed day and no mismatch, as every stage-1 window, gives
-    today's record.
+    A day in ``DOCUMENTED_DAILY_DEFECTS`` (owner decision 14) goes through the
+    completeness check and the official-bar lookup like any other, and counts as
+    compared. Only its volume is excused: when its open, high, low and close equal its
+    hours' exactly, it counts in ``daily_days_volume_excused`` whatever its volume, and
+    as neither a mismatch nor drift; a price that differs is a mismatch, as on any other
+    day. The key is written only when non-zero. A listed day that holds a masked hour
+    takes the masked path. A day that mismatches is named in ``daily_mismatched_days``,
+    in date order, a key written only when one does. A window whose hourly span holds no
+    listed day and no mismatch, as every stage-1 window, gives today's record.
     """
     opens = [k.open_ms for k in daily]
     present = set(opens)
@@ -1403,14 +1407,11 @@ def cross_check_daily(
         if hourly_window[0] <= kline.open_ms < hourly_window[1]:
             by_day.setdefault(kline.open_ms // DAY_MS * DAY_MS, []).append(kline)
     official = {k.open_ms: k for k in daily}
-    compared = mismatched = incomplete = drift = skipped = documented = 0
+    compared = mismatched = incomplete = drift = skipped = excused = 0
     mismatched_days: list[str] = []
     for day in range(hourly_window[0], hourly_window[1], DAY_MS):
         if day in masked_days:
             skipped += 1
-            continue
-        if utc_date(day) in DOCUMENTED_DAILY_DEFECTS:
-            documented += 1
             continue
         hours = by_day.get(day, [])
         if len({h.open_ms for h in hours}) != 24 or len(hours) != 24:
@@ -1421,11 +1422,18 @@ def cross_check_daily(
             continue  # counted as missing below
         compared += 1
         (merged,) = aggregate(sorted(hours, key=lambda h: h.open_ms), DAY_MS)
-        outcome = compare_bars(merged, reference, volume_tolerance)
+        if _utc_date(day) in DOCUMENTED_DAILY_DEFECTS:
+            # Decision 14 excuses the volume only: the prices must still match exactly.
+            prices = (merged.open, merged.high, merged.low, merged.close)
+            same = prices == (reference.open, reference.high, reference.low, reference.close)
+            outcome = "excused" if same else "mismatch"
+        else:
+            outcome = compare_bars(merged, reference, volume_tolerance)
         if outcome == "mismatch":
             mismatched += 1
-            mismatched_days.append(utc_date(day))
+            mismatched_days.append(_utc_date(day))
         drift += int(outcome == "drift")
+        excused += int(outcome == "excused")
     warmup = sum(1 for o in opens if o + DAY_MS <= evaluation_start_ms)
     result: dict[str, int | list[str]] = {
         "daily_days_compared": compared,
@@ -1440,8 +1448,8 @@ def cross_check_daily(
     if skipped:  # Written only when non-zero, so an unmasked record is today's.
         result["daily_days_skipped_for_masks"] = skipped
     # Each written only when non-zero or non-empty, for the same reason (decision 14).
-    if documented:
-        result["daily_days_skipped_documented"] = documented
+    if excused:
+        result["daily_days_volume_excused"] = excused
     if mismatched_days:
         result["daily_mismatched_days"] = mismatched_days
     return result
