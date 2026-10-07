@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -33,29 +34,46 @@ def step(job: str, step_id: str) -> dict:
     return next(s for s in workflow()["jobs"][job]["steps"] if s.get("id") == step_id)
 
 
-def run_step(script: str, cwd: Path, env: dict[str, str]) -> tuple[int, dict[str, str], str]:
-    """Run a step's script with GitHub's default shell for `run`: bash -e, no pipefail."""
+def run_step(
+    script: str, cwd: Path, env: dict[str, str], runner_temp: Path | None = None
+) -> tuple[int, dict[str, str], str]:
+    """Run a step's script with GitHub's default shell for `run`: bash -e, no pipefail.
+
+    The script and GITHUB_OUTPUT live in their own scratch directory, so ``runner_temp``
+    (RUNNER_TEMP) holds only what the step itself leaves on the machine."""
     shell = (
         str(Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "Git/bin/bash.exe")
         if os.name == "nt"
         else shutil.which("bash")
     )
     assert shell and Path(shell).is_file(), "Git Bash (Windows) or bash is required"
-    output = cwd / "github-output.txt"
+    scratch = Path(tempfile.mkdtemp(prefix="bob-task-step-"))
+    if runner_temp is None:
+        runner_temp = scratch / "runner-temp"
+        runner_temp.mkdir()
+    output = scratch / "github-output.txt"
     output.write_text("", encoding="utf-8")
-    script_file = cwd / "step.sh"
+    script_file = scratch / "step.sh"
     script_file.write_text(script, encoding="utf-8")
-    result = subprocess.run(
-        [shell, "--noprofile", "--norc", "-e", str(script_file)],
-        cwd=cwd,
-        env={**os.environ, "GITHUB_OUTPUT": str(output), "RUNNER_TEMP": str(cwd), **env},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    outputs = dict(
-        line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines() if line
-    )
+    try:
+        result = subprocess.run(
+            [shell, "--noprofile", "--norc", "-e", str(script_file)],
+            cwd=cwd,
+            env={
+                **os.environ,
+                "GITHUB_OUTPUT": str(output),
+                "RUNNER_TEMP": str(runner_temp),
+                **env,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        outputs = dict(
+            line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines() if line
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
     return result.returncode, outputs, result.stdout + result.stderr
 
 
@@ -158,6 +176,15 @@ def test_a_comment_without_one_full_revision_runs_nothing(tmp_path: Path, body: 
     assert code == 0, log
     assert out["tasks"] == "[]"
     assert out["revision"] == ""
+    assert "nothing runs" in log  # the run log says why
+
+
+def test_a_comment_runs_only_its_first_command(tmp_path: Path) -> None:
+    other = "docs/tasks/2026-10-08-bob-other.md"
+    body = f"/bob-run {TASK} {'a' * 40}\n/bob-run {other} {'b' * 40}"
+    code, out, log = resolve(tmp_path, EVENT="issue_comment", BODY=body)
+    assert code == 0, log
+    assert out == {"tasks": f'["{TASK}"]', "revision": "a" * 40}
 
 
 def test_run_workflow_runs_at_the_commit_it_names(tmp_path: Path) -> None:
@@ -178,7 +205,7 @@ def test_run_workflow_without_a_full_revision_fails(tmp_path: Path, revision: st
     assert "tasks" not in out
 
 
-# --- the worker: exactly the recorded commit, which main has been at -----------------
+# --- the worker: exactly the recorded commit, on main's first-parent line ------------
 
 
 def gate(cwd: Path, revision: str, task: str = TASK) -> tuple[int, dict[str, str], str]:
@@ -218,10 +245,15 @@ def test_the_worker_checks_out_the_gate_revision_and_never_main() -> None:
     assert names.index("freeze") < names.index("bob")
 
 
-def verify(checkout: Path, head: str, revision: str) -> tuple[int, str]:
+def verify(
+    checkout: Path, head: str, revision: str, runner_temp: Path | None = None
+) -> tuple[int, str]:
     git(checkout, "checkout", "--quiet", "--detach", head)
     code, _, log = run_step(
-        step("bob-task", "exists")["run"], checkout, {"TASK": TASK, "REVISION": revision}
+        step("bob-task", "exists")["run"],
+        checkout,
+        {"TASK": TASK, "REVISION": revision},
+        runner_temp,
     )
     return code, log
 
@@ -240,8 +272,8 @@ def test_a_merge_commit_main_has_been_at_is_run_as_it_was(
     ("head", "revision", "message"),
     [
         # An ancestor of main, but main was never at it: an unreviewed intermediate state.
-        ("inside_branch", "inside_branch", "is not a commit main has been at"),
-        ("stray", "stray", "is not a commit main has been at"),
+        ("inside_branch", "inside_branch", "is not on main's first-parent line"),
+        ("stray", "stray", "is not on main's first-parent line"),
         ("later", "merge", "not the run revision"),
         ("base", "base", f"{TASK} is not in"),
     ],
@@ -259,17 +291,25 @@ def test_the_worker_stops_before_bob_on(
 
 
 def test_the_frozen_repository_holds_only_the_revision_history(
-    remote: tuple[Path, dict[str, str]], checkout: Path
+    remote: tuple[Path, dict[str, str]], checkout: Path, tmp_path: Path
 ) -> None:
     """fetch-depth 0 fetched every branch, tag and object as at job start; none of what
-    is newer than the revision may reach Bob, by ref or by searching .git (Codex, #194)."""
+    is newer than the revision may reach Bob, by ref, by searching .git, or from a file
+    the checks left on the machine (Codex, #194)."""
     _, rev = remote
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
     git(checkout, "fetch", "--quiet", "origin", "stray")  # leaves a FETCH_HEAD behind
-    code, log = verify(checkout, rev["merge"], rev["merge"])
+    code, log = verify(checkout, rev["merge"], rev["merge"], runner_temp)
     assert code == 0, log
     assert git(checkout, "cat-file", "-t", rev["later"]) == "commit"  # fetched, before
-    code, _, log = run_step(step("bob-task", "freeze")["run"], checkout, {"REVISION": rev["merge"]})
+    code, _, log = run_step(
+        step("bob-task", "freeze")["run"], checkout, {"REVISION": rev["merge"]}, runner_temp
+    )
     assert code == 0, log
+    # No snapshot of main's line or of the fetched refs is left for Bob to read.
+    assert list(runner_temp.iterdir()) == []
+    assert rev["later"] not in log
     refs = git(checkout, "for-each-ref", "--format=%(objectname) %(refname)").splitlines()
     assert refs == [f"{rev['merge']} refs/heads/main", f"{rev['merge']} refs/remotes/origin/main"]
     assert git(checkout, "symbolic-ref", "HEAD") == "refs/heads/main"

@@ -9,12 +9,13 @@ file is merged into `main`**, so a task PR is merged only after review. To run a
 again, or one merged before automation existed, the owner comments
 `/bob-run docs/tasks/<file>.md <full commit SHA>` on any issue or PR, or uses "Run
 workflow" on **IBM Bob task run** in the Actions tab with the task path and that SHA.
-The SHA is a commit `main` has been at; Bob runs the task as it is in that commit (for
-an automatic run, the merge commit), not as `main` is when the run starts. The worker
-holds that commit's history and nothing else, so a task can use no other branch or
-commit: what it needs is merged first. Older task files keep their reviewed text, so
-some still give the two-word `/bob-run` form, which now starts nothing: add the SHA. Bob runs on a Linux machine, and the report arrives as
-a PR ([rules](../AGENT_HANDOFF.md)).
+The SHA is a merge commit or pushed head on `main`; Bob runs the task as it is in that
+commit (for an automatic run, the merge commit), not as `main` is when the run starts.
+The worker holds that commit's history and nothing else, so a task can use no other
+branch or commit: what it needs is merged first. Older task files keep their reviewed
+text, so some still give the two-word `/bob-run` form, which now starts nothing: add the
+SHA. Bob runs on a Linux machine, and the report arrives as a PR
+([rules](../AGENT_HANDOFF.md)).
 
 | Task | Status |
 | --- | --- |

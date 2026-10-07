@@ -10,11 +10,14 @@ name: IBM Bob task run
 #   repository owner. Without the SHA nothing runs;
 # - "Run workflow" by the repository owner, with the task path and the full commit SHA.
 # The worker checks out the run revision, never "main when the job starts", and stops
-# before Bob unless main has been at that commit (main's first-parent line). It then
-# freezes the repository there: main and origin/main name the revision, no other
-# branch, tag or remote is left, and .git holds only the revision's history. So a commit
-# merged while a run waits in the bob-task queue cannot change what the run reads
-# (Codex's reviews of PRs #193 and #194).
+# before Bob unless the commit is on main's first-parent line (merges and pushes to main,
+# not a commit from inside a merged branch; the poster names a merge commit or pushed
+# head). It then freezes the repository there: main and origin/main name the revision,
+# no other branch, tag or remote is left, and .git holds only the revision's history.
+# So a commit merged while a run waits in the bob-task queue cannot change what the run
+# reads (Codex's reviews of PRs #193 and #194). This is a consistency guard, not a
+# security boundary: with sudo and an open network Bob could still fetch by URL, which
+# only his prompt forbids.
 # The comment keyword is not "@bob", so the read-only review workflow does not also fire.
 #
 # Containment (Codex's audit, 2026-09-25): Bob's commands and the repository-write token
@@ -42,7 +45,7 @@ on:
         description: "Task file, e.g. docs/tasks/2026-09-25-bob-v0-trace-hash-crosscheck.md"
         required: true
       revision:
-        description: "Full 40-character SHA of the commit to run at; main must have been at it (git log --first-parent main)"
+        description: "Full 40-character SHA to run at: a merge commit or pushed head on main (git log --first-parent main)"
         required: true
 
 # Default for every job; only the publish job is granted write access.
@@ -101,13 +104,19 @@ jobs:
                 | grep -oE '(^|[[:space:]])/bob-run[[:space:]]+docs/tasks/[A-Za-z0-9._-]+\.md[[:space:]]+[0-9a-f]{40}([[:space:]]|$)' \
                 | head -1 || true)
               candidates=$(printf '%s\n' "$command" | awk '{print $2}')
-              revision=$(printf '%s\n' "$command" | awk '{print $3}') ;;
+              revision=$(printf '%s\n' "$command" | awk '{print $3}')
+              # Only the first such line runs, as before. No reply is posted here: this
+              # job cannot write, and a reply would also answer comments that merely
+              # mention the command. The run log says why nothing ran.
+              if [ -z "$command" ]; then
+                echo "No line '/bob-run docs/tasks/<file>.md <full 40-character SHA>'; nothing runs."
+              fi ;;
           esac
           tasks=$(printf '%s\n' "$candidates" \
             | grep -E '^docs/tasks/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[a-z0-9-]+\.md$' \
             | jq -R -s -c 'split("\n") | map(select(length > 0))' || echo '[]')
           # One full commit SHA per run, fixed here at the trigger. The worker checks
-          # out exactly this commit and checks that main has been at it.
+          # out exactly this commit and checks that it is on main's first-parent line.
           if [ "$tasks" != '[]' ] && ! [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
             echo "The run revision must be a full 40-character commit SHA; nothing runs."
             exit 1
@@ -180,17 +189,18 @@ jobs:
           TASK: ${{ steps.gate.outputs.task }}
           REVISION: ${{ steps.gate.outputs.revision }}
         run: |
-          # Exactly the recorded commit, one main has been at (its first-parent line: a
-          # merge or a push to main, not a commit from inside a merged branch), and the
-          # task file in it. Checked before Bob starts.
+          # Exactly the recorded commit, on main's first-parent line (a merge or a push to
+          # main, not a commit from inside a merged branch), with the task file in it.
+          # Checked before Bob starts. Nothing here or in the freeze is written to disk:
+          # main's line and the fetched refs are newer than the trigger, and Bob, with
+          # sudo, could read any file left on this machine (Codex, PR #194).
           head=$(git rev-parse HEAD)
           if [ "$head" != "$REVISION" ]; then
             echo "Checked out $head, not the run revision $REVISION"
             exit 1
           fi
-          git rev-list --first-parent refs/remotes/origin/main > "$RUNNER_TEMP/main-line.txt"
-          if ! grep -qxF "$REVISION" "$RUNNER_TEMP/main-line.txt"; then
-            echo "$REVISION is not a commit main has been at"
+          if ! grep -qxF "$REVISION" <(git rev-list --first-parent refs/remotes/origin/main); then
+            echo "$REVISION is not on main's first-parent line"
             exit 1
           fi
           test -f "$TASK" || { echo "$TASK is not in $REVISION"; exit 1; }
@@ -201,7 +211,9 @@ jobs:
       # but the run revision: main and origin/main point to it, and no other branch,
       # tag, FETCH_HEAD or remote is left. The objects fetched with them are purged too,
       # since git fsck and git show would read them without a ref (Codex, PR #194), so
-      # .git holds the run revision's history and nothing else.
+      # .git holds the run revision's history and nothing else. A consistency guard,
+      # not a security boundary: Bob could still fetch by URL, which only his prompt
+      # forbids.
       - name: Freeze the repository at the run revision
         id: freeze
         if: steps.gate.outputs.ok == 'true'
@@ -209,27 +221,28 @@ jobs:
           REVISION: ${{ steps.gate.outputs.revision }}
         run: |
           git remote remove origin
-          git for-each-ref --format='%(refname)' > "$RUNNER_TEMP/refs.txt"
-          while IFS= read -r ref; do git update-ref -d "$ref"; done < "$RUNNER_TEMP/refs.txt"
+          # Ref names never hold spaces or glob characters, so word splitting is safe.
+          for ref in $(git for-each-ref --format='%(refname)'); do git update-ref -d "$ref"; done
           rm -f "$(git rev-parse --git-path FETCH_HEAD)"
           git checkout --quiet -B main "$REVISION"
           git update-ref refs/remotes/origin/main "$REVISION"
           git reflog expire --expire=now --expire-unreachable=now --all
           git gc --quiet --prune=now
-          git for-each-ref --format='%(objectname) %(refname)' | tee "$RUNNER_TEMP/refs-left.txt"
-          printf '%s refs/heads/main\n%s refs/remotes/origin/main\n' "$REVISION" "$REVISION" \
-            > "$RUNNER_TEMP/refs-expected.txt"
-          cmp -s "$RUNNER_TEMP/refs-expected.txt" "$RUNNER_TEMP/refs-left.txt" \
-            || { echo "Refs other than the run revision remain"; exit 1; }
+          refs_left=$(git for-each-ref --format='%(objectname) %(refname)')
+          echo "$refs_left"
+          if [ "$refs_left" != "$REVISION refs/heads/main"$'\n'"$REVISION refs/remotes/origin/main" ]; then
+            echo "Refs other than the run revision remain"
+            exit 1
+          fi
           test -z "$(git remote)" && test "$(git rev-parse HEAD)" = "$REVISION"
           # Every object left must be reachable from the revision.
-          git cat-file --batch-all-objects --batch-check='%(objectname)' \
-            | sort > "$RUNNER_TEMP/objects-left.txt"
-          git rev-list --objects "$REVISION" | cut -d' ' -f1 | sort -u \
-            > "$RUNNER_TEMP/objects-reachable.txt"
-          cmp -s "$RUNNER_TEMP/objects-reachable.txt" "$RUNNER_TEMP/objects-left.txt" \
-            || { echo "Objects outside the run revision's history remain"; exit 1; }
-          echo "$(wc -l < "$RUNNER_TEMP/objects-left.txt") objects, all in $REVISION's history"
+          objects_left=$(git cat-file --batch-all-objects --batch-check='%(objectname)' | sort)
+          reachable=$(git rev-list --objects "$REVISION" | cut -d' ' -f1 | sort -u)
+          if [ "$objects_left" != "$reachable" ]; then
+            echo "Objects outside the run revision's history remain"
+            exit 1
+          fi
+          echo "$(printf '%s\n' "$objects_left" | wc -l) objects, all in $REVISION's history"
 
       - uses: actions/setup-python@v5
         if: steps.gate.outputs.ok == 'true'
