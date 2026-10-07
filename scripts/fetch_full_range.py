@@ -54,9 +54,11 @@ and ends the run with a traceback.
 
 The log ends with one ``PROBLEM`` line per problem and ``RESULT <n> problem(s)``; the exit
 status is 0 only with none. The problems: a stop (``STOP`` line), verify not valid, a
-window left with fewer than 2 included pairs, a symbol-month that mask-report excludes
-under the 17% rule, a digest that does not rebuild both manifests, and a run log and
-digest over ``REPORT_LIMIT`` bytes together.
+scored window left with fewer than 2 included pairs, a symbol-month that mask-report
+excludes under the 17% rule, a digest that does not rebuild both manifests, and a run log
+and digest over ``REPORT_LIMIT`` bytes together. The reported window's included pairs are
+logged, but too few of them is no problem: that window decides nothing (spec v1 section 5
+rule 6).
 
 **The digest, format v1:** one line each, its fields separated by single spaces.
 
@@ -473,8 +475,18 @@ def written(spec: DatasetSpec, copy: Path, manifest: dict[str, Any], log: Log) -
 
 
 def verify(
-    spec: DatasetSpec, copy: Path, data_dir: Path, jobs: int, log: Log, problems: list[str]
+    spec: DatasetSpec,
+    copy: Path,
+    data_dir: Path,
+    jobs: int,
+    log: Log,
+    problems: list[str],
+    *,
+    scored: bool,
 ) -> None:
+    """``verify`` on a spec copy, logged. Fewer than ``MINIMUM_PAIRS`` included pairs is a
+    problem only in the ``scored`` window: in the reported one it decides nothing (spec v1
+    section 5 rule 6), so its count is logged and the run goes on."""
     code, text = cli("verify", copy, data_dir, jobs)
     target = data_dir / f"{spec.name}.verify.json"
     digest = _kept(target, text)
@@ -492,10 +504,16 @@ def verify(
         log(f"VERIFY {spec.name} excluded {pair}: {'; '.join(reasons)}")
     if code != 0 or report["status"] != "valid":
         problems.append(f"verify of {spec.name} is {report['status']} (exit {code})")
-    if len(included) < MINIMUM_PAIRS:
+    if len(included) < MINIMUM_PAIRS and scored:
         problems.append(
             f"{spec.name} keeps {len(included)} included pair(s); spec v1 section 5 needs "
             f"{MINIMUM_PAIRS}"
+        )
+    elif len(included) < MINIMUM_PAIRS:
+        log(
+            f"VERIFY {spec.name} keeps {len(included)} included pair(s), fewer than "
+            f"{MINIMUM_PAIRS}: reported, not a problem, since this window decides nothing "
+            "(spec v1 section 5 rule 6)"
         )
 
 
@@ -565,7 +583,7 @@ def fetch(
     restore_filters(scored, plan.filters)
     scored["files"] += funding
     first = written(plan.scored, plan.scored_copy, scored, log)
-    verify(plan.scored, plan.scored_copy, data_dir, args.jobs, log, problems)
+    verify(plan.scored, plan.scored_copy, data_dir, args.jobs, log, problems, scored=True)
     mask_report(plan.scored, plan.scored_copy, data_dir, args.jobs, log, problems)
 
     reported = fetch_dataset(
@@ -585,7 +603,7 @@ def fetch(
             f"is not written: {', '.join(differing)}"
         )
     second = written(plan.reported, plan.reported_copy, reported, log)
-    verify(plan.reported, plan.reported_copy, data_dir, args.jobs, log, problems)
+    verify(plan.reported, plan.reported_copy, data_dir, args.jobs, log, problems, scored=False)
 
     hashes = {
         plan.scored.name: sha256_file(manifest_path(plan.scored_copy)),

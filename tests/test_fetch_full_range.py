@@ -248,6 +248,8 @@ class Run:
     cli_calls: list[tuple[str, Path, bool]] = field(default_factory=list)
     # (dataset, index of its first request, index after its last) for each fetch_dataset
     fetches: list[tuple[str, int, int]] = field(default_factory=list)
+    # (dataset, whether it is the scored window) for each verify the script runs
+    verified: list[tuple[str, bool]] = field(default_factory=list)
     before: dict[str, str] = field(default_factory=dict)
     after: dict[str, str] = field(default_factory=dict)
 
@@ -270,11 +272,16 @@ def run_script(tmp: Path, objects: dict[str, bytes], fail_once: set[str] | None 
     reported.write_text(REPORTED_SPEC, encoding="utf-8")
     run = Run(None, None, "", data, scored, reported, Host(objects, fail_once or set()), [])
     real_cli, real_fetch = fetch_full_range.backtest_cli.main, fetch_full_range.fetch_dataset
+    real_verify = fetch_full_range.verify
 
     def spy_cli(argv: list[str]) -> int:
         spec = Path(argv[argv.index("--spec") + 1])
         run.cli_calls.append((argv[0], spec, manifest_path(spec).is_file()))
         return real_cli(argv)
+
+    def spy_verify(spec: Any, *args: Any, scored: bool) -> None:
+        run.verified.append((spec.name, scored))
+        real_verify(spec, *args, scored=scored)
 
     def spy_fetch(spec: Any, data_dir: Path, **kwargs: Any) -> dict[str, Any]:
         first = len(run.host.requests)
@@ -294,6 +301,7 @@ def run_script(tmp: Path, objects: dict[str, bytes], fail_once: set[str] | None 
         patch.chdir(cwd)
         patch.setattr(fetch_full_range.backtest_cli, "main", spy_cli)
         patch.setattr(fetch_full_range, "fetch_dataset", spy_fetch)
+        patch.setattr(fetch_full_range, "verify", spy_verify)
         for name in ("https_connection", "PublicClient", "exchange_filters", "archive_get"):
             patch.setattr(dataset, name, no_network)
         with contextlib.redirect_stdout(out):
@@ -502,6 +510,50 @@ def test_the_reported_manifest_is_a_subset_with_nothing_downloaded_again(happy: 
     verified = json.loads((happy.data / "synthetic-reported.verify.json").read_text("utf-8"))
     assert verified["status"] == "valid"
     assert "every entry equals synthetic-scored's: True" in happy.out
+    # Only the scored window's pair shortfall can stop the run (spec v1 section 5 rule 6).
+    assert happy.verified == [("synthetic-scored", True), ("synthetic-reported", False)]
+
+
+def test_too_few_pairs_is_a_problem_in_the_scored_window_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec v1 section 5: each window must keep 2 included pairs, but rule 6 says the
+    reported window falling short decides nothing. So a shortfall there is logged and the
+    run goes on, while the scored window's is a problem, which stops Bob."""
+    spec_path = tmp_path / "synthetic-scored.toml"
+    spec_path.write_text(SCORED_SPEC, encoding="utf-8")
+    spec = load_spec(spec_path)
+    rule_8 = {"XRPUSDT": ["XRPUSDT: tick_limit_quotes=2"]}
+    shortfall = {**rule_8, "ETHUSDT": ["ETHUSDT: hours_mismatched=3"]}
+    outcomes = {}
+    for excluded in (rule_8, shortfall):
+        text = json.dumps({"status": "valid", "failures": [], "excluded_pairs": excluded})
+        monkeypatch.setattr(fetch_full_range, "cli", lambda *args, text=text: (0, text))
+        for scored in (True, False):
+            lines: list[str] = []
+            problems: list[str] = []
+            fetch_full_range.verify(
+                spec, spec_path, tmp_path, 1, lines.append, problems, scored=scored
+            )
+            outcomes[len(excluded), scored] = (lines, problems)
+            for pair, reasons in excluded.items():
+                assert f"VERIFY synthetic-scored excluded {pair}: {reasons[0]}" in lines
+    # XRPUSDT alone excluded under rule 8 leaves BTC and ETH: a finding in either window.
+    for scored in (True, False):
+        lines, problems = outcomes[1, scored]
+        assert problems == []
+        assert "included pairs 2 of 3: BTCUSDT, ETHUSDT;" in lines[0]
+        assert len(lines) == 2  # the VERIFY line and XRPUSDT's exclusion
+    lines, problems = outcomes[2, True]
+    assert problems == ["synthetic-scored keeps 1 included pair(s); spec v1 section 5 needs 2"]
+    assert "included pairs 1 of 3: BTCUSDT;" in lines[0]
+    lines, problems = outcomes[2, False]
+    assert problems == []
+    assert "included pairs 1 of 3: BTCUSDT;" in lines[0]
+    assert lines[-1] == (
+        "VERIFY synthetic-scored keeps 1 included pair(s), fewer than 2: reported, not a "
+        "problem, since this window decides nothing (spec v1 section 5 rule 6)"
+    )
 
 
 def test_the_digest_rows_name_each_file_and_only_what_differs_from_a_complete_month() -> None:

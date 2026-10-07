@@ -97,8 +97,8 @@ any line says `FAILED`, stop before Step 3 and report. Step 2 copies the 16 line
 block out of this file, byte for byte:
 
 ```text
-6b8ea6c8188ba5395d87bd85d6c8262474a4e7f6e52c6fb8519683e687a8fe0e  scripts/fetch_full_range.py
-16ff792c29b706fc6c1cac0ee283caf0a4ed9d55a478fcef3b19efd8dfce3bb9  tests/test_fetch_full_range.py
+df00aab3de98d1117aa85f5c847795384a715c8ebed558769131749dc7e1dbfd  scripts/fetch_full_range.py
+85c2f5e1714e7e479fa6a41a48ff89c647ddfe03ef2fefdc942b9515debf87b4  tests/test_fetch_full_range.py
 f4216524de089988a15fbddd72a9625a737f41be5a8dcb4bed6a36ccf8e0addb  config/datasets/full-range-2017-2024.toml
 8dad70041f4423706b0eeba272595fb24af74cb83713b6316abb68e5a40dafcb  config/datasets/full-range-2019-2024.toml
 349ce104be44d28d918b22dc99dd611f56d174011b50cb144393a97940c72374  config/datasets/long-bull-bear-2022.manifest.json
@@ -137,7 +137,7 @@ and its output go into the report.
    tail -n 3 data/full-range-tests.log
    ```
 
-   It must print `exit 0`, and the log's last line must report `12 passed`. (Add no `-q`:
+   It must print `exit 0`, and the log's last line must report `13 passed`. (Add no `-q`:
    `pyproject.toml` already passes one, and a second one hides that line.)
 4. The run: about 3,600 requests to data.binance.vision, `verify` on both windows and
    `mask-report` on the scored one. Expect about an hour; the job allows 240 minutes.
@@ -232,7 +232,9 @@ and its output go into the report.
      - both `KLINES` lines, with each window's `missing` count against the 46 and 25
        expected above;
      - both `VERIFY` lines, and every excluded pair with its reason. An XRPUSDT exclusion
-       under §5 rule 8 is a finding, not a stop, while each window keeps two pairs;
+       under §5 rule 8 is a finding, not a stop, while the scored window keeps two
+       pairs. The reported window's included pairs are a finding whatever their number:
+       below two, the script logs a `VERIFY ... keeps` line and goes on (§5 rule 6);
      - the `MASK totals` line, XRPUSDT's quote-test line and the number of symbol-months
        listed;
      - the `REQUESTS` line, the `find` count from Step 5, and the `REPORT` line;
@@ -277,11 +279,13 @@ and its output go into the report.
 ## Validity checks (all must hold for a valid run)
 
 1. Step 2: 16 `OK` lines and `exit 0`.
-2. Step 3: `exit 0` and `12 passed`.
+2. Step 3: `exit 0` and `13 passed`.
 3. Step 4: `exit 0` and the last line `RESULT 0 problem(s)`, which the script prints only
    when all of these hold:
    - `FUNDING 60 of 60 months ok`;
-   - both `VERIFY` lines say `exit 0 status valid` and keep at least 2 of the 3 pairs;
+   - both `VERIFY` lines say `exit 0 status valid`, and the scored window's keeps at
+     least 2 of the 3 pairs. The reported window's count is reported only: below 2, it
+     decides nothing (§5 rule 6), so it is no problem;
    - `MASK symbol-months` lists no month with `excluded True`;
    - `COMPARE full-range-2019-2024: ... every entry equals full-range-2017-2024's: True`;
    - `DIGEST ... rebuilds both manifests byte for byte: True`;
@@ -318,8 +322,10 @@ Stop, keep everything, and report what you have, with the full error, if:
 - a transport error persists through 4 attempts (a traceback after
   `RETRY attempt 4 of 4`);
 - a funding month is not `ok` (a `STOP` line);
-- either window is left with fewer than 2 included pairs, or either `verify` is not
-  `valid`;
+- either `verify` is not `valid`, or the scored window, `full-range-2017-2024`, is left
+  with fewer than 2 included pairs. A shortfall in the reported window,
+  `full-range-2019-2024`, is not a stop: spec v1 §5 rule 6 says it decides nothing.
+  Report its count in the results and go on;
 - `mask-report` excludes any symbol-month under the 17% rule. The eligibility record found
   every one of its 772 measured pair-months under 17%. The one unusable month here,
   DOGEUSDT 2020-02, has no expected hours, since both specs document it as an absence.
