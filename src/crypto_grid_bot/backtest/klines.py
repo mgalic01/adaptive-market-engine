@@ -197,16 +197,31 @@ _MEMBER_MONTH = re.compile(r"-(\d{4}-\d{2})\.csv$")
 # cannot be decoded: ``zlib.error``, ``lzma.LZMAError`` and ``EOFError`` from a corrupt
 # deflate or LZMA stream, and ``RuntimeError`` from an encrypted member, whose subclass
 # ``NotImplementedError`` is a compression method zipfile cannot read. A corrupt bzip2
-# stream raises an ``OSError`` instead, which ``undecodable`` tells from the file system's.
+# stream raises an ``OSError`` instead, which ``undecodable`` tells from any other.
 UNDECODABLE = (zlib.error, lzma.LZMAError, EOFError, RuntimeError)
 
 
-def undecodable(exc: BaseException) -> bool:
-    """Whether ``exc``, raised by ``read_member`` on a stored archive, says that its member
-    cannot be decoded: one of ``UNDECODABLE``, or an ``OSError`` without an errno, as
-    bzip2's "Invalid data stream" is. An ``OSError`` with an errno (a missing file, a
-    denied open) is the file system's error, not the archive's."""
-    return isinstance(exc, UNDECODABLE) or (isinstance(exc, OSError) and exc.errno is None)
+def member_compression(path: Path) -> int | None:
+    """The compression method (``ZipInfo.compress_type``) of the archive's only member, or
+    None when the archive cannot be opened or holds other than one member."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+    except (OSError, zipfile.BadZipFile):
+        return None
+    return members[0].compress_type if len(members) == 1 else None
+
+
+def undecodable(exc: BaseException, compression: int | None) -> bool:
+    """Whether ``exc``, raised by ``read_member`` on a stored archive whose only member is
+    compressed by ``compression`` (``member_compression``), says that the member cannot be
+    decoded: one of ``UNDECODABLE``, or an ``OSError`` without an errno from a bzip2 member,
+    as bzip2's "Invalid data stream" is. Any other ``OSError`` is not the archive's: one
+    with an errno is the file system's (a missing file, a denied open), and an errno-less
+    one from another compression method is no decoder's (Codex review of #189)."""
+    if isinstance(exc, UNDECODABLE):
+        return True
+    return isinstance(exc, OSError) and exc.errno is None and compression == zipfile.ZIP_BZIP2
 
 
 def read_member(path: Path, expected_member: str) -> str:
@@ -383,10 +398,10 @@ def read_archive_repaired(path: Path, symbol: str, interval: str, month: str) ->
     """``parse_rows_repaired`` of the archive's single CSV member.
 
     An archive that ``read_member`` cannot open or decode is unreadable, not an error: a
-    ``DataError``, or what ``undecodable`` accepts. A missing file still raises, as does a
-    bad symbol, a month outside the development window or an interval other than 1m and
-    1h: those are the caller's errors, as in ``read_archive``. Daily archives keep
-    ``read_archive``: a daily bar is never masked.
+    ``DataError``, or what ``undecodable`` accepts given the member's compression method. A
+    missing file still raises, as does a bad symbol, a month outside the development window
+    or an interval other than 1m and 1h: those are the caller's errors, as in
+    ``read_archive``. Daily archives keep ``read_archive``: a daily bar is never masked.
     """
     symbol_name(symbol)
     development_month(month)
@@ -396,7 +411,7 @@ def read_archive_repaired(path: Path, symbol: str, interval: str, month: str) ->
     except DataError as exc:
         return _unreadable(_why(exc), interval, month)
     except Exception as exc:
-        if not undecodable(exc):
+        if not undecodable(exc, member_compression(path)):
             raise
         return _unreadable(_why(exc), interval, month)
     return parse_rows_repaired(text, interval, month)

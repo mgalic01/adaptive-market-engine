@@ -467,6 +467,28 @@ class UnreadableTests(unittest.TestCase):
                     self.assertIs(error, type(raised.exception))
                     self.assertUnreadable(read_archive_repaired(path, "ADAUSDT", "1m", MONTH))
 
+    def test_an_errno_less_os_error_is_unreadable_only_from_a_bzip2_member(self):
+        # Codex review of #189: bzip2's "Invalid data stream" is an OSError without an
+        # errno, and so may be another failure while reading. Only a bzip2 member's makes
+        # the archive unreadable; from a deflate or a stored member it still raises.
+        name = f"ADAUSDT-1m-{MONTH}.csv"
+        failure = OSError("Invalid data stream")
+        with tempfile.TemporaryDirectory() as temp:
+            for method in (zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED, zipfile.ZIP_BZIP2):
+                path = Path(temp) / f"method-{method}.zip"
+                with zipfile.ZipFile(path, "w", method) as archive:
+                    archive.writestr(name, minute_rows(JAN_2024_MS, 3))
+                with (
+                    self.subTest(method=method),
+                    patch.object(zipfile.ZipExtFile, "read", side_effect=failure),
+                ):
+                    if method == zipfile.ZIP_BZIP2:
+                        self.assertUnreadable(read_archive_repaired(path, "ADAUSDT", "1m", MONTH))
+                        continue
+                    with self.assertRaises(OSError) as raised:
+                        read_archive_repaired(path, "ADAUSDT", "1m", MONTH)
+                    self.assertIs(failure, raised.exception)
+
     def test_a_file_system_error_still_raises(self):
         # An OSError with an errno is the file system's, not the archive's: a denied open
         # must not turn a month's hours into masked ones.

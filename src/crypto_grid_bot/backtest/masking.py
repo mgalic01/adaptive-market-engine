@@ -1,4 +1,5 @@
-"""Hour masks and the 17% rule, month by month (spec v1 section 5, rules 1, 2, 3 and 5).
+"""Hour masks, the 17% rule and XRP's actual-quotes test (spec v1 section 5, rules 1, 2, 3,
+5 and 8).
 
 One ``MonthMask`` describes one symbol-month: which hours should exist (the month's hours
 minus the symbol's documented exclusions, listing hours included), which of them are masked
@@ -16,10 +17,11 @@ import this module.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
+from typing import NamedTuple
 
 from crypto_grid_bot.backtest.dataset import BasketExclusion
 from crypto_grid_bot.backtest.klines import (
@@ -29,7 +31,7 @@ from crypto_grid_bot.backtest.klines import (
     aggregate,
     month_bounds_ms,
 )
-from crypto_grid_bot.backtest.replay import VOLUME_DRIFT_TOLERANCE, compare_bars
+from crypto_grid_bot.backtest.replay import VOLUME_DRIFT_TOLERANCE, bar_quotes, compare_bars
 from crypto_grid_bot.backtest.window import development_month
 
 HOUR_MS = INTERVAL_MS["1h"]
@@ -43,6 +45,9 @@ PRICE_FIELDS = ("open", "high", "low", "close")
 
 # More than this share of a month's expected hours masked as real defects excludes the month.
 SEVENTEEN = Fraction(17, 100)
+
+# Rule 8's pair: the one whose quotes can break the engine's spread limit at its tick.
+QUOTE_TESTED_SYMBOL = "XRPUSDT"
 
 UNTRUSTED_ROW = "untrusted row"
 NO_HOURLY_BAR = "no hourly bar"
@@ -298,3 +303,60 @@ def apply_seventeen_percent(month: MonthMask) -> MonthMask:
 def masked_days(masked: Iterable[int]) -> frozenset[int]:
     """The UTC day opens that contain a masked hour (rule 3: P3 skips these days)."""
     return frozenset(hour // DAY_MS * DAY_MS for hour in masked)
+
+
+def quote_spreads_pct(
+    minutes: Iterable[Kline], symbol: str, spread: Decimal, tick: Decimal
+) -> Iterator[Decimal]:
+    """The spread in percent of every quote the replay synthesizes from ``minutes``, in the
+    engine's own arithmetic (``PaperSimulator._validate_frame``: ``(ask - bid) / ask * 100``).
+
+    ``spread`` is the run's, a fraction (``RunConfig.spread``), and ``tick`` the pair's. Both
+    intrabar paths give the same four quotes in another order, so one path suffices. Each
+    minute is read once, as it arrives. The engine divides at 50 digits and this at the
+    default 28; a comparison with the limit comes out the same, since a quotient other than
+    the limit differs from it by far more than the 28th digit.
+    """
+    for kline in minutes:
+        for quote in bar_quotes(kline, symbol, "high_first", spread, tick):
+            yield (quote.ask - quote.bid) / quote.ask * 100
+
+
+def widest_spread_pct(
+    minutes: Iterable[Kline], symbol: str, spread: Decimal, tick: Decimal
+) -> Decimal:
+    """The largest spread in percent over every quote ``bar_quotes`` synthesizes from
+    ``minutes`` (0 with none), for XRPUSDT's test (spec v1 section 5, rule 8)."""
+    return max(quote_spreads_pct(minutes, symbol, spread, tick), default=Decimal(0))
+
+
+def tick_limit_quotes(
+    minutes: Iterable[Kline], symbol: str, spread: Decimal, tick: Decimal, limit: Decimal
+) -> int:
+    """How many of those quotes have a spread above ``limit`` in percent: the engine's own
+    rejection condition (``> limit``), so a quote exactly at it passes. Rule 8 excludes
+    XRPUSDT's pair-window when this is not zero."""
+    return sum(pct > limit for pct in quote_spreads_pct(minutes, symbol, spread, tick))
+
+
+class QuoteTest(NamedTuple):
+    """Both figures of rule 8's test over one span, from a single pass."""
+
+    widest_spread_pct: Decimal
+    tick_limit_quotes: int
+
+    @property
+    def breached(self) -> bool:
+        return self.tick_limit_quotes > 0
+
+
+def quote_test(
+    minutes: Iterable[Kline], symbol: str, spread: Decimal, tick: Decimal, limit: Decimal
+) -> QuoteTest:
+    """``widest_spread_pct`` and ``tick_limit_quotes`` of ``minutes``, read once: the minutes
+    of a long window are far too many to hold, and ``load_minutes`` serves each only once."""
+    widest, over = Decimal(0), 0
+    for pct in quote_spreads_pct(minutes, symbol, spread, tick):
+        widest = max(widest, pct)
+        over += pct > limit
+    return QuoteTest(widest, over)

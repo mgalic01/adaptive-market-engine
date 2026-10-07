@@ -601,21 +601,80 @@ class MaskTests(unittest.TestCase):
                     )
                     self.assertEqual(window.included, ("BTCUSDT", "ETHUSDT", "XRPUSDT"))
 
-    def test_the_long_window_data_rules_are_not_applied_yet(self) -> None:
-        # The hook for section 5 rules 1-8: the long-window data PR fills it. Until then
-        # XRP stays in every window (rule 8 excludes nothing), and a failed hour fails its
-        # integrity check and excludes the pair-window, as in stage 1, where rule 2 will
-        # mask an incomplete hour instead and the post-mask checks will keep the pair.
+    def test_scorer_excludes_the_same_xrp_window(self) -> None:
+        # Section 5 rule 8: a replayed XRP quote that breaks the tick limit puts
+        # tick_limit_quotes in XRPUSDT's cross-check record, which scoped_failures makes its
+        # own failure. window_of excludes that pair-window as it does any failed check, with
+        # no hook of its own (data_rule_exclusions stays empty), and no XRP run is then
+        # expected: the matrix wants rows from the two included pairs only. A failed hour
+        # still fails its check and excludes the pair-window, as in stage 1.
         with tempfile.TemporaryDirectory() as directory:
             write_datasets(Path(directory))
             spec = load_spec(Path(directory) / "full-range-2017-2024.toml")
-        for pair in spec.traded:
-            self.assertEqual(score.data_rule_exclusions(spec, pair), [])
-        checks = clean_checks(spec)
-        self.assertIn("XRPUSDT", score.window_of(spec, checks).included)
-        next(c for c in checks if c["symbol"] == "XRPUSDT")["hours_incomplete"] = 1
-        window = score.window_of(spec, checks)
-        self.assertEqual(window.excluded, {"XRPUSDT": ("XRPUSDT: hours_incomplete=1",)})
+            for pair in spec.traded:
+                self.assertEqual(score.data_rule_exclusions(spec, pair), [])
+            checks = clean_checks(spec)
+            window = score.window_of(spec, checks)
+            self.assertEqual(window.included, ("BTCUSDT", "ETHUSDT", "XRPUSDT"))
+            xrp = next(c for c in checks if c["symbol"] == "XRPUSDT")
+            xrp["tick_limit_quotes"] = 3
+            window = score.window_of(spec, checks)
+            self.assertEqual(window.excluded, {"XRPUSDT": ("XRPUSDT: tick_limit_quotes=3",)})
+            self.assertEqual(window.included, ("BTCUSDT", "ETHUSDT"))
+            for pair in spec.traded:
+                self.assertEqual(score.data_rule_exclusions(spec, pair), [])
+            # The results file the CLI writes for it has no XRP rows, and one that kept them
+            # would have them left out: either way the scorer's runs are BTC's and ETH's.
+            dataset = "full-range-2017-2024"
+            rows = rows_for(dataset, "V0", directory=Path(directory))
+            for kept in (rows, [r for r in rows if r["symbol"] != "XRPUSDT"]):
+                written = document(dataset, kept, Path(directory), hourly_cross_checks=checks)
+                # As the scorer reads a file: floats as Decimals.
+                results = json.loads(json.dumps(written, default=str), parse_float=Decimal)
+                runs = list(score.runs_of(results, window))
+                self.assertEqual({run.symbol for _, run in runs}, {"BTCUSDT", "ETHUSDT"})
+                self.assertEqual(len(runs), 4)  # two pairs, two paths
+            # The stage wants the two included pairs' runs only, so none is missing.
+            found = {"V0": {run.key: run for _, run in runs}}
+            judged = score.judge(score.STAGE_2, {dataset: window}, {dataset: {"V0"}}, found)
+            (v0,) = judged.scores
+            self.assertEqual((v0.variant, len(v0.runs), v0.missing), ("V0", 4, ()))
+            # Another failure of XRP's check joins the breach in its reasons.
+            xrp["hours_incomplete"] = 1
+            window = score.window_of(spec, checks)
+            reasons = ("XRPUSDT: hours_incomplete=1", "XRPUSDT: tick_limit_quotes=3")
+            self.assertEqual(window.excluded, {"XRPUSDT": reasons})
+            del xrp["tick_limit_quotes"]
+            window = score.window_of(spec, checks)
+            self.assertEqual(window.excluded, {"XRPUSDT": ("XRPUSDT: hours_incomplete=1",)})
+
+    def test_window_of_is_unchanged_without_the_new_keys(self) -> None:
+        # Spec v1 section 6, decision 18: the long-window data code leaves acceptance.py's
+        # code as it is. On cross-checks that carry none of the fields that code adds, as
+        # every stage-1 record does, window_of gives each stage-1 window its pairs and its
+        # exclusions exactly as before. A day the daily check skips for a mask is a count,
+        # not a failure: it excludes nothing. Stage 1's own files are not in the
+        # repository; the stage-1 identity check (scripts/stage1_identity.py) reads them.
+        added = {"daily_days_skipped_for_masks", "tick_limit_quotes"}
+        sol = (score.FILTER_EXCLUSIONS["practice-2022", "SOLUSDT"],)
+        for name, days, included, excluded in (
+            ("verify-2024h1", 182, ("ADAUSDT", "BTCUSDT"), {}),
+            ("practice-2022", 245, ("BTCUSDT", "XRPUSDT"), {"SOLUSDT": sol}),
+        ):
+            with self.subTest(name):
+                spec = load_spec(SPECS / f"{name}.toml")
+                checks = clean_checks(spec)
+                self.assertFalse(added & {field for check in checks for field in check})
+                window = score.window_of(spec, checks)
+                self.assertEqual(
+                    score.Window(name, spec.traded, excluded, days, len(spec.months(spec.start))),
+                    window,
+                )
+                self.assertEqual(included, window.included)
+                for check in checks:
+                    if "daily_days_compared" in check:
+                        check["daily_days_skipped_for_masks"] = 3
+                self.assertEqual(window, score.window_of(spec, checks))
 
     def test_practice_2022_sol_fails_the_filter_check_for_every_variant(self) -> None:
         spec = load_spec(SPECS / "practice-2022.toml")

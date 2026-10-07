@@ -1,9 +1,10 @@
-"""Historical replay commands: fetch, verify and run. Offline except ``fetch``.
+"""Historical replay commands: fetch, verify, run and mask-report. Offline except ``fetch``.
 
     python -m crypto_grid_bot.backtest fetch  --spec config/datasets/verify-2024h1.toml
     python -m crypto_grid_bot.backtest verify --spec config/datasets/verify-2024h1.toml
     python -m crypto_grid_bot.backtest run    --spec config/datasets/verify-2024h1.toml \\
         --config config/default.toml
+    python -m crypto_grid_bot.backtest mask-report --spec config/datasets/verify-2024h1.toml
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import argparse
 import json
 import shutil
 import subprocess  # nosec B404
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -35,11 +36,22 @@ from crypto_grid_bot.backtest.features import FEATURE_VERSION, STRUCTURE_FEATURE
 from crypto_grid_bot.backtest.jobs import (
     SOURCE_FILES,
     SOURCE_IDENTITY,
+    SymbolMask,
     check_sources,
     cross_check_job,
     manifest_path,
+    mask_job,
+    quote_test_job,
+    quoted,
     run_job,
     variant_policy,
+)
+from crypto_grid_bot.backtest.masking import (
+    HOUR_MS,
+    QUOTE_TESTED_SYMBOL,
+    UNTRUSTED_ROW,
+    MonthMask,
+    real_defect_share,
 )
 from crypto_grid_bot.backtest.replay import (
     ENGINE_VERSION,
@@ -72,6 +84,11 @@ INTEGRITY_FIELDS = (
 
 # Checks on an untraded market proxy or basket symbol (hourly data only).
 SERIES_INTEGRITY_FIELDS = ("series_hours_missing", "series_hours_duplicated")
+
+
+# A traded pair's actual-quotes test (spec v1 section 5 rule 8): the check carries the field
+# only when a replayed quote breaks the spread limit, so it is read with a default of 0.
+QUOTE_INTEGRITY_FIELDS = ("tick_limit_quotes",)
 
 
 # Present only when the spec declares daily_warmup_start (spec v1 P3).
@@ -123,6 +140,12 @@ def integrity_failures(
             for field in fields
             if check[field] and kept(check, field)
         ]
+        if not series:
+            failures += [
+                f"{check['symbol']}: {field}={check[field]}"
+                for field in QUOTE_INTEGRITY_FIELDS
+                if check.get(field, 0) and kept(check, field)
+            ]
         # A basket symbol documented as absent for the whole window has no hours.
         wholly_excluded = (
             series and check["series_hours_excluded"] and not check["series_hours_missing"]
@@ -186,6 +209,124 @@ def result_failures(results: list[dict[str, Any]]) -> list[str]:
                 f"{r['final_unsellable_notional']} unsold"
             )
     return failures
+
+
+def hour_text(open_ms: int) -> str:
+    """An hour's open as ``YYYY-MM-DDTHH:00Z``, the form of ``[[basket_exclusions]]``."""
+    return datetime.fromtimestamp(open_ms // 1000, UTC).strftime("%Y-%m-%dT%H:00Z")
+
+
+def masked_ranges(months: Sequence[MonthMask]) -> list[dict[str, str]]:
+    """A symbol's masked hours as ``[from, to)`` ranges of whole UTC hours, the form of
+    ``[[basket_exclusions]]``, each with its reason. Consecutive hours masked for one reason
+    merge into one range, across a month's end too."""
+    reasons = {hour: month.reasons[hour] for month in months for hour in month.masked}
+    spans: list[tuple[int, int, str]] = []
+    for hour in sorted(reasons):
+        if spans and spans[-1][1:] == (hour, reasons[hour]):
+            spans[-1] = (spans[-1][0], hour + HOUR_MS, reasons[hour])
+        else:
+            spans.append((hour, hour + HOUR_MS, reasons[hour]))
+    return [{"from": hour_text(a), "to": hour_text(b), "reason": why} for a, b, why in spans]
+
+
+def comparison_mask(masks: Sequence[SymbolMask]) -> dict[str, Any]:
+    """Spec v1 section 5's comparison mask from the symbols' masks, built before any check
+    or run: for each symbol with a masked hour, its masked hours (``masked_ranges``) and the
+    months the 17% rule excludes. Rule 8's breach is the one entry no mask can give: XRPUSDT's
+    check finds it, so ``with_quote_breaches`` adds it after the cross-checks, before any
+    replay, and the mask is complete before anything replays or is scored. Empty when no hour
+    is masked and nothing breaches, as in every stage-1 window; an empty mask is written
+    nowhere, so those windows' outputs keep their exact layout."""
+    mask: dict[str, Any] = {}
+    for symbol_mask in masks:
+        ranges = masked_ranges(symbol_mask.months)
+        excluded = [month.month for month in symbol_mask.months if month.excluded]
+        if ranges or excluded:
+            mask[symbol_mask.symbol] = {"masked": ranges, "excluded_months": excluded}
+    return mask
+
+
+def with_quote_breaches(mask: dict[str, Any], counts: Mapping[str, int]) -> dict[str, Any]:
+    """The comparison mask with XRPUSDT's actual-quotes breach (spec v1 section 5 rule 8):
+    each symbol in ``counts`` with a non-zero ``tick_limit_quotes`` gains it in its entry,
+    beside its masked hours, or an entry holding only it. A pass changes nothing, so a window
+    that passes keeps its layout. It is the one entry no mask can give, since it needs the
+    replayed quotes, which the symbol's check takes after the masks; it joins the mask before
+    any replay or scoring."""
+    result = dict(mask)
+    for symbol, quotes in counts.items():
+        if quotes:
+            entry = {"masked": [], "excluded_months": [], **mask.get(symbol, {})}
+            result[symbol] = {**entry, "tick_limit_quotes": quotes}
+    return result
+
+
+def check_job(mask: frozenset[int] | None, config: Path) -> Callable[..., dict[str, Any]]:
+    """``cross_check_job`` as the pool receives it for one symbol: bound to the config, which
+    XRPUSDT's actual-quotes test reads, and to the symbol's mask only when it has one, so a
+    symbol whose mask is None (every stage-1 symbol) is checked as before masks existed."""
+    if mask is None:
+        return partial(cross_check_job, config_path=config)
+    return partial(cross_check_job, mask=mask, config_path=config)
+
+
+def _month_report(month: MonthMask) -> dict[str, Any]:
+    share = real_defect_share(month)
+    return {
+        "month": month.month,
+        "expected_hours": len(month.expected),
+        "masked_hours": len(month.masked),
+        "open_only_hours": len(month.open_only),
+        # Exact, as the 17% rule compares it (``Fraction(text)`` reads it back); null for a
+        # month with no expected hour, which the rule never excludes.
+        "real_defect_share": None if share is None else str(share),
+        "excluded": month.excluded,
+    }
+
+
+MASK_COUNTS = ("repaired_hours", "dropped_hours", "masked_hours")
+
+
+def mask_report(
+    spec: DatasetSpec,
+    masks: Sequence[SymbolMask],
+    mask: dict[str, Any],
+    quote: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """``mask-report``'s document, from the symbols' masks, their comparison ``mask`` and
+    XRPUSDT's actual-quotes ``quote`` test (``jobs.quote_test_job``), with no check and no
+    replay. Per symbol: whether its mask is None, so that it loads with today's strict reader
+    (every stage-1 symbol must), its counts and its months. ``xrp_quote_test`` is the test's
+    result where the spec trades XRPUSDT and null elsewhere; ``mask`` already carries its
+    breach, as a run's does.
+
+    The counts are of expected hours: ``repaired_hours`` hold a repaired row,
+    ``dropped_hours`` a row the reader dropped (masked as an untrusted row) and
+    ``masked_hours`` are masked for any reason. A repaired or dropped row inside a documented
+    absence counts in none of them, though it still makes the symbol's mask a set."""
+    symbols: dict[str, Any] = {}
+    for symbol_mask in masks:
+        months = symbol_mask.months
+        symbols[symbol_mask.symbol] = {
+            "mask_is_none": symbol_mask.mask is None,
+            "repaired_hours": sum(len(m.repaired) for m in months),
+            "dropped_hours": sum(m.reasons[h] == UNTRUSTED_ROW for m in months for h in m.masked),
+            "masked_hours": sum(len(m.masked) for m in months),
+            "months": [_month_report(m) for m in months],
+        }
+    totals = {
+        "symbols_with_a_mask": sum(m.mask is not None for m in masks),
+        **{count: sum(s[count] for s in symbols.values()) for count in MASK_COUNTS},
+        "excluded_months": sum(month.excluded for m in masks for month in m.months),
+    }
+    return {
+        "dataset": spec.name,
+        "comparison_mask": mask,
+        "xrp_quote_test": quote,
+        "symbols": symbols,
+        "totals": totals,
+    }
 
 
 def _identity(spec_path: Path, config_path: Path) -> dict[str, str]:
@@ -308,7 +449,7 @@ def _table(results: list[dict[str, Any]]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m crypto_grid_bot.backtest")
-    parser.add_argument("command", choices=("fetch", "verify", "run"))
+    parser.add_argument("command", choices=("fetch", "verify", "run", "mask-report"))
     parser.add_argument("--spec", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=Path("config/default.toml"))
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
@@ -473,13 +614,57 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     with executor as pool:
+        # Spec v1 section 5: hour-level masking runs first, for every checked symbol, and
+        # the comparison mask is built from it before any check or run (rule 8's breach
+        # joins it after the checks, before any replay). Every mask is submitted before any
+        # is awaited, so they run in parallel, as the checks do.
+        symbols = checked_symbols(spec)
+        pending = [pool.submit(mask_job, args.spec, args.data_dir, s) for s in symbols]
+        symbol_masks = [symbol_mask.result() for symbol_mask in pending]
+        mask = comparison_mask(symbol_masks)
+        masks = {symbol_mask.symbol: symbol_mask.mask for symbol_mask in symbol_masks}
+        if args.command == "mask-report":
+            # Rule 8's statistic, on XRPUSDT's own mask: the same one its check records.
+            quote = (
+                pool.submit(
+                    quote_test_job,
+                    args.spec,
+                    args.data_dir,
+                    args.config,
+                    masks[QUOTE_TESTED_SYMBOL],
+                ).result()
+                if quoted(spec, QUOTE_TESTED_SYMBOL)
+                else None
+            )
+            if quote is not None:
+                mask = with_quote_breaches(mask, {QUOTE_TESTED_SYMBOL: quote["tick_limit_quotes"]})
+            print(json.dumps(mask_report(spec, symbol_masks, mask, quote), indent=1))
+            return 0
+        # The month tables (every month's expected hours) served only the comparison mask and
+        # the map; only the masked hours go on, so a long window's tables do not outlive this
+        # phase (the plan: "only sets of masked hours are kept").
+        del pending, symbol_masks
         # Chronology is settled before any replay starts; invalid data never replays.
-        # Submit every check before waiting on any, so they run in parallel.
+        # Submit every check before waiting on any, so they run in parallel. Each check
+        # runs on its symbol's post-mask expected set; a symbol whose mask is None (every
+        # stage-1 symbol) is checked exactly as before masks existed. Every check gets the
+        # config, which XRPUSDT's actual-quotes test reads (spec v1 section 5 rule 8).
         checks = [
-            pool.submit(cross_check_job, args.spec, args.data_dir, symbol, args.strict_volume)
-            for symbol in checked_symbols(spec)
+            pool.submit(
+                check_job(masks[symbol], args.config),
+                args.spec,
+                args.data_dir,
+                symbol,
+                args.strict_volume,
+            )
+            for symbol in symbols
         ]
         cross_checks = [check.result() for check in checks]
+        # Rule 8's breach is found by XRPUSDT's check, after the masks, and joins the mask
+        # here, before any replay or scoring.
+        mask = with_quote_breaches(
+            mask, {check["symbol"]: check.get("tick_limit_quotes", 0) for check in cross_checks}
+        )
         # Section 5: a traded pair whose own check failed is excluded and not replayed, and
         # the other pairs run. A failure that reaches every pair, or an exclusion that
         # leaves none, stops the run: nothing replays, and every failure is reported.
@@ -499,16 +684,25 @@ def main(argv: list[str] | None = None) -> int:
                         "integrity_rules": integrity,
                         "failures": failures,
                         **({"excluded_pairs": excluded} if excluded else {}),
+                        # Present only when an hour is masked, as in results.json.
+                        **({"comparison_mask": mask} if mask else {}),
                         "checks": cross_checks,
                     },
                     indent=1,
                 )
             )
             return 2 if failures else 0
-        # A sensitivity run's fill trigger reaches every grid replay (D9). Without the flag
-        # each job is submitted exactly as before. D places no resting order, so the
-        # trigger cannot change it.
-        grid_job = run_job if fill is None else partial(run_job, fill_trigger=fill)
+        # A sensitivity run's fill trigger reaches every grid replay (D9), and the masks
+        # reach every run, D's included, once any symbol has one (a set, even an empty one,
+        # loads with the repairing reader). Without either, each job is submitted exactly as
+        # before. D places no resting order, so the trigger cannot change it.
+        masked = any(symbol_mask is not None for symbol_mask in masks.values())
+        options: dict[str, Any] = {
+            **({"fill_trigger": fill} if fill is not None else {}),
+            **({"masks": masks} if masked else {}),
+        }
+        grid_job = partial(run_job, **options) if options else run_job
+        benchmark_job = partial(trend_job, masks=masks) if masked else trend_job
         futures = [
             pool.submit(
                 grid_job,
@@ -531,7 +725,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.trend_benchmark:
             futures += [
                 pool.submit(
-                    trend_job, args.spec, args.config, args.data_dir, s, mode, (maker, taker)
+                    benchmark_job, args.spec, args.config, args.data_dir, s, mode, (maker, taker)
                 )
                 for s in pairs
                 for mode in PATH_MODES
@@ -584,6 +778,11 @@ def main(argv: list[str] | None = None) -> int:
         # is excluded for every variant alike and has no rows, and its failing check stays
         # in hourly_cross_checks. It is not a failure of the runs that did replay.
         **({"excluded_pairs": excluded} if excluded else {}),
+        # Spec v1 section 5: every masked hour and excluded pair-month, fixed before any
+        # check or run, and rule 8's breach, added after the checks and before any replay.
+        # Present only when it is non-empty, so a window with no mask and no breach (every
+        # stage-1 window) keeps its exact layout.
+        **({"comparison_mask": mask} if mask else {}),
         "hourly_cross_checks": cross_checks,
         "results": results,
     }
@@ -591,7 +790,11 @@ def main(argv: list[str] | None = None) -> int:
     table = _table(results)
     (out / "summary.md").write_text(table + "\n")
     brief = [{k: v for k, v in r.items() if k != "hourly_equity"} for r in results]
-    shown = {"out": str(out), **({"excluded_pairs": excluded} if excluded else {})}
+    shown = {
+        "out": str(out),
+        **({"excluded_pairs": excluded} if excluded else {}),
+        **({"comparison_mask": mask} if mask else {}),
+    }
     print(json.dumps({**shown, "hourly_cross_checks": cross_checks}, indent=1))
     print(table)
     print(json.dumps(brief, indent=1, default=str))

@@ -34,7 +34,7 @@ from crypto_grid_bot.backtest.features import (
     FeatureEngine,
     SeriesFeatures,
 )
-from crypto_grid_bot.backtest.jobs import run_job, variant_policy
+from crypto_grid_bot.backtest.jobs import SymbolMask, run_job, variant_policy
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import PATH_MODES
 from crypto_grid_bot.simulation.runner import FULL_STACK
@@ -226,11 +226,18 @@ BASKET_CHECK |= {field: 0 for field in cli.SERIES_INTEGRITY_FIELDS}
 ETH_EXCLUDED = ("ETHUSDT: daily_days_missing=3",)
 
 
-def checks(spec_path, data_dir, symbol, strict_volume=False):
+def checks(spec_path, data_dir, symbol, strict_volume=False, *, config_path=None):
     check = {"symbol": symbol, **(PAIR_CHECK if symbol in TRADED else BASKET_CHECK)}
     if symbol == "ETHUSDT":
         check["daily_days_missing"] = 3
     return check
+
+
+def no_mask(spec_path, data_dir, symbol):
+    """A made-up mask, like the made-up checks (``checks``): None for every symbol, so the
+    suite stays on the clean path it was written for. The real ``mask_job`` would mask
+    almost the whole evaluation month, since the dataset holds only an hour of minutes."""
+    return SymbolMask(symbol, None, ())
 
 
 class CliToScorerTests(SyntheticDataset):
@@ -243,6 +250,7 @@ class CliToScorerTests(SyntheticDataset):
         command += ["--config", str(ROOT / "config/default.toml"), "--out", str(out)]
         command += ["--jobs", "1", "--maker-fee", "0", "--taker-fee", "0.0009", *flags]
         with (
+            patch.object(cli, "mask_job", no_mask),
             patch.object(cli, "cross_check_job", checks),
             contextlib.redirect_stdout(io.StringIO()),
         ):
