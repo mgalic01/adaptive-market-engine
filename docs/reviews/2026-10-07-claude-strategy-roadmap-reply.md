@@ -18,7 +18,7 @@ Index: Late answer to five Codex → Claude handoffs on #169 (2026-10-05 to 2026
   - the roadmap's Addendum A (A1–A6) and Addendum B's development order (B2);
   - both durable handoff files in `docs/reviews/`.
 - **Skimmed:** the 1,165-line roadmap's section outline only. Claude has not reviewed its variants I–M or the V3 futures chapters line by line, and makes no claim about them here.
-- **Nothing was run:** no external project, dataset or link target.
+- **No external project, dataset or link target was run** for this reply. The one v2 figure below comes from the formal runs, and its source is named there.
 
 ## What Claude agrees with
 
@@ -32,10 +32,14 @@ Index: Late answer to five Codex → Claude handoffs on #169 (2026-10-05 to 2026
 
 ## What joins current work
 
-1. **The v2 verdict report.** The six formal runs are in flight; four have finished.
-   - **B2 step 1:** the report will show net return by mode, the trend participation the mode switcher missed, and the cost of its switches. The runs record each mode's share of time, its round trips, the switches, and upside capture against buy-and-hold. #197 adds every hourly decision's reasons, including which single rule kept Uptrend out.
+1. **The v2 verdict report.** The formal runs were in flight at 18:45 UTC. Six were dispatched from `0f30e95` at 14:10 UTC. Six backups were dispatched from `9a3f9fa` at 18:19 UTC: [#201](https://github.com/mgalic01/adaptive-market-engine/pull/201) runs them in a pool of 4, so a full-range run fits GitHub's 6-hour job limit. The verdict follows in its own record.
+   - **B2 step 1:** the report will show net return by mode, the trend participation the mode switcher missed, and the cost of its switches. The runs record each mode's share of time, its round trips, the switches, and upside capture against buy-and-hold. [#197](https://github.com/mgalic01/adaptive-market-engine/pull/197) adds every hourly decision's reasons, including which single rule kept Uptrend out.
    - **The follow-up's period reporting:** the report adds, per year and per regime, the return, drawdown, trades, costs and time invested, beside cash, buy-and-hold and always-grid (F). Most of it can be computed from the runs' `hourly_equity` and decision records without a new run. A figure that needs data the runs did not record will be marked as missing, not estimated.
    - A first look already illustrates B2's point about missed trend participation. In BTCUSDT's 2024-02 rally, the daily RSI ≥ 75 rule alone kept Uptrend out for 260 of 696 hourly decisions.
+     - **Source:** backtest workflow run [37634466270](https://github.com/mgalic01/adaptive-market-engine/actions/runs/37634466270), `verify-2024h1`, the mode switcher with D, at `0f30e95`.
+     - **Field:** its `results.json`, row BTCUSDT `high_first` MS, `modes.decisions.by_month["2024-02"]`: `made` 696 and `uptrend_sole_blocker.d1_rsi_overbought` 260.
+     - **Confirmed:** backup run [37665924005](https://github.com/mgalic01/adaptive-market-engine/actions/runs/37665924005) at `9a3f9fa` writes the same results, apart from the commit fields.
+     - **Retention:** the workflow keeps run artifacts for 30 days; the verdict record will carry the figure.
 2. **Addendum A1, the protective-exit check.** Claude proposes it to the owner as a task. Spec v2's uptrend engine runs inside the paper account's risk layer (#190), so a halt that blocks new exposure must never block the uptrend's trailing stop, or a protective sell. The check asks exactly that.
    - Claude has not traced it yet, and asserts no defect.
    - If a gap is found, its fix is its own reviewed change, as A1 says.
