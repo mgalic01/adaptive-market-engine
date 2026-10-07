@@ -450,6 +450,13 @@ GOLDEN_DIRTY = {
         "series_hours_excluded": 0,
     },
 }
+# Owner decision 14 (2026-10-07) adds one key to a daily record with a mismatch: the
+# mismatched days by name. The dirty fixture's is day 2. Every captured key and value
+# above stands; a record with no mismatch, as every clean one, gains nothing.
+NAMED_MISMATCH = {"daily_mismatched_days": ["2024-01-03"]}
+DIRTY_NOW = GOLDEN_DIRTY | {
+    name: GOLDEN_DIRTY[name] | NAMED_MISMATCH for name in ("daily", "daily strict")
+}
 
 
 def loader_fixture(test):
@@ -517,7 +524,7 @@ class NoMaskTests(unittest.TestCase):
         data, manifest = loader_fixture(self)
         self.assertEqual(GOLDEN_LOADERS, loader_outputs(data, manifest))
         self.assertEqual(GOLDEN_CLEAN_LOADS, clean_loads(self.spec_path))
-        self.assertEqual(GOLDEN_DIRTY, dirty_checks())
+        self.assertEqual(DIRTY_NOW, dirty_checks())
         # Passing None, or an empty set of masked hours to a check, is still no mask.
         clean_data, clean_manifest = self.spec_path.parent / "data", manifest_of(self.spec_path)
         self.assertEqual(
@@ -535,7 +542,7 @@ class NoMaskTests(unittest.TestCase):
         )
         daily, day_hours, daily_window, hourly_window = dirty_daily_inputs()
         self.assertEqual(
-            GOLDEN_DIRTY["daily"],
+            DIRTY_NOW["daily"],
             cross_check_daily(
                 daily, day_hours, daily_window, hourly_window, T0, masked_days=frozenset()
             ),
@@ -648,7 +655,7 @@ class MaskedChecksTests(unittest.TestCase):
         outside = cross_check_daily(
             daily, hours, daily_window, hourly_window, T0, masked_days={T0 - DAY_MS}
         )
-        self.assertEqual(GOLDEN_DIRTY["daily"], outside)
+        self.assertEqual(DIRTY_NOW["daily"], outside)
         # In a run, the official 1d bar of a masked day stays in use: the daily bars are
         # read whole, whatever the pair's mask (A's SMA refuses gaps).
         data, manifest = self.spec_path.parent / "data", manifest_of(self.spec_path)

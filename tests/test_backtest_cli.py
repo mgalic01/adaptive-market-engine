@@ -1274,6 +1274,32 @@ class QuoteIntegrityTests(unittest.TestCase):
         )
 
 
+class DocumentedDailyDefectIntegrityTests(unittest.TestCase):
+    """Owner decision 14 (2026-10-07): a day the daily check skips as a documented defect
+    is a count, not a failure, and the mismatched days a record names fail only through
+    their count."""
+
+    def test_a_documented_skip_is_no_failure(self):
+        pair = {"symbol": "BTCUSDT", "hours_compared": 10, **CLEAN_FIELDS}
+        daily = {"daily_days_compared": 10, **dict.fromkeys(cli.DAILY_INTEGRITY_FIELDS, 0)}
+        for field in ("daily_days_skipped_documented", "daily_mismatched_days"):
+            self.assertNotIn(field, cli.DAILY_INTEGRITY_FIELDS)
+            self.assertNotIn(field, cli.PROXY_HOURLY_FIELDS)
+        skipped = pair | daily | {"daily_days_skipped_documented": 1}
+        self.assertEqual([], cli.integrity_failures([skipped]))
+        mismatched = skipped | {"daily_days_mismatched": 1, "daily_mismatched_days": ["2021-01-22"]}
+        self.assertEqual(["BTCUSDT: daily_days_mismatched=1"], cli.integrity_failures([mismatched]))
+        # On a window's checks, the skip excludes nothing, as a masked day's does not.
+        spec = jobs.load_spec(ROOT / "config/datasets/practice-2022.toml")
+        checks = []
+        for symbol in cli.checked_symbols(spec):
+            if symbol in spec.traded:
+                checks.append(skipped | {"symbol": symbol})
+            else:
+                checks.append({"symbol": symbol, **PROXY_CLEAN, "role": "breadth_basket"})
+        self.assertEqual(([], {}), cli.scoped_failures(spec, checks))
+
+
 XRP_WINDOW = """name = "xrp-window"
 purpose = "synthetic: rule 8's statistic through cross_check_job"
 traded = ["BTCUSDT", "XRPUSDT"]

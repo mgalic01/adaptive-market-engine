@@ -392,8 +392,42 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
       `_hours_incomplete`). Prices must match exactly; volume within the same 0.1%
       tolerance, reported as `daily_days_volume_drift`. Days before the hourly window
       are checked for presence, never for equality.
-  - Any non-zero count of those fields fails its check. `hours_volume_drift` and
-    `daily_days_volume_drift` are reported but are not among them.
+    - when a day mismatches, the record also names it: `daily_mismatched_days` lists
+      every mismatched day as `YYYY-MM-DD`, in date order. The key is written only when
+      the list is not empty, so a passing record keeps its layout.
+    - **A documented defect day is skipped in the 24-hour comparison** and counted in
+      `daily_days_skipped_documented`, exactly as a day holding a masked hour is skipped
+      and counted in `daily_days_skipped_for_masks` (spec v1 §5 rule 3). The skip is by
+      date, for every symbol, and whatever `--strict-volume` says: the day is not
+      compared at all, so its 1d bar is checked against its hours neither for volume nor
+      for prices, and its hours are not counted. Its official 1d bar is kept, and the
+      presence checks over the whole daily window still apply to it: a missing or
+      duplicated bar that day still fails. A listed day that also holds a masked hour
+      counts as masked. The key is written only when non-zero, and it is not an
+      integrity failure field.
+      - The list is `DOCUMENTED_DAILY_DEFECTS` in `backtest/replay.py`. It holds one day,
+        **2021-01-21**. On that day every pair's official 1d bar has about 2.4% less
+        volume than the sum of its 24 official 1h bars, while the prices agree exactly
+        (BTCUSDT: 131803.182926 against 135004.076658). Bob's defect calendar
+        documented this on 2026-09-26 ([its "Day-Level Defects"
+        section](reviews/2026-09-26-bob-hourly-defect-calendar.md)), before any
+        2019-2024 result existed.
+      - In `full-range-2017-2024`, `verify` reported one mismatched day under the 0.1%
+        tolerance for each of BTCUSDT, ETHUSDT and XRPUSDT. XRPUSDT is excluded by its
+        quote test anyway (rule 8), so no pair would have been left. `verify` reported
+        counts only; the record now names the days (`daily_mismatched_days`), so the
+        next `verify` shows whether 2021-01-21 was the only one.
+      - The owner granted the skip on 2026-10-07 as an exception on record to spec v1
+        §5 rule 3 and P3 ([decision
+        14](reviews/2026-10-07-claude-v2-decisions-after-first-read.md)). The mode
+        switcher never reads daily volume. No strategy rule changes, and spec v1 and v2
+        stay frozen.
+      - Stage 1's windows hold the day in their daily window but not in their hourly
+        window, so it is never compared there, and their records carry neither new key.
+  - Any non-zero count of those fields fails its check. `hours_volume_drift`,
+    `daily_days_volume_drift`, `daily_days_skipped_for_masks` and
+    `daily_days_skipped_documented` are reported but are not among them, and
+    `daily_mismatched_days` only names what `daily_days_mismatched` counts.
   - A failed check of a traded pair's own data excludes that pair-window only (spec v1
     §5). The pair is not replayed and has no rows. Its failing check stays in
     `hourly_cross_checks`, `excluded_pairs` lists it with its failures, and the other
@@ -634,6 +668,11 @@ decimals (below).
     check;
   - each run's mask report (`masked_hours`, `days_skipped_for_masks` and
     `fills_after_masked_span`) is in its row and scored by no criterion.
+  - the daily check's skip of a documented defect day (owner decision 14, under
+    "Verification in every run") reaches the scorer only as
+    `daily_days_skipped_documented` in the pair's cross-check record, a count that
+    excludes nothing. `daily_mismatched_days` only names the days a failed check
+    counts. Both scorers read neither key, so neither changes a comparison mask.
 
   A defect that masking does not cover, such as a missing or duplicated daily bar or a
   short warm-up, still fails its check and excludes the pair-window, as in stage 1.

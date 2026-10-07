@@ -676,6 +676,31 @@ class MaskTests(unittest.TestCase):
                         check["daily_days_skipped_for_masks"] = 3
                 self.assertEqual(window, score.window_of(spec, checks))
 
+    def test_window_of_reads_the_documented_daily_defect_keys_as_before(self) -> None:
+        # Owner decision 14 (2026-10-07): the daily check skips 2021-01-21 and counts it in
+        # daily_days_skipped_documented, and a record with a mismatch names its days in
+        # daily_mismatched_days. window_of reads only the integrity fields, so neither key
+        # changes a window: the skip is a count, and a mismatch excludes its pair through
+        # daily_days_mismatched alone, as before.
+        for name in ("verify-2024h1", "practice-2022"):
+            with self.subTest(name):
+                spec = load_spec(SPECS / f"{name}.toml")
+                checks = clean_checks(spec)
+                window = score.window_of(spec, checks)
+                for check in checks:
+                    if "daily_days_compared" in check:
+                        check["daily_days_skipped_documented"] = 1
+                self.assertEqual(window, score.window_of(spec, checks))
+                xrp = next(c for c in checks if c["symbol"] == "XRPUSDT")
+                if "daily_days_compared" not in xrp:
+                    continue  # verify-2024h1: XRPUSDT is only a basket member
+                xrp |= {"daily_days_mismatched": 1, "daily_mismatched_days": ["2021-01-22"]}
+                mismatched = score.window_of(spec, checks)
+                reasons = {**window.excluded, "XRPUSDT": ("XRPUSDT: daily_days_mismatched=1",)}
+                self.assertEqual(reasons, dict(mismatched.excluded))
+                del xrp["daily_mismatched_days"]
+                self.assertEqual(mismatched, score.window_of(spec, checks))
+
     def test_practice_2022_sol_fails_the_filter_check_for_every_variant(self) -> None:
         spec = load_spec(SPECS / "practice-2022.toml")
         window = score.window_of(spec, clean_checks(spec))
