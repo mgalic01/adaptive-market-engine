@@ -22,7 +22,9 @@ import contextlib
 import hashlib
 import io
 import json
+import subprocess  # nosec B404: a stand-in child
 import sys
+import time
 import zipfile
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -847,3 +849,79 @@ def test_requests_outside_the_plan_are_refused_and_retries_are_bounded() -> None
             requests(path)
     assert outages == [planned] * 4  # a refused path never reaches the fetcher
     assert requests.paths == [planned] * 4
+
+
+# --- start and wait: the script runs itself in the background (Step 4) ---------------------
+# Each test starts real child processes of the script with its hidden --fake-run option, so
+# the child sleeps briefly and exits instead of fetching anything: no network.
+
+
+def background(monkeypatch: pytest.MonkeyPatch, wait_seconds: float) -> None:
+    monkeypatch.setattr(fetch_full_range, "WAIT_SECONDS", wait_seconds)
+    monkeypatch.setattr(fetch_full_range, "POLL_SECONDS", 0.1)
+
+
+def test_start_runs_the_script_detached_and_wait_reports_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    background(monkeypatch, 60)
+    data = tmp_path / "data"
+    assert fetch_full_range.main(["wait", str(data)]) == 1
+    assert capsys.readouterr().out.startswith("NOT STARTED")
+    assert fetch_full_range.main(["start", str(data), "--fake-run", "0.2"]) == 0
+    pid = int((data / "run.pid").read_text(encoding="utf-8"))
+    log, exit_file = (data / "run.log").as_posix(), (data / "run.exit").as_posix()
+    assert capsys.readouterr().out == f"STARTED pid {pid}; log {log}; exit file {exit_file}\n"
+    assert fetch_full_range.main(["wait", str(data)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert (lines[0], lines[-1]) == ("DONE exit=0", "RESULT 0 problem(s)")
+    assert (data / "run.exit").read_text(encoding="utf-8") == "0\n"
+    # A run that has ended is never started again in the same data dir.
+    assert fetch_full_range.main(["start", str(data), "--fake-run", "0.2"]) == 1
+    assert capsys.readouterr().out.startswith("NOT STARTED")
+
+
+def test_wait_returns_running_within_its_limit_then_done_with_the_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = tmp_path / "data"
+    assert fetch_full_range.main(["start", str(data), "--fake-run", "4", "--fake-raise"]) == 0
+    capsys.readouterr()
+    background(monkeypatch, 0.5)
+    began = time.monotonic()
+    assert fetch_full_range.main(["wait", str(data)]) == 0
+    assert time.monotonic() - began < 3.5  # it returns at its limit, not when the run ends
+    (line,) = capsys.readouterr().out.splitlines()
+    assert line.startswith("RUNNING pid ")
+    assert line.endswith("latest: FAKE run: 4.0 s") or line.endswith("latest: no output yet")
+    # A second start while the first runs is refused.
+    assert fetch_full_range.main(["start", str(data), "--fake-run", "0.2"]) == 1
+    assert "still running" in capsys.readouterr().out
+    background(monkeypatch, 60)
+    assert fetch_full_range.main(["wait", str(data)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    # A run that ends in a traceback still writes its exit file: DONE, not GONE.
+    assert lines[0] == "DONE exit=1"
+    assert lines[-1] == "RuntimeError: fake run failure"
+
+
+def test_wait_reports_a_run_gone_without_an_exit_file_and_start_runs_once_more(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    background(monkeypatch, 60)
+    data = tmp_path / "data"
+    data.mkdir()
+    ended = subprocess.Popen([sys.executable, "-c", "pass"])  # nosec B603: a fixed command
+    ended.wait()
+    (data / "run.pid").write_text(f"{ended.pid}\n", encoding="utf-8")
+    (data / "run.log").write_text("PLAN first attempt\n", encoding="utf-8")
+    assert fetch_full_range.main(["wait", str(data)]) == 1
+    assert capsys.readouterr().out == (
+        f"GONE pid {ended.pid}: no process and no exit file; latest: PLAN first attempt\n"
+    )
+    # start runs it once more, unchanged, and keeps the first attempt's log.
+    assert fetch_full_range.main(["start", str(data), "--fake-run", "0.2"]) == 0
+    capsys.readouterr()
+    assert (data / "run-1.log").read_text(encoding="utf-8") == "PLAN first attempt\n"
+    assert fetch_full_range.main(["wait", str(data)]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "DONE exit=0"

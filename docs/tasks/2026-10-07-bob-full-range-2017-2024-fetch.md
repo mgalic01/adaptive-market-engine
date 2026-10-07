@@ -76,6 +76,10 @@ defines the digest's format. In short:
    run log prints a summary of each. A check that raises is a `PROBLEM` naming it, with
    its traceback in the log, and the next check still runs.
 
+Step 4 runs all of this in the background through the script itself: `start` launches
+it as a detached child process, and `wait` reports on it, so that no single command
+lasts more than about 9 minutes and none needs more than `python`.
+
 How the limits hold in code:
 - Every request goes through the script's `Requests`. It passes only the planned archive
   and `.CHECKSUM` paths of the scored window, which include the reported window's. Any
@@ -103,8 +107,8 @@ any line says `FAILED`, stop before Step 3 and report. Step 2 copies the 16 line
 block out of this file, byte for byte:
 
 ```text
-1d7b18d8cd9f5b8cdd6d2e196b4a765abc63873ad853e37384160749d4eb9b78  scripts/fetch_full_range.py
-d11db8eb0ef2ad691bd04b3b96cef5da0b381e3ac86ec9bae2227755cf6bb3b2  tests/test_fetch_full_range.py
+667410f175ad2b4b1d9c132543a23d06f27244296f4a1caf0747ba711637a5cf  scripts/fetch_full_range.py
+643f05ba508eddd0a7aeb5f44faea1ef0f5e83c1a0ae49ce22e55a9175422a14  tests/test_fetch_full_range.py
 f4216524de089988a15fbddd72a9625a737f41be5a8dcb4bed6a36ccf8e0addb  config/datasets/full-range-2017-2024.toml
 8dad70041f4423706b0eeba272595fb24af74cb83713b6316abb68e5a40dafcb  config/datasets/full-range-2019-2024.toml
 349ce104be44d28d918b22dc99dd611f56d174011b50cb144393a97940c72374  config/datasets/long-bull-bear-2022.manifest.json
@@ -131,7 +135,7 @@ and its output go into the report.
    `sha256sum` line must end in `OK`, and the last line must be `exit 0`:
 
    ```text
-   sed -n '106,121p' docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md > data/full-range-pins.txt
+   sed -n '110,125p' docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md > data/full-range-pins.txt
    wc -l data/full-range-pins.txt
    sha256sum -c data/full-range-pins.txt; echo "exit $?"
    ```
@@ -143,38 +147,46 @@ and its output go into the report.
    tail -n 3 data/full-range-tests.log
    ```
 
-   It must print `exit 0`, and the log's last line must report `15 passed`. (Add no `-q`:
+   It must print `exit 0`, and the log's last line must report `18 passed`. (Add no `-q`:
    `pyproject.toml` already passes one, and a second one hides that line.)
 4. The run: about 3,600 requests to data.binance.vision, `verify` on both windows and
    `mask-report` on the scored one. Expect about an hour; the job allows 240 minutes.
-   That is longer than any single command on record here (about 19 minutes), so it runs
-   in the background, and you wait for it in steps of at most 10 minutes. Start it once:
+   That is longer than any single command on record here (about 19 minutes), so the
+   script runs itself in the background, and you wait for it in steps of under 10
+   minutes, with `python` only. Start it once:
 
    ```text
-   setsid nohup sh -c 'python scripts/fetch_full_range.py data/full-range > data/full-range-run.log 2>&1; echo "exit $?" > data/full-range-exit.txt' > /dev/null 2>&1 &
+   python scripts/fetch_full_range.py start data/full-range
    ```
 
-   Then wait. This command only reads files; it returns after at most 10 minutes, or as
-   soon as the run has ended:
+   It prints `STARTED pid <n>; log data/full-range/run.log; exit file
+   data/full-range/run.exit` and returns at once. Then wait:
 
    ```text
-   for i in $(seq 60); do [ -f data/full-range-exit.txt ] && break; sleep 10; done; tail -n 2 data/full-range-run.log; cat data/full-range-exit.txt 2>/dev/null || echo "still running"
+   python scripts/fetch_full_range.py wait data/full-range
    ```
 
-   Repeat the wait until it prints an `exit` line, then `cat data/full-range-run.log`.
-   Never start the run a second time while `data/full-range-exit.txt` does not exist: the
-   first one is still working, and its log stays empty for long stretches (the first
-   lines after `FUNDING` come only when the whole scored fetch is done). If the wait
-   command itself is cut off by your tool, run it again. Only if the run is gone with no
-   exit file (`pgrep -f scripts/fetch_full_range.py` prints nothing), start it once more
-   unchanged: stored archives are reused while their checksum matches, so only
-   `.CHECKSUM` requests repeat. Say so in 6b.
+   It returns within about 9 minutes and prints one of:
+   - `RUNNING pid <n>; latest: <the log's last line>`: run the same `wait` again. The log
+     stays quiet for long stretches: after `FUNDING`, nothing comes until the whole scored
+     fetch is done.
+   - `DONE exit=<status>`, then the log's last lines: the run has ended. Read
+     `data/full-range/run.log` in full, then go to Step 5.
+   - `GONE pid <n>: no process and no exit file; ...`: the run was lost without ending
+     (the script writes the exit file even after a traceback). Run the same `start` once
+     more, unchanged: stored archives are reused while their checksum matches, so only
+     `.CHECKSUM` requests repeat, and the first attempt's log is kept as
+     `data/full-range/run-1.log`. Then `wait` again. If it is lost a second time, stop and
+     report.
+
+   `start` refuses while a run is alive, and after one has ended, so it cannot start a
+   second run by mistake. Say in 6b how many waits it took, and whether `start` ran twice.
 
 5. The hashes of what the run wrote, the sizes, and the reserved-window file check:
 
    ```text
-   sha256sum data/full-range-tests.log data/full-range-run.log data/full-range/*.toml data/full-range/*.json data/full-range/*.txt
-   wc -c data/full-range-run.log data/full-range/full-range-2017-2024.digest.txt
+   sha256sum data/full-range-tests.log data/full-range/run.* data/full-range/*.toml data/full-range/*.json data/full-range/*.txt
+   wc -c data/full-range/run.log data/full-range/full-range-2017-2024.digest.txt
    find data -type f | grep -cE -- '-20(2[5-9]|[3-9][0-9])-[0-9]{2}\.(zip|csv|zip\.CHECKSUM)$'
    ```
 
@@ -212,7 +224,7 @@ and its output go into the report.
    file as the arguments:
 
    ```text
-   python -c "import sys; from pathlib import Path; h, t = sys.argv[1], Path(sys.argv[2]).read_text(encoding='utf-8'); f = Path('docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md').open('a', encoding='utf-8', newline='\n'); f.write('\n## ' + h + '\n\n\x60\x60\x60text\n' + t + ('' if t.endswith('\n') else '\n') + '\x60\x60\x60\n'); f.close()" "Run log" data/full-range-run.log
+   python -c "import sys; from pathlib import Path; h, t = sys.argv[1], Path(sys.argv[2]).read_text(encoding='utf-8'); f = Path('docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md').open('a', encoding='utf-8', newline='\n'); f.write('\n## ' + h + '\n\n\x60\x60\x60text\n' + t + ('' if t.endswith('\n') else '\n') + '\x60\x60\x60\n'); f.close()" "Run log" data/full-range/run.log
    ```
 
    **Rules for everything you write by hand:**
@@ -234,11 +246,11 @@ and its output go into the report.
 
    **6b. Steps 4 and 5, by hand** (about 15 lines). Write to `data/fr-6b.md`, then append
    it with the command at the top of Step 6: a `## Steps 4 and 5` section with the Step 4
-   commands, how many waits it took, the `exit` line of `data/full-range-exit.txt`, and
-   each Step 5 command with its full output.
+   commands, the `STARTED` line, how many waits it took, the `DONE` line, and each Step 5
+   command with its full output.
 
    **6c. The run log, by command:** the command above, with the heading `Run log` and
-   `data/full-range-run.log`. The run log holds every summary this task asks for: the
+   `data/full-range/run.log`. The run log holds every summary this task asks for: the
    `PLAN`, `FILTERS`, `FUNDING`, `RETRY`, `KLINES`, `MANIFEST`, `VERIFY`, `MASK`,
    `COMPARE`, `DIGEST`, `REQUESTS`, `REPORT`, `STOP`, `PROBLEM` and `RESULT` lines, the
    traceback of any check that raised, and a traceback if the run ended in one. Do not
@@ -327,8 +339,8 @@ and its output go into the report.
 ## Validity checks (all must hold for a valid run)
 
 1. Step 2: 16 `OK` lines and `exit 0`.
-2. Step 3: `exit 0` and `15 passed`.
-3. Step 4: `exit 0` in `data/full-range-exit.txt`, and the run log's last line
+2. Step 3: `exit 0` and `18 passed`.
+3. Step 4: `wait` prints `DONE exit=0`, and the run log's last line is
    `RESULT 0 problem(s)`, which the script prints only when all of these hold:
    - `FUNDING 60 of 60 months ok`;
    - both `VERIFY` lines say `exit 0 status valid`, and the scored window's keeps at
@@ -362,8 +374,8 @@ as above:
 ## Stop conditions
 
 There are two kinds of stop:
-- **The run ended with a `RESULT` line** (`data/full-range-exit.txt` says `exit 0` or
-  `exit 1`). Complete Steps 5 and 6 in full, the digest included (6d) whenever the log
+- **The run ended with a `RESULT` line** (`wait` printed `DONE exit=0` or `DONE exit=1`,
+  and the log's last line is `RESULT`). Complete Steps 5 and 6 in full, the digest included (6d) whenever the log
   has a `DIGEST` line, whatever the `PROBLEM` lines say: a 17% exclusion, a
   scored-window pair shortfall, `verify` not valid, or a check that raised. (A `STOP`
   comes before the digest, so there is none to append.) The script writes the digest as
@@ -384,6 +396,7 @@ Report each of these:
 - a transport error persists through 4 attempts (a traceback after
   `RETRY attempt 4 of 4`);
 - a funding month is not `ok` (a `STOP` line);
+- `wait` prints `GONE` after the second `start` as well;
 - either `verify` is not `valid`, or the scored window, `full-range-2017-2024`, is left
   with fewer than 2 included pairs. A shortfall in the reported window,
   `full-range-2019-2024`, is not a stop: spec v1 §5 rule 6 says it decides nothing.

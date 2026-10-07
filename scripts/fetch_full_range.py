@@ -2,6 +2,8 @@
 
     python scripts/fetch_full_range.py <data-dir> [--spec PATH] [--reported-spec PATH]
         [--jobs N]
+    python scripts/fetch_full_range.py start <data-dir> [the same options]
+    python scripts/fetch_full_range.py wait <data-dir>
 
 Task: docs/tasks/2026-10-07-bob-full-range-2017-2024-fetch.md (long-window data plan, Task
 9). IBM Bob runs it on a GitHub Actions machine: Bob is the only actor allowed to reach
@@ -10,6 +12,18 @@ in the git-ignored ``data/``, since bob-task.yml refuses any change but Bob's ne
 The defaults are the committed specs; ``--spec`` and ``--reported-spec`` exist for the
 tests, which run it on small synthetic specs against a fake host. ``--jobs`` is the
 backtest CLI's, for verify and mask-report.
+
+**Running in the background, with Python only.** The run takes about an hour, longer than
+one command of Bob's is known to last, and Bob's prompt allows python but no shell job
+control. So ``start`` launches the same run as a detached child process of this script
+(a new session on POSIX, a new process group on Windows), with its output in
+``<data-dir>/run.log``, its pid in ``run.pid`` and, when it ends, its exit status in
+``run.exit``, written even when the run ends in a traceback. ``start`` returns at once;
+it refuses while a run is alive, and after one has ended, so a data dir holds one run. A
+log from an earlier attempt is kept as ``run-<n>.log``. ``wait`` returns within
+``WAIT_SECONDS`` and prints ``DONE exit=<status>`` with the log's last lines, ``RUNNING``
+with its latest line, or ``GONE`` when the process has vanished without an exit file.
+Without a subcommand, the run happens in the foreground, as the tests run it.
 
 What it does, in order (spec v1 sections 4 and 5; P8 for the funding archives):
 
@@ -91,8 +105,10 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import re
 import shutil
+import subprocess  # nosec B404
 import sys
 import time
 import traceback
@@ -139,6 +155,16 @@ ATTEMPTS = 4
 # a report over 200,000 bytes, and the hand-written passages need the rest.
 REPORT_LIMIT = 190_000
 MINIMUM_PAIRS = 2  # spec v1 section 5, "Minimum evidence"
+# start and wait (the module docstring): one wait returns within about 9 minutes, under the
+# 10 the task allows a command, and looks for the exit file every 10 seconds.
+WAIT_SECONDS = 540.0
+POLL_SECONDS = 10.0
+TAIL_LINES = 5
+RECORD = "_run"  # the hidden subcommand of the child that start launches
+# The children start launched, kept so that this process never collects one while it
+# runs: Popen would then warn that it is still running (ResourceWarning).
+_LAUNCHED: list[subprocess.Popen[bytes]] = []
+STILL_ACTIVE = 259  # GetExitCodeProcess of a Windows process that has not ended
 # The statistics a digest row gives where they differ from a complete month's.
 STATS = ("rows", "gaps", "first_open_ms", "last_open_ms", "timestamp_units")
 _KLINE_NAME = re.compile(r"([A-Z0-9]{2,24})-(1m|1h|1d)-(\d{4}-\d{2})\.zip")
@@ -677,12 +703,7 @@ def log_requests(requests: Requests, data_dir: Path, log: Log) -> None:
     )
 
 
-def main(
-    argv: Sequence[str] | None = None,
-    *,
-    fetcher: Fetcher = archive_get,
-    sleep: Callable[[float], None] = time.sleep,
-) -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data_dir", type=Path, help="where every file goes (data/full-range)")
     parser.add_argument("--spec", type=Path, default=SCORED_SPEC, help="the scored window")
@@ -695,7 +716,184 @@ def main(
     parser.add_argument(
         "--jobs", type=int, default=4, help="worker processes for verify and mask-report"
     )
-    args = parser.parse_args(argv)
+    # For the tests of start and wait only: sleep that long, then end, fetching nothing.
+    parser.add_argument("--fake-run", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--fake-raise", action="store_true", help=argparse.SUPPRESS)
+    return parser
+
+
+@dataclass(frozen=True)
+class RunFiles:
+    """The files of a background run, all in its data dir."""
+
+    log: Path
+    pid: Path
+    exit: Path
+
+
+def run_files(data_dir: Path) -> RunFiles:
+    return RunFiles(data_dir / "run.log", data_dir / "run.pid", data_dir / "run.exit")
+
+
+def _alive(pid: int) -> bool:
+    """Whether process ``pid`` exists and has not ended. Windows has no signal 0: there
+    ``os.kill`` would end the process, so its exit code is asked for instead."""
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and (
+                code.value == STILL_ACTIVE
+            )
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _lines(path: Path) -> list[str]:
+    """The non-empty lines of a log, or none if it does not exist yet."""
+    if not path.exists():
+        return []
+    return [line for line in path.read_text("utf-8", "replace").splitlines() if line.strip()]
+
+
+def _detached() -> dict[str, Any]:
+    """Popen's arguments that let the child outlive the command that started it."""
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def start(arguments: list[str]) -> int:
+    """Launch the run (the same options as a foreground run) as a detached child, once."""
+    args = _parser().parse_args(arguments)  # a mistyped option fails here, not in the child
+    data_dir: Path = args.data_dir
+    files = run_files(data_dir)
+    if files.exit.exists():
+        print(f"NOT STARTED: the run in {data_dir.as_posix()} has ended ({files.exit.as_posix()})")
+        return 1
+    if files.pid.exists() and _alive(int(files.pid.read_text(encoding="utf-8"))):
+        print(f"NOT STARTED: the run in {data_dir.as_posix()} is still running")
+        return 1
+    data_dir.mkdir(parents=True, exist_ok=True)
+    if files.log.exists():  # an earlier attempt that was lost (wait said GONE): keep its log
+        attempt = 1
+        while (data_dir / f"run-{attempt}.log").exists():
+            attempt += 1
+        files.log.replace(data_dir / f"run-{attempt}.log")
+    # The child imports the same crypto_grid_bot as this process, whatever else is installed.
+    source = str(Path(backtest_cli.__file__).resolve().parents[2])
+    paths = [source, *filter(None, [os.environ.get("PYTHONPATH")])]
+    command = [sys.executable, str(Path(__file__).resolve()), RECORD, *arguments]
+    with files.log.open("wb") as log:
+        # This script with its own arguments, and no shell.
+        child = subprocess.Popen(  # nosec B603
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env={**os.environ, "PYTHONPATH": os.pathsep.join(paths)},
+            **_detached(),
+        )
+    _LAUNCHED.append(child)
+    files.pid.write_text(f"{child.pid}\n", encoding="utf-8")
+    print(f"STARTED pid {child.pid}; log {files.log.as_posix()}; exit file {files.exit.as_posix()}")
+    return 0
+
+
+def wait(arguments: list[str]) -> int:
+    """Wait up to ``WAIT_SECONDS`` for the background run; say how it stands."""
+    parser = argparse.ArgumentParser(prog="fetch_full_range.py wait")
+    parser.add_argument("data_dir", type=Path)
+    data_dir: Path = parser.parse_args(arguments).data_dir
+    files = run_files(data_dir)
+    if not files.pid.exists() and not files.exit.exists():
+        print(f"NOT STARTED: no run in {data_dir.as_posix()}")
+        return 1
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        if files.exit.exists():
+            print(f"DONE exit={files.exit.read_text(encoding='utf-8').strip()}")
+            for line in _lines(files.log)[-TAIL_LINES:]:
+                print(line)
+            return 0
+        pid = int(files.pid.read_text(encoding="utf-8"))
+        latest = (_lines(files.log) or ["no output yet"])[-1]
+        if not _alive(pid):
+            if files.exit.exists():  # it ended between the two looks
+                continue
+            print(f"GONE pid {pid}: no process and no exit file; latest: {latest}")
+            return 1
+        if time.monotonic() >= deadline:
+            print(f"RUNNING pid {pid}; latest: {latest}")
+            return 0
+        time.sleep(POLL_SECONDS)
+
+
+def record(arguments: list[str], *, fetcher: Fetcher, sleep: Callable[[float], None]) -> int:
+    """The child that start launches: the run, then its exit status in the exit file, also
+    after a traceback, which goes to the log."""
+    files = run_files(_parser().parse_args(arguments).data_dir)
+    code = 1
+    try:
+        code = run(arguments, fetcher=fetcher, sleep=sleep)
+    except SystemExit as stop:
+        code = stop.code if isinstance(stop.code, int) else 1
+    except BaseException:
+        traceback.print_exc()
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        partial = files.exit.with_name(files.exit.name + ".partial")
+        partial.write_text(f"{code}\n", encoding="utf-8")
+        partial.replace(files.exit)
+    return code
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    fetcher: Fetcher = archive_get,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """``start`` or ``wait`` (the background run), or the run itself in the foreground."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    command = arguments[0] if arguments else ""
+    if command == "start":
+        return start(arguments[1:])
+    if command == "wait":
+        return wait(arguments[1:])
+    if command == RECORD:
+        return record(arguments[1:], fetcher=fetcher, sleep=sleep)
+    return run(arguments, fetcher=fetcher, sleep=sleep)
+
+
+def run(
+    argv: Sequence[str],
+    *,
+    fetcher: Fetcher = archive_get,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """The whole run (the module docstring's steps), in this process."""
+    args = _parser().parse_args(argv)
+    if args.fake_run is not None:
+        print(f"FAKE run: {args.fake_run} s", flush=True)
+        time.sleep(args.fake_run)
+        if args.fake_raise:
+            raise RuntimeError("fake run failure")
+        print("RESULT 0 problem(s)", flush=True)
+        return 0
     log = Log()
     problems: list[str] = []
     requests: Requests | None = None
