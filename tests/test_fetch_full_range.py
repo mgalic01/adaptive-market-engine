@@ -1242,3 +1242,19 @@ def test_the_task_file_asks_bob_only_for_commands_his_prompt_allows() -> None:
     for span in re.findall(r"`([^`\n]+)`", prose):
         words = span.split()
         assert not words or words[0] not in SHELL_UTILITIES, span
+
+
+def test_a_pin_failure_runs_no_script() -> None:
+    """Codex's second P1 on #193: after a failed pin the script and its tests are not the
+    reviewed ones, and an older script can read an argument it does not know as a data
+    directory and start a fetch. So the pin-failure path writes the report with Bob's edit
+    tool and runs nothing, and the pins section and the self-check send a pin failure there."""
+    text = TASK_FILE.read_text(encoding="utf-8")
+    stops = text.split("## Stop conditions", 1)[1]
+    pin_path = stops.split("- **Step 1 or Step 2 failed**", 1)[1].split("\n- **", 1)[0]
+    assert "run nothing else" in pin_path and "edit tool" in pin_path
+    assert "```" not in pin_path  # not one command to run on this path
+    pins = text.split("## Pinned inputs", 1)[1].split("## Steps", 1)[0]
+    assert "pin-failure path" in pins
+    self_check = text.split("## Self-check", 1)[1]
+    assert "After a pin failure (Step 1 or Step 2), run neither" in self_check

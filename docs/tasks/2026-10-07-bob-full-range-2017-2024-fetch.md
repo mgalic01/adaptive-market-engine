@@ -118,7 +118,7 @@ request, that the code and inputs are the ones reviewed here:
 
 ```text
 452d7214119fa0ac883c960922e53d63439e26839a560202f0144863c241b022  scripts/fetch_full_range.py
-11b11b234c42bbca1b6458c29d8d434a88a6cd3714d4826a5218c9d40d226fb1  tests/test_fetch_full_range.py
+2aed6594ad18aa42eea473cf9341862963c53f1fb409bf0d7a3574380db7c962  tests/test_fetch_full_range.py
 f4216524de089988a15fbddd72a9625a737f41be5a8dcb4bed6a36ccf8e0addb  config/datasets/full-range-2017-2024.toml
 8dad70041f4423706b0eeba272595fb24af74cb83713b6316abb68e5a40dafcb  config/datasets/full-range-2019-2024.toml
 349ce104be44d28d918b22dc99dd611f56d174011b50cb144393a97940c72374  config/datasets/long-bull-bear-2022.manifest.json
@@ -126,7 +126,8 @@ f4216524de089988a15fbddd72a9625a737f41be5a8dcb4bed6a36ccf8e0addb  config/dataset
 ```
 
 If the tree hash differs, `git status` lists a change under `src`, or any `sha256sum` line
-says `FAILED`, stop before Step 3 and report. **Any change under `src` on `main` before
+says `FAILED`, stop before Step 3 and report by the pin-failure path in "Stop conditions",
+which runs no script. **Any change under `src` on `main` before
 this file merges changes the tree hash, so the pins must be updated in its PR before the
 owner's go.**
 
@@ -171,7 +172,7 @@ success is a stop (see "Stop conditions").
    python scripts/fetch_full_range.py tail data/full-range-tests.log
    ```
 
-   The last line must report `24 passed`. Add no `-q`: `pyproject.toml` already passes
+   The last line must report `25 passed`. Add no `-q`: `pyproject.toml` already passes
    one, and a second one hides that line.
 4. The run: about 3,600 requests to data.binance.vision, `verify` on both windows and
    `mask-report` on the scored one. Expect about an hour; the job allows 240 minutes.
@@ -364,7 +365,7 @@ success is a stop (see "Stop conditions").
 ## Validity checks (all must hold for a valid run)
 
 1. Step 2: the pinned tree hash, an empty `git status`, `6 pins` and six `OK` lines.
-2. Step 3: `24 passed`.
+2. Step 3: `25 passed`.
 3. Step 4: `wait` prints `DONE exit=0`, and the run log's last line is
    `RESULT 0 problem(s)`, which the script prints only when all of these hold:
    - `FUNDING 60 of 60 months ok`;
@@ -406,9 +407,19 @@ There are two kinds of stop:
     The digest is what rebuilds the manifests, so it always reaches the report, compressed
     when it must be. (A `STOP` comes before the digest, so then there is none.)
   - "Stop" then means: no rerun, no change and no workaround.
-- **Anything else** (a pin, the tests, a traceback with no `RESULT` line): stop where you
-  are. Keep everything, and write the report with what you have, by the same steps: 6a,
-  6b, 6c if a run log exists, 6d and 6e, with the full error.
+- **Step 1 or Step 2 failed** (the clock, the commit, or any pin): the script and its
+  tests are not the reviewed ones, so **run nothing else: not `scripts/fetch_full_range.py`
+  in any form, not its report subcommands, and not `python -m pytest`.** An unreviewed
+  script can read an argument it does not know as a data directory and start a fetch.
+  Write the report file directly with your edit tool instead, as one new file
+  `docs/reviews/2026-10-07-bob-full-range-2017-2024-fetch.md`:
+  - first line `# Bob: full-range-2017-2024 fetch stopped at the pins`;
+  - within the first 20 lines, a line starting `Index: ` that names the failed check;
+  - every Step 1 and Step 2 command with its output, verbatim, the failing line included;
+  - one sentence saying that nothing was fetched and the pins need updating in a new PR.
+- **Anything else after Step 2 passed** (the tests, a traceback with no `RESULT` line):
+  stop where you are. Keep everything, and write the report with what you have, by the
+  same steps: 6a, 6b, 6c if a run log exists, 6d and 6e, with the full error.
 
 Report each of these:
 - the tree hash differs, `git status` lists a change under `src`, any pin says `FAILED`,
@@ -449,6 +460,9 @@ Report each of these:
 Where that file names a shell command, use the script instead:
 - for the clock (item 8), `python scripts/fetch_full_range.py now`;
 - for a path check (item 2), `python scripts/fetch_full_range.py exists PATH ...`.
+
+After a pin failure (Step 1 or Step 2), run neither: take the clock from Step 1's output,
+and check paths by reading the files with your read tool.
 
 From 6c on, change nothing already in the report; an error found later goes in your final
 message. The one exception is 6e.3: a report of 200,000 bytes or more is written again,
