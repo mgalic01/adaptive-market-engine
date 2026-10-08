@@ -247,6 +247,11 @@ def test_manifest_inspection_from_synthetic_archive(kind, header):
     if kind != "funding":
         assert entry["daily_bars"] == 29
         assert entry["masked_hours"] == []
+        from crypto_grid_bot.backtest.klines import month_bounds_ms
+
+        start, end = month_bounds_ms("2024-02")
+        assert entry["first_open_ms"] == start
+        assert entry["last_open_ms"] == end - 3_600_000
 
 
 def test_manifest_missing_and_corrupt_are_distinct():

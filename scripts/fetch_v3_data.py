@@ -262,6 +262,8 @@ def inspect_archive(
                     status="excluded" if checked.excluded else "eligible",
                     rows=read.stats.rows,
                     expected_rows=read.stats.expected_rows,
+                    first_open_ms=read.stats.first_open_ms,
+                    last_open_ms=read.stats.last_open_ms,
                     masked_hours=sorted(checked.masked_hours),
                     repaired_hours=sorted(read.repaired),
                     daily_bars=len(checked.daily_bars),
@@ -349,7 +351,8 @@ def collect_inventory(
     transport: InventoryTransport,
     spec_sha256: str,
     *,
-    reuse: dict[str, PinnedArchive] | None = None,
+    reuse: dict[str, PinnedArchive | None] | None = None,
+    futures_snapshot: bytes | None = None,
 ) -> Path:
     """Save one fresh inventory; a failed fetch leaves evidence but no final manifest.
 
@@ -372,9 +375,11 @@ def collect_inventory(
         if (
             path not in paths
             or not path.startswith("/data/spot/")
-            or re.fullmatch(r"[0-9a-f]{64}", pin.sha256) is None
+            or (pin is not None and re.fullmatch(r"[0-9a-f]{64}", pin.sha256) is None)
         ):
             raise ValueError("invalid pinned spot request")
+    if futures_snapshot is not None:
+        parse_filter_snapshot(futures_snapshot, tuple(sorted(SYMBOLS)), futures=True)
     output_dir.mkdir(parents=True, exist_ok=False)
     snapshot_dir = output_dir / "snapshots"
     snapshot_dir.mkdir()
@@ -383,7 +388,9 @@ def collect_inventory(
         ("spot", transport.spot_filters),
         ("futures", transport.futures_filters),
     ):
-        raw = retrieve()
+        raw = (
+            futures_snapshot if market == "futures" and futures_snapshot is not None else retrieve()
+        )
         if not isinstance(raw, bytes) or len(raw) > 8 * 1024 * 1024:
             raise ValueError("invalid or oversized snapshot response")
         (snapshot_dir / f"{market}.json").write_bytes(raw)
@@ -391,8 +398,11 @@ def collect_inventory(
         snapshots[market] = raw
     entries = []
     for kind, symbol, month in sorted(requests):
-        archive = reuse_or_fetch_archive(
-            kind, symbol, month, transport.archive, pins.get(archive_path(kind, symbol, month))
+        path = archive_path(kind, symbol, month)
+        archive = (
+            None
+            if path in pins and pins[path] is None
+            else reuse_or_fetch_archive(kind, symbol, month, transport.archive, pins.get(path))
         )
         entry = inspect_archive(archive, kind, symbol, month)
         if archive is not None:
