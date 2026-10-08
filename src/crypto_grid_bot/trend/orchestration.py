@@ -9,7 +9,7 @@ from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.metrics import TRADE_RECONCILIATION_TOLERANCE, summarize_runner
-from crypto_grid_bot.trend.replay import ReplayResult, replay_window
+from crypto_grid_bot.trend.replay import ReplayExecutionError, ReplayResult, replay_window
 from crypto_grid_bot.trend.walk_forward import RULES, choose_rule, windows
 
 INVALID = frozenset(
@@ -123,6 +123,8 @@ def replay_sensitivities(
             if result.reason is None and result.runner is None:
                 raise ValueError("successful replay has no account evidence")
         except Exception as exc:
+            if isinstance(exc, ReplayExecutionError):
+                result = exc.partial_result
             record(
                 Attempt(
                     run_id,
@@ -198,6 +200,8 @@ def run_walk_forward(
                         raise ValueError("successful replay has no account evidence")
                     score = summarize_runner(result.runner).sharpe
             except Exception as exc:
+                if isinstance(exc, ReplayExecutionError):
+                    result = exc.partial_result
                 record(
                     Attempt(
                         run_id, "training", rule, start, end, result, f"{type(exc).__name__}: {exc}"
@@ -222,6 +226,8 @@ def run_walk_forward(
         if result.reason is not None and result.reason not in INVALID:
             raise ValueError("unknown strategy-invalid outcome")
     except Exception as exc:
+        if isinstance(exc, ReplayExecutionError):
+            result = exc.partial_result
         record(
             Attempt(
                 run_id, "out_of_sample", None, start, end, result, f"{type(exc).__name__}: {exc}"

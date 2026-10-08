@@ -12,6 +12,29 @@ DAY, HOUR = 86400000, 3600000
 FILTER = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
 
 
+def test_execution_error_exposes_partial_runner_without_terminal_mark(monkeypatch):
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.replay import replay_window
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    original = TrendRunner.step
+
+    def broken(self, stamp, *args, **kwargs):
+        if stamp == T + HOUR:
+            raise ArithmeticError("synthetic account failure")
+        return original(self, stamp, *args, **kwargs)
+
+    monkeypatch.setattr(TrendRunner, "step", broken)
+    with pytest.raises(Exception, match="synthetic account failure") as caught:
+        replay_window(DailyDecisions({}, {}), {}, {}, {}, T, T + DAY, {T: None})
+    partial = getattr(caught.value, "partial_result", None)
+    assert partial is not None
+    assert len(partial.runner.hours) == 1
+    assert partial.runner.stopped == "engine_failure"
+    assert all(state.kind != "terminal" for state in partial.runner.equity_path)
+    assert isinstance(caught.value.__cause__, ArithmeticError)
+
+
 @pytest.mark.parametrize("knobs", [{"multiple": 4}, {"cost_multiple": 3}])
 def test_invalid_configuration_precedes_unavailable_close(knobs):
     from crypto_grid_bot.trend.decisions import DailyDecisions

@@ -52,3 +52,15 @@ pending; that is not a finished or successful result. Memory is bounded per seri
 row, not for the whole replay or the five retained sensitivity runners. No historical
 dispatch is authorized by these changes. Claude handoff: these are evidence integrity
 fixes; no new dependency, credential handling or trading-rule change.
+
+Partial execution evidence follow-up: ReplayExecutionError now carries the unfinished
+ReplayResult and chains the original exception. Failures after runner construction
+mark it engine_failure without inventing a terminal mark or censoring active trades.
+Training, OOS and sensitivity handlers persist that partial result before re-raising.
+Two regressions reproduced missing partial evidence before implementation; the writer
+test now verifies the preceding hour and failed account state in the actual artifact.
+All 39 focused replay/writer/orchestration tests excluding the slow full-training
+scenario pass. Ruff and mypy pass. Compatibility: execution-time engine errors are
+now wrapped in ReplayExecutionError; preflight errors retain their original types.
+The earlier full-suite process tests the recovery-only snapshot f8c28db, not this
+subsequent change. Full decision evidence and report/recovery completion remain open.

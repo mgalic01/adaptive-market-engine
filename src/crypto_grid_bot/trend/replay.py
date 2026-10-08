@@ -24,6 +24,14 @@ class ReplayResult:
     trade_reconciliation_residual: Decimal | None = None
 
 
+class ReplayExecutionError(RuntimeError):
+    """Engine failure retaining the unfinished account for diagnostic evidence."""
+
+    def __init__(self, error: Exception, partial_result: ReplayResult) -> None:
+        super().__init__(f"{type(error).__name__}: {error}")
+        self.partial_result = partial_result
+
+
 def replay_window(
     decisions: DailyDecisions,
     filters: Mapping[str, OrderFilters],
@@ -101,48 +109,54 @@ def replay_window(
     )
     closes: dict[str, Decimal] = {}
     current_rule = picks[start_ms]
-    for hour in range(start_ms, end_ms_exclusive, HOUR):
-        if any(
-            item.decision_ms == hour
-            and item.fill_ms is None
-            and item.symbol in runner.account.positions
-            and runner.account.positions[item.symbol].quantity != 0
-            for item in requirements
-        ):
-            runner.finish(closes, reason="unavailable_exclusion_close")
-            return ReplayResult(runner, "unavailable_exclusion_close", requirements)
-        month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
-        eligible = {
-            s
-            for s, first in first_months.items()
-            if first <= month and month not in excluded.get(s, ())
-        }
-        bars = {}
-        for symbol in sorted(eligible):
-            row = indexed[symbol].get(hour)
-            if row is not None:
-                bars[symbol] = (row.open, row.low, row.high)
-                closes[symbol] = row.close
-        groups = {
-            stamp: {s: rate for s, rate in rates.items() if s in eligible}
-            for stamp, rates in by_hour.get(hour, {}).items()
-        }
-        groups = {stamp: rates for stamp, rates in groups.items() if rates}
-        targets = {}
-        reasons = {}
-        if hour % DAY == 0:
-            previous_rule = current_rule
-            current_rule = picks.get(hour, current_rule)
-            decision = decisions.at(
-                hour,
-                current_rule,
-                multiple=multiple,
-                pick_changed=current_rule != previous_rule,
-                run_end_ms=end_ms_exclusive,
-            )
-            targets, reasons = decision.targets, decision.exit_reasons
-        result = runner.step(hour, bars, targets, groups, exit_reasons=reasons)
-        if result.reason is not None:
-            return ReplayResult(runner, result.reason, requirements)
-    runner.finish(closes)
-    return ReplayResult(runner, None, requirements)
+    try:
+        for hour in range(start_ms, end_ms_exclusive, HOUR):
+            if any(
+                item.decision_ms == hour
+                and item.fill_ms is None
+                and item.symbol in runner.account.positions
+                and runner.account.positions[item.symbol].quantity != 0
+                for item in requirements
+            ):
+                runner.finish(closes, reason="unavailable_exclusion_close")
+                return ReplayResult(runner, "unavailable_exclusion_close", requirements)
+            month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
+            eligible = {
+                s
+                for s, first in first_months.items()
+                if first <= month and month not in excluded.get(s, ())
+            }
+            bars = {}
+            for symbol in sorted(eligible):
+                row = indexed[symbol].get(hour)
+                if row is not None:
+                    bars[symbol] = (row.open, row.low, row.high)
+                    closes[symbol] = row.close
+            groups = {
+                stamp: {s: rate for s, rate in rates.items() if s in eligible}
+                for stamp, rates in by_hour.get(hour, {}).items()
+            }
+            groups = {stamp: rates for stamp, rates in groups.items() if rates}
+            targets = {}
+            reasons = {}
+            if hour % DAY == 0:
+                previous_rule = current_rule
+                current_rule = picks.get(hour, current_rule)
+                decision = decisions.at(
+                    hour,
+                    current_rule,
+                    multiple=multiple,
+                    pick_changed=current_rule != previous_rule,
+                    run_end_ms=end_ms_exclusive,
+                )
+                targets, reasons = decision.targets, decision.exit_reasons
+            result = runner.step(hour, bars, targets, groups, exit_reasons=reasons)
+            if result.reason is not None:
+                return ReplayResult(runner, result.reason, requirements)
+        runner.finish(closes)
+        return ReplayResult(runner, None, requirements)
+    except Exception as exc:
+        runner.stopped = "engine_failure"
+        raise ReplayExecutionError(
+            exc, ReplayResult(runner, "engine_failure", requirements)
+        ) from exc
