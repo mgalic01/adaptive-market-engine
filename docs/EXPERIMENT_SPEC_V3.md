@@ -29,7 +29,11 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 - **Integrity:** the 1h futures klines go through the repairing reader of the long-window data (#186, #189).
   - As spec v1 §5 rule 5 treats a symbol that has only 1h archives, every hour the reader repairs, and every missing hour, is masked.
   - A coin-month with more than 17% of its hours masked is excluded, under spec v1 §5's 17% rule. So is a coin-month whose funding file is missing.
-  - **An excluded coin-month** gives that coin a target of 0 for the whole month, in every run: the out-of-sample account, the training runs and the hold benchmark. An open position closes at the first daily decision of the month (§6). If the month has no unmasked hour to fill in, the run is invalid (§8).
+  - **An excluded coin-month** gives that coin a target of 0 for the whole month, in every run: the out-of-sample account, the training runs and the hold benchmark.
+    - An open position closes at the decision made after the close of the day before the previous month's last day. That decision fills at 01:00 UTC on the previous month's last day, so the coin is flat through every funding timestamp of the excluded month.
+    - The coin trades again from the first decision whose fill falls after the excluded month.
+    - Exclusions are a data fact, settled from the committed manifest before any run, so knowing one a month ahead uses no market information. In live trading a data gap would not be known in advance, so the record states this simplification.
+    - If that closing fill has no unmasked hour on the previous month's last day, it moves to the next unmasked hour before the excluded month starts. If there is none, the run is invalid (§8).
   - Spec v1 §5's other rules concern minute replay, the daily/hourly cross-check and spot quoting (rule 8, the actual-quotes test). They do not apply to v3, which neither replays minutes nor quotes inside the spread.
 
 **Spot data:**
@@ -37,11 +41,20 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
   - Nine coins' files are already in `full-range-2017-2024`'s committed manifest (#199), and are reused with the same checksums.
   - ADAUSDT is not in that dataset, so its files are fetched in the same Bob task.
   - The integrity rules above apply to them too.
-- **Daily closes for signals** (§4) are aggregated from these spot 1h bars.
+  - **A spot coin-month that is excluded** gives that coin a target of 0 for the same month, as a futures exclusion does, and its days drop out of the daily series.
+- **Daily bars for signals** (§4) are aggregated from these spot 1h bars: R5 needs highs and lows, and the other rules use closes.
 - **The hold benchmark** (§8) uses the same spot 1h bars.
-- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06 gives every coin more than a year before its futures data start (§3), except where a coin's spot listing is later (SOLUSDT, 2020-08). There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
+- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06, or from a coin's first full spot month if later, gives each coin more than a year before its futures data start (§3), except where the spot listing is too late for that: SOLUSDT's spot starts in 2020-08. There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
 
-**Daily bars** are UTC days, built from 1h bars. A day with a masked hour still produces a daily close from its last unmasked hour, and is reported as such.
+**Daily bars** are UTC days, built from the unmasked 1h bars of each day:
+- open is the first unmasked hour's open, and close is the last unmasked hour's close;
+- high and low are the maximum and minimum over the unmasked hours;
+- a day with some hours masked still gives a bar, and is reported as such;
+- a day with every hour masked, or in an excluded month, gives no bar.
+
+**The daily series** of a coin is its bars in date order, with missing days simply absent:
+- "n closes" means the last n available bars, and "the close 365 days earlier" (R4) means the last available close on or before that calendar date;
+- a daily return is the simple return between consecutive available closes, so a return across a gap spans the gap and counts once.
 
 ## 3. Coins
 
@@ -59,10 +72,19 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
 | R2 | **EMA 21/55** | EMA(21) > EMA(55) → +1; below → −1; equal → 0. |
 | R3 | **Donchian 55/20** | Flat until a close above the prior 55-day high (+1) or below the prior 55-day low (−1). A long exits to 0 on a close below the prior 20-day low; a short exits to 0 on a close above the prior 20-day high. "Prior" means the window ending the day before. |
 | R4 | **12-month momentum** | close ÷ close 365 days earlier − 1: > 0 → +1; < 0 → −1; = 0 → 0. |
-| R5 | **Supertrend 10/3** | ATR(10) with Wilder smoothing, multiplier 3, standard band carry-forward: close above the line → +1, below → −1. |
+| R5 | **Supertrend 10/3** | Defined in full below the table. Uptrend → +1, downtrend → −1. |
 | R6 | **Equal blend** | the mean of R1–R5's signals, a value in [−1, +1]. It is the only rule whose signal is not just −1, 0 or +1. |
 
-- **A rule with too little history** for a coin gives 0 for that coin until it has enough: 50 closes for R1, 55 for R2 and R3, 366 for R4, and 11 for R5.
+**R5 in full**, on daily bars (H, L, C):
+- **True range:** `TR_t = max(H_t − L_t, |H_t − C_{t−1}|, |L_t − C_{t−1}|)`, from the second bar on.
+- **ATR:** the first ATR is the mean of the first 10 true ranges, at bar 11. After that, `ATR_t = (9 × ATR_{t−1} + TR_t) ÷ 10` (Wilder).
+- **Basic bands:** `mid = (H_t + L_t) ÷ 2`; `basic_upper = mid + 3 × ATR_t`; `basic_lower = mid − 3 × ATR_t`.
+- **Final bands:** at bar 11 they equal the basic bands. After that:
+  - `upper_t = basic_upper_t` if `basic_upper_t < upper_{t−1}` or `C_{t−1} > upper_{t−1}`, else `upper_{t−1}`;
+  - `lower_t = basic_lower_t` if `basic_lower_t > lower_{t−1}` or `C_{t−1} < lower_{t−1}`, else `lower_{t−1}`.
+- **Trend:** at bar 11, uptrend if `C_t ≥ mid`, else downtrend. After that, an uptrend turns down when `C_t < lower_t`, and a downtrend turns up when `C_t > upper_t`. Otherwise it continues.
+
+- **A rule with too little history** for a coin gives 0 for that coin until it has enough: 50 closes for R1, 55 for R2 and R3, a close at least 365 days earlier for R4, and 11 bars for R5.
 - **No other strategy family is in v3.** That covers mean reversion, scalping, breakout variants, pattern recognition, market structure, pairs trading and funding arbitrage (§10). Each extra rule is another trial, and more trials make a lucky pass more likely.
 
 ## 5. Sizing
@@ -70,9 +92,10 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
 At each daily decision, after day d's close:
 
 1. **Raw weight:** for each coin with a non-zero signal `s`, `raw = s × (1 / σ)`, where σ is the annualised volatility of the coin's daily spot simple returns over the last 60 days (sample standard deviation × √365).
-   - A coin with fewer than 60 daily spot returns, or with σ = 0, gets a raw weight of 0.
+   - σ uses the coin's last 60 daily returns (§2). A coin with fewer than 60, or with σ = 0, gets a raw weight of 0.
    - Spot history precedes every coin's futures history (§2), so a coin that joins mid-window normally already has its 60 returns.
 2. **Volatility target:** the portfolio's estimated volatility is `√(rawᵀ Σ raw)`, where Σ is the 60-day sample covariance matrix of the same returns, annualised, over the coins with a non-zero raw weight. All raw weights are scaled by `0.20 ÷ that estimate`, so the portfolio targets **20% volatility a year**.
+   - Σ uses the last 60 UTC days, keeping only the days on which every coin with a non-zero raw weight has a daily return (§2). If fewer than 40 such days remain, every target is 0.
    - Σ is never inverted, so a singular Σ needs no special case.
    - If every raw weight is 0, or the estimate is 0, every target is 0: the book goes flat.
 3. **Caps,** applied after scaling, in this order:
@@ -86,7 +109,8 @@ At each daily decision, after day d's close:
    - The band is tested on weights, before any rounding.
 5. **Quantity:** `target quantity = target weight × equity ÷ open`, where equity is the account's mark at the fill hour's open, before that hour's fills, and open is that hour's unslipped open (§6).
    - The quantity rounds toward zero to the symbol's quantity step.
-   - A trade whose notional (quantity change × open) is below the symbol's minimum notional is not made, and is reported.
+   - A trade that opens or increases a position is not made if its notional (quantity change × open) is below the symbol's minimum notional, and it is reported.
+   - A trade that reduces or closes a position is always made, at any size, as a reduce-only order is on Binance.
 
 **Precision:** every sizing computation runs in `Decimal` at 60 significant digits with `ROUND_HALF_EVEN`, including the covariance, the square roots (`Decimal.sqrt`) and the scaling. Prices and rates are used exactly as archived.
 
@@ -94,8 +118,11 @@ At each daily decision, after day d's close:
 
 **One portfolio account** at 10,000 USDT, with cross margin, run on hourly futures bars.
 - **Fills:** each daily decision fills at the open of the 1h bar that starts one hour after the UTC day's close (01:00 UTC). A buy fills at `open × (1 + 0.0005)` and a sell at `open × (1 − 0.0005)`, which is the slippage. Each fill pays the taker fee, 0.05% (Binance USDⓈ-M, VIP 0), of its slipped notional: `quantity × fill price`. Quantities come from §5 step 5.
-- **A masked fill hour:** the fill moves to the open of the next unmasked hour of that coin, on the same terms.
-- **Funding:** at each funding timestamp in the coin's funding file, the position pays `quantity × the 1h bar's open at that hour × rate` if it is long and the rate is positive. A short receives it. A negative rate reverses both.
+- **A masked fill hour:** the fill moves to the open of the next unmasked hour of that coin, on the same terms. The current weight, the equity and the open of §5 steps 4 and 5 are all taken at that actual fill hour.
+- **Funding:** each timestamp in the coin's funding file belongs to the 1h bar whose hour contains it, so millisecond offsets map to the hour they fall in.
+  - The position pays `quantity × that bar's open × rate` if it is long and the rate is positive. A short receives it. A negative rate reverses both.
+  - **Order within an hour:** funding first, on the quantity held before that hour's fills; then the fills.
+  - Funding is charged at exactly the timestamps in the file. A month whose file has fewer timestamps than its days × 3 is reported, and its missing timestamps are not charged.
 - **Marking:** equity is marked at every hour's open. Total equity is cash plus the unrealised profit and loss of every position, after every fee and funding payment.
 - **Liquidation:** each hour, equity is also computed at each position's adverse extreme of that 1h bar: the low for a long, the high for a short, all at once.
   - If that equity is ≤ 1% of the gross open notional, the account is liquidated at the next hour's opens, and the run fails (§8).
@@ -104,7 +131,7 @@ At each daily decision, after day d's close:
 - **Accounting identities,** exact and checked at the end of every run, as in spec v1 P6:
   - cash = initial capital − the sum of buy notionals + the sum of sell notionals − fees − funding paid + funding received, with notionals at fill prices;
   - each coin's quantity = its buys − its sells;
-  - realised plus unrealised profit and loss equals the change in equity.
+  - realised plus unrealised profit and loss, net of every fee and funding payment, equals the change in equity.
 
 **Costs stress, reported only:** every run is repeated at double fees and double slippage.
 
@@ -140,7 +167,10 @@ At each daily decision, after day d's close:
 **The hold benchmark:** long-only, equal signal (+1) for every coin in the portfolio at that time, on spot prices with no funding. It uses the same sizing (§5: volatility target, caps, rebalancing rule) and the same fees and slippage (§6). It answers one question: does timing add anything over just holding the same coins at the same risk?
 - **It holds spot, without funding, on purpose.** That is the realistic "just hold" alternative. In 2020–2024 funding was mostly positive (#137), so holding long perpetuals would have paid funding and done worse. The asymmetry leans in the benchmark's favour, against v3.
 
-**A run fails** if it is invalid: an accounting identity fails, a liquidation occurs, or a fill or funding payment the rules require cannot be made.
+**A run is invalid** if an accounting identity fails, a liquidation occurs, or a fill the rules require cannot be made.
+- **The out-of-sample account or the hold benchmark invalid:** v3 fails.
+- **A training run invalid:** only that rule is out of the pick for that window, and the record says so.
+- **All six training runs invalid in a window:** the book is flat (every target 0) for that test quarter, and the record says so.
 
 **Reported, deciding nothing:**
 - **The owner's monthly target:** every out-of-sample month's return, beside the owner's 20–30% target, and how many months reached 20%.
@@ -156,7 +186,7 @@ At each daily decision, after day d's close:
   - Python's `random.Random(20261008)` as the only source of randomness;
   - the 2.5th and 97.5th percentiles of the resampled Sharpe ratios, by the nearest-rank method;
 - the double-cost results;
-- the worst drawdown's dates;
+- the worst drawdown's dates, and the maximum drawdown beside equal-weight buy-and-hold's;
 - the picks quarter by quarter;
 - variant D, and plain equal-weight buy-and-hold at full size;
 - **the minimum account size:** the smallest account at which every target position of the out-of-sample run meets its symbol's minimum notional (§5).
