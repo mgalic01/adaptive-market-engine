@@ -73,3 +73,35 @@ def test_censor_validation_is_atomic_across_coins():
         ledger.censor(T + 1000, a.positions, {"BTCUSDT": D(100)}, "end_of_run")
     assert not ledger.completed
     assert all(life.end_ms is None for life in ledger.active.values())
+
+
+def test_increase_preserves_pre_fill_excursion_and_flip_starts_new_life():
+    from crypto_grid_bot.trend.lifecycles import LifecycleLedger
+
+    a, ledger = FuturesAccount(), LifecycleLedger()
+    for quantity, price, reducing, reasons in [
+        (1, 100, False, set()),
+        (9, 120, False, set()),
+        (-10, 110, True, {"flip"}),
+        (-2, 110, False, set()),
+    ]:
+        before = a.positions.get("BTCUSDT", Position())
+        fill = a.fill("BTCUSDT", OrderIntent(D(quantity), reducing), D(price), T)
+        ledger.fill(fill, before, a.positions["BTCUSDT"], reasons)
+    closed = ledger.completed[0]
+    assert closed.favourable == D("20.0100")
+    assert closed.exit_reason == "flip"
+    assert closed.side == "long"
+    assert len(closed.fills) == 3
+    assert ledger.active["BTCUSDT"].side == "short"
+    assert len(ledger.active["BTCUSDT"].fills) == 1
+
+
+def test_inconsistent_fill_positions_are_rejected_before_entry():
+    from crypto_grid_bot.trend.lifecycles import LifecycleLedger
+
+    a, ledger = FuturesAccount(), LifecycleLedger()
+    fill = a.fill("BTCUSDT", OrderIntent(D(1), False), D(100), T)
+    with pytest.raises(ValueError, match="quantity"):
+        ledger.fill(fill, Position(), Position(D(2), fill.price))
+    assert not ledger.active

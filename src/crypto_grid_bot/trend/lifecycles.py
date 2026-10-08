@@ -71,6 +71,16 @@ class LifecycleLedger:
     def fill(
         self, fill: Fill, before: Position, after: Position, reasons: Set[str] = frozenset()
     ) -> None:
+        with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+            if before.quantity + fill.quantity != after.quantity:
+                raise ValueError("inconsistent fill quantity")
+            if fill.quantity == ZERO or before.quantity * after.quantity < ZERO:
+                raise ValueError("fill must not cross zero in one lifecycle event")
+            if fill.reduce_only and (
+                before.quantity * fill.quantity >= ZERO
+                or abs(after.quantity) >= abs(before.quantity)
+            ):
+                raise ValueError("invalid reducing quantity")
         reason = next((reason for reason in EXIT_PRIORITY if reason in reasons), None)
         if after.quantity == ZERO and reason is None:
             raise ValueError("closing fill needs an exit reason")
