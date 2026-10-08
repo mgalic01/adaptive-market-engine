@@ -59,3 +59,13 @@ trade lifecycles, WFO and evaluation are still required. The class does not enfo
 those missing runner responsibilities. No market archives, replay runs, new
 libraries, live routes or altered frozen trading rules. External exact-head review
 and full CI remain pending.
+# Follow-up audit safeguards
+
+Cloud identified three reproducible evidence/validation defects at a5003f7.
+The quantity audit now checks the union of position and fill symbols, so a lost
+position cannot disappear from reconciliation. Marks retain prices in an immutable
+mapping. Empty funding groups are refused before either clock or ledger changes.
+Three regressions failed on the earlier implementation and pass after these fixes;
+all23 account tests pass, along with Ruff, formatting and mypy. No arithmetic,
+funding rates, costs, liquidation threshold or proposed tolerance changed.
+

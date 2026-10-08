@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+from types import MappingProxyType
 
 from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.parsing import symbol_name
@@ -69,7 +70,7 @@ class AccountMark:
     gross_notional: Decimal
     margin_ratio: Decimal | None
     gross_leverage: Decimal | None
-    prices: dict[str, Decimal]
+    prices: Mapping[str, Decimal]
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +182,8 @@ class FuturesAccount:
         self, timestamp_ms: int, rates: Mapping[str, Decimal], prices: Mapping[str, Decimal]
     ) -> FundingEvent:
         self._time(timestamp_ms)
+        if not rates:
+            raise ValueError("empty funding group")
         if timestamp_ms <= self._funding_clock:
             raise ValueError("same-time funding must be supplied as one complete group")
         payments = []
@@ -227,7 +230,9 @@ class FuturesAccount:
             equity = wallet + unrealized
             margin = equity / gross if gross != ZERO else None
             leverage = gross / equity if equity > ZERO else None
-            return AccountMark(wallet, unrealized, equity, gross, margin, leverage, used)
+            return AccountMark(
+                wallet, unrealized, equity, gross, margin, leverage, MappingProxyType(used)
+            )
 
     def check_liquidation(self, prices: Mapping[str, Decimal], timestamp_ms: int) -> AccountMark:
         self._time(timestamp_ms)
@@ -251,7 +256,9 @@ class FuturesAccount:
                 )
             expected_wallet = self.initial + realized - fees - paid + received
             residuals = {}
-            for symbol, position in sorted(self._positions.items()):
+            symbols = set(self._positions) | {row.symbol for row in self._fills}
+            for symbol in sorted(symbols):
+                position = self._positions.get(symbol, Position())
                 bought = sum(
                     (
                         row.quantity

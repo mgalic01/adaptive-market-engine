@@ -213,3 +213,34 @@ def test_wallet_audit_detects_corrupted_totals():
     fill(a, "1", "100")
     a._fees += D(1)  # Deliberate state corruption to exercise independent reconstruction.
     assert a.audit({"BTCUSDT": D(100)}).wallet_residual == -1
+
+
+def test_quantity_audit_detects_lost_position():
+    a = account()
+    fill(a, "1", "100")
+    del a._positions["BTCUSDT"]
+    result = a.audit({"BTCUSDT": D(100)})
+    assert result.quantity_residuals == {"BTCUSDT": D(-1)}
+    assert not result.exact
+
+
+def test_liquidation_prices_cannot_be_mutated():
+    a = account()
+    fill(a, "200", "100")
+    prices = {"BTCUSDT": D(50)}
+    mark = a.check_liquidation(prices, T)
+    prices["BTCUSDT"] = D(99)
+    with pytest.raises(TypeError):
+        mark.prices["BTCUSDT"] = D(99)
+    assert a.liquidation.mark.prices == {"BTCUSDT": D(50)}
+
+
+def test_empty_funding_group_does_not_advance_clocks():
+    a = account()
+    fill(a, "1", "100")
+    before = (a.wallet, a.funding, a._clock, a._funding_clock)
+    with pytest.raises(ValueError, match="empty"):
+        a.fund(T + 1000, {}, {})
+    assert (a.wallet, a.funding, a._clock, a._funding_clock) == before
+    event = a.fund(T, {"BTCUSDT": D(".01")}, {"BTCUSDT": D(100)})
+    assert event.payments[0].payment == D(1)
