@@ -121,7 +121,8 @@ def test_summary_rejects_mismatched_initial_equity_even_when_trades_reconcile():
         summarize([(0, D(100)), (86400000, D(110))], [D(90), D(110)], [D(20)])
 
 
-def test_runner_summary_accepts_equity_tolerance_without_calling_it_exact():
+@pytest.mark.parametrize("bad_quantity", [False, True])
+def test_runner_summary_accepts_equity_tolerance_without_calling_it_exact(bad_quantity):
     from crypto_grid_bot.trend.account import AccountingAudit
     from crypto_grid_bot.trend.metrics import summarize_runner
     from crypto_grid_bot.trend.runner import TrendRunner
@@ -135,6 +136,64 @@ def test_runner_summary_accepts_equity_tolerance_without_calling_it_exact():
     assert evidence.accepted and not evidence.exact
     assert summarize_runner(runner).net_pnl == 0
     assert runner.audits[-1].equity_residual == D("-1e-59")
-    runner.audits.append(AccountingAudit(D("1e-59"), {}, D(0)))
+    runner.audits.append(
+        AccountingAudit(D(0), {"BTCUSDT": D("1e-59")}, D(0))
+        if bad_quantity
+        else AccountingAudit(D("1e-59"), {}, D(0))
+    )
     with pytest.raises(ValueError, match="accounting"):
         summarize_runner(runner)
+
+
+def test_real_round_trip_retains_accepted_trade_residual():
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.metrics import summarize_runner
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    rules = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    runner = TrendRunner({"BTCUSDT": rules})
+    start = 1609459200000
+    for hour in range(50):
+        price = D(1 if hour < 24 else 2)
+        targets = (
+            {"BTCUSDT": D(".1" if hour == 0 else ".2" if hour == 24 else "0")}
+            if hour in (0, 24, 48)
+            else {}
+        )
+        runner.step(
+            start + hour * 3600000,
+            {"BTCUSDT": (price, price, price)},
+            targets,
+            {},
+            exit_reasons={"BTCUSDT": frozenset({"signal_zero" if hour == 48 else "sizing"})},
+        )
+    runner.finish({"BTCUSDT": D(2)})
+    assert all(a.accepted for a in runner.audits)
+    assert any(a.equity_residual == D("-5e-57") for a in runner.audits)
+    assert len(runner.lifecycles.completed) == 1
+    assert not runner.lifecycles.completed[0].censored
+    from decimal import Context, localcontext
+
+    with localcontext(Context(prec=60)):
+        trade_total = sum((life.net for life in runner.lifecycles.completed), D(0))
+        account_profit = runner.daily_samples[-1][1] - runner.daily_samples[0][1]
+        assert trade_total - account_profit == D("5e-57")
+    assert summarize_runner(runner).trade_reconciliation_residual == D("5e-57")
+
+
+@pytest.mark.parametrize("residual", [D("1e-18"), D("-1e-18"), D(0)])
+def test_trade_reconciliation_accepts_inclusive_bound_and_reports_residual(residual):
+    from crypto_grid_bot.trend.metrics import summarize
+
+    result = summarize([(0, D(100)), (86400000, D(100))], [D(100), D(100)], [residual])
+    assert result.trade_reconciliation_residual == residual
+
+
+@pytest.mark.parametrize(
+    "residual", [D("1.00000000000000000001e-18"), D("-1.00000000000000000001e-18")]
+)
+def test_trade_reconciliation_rejects_outside_bound(residual):
+    from crypto_grid_bot.trend.metrics import summarize
+
+    with pytest.raises(ValueError, match="reconcile"):
+        summarize([(0, D(100)), (86400000, D(100))], [D(100), D(100)], [residual])

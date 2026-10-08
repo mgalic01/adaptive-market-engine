@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from crypto_grid_bot.trend.runner import TrendRunner
 
 ZERO = Decimal(0)
+TRADE_RECONCILIATION_TOLERANCE = Decimal("1e-18")
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,7 @@ class PerformanceSummary:
     wins: int
     losses: int
     win_rate: Decimal
+    trade_reconciliation_residual: Decimal
 
 
 def summarize_runner(runner: "TrendRunner") -> PerformanceSummary:
@@ -60,8 +62,11 @@ def summarize(
     growth = cagr(samples)
     with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
         net_pnl = samples[-1][1] - equity_path[0]
-        if sum(trade_net_results, ZERO) != net_pnl:
-            raise ValueError("trade results do not reconcile with account equity")
+        residual = sum(trade_net_results, ZERO) - net_pnl
+        if not residual.is_finite() or residual.copy_abs() > TRADE_RECONCILIATION_TOLERANCE:
+            raise ValueError(
+                f"trade results do not reconcile with account equity: residual={residual}"
+            )
         changes = [samples[i][1] - samples[i - 1][1] for i in range(1, len(samples))]
         wins = sum(value > ZERO for value in trade_net_results)
         losses = sum(value < ZERO for value in trade_net_results)
@@ -78,6 +83,7 @@ def summarize(
             wins,
             losses,
             Decimal(wins) / count if count else ZERO,
+            residual,
         )
 
 

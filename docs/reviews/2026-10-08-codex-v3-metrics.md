@@ -42,3 +42,29 @@ residual passes reporting while a tiny wallet discrepancy still fails. All 76
 metric/account/runner/lifecycle tests pass, with Ruff and mypy. Renewed full CI and
 external review are required at the integrated head. The separate trade-total
 reconciliation remains exact and is not covered by that approval.
+
+Review follow-up: the summary tolerance test now covers both nonzero wallet and
+nonzero quantity residuals. Both remain rejected. Current metric-only verification
+is 14 test cases (13 functions, one parametrized), passing. Earlier 11/12 counts
+refer to prior revisions; 159 and 76 refer to different broader stack suites, not
+the metric-only count. Real lifecycle/equity grouping investigation remains open;
+no relaxation of exact trade reconciliation is authorized or implemented.
+
+Real lifecycle regression: a 50-hour synthetic run opens at price 1, changes target
+at price 2, then closes at price 2. Every equity audit is accepted; nonexact audits
+retain -5e-57. One uncensored completed lifecycle is present, but summarize_runner
+raises 'trade results do not reconcile with account equity'. The regression locks
+in the current strict rejection rather than silently relaxing it. This is confirmed
+numerical/evidence friction, not a strategy loss or historical performance result.
+All 15 metric cases pass. Quantify the separate trade residual before proposing an
+owner-approved replacement; the existing equity-only approval does not cover it.
+
+Owner-approved replacement implemented: trade-total reconciliation accepts inclusive
+absolute residual <=1e-18 USDT and exposes trade_reconciliation_residual in every
+PerformanceSummary. Out-of-bound errors include the signed residual. Trading
+arithmetic and exact wallet/quantity audits remain unchanged. The preceding strict
+rejection notes describe history, not the new approved policy. Spec e7ea68a precedes
+replacement registration 7ee82e0 (v3-candidate-space-5), which precedes implementation.
+All 70 metric/account/runner tests pass, including the real completed round trip,
+both inclusive boundaries and just-outside values. Ruff and mypy pass. New summary
+field is an output-schema addition; serializers must retain it. No historical run.
