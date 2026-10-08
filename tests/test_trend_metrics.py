@@ -145,7 +145,7 @@ def test_runner_summary_accepts_equity_tolerance_without_calling_it_exact(bad_qu
         summarize_runner(runner)
 
 
-def test_real_round_trip_retains_accepted_residual_but_exact_trade_gate_still_fails():
+def test_real_round_trip_retains_accepted_trade_residual():
     from crypto_grid_bot.trend.filters import OrderFilters
     from crypto_grid_bot.trend.metrics import summarize_runner
     from crypto_grid_bot.trend.runner import TrendRunner
@@ -178,5 +178,22 @@ def test_real_round_trip_retains_accepted_residual_but_exact_trade_gate_still_fa
         trade_total = sum((life.net for life in runner.lifecycles.completed), D(0))
         account_profit = runner.daily_samples[-1][1] - runner.daily_samples[0][1]
         assert trade_total - account_profit == D("5e-57")
-    with pytest.raises(ValueError, match="trade results do not reconcile"):
-        summarize_runner(runner)
+    assert summarize_runner(runner).trade_reconciliation_residual == D("5e-57")
+
+
+@pytest.mark.parametrize("residual", [D("1e-18"), D("-1e-18"), D(0)])
+def test_trade_reconciliation_accepts_inclusive_bound_and_reports_residual(residual):
+    from crypto_grid_bot.trend.metrics import summarize
+
+    result = summarize([(0, D(100)), (86400000, D(100))], [D(100), D(100)], [residual])
+    assert result.trade_reconciliation_residual == residual
+
+
+@pytest.mark.parametrize(
+    "residual", [D("1.00000000000000000001e-18"), D("-1.00000000000000000001e-18")]
+)
+def test_trade_reconciliation_rejects_outside_bound(residual):
+    from crypto_grid_bot.trend.metrics import summarize
+
+    with pytest.raises(ValueError, match="reconcile"):
+        summarize([(0, D(100)), (86400000, D(100))], [D(100), D(100)], [residual])

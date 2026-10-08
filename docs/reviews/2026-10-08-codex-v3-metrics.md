@@ -58,3 +58,13 @@ in the current strict rejection rather than silently relaxing it. This is confir
 numerical/evidence friction, not a strategy loss or historical performance result.
 All 15 metric cases pass. Quantify the separate trade residual before proposing an
 owner-approved replacement; the existing equity-only approval does not cover it.
+
+Owner-approved replacement implemented: trade-total reconciliation accepts inclusive
+absolute residual <=1e-18 USDT and exposes trade_reconciliation_residual in every
+PerformanceSummary. Out-of-bound errors include the signed residual. Trading
+arithmetic and exact wallet/quantity audits remain unchanged. The preceding strict
+rejection notes describe history, not the new approved policy. Spec e7ea68a precedes
+replacement registration 7ee82e0 (v3-candidate-space-5), which precedes implementation.
+All 70 metric/account/runner tests pass, including the real completed round trip,
+both inclusive boundaries and just-outside values. Ruff and mypy pass. New summary
+field is an output-schema addition; serializers must retain it. No historical run.
