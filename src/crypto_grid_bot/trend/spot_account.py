@@ -60,6 +60,42 @@ class SpotAccount:
         self._clock = -1
         self.cost_multiple = cost_multiple
 
+    def execute(
+        self,
+        symbol: str,
+        quantity: Decimal,
+        open_price: Decimal,
+        filters: OrderFilters,
+        timestamp_ms: int,
+    ) -> tuple[SpotFill, ...]:
+        """Balanced maximum-quantity splitting; each child obeys spot cash limits."""
+        _finite(quantity)
+        for value in (filters.step_size, filters.max_quantity, filters.min_quantity):
+            _finite(value, positive=True)
+        if quantity < 0 and quantity.copy_abs() > self.holdings.get(symbol, ZERO):
+            raise ValueError("spot cannot sell unowned quantity")
+        if quantity.copy_abs() <= filters.max_quantity:
+            return (self.fill(symbol, quantity, open_price, filters, timestamp_ms),)
+        with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+            steps = Fraction(quantity.copy_abs()) // Fraction(filters.step_size)
+            maximum = Fraction(filters.max_quantity) // Fraction(filters.step_size)
+            if maximum < 1:
+                raise ValueError("maximum quantity is below step")
+            count = (steps + maximum - 1) // maximum
+            base, extra = divmod(steps, count)
+            sizes = [(base + (i < extra)) * filters.step_size for i in range(count)]
+            if any(size < filters.min_quantity for size in sizes):
+                raise ValueError("no valid balanced quantity split")
+            fills = []
+            for size in sizes:
+                fill = self.fill(
+                    symbol, size if quantity > 0 else -size, open_price, filters, timestamp_ms
+                )
+                fills.append(fill)
+                if fill.quantity == 0 or fill.reason == "cash_clipped":
+                    break
+            return tuple(fills)
+
     def fill(
         self,
         symbol: str,

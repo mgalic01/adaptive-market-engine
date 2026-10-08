@@ -73,3 +73,32 @@ def test_rejected_orders_preserve_state_and_audit_detects_corruption():
     a.cash -= 1
     a.holdings["BTCUSDT"] += 1
     assert not a.audit().exact
+
+
+def test_balanced_maximum_quantity_split_preserves_total_and_audit():
+    from crypto_grid_bot.trend.spot_account import SpotAccount
+
+    filters = OrderFilters(*map(D, ("1", "5", "1", "5", "1", "5", "1", "1")))
+    a = SpotAccount()
+    fills = a.execute("BTCUSDT", D(13), D(100), filters, T)
+    assert [f.quantity for f in fills] == [D(5), D(4), D(4)]
+    assert a.holdings["BTCUSDT"] == 13
+    assert a.audit().exact
+    with pytest.raises(ValueError, match="unowned"):
+        a.execute("BTCUSDT", D(-14), D(100), filters, T + 1)
+    assert len(a.fills) == 3
+
+
+def test_low_ambient_precision_does_not_change_settlement():
+    from decimal import localcontext
+
+    from crypto_grid_bot.trend.spot_account import SpotAccount
+
+    expected = SpotAccount()
+    expected.fill("BTCUSDT", D(13), D("123.456789"), FILTERS, T)
+    with localcontext() as ctx:
+        ctx.prec = 3
+        actual = SpotAccount()
+        actual.fill("BTCUSDT", D(13), D("123.456789"), FILTERS, T)
+        assert actual.cash == expected.cash
+        assert actual.audit().exact
