@@ -62,3 +62,85 @@ def test_legacy_gate_does_not_change():
 def test_reserved_month_rejected_before_inspection():
     with pytest.raises(ValueError):
         funding_schedule([], "2025-01")
+
+
+def hourly_bars():
+    from crypto_grid_bot.backtest.klines import Kline
+
+    start, end = month_bounds_ms("2024-02")
+    return [
+        Kline(
+            t,
+            Decimal(10),
+            Decimal(12),
+            Decimal(9),
+            Decimal(11),
+            Decimal(1),
+            Decimal(10),
+            Decimal("0.5"),
+        )
+        for t in range(start, end, 3_600_000)
+    ]
+
+
+@pytest.mark.parametrize("missing,day_present", [(4, True), (5, False)])
+def test_daily_completeness(missing, day_present):
+    from crypto_grid_bot.trend.data import hourly_month
+
+    bars = hourly_bars()
+    result = hourly_month(bars[missing:], "2024-02")
+    assert not result.excluded
+    assert len(result.daily_bars) == (29 if day_present else 28)
+    assert len(result.masked_hours) == missing
+    if day_present:
+        day = result.daily_bars[0]
+        assert day.open_ms == bars[0].open_ms
+        assert day.volume == Decimal(20)
+        assert (day.open, day.high, day.low, day.close) == (
+            Decimal(10),
+            Decimal(12),
+            Decimal(9),
+            Decimal(11),
+        )
+
+
+@pytest.mark.parametrize("missing,excluded", [(118, False), (119, True)])
+def test_month_seventeen_percent_boundary(missing, excluded):
+    from crypto_grid_bot.trend.data import hourly_month
+
+    result = hourly_month(hourly_bars()[missing:], "2024-02")
+    assert result.excluded is excluded
+    if excluded:
+        assert result.daily_bars == ()
+
+
+def test_repaired_hour_not_in_daily_extremes():
+    from dataclasses import replace
+
+    from crypto_grid_bot.trend.data import hourly_month
+
+    bars = hourly_bars()
+    bars[2] = replace(bars[2], high=Decimal(999))
+    result = hourly_month(bars, "2024-02", frozenset({bars[2].open_ms}))
+    assert result.daily_bars[0].high == Decimal(12)
+    assert result.daily_bars[0].volume == Decimal(23)
+
+
+def test_duplicate_hour_rejected():
+    from crypto_grid_bot.trend.data import hourly_month
+
+    bars = hourly_bars()
+    with pytest.raises(ValueError, match="duplicate"):
+        hourly_month([*bars, bars[0]], "2024-02")
+
+
+def test_reader_repairs_are_always_masked():
+    from crypto_grid_bot.backtest.klines import FileStats, RepairedRead
+    from crypto_grid_bot.trend.data import repaired_month
+
+    bars = hourly_bars()
+    stats = FileStats(len(bars), len(bars), 0, 0, bars[0].open_ms, bars[-1].open_ms, ("ms",))
+    read = RepairedRead(bars, stats, frozenset({bars[0].open_ms}), frozenset({bars[1].open_ms}), "")
+    result = repaired_month(read, "2024-02")
+    assert result.masked_hours == frozenset({bars[0].open_ms, bars[1].open_ms})
+    assert result.daily_bars[0].volume == Decimal(22)
