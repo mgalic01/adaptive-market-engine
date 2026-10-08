@@ -90,3 +90,17 @@ superseded by the recorded owner approval. The registration pins were rechecked 
 raw Git blobs before this push; no data or historical dispatch occurred.
 
 Final focused check for this batch: 73 metrics/runner/lifecycle/decision/pending tests pass; full Ruff format/lint and mypy pass. A read-only internal reviewer independently passed 25 metric tests and checked the 01:00 terminal boundary. Raw spec blob SHA-256 at both e7ea68ad20d41aa6890fddc395b5698ac37463b3 and this branch is 1c541b38cb1858c8ac8262d9233813f31ef8c084bca74c017f8cf6bb23e42bca; the pinned commit is an ancestor. Full CI and Bob's latest-head review are still required.
+
+## 2026-10-09 terminal-boundary follow-up
+
+Pre-merge sweep of all inline review history found the terminal timestamp/kind
+finding still open. Two fail-first regressions reproduced acceptance of marks
+beyond the terminal sample and an open mark posing as terminal. summarize now
+requires the last path mark to have terminal kind and exactly the last sample's
+timestamp/equity. This prevents post-window drawdowns contaminating metrics.
+
+Integrated main a400b87 using a merge commit, preserving registration ancestry
+and its latest missing-spot attribution. 78 focused metrics/runner/lifecycle/
+decision/pending checks pass; Ruff lint/format and mypy pass. No formula or strategy
+change. Compatibility: malformed direct-call evidence is now rejected. Fresh
+external review and CI required; no historical dispatch.
