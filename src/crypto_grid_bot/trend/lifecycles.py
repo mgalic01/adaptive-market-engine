@@ -112,6 +112,16 @@ class LifecycleLedger:
     ) -> None:
         if reason not in ("end_of_run", "liquidation"):
             raise ValueError("invalid censor reason")
+        for symbol, life in self.active.items():
+            if symbol not in positions or symbol not in prices:
+                raise ValueError("missing terminal position or price")
+            price = prices[symbol]
+            if not isinstance(price, Decimal) or not price.is_finite() or price <= ZERO:
+                raise ValueError("invalid terminal price")
+            if type(timestamp_ms) is not int or timestamp_ms < life.start_ms:
+                raise ValueError("invalid terminal timestamp")
+            if positions[symbol].quantity == ZERO:
+                raise ValueError("active lifecycle has flat terminal position")
         with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
             for symbol in sorted(self.active):
                 life = self.active[symbol]

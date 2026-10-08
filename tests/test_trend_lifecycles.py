@@ -2,6 +2,8 @@
 
 from decimal import Decimal as D
 
+import pytest
+
 from crypto_grid_bot.trend.account import FuturesAccount, Position
 from crypto_grid_bot.trend.orders import OrderIntent
 
@@ -39,3 +41,35 @@ def test_censor_preserves_unrealized_and_does_not_add_fills():
     assert life.unrealized == D("9.9000")
     assert life.given_back == 10
     assert len(life.fills) == 1
+
+
+def test_partial_close_and_funding_stay_in_one_lifecycle():
+    from crypto_grid_bot.trend.lifecycles import LifecycleLedger
+
+    a, ledger = FuturesAccount(), LifecycleLedger()
+    opened = a.fill("BTCUSDT", OrderIntent(D(2), False), D(100), T)
+    ledger.fill(opened, Position(), a.positions["BTCUSDT"])
+    ledger.fund(a.fund(T, {"BTCUSDT": D(".01")}, {"BTCUSDT": D(100)}))
+    before = a.positions["BTCUSDT"]
+    reduced = a.fill("BTCUSDT", OrderIntent(D(-1), True), D(110), T + 1000)
+    ledger.fill(reduced, before, a.positions["BTCUSDT"])
+    assert not ledger.completed
+    ledger.censor(T + 2000, a.positions, {"BTCUSDT": D(105)}, "end_of_run")
+    life = ledger.completed[0]
+    assert life.funding_paid == 2
+    assert life.realized == reduced.realized
+    assert len(life.fills) == 2
+    assert life.given_back >= 0
+
+
+def test_censor_validation_is_atomic_across_coins():
+    from crypto_grid_bot.trend.lifecycles import LifecycleLedger
+
+    a, ledger = FuturesAccount(), LifecycleLedger()
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        fill = a.fill(symbol, OrderIntent(D(1), False), D(100), T)
+        ledger.fill(fill, Position(), a.positions[symbol])
+    with pytest.raises(ValueError):
+        ledger.censor(T + 1000, a.positions, {"BTCUSDT": D(100)}, "end_of_run")
+    assert not ledger.completed
+    assert all(life.end_ms is None for life in ledger.active.values())
