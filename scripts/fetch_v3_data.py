@@ -152,3 +152,76 @@ class V3Transport:
         if content is None:
             raise ValueError("missing spot filter snapshot")
         return content
+
+
+KLINE_HEADER = (
+    "open_time,open,high,low,close,volume,close_time,quote_volume,count,"
+    "taker_buy_volume,taker_buy_quote_volume,ignore"
+)
+
+
+def inspect_archive(
+    archive: ArchiveObject | None, kind: str, symbol: str, month: str
+) -> dict[str, object]:
+    """Build a deterministic manifest entry from verified bytes; no network access."""
+    import tempfile
+    import zipfile
+    from pathlib import Path
+
+    from crypto_grid_bot.backtest.funding import parse_funding_rows
+    from crypto_grid_bot.backtest.klines import parse_rows_repaired, read_member
+    from crypto_grid_bot.market_data.parsing import DataError
+    from crypto_grid_bot.trend.data import funding_schedule, repaired_month
+
+    path = archive_path(kind, symbol, month)
+    entry: dict[str, object] = {
+        "kind": kind,
+        "symbol": symbol,
+        "month": month,
+        "path": path,
+        "sha256": None,
+        "status": "missing",
+    }
+    if archive is None:
+        return entry
+    if archive.path != path or hashlib.sha256(archive.content).hexdigest() != archive.sha256:
+        raise ValueError("archive path or hash does not match inspected bytes")
+    if len(archive.content) > MAX_ARCHIVE_BYTES:
+        raise ValueError("archive exceeds size limit")
+    entry["sha256"] = archive.sha256
+    member = f"{symbol}-{'fundingRate' if kind == 'funding' else '1h'}-{month}.csv"
+    with tempfile.TemporaryDirectory(prefix="v3-inspect-") as folder:
+        local = Path(folder) / "archive.zip"
+        local.write_bytes(archive.content)
+        try:
+            text = read_member(local, member)
+            if kind == "funding":
+                records = parse_funding_rows(text, month)
+                schedule = funding_schedule(records, month)
+                entry.update(
+                    status="eligible" if schedule.eligible else "excluded",
+                    rows=len(records),
+                    interval_hours=schedule.interval_hours,
+                    expected_slots=schedule.expected_slots,
+                    reasons=list(schedule.reasons),
+                )
+            else:
+                header_removed = False
+                if kind == "futures" and text.partition("\n")[0].rstrip("\r") == KLINE_HEADER:
+                    text = text.partition("\n")[2]
+                    header_removed = True
+                read = parse_rows_repaired(text, "1h", month)
+                checked = repaired_month(read, month)
+                entry.update(
+                    status="excluded" if checked.excluded else "eligible",
+                    rows=read.stats.rows,
+                    expected_rows=read.stats.expected_rows,
+                    masked_hours=sorted(checked.masked_hours),
+                    repaired_hours=sorted(read.repaired),
+                    daily_bars=len(checked.daily_bars),
+                    unreadable=read.unreadable,
+                    header_removed=header_removed,
+                )
+        except (DataError, zipfile.BadZipFile) as exc:
+            entry.update(status="excluded", rows=0, reasons=[str(exc)])
+    return entry

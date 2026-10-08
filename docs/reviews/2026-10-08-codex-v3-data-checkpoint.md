@@ -42,3 +42,15 @@ falls back to LOT_SIZE. Snapshot parsing rejects missing symbols, nonperpetual f
 wrong quote assets, missing/duplicate filters and inconsistent quantity bounds.
 Combined focused suite: 65 tests pass; Ruff, mypy and Bandit pass in changed scope.
 No real snapshot was requested. Manifest linkage and complete fetch task remain pending.
+
+Manifest inspection now ties each verified archive to hash, source path, kind,
+symbol/month, eligibility and parsing diagnostics. Synthetic spot, futures and
+funding zip tests cover full-month rows; a single exact futures CSV header is
+recognized and its removal recorded. Raw bytes remain unchanged and hashed.
+Focused suite: 70 tests pass; Ruff (after import sorting), mypy and Bandit pass.
+
+Format reference consulted: https://github.com/binance/binance-public-data (official
+README, data columns/checksum description). That documentation displayed a few
+2025-dated example rows incidentally; no archive or reserved dataset was requested,
+and those examples were not used for returns, strategy design or parameter choices.
+Record this incidental exposure for any later reserved-window methodology review.

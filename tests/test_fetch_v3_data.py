@@ -198,3 +198,63 @@ def test_transport_size_limit_is_enforced(monkeypatch):
     with pytest.raises(ValueError, match="size limit"):
         module.V3Transport().archive(archive_path("futures", "BTCUSDT", "2024-12"))
     assert closed == [True]
+
+
+def synthetic_archive(kind, header=False):
+    import io
+    import zipfile
+
+    from fetch_v3_data import ArchiveObject
+
+    from crypto_grid_bot.backtest.klines import month_bounds_ms
+
+    start, end = month_bounds_ms("2024-02")
+    if kind == "funding":
+        text = "calc_time,funding_interval_hours,last_funding_rate\n" + "".join(
+            f"{stamp},8,0.0001\n" for stamp in range(start, end, 8 * 3_600_000)
+        )
+        member = "BTCUSDT-fundingRate-2024-02.csv"
+    else:
+        text = "".join(
+            f"{t},10,12,9,11,1,{t + 3599999},10,1,0.5,5,0\n" for t in range(start, end, 3_600_000)
+        )
+        if header:
+            text = (
+                "open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore\n"
+                + text
+            )
+        member = "BTCUSDT-1h-2024-02.csv"
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(member, text)
+    raw = out.getvalue()
+    return ArchiveObject(
+        archive_path(kind, "BTCUSDT", "2024-02"), hashlib.sha256(raw).hexdigest(), raw
+    )
+
+
+@pytest.mark.parametrize(
+    "kind,header", [("futures", False), ("futures", True), ("spot", False), ("funding", False)]
+)
+def test_manifest_inspection_from_synthetic_archive(kind, header):
+    from fetch_v3_data import inspect_archive
+
+    archive = synthetic_archive(kind, header)
+    entry = inspect_archive(archive, kind, "BTCUSDT", "2024-02")
+    assert entry["status"] == "eligible"
+    assert entry["sha256"] == archive.sha256
+    assert entry["rows"] == (87 if kind == "funding" else 696)
+    if kind != "funding":
+        assert entry["daily_bars"] == 29
+        assert entry["masked_hours"] == []
+
+
+def test_manifest_missing_and_corrupt_are_distinct():
+    from dataclasses import replace
+
+    from fetch_v3_data import inspect_archive
+
+    assert inspect_archive(None, "futures", "BTCUSDT", "2024-02")["status"] == "missing"
+    archive = synthetic_archive("futures")
+    with pytest.raises(ValueError, match="hash"):
+        inspect_archive(replace(archive, sha256="0" * 64), "futures", "BTCUSDT", "2024-02")
