@@ -51,6 +51,12 @@ ran 53 synthetic tests. The subsequent offline verifier has its own tamper tests
 it was not in that review. External exact-head review and CI remain pending;
 #211's evidence is separate.
 
+Follow-up verification: the new offline verifier was independently reviewed at
+70e5aacd64f8192bda9d8846899b2d009db38e80, with no concrete findings. Four build/CLI
+tests and additional synthetic diagnostic/path-tamper reproductions passed. That
+head incorporates #211's dual-notional-filter fix; the combined focused suite is
+now 101 passing tests. No real data or network was used for these checks.
+
 ## Before an owner-started Bob fetch
 
 The current Bob workflow has two concrete integration constraints:
