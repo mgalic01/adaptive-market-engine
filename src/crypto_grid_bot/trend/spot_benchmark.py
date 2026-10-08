@@ -11,7 +11,7 @@ from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.parsing import symbol_name
 from crypto_grid_bot.trend.decisions import DAY, DailyDecision
-from crypto_grid_bot.trend.exclusions import ExclusionCalendar
+from crypto_grid_bot.trend.exclusions import CloseRequirement, ExclusionCalendar, UnavailableClose
 from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.pending import HOUR, DecisionDispatch, PendingDecision, PendingDecisions
 from crypto_grid_bot.trend.runner import EquityState
@@ -46,6 +46,8 @@ class SpotRunner:
         self.audits: list[SpotAudit] = []
         self.dispatches: list[tuple[int, DecisionDispatch]] = []
         self.rebalances: list[SpotRebalance] = []
+        self.close_requirements: tuple[CloseRequirement, ...] = ()
+        self.exclusion_dust: list[tuple[int, str, Decimal, Decimal]] = []
         self.samples: list[tuple[int, Decimal]] = []
         self.equity_path: list[EquityState] = []
         self.peak = self.account.initial
@@ -61,11 +63,15 @@ class SpotRunner:
         if not audit.exact:
             raise ValueError(f"spot accounting identity failed: {audit}")
 
-    def finish(self, last_unmasked_closes: Mapping[str, Decimal]) -> Decimal:
+    def finish(
+        self, last_unmasked_closes: Mapping[str, Decimal], *, reason: str = "completed"
+    ) -> Decimal:
         """Adapter-proven in-window closes; no terminal trade or fee."""
         if self.stopped is not None:
             raise ValueError(f"runner stopped: {self.stopped}")
         try:
+            if reason not in ("completed", "unavailable_exclusion_close"):
+                raise ValueError("invalid terminal reason")
             if self._hour is None:
                 raise ValueError("cannot finish before processing an hour")
             with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
@@ -73,11 +79,26 @@ class SpotRunner:
                 stamp = self._hour + HOUR
                 equity = self._mark(stamp, "terminal", last_unmasked_closes)
                 self.samples.append((stamp, equity))
-                self.stopped = "completed"
+                self.stopped = reason
                 return equity
         except Exception:
             self.stopped = "engine_failure"
             raise
+
+    def missing_close_requires_fill(self, symbol: str, timestamp_ms: int) -> bool:
+        """Classify retained quantity at its carried mark, without inventing a fill."""
+        quantity = self.account.holdings.get(symbol, Decimal(0))
+        if not quantity:
+            return False
+        with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+            filters = self.filters[symbol]
+            price = self._prices[symbol]
+            size = _floor(Fraction(quantity), filters.step_size)
+            slipped = price * (1 - Decimal(".0005") * self.account.cost_multiple)
+            if size < filters.min_quantity or size * slipped < filters.min_notional:
+                self.exclusion_dust.append((timestamp_ms, symbol, quantity, price))
+                return False
+            return True
 
     def _mark(self, stamp: int, kind: str, prices: Mapping[str, Decimal]) -> Decimal:
         equity = self.account.mark(prices)
@@ -275,8 +296,30 @@ def replay_spot_benchmark(
         {symbol: frozenset(rows) for symbol, rows in indexed.items()},
     )
     first, excluded = decisions.first_months, decisions.excluded_months
+    calendar = ExclusionCalendar(
+        {
+            symbol: frozenset(month for month in months if month >= first[symbol])
+            for symbol, months in excluded.items()
+        }
+    )
+    try:
+        runner.close_requirements = calendar.check_close_availability(
+            start_ms,
+            end_ms_exclusive,
+            {symbol: frozenset(rows) for symbol, rows in indexed.items()},
+        )
+    except UnavailableClose as exc:
+        runner.close_requirements = exc.requirements
     closes: dict[str, Decimal] = {}
     for hour in range(start_ms, end_ms_exclusive, HOUR):
+        if any(
+            item.decision_ms == hour
+            and item.fill_ms is None
+            and runner.missing_close_requires_fill(item.symbol, hour)
+            for item in runner.close_requirements
+        ):
+            runner.finish(closes, reason="unavailable_exclusion_close")
+            return runner
         month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
         bars = {}
         for symbol in sorted(filters):

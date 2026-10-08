@@ -173,3 +173,35 @@ def test_replay_rejects_reserved_and_duplicate_hour_inventory():
     reserved = Kline(1735689600000, D(100), D(100), D(100), D(100), D(1), D(1), D(".5"))
     with pytest.raises(ValueError, match="inventory"):
         replay_spot_benchmark(decisions, {"BTCUSDT": FILTERS}, {"BTCUSDT": [reserved]}, T, T + DAY)
+
+
+def test_exclusion_missing_fill_invalidates_held_position_but_retains_dust():
+    from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, replay_spot_benchmark
+
+    start = T + 89 * DAY
+    decisions = HoldDecisions(
+        {"BTCUSDT": history(90)}, {"BTCUSDT": "2020-01"}, {"BTCUSDT": frozenset({"2020-04"})}
+    )
+
+    def run(final_price):
+        rows = [
+            Kline(start + i * HOUR, D(100), D(100), D(100), D(100), D(1), D(1), D(".5"))
+            for i in range(23)
+        ]
+        p = D(final_price)
+        rows.append(Kline(start + 23 * HOUR, p, p, p, p, D(1), D(1), D(".5")))
+        return replay_spot_benchmark(
+            decisions, {"BTCUSDT": FILTERS}, {"BTCUSDT": rows}, start, start + 3 * DAY
+        )
+
+    held = run(100)
+    assert held.stopped == "unavailable_exclusion_close"
+    assert held.samples[-1][0] == start + DAY
+    assert len(held.account.fills) == 1
+    assert held.close_requirements[0].fill_ms is None
+    dust = run(".1")
+    assert dust.stopped == "completed"
+    assert dust.account.holdings["BTCUSDT"] == 10
+    assert dust.exclusion_dust[0][1] == "BTCUSDT"
+    assert dust.samples[-1][1] == dust.account.cash + 1
+    assert all(a.exact for a in dust.audits)

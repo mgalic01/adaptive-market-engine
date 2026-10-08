@@ -64,3 +64,15 @@ clipping/minimum refusal reasons into the decision record. Sixteen spot tests pa
 slow training-menu test. Ruff and mypy pass for the new module/tests. Durable
 serialization, spot exclusion/dust classification and acceptance integration remain
 pending; this is still a draft, with no historical performance or merge claim.
+
+Spot exclusion classification: predeclared missing-close requirements are retained.
+At the mandatory decision, a held sellable quantity makes the run invalid; the
+account stops at prior in-window closes, audited, without an invented trade. A
+quantity below minimum quantity or slipped minimum notional at its last usable
+open is retained as dust, recording timestamp, symbol, quantity and that mark.
+No unseen future price is inferred. Flat accounts continue. This carried-price
+dust classification needs explicit external scrutiny against section 8; source
+validation and complete evidence serialization remain unfinished.
+Seventeen spot tests and 64 combined focused tests pass, plus Ruff/mypy. The new
+regression covers sellable-invalid versus dust-retained outcomes from the same
+missing-hour inventory. Draft only; no historical run or performance claim.
