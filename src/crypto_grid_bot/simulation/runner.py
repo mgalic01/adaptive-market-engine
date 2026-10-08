@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
@@ -1628,7 +1629,37 @@ class PaperSimulator:
                 account.risk_recovery_count = 0
         quote, rules = frame.quote, self.rules
         position = account.uptrend
+        entry: dict[str, Any] = {}
+        if decided is Mode.UPTREND or (position is not None and position.phase == "entering"):
+            entry = {
+                "selected": decided is Mode.UPTREND,
+                "observed_at": quote.observed_at,
+                "outcome": "blocked",
+                "blockers": [],
+                "risk_action": action.value,
+                "risk_recovery": account.risk_recovery,
+                "available_cash": account.cash - account.pending,
+                "active_equity": account.equity(quote, rules),
+                "risk_high": account.risk_high,
+                "measure_high": account.measure_high,
+                "filled_quantity": ZERO,
+                "bid": quote.bid,
+                "ask": quote.ask,
+                "ask_size": quote.ask_size,
+                "minimum_notional": rules.minimum_notional,
+                "daily_rsi": self._snapshot(frame).d1_rsi,
+                "daily_atr": self._snapshot(frame).d1_atr,
+            }
+            report["uptrend_entry"] = entry
         if position is None:
+            if decided is Mode.UPTREND:
+                # These independent checks are observational. Keep the original gate below.
+                entry["blockers"] = (
+                    (["risk_action"] if action != RiskAction.ALLOW else [])
+                    + (["risk_recovery"] if account.risk_recovery else [])
+                    # _flat may clear obsolete fragments; diagnostics must not do so.
+                    + (["not_flat"] if not self._flat(deepcopy(account), quote) else [])
+                )
             if (
                 decided is not Mode.UPTREND
                 or action != RiskAction.ALLOW
@@ -1639,9 +1670,12 @@ class PaperSimulator:
             snapshot = self._snapshot(frame)
             close, atr, day_ms = snapshot.d1_close, snapshot.d1_atr, snapshot.d1_open_ms
             if close is None or atr is None or day_ms is None:
+                entry["blockers"].append("daily_inputs_unavailable")
                 return  # unreachable: Uptrend needs the daily close and ATR
             stop = initial_stop(close, atr)
+            entry["stop"] = stop
             if stop_distance(buy_price(quote, rules), stop) <= ZERO or quote.bid <= stop:
+                entry["blockers"].append("invalid_stop")
                 return
             cash_cap, risk_allowance = entry_limits(
                 account.cash - account.pending, account.equity(quote, rules)
@@ -1665,6 +1699,10 @@ class PaperSimulator:
                 f"an entering uptrend position met risk action {action} "
                 f"(recovery {account.risk_recovery}): a drain or a halt should have ended it"
             )
+        entry.update(
+            cash_left=position.cash_cap - position.spent,
+            risk_left=position.risk_allowance - position.risk_used,
+        )
         result = market_buy(
             account,
             quote,
@@ -1674,6 +1712,14 @@ class PaperSimulator:
             stop=position.stop,
         )
         fill = result.fill
+        entry.update(
+            entered_at=position.entered_at,
+            stop=position.stop,
+            cash_cap=position.cash_cap,
+            risk_allowance=position.risk_allowance,
+            outcome="filled" if fill is not None else result.refusal,
+            filled_quantity=fill.quantity if fill is not None else ZERO,
+        )
         if fill is not None:
             position.quantity += fill.quantity
             position.spent += fill.price * fill.quantity + fill.fee

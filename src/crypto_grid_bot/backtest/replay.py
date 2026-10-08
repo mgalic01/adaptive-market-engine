@@ -32,6 +32,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
+from crypto_grid_bot.backtest.attribution import EntryAttribution
 from crypto_grid_bot.backtest.dataset import funding_local_path, is_funding, local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
 from crypto_grid_bot.backtest.funding import (
@@ -407,6 +408,7 @@ class Metrics:
     uptrend_fades: int = 0
     held_at_end: tuple[Decimal, Decimal] = (ZERO, ZERO)
     mode_decisions: ModeDecisions = field(default_factory=ModeDecisions)
+    entry_attribution: EntryAttribution = field(default_factory=EntryAttribution)
 
 
 def record_exit_block(metrics: Metrics, blocked: str, notional: Decimal) -> None:
@@ -629,6 +631,7 @@ def modes_report(metrics: Metrics) -> dict[str, Any]:
             "held_at_end": {"quantity": str(quantity), "value": str(value)},
             "buy_and_hold_final": str(metrics.hold_final),
             "decisions": metrics.mode_decisions.report(),
+            "entries": metrics.entry_attribution.report(),
         },
     }
 
@@ -1074,6 +1077,7 @@ def replay(
             if perception is not None:
                 mode, mode_since = account.mode, at_ms
                 record_uptrend(metrics, report, position)
+                metrics.entry_attribution.record(report)
                 if "mode_reasons" in report:
                     metrics.mode_decisions.record(report["mode_reasons"])  # reported only
             metrics.requests_by_day[quote.observed_at[:10]] += order_requests(

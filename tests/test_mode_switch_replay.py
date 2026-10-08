@@ -548,6 +548,7 @@ def test_ms_rows_carry_their_own_strategy() -> None:
         "held_at_end",
         "buy_and_hold_final",
         "decisions",
+        "entries",
     }
     # Its grid cycles stay in the row's own completed_cycles, never copied into the readouts.
     assert "completed_cycles" not in ms_row["modes"]
@@ -832,7 +833,11 @@ def numbers_digest(runs: list[tuple[dict[str, Any], list[dict[str, Any]]]]) -> s
     for row, reports in runs:
         row = copy.deepcopy(row)
         row["modes"].pop("decisions", None)
-        frames = [{k: v for k, v in report.items() if k != "mode_reasons"} for report in reports]
+        row["modes"].pop("entries", None)
+        frames = [
+            {k: v for k, v in report.items() if k not in ("mode_reasons", "uptrend_entry")}
+            for report in reports
+        ]
         payload.append({"row": row, "reports": frames})
     text = json.dumps(canonical(payload), sort_keys=True, default=str)
     return hashlib.sha256(text.encode()).hexdigest()
