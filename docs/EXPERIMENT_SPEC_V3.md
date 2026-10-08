@@ -46,7 +46,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
     - An open position closes at the decision made after the close of the day before the previous month's last day. That decision fills at 01:00 UTC on the previous month's last day, so the coin is flat through every funding timestamp of the excluded month.
     - The coin trades again from the first decision whose fill falls after the excluded month.
     - Exclusions are a data fact, settled from the committed manifest before any run, so knowing one a month ahead uses no market information. In live trading a data gap would not be known in advance, so the record states this simplification.
-    - If that closing fill has no unmasked hour on the previous month's last day, it moves to the next unmasked hour before the excluded month starts. If there is none, the run is invalid (§8).
+    - If that closing fill has no unmasked hour on the previous month's last day, it moves to the next unmasked hour before the excluded month starts. If there is none, the run is invalid (§8). The record lists every time this happens, in training runs too.
   - Spec v1 §5's other rules concern minute replay, the daily/hourly cross-check and spot quoting (rule 8, the actual-quotes test). They do not apply to v3, which neither replays minutes nor quotes inside the spread.
 
 **Spot data:**
@@ -57,7 +57,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
   - **A spot coin-month that is excluded** gives that coin a target of 0 for the same month, as a futures exclusion does, and its days drop out of the daily series.
 - **Daily bars for signals** (§4) are aggregated from these spot 1h bars: R5 needs highs and lows, and the other rules use closes.
 - **The hold benchmark** (§8) uses the same spot 1h bars.
-- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06, or from a coin's first full spot month if later, gives each coin more than a year before its futures data start (§3), except where the spot listing is too late for that, as SOLUSDT's (2020-08) appears to be. The fetch records each coin's first spot month and first futures month in the manifest, and the record lists every coin with less than a year of spot history before its futures start. There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
+- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06, or from a coin's first full spot month if later, gives each coin more than a year before its futures data start (§3), except where the spot listing is too late for that. The fetch records each coin's first spot month and first futures month in the manifest, and the record lists every coin with less than a year of spot history before its futures start. SOLUSDT, whose spot is listed from 2020-08 in `full-range-2017-2024`, is expected to be one. There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
 
 **Daily bars** are UTC days, built from the unmasked 1h bars of each day:
 - open is the first unmasked hour's open, and close is the last unmasked hour's close;
@@ -109,6 +109,7 @@ At each daily decision, after day d's close:
 
 1. **Raw weight:** for each coin with a non-zero signal `s`, `raw = s × (1 / σ)`, where σ is the annualised volatility of the coin's daily spot simple returns over the last 60 days (sample standard deviation × √365).
    - σ uses the coin's last 60 one-day returns (§2). A coin with fewer than 60, or with σ = 0, gets a raw weight of 0.
+   - **A coin in an excluded month (§2)** has its signal set to 0 before this step. So it has a raw weight of 0, and it is not in Σ. The hold benchmark follows the same rule.
    - Spot history precedes every coin's futures history (§2), so a coin that joins mid-window normally already has its 60 returns.
 2. **Volatility target:** the portfolio's estimated volatility is `√(rawᵀ Σ raw)`, where Σ is the 60-day sample covariance matrix of the same returns, annualised, over the coins with a non-zero raw weight. All raw weights are scaled by `0.20 ÷ that estimate`, so the portfolio targets **20% volatility a year**.
    - Σ uses the last 60 UTC days, keeping only the days on which every coin with a non-zero raw weight has a one-day return (§2), so every pair of returns spans the same calendar day. If fewer than 40 such days remain, every target is 0.
@@ -168,7 +169,7 @@ At each daily decision, after day d's close:
 - **Liquidation:** each hour, equity is also computed at each position's adverse extreme of that 1h bar: the low for a long, the high for a short, all at once.
   - If that equity is ≤ 1% of the gross open notional, the account is liquidated.
   - **Either kind of liquidation,** the pre-fill check at the open or this post-fill check, is recorded at the hour of the check, with each position's price in that check. The run is invalid from then on (§8), and no later order is simulated. The gross open notional is `Σ |quantity| × price` at the same adverse-extreme prices.
-  - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin.
+  - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin. Checked at the open and at the bar's adverse extremes, it can fail a run that Binance would not have liquidated, so it leans against v3.
   - It is expected never to happen at these sizes.
 - **The 1x ceiling, on the actual book:** at every hourly mark, gross leverage is `Σ |quantity| × mark ÷ equity`.
   - If it exceeds 1.0, the account delevers at the next hour.
