@@ -46,3 +46,12 @@ Outstanding coverage includes held positions across exclusion boundaries, termin
 leverage failure at adapter level, and non-flat last-unmasked-close valuation.
 Upstream loader must prove funding completeness and first non-excluded eligibility;
 absence of funding is not a validated historical zero-cost assumption.
+
+Coverage completion: 16 replay tests now pass. Added a held position closing before
+an excluded month and excluded-month funding; non-flat terminal valuation at the
+last unmasked close despite a supplied future bar; and a scripted-target adapter
+test for terminal leverage failure with retained lifecycle evidence. Initial test
+failures were fixture assumptions about zero-quantity position entries and the
+average_entry field, corrected without production changes. This completes the
+adapter coverage requests above. Historical funding completeness and portfolio
+eligibility remain loader obligations, not claims established by these fixtures.

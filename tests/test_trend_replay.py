@@ -227,3 +227,86 @@ def test_invalid_funding_is_not_hidden_by_unavailable_close():
             start + 2 * DAY,
             {start: "R1"},
         )
+
+
+def test_held_position_closes_before_excluded_month_and_its_funding():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.replay import replay_window
+
+    start = T + 89 * DAY  # March 30; March 31 is the mandatory decision day.
+    book = DailyDecisions(
+        {"BTCUSDT": [bar(T + i * DAY, 100 + i * 2 + i % 3) for i in range(92)]},
+        {"BTCUSDT": "2020-01"},
+        {"BTCUSDT": frozenset({"2020-04"})},
+    )
+    result = replay_window(
+        book,
+        {"BTCUSDT": FILTER},
+        {"BTCUSDT": [bar(start + i * HOUR) for i in range(72)]},
+        {start + 2 * DAY: {"BTCUSDT": D(100)}},
+        start,
+        start + 3 * DAY,
+        {start: "R1"},
+    )
+    assert result.reason is None
+    r = result.runner
+    assert len(r.account.fills) == 2
+    assert r.account.fills[-1].timestamp_ms == start + DAY + HOUR
+    assert r.lifecycles.completed[0].exit_reason == "excluded_month"
+    assert r.account.funding == ()
+    assert all(p.quantity == 0 for p in r.account.positions.values())
+
+
+def test_terminal_mark_uses_last_unmasked_close_without_future_bar():
+    from crypto_grid_bot.trend.replay import replay_window
+
+    start = T + 65 * DAY
+    last = Kline(start + 5 * HOUR, D(100), D(110), D(100), D(110), D(1), D(110), D(".5"))
+    result = replay_window(
+        decisions(),
+        {"BTCUSDT": FILTER},
+        {"BTCUSDT": [bar(start), bar(start + HOUR), last, bar(start + DAY, 999)]},
+        {},
+        start,
+        start + DAY,
+        {start: "R1"},
+    )
+    assert result.reason is None
+    r = result.runner
+    trade = r.lifecycles.completed[0]
+    position = r.account.positions["BTCUSDT"]
+    assert trade.censored
+    assert trade.unrealized == position.quantity * (D(110) - position.average_entry)
+    assert trade.end_ms == start + DAY
+
+
+def test_adapter_stops_and_preserves_terminal_leverage_failure(monkeypatch):
+    from crypto_grid_bot.trend.decisions import DailyDecision, DailyDecisions
+    from crypto_grid_bot.trend.replay import replay_window
+
+    # Scripted targets isolate adapter event forwarding from the signal/sizing tests.
+    book = DailyDecisions(
+        {s: [] for s in ("BTCUSDT", "ETHUSDT")}, {s: "2020-01" for s in ("BTCUSDT", "ETHUSDT")}
+    )
+    monkeypatch.setattr(
+        book,
+        "at",
+        lambda *a, **k: DailyDecision({"BTCUSDT": D(".7"), "ETHUSDT": D(".1")}, {}, {}, None),
+    )
+    stamp = T + 2 * HOUR + 30
+    result = replay_window(
+        book,
+        {s: FILTER for s in ("BTCUSDT", "ETHUSDT")},
+        {"BTCUSDT": [bar(T), bar(T + HOUR)], "ETHUSDT": [bar(T + i * HOUR) for i in range(24)]},
+        {stamp: {"BTCUSDT": D(".9")}},
+        T,
+        T + DAY,
+        {T: "R1"},
+        multiple=1,
+    )
+    assert result.reason == "leverage_not_restored"
+    assert len(result.runner.hours) == 3
+    assert not result.runner.lifecycles.active
+    btc = next(t for t in result.runner.lifecycles.completed if t.symbol == "BTCUSDT")
+    assert btc.censored and btc.exit_reason == result.reason
+    assert btc.end_ms == stamp
