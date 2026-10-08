@@ -35,6 +35,7 @@ class SpotRunner:
         self.equity_path: list[EquityState] = []
         self.peak = self.account.initial
         self.max_drawdown = Decimal(0)
+        self.masked_held_hours: dict[str, int] = {}
         self._prices: dict[str, Decimal] = {}
         self._hour: int | None = None
         self.stopped: str | None = None
@@ -111,6 +112,9 @@ class SpotRunner:
         self._audit()
         dispatch = self.pending.advance(hour_ms, targets, set(bars), reasons)
         self.dispatches.append((hour_ms, dispatch))
+        for symbol, quantity in self.account.holdings.items():
+            if quantity and symbol not in bars:
+                self.masked_held_hours[symbol] = self.masked_held_hours.get(symbol, 0) + 1
         equity = self._mark(hour_ms, "open", prices)
         if hour_ms % DAY == HOUR:
             self.samples.append((hour_ms, equity))
@@ -167,6 +171,15 @@ class HoldDecisions:
             symbol: frozenset(bar.open_ms for bar in bars) for symbol, bars in spot_bars.items()
         }
         self._exclusions = ExclusionCalendar(excluded_months or {})
+        self._excluded = {s: frozenset(months) for s, months in (excluded_months or {}).items()}
+
+    @property
+    def first_months(self) -> dict[str, str]:
+        return dict(self._first)
+
+    @property
+    def excluded_months(self) -> dict[str, frozenset[str]]:
+        return dict(self._excluded)
 
     def at(self, decision_ms: int, *, run_end_ms: int | None = None) -> DailyDecision:
         forced = self._exclusions.zero_symbols(decision_ms, run_end_ms=run_end_ms)
@@ -191,3 +204,59 @@ class HoldDecisions:
             for symbol, weight in targets.items()
         }
         return DailyDecision(targets, signals, reasons, sizing)
+
+
+def replay_spot_benchmark(
+    decisions: HoldDecisions,
+    filters: Mapping[str, OrderFilters],
+    hourly: Mapping[str, Sequence[Kline]],
+    start_ms: int,
+    end_ms_exclusive: int,
+    *,
+    cost_multiple: int = 1,
+) -> SpotRunner:
+    """Replay supplied, already validated/masked sources in a fresh spot account.
+
+    This does not authorize historical dispatch or certify source provenance.
+    Exclusions supplied to HoldDecisions must be the union of spot and futures
+    exclusions. Retained dust keeps its last usable mark during excluded months.
+    """
+    runner = SpotRunner(filters, cost_multiple=cost_multiple)
+    if set(hourly) != set(filters) or set(filters) != set(decisions.first_months):
+        raise ValueError("replay input universes disagree")
+    # The empty calendar validates the development-only daily window and hourly
+    # inventory without importing futures' unavailable-close invalidity for dust.
+    indexed = {}
+    for symbol, rows in hourly.items():
+        stamps = [row.open_ms for row in rows]
+        if stamps != sorted(set(stamps)):
+            raise ValueError("hourly rows must be unique and sorted")
+        indexed[symbol] = {row.open_ms: row for row in rows}
+    ExclusionCalendar({}).check_close_availability(
+        start_ms,
+        end_ms_exclusive,
+        {symbol: frozenset(rows) for symbol, rows in indexed.items()},
+    )
+    first, excluded = decisions.first_months, decisions.excluded_months
+    closes: dict[str, Decimal] = {}
+    for hour in range(start_ms, end_ms_exclusive, HOUR):
+        month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
+        bars = {}
+        for symbol in sorted(filters):
+            if first[symbol] > month or month in excluded.get(symbol, ()):
+                continue
+            row = indexed[symbol].get(hour)
+            if row is not None:
+                _finite(row.close, positive=True)
+                if not row.low <= row.close <= row.high:
+                    raise ValueError("close outside hourly bar")
+                bars[symbol] = (row.open, row.low, row.high)
+                closes[symbol] = row.close
+        targets = {}
+        reasons = {}
+        if hour % DAY == 0:
+            decision = decisions.at(hour, run_end_ms=end_ms_exclusive)
+            targets, reasons = decision.targets, decision.exit_reasons
+        runner.step(hour, bars, targets, exit_reasons=reasons)
+    runner.finish(closes)
+    return runner

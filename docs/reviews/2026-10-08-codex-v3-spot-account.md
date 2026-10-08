@@ -44,3 +44,13 @@ account corruption refusal, drawdown ordering and terminal valuation; Ruff and
 mypy pass. Data-window adapter, complete decision/skip evidence, masked-held-hour
 counts, multi-asset boundary coverage and reporting remain unfinished. Draft only;
 the earlier full-suite result belongs to orchestration, not these new changes.
+
+Window adapter follow-up: `replay_spot_benchmark` now runs one fresh account over
+supplied masked hourly bars, respecting eligibility/excluded months and exclusive
+run-end decisions. It validates aligned development-only inventory, rejects duplicate
+hours and uses only in-window terminal closes. Tests compare independent base/double
+cost accounts, verify sells precede buys in a two-coin rotation and retain missing
+held-hour counts. Fifteen combined spot tests, Ruff and mypy pass. Historical source
+validation, pre-exclusion unavailable-close versus retained-dust classification,
+complete per-decision/skip evidence and durable reporting still need completion
+before this draft can be considered for merge or historical dispatch.

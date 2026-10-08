@@ -94,3 +94,63 @@ def test_terminal_mark_keeps_holdings_and_charges_no_exit_fee():
     assert r.account.holdings["BTCUSDT"] == 10
     assert r.samples[-1] == (T + 2 * HOUR, D("10048.4995"))
     assert r.stopped == "completed"
+
+
+def test_replay_uses_window_closes_and_independent_cost_accounts():
+    from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, replay_spot_benchmark
+
+    start = T + 65 * DAY
+    rows = [
+        Kline(start + i * HOUR, D(100), D(100), D(100), D(100), D(1), D(1), D(".5"))
+        for i in range(48)
+    ]
+    rows.append(Kline(start + 48 * HOUR, D(999), D(999), D(999), D(999), D(1), D(1), D(".5")))
+    decisions = HoldDecisions({"BTCUSDT": history(67)}, {"BTCUSDT": "2020-01"})
+    a = replay_spot_benchmark(
+        decisions, {"BTCUSDT": FILTERS}, {"BTCUSDT": rows}, start, start + 48 * HOUR
+    )
+    b = replay_spot_benchmark(
+        decisions,
+        {"BTCUSDT": FILTERS},
+        {"BTCUSDT": rows},
+        start,
+        start + 48 * HOUR,
+        cost_multiple=2,
+    )
+    assert a.stopped == b.stopped == "completed"
+    assert a.account.holdings["BTCUSDT"] == b.account.holdings["BTCUSDT"] == 10
+    assert a.samples[-1] == (start + 48 * HOUR, D("9998.4995"))
+    assert b.samples[-1][1] < a.samples[-1][1]
+    assert len(a.account.fills) == 1  # second day's tiny weight drift stays inside band
+
+
+def test_rotation_sells_before_buys_and_counts_missing_held_hours():
+    from crypto_grid_bot.trend.spot_benchmark import SpotRunner
+
+    r = SpotRunner({"BTCUSDT": FILTERS, "ETHUSDT": FILTERS})
+    bars = {s: (D(100), D(100), D(100)) for s in r.filters}
+    r.step(T, bars, {"ETHUSDT": D(".1")})
+    r.step(T + HOUR, bars)
+    r.step(T + 2 * HOUR, {"BTCUSDT": bars["BTCUSDT"]})
+    assert r.masked_held_hours == {"ETHUSDT": 1}
+    for hour in range(3, 24):
+        r.step(T + hour * HOUR, bars)
+    r.step(T + DAY, bars, {"ETHUSDT": D(0), "BTCUSDT": D(".1")})
+    r.step(T + DAY + HOUR, bars)
+    assert [f.symbol for f in r.account.fills[-2:]] == ["ETHUSDT", "BTCUSDT"]
+    assert r.account.holdings["ETHUSDT"] == 0
+    assert r.account.audit().exact
+
+
+def test_replay_rejects_reserved_and_duplicate_hour_inventory():
+    import pytest
+
+    from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, replay_spot_benchmark
+
+    decisions = HoldDecisions({"BTCUSDT": history(65)}, {"BTCUSDT": "2020-01"})
+    bar = Kline(T, D(100), D(100), D(100), D(100), D(1), D(1), D(".5"))
+    with pytest.raises(ValueError, match="unique"):
+        replay_spot_benchmark(decisions, {"BTCUSDT": FILTERS}, {"BTCUSDT": [bar, bar]}, T, T + DAY)
+    reserved = Kline(1735689600000, D(100), D(100), D(100), D(100), D(1), D(1), D(".5"))
+    with pytest.raises(ValueError, match="inventory"):
+        replay_spot_benchmark(decisions, {"BTCUSDT": FILTERS}, {"BTCUSDT": [reserved]}, T, T + DAY)
