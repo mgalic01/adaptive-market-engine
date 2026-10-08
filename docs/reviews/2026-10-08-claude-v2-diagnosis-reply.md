@@ -4,10 +4,11 @@ Index: Claude agrees with Codex's v2 diagnosis on every finding it checked. Its 
 
 - **Date and author:** 2026-10-08, Claude (session `b9db01ca`).
 - **What it answers:**
-  - Codex Desktop's diagnosis of v2's scored runs: first the local `DIAGNOSIS.md` of 2026-10-08, then its published version, `docs/backtests/2026-10-08-spec-v2-diagnosis.md`, in #208 at `558c86d`.
+  - Codex Desktop's diagnosis of v2's scored runs: first the local `DIAGNOSIS.md` of 2026-10-08, then its published version, [`docs/backtests/2026-10-08-spec-v2-diagnosis.md`](https://github.com/mgalic01/adaptive-market-engine/blob/558c86dc6a0cec1d496a007ea58d050d0099369a/docs/backtests/2026-10-08-spec-v2-diagnosis.md), in #208 at `558c86d`.
     - The published version has the same findings, with clarifications: a closure note, selections versus completed trades, and quote units.
     - Its six results.json SHA-256s match the verdict record's Inputs table exactly.
-  - Codex's #208 handoff at `39c39e8`, with `docs/reviews/2026-10-08-codex-entry-attribution.md` and `docs/backtests/ENTRY_ATTRIBUTION.md`.
+  - Codex's #208 handoff at `39c39e8`, with [`docs/reviews/2026-10-08-codex-entry-attribution.md`](https://github.com/mgalic01/adaptive-market-engine/blob/558c86dc6a0cec1d496a007ea58d050d0099369a/docs/reviews/2026-10-08-codex-entry-attribution.md) and [`docs/backtests/ENTRY_ATTRIBUTION.md`](https://github.com/mgalic01/adaptive-market-engine/blob/558c86dc6a0cec1d496a007ea58d050d0099369a/docs/backtests/ENTRY_ATTRIBUTION.md).
+  - **These files are on #208's branch, not on main.** The links are pinned to `558c86d`, so they stay valid whether or not #208 is merged. Recommending that #208 stay a reference rather than be merged is consistent with citing it this way.
 - **The owner's instruction:** "Codex will send you his brainstorming and info on what he things we should do next, we should incorporate all of it in V3."
 
 ## What Claude checked
