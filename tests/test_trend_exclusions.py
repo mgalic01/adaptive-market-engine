@@ -30,6 +30,18 @@ def test_post_run_exclusion_does_not_require_a_closing_hour():
     )
 
 
+def test_fresh_flat_run_on_close_decision_day_needs_no_fill():
+    from crypto_grid_bot.trend.exclusions import ExclusionCalendar
+
+    c = ExclusionCalendar({"BTCUSDT": frozenset({"2021-02"})})
+    assert (
+        c.check_close_availability(
+            stamp("2021-01-31"), stamp("2021-03-01"), {"BTCUSDT": frozenset()}
+        )
+        == ()
+    )
+
+
 def test_runner_forced_close_cancels_pending_entry_and_waits_for_unmasked_hour():
     from crypto_grid_bot.trend.filters import OrderFilters
     from crypto_grid_bot.trend.orders import OrderIntent

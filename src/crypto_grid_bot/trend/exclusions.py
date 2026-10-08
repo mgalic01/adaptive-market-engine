@@ -89,7 +89,9 @@ class ExclusionCalendar:
                 boundary, _ = month_bounds_ms(month)
                 decision = boundary - DAY
                 previous = datetime.fromtimestamp(decision // 1000, UTC).strftime("%Y-%m")
-                if start_ms <= decision < boundary < end_ms_exclusive and previous not in months:
+                # A fresh account is flat at its initial decision. That forced
+                # zero cannot require an execution hour to close a position.
+                if start_ms < decision < boundary < end_ms_exclusive and previous not in months:
                     requirements.append(
                         CloseRequirement(
                             symbol,
