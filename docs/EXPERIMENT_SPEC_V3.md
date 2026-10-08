@@ -74,7 +74,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 ## 3. Coins
 
 BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, ADAUSDT, DOGEUSDT, LTCUSDT, LINKUSDT and TRXUSDT, as perpetuals.
-- **A coin joins the portfolio** at its first month that has both a full month of futures klines and a funding file, and leaves only for an excluded month (§2). The fetch settles each coin's first month.
+- **A coin joins the portfolio** at its first month that has both a full month of futures klines and a funding file and is not excluded under §2, and leaves only for an excluded month. The fetch settles each coin's first month from the committed manifest, and §7's windows start from BTCUSDT's.
 - **Hindsight (disclosed):** these coins were chosen in 2026, and all of them are still large today. Coins that crashed or were delisted are not in the set, so the results are flattered.
   - The reserved window cannot remove this bias. The set was chosen knowing that these coins stayed large through 2025–26, which is information from inside that window, even though its prices stay unopened.
   - A reserved run would test unseen prices for a set chosen with hindsight. It would not be a bias-free confirmation, and any record of it must say so.
@@ -92,7 +92,7 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
 | R5 | **Supertrend 10/3** | Defined in full below the table. Uptrend → +1, downtrend → −1. |
 | R6 | **Equal blend** | the mean of R1–R5's signals, a value in [−1, +1]. It is the only rule whose signal is not just −1, 0 or +1. A rule still warming up counts as 0 in the mean, which dilutes R6 early on, and that is intended. |
 
-**R5 in full**, on daily bars (H, L, C):
+**R5 in full**, on daily bars (H, L, C). Here `t − 1` is the previous available bar: a day with no bar (§4) adds no update, so the next bar's true range, bands and trend use the last bar before the gap.
 - **True range:** `TR_t = max(H_t − L_t, |H_t − C_{t−1}|, |L_t − C_{t−1}|)`, from the second bar on.
 - **ATR:** the first ATR is the mean of the first 10 true ranges, at bar 11. After that, `ATR_t = (9 × ATR_{t−1} + TR_t) ÷ 10` (Wilder).
 - **Basic bands:** `mid = (H_t + L_t) ÷ 2`; `basic_upper = mid + 3 × ATR_t`; `basic_lower = mid − 3 × ATR_t`.
@@ -182,7 +182,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - **At the first unmasked hour after a gap,** the mark, the adverse extremes and the liquidation check use that hour's own bar, so a move across the gap is caught there.
   - Hours with an open position and a masked bar are counted and reported.
 - **Liquidation:** each hour, equity is also computed at each position's adverse extreme of that 1h bar: the low for a long, the high for a short, all at once.
-  - If that equity is ≤ 1% of the gross open notional, the account is liquidated.
+  - If that equity is ≤ 1% of the gross open notional, the account is liquidated. A flat book, with gross notional 0, has nothing to liquidate, so every liquidation check skips it.
   - **Any liquidation,** at any of the checks above, is recorded at the hour of the check, with each position's price in that check. The run is invalid from then on (§8), and no later order is simulated. The gross open notional is `Σ |quantity| × price` at the same prices as the check's equity.
   - **No liquidation fill is simulated.** The run stops at the check: every open position stays open, marked at its price in that check, and that is the run's terminal mark. No fee or slippage is charged for it. Its lifecycle is recorded as censored, with liquidation as the reason (§8), and the accounting identities are checked at that mark.
   - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin. Checked at the open and at the bar's adverse extremes, it can fail a run that Binance would not have liquidated, so it leans against v3.
@@ -253,7 +253,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   4. its favourable-extreme equity: every position at its bar's favourable extreme at once (the high for a long, the low for a short);
   5. its adverse-extreme equity: every position at its bar's adverse extreme at once (the post-fill liquidation check's).
 
-  The terminal mark ends the path. Peak and trough use the same path.
+  The terminal mark ends the path. After a liquidation, that is the liquidation check's mark (§6), so the drawdown includes it. Peak and trough use the same path.
   - Putting the favourable extreme before the adverse one in every hour, and taking every coin's extreme at once, can overstate a drawdown. That leans against v3.
 - **Calmar ratio:** CAGR ÷ maximum drawdown.
   - With a maximum drawdown of 0 and a positive CAGR, it is +∞, and A3 passes.
@@ -287,7 +287,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 **A run is invalid** if an accounting identity fails, a liquidation occurs, or a fill the rules require cannot be made.
 - **The out-of-sample account or the hold benchmark invalid:** v3 fails.
 - **A training run invalid:** only that rule is out of the pick for that window, and the record says so.
-- **All six training runs invalid in a window:** the book is flat (every target 0) for that test quarter, and the record says so.
+- **All six training runs invalid in a window:** every target is 0 for that test quarter, and the record says so. Open positions close at the quarter's first fill by the normal rules (§6), deferred if their hour is masked. Until they fill, they carry profit, loss and funding as usual, and the record reports that exposure.
 
 **Reported, deciding nothing:**
 - **The owner's monthly target:** every out-of-sample month's return, beside the owner's 20–30% target, and how many months reached 20%.
@@ -330,7 +330,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - **Every position's lifecycle.** A position runs from flat to non-zero, and ends back at flat or at a flip. For each one:
   - the coin and side;
   - every fill, with its time, quantity and price;
-  - the exit's trigger: the signal going to 0, a flip, a pick change, an excluded month, or a delevering that rounds the position to 0;
+  - the exit's trigger, exactly one, the first that applies in this order: an excluded month; a flip; a pick change; the signal going to 0; sizing (a non-zero signal whose target is 0 under §5 steps 1–2, or whose target quantity rounds to 0); or a delevering that rounds the position to 0;
   - **a position still open when a run ends,** at its last hour or at a liquidation (§6), is not closed: no fill, fee or slippage is charged. It is marked at the terminal mark (§8, or the liquidation check's prices), its profit and loss stays unrealised, and its record is labelled censored, with the reason (end of run or liquidation) and that unrealised profit and loss. This holds for training runs and for the out-of-sample run;
   - its duration;
   - its maximum favourable and maximum adverse excursion, in USDT, before fees and funding. For each hour the position is open, two values are taken: the profit and loss realised so far in the lifecycle, plus the remaining position's unrealised profit and loss at the bar's favourable extreme, and the same at its adverse extreme. Both use the quantity and average entry price in force during that hour, and earlier hours are never recomputed against a later average entry. The excursions are the maximum and the minimum of these hourly values;
