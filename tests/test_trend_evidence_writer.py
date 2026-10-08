@@ -94,6 +94,17 @@ def test_explicit_recovery_refuses_malformed_orphan_and_empty_reason(tmp_path):
     assert not (tmp_path / "one.finished.json").exists()
 
 
+def test_reopen_rejects_artifact_arriving_after_no_evidence_recovery(tmp_path):
+    from crypto_grid_bot.trend.evidence_writer import AttemptRecorder, recover_interrupted
+
+    record = AttemptRecorder(tmp_path)
+    record(Attempt("one", "training", "R1", 0, 1, None, None, state="started"))
+    recover_interrupted(tmp_path, "one", reason="worker confirmed stopped")
+    (tmp_path / "one.evidence.jsonl").write_text('{"schema":1,"kind":"outcome","value":{}}\n')
+    with pytest.raises(ValueError, match="unreferenced.*evidence"):
+        AttemptRecorder(tmp_path)
+
+
 def test_engine_failure_persists_partial_hour_evidence(tmp_path, monkeypatch):
     from crypto_grid_bot.trend.evidence_writer import AttemptRecorder
     from crypto_grid_bot.trend.runner import TrendRunner

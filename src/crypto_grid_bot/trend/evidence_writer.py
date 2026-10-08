@@ -299,6 +299,8 @@ class AttemptRecorder:
                 raise ValueError("finished attempt identity differs from start")
             evidence = finish["evidence"]
             if evidence is None:
+                if (self.journal.directory / f"{run_id}.evidence.jsonl").exists():
+                    raise ValueError("finished attempt has unreferenced published evidence")
                 if not isinstance(finish["error"], str) or not finish["error"]:
                     raise ValueError("finished attempt lacks evidence or error")
             else:
