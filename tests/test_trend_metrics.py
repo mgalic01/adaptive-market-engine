@@ -7,9 +7,45 @@ import pytest
 from crypto_grid_bot.trend.runner import EquityState
 
 
+@pytest.mark.parametrize("damage", ["missing", "wrong_hour"])
+def test_summary_refuses_incomplete_or_wrong_hour_daily_samples(damage):
+    from crypto_grid_bot.trend.metrics import summarize
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    runner = TrendRunner({})
+    start = 1609459200000
+    for hour in range(50):
+        runner.step(start + hour * 3600000, {}, {}, {})
+    runner.finish({})
+    samples = list(runner.daily_samples)
+    if damage == "missing":
+        del samples[1]
+    else:
+        samples[1] = (samples[1][0] + 3600000, samples[1][1])
+    with pytest.raises(ValueError, match="complete.*01:00"):
+        summarize(samples, runner.equity_path, [])
+
+
+def test_summary_refuses_unordered_path_with_matching_samples():
+    from crypto_grid_bot.trend.metrics import summarize
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    runner = TrendRunner({})
+    start = 1609459200000
+    for hour in range(3):
+        runner.step(start + hour * 3600000, {}, {}, {})
+    runner.finish({})
+    path = list(runner.equity_path)
+    path[1], path[2] = path[2], path[1]
+    with pytest.raises(ValueError, match="ordered"):
+        summarize(runner.daily_samples, path, [])
+
+
 def P(*values):
     return [
-        EquityState(i * 86400000, "terminal" if i == len(values) - 1 else "open", D(v), D(v), D(0))
+        EquityState(
+            3600000 + i * 86400000, "terminal" if i == len(values) - 1 else "open", D(v), D(v), D(0)
+        )
         for i, v in enumerate(values)
     ]
 
@@ -74,9 +110,11 @@ def test_duplicate_sample_time_is_invalid():
 def test_summary_keeps_trade_and_daily_profit_factors_separate():
     from crypto_grid_bot.trend.metrics import summarize
 
+    path = P(100, 110, 120, 105)
+    path[2] = EquityState(path[2].timestamp_ms, "favourable", D(120), D(120), D(0))
     result = summarize(
-        [(0, D(100)), (86400000, D(110)), (259200000, D(105))],
-        P(100, 110, 120, 105),
+        [(3600000, D(100)), (90000000, D(110)), (262800000, D(105))],
+        path,
         [D(20), D(-15), D(0)],
     )
     assert result.net_pnl == 5
@@ -92,14 +130,14 @@ def test_summary_requires_path_to_end_at_terminal_equity():
     from crypto_grid_bot.trend.metrics import summarize
 
     with pytest.raises(ValueError, match="terminal"):
-        summarize([(0, D(100)), (86400000, D(105))], P(100, 99), [])
+        summarize([(3600000, D(100)), (90000000, D(105))], P(100, 99), [])
 
 
 def test_summary_rejects_missing_trade_results():
     from crypto_grid_bot.trend.metrics import summarize
 
     with pytest.raises(ValueError, match="reconcile"):
-        summarize([(0, D(100)), (86400000, D(105))], P(100, 105), [])
+        summarize([(3600000, D(100)), (90000000, D(105))], P(100, 105), [])
 
 
 def test_finished_runner_to_summary_includes_censored_trade_costs():
@@ -127,7 +165,7 @@ def test_summary_rejects_mismatched_initial_equity_even_when_trades_reconcile():
     from crypto_grid_bot.trend.metrics import summarize
 
     with pytest.raises(ValueError, match="initial"):
-        summarize([(0, D(100)), (86400000, D(110))], P(90, 110), [D(20)])
+        summarize([(3600000, D(100)), (90000000, D(110))], P(90, 110), [D(20)])
 
 
 @pytest.mark.parametrize("bad_quantity", [False, True])
@@ -194,7 +232,7 @@ def test_real_round_trip_retains_accepted_trade_residual():
 def test_trade_reconciliation_accepts_inclusive_bound_and_reports_residual(residual):
     from crypto_grid_bot.trend.metrics import summarize
 
-    result = summarize([(0, D(100)), (86400000, D(100))], P(100, 100), [residual])
+    result = summarize([(3600000, D(100)), (90000000, D(100))], P(100, 100), [residual])
     assert result.trade_reconciliation_residual == residual
 
 
@@ -205,14 +243,16 @@ def test_trade_reconciliation_rejects_outside_bound(residual):
     from crypto_grid_bot.trend.metrics import summarize
 
     with pytest.raises(ValueError, match="reconcile"):
-        summarize([(0, D(100)), (86400000, D(100))], P(100, 100), [residual])
+        summarize([(3600000, D(100)), (90000000, D(100))], P(100, 100), [residual])
 
 
 def test_summary_rejects_interior_sample_absent_from_equity_path():
     from crypto_grid_bot.trend.metrics import summarize
 
     with pytest.raises(ValueError, match="sample.*path"):
-        summarize([(0, D(100)), (86400000, D(1000)), (172800000, D(110))], P(100, 90, 110), [D(10)])
+        summarize(
+            [(3600000, D(100)), (90000000, D(1000)), (176400000, D(110))], P(100, 90, 110), [D(10)]
+        )
 
 
 def test_summary_rejects_matching_value_at_wrong_path_time():
@@ -220,5 +260,7 @@ def test_summary_rejects_matching_value_at_wrong_path_time():
 
     with pytest.raises(ValueError, match="sample.*path"):
         summarize(
-            [(0, D(100)), (86400000, D(120)), (259200000, D(110))], P(100, 110, 120, 110), [D(10)]
+            [(3600000, D(100)), (90000000, D(120)), (262800000, D(110))],
+            P(100, 110, 120, 110),
+            [D(10)],
         )
