@@ -8,6 +8,27 @@ T = 1609459200000
 H = 3600000
 
 
+def test_deferred_pick_close_keeps_cause_across_replacement_but_not_after_dispatch():
+    from crypto_grid_bot.trend.pending import PendingDecisions
+
+    q = PendingDecisions()
+    q.advance(T, {"BTCUSDT": D(0)}, set(), {"BTCUSDT": frozenset({"pick_change"})})
+    q.advance(T + 24 * H, {"BTCUSDT": D(0)}, set(), {"BTCUSDT": frozenset({"signal_zero"})})
+    ready = q.advance(T + 25 * H, {}, {"BTCUSDT"}).ready
+    assert ready[0][1].exit_reasons == frozenset({"pick_change", "signal_zero"})
+    q.advance(T + 48 * H, {"BTCUSDT": D(0)}, set())
+    assert q.advance(T + 49 * H, {}, {"BTCUSDT"}).ready[0][1].exit_reasons == frozenset()
+
+
+def test_cancelled_close_does_not_attribute_later_nonzero_target_to_old_pick():
+    from crypto_grid_bot.trend.pending import PendingDecisions
+
+    q = PendingDecisions()
+    q.advance(T, {"BTCUSDT": D(0)}, set(), {"BTCUSDT": frozenset({"pick_change"})})
+    q.advance(T + 24 * H, {"BTCUSDT": D(".1")}, set())
+    assert q.advance(T + 25 * H, {}, {"BTCUSDT"}).ready[0][1].exit_reasons == frozenset()
+
+
 def test_midnight_replaces_pending_before_zero_hour_fill():
     from crypto_grid_bot.trend.pending import PendingDecisions
 

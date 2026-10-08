@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
 from crypto_grid_bot.trend.account import AccountingAudit, AccountMark, FillEvent, FuturesAccount
+from crypto_grid_bot.trend.exclusions import ExclusionCalendar
 from crypto_grid_bot.trend.execution import HourResult, execute_hour
 from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.lifecycles import LifecycleLedger
@@ -37,11 +38,19 @@ class TrendRunner:
     """
 
     def __init__(
-        self, filters: Mapping[str, OrderFilters], *, multiple: int = 2, cost_multiple: int = 1
+        self,
+        filters: Mapping[str, OrderFilters],
+        *,
+        multiple: int = 2,
+        cost_multiple: int = 1,
+        excluded_months: Mapping[str, frozenset[str]] | None = None,
     ) -> None:
         if type(multiple) is not int or multiple not in (1, 2, 3):
             raise ValueError("multiple must be 1, 2 or 3")
         self.filters = dict(filters)
+        if not set(excluded_months or {}) <= self.filters.keys():
+            raise ValueError("unknown exclusion symbol")
+        self.exclusions = ExclusionCalendar(excluded_months or {})
         self.multiple = multiple
         self.account = FuturesAccount(cost_multiple=cost_multiple)
         self.pending = PendingDecisions()
@@ -136,6 +145,13 @@ class TrendRunner:
         self.audits.append(pre_audit)
         if not pre_audit.accepted:
             raise AccountingFailure(pre_audit)
+        if hour_ms % (24 * HOUR) == 0:
+            forced = self.exclusions.zero_symbols(hour_ms)
+            new_targets = {**new_targets, **dict.fromkeys(forced, Decimal(0))}
+            exit_reasons = {
+                **(exit_reasons or {}),
+                **{symbol: frozenset({"excluded_month"}) for symbol in forced},
+            }
         dispatch = self.pending.advance(hour_ms, new_targets, set(bars), exit_reasons)
         for symbol, position in self.account.positions.items():
             if position.quantity != 0 and symbol not in bars:
