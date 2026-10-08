@@ -143,3 +143,34 @@ def test_runner_summary_accepts_equity_tolerance_without_calling_it_exact(bad_qu
     )
     with pytest.raises(ValueError, match="accounting"):
         summarize_runner(runner)
+
+
+def test_real_round_trip_retains_accepted_residual_but_exact_trade_gate_still_fails():
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.metrics import summarize_runner
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    rules = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    runner = TrendRunner({"BTCUSDT": rules})
+    start = 1609459200000
+    for hour in range(50):
+        price = D(1 if hour < 24 else 2)
+        targets = (
+            {"BTCUSDT": D(".1" if hour == 0 else ".2" if hour == 24 else "0")}
+            if hour in (0, 24, 48)
+            else {}
+        )
+        runner.step(
+            start + hour * 3600000,
+            {"BTCUSDT": (price, price, price)},
+            targets,
+            {},
+            exit_reasons={"BTCUSDT": frozenset({"signal_zero" if hour == 48 else "sizing"})},
+        )
+    runner.finish({"BTCUSDT": D(2)})
+    assert all(a.accepted for a in runner.audits)
+    assert any(a.equity_residual == D("-5e-57") for a in runner.audits)
+    assert len(runner.lifecycles.completed) == 1
+    assert not runner.lifecycles.completed[0].censored
+    with pytest.raises(ValueError, match="trade results do not reconcile"):
+        summarize_runner(runner)
