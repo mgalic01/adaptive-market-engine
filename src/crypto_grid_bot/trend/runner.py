@@ -35,12 +35,14 @@ class TrendRunner:
     poisons the run; a partially processed hour must never be retried as valid.
     """
 
-    def __init__(self, filters: Mapping[str, OrderFilters], *, multiple: int = 2) -> None:
+    def __init__(
+        self, filters: Mapping[str, OrderFilters], *, multiple: int = 2, cost_multiple: int = 1
+    ) -> None:
         if type(multiple) is not int or multiple not in (1, 2, 3):
             raise ValueError("multiple must be 1, 2 or 3")
         self.filters = dict(filters)
         self.multiple = multiple
-        self.account = FuturesAccount()
+        self.account = FuturesAccount(cost_multiple=cost_multiple)
         self.pending = PendingDecisions()
         self._prices: dict[str, Decimal] = {}
         self._hour: int | None = None
@@ -111,6 +113,8 @@ class TrendRunner:
             raise ValueError("runner requires consecutive hours")
         if not set(bars) <= self.filters.keys() or not set(new_targets) <= self.filters.keys():
             raise ValueError("unknown bar or target symbol")
+        if any(not set(rates) <= self.filters.keys() for rates in funding.values()):
+            raise ValueError("unknown funding symbol")
         prices = dict(self._prices)
         extremes = {}
         for symbol, (opened, low, high) in bars.items():
