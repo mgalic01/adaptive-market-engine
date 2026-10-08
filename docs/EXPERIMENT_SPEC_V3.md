@@ -240,7 +240,10 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - **Profit factor:** the sum of the positive daily changes in equity (in USDT, between consecutive daily samples) ÷ the absolute sum of the negative ones.
   - With no negative day and at least one positive day, it is +∞, and A2 passes.
   - With no positive day, it is 0, and A2 fails.
-- **CAGR:** compound annual growth over the out-of-sample days (365.25-day years).
+- **CAGR:** `(E_T ÷ E_0) ^ (365.25 ÷ d) − 1`, computed with `Decimal`'s power at the precision above:
+  - `E_0` is the first daily sample, at 01:00 UTC on the run's first day, and `E_T` is the terminal sample;
+  - `d` is the exact time between them, in days: the terminal sample's time minus the first sample's, in milliseconds, ÷ 86,400,000. The terminal sample's time is the end of the last 1h bar, 00:00 UTC on the day after the run's last day. For the out-of-sample run, that is from 2021-07-01 01:00 to 2025-01-01 00:00 if the first test quarter is 2021-Q3;
+  - if `E_T ≤ 0`, CAGR is −1. Such a run has already been liquidated and is invalid (§6).
 - **Maximum drawdown:** the largest fall from a running peak along one path of equity states. Each hour contributes these states, in this order (§6, "Order of events in an hour"):
   1. its open mark;
   2. its post-fill mark, after all of the hour's trading;
