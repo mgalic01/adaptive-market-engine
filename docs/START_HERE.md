@@ -27,13 +27,16 @@ is why results are not tuned after the fact and why the criteria are fixed in ad
 the whole point is an answer we can trust, including an unwelcome one.
 
 **The bridge between the two** is the untouched 2025–26 window, judged against the
-acceptance criteria the owner chose. **No experiment is current.** Spec v2 (the mode
-switcher) failed on C1 and closed on 2026-10-08
+acceptance criteria the owner chose. **The current experiment is spec v3**
+(trend-following on perpetual futures, long and short or long only), frozen on 2026-10-08
+([spec](EXPERIMENT_SPEC_V3.md), #207). Its binding set is A1–A5 in
+[`EXPERIMENT_SPEC_V3.md` §8](EXPERIMENT_SPEC_V3.md#8-evaluation). A v3 pass is a
+development pass, which permits only the reserved-window confirmation. No v3 run is
+dispatched before its trial register is committed (§9). Spec v2 (the mode switcher)
+failed on C1 and closed on 2026-10-08
 ([verdict](backtests/2026-10-07-spec-v2-verdict.md)); its binding set, C1–C6 in
 [`EXPERIMENT_SPEC_V2.md` §8](EXPERIMENT_SPEC_V2.md#8-evaluation), governs only v2's
-results. **Spec v3** (trend-following, long and short, on perpetual futures) is a draft
-under review in #207: nothing is built or run under it until the owner freezes it, and
-its acceptance criteria bind only from then. Read the frozen table, not a summary of it.
+results. Read the frozen table, not a summary of it.
 C7 (spec v1 §6) still gates the reserved run until it is settled or waived in writing. **Spec v1's binding
 set was C1–C6 in
 [`EXPERIMENT_SPEC_V1.md` §6](EXPERIMENT_SPEC_V1.md#6-acceptance-and-selection-owner-decisions-2026-09-24)**;

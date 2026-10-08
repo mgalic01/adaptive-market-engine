@@ -1,7 +1,11 @@
-# Experiment specification v3: trend-following, long and short, on perpetual futures (draft)
+# Experiment specification v3: trend-following, long and short, on perpetual futures (frozen 2026-10-08)
 
-**Status:** draft, not frozen. Claude wrote it from the owner's design decisions of 2026-10-08 (§11).
-- **Before any build:** the owner reviews this draft, Codex and Bob review it, and the owner gives the go to freeze it. The freeze comes before any code that could be tuned to results, and before any v3 run.
+**Status:** frozen on 2026-10-08. Claude wrote it from the owner's design decisions of that day (§11).
+- **How it was frozen:**
+  - The owner approved the spec: "approve" (§11, decision 14).
+  - PR #207 settled every finding of 33 review rounds. At its final head, `e01eb2e`, Codex found no major issues, Bob reported NO ISSUES, the automated review approved, and CI passed. It landed as `2675941`.
+  - The freezing PR changes only this title and Status block, adds §11 decision 14, and updates START_HERE's and ROADMAP's pointers.
+- **Before any build:** the freeze comes before any code that could be tuned to results, and before any v3 run. The first build step is the trial register (§9, step 2).
 - **After the freeze:** a change requires a new version. The freeze covers this file only. The build plan may change, and where the two differ, this spec rules.
 - **Scope:** historical replay only, on paper. Nothing here authorises live trading, exchange credentials, API keys or withdrawals. No v3 code places, signs or routes an order.
 - **The bot's operating rules, as amended for v3** (§11, decisions 11 and 12). The README and SECURITY.md said the bot trades "only Binance spot markets; no leverage, futures, or martingale". The owner amended both in the PR that adds this spec:
@@ -510,3 +514,5 @@ Each entry gives the question, and the option the owner chose.
     - **Disclosed:** A2's measure was changed after seeing D's 2019–2024 figures. It changes how the bar is measured, not the strategy. The 12-rule menu doubles the trials from six, which makes a lucky pass a little more likely. The out-of-sample-only scoring and the reserved window's multiple-testing rule (§8) are the guards.
     - **Codex then found** that changing A2 after seeing D's figures, for a test on those same years, tunes the bar to known outcomes. It offered two fixes: restore the daily measure, or treat v3's result as development rather than a pass. The owner's per-trade choice stands, and §8 states that a v3 pass is a development pass that permits only the reserved-window confirmation. The v2 verdict record had already said that only the reserved window could confirm a v3 tested on these years.
     - **In this spec:** the long-only versions are in §4, the 12-rule pick in §7, and A2's measure in §8.
+14. **The freeze.** With every review clean at `e01eb2e`, Claude asked the owner to read the spec, then approve it or say what to change. One optional question remained open: whether A2 should need a minimum number of trades. Claude recommended no minimum, with the count reported beside A2, as §8 says. The owner answered: "approve".
+    - So the spec is frozen as written, and A2 has no minimum trade count.
