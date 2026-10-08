@@ -1,0 +1,76 @@
+"""Daily decision integration on synthetic spot history."""
+
+from decimal import Decimal as D
+
+from crypto_grid_bot.backtest.klines import Kline
+
+DAY = 86400000
+T = 1577836800000
+
+
+def bars(count):
+    result = []
+    for i in range(count):
+        p = D(100 + i * 2 + i % 3)
+        result.append(Kline(T + i * DAY, p, p, p, p, D(1), p, D(".5")))
+    return result
+
+
+def test_decision_uses_closed_history_and_does_not_change_with_future_bars():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+
+    a = DailyDecisions({"BTCUSDT": bars(65)}, {"BTCUSDT": "2020-01"})
+    b = DailyDecisions({"BTCUSDT": bars(90)}, {"BTCUSDT": "2020-01"})
+    x, y = a.at(T + 65 * DAY, "R1"), b.at(T + 65 * DAY, "R1")
+    assert x.targets == y.targets
+    assert x.targets["BTCUSDT"] > 0
+    assert x.signals["BTCUSDT"] == 1
+
+
+def test_missing_bar_keeps_signal_but_issues_no_target():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+
+    book = DailyDecisions({"BTCUSDT": bars(65)}, {"BTCUSDT": "2020-01"})
+    decision = book.at(T + 66 * DAY, "R1")
+    assert decision.signals["BTCUSDT"] == 1
+    assert decision.targets == {}
+
+
+def test_ineligible_coins_are_absent_and_all_invalid_pick_targets_flat():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+
+    book = DailyDecisions(
+        {"BTCUSDT": bars(65), "ETHUSDT": bars(65)}, {"BTCUSDT": "2020-01", "ETHUSDT": "2020-05"}
+    )
+    decision = book.at(T + 66 * DAY, None, pick_changed=True)
+    assert decision.targets == {"BTCUSDT": D(0)}
+    assert decision.exit_reasons["BTCUSDT"] == frozenset({"pick_change"})
+
+
+def test_daily_decision_flows_into_next_hour_runner_fill():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    book = DailyDecisions({"BTCUSDT": bars(65)}, {"BTCUSDT": "2020-01"})
+    rules = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    runner = TrendRunner({"BTCUSDT": rules})
+    time = T + 65 * DAY
+    decision = book.at(time, "R1")
+    price = {"BTCUSDT": (D(100), D(100), D(100))}
+    runner.step(time, price, decision.targets, {}, exit_reasons=decision.exit_reasons)
+    assert not runner.account.fills
+    runner.step(time + 3600000, price, {}, {})
+    assert runner.account.positions["BTCUSDT"].quantity > 0
+    assert runner.account.fills[0].timestamp_ms == time + 3600000
+
+
+def test_exclusion_overrides_missing_signal_bar_before_month_start():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+
+    book = DailyDecisions(
+        {"BTCUSDT": bars(65)}, {"BTCUSDT": "2020-01"}, {"BTCUSDT": frozenset({"2020-04"})}
+    )
+    decision = book.at(T + 90 * DAY, "R1")  # March 31; latest signal bar is in March's first week.
+    assert decision.targets == {"BTCUSDT": D(0)}
+    assert "excluded_month" in decision.exit_reasons["BTCUSDT"]
