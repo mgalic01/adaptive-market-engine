@@ -60,7 +60,9 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 
 BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, ADAUSDT, DOGEUSDT, LTCUSDT, LINKUSDT and TRXUSDT, as perpetuals.
 - **A coin joins the portfolio** at its first month that has both a full month of futures klines and a funding file, and leaves only for an excluded month (§2). The fetch settles each coin's first month.
-- **Hindsight (disclosed):** these coins were chosen in 2026, and all of them are still large today. Coins that crashed or were delisted are not in the set, so the results are flattered. Only the reserved window can check a pass free of this bias.
+- **Hindsight (disclosed):** these coins were chosen in 2026, and all of them are still large today. Coins that crashed or were delisted are not in the set, so the results are flattered.
+  - The reserved window cannot remove this bias. The set was chosen knowing that these coins stayed large through 2025–26, which is information from inside that window, even though its prices stay unopened.
+  - A reserved run would test unseen prices for a set chosen with hindsight. It would not be a bias-free confirmation, and any record of it must say so.
 
 ## 4. The rules
 
@@ -103,22 +105,22 @@ At each daily decision, after day d's close:
    - the sum of |weights| ≤ 0.80;
    - if the sum exceeds 0.80, every weight is scaled down proportionally.
 
-   So leverage never exceeds 1x.
+   These caps bind the targets at each decision. Between decisions, price moves can push actual leverage above them; the hourly check in §6 enforces 1x on the actual book.
 4. **Rebalancing:** a coin trades to its target only if `|target weight − current weight| > 0.01`, or if the signal changes sign or goes to or from 0. Otherwise its position stays.
    - The current weight is `quantity × the fill hour's open ÷ equity at that open`.
    - The band is tested on weights, before any rounding.
 5. **Quantity:** `target quantity = target weight × equity ÷ open`, where equity is the account's mark at the fill hour's open, before that hour's fills, and open is that hour's unslipped open (§6).
    - The quantity rounds toward zero to the symbol's quantity step.
-   - A trade that opens or increases a position is not made if its notional (quantity change × open) is below the symbol's minimum notional, and it is reported.
+   - A trade that opens or increases a position on one side is not made if its notional, `|quantity change| × open`, is below the symbol's minimum notional, and it is reported. A flip is never tested as one trade (below).
    - A trade that reduces or closes a position is always made, at any size, as a reduce-only order is on Binance.
-   - **A flip** (long to short, or short to long) is two orders at the same fill price: first a close of the whole position, always made; then an opening order for the new side. The opening order rounds to the quantity step and must meet the minimum notional. If it does not, the coin is left flat, and this is reported. Each order pays its own fee.
+   - **A flip** (long to short, or short to long) is two orders at the same fill price: first a close of the whole position, always made; then an opening order for the new side. The opening order rounds to the quantity step and must meet the minimum notional on its own, `|new quantity| × open`. If it does not, the coin is left flat, and this is reported. Each order pays its own fee.
 
 **Precision:** every sizing computation runs in `Decimal` at 60 significant digits with `ROUND_HALF_EVEN`, including the covariance, the square roots (`Decimal.sqrt`) and the scaling. Prices and rates are used exactly as archived.
 
 ## 6. The account
 
 **One portfolio account** at 10,000 USDT, with cross margin, run on hourly futures bars.
-- **Fills:** each daily decision fills at the open of the 1h bar that starts one hour after the UTC day's close (01:00 UTC). A buy fills at `open × (1 + 0.0005)` and a sell at `open × (1 − 0.0005)`, which is the slippage. Each fill pays the taker fee, 0.05% (Binance USDⓈ-M, VIP 0), of its slipped notional: `quantity × fill price`. Quantities come from §5 step 5.
+- **Fills:** each daily decision fills at the open of the 1h bar that starts one hour after the UTC day's close (01:00 UTC). A buy fills at `open × (1 + 0.0005)` and a sell at `open × (1 − 0.0005)`, which is the slippage. Each fill pays the taker fee, 0.05% (Binance USDⓈ-M, VIP 0), of its slipped notional, `|fill quantity| × fill price`, so buys and sells both pay a positive fee. Quantities come from §5 step 5.
 - **A masked fill hour:** the fill moves to the open of the next unmasked hour of that coin, on the same terms. The current weight, the equity and the open of §5 steps 4 and 5 are all taken at that actual fill hour.
 - **Funding:** each timestamp in the coin's funding file belongs to the 1h bar whose hour contains it, so millisecond offsets map to the hour they fall in.
   - The position pays `quantity × price × rate` if it is long and the rate is positive. A short receives it. A negative rate reverses both.
@@ -126,15 +128,28 @@ At each daily decision, after day d's close:
   - Binance charges funding on the mark price, not on the last-trade price. Using the bar's open is a disclosed approximation: the two differ by the basis, which is small next to the funding rate's own variation.
   - **Order within an hour:** funding first, on the quantity held before that hour's fills; then the fills.
   - Funding is charged at exactly the timestamps in the file. A month whose file has fewer timestamps than its days × 3 is reported, and its missing timestamps are not charged.
-- **Marking:** equity is marked at every hour's open. Total equity is cash plus the unrealised profit and loss of every position, after every fee and funding payment.
+- **Marking:** equity is marked at every hour's open (the wallet and equity are defined under "Wallet and equity" below).
+  - **A coin's mark price** in an hour is that hour's open.
+  - **In a masked or missing hour,** which an included month may have (up to 17%), the coin's mark is the open of its last unmasked hour before it. Its funding price is the same (above), and its liquidation check uses that same price, since the hour has no usable high or low.
+  - **At the first unmasked hour after a gap,** the mark, the adverse extremes and the liquidation check use that hour's own bar, so a move across the gap is caught there.
+  - Hours with an open position and a masked bar are counted and reported.
 - **Liquidation:** each hour, equity is also computed at each position's adverse extreme of that 1h bar: the low for a long, the high for a short, all at once.
   - If that equity is ≤ 1% of the gross open notional, the account is liquidated at the next hour's opens, and the run fails (§8).
   - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin.
   - It is expected never to happen at these sizes.
+- **The 1x ceiling, on the actual book:** at every hourly mark, gross leverage is `Σ |quantity| × mark ÷ equity`.
+  - If it exceeds 1.0, every position is scaled down proportionally, by reduce-only orders at the next hour's opens, to gross leverage of 0.80, with the usual slippage and fees.
+  - Each such delevering is reported.
+- **Wallet and equity.** A perpetual futures position does not exchange its notional with the wallet: opening it moves no cash. Only fees, funding and realised profit and loss move the wallet.
+  - **Average entry price:** each coin's position carries one. An order that opens or increases the position updates it to the quantity-weighted average of the old position and the fill. An order that reduces or closes it leaves it unchanged.
+  - **Realised profit and loss** of a reducing or closing fill is `closed quantity × (fill price − average entry)` for a long, and `closed quantity × (average entry − fill price)` for a short.
+  - **The wallet** is the initial capital, plus realised profit and loss, minus fees, minus funding paid, plus funding received.
+  - **Unrealised profit and loss** of a position is `quantity × (mark − average entry)`, with quantity signed (negative for a short).
+  - **Equity** is the wallet plus the unrealised profit and loss of every position.
 - **Accounting identities,** exact and checked at the end of every run, as in spec v1 P6:
-  - cash = initial capital − the sum of buy notionals + the sum of sell notionals − fees − funding paid + funding received, with notionals at fill prices;
-  - each coin's quantity = its buys − its sells;
-  - realised plus unrealised profit and loss, net of every fee and funding payment, equals the change in equity.
+  - the wallet equals the initial capital + Σ realised profit and loss − Σ fees − Σ funding paid + Σ funding received, each summed from the fill and funding records;
+  - each coin's quantity equals its bought quantity minus its sold quantity;
+  - the change in equity equals realised plus unrealised profit and loss, minus fees, minus funding paid, plus funding received.
 
 **No recovery, restart or rebasing.** v3 has no soft-drawdown recovery, halt, restart or any other rule that moves a reference peak. Drawdown is measured from the run's true peak, the running maximum of the hourly equity marks, and that peak is never lowered. Codex's diagnosis of v2 found that v2's risk layer could lower its own peak after a recovery, so it never enforced the lifetime drawdown that C1 measured (§11, decision 10). v3's sizing is the only risk control, and A3 judges it against the true peak.
 
@@ -152,8 +167,8 @@ At each daily decision, after day d's close:
 
 ## 8. Evaluation
 
-**Metrics,** on the stitched out-of-sample run, from the daily equity series at 01:00 UTC before that hour's fills:
-- **Sharpe ratio:** mean ÷ sample standard deviation (n − 1) of the daily simple returns, × √365, with a risk-free rate of 0. The hold benchmark's Sharpe ratio (A5) uses the same formula over the same days.
+**Metrics,** on the stitched out-of-sample run, from the daily equity series at 01:00 UTC before that hour's fills. One terminal sample closes the series: equity marked at the close of the last 1h bar of 2024-12-31. So the last daily return covers the window's final 23 hours, and no 2025 data is read.
+- **Sharpe ratio:** mean ÷ sample standard deviation (n − 1) of the daily simple returns, × √365, with a risk-free rate of 0. The hold benchmark's Sharpe ratio (A5) uses the same formula over the same days. With fewer than two returns, or a standard deviation of 0, the Sharpe ratio is 0. In training windows that means it cannot beat a rule with a positive one, and in A1 it fails.
 - **Profit factor:** the sum of positive daily profit and loss ÷ the absolute sum of negative daily profit and loss.
 - **CAGR:** compound annual growth over the out-of-sample days (365.25-day years).
 - **Maximum drawdown:** on the hourly equity marks, from the running peak.
@@ -181,7 +196,7 @@ At each daily decision, after day d's close:
 **Reported, deciding nothing:**
 - **The owner's monthly target:** every out-of-sample month's return, beside the owner's 20–30% target, and how many months reached 20%.
 - each rule's full-period results, as if picked every quarter;
-- **each rule's long-only twin:** the same rule and sizing with every −1 set to 0;
+- **each rule's long-only twin:** the same rule and sizing with every negative signal set to 0, including R6's fractional ones;
 - the long-versus-short split of profit and loss, per rule and per coin;
 - funding paid and received, fees, slippage and turnover;
 - the time invested, gross and net;
