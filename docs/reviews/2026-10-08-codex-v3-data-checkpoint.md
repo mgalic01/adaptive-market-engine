@@ -28,3 +28,10 @@ funding files. It rejects missing/malformed/mismatched checksums and enforces by
 limits; no real network adapter or CLI dispatch exists yet. Combined data/helper
 suite: 45 passing tests, Ruff and strict mypy clean. Actual fetch task, committed
 manifest and filter snapshot still require completion and external review.
+
+Network adapter implemented outside src with fixed public hosts and paths, reserved
+month validation before connection creation, no redirects, bounded response reads,
+and connection cleanup. Futures filters allow one GET attempt per fetch instance;
+a failed attempt does not reset that guard. There is still no fetch CLI or task
+execution. All transport tests replace HTTPSConnection with fakes. Combined focused
+suite: 52 tests pass; Ruff, mypy and Bandit pass for the changed helper/module scope.

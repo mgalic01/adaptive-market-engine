@@ -77,3 +77,124 @@ def test_missing_or_mismatched_checksum_rejected(checksum):
 
 def test_absent_archive_is_explicit():
     assert fetch_verified_archive("futures", "BTCUSDT", "2024-12", lambda _: None) is None
+
+
+def test_archive_transport_rejects_reserved_or_noncanonical_before_connection(monkeypatch):
+    import fetch_v3_data as module
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("network connection attempted")
+
+    monkeypatch.setattr(module, "HTTPSConnection", forbidden)
+    transport = module.V3Transport()
+    for path in [
+        "https://evil.invalid",
+        "/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-01.zip",
+        archive_path("futures", "BTCUSDT", "2024-12") + "?month=2024-12",
+    ]:
+        with pytest.raises(ValueError):
+            transport.archive(path)
+
+
+@pytest.mark.parametrize(
+    "status,expected", [(200, b"body"), (404, None), (302, "error"), (500, "error")]
+)
+def test_transport_status_and_cleanup(monkeypatch, status, expected):
+    import fetch_v3_data as module
+
+    calls = []
+
+    class Response:
+        def __init__(self):
+            self.status = status
+
+        def read(self, limit):
+            assert limit > 0
+            return b"body"
+
+    class Connection:
+        def __init__(self, host, timeout):
+            calls.append((host, timeout))
+
+        def request(self, method, path):
+            calls.append((method, path))
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            calls.append("closed")
+
+    monkeypatch.setattr(module, "HTTPSConnection", Connection)
+    path = archive_path("futures", "BTCUSDT", "2024-12")
+    if expected == "error":
+        with pytest.raises(ValueError):
+            module.V3Transport().archive(path)
+    else:
+        assert module.V3Transport().archive(path) == expected
+    assert calls[0][0] == "data.binance.vision"
+    assert calls[1] == ("GET", path)
+    assert calls[-1] == "closed"
+
+
+def test_futures_filters_requested_at_most_once(monkeypatch):
+    import fetch_v3_data as module
+
+    calls = []
+
+    class Connection:
+        def __init__(self, host, timeout):
+            calls.append(host)
+
+        def request(self, method, path):
+            calls.append(path)
+
+        def getresponse(self):
+            class Response:
+                status = 200
+
+                def read(self, limit):
+                    return b'{"symbols": []}'
+
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "HTTPSConnection", Connection)
+    transport = module.V3Transport()
+    assert transport.futures_filters() == b'{"symbols": []}'
+    with pytest.raises(ValueError, match="once"):
+        transport.futures_filters()
+    assert calls == ["fapi.binance.com", "/fapi/v1/exchangeInfo"]
+
+
+def test_transport_size_limit_is_enforced(monkeypatch):
+    import fetch_v3_data as module
+
+    closed = []
+
+    class Connection:
+        def __init__(self, host, timeout):
+            pass
+
+        def request(self, method, path):
+            pass
+
+        def getresponse(self):
+            class Response:
+                status = 200
+
+                def read(self, limit):
+                    return b"x" * limit
+
+            return Response()
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(module, "HTTPSConnection", Connection)
+    monkeypatch.setattr(module, "MAX_ARCHIVE_BYTES", 3)
+    with pytest.raises(ValueError, match="size limit"):
+        module.V3Transport().archive(archive_path("futures", "BTCUSDT", "2024-12"))
+    assert closed == [True]
