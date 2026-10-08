@@ -82,3 +82,17 @@ def test_close_preflight_rejects_missing_inventory_and_non_daily_run_bounds():
         c.check_close_availability(
             stamp("2021-01-01") + 1, stamp("2021-03-01"), {"BTCUSDT": frozenset()}
         )
+
+
+def test_malformed_inventory_is_data_error_not_unavailable_close():
+    import pytest
+
+    from crypto_grid_bot.trend.exclusions import ExclusionCalendar, UnavailableClose
+
+    c = ExclusionCalendar({"BTCUSDT": frozenset({"2021-02"})})
+    for bad in (True, -3600000, stamp("2021-01-31") + 1, stamp("2025-01-01")):
+        with pytest.raises(ValueError, match="inventory") as failure:
+            c.check_close_availability(
+                stamp("2021-01-01"), stamp("2021-03-01"), {"BTCUSDT": frozenset({bad})}
+            )
+        assert not isinstance(failure.value, UnavailableClose)

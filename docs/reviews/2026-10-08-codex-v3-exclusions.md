@@ -35,3 +35,18 @@ record all unavailable-close cases. The constructor alone does not certify masks
 This PR does not implement that adapter or authorize a historical run. Continuous
 signal/sizing linkage, walk-forward orchestration and reporting remain unfinished.
 No new dependency or known security finding; no frozen parameter changes.
+
+## Review correction
+
+Bob identified malformed execution-hour timestamps being mistaken for unavailable
+closes. Preflight now rejects booleans, negative, off-hour and reserved-window
+stamps as input errors before close selection. The regression first failed with
+UnavailableClose; all 29 exclusion/runner/pending tests now pass, with Ruff/mypy.
+
+Dependency evidence: pending.py at f56cee1c95f258abd38c579f86c1e92f7db11cae defines
+advance(hour_ms, new_targets, tradable, exit_reasons=None) and stores immutable
+exit reasons on PendingDecision. That lifecycle commit is an ancestor of this
+branch, and the runner cancellation/delayed-fill regression exercises that actual
+interface. Replacing reasons with excluded_month is intentional because it is the
+first priority exit reason. The future dispatcher must catch UnavailableClose
+separately from input errors; dispatcher implementation is still outstanding.

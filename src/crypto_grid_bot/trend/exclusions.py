@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from crypto_grid_bot.backtest.klines import month_bounds_ms
-from crypto_grid_bot.backtest.window import development_month
+from crypto_grid_bot.backtest.window import DEVELOPMENT_END, development_month
 from crypto_grid_bot.market_data.parsing import symbol_name
 from crypto_grid_bot.trend.data import mandatory_close_hour
 
@@ -75,6 +75,14 @@ class ExclusionCalendar:
         self.zero_symbols(end_ms_exclusive - DAY)
         if not self._months.keys() <= unmasked_hours.keys():
             raise ValueError("missing execution-hour inventory")
+        _, allowed_end = month_bounds_ms(DEVELOPMENT_END)
+        for symbol, hours in unmasked_hours.items():
+            symbol_name(symbol)
+            if any(
+                type(stamp) is not int or not 0 <= stamp < allowed_end or stamp % 3600000
+                for stamp in hours
+            ):
+                raise ValueError("invalid execution-hour inventory timestamp")
         requirements = []
         for symbol, months in sorted(self._months.items()):
             for month in sorted(months):
