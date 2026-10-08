@@ -133,11 +133,11 @@ def test_two_replays_get_fresh_accounts_and_missing_hours_are_processed():
     assert a.runner.daily_samples == b.runner.daily_samples
 
 
-def test_unavailable_exclusion_close_returns_invalid_before_creating_account():
+def test_unavailable_close_does_not_invalidate_flat_rule():
     from crypto_grid_bot.trend.decisions import DailyDecisions
     from crypto_grid_bot.trend.replay import replay_window
 
-    start = T + 90 * DAY
+    start = T + 89 * DAY
     book = DailyDecisions(
         {"BTCUSDT": []}, {"BTCUSDT": "2020-01"}, {"BTCUSDT": frozenset({"2020-04"})}
     )
@@ -147,12 +147,42 @@ def test_unavailable_exclusion_close_returns_invalid_before_creating_account():
         {"BTCUSDT": [bar(start)]},
         {},
         start,
-        start + 2 * DAY,
+        start + 3 * DAY,
         {start: "R1"},
     )
-    assert result.runner is None
-    assert result.reason == "unavailable_exclusion_close"
+    assert result.runner.stopped == "completed"
+    assert result.reason is None
     assert result.close_requirements[0].fill_ms is None
+
+
+def test_missing_mandatory_fill_stops_only_a_held_position_with_audits():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.replay import replay_window
+
+    start = T + 89 * DAY
+    book = DailyDecisions(
+        {"BTCUSDT": [bar(T + i * DAY, 100 + i * 2 + i % 3) for i in range(90)]},
+        {"BTCUSDT": "2020-01"},
+        {"BTCUSDT": frozenset({"2020-04"})},
+    )
+    result = replay_window(
+        book,
+        {"BTCUSDT": FILTER},
+        {"BTCUSDT": [bar(start + i * HOUR) for i in range(24)]},
+        {},
+        start,
+        start + 3 * DAY,
+        {start: "R1"},
+    )
+    assert result.reason == "unavailable_exclusion_close"
+    r = result.runner
+    assert r.stopped == result.reason
+    assert len(r.hours) == 24
+    assert r.account.positions["BTCUSDT"].quantity > 0
+    assert not r.lifecycles.active
+    assert r.lifecycles.completed[0].exit_reason == result.reason
+    assert r.lifecycles.completed[0].censored
+    assert all(a.accepted for a in r.audits)
 
 
 def test_funding_liquidation_stops_replay_without_following_hours():

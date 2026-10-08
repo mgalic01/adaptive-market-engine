@@ -64,3 +64,15 @@ identical fills and daily equity with/without the post-run exclusion and confirm
 terminal lifecycle censoring. All 31 replay/decision/exclusion tests and mypy pass.
 No strategy rule, market source or historical run changed. Latest #224 attribution
 and bounded-sizing corrections are integrated without conflicts.
+
+Exclusion review repair: missing mandatory execution hours remain in the preflight
+requirements, but replay now checks the actual position at the mandatory decision.
+A flat strategy proceeds; a held position stops before processing that hour, at the
+previous processed hour's last available closes. Its account is audited and its
+lifecycle censored as unavailable_exclusion_close, with no invented fill or fee.
+The terminal path and stop reason are retained so downstream reconciliation can
+check the failed attempt. Integrated PR223's fresh-flat initial-decision fix.
+Fifty-seven replay/runner/lifecycle/exclusion tests pass; Ruff and mypy pass.
+Regressions first failed for both the flat and held cases. No historical dispatch,
+new dependency or security change. Integration with orchestration and external
+review of this complete new head remain required before merge.

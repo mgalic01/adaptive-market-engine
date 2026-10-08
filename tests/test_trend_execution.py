@@ -138,6 +138,10 @@ def test_hour_adverse_extremes_can_liquidate_without_a_close_fill():
     assert result.reason == "liquidation"
     assert len(a.fills) == 1
     assert result.marks[-1][1].prices["BTCUSDT"] == 1
+    assert a.liquidation is not None
+    with pytest.raises(ValueError, match="terminal"):
+        a.fill("BTCUSDT", OrderIntent(D(-1), True), D(100), T + 3600000)
+    assert len(a.fills) == 1
 
 
 def test_daily_batch_closes_all_coins_before_alphabetical_openings():
