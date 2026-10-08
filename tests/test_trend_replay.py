@@ -12,6 +12,29 @@ DAY, HOUR = 86400000, 3600000
 FILTER = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
 
 
+def test_execution_error_exposes_partial_runner_without_terminal_mark(monkeypatch):
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.replay import replay_window
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    original = TrendRunner.step
+
+    def broken(self, stamp, *args, **kwargs):
+        if stamp == T + HOUR:
+            raise ArithmeticError("synthetic account failure")
+        return original(self, stamp, *args, **kwargs)
+
+    monkeypatch.setattr(TrendRunner, "step", broken)
+    with pytest.raises(Exception, match="synthetic account failure") as caught:
+        replay_window(DailyDecisions({}, {}), {}, {}, {}, T, T + DAY, {T: None})
+    partial = getattr(caught.value, "partial_result", None)
+    assert partial is not None
+    assert len(partial.runner.hours) == 1
+    assert partial.runner.stopped == "engine_failure"
+    assert all(state.kind != "terminal" for state in partial.runner.equity_path)
+    assert isinstance(caught.value.__cause__, ArithmeticError)
+
+
 @pytest.mark.parametrize("knobs", [{"multiple": 4}, {"cost_multiple": 3}])
 def test_invalid_configuration_precedes_unavailable_close(knobs):
     from crypto_grid_bot.trend.decisions import DailyDecisions
@@ -45,6 +68,47 @@ def decisions():
     return DailyDecisions(
         {"BTCUSDT": [bar(T + i * DAY, 100 + i * 2 + i % 3) for i in range(65)]},
         {"BTCUSDT": "2020-01"},
+    )
+
+
+def test_replay_retains_daily_rule_and_sizing_evidence(tmp_path):
+    import json
+
+    from crypto_grid_bot.trend.evidence_writer import write_replay
+    from crypto_grid_bot.trend.replay import replay_window
+
+    start = T + 65 * DAY
+    book = decisions()
+    result = replay_window(
+        book,
+        {"BTCUSDT": FILTER},
+        {"BTCUSDT": [bar(start)]},
+        {},
+        start,
+        start + DAY,
+        {start: "R1"},
+    )
+    records = getattr(result, "daily_decisions", ())
+    assert len(records) == 1
+    stamp, rule, decision = records[0]
+    assert (stamp, rule) == (start, "R1")
+    assert decision == book.at(start, "R1", run_end_ms=start + DAY)
+    assert set(decision.all_rule_signals["BTCUSDT"]) == {
+        f"R{i}{suffix}" for i in range(1, 7) for suffix in ("", "L")
+    }
+    assert decision.sizing is not None
+    artifact = write_replay(tmp_path, "decision-record", result)
+    rows = [json.loads(line) for line in (tmp_path / artifact["path"]).read_text().splitlines()]
+    saved = next(row["value"]["decision"] for row in rows if row["kind"] == "decision")
+    assert saved["all_rule_signals"]["BTCUSDT"]["R1"] == str(
+        decision.all_rule_signals["BTCUSDT"]["R1"]
+    )
+    assert saved["sizing"]["volatility"]["BTCUSDT"] == str(decision.sizing.volatility["BTCUSDT"])
+    assert saved["sizing"]["scaled_weights"]["BTCUSDT"] == str(
+        decision.sizing.scaled_weights["BTCUSDT"]
+    )
+    assert set(saved["sizing"]["binding_caps"]["BTCUSDT"]) == set(
+        decision.sizing.binding_caps["BTCUSDT"]
     )
 
 

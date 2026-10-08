@@ -44,6 +44,8 @@ def replay_rows(result: ReplayResult) -> Iterator[tuple[str, Any]]:
             "close_requirements": result.close_requirements,
         },
     )
+    for stamp, rule, decision in result.daily_decisions:
+        yield "decision", {"timestamp_ms": stamp, "rule": rule, "decision": decision}
     runner = result.runner
     if runner is None:
         return

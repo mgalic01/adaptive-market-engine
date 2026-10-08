@@ -9,6 +9,43 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.orchestration import Attempt, replay_sensitivities
 
 
+def test_engine_failure_persists_partial_hour_evidence(tmp_path, monkeypatch):
+    from crypto_grid_bot.trend.evidence_writer import AttemptRecorder
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    t = 1609459200000
+    original = TrendRunner.step
+
+    def broken(self, stamp, *args, **kwargs):
+        if stamp == t + 3600000:
+            raise ArithmeticError("synthetic late failure")
+        return original(self, stamp, *args, **kwargs)
+
+    monkeypatch.setattr(TrendRunner, "step", broken)
+    with pytest.raises(Exception, match="synthetic late failure"):
+        replay_sensitivities(
+            DailyDecisions({}, {}),
+            {},
+            {},
+            {},
+            {t: None},
+            t + 86400000,
+            record=AttemptRecorder(tmp_path),
+        )
+    finishes = list(tmp_path.glob("*.finished.json"))
+    assert len(finishes) == 1
+    payload = json.loads(finishes[0].read_text())["payload"]
+    assert "synthetic late failure" in payload["error"]
+    assert payload["evidence"] is not None
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / payload["evidence"]["path"]).read_text().splitlines()
+    ]
+    assert len([row for row in rows if row["kind"] == "hour"]) == 1
+    account = next(row["value"] for row in rows if row["kind"] == "account")
+    assert account["stopped"] == "engine_failure"
+
+
 def test_reopening_pending_attempt_refuses_new_dispatch(tmp_path):
     from crypto_grid_bot.trend.evidence_writer import AttemptRecorder
 
@@ -63,7 +100,7 @@ def test_callback_publishes_verified_artifacts_for_real_synthetic_replays(tmp_pa
         assert len(rows) == evidence["records"]
         assert len(raw) == evidence["bytes"]
         kinds = {row["kind"] for row in rows}
-        assert {"outcome", "account", "hour", "audit", "equity", "sample"} <= kinds
+        assert {"outcome", "decision", "account", "hour", "audit", "equity", "sample"} <= kinds
         assert rows[0]["value"]["trade_reconciliation_residual"] == "0"
 
 
