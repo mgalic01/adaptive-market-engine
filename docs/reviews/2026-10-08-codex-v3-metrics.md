@@ -27,3 +27,15 @@ Outstanding: Sortino and broader diagnostic definitions, bootstrap, benchmarks,
 acceptance gates, walk-forward orchestration, report serialization and actual data
 integration. No historical replay or market-data fetch occurred. No dependencies
 or frozen parameters changed; high-return objectives remain unproven.
+
+## Initial-equity review correction
+
+Cloud's finding at 7f1ac293b36e9198af88ee965c061a7761116072 was reproduced with
+samples 100 to 110, path 90 to 110 and trade PnL +20. Summary now rejects differing
+initial equities as well as differing terminal equities. All 12 metric tests pass;
+Ruff and mypy pass. Full CI and renewed review remain required.
+
+The owner has since approved the equity-change audit amendment in PR #221.
+This metrics branch has not yet integrated that dependency; its audit gate must
+be aligned with the approved accepted predicate during integration. The separate
+trade-total reconciliation remains exact and is not covered by that approval.

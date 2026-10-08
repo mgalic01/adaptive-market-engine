@@ -112,3 +112,10 @@ def test_finished_runner_to_summary_includes_censored_trade_costs():
     assert summary.trade_count == 1
     assert summary.losses == 1
     assert summary.trade_profit_factor == 0
+
+
+def test_summary_rejects_mismatched_initial_equity_even_when_trades_reconcile():
+    from crypto_grid_bot.trend.metrics import summarize
+
+    with pytest.raises(ValueError, match="initial"):
+        summarize([(0, D(100)), (86400000, D(110))], [D(90), D(110)], [D(20)])

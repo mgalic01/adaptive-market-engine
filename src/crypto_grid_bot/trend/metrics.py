@@ -54,6 +54,8 @@ def summarize(
     _validate(trade_net_results)
     if not equity_path or equity_path[-1] != samples[-1][1]:
         raise ValueError("path and samples must have the same terminal equity")
+    if equity_path[0] != samples[0][1]:
+        raise ValueError("path and samples must have the same initial equity")
     drawdown = maximum_drawdown(equity_path)
     growth = cagr(samples)
     with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
