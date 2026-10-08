@@ -170,7 +170,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - Binance charges funding on the mark price, not on the last-trade price. Using the bar's open is a disclosed approximation: the two differ by the basis, which is small next to the funding rate's own variation.
   - **Order within an hour:** see "Order of events in an hour" below.
   - Funding is charged at exactly the timestamps in the file. A month whose file breaks its schedule is excluded (§2), so no included month has a missing payment.
-- **Order of events in an hour,** for every hour from the first to the last of the run. All of the hour's trading, delevering included, happens at the bar's open, before any of its funding:
+- **Order of events in an hour,** for every hour from the first to the last of the run. The hour's daily fills, and any delevering the open's check needs, happen at the bar's open, before any of its funding. A delevering that a funding event needs follows that event (step 5):
   1. **The open mark,** at the bar's open time, before any of the hour's fills or funding. The daily 01:00 sample (§8) is this mark, so it is taken before any funding in the 01:00 hour. With an 8-hour interval none falls there; with a 1-hour interval, which §2 allows, one does.
   2. **The pre-fill liquidation check,** on the quantities held at the open, at the open prices. A book that gapped through the threshold is liquidated (below), and the rest of the hour is cancelled.
   3. **The daily fills,** at the open, as one batch (their order is below).
@@ -226,7 +226,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 
 **No recovery, restart or rebasing.** v3 has no soft-drawdown recovery, halt, restart or any other rule that moves a reference peak. Drawdown is measured from the run's true peak, the running maximum of the hourly equity marks, and that peak is never lowered. Codex's diagnosis of v2 found that v2's risk layer could lower its own peak after a recovery, so it never enforced the lifetime drawdown that C1 measured (§11, decision 10). v3's sizing is the only risk control, and A3 judges it against the true peak.
 
-**Costs stress, reported only:** every run is repeated at double fees and double slippage.
+**Costs stress, reported only:** the main test, the m = 1 and m = 3 runs and the hold benchmark are each repeated at double fees and double slippage, with the main test's quarterly picks held fixed. The training runs are not repeated, so the picks do not change.
 
 ## 7. Walk-forward
 
@@ -258,6 +258,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - **The profit factor** is the sum of the positive net results ÷ the absolute sum of the negative ones. A trade whose net result is exactly 0 counts in neither sum.
   - With no losing trade and at least one winning one, it is +∞, and A2 passes.
   - With no winning trade, it is 0, and A2 fails.
+  - **The number of trades,** winning and losing, is reported beside A2.
   - **The daily profit factor,** the sum of the positive daily changes in equity ÷ the absolute sum of the negative ones, is reported beside it and decides nothing.
 - **CAGR:** `(E_T ÷ E_0) ^ (365.25 ÷ d) − 1`, computed with `Decimal`'s power at the precision above:
   - `E_0` is the first daily sample, at 01:00 UTC on the run's first day, and `E_T` is the terminal sample;
@@ -304,7 +305,9 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - its accounting identities are spot's: cash reconciles to the initial capital minus buys plus sells minus fees, and each quantity to its buys minus its sells.
 - **It holds spot, without funding, on purpose.** That is the realistic "just hold" alternative. In 2020–2024 funding was mostly positive (#137), so holding long perpetuals would have paid funding and done worse. The asymmetry leans in the benchmark's favour, against v3.
 
-**A run is invalid** if an accounting identity fails, a liquidation occurs, or a fill the rules require cannot be made.
+**An accounting identity that fails in any run,** training or out-of-sample, main test, size variant or benchmark, is an engine defect, not a strategy outcome. It stops the experiment with no verdict. The defect is fixed, and every v3 run is repeated from one commit. The failed attempt stays in the trial register (§9).
+
+**A run is invalid** if a liquidation occurs, its leverage limit cannot be restored (§6), or a fill the rules require cannot be made. These are outcomes of the strategy, not of the engine.
 - **The out-of-sample account (m = 2), the m = 1 run or the hold benchmark invalid:** v3 fails.
 - **A training run invalid:** only that rule is out of the pick for that window, and the record says so.
 - **All 12 training runs invalid in a window:** every target is 0 for that test quarter, and the record says so. Open positions close at the quarter's first fill by the normal rules (§6), deferred if their hour is masked. Until they fill, they carry profit, loss and funding as usual, and the record reports that exposure.
@@ -312,7 +315,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 **Reported, deciding nothing:**
 - **The owner's monthly target:** every out-of-sample month's return, beside the owner's 20–30% target, and how many months reached 20%, for the main test and for m = 1 and m = 3.
   - A month's return runs from the first daily sample at or after its start, the 01:00 sample of its first day, to the first at or after the next month's start, as in spec v2 §8. The first month starts at the run's first sample, and the last ends at the terminal sample.
-- **The same out-of-sample run at m = 1 and m = 3** (§11, decision 12): the main test's quarterly picks, unchanged, with every size quantity of §5–6 scaled by m, each in its own account. They show what the same strategy would have made at half and at one and a half times the main test's risk. The m = 1 run also decides A5 (above). The m = 3 run decides nothing: a liquidation or an unrestorable limit makes it invalid, which is reported and does not fail v3;
+- **The same out-of-sample run at m = 1 and m = 3** (§11, decision 12): the main test's quarterly picks, unchanged, with every size quantity of §5–6 scaled by m, each in its own account. They show what the same strategy would have made at half and at one and a half times the main test's risk. The m = 1 run also decides A5 (above). The m = 3 run is historical replay, as all of v3 is, and decides nothing: a liquidation or an unrestorable limit makes it invalid, which is reported and does not fail v3;
 - each of the 12 rules' full-period results, as if picked every quarter, with each rule's long-short and long-only versions side by side;
 - **how often a long-only version was picked,** quarter by quarter;
 - the long-versus-short split of profit and loss, per rule and per coin;
@@ -371,9 +374,11 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - **The equity series:** hourly total equity, the running peak and the drawdown, never rebased.
 - The design follows Codex's entry-attribution work on v2, in #208 (§11, decision 10).
 
+**What a pass means.** v3 is scored on 2021–2024, years this project has already seen through v1, v2, D and #137. Its A2 measure was also set after seeing D's daily figures (§11, decision 13). So a v3 pass is a development pass, not out-of-sample evidence. The v2 verdict record says the same: only the reserved window could confirm a v3 tested on these years. A pass permits only the confirmation below. It never permits paper or live trading on its own.
+
 **Outcome:**
 - **If v3 passes,** the reserved 2025–26 window may run once, as a confirmation. Before it runs, two things are needed, and nothing in v3 runs on it before then:
-  - **A written rule,** as spec v1's C7 ([§6](EXPERIMENT_SPEC_V1.md#6-acceptance-and-selection-owner-decisions-2026-09-24)), including a multiple-testing correction over the whole family tried on these years: v1's variants, v2's mode switcher, D, #137's rules, and v3's six rules with its picking procedure. Alternatively, the owner may waive that correction in writing.
+  - **A written rule,** as spec v1's C7 ([§6](EXPERIMENT_SPEC_V1.md#6-acceptance-and-selection-owner-decisions-2026-09-24)), including a multiple-testing correction over the whole family tried on these years: v1's variants, v2's mode switcher, D, #137's rules, and v3's 12 rule versions with its picking procedure, its three sizes and its double-cost runs, as the trial register records them (§9). Alternatively, the owner may waive that correction in writing.
   - **The owner's go.**
 - **If it fails,** v3 ends with no pass, and nothing runs on the reserved window.
 
@@ -397,16 +402,22 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 ## 9. Build order
 
 1. **This spec is frozen** after the owner's review and clean reviews from Codex and Bob.
-2. **Futures data:** the dataset spec, a pinned fetch script with tests that block the network, and Bob's task file. The owner starts Bob's run, and the manifest is committed from Bob's digest.
-3. **The rules, the sizing and the account,** in a new package `crypto_grid_bot.trend`, kept apart from the grid code. They are tested first on synthetic data:
+2. **The trial register,** before any v3 code that could be tuned and before any run, as the v2 verdict record requires. It is `docs/trials/register.jsonl`, committed and append-only, in the shape Claude and Codex agreed (`docs/reviews/2026-09-25-claude-data-reuse-proposal.md`, `docs/reviews/2026-09-26-codex-data-reuse-response.md`).
+   - **Retrospective entries first,** each labelled not preregistered: v0, v1's variants, v2's mode switcher, D and #137's rules.
+   - **Then v3's registration:** the 12 rule versions, the picking procedure, the three sizes, the double-cost runs and the hold benchmark, with the spec's, data's and code's hashes and the selection rule.
+   - **Every v3 run appends a result event,** whether it succeeds, fails or is cancelled, referencing that registration. No v3 run is dispatched without a committed registration.
+   - The register is written by a separately reviewed process, not by Bob's report publisher.
+3. **Futures data:** the dataset spec, a pinned fetch script with tests that block the network, and Bob's task file. The owner starts Bob's run, and the manifest is committed from Bob's digest.
+4. **The rules, the sizing and the account,** in a new package `crypto_grid_bot.trend`, kept apart from the grid code. They are tested first on synthetic data:
    - each rule against hand-worked examples;
    - no look-ahead;
    - the accounting identities;
    - funding signs;
    - the caps and the volatility target;
+   - the rules a builder is most likely to guess: the hour's event order with ties, flips, and the masked-book factor k′;
    - determinism.
-4. **Walk-forward and the scorer:** the pass criteria, the benchmarks, and the JSON and Markdown reports in `docs/backtests/`.
-5. **The runs and the verdict record,** through the backtest workflow, with progress lines.
+5. **Walk-forward and the scorer:** the pass criteria, the benchmarks, and the JSON and Markdown reports in `docs/backtests/`.
+6. **The runs and the verdict record,** through the backtest workflow, with progress lines, each run's result appended to the trial register.
 
 **V0, every v1 variant and the mode switcher stay byte-identical,** checked by `scripts/byte_identity.py` on every PR.
 
@@ -479,4 +490,5 @@ Each entry gives the question, and the option the owner chose.
     - Question: "How should A2 (profit factor >= 1.3) be measured?" Chosen: **"Per trade"**. The option said: "Profit of winning trades / loss of losing trades, after fees and funding, over the out-of-sample trades. The usual definition for trend-following. The spec will note this was changed after seeing that D fails the daily version."
     - Question: "How should v3 handle shorts, given that #137 found they hurt trend rules on BTC?" Chosen: **"Let walk-forward choose"**. The option said: "The menu gets each rule in two versions, long-short and long-only (12 choices). Each quarter the best of the previous 18 months is picked, so shorts are used only where they helped before."
     - **Disclosed:** A2's measure was changed after seeing D's 2019–2024 figures. It changes how the bar is measured, not the strategy. The 12-rule menu doubles the trials from six, which makes a lucky pass a little more likely. The out-of-sample-only scoring and the reserved window's multiple-testing rule (§8) are the guards.
+    - **Codex then found** that changing A2 after seeing D's figures, for a test on those same years, tunes the bar to known outcomes. It offered two fixes: restore the daily measure, or treat v3's result as development rather than a pass. The owner's per-trade choice stands, and §8 states that a v3 pass is a development pass that permits only the reserved-window confirmation. The v2 verdict record had already said that only the reserved window could confirm a v3 tested on these years.
     - **In this spec:** the long-only versions are in §4, the 12-rule pick in §7, and A2's measure in §8.
