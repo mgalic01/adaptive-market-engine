@@ -59,8 +59,9 @@ prerequisites and every variant on main.
   Stage 2's long-window data work moves into v2: masking per spec §5, Bob's re-fetch,
   the XRP measurement, and the long dataset specs and manifests.
 
-**Spec v2, the spot mode switcher, closed as failed on 2026-10-08** (C1: drawdown 21.9% against
-a 10% limit; [verdict](docs/backtests/2026-10-07-spec-v2-verdict.md)). Spec v3, trend-following on
+**Spec v2, the spot mode switcher, closed as failed on 2026-10-08** (the owner's decision), on its
+verdict of 2026-10-07 (C1: drawdown 21.9% against a 10% limit;
+[verdict](docs/backtests/2026-10-07-spec-v2-verdict.md)). Spec v3, trend-following on
 perpetual-futures data, is a draft under review in PR #207. What follows is v2's record. It was frozen on 2026-10-06
 ([spec](docs/EXPERIMENT_SPEC_V2.md), PR #174 and its freezing PR). Each pair, every hour,
 chooses Grid (v1's grid with F's block), Uptrend (one long position with a trailing stop)
