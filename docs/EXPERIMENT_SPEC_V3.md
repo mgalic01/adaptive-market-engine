@@ -116,7 +116,8 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
 
 **The size multiple m** (§11, decision 12). Every run has one, and it scales every size quantity below: the volatility target is `0.20 × m`, the caps are `0.10 × m` per coin and `0.80 × m` in total, and the leverage limit (§6) is `m`.
 - **The main test, m = 2,** decides pass or fail: a 40% volatility target, caps of 20% per coin and 160% in total, and a leverage limit of 2.0. Every training run uses m = 2.
-- **m = 1 and m = 3** are reported only (§8).
+- **m = 1** decides A5 only: the same strategy and the hold benchmark compared at the same size (§8). Its other results are reported.
+- **m = 3** is reported only (§8).
 - **The hold benchmark** uses m = 1, since a spot account cannot borrow (§8).
 
 At each daily decision, after day d's close:
@@ -202,6 +203,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - Each coin's position is reduced, on the side it is actually held, to `held quantity × k`, rounding toward zero to the quantity step, by reduce-only orders at that open, with the usual slippage and fees.
   - A delevering order is reduce-only, so it ignores the minimum notional.
   - **When some positions cannot trade** because their hour is masked, they stay at their carried marks. The tradable positions are then reduced by `k' = (0.80 × m × equity − masked gross) ÷ tradable gross`, so gross leverage falls to 0.80 × m at once:
+    - **if no open position can trade** (tradable gross is 0), k' is not computed. No delevering can fill, the limit cannot be restored, and the run is invalid (§8). Masked marks are carried, so only a funding debit can cause this: the book must already be within one funding payment of the limit;
     - if k' ≤ 0, every tradable position is closed;
     - a masked position is checked again at its next unmasked hour, by the ordinary rule.
   - **After any delevering,** gross leverage is computed again at the new post-fill mark, with the equity after the delevering's fees and slippage. If it still exceeds m, the limit cannot be restored, and the run is invalid (§8). That can happen only when masked positions are close to the whole equity, so the costs of closing the tradable ones tip it over.
@@ -247,7 +249,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - That is a deliberate exception to the open-mark convention of §6. There is no later open inside the window, and the 23:00 bar's close is in the 2024-12 archive.
 - So the last daily return covers the window's final 23 hours, and no 2025 data is read.
 - The maximum drawdown includes this terminal mark.
-- **Sharpe ratio:** mean ÷ sample standard deviation (n − 1) of the daily simple returns, × √365, with a risk-free rate of 0. The hold benchmark's Sharpe ratio (A5) uses the same formula over the same days. With fewer than two returns, or a standard deviation of 0, the Sharpe ratio is 0. In training windows that means it cannot beat a rule with a positive one, and in A1 it fails.
+- **Sharpe ratio:** mean ÷ sample standard deviation (n − 1) of the daily simple returns, × √365, with a risk-free rate of 0. A5 compares the m = 1 run's and the hold benchmark's Sharpe ratios, by the same formula over the same days. With fewer than two returns, or a standard deviation of 0, the Sharpe ratio is 0. In training windows that means it cannot beat a rule with a positive one, and in A1 it fails.
 - **Profit factor:** the sum of the positive daily changes in equity (in USDT, between consecutive daily samples) ÷ the absolute sum of the negative ones.
   - With no negative day and at least one positive day, it is +∞, and A2 passes.
   - With no positive day, it is 0, and A2 fails.
@@ -269,7 +271,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - With a maximum drawdown of 0 and a CAGR of 0 or less, it is 0, and A3 fails.
 - **Precision:** A1–A5 are computed in `Decimal` at 60 significant digits with `ROUND_HALF_EVEN`, as sizing is. The bootstrap interval below is reported only, and may use binary floating point.
 
-**Acceptance.** v3 passes only if all five hold:
+**Acceptance.** v3 passes only if all five hold. A1–A4 are judged on the main test (m = 2). A5 is judged on the m = 1 run (below), so that the strategy and the benchmark it is compared with have the same size (§11, decision 12):
 
 | # | Criterion |
 | --- | --- |
@@ -277,10 +279,12 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 | A2 | Profit factor ≥ 1.3 |
 | A3 | Calmar ratio ≥ 0.5 |
 | A4 | CAGR ≥ 8% (the owner's passive-investment hurdle) |
-| A5 | The Sharpe ratio exceeds the hold benchmark's over the same days |
+| A5 | The m = 1 run's Sharpe ratio exceeds the hold benchmark's over the same days |
 
 **The hold benchmark:** long-only, equal signal (+1) for every coin in the portfolio at that time, on spot prices with no funding. It answers one question: does timing add anything over just holding the same coins?
-- **Its size is m = 1** (§5): a 20% volatility target and caps of 10% per coin and 80% in total, since a spot account cannot borrow. A5 compares Sharpe ratios, which do not depend on the size of the book, so the comparison with the main test at m = 2 stays like for like.
+- **Its size is m = 1** (§5): a 20% volatility target and caps of 10% per coin and 80% in total, since a spot account cannot borrow.
+- **A5 compares it with the m = 1 run,** not the main test. The rebalancing band, rounding, minimum notionals, fees and spot cash do not scale exactly with size, so a Sharpe ratio is not fully scale-free under these rules. At the same m, the same band and the same caps, only timing differs.
+- **The m = 1 run** is the main test's strategy at m = 1: the main test's quarterly picks, unchanged, with every size quantity of §5–6 at m = 1, in its own account.
 - **The same as the account:** the rest of the sizing (§5: rebalancing band), the fees and slippage, the fill timing, the masked-hour rule, the excluded months (§2: both the futures exclusions, which decide when a coin is in the portfolio, and its own spot exclusions) and the order of events (§6).
 - **It is one account** that starts flat at the first test quarter's start, as the main account does (§7), and runs continuously to the end of 2024-Q4.
 - **Its own account is a spot account,** 10,000 USDT:
@@ -295,14 +299,14 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - **It holds spot, without funding, on purpose.** That is the realistic "just hold" alternative. In 2020–2024 funding was mostly positive (#137), so holding long perpetuals would have paid funding and done worse. The asymmetry leans in the benchmark's favour, against v3.
 
 **A run is invalid** if an accounting identity fails, a liquidation occurs, or a fill the rules require cannot be made.
-- **The out-of-sample account or the hold benchmark invalid:** v3 fails.
+- **The out-of-sample account (m = 2), the m = 1 run or the hold benchmark invalid:** v3 fails.
 - **A training run invalid:** only that rule is out of the pick for that window, and the record says so.
 - **All six training runs invalid in a window:** every target is 0 for that test quarter, and the record says so. Open positions close at the quarter's first fill by the normal rules (§6), deferred if their hour is masked. Until they fill, they carry profit, loss and funding as usual, and the record reports that exposure.
 
 **Reported, deciding nothing:**
 - **The owner's monthly target:** every out-of-sample month's return, beside the owner's 20–30% target, and how many months reached 20%, for the main test and for m = 1 and m = 3.
   - A month's return runs from the first daily sample at or after its start, the 01:00 sample of its first day, to the first at or after the next month's start, as in spec v2 §8. The first month starts at the run's first sample, and the last ends at the terminal sample.
-- **The same out-of-sample run at m = 1 and m = 3** (§11, decision 12): the main test's quarterly picks, unchanged, with every size quantity of §5–6 scaled by m. Each is its own account. A liquidation or an unrestorable limit makes it invalid, which is reported and does not fail v3. They show what the same strategy would have made at half and at one and a half times the main test's risk;
+- **The same out-of-sample run at m = 1 and m = 3** (§11, decision 12): the main test's quarterly picks, unchanged, with every size quantity of §5–6 scaled by m, each in its own account. They show what the same strategy would have made at half and at one and a half times the main test's risk. The m = 1 run also decides A5 (above). The m = 3 run decides nothing: a liquidation or an unrestorable limit makes it invalid, which is reported and does not fail v3;
 - each rule's full-period results, as if picked every quarter;
 - **each rule's long-only twin:** the same rule and sizing with every negative signal set to 0, including R6's fractional ones;
 - the long-versus-short split of profit and loss, per rule and per coin;
@@ -326,8 +330,12 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - it holds them to the terminal mark (§8). It never sells, and a coin that joins the portfolio later is not added;
   - it ignores excluded months. Where a coin has no spot bar, it is marked at its last unmasked spot price;
 - **variant D,** quoted from spec v1's published runs, not rerun. Its windows and engine differ from v3's, and the record says so. R1's long-only twin (above) is the like-for-like comparison inside v3;
-- **the minimum account size:** computed by scaling, not by rerunning. For each order that opens or increases a position in the 10,000-USDT out-of-sample run, the ratio of the symbol's minimum notional to that order's notional, × 10,000 USDT. The largest such value, rounded up to the next 10 USDT, is reported.
-  - **Refused orders count:** an opening or increasing order refused for minimum notional (§5), including a flip's opening order, enters with its intended notional. Its value is above 10,000 USDT, so a refusal shows that even 10,000 USDT was too small for that order.
+- **the minimum account size:** computed by scaling, not by rerunning, on the main test's 10,000-USDT out-of-sample run. For each intended opening or increase of a position, with its unrounded quantity change `Δq` and its notional `|Δq| × open`, the required size is the larger of two ratios, × 10,000 USDT:
+  - the symbol's minimum notional ÷ that notional;
+  - the symbol's quantity step ÷ `|Δq|`.
+
+  The largest required size, rounded up to the next 10 USDT, is reported.
+  - **Every intended opening or increase counts,** made or not: one that was filled, one refused for minimum notional (§5), and one whose quantity rounded to 0 at the step, including a flip's opening order. A refusal or a rounding to 0 gives a value above 10,000 USDT, which shows that even 10,000 USDT was too small for it.
   - If the run has no opening or increasing order at all, the record says so, and no size is reported.
   - It ignores how rounding and refusals at a different account size would change the later path, and the record says so.
 - **the lowest margin ratio reached:** the minimum, over every liquidation check with an open position, of equity ÷ gross open notional, against the 1% threshold. A check on a flat book has no ratio and is skipped. If the book is never open, the record says so. This shows how close the run came to the threshold;
@@ -346,7 +354,9 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - **a position still open when a run ends,** at its last hour or at a liquidation (§6), is not closed: no fill, fee or slippage is charged. It is marked at the terminal mark (§8, or the liquidation check's prices), its profit and loss stays unrealised, and its record is labelled censored, with the reason (end of run or liquidation) and that unrealised profit and loss. This holds for training runs and for the out-of-sample run;
   - its duration;
   - its maximum favourable and maximum adverse excursion, in USDT, before fees and funding. For each hour the position is open, two values are taken: the profit and loss realised so far in the lifecycle, plus the remaining position's unrealised profit and loss at the bar's favourable extreme, and the same at its adverse extreme. Both use the quantity and average entry price in force during that hour, and earlier hours are never recomputed against a later average entry. The excursions are the maximum and the minimum of these hourly values;
-  - **Each reducing or closing fill** adds one more excursion state: the lifecycle's realised profit and loss after that fill, plus the remaining position's unrealised profit and loss at the fill price. So a close after a favourable gap counts in the maximum favourable excursion;
+  - **Each fill** adds excursion states at its fill price:
+    - **just before it,** with the quantity and average entry held before the fill: the profit and loss realised so far, plus that position's unrealised at the fill price. So an increase after a favourable gap counts the old position's gain before the new quantity dilutes the average entry;
+    - **just after a reducing or closing fill,** the realised profit and loss after it, plus the remaining position's unrealised at the fill price. So a close after a favourable gap counts in the maximum favourable excursion;
   - **A censored lifecycle's terminal state** adds one more: the profit and loss realised so far, plus the unrealised at the terminal prices, whether the run's terminal mark (§8) or a liquidation check's prices (§6). With this and the fills' states, profit given back cannot be negative;
   - the profit given back: the maximum favourable excursion minus the lifecycle's final profit and loss before fees and funding. For a closed position that is its total realised profit and loss. For a censored one it is the profit and loss realised so far plus the unrealised at the terminal mark;
   - its realised profit and loss, fees, and funding paid and received.
@@ -372,7 +382,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - R3, R4 and R5 use textbook settings;
   - the base volatility target of 20% is from the owner's choice of about 20–25% (§11, decision 2);
   - the base caps of 10% per coin and 80% total are from the owner's brief;
-  - the size multiple m = 2 for the main test, and the reported m = 1 and m = 3, are the owner's (§11, decision 12);
+  - the size multiple m = 2 for the main test, m = 1 for A5 and the reported m = 3 are the owner's (§11, decision 12);
   - the gate's Sharpe ≥ 1.0 and profit factor ≥ 1.3, and the 18-month and 3-month windows, are from the owner's brief;
   - the 8% hurdle is the owner's;
   - Calmar ≥ 0.5, the 60-day estimators and the 1% rebalancing band are Claude's design choices.
@@ -450,4 +460,5 @@ Each entry gives the question, and the option the owner chose.
     - Question: "Which size should decide pass/fail? The other two sizes are reported alongside for information." Chosen: **"2x decides, report 1x and 3x"**. The option said: "Main test at 2x: 40% yearly risk budget, up to 20% per coin and 160% in total. 1x (today's design) and 3x are shown alongside but don't affect pass/fail."
     - Question: "How strictly should each run's leverage limit (2x or 3x) be checked?" Chosen: **"Hourly and after funding"**. The option said: "Positions are cut back whenever leverage is above the limit at an hourly check or after a funding payment. Brief spikes between checks are reported, not failed. The liquidation check stays strict at every hour's worst price."
     - Question: "The backtest needs Binance futures' order rules (minimum order size, quantity step). They are only published on fapi.binance.com, which isn't on SECURITY.md's list of allowed hosts. How should we get them?" Chosen: **"Allow one read-only fetch"**. The option said: "In the fetch you start, Bob makes one public, read-only request to fapi.binance.com/fapi/v1/exchangeInfo, with no keys and no trading. The response is saved with a checksum, and the backtester only reads the saved file. SECURITY.md gets a narrow exception naming this one fetch."
-    - **In this spec:** the size multiple m is in §5, the leverage limit in §6, the filters' source in §2, and the m = 1 and m = 3 runs in §8. README and SECURITY.md say no more than 3x, checked hourly and after funding, and name the one fetch.
+    - **A5's comparison.** Codex then found that, with the hold benchmark at 1x and the strategy at 2x, the rebalancing band, rounding, minimum order sizes and fees make the Sharpe ratios differ for reasons of size, not only timing. Question: "A5 asks whether v3 beats simply holding the same coins. The strategy now runs at 2x, but holding runs at 1x on spot, because spot can't borrow. At different sizes the comparison isn't exact. How should A5 compare them?" Chosen: **"Compare both at 1x"**. The option said: "A5 compares the same strategy run at 1x (same quarterly picks) with holding at 1x on spot. Same size, so only timing differs. The 1x run then counts for A5: if it's invalid, v3 fails. A1-A4 are still judged on the 2x main test."
+    - **In this spec:** the size multiple m is in §5, the leverage limit in §6, the filters' source in §2, and the m = 1 and m = 3 runs and A5 in §8. README and SECURITY.md say no more than 3x, checked hourly and after funding, and name the one fetch.
