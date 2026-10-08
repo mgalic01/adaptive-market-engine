@@ -76,3 +76,14 @@ Fifty-seven replay/runner/lifecycle/exclusion tests pass; Ruff and mypy pass.
 Regressions first failed for both the flat and held cases. No historical dispatch,
 new dependency or security change. Integration with orchestration and external
 review of this complete new head remain required before merge.
+
+CI formatting follow-up (2026-10-09): reproduced the runner.py format failure from quality run 37851396087. Applied the formatter to the censor call only; no behavioral change. Repository format check and 36 replay/runner tests pass. Bob's dependency concern is resolved by the full branch tree: TrendRunner.__init__ accepts excluded_months inherited from PR 224; main alone is not this stacked branch. No new security or compatibility risk identified in this formatting-only delta.
+
+## 2026-10-09 main integration
+
+PR224 is merged at a400b871a5c20fae99905c1e6224fa33a866375a. Retargeted
+this PR to main and merged that main commit without rewriting registration
+ancestry. Git integrated cleanly, preserving both run-end/exclusion handling and
+the newly merged missing-spot pick-change attribution. 64 replay, runner,
+decision, pending and exclusion tests pass; Ruff lint/format and mypy pass.
+No extra behavior or dependency change. Fresh full-head review and CI required.
