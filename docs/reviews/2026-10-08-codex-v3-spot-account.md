@@ -76,3 +76,13 @@ validation and complete evidence serialization remain unfinished.
 Seventeen spot tests and 64 combined focused tests pass, plus Ruff/mypy. The new
 regression covers sellable-invalid versus dust-retained outcomes from the same
 missing-hour inventory. Draft only; no historical run or performance claim.
+
+A5 comparison follow-up: benchmark_comparison.compare_hold requires completed,
+audited base-cost accounts, strategy m=1, identical sample times and consistent
+spot path endpoints. It uses the existing sample_returns/Sharpe calculation and
+strict strategy Sharpe > hold Sharpe. Invalid runs raise for the enclosing verdict
+report to classify; this helper never declares the whole experiment passed.
+Four comparison tests cover ties, real spot fee drag, size/time mismatch and
+corrupted/invalid spot accounts. Twenty-one combined comparison/spot tests pass;
+Ruff and mypy pass. Durable reports, source provenance, full-size equal-weight
+hold diagnostic and the complete A1-A5 report remain pending. No historical run.
