@@ -13,6 +13,11 @@ documents every agent reads at session start held the whole process and none of 
 purpose, and no entry point linked the goal or the roadmap. An agent that cannot see
 the goal optimises the only thing it can see, which is the process.
 
+**Scope note, 2026-10-08:** the grid description below records the owner's
+2026-09-27 starting point. The owner subsequently chose the V3 trend-following
+futures experiment (spec v3, §11 decisions 1, 11 and 12). That approved experiment
+is the current build scope; the historical wording does not restrict it to grids.
+
 **The product is a crypto grid-trading bot that trades real capital on a real exchange
 and grows it.** Starting capital is about **€100**. At that size the economics are tight:
 a strategy that only pays at a larger size is not a strategy for this project. How much

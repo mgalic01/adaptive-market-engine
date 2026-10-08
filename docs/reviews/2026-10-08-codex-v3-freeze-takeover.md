@@ -21,3 +21,14 @@ Next owner: Codex Desktop prepares the trial-register implementation plan and fi
 register batch after the freeze corrections clear external review. Bob is the
 available external reviewer while Claude is unavailable. No freeze-rule changes,
 data dispatch, reserved-window access or automatic merge is implied by this handoff.
+
+## Bob follow-up on e04665e
+
+Bob confirmed the three original findings were addressed and raised two wording
+concerns. A dated scope note now links the older grid goal to the later approved
+V3 decisions without rewriting the owner statement. The spec Status now accurately
+describes the freeze PR and startup guidance edits. Only freeze provenance changes
+in the spec; the experiment rules remain unchanged. The earlier byte-identical
+whole-file check applies to e04665e; this follow-up checks sections 1 onward against
+e04665e instead. Claude automation failed before substantive review (is_error:true);
+the visible log does not establish why. Bob review of the new head remains required.

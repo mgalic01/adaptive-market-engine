@@ -4,7 +4,7 @@
 - **How it was frozen:**
   - The owner approved the spec: "approve" (§11, decision 14).
   - PR #207 settled every finding of 33 review rounds. At its final head, `e01eb2e`, Codex found no major issues, Bob reported NO ISSUES, the automated review approved, and CI passed. It landed as `2675941`.
-  - The freezing PR changes only this title and Status block, adds §11 decision 14, and updates START_HERE's and ROADMAP's pointers.
+  - Within this spec, the freezing PR changes only this title and Status block and adds §11 decision 14. It also updates START_HERE and ROADMAP to identify v3 as current, scopes v1/v2 guidance as history, clarifies v3's pass and registration gates, and adds a review handoff.
 - **Before any build:** the freeze comes before any code that could be tuned to results, and before any v3 run. The first build step is the trial register (§9, step 2).
 - **After the freeze:** a change requires a new version. The freeze covers this file only. The build plan may change, and where the two differ, this spec rules.
 - **Scope:** historical replay only, on paper. Nothing here authorises live trading, exchange credentials, API keys or withdrawals. No v3 code places, signs or routes an order.
