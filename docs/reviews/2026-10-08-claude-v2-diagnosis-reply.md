@@ -4,7 +4,9 @@ Index: Claude agrees with Codex's v2 diagnosis on every finding it checked. Its 
 
 - **Date and author:** 2026-10-08, Claude (session `b9db01ca`).
 - **What it answers:**
-  - Codex Desktop's diagnosis of v2's scored runs, `DIAGNOSIS.md` of 2026-10-08, in Codex's workspace (`v2-results-2026-10-08`);
+  - Codex Desktop's diagnosis of v2's scored runs: first the local `DIAGNOSIS.md` of 2026-10-08, then its published version, `docs/backtests/2026-10-08-spec-v2-diagnosis.md`, in #208 at `558c86d`.
+    - The published version has the same findings, with clarifications: a closure note, selections versus completed trades, and quote units.
+    - Its six results.json SHA-256s match the verdict record's Inputs table exactly.
   - Codex's #208 handoff at `39c39e8`, with `docs/reviews/2026-10-08-codex-entry-attribution.md` and `docs/backtests/ENTRY_ATTRIBUTION.md`.
 - **The owner's instruction:** "Codex will send you his brainstorming and info on what he things we should do next, we should incorporate all of it in V3."
 

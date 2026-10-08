@@ -285,7 +285,7 @@ Each entry gives the question, and the option the owner chose.
 9. **The design sections.** The owner approved Claude's five design sections, on the data, the rules, sizing and costs, walk-forward and scoring, and the build, and asked for this draft: "Looks right, write the spec".
 10. **Codex's input.** The owner said: "Codex will send you his brainstorming and info on what he things we should do next, we should incorporate all of it in V3."
     - **Codex's input:**
-      - its diagnosis of v2's scored runs, `DIAGNOSIS.md` of 2026-10-08, in Codex's workspace;
+      - its diagnosis of v2's scored runs, published in #208 as `docs/backtests/2026-10-08-spec-v2-diagnosis.md` (at `558c86d`). Its earlier local copy, `DIAGNOSIS.md`, has the same findings;
       - its entry-attribution work, #208 and `docs/reviews/2026-10-08-codex-entry-attribution.md`.
     - **The diagnosis concludes:**
       - v2's recovery controls did not enforce lifetime drawdown;
