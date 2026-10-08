@@ -35,3 +35,10 @@ and connection cleanup. Futures filters allow one GET attempt per fetch instance
 a failed attempt does not reset that guard. There is still no fetch CLI or task
 execution. All transport tests replace HTTPSConnection with fakes. Combined focused
 suite: 52 tests pass; Ruff, mypy and Bandit pass for the changed helper/module scope.
+
+Offline exchange-filter parsing added with bounded numeric fields and strict symbol/
+filter uniqueness. Both LOT_SIZE and MARKET_LOT_SIZE are preserved; zero market step
+falls back to LOT_SIZE. Snapshot parsing rejects missing symbols, nonperpetual futures,
+wrong quote assets, missing/duplicate filters and inconsistent quantity bounds.
+Combined focused suite: 65 tests pass; Ruff, mypy and Bandit pass in changed scope.
+No real snapshot was requested. Manifest linkage and complete fetch task remain pending.
