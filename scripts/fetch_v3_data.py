@@ -262,6 +262,8 @@ def inspect_archive(
                     status="excluded" if checked.excluded else "eligible",
                     rows=read.stats.rows,
                     expected_rows=read.stats.expected_rows,
+                    first_open_ms=read.stats.first_open_ms,
+                    last_open_ms=read.stats.last_open_ms,
                     masked_hours=sorted(checked.masked_hours),
                     repaired_hours=sorted(read.repaired),
                     daily_bars=len(checked.daily_bars),
