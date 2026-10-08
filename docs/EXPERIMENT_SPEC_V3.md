@@ -25,7 +25,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 - **Fetch:** by Bob, in a task file the owner starts, with a pinned script, as in #193.
   - Every archive is checked against Binance's published SHA-256.
   - Each file's checksum and statistics are recorded in a committed manifest.
-  - The fetch also records today's USDⓈ-M exchange filters (quantity step, minimum notional) for the 10 symbols, once, in the manifest. Historical filters are not published (spec v1 P4), so today's are used and the record says so.
+  - The fetch also records today's exchange filters (quantity step, minimum notional) for the 10 symbols, once, in the manifest: the USDⓈ-M perpetuals' for the account, and spot's for the hold benchmark (§8). Historical filters are not published (spec v1 P4), so today's are used and the record says so.
 - **Integrity:** the 1h futures klines go through the repairing reader of the long-window data (#186, #189).
   - Spec v1 §5 rule 5, "Untraded basket symbols' repaired hours are masked", covers a symbol that has only its 1h archive, so a repaired hour cannot be checked against minutes. v3's futures are in the same position. So every hour the reader repairs is masked, and so is every missing hour (rule 1).
   - A coin-month with more than 17% of its hours masked is excluded, under spec v1 §5's 17% rule. So is a coin-month whose funding file is missing.
@@ -86,6 +86,7 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
   - `lower_t = basic_lower_t` if `basic_lower_t > lower_{t−1}` or `C_{t−1} < lower_{t−1}`, else `lower_{t−1}`.
 - **Trend:** at bar 11, uptrend if `C_t ≥ mid`, else downtrend. After that, an uptrend turns down when `C_t < lower_t`, and a downtrend turns up when `C_t > upper_t`. Otherwise it continues.
 
+- **Signals run on each coin's whole spot daily series,** from its first spot bar, once and continuously. They are never restarted at a training window or a test quarter: every run reads the same signal series. Recursive state carries across gaps and excluded months, which simply have no bars. That state is the EMAs, R5's ATR, bands and trend, and R3's held position, so a gap adds no update and resets nothing.
 - **A rule with too little history** for a coin gives 0 for that coin until it has enough: 50 closes for R1, 55 for R2, 56 bars for R3 (55 prior bars and the current one), a close at least 365 days earlier for R4, and 11 bars for R5.
 - **No other strategy family is in v3.** That covers mean reversion, scalping, breakout variants, pattern recognition, market structure, pairs trading and funding arbitrage (§10). Each extra rule is another trial, and more trials make a lucky pass more likely.
 
@@ -99,6 +100,7 @@ At each daily decision, after day d's close:
 2. **Volatility target:** the portfolio's estimated volatility is `√(rawᵀ Σ raw)`, where Σ is the 60-day sample covariance matrix of the same returns, annualised, over the coins with a non-zero raw weight. All raw weights are scaled by `0.20 ÷ that estimate`, so the portfolio targets **20% volatility a year**.
    - Σ uses the last 60 UTC days, keeping only the days on which every coin with a non-zero raw weight has a daily return (§2). If fewer than 40 such days remain, every target is 0.
    - Σ is never inverted, so a singular Σ needs no special case.
+   - σ (each coin's own last 60 returns) and Σ's diagonal (the common days only) can differ. That is intended: σ sets each coin's relative weight, and Σ estimates the whole book's risk.
    - If every raw weight is 0, or the estimate is 0, every target is 0: the book goes flat.
 3. **Caps,** applied after scaling, in this order:
    - each coin's |weight| ≤ 0.10 of equity;
@@ -126,20 +128,30 @@ At each daily decision, after day d's close:
   - The position pays `quantity × price × rate` if it is long and the rate is positive. A short receives it. A negative rate reverses both.
   - The price is that bar's open, or, if the bar is masked or missing, the open of the last unmasked bar before it.
   - Binance charges funding on the mark price, not on the last-trade price. Using the bar's open is a disclosed approximation: the two differ by the basis, which is small next to the funding rate's own variation.
-  - **Order within an hour:** funding first, on the quantity held before that hour's fills; then the fills.
+  - **Order within an hour:** see "Order of events in an hour" below.
   - Funding is charged at exactly the timestamps in the file. A month whose file has fewer timestamps than its days × 3 is reported, and its missing timestamps are not charged.
+- **Order of events in an hour,** for every hour from the first to the last of the run:
+  1. funding at any of the hour's timestamps, on the quantity held before the hour's fills;
+  2. the open mark, so the open mark includes that hour's funding, and the daily 01:00 sample (§8) is this mark;
+  3. the hour's fills: the daily decision's, then any delevering ordered the hour before;
+  4. the 1x-ceiling check, on the quantities after the fills, at the open mark;
+  5. the liquidation check, on those quantities, at the bar's adverse extremes.
 - **Marking:** equity is marked at every hour's open (the wallet and equity are defined under "Wallet and equity" below).
   - **A coin's mark price** in an hour is that hour's open.
   - **In a masked or missing hour,** which an included month may have (up to 17%), the coin's mark is the open of its last unmasked hour before it. Its funding price is the same (above), and its liquidation check uses that same price, since the hour has no usable high or low.
   - **At the first unmasked hour after a gap,** the mark, the adverse extremes and the liquidation check use that hour's own bar, so a move across the gap is caught there.
   - Hours with an open position and a masked bar are counted and reported.
 - **Liquidation:** each hour, equity is also computed at each position's adverse extreme of that 1h bar: the low for a long, the high for a short, all at once.
-  - If that equity is ≤ 1% of the gross open notional, the account is liquidated at the next hour's opens, and the run fails (§8).
+  - If that equity is ≤ 1% of the gross open notional, the account is liquidated at the next hour's opens, and the run fails (§8). The gross open notional is `Σ |quantity| × price` at the same adverse-extreme prices.
   - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin.
   - It is expected never to happen at these sizes.
 - **The 1x ceiling, on the actual book:** at every hourly mark, gross leverage is `Σ |quantity| × mark ÷ equity`.
   - If it exceeds 1.0, every position is scaled down proportionally, by reduce-only orders at the next hour's opens, to gross leverage of 0.80, with the usual slippage and fees.
+  - Each coin's new quantity is `quantity × 0.80 × equity ÷ gross notional`, at that check's mark, and the new quantity rounds toward zero to the quantity step.
+  - A delevering order is reduce-only, so it ignores the minimum notional.
+  - A delevering fill whose coin's next hour is masked moves to that coin's next unmasked hour, as a daily fill does.
   - Each such delevering is reported.
+  - **After a delevering,** the next daily decision tests its band (§5 step 4) against the post-delevering weight, so a gap above 1% is rebalanced back toward the target. A slow cycle is therefore possible: delever, re-size at the next decision, then delever again after a further rise. Each step is reported, and none can repeat within an hour.
 - **Wallet and equity.** A perpetual futures position does not exchange its notional with the wallet: opening it moves no cash. Only fees, funding and realised profit and loss move the wallet.
   - **Average entry price:** each coin's position carries one. An order that opens or increases the position updates it to the quantity-weighted average of the old position and the fill. An order that reduces or closes it leaves it unchanged.
   - **Realised profit and loss** of a reducing or closing fill is `closed quantity × (fill price − average entry)` for a long, and `closed quantity × (average entry − fill price)` for a short.
@@ -167,12 +179,19 @@ At each daily decision, after day d's close:
 
 ## 8. Evaluation
 
-**Metrics,** on the stitched out-of-sample run, from the daily equity series at 01:00 UTC before that hour's fills. One terminal sample closes the series: equity marked at the close of the last 1h bar of 2024-12-31. So the last daily return covers the window's final 23 hours, and no 2025 data is read.
+**Metrics,** on the stitched out-of-sample run, from the daily equity series at 01:00 UTC before that hour's fills. One terminal sample closes the series: equity at the close of the last 1h bar of 2024-12-31, the 23:00 bar, with each coin marked at its last unmasked close of 2024.
+- That is a deliberate exception to the open-mark convention of §6. There is no later open inside the window, and the 23:00 bar's close is in the 2024-12 archive.
+- So the last daily return covers the window's final 23 hours, and no 2025 data is read.
+- The maximum drawdown includes this terminal mark.
 - **Sharpe ratio:** mean ÷ sample standard deviation (n − 1) of the daily simple returns, × √365, with a risk-free rate of 0. The hold benchmark's Sharpe ratio (A5) uses the same formula over the same days. With fewer than two returns, or a standard deviation of 0, the Sharpe ratio is 0. In training windows that means it cannot beat a rule with a positive one, and in A1 it fails.
-- **Profit factor:** the sum of positive daily profit and loss ÷ the absolute sum of negative daily profit and loss.
+- **Profit factor:** the sum of the positive daily changes in equity (in USDT, between consecutive daily samples) ÷ the absolute sum of the negative ones.
+  - With no negative day and at least one positive day, it is +∞, and A2 passes.
+  - With no positive day, it is 0, and A2 fails.
 - **CAGR:** compound annual growth over the out-of-sample days (365.25-day years).
 - **Maximum drawdown:** on the hourly equity marks, from the running peak.
 - **Calmar ratio:** CAGR ÷ maximum drawdown.
+  - With a maximum drawdown of 0 and a positive CAGR, it is +∞, and A3 passes.
+  - With a maximum drawdown of 0 and a CAGR of 0 or less, it is 0, and A3 fails.
 - **Precision:** A1–A5 are computed in `Decimal` at 60 significant digits with `ROUND_HALF_EVEN`, as sizing is. The bootstrap interval below is reported only, and may use binary floating point.
 
 **Acceptance.** v3 passes only if all five hold:
@@ -185,7 +204,14 @@ At each daily decision, after day d's close:
 | A4 | CAGR ≥ 8% (the owner's passive-investment hurdle) |
 | A5 | The Sharpe ratio exceeds the hold benchmark's over the same days |
 
-**The hold benchmark:** long-only, equal signal (+1) for every coin in the portfolio at that time, on spot prices with no funding. It uses the same sizing (§5: volatility target, caps, rebalancing rule) and the same fees and slippage (§6). It answers one question: does timing add anything over just holding the same coins at the same risk?
+**The hold benchmark:** long-only, equal signal (+1) for every coin in the portfolio at that time, on spot prices with no funding. It answers one question: does timing add anything over just holding the same coins at the same risk?
+- **The same as the account:** the sizing (§5: volatility target, caps, rebalancing band), the fees and slippage, the fill timing, the masked-hour rule, the excluded months (§2) and the order of events (§6).
+- **Its own account is a spot account,** 10,000 USDT:
+  - a buy spends its notional plus its fee from cash, and a sell adds its notional minus its fee;
+  - equity is cash plus each holding's quantity × its spot mark;
+  - quantities round to the spot quantity step, and spot's minimum notional applies to buys;
+  - its gross exposure is at most 0.80 by the caps, and it never borrows, so the 1x ceiling and the liquidation check do not apply to it;
+  - its accounting identities are spot's: cash reconciles to the initial capital minus buys plus sells minus fees, and each quantity to its buys minus its sells.
 - **It holds spot, without funding, on purpose.** That is the realistic "just hold" alternative. In 2020–2024 funding was mostly positive (#137), so holding long perpetuals would have paid funding and done worse. The asymmetry leans in the benchmark's favour, against v3.
 
 **A run is invalid** if an accounting identity fails, a liquidation occurs, or a fill the rules require cannot be made.
@@ -200,7 +226,7 @@ At each daily decision, after day d's close:
 - the long-versus-short split of profit and loss, per rule and per coin;
 - funding paid and received, fees, slippage and turnover;
 - the time invested, gross and net;
-- the realised portfolio volatility against the 20% target, and the share of days on which a cap bound. With few coins early on, the 10% cap can hold the book below target, and A4 is not scale-free;
+- the realised portfolio volatility against the 20% target, and the share of decision days on which a cap bound: some coin's target was clipped at 10%, or the 80% gross cap scaled the book. This counts whatever the number of coins in the portfolio that day. With few coins early on, the 10% cap can hold the book below target, and A4 is not scale-free;
 - a 95% interval for the Sharpe ratio, beside A1 and A5. It is a stationary block bootstrap of the daily returns (Politis and Romano):
   - block lengths are geometric, with a mean of 20 days, and blocks wrap around the end of the series (circular, as in Politis and Romano);
   - with fewer than 60 daily returns, no interval is reported;
@@ -290,7 +316,7 @@ Each entry gives the question, and the option the owner chose.
    - The pass bar the owner approved afterwards carries the Calmar ratio as A3, and has no separate drawdown-versus-buy-and-hold criterion. The maximum drawdown and buy-and-hold's are both reported (§8). Two later answers record that pass bar:
      - **Decision 5's option,** quoted below, lists the pass as the gate, Calmar, 8% a year, and beating the same coins held at the same risk.
      - **Design section 4.** The question put to the owner was: "Section 4 (walk-forward and scoring): 18-month train / 3-month test, rolling quarterly; 15 out-of-sample quarters (2021-Q2 to 2024-Q4); the best-Sharpe rule of the menu trades each next quarter; pass = all of Sharpe >= 1.0, profit factor >= 1.3 (daily), Calmar >= 0.5, >= 8%/yr net, and a higher Sharpe than the same coins held at the same 20% risk; monthly returns vs your 20-30% target reported. OK?" The owner answered "Looks right".
-     - Its quarter count was later corrected by review: funding archives begin in 2020-01, so the start is conditional on the fetch (§7).
+     - Its quarter count was later corrected by review: funding archives begin in 2020-01, so the start is conditional on the fetch. §7 now expects 2021-Q3 and 14 quarters if they do.
 3. **Shorts.** Question: "How should v3 handle the short side?" Chosen: **"Long and short on futures data"**: perpetual-futures prices and funding history fetched by Bob, real funding charged, at 1x leverage.
 4. **Coins.** Question: "Which coins should v3 trade?" Chosen: **"Our 10 coins, bias stated"**.
 5. **The pass bar.** The owner first answered: "our strategy needs to make 20-30% profits per month." Claude explained that 20% a month is about +790% a year, and that at 1x leverage and a 20% risk budget it would need a Sharpe ratio near 30. Question: "Given that 20-30% a month can't be reached at 1x leverage and a 20-25% risk budget, how should v3 judge a pass?" Chosen: **"Realistic bar, report vs 20-30%"**. The option said: "Pass = the gate (Sharpe >= 1.0, profit factor >= 1.3) + Calmar >= 0.5 + at least 8% a year + beats holding the same coins at the same risk. Every report also shows monthly returns against your 20-30% target, so the gap is visible."
