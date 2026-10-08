@@ -9,7 +9,12 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.replay import ReplayResult
 
 
-def test_missing_close_terminal_is_reconciled_before_invalid_classification():
+def test_invalid_outcome_without_account_evidence_is_rejected():
+    with pytest.raises(ValueError, match="account evidence"):
+        orchestration.reconcile_replay(ReplayResult(None, "unavailable_exclusion_close", ()))
+
+
+def missing_close_result():
     from crypto_grid_bot.backtest.klines import Kline
     from crypto_grid_bot.trend.filters import OrderFilters
     from crypto_grid_bot.trend.replay import replay_window
@@ -36,6 +41,11 @@ def test_missing_close_terminal_is_reconciled_before_invalid_classification():
         start + 3 * day,
         {start: "R1"},
     )
+    return result
+
+
+def test_missing_close_terminal_is_reconciled_before_invalid_classification():
+    result = missing_close_result()
     checked = orchestration.reconcile_replay(result)
     assert checked.reason == "unavailable_exclusion_close"
     assert abs(checked.trade_reconciliation_residual) <= D("1e-18")
@@ -102,7 +112,7 @@ def test_sensitivity_menu_uses_identical_picks_and_records_invalid_outcomes(monk
 
     def run(*args, **kwargs):
         calls.append((dict(args[6]), kwargs))
-        return ReplayResult(None, "unavailable_exclusion_close", ())
+        return missing_close_result()
 
     monkeypatch.setattr(orchestration, "replay_window", run)
     picks = {1609459200000: "R1", 1617235200000: "R2L"}
@@ -173,7 +183,7 @@ def test_all_invalid_candidates_are_recorded_and_choose_flat(monkeypatch):
 
     def invalid(*args, **kwargs):
         calls.append(args[6])
-        return ReplayResult(None, "unavailable_exclusion_close", ())
+        return missing_close_result()
 
     monkeypatch.setattr(orchestration, "replay_window", invalid)
     result = orchestration.run_walk_forward(
@@ -215,7 +225,7 @@ def test_failed_evidence_recording_stops_after_first_attempt(monkeypatch):
 
     def invalid(*args, **kwargs):
         calls.append(args)
-        return ReplayResult(None, "unavailable_exclusion_close", ())
+        return missing_close_result()
 
     def cannot_save(attempt):
         raise OSError("disk full")
