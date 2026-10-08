@@ -97,9 +97,7 @@ class TrendRunner:
                     EquityState(stamp, "terminal", mark.equity, self.peak, drawdown)
                 )
             self.daily_samples.append((stamp, mark.equity))
-            self.lifecycles.censor(
-                stamp, self.account.positions, last_unmasked_closes, reason
-            )
+            self.lifecycles.censor(stamp, self.account.positions, last_unmasked_closes, reason)
             self.stopped = "completed" if reason == "end_of_run" else reason
             return mark
         except Exception:
