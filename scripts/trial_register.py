@@ -272,6 +272,15 @@ def _forward(
         if p["run_id"] in runs:
             raise ValueError("duplicate run ID; append a correction instead")
         runs.add(p["run_id"])
+    elif kind == "correction":
+        p = _fields(p, {"target_id", "reason", "details"})
+        target = p["target_id"]
+        if not _text(target) or target not in prior:
+            raise ValueError("correction target must already exist")
+        if prior[target]["trial_id"] != event["trial_id"]:
+            raise ValueError("correction target belongs to another trial")
+        if not _text(p["reason"]) or not _text(p["details"]):
+            raise ValueError("correction explanation required")
     else:
         raise ValueError("unsupported event type")
     stages.add(stage)
@@ -294,7 +303,9 @@ def _git(root: Path, *args: str) -> bytes:
 
     # Fixed Git executable and separate arguments; no shell or repository hooks invoked.
     process = subprocess.run(  # nosec B603, B607
-        ["git", "-C", str(root), *args], capture_output=True, check=False  # nosec B603, B607
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        check=False,  # nosec B603, B607
     )
     if process.returncode:
         raise ValueError("Git object or ancestry check failed")
@@ -313,6 +324,9 @@ def check_ready(root: Path, trial_id: str, revision: str) -> dict[str, Any]:
     if len(matches) != 1:
         raise ValueError("one committed completion required")
     done = matches[0]
+    # Corrections are annotations, never silent replacement of authorization pins.
+    if any(e["trial_id"] == trial_id and e["event_type"] == "correction" for e in events):
+        raise ValueError("corrected trial requires a new registration before dispatch")
     payload = done["payload"]
     registration = next(e for e in events if e["event_id"] == payload["registration_id"])
     spec = registration["payload"]["spec"]
@@ -328,7 +342,94 @@ def check_ready(root: Path, trial_id: str, revision: str) -> dict[str, Any]:
     ):
         raise ValueError("registered spec commit does not match pin")
     for commit in (payload["code_commit"], revision):
+        tracked = _git(root, "ls-tree", "-r", "--name-only", "-z", commit).decode().split("\0")
+        required = {
+            p
+            for p in tracked
+            if p.startswith(("src/", "scripts/"))
+            or p in {"pyproject.toml", "requirements-dev.lock", "requirements.txt"}
+        }
+        if set(payload["code_paths"]) != required:
+            raise ValueError("code path inventory does not cover committed implementation")
         blobs = {path: _git(root, "show", f"{commit}:{path}") for path in payload["code_paths"]}
         if code_digest(blobs) != payload["code_sha256"]:
             raise ValueError("committed code does not match pin")
     return done
+
+
+def append_event(path: Path, event: dict[str, Any]) -> None:
+    """Validate before atomic replacement; fail closed on another writer's lock."""
+    import os
+    import tempfile
+
+    lock = path.with_suffix(path.suffix + ".lock")
+    try:
+        handle = lock.open("xb")
+    except FileExistsError as exc:
+        raise ValueError("register writer lock exists; inspect before recovery") from exc
+    temporary: str | None = None
+    try:
+        with handle:
+            handle.write(str(os.getpid()).encode("ascii"))
+        old = path.read_bytes() if path.exists() else b""
+        addition = (json.dumps(event, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+        candidate = old + addition
+        validate_append(old, candidate)
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
+            temporary = output.name
+            output.write(candidate)
+            output.flush()
+            os.fsync(output.fileno())
+        # Detect an external editor which did not respect our writer lock.
+        if (path.read_bytes() if path.exists() else b"") != old:
+            raise ValueError("register changed during append")
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+        lock.unlink(missing_ok=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    validate = commands.add_parser("validate")
+    validate.add_argument("--register", type=Path, default=Path("docs/trials/register.jsonl"))
+    validate.add_argument("--base-ref", help="full base commit for append-only comparison")
+    append = commands.add_parser("append")
+    append.add_argument("--register", type=Path, default=Path("docs/trials/register.jsonl"))
+    append.add_argument("--event", type=Path, required=True)
+    ready = commands.add_parser("check-ready")
+    ready.add_argument("--trial-id", required=True)
+    ready.add_argument("--revision", required=True, help="full committed revision")
+    ready.add_argument("--root", type=Path, default=Path.cwd())
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "check-ready":
+            check_ready(args.root, args.trial_id, args.revision)
+        elif args.command == "append":
+            event = json.loads(args.event.read_text(encoding="utf-8"), object_pairs_hook=_object)
+            append_event(args.register, event)
+        else:
+            load_events(args.register)
+            if args.base_ref:
+                _digest(args.base_ref, 40)
+                root = Path(_git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
+                relative = args.register.resolve().relative_to(root.resolve()).as_posix()
+                _path(relative)
+                present = _git(root, "ls-tree", "--name-only", args.base_ref, "--", relative)
+                base = _git(root, "show", f"{args.base_ref}:{relative}") if present else b""
+                validate_append(base, args.register.read_bytes())
+        print("trial register: valid")
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f"trial register: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

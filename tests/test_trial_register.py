@@ -220,7 +220,8 @@ def test_duplicate_run_id_rejected_even_with_new_event_id(tmp_path):
         load_events(path)
 
 
-def test_ready_requires_committed_completion_and_matching_blobs(tmp_path):
+@pytest.mark.parametrize("change", ["modify", "add"])
+def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change):
     import hashlib
     import subprocess
 
@@ -259,9 +260,65 @@ def test_ready_requires_committed_completion_and_matching_blobs(tmp_path):
     git("commit", "-m", "registration")
     ready = git("rev-parse", "HEAD")
     assert check_ready(tmp_path, "v3", ready)["event_id"] == "completed"
-    (tmp_path / "src/engine.py").write_bytes(b"changed\n")
+    (tmp_path / ("src/engine.py" if change == "modify" else "src/new.py")).write_bytes(b"changed\n")
     git("add", ".")
     git("commit", "-m", "unregistered code change")
     with pytest.raises(ValueError, match="code"):
         check_ready(tmp_path, "v3", git("rev-parse", "HEAD"))
     assert check_ready(tmp_path, "v3", ready)["event_id"] == "completed"
+
+
+def test_atomic_append_preserves_history_on_invalid_event(tmp_path):
+    from trial_register import append_event
+
+    path = tmp_path / "register.jsonl"
+    append_event(path, record())
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        append_event(path, record())
+    assert path.read_bytes() == before
+    append_event(path, record("next"))
+    assert path.read_bytes().startswith(before)
+    assert len(load_events(path)) == 2
+
+
+def test_append_refuses_concurrent_writer(tmp_path):
+    from trial_register import append_event
+
+    path = tmp_path / "register.jsonl"
+    path.with_suffix(".jsonl.lock").write_text("another writer")
+    with pytest.raises(ValueError, match="lock"):
+        append_event(path, record())
+    assert not path.exists()
+
+
+def test_correction_preserves_target(tmp_path):
+    from trial_register import append_event
+
+    path = tmp_path / "register.jsonl"
+    append_event(path, record())
+    event = record("correction")
+    event["event_type"] = "correction"
+    event["payload"] = {
+        "target_id": "old",
+        "reason": "incorrect scope",
+        "details": "source establishes narrower scope",
+    }
+    append_event(path, event)
+    assert load_events(path)[0] == record()
+    event["event_id"] = "bad-correction"
+    event["payload"]["target_id"] = "missing"
+    with pytest.raises(ValueError):
+        append_event(path, event)
+
+
+def test_cli_validate_and_append(tmp_path, capsys):
+    from trial_register import main
+
+    path = tmp_path / "register.jsonl"
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps(record()), encoding="utf-8")
+    assert main(["append", "--register", str(path), "--event", str(event)]) == 0
+    assert main(["validate", "--register", str(path)]) == 0
+    assert main(["append", "--register", str(path), "--event", str(event)]) == 1
+    assert "duplicate" in capsys.readouterr().err
