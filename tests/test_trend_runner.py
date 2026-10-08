@@ -131,3 +131,24 @@ def test_terminal_mark_requires_all_held_close_prices():
     with pytest.raises(ValueError, match="missing"):
         r.finish({})
     assert r.stopped == "engine_failure"
+
+
+def test_runner_double_cost_mode_changes_fill_price_and_fee():
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1, cost_multiple=2)
+    bar = {"BTCUSDT": (D(100), D(100), D(100))}
+    r.step(T, bar, {"BTCUSDT": D(".1")}, {})
+    r.step(T + H, bar, {}, {})
+    assert r.account.fills[0].price == D("100.1")
+    assert r.account.fills[0].fee == D("1.001")
+
+
+def test_foreign_funding_symbol_fails_before_account_mutation():
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
+    with pytest.raises(ValueError, match="funding symbol"):
+        r.step(T, {}, {}, {T: {"BTXUSDT": D(".01")}})
+    assert r.account._clock == -1
+    assert not r.account.funding
