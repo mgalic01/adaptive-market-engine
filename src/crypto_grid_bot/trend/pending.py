@@ -60,10 +60,10 @@ class PendingDecisions:
             if symbol in self._pending:
                 previous = self._pending[symbol]
                 cancelled.append((symbol, previous))
-                # A still-deferred close retains its initiating pick change.
-                # A new nonzero target cancels that closing intention entirely.
-                if previous.weight == 0 and new_targets[symbol] == 0:
-                    reasons |= previous.exit_reasons & {"pick_change"}
+                # The newly selected rule has not had an execution attempt yet.
+                # Keep that cause even for nonzero targets: rounding or minimum
+                # quantity can turn their eventual reduction into a full close.
+                reasons |= previous.exit_reasons & {"pick_change"}
             self._pending[symbol] = PendingDecision(hour_ms, new_targets[symbol], reasons)
         ready = []
         for symbol, decision in sorted(self._pending.items()):

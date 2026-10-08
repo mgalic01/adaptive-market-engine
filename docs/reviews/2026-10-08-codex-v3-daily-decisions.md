@@ -58,3 +58,12 @@ Regression reproduced lost attribution before the fix; all 32 pending/runner/dec
 tests, Ruff and mypy pass. This covers explicit zero-target closes, not a nonzero
 replacement that eventually rounds or reduces to zero; that broader case still needs
 review. All-invalid/no-bar specification interpretation also remains open.
+
+Deferred attribution completion supersedes the earlier zero-only restriction:
+pick_change now survives every still-pending replacement until the first execution
+attempt. A nonzero target can round to zero or undergo minimum-quantity enlargement,
+so clearing the cause merely on a nonzero replacement was incorrect. Three signed/
+tiny-target regressions reproduced the loss. A real 50-hour runner regression opens,
+defers a pick close, replaces with a tiny nonzero target and verifies the eventual
+rounding close records pick_change. All 35 pending/runner/decision tests pass;
+Ruff and mypy pass. No target, execution time or accounting arithmetic changes.
