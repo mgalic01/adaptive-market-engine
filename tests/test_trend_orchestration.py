@@ -9,6 +9,41 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.replay import ReplayResult
 
 
+def test_missing_close_terminal_is_reconciled_before_invalid_classification():
+    from crypto_grid_bot.backtest.klines import Kline
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.replay import replay_window
+
+    t, day, hour = 1577836800000, 86400000, 3600000
+    start = t + 89 * day
+
+    def bar(stamp, price):
+        p = D(price)
+        return Kline(stamp, p, p, p, p, D(1), p, D(".5"))
+
+    rules = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    book = DailyDecisions(
+        {"BTCUSDT": [bar(t + i * day, 100 + i * 2 + i % 3) for i in range(90)]},
+        {"BTCUSDT": "2020-01"},
+        {"BTCUSDT": frozenset({"2020-04"})},
+    )
+    result = replay_window(
+        book,
+        {"BTCUSDT": rules},
+        {"BTCUSDT": [bar(start + i * hour, 100) for i in range(24)]},
+        {},
+        start,
+        start + 3 * day,
+        {start: "R1"},
+    )
+    checked = orchestration.reconcile_replay(result)
+    assert checked.reason == "unavailable_exclusion_close"
+    assert abs(checked.trade_reconciliation_residual) <= D("1e-18")
+    result.runner.lifecycles.completed[0].fees += 1
+    with pytest.raises(ValueError, match="reconcile"):
+        orchestration.reconcile_replay(result)
+
+
 def test_cancelled_replay_already_has_persisted_start_identity(monkeypatch):
     records = []
 

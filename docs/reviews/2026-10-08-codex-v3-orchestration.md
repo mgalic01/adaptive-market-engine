@@ -66,3 +66,12 @@ A real liquidation fixture with one corrupted lifecycle fee first passed silentl
 it now raises an engine/evidence error before scenario continuation. Eight fast
 orchestration tests plus 37 replay/metric tests, Ruff and mypy pass. Full training
 integration remains for CI. No historical run or new dependency.
+
+Exclusion repair integration: merged replay 5935d9d and the fresh-flat exclusion
+fix. A real held-position unavailable-close fixture now passes lifecycle/equity
+reconciliation; deliberately increasing its recorded fee is rejected as an engine
+error. Forty-seven focused orchestration/replay/metrics tests pass, plus the
+separate full synthetic 12-candidate training-selection and continuous OOS test.
+Ruff and mypy pass. The prior full repository suite was on af9322c, not this new
+integration; no claim that it covers this changed source. No historical data or
+new dependency. Fresh exact-head external review and CI remain required.
