@@ -75,3 +75,13 @@ separate full synthetic 12-candidate training-selection and continuous OOS test.
 Ruff and mypy pass. The prior full repository suite was on af9322c, not this new
 integration; no claim that it covers this changed source. No historical data or
 new dependency. Fresh exact-head external review and CI remain required.
+
+Timestamped metric-path integration: merged PR220's repair and current main/daily
+history. Fifty focused orchestration/metrics/replay tests pass, Ruff and mypy pass.
+Removed the obsolete runner-less unavailable-close exception from reconcile_replay:
+actual-position invalidity now always retains a finalized account. A regression
+first reproduced that missing evidence bypass; it now raises an engine error.
+Selection/sensitivity tests use actual synthetic missing-close accounts rather
+than runner-less placeholders. Every classified replay now has a numeric residual.
+The separate full spot-branch suite is still running on c9b7d36; it does not cover
+this later metrics integration. No historical data, new dependency or spec change.

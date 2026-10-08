@@ -68,3 +68,15 @@ replacement registration 7ee82e0 (v3-candidate-space-5), which precedes implemen
 All 70 metric/account/runner tests pass, including the real completed round trip,
 both inclusive boundaries and just-outside values. Ruff and mypy pass. New summary
 field is an output-schema addition; serializers must retain it. No historical run.
+
+Current-main integration and metric evidence repair: merged main 4459964 and the
+latest daily-decision branch, retargeting PR220 to main. The Cloud sample/path
+finding reproduced: endpoint-only reconciliation accepted a fabricated interior
+sample. summarize now takes timestamped EquityState records and requires every
+daily sample to match an open or terminal mark at its own timestamp; unordered
+paths are rejected. summarize_runner supplies the complete existing path directly.
+This intentionally changes the new internal summarize API from bare Decimal paths;
+all repository callers are updated. Tests also reject a real path value assigned
+to the wrong sample time. Twenty-two metric tests pass; the prior combined batch
+passed 96 tests before that additional timestamp regression. Ruff and mypy pass.
+No historical result, spec change or new dependency. Fresh review/CI required.

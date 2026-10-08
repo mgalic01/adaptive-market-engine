@@ -21,9 +21,7 @@ def reconcile_replay(result: ReplayResult) -> ReplayResult:
     """Audit finalized lifecycle evidence before success/strategy classification."""
     runner = result.runner
     if runner is None:
-        if result.reason != "unavailable_exclusion_close":
-            raise ValueError("replay outcome lacks account evidence")
-        return result
+        raise ValueError("replay outcome lacks account evidence")
     if runner.stopped != (result.reason or "completed") or runner.lifecycles.active:
         raise ValueError("replay account is not finalized consistently")
     if not runner.audits or any(not a.accepted for a in runner.audits):
