@@ -30,7 +30,7 @@ def summarize_runner(runner: "TrendRunner") -> PerformanceSummary:
     """Report a finished, audited runner; invalid runs require separate diagnostics."""
     if runner.stopped != "completed" or runner.lifecycles.active:
         raise ValueError("runner must be finished with finalized lifecycles")
-    if not runner.audits or any(not audit.exact for audit in runner.audits):
+    if not runner.audits or any(not audit.accepted for audit in runner.audits):
         raise ValueError("runner has missing or failed accounting evidence")
     return summarize(
         runner.daily_samples,

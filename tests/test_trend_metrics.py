@@ -119,3 +119,22 @@ def test_summary_rejects_mismatched_initial_equity_even_when_trades_reconcile():
 
     with pytest.raises(ValueError, match="initial"):
         summarize([(0, D(100)), (86400000, D(110))], [D(90), D(110)], [D(20)])
+
+
+def test_runner_summary_accepts_equity_tolerance_without_calling_it_exact():
+    from crypto_grid_bot.trend.account import AccountingAudit
+    from crypto_grid_bot.trend.metrics import summarize_runner
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    runner = TrendRunner({})
+    runner.step(1609459200000, {}, {}, {})
+    runner.step(1609462800000, {}, {}, {})
+    runner.finish({})
+    evidence = AccountingAudit(D(0), {}, D("-1e-59"))
+    runner.audits.append(evidence)
+    assert evidence.accepted and not evidence.exact
+    assert summarize_runner(runner).net_pnl == 0
+    assert runner.audits[-1].equity_residual == D("-1e-59")
+    runner.audits.append(AccountingAudit(D("1e-59"), {}, D(0)))
+    with pytest.raises(ValueError, match="accounting"):
+        summarize_runner(runner)

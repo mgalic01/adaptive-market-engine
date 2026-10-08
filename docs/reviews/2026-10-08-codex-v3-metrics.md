@@ -12,11 +12,11 @@ and 365.25 for CAGR, and the entire ordered equity path for drawdown. It handles
 zero variance, no winning/losing trades, zero drawdown and nonpositive terminal
 equity explicitly. Win rate includes zero-result trades in its denominator.
 
-The runner summary requires completed state, no open lifecycles and exact audit
+The runner summary requires completed state, no open lifecycles and accepted audit
 evidence. Trade totals must reconcile exactly with total equity change; failure is
 an engine/evidence error, not a strategy rejection. This strict check may expose
-the same Decimal rounding issue already awaiting owner decision. No tolerance is
-introduced. Timestamp/path provenance and full window coverage remain upstream
+Decimal grouping differences. Its separate reconciliation remains exact; the
+owner-approved equity-audit tolerance does not change it. Timestamp/path provenance and full window coverage remain upstream
 obligations; these formulas alone do not validate a dataset or certify an experiment.
 
 Validation: 159 focused synthetic tests pass across the current V3 stack, including
@@ -35,7 +35,10 @@ samples 100 to 110, path 90 to 110 and trade PnL +20. Summary now rejects differ
 initial equities as well as differing terminal equities. All 12 metric tests pass;
 Ruff and mypy pass. Full CI and renewed review remain required.
 
-The owner has since approved the equity-change audit amendment in PR #221.
-This metrics branch has not yet integrated that dependency; its audit gate must
-be aligned with the approved accepted predicate during integration. The separate
-trade-total reconciliation remains exact and is not covered by that approval.
+The owner approved the equity-change audit amendment in PR #221, now integrated
+with the lifecycle corrections. The summary audit gate uses accepted, preserving
+the raw residual and exact status. A regression verifies the permitted tiny equity
+residual passes reporting while a tiny wallet discrepancy still fails. All 76
+metric/account/runner/lifecycle tests pass, with Ruff and mypy. Renewed full CI and
+external review are required at the integrated head. The separate trade-total
+reconciliation remains exact and is not covered by that approval.
