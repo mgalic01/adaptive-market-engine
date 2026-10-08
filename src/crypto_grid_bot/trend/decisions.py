@@ -106,12 +106,8 @@ class DailyDecisions:
             # Last 60 observations also contain every available return in the
             # last 60 calendar days (at most one return per day).
             returns[symbol] = self._returns[symbol][max(0, end - 60) : end]
-        sizing = (
-            None
-            if rule is None
-            else size_portfolio(signals, returns, day, excluded=forced, multiple=multiple)
-        )
-        weights = dict.fromkeys(eligible, ZERO) if sizing is None else sizing.weights
+        sizing = size_portfolio(signals, returns, day, excluded=forced, multiple=multiple)
+        weights = sizing.weights
         targets = {
             symbol: weights[symbol]
             for symbol in eligible
