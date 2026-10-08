@@ -4,3 +4,6 @@
 # core.autocrlf says, so a file on disk hashes as its blob does.
 config/datasets/*.manifest.json text eol=lf
 config/datasets/*.digest.txt text eol=lf
+
+# Preserve exact append-only register bytes on every platform.
+docs/trials/register.jsonl text eol=lf

@@ -38,6 +38,10 @@ jobs:
       - run: mypy src scripts
       - run: pytest
       - run: python scripts/check_reports.py
+      - name: Validate append-only experiment history
+        run: |
+          BASE=$(git rev-parse HEAD^1)
+          python scripts/trial_register.py validate --base-ref "$BASE"
       - name: Bob task branch scope
         if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'bob/task-')
         run: |
