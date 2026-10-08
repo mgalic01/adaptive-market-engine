@@ -6,7 +6,7 @@ from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from crypto_grid_bot.trend.runner import TrendRunner
+    from crypto_grid_bot.trend.runner import EquityState, TrendRunner
 
 ZERO = Decimal(0)
 TRADE_RECONCILIATION_TOLERANCE = Decimal("1e-18")
@@ -36,14 +36,14 @@ def summarize_runner(runner: "TrendRunner") -> PerformanceSummary:
         raise ValueError("runner has missing or failed accounting evidence")
     return summarize(
         runner.daily_samples,
-        [state.equity for state in runner.equity_path],
+        runner.equity_path,
         [life.net for life in runner.lifecycles.completed],
     )
 
 
 def summarize(
     samples: Sequence[tuple[int, Decimal]],
-    equity_path: Sequence[Decimal],
+    equity_path: Sequence["EquityState"],
     trade_net_results: Sequence[Decimal],
 ) -> PerformanceSummary:
     """Summarize supplied finalized evidence, without declaring acceptance/validity.
@@ -54,14 +54,25 @@ def summarize(
     """
     returns = sample_returns(samples)
     _validate(trade_net_results)
-    if not equity_path or equity_path[-1] != samples[-1][1]:
+    if not equity_path or equity_path[-1].equity != samples[-1][1]:
         raise ValueError("path and samples must have the same terminal equity")
-    if equity_path[0] != samples[0][1]:
+    if equity_path[0].equity != samples[0][1]:
         raise ValueError("path and samples must have the same initial equity")
-    drawdown = maximum_drawdown(equity_path)
+    marks = {
+        (state.timestamp_ms, state.equity)
+        for state in equity_path
+        if state.kind in ("open", "terminal")
+    }
+    if any(sample not in marks for sample in samples):
+        raise ValueError("daily sample does not match an open or terminal path mark")
+    if any(
+        a.timestamp_ms > b.timestamp_ms for a, b in zip(equity_path, equity_path[1:], strict=False)
+    ):
+        raise ValueError("equity path timestamps must be ordered")
+    drawdown = maximum_drawdown([state.equity for state in equity_path])
     growth = cagr(samples)
     with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
-        net_pnl = samples[-1][1] - equity_path[0]
+        net_pnl = samples[-1][1] - equity_path[0].equity
         residual = sum(trade_net_results, ZERO) - net_pnl
         if not residual.is_finite() or residual.copy_abs() > TRADE_RECONCILIATION_TOLERANCE:
             raise ValueError(
