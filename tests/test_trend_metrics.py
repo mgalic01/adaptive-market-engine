@@ -172,5 +172,11 @@ def test_real_round_trip_retains_accepted_residual_but_exact_trade_gate_still_fa
     assert any(a.equity_residual == D("-5e-57") for a in runner.audits)
     assert len(runner.lifecycles.completed) == 1
     assert not runner.lifecycles.completed[0].censored
+    from decimal import Context, localcontext
+
+    with localcontext(Context(prec=60)):
+        trade_total = sum((life.net for life in runner.lifecycles.completed), D(0))
+        account_profit = runner.daily_samples[-1][1] - runner.daily_samples[0][1]
+        assert trade_total - account_profit == D("5e-57")
     with pytest.raises(ValueError, match="trade results do not reconcile"):
         summarize_runner(runner)
