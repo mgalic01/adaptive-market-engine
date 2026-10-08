@@ -57,3 +57,11 @@ requires the excluded month's boundary strictly inside the run. Thirty exclusion
 runner/pending tests and Ruff pass. This is only the preflight correction: the
 replay adapter and daily decision calendar still need run-end scoping so they do
 not force a post-run exclusion close. Do not merge this partial fix alone.
+
+Current-main integration: #221 is merged and the full runner signature is now on
+main. _step explicitly receives exit_reasons, so non-midnight calls use that parameter;
+there is no unbound local. Thirty exclusion/runner/pending tests pass. Malformed
+inventory validation is in exclusions.py's inventory loop, including the explicit
+'invalid execution-hour inventory timestamp' error. The complementary run-end
+runtime fix is implemented and tested on #225; that dependency review remains open.
+This branch's preflight fix changes no standalone runner target scheduling.
