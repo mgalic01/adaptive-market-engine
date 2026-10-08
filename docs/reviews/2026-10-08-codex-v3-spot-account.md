@@ -133,3 +133,17 @@ ran 41 focused tests and checked a legitimate 01:00 terminal. Full current-head
 CI and Bob review remain required. No new dependencies or known security risks.
 Compatibility: corrupted spot evidence now raises instead of producing A5.
 Historical registration, spot artifact/reporting and recovery work remain open.
+
+## 2026-10-09 final evidence integration
+
+Merged metrics71d9422 and the current recovery/pick-schedule work from PR226.
+Resolved the metrics conflict by retaining the shared validator and placing the
+new terminal timestamp/kind guard inside it, protecting both strategy and hold.
+Retained both independently added writer test groups in the test-only conflict.
+82 focused metrics/comparison/spot/orchestration/journal/writer tests pass after
+resolution; Ruff lint/format, mypy and Bandit pass. A final docs-only upstream
+merge was followed by 47 metrics/comparison/writer checks, all passing.
+
+No known behavior divergence from either reviewed component. New integrated head
+still requires Bob review and full CI. Spot-specific durable artifact/report
+work, full-size diagnostic hold and registration remain open; no historical run.
