@@ -41,7 +41,8 @@ def leverage_checkpoint(
             return LeverageCheckpoint(before, before, (), (), "liquidation")
         if before.gross_notional == 0:
             return LeverageCheckpoint(before, before, (), (), None)
-        assert before.gross_leverage is not None
+        if before.gross_leverage is None:
+            raise ValueError("non-flat unliquidated account has no leverage ratio")
         if before.gross_leverage <= multiple:
             return LeverageCheckpoint(before, before, (), (), None)
         positions = account.positions
