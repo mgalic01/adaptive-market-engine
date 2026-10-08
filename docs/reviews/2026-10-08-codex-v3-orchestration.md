@@ -37,3 +37,11 @@ Earlier exact trade-total reconciliation wording above is historical: the owner'
 separate approved bound now applies, with signed residual retained in summaries.
 No historical source or replay was used. Dependency reviews and completing
 registration remain required; this synthetic integration is not a profitability test.
+
+Sensitivity replay added: fixed main picks drive five fresh futures accounts,
+(m,cost)=(1,1),(3,1),(1,2),(2,2),(3,2). Main (2,1) already exists. No retraining;
+invalid outcomes retain evidence and engine errors abort. Attempt records now name
+multiple and cost_multiple. Three new tests cover menu/picks/evidence, engine-error
+abort, and five real independent flat synthetic accounts. Six fast orchestration
+tests pass; the earlier full training test was not rerun for this additive helper.
+Ruff and mypy pass. Spot benchmark/cost replay and historical dispatch still pending.

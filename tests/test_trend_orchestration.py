@@ -9,6 +9,72 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.replay import ReplayResult
 
 
+def test_sensitivity_menu_uses_identical_picks_and_records_invalid_outcomes(monkeypatch):
+    calls, records = [], []
+
+    def run(*args, **kwargs):
+        calls.append((dict(args[6]), kwargs))
+        return ReplayResult(None, "unavailable_exclusion_close", ())
+
+    monkeypatch.setattr(orchestration, "replay_window", run)
+    picks = {1609459200000: "R1", 1617235200000: "R2L"}
+    results = orchestration.replay_sensitivities(
+        DailyDecisions({"BTCUSDT": []}, {"BTCUSDT": "2020-01"}),
+        {},
+        {},
+        {},
+        picks,
+        1640995200000,
+        record=records.append,
+    )
+    assert list(results) == [(1, 1), (3, 1), (1, 2), (2, 2), (3, 2)]
+    assert all(p == picks for p, _ in calls)
+    assert [(k["multiple"], k["cost_multiple"]) for _, k in calls] == list(results)
+    assert len({r.run_id for r in records}) == 5
+    assert [(r.multiple, r.cost_multiple) for r in records] == list(results)
+    assert all(r.result.reason == "unavailable_exclusion_close" for r in records)
+
+
+def test_sensitivity_engine_error_aborts_remaining_scenarios(monkeypatch):
+    records = []
+
+    def broken(*args, **kwargs):
+        raise ArithmeticError("bad ledger")
+
+    monkeypatch.setattr(orchestration, "replay_window", broken)
+    with pytest.raises(ArithmeticError, match="bad ledger"):
+        orchestration.replay_sensitivities(
+            DailyDecisions({"BTCUSDT": []}, {"BTCUSDT": "2020-01"}),
+            {},
+            {},
+            {},
+            {1609459200000: "R1"},
+            1640995200000,
+            record=records.append,
+        )
+    assert len(records) == 1
+    assert records[0].error == "ArithmeticError: bad ledger"
+
+
+def test_sensitivities_create_five_independent_accounts_on_synthetic_day():
+    from crypto_grid_bot.trend.filters import OrderFilters
+
+    rules = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    records = []
+    result = orchestration.replay_sensitivities(
+        DailyDecisions({"BTCUSDT": []}, {"BTCUSDT": "2020-01"}),
+        {"BTCUSDT": rules},
+        {"BTCUSDT": []},
+        {},
+        {1609459200000: None},
+        1609545600000,
+        record=records.append,
+    )
+    assert len({id(row.runner.account) for row in result.values()}) == 5
+    assert all(row.runner.stopped == "completed" for row in result.values())
+    assert all(row.runner.account.wallet == 10000 for row in result.values())
+
+
 def test_all_invalid_candidates_are_recorded_and_choose_flat(monkeypatch):
     records = []
     calls = []

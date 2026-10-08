@@ -26,6 +26,8 @@ class Attempt:
     end_ms_exclusive: int
     result: ReplayResult | None
     error: str | None
+    multiple: int = 2
+    cost_multiple: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +44,71 @@ class WalkForwardResult:
     training: tuple[TrainingScore, ...]
     picks: dict[int, str | None]
     out_of_sample: ReplayResult
+
+
+def replay_sensitivities(
+    decisions: DailyDecisions,
+    filters: Mapping[str, OrderFilters],
+    hourly: Mapping[str, Sequence[Kline]],
+    funding: Mapping[int, Mapping[str, Decimal]],
+    picks: Mapping[int, str | None],
+    end_ms_exclusive: int,
+    *,
+    record: Callable[[Attempt], None],
+) -> dict[tuple[int, int], ReplayResult]:
+    """Replay fixed main-test picks; no training or selection is performed here.
+
+    Base m=2 is already run by run_walk_forward. The five other futures scenarios
+    each get a fresh account. Invalid strategies are retained, engine errors abort.
+    The spot benchmark and its cost stress are separate, still-required runs.
+    """
+    if not picks:
+        raise ValueError("main-test picks are required")
+    fixed_picks = dict(picks)
+    start = min(fixed_picks)
+    prefix = uuid4().hex
+    results = {}
+    for multiple, cost in ((1, 1), (3, 1), (1, 2), (2, 2), (3, 2)):
+        run_id = f"{prefix}-sensitivity-m{multiple}-cost{cost}"
+        result = None
+        try:
+            result = replay_window(
+                decisions,
+                filters,
+                hourly,
+                funding,
+                start,
+                end_ms_exclusive,
+                fixed_picks,
+                multiple=multiple,
+                cost_multiple=cost,
+            )
+            if result.reason is not None and result.reason not in INVALID:
+                raise ValueError("unknown strategy-invalid outcome")
+            if result.reason is None and result.runner is None:
+                raise ValueError("successful replay has no account evidence")
+        except Exception as exc:
+            record(
+                Attempt(
+                    run_id,
+                    "sensitivity",
+                    None,
+                    start,
+                    end_ms_exclusive,
+                    result,
+                    f"{type(exc).__name__}: {exc}",
+                    multiple,
+                    cost,
+                )
+            )
+            raise
+        record(
+            Attempt(
+                run_id, "sensitivity", None, start, end_ms_exclusive, result, None, multiple, cost
+            )
+        )
+        results[multiple, cost] = result
+    return results
 
 
 def run_walk_forward(
