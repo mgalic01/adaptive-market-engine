@@ -60,3 +60,27 @@ def test_duplicate_sample_time_is_invalid():
 
     with pytest.raises(ValueError):
         sample_returns([(0, D(100)), (0, D(101))])
+
+
+def test_summary_keeps_trade_and_daily_profit_factors_separate():
+    from crypto_grid_bot.trend.metrics import summarize
+
+    result = summarize(
+        [(0, D(100)), (86400000, D(110)), (172800000, D(105))],
+        [D(100), D(120), D(105)],
+        [D(20), D(-15), D(0)],
+    )
+    assert result.net_pnl == 5
+    assert result.trade_count == 3
+    assert result.wins == 1
+    assert result.losses == 1
+    assert result.daily_profit_factor == 2
+    assert D("1.33") < result.trade_profit_factor < D("1.34")
+    assert result.max_drawdown == D(".125")
+
+
+def test_summary_requires_path_to_end_at_terminal_equity():
+    from crypto_grid_bot.trend.metrics import summarize
+
+    with pytest.raises(ValueError, match="terminal"):
+        summarize([(0, D(100)), (86400000, D(105))], [D(100), D(99)], [])

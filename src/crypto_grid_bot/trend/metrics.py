@@ -1,9 +1,62 @@
 """Frozen V3 evaluation arithmetic on supplied evidence, without data access."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
 ZERO = Decimal(0)
+
+
+@dataclass(frozen=True, slots=True)
+class PerformanceSummary:
+    net_pnl: Decimal
+    sharpe: Decimal
+    cagr: Decimal
+    max_drawdown: Decimal
+    calmar: Decimal
+    trade_profit_factor: Decimal
+    daily_profit_factor: Decimal
+    trade_count: int
+    wins: int
+    losses: int
+    win_rate: Decimal
+
+
+def summarize(
+    samples: Sequence[tuple[int, Decimal]],
+    equity_path: Sequence[Decimal],
+    trade_net_results: Sequence[Decimal],
+) -> PerformanceSummary:
+    """Summarize supplied finalized evidence, without declaring acceptance/validity.
+
+    Samples start at the first 01:00 mark; the equity path includes the earlier
+    initial mark and every frozen drawdown state. Trade results include censored
+    terminal unrealized PnL. Zero-result trades count in the win-rate denominator.
+    """
+    returns = sample_returns(samples)
+    _validate(trade_net_results)
+    if not equity_path or equity_path[-1] != samples[-1][1]:
+        raise ValueError("path and samples must have the same terminal equity")
+    drawdown = maximum_drawdown(equity_path)
+    growth = cagr(samples)
+    with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+        changes = [samples[i][1] - samples[i - 1][1] for i in range(1, len(samples))]
+        wins = sum(value > ZERO for value in trade_net_results)
+        losses = sum(value < ZERO for value in trade_net_results)
+        count = len(trade_net_results)
+        return PerformanceSummary(
+            samples[-1][1] - equity_path[0],
+            sharpe(returns),
+            growth,
+            drawdown,
+            calmar(growth, drawdown),
+            profit_factor(trade_net_results),
+            profit_factor(changes),
+            count,
+            wins,
+            losses,
+            Decimal(wins) / count if count else ZERO,
+        )
 
 
 def _samples(samples: Sequence[tuple[int, Decimal]]) -> None:
