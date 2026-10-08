@@ -151,7 +151,11 @@ At each daily decision, after day d's close:
    - The quantity rounds toward zero to the symbol's quantity step (§2: the market-order step).
    - **The market order's minimum and maximum quantity:** an order that opens or increases a position is not made if its quantity change is below the minimum quantity, and this is reported as a minimum-notional refusal is. An order above the maximum quantity is split into orders of at most the maximum, all at the same fill price, each paying its fee, and this is reported. At this account size that is not expected to happen.
    - A trade that opens or increases a position on one side is not made if its notional, `|quantity change| × open`, is below the symbol's minimum notional, and it is reported. A flip is never tested as one trade (below).
-   - A trade that reduces or closes a position is always made, at any size, as a reduce-only order is on Binance. It ignores the minimum quantity and the minimum notional. The record counts any such trade that the minimum quantity would have blocked.
+   - **A trade that reduces or closes a position** is always made. It ignores the minimum notional, as Binance's reduce-only exception allows, but it obeys the minimum quantity, which that exception does not cover:
+     - a reduction smaller than the minimum quantity is raised to it, or to the whole position if that is smaller;
+     - a reduction that would leave a position smaller than the minimum quantity closes the whole position instead.
+
+     So no position is ever left below the minimum quantity, and every required reduction can be made. Each raised or enlarged reduction is reported.
    - **A flip** (long to short, or short to long) is two orders at the same fill price: first a close of the whole position, always made; then an opening order for the new side. The opening order rounds to the quantity step and must meet the minimum notional on its own, `|new quantity| × open`. If it does not, the coin is left flat, and this is reported. Each order pays its own fee.
 
 **Precision:** every computation of §4 to §6 runs in `Decimal`, in one context at 60 significant digits with `ROUND_HALF_EVEN`:
@@ -208,7 +212,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - **The limit is enforced at these checks only,** at hourly opens and after funding (§11, decision 12). Price moves inside an hour can take gross leverage above m between two checks. That is not a breach, and the record reports the highest gross leverage seen at the bars' adverse extremes. The liquidation check stays strict at every hour's adverse extremes.
   - **The factor** is `k = 0.80 × m × equity ÷ gross notional`, on the book after that hour's daily fills, at its open mark.
   - Each coin's position is reduced, on the side it is actually held, to `held quantity × k`, rounding toward zero to the quantity step, by reduce-only orders at that open, with the usual slippage and fees.
-  - A delevering order is reduce-only, so it ignores the minimum notional.
+  - A delevering order is reduce-only, so it ignores the minimum notional. It obeys the minimum quantity by §5's rule for reductions, which can only reduce the book further.
   - **When some positions cannot trade** because their hour is masked, they stay at their carried marks. The tradable positions are then reduced by `k' = (0.80 × m × equity − masked gross) ÷ tradable gross`, so gross leverage falls to 0.80 × m at once:
     - **if no open position can trade** (tradable gross is 0), k' is not computed. No delevering can fill, the limit cannot be restored, and the run is invalid (§8). Masked marks are carried, so only a funding debit can cause this: the book must already be within one funding payment of the limit;
     - if k' ≤ 0, every tradable position is closed;
@@ -345,7 +349,8 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - **variant D,** quoted from spec v1's published runs, not rerun. Its windows and engine differ from v3's, and the record says so. R1L, R1's long-only version (§4), is the like-for-like comparison inside v3;
 - **the minimum account size:** computed by scaling, not by rerunning, on the main test's 10,000-USDT out-of-sample run. For each intended opening or increase of a position, with its unrounded quantity change `Δq` and its notional `|Δq| × open`, the required size is the larger of two ratios, × 10,000 USDT:
   - the symbol's minimum notional ÷ that notional;
-  - the symbol's quantity step ÷ `|Δq|`.
+  - the symbol's quantity step ÷ `|Δq|`;
+  - the symbol's minimum quantity ÷ `|Δq|`.
 
   The largest required size, rounded up to the next 10 USDT, is reported.
   - **Every intended opening or increase counts,** made or not: one that was filled, one refused for minimum notional (§5), and one whose quantity rounded to 0 at the step, including a flip's opening order. A refusal or a rounding to 0 gives a value above 10,000 USDT, which shows that even 10,000 USDT was too small for it.
@@ -375,7 +380,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - the profit given back: the maximum favourable excursion minus the lifecycle's final profit and loss before fees and funding. For a closed position that is its total realised profit and loss. For a censored one it is the profit and loss realised so far plus the unrealised at the terminal mark;
   - its realised profit and loss, fees, and funding paid and received.
 - **Every walk-forward window:** each rule's training Sharpe ratio and validity, and the pick.
-- **The equity series:** hourly total equity, the running peak and the drawdown, never rebased.
+- **The equity path:** every state of §8's drawdown path, in order, never rebased. Each state carries its time, its kind (open, post-fill, after a funding event, after a delevering, favourable extreme, adverse extreme or terminal), its equity, the running peak and the drawdown. So the maximum drawdown and A3 can be checked from the published record.
 - The design follows Codex's entry-attribution work on v2, in #208 (§11, decision 10).
 
 **What a pass means.** v3 is scored on 2021–2024, years this project has already seen through v1, v2, D and #137. Its A2 measure was also set after seeing D's daily figures (§11, decision 13). So a v3 pass is a development pass, not out-of-sample evidence. The v2 verdict record says the same: only the reserved window could confirm a v3 tested on these years. A pass permits only the confirmation below. It never permits paper or live trading on its own.
