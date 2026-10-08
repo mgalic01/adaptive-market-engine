@@ -4,9 +4,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
-from crypto_grid_bot.trend.account import AccountingAudit, AccountMark, FuturesAccount
+from crypto_grid_bot.trend.account import AccountingAudit, AccountMark, FillEvent, FuturesAccount
 from crypto_grid_bot.trend.execution import HourResult, execute_hour
 from crypto_grid_bot.trend.filters import OrderFilters
+from crypto_grid_bot.trend.lifecycles import LifecycleLedger
 from crypto_grid_bot.trend.pending import DecisionDispatch, PendingDecisions
 
 HOUR = 3600000
@@ -44,6 +45,7 @@ class TrendRunner:
         self.multiple = multiple
         self.account = FuturesAccount(cost_multiple=cost_multiple)
         self.pending = PendingDecisions()
+        self.lifecycles = LifecycleLedger()
         self._prices: dict[str, Decimal] = {}
         self._hour: int | None = None
         self.stopped: str | None = None
@@ -80,6 +82,9 @@ class TrendRunner:
                     EquityState(stamp, "terminal", mark.equity, self.peak, drawdown)
                 )
             self.daily_samples.append((stamp, mark.equity))
+            self.lifecycles.censor(
+                stamp, self.account.positions, last_unmasked_closes, "end_of_run"
+            )
             self.stopped = "completed"
             return mark
         except Exception:
@@ -92,12 +97,14 @@ class TrendRunner:
         bars: Mapping[str, tuple[Decimal, Decimal, Decimal]],
         new_targets: Mapping[str, Decimal],
         funding: Mapping[int, Mapping[str, Decimal]],
+        *,
+        exit_reasons: Mapping[str, frozenset[str]] | None = None,
     ) -> HourResult:
         """Bars are (open, low, high); excluded months must be handled upstream."""
         if self.stopped is not None:
             raise ValueError(f"runner stopped: {self.stopped}")
         try:
-            return self._step(hour_ms, bars, new_targets, funding)
+            return self._step(hour_ms, bars, new_targets, funding, exit_reasons)
         except Exception:
             self.stopped = "engine_failure"
             raise
@@ -108,6 +115,7 @@ class TrendRunner:
         bars: Mapping[str, tuple[Decimal, Decimal, Decimal]],
         new_targets: Mapping[str, Decimal],
         funding: Mapping[int, Mapping[str, Decimal]],
+        exit_reasons: Mapping[str, frozenset[str]] | None,
     ) -> HourResult:
         if self._hour is not None and hour_ms != self._hour + HOUR:
             raise ValueError("runner requires consecutive hours")
@@ -127,7 +135,7 @@ class TrendRunner:
         pre_audit = self.account.audit(prices)
         if not pre_audit.exact:
             raise AccountingFailure(pre_audit)
-        dispatch = self.pending.advance(hour_ms, new_targets, set(bars))
+        dispatch = self.pending.advance(hour_ms, new_targets, set(bars), exit_reasons)
         for symbol, position in self.account.positions.items():
             if position.quantity != 0 and symbol not in bars:
                 self.masked_held_hours[symbol] = self.masked_held_hours.get(symbol, 0) + 1
@@ -142,6 +150,45 @@ class TrendRunner:
             multiple=self.multiple,
         )
         self._prices = prices
+        reasons_by_symbol = {symbol: set(d.exit_reasons) for symbol, d in dispatch.ready}
+        plans = dict(result.plans)
+        delevered = {id(fill) for check in result.checkpoints for fill in check.fills}
+        event_reasons = {}
+        for index, event in enumerate(self.account.events):
+            if not isinstance(event, FillEvent) or event.after.quantity != 0:
+                continue
+            reasons = set(reasons_by_symbol.get(event.fill.symbol, ()))
+            if id(event.fill) in delevered:
+                reasons = {"delevering"}
+            elif event.fill.symbol in plans:
+                plan = plans[event.fill.symbol]
+                decision = dict(dispatch.ready)[event.fill.symbol]
+                if decision.weight * event.before.quantity < 0:
+                    reasons.add("flip")
+                if "quantity_rounded_to_zero" in plan.adjustments:
+                    reasons.add("sizing")
+                if (
+                    "dust_close" in plan.adjustments
+                    or "minimum_quantity_reduction" in plan.adjustments
+                ):
+                    reasons.add("minimum_quantity")
+            event_reasons[index] = reasons
+        self.lifecycles.consume(self.account.events, event_reasons)
+        for kind, mark in result.marks:
+            if kind in ("favourable", "adverse"):
+                for symbol in self.lifecycles.active:
+                    self.lifecycles.observe(
+                        symbol, self.account.positions[symbol], mark.prices[symbol]
+                    )
+        if result.reason == "liquidation":
+            if self.account.liquidation is None:
+                raise ValueError("missing liquidation evidence")
+            self.lifecycles.censor(
+                self.account.liquidation.timestamp_ms,
+                self.account.positions,
+                result.marks[-1][1].prices,
+                "liquidation",
+            )
         self._hour = hour_ms
         self.hours.append((hour_ms, dispatch, result))
         if hour_ms % (24 * HOUR) == HOUR:

@@ -152,3 +152,19 @@ def test_foreign_funding_symbol_fails_before_account_mutation():
         r.step(T, {}, {}, {T: {"BTXUSDT": D(".01")}})
     assert r.account._clock == -1
     assert not r.account.funding
+
+
+def test_runner_tracks_funding_and_censors_open_trade_at_finish():
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
+    bar = {"BTCUSDT": (D(100), D(99), D(101))}
+    r.step(T, bar, {"BTCUSDT": D(".1")}, {})
+    r.step(T + H, bar, {}, {T + H: {"BTCUSDT": D(".01")}})
+    r.finish({"BTCUSDT": D(100)})
+    life = r.lifecycles.completed[0]
+    assert life.funding_paid == 10
+    assert life.censored
+    assert life.favourable == D("9.5")
+    assert life.adverse == D("-10.5")
+    assert len(life.fills) == 1
