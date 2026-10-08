@@ -133,6 +133,23 @@ def test_summary_requires_path_to_end_at_terminal_equity():
         summarize([(3600000, D(100)), (90000000, D(105))], P(100, 99), [])
 
 
+@pytest.mark.parametrize("damage", ["after_terminal", "no_terminal"])
+def test_summary_requires_final_path_mark_to_be_the_terminal_sample(damage):
+    from dataclasses import replace
+
+    from crypto_grid_bot.trend.metrics import summarize
+
+    path = P(100, 105)
+    samples = [(state.timestamp_ms, state.equity) for state in path]
+    if damage == "after_terminal":
+        path.append(replace(path[-1], timestamp_ms=90000001, kind="adverse", equity=D(50)))
+        path.append(replace(path[-1], timestamp_ms=90000002, kind="favourable", equity=D(105)))
+    else:
+        path[-1] = replace(path[-1], kind="open")
+    with pytest.raises(ValueError, match="terminal"):
+        summarize(samples, path, [D(5)])
+
+
 def test_summary_rejects_missing_trade_results():
     from crypto_grid_bot.trend.metrics import summarize
 

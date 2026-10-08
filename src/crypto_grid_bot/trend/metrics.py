@@ -47,8 +47,12 @@ def validate_sample_path(
 ) -> None:
     """Require complete, ordered 01:00/terminal samples matching account evidence."""
     _samples(samples)
-    if not equity_path or equity_path[-1].equity != samples[-1][1]:
-        raise ValueError("path and samples must have the same terminal equity")
+    if (
+        not equity_path
+        or equity_path[-1].kind != "terminal"
+        or (equity_path[-1].timestamp_ms, equity_path[-1].equity) != samples[-1]
+    ):
+        raise ValueError("path must end at the terminal sample timestamp and equity")
     if equity_path[0].equity != samples[0][1]:
         raise ValueError("path and samples must have the same initial equity")
     marks = {
