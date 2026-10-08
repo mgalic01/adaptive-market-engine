@@ -42,6 +42,50 @@ def _split(quantity: Decimal, reduce_only: bool, filters: OrderFilters) -> tuple
     return tuple(OrderIntent(size * _sign(quantity), reduce_only) for size in sizes)
 
 
+def plan_reduction(
+    held_quantity: Decimal, target_quantity: Decimal, filters: OrderFilters
+) -> tuple[tuple[OrderIntent, ...], tuple[str, ...]]:
+    """Mandatory same-side reduction, without the daily weight band or notional gate."""
+    values = (
+        held_quantity,
+        target_quantity,
+        filters.step_size,
+        filters.min_quantity,
+        filters.max_quantity,
+    )
+    if any(not value.is_finite() for value in values):
+        raise ValueError("reduction inputs must be finite")
+    if (
+        filters.step_size <= 0
+        or filters.min_quantity < 0
+        or filters.max_quantity <= 0
+        or filters.min_quantity > filters.max_quantity
+    ):
+        raise ValueError("invalid reduction filters")
+    with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+        step = filters.step_size
+        if held_quantity % step != ZERO:
+            raise ValueError("held quantity must be a multiple of the market step")
+        if abs(target_quantity) > abs(held_quantity) or (
+            target_quantity != ZERO and _sign(target_quantity) != _sign(held_quantity)
+        ):
+            raise ValueError("target must reduce on the held side")
+        target = (target_quantity / step).to_integral_value(rounding=ROUND_DOWN) * step
+        magnitude = abs(held_quantity) - abs(target)
+        if magnitude == ZERO:
+            return (), ()
+        adjustments = []
+        minimum = (filters.min_quantity / step).to_integral_value(rounding=ROUND_CEILING) * step
+        if magnitude < minimum:
+            magnitude = min(minimum, abs(held_quantity))
+            adjustments.append("minimum_quantity_reduction")
+        remaining = abs(held_quantity) - magnitude
+        if ZERO < remaining < filters.min_quantity:
+            magnitude = abs(held_quantity)
+            adjustments.append("dust_close")
+        return _split(-_sign(held_quantity) * magnitude, True, filters), tuple(adjustments)
+
+
 def plan_rebalance(
     target_weight: Decimal,
     held_quantity: Decimal,
@@ -101,15 +145,11 @@ def plan_rebalance(
             adjustments.append("quantity_rounded_to_zero")
 
         def reduce(magnitude: Decimal) -> None:
-            minimum = (filters.min_quantity / step).to_integral_value(rounding=ROUND_CEILING) * step
-            if magnitude < minimum:
-                magnitude = min(minimum, abs(held_quantity))
-                adjustments.append("minimum_quantity_reduction")
-            remaining = abs(held_quantity) - magnitude
-            if ZERO < remaining < filters.min_quantity:
-                magnitude = abs(held_quantity)
-                adjustments.append("dust_close")
-            orders.extend(_split(-_sign(held_quantity) * magnitude, True, filters))
+            reduction, changes = plan_reduction(
+                held_quantity, _sign(held_quantity) * (abs(held_quantity) - magnitude), filters
+            )
+            orders.extend(reduction)
+            adjustments.extend(changes)
 
         def increase(quantity: Decimal) -> None:
             if quantity == ZERO:
