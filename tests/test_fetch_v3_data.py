@@ -298,3 +298,110 @@ def test_manifest_assembly_is_deterministic_and_pins_snapshots():
     assert doc["replay_ready"] is False
     with pytest.raises(ValueError, match="duplicate"):
         assemble_manifest([*entries, entries[0]], snapshot, snapshot, "a" * 64)
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+def test_inventory_task_saves_verified_archives_and_snapshot_pins(tmp_path, reuse):
+    import json
+
+    from fetch_v3_data import SYMBOLS, PinnedArchive, collect_inventory
+
+    filters = [
+        {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "100", "stepSize": "0.001"},
+        {"filterType": "MARKET_LOT_SIZE", "minQty": "0.001", "maxQty": "100", "stepSize": "0"},
+        {"filterType": "MIN_NOTIONAL", "notional": "5"},
+    ]
+    snapshot = json.dumps(
+        {
+            "symbols": [
+                {
+                    "symbol": symbol,
+                    "quoteAsset": "USDT",
+                    "contractType": "PERPETUAL",
+                    "filters": filters,
+                }
+                for symbol in sorted(SYMBOLS)
+            ]
+        }
+    ).encode()
+    archive = synthetic_archive("spot")
+    cached = tmp_path / "existing.zip"
+    cached.write_bytes(archive.content)
+    pins = {archive.path: PinnedArchive(cached, archive.sha256)} if reuse else {}
+    calls = []
+
+    class Fake:
+        def futures_filters(self):
+            calls.append("futures-filters")
+            return snapshot
+
+        def spot_filters(self):
+            calls.append("spot-filters")
+            return snapshot
+
+        def archive(self, path):
+            assert not reuse, "pinned cached archive must not be downloaded"
+            calls.append(path)
+            if path.endswith(".CHECKSUM"):
+                return (archive.sha256 + "  " + archive.path.rsplit("/", 1)[1]).encode()
+            return archive.content
+
+    output = tmp_path / "fetch"
+    manifest = collect_inventory(
+        output, [("spot", "BTCUSDT", "2024-02")], Fake(), "a" * 64, reuse=pins
+    )
+    doc = json.loads(manifest.read_bytes())
+    assert doc["snapshots"]["futures"]["path"] == "snapshots/futures.json"
+    assert (output / doc["entries"][0]["local_path"]).read_bytes() == archive.content
+    assert calls.count("futures-filters") == 1
+    assert calls.count("spot-filters") == 1
+    assert doc["entries"][0]["status"] == "eligible"
+    assert doc["replay_ready"] is False
+
+
+def test_inventory_task_validates_all_requests_before_transport(tmp_path):
+    from fetch_v3_data import collect_inventory
+
+    class Forbidden:
+        def __getattr__(self, name):
+            pytest.fail("transport accessed before request validation")
+
+    with pytest.raises(ValueError):
+        collect_inventory(
+            tmp_path / "fetch", [("futures", "BTCUSDT", "2025-01")], Forbidden(), "a" * 64
+        )
+    assert not (tmp_path / "fetch").exists()
+
+
+def test_pinned_spot_archive_reuse_checks_bytes_without_network(tmp_path):
+    from fetch_v3_data import PinnedArchive, reuse_or_fetch_archive
+
+    archive = synthetic_archive("spot")
+    cached = tmp_path / "cache.zip"
+    cached.write_bytes(archive.content)
+
+    def forbidden(path):
+        pytest.fail("verified cache should not use network")
+
+    pin = PinnedArchive(cached, archive.sha256)
+    assert reuse_or_fetch_archive("spot", "BTCUSDT", "2024-02", forbidden, pin) == archive
+    cached.write_bytes(b"changed cache")
+    with pytest.raises(ValueError, match="pinned"):
+        reuse_or_fetch_archive("spot", "BTCUSDT", "2024-02", forbidden, pin)
+
+
+def test_pinned_archive_refetch_cannot_silently_change_original_checksum(tmp_path):
+    from fetch_v3_data import PinnedArchive, reuse_or_fetch_archive
+
+    archive = synthetic_archive("spot")
+
+    def fetch(path):
+        if path.endswith(".CHECKSUM"):
+            return (archive.sha256 + "  " + archive.path.rsplit("/", 1)[1]).encode()
+        return archive.content
+
+    pin = PinnedArchive(tmp_path / "absent.zip", "f" * 64)
+    with pytest.raises(ValueError, match="pinned"):
+        reuse_or_fetch_archive("spot", "BTCUSDT", "2024-02", fetch, pin)
+    good = PinnedArchive(pin.local_path, archive.sha256)
+    assert reuse_or_fetch_archive("spot", "BTCUSDT", "2024-02", fetch, good) == archive

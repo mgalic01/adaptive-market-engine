@@ -11,6 +11,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from http.client import HTTPException, HTTPSConnection
+from pathlib import Path
+from typing import Protocol
 
 from crypto_grid_bot.backtest.window import development_month
 
@@ -32,11 +34,25 @@ MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 Fetcher = Callable[[str], bytes | None]
 
 
+class InventoryTransport(Protocol):
+    def archive(self, path: str) -> bytes | None: ...
+
+    def spot_filters(self) -> bytes: ...
+
+    def futures_filters(self) -> bytes: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ArchiveObject:
     path: str
     sha256: str
     content: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedArchive:
+    local_path: Path
+    sha256: str
 
 
 def archive_path(kind: str, symbol: str, month: str) -> str:
@@ -76,6 +92,31 @@ def fetch_verified_archive(
     if match.group(1).lower() != digest:
         raise ValueError("archive checksum mismatch")
     return ArchiveObject(path, digest, content)
+
+
+def reuse_or_fetch_archive(
+    kind: str,
+    symbol: str,
+    month: str,
+    fetch: Fetcher,
+    pin: PinnedArchive | None = None,
+) -> ArchiveObject | None:
+    """Reuse committed spot pins; even a fresh download must match the old digest."""
+    path = archive_path(kind, symbol, month)
+    if pin is None:
+        return fetch_verified_archive(kind, symbol, month, fetch)
+    if kind != "spot" or re.fullmatch(r"[0-9a-f]{64}", pin.sha256) is None:
+        raise ValueError("invalid pinned spot archive")
+    if pin.local_path.exists():
+        with pin.local_path.open("rb") as stream:
+            content = stream.read(MAX_ARCHIVE_BYTES + 1)
+        if len(content) > MAX_ARCHIVE_BYTES or hashlib.sha256(content).hexdigest() != pin.sha256:
+            raise ValueError("cached archive does not match pinned checksum")
+        return ArchiveObject(path, pin.sha256, content)
+    archive = fetch_verified_archive(kind, symbol, month, fetch)
+    if archive is None or archive.sha256 != pin.sha256:
+        raise ValueError("download does not match pinned archive")
+    return archive
 
 
 ARCHIVE_HOST = "data.binance.vision"
@@ -291,3 +332,74 @@ def assemble_manifest(
         "filters": parsed,
     }
     return (json.dumps(document, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
+
+
+def collect_inventory(
+    output_dir: Path,
+    requests: list[tuple[str, str, str]],
+    transport: InventoryTransport,
+    spec_sha256: str,
+    *,
+    reuse: dict[str, PinnedArchive] | None = None,
+) -> Path:
+    """Save one fresh inventory; a failed fetch leaves evidence but no final manifest.
+
+    All requests are checked before filesystem or transport side effects. The fresh
+    directory requirement prevents overwriting an earlier filter snapshot or inventory.
+    This preparatory artifact never authorizes a strategy replay.
+    """
+    import json
+
+    from crypto_grid_bot.trend.filters import parse_filter_snapshot
+
+    if re.fullmatch(r"[0-9a-f]{64}", spec_sha256) is None:
+        raise ValueError("invalid spec hash")
+    if not requests or len(set(requests)) != len(requests):
+        raise ValueError("empty or duplicate archive requests")
+    paths = {archive_path(kind, symbol, month) for kind, symbol, month in requests}
+    pins = {} if reuse is None else dict(reuse)
+    for path, pin in pins.items():
+        _guard_archive(path)
+        if (
+            path not in paths
+            or not path.startswith("/data/spot/")
+            or re.fullmatch(r"[0-9a-f]{64}", pin.sha256) is None
+        ):
+            raise ValueError("invalid pinned spot request")
+    output_dir.mkdir(parents=True, exist_ok=False)
+    snapshot_dir = output_dir / "snapshots"
+    snapshot_dir.mkdir()
+    snapshots = {}
+    for market, retrieve in (
+        ("spot", transport.spot_filters),
+        ("futures", transport.futures_filters),
+    ):
+        raw = retrieve()
+        parse_filter_snapshot(raw, tuple(sorted(SYMBOLS)), futures=market == "futures")
+        (snapshot_dir / f"{market}.json").write_bytes(raw)
+        snapshots[market] = raw
+    entries = []
+    for kind, symbol, month in sorted(requests):
+        archive = reuse_or_fetch_archive(
+            kind, symbol, month, transport.archive, pins.get(archive_path(kind, symbol, month))
+        )
+        entry = inspect_archive(archive, kind, symbol, month)
+        if archive is not None:
+            relative = "archives/" + archive.path.lstrip("/")
+            destination = output_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(archive.content)
+            entry["local_path"] = relative
+        entries.append(entry)
+    document = json.loads(
+        assemble_manifest(entries, snapshots["spot"], snapshots["futures"], spec_sha256)
+    )
+    for market in snapshots:
+        document["snapshots"][market]["path"] = f"snapshots/{market}.json"
+    destination = output_dir / "inventory.manifest.json"
+    temporary = output_dir / "inventory.manifest.json.tmp"
+    temporary.write_bytes(
+        (json.dumps(document, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
+    )
+    temporary.replace(destination)
+    return destination

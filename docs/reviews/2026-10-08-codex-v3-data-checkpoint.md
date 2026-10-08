@@ -66,3 +66,19 @@ rejection, canonical path/hash checks, raw snapshot hashes and parsed limits for
 ten symbols. It remains replay_ready=false until coverage, close diagnostics and
 verified local snapshot/archive paths are integrated. Combined focused suite: 72
 passed; Ruff, mypy and Bandit clean. This is not a completed replay manifest.
+
+Collector integration now saves verified archives and both raw filter snapshots in
+a fresh output directory, validates every request before transport access, and
+publishes the inventory manifest only after collection succeeds. Existing output
+directories are refused. Spot cache reuse verifies the original pinned SHA-256;
+if an archive must be downloaded again, it must still match that original pin.
+Corrupt cached bytes and changed upstream bytes fail rather than silently replacing
+the dataset. Synthetic collector and reuse regressions were observed failing before
+implementation and now pass. Focused suite: 77 tests; Ruff/format and mypy pass.
+
+Current foundation batch remains preparatory: no CLI, actual retrieval, automatic
+request-universe generation, committed-manifest reuse-map loader, complete coverage
+or mandatory-close integration yet. The inventory remains replay_ready=false.
+The register is now merged in main 3f1ef45; its earlier full-suite and byte-identity
+results belong to the register batch, not to this data batch. Codex owns the remaining
+implementation. Independent review and this batch's full verification are pending.
