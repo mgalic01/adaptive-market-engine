@@ -41,3 +41,22 @@ No new dependencies, frozen parameters, market data reads, fetches, live-order
 routes or known security findings. Account wallet/PnL/funding/liquidation chronology,
 deferred orders, WFO and analytics are still outstanding. This layer alone cannot
 run a strategy or establish profitability.
+
+
+## Rounded-away attempt correction
+
+Cloud found that a required opening/increase rounded to zero could disappear from
+the decision evidence. The plan now retains signed `intended_increase_quantity`
+before quantity rounding for every band-approved opening/increase, including
+filled and minimum-refused attempts. A flip records its new leg only, excluding
+the closing quantity. `quantity_rounded_to_zero` marks a blocked opening/increase;
+a within-band no-op or an ordinary reduction has no increase attempt.
+Six new failing regressions cover flat, same-side long/short and flip rounding,
+plus filled/refused intent sizes. All28 order and43 sizing/signal tests pass.
+The account-size reporter must consume this field for every non-None attempt.
+
+The minimum-notional-before-split interpretation is disclosed on the PR: the
+frozen text explicitly tests the complete quantity change and only names minimum
+quantity as its invalid-split condition. Bob and independent review found this
+faithful to the frozen text. It is not a claim that each child's minimum notional
+matches live exchange enforcement.
