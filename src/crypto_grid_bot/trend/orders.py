@@ -25,6 +25,7 @@ class OrderPlan:
     orders: tuple[OrderIntent, ...]
     refusals: tuple[str, ...]
     adjustments: tuple[str, ...]
+    intended_increase_quantity: Decimal | None = None
 
 
 def _split(quantity: Decimal, reduce_only: bool, filters: OrderFilters) -> tuple[OrderIntent, ...]:
@@ -81,13 +82,18 @@ def plan_rebalance(
         if held_steps != held_steps.to_integral_value(rounding=ROUND_DOWN):
             raise ValueError("held quantity must be a multiple of the market step")
         current = held_quantity * open_price / equity
-        target = (target_weight * equity / open_price / step).to_integral_value(
-            rounding=ROUND_DOWN
-        ) * step
+        unrounded = target_weight * equity / open_price
+        target = (unrounded / step).to_integral_value(rounding=ROUND_DOWN) * step
         if _sign(target_weight) == _sign(held_quantity) and abs(target_weight - current) <= Decimal(
             ".01"
         ):
             return OrderPlan(current, target, (), (), ())
+        intended_increase = None
+        if unrounded != ZERO:
+            if _sign(unrounded) != _sign(held_quantity):
+                intended_increase = unrounded  # Only a flip's opening leg, not its close.
+            elif abs(unrounded) > abs(held_quantity):
+                intended_increase = unrounded - held_quantity
         orders: list[OrderIntent] = []
         refusals: list[str] = []
         adjustments: list[str] = []
@@ -105,6 +111,8 @@ def plan_rebalance(
 
         def increase(quantity: Decimal) -> None:
             if quantity == ZERO:
+                if intended_increase is not None:
+                    adjustments.append("quantity_rounded_to_zero")
                 return
             if abs(quantity) < filters.min_quantity:
                 refusals.append("minimum_quantity")
@@ -120,4 +128,6 @@ def plan_rebalance(
             reduce(abs(held_quantity) - abs(target))
         else:
             increase(target - held_quantity)
-        return OrderPlan(current, target, tuple(orders), tuple(refusals), tuple(adjustments))
+        return OrderPlan(
+            current, target, tuple(orders), tuple(refusals), tuple(adjustments), intended_increase
+        )

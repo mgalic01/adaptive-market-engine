@@ -139,3 +139,33 @@ def test_invalid_filters_are_rejected(rules):
 def test_non_step_held_quantity_is_rejected():
     with pytest.raises(ValueError, match="market step"):
         plan(".2", held="1.5")
+
+
+@pytest.mark.parametrize(
+    "target,held,price,expected",
+    [
+        (".001", "0", "10", ".1"),
+        (".56", "5", "100", ".6"),
+        ("-.56", "-5", "100", "-.6"),
+        ("-.001", "10", "10", "-.1"),
+    ],
+)
+def test_rounded_away_increases_preserve_unrounded_attempt(target, held, price, expected):
+    result = plan(target, held=held, price=price)
+    assert result.intended_increase_quantity == D(expected)
+    assert "quantity_rounded_to_zero" in result.adjustments
+    assert not any(not row.reduce_only for row in result.orders)
+
+
+def test_band_noop_and_reductions_do_not_create_increase_attempts():
+    assert plan(".11", held="10").intended_increase_quantity is None
+    assert plan("0", held="10").intended_increase_quantity is None
+    assert plan(".02", held="10").intended_increase_quantity is None
+    result = plan("-.001", held="10")
+    assert quantities(result) == [(D(-10), True)]
+    assert result.intended_increase_quantity == D("-.1")
+
+
+def test_filled_and_refused_increases_both_keep_unrounded_size():
+    assert plan(".129").intended_increase_quantity == D("12.9")
+    assert plan(".129", rules=filters(notional="1000")).intended_increase_quantity == D("12.9")
