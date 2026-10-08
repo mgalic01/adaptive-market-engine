@@ -124,3 +124,8 @@ checks and found no actionable defect. Existing artifact verification shares the
 streaming parser; it still enforces stored digests and counts. This is an additive
 API with no automatic invocation and no new dependency. Full experiment reports,
 spot artifact integration and trial linkage remain incomplete.
+
+Final integration for this batch also merges metrics71d9422 (strict terminal
+sample boundary) and main08a9956 (reviewed replay) without rewriting history.
+79 focused metrics/replay/orchestration/writer/journal checks pass, as do Ruff
+lint/format and mypy. Historical execution remains gated; no data replay ran.
