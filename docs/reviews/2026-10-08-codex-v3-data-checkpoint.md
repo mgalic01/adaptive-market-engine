@@ -14,3 +14,10 @@ synthetic February 2024 records. No archives or reserved data were opened.
 Pending: fetch tooling and manifest schema/integration, complete data diagnostics,
 independent review, legacy-equivalence/full suite for the eventual data batch.
 The register branch's long validation runs remain isolated in its original worktree.
+
+Mandatory-close diagnostic added: earliest unmasked futures hour from 01:00 on the
+previous month's last day through 23:00; no valid hour returns None for the caller
+to flag as invalid. Midnight and hours in the excluded month cannot satisfy it.
+The focused suite now has 31 passing tests; Ruff and strict mypy pass. Manifest
+serialization and runner consumption remain pending; this helper alone does not
+claim execution integration.

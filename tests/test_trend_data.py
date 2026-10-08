@@ -144,3 +144,26 @@ def test_reader_repairs_are_always_masked():
     result = repaired_month(read, "2024-02")
     assert result.masked_hours == frozenset({bars[0].open_ms, bars[1].open_ms})
     assert result.daily_bars[0].volume == Decimal(22)
+
+
+def test_mandatory_close_uses_last_day_at_one_or_next_unmasked_hour():
+    from crypto_grid_bot.trend.data import mandatory_close_hour
+
+    start, _ = month_bounds_ms("2024-03")
+    first = start - 23 * 3_600_000  # February 29 at 01:00 UTC
+    assert mandatory_close_hour("2024-03", frozenset({first, first + 3_600_000})) == first
+    assert mandatory_close_hour("2024-03", frozenset({first + 3_600_000})) == first + 3_600_000
+
+
+def test_mandatory_close_never_uses_midnight_or_excluded_month():
+    from crypto_grid_bot.trend.data import mandatory_close_hour
+
+    start, _ = month_bounds_ms("2024-03")
+    assert mandatory_close_hour("2024-03", frozenset({start - 86_400_000, start})) is None
+
+
+def test_mandatory_close_reserved_month_rejected():
+    from crypto_grid_bot.trend.data import mandatory_close_hour
+
+    with pytest.raises(ValueError):
+        mandatory_close_hour("2025-01", frozenset())

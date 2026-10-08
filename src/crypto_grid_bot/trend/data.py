@@ -111,3 +111,18 @@ def hourly_month(
 def repaired_month(read: RepairedRead, month: str) -> HourlyMonth:
     """Bridge from the existing repairing reader without forgetting repaired hours."""
     return hourly_month(read.bars, month, read.repaired | read.masked_hours)
+
+
+def mandatory_close_hour(excluded_month: str, unmasked_hours: frozenset[int]) -> int | None:
+    """Earliest permitted pre-exclusion fill, or None (the run would be invalid).
+
+    These are manifest eligibility facts, not a prediction of live feed availability.
+    The caller supplies unmasked futures execution hours, not spot signal hours.
+    """
+    development_month(excluded_month)
+    start, _ = month_bounds_ms(excluded_month)
+    hour = 3_600_000
+    for stamp in range(start - 23 * hour, start, hour):
+        if stamp in unmasked_hours:
+            return stamp
+    return None
