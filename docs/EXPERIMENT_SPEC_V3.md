@@ -53,7 +53,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 - **1h spot klines for all 10 coins,** from 2018-06, or the coin's first full spot month if later, to 2024-12.
   - Nine coins' files are already in `full-range-2017-2024`'s committed manifest (#199), and are reused with the same checksums.
   - ADAUSDT is not in that dataset, so its files are fetched in the same Bob task.
-  - The integrity rules above apply to them too.
+  - The kline integrity rules above apply to them too: the repairing reader, hour masking, the 17% rule and the per-day completeness rule. The funding rules apply to futures months only, since spot has no funding.
   - **A spot coin-month that is excluded** gives that coin a target of 0 for the same month, as a futures exclusion does, and its days drop out of the daily series.
 - **Daily bars for signals** (§4) are aggregated from these spot 1h bars: R5 needs highs and lows, and the other rules use closes.
 - **The hold benchmark** (§8) uses the same spot 1h bars.
@@ -99,7 +99,10 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
   - `lower_t = basic_lower_t` if `basic_lower_t > lower_{t−1}` or `C_{t−1} < lower_{t−1}`, else `lower_{t−1}`.
 - **Trend:** at bar 11, uptrend if `C_t ≥ mid`, else downtrend. After that, an uptrend turns down when `C_t < lower_t`, and a downtrend turns up when `C_t > upper_t`. Otherwise it continues.
 
-- **Signals run on each coin's whole spot daily series,** from its first spot bar, once and continuously. They are never restarted at a training window or a test quarter: every run reads the same signal series. Recursive state carries across gaps and excluded months, which simply have no bars. That state is the EMAs, R5's ATR, bands and trend, and R3's held position, so a gap adds no update and resets nothing.
+- **Signals run on each coin's whole spot daily series,** from its first spot bar, once and continuously. They are never restarted at a training window or a test quarter: every run reads the same signal series.
+  - Recursive state carries across days with no spot bar: a day that fails the per-day rule, or a spot month excluded under §2. That state is the EMAs, R5's ATR, bands and trend, and R3's held position, so a missing day adds no update and resets nothing.
+  - A month excluded on the futures side only (its futures klines or funding fail §2) keeps its spot bars. They go on updating the signals, and only the coin's target is 0 that month.
+- **A date with no spot bar for a coin:** for the decision after that date, the coin keeps its previous signal and takes no order (its position stays as it is), and any deferred order it already has stays pending. The other coins are decided as usual. Its σ and its Σ entries use its one-day returns as available (§2).
 - **A rule with too little history** for a coin gives 0 for that coin until it has enough: 50 closes for R1, 55 for R2, 56 bars for R3 (55 prior bars and the current one), a close at least 365 days earlier for R4, and 11 bars for R5.
 - **No other strategy family is in v3.** That covers mean reversion, scalping, breakout variants, pattern recognition, market structure, pairs trading and funding arbitrage (§10). Each extra rule is another trial, and more trials make a lucky pass more likely.
 
@@ -175,7 +178,10 @@ At each daily decision, after day d's close:
   - **The factor** is `k = 0.80 × equity ÷ gross notional`, on the book after that hour's daily fills, at its open mark.
   - Each coin's position is reduced, on the side it is actually held, to `held quantity × k`, rounding toward zero to the quantity step, by reduce-only orders at that open, with the usual slippage and fees.
   - A delevering order is reduce-only, so it ignores the minimum notional.
-  - A coin whose hour is masked cannot fill. It is reduced at its next unmasked hour, to its then-held quantity × the same k, and until then it takes no new delevering order.
+  - **When some positions cannot trade** because their hour is masked, they stay at their carried marks. The tradable positions are then reduced by `k' = (0.80 × equity − masked gross) ÷ tradable gross`, so gross leverage falls to 0.80 at once:
+    - if k' ≤ 0, every tradable position is closed;
+    - if the masked positions alone exceed 1.0 × equity, the ceiling cannot be restored, and the run is invalid (§8);
+    - a masked position is checked again at its next unmasked hour, by the ordinary rule.
   - If equity is ≤ 0 at a mark, the ratio is not computed: the liquidation check has already failed the run.
   - Each such delevering is reported.
   - **After a delevering,** the next daily decision tests its band (§5 step 4) against the post-delevering weight, so a gap above 1% is rebalanced back toward the target. A slow cycle is therefore possible: delever, re-size at the next decision, then delever again after a further rise. Each step is reported, and none can repeat within an hour.
@@ -222,9 +228,14 @@ At each daily decision, after day d's close:
   - With no negative day and at least one positive day, it is +∞, and A2 passes.
   - With no positive day, it is 0, and A2 fails.
 - **CAGR:** compound annual growth over the out-of-sample days (365.25-day years).
-- **Maximum drawdown:** from the running peak, over every equity state of the run: each hour's open mark, its post-fill mark, and its adverse-extreme equity (the post-fill liquidation check's: every position at its bar's adverse extreme at once, §6), plus the terminal mark.
-  - Taking every coin's extreme at once can overstate an hour's trough, when the extremes came at different minutes. That leans against v3.
-  - The peak is the running maximum of the open, post-fill and terminal marks only, so the peak never uses a favourable extreme.
+- **Maximum drawdown:** the largest fall from a running peak along one path of equity states. Each hour contributes four states, in this order:
+  1. its open mark;
+  2. its post-fill mark;
+  3. its favourable-extreme equity: every position at its bar's favourable extreme at once (the high for a long, the low for a short);
+  4. its adverse-extreme equity: every position at its bar's adverse extreme at once (the post-fill liquidation check's).
+
+  The terminal mark ends the path. Peak and trough use the same path.
+  - Putting the favourable extreme before the adverse one in every hour, and taking every coin's extreme at once, can overstate a drawdown. That leans against v3.
 - **Calmar ratio:** CAGR ÷ maximum drawdown.
   - With a maximum drawdown of 0 and a positive CAGR, it is +∞, and A3 passes.
   - With a maximum drawdown of 0 and a CAGR of 0 or less, it is 0, and A3 fails.
@@ -278,7 +289,8 @@ At each daily decision, after day d's close:
 - the worst drawdown's dates, and the maximum drawdown beside equal-weight buy-and-hold's;
 - the picks quarter by quarter;
 - variant D, and plain equal-weight buy-and-hold at full size;
-- **the minimum account size:** the smallest account at which every target position of the out-of-sample run meets its symbol's minimum notional (§5).
+- **the minimum account size:** computed by scaling, not by rerunning. For each order that opens or increases a position in the 10,000-USDT out-of-sample run, the ratio of the symbol's minimum notional to that order's notional, × 10,000 USDT. The largest such value, rounded up to the next 10 USDT, is reported.
+  - It ignores how rounding and refusals at a smaller account would change the later path, and the record says so.
 - **the lowest margin ratio reached:** the minimum, over every liquidation check with an open position, of equity ÷ gross open notional, against the 1% threshold. A check on a flat book has no ratio and is skipped. If the book is never open, the record says so. This shows how close the run came to the threshold;
 
 **Decision and trade records** (required outputs, written with every run, and never read back by any decision; §11, decision 10):
@@ -295,7 +307,7 @@ At each daily decision, after day d's close:
   - **a position still open when a run ends** is not closed: no fill, fee or slippage is charged. It is marked at the terminal mark (§8), its profit and loss stays unrealised, and its record is labelled censored, with that unrealised profit and loss. This holds for training runs and for the out-of-sample run;
   - its duration;
   - its maximum favourable and maximum adverse excursion, in USDT, before fees and funding. For each hour the position is open, two values are taken: the profit and loss realised so far in the lifecycle, plus the remaining position's unrealised profit and loss at the bar's favourable extreme, and the same at its adverse extreme. Both use the quantity and average entry price in force during that hour, and earlier hours are never recomputed against a later average entry. The excursions are the maximum and the minimum of these hourly values;
-  - the profit given back: the maximum favourable excursion minus the position's final realised profit and loss before fees and funding, or minus its unrealised profit and loss at the terminal mark if it is censored;
+  - the profit given back: the maximum favourable excursion minus the lifecycle's final profit and loss before fees and funding. For a closed position that is its total realised profit and loss. For a censored one it is the profit and loss realised so far plus the unrealised at the terminal mark;
   - its realised profit and loss, fees, and funding paid and received.
 - **Every walk-forward window:** each rule's training Sharpe ratio and validity, and the pick.
 - **The equity series:** hourly total equity, the running peak and the drawdown, never rebased.
