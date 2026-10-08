@@ -28,6 +28,17 @@ Three sets of the same six runs were dispatched. Each set holds the mode switche
    - **Every file is valid,** with no failures. The fix clears the false accounting flag on the ungated baseline rows.
    - **Every row is identical to set 2's,** apart from the commit fields and those four rows' `accounting_problems`.
    - **`acceptance_v2`,** run from a clean checkout of `7d309a2`, prints a verdict identical to set 2's from the comparison mask on: fail, on C1. Its verdict JSON's SHA-256 is `a6be8a3b50dca94ce9a482fb765ffa1528e5bc5203e62188ab3b56d97f4ccdd2`.
+   - **Its inputs,** every one with `code_commit` `7d309a2068dca2b358c5887a2ca074c5e6e40cc1`, clean:
+
+     | Workflow run | What | results.json SHA-256 | valid |
+     | --- | --- | --- | --- |
+     | [37685358642](https://github.com/mgalic01/adaptive-market-engine/actions/runs/37685358642) | full-range-2017-2024, MS with D | `7a8870efcc325f973359e2925f6618a0bdd6f7cf882a190c11ed0bc341773401` | true |
+     | [37685366857](https://github.com/mgalic01/adaptive-market-engine/actions/runs/37685366857) | full-range-2017-2024, F | `ce85832668ac1469f7b904878355a004d4c29918beb4ce5d0ec51d139715eb9c` | true |
+     | [37685374982](https://github.com/mgalic01/adaptive-market-engine/actions/runs/37685374982) | practice-2022, MS with D | `b7c1cc86f84d069e43b746a68596ab097fef9e30aa8a1d871b50b354a9046960` | true |
+     | [37685384065](https://github.com/mgalic01/adaptive-market-engine/actions/runs/37685384065) | practice-2022, F | `8f796bfa6eaf8a7c5d035136bf00e015c14ac6e50bfad31a8a0710480a80e5a2` | true |
+     | [37685392610](https://github.com/mgalic01/adaptive-market-engine/actions/runs/37685392610) | verify-2024h1, MS with D | `f115b06a64d0a3dbc4c72ff96cd77170200f8b0d5e2728c44510b224fb0f0271` | true |
+     | [37685401222](https://github.com/mgalic01/adaptive-market-engine/actions/runs/37685401222) | verify-2024h1, F | `889c4aa37a9cec55ae60b3fe4b9c9220dcc3efa499fbc07fabc2723539ecfd89` | true |
+
 
 **Set 2 matches set 1.** Apart from the commit fields, set 2's results equal set 1's for the full-range F run and for verify-2024h1 MS. A pool writes the same results as one job, which #201's test also shows.
 
