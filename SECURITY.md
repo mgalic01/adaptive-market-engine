@@ -44,7 +44,8 @@ It has no networked exchange implementation and does not read API credentials.
   no signed endpoint, and touches nothing else on that host. The response is committed with
   its SHA-256, and the backtester reads only the committed file. The fetch script lives
   outside `src/`, and no code under `src/` names that host, so the allowed-hosts list above
-  is unchanged.
+  is unchanged. It is a one-off fetch, not a collector or a stream, and it does not relax the
+  next rule.
 - Do not point collectors or streams at trading hosts, or add user-data (`listenKey`)
   streams, before the live-adapter review.
 - Never use protected reserve to fund a grid, an exit, or loss recovery.

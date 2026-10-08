@@ -30,7 +30,9 @@ Does trend-following, long and short or long only as the walk-forward picks (§4
 - **Fetch:** by Bob, in a task file the owner starts, with a pinned script, as in #193.
   - Every archive is checked against Binance's published SHA-256.
   - Each file's checksum and statistics are recorded in a committed manifest.
-  - The fetch also records today's exchange filters (quantity step, minimum notional) for the 10 symbols, once, in the manifest: the USDⓈ-M perpetuals' for the account, and spot's for the hold benchmark (§8). Historical filters are not published (spec v1 P4), so today's are used and the record says so.
+  - The fetch also records today's exchange filters for the 10 symbols, once, in the manifest: the USDⓈ-M perpetuals' for the account, and spot's for the hold benchmark (§8). Historical filters are not published (spec v1 P4), so today's are used and the record says so.
+    - **The filters recorded:** `LOT_SIZE` and `MARKET_LOT_SIZE`, each with its minimum quantity, maximum quantity and step, and the minimum-notional filter.
+    - **Every simulated order is a market order,** so `MARKET_LOT_SIZE` applies. Where its step is 0, meaning no market step is set, `LOT_SIZE`'s step is used. That is the stricter choice, and it leans against v3.
     - **Spot's** come from `data-api.binance.vision/api/v3/exchangeInfo`, an allowed host.
     - **The perpetuals'** come from one public, read-only GET of `https://fapi.binance.com/fapi/v1/exchangeInfo`, which the owner allowed for this fetch only (§11, decision 12). No key, no signed endpoint, nothing else on that host. The response is committed with its SHA-256, and the backtester reads only the committed file. The fetch script lives outside `src/`, and no code under `src/` names that host (SECURITY.md).
 - **Integrity:** the 1h futures klines go through the repairing reader of the long-window data (#186, #189).
@@ -144,10 +146,12 @@ At each daily decision, after day d's close:
    - **A target of 0 against an open position always trades,** whatever the band, including a target forced to 0 by step 1 or 2 (too little history, σ or the estimate of 0, too few common days). No position is kept at a target of 0.
    - The current weight is `quantity × the fill hour's open ÷ equity at that open`.
    - The band is tested on weights, before any rounding.
+   - **The band is 0.01 at every size m,** deliberately not scaled. It is a turnover control, not a size, and A5 compares runs at the same m (§8).
 5. **Quantity:** `target quantity = target weight × equity ÷ open`, where equity is the account's mark at the fill hour's open, before that hour's fills, and open is that hour's unslipped open (§6).
-   - The quantity rounds toward zero to the symbol's quantity step.
+   - The quantity rounds toward zero to the symbol's quantity step (§2: the market-order step).
+   - **The market order's minimum and maximum quantity:** an order that opens or increases a position is not made if its quantity change is below the minimum quantity, and this is reported as a minimum-notional refusal is. An order above the maximum quantity is split into orders of at most the maximum, all at the same fill price, each paying its fee, and this is reported. At this account size that is not expected to happen.
    - A trade that opens or increases a position on one side is not made if its notional, `|quantity change| × open`, is below the symbol's minimum notional, and it is reported. A flip is never tested as one trade (below).
-   - A trade that reduces or closes a position is always made, at any size, as a reduce-only order is on Binance.
+   - A trade that reduces or closes a position is always made, at any size, as a reduce-only order is on Binance. It ignores the minimum quantity and the minimum notional. The record counts any such trade that the minimum quantity would have blocked.
    - **A flip** (long to short, or short to long) is two orders at the same fill price: first a close of the whole position, always made; then an opening order for the new side. The opening order rounds to the quantity step and must meet the minimum notional on its own, `|new quantity| × open`. If it does not, the coin is left flat, and this is reported. Each order pays its own fee.
 
 **Precision:** every computation of §4 to §6 runs in `Decimal`, in one context at 60 significant digits with `ROUND_HALF_EVEN`:
@@ -197,7 +201,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - If that equity is ≤ 1% of the gross open notional, the account is liquidated. A flat book, with gross notional 0, has nothing to liquidate, so every liquidation check skips it.
   - **Any liquidation,** at any of the checks above, is recorded at the hour of the check, with each position's price in that check. The run is invalid from then on (§8), and no later order is simulated. The gross open notional is `Σ |quantity| × price` at the same prices as the check's equity.
   - **No liquidation fill is simulated.** The run stops at the check: every open position stays open, marked at its price in that check, and that is the run's terminal mark. No fee or slippage is charged for it. Its lifecycle is recorded as censored, with liquidation as the reason (§8), and the accounting identities are checked at that mark.
-  - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin. Checked at the open and at the bar's adverse extremes, it can fail a run that Binance would not have liquidated, so it leans against v3.
+  - The 1% threshold is Claude's design choice, a simplified stand-in for Binance's tiered maintenance margin. That margin varies by symbol and position size, and it is not fetched, since its endpoint needs a signed request. So whether 1% is above or below a given symbol's real rate is not known, and the record says so. Checking at the open and at the bar's adverse extremes, all at once, leans against v3.
   - It is rare at m = 1, and more likely at m = 2 and 3: the larger the book, the smaller the move against it that reaches the threshold. The record gives each run's lowest margin ratio (§8).
 - **The leverage limit m, on the actual book:** at every hourly mark, gross leverage is `Σ |quantity| × mark ÷ equity`.
   - If it exceeds m, the account delevers **in the same hour, at the same open** (step 4 of the hour's order, before any funding), and again right after any funding event that takes it above m (step 5).
@@ -404,8 +408,9 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 1. **This spec is frozen** after the owner's review and clean reviews from Codex and Bob.
 2. **The trial register,** before any v3 code that could be tuned and before any run, as the v2 verdict record requires. It is `docs/trials/register.jsonl`, committed and append-only, in the shape Claude and Codex agreed (`docs/reviews/2026-09-25-claude-data-reuse-proposal.md`, `docs/reviews/2026-09-26-codex-data-reuse-response.md`).
    - **Retrospective entries first,** each labelled not preregistered: v0, v1's variants, v2's mode switcher, D and #137's rules.
-   - **Then v3's registration:** the 12 rule versions, the picking procedure, the three sizes, the double-cost runs and the hold benchmark, with the spec's, data's and code's hashes and the selection rule.
-   - **Every v3 run appends a result event,** whether it succeeds, fails or is cancelled, referencing that registration. No v3 run is dispatched without a committed registration.
+   - **Then v3's registration of its candidate space,** with the frozen spec's hash: the 12 rule versions, the picking procedure, the three sizes, the double-cost runs, the hold benchmark and the selection rule.
+   - **The completing registration event,** appended after steps 3–5, once the reviewed data and code exist and before any run is dispatched: the data's manifest hash and the code commit and hash. It references the same trial ID, so nothing appended earlier is rewritten.
+   - **Every v3 run appends a result event,** whether it succeeds, fails or is cancelled, referencing that registration. No v3 run is dispatched before the completing event is committed.
    - The register is written by a separately reviewed process, not by Bob's report publisher.
 3. **Futures data:** the dataset spec, a pinned fetch script with tests that block the network, and Bob's task file. The owner starts Bob's run, and the manifest is committed from Bob's digest.
 4. **The rules, the sizing and the account,** in a new package `crypto_grid_bot.trend`, kept apart from the grid code. They are tested first on synthetic data:
