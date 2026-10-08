@@ -10,7 +10,11 @@
   - Buy-and-hold made +2,419.60% on BTCUSDT and +2,430.53% on ETHUSDT. As a share of that six-year rise, the mode switcher's return is about 1.2% on BTCUSDT (30.13 of 2,419.60) and 1.5% on ETHUSDT (36.08 of 2,430.53).
   - Spec v2's registered upside capture is a different, monthly measure: over the months in which buy-and-hold rose, the run's summed monthly returns divided by buy-and-hold's (§8). It is 0.0605 on BTCUSDT and 0.045 on ETHUSDT.
 - **The sanity windows** (`practice-2022`, `verify-2024h1`) are reported only and decide nothing (spec v2 §8). The mode switcher lost money in all 8 of their runs, as in the first read (decisions 10–13).
-- **The owner's decision on what follows is pending.** Claude reported the verdict on 2026-10-07 at about 21:20 UTC, with two options: close v2, or register a v3 aimed at the weaknesses below. This record is amended when the owner decides.
+- **The owner's decision (2026-10-08): v2 closes as failed, and a v3 is designed.**
+  - Claude reported the verdict on 2026-10-07 at about 21:20 UTC. The owner then shared a multi-strategy trading-bot brief: 25% a month, 50 coins, 20x leverage, live trading. Claude assessed it against v0–v2's evidence and asked what to do with it.
+  - The owner chose **"Test the core idea first"**. The option said: "Before any big build: a new pre-registered spec (v3), paper-only, testing trend-following (long and short) across a wider set of top coins, held to the spec's own walk-forward gate (Sharpe at least 1.0, profit factor at least 1.3). Build infrastructure only for what passes. No profit promise."
+  - The other options were "Build the full spec, paper-only", "Just your assessment for now" and "Close v2 and stop here".
+  - Spec v3 is drafted separately. Nothing in this record changes.
 
 ## How the runs were made
 
@@ -20,7 +24,10 @@ Three sets of the same six runs were dispatched. Each set holds the mode switche
    - The full-range mode-switcher run was cancelled at GitHub's 6-hour job limit (run 37634426637).
    - Its full-range F run finished in 5 h 50 min, but marked itself invalid. See "A false accounting failure" below.
 2. **`9a3f9fa`** (#201 merged: the workflow runs the CLI in a pool of 4), dispatched at 18:19 UTC. All six finished: the full-range runs in 2 h 31 min (F) and 2 h 48 min (MS). **This set is scored.**
-3. **`7d309a2`** (#204 merged: the accounting fix), dispatched at 20:53 UTC as a hedge. Its results so far are identical to set 2's, apart from the commit fields: practice-2022 MS, verify-2024h1 MS and verify-2024h1 F.
+3. **`7d309a2`** (#204 merged: the accounting fix), dispatched at 20:53 UTC as a hedge. All six finished; the full-range runs took 2 h 36 min (F) and 2 h 51 min (MS).
+   - **Every file is valid,** with no failures. The fix clears the false accounting flag on the ungated baseline rows.
+   - **Every row is identical to set 2's,** apart from the commit fields and those four rows' `accounting_problems`.
+   - **`acceptance_v2`,** run from a clean checkout of `7d309a2`, prints a verdict identical to set 2's from the comparison mask on: fail, on C1. Its verdict JSON's SHA-256 is `a6be8a3b50dca94ce9a482fb765ffa1528e5bc5203e62188ab3b56d97f4ccdd2`.
 
 **Set 2 matches set 1.** Apart from the commit fields, set 2's results equal set 1's for the full-range F run and for verify-2024h1 MS. A pool writes the same results as one job, which #201's test also shows.
 
@@ -175,7 +182,7 @@ Both windows fail C2 and C6 there, and `practice-2022` fails C5 as well. These a
 
 ## What follows
 
-- **The owner decides** whether to close v2 or to register a v3. This record is amended with that decision.
+- **The owner decided (2026-10-08):** v2 closes as failed, and a v3 is designed. See the top of this record.
 - **A caution for any v3:** `full-range-2017-2024` has now been seen. A v3 tested on the same years is not an out-of-sample test there, so it needs a fixed trial register (#169's Addendum B2), and only the reserved window could confirm it.
 - **Two findings for a v3:**
   - the drawdown came from a slow decline that the rebasing risk layer never stopped;
