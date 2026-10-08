@@ -67,3 +67,14 @@ tiny-target regressions reproduced the loss. A real 50-hour runner regression op
 defers a pick close, replaces with a tiny nonzero target and verifies the eventual
 rounding close records pick_change. All 35 pending/runner/decision tests pass;
 Ruff and mypy pass. No target, execution time or accounting arithmetic changes.
+
+Main integration after PR223: merged main 4459964ceba3fe8c6280ad0cf23f71288891ad84
+and retargeted PR224 to main. Forty-three decision/pending/runner/exclusion tests
+pass; check_reports reports zero problems (historical unverifiable entries remain
+explicitly labeled). Bob's registration concern is resolved by direct Git evidence:
+df78b799c6e0b9c414712dc9cce2c7bdfa25e158 is an ancestor, and its tree contains both
+the spec amendment and owner record. SHA-256 of the raw spec blob at that commit is
+bed8bc2ee71788549659d1679c75921f8727736e5e71b7084fc9834499173e88, exactly the register
+pin. No registration change is needed. Fresh full-head review and CI required.
+
+Missing-spot attribution follow-up: a pick boundary now emits provenance for every eligible symbol even when no target may be issued. PendingDecisions retains that cause separately until the first target from the new rule arrives, then the existing pending-order mechanism carries it through deferred execution. It does not invent an order, cancel an old order on a no-bar day, or share mutable state between training accounts. Two regressions first reproduced missing cause; a 50-hour actual runner case opens under R1, encounters a missing spot day at a change to R4, and later closes with pick_change. All 46 decision/pending/runner/exclusion tests pass, plus Ruff lint/format and mypy. New cause-only pick events must occur at midnight. No numeric strategy or fill behavior changes. Full CI and renewed external review required.

@@ -127,4 +127,8 @@ class DailyDecisions:
                 elif weights[symbol] == ZERO:
                     why.add("sizing")
             reasons[symbol] = frozenset(why)
+        if pick_changed:
+            for symbol in eligible:
+                if symbol not in targets:
+                    reasons[symbol] = frozenset({"pick_change"})
         return DailyDecision(targets, signals, reasons, sizing)

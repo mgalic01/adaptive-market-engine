@@ -106,3 +106,19 @@ def test_duplicate_hour_and_nonmidnight_decisions_are_rejected():
         q.advance(T, {}, set())
     with pytest.raises(ValueError):
         q.advance(T + H, {"BTCUSDT": D(0)}, set())
+
+
+def test_pick_cause_survives_missing_target_until_first_new_rule_target():
+    from decimal import Decimal
+
+    from crypto_grid_bot.trend.pending import PendingDecisions
+
+    t, hour = 1609459200000, 3600000
+    pending = PendingDecisions()
+    assert not pending.advance(t, {}, {"BTCUSDT"}, {"BTCUSDT": frozenset({"pick_change"})}).ready
+    assert not pending.advance(t + hour, {}, {"BTCUSDT"}).ready
+    pending.advance(t + 24 * hour, {"BTCUSDT": Decimal(0)}, {"BTCUSDT"})
+    ready = pending.advance(t + 25 * hour, {}, {"BTCUSDT"}).ready
+    assert ready[0][1].exit_reasons == frozenset({"pick_change"})
+    pending.advance(t + 48 * hour, {"BTCUSDT": Decimal(0)}, {"BTCUSDT"})
+    assert not pending.advance(t + 49 * hour, {}, {"BTCUSDT"}).ready[0][1].exit_reasons

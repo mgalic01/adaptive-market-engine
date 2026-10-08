@@ -56,6 +56,39 @@ def test_missing_bar_keeps_signal_but_issues_no_target():
     assert decision.targets == {}
 
 
+def test_missing_bar_records_pick_cause_without_issuing_target():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+
+    book = DailyDecisions({"BTCUSDT": bars(65)}, {"BTCUSDT": "2020-01"})
+    decision = book.at(T + 66 * DAY, "R2", pick_changed=True)
+    assert decision.targets == {}
+    assert decision.exit_reasons.get("BTCUSDT") == frozenset({"pick_change"})
+
+
+def test_missing_spot_boundary_retains_pick_cause_through_actual_close():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    rows = [row for row in bars(67) if row.open_ms != T + 65 * DAY]
+    book = DailyDecisions({"BTCUSDT": rows}, {"BTCUSDT": "2020-01"})
+    rules = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    runner = TrendRunner({"BTCUSDT": rules})
+    start = T + 65 * DAY
+    price = {"BTCUSDT": (D(100), D(100), D(100))}
+    for hour in range(50):
+        stamp = start + hour * 3600000
+        targets, reasons = {}, {}
+        if hour % 24 == 0:
+            decision = book.at(stamp, "R1" if hour == 0 else "R4", pick_changed=hour == 24)
+            targets, reasons = decision.targets, decision.exit_reasons
+            if hour == 24:
+                assert not targets
+        runner.step(stamp, price, targets, {}, exit_reasons=reasons)
+    assert len(runner.lifecycles.completed) == 1
+    assert runner.lifecycles.completed[0].exit_reason == "pick_change"
+
+
 def test_ineligible_coins_are_absent_and_all_invalid_pick_targets_flat():
     from crypto_grid_bot.trend.decisions import DailyDecisions
 
