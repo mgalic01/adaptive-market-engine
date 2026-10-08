@@ -29,10 +29,13 @@ the whole point is an answer we can trust, including an unwelcome one.
 **The bridge between the two** is the untouched 2025–26 window, judged against the
 acceptance criteria the owner chose. **The current experiment is spec v3**
 (trend-following on perpetual futures, long and short or long only), frozen on 2026-10-08
-([spec](EXPERIMENT_SPEC_V3.md), #207). Its binding set is A1–A5 in
+([spec](EXPERIMENT_SPEC_V3.md), reviewed draft #207, freeze #209). Its binding set is A1–A5 in
 [`EXPERIMENT_SPEC_V3.md` §8](EXPERIMENT_SPEC_V3.md#8-evaluation). A v3 pass is a
 development pass, which permits only the reserved-window confirmation. No v3 run is
-dispatched before its trial register is committed (§9). Spec v2 (the mode switcher)
+dispatched before the **completing registration event** is committed (§9, step 2),
+pinning the reviewed data manifest hash and code commit and hash to the same trial ID.
+The initial retrospective entries and candidate-space registration alone do not permit
+dispatch. Spec v2 (the mode switcher)
 failed on C1 and closed on 2026-10-08
 ([verdict](backtests/2026-10-07-spec-v2-verdict.md)); its binding set, C1–C6 in
 [`EXPERIMENT_SPEC_V2.md` §8](EXPERIMENT_SPEC_V2.md#8-evaluation), governs only v2's
@@ -53,7 +56,8 @@ spec v1's criteria, across every included pair, window and intrabar path:
 | C6 | The gate earns its place: beats the ungated V0 baseline on return ÷ drawdown in at least 60% of runs |
 | R1 | Economics — **reported only**: the capital at which mean monthly return would cover €5/month of hosting (€0 on the owner's own PC) |
 
-**All of C1–C6 must pass; R1 informs but does not gate.** Two traps:
+**For v1's historical results, all of C1–C6 had to pass; R1 informed but did not gate.**
+The following two distinctions concern v1/v2, not v3's sizing and acceptance rules:
 
 - **10% is not 12%.** The runtime risk rules in `config/default.toml` are a soft stop at
   8% and a hard stop at **12%**. Those are the bot's safety net, not the acceptance bar.
@@ -65,16 +69,17 @@ spec v1's criteria, across every included pair, window and intrabar path:
   built from; where they differ — including its 12% risk limit and its economics gate —
   **§6 governs**.
 
-Passing does not authorise live trading or a live-capital pilot. It justifies only the
-next step the spec names in §7 and §8: a *proposal* for paper trading on live
-Revolut X prices (a live-price paper/shadow validation), which needs its own review. A live pilot comes
-later still, after the roadmap's read-only shadow gate, as a separate owner decision
-with a separately tested adapter and a live-deployment review. The delivery gates and
-what is already built are in [`ROADMAP.md`](../ROADMAP.md).
+A **v3 development pass** permits only a proposal for the reserved-window confirmation
+under v3 §8: the written multiple-testing rule (or the owner's written waiver) and
+the owner's explicit go are required before that run. It does not authorise live-price
+paper trading, a live-capital pilot or live trading. The older v1/v2 path to a Revolut X
+paper/shadow proposal belongs to those closed experiments and is not v3's next step.
+The delivery gates and what is already built are in [`ROADMAP.md`](../ROADMAP.md).
 
 **Before you build or propose anything, answer this in one line:** what does it do for
-that goal? Work that makes the bot more likely to pass C1–C6, or that makes the evidence
-trustworthy enough to stake €100 on, is the work. Everything else, **including
+that goal? Work that implements v3's frozen rules and A1–A5 faithfully, or makes the
+evidence trustworthy enough to judge that experiment, is the work. Improving a score
+by changing frozen rules or criteria is not implementation. Everything else, **including
 improvements to this process**, is overhead and has to justify its ongoing cost before
 it is built — not after four reviewers have approved it.
 

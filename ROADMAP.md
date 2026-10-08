@@ -62,7 +62,7 @@ prerequisites and every variant on main.
 **Spec v2, the spot mode switcher, closed as failed on 2026-10-08** (the owner's decision), on its
 verdict of 2026-10-07 (C1: drawdown 21.9% against a 10% limit;
 [verdict](docs/backtests/2026-10-07-spec-v2-verdict.md)). Spec v3, trend-following on
-perpetual-futures data, was frozen on 2026-10-08 (PR #207,
+perpetual-futures data, was frozen on 2026-10-08 (reviewed draft PR #207, freeze PR #209,
 [spec](docs/EXPERIMENT_SPEC_V3.md)); its build starts with the trial register. What follows is v2's record. It was frozen on 2026-10-06
 ([spec](docs/EXPERIMENT_SPEC_V2.md), PR #174 and its freezing PR). Each pair, every hour,
 chooses Grid (v1's grid with F's block), Uptrend (one long position with a trailing stop)
@@ -75,7 +75,7 @@ or Cash, under v1's unchanged risk limits.
   spec v2 §8. It failed C1 and passed C2–C6
   ([verdict](docs/backtests/2026-10-07-spec-v2-verdict.md)).
 - **The reserved 2025–26 window stays closed.** v2 did not pass, so no v2 step remains.
-  The next experiment is spec v3 (PR #207), frozen on 2026-10-08.
+  The next experiment is spec v3 (reviewed draft PR #207, freeze PR #209), frozen on 2026-10-08.
 
 ## 3. Read-only market-data shadow mode (partly implemented; expansion deferred)
 
