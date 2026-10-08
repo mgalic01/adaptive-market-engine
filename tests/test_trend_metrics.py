@@ -35,3 +35,28 @@ def test_nonfinite_metrics_are_rejected():
 
     with pytest.raises(ValueError):
         profit_factor([D("NaN")])
+
+
+def test_sample_returns_and_cagr_use_exact_elapsed_time():
+    from crypto_grid_bot.trend.metrics import cagr, sample_returns
+
+    year_ms = 31557600000  # 365.25 days
+    samples = [(0, D(100)), (year_ms // 2, D(110)), (year_ms, D(121))]
+    assert sample_returns(samples) == (D(".1"), D(".1"))
+    assert cagr(samples) == D(".21")
+    assert cagr([(0, D(100)), (year_ms, D(-1))]) == -1
+
+
+def test_calmar_boundaries():
+    from crypto_grid_bot.trend.metrics import calmar
+
+    assert calmar(D(".2"), D(".1")) == 2
+    assert calmar(D(".2"), D(0)) == D("Infinity")
+    assert calmar(D("-.2"), D(0)) == 0
+
+
+def test_duplicate_sample_time_is_invalid():
+    from crypto_grid_bot.trend.metrics import sample_returns
+
+    with pytest.raises(ValueError):
+        sample_returns([(0, D(100)), (0, D(101))])

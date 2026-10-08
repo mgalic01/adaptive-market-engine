@@ -6,6 +6,45 @@ from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 ZERO = Decimal(0)
 
 
+def _samples(samples: Sequence[tuple[int, Decimal]]) -> None:
+    _validate([equity for _, equity in samples])
+    if len(samples) < 2 or samples[0][1] <= ZERO:
+        raise ValueError("need two samples beginning with positive equity")
+    previous = -1
+    for stamp, _ in samples:
+        if type(stamp) is not int or stamp <= previous:
+            raise ValueError("sample times must be nonnegative and strictly increasing")
+        previous = stamp
+
+
+def sample_returns(samples: Sequence[tuple[int, Decimal]]) -> tuple[Decimal, ...]:
+    """Simple returns; the terminal partial day is one observation, as frozen."""
+    _samples(samples)
+    if any(equity <= ZERO for _, equity in samples[:-1]):
+        raise ValueError("nonpositive equity before terminal sample")
+    with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+        return tuple(samples[i][1] / samples[i - 1][1] - 1 for i in range(1, len(samples)))
+
+
+def cagr(samples: Sequence[tuple[int, Decimal]]) -> Decimal:
+    _samples(samples)
+    if samples[-1][1] <= ZERO:
+        return Decimal(-1)
+    with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+        days = Decimal(samples[-1][0] - samples[0][0]) / Decimal(86400000)
+        return (samples[-1][1] / samples[0][1]) ** (Decimal("365.25") / days) - 1
+
+
+def calmar(annual_return: Decimal, drawdown: Decimal) -> Decimal:
+    _validate([annual_return, drawdown])
+    if drawdown < ZERO:
+        raise ValueError("drawdown cannot be negative")
+    with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+        if drawdown == ZERO:
+            return Decimal("Infinity") if annual_return > ZERO else ZERO
+        return annual_return / drawdown
+
+
 def _validate(values: Sequence[Decimal]) -> None:
     if any(not isinstance(value, Decimal) or not value.is_finite() for value in values):
         raise ValueError("metrics require finite Decimal observations")
