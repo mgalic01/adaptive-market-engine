@@ -54,7 +54,18 @@ class DailyDecisions:
         self._return_days = {
             symbol: tuple(p.day_ms for p in points) for symbol, points in self._returns.items()
         }
-        self._exclusions = ExclusionCalendar(excluded_months or {})
+        self._excluded_months = {
+            symbol: frozenset(months) for symbol, months in (excluded_months or {}).items()
+        }
+        self._exclusions = ExclusionCalendar(self._excluded_months)
+
+    @property
+    def first_months(self) -> dict[str, str]:
+        return dict(self._first)
+
+    @property
+    def excluded_months(self) -> dict[str, frozenset[str]]:
+        return dict(self._excluded_months)
 
     def at(
         self,
