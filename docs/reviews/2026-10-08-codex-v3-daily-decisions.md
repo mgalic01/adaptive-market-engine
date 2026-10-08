@@ -34,3 +34,36 @@ portfolio start months and exclusion calendar. It is not implemented by this cla
 Historical dispatcher, continuous OOS orchestration and completion registration
 remain unfinished. No market data fetch or historical replay occurred. No new
 dependency or known security finding. Return targets remain unproven.
+
+Cloud performance follow-up: daily sizing now receives at most the last 60 return
+observations. These include every available return in the last 60 calendar days,
+because each coin has at most one return per day. A sparse 300-day regression first
+failed with 264 rows, then passed with 60 and identical full-history SizingResult.
+All 37 decision/sizing tests, Ruff and mypy pass. No strategy formula changes.
+Other review concerns (deferred pick-change attribution, all-invalid/no-bar
+interpretation and excluded-signal reporting) remain open; not merge-ready.
+
+Excluded-signal reporting fix: the recorded effective signal is now zero before
+sizing for a forced exclusion. The regression first reproduced the stale +1 signal,
+then passed. Candidate exit reasons are explicitly documented as inputs to the
+lifecycle ledger's single priority-selected final reason. All 50 decision/sizing/
+lifecycle tests, Ruff and mypy pass. Signal-series state itself remains continuous.
+Deferred pick attribution and the all-invalid missing-bar interpretation remain
+open; this does not claim those review concerns are resolved.
+
+Deferred zero-target close attribution: replacing a pending zero target with another
+zero target now retains its initiating pick_change candidate. Dispatch consumes it;
+a nonzero replacement cancels that closing intention and does not inherit the cause.
+Regression reproduced lost attribution before the fix; all 32 pending/runner/decision
+tests, Ruff and mypy pass. This covers explicit zero-target closes, not a nonzero
+replacement that eventually rounds or reduces to zero; that broader case still needs
+review. All-invalid/no-bar specification interpretation also remains open.
+
+Deferred attribution completion supersedes the earlier zero-only restriction:
+pick_change now survives every still-pending replacement until the first execution
+attempt. A nonzero target can round to zero or undergo minimum-quantity enlargement,
+so clearing the cause merely on a nonzero replacement was incorrect. Three signed/
+tiny-target regressions reproduced the loss. A real 50-hour runner regression opens,
+defers a pick close, replaces with a tiny nonzero target and verifies the eventual
+rounding close records pick_change. All 35 pending/runner/decision tests pass;
+Ruff and mypy pass. No target, execution time or accounting arithmetic changes.

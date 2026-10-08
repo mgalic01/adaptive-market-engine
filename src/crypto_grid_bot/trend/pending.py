@@ -56,11 +56,15 @@ class PendingDecisions:
             symbol_name(symbol)
         cancelled = []
         for symbol in sorted(new_targets):
+            reasons = frozenset((exit_reasons or {}).get(symbol, ()))
             if symbol in self._pending:
-                cancelled.append((symbol, self._pending[symbol]))
-            self._pending[symbol] = PendingDecision(
-                hour_ms, new_targets[symbol], frozenset((exit_reasons or {}).get(symbol, ()))
-            )
+                previous = self._pending[symbol]
+                cancelled.append((symbol, previous))
+                # The newly selected rule has not had an execution attempt yet.
+                # Keep that cause even for nonzero targets: rounding or minimum
+                # quantity can turn their eventual reduction into a full close.
+                reasons |= previous.exit_reasons & {"pick_change"}
+            self._pending[symbol] = PendingDecision(hour_ms, new_targets[symbol], reasons)
         ready = []
         for symbol, decision in sorted(self._pending.items()):
             if symbol in tradable and hour_ms >= decision.decision_ms + HOUR:
