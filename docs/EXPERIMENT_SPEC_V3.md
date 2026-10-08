@@ -27,7 +27,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
   - Each file's checksum and statistics are recorded in a committed manifest.
   - The fetch also records today's USDⓈ-M exchange filters (quantity step, minimum notional) for the 10 symbols, once, in the manifest. Historical filters are not published (spec v1 P4), so today's are used and the record says so.
 - **Integrity:** the 1h futures klines go through the repairing reader of the long-window data (#186, #189).
-  - As spec v1 §5 rule 5 treats a symbol that has only 1h archives, every hour the reader repairs, and every missing hour, is masked.
+  - Spec v1 §5 rule 5, "Untraded basket symbols' repaired hours are masked", covers a symbol that has only its 1h archive, so a repaired hour cannot be checked against minutes. v3's futures are in the same position. So every hour the reader repairs is masked, and so is every missing hour (rule 1).
   - A coin-month with more than 17% of its hours masked is excluded, under spec v1 §5's 17% rule. So is a coin-month whose funding file is missing.
   - **An excluded coin-month** gives that coin a target of 0 for the whole month, in every run: the out-of-sample account, the training runs and the hold benchmark.
     - An open position closes at the decision made after the close of the day before the previous month's last day. That decision fills at 01:00 UTC on the previous month's last day, so the coin is flat through every funding timestamp of the excluded month.
@@ -44,7 +44,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
   - **A spot coin-month that is excluded** gives that coin a target of 0 for the same month, as a futures exclusion does, and its days drop out of the daily series.
 - **Daily bars for signals** (§4) are aggregated from these spot 1h bars: R5 needs highs and lows, and the other rules use closes.
 - **The hold benchmark** (§8) uses the same spot 1h bars.
-- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06, or from a coin's first full spot month if later, gives each coin more than a year before its futures data start (§3), except where the spot listing is too late for that: SOLUSDT's spot starts in 2020-08. There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
+- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06, or from a coin's first full spot month if later, gives each coin more than a year before its futures data start (§3), except where the spot listing is too late for that: SOLUSDT's spot starts in 2020-08, which the fetch confirms and the record states. There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
 
 **Daily bars** are UTC days, built from the unmasked 1h bars of each day:
 - open is the first unmasked hour's open, and close is the last unmasked hour's close;
@@ -69,8 +69,8 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
 | # | Rule | Signal |
 | --- | --- | --- |
 | R1 | **SMA50** | close > SMA(50) → +1; close < SMA(50) → −1; equal → 0. D's rule, with a short side. |
-| R2 | **EMA 21/55** | EMA(21) > EMA(55) → +1; below → −1; equal → 0. |
-| R3 | **Donchian 55/20** | Flat until a close above the prior 55-day high (+1) or below the prior 55-day low (−1). A long exits to 0 on a close below the prior 20-day low; a short exits to 0 on a close above the prior 20-day high. "Prior" means the window ending the day before. |
+| R2 | **EMA 21/55** | EMA(21) > EMA(55) → +1; below → −1; equal → 0. Each EMA starts as the simple average of its first n closes, at bar n, then `EMA_t = α × C_t + (1 − α) × EMA_{t−1}` with `α = 2 ÷ (n + 1)`. |
+| R3 | **Donchian 55/20** | "Prior n-day" means the n bars ending the bar before. Each day, in this order: a close above the prior 55-day high → +1; else a close below the prior 55-day low → −1; else a long whose close is below the prior 20-day low → 0; else a short whose close is above the prior 20-day high → 0; else unchanged. Starts flat. A close that breaks both a long's 20-day exit and the 55-day low reverses to −1, and likewise for a short. Highs and lows are the daily bars' (§2). |
 | R4 | **12-month momentum** | close ÷ close 365 days earlier − 1: > 0 → +1; < 0 → −1; = 0 → 0. |
 | R5 | **Supertrend 10/3** | Defined in full below the table. Uptrend → +1, downtrend → −1. |
 | R6 | **Equal blend** | the mean of R1–R5's signals, a value in [−1, +1]. It is the only rule whose signal is not just −1, 0 or +1. |
@@ -84,7 +84,7 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
   - `lower_t = basic_lower_t` if `basic_lower_t > lower_{t−1}` or `C_{t−1} < lower_{t−1}`, else `lower_{t−1}`.
 - **Trend:** at bar 11, uptrend if `C_t ≥ mid`, else downtrend. After that, an uptrend turns down when `C_t < lower_t`, and a downtrend turns up when `C_t > upper_t`. Otherwise it continues.
 
-- **A rule with too little history** for a coin gives 0 for that coin until it has enough: 50 closes for R1, 55 for R2 and R3, a close at least 365 days earlier for R4, and 11 bars for R5.
+- **A rule with too little history** for a coin gives 0 for that coin until it has enough: 50 closes for R1, 55 for R2, 56 bars for R3 (55 prior bars and the current one), a close at least 365 days earlier for R4, and 11 bars for R5.
 - **No other strategy family is in v3.** That covers mean reversion, scalping, breakout variants, pattern recognition, market structure, pairs trading and funding arbitrage (§10). Each extra rule is another trial, and more trials make a lucky pass more likely.
 
 ## 5. Sizing
@@ -111,6 +111,7 @@ At each daily decision, after day d's close:
    - The quantity rounds toward zero to the symbol's quantity step.
    - A trade that opens or increases a position is not made if its notional (quantity change × open) is below the symbol's minimum notional, and it is reported.
    - A trade that reduces or closes a position is always made, at any size, as a reduce-only order is on Binance.
+   - **A flip** (long to short, or short to long) is two orders at the same fill price: first a close of the whole position, always made; then an opening order for the new side. The opening order rounds to the quantity step and must meet the minimum notional. If it does not, the coin is left flat, and this is reported. Each order pays its own fee.
 
 **Precision:** every sizing computation runs in `Decimal` at 60 significant digits with `ROUND_HALF_EVEN`, including the covariance, the square roots (`Decimal.sqrt`) and the scaling. Prices and rates are used exactly as archived.
 
@@ -120,18 +121,22 @@ At each daily decision, after day d's close:
 - **Fills:** each daily decision fills at the open of the 1h bar that starts one hour after the UTC day's close (01:00 UTC). A buy fills at `open × (1 + 0.0005)` and a sell at `open × (1 − 0.0005)`, which is the slippage. Each fill pays the taker fee, 0.05% (Binance USDⓈ-M, VIP 0), of its slipped notional: `quantity × fill price`. Quantities come from §5 step 5.
 - **A masked fill hour:** the fill moves to the open of the next unmasked hour of that coin, on the same terms. The current weight, the equity and the open of §5 steps 4 and 5 are all taken at that actual fill hour.
 - **Funding:** each timestamp in the coin's funding file belongs to the 1h bar whose hour contains it, so millisecond offsets map to the hour they fall in.
-  - The position pays `quantity × that bar's open × rate` if it is long and the rate is positive. A short receives it. A negative rate reverses both.
+  - The position pays `quantity × price × rate` if it is long and the rate is positive. A short receives it. A negative rate reverses both.
+  - The price is that bar's open, or, if the bar is masked or missing, the open of the last unmasked bar before it.
+  - Binance charges funding on the mark price, not on the last-trade price. Using the bar's open is a disclosed approximation: the two differ by the basis, which is small next to the funding rate's own variation.
   - **Order within an hour:** funding first, on the quantity held before that hour's fills; then the fills.
   - Funding is charged at exactly the timestamps in the file. A month whose file has fewer timestamps than its days × 3 is reported, and its missing timestamps are not charged.
 - **Marking:** equity is marked at every hour's open. Total equity is cash plus the unrealised profit and loss of every position, after every fee and funding payment.
 - **Liquidation:** each hour, equity is also computed at each position's adverse extreme of that 1h bar: the low for a long, the high for a short, all at once.
   - If that equity is ≤ 1% of the gross open notional, the account is liquidated at the next hour's opens, and the run fails (§8).
-  - The 1% threshold is Claude's design choice, deliberately conservative.
+  - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin.
   - It is expected never to happen at these sizes.
 - **Accounting identities,** exact and checked at the end of every run, as in spec v1 P6:
   - cash = initial capital − the sum of buy notionals + the sum of sell notionals − fees − funding paid + funding received, with notionals at fill prices;
   - each coin's quantity = its buys − its sells;
   - realised plus unrealised profit and loss, net of every fee and funding payment, equals the change in equity.
+
+**No recovery, restart or rebasing.** v3 has no soft-drawdown recovery, halt, restart or any other rule that moves a reference peak. Drawdown is measured from the run's true peak, the running maximum of the hourly equity marks, and that peak is never lowered. Codex's diagnosis of v2 found that v2's risk layer could lower its own peak after a recovery, so it never enforced the lifetime drawdown that C1 measured (§11, decision 10). v3's sizing is the only risk control, and A3 judges it against the true peak.
 
 **Costs stress, reported only:** every run is repeated at double fees and double slippage.
 
@@ -148,11 +153,12 @@ At each daily decision, after day d's close:
 ## 8. Evaluation
 
 **Metrics,** on the stitched out-of-sample run, from the daily equity series at 01:00 UTC before that hour's fills:
-- **Sharpe ratio:** mean ÷ standard deviation of the daily simple returns, × √365, with a risk-free rate of 0.
+- **Sharpe ratio:** mean ÷ sample standard deviation (n − 1) of the daily simple returns, × √365, with a risk-free rate of 0. The hold benchmark's Sharpe ratio (A5) uses the same formula over the same days.
 - **Profit factor:** the sum of positive daily profit and loss ÷ the absolute sum of negative daily profit and loss.
 - **CAGR:** compound annual growth over the out-of-sample days (365.25-day years).
 - **Maximum drawdown:** on the hourly equity marks, from the running peak.
 - **Calmar ratio:** CAGR ÷ maximum drawdown.
+- **Precision:** A1–A5 are computed in `Decimal` at 60 significant digits with `ROUND_HALF_EVEN`, as sizing is. The bootstrap interval below is reported only, and may use binary floating point.
 
 **Acceptance.** v3 passes only if all five hold:
 
@@ -181,7 +187,8 @@ At each daily decision, after day d's close:
 - the time invested, gross and net;
 - the realised portfolio volatility against the 20% target, and the share of days on which a cap bound. With few coins early on, the 10% cap can hold the book below target, and A4 is not scale-free;
 - a 95% interval for the Sharpe ratio, beside A1 and A5. It is a stationary block bootstrap of the daily returns (Politis and Romano):
-  - block lengths are geometric, with a mean of 20 days;
+  - block lengths are geometric, with a mean of 20 days, and blocks wrap around the end of the series (circular, as in Politis and Romano);
+  - with fewer than 60 daily returns, no interval is reported;
   - 10,000 resamples;
   - Python's `random.Random(20261008)` as the only source of randomness;
   - the 2.5th and 97.5th percentiles of the resampled Sharpe ratios, by the nearest-rank method;
@@ -191,8 +198,29 @@ At each daily decision, after day d's close:
 - variant D, and plain equal-weight buy-and-hold at full size;
 - **the minimum account size:** the smallest account at which every target position of the out-of-sample run meets its symbol's minimum notional (§5).
 
+**Decision and trade records** (required outputs, written with every run, and never read back by any decision; §11, decision 10):
+- **Every daily decision, per coin:**
+  - the signal of every rule R1–R6, and which rule is picked;
+  - σ, the raw weight, the scaled weight and which cap bound;
+  - the final target, and whether the band skipped the trade;
+  - any minimum-notional refusal, or flat-after-flip;
+  - the fill hour (and whether it was deferred), the filled quantity, the fill price and the fee.
+- **Every position's lifecycle.** A position runs from flat to non-zero, and ends back at flat or at a flip. For each one:
+  - the coin and side;
+  - every fill, with its time, quantity and price;
+  - the exit's trigger: the signal going to 0, a flip, a pick change, an excluded month, or the end of the run;
+  - its duration;
+  - its maximum favourable and maximum adverse excursion per unit, from the average entry price, on the hourly highs and lows while it is open;
+  - the profit given back before exit (the maximum favourable excursion minus the realised move per unit);
+  - its realised profit and loss, fees, and funding paid and received.
+- **Every walk-forward window:** each rule's training Sharpe ratio and validity, and the pick.
+- **The equity series:** hourly total equity, the running peak and the drawdown, never rebased.
+- The design follows Codex's entry-attribution work on v2 (#208).
+
 **Outcome:**
-- **If v3 passes,** the reserved 2025–26 window may run once, as a confirmation. That needs its own written rule first (as spec v1's C7), and the owner's go. Nothing in v3 runs on it before then.
+- **If v3 passes,** the reserved 2025–26 window may run once, as a confirmation. Before it runs, two things are needed, and nothing in v3 runs on it before then:
+  - **A written rule,** as spec v1's C7, including a multiple-testing correction over the whole family tried on these years: v1's variants, v2's mode switcher, D, #137's rules, and v3's six rules with its picking procedure. Alternatively, the owner may waive that correction in writing.
+  - **The owner's go.**
 - **If it fails,** v3 ends with no pass, and nothing runs on the reserved window.
 
 **Trials:** six rules and one picking procedure, all fixed in this draft before any v3 result. The long-only twins are reported, never picked.
@@ -200,6 +228,7 @@ At each daily decision, after day d's close:
 **Prior exposure (disclosed):**
 - **v2's runs** covered 2019–2024 on spot for BTCUSDT and ETHUSDT, with a different strategy. Their results, and D's, were seen before this design.
 - **#137** (2026-09-28) ran three published trend rules on BTCUSDT 2017–2024. Adding a short side made each one worse: 12-month momentum fell from +1,423% to +700%, a Donchian breakout from +2,643% to +377%, and 50/200 averages from +593% to +57%. This is why every report shows the long-only twins and the long-versus-short split (§11, decision 7).
+- **Codex's diagnosis of v2** (2026-10-08) informed v3's records, and the statement on lifetime drawdown (§11, decision 10).
 - **Where the settings come from:**
   - R1 is D's rule;
   - R2's 21/55 is from the owner's brief;
@@ -243,7 +272,10 @@ Each entry gives the question, and the option the owner chose.
 1. **What to do with the brief.** The owner shared a brief for a 25%-a-month, 50-coin, multi-strategy, 20x-leverage bot with live trading. Claude assessed it against v0–v2's evidence. Question: "What do you want me to do with this spec?" Chosen: **"Test the core idea first"**. The option said: "Before any big build: a new pre-registered spec (v3), paper-only, testing trend-following (long and short) across a wider set of top coins, held to the spec's own walk-forward gate (Sharpe at least 1.0, profit factor at least 1.3). Build infrastructure only for what passes. No profit promise." This also closes spec v2 as failed.
 2. **Drawdown.** Question: "What drawdown should v3 accept?" Chosen: **"Size to a risk budget"**. The option said: "No fixed cap kills a run on its own. Positions are sized so the portfolio targets a set volatility (e.g., ~20-25% a year), which keeps drawdowns moderate, and the gate also requires drawdown well below buy-and-hold's and a Calmar ratio (return / drawdown) of at least ~0.5. Most room for trend-following to show an edge."
    - v3 uses a 20% target (§5).
-   - The pass bar the owner approved afterwards (decision 5, and design section 4) carries the Calmar ratio as A3. It has no separate drawdown-versus-buy-and-hold criterion. The maximum drawdown and buy-and-hold's are both reported (§8).
+   - The pass bar the owner approved afterwards carries the Calmar ratio as A3, and has no separate drawdown-versus-buy-and-hold criterion. The maximum drawdown and buy-and-hold's are both reported (§8). Two later answers record that pass bar:
+     - **Decision 5's option,** quoted below, lists the pass as the gate, Calmar, 8% a year, and beating the same coins held at the same risk.
+     - **Design section 4.** The question put to the owner was: "Section 4 (walk-forward and scoring): 18-month train / 3-month test, rolling quarterly; 15 out-of-sample quarters (2021-Q2 to 2024-Q4); the best-Sharpe rule of the menu trades each next quarter; pass = all of Sharpe >= 1.0, profit factor >= 1.3 (daily), Calmar >= 0.5, >= 8%/yr net, and a higher Sharpe than the same coins held at the same 20% risk; monthly returns vs your 20-30% target reported. OK?" The owner answered "Looks right".
+     - Its quarter count was later corrected by review: funding archives begin in 2020-01, so the start is conditional on the fetch (§7).
 3. **Shorts.** Question: "How should v3 handle the short side?" Chosen: **"Long and short on futures data"**: perpetual-futures prices and funding history fetched by Bob, real funding charged, at 1x leverage.
 4. **Coins.** Question: "Which coins should v3 trade?" Chosen: **"Our 10 coins, bias stated"**.
 5. **The pass bar.** The owner first answered: "our strategy needs to make 20-30% profits per month." Claude explained that 20% a month is about +790% a year, and that at 1x leverage and a 20% risk budget it would need a Sharpe ratio near 30. Question: "Given that 20-30% a month can't be reached at 1x leverage and a 20-25% risk budget, how should v3 judge a pass?" Chosen: **"Realistic bar, report vs 20-30%"**. The option said: "Pass = the gate (Sharpe >= 1.0, profit factor >= 1.3) + Calmar >= 0.5 + at least 8% a year + beats holding the same coins at the same risk. Every report also shows monthly returns against your 20-30% target, so the gap is visible."
@@ -251,3 +283,19 @@ Each entry gives the question, and the option the owner chose.
 7. **The short side, after #137.** Claude disclosed #137's finding that shorts made trend rules worse on BTCUSDT. Question: "How should v3 treat the short side?" Chosen: **"Keep long+short, report long-only alongside"**.
 8. **The build approach.** Question: "Which way should the v3 test be built?" Chosen: **"A: new hourly backtester"**: its own module, hourly futures bars, exact decimals, real funding, fills at the next hour's open with slippage and fees.
 9. **The design sections.** The owner approved Claude's five design sections, on the data, the rules, sizing and costs, walk-forward and scoring, and the build, and asked for this draft: "Looks right, write the spec".
+10. **Codex's input.** The owner said: "Codex will send you his brainstorming and info on what he things we should do next, we should incorporate all of it in V3."
+    - **Codex's input:**
+      - its diagnosis of v2's scored runs, `DIAGNOSIS.md` of 2026-10-08, in Codex's workspace;
+      - its entry-attribution work, #208 and `docs/reviews/2026-10-08-codex-entry-attribution.md`.
+    - **The diagnosis concludes:**
+      - v2's recovery controls did not enforce lifetime drawdown;
+      - entries left very little participation;
+      - exit losses consumed much of the gain.
+    - **It recommends:**
+      - recording every entry rejection and every position's lifecycle;
+      - settling lifetime risk before more participation;
+      - testing one change at a time.
+    - Claude put the one tension to the owner. Question: "Codex advises testing one change at a time; v3 as designed changes several at once (futures, shorts, new rules, new sizing, 10 coins). How should v3 handle this?" Chosen: **"Keep v3, add Codex's records"**. The option said: "v3 stays one combined test, with its existing breakdowns (long-only twins, each rule alone, hold at the same risk, double costs, funding split) plus Codex's full decision and trade-lifecycle records, so every result can be traced to its cause. One test, one verdict."
+    - **In this spec:**
+      - the records are in §8;
+      - the statement that v3 measures drawdown from the true peak, with no rebasing, is in §6.
