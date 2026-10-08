@@ -80,3 +80,23 @@ verification and external review remain required. Start-record pick schedule lin
 explicit recovery finalization and whole-experiment reports are still unfinished.
 
 Clean full local suite at 46f4d2ad852b38d9d245a88d79b55cbcf7ce0daf completed with exit0 after holding the checkout unchanged. The preceding mixed-version run is invalid evidence: late imports saw edited modules; its separate worker-pool failure did not reproduce in the clean run. The current follow-up integrates 214b3cb metric sample completeness and eb5aa15 missing-spot pick attribution. Its sole decisions.py conflict keeps both cause-only events and all-rule evidence. It also ports the reviewed internal volatility diagnostic correction from 2a5742c (measured inactive-coin sigma, null when unavailable, all-invalid flat sizing diagnostics), and the bootstrap's narrowly documented non-security Bandit annotation. All 109 focused metrics/sizing/decision/pending/replay/writer tests pass, plus Ruff lint/format, mypy and Bandit. This later integrated version still requires full CI; do not carry the 46f4d2a full-suite result across it. No new dependencies or trading parameters. Nullable diagnostic volatility is the explicit schema compatibility change.
+
+## 2026-10-09 started pick schedules
+
+Every training, out-of-sample and sensitivity attempt now retains its complete
+immutable pick schedule before replay, and repeats it in both successful and
+failed finish identities. The recorder stores schedules as JSON arrays and
+rejects changed schedules at finish. Daily decision evidence remains separate.
+Cancellation tests failed before the field was added and now show the schedule
+already present when replay begins. Saved JSON read-back and changed-finish
+regressions pass. Existing completed journals remain readable; this adds an
+identity field to newly produced journals and does not rewrite prior evidence.
+
+Validation: 22 focused orchestration/writer checks and the separate full synthetic
+training/OOS integration test pass (23 total), Ruff lint/format and mypy pass.
+Independent read-only Codex reviewer checked all nine production attempt paths,
+ran the 22 focused checks and found no actionable defects. No selection/execution
+formula changes, historical dispatch, new dependencies or known security changes.
+Full trial registration linkage, explicit orphan adjudication and spot/report
+integration remain unfinished. Earlier Bob NO ISSUES at d431e67 predates this delta;
+new full-head external review and CI are required.

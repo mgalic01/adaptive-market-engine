@@ -48,6 +48,7 @@ class Attempt:
     multiple: int = 2
     cost_multiple: int = 1
     state: str = "finished"
+    pick_schedule: tuple[tuple[int, str | None], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,7 @@ def replay_sensitivities(
     if not picks:
         raise ValueError("main-test picks are required")
     fixed_picks = dict(picks)
+    schedule = tuple(sorted(fixed_picks.items()))
     start = min(fixed_picks)
     prefix = uuid4().hex
     results = {}
@@ -102,6 +104,7 @@ def replay_sensitivities(
                 multiple,
                 cost,
                 "started",
+                schedule,
             )
         )
         result = None
@@ -136,12 +139,22 @@ def replay_sensitivities(
                     f"{type(exc).__name__}: {exc}",
                     multiple,
                     cost,
+                    pick_schedule=schedule,
                 )
             )
             raise
         record(
             Attempt(
-                run_id, "sensitivity", None, start, end_ms_exclusive, result, None, multiple, cost
+                run_id,
+                "sensitivity",
+                None,
+                start,
+                end_ms_exclusive,
+                result,
+                None,
+                multiple,
+                cost,
+                pick_schedule=schedule,
             )
         )
         results[multiple, cost] = result
@@ -176,7 +189,20 @@ def run_walk_forward(
         scores = {}
         for rule in RULES:
             run_id = f"{prefix}-train-{window.test_start}-{rule}"
-            record(Attempt(run_id, "training", rule, start, end, None, None, state="started"))
+            schedule: tuple[tuple[int, str | None], ...] = ((start, rule),)
+            record(
+                Attempt(
+                    run_id,
+                    "training",
+                    rule,
+                    start,
+                    end,
+                    None,
+                    None,
+                    state="started",
+                    pick_schedule=schedule,
+                )
+            )
             result = None
             try:
                 result = replay_window(
@@ -204,11 +230,20 @@ def run_walk_forward(
                     result = exc.partial_result
                 record(
                     Attempt(
-                        run_id, "training", rule, start, end, result, f"{type(exc).__name__}: {exc}"
+                        run_id,
+                        "training",
+                        rule,
+                        start,
+                        end,
+                        result,
+                        f"{type(exc).__name__}: {exc}",
+                        pick_schedule=schedule,
                     )
                 )
                 raise
-            record(Attempt(run_id, "training", rule, start, end, result, None))
+            record(
+                Attempt(run_id, "training", rule, start, end, result, None, pick_schedule=schedule)
+            )
             scores[rule] = score
             training.append(TrainingScore(run_id, window.test_start, rule, score, result.reason))
         picks[end] = choose_rule(scores)
@@ -216,7 +251,20 @@ def run_walk_forward(
     # This is only an exclusive timestamp boundary, not a requested 2025 price.
     end = month_bounds_ms(calendar[-1].test_end_exclusive)[0]
     run_id = f"{prefix}-out-of-sample-m2"
-    record(Attempt(run_id, "out_of_sample", None, start, end, None, None, state="started"))
+    schedule = tuple(sorted(picks.items()))
+    record(
+        Attempt(
+            run_id,
+            "out_of_sample",
+            None,
+            start,
+            end,
+            None,
+            None,
+            state="started",
+            pick_schedule=schedule,
+        )
+    )
     result = None
     try:
         result = replay_window(
@@ -230,9 +278,16 @@ def run_walk_forward(
             result = exc.partial_result
         record(
             Attempt(
-                run_id, "out_of_sample", None, start, end, result, f"{type(exc).__name__}: {exc}"
+                run_id,
+                "out_of_sample",
+                None,
+                start,
+                end,
+                result,
+                f"{type(exc).__name__}: {exc}",
+                pick_schedule=schedule,
             )
         )
         raise
-    record(Attempt(run_id, "out_of_sample", None, start, end, result, None))
+    record(Attempt(run_id, "out_of_sample", None, start, end, result, None, pick_schedule=schedule))
     return WalkForwardResult(tuple(training), picks, result)

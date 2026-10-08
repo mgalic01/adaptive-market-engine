@@ -61,6 +61,7 @@ def test_cancelled_replay_already_has_persisted_start_identity(monkeypatch):
         assert len(records) == 1
         assert records[0].state == "started"
         assert records[0].run_id
+        assert records[0].pick_schedule == ((args[4], args[6][args[4]]),)
         raise KeyboardInterrupt()
 
     monkeypatch.setattr(orchestration, "replay_window", cancelled)
@@ -71,6 +72,22 @@ def test_cancelled_replay_already_has_persisted_start_identity(monkeypatch):
             {},
             {},
             record=records.append,
+        )
+
+
+def test_cancelled_sensitivity_start_retains_entire_pick_schedule(monkeypatch):
+    records = []
+    start, day = 1609459200000, 86400000
+    picks = {start: "R1", start + day: None}
+
+    def cancelled(*args, **kwargs):
+        assert records[0].pick_schedule == tuple(sorted(picks.items()))
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(orchestration, "replay_window", cancelled)
+    with pytest.raises(KeyboardInterrupt):
+        orchestration.replay_sensitivities(
+            DailyDecisions({}, {}), {}, {}, {}, picks, start + 2 * day, record=records.append
         )
 
 
@@ -198,6 +215,12 @@ def test_all_invalid_candidates_are_recorded_and_choose_flat(monkeypatch):
     assert all(row.invalid_reason == "unavailable_exclusion_close" for row in result.training)
     assert set(result.picks.values()) == {None}
     assert calls[-1] == result.picks
+    assert records[-2].state == "started"
+    assert (
+        records[-2].pick_schedule
+        == records[-1].pick_schedule
+        == tuple(sorted(result.picks.items()))
+    )
 
 
 def test_engine_error_is_recorded_and_aborts_instead_of_selecting_another_rule(monkeypatch):

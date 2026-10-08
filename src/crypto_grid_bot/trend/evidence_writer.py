@@ -195,6 +195,7 @@ class AttemptRecorder:
                 "cost_multiple",
             )
         }
+        identity["pick_schedule"] = [list(pick) for pick in attempt.pick_schedule]
         if attempt.state == "started":
             if attempt.result is not None or attempt.error is not None:
                 raise ValueError("started attempt cannot have a result")
