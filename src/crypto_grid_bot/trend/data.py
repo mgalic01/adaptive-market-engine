@@ -18,7 +18,7 @@ class FundingSchedule:
 
 
 def funding_schedule(records: Sequence[FundingRecord], month: str) -> FundingSchedule:
-    """Apply frozen V3 Â§2 to the entire month, retaining every bad record as evidence."""
+    """Apply frozen V3 Ã‚Â§2 to the entire month, retaining every bad record as evidence."""
     development_month(month)
     start, end = month_bounds_ms(month)
     if not records:
@@ -110,7 +110,11 @@ def hourly_month(
 
 def repaired_month(read: RepairedRead, month: str) -> HourlyMonth:
     """Bridge from the existing repairing reader without forgetting repaired hours."""
-    return hourly_month(read.bars, month, read.repaired | read.masked_hours)
+    start, end = month_bounds_ms(month)
+    # The repairing reader also reports bad rows outside the archive's month.
+    # Their hours do not belong in this month's mask or its 17% denominator.
+    masks = frozenset(t for t in read.repaired | read.masked_hours if start <= t < end)
+    return hourly_month(read.bars, month, masks)
 
 
 def mandatory_close_hour(excluded_month: str, unmasked_hours: frozenset[int]) -> int | None:

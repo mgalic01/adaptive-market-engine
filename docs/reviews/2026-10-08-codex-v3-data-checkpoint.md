@@ -54,3 +54,9 @@ README, data columns/checksum description). That documentation displayed a few
 2025-dated example rows incidentally; no archive or reserved dataset was requested,
 and those examples were not used for returns, strategy design or parameter choices.
 Record this incidental exposure for any later reserved-window methodology review.
+
+Manifest integration regression: repairing-reader masks can include an out-of-month
+bad row. The V3 bridge now keeps only in-month mask hours before aggregation; the
+reader's documented contract says out-of-month hours do not count. A failing test
+reproduced the previous rejection and now passes. Focused data/helper suite: 71
+passed, strict mypy clean. The legacy reader remains unchanged.

@@ -167,3 +167,15 @@ def test_mandatory_close_reserved_month_rejected():
 
     with pytest.raises(ValueError):
         mandatory_close_hour("2025-01", frozenset())
+
+
+def test_reader_out_of_month_bad_row_does_not_mask_an_in_month_hour():
+    from crypto_grid_bot.backtest.klines import FileStats, RepairedRead
+    from crypto_grid_bot.trend.data import repaired_month
+
+    bars = hourly_bars()
+    stats = FileStats(len(bars), len(bars), 0, 0, bars[0].open_ms, bars[-1].open_ms, ("ms",))
+    read = RepairedRead(bars, stats, frozenset(), frozenset({bars[0].open_ms - 3_600_000}), "")
+    result = repaired_month(read, "2024-02")
+    assert result.masked_hours == frozenset()
+    assert len(result.daily_bars) == 29
