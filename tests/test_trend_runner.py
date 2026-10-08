@@ -77,16 +77,17 @@ def test_runner_stops_on_corrupt_account_instead_of_classifying_strategy():
     assert r.stopped == "engine_failure"
 
 
-def test_runner_does_not_silently_adopt_proposed_rounding_tolerance():
-    from crypto_grid_bot.trend.orders import OrderIntent
+def test_runner_stops_and_retains_equity_residual_above_approved_bound(monkeypatch):
+    from crypto_grid_bot.trend.account import AccountingAudit
     from crypto_grid_bot.trend.runner import AccountingFailure, TrendRunner
 
     r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
-    for quantity, price, reducing in [(1, 1, False), (6, 2, False), (-7, 2, True)]:
-        r.account.fill("BTCUSDT", OrderIntent(D(quantity), reducing), D(price), T)
+    audit = AccountingAudit(D(0), {}, D("-1.0000000000000000001e-18"))
+    monkeypatch.setattr(r.account, "audit", lambda prices: audit)
     with pytest.raises(AccountingFailure) as failure:
         r.step(T, {}, {}, {})
-    assert failure.value.audit.equity_residual == D("-1e-59")
+    assert failure.value.audit == audit
+    assert r.audits == [audit]
     assert r.stopped == "engine_failure"
     assert not r.hours
 
@@ -249,3 +250,19 @@ def test_runner_consumes_event_suffix_without_reading_full_journal(monkeypatch):
     r.step(T + 2 * H, bar, {}, {T + 2 * H: {"BTCUSDT": D(".01")}})
     assert r.lifecycles.event_count == 2
     assert r.lifecycles.active["BTCUSDT"].funding_paid == 10
+
+
+def test_runner_accepts_and_retains_approved_equity_rounding_residual():
+    from crypto_grid_bot.trend.orders import OrderIntent
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES})
+    for quantity, price in ((1, 1), (6, 2), (-7, 2)):
+        r.account.fill("BTCUSDT", OrderIntent(D(quantity), quantity < 0), D(price), T)
+    r.lifecycles.consume(r.account.events, {2: {"signal_zero"}})
+    r.step(T, {}, {}, {})
+    r.finish({})
+    assert r.stopped == "completed"
+    assert len(r.audits) == 3
+    assert all(a.accepted and not a.exact for a in r.audits)
+    assert all(a.equity_residual == D("-1e-59") for a in r.audits)
