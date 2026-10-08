@@ -24,6 +24,24 @@ def test_runner_carries_last_open_and_counts_masked_held_hours():
     assert r.account.positions["BTCUSDT"].quantity == 10
     assert r.peak > 10000
     assert r.max_drawdown > 0
+    assert r.daily_samples[0][0] == T + H
+    assert r.daily_samples[0][1] == 10000
+    assert [state.kind for state in r.equity_path[-4:]] == [
+        "open",
+        "post_fill",
+        "favourable",
+        "adverse",
+    ]
+    assert all(left.peak <= right.peak for left, right in zip(r.equity_path, r.equity_path[1:]))
+
+
+def test_funding_path_preserves_raw_timestamp():
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
+    r.step(T, {}, {}, {T + 30: {"BTCUSDT": D(".01")}})
+    state = next(state for state in r.equity_path if state.kind == "funding")
+    assert state.timestamp_ms == T + 30
 
 
 def test_runner_does_not_skip_hours_or_continue_after_engine_failure():

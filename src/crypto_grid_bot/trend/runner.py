@@ -1,6 +1,7 @@
 """Continuous V3 synthetic/data-adapter runner, with strict engine audits."""
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
 from crypto_grid_bot.trend.account import AccountingAudit, FuturesAccount
@@ -9,6 +10,15 @@ from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.pending import DecisionDispatch, PendingDecisions
 
 HOUR = 3600000
+
+
+@dataclass(frozen=True, slots=True)
+class EquityState:
+    timestamp_ms: int
+    kind: str
+    equity: Decimal
+    peak: Decimal
+    drawdown: Decimal
 
 
 class AccountingFailure(RuntimeError):
@@ -40,6 +50,8 @@ class TrendRunner:
         self.audits: list[AccountingAudit] = []
         self.peak = self.account.initial
         self.max_drawdown = Decimal(0)
+        self.equity_path: list[EquityState] = []
+        self.daily_samples: list[tuple[int, Decimal]] = []
 
     def step(
         self,
@@ -97,10 +109,23 @@ class TrendRunner:
         self._prices = prices
         self._hour = hour_ms
         self.hours.append((hour_ms, dispatch, result))
+        if hour_ms % (24 * HOUR) == HOUR:
+            self.daily_samples.append((hour_ms, result.marks[0][1].equity))
+        funding_times = iter(sorted(funding))
+        funding_stamp = hour_ms
         with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
-            for _, mark in result.marks:
+            for kind, mark in result.marks:
+                stamp = hour_ms
+                if kind == "funding":
+                    funding_stamp = next(funding_times)
+                if kind.startswith("funding"):
+                    stamp = funding_stamp
+                elif kind in ("favourable", "adverse"):
+                    stamp = hour_ms + HOUR - 1
                 self.peak = max(self.peak, mark.equity)
-                self.max_drawdown = max(self.max_drawdown, (self.peak - mark.equity) / self.peak)
+                drawdown = (self.peak - mark.equity) / self.peak
+                self.max_drawdown = max(self.max_drawdown, drawdown)
+                self.equity_path.append(EquityState(stamp, kind, mark.equity, self.peak, drawdown))
         audit = self.account.audit(result.marks[-1][1].prices)
         self.audits.append(audit)
         if not audit.exact:
