@@ -32,7 +32,8 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
   - The fetch also records today's exchange filters (quantity step, minimum notional) for the 10 symbols, once, in the manifest: the USDⓈ-M perpetuals' for the account, and spot's for the hold benchmark (§8). Historical filters are not published (spec v1 P4), so today's are used and the record says so.
 - **Integrity:** the 1h futures klines go through the repairing reader of the long-window data (#186, #189).
   - Spec v1 §5 rule 5, "Untraded basket symbols' repaired hours are masked", covers a symbol that has only its 1h archive, so a repaired hour cannot be checked against minutes. v3's futures are in the same position. So every hour the reader repairs is masked, and so is every missing hour (rule 1).
-  - A coin-month with more than 17% of its hours masked is excluded, under spec v1 §5's 17% rule. So is a coin-month whose funding file is missing.
+  - A coin-month with more than 17% of its hours masked is excluded, under spec v1 §5's 17% rule.
+  - So is a coin-month whose funding file is missing, or incomplete: fewer timestamps than the month's days × 3, the 8-hour schedule. A shorter interval, which gives more timestamps, is fine.
   - **An excluded coin-month** gives that coin a target of 0 for the whole month, in every run: the out-of-sample account, the training runs and the hold benchmark.
     - An open position closes at the decision made after the close of the day before the previous month's last day. That decision fills at 01:00 UTC on the previous month's last day, so the coin is flat through every funding timestamp of the excluded month.
     - The coin trades again from the first decision whose fill falls after the excluded month.
@@ -128,18 +129,20 @@ At each daily decision, after day d's close:
 **One portfolio account** at 10,000 USDT, with cross margin, run on hourly futures bars.
 - **Fills:** each daily decision fills at the open of the 1h bar that starts one hour after the UTC day's close (01:00 UTC). A buy fills at `open × (1 + 0.0005)` and a sell at `open × (1 − 0.0005)`, which is the slippage. Each fill pays the taker fee, 0.05% (Binance USDⓈ-M, VIP 0), of its slipped notional, `|fill quantity| × fill price`, so buys and sells both pay a positive fee. Quantities come from §5 step 5.
 - **A masked fill hour:** the fill moves to the open of the next unmasked hour of that coin, on the same terms. The current weight, the equity and the open of §5 steps 4 and 5 are all taken at that actual fill hour.
+  - **Colliding decisions:** a coin has at most one pending daily order. If a later daily decision comes while an earlier one is still deferred, the earlier one is cancelled. Only the latest decision's target is filled, with its band test and quantity computed at the fill hour. Each cancellation is reported.
 - **Funding:** each timestamp in the coin's funding file belongs to the 1h bar whose hour contains it, so millisecond offsets map to the hour they fall in.
   - The position pays `quantity × price × rate` if it is long and the rate is positive. A short receives it. A negative rate reverses both.
   - The price is that bar's open, or, if the bar is masked or missing, the open of the last unmasked bar before it.
   - Binance charges funding on the mark price, not on the last-trade price. Using the bar's open is a disclosed approximation: the two differ by the basis, which is small next to the funding rate's own variation.
   - **Order within an hour:** see "Order of events in an hour" below.
-  - Funding is charged at exactly the timestamps in the file. A month whose file has fewer timestamps than its days × 3 is reported, and its missing timestamps are not charged.
+  - Funding is charged at exactly the timestamps in the file. A month with an incomplete file is excluded (§2), so no included month has a missing payment.
 - **Order of events in an hour,** for every hour from the first to the last of the run:
   1. funding at any of the hour's timestamps, on the quantity held before the hour's fills;
   2. the open mark, so the open mark includes that hour's funding, and the daily 01:00 sample (§8) is this mark;
   3. the hour's fills: the daily decision's, then any delevering ordered the hour before;
-  4. the 1x-ceiling check, on the quantities after the fills, at the open mark;
-  5. the liquidation check, on those quantities, at the bar's adverse extremes.
+  4. the post-fill mark: equity after the fills, at the same open prices, so the fees, slippage and any realised loss of those fills show at once;
+  5. the 1x-ceiling check, on the quantities after the fills, at the open mark;
+  6. the liquidation check, on those quantities, at the bar's adverse extremes.
 - **Marking:** equity is marked at every hour's open (the wallet and equity are defined under "Wallet and equity" below).
   - **A coin's mark price** in an hour is that hour's open.
   - **In a masked or missing hour,** which an included month may have (up to 17%), the coin's mark is the open of its last unmasked hour before it. Its funding price is the same (above), and its liquidation check uses that same price, since the hour has no usable high or low.
@@ -201,7 +204,7 @@ At each daily decision, after day d's close:
   - With no negative day and at least one positive day, it is +∞, and A2 passes.
   - With no positive day, it is 0, and A2 fails.
 - **CAGR:** compound annual growth over the out-of-sample days (365.25-day years).
-- **Maximum drawdown:** on the hourly equity marks, from the running peak.
+- **Maximum drawdown:** from the running peak, over every equity mark of the run: each hour's open mark and its post-fill mark (§6), and the terminal mark.
 - **Calmar ratio:** CAGR ÷ maximum drawdown.
   - With a maximum drawdown of 0 and a positive CAGR, it is +∞, and A3 passes.
   - With a maximum drawdown of 0 and a CAGR of 0 or less, it is 0, and A3 fails.
@@ -222,7 +225,9 @@ At each daily decision, after day d's close:
 - **Its own account is a spot account,** 10,000 USDT:
   - a buy spends its notional plus its fee from cash, and a sell adds its notional minus its fee;
   - equity is cash plus each holding's quantity × its spot mark;
-  - quantities round to the spot quantity step, and spot's minimum notional applies to buys;
+  - quantities round to the spot quantity step;
+  - spot's minimum notional applies to buys and sells alike, as the project's spot execution refuses a sell below it (`simulation/execution.py`);
+  - a holding too small to sell stays as dust. It is marked in equity, reported, and sold once it can be: it may not be sellable during an excluded month, and that does not invalidate the run;
   - its gross exposure is at most 0.80 by the caps, and it never borrows, so the 1x ceiling and the liquidation check do not apply to it;
   - its accounting identities are spot's: cash reconciles to the initial capital minus buys plus sells minus fees, and each quantity to its buys minus its sells.
 - **It holds spot, without funding, on purpose.** That is the realistic "just hold" alternative. In 2020–2024 funding was mostly positive (#137), so holding long perpetuals would have paid funding and done worse. The asymmetry leans in the benchmark's favour, against v3.
@@ -262,7 +267,7 @@ At each daily decision, after day d's close:
 - **Every position's lifecycle.** A position runs from flat to non-zero, and ends back at flat or at a flip. For each one:
   - the coin and side;
   - every fill, with its time, quantity and price;
-  - the exit's trigger: the signal going to 0, a flip, a pick change, an excluded month, or the end of the run;
+  - the exit's trigger: the signal going to 0, a flip, a pick change, an excluded month, a delevering that rounds the position to 0, a liquidation, or the end of the run;
   - its duration;
   - its maximum favourable and maximum adverse excursion per unit, from the average entry price, on the hourly highs and lows while it is open;
   - the profit given back before exit (the maximum favourable excursion minus the realised move per unit);
