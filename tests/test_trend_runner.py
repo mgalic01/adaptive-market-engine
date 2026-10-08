@@ -168,3 +168,35 @@ def test_runner_tracks_funding_and_censors_open_trade_at_finish():
     assert life.favourable == D("9.5")
     assert life.adverse == D("-10.5")
     assert len(life.fills) == 1
+
+
+def test_deferred_close_retains_original_decision_reason():
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
+    bar = {"BTCUSDT": (D(100), D(100), D(100))}
+    r.step(T, bar, {"BTCUSDT": D(".1")}, {})
+    for hour in range(1, 24):
+        r.step(T + hour * H, bar, {}, {})
+    r.step(
+        T + 24 * H, bar, {"BTCUSDT": D(0)}, {}, exit_reasons={"BTCUSDT": frozenset({"signal_zero"})}
+    )
+    r.step(T + 25 * H, {}, {}, {})
+    assert not r.lifecycles.completed
+    r.step(T + 26 * H, bar, {}, {})
+    assert r.lifecycles.completed[0].exit_reason == "signal_zero"
+    assert r.lifecycles.completed[0].end_ms == T + 26 * H
+
+
+def test_runner_flip_closes_old_trade_and_starts_new_trade():
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
+    bar = {"BTCUSDT": (D(100), D(100), D(100))}
+    r.step(T, bar, {"BTCUSDT": D(".1")}, {})
+    for hour in range(1, 24):
+        r.step(T + hour * H, bar, {}, {})
+    r.step(T + 24 * H, bar, {"BTCUSDT": D("-.1")}, {})
+    r.step(T + 25 * H, bar, {}, {})
+    assert r.lifecycles.completed[0].exit_reason == "flip"
+    assert r.lifecycles.active["BTCUSDT"].side == "short"
