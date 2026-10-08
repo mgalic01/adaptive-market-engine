@@ -6,7 +6,7 @@ from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
 from crypto_grid_bot.trend.account import AccountMark, Fill, FuturesAccount
 from crypto_grid_bot.trend.filters import OrderFilters
-from crypto_grid_bot.trend.orders import plan_reduction
+from crypto_grid_bot.trend.orders import OrderPlan, plan_rebalance, plan_reduction
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,3 +89,102 @@ def leverage_checkpoint(
         ):
             reason = "leverage_not_restored"
         return LeverageCheckpoint(before, after, tuple(fills), tuple(adjustments), reason)
+
+
+@dataclass(frozen=True, slots=True)
+class HourResult:
+    marks: tuple[tuple[str, AccountMark], ...]
+    plans: tuple[tuple[str, OrderPlan], ...]
+    checkpoints: tuple[LeverageCheckpoint, ...]
+    reason: str | None
+
+
+def execute_hour(
+    account: FuturesAccount,
+    hour_ms: int,
+    prices: Mapping[str, Decimal],
+    extremes: Mapping[str, tuple[Decimal, Decimal]],
+    tradable: Mapping[str, OrderFilters],
+    targets: Mapping[str, Decimal],
+    funding: Mapping[int, Mapping[str, Decimal]],
+    *,
+    multiple: int,
+) -> HourResult:
+    """Execute already-scheduled targets and complete funding groups for one hour.
+
+    The caller supplies carried opens for masked coins and only unmasked coins in
+    tradable/extremes. Deferred decisions and lifecycle attribution belong to the
+    scheduler. A terminal result must stop it. Marks retain every risk checkpoint.
+    """
+    if type(hour_ms) is not int or hour_ms % 3600000:
+        raise ValueError("hour must be aligned")
+    if type(multiple) is not int or multiple not in (1, 2, 3):
+        raise ValueError("multiple must be 1, 2 or 3")
+    if not set(targets) <= set(tradable) or set(extremes) != set(tradable):
+        raise ValueError("targets and extremes must match tradable coins")
+    for symbol in tradable:
+        low, high = extremes[symbol]
+        if (
+            symbol not in prices
+            or not (low.is_finite() and high.is_finite())
+            or not (0 < low <= prices[symbol] <= high)
+        ):
+            raise ValueError("invalid hourly prices")
+    for stamp, rates in funding.items():
+        if type(stamp) is not int or not hour_ms <= stamp < hour_ms + 3600000 or not rates:
+            raise ValueError("invalid hourly funding group")
+        if any(not rate.is_finite() for rate in rates.values()):
+            raise ValueError("invalid funding rate")
+    marks = []
+    checkpoints = []
+    plans: list[tuple[str, OrderPlan]] = []
+    opened = account.check_liquidation(prices, hour_ms)
+    marks.append(("open", opened))
+    if account.liquidation is not None:
+        return HourResult(tuple(marks), (), (), "liquidation")
+    for symbol in sorted(targets):
+        held = account.positions.get(symbol)
+        plans.append(
+            (
+                symbol,
+                plan_rebalance(
+                    targets[symbol],
+                    held.quantity if held else Decimal(0),
+                    opened.equity,
+                    prices[symbol],
+                    tradable[symbol],
+                ),
+            )
+        )
+    for reducing in (True, False):
+        for symbol, plan in plans:
+            for intent in plan.orders:
+                if intent.reduce_only == reducing:
+                    account.fill(symbol, intent, prices[symbol], hour_ms)
+
+    def checkpoint(label: str, stamp: int) -> str | None:
+        check = leverage_checkpoint(account, prices, tradable, stamp, multiple=multiple)
+        checkpoints.append(check)
+        marks.append((label, check.before))
+        if check.fills:
+            marks.append((label + "_delevered", check.after))
+        return check.reason
+
+    reason = checkpoint("post_fill", hour_ms)
+    if reason is None:
+        for stamp in sorted(funding):
+            account.fund(stamp, funding[stamp], prices)
+            reason = checkpoint("funding", stamp)
+            if reason is not None:
+                break
+    if reason is None:
+        adverse = dict(prices)
+        for symbol, position in account.positions.items():
+            if position.quantity != 0 and symbol in extremes:
+                low, high = extremes[symbol]
+                adverse[symbol] = low if position.quantity > 0 else high
+        mark = account.check_liquidation(adverse, hour_ms + 3599999)
+        marks.append(("adverse", mark))
+        if account.liquidation is not None:
+            reason = "liquidation"
+    return HourResult(tuple(marks), tuple(plans), tuple(checkpoints), reason)

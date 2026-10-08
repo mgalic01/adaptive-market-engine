@@ -57,3 +57,61 @@ def test_masked_exposure_can_make_closing_all_tradable_insufficient():
     assert a.positions["ETHUSDT"].quantity == 0
     assert a.positions["BTCUSDT"].quantity == 150
     assert result.reason == "leverage_not_restored"
+
+
+def test_hour_fills_before_same_time_funding_and_preserves_open_sample():
+    from crypto_grid_bot.trend.execution import execute_hour
+
+    a = FuturesAccount()
+    result = execute_hour(
+        a,
+        T,
+        {"BTCUSDT": D(100)},
+        {"BTCUSDT": (D(99), D(101))},
+        {"BTCUSDT": RULES},
+        {"BTCUSDT": D(".1")},
+        {T: {"BTCUSDT": D(".01")}},
+        multiple=1,
+    )
+    assert result.marks[0][1].equity == 10000
+    assert a.funding[0].payments[0].quantity == 10
+    assert a.funding[0].payments[0].payment == 10
+    assert result.reason is None
+
+
+def test_hour_gap_liquidation_prevents_daily_fills_and_funding():
+    from crypto_grid_bot.trend.execution import execute_hour
+
+    a = book()
+    result = execute_hour(
+        a,
+        T + 3600000,
+        {"BTCUSDT": D(1)},
+        {"BTCUSDT": (D(1), D(1))},
+        {"BTCUSDT": RULES},
+        {"BTCUSDT": D(0)},
+        {T + 3600000: {"BTCUSDT": D(".01")}},
+        multiple=1,
+    )
+    assert result.reason == "liquidation"
+    assert len(a.fills) == 1
+    assert not a.funding
+
+
+def test_hour_adverse_extremes_can_liquidate_without_a_close_fill():
+    from crypto_grid_bot.trend.execution import execute_hour
+
+    a = FuturesAccount()
+    result = execute_hour(
+        a,
+        T,
+        {"BTCUSDT": D(100)},
+        {"BTCUSDT": (D(1), D(101))},
+        {"BTCUSDT": RULES},
+        {"BTCUSDT": D("1.5")},
+        {},
+        multiple=2,
+    )
+    assert result.reason == "liquidation"
+    assert len(a.fills) == 1
+    assert result.marks[-1][1].prices["BTCUSDT"] == 1
