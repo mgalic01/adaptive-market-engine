@@ -4,9 +4,10 @@
 - **Before any build:** the owner reviews this draft, Codex and Bob review it, and the owner gives the go to freeze it. The freeze comes before any code that could be tuned to results, and before any v3 run.
 - **After the freeze:** a change requires a new version. The freeze covers this file only. The build plan may change, and where the two differ, this spec rules.
 - **Scope:** historical replay only, on paper. Nothing here authorises live trading, exchange credentials, API keys or withdrawals. No v3 code places, signs or routes an order.
-- **The bot's operating rules are unchanged.** The README says the bot trades "only Binance spot markets; no leverage, futures, or martingale", and SECURITY.md says "Do not add withdrawal-enabled keys or enable leverage/futures".
-  - v3 is research replay on historical futures data. It adds no futures, short-selling or leverage capability to the bot, and those two rules still govern the product and any paper or live step.
-  - Any move toward futures in the bot itself needs its own owner decision, which would also amend those two rules.
+- **The bot's operating rules, as amended for v3** (§11, decision 11). The README and SECURITY.md said the bot trades "only Binance spot markets; no leverage, futures, or martingale". The owner amended both in the PR that adds this spec:
+  - futures and short positions are allowed in historical backtests and paper trading, at no more than 1x leverage;
+  - live futures trading still needs a separate owner decision.
+  - v3 itself is historical replay only (above).
 - **Earlier specs:** [spec v1](EXPERIMENT_SPEC_V1.md) ended with no winner ([report](backtests/2026-10-06-spec-v1-stage-1.md)). [Spec v2](EXPERIMENT_SPEC_V2.md) failed on its drawdown criterion, C1 ([verdict](backtests/2026-10-07-spec-v2-verdict.md)). Both stay frozen as the records of their experiments.
 
 ## 1. Question
@@ -352,3 +353,7 @@ Each entry gives the question, and the option the owner chose.
     - **In this spec:**
       - the records are in §8;
       - the statement that v3 measures drawdown from the true peak, with no rebasing, is in §6.
+11. **The spot-only rule.** The owner set a standing way of working (2026-10-08): "when i say that we add new features we add them. IF i say a rule is this and that your role is to tell me about the rule and ask me do i wish to modify it."
+    - Claude then put the bot's rule to the owner. Question: "The README says the bot trades "only Binance spot markets; no leverage, futures, or martingale", and SECURITY.md says "Do not ... enable leverage/futures." v3 tests trend-following long and short on futures data. Do you want to modify these rules?"
+    - Chosen: **"Allow futures in research and paper"**. The option said: "Amend README and SECURITY: futures and shorts allowed in backtests and paper trading (no live, no leverage above 1x); live trading still needs a separate decision."
+    - Both files are amended in the PR that adds this spec. ROADMAP.md's live pilot stays spot-only, since live futures need their own decision.
