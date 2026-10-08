@@ -124,6 +124,13 @@ def verify_artifact(directory: Path, metadata: dict[str, Any]) -> None:
         raise ValueError("invalid evidence digest")
     if any(type(metadata.get(key)) is not int or metadata[key] < 0 for key in ("bytes", "records")):
         raise ValueError("invalid evidence counts")
+    actual = _inspect_artifact(directory, name)
+    if any(actual[key] != metadata[key] for key in ("sha256", "records", "bytes")):
+        raise ValueError("evidence digest or counts disagree")
+
+
+def _inspect_artifact(directory: Path, name: str) -> dict[str, Any]:
+    """Read framing and compute current bytes; does not certify replay completeness."""
     digest = hashlib.sha256()
     count = size = 0
     with (directory / name).open("rb") as source:
@@ -143,12 +150,39 @@ def verify_artifact(directory: Path, metadata: dict[str, Any]) -> None:
             digest.update(data)
             count += 1
             size += len(data)
-    if (
-        digest.hexdigest() != digest_text
-        or count != metadata["records"]
-        or size != metadata["bytes"]
-    ):
-        raise ValueError("evidence digest or counts disagree")
+    if not count:
+        raise ValueError("evidence has no rows")
+    return {"path": name, "sha256": digest.hexdigest(), "bytes": size, "records": count}
+
+
+def recover_interrupted(directory: Path, run_id: str, *, reason: str) -> None:
+    """Explicitly record an unfinished attempt as an unconfirmed failure.
+
+    Requires exclusive writer ownership and a caller-supplied diagnosis. An
+    orphan artifact is retained with its current digest, never adopted as valid
+    experiment evidence. This does not authorize a retry or historical dispatch.
+    Malformed published artifacts remain blocked for separate investigation;
+    temporary files are left untouched. A duplicate finish is never overwritten.
+    """
+    _identity(run_id, "finished")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("explicit recovery reason is required")
+    journal = EvidenceJournal(directory)
+    if run_id not in journal.pending():
+        raise ValueError("recovery requires an unfinished attempt")
+    start = journal._read(run_id, "started")["payload"]
+    name = f"{run_id}.evidence.jsonl"
+    artifact = journal.directory / name
+    evidence = _inspect_artifact(journal.directory, name) if artifact.exists() else None
+    journal.record(
+        run_id,
+        "finished",
+        {
+            **start,
+            "error": f"InterruptedAttempt: outcome unconfirmed; {reason}",
+            "evidence": evidence,
+        },
+    )
 
 
 class AttemptRecorder:

@@ -100,3 +100,27 @@ formula changes, historical dispatch, new dependencies or known security changes
 Full trial registration linkage, explicit orphan adjudication and spot/report
 integration remain unfinished. Earlier Bob NO ISSUES at d431e67 predates this delta;
 new full-head external review and CI are required.
+
+## 2026-10-09 explicit interruption adjudication
+
+Added recover_interrupted(directory, run_id, reason=...). This administrative API
+requires exclusive writer ownership and an explicit diagnosis. It records only
+an InterruptedAttempt with outcome unconfirmed, even when a complete-looking
+orphan JSONL exists. The original start and artifact bytes remain unchanged;
+current artifact hashes and counts are retained as diagnostics. No success is
+inferred, no automatic replay occurs and no historical dispatch is authorized.
+The trial register still needs a separate record before any permitted rerun.
+
+Recovery refuses missing/already-finished starts, empty reasons, malformed or
+empty published artifacts. Such evidence requires separate investigation; it is
+not deleted or rewritten. Unpublished temporary files remain untouched. File
+framing and hashing do not prove semantic completeness. If original error text
+was lost before durable publication, the API cannot reconstruct it: the caller's
+diagnosis must not claim more than known.
+
+Validation: three new fail-first recovery cases now pass; all21 journal/writer
+checks pass, along with Ruff/mypy. Independent Codex reviewer ran the same21
+checks and found no actionable defect. Existing artifact verification shares the
+streaming parser; it still enforces stored digests and counts. This is an additive
+API with no automatic invocation and no new dependency. Full experiment reports,
+spot artifact integration and trial linkage remain incomplete.
