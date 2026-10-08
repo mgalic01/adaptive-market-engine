@@ -123,3 +123,41 @@ def test_duplicate_execution_hours_are_engine_input_errors():
             start + DAY,
             {start: "R1"},
         )
+
+
+def test_pre_portfolio_exclusion_does_not_invalidate_fresh_window():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.replay import replay_window
+
+    start = T + 90 * DAY
+    book = DailyDecisions(
+        {"BTCUSDT": []}, {"BTCUSDT": "2020-05"}, {"BTCUSDT": frozenset({"2020-04"})}
+    )
+    result = replay_window(
+        book, {"BTCUSDT": FILTER}, {"BTCUSDT": []}, {}, start, start + 2 * DAY, {start: "R1"}
+    )
+    assert result.reason is None
+    assert result.runner.account.fills == ()
+    assert result.close_requirements == ()
+
+
+def test_invalid_funding_is_not_hidden_by_unavailable_close():
+    import pytest
+
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.replay import replay_window
+
+    start = T + 90 * DAY
+    book = DailyDecisions(
+        {"BTCUSDT": []}, {"BTCUSDT": "2020-01"}, {"BTCUSDT": frozenset({"2020-04"})}
+    )
+    with pytest.raises(ValueError, match="funding"):
+        replay_window(
+            book,
+            {"BTCUSDT": FILTER},
+            {"BTCUSDT": []},
+            {start: {"BTCUSDT": D("NaN")}},
+            start,
+            start + 2 * DAY,
+            {start: "R1"},
+        )

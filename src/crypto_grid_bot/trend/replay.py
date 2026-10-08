@@ -57,15 +57,6 @@ def replay_window(
         if stamps != sorted(set(stamps)):
             raise ValueError("hourly rows must be unique and sorted")
         indexed[symbol] = {row.open_ms: row for row in rows}
-    calendar = ExclusionCalendar(decisions.excluded_months)
-    try:
-        requirements = calendar.check_close_availability(
-            start_ms,
-            end_ms_exclusive,
-            {symbol: frozenset(rows) for symbol, rows in indexed.items()},
-        )
-    except UnavailableClose as exc:
-        return ReplayResult(None, "unavailable_exclusion_close", exc.requirements)
     by_hour: dict[int, dict[int, dict[str, Decimal]]] = {}
     for stamp, rates in funding.items():
         if type(stamp) is not int or stamp < 0:
@@ -77,16 +68,28 @@ def replay_window(
             raise ValueError("invalid funding rate")
         if start_ms <= stamp < end_ms_exclusive:
             by_hour.setdefault(stamp - stamp % HOUR, {})[stamp] = dict(rates)
+    first_months = decisions.first_months
+    excluded = {
+        symbol: frozenset(month for month in months if month >= first_months[symbol])
+        for symbol, months in decisions.excluded_months.items()
+    }
+    calendar = ExclusionCalendar(excluded)
+    try:
+        requirements = calendar.check_close_availability(
+            start_ms,
+            end_ms_exclusive,
+            {symbol: frozenset(rows) for symbol, rows in indexed.items()},
+        )
+    except UnavailableClose as exc:
+        return ReplayResult(None, "unavailable_exclusion_close", exc.requirements)
     runner = TrendRunner(
         filters,
         multiple=multiple,
         cost_multiple=cost_multiple,
-        excluded_months=decisions.excluded_months,
+        excluded_months=excluded,
     )
     closes = {}
     current_rule = picks[start_ms]
-    first_months = decisions.first_months
-    excluded = decisions.excluded_months
     for hour in range(start_ms, end_ms_exclusive, HOUR):
         month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
         eligible = {
