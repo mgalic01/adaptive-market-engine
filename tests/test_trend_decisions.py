@@ -16,6 +16,26 @@ def bars(count):
     return result
 
 
+def test_sizing_receives_bounded_history_with_identical_sparse_results(monkeypatch):
+    from crypto_grid_bot.trend import decisions as module
+    from crypto_grid_bot.trend.sizing import daily_returns, size_portfolio
+
+    rows = [row for i, row in enumerate(bars(300)) if i % 17 != 0]
+    book = module.DailyDecisions({"BTCUSDT": rows}, {"BTCUSDT": "2020-01"})
+    original = module.size_portfolio
+    observed = []
+
+    def bounded(signals, returns, day, **kwargs):
+        observed.append(len(returns["BTCUSDT"]))
+        return original(signals, returns, day, **kwargs)
+
+    monkeypatch.setattr(module, "size_portfolio", bounded)
+    result = book.at(T + 300 * DAY, "R1")
+    full = size_portfolio(result.signals, {"BTCUSDT": daily_returns(rows)}, T + 299 * DAY)
+    assert result.sizing == full
+    assert observed == [60]
+
+
 def test_decision_uses_closed_history_and_does_not_change_with_future_bars():
     from crypto_grid_bot.trend.decisions import DailyDecisions
 

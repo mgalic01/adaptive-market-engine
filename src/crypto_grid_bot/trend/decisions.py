@@ -82,7 +82,9 @@ class DailyDecisions:
             if point is not None and point.day_ms == day:
                 available.add(symbol)
             end = bisect_right(self._return_days[symbol], day)
-            returns[symbol] = self._returns[symbol][:end]
+            # Last 60 observations also contain every available return in the
+            # last 60 calendar days (at most one return per day).
+            returns[symbol] = self._returns[symbol][max(0, end - 60) : end]
         sizing = (
             None
             if rule is None

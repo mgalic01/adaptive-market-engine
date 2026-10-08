@@ -34,3 +34,11 @@ portfolio start months and exclusion calendar. It is not implemented by this cla
 Historical dispatcher, continuous OOS orchestration and completion registration
 remain unfinished. No market data fetch or historical replay occurred. No new
 dependency or known security finding. Return targets remain unproven.
+
+Cloud performance follow-up: daily sizing now receives at most the last 60 return
+observations. These include every available return in the last 60 calendar days,
+because each coin has at most one return per day. A sparse 300-day regression first
+failed with 264 rows, then passed with 60 and identical full-history SizingResult.
+All 37 decision/sizing tests, Ruff and mypy pass. No strategy formula changes.
+Other review concerns (deferred pick-change attribution, all-invalid/no-bar
+interpretation and excluded-signal reporting) remain open; not merge-ready.
