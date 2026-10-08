@@ -16,6 +16,26 @@ def bars(count):
     return result
 
 
+def test_sizing_receives_bounded_history_with_identical_sparse_results(monkeypatch):
+    from crypto_grid_bot.trend import decisions as module
+    from crypto_grid_bot.trend.sizing import daily_returns, size_portfolio
+
+    rows = [row for i, row in enumerate(bars(300)) if i % 17 != 0]
+    book = module.DailyDecisions({"BTCUSDT": rows}, {"BTCUSDT": "2020-01"})
+    original = module.size_portfolio
+    observed = []
+
+    def bounded(signals, returns, day, **kwargs):
+        observed.append(len(returns["BTCUSDT"]))
+        return original(signals, returns, day, **kwargs)
+
+    monkeypatch.setattr(module, "size_portfolio", bounded)
+    result = book.at(T + 300 * DAY, "R1")
+    full = size_portfolio(result.signals, {"BTCUSDT": daily_returns(rows)}, T + 299 * DAY)
+    assert result.sizing == full
+    assert observed == [60]
+
+
 def test_decision_uses_closed_history_and_does_not_change_with_future_bars():
     from crypto_grid_bot.trend.decisions import DailyDecisions
 
@@ -74,6 +94,8 @@ def test_exclusion_overrides_missing_signal_bar_before_month_start():
     decision = book.at(T + 90 * DAY, "R1")  # March 31; latest signal bar is in March's first week.
     assert decision.targets == {"BTCUSDT": D(0)}
     assert "excluded_month" in decision.exit_reasons["BTCUSDT"]
+    assert decision.signals["BTCUSDT"] == 0
+    assert "sizing" not in decision.exit_reasons["BTCUSDT"]
 
 
 def test_all_invalid_quarter_keeps_pick_change_reason_after_first_day():

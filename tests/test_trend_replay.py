@@ -257,6 +257,34 @@ def test_held_position_closes_before_excluded_month_and_its_funding():
     assert all(p.quantity == 0 for p in r.account.positions.values())
 
 
+def test_exclusion_after_run_does_not_close_or_charge_terminal_trade():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.replay import replay_window
+
+    start = T + 89 * DAY
+    rows = [bar(T + i * DAY, 100 + i * 2 + i % 3) for i in range(92)]
+    common = (
+        {"BTCUSDT": FILTER},
+        {"BTCUSDT": [bar(start + i * HOUR) for i in range(48)]},
+        {},
+        start,
+        start + 2 * DAY,
+        {start: "R1"},
+    )
+    plain = replay_window(DailyDecisions({"BTCUSDT": rows}, {"BTCUSDT": "2020-01"}), *common)
+    excluded = replay_window(
+        DailyDecisions(
+            {"BTCUSDT": rows}, {"BTCUSDT": "2020-01"}, {"BTCUSDT": frozenset({"2020-04"})}
+        ),
+        *common,
+    )
+    assert excluded.reason is None
+    assert excluded.close_requirements == ()
+    assert excluded.runner.account.fills == plain.runner.account.fills
+    assert excluded.runner.daily_samples == plain.runner.daily_samples
+    assert excluded.runner.lifecycles.completed[0].censored
+
+
 def test_terminal_mark_uses_last_unmasked_close_without_future_bar():
     from crypto_grid_bot.trend.replay import replay_window
 

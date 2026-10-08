@@ -50,3 +50,10 @@ branch, and the runner cancellation/delayed-fill regression exercises that actua
 interface. Replacing reasons with excluded_month is intentional because it is the
 first priority exit reason. The future dispatcher must catch UnavailableClose
 separately from input errors; dispatcher implementation is still outstanding.
+
+Cloud run-end finding reproduced: an excluded month beginning exactly at the
+exclusive run end incorrectly demanded a prior-day closing hour. Preflight now
+requires the excluded month's boundary strictly inside the run. Thirty exclusion/
+runner/pending tests and Ruff pass. This is only the preflight correction: the
+replay adapter and daily decision calendar still need run-end scoping so they do
+not force a post-run exclusion close. Do not merge this partial fix alone.

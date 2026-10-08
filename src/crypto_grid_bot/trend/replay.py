@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from crypto_grid_bot.backtest.klines import Kline
+from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.exclusions import CloseRequirement, ExclusionCalendar, UnavailableClose
@@ -74,7 +74,11 @@ def replay_window(
             by_hour.setdefault(stamp - stamp % HOUR, {})[stamp] = dict(rates)
     first_months = decisions.first_months
     excluded = {
-        symbol: frozenset(month for month in months if month >= first_months[symbol])
+        symbol: frozenset(
+            month
+            for month in months
+            if month >= first_months[symbol] and month_bounds_ms(month)[0] < end_ms_exclusive
+        )
         for symbol, months in decisions.excluded_months.items()
     }
     calendar = ExclusionCalendar(excluded)
@@ -118,7 +122,11 @@ def replay_window(
             previous_rule = current_rule
             current_rule = picks.get(hour, current_rule)
             decision = decisions.at(
-                hour, current_rule, multiple=multiple, pick_changed=current_rule != previous_rule
+                hour,
+                current_rule,
+                multiple=multiple,
+                pick_changed=current_rule != previous_rule,
+                run_end_ms=end_ms_exclusive,
             )
             targets, reasons = decision.targets, decision.exit_reasons
         result = runner.step(hour, bars, targets, groups, exit_reasons=reasons)
