@@ -244,3 +244,31 @@ def test_empty_funding_group_does_not_advance_clocks():
     assert (a.wallet, a.funding, a._clock, a._funding_clock) == before
     event = a.fund(T, {"BTCUSDT": D(".01")}, {"BTCUSDT": D(100)})
     assert event.payments[0].payment == D(1)
+
+
+@pytest.mark.parametrize(
+    "residual,accepted",
+    [
+        ("0", True),
+        ("-1e-59", True),
+        ("1e-18", True),
+        ("-1e-18", True),
+        ("1.0000000000000000001e-18", False),
+        ("-1.0000000000000000001e-18", False),
+        ("NaN", False),
+        ("Infinity", False),
+    ],
+)
+def test_equity_audit_tolerance_is_bounded_and_preserves_residual(residual, accepted):
+    from crypto_grid_bot.trend.account import AccountingAudit
+
+    audit = AccountingAudit(D(0), {"BTCUSDT": D(0)}, D(residual))
+    assert audit.accepted is accepted
+    assert str(audit.equity_residual) == str(D(residual))
+
+
+def test_audit_tolerance_never_relaxes_wallet_or_quantity():
+    from crypto_grid_bot.trend.account import AccountingAudit
+
+    assert not AccountingAudit(D("1e-59"), {}, D(0)).accepted
+    assert not AccountingAudit(D(0), {"BTCUSDT": D("1e-59")}, D(0)).accepted

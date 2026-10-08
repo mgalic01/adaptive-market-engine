@@ -12,6 +12,7 @@ from crypto_grid_bot.trend.orders import OrderIntent
 
 ZERO = Decimal(0)
 ONE = Decimal(1)
+EQUITY_AUDIT_TOLERANCE = Decimal("1e-18")
 
 
 def _context() -> Context:
@@ -70,6 +71,13 @@ class FundingEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class JournalBatch:
+    start: int
+    previous: FillEvent | FundingEvent | None
+    events: tuple[FillEvent | FundingEvent, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AccountMark:
     wallet: Decimal
     unrealized: Decimal
@@ -91,6 +99,19 @@ class AccountingAudit:
     wallet_residual: Decimal
     quantity_residuals: dict[str, Decimal]
     equity_residual: Decimal
+
+    @property
+    def accepted(self) -> bool:
+        """Owner-approved bound on equity only; preserve all raw residuals."""
+        return (
+            self.wallet_residual.is_finite()
+            and self.wallet_residual == ZERO
+            and all(
+                value.is_finite() and value == ZERO for value in self.quantity_residuals.values()
+            )
+            and self.equity_residual.is_finite()
+            and self.equity_residual.copy_abs() <= EQUITY_AUDIT_TOLERANCE
+        )
 
     @property
     def exact(self) -> bool:
@@ -139,6 +160,14 @@ class FuturesAccount:
     def events(self) -> tuple[FillEvent | FundingEvent, ...]:
         """Actual insertion order, including ties between funding and fills."""
         return tuple(self._events)
+
+    def events_since(self, cursor: int) -> JournalBatch:
+        """Copy only the new suffix, anchored to the preceding immutable event."""
+        if type(cursor) is not int or not 0 <= cursor <= len(self._events):
+            raise ValueError("invalid account journal cursor")
+        return JournalBatch(
+            cursor, self._events[cursor - 1] if cursor else None, tuple(self._events[cursor:])
+        )
 
     @property
     def wallet(self) -> Decimal:

@@ -235,10 +235,11 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - **The wallet** is the initial capital, plus realised profit and loss, minus fees, minus funding paid, plus funding received.
   - **Unrealised profit and loss** of a position is `quantity × (mark − average entry)`, with quantity signed (negative for a short).
   - **Equity** is the wallet plus the unrealised profit and loss of every position.
-- **Accounting identities,** exact and checked at the end of every run, as in spec v1 P6:
+- **Accounting identities,** checked at the end of every run, as in spec v1 P6, with the owner's 2026-10-08 numerical-audit amendment below:
   - the wallet equals the initial capital + Σ realised profit and loss − Σ fees − Σ funding paid + Σ funding received, each summed from the fill and funding records;
   - each coin's quantity equals its bought quantity minus its sold quantity;
   - the change in equity equals realised plus unrealised profit and loss, minus fees, minus funding paid, plus funding received.
+  - **Numerical-audit amendment, owner-approved 2026-10-08:** the wallet and each coin's quantity identities remain exact. Only the equity-change identity admits an absolute residual of at most `1e-18 USDT`, inclusive; a larger or nonfinite residual is an engine failure. Retain and report the signed residual for every audit, including accepted nonzero residuals. This changes audit acceptance only: Decimal precision, rounding, trading arithmetic, balances, position sizes, costs and performance criteria are unchanged. A synthetic weighted-entry round trip produced `-1e-59 USDT` from finite Decimal arithmetic before any V3 historical replay. The downside is that a real equity-accounting error no larger than the tolerance can pass. See [the owner decision](reviews/2026-10-08-owner-v3-equity-audit-tolerance.md).
 
 **No recovery, restart or rebasing.** v3 has no soft-drawdown recovery, halt, restart or any other rule that moves a reference peak. Drawdown is measured from the run's true peak, the running maximum of the hourly equity marks, and that peak is never lowered. Codex's diagnosis of v2 found that v2's risk layer could lower its own peak after a recovery, so it never enforced the lifetime drawdown that C1 measured (§11, decision 10). v3's sizing is the only risk control, and A3 judges it against the true peak.
 
