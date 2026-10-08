@@ -115,3 +115,56 @@ def test_hour_adverse_extremes_can_liquidate_without_a_close_fill():
     assert result.reason == "liquidation"
     assert len(a.fills) == 1
     assert result.marks[-1][1].prices["BTCUSDT"] == 1
+
+
+def test_daily_batch_closes_all_coins_before_alphabetical_openings():
+    from crypto_grid_bot.trend.execution import execute_hour
+
+    a = FuturesAccount()
+    a.fill("BTCUSDT", OrderIntent(D(10), False), D(100), T)
+    a.fill("ETHUSDT", OrderIntent(D(-10), False), D(100), T)
+    prices = {"BTCUSDT": D(100), "ETHUSDT": D(100)}
+    before = a.mark(prices)
+    result = execute_hour(
+        a,
+        T + 3600000,
+        prices,
+        {s: (D(100), D(100)) for s in prices},
+        {s: RULES for s in prices},
+        {"ETHUSDT": D(".2"), "BTCUSDT": D("-.2")},
+        {},
+        multiple=1,
+    )
+    assert [(f.symbol, f.reduce_only) for f in a.fills[2:]] == [
+        ("BTCUSDT", True),
+        ("ETHUSDT", True),
+        ("BTCUSDT", False),
+        ("ETHUSDT", False),
+    ]
+    assert result.marks[0][1] == before
+    assert [p.target_quantity for _, p in result.plans] == [D(-19), D(19)]
+
+
+def test_funding_times_are_sorted_and_each_has_its_own_check():
+    from crypto_grid_bot.trend.execution import execute_hour
+
+    a = FuturesAccount()
+    result = execute_hour(
+        a,
+        T,
+        {"BTCUSDT": D(100)},
+        {"BTCUSDT": (D(100), D(100))},
+        {"BTCUSDT": RULES},
+        {"BTCUSDT": D(".1")},
+        {T + 100: {"BTCUSDT": D(".001")}, T: {"BTCUSDT": D("-.001")}},
+        multiple=1,
+    )
+    assert [event.timestamp_ms for event in a.funding] == [T, T + 100]
+    assert len(result.checkpoints) == 3
+    assert [label for label, _ in result.marks] == [
+        "open",
+        "post_fill",
+        "funding",
+        "funding",
+        "adverse",
+    ]
