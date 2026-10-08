@@ -22,18 +22,18 @@ interruption and explicitly document platform limits.
 
 ## Task 1: Immutable local journal
 
-- [ ] Add evidence_journal.py with record(run_id, state, payload) and pending().
-- [ ] Test unsafe IDs, duplicate records, missing starts and interrupted starts.
-- [ ] Publish fully flushed temporary files atomically without replacing an existing
+- [x] Add evidence_journal.py with record(run_id, state, payload) and pending().
+- [x] Test unsafe IDs, duplicate records, missing starts and interrupted starts.
+- [x] Publish fully flushed temporary files atomically without replacing an existing
   destination. Reject malformed recovery records. Support exact Decimal strings;
   reject floats/nonfinite values rather than quietly rounding evidence.
-- [ ] Verify tests, lint and typing; record limitations and commit.
+- [x] Verify tests, lint and typing; record limitations and commit.
 
 ## Task 2: Replay evidence adapter
 
 - [ ] Stream account state, events, fills, funding, lifecycle records, audits,
   decisions, equity path, samples and residuals into a separately hashed artifact.
-- [ ] Connect Attempt callbacks: start before replay; completed evidence before finish.
+- [x] Connect Attempt callbacks: start before replay; completed evidence before finish.
 - [ ] Test invalid outcomes, corrupt evidence, serialization failures and termination.
 - [ ] Recover unfinished attempts explicitly; do not auto-rerun historical work.
 

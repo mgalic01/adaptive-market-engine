@@ -158,6 +158,27 @@ class AttemptRecorder:
 
     def __init__(self, directory: Path) -> None:
         self.journal = EvidenceJournal(directory)
+        pending = self.journal.pending()
+        for path in self.journal.directory.glob("*.finished.json"):
+            run_id = path.name[:-14]
+            start = self.journal._read(run_id, "started")["payload"]
+            finish = self.journal._read(run_id, "finished")["payload"]
+            if set(finish) != set(start) | {"error", "evidence"} or any(
+                finish[key] != value for key, value in start.items()
+            ):
+                raise ValueError("finished attempt identity differs from start")
+            evidence = finish["evidence"]
+            if evidence is None:
+                if not isinstance(finish["error"], str) or not finish["error"]:
+                    raise ValueError("finished attempt lacks evidence or error")
+            else:
+                if not isinstance(evidence, dict) or evidence.get("path") != (
+                    f"{run_id}.evidence.jsonl"
+                ):
+                    raise ValueError("finished evidence belongs to another attempt")
+                verify_artifact(self.journal.directory, evidence)
+        if pending:
+            raise ValueError(f"unfinished attempts require explicit recovery: {', '.join(pending)}")
 
     def __call__(self, attempt: Attempt) -> None:
         _identity(attempt.run_id, attempt.state)

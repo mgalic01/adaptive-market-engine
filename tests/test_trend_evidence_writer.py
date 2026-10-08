@@ -9,6 +9,41 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.orchestration import Attempt, replay_sensitivities
 
 
+def test_reopening_pending_attempt_refuses_new_dispatch(tmp_path):
+    from crypto_grid_bot.trend.evidence_writer import AttemptRecorder
+
+    record = AttemptRecorder(tmp_path)
+    record(Attempt("one", "training", "R1", 0, 1, None, None, state="started"))
+    with pytest.raises(ValueError, match="unfinished.*one"):
+        AttemptRecorder(tmp_path)
+
+
+@pytest.mark.parametrize("damage", ["missing", "truncated", "identity", "wrong_path"])
+def test_reopening_validates_finished_evidence(tmp_path, damage):
+    from crypto_grid_bot.trend.evidence_writer import AttemptRecorder
+
+    record = AttemptRecorder(tmp_path)
+    t = 1609459200000
+    replay_sensitivities(DailyDecisions({}, {}), {}, {}, {}, {t: None}, t + 86400000, record=record)
+    AttemptRecorder(tmp_path)  # Intact evidence can be reopened.
+    finished = next(tmp_path.glob("*.finished.json"))
+    doc = json.loads(finished.read_text())
+    artifact = tmp_path / doc["payload"]["evidence"]["path"]
+    if damage == "missing":
+        artifact.unlink()
+    elif damage == "truncated":
+        artifact.write_bytes(artifact.read_bytes()[:-1])
+    elif damage == "identity":
+        doc["payload"]["multiple"] = 99
+        finished.write_text(json.dumps(doc))
+    else:
+        other = next(p for p in tmp_path.glob("*.finished.json") if p != finished)
+        doc["payload"]["evidence"] = json.loads(other.read_text())["payload"]["evidence"]
+        finished.write_text(json.dumps(doc))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        AttemptRecorder(tmp_path)
+
+
 def test_callback_publishes_verified_artifacts_for_real_synthetic_replays(tmp_path):
     from crypto_grid_bot.trend.evidence_writer import AttemptRecorder
 
