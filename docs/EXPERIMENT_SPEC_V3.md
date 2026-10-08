@@ -4,6 +4,9 @@
 - **Before any build:** the owner reviews this draft, Codex and Bob review it, and the owner gives the go to freeze it. The freeze comes before any code that could be tuned to results, and before any v3 run.
 - **After the freeze:** a change requires a new version. The freeze covers this file only. The build plan may change, and where the two differ, this spec rules.
 - **Scope:** historical replay only, on paper. Nothing here authorises live trading, exchange credentials, API keys or withdrawals. No v3 code places, signs or routes an order.
+- **The bot's operating rules are unchanged.** The README says the bot trades "only Binance spot markets; no leverage, futures, or martingale", and SECURITY.md says "Do not add withdrawal-enabled keys or enable leverage/futures".
+  - v3 is research replay on historical futures data. It adds no futures, short-selling or leverage capability to the bot, and those two rules still govern the product and any paper or live step.
+  - Any move toward futures in the bot itself needs its own owner decision, which would also amend those two rules.
 - **Earlier specs:** [spec v1](EXPERIMENT_SPEC_V1.md) ended with no winner ([report](backtests/2026-10-06-spec-v1-stage-1.md)). [Spec v2](EXPERIMENT_SPEC_V2.md) failed on its drawdown criterion, C1 ([verdict](backtests/2026-10-07-spec-v2-verdict.md)). Both stay frozen as the records of their experiments.
 
 ## 1. Question
@@ -53,7 +56,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 - a day with every hour masked, or in an excluded month, gives no bar.
 
 **The daily series** of a coin is its bars in date order, with missing days simply absent:
-- "n closes" means the last n available bars, and "the close 365 days earlier" (R4) means the last available close on or before that calendar date;
+- "n closes" means the last n available bars, and "the close 365 days earlier" (R4) means the last available close on or before that calendar date. If that close is more than 7 days before the date, R4 gives 0 for that day;
 - a daily return is the simple return between consecutive available closes, so a return across a gap spans the gap and counts once.
 
 ## 3. Coins
@@ -75,7 +78,7 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
 | R3 | **Donchian 55/20** | "Prior n-day" means the n bars ending the bar before. Each day, in this order: a close above the prior 55-day high → +1; else a close below the prior 55-day low → −1; else a long whose close is below the prior 20-day low → 0; else a short whose close is above the prior 20-day high → 0; else unchanged. Starts flat. A close that breaks both a long's 20-day exit and the 55-day low reverses to −1, and likewise for a short. Highs and lows are the daily bars' (§2). |
 | R4 | **12-month momentum** | close ÷ close 365 days earlier − 1: > 0 → +1; < 0 → −1; = 0 → 0. |
 | R5 | **Supertrend 10/3** | Defined in full below the table. Uptrend → +1, downtrend → −1. |
-| R6 | **Equal blend** | the mean of R1–R5's signals, a value in [−1, +1]. It is the only rule whose signal is not just −1, 0 or +1. |
+| R6 | **Equal blend** | the mean of R1–R5's signals, a value in [−1, +1]. It is the only rule whose signal is not just −1, 0 or +1. A rule still warming up counts as 0 in the mean, which dilutes R6 early on, and that is intended. |
 
 **R5 in full**, on daily bars (H, L, C):
 - **True range:** `TR_t = max(H_t − L_t, |H_t − C_{t−1}|, |L_t − C_{t−1}|)`, from the second bar on.
@@ -146,10 +149,12 @@ At each daily decision, after day d's close:
   - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin.
   - It is expected never to happen at these sizes.
 - **The 1x ceiling, on the actual book:** at every hourly mark, gross leverage is `Σ |quantity| × mark ÷ equity`.
-  - If it exceeds 1.0, every position is scaled down proportionally, by reduce-only orders at the next hour's opens, to gross leverage of 0.80, with the usual slippage and fees.
-  - Each coin's new quantity is `quantity × 0.80 × equity ÷ gross notional`, at that check's mark, and the new quantity rounds toward zero to the quantity step.
+  - If it exceeds 1.0, the account delevers at the next hour.
+  - **The delevering is recomputed there,** after that hour's daily fills, at that hour's open mark, as a factor `k = 0.80 × equity ÷ gross notional`. If k ≥ 1 (the daily fills already brought the book down), nothing is done.
+  - Otherwise each coin's position is reduced, on the side it is actually held, to `held quantity × k`, rounding toward zero to the quantity step, by reduce-only orders at that hour's open, with the usual slippage and fees.
   - A delevering order is reduce-only, so it ignores the minimum notional.
-  - A delevering fill whose coin's next hour is masked moves to that coin's next unmasked hour, as a daily fill does.
+  - A coin whose delevering hour is masked is reduced at its next unmasked hour, to its then-held quantity × the same k. Until then it takes no new delevering order.
+  - If equity is ≤ 0 at a mark, the ratio is not computed: the liquidation check has already failed the run.
   - Each such delevering is reported.
   - **After a delevering,** the next daily decision tests its band (§5 step 4) against the post-delevering weight, so a gap above 1% is rebalanced back toward the target. A slow cycle is therefore possible: delever, re-size at the next decision, then delever again after a further rise. Each step is reported, and none can repeat within an hour.
 - **Wallet and equity.** A perpetual futures position does not exchange its notional with the wallet: opening it moves no cash. Only fees, funding and realised profit and loss move the wallet.
@@ -174,7 +179,14 @@ At each daily decision, after day d's close:
   - If BTCUSDT's funding archives begin in 2020-01, as #137 found, that is **2021-Q3**, giving 14 test quarters. The fetch settles it, and the record states the count.
   - The last test quarter is **2024-Q4**.
 - **Picking:** in each training window, each of R1–R6 is run on the whole portfolio, with the sizing, costs and funding of §5–6. The rule with the highest Sharpe ratio (§8) over that window trades the next test quarter. A tie goes to the lower rule number.
-- **Continuity:** one account runs through all test quarters. At a quarter boundary where the pick changes, the book moves to the new rule's targets at the next daily decision. Training runs are separate, fresh accounts and never touch it.
+- **Continuity:** one account runs through all test quarters.
+  - **The start:** it starts flat, with 10,000 USDT, at 00:00 UTC on the first test quarter's first day. Its first decision is the one made after the close of the day before, with that quarter's pick, and it fills at 01:00 on the quarter's first day.
+  - **At each boundary:** the decision made after the last day of quarter q uses quarter q+1's pick, and fills on q+1's first day. The book moves to the new rule's targets there, by the normal band test.
+  - **Training runs** are separate, fresh accounts, and never touch it. Each one starts the same way: flat, with 10,000 USDT, at 00:00 on its window's first day, with its first decision after the close of the day before.
+- **Sample series,** the same for every run, training or out-of-sample:
+  - the daily samples at 01:00 before fills, from the run's first day (equal to 10,000, since the account is flat);
+  - one terminal sample at the close of the last 1h bar of the run's last day, with each coin at its last unmasked close (§8);
+  - the first return runs from the first day's 01:00 sample.
 - **Out-of-sample** means only the test quarters, stitched in order. Every pass criterion is computed on that stitched run.
 
 ## 8. Evaluation
@@ -205,7 +217,7 @@ At each daily decision, after day d's close:
 | A5 | The Sharpe ratio exceeds the hold benchmark's over the same days |
 
 **The hold benchmark:** long-only, equal signal (+1) for every coin in the portfolio at that time, on spot prices with no funding. It answers one question: does timing add anything over just holding the same coins at the same risk?
-- **The same as the account:** the sizing (§5: volatility target, caps, rebalancing band), the fees and slippage, the fill timing, the masked-hour rule, the excluded months (§2) and the order of events (§6).
+- **The same as the account:** the sizing (§5: volatility target, caps, rebalancing band), the fees and slippage, the fill timing, the masked-hour rule, the excluded months (§2: both the futures exclusions, which decide when a coin is in the portfolio, and its own spot exclusions) and the order of events (§6).
 - **Its own account is a spot account,** 10,000 USDT:
   - a buy spends its notional plus its fee from cash, and a sell adds its notional minus its fee;
   - equity is cash plus each holding's quantity × its spot mark;
