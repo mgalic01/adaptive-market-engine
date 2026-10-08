@@ -324,6 +324,8 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - its accounting identities are spot's: cash reconciles to the initial capital minus buys plus sells minus fees, and each quantity to its buys minus its sells.
 - **It holds spot, without funding, on purpose.** That is the realistic "just hold" alternative. In 2020–2024 funding was mostly positive (#137), so holding long perpetuals would have paid funding and done worse. The asymmetry leans in the benchmark's favour, against v3.
 
+**Trade-total reconciliation amendment, owner-approved 2026-10-08:** the sum of net lifecycle results minus total account equity change may have an absolute residual of at most `1e-18 USDT`, inclusive. Retain and report the signed residual, including accepted nonzero values. Larger or nonfinite residuals remain engine failures. Wallet and quantity identities remain exact; trading arithmetic and all performance criteria are unchanged. A completed synthetic round trip differed by `5e-57 USDT` solely at the reconciliation stage. The downside is that a genuine reconciliation error within the bound can pass. See [the owner decision](reviews/2026-10-08-owner-v3-trade-reconciliation.md).
+
 **An accounting identity that fails in any run,** training or out-of-sample, main test, size variant or benchmark, is an engine defect, not a strategy outcome. It stops the experiment with no verdict. The defect is fixed, and every v3 run is repeated from one commit. The failed attempt stays in the trial register (§9).
 
 **A run is invalid** if a liquidation occurs, its leverage limit cannot be restored (§6), or a fill the rules require cannot be made. These are outcomes of the strategy, not of the engine.
