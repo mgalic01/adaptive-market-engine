@@ -47,7 +47,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
     - The coin trades again from the first decision whose fill falls after the excluded month.
     - Exclusions are a data fact, settled from the committed manifest before any run, so knowing one a month ahead uses no market information. In live trading a data gap would not be known in advance, so the record states this simplification.
     - If that closing fill has no unmasked hour on the previous month's last day, it moves to the next unmasked hour before the excluded month starts. If there is none, the run is invalid (§8). The record lists every time this happens, in training runs too.
-  - Spec v1 §5's other rules concern minute replay, the daily/hourly cross-check and spot quoting (rule 8, the actual-quotes test). They do not apply to v3, which neither replays minutes nor quotes inside the spread.
+  - Spec v1 §5's other rules concern minute replay, the daily/hourly cross-check and the spot spread limit (rule 8, "XRP below the tick limit"). They do not apply to v3, which neither replays minutes nor quotes inside the spread.
 
 **Spot data:**
 - **1h spot klines for all 10 coins,** from 2018-06, or the coin's first full spot month if later, to 2024-12.
@@ -151,7 +151,7 @@ At each daily decision, after day d's close:
   3. **The hour's events,** in the order of their raw timestamps:
      - fills happen at the bar's open time: first the daily decision's orders, then any delevering ordered the hour before (below);
      - funding happens at its recorded timestamp, which is at or a few milliseconds after the open;
-     - so a fill at the open is charged that hour's funding on the post-fill quantity;
+     - so, except on an exact tie, a fill at the open is charged that hour's funding on the post-fill quantity;
      - on an exact tie, funding comes first.
   4. **The post-fill mark:** equity after step 3, at the same open prices, so the fees, slippage and any realised loss of those fills, and that hour's funding, show at once.
   5. **The 1x-ceiling check,** on the quantities after the fills, at the open mark.
@@ -241,6 +241,7 @@ At each daily decision, after day d's close:
 
 **The hold benchmark:** long-only, equal signal (+1) for every coin in the portfolio at that time, on spot prices with no funding. It answers one question: does timing add anything over just holding the same coins at the same risk?
 - **The same as the account:** the sizing (§5: volatility target, caps, rebalancing band), the fees and slippage, the fill timing, the masked-hour rule, the excluded months (§2: both the futures exclusions, which decide when a coin is in the portfolio, and its own spot exclusions) and the order of events (§6).
+- **It is one account** that starts flat at the first test quarter's start, as the main account does (§7), and runs continuously to the end of 2024-Q4.
 - **Its own account is a spot account,** 10,000 USDT:
   - a buy spends its notional plus its fee from cash, and a sell adds its notional minus its fee;
   - sells go before buys, as in §6. A buy larger than the cash then available is cut to what the cash pays for, fee included, rounded down to the step. If that is below the minimum notional, it is skipped and reported. Neither case invalidates the run;
@@ -265,6 +266,7 @@ At each daily decision, after day d's close:
 - funding paid and received, fees, slippage and turnover;
 - the time invested, gross and net;
 - the realised portfolio volatility against the 20% target, and the share of decision days on which a cap bound: some coin's target was clipped at 10%, or the 80% gross cap scaled the book. This counts whatever the number of coins in the portfolio that day. With few coins early on, the 10% cap can hold the book below target, and A4 is not scale-free;
+  - **Reading the coin count:** the few-coin effect falls mainly on the training windows. By the first test quarter, every coin whose futures started in 2019–2020 is already in the portfolio. The record gives the coin count for each test quarter;
 - a 95% interval for the Sharpe ratio, beside A1 and A5. It is a stationary block bootstrap of the daily returns (Politis and Romano):
   - block lengths are geometric, with a mean of 20 days, and blocks wrap around the end of the series (circular, as in Politis and Romano);
   - with fewer than 60 daily returns, no interval is reported;
@@ -276,6 +278,7 @@ At each daily decision, after day d's close:
 - the picks quarter by quarter;
 - variant D, and plain equal-weight buy-and-hold at full size;
 - **the minimum account size:** the smallest account at which every target position of the out-of-sample run meets its symbol's minimum notional (§5).
+- **the lowest margin ratio reached:** the minimum, over every liquidation check, of equity ÷ gross open notional, against the 1% threshold. This shows how close the run came to it;
 
 **Decision and trade records** (required outputs, written with every run, and never read back by any decision; §11, decision 10):
 - **Every daily decision, per coin:**
