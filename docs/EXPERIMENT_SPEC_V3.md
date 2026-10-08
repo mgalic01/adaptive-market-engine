@@ -150,7 +150,11 @@ At each daily decision, after day d's close:
 - funding paid and received, fees, slippage and turnover;
 - the time invested, gross and net;
 - the realised portfolio volatility against the 20% target, and the share of days on which a cap bound. With few coins early on, the 10% cap can hold the book below target, and A4 is not scale-free;
-- a 95% interval for the Sharpe ratio, beside A1 and A5: a stationary block bootstrap of the daily returns, with 20-day blocks, 10,000 resamples and a fixed seed;
+- a 95% interval for the Sharpe ratio, beside A1 and A5. It is a stationary block bootstrap of the daily returns (Politis and Romano):
+  - block lengths are geometric, with a mean of 20 days;
+  - 10,000 resamples;
+  - Python's `random.Random(20261008)` as the only source of randomness;
+  - the 2.5th and 97.5th percentiles of the resampled Sharpe ratios, by the nearest-rank method;
 - the double-cost results;
 - the worst drawdown's dates;
 - the picks quarter by quarter;
