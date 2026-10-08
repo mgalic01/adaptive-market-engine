@@ -33,3 +33,14 @@ independence, missing bars and exclusion boundaries. Nine combined spot tests pa
 Ruff and mypy pass for the new decision module. The continuous execution runner,
 benchmark metrics and durable evidence remain pending. No historical results or
 merge readiness are claimed.
+
+Hourly runner foundation: `SpotRunner` now consumes deferred daily targets,
+computes all quantity changes from the same pre-fill equity, settles sells before
+buys and records pre/post exact audits. It retains 01:00 pre-fill samples and the
+frozen favourable-before-adverse drawdown path. Final supplied in-window closes
+mark retained holdings without a terminal trade or fee. An exception permanently
+stops the runner. Twelve synthetic spot tests pass, including masked deferral,
+account corruption refusal, drawdown ordering and terminal valuation; Ruff and
+mypy pass. Data-window adapter, complete decision/skip evidence, masked-held-hour
+counts, multi-asset boundary coverage and reporting remain unfinished. Draft only;
+the earlier full-suite result belongs to orchestration, not these new changes.
