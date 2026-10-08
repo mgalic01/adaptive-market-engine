@@ -155,11 +155,12 @@ At each daily decision, after day d's close:
   1. **The open mark,** at the bar's open time, before any of the hour's fills or funding. The daily 01:00 sample (§8) is this mark, so it is taken before any funding in the 01:00 hour. With an 8-hour interval none falls there; with a 1-hour interval, which §2 allows, one does.
   2. **The pre-fill liquidation check,** on the quantities held at the open, at the open prices. A book that gapped through the threshold is liquidated (below), and the hour's fills are cancelled.
   3. **The hour's events,** in the order of their raw timestamps:
-     - fills happen at the bar's open time: the daily decision's orders;
-     - funding happens at its recorded timestamp, which is at or a few milliseconds after the open;
+     - fills happen at the bar's open time: the daily decision's orders, applied as one batch;
+     - funding happens at its recorded timestamp, which is at or a few milliseconds after the open. **All funding records with the same raw timestamp,** across coins, are one funding event: they are applied together, so no debit is applied before a credit of the same instant;
      - so, except on an exact tie, a fill at the open is charged that hour's funding on the post-fill quantity;
-     - on an exact tie, funding comes first, and the pre-fill liquidation check (step 2) is repeated right after that funding, before the tied fill. A book the funding pushes through the threshold is liquidated there, and the fill is cancelled.
-  4. **The post-fill mark:** equity after step 3, at the same open prices, so the fees, slippage and any realised loss of those fills, and that hour's funding, show at once.
+     - on an exact tie, the funding event comes first;
+     - **after every funding event,** the liquidation check of step 2 is repeated at the open prices, on the quantities held then. A book the funding pushes through the threshold is liquidated there, and every later event of the hour, fill or delevering, is cancelled.
+  4. **The post-fill mark:** equity after step 3, at the same open prices, so the fees, slippage and any realised loss of those fills, and that hour's funding, show at once. The liquidation check of step 2 is repeated on it, at the open prices, before any delevering.
   5. **The 1x-ceiling check,** on the quantities after the fills, at the open mark. If gross leverage exceeds 1.0, the delevering (below) fills at this same open, and the post-fill mark is taken again after it.
   6. **The post-fill liquidation check,** on the quantities after any delevering, at the bar's adverse extremes.
 
@@ -173,7 +174,8 @@ At each daily decision, after day d's close:
   - Hours with an open position and a masked bar are counted and reported.
 - **Liquidation:** each hour, equity is also computed at each position's adverse extreme of that 1h bar: the low for a long, the high for a short, all at once.
   - If that equity is ≤ 1% of the gross open notional, the account is liquidated.
-  - **Either kind of liquidation,** the pre-fill check at the open or this post-fill check, is recorded at the hour of the check, with each position's price in that check. The run is invalid from then on (§8), and no later order is simulated. The gross open notional is `Σ |quantity| × price` at the same adverse-extreme prices.
+  - **Any liquidation,** at any of the checks above, is recorded at the hour of the check, with each position's price in that check. The run is invalid from then on (§8), and no later order is simulated. The gross open notional is `Σ |quantity| × price` at the same prices as the check's equity.
+  - **No liquidation fill is simulated.** The run stops at the check: every open position stays open, marked at its price in that check, and that is the run's terminal mark. No fee or slippage is charged for it. Its lifecycle is recorded as censored, with liquidation as the reason (§8), and the accounting identities are checked at that mark.
   - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin. Checked at the open and at the bar's adverse extremes, it can fail a run that Binance would not have liquidated, so it leans against v3.
   - It is expected never to happen at these sizes.
 - **The 1x ceiling, on the actual book:** at every hourly mark, gross leverage is `Σ |quantity| × mark ÷ equity`.
@@ -183,8 +185,8 @@ At each daily decision, after day d's close:
   - A delevering order is reduce-only, so it ignores the minimum notional.
   - **When some positions cannot trade** because their hour is masked, they stay at their carried marks. The tradable positions are then reduced by `k' = (0.80 × equity − masked gross) ÷ tradable gross`, so gross leverage falls to 0.80 at once:
     - if k' ≤ 0, every tradable position is closed;
-    - if the masked positions alone exceed 1.0 × equity, the ceiling cannot be restored, and the run is invalid (§8);
     - a masked position is checked again at its next unmasked hour, by the ordinary rule.
+  - **After any delevering,** gross leverage is computed again at the new post-fill mark, with the equity after the delevering's fees and slippage. If it still exceeds 1.0, the ceiling cannot be restored, and the run is invalid (§8). That can happen only when masked positions are close to the whole equity, so the costs of closing the tradable ones tip it over.
   - If equity is ≤ 0 at a mark, the ratio is not computed: the liquidation check has already failed the run.
   - Each such delevering is reported.
   - **After a delevering,** the next daily decision tests its band (§5 step 4) against the post-delevering weight, so a gap above 1% is rebalanced back toward the target. A slow cycle is therefore possible: delever, re-size at the next decision, then delever again after a further rise. Each step is reported, and none can repeat within an hour.
@@ -286,14 +288,22 @@ At each daily decision, after day d's close:
   - block lengths are geometric, with a mean of 20 days, and blocks wrap around the end of the series (circular, as in Politis and Romano);
   - with fewer than 60 daily returns, no interval is reported;
   - 10,000 resamples;
-  - Python's `random.Random(20261008)` as the only source of randomness;
-  - the 2.5th and 97.5th percentiles of the resampled Sharpe ratios, by the nearest-rank method;
+  - CPython's `random.Random(20261008)`, one generator for all resamples, as the only source of randomness;
+  - **each resample,** of the n daily returns `r[0..n−1]`, in this exact draw order: `i = rng.randrange(n)`, and the first element is `r[i]`. Then, for each of the next n − 1 elements: `u = rng.random()`; if `u < 1/20`, a new block starts at `i = rng.randrange(n)`; otherwise `i = (i + 1) mod n`. The element is `r[i]`. Each resample has exactly n elements, so no block is truncated or restarted in any other way;
+  - each resample's Sharpe ratio uses §8's formula, including its 0 for a standard deviation of 0;
+  - the 2.5th and 97.5th percentiles of the 10,000 sorted Sharpe ratios, by the nearest-rank method: the 250th and the 9,750th values, counting from 1;
 - the double-cost results;
-- the worst drawdown's dates, and the maximum drawdown beside equal-weight buy-and-hold's;
+- the worst drawdown's dates, and the maximum drawdown beside full-size equal-weight buy-and-hold's (below);
 - the picks quarter by quarter;
-- variant D, and plain equal-weight buy-and-hold at full size;
+- **plain equal-weight buy-and-hold at full size:** a spot account of 10,000 USDT, with the hold benchmark's spot rules (fees, slippage, steps, minimum notional), but no volatility target, no caps and no rebalancing:
+  - at 01:00 UTC on the first test quarter's first day, it buys an equal share of its cash in each coin in the portfolio then, fees included;
+  - it holds them to the terminal mark (§8). It never sells, and a coin that joins the portfolio later is not added;
+  - it ignores excluded months. Where a coin has no spot bar, it is marked at its last unmasked spot price;
+- **variant D,** quoted from spec v1's published runs, not rerun. Its windows and engine differ from v3's, and the record says so. R1's long-only twin (above) is the like-for-like comparison inside v3;
 - **the minimum account size:** computed by scaling, not by rerunning. For each order that opens or increases a position in the 10,000-USDT out-of-sample run, the ratio of the symbol's minimum notional to that order's notional, × 10,000 USDT. The largest such value, rounded up to the next 10 USDT, is reported.
-  - It ignores how rounding and refusals at a smaller account would change the later path, and the record says so.
+  - **Refused orders count:** an opening or increasing order refused for minimum notional (§5), including a flip's opening order, enters with its intended notional. Its value is above 10,000 USDT, so a refusal shows that even 10,000 USDT was too small for that order.
+  - If the run has no opening or increasing order at all, the record says so, and no size is reported.
+  - It ignores how rounding and refusals at a different account size would change the later path, and the record says so.
 - **the lowest margin ratio reached:** the minimum, over every liquidation check with an open position, of equity ÷ gross open notional, against the 1% threshold. A check on a flat book has no ratio and is skipped. If the book is never open, the record says so. This shows how close the run came to the threshold;
 
 **Decision and trade records** (required outputs, written with every run, and never read back by any decision; §11, decision 10):
@@ -306,8 +316,8 @@ At each daily decision, after day d's close:
 - **Every position's lifecycle.** A position runs from flat to non-zero, and ends back at flat or at a flip. For each one:
   - the coin and side;
   - every fill, with its time, quantity and price;
-  - the exit's trigger: the signal going to 0, a flip, a pick change, an excluded month, a delevering that rounds the position to 0, or a liquidation;
-  - **a position still open when a run ends** is not closed: no fill, fee or slippage is charged. It is marked at the terminal mark (§8), its profit and loss stays unrealised, and its record is labelled censored, with that unrealised profit and loss. This holds for training runs and for the out-of-sample run;
+  - the exit's trigger: the signal going to 0, a flip, a pick change, an excluded month, or a delevering that rounds the position to 0;
+  - **a position still open when a run ends,** at its last hour or at a liquidation (§6), is not closed: no fill, fee or slippage is charged. It is marked at the terminal mark (§8, or the liquidation check's prices), its profit and loss stays unrealised, and its record is labelled censored, with the reason (end of run or liquidation) and that unrealised profit and loss. This holds for training runs and for the out-of-sample run;
   - its duration;
   - its maximum favourable and maximum adverse excursion, in USDT, before fees and funding. For each hour the position is open, two values are taken: the profit and loss realised so far in the lifecycle, plus the remaining position's unrealised profit and loss at the bar's favourable extreme, and the same at its adverse extreme. Both use the quantity and average entry price in force during that hour, and earlier hours are never recomputed against a later average entry. The excursions are the maximum and the minimum of these hourly values;
   - **Each reducing or closing fill** adds one more excursion state: the lifecycle's realised profit and loss after that fill, plus the remaining position's unrealised profit and loss at the fill price. So a close after a favourable gap counts in the maximum favourable excursion, and profit given back cannot be negative;
