@@ -1,0 +1,102 @@
+"""Walk-forward orchestration with synthetic flat data, no market sources."""
+
+from decimal import Decimal as D
+
+import pytest
+
+from crypto_grid_bot.trend import orchestration as orchestration
+from crypto_grid_bot.trend.decisions import DailyDecisions
+from crypto_grid_bot.trend.replay import ReplayResult
+
+
+def test_all_invalid_candidates_are_recorded_and_choose_flat(monkeypatch):
+    records = []
+    calls = []
+
+    def invalid(*args, **kwargs):
+        calls.append(args[6])
+        return ReplayResult(None, "unavailable_exclusion_close", ())
+
+    monkeypatch.setattr(orchestration, "replay_window", invalid)
+    result = orchestration.run_walk_forward(
+        DailyDecisions({"BTCUSDT": []}, {"BTCUSDT": "2023-04"}),
+        {},
+        {},
+        {},
+        record=records.append,
+    )
+    assert len(records) == 13
+    assert all(row.sharpe is None for row in result.training)
+    assert all(row.invalid_reason == "unavailable_exclusion_close" for row in result.training)
+    assert set(result.picks.values()) == {None}
+    assert calls[-1] == result.picks
+
+
+def test_engine_error_is_recorded_and_aborts_instead_of_selecting_another_rule(monkeypatch):
+    records = []
+
+    def broken(*args, **kwargs):
+        raise ArithmeticError("audit failed")
+
+    monkeypatch.setattr(orchestration, "replay_window", broken)
+    with pytest.raises(ArithmeticError, match="audit failed"):
+        orchestration.run_walk_forward(
+            DailyDecisions({"BTCUSDT": []}, {"BTCUSDT": "2023-04"}),
+            {},
+            {},
+            {},
+            record=records.append,
+        )
+    assert len(records) == 1
+    assert records[0].rule == "R1"
+    assert records[0].error == "ArithmeticError: audit failed"
+
+
+def test_failed_evidence_recording_stops_after_first_attempt(monkeypatch):
+    calls = []
+
+    def invalid(*args, **kwargs):
+        calls.append(args)
+        return ReplayResult(None, "unavailable_exclusion_close", ())
+
+    def cannot_save(attempt):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(orchestration, "replay_window", invalid)
+    with pytest.raises(OSError, match="disk full"):
+        orchestration.run_walk_forward(
+            DailyDecisions({"BTCUSDT": []}, {"BTCUSDT": "2023-04"}),
+            {},
+            {},
+            {},
+            record=cannot_save,
+        )
+    assert len(calls) == 1
+
+
+def test_frozen_training_menu_then_one_continuous_oos_account():
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.orchestration import run_walk_forward
+
+    filters = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    book = DailyDecisions({"BTCUSDT": []}, {"BTCUSDT": "2023-04"})
+    records = []
+
+    def record(attempt):
+        assert attempt.error is None
+        assert attempt.result.runner.account.initial == 10000
+        assert attempt.result.runner.stopped == "completed"
+        records.append((attempt.run_id, attempt.phase, attempt.rule))
+
+    result = run_walk_forward(book, {"BTCUSDT": filters}, {"BTCUSDT": []}, {}, record=record)
+    assert len(result.training) == 12
+    assert [row.rule for row in result.training] == [
+        f"R{i}{suffix}" for suffix in ("", "L") for i in range(1, 7)
+    ]
+    assert len(result.picks) == 1
+    assert set(result.picks.values()) == {"R1"}
+    assert len(records) == 13
+    assert len({row[0] for row in records}) == 13
+    assert records[-1][1] == "out_of_sample"
+    assert result.out_of_sample.runner.account.wallet == 10000
