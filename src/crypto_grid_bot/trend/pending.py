@@ -15,6 +15,7 @@ HOUR = 3600000
 class PendingDecision:
     decision_ms: int
     weight: Decimal
+    exit_reasons: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +37,11 @@ class PendingDecisions:
         self._clock = -1
 
     def advance(
-        self, hour_ms: int, new_targets: Mapping[str, Decimal], tradable: Set[str]
+        self,
+        hour_ms: int,
+        new_targets: Mapping[str, Decimal],
+        tradable: Set[str],
+        exit_reasons: Mapping[str, frozenset[str]] | None = None,
     ) -> DecisionDispatch:
         if type(hour_ms) is not int or hour_ms < 0 or hour_ms % HOUR or hour_ms <= self._clock:
             raise ValueError("hours must be aligned and strictly increasing")
@@ -53,7 +58,9 @@ class PendingDecisions:
         for symbol in sorted(new_targets):
             if symbol in self._pending:
                 cancelled.append((symbol, self._pending[symbol]))
-            self._pending[symbol] = PendingDecision(hour_ms, new_targets[symbol])
+            self._pending[symbol] = PendingDecision(
+                hour_ms, new_targets[symbol], frozenset((exit_reasons or {}).get(symbol, ()))
+            )
         ready = []
         for symbol, decision in sorted(self._pending.items()):
             if symbol in tradable and hour_ms >= decision.decision_ms + HOUR:
