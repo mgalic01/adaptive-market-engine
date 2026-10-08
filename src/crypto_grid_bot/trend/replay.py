@@ -89,16 +89,27 @@ def replay_window(
             {symbol: frozenset(rows) for symbol, rows in indexed.items()},
         )
     except UnavailableClose as exc:
-        return ReplayResult(None, "unavailable_exclusion_close", exc.requirements)
+        # Inventory is a predeclared data fact, not proof the strategy holds
+        # a position. Keep the fact and decide at its mandatory decision time.
+        requirements = exc.requirements
     runner = TrendRunner(
         filters,
         multiple=multiple,
         cost_multiple=cost_multiple,
         excluded_months=excluded,
     )
-    closes = {}
+    closes: dict[str, Decimal] = {}
     current_rule = picks[start_ms]
     for hour in range(start_ms, end_ms_exclusive, HOUR):
+        if any(
+            item.decision_ms == hour
+            and item.fill_ms is None
+            and item.symbol in runner.account.positions
+            and runner.account.positions[item.symbol].quantity != 0
+            for item in requirements
+        ):
+            runner.finish(closes, reason="unavailable_exclusion_close")
+            return ReplayResult(runner, "unavailable_exclusion_close", requirements)
         month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
         eligible = {
             s

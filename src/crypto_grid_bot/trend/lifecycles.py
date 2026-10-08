@@ -183,6 +183,7 @@ class LifecycleLedger:
             "liquidation",
             "no_tradable_position",
             "leverage_not_restored",
+            "unavailable_exclusion_close",
         ):
             raise ValueError("invalid censor reason")
         for symbol, life in self.active.items():
