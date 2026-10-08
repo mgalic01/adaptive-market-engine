@@ -71,7 +71,7 @@ class TrendRunner:
             mark = self.account.mark(last_unmasked_closes)
             audit = self.account.audit(last_unmasked_closes)
             self.audits.append(audit)
-            if not audit.exact:
+            if not audit.accepted:
                 raise AccountingFailure(audit)
             stamp = self._hour + HOUR
             with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
@@ -133,7 +133,8 @@ class TrendRunner:
             prices[symbol] = opened
             extremes[symbol] = (low, high)
         pre_audit = self.account.audit(prices)
-        if not pre_audit.exact:
+        self.audits.append(pre_audit)
+        if not pre_audit.accepted:
             raise AccountingFailure(pre_audit)
         dispatch = self.pending.advance(hour_ms, new_targets, set(bars), exit_reasons)
         for symbol, position in self.account.positions.items():
@@ -218,7 +219,7 @@ class TrendRunner:
             )
         audit = self.account.audit(result.marks[-1][1].prices)
         self.audits.append(audit)
-        if not audit.exact:
+        if not audit.accepted:
             raise AccountingFailure(audit)
         self.stopped = result.reason
         return result

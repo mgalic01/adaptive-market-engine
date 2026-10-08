@@ -23,3 +23,15 @@ the other execution gates still apply; this decision does not launch a replay.
 
 The separate lifecycle-total-to-equity reconciliation in the metrics layer is
 not relaxed by this amendment. Any further tolerance needs a concrete proposal.
+
+Implementation evidence: the account exposes `accepted` separately from `exact`;
+accepted nonzero residuals never become exact. Runner pre-hour, post-hour and final
+audits all use the approved acceptance test and retain their original residuals.
+Pre-hour audits are now retained too, including failures. Decimal `copy_abs()`
+avoids ambient-context rounding of the bound comparison.
+
+Validation: 79 account/runner/lifecycle/execution/pending synthetic tests pass,
+including both signed boundaries, just-outside values, NaN/infinity, exact wallet
+and quantity guards, the actual weighted-entry round trip and runner rejection.
+Ruff, mypy and append-only trial validation pass. External review and full CI are
+pending; these checks establish behavior, not historical profitability.

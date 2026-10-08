@@ -12,6 +12,7 @@ from crypto_grid_bot.trend.orders import OrderIntent
 
 ZERO = Decimal(0)
 ONE = Decimal(1)
+EQUITY_AUDIT_TOLERANCE = Decimal("1e-18")
 
 
 def _context() -> Context:
@@ -98,6 +99,19 @@ class AccountingAudit:
     wallet_residual: Decimal
     quantity_residuals: dict[str, Decimal]
     equity_residual: Decimal
+
+    @property
+    def accepted(self) -> bool:
+        """Owner-approved bound on equity only; preserve all raw residuals."""
+        return (
+            self.wallet_residual.is_finite()
+            and self.wallet_residual == ZERO
+            and all(
+                value.is_finite() and value == ZERO for value in self.quantity_residuals.values()
+            )
+            and self.equity_residual.is_finite()
+            and self.equity_residual.copy_abs() <= EQUITY_AUDIT_TOLERANCE
+        )
 
     @property
     def exact(self) -> bool:
