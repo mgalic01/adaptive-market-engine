@@ -34,6 +34,7 @@ class PendingDecisions:
 
     def __init__(self) -> None:
         self._pending: dict[str, PendingDecision] = {}
+        self._deferred_pick: set[str] = set()
         self._clock = -1
 
     def advance(
@@ -54,13 +55,28 @@ class PendingDecisions:
                 raise ValueError("invalid target weight")
         for symbol in tradable:
             symbol_name(symbol)
+        pick_symbols = {
+            symbol for symbol, reasons in (exit_reasons or {}).items() if "pick_change" in reasons
+        }
+        for symbol in pick_symbols:
+            symbol_name(symbol)
+        if pick_symbols and hour_ms % (24 * HOUR):
+            raise ValueError("new pick changes only at midnight")
+        self._deferred_pick.update(pick_symbols)
         cancelled = []
         for symbol in sorted(new_targets):
+            reasons = frozenset((exit_reasons or {}).get(symbol, ()))
+            if symbol in self._deferred_pick:
+                reasons |= {"pick_change"}
+                self._deferred_pick.remove(symbol)
             if symbol in self._pending:
-                cancelled.append((symbol, self._pending[symbol]))
-            self._pending[symbol] = PendingDecision(
-                hour_ms, new_targets[symbol], frozenset((exit_reasons or {}).get(symbol, ()))
-            )
+                previous = self._pending[symbol]
+                cancelled.append((symbol, previous))
+                # The newly selected rule has not had an execution attempt yet.
+                # Keep that cause even for nonzero targets: rounding or minimum
+                # quantity can turn their eventual reduction into a full close.
+                reasons |= previous.exit_reasons & {"pick_change"}
+            self._pending[symbol] = PendingDecision(hour_ms, new_targets[symbol], reasons)
         ready = []
         for symbol, decision in sorted(self._pending.items()):
             if symbol in tradable and hour_ms >= decision.decision_ms + HOUR:
