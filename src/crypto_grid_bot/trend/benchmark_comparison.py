@@ -3,7 +3,12 @@
 from dataclasses import dataclass
 from decimal import Decimal
 
-from crypto_grid_bot.trend.metrics import sample_returns, sharpe, summarize_runner
+from crypto_grid_bot.trend.metrics import (
+    sample_returns,
+    sharpe,
+    summarize_runner,
+    validate_sample_path,
+)
 from crypto_grid_bot.trend.runner import TrendRunner
 from crypto_grid_bot.trend.spot_benchmark import SpotRunner
 
@@ -46,6 +51,7 @@ def compare_hold(strategy: TrendRunner, hold: SpotRunner) -> HoldComparison:
     ):
         raise ValueError("spot path and samples disagree")
     strategy_metrics = summarize_runner(strategy)
+    validate_sample_path(hold.samples, hold.equity_path)
     returns = sample_returns(hold.samples)
     hold_sharpe = sharpe(returns)
     return HoldComparison(

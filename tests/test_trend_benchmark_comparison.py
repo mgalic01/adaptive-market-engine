@@ -72,3 +72,13 @@ def test_invalid_or_corrupted_spot_account_cannot_receive_a5_verdict():
     hold.stopped = "unavailable_exclusion_close"
     with pytest.raises(ValueError, match="completed"):
         compare_hold(strategy, hold)
+
+
+def test_corrupted_interior_hold_sample_cannot_receive_a5_verdict():
+    from crypto_grid_bot.trend.benchmark_comparison import compare_hold
+
+    strategy, hold = accounts()
+    stamp, equity = hold.samples[1]
+    hold.samples[1] = (stamp, equity + 1)
+    with pytest.raises(ValueError, match="sample.*path mark"):
+        compare_hold(strategy, hold)

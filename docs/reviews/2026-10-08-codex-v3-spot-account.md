@@ -109,3 +109,27 @@ Integration follow-up (2026-10-09): integrated f8c28db (metrics, evidence writer
 Second integration batch (2026-10-09): includes PR226 46f4d2a daily/partial evidence, PR220 214b3cb sample completeness, and PR224 eb5aa15 missing-spot attribution. The decisions.py conflict was resolved by keeping both cause-only pick events and all-rule signal evidence. All 127 focused integration tests passed before the diagnostic follow-up below. Bandit B311 was reproduced on the frozen statistical random.Random seed; a line-specific nosec B311 with its non-security rationale preserves the required algorithm and passes Bandit. No security check is globally disabled.
 
 Diagnostic follow-up from internal review: volatility is now measured for every coin with sufficient history even when its signal is zero or it is excluded. Unavailable volatility is null, distinguishable from an actually measured zero. All-invalid decisions also retain flat sizing diagnostics; targets remain zero. Four regression cases failed before correction; 87 focused sizing/decision/replay/evidence/spot/comparison checks now pass, with Ruff lint/format and mypy. Compatibility: SizingResult.volatility values may be null when fewer than 60 observations exist; serialized evidence must preserve that distinction. No active-weight formula or trading parameter changed. Full integrated CI and external review remain pending; no historical dispatch.
+
+## 2026-10-09 benchmark sample integrity follow-up
+
+Bob identified that A5 checked hold timestamps but not interior equity values.
+The new regression changed only the second hold sample's equity and incorrectly
+received a verdict before this fix. Both account types now call the shared
+validate_sample_path routine, preserving complete 01:00/terminal coverage,
+chronological order, matching values and initial-equity equality. Trade-level
+reconciliation remains futures-specific. No sizing, execution or metric formula
+changed. The metrics docstring clarifies that the equality guard prohibits any
+omitted initial-to-first-sample gain or loss.
+
+An actual published JSONL regression uses computed daily decisions to verify
+unavailable ETH volatility is JSON null, measured BTC zero is an exact Decimal
+string, and the all-invalid selected rule is null. This was existing serializer
+behavior; no encoding change was necessary.
+
+Validation: the forged-equity regression failed before the fix; 58 focused
+comparison, metrics, writer, spot runner and spot ledger tests pass afterwards.
+Ruff and mypy pass. Independent Codex reviewer found no actionable delta defects,
+ran 41 focused tests and checked a legitimate 01:00 terminal. Full current-head
+CI and Bob review remain required. No new dependencies or known security risks.
+Compatibility: corrupted spot evidence now raises instead of producing A5.
+Historical registration, spot artifact/reporting and recovery work remain open.
