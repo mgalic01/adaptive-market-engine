@@ -89,7 +89,7 @@ class ExclusionCalendar:
                 boundary, _ = month_bounds_ms(month)
                 decision = boundary - DAY
                 previous = datetime.fromtimestamp(decision // 1000, UTC).strftime("%Y-%m")
-                if start_ms <= decision < end_ms_exclusive and previous not in months:
+                if start_ms <= decision < boundary < end_ms_exclusive and previous not in months:
                     requirements.append(
                         CloseRequirement(
                             symbol,
