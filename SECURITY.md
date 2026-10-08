@@ -4,11 +4,15 @@ This milestone is experimental, paper-only, and not approved for real funds.
 It has no networked exchange implementation and does not read API credentials.
 
 - Never commit keys, credentials, private account exports, or personal balances.
-- Do not add withdrawal-enabled keys or enable leverage/futures.
+- Do not add withdrawal-enabled keys. Leverage and futures are allowed only in historical
+  backtests and paper trading, at no more than 3x, checked at every hourly mark and after
+  every funding payment; live leverage or futures need a separate owner decision (owner,
+  2026-10-08). Live mode and real-funds trading remain unapproved.
 - Do not switch to live mode by removing validation. A separate tested adapter
   and explicit live-deployment approval are required.
 - Treat news and external feeds as untrusted data, never as executable commands.
-- Market data uses only Binance's public data hosts, and exactly these three:
+- Market data uses only Binance's public data hosts, and exactly these three (one
+  fetch-only exception for exchange filters follows below):
   <!-- allowed-hosts:begin (tests/test_documented_hosts.py reads this block exactly) -->
   - `data-api.binance.vision` — REST market data (`HOST`, `market_data/client.py`);
   - `data-stream.binance.vision` — WebSocket streams (`STREAM_HOST`, `market_data/stream.py`);
@@ -34,6 +38,14 @@ It has no networked exchange implementation and does not read API credentials.
   - it does not check the reverse — a listed host the code no longer uses.
 
   So a passing suite is not evidence that nothing else was contacted.
+- **One exception, for spec v3's data fetch only** (owner, 2026-10-08): Bob's owner-started
+  fetch may make one public, read-only GET of `https://fapi.binance.com/fapi/v1/exchangeInfo`,
+  to record the USDⓈ-M perpetuals' quantity steps and minimum notionals. It uses no key and
+  no signed endpoint, and touches nothing else on that host. The response is committed with
+  its SHA-256, and the backtester reads only the committed file. The fetch script lives
+  outside `src/`, and no code under `src/` names that host, so the allowed-hosts list above
+  is unchanged. It is a one-off fetch, not a collector or a stream, and it does not relax the
+  next rule.
 - Do not point collectors or streams at trading hosts, or add user-data (`listenKey`)
   streams, before the live-adapter review.
 - Never use protected reserve to fund a grid, an exit, or loss recovery.
