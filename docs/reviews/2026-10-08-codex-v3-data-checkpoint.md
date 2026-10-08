@@ -93,3 +93,12 @@ still produces no final manifest. Focused suite: 82 passed; repository Ruff,
 format, mypy (74 files) and Bandit clean. The earlier full-suite and byte-identity
 runs were deliberately interrupted before this fix pass and are not pass evidence.
 External exact-head review and full verification remain pending.
+
+PR #211 validation at f02ec0a: Bob NO ISSUES; CI 1,839 passed, 2 skipped,
+1,595 subtests passed; local legacy byte identity ALL IDENTICAL. The duplicate local
+full pytest was stopped after CI provided completed full-suite evidence. Before
+merge, Cloud review then identified the valid dual MIN_NOTIONAL/NOTIONAL shape
+already supported by the legacy exchange parser. Merge was held. Two new regression
+cases reproduced the rejection and now pass; V3 parses every supplied minimum and
+uses their maximum. Missing/malformed values remain errors. New-head review and CI
+are required; the prior verdict is not carried over to this fix.
