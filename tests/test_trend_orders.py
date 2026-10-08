@@ -169,3 +169,16 @@ def test_band_noop_and_reductions_do_not_create_increase_attempts():
 def test_filled_and_refused_increases_both_keep_unrounded_size():
     assert plan(".129").intended_increase_quantity == D("12.9")
     assert plan(".129", rules=filters(notional="1000")).intended_increase_quantity == D("12.9")
+
+
+@pytest.mark.parametrize("target,held", [(".005", "2"), ("-.005", "-2")])
+def test_zero_rounded_sizing_exit_is_recorded(target, held):
+    result = plan(target, held=held)
+    assert quantities(result) == [(D(held).copy_negate(), True)]
+    assert result.adjustments == ("quantity_rounded_to_zero",)
+    assert result.intended_increase_quantity is None
+
+
+def test_explicit_zero_and_band_noop_are_not_rounding_exits():
+    assert plan("0", held="2").adjustments == ()
+    assert plan(".005", held="1").adjustments == ()
