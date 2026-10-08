@@ -105,3 +105,35 @@ def test_inconsistent_fill_positions_are_rejected_before_entry():
     with pytest.raises(ValueError, match="quantity"):
         ledger.fill(fill, Position(), Position(D(2), fill.price))
     assert not ledger.active
+
+
+def test_invalid_funding_group_does_not_partially_charge_lifecycles():
+    from crypto_grid_bot.trend.account import FundingEvent, FundingPayment
+    from crypto_grid_bot.trend.lifecycles import LifecycleLedger
+
+    a, ledger = FuturesAccount(), LifecycleLedger()
+    fill = a.fill("BTCUSDT", OrderIntent(D(1), False), D(100), T)
+    ledger.fill(fill, Position(), a.positions["BTCUSDT"])
+    event = FundingEvent(
+        T,
+        (
+            FundingPayment("BTCUSDT", D(1), D(100), D(".01"), D(1)),
+            FundingPayment("ETHUSDT", D(1), D(100), D(".01"), D(1)),
+        ),
+    )
+    with pytest.raises(ValueError):
+        ledger.fund(event)
+    assert ledger.active["BTCUSDT"].funding_paid == 0
+
+
+def test_duplicate_funding_event_is_not_counted_twice():
+    from crypto_grid_bot.trend.lifecycles import LifecycleLedger
+
+    a, ledger = FuturesAccount(), LifecycleLedger()
+    fill = a.fill("BTCUSDT", OrderIntent(D(1), False), D(100), T)
+    ledger.fill(fill, Position(), a.positions["BTCUSDT"])
+    event = a.fund(T, {"BTCUSDT": D(".01")}, {"BTCUSDT": D(100)})
+    ledger.fund(event)
+    with pytest.raises(ValueError):
+        ledger.fund(event)
+    assert ledger.active["BTCUSDT"].funding_paid == 1

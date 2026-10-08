@@ -60,6 +60,7 @@ class LifecycleLedger:
     def __init__(self) -> None:
         self.active: dict[str, Lifecycle] = {}
         self.completed: list[Lifecycle] = []
+        self._funding_clock = -1
 
     def observe(self, symbol: str, position: Position, price: Decimal) -> None:
         life = self.active[symbol]
@@ -105,6 +106,17 @@ class LifecycleLedger:
             self.completed.append(self.active.pop(fill.symbol))
 
     def fund(self, event: FundingEvent) -> None:
+        if type(event.timestamp_ms) is not int or event.timestamp_ms <= self._funding_clock:
+            raise ValueError("funding groups must have strictly increasing timestamps")
+        symbols = set()
+        for payment in event.payments:
+            if payment.symbol not in self.active or payment.symbol in symbols:
+                raise ValueError("funding needs one payment per active lifecycle")
+            if event.timestamp_ms < self.active[payment.symbol].start_ms:
+                raise ValueError("funding predates lifecycle")
+            if not payment.payment.is_finite():
+                raise ValueError("nonfinite funding payment")
+            symbols.add(payment.symbol)
         with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
             for payment in event.payments:
                 life = self.active[payment.symbol]
@@ -112,6 +124,7 @@ class LifecycleLedger:
                     life.funding_paid += payment.payment
                 else:
                     life.funding_received -= payment.payment
+        self._funding_clock = event.timestamp_ms
 
     def censor(
         self,
