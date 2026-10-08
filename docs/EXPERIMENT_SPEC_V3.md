@@ -62,8 +62,8 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 **Daily bars** are UTC days, built from the unmasked 1h bars of each day:
 - open is the first unmasked hour's open, and close is the last unmasked hour's close;
 - high and low are the maximum and minimum over the unmasked hours;
-- a day with some hours masked still gives a bar, and is reported as such;
-- a day with every hour masked, or in an excluded month, gives no bar.
+- a day needs at least 20 of its 24 hours unmasked to give a bar. That is the 17% rule applied to the day: up to 4 masked hours. A day with some hours masked but at least 20 unmasked still gives a bar, and is reported as such;
+- a day with more than 4 hours masked, or in an excluded month, gives no bar.
 
 **The daily series** of a coin is its bars in date order, with missing days simply absent:
 - "n closes" means the last n available bars, and "the close 365 days earlier" (R4) means the last available close on or before that calendar date. If that close is more than 7 days before the date, R4 gives 0 for that day;
@@ -149,18 +149,17 @@ At each daily decision, after day d's close:
   1. **The open mark,** at the bar's open time, before any of the hour's fills or funding. The daily 01:00 sample (§8) is this mark, and no funding falls at 01:00.
   2. **The pre-fill liquidation check,** on the quantities held at the open, at the open prices. A book that gapped through the threshold is liquidated (below), and the hour's fills are cancelled.
   3. **The hour's events,** in the order of their raw timestamps:
-     - fills happen at the bar's open time: first the daily decision's orders, then any delevering ordered the hour before (below);
+     - fills happen at the bar's open time: the daily decision's orders;
      - funding happens at its recorded timestamp, which is at or a few milliseconds after the open;
      - so, except on an exact tie, a fill at the open is charged that hour's funding on the post-fill quantity;
      - on an exact tie, funding comes first.
   4. **The post-fill mark:** equity after step 3, at the same open prices, so the fees, slippage and any realised loss of those fills, and that hour's funding, show at once.
-  5. **The 1x-ceiling check,** on the quantities after the fills, at the open mark.
-  6. **The post-fill liquidation check,** on those quantities, at the bar's adverse extremes.
+  5. **The 1x-ceiling check,** on the quantities after the fills, at the open mark. If gross leverage exceeds 1.0, the delevering (below) fills at this same open, and the post-fill mark is taken again after it.
+  6. **The post-fill liquidation check,** on the quantities after any delevering, at the bar's adverse extremes.
 
   **Within one hour's fills:**
   - **The daily decision's orders come first.** Among them, every order that reduces or closes a position goes first, then every order that opens or increases one, each group in alphabetical order of symbol.
-  - **Then the delevering,** if one was ordered: k is computed on the book after all of the hour's daily fills, and the delevering orders follow, in alphabetical order of symbol.
-  - **Step 5 then checks** the book after both. It orders a further delevering for the next hour only if gross leverage still exceeds 1.0.
+  - **Then any delevering** (step 5): k is computed on the book after all of the hour's daily fills, and its orders follow at the same open, in alphabetical order of symbol. One delevering per hour at most. It targets 0.80, so a book above 1.0 is brought well under it.
 - **Marking:** equity is marked at every hour's open (the wallet and equity are defined under "Wallet and equity" below).
   - **A coin's mark price** in an hour is that hour's open.
   - **In a masked or missing hour,** which an included month may have (up to 17%), the coin's mark is the open of its last unmasked hour before it. Its funding price is the same (above), and its liquidation check uses that same price, since the hour has no usable high or low.
@@ -172,11 +171,11 @@ At each daily decision, after day d's close:
   - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin. Checked at the open and at the bar's adverse extremes, it can fail a run that Binance would not have liquidated, so it leans against v3.
   - It is expected never to happen at these sizes.
 - **The 1x ceiling, on the actual book:** at every hourly mark, gross leverage is `Σ |quantity| × mark ÷ equity`.
-  - If it exceeds 1.0, the account delevers at the next hour.
-  - **The delevering is recomputed there,** after that hour's daily fills, at that hour's open mark, as a factor `k = 0.80 × equity ÷ gross notional`. If k ≥ 1 (the daily fills already brought the book down), nothing is done.
-  - Otherwise each coin's position is reduced, on the side it is actually held, to `held quantity × k`, rounding toward zero to the quantity step, by reduce-only orders at that hour's open, with the usual slippage and fees.
+  - If it exceeds 1.0, the account delevers **in the same hour, at the same open** (step 5 of the hour's order). Gross leverage is checked at hourly opens, so it can exceed 1.0 inside an hour between two checks. The record reports the highest gross leverage seen at the bars' adverse extremes.
+  - **The factor** is `k = 0.80 × equity ÷ gross notional`, on the book after that hour's daily fills, at its open mark.
+  - Each coin's position is reduced, on the side it is actually held, to `held quantity × k`, rounding toward zero to the quantity step, by reduce-only orders at that open, with the usual slippage and fees.
   - A delevering order is reduce-only, so it ignores the minimum notional.
-  - A coin whose delevering hour is masked is reduced at its next unmasked hour, to its then-held quantity × the same k. Until then it takes no new delevering order.
+  - A coin whose hour is masked cannot fill. It is reduced at its next unmasked hour, to its then-held quantity × the same k, and until then it takes no new delevering order.
   - If equity is ≤ 0 at a mark, the ratio is not computed: the liquidation check has already failed the run.
   - Each such delevering is reported.
   - **After a delevering,** the next daily decision tests its band (§5 step 4) against the post-delevering weight, so a gap above 1% is rebalanced back toward the target. A slow cycle is therefore possible: delever, re-size at the next decision, then delever again after a further rise. Each step is reported, and none can repeat within an hour.
@@ -223,7 +222,9 @@ At each daily decision, after day d's close:
   - With no negative day and at least one positive day, it is +∞, and A2 passes.
   - With no positive day, it is 0, and A2 fails.
 - **CAGR:** compound annual growth over the out-of-sample days (365.25-day years).
-- **Maximum drawdown:** from the running peak, over every equity mark of the run: each hour's open mark and its post-fill mark (§6), and the terminal mark.
+- **Maximum drawdown:** from the running peak, over every equity state of the run: each hour's open mark, its post-fill mark, and its adverse-extreme equity (the post-fill liquidation check's: every position at its bar's adverse extreme at once, §6), plus the terminal mark.
+  - Taking every coin's extreme at once can overstate an hour's trough, when the extremes came at different minutes. That leans against v3.
+  - The peak is the running maximum of the open, post-fill and terminal marks only, so the peak never uses a favourable extreme.
 - **Calmar ratio:** CAGR ÷ maximum drawdown.
   - With a maximum drawdown of 0 and a positive CAGR, it is +∞, and A3 passes.
   - With a maximum drawdown of 0 and a CAGR of 0 or less, it is 0, and A3 fails.
@@ -278,7 +279,7 @@ At each daily decision, after day d's close:
 - the picks quarter by quarter;
 - variant D, and plain equal-weight buy-and-hold at full size;
 - **the minimum account size:** the smallest account at which every target position of the out-of-sample run meets its symbol's minimum notional (§5).
-- **the lowest margin ratio reached:** the minimum, over every liquidation check, of equity ÷ gross open notional, against the 1% threshold. This shows how close the run came to it;
+- **the lowest margin ratio reached:** the minimum, over every liquidation check with an open position, of equity ÷ gross open notional, against the 1% threshold. A check on a flat book has no ratio and is skipped. If the book is never open, the record says so. This shows how close the run came to the threshold;
 
 **Decision and trade records** (required outputs, written with every run, and never read back by any decision; §11, decision 10):
 - **Every daily decision, per coin:**
@@ -293,7 +294,7 @@ At each daily decision, after day d's close:
   - the exit's trigger: the signal going to 0, a flip, a pick change, an excluded month, a delevering that rounds the position to 0, or a liquidation;
   - **a position still open when a run ends** is not closed: no fill, fee or slippage is charged. It is marked at the terminal mark (§8), its profit and loss stays unrealised, and its record is labelled censored, with that unrealised profit and loss. This holds for training runs and for the out-of-sample run;
   - its duration;
-  - its maximum favourable and maximum adverse excursion, in USDT. For each hour the position is open, its unrealised profit and loss is computed at the bar's favourable and adverse extremes, the high and the low, with the quantity and average entry price in force during that hour. Earlier hours are never recomputed against a later average entry. The excursions are the maximum and the minimum of these hourly values;
+  - its maximum favourable and maximum adverse excursion, in USDT, before fees and funding. For each hour the position is open, two values are taken: the profit and loss realised so far in the lifecycle, plus the remaining position's unrealised profit and loss at the bar's favourable extreme, and the same at its adverse extreme. Both use the quantity and average entry price in force during that hour, and earlier hours are never recomputed against a later average entry. The excursions are the maximum and the minimum of these hourly values;
   - the profit given back: the maximum favourable excursion minus the position's final realised profit and loss before fees and funding, or minus its unrealised profit and loss at the terminal mark if it is censored;
   - its realised profit and loss, fees, and funding paid and received.
 - **Every walk-forward window:** each rule's training Sharpe ratio and validity, and the pick.
