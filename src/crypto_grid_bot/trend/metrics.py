@@ -3,6 +3,10 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from crypto_grid_bot.trend.runner import TrendRunner
 
 ZERO = Decimal(0)
 
@@ -20,6 +24,19 @@ class PerformanceSummary:
     wins: int
     losses: int
     win_rate: Decimal
+
+
+def summarize_runner(runner: "TrendRunner") -> PerformanceSummary:
+    """Report a finished, audited runner; invalid runs require separate diagnostics."""
+    if runner.stopped != "completed" or runner.lifecycles.active:
+        raise ValueError("runner must be finished with finalized lifecycles")
+    if not runner.audits or any(not audit.exact for audit in runner.audits):
+        raise ValueError("runner has missing or failed accounting evidence")
+    return summarize(
+        runner.daily_samples,
+        [state.equity for state in runner.equity_path],
+        [life.net for life in runner.lifecycles.completed],
+    )
 
 
 def summarize(

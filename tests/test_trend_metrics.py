@@ -91,3 +91,24 @@ def test_summary_rejects_missing_trade_results():
 
     with pytest.raises(ValueError, match="reconcile"):
         summarize([(0, D(100)), (86400000, D(105))], [D(100), D(105)], [])
+
+
+def test_finished_runner_to_summary_includes_censored_trade_costs():
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.metrics import summarize_runner
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    rules = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    r = TrendRunner({"BTCUSDT": rules}, multiple=1)
+    start, hour = 1609459200000, 3600000
+    bar = {"BTCUSDT": (D(100), D(99), D(101))}
+    r.step(start, bar, {"BTCUSDT": D(".1")}, {})
+    r.step(start + hour, bar, {}, {})
+    with pytest.raises(ValueError, match="finished"):
+        summarize_runner(r)
+    r.finish({"BTCUSDT": D(100)})
+    summary = summarize_runner(r)
+    assert summary.net_pnl == D("-1.00025")
+    assert summary.trade_count == 1
+    assert summary.losses == 1
+    assert summary.trade_profit_factor == 0
