@@ -210,7 +210,12 @@ def inspect_archive(
     from pathlib import Path
 
     from crypto_grid_bot.backtest.funding import parse_funding_rows
-    from crypto_grid_bot.backtest.klines import parse_rows_repaired, read_member
+    from crypto_grid_bot.backtest.klines import (
+        member_compression,
+        parse_rows_repaired,
+        read_member,
+        undecodable,
+    )
     from crypto_grid_bot.market_data.parsing import DataError
     from crypto_grid_bot.trend.data import funding_schedule, repaired_month
 
@@ -264,6 +269,10 @@ def inspect_archive(
                     header_removed=header_removed,
                 )
         except (DataError, zipfile.BadZipFile) as exc:
+            entry.update(status="excluded", rows=0, reasons=[str(exc)])
+        except Exception as exc:
+            if not undecodable(exc, member_compression(local)):
+                raise
             entry.update(status="excluded", rows=0, reasons=[str(exc)])
     return entry
 
@@ -375,8 +384,10 @@ def collect_inventory(
         ("futures", transport.futures_filters),
     ):
         raw = retrieve()
-        parse_filter_snapshot(raw, tuple(sorted(SYMBOLS)), futures=market == "futures")
+        if not isinstance(raw, bytes) or len(raw) > 8 * 1024 * 1024:
+            raise ValueError("invalid or oversized snapshot response")
         (snapshot_dir / f"{market}.json").write_bytes(raw)
+        parse_filter_snapshot(raw, tuple(sorted(SYMBOLS)), futures=market == "futures")
         snapshots[market] = raw
     entries = []
     for kind, symbol, month in sorted(requests):

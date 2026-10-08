@@ -82,3 +82,14 @@ or mandatory-close integration yet. The inventory remains replay_ready=false.
 The register is now merged in main 3f1ef45; its earlier full-suite and byte-identity
 results belong to the register batch, not to this data batch. Codex owns the remaining
 implementation. Independent review and this batch's full verification are pending.
+
+Independent Codex review of foundation head 336c2b20eec8e7afc820e878b0ce288963f982b6
+found two P2 defects. Both were reproduced by failing synthetic tests and fixed:
+undecodable compressed members now use the existing reader's decoder-error
+classification and become excluded entries, while unrelated filesystem failures
+still propagate; bounded raw filter responses are saved before semantic parsing,
+so a malformed one-time futures response survives for diagnosis. A failed parse
+still produces no final manifest. Focused suite: 82 passed; repository Ruff,
+format, mypy (74 files) and Bandit clean. The earlier full-suite and byte-identity
+runs were deliberately interrupted before this fix pass and are not pass evidence.
+External exact-head review and full verification remain pending.

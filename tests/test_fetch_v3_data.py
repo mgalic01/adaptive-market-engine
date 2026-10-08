@@ -301,7 +301,8 @@ def test_manifest_assembly_is_deterministic_and_pins_snapshots():
 
 
 @pytest.mark.parametrize("reuse", [False, True])
-def test_inventory_task_saves_verified_archives_and_snapshot_pins(tmp_path, reuse):
+@pytest.mark.parametrize("invalid_futures", [False, True])
+def test_inventory_task_saves_verified_archives_and_snapshot_pins(tmp_path, reuse, invalid_futures):
     import json
 
     from fetch_v3_data import SYMBOLS, PinnedArchive, collect_inventory
@@ -333,7 +334,7 @@ def test_inventory_task_saves_verified_archives_and_snapshot_pins(tmp_path, reus
     class Fake:
         def futures_filters(self):
             calls.append("futures-filters")
-            return snapshot
+            return b'{"symbols": []}' if invalid_futures else snapshot
 
         def spot_filters(self):
             calls.append("spot-filters")
@@ -347,6 +348,15 @@ def test_inventory_task_saves_verified_archives_and_snapshot_pins(tmp_path, reus
             return archive.content
 
     output = tmp_path / "fetch"
+    if invalid_futures:
+        with pytest.raises(ValueError, match="missing snapshot symbol"):
+            collect_inventory(
+                output, [("spot", "BTCUSDT", "2024-02")], Fake(), "a" * 64, reuse=pins
+            )
+        assert (output / "snapshots/futures.json").read_bytes() == b'{"symbols": []}'
+        assert not (output / "inventory.manifest.json").exists()
+        assert calls == ["spot-filters", "futures-filters"]
+        return
     manifest = collect_inventory(
         output, [("spot", "BTCUSDT", "2024-02")], Fake(), "a" * 64, reuse=pins
     )
@@ -405,3 +415,24 @@ def test_pinned_archive_refetch_cannot_silently_change_original_checksum(tmp_pat
         reuse_or_fetch_archive("spot", "BTCUSDT", "2024-02", fetch, pin)
     good = PinnedArchive(pin.local_path, archive.sha256)
     assert reuse_or_fetch_archive("spot", "BTCUSDT", "2024-02", fetch, good) == archive
+
+
+@pytest.mark.parametrize("kind", ["spot", "futures", "funding"])
+def test_undecodable_compressed_archive_is_recorded_as_excluded(kind):
+    from dataclasses import replace
+
+    from fetch_v3_data import inspect_archive
+
+    archive = synthetic_archive(kind)
+    raw = bytearray(archive.content)
+    name_length = int.from_bytes(raw[26:28], "little")
+    extra_length = int.from_bytes(raw[28:30], "little")
+    # The reserved DEFLATE block type (binary 11) cannot be decoded.
+    payload_start = 30 + name_length + extra_length
+    raw[payload_start] = 7
+    content = bytes(raw)
+    broken = replace(archive, content=content, sha256=hashlib.sha256(content).hexdigest())
+    entry = inspect_archive(broken, kind, "BTCUSDT", "2024-02")
+    assert entry["status"] == "excluded"
+    assert entry["sha256"] == broken.sha256
+    assert entry["reasons"]
