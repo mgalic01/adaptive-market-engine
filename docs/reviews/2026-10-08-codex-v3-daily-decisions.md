@@ -42,3 +42,11 @@ failed with 264 rows, then passed with 60 and identical full-history SizingResul
 All 37 decision/sizing tests, Ruff and mypy pass. No strategy formula changes.
 Other review concerns (deferred pick-change attribution, all-invalid/no-bar
 interpretation and excluded-signal reporting) remain open; not merge-ready.
+
+Excluded-signal reporting fix: the recorded effective signal is now zero before
+sizing for a forced exclusion. The regression first reproduced the stale +1 signal,
+then passed. Candidate exit reasons are explicitly documented as inputs to the
+lifecycle ledger's single priority-selected final reason. All 50 decision/sizing/
+lifecycle tests, Ruff and mypy pass. Signal-series state itself remains continuous.
+Deferred pick attribution and the all-invalid missing-bar interpretation remain
+open; this does not claim those review concerns are resolved.

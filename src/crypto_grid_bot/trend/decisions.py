@@ -78,7 +78,11 @@ class DailyDecisions:
         for symbol in eligible:
             index = bisect_right(self._days[symbol], day) - 1
             point = self._signals[symbol][index] if index >= 0 else None
-            signals[symbol] = point.rule(rule) if point is not None and rule is not None else ZERO
+            signals[symbol] = (
+                point.rule(rule)
+                if point is not None and rule is not None and symbol not in forced
+                else ZERO
+            )
             if point is not None and point.day_ms == day:
                 available.add(symbol)
             end = bisect_right(self._return_days[symbol], day)
@@ -96,6 +100,8 @@ class DailyDecisions:
             for symbol in eligible
             if symbol in available or symbol in forced or rule is None
         }
+        # Candidate triggers; LifecycleLedger applies the frozen priority and
+        # records exactly one final exit reason when the position closes.
         reasons = {}
         for symbol in targets:
             why = set()

@@ -94,6 +94,8 @@ def test_exclusion_overrides_missing_signal_bar_before_month_start():
     decision = book.at(T + 90 * DAY, "R1")  # March 31; latest signal bar is in March's first week.
     assert decision.targets == {"BTCUSDT": D(0)}
     assert "excluded_month" in decision.exit_reasons["BTCUSDT"]
+    assert decision.signals["BTCUSDT"] == 0
+    assert "sizing" not in decision.exit_reasons["BTCUSDT"]
 
 
 def test_all_invalid_quarter_keeps_pick_change_reason_after_first_day():
