@@ -47,6 +47,15 @@ def test_funding_path_preserves_raw_timestamp():
     assert state.timestamp_ms == T + 30
 
 
+def test_multiple_funding_marks_keep_each_raw_time_and_path_order():
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
+    r.step(T, {}, {}, {T + 50: {"BTCUSDT": D(".02")}, T + 30: {"BTCUSDT": D(".01")}})
+    assert [s.timestamp_ms for s in r.equity_path if s.kind == "funding"] == [T + 30, T + 50]
+    assert [s.timestamp_ms for s in r.equity_path] == sorted(s.timestamp_ms for s in r.equity_path)
+
+
 def test_runner_does_not_skip_hours_or_continue_after_engine_failure():
     from crypto_grid_bot.trend.runner import TrendRunner
 
