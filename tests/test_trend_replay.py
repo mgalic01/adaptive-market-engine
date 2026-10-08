@@ -2,12 +2,36 @@
 
 from decimal import Decimal as D
 
+import pytest
+
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.trend.filters import OrderFilters
 
 T = 1577836800000
 DAY, HOUR = 86400000, 3600000
 FILTER = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+
+
+@pytest.mark.parametrize("knobs", [{"multiple": 4}, {"cost_multiple": 3}])
+def test_invalid_configuration_precedes_unavailable_close(knobs):
+    from crypto_grid_bot.trend.decisions import DailyDecisions
+    from crypto_grid_bot.trend.replay import replay_window
+
+    start = T + 90 * DAY
+    book = DailyDecisions(
+        {"BTCUSDT": []}, {"BTCUSDT": "2020-01"}, {"BTCUSDT": frozenset({"2020-04"})}
+    )
+    with pytest.raises(ValueError, match="multiple"):
+        replay_window(
+            book,
+            {"BTCUSDT": FILTER},
+            {"BTCUSDT": []},
+            {},
+            start,
+            start + 2 * DAY,
+            {start: "R1"},
+            **knobs,
+        )
 
 
 def bar(t, price=100):
@@ -22,6 +46,48 @@ def decisions():
         {"BTCUSDT": [bar(T + i * DAY, 100 + i * 2 + i % 3) for i in range(65)]},
         {"BTCUSDT": "2020-01"},
     )
+
+
+@pytest.mark.parametrize("end_delta", [DAY + 1, DAY + HOUR])
+def test_non_midnight_end_is_rejected_by_preflight(end_delta):
+    from crypto_grid_bot.trend.replay import replay_window
+
+    with pytest.raises(ValueError, match="exclusive run end"):
+        replay_window(
+            decisions(), {"BTCUSDT": FILTER}, {"BTCUSDT": []}, {}, T, T + end_delta, {T: "R1"}
+        )
+
+
+def test_off_hour_inventory_is_rejected_by_preflight():
+    from crypto_grid_bot.trend.replay import replay_window
+
+    with pytest.raises(ValueError, match="inventory timestamp"):
+        replay_window(
+            decisions(), {"BTCUSDT": FILTER}, {"BTCUSDT": [bar(T + 1)]}, {}, T, T + DAY, {T: "R1"}
+        )
+
+
+def test_pick_change_closes_position_in_same_account_with_masked_final_hour():
+    from crypto_grid_bot.trend.replay import replay_window
+
+    start = T + 65 * DAY
+    result = replay_window(
+        decisions(),
+        {"BTCUSDT": FILTER},
+        {"BTCUSDT": [bar(start + i * HOUR) for i in range(47)]},
+        {},
+        start,
+        start + 2 * DAY,
+        {start: "R1", start + DAY: None},
+    )
+    assert result.reason is None
+    r = result.runner
+    assert len(r.hours) == 48
+    assert len(r.lifecycles.completed) == 1
+    assert r.lifecycles.completed[0].exit_reason == "pick_change"
+    assert not r.lifecycles.completed[0].censored
+    assert r.account.fills[-1].timestamp_ms == start + DAY + HOUR
+    assert r.account.wallet < r.account.initial  # Both fills' costs survive the pick change.
 
 
 def test_replay_wires_daily_fills_raw_funding_and_terminal_in_window_close():

@@ -35,3 +35,14 @@ routine does not perform selection or enforce the quarterly calendar. Training
 orchestration, reporting and benchmark/bootstrap comparisons remain unfinished.
 No historical V3 run or profitability claim. No new dependency or known security
 finding; all inputs used in validation were synthetic.
+
+Review follow-up: configuration validation now precedes unavailable-close strategy
+invalidity. Two regressions first reproduced the misclassification, then passed.
+Additional tests prove inherited rejection of non-midnight ends and off-hour rows,
+and exercise a pick change that closes an existing position in the same account.
+Thirteen replay tests pass. The existing exclusion preflight already enforces the
+end boundary and timestamp alignment; these were not missing source checks.
+Outstanding coverage includes held positions across exclusion boundaries, terminal
+leverage failure at adapter level, and non-flat last-unmasked-close valuation.
+Upstream loader must prove funding completeness and first non-excluded eligibility;
+absence of funding is not a validated historical zero-cost assumption.

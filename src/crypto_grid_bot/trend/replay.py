@@ -41,6 +41,10 @@ def replay_window(
     hashes must be checked by the historical adapter before calling this routine.
     Engine errors propagate. Only explicit strategy outcomes return a reason.
     """
+    if type(multiple) is not int or multiple not in (1, 2, 3):
+        raise ValueError("invalid size multiple")
+    if type(cost_multiple) is not int or cost_multiple not in (1, 2):
+        raise ValueError("invalid cost multiple")
     if set(hourly) != set(filters) or set(filters) != set(decisions.first_months):
         raise ValueError("replay input universes disagree")
     if start_ms not in picks or any(
