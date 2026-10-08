@@ -183,13 +183,16 @@ def test_exclusion_missing_fill_invalidates_held_position_but_retains_dust():
         {"BTCUSDT": history(90)}, {"BTCUSDT": "2020-01"}, {"BTCUSDT": frozenset({"2020-04"})}
     )
 
-    def run(final_price):
+    def run(final_price, decision_open=None):
         rows = [
             Kline(start + i * HOUR, D(100), D(100), D(100), D(100), D(1), D(1), D(".5"))
             for i in range(23)
         ]
         p = D(final_price)
         rows.append(Kline(start + 23 * HOUR, p, p, p, p, D(1), D(1), D(".5")))
+        if decision_open is not None:
+            p = D(decision_open)
+            rows.append(Kline(start + DAY, p, p, p, p, D(1), D(1), D(".5")))
         return replay_spot_benchmark(
             decisions, {"BTCUSDT": FILTERS}, {"BTCUSDT": rows}, start, start + 3 * DAY
         )
@@ -205,3 +208,8 @@ def test_exclusion_missing_fill_invalidates_held_position_but_retains_dust():
     assert dust.exclusion_dust[0][1] == "BTCUSDT"
     assert dust.samples[-1][1] == dust.account.cash + 1
     assert all(a.exact for a in dust.audits)
+    assert dust.exclusion_dust[0][3] == D(".1")  # plain mark, never sell-slipped
+    assert run(".1", 100).stopped == "unavailable_exclusion_close"
+    refreshed_dust = run(100, ".1")
+    assert refreshed_dust.stopped == "completed"
+    assert refreshed_dust.exclusion_dust[0][3] == D(".1")

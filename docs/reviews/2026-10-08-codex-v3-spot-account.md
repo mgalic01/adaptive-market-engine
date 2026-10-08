@@ -1,6 +1,11 @@
 # V3 spot benchmark cash ledger
 
-Index: Spot settlement and constant-long daily decisions; nine synthetic tests pass, benchmark runner pending.
+Index: Draft spot benchmark and A5 comparison; current validation and open work are recorded in the dated follow-ups below.
+
+Stack dependency: PR228 is based on PR226 (codex/v3-wfo-orchestration), which
+contains PR225 replay, PR224 daily decisions and PR223 exclusions. The full PR228
+tree includes exclusions.py; it is not intended for independent cherry-picking
+onto main. Merge only after dependency integration and fresh review.
 
 Implements Decimal60 spot settlement with 10,000 initial cash, 0.10% fee and 0.05%
 slippage, doubled together in cost stress. Buys clip to cash including fees and
@@ -86,3 +91,15 @@ Four comparison tests cover ties, real spot fee drag, size/time mismatch and
 corrupted/invalid spot accounts. Twenty-one combined comparison/spot tests pass;
 Ruff and mypy pass. Durable reports, source provenance, full-size equal-weight
 hold diagnostic and the complete A1-A5 report remain pending. No historical run.
+
+Review response (Bob at 55c0d55): the unmasked 00:00 decision-bar case reproduced
+stale dust classification and is fixed by using that available open; otherwise the
+last usable open is carried. Regression covers price movements both into and out
+of dust and asserts the stored dust mark is plain, not sell-slipped. Twenty-one
+comparison/spot tests, Ruff and mypy pass. Bob concerns 2/3 misread the source:
+slipped is used only for sellability, while exclusion_dust stores price. Concern 5
+is handled by replay's every-hour range and the consecutive-step guard, not a
+coincidence; normal terminal time is exactly the exclusive end. Early invalid
+termination deliberately uses the prior processed-hour boundary. Dependency and
+index clarity corrected above. This remains a draft pending full verification,
+durable evidence and complete experiment reporting.

@@ -85,14 +85,17 @@ class SpotRunner:
             self.stopped = "engine_failure"
             raise
 
-    def missing_close_requires_fill(self, symbol: str, timestamp_ms: int) -> bool:
+    def missing_close_requires_fill(
+        self, symbol: str, timestamp_ms: int, current_open: Decimal | None = None
+    ) -> bool:
         """Classify retained quantity at its carried mark, without inventing a fill."""
         quantity = self.account.holdings.get(symbol, Decimal(0))
         if not quantity:
             return False
         with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
             filters = self.filters[symbol]
-            price = self._prices[symbol]
+            price = self._prices[symbol] if current_open is None else current_open
+            _finite(price, positive=True)
             size = _floor(Fraction(quantity), filters.step_size)
             slipped = price * (1 - Decimal(".0005") * self.account.cost_multiple)
             if size < filters.min_quantity or size * slipped < filters.min_notional:
@@ -315,7 +318,11 @@ def replay_spot_benchmark(
         if any(
             item.decision_ms == hour
             and item.fill_ms is None
-            and runner.missing_close_requires_fill(item.symbol, hour)
+            and runner.missing_close_requires_fill(
+                item.symbol,
+                hour,
+                indexed[item.symbol][hour].open if hour in indexed[item.symbol] else None,
+            )
             for item in runner.close_requirements
         ):
             runner.finish(closes, reason="unavailable_exclusion_close")
