@@ -176,3 +176,8 @@ were explicitly non-blocking maintainability notes. These helpers are internal
 implementation details covered by integration tests; no public API guarantee is
 claimed. Extra spot initial-account checks additionally bind samples to the
 actual account initial balance. No speculative renaming is included in this batch.
+
+Integrated the upstream late-orphan detection regression without conflict.
+53 combined spot/evidence/comparison checks now pass; Ruff lint/format, mypy and
+Bandit pass on the combined tree. This includes detection of same-run evidence
+appearing after a finish that declared no artifact.
