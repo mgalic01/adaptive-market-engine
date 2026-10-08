@@ -95,3 +95,12 @@ def test_spot_min_notional_field():
 def test_duplicate_json_keys_rejected():
     with pytest.raises(ValueError):
         parse_filter_snapshot(b'{"symbols": [], "symbols": []}', ("BTCUSDT",), futures=True)
+
+
+@pytest.mark.parametrize("other,expected", [("10", "10"), ("3", "5")])
+def test_both_notional_filters_use_stricter_minimum(other, expected):
+    doc = snapshot()
+    doc["symbols"][0]["filters"][-1] = {"filterType": "MIN_NOTIONAL", "minNotional": "5"}
+    doc["symbols"][0]["filters"].append({"filterType": "NOTIONAL", "minNotional": other})
+    parsed = parse_filter_snapshot(json.dumps(doc).encode(), ("BTCUSDT",), futures=False)
+    assert parsed["BTCUSDT"].min_notional == Decimal(expected)

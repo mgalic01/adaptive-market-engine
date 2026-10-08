@@ -80,15 +80,16 @@ def parse_filter_snapshot(
             market_min = amount(market.get("minQty"), positive=False)
             market_max = amount(market.get("maxQty"))
             market_step = amount(market.get("stepSize"), positive=False)
-            if "MIN_NOTIONAL" in by_kind and "NOTIONAL" in by_kind:
-                raise ValueError("ambiguous minimum notional filters")
-            notional = by_kind.get("MIN_NOTIONAL", by_kind.get("NOTIONAL"))
-            if not isinstance(notional, dict):
+            notionals = [by_kind[key] for key in ("MIN_NOTIONAL", "NOTIONAL") if key in by_kind]
+            if not notionals:
                 raise ValueError("missing minimum notional")
-            values = [notional[key] for key in ("notional", "minNotional") if key in notional]
-            if len(values) != 1:
-                raise ValueError("ambiguous or absent minimum notional value")
-            minimum = amount(values[0], positive=False)
+            minima = []
+            for notional in notionals:
+                values = [notional[key] for key in ("notional", "minNotional") if key in notional]
+                if len(values) != 1:
+                    raise ValueError("ambiguous or absent minimum notional value")
+                minima.append(amount(values[0], positive=False))
+            minimum = max(minima)
         except KeyError as exc:
             raise ValueError("missing lot filter") from exc
         step = market_step or lot_step
