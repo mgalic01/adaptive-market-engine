@@ -46,6 +46,54 @@ def test_artifact_preserves_missing_and_measured_zero_volatility(tmp_path):
     assert D(volatility["BTCUSDT"]) == 0
 
 
+@pytest.mark.parametrize("orphan", [False, True])
+def test_explicit_recovery_retains_evidence_but_never_adopts_success(tmp_path, orphan):
+    from crypto_grid_bot.trend.evidence_writer import (
+        AttemptRecorder,
+        recover_interrupted,
+        write_replay,
+    )
+    from crypto_grid_bot.trend.replay import ReplayResult
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    record = AttemptRecorder(tmp_path)
+    record(Attempt("one", "training", "R1", 0, 1, None, None, state="started"))
+    start = (tmp_path / "one.started.json").read_bytes()
+    artifact = tmp_path / "one.evidence.jsonl"
+    before = None
+    if orphan:
+        runner = TrendRunner({})
+        runner.step(1609459200000, {}, {}, {})
+        runner.finish({})
+        write_replay(tmp_path, "one", ReplayResult(runner, None, ()))
+        before = artifact.read_bytes()
+    recover_interrupted(tmp_path, "one", reason="process terminated before finish publication")
+    payload = json.loads((tmp_path / "one.finished.json").read_text())["payload"]
+    assert payload["error"].startswith("InterruptedAttempt: outcome unconfirmed;")
+    assert "process terminated" in payload["error"]
+    assert (payload["evidence"] is not None) == orphan
+    assert (tmp_path / "one.started.json").read_bytes() == start
+    if orphan:
+        assert artifact.read_bytes() == before
+    assert AttemptRecorder(tmp_path).journal.pending() == ()
+    with pytest.raises(ValueError, match="unfinished"):
+        recover_interrupted(tmp_path, "one", reason="second recovery")
+
+
+def test_explicit_recovery_refuses_malformed_orphan_and_empty_reason(tmp_path):
+    from crypto_grid_bot.trend.evidence_writer import AttemptRecorder, recover_interrupted
+
+    record = AttemptRecorder(tmp_path)
+    record(Attempt("one", "training", "R1", 0, 1, None, None, state="started"))
+    with pytest.raises(ValueError, match="reason"):
+        recover_interrupted(tmp_path, "one", reason=" ")
+    (tmp_path / "one.evidence.jsonl").write_bytes(b'{"schema":1')
+    with pytest.raises(ValueError, match="row"):
+        recover_interrupted(tmp_path, "one", reason="interrupted")
+    assert record.journal.pending() == ("one",)
+    assert not (tmp_path / "one.finished.json").exists()
+
+
 def test_engine_failure_persists_partial_hour_evidence(tmp_path, monkeypatch):
     from crypto_grid_bot.trend.evidence_writer import AttemptRecorder
     from crypto_grid_bot.trend.runner import TrendRunner
