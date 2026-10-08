@@ -10,9 +10,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 
+@pytest.mark.parametrize("reuse_snapshot", [False, True])
 @pytest.mark.parametrize("with_archive", [False, True])
 def test_build_inventory_adds_coverage_and_source_provenance_without_network(
-    tmp_path, with_archive
+    tmp_path, with_archive, reuse_snapshot, monkeypatch
 ):
     from fetch_v3_data import SYMBOLS, archive_path
     from v3_inventory import build_inventory, main, planned_requests, verify_inventory
@@ -51,7 +52,7 @@ def test_build_inventory_adds_coverage_and_source_provenance_without_network(
     calls = []
     archive_bytes = b"checksum-valid but unreadable synthetic archive"
     archive_digest = hashlib.sha256(archive_bytes).hexdigest()
-    archive_request = archive_path("spot", "BTCUSDT", "2024-02")
+    archive_request = archive_path("spot", "ADAUSDT", "2024-02")
 
     class Fake:
         def archive(self, path):
@@ -67,21 +68,61 @@ def test_build_inventory_adds_coverage_and_source_provenance_without_network(
             return snapshot
 
         def futures_filters(self):
+            assert not reuse_snapshot, "saved futures snapshot must prevent a second GET"
             calls.append("futures")
             return snapshot
 
     source_hash = hashlib.sha256(source).hexdigest()
-    path = build_inventory(
-        tmp_path / "output", tmp_path / "cache", source, source_hash, "a" * 64, Fake()
-    )
+    if reuse_snapshot:
+        import v3_inventory
+
+        monkeypatch.setattr(v3_inventory, "V3Transport", Fake)
+        saved = tmp_path / "saved-futures.json"
+        saved.write_bytes(snapshot)
+        spec = tmp_path / "spec.md"
+        spec.write_bytes(b"pinned spec")
+        source_file = tmp_path / "source.json"
+        source_file.write_bytes(source)
+        assert (
+            main(
+                [
+                    "fetch",
+                    "--output",
+                    str(tmp_path / "output"),
+                    "--cache-dir",
+                    str(tmp_path / "cache"),
+                    "--spec-file",
+                    str(spec),
+                    "--spec-sha256",
+                    hashlib.sha256(spec.read_bytes()).hexdigest(),
+                    "--spot-manifest",
+                    str(source_file),
+                    "--spot-manifest-sha256",
+                    source_hash,
+                    "--reuse-futures-snapshot",
+                    str(saved),
+                    "--futures-snapshot-sha256",
+                    hashlib.sha256(snapshot).hexdigest(),
+                ]
+            )
+            == 0
+        )
+        path = tmp_path / "output/inventory.manifest.json"
+        assert (path.parent / "snapshots/futures.json").read_bytes() == snapshot
+    else:
+        path = build_inventory(
+            tmp_path / "output", tmp_path / "cache", source, source_hash, "a" * 64, Fake()
+        )
     document = json.loads(path.read_bytes())
     assert len(document["entries"]) == 2710
     assert document["source_spot_manifest_sha256"] == source_hash
     assert document["coverage"]["coverage_review_required"] is True
     assert document["coverage"]["first_test_quarter_candidate"] is None
     assert document["replay_ready"] is False
-    assert calls.count("spot") == calls.count("futures") == 1
-    assert len(calls) == 2712 + int(with_archive)
+    assert calls.count("spot") == 1
+    assert calls.count("futures") == int(not reuse_snapshot)
+    assert len(calls) == 2001 + int(with_archive) - int(reuse_snapshot)
+    assert not any("/spot/" in call and "ADAUSDT" not in call for call in calls)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     verified = verify_inventory(path.parent, digest)
     assert verified["verified_archives"] == int(with_archive)

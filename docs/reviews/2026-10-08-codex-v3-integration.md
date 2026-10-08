@@ -39,7 +39,9 @@ Source manifest at main 3f1ef45b508797f675b957d8b6c4eb04382db77a:
 `config/datasets/full-range-2017-2024.manifest.json`, raw Git-blob SHA-256
 `069024759d2e999cd09801a17961c12f6b6f57e73bb66900748364261260b94e`.
 The loader independently accounted for 711 hourly rows, preserving 665 archive pins
-and 46 recorded absences. Only committed metadata was read, not archive prices.
+and identified 46 recorded absences. The initial implementation dropped those
+absences from the reuse map; the review correction below preserves them through
+collection. Only committed metadata was read, not archive prices.
 
 Synthetic tests cover late listings, funding-delayed entry, distinct spot/futures
 close availability, complete request coverage, source tampering/duplicates, and
@@ -77,3 +79,38 @@ The current Bob workflow has two concrete integration constraints:
 Codex owns the remaining delivery proposal and task preparation. The owner starts
 the actual fetch after exact-head external review.
 No replay runs before the reviewed manifest/code completing registration event.
+
+
+## Cloud review corrections after e9602bd
+
+Three findings on PR #212 prevented merging despite earlier clean Bob review and
+CI (1,858 passed, 2 skipped). Regression tests reproduced the missing-row and
+first-full-month failures before implementation.
+
+- Explicit `None` spot pins preserve committed missing rows without another archive
+  request; checksum pins continue to protect present archives. ADA remains discovery.
+- First-full-month candidates require an eligible archive with the first and last
+  calendar hours observed. Missing, excluded or truncated months cannot establish
+  this candidate. Internal masks remain governed by the existing 17% rule. This is
+  conservative evidence, not an assertion of the original listing date.
+- A recovery fetch can use `--reuse-futures-snapshot <saved-file>` together with
+  `--futures-snapshot-sha256 <sha256>`. Both the digest and semantic contents are
+  checked before transport construction. The new output retains identical bytes;
+  its futures endpoint is never called. The original failed directory is untouched.
+  This is snapshot recovery into a fresh inventory, not archive-download checkpointing.
+  If no valid response was saved, this option cannot recover it and does not authorize
+  another futures request. The reviewed task must use recovery whenever a prior
+  response exists. No real fetch or additional request has occurred.
+
+The snapshot-reuse CLI test failed on missing arguments before implementation;
+synthetic end-to-end tests now exercise fresh and recovered snapshots with and
+without archives. Invalid recovery inputs fail before network construction.
+New-head review and full CI are still required; earlier verdicts do not transfer.
+
+Local correction checks: 109 focused tests pass; Ruff, formatting, mypy (75
+source files), Bandit and report checks pass (0 report problems).
+
+The independent correction review found one adjacent membership defect: after a
+full month lacking funding, the joining month could itself be truncated. A failing
+synthetic regression reproduced it. Initial membership now also requires full
+futures calendar endpoints; later months keep the existing masking allowance.

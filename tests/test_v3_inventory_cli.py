@@ -51,3 +51,42 @@ def test_fetch_cli_checks_spec_pin_before_transport(monkeypatch, tmp_path):
             ]
         )
     assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize("mode", ["missing_hash", "wrong_hash", "invalid_content"])
+def test_saved_snapshot_is_validated_before_any_transport(tmp_path, monkeypatch, mode):
+    import hashlib
+
+    import v3_inventory
+
+    def forbidden():
+        pytest.fail("invalid recovery input constructed transport")
+
+    monkeypatch.setattr(v3_inventory, "V3Transport", forbidden)
+    saved = tmp_path / "futures.json"
+    saved.write_bytes(b'{"symbols": []}')
+    args = [
+        "fetch",
+        "--output",
+        str(tmp_path / "out"),
+        "--cache-dir",
+        str(tmp_path / "cache"),
+        "--spec-file",
+        str(tmp_path / "spec"),
+        "--spec-sha256",
+        "a" * 64,
+        "--spot-manifest",
+        str(tmp_path / "source"),
+        "--spot-manifest-sha256",
+        "b" * 64,
+        "--reuse-futures-snapshot",
+        str(saved),
+    ]
+    if mode != "missing_hash":
+        digest = (
+            "c" * 64 if mode == "wrong_hash" else hashlib.sha256(saved.read_bytes()).hexdigest()
+        )
+        args.extend(["--futures-snapshot-sha256", digest])
+    with pytest.raises(ValueError):
+        v3_inventory.main(args)
+    assert not (tmp_path / "out").exists()
