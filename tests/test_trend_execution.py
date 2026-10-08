@@ -2,12 +2,35 @@
 
 from decimal import Decimal as D
 
+import pytest
+
 from crypto_grid_bot.trend.account import FuturesAccount
 from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.orders import OrderIntent
 
 T = 1609459200000
 RULES = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+
+
+@pytest.mark.parametrize("rates", [{"bad symbol": D(".01")}, {"BTCUSDT": D("1e37")}])
+def test_invalid_funding_is_rejected_before_daily_fills(rates):
+    from crypto_grid_bot.trend.execution import execute_hour
+
+    a = FuturesAccount()
+    with pytest.raises(ValueError):
+        execute_hour(
+            a,
+            T,
+            {"BTCUSDT": D(100)},
+            {"BTCUSDT": (D(99), D(101))},
+            {"BTCUSDT": RULES},
+            {"BTCUSDT": D(".1")},
+            {T: rates},
+            multiple=1,
+        )
+    assert not a.fills
+    assert not a.funding
+    assert a._clock == -1
 
 
 def book():

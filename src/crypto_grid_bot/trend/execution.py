@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
+from crypto_grid_bot.market_data.parsing import symbol_name
 from crypto_grid_bot.trend.account import AccountMark, Fill, FuturesAccount
 from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.orders import OrderPlan, plan_rebalance, plan_reduction
@@ -133,8 +134,14 @@ def execute_hour(
     for stamp, rates in funding.items():
         if type(stamp) is not int or not hour_ms <= stamp < hour_ms + 3600000 or not rates:
             raise ValueError("invalid hourly funding group")
-        if any(not rate.is_finite() for rate in rates.values()):
-            raise ValueError("invalid funding rate")
+        for symbol, rate in rates.items():
+            symbol_name(symbol)
+            if (
+                not isinstance(rate, Decimal)
+                or not rate.is_finite()
+                or rate.copy_abs() > Decimal("1e36")
+            ):
+                raise ValueError("invalid funding rate")
     marks = []
     checkpoints = []
     plans: list[tuple[str, OrderPlan]] = []
