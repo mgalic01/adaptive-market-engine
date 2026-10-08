@@ -137,3 +137,17 @@ def test_duplicate_funding_event_is_not_counted_twice():
     with pytest.raises(ValueError):
         ledger.fund(event)
     assert ledger.active["BTCUSDT"].funding_paid == 1
+
+
+def test_account_journal_preserves_same_time_fill_funding_reduction_order():
+    from crypto_grid_bot.trend.account import FillEvent, FundingEvent
+
+    a = FuturesAccount()
+    a.fill("BTCUSDT", OrderIntent(D(2), False), D(100), T)
+    a.fund(T, {"BTCUSDT": D(".01")}, {"BTCUSDT": D(100)})
+    a.fill("BTCUSDT", OrderIntent(D(-1), True), D(100), T)
+    assert [type(event) for event in a.events] == [FillEvent, FundingEvent, FillEvent]
+    assert a.events[0].before.quantity == 0
+    assert a.events[0].after.quantity == 2
+    assert a.events[2].before.quantity == 2
+    assert a.events[2].after.quantity == 1

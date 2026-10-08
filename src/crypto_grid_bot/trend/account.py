@@ -48,6 +48,13 @@ class Fill:
 
 
 @dataclass(frozen=True, slots=True)
+class FillEvent:
+    fill: Fill
+    before: Position
+    after: Position
+
+
+@dataclass(frozen=True, slots=True)
 class FundingPayment:
     symbol: str
     quantity: Decimal
@@ -110,6 +117,7 @@ class FuturesAccount:
         self._positions: dict[str, Position] = {}
         self._fills: list[Fill] = []
         self._funding: list[FundingEvent] = []
+        self._events: list[FillEvent | FundingEvent] = []
         self._realized = self._fees = self._paid = self._received = ZERO
         self._clock = -1
         self._funding_clock = -1
@@ -126,6 +134,11 @@ class FuturesAccount:
     @property
     def funding(self) -> tuple[FundingEvent, ...]:
         return tuple(self._funding)
+
+    @property
+    def events(self) -> tuple[FillEvent | FundingEvent, ...]:
+        """Actual insertion order, including ties between funding and fills."""
+        return tuple(self._events)
 
     @property
     def wallet(self) -> Decimal:
@@ -175,6 +188,7 @@ class FuturesAccount:
             self._realized += realized
             self._fees += fee
             self._fills.append(record)
+            self._events.append(FillEvent(record, held, self._positions[symbol]))
             self._clock = timestamp_ms
             return record
 
@@ -209,6 +223,7 @@ class FuturesAccount:
             self._paid += paid
             self._received += received
             self._funding.append(event)
+            self._events.append(event)
             self._clock = self._funding_clock = timestamp_ms
             return event
 
