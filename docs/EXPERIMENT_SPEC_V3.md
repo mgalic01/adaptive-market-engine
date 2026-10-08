@@ -33,11 +33,13 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 - **Integrity:** the 1h futures klines go through the repairing reader of the long-window data (#186, #189).
   - Spec v1 §5 rule 5, "Untraded basket symbols' repaired hours are masked", covers a symbol that has only its 1h archive, so a repaired hour cannot be checked against minutes. v3's futures are in the same position. So every hour the reader repairs is masked, and so is every missing hour (rule 1).
   - A coin-month with more than 17% of its hours masked is excluded, under spec v1 §5's 17% rule.
-  - So is a coin-month whose funding file is missing, or does not follow its own schedule:
-    - duplicate settlement timestamps;
-    - timestamps out of order;
-    - two consecutive settlements further apart than the earlier one's declared interval (`funding_interval_hours`) plus 60 seconds;
-    - a first settlement more than one interval after the month's start, or a last one more than one interval before its end.
+  - So is a coin-month whose funding file is missing, or does not match its exact schedule:
+    - every record of the month must declare the same interval I (`funding_interval_hours`), and I must divide 24;
+    - the expected slots are 00:00 UTC + k × I hours, for every k that falls inside the month;
+    - each record's timestamp must lie within 60 seconds after one slot, and every slot must have exactly one record;
+    - a missing slot, a duplicate, a record off its slot, or a change of interval inside the month excludes the month.
+
+    Slots run continuously across months, since each month's start is a slot. The record lists every month excluded this way.
 
     Bob's funding audit found BTCUSDT's 2020–2024 records always at an 8-hour interval, with offsets of at most 47 ms (`docs/reviews/2026-09-25-bob-funding-cadence.md`).
   - **An excluded coin-month** gives that coin a target of 0 for the whole month, in every run: the out-of-sample account, the training runs and the hold benchmark.
@@ -284,10 +286,11 @@ At each daily decision, after day d's close:
 - **Every position's lifecycle.** A position runs from flat to non-zero, and ends back at flat or at a flip. For each one:
   - the coin and side;
   - every fill, with its time, quantity and price;
-  - the exit's trigger: the signal going to 0, a flip, a pick change, an excluded month, a delevering that rounds the position to 0, a liquidation, or the end of the run;
+  - the exit's trigger: the signal going to 0, a flip, a pick change, an excluded month, a delevering that rounds the position to 0, or a liquidation;
+  - **a position still open when a run ends** is not closed: no fill, fee or slippage is charged. It is marked at the terminal mark (§8), its profit and loss stays unrealised, and its record is labelled censored, with that unrealised profit and loss. This holds for training runs and for the out-of-sample run;
   - its duration;
-  - its maximum favourable and maximum adverse excursion per unit, from the average entry price, on the hourly highs and lows while it is open;
-  - the profit given back before exit (the maximum favourable excursion minus the realised move per unit);
+  - its maximum favourable and maximum adverse excursion, in USDT. For each hour the position is open, its unrealised profit and loss is computed at the bar's favourable and adverse extremes, the high and the low, with the quantity and average entry price in force during that hour. Earlier hours are never recomputed against a later average entry. The excursions are the maximum and the minimum of these hourly values;
+  - the profit given back: the maximum favourable excursion minus the position's final realised profit and loss before fees and funding, or minus its unrealised profit and loss at the terminal mark if it is censored;
   - its realised profit and loss, fees, and funding paid and received.
 - **Every walk-forward window:** each rule's training Sharpe ratio and validity, and the pick.
 - **The equity series:** hourly total equity, the running peak and the drawdown, never rebased.
