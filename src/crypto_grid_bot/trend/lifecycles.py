@@ -78,9 +78,12 @@ class LifecycleLedger:
             raise ValueError("account journal was truncated or changed")
         for index in range(start, len(events)):
             event = events[index]
-            if isinstance(event, FillEvent) and event.after.quantity == ZERO:
-                if not any(reason in EXIT_PRIORITY for reason in exit_reasons.get(index, set())):
-                    raise ValueError("closing journal event needs an exit reason")
+            if (
+                isinstance(event, FillEvent)
+                and event.after.quantity == ZERO
+                and not any(reason in EXIT_PRIORITY for reason in exit_reasons.get(index, set()))
+            ):
+                raise ValueError("closing journal event needs an exit reason")
         for index in range(start, len(events)):
             event = events[index]
             if isinstance(event, FillEvent):
