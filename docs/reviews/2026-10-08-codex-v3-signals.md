@@ -40,5 +40,9 @@ Decimal Context operations after correcting an overlong expected literal.
 Prefix stability, recursive-state continuity across gaps and caller Decimal-context
 independence are covered. No market archive, backtest result or parameter tuning.
 
-Independent review, external exact-head review and full CI remain pending. Codex owns
-the signal branch and subsequent frozen sizing/account integration.
+An independent Codex reviewer found no actionable issue at
+755f528c26f54177dd4aa9d65382808bde0e16c7. Besides the13 tests, its separate synthetic
+oracle matched all signals and diagnostics over1,500 gapped bars, including hostile
+ambient Decimal settings and prefix replay. This covers signals only, not sizing,
+execution, portfolio exclusions or performance. External exact-head review and full
+CI remain pending. Codex owns this branch and subsequent sizing/account integration.
