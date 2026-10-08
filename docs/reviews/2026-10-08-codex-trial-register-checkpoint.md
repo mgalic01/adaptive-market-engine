@@ -44,3 +44,19 @@ record; V3 declares 20261008 for its diagnostic bootstrap. The register is force
 LF on Windows. There are now 42 passing focused tests, with repository-wide Ruff,
 format and mypy clean. The earlier full-suite run was cancelled to apply these fixes
 and is not claimed as passing. Stable-head full-suite and byte-identity checks remain.
+
+## Register batch validation complete
+
+Implementation tested: 52e0c2fa466913fd63fc1c4a68e542aee5d93e09.
+Full pytest: 1753 passed, 6 skipped, 1595 subtests passed in 1450.92 seconds.
+`python scripts/byte_identity.py check --jobs 4`: ALL IDENTICAL, exit 0.
+Repository Ruff, formatting and mypy passed; report checker 0 problems, with the
+same 14 historical unverifiable entries. Focused register suite: 42 passed.
+The only subsequent change for publication is this validation record.
+
+The register contains 29 events: 26 retrospective summaries, initial V3 candidate
+registration, its bootstrap-seed correction, and replacement candidate registration.
+There is no completion event and no V3 run authorization. The future dispatcher and
+trusted result publisher must enforce the documented integration contract. This PR
+implements the register mechanism and initial inventory, not those future components.
+Bob's exact-head external review and GitHub CI are required before merge.
