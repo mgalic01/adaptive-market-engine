@@ -49,6 +49,7 @@ class SpotRunner:
         self.close_requirements: tuple[CloseRequirement, ...] = ()
         self.exclusion_dust: list[tuple[int, str, Decimal, Decimal]] = []
         self.samples: list[tuple[int, Decimal]] = []
+        self.daily_decisions: list[tuple[int, DailyDecision]] = []
         self.equity_path: list[EquityState] = []
         self.peak = self.account.initial
         self.max_drawdown = Decimal(0)
@@ -267,6 +268,14 @@ class HoldDecisions:
         return DailyDecision(targets, signals, reasons, sizing)
 
 
+class SpotReplayExecutionError(RuntimeError):
+    """Execution failure retaining the unfinished spot account as evidence."""
+
+    def __init__(self, error: Exception, runner: SpotRunner) -> None:
+        super().__init__(f"{type(error).__name__}: {error}")
+        self.runner = runner
+
+
 def replay_spot_benchmark(
     decisions: HoldDecisions,
     filters: Mapping[str, OrderFilters],
@@ -313,37 +322,42 @@ def replay_spot_benchmark(
         )
     except UnavailableClose as exc:
         runner.close_requirements = exc.requirements
-    closes: dict[str, Decimal] = {}
-    for hour in range(start_ms, end_ms_exclusive, HOUR):
-        if any(
-            item.decision_ms == hour
-            and item.fill_ms is None
-            and runner.missing_close_requires_fill(
-                item.symbol,
-                hour,
-                indexed[item.symbol][hour].open if hour in indexed[item.symbol] else None,
-            )
-            for item in runner.close_requirements
-        ):
-            runner.finish(closes, reason="unavailable_exclusion_close")
-            return runner
-        month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
-        bars = {}
-        for symbol in sorted(filters):
-            if first[symbol] > month or month in excluded.get(symbol, ()):
-                continue
-            row = indexed[symbol].get(hour)
-            if row is not None:
-                _finite(row.close, positive=True)
-                if not row.low <= row.close <= row.high:
-                    raise ValueError("close outside hourly bar")
-                bars[symbol] = (row.open, row.low, row.high)
-                closes[symbol] = row.close
-        targets = {}
-        reasons = {}
-        if hour % DAY == 0:
-            decision = decisions.at(hour, run_end_ms=end_ms_exclusive)
-            targets, reasons = decision.targets, decision.exit_reasons
-        runner.step(hour, bars, targets, exit_reasons=reasons)
-    runner.finish(closes)
+    try:
+        closes: dict[str, Decimal] = {}
+        for hour in range(start_ms, end_ms_exclusive, HOUR):
+            if any(
+                item.decision_ms == hour
+                and item.fill_ms is None
+                and runner.missing_close_requires_fill(
+                    item.symbol,
+                    hour,
+                    indexed[item.symbol][hour].open if hour in indexed[item.symbol] else None,
+                )
+                for item in runner.close_requirements
+            ):
+                runner.finish(closes, reason="unavailable_exclusion_close")
+                return runner
+            month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
+            bars = {}
+            for symbol in sorted(filters):
+                if first[symbol] > month or month in excluded.get(symbol, ()):
+                    continue
+                row = indexed[symbol].get(hour)
+                if row is not None:
+                    _finite(row.close, positive=True)
+                    if not row.low <= row.close <= row.high:
+                        raise ValueError("close outside hourly bar")
+                    bars[symbol] = (row.open, row.low, row.high)
+                    closes[symbol] = row.close
+            targets = {}
+            reasons = {}
+            if hour % DAY == 0:
+                decision = decisions.at(hour, run_end_ms=end_ms_exclusive)
+                runner.daily_decisions.append((hour, decision))
+                targets, reasons = decision.targets, decision.exit_reasons
+            runner.step(hour, bars, targets, exit_reasons=reasons)
+        runner.finish(closes)
+    except Exception as exc:
+        runner.stopped = "engine_failure"
+        raise SpotReplayExecutionError(exc, runner) from exc
     return runner

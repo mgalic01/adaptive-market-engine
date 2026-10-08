@@ -147,3 +147,32 @@ merge was followed by 47 metrics/comparison/writer checks, all passing.
 No known behavior divergence from either reviewed component. New integrated head
 still requires Bob review and full CI. Spot-specific durable artifact/report
 work, full-size diagnostic hold and registration remain open; no historical run.
+
+## 2026-10-09 durable spot evidence and failure records
+
+Added write_spot_replay using the shared immutable, fsynced JSONL publisher.
+Spot artifacts retain cash/holdings, fills, audits, rebalances, dispatches, dust,
+actual daily decisions, equity and samples without converting Decimal values.
+Added replay_spot_recorded: publishes start before replay, then artifact before
+finish metadata; full or partial outcomes remain explicitly identified by stopped
+reason and error. Completion of recording is not acceptance of a strategy.
+
+Execution exceptions are chained SpotReplayExecutionError objects retaining the
+partial runner; preflight exceptions keep their original types. KeyboardInterrupt
+and publication failure leave a pending start and never trigger a retry. This is
+an intentional exception-interface extension for replay_spot_benchmark callers.
+Historical source/provenance and registration gates remain the caller's obligation.
+
+Validation: eight new spot evidence scenarios, including actual JSON readback,
+non-overwrite, real adapter decisions, execution failure, preflight error,
+interruption and publication failure. 52 combined spot/evidence/comparison tests
+pass; Ruff and mypy pass. Independent Codex reviewer ran45 focused tests and found
+no actionable defects. Bob review/full CI pending. No dependencies, live data or
+strategy changes. Acceptance reports, full-size diagnostic hold and registered
+historical dispatch still remain incomplete.
+
+Prior Bob comments on private intra-package helpers and overlapping validation
+were explicitly non-blocking maintainability notes. These helpers are internal
+implementation details covered by integration tests; no public API guarantee is
+claimed. Extra spot initial-account checks additionally bind samples to the
+actual account initial balance. No speculative renaming is included in this batch.
