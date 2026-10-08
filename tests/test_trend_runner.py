@@ -32,7 +32,10 @@ def test_runner_carries_last_open_and_counts_masked_held_hours():
         "favourable",
         "adverse",
     ]
-    assert all(left.peak <= right.peak for left, right in zip(r.equity_path, r.equity_path[1:]))
+    assert all(
+        left.peak <= right.peak
+        for left, right in zip(r.equity_path, r.equity_path[1:], strict=False)
+    )
 
 
 def test_funding_path_preserves_raw_timestamp():
