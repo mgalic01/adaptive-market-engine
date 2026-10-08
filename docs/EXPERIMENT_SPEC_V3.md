@@ -64,7 +64,7 @@ Does trend-following, long and short or long only as the walk-forward picks (§4
     - **Re-entry:** the first decision whose fill falls after the month is made after the close of the month's last day, which has no spot bar. So the no-bar rule (§4) applies to it: the coin takes no order there, and trades again from the first decision whose decision day has a bar.
 - **Daily bars for signals** (§4) are aggregated from these spot 1h bars: R5 needs highs and lows, and the other rules use closes.
 - **The hold benchmark** (§8) uses the same spot 1h bars.
-- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06, or from a coin's first full spot month if later, gives each coin more than a year before its futures data start (§3), except where the spot listing is too late for that. The fetch records each coin's first spot month and first futures month in the manifest, and the record lists every coin with less than a year of spot history before its futures start. SOLUSDT, whose spot is listed from 2020-08 in `full-range-2017-2024`, is expected to be one. There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
+- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06, or from a coin's first full spot month if later, gives each coin more than a year before its futures data start (§3), except where the spot listing is too late for that. The fetch records each coin's first spot month and first futures month in the manifest, and the record lists every coin with less than a year of spot history before its futures start. SOLUSDT, whose spot is listed from 2020-08 in `full-range-2017-2024`, is expected to be one. There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices. The gap between spot and perpetual prices, the basis, means a signal can differ slightly from one computed on futures prices. That is a disclosed limitation.
 
 **Daily bars** are UTC days, built from the unmasked 1h bars of each day:
 - open is the first unmasked hour's open, and close is the last unmasked hour's close;
@@ -195,7 +195,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 
   **Within one hour's trading:**
   - **The daily decision's orders come first.** Among them, every order that reduces or closes a position goes first, then every order that opens or increases one, each group in alphabetical order of symbol. A flip's closing order is in the first group, and its opening order in the second.
-  - **Then any delevering** (step 4): k is computed on the book after all of the hour's daily fills, and its orders follow at the same open, in alphabetical order of symbol. At most one delevering at step 4, and one after each funding event (step 5), each computed the same way on the book at that point. For example, with an 8-hour funding interval, an hour has at most one funding event, so at most two deleverings. Each targets 0.80 × m, so a book above m is brought well under it.
+  - **Then any delevering** (step 4): k is computed on the book after all of the hour's daily fills, and its orders follow at the same open, in alphabetical order of symbol. At most one delevering at step 4, and one after each funding event (step 5), each computed the same way on the book at that point. Funding records of different coins usually carry different raw timestamps, a few milliseconds apart, and each distinct timestamp is its own funding event. So with 10 coins, a funding hour can hold up to 10 funding events and up to 11 deleverings, and an hour without funding at most one. Each targets 0.80 × m, so a book above m is brought well under it.
 - **Marking:** equity is marked at every hour's open (the wallet and equity are defined under "Wallet and equity" below).
   - **A coin's mark price** in an hour is that hour's open.
   - **In a masked or missing hour,** which an included month may have (up to 17%), the coin's mark is the open of its last unmasked hour before it. Its funding price is the same (above), and its liquidation check uses that same price, since the hour has no usable high or low.
@@ -267,7 +267,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - With no losing trade and at least one winning one, it is +∞, and A2 passes.
   - With no winning trade, it is 0, and A2 fails.
   - **The number of trades,** winning and losing, is reported beside A2.
-  - **The daily profit factor,** the sum of the positive daily changes in equity ÷ the absolute sum of the negative ones, is reported beside it and decides nothing.
+  - **The daily profit factor,** the sum of the positive daily changes in equity ÷ the absolute sum of the negative ones, is reported beside it and decides nothing. With no negative day and at least one positive day it is +∞. With no positive day it is 0.
 - **CAGR:** `(E_T ÷ E_0) ^ (365.25 ÷ d) − 1`, computed with `Decimal`'s power at the precision above:
   - `E_0` is the first daily sample, at 01:00 UTC on the run's first day, and `E_T` is the terminal sample;
   - `d` is the exact time between them, in days: the terminal sample's time minus the first sample's, in milliseconds, ÷ 86,400,000. The terminal sample's time is the end of the last 1h bar, 00:00 UTC on the day after the run's last day. For the out-of-sample run, that is from 2021-07-01 01:00 to 2025-01-01 00:00 if the first test quarter is 2021-Q3;
@@ -300,9 +300,10 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - **Its size is m = 1** (§5): a 20% volatility target and caps of 10% per coin and 80% in total, since a spot account cannot borrow.
 - **A5 compares it with the m = 1 run,** not the main test. The rebalancing band, rounding, minimum notionals, fees and spot cash do not scale exactly with size, so a Sharpe ratio is not fully scale-free under these rules. At the same m, the same band and the same caps, only timing differs.
 - **The m = 1 run** is the main test's strategy at m = 1: the main test's quarterly picks, unchanged, with every size quantity of §5–6 at m = 1, in its own account.
-- **The same as the account:** the rest of the sizing (§5: rebalancing band), the fees and slippage, the fill timing, the masked-hour rule, the excluded months (§2: both the futures exclusions, which decide when a coin is in the portfolio, and its own spot exclusions) and the order of events (§6).
+- **The same as the account:** the rest of the sizing (§5: rebalancing band), the slippage, the fill timing, the masked-hour rule, the excluded months (§2: both the futures exclusions, which decide when a coin is in the portfolio, and its own spot exclusions) and the order of events (§6).
 - **It is one account** that starts flat at the first test quarter's start, as the main account does (§7), and runs continuously to the end of 2024-Q4.
 - **Its own account is a spot account,** 10,000 USDT:
+  - **its fee is Binance's spot taker fee, 0.10%** (regular user, VIP 0, no BNB discount), of each fill's slipped notional. That is the same tier as the account's 0.05% futures fee. It is 0.20% in its double-cost run;
   - a buy spends its notional plus its fee from cash, and a sell adds its notional minus its fee;
   - sells go before buys, as in §6. A buy larger than the cash then available is cut to what the cash pays for, fee included, rounded down to the step. If that is below the minimum notional, it is skipped and reported. Neither case invalidates the run;
   - equity is cash plus each holding's quantity × its spot mark;
@@ -328,7 +329,10 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - **how often a long-only version was picked,** quarter by quarter;
 - the long-versus-short split of profit and loss, per rule and per coin;
 - funding paid and received, fees, slippage and turnover;
-- the time invested, gross and net;
+- **the time invested,** from every hour's post-fill mark (§6, step 4):
+  - the share of hours with any open position;
+  - the mean gross exposure, `Σ |quantity| × mark ÷ equity`;
+  - the mean net exposure, `Σ quantity × mark ÷ equity`, with shorts negative;
 - the realised portfolio volatility against the run's target (20% × m), and the share of decision days on which a cap bound: some coin's target was clipped at its per-coin cap, or the gross cap scaled the book. This counts whatever the number of coins in the portfolio that day. With few coins early on, the per-coin cap can hold the book below target, and A4 is not scale-free;
   - **Reading the coin count:** the few-coin effect falls mainly on the training windows. By the first test quarter, every coin whose futures started in 2019–2020 is already in the portfolio. The record gives the coin count for each test quarter;
 - a 95% interval for the Sharpe ratio, beside A1 and A5. It is a stationary block bootstrap of the daily returns (Politis and Romano):
@@ -369,7 +373,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - **Every position's lifecycle.** A position runs from flat to non-zero, and ends back at flat or at a flip. For each one:
   - the coin and side;
   - every fill, with its time, quantity and price;
-  - the exit's trigger, exactly one, the first that applies in this order: an excluded month; a flip; a pick change; the signal going to 0; sizing (a non-zero signal whose target is 0 under §5 steps 1–2, or whose target quantity rounds to 0); a delevering that rounds the position to 0, or that the minimum quantity enlarges to the whole position; or the minimum quantity, when it enlarges an ordinary reduction to the whole position (§5);
+  - the exit's trigger, exactly one, the first that applies in this order: an excluded month; a flip; a pick change, including a quarter whose 12 training runs were all invalid, so every target is 0 (§8); the signal going to 0; sizing (a non-zero signal whose target is 0 under §5 steps 1–2, or whose target quantity rounds to 0); a delevering that rounds the position to 0, or that the minimum quantity enlarges to the whole position; or the minimum quantity, when it enlarges an ordinary reduction to the whole position (§5);
   - **a position still open when a run ends,** at its last hour or at a liquidation (§6), is not closed: no fill, fee or slippage is charged. It is marked at the terminal mark (§8, or the liquidation check's prices), its profit and loss stays unrealised, and its record is labelled censored, with the reason (end of run or liquidation) and that unrealised profit and loss. This holds for training runs and for the out-of-sample run;
   - its duration;
   - its maximum favourable and maximum adverse excursion, in USDT, before fees and funding. For each hour the position is open, two values are taken: the profit and loss realised so far in the lifecycle, plus the remaining position's unrealised profit and loss at the bar's favourable extreme, and the same at its adverse extreme. Both use the quantity and average entry price in force during that hour, and earlier hours are never recomputed against a later average entry. The excursions are the maximum and the minimum of these hourly values;
