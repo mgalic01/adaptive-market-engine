@@ -1,20 +1,41 @@
 """Frozen walk-forward orchestration over supplied, prevalidated in-memory inputs."""
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from decimal import Decimal
+from dataclasses import dataclass, replace
+from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from uuid import uuid4
 
 from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.filters import OrderFilters
-from crypto_grid_bot.trend.metrics import summarize_runner
+from crypto_grid_bot.trend.metrics import TRADE_RECONCILIATION_TOLERANCE, summarize_runner
 from crypto_grid_bot.trend.replay import ReplayResult, replay_window
 from crypto_grid_bot.trend.walk_forward import RULES, choose_rule, windows
 
 INVALID = frozenset(
     {"liquidation", "no_tradable_position", "leverage_not_restored", "unavailable_exclusion_close"}
 )
+
+
+def reconcile_replay(result: ReplayResult) -> ReplayResult:
+    """Audit finalized lifecycle evidence before success/strategy classification."""
+    runner = result.runner
+    if runner is None:
+        if result.reason != "unavailable_exclusion_close":
+            raise ValueError("replay outcome lacks account evidence")
+        return result
+    if runner.stopped != (result.reason or "completed") or runner.lifecycles.active:
+        raise ValueError("replay account is not finalized consistently")
+    if not runner.audits or any(not a.accepted for a in runner.audits):
+        raise ValueError("replay has missing or failed accounting audits")
+    if not runner.equity_path:
+        raise ValueError("replay has no terminal equity evidence")
+    with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+        total = sum((life.net for life in runner.lifecycles.completed), Decimal(0))
+        residual = total - (runner.equity_path[-1].equity - runner.account.initial)
+        if not residual.is_finite() or residual.copy_abs() > TRADE_RECONCILIATION_TOLERANCE:
+            raise ValueError(f"lifecycle totals do not reconcile: residual={residual}")
+    return replace(result, trade_reconciliation_residual=residual)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +119,7 @@ def replay_sensitivities(
                 multiple=multiple,
                 cost_multiple=cost,
             )
+            result = reconcile_replay(result)
             if result.reason is not None and result.reason not in INVALID:
                 raise ValueError("unknown strategy-invalid outcome")
             if result.reason is None and result.runner is None:
@@ -168,6 +190,7 @@ def run_walk_forward(
                     multiple=2,
                     cost_multiple=1,
                 )
+                result = reconcile_replay(result)
                 if result.reason is not None:
                     if result.reason not in INVALID:
                         raise ValueError("unknown strategy-invalid outcome")
@@ -197,6 +220,7 @@ def run_walk_forward(
         result = replay_window(
             decisions, filters, hourly, funding, start, end, picks, multiple=2, cost_multiple=1
         )
+        result = reconcile_replay(result)
         if result.reason is not None and result.reason not in INVALID:
             raise ValueError("unknown strategy-invalid outcome")
     except Exception as exc:

@@ -29,6 +29,39 @@ def test_cancelled_replay_already_has_persisted_start_identity(monkeypatch):
         )
 
 
+def test_invalid_run_lifecycle_corruption_is_engine_failure(monkeypatch):
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.orders import OrderIntent
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    rules = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    r = TrendRunner({"BTCUSDT": rules})
+    t = 1609459200000
+    r.account.fill("BTCUSDT", OrderIntent(D(10), False), D(100), t)
+    r.step(t, {"BTCUSDT": (D(100), D(100), D(100))}, {}, {})
+    r.step(
+        t + 3600000, {"BTCUSDT": (D(100), D(100), D(100))}, {}, {t + 3600000: {"BTCUSDT": D(100)}}
+    )
+    assert r.stopped == "liquidation"
+    r.lifecycles.completed[0].fees += D(1)
+    monkeypatch.setattr(
+        orchestration, "replay_window", lambda *a, **k: ReplayResult(r, "liquidation", ())
+    )
+    records = []
+    with pytest.raises(ValueError, match="reconcile"):
+        orchestration.replay_sensitivities(
+            DailyDecisions({"BTCUSDT": []}, {"BTCUSDT": "2020-01"}),
+            {},
+            {},
+            {},
+            {t: "R1"},
+            t + 86400000,
+            record=records.append,
+        )
+    assert len(records) == 2
+    assert "reconcile" in records[-1].error
+
+
 def test_sensitivity_menu_uses_identical_picks_and_records_invalid_outcomes(monkeypatch):
     calls, records = [], []
 

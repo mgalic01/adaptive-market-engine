@@ -21,6 +21,7 @@ class ReplayResult:
     runner: TrendRunner | None
     reason: str | None
     close_requirements: tuple[CloseRequirement, ...]
+    trade_reconciliation_residual: Decimal | None = None
 
 
 def replay_window(

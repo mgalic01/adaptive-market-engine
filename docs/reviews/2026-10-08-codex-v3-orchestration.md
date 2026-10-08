@@ -56,3 +56,13 @@ to implement that durable writer or recovery supervisor. Seven fast tests pass,
 including KeyboardInterrupt after the start record and zero dispatch on save failure;
 Ruff and mypy pass. Lifecycle reconciliation for all invalid/OOS runs remains an
 open Cloud finding and must be addressed before merge.
+
+Lifecycle reconciliation now precedes classification for training, OOS and every
+sensitivity replay that produced an account, including censored strategy-invalid
+runs. It requires consistent terminal state, finalized lifecycles, accepted audits,
+and a terminal equity path. The approved bound is applied and its signed residual
+retained in ReplayResult. Unavailable-close preflight has no account to reconcile.
+A real liquidation fixture with one corrupted lifecycle fee first passed silently;
+it now raises an engine/evidence error before scenario continuation. Eight fast
+orchestration tests plus 37 replay/metric tests, Ruff and mypy pass. Full training
+integration remains for CI. No historical run or new dependency.
