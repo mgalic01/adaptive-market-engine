@@ -14,15 +14,15 @@ from decimal import Decimal as D, Context, ROUND_HALF_EVEN, localcontext
 
 with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
     initial = D(10000)
-    buy1 = D(1) * (D(1) + D('.0005'))
-    buy2 = D(2) * (D(1) + D('.0005'))
-    sell = D(2) * (D(1) - D('.0005'))
+    buy1 = D(1) * (D(1) + D(".0005"))
+    buy2 = D(2) * (D(1) + D(".0005"))
+    sell = D(2) * (D(1) - D(".0005"))
     average = (buy1 + D(6) * buy2) / D(7)
     realized = D(7) * (sell - average)
-    fees = buy1*D('.0005') + D(6)*buy2*D('.0005') + D(7)*sell*D('.0005')
+    fees = buy1 * D(".0005") + D(6) * buy2 * D(".0005") + D(7) * sell * D(".0005")
     wallet = initial + realized - fees
     residual = (wallet - initial) - (realized - fees)
-    assert residual == D('-1e-59')
+    assert residual == D("-1e-59")
 ```
 
 The wallet identity holds by its written formula, and the book is flat. But adding

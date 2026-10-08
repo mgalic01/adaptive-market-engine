@@ -26,8 +26,8 @@ The matrix product evaluates `(raw^T Sigma) raw` in sorted symbol order. A negat
 computed portfolio variance raises an error; no undocumented epsilon or absolute
 value changes the frozen arithmetic. The future runner must stop and diagnose this as an engine/numerical failure,
 not classify it as a strategy-invalid run or silently replace the result. This
-corrects the original handoff wording: §8 reserves strategy-invalid outcomes for
-liquidation, unrestorable leverage and required fills that cannot be made.
+corrects the original handoff wording: section 8 reserves strategy-invalid outcomes
+for liquidation, unrestorable leverage and required fills that cannot be made.
 
 The volatility target is 0.20*m, followed by per-coin absolute caps of 0.10*m,
 then proportional gross scaling to 0.80*m, for the fixed m=1,2,3. Result fields
