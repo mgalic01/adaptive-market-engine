@@ -45,3 +45,14 @@ multiple and cost_multiple. Three new tests cover menu/picks/evidence, engine-er
 abort, and five real independent flat synthetic accounts. Six fast orchestration
 tests pass; the earlier full training test was not rerun for this additive helper.
 Ruff and mypy pass. Spot benchmark/cost replay and historical dispatch still pending.
+
+Cancellation evidence fix: every training, OOS and sensitivity replay now first
+calls the mandatory recorder with state=started and its run ID, bounds and scenario.
+The recorder must durably persist before returning; failure prevents dispatch.
+Normal/error completion emits state=finished with the same ID. A process kill or
+BaseException may leave only started, which the supervising dispatcher must finalize
+as interrupted/cancelled after confirming termination. This module does not claim
+to implement that durable writer or recovery supervisor. Seven fast tests pass,
+including KeyboardInterrupt after the start record and zero dispatch on save failure;
+Ruff and mypy pass. Lifecycle reconciliation for all invalid/OOS runs remains an
+open Cloud finding and must be addressed before merge.

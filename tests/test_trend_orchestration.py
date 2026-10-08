@@ -9,6 +9,26 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.replay import ReplayResult
 
 
+def test_cancelled_replay_already_has_persisted_start_identity(monkeypatch):
+    records = []
+
+    def cancelled(*args, **kwargs):
+        assert len(records) == 1
+        assert records[0].state == "started"
+        assert records[0].run_id
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(orchestration, "replay_window", cancelled)
+    with pytest.raises(KeyboardInterrupt):
+        orchestration.run_walk_forward(
+            DailyDecisions({"BTCUSDT": []}, {"BTCUSDT": "2023-04"}),
+            {},
+            {},
+            {},
+            record=records.append,
+        )
+
+
 def test_sensitivity_menu_uses_identical_picks_and_records_invalid_outcomes(monkeypatch):
     calls, records = [], []
 
@@ -31,8 +51,12 @@ def test_sensitivity_menu_uses_identical_picks_and_records_invalid_outcomes(monk
     assert all(p == picks for p, _ in calls)
     assert [(k["multiple"], k["cost_multiple"]) for _, k in calls] == list(results)
     assert len({r.run_id for r in records}) == 5
-    assert [(r.multiple, r.cost_multiple) for r in records] == list(results)
-    assert all(r.result.reason == "unavailable_exclusion_close" for r in records)
+    assert [(r.multiple, r.cost_multiple) for r in records if r.state == "finished"] == list(
+        results
+    )
+    assert all(
+        r.result.reason == "unavailable_exclusion_close" for r in records if r.state == "finished"
+    )
 
 
 def test_sensitivity_engine_error_aborts_remaining_scenarios(monkeypatch):
@@ -52,8 +76,8 @@ def test_sensitivity_engine_error_aborts_remaining_scenarios(monkeypatch):
             1640995200000,
             record=records.append,
         )
-    assert len(records) == 1
-    assert records[0].error == "ArithmeticError: bad ledger"
+    assert len(records) == 2
+    assert records[-1].error == "ArithmeticError: bad ledger"
 
 
 def test_sensitivities_create_five_independent_accounts_on_synthetic_day():
@@ -91,7 +115,7 @@ def test_all_invalid_candidates_are_recorded_and_choose_flat(monkeypatch):
         {},
         record=records.append,
     )
-    assert len(records) == 13
+    assert len(records) == 26
     assert all(row.sharpe is None for row in result.training)
     assert all(row.invalid_reason == "unavailable_exclusion_close" for row in result.training)
     assert set(result.picks.values()) == {None}
@@ -113,9 +137,9 @@ def test_engine_error_is_recorded_and_aborts_instead_of_selecting_another_rule(m
             {},
             record=records.append,
         )
-    assert len(records) == 1
-    assert records[0].rule == "R1"
-    assert records[0].error == "ArithmeticError: audit failed"
+    assert len(records) == 2
+    assert records[-1].rule == "R1"
+    assert records[-1].error == "ArithmeticError: audit failed"
 
 
 def test_failed_evidence_recording_stops_after_first_attempt(monkeypatch):
@@ -137,7 +161,7 @@ def test_failed_evidence_recording_stops_after_first_attempt(monkeypatch):
             {},
             record=cannot_save,
         )
-    assert len(calls) == 1
+    assert len(calls) == 0
 
 
 def test_frozen_training_menu_then_one_continuous_oos_account():
@@ -150,6 +174,8 @@ def test_frozen_training_menu_then_one_continuous_oos_account():
     records = []
 
     def record(attempt):
+        if attempt.state == "started":
+            return
         assert attempt.error is None
         assert attempt.result.runner.account.initial == 10000
         assert attempt.result.runner.stopped == "completed"

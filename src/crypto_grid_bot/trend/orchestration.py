@@ -28,6 +28,7 @@ class Attempt:
     error: str | None
     multiple: int = 2
     cost_multiple: int = 1
+    state: str = "finished"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +71,20 @@ def replay_sensitivities(
     results = {}
     for multiple, cost in ((1, 1), (3, 1), (1, 2), (2, 2), (3, 2)):
         run_id = f"{prefix}-sensitivity-m{multiple}-cost{cost}"
+        record(
+            Attempt(
+                run_id,
+                "sensitivity",
+                None,
+                start,
+                end_ms_exclusive,
+                None,
+                None,
+                multiple,
+                cost,
+                "started",
+            )
+        )
         result = None
         try:
             result = replay_window(
@@ -139,6 +154,7 @@ def run_walk_forward(
         scores = {}
         for rule in RULES:
             run_id = f"{prefix}-train-{window.test_start}-{rule}"
+            record(Attempt(run_id, "training", rule, start, end, None, None, state="started"))
             result = None
             try:
                 result = replay_window(
@@ -175,6 +191,7 @@ def run_walk_forward(
     # This is only an exclusive timestamp boundary, not a requested 2025 price.
     end = month_bounds_ms(calendar[-1].test_end_exclusive)[0]
     run_id = f"{prefix}-out-of-sample-m2"
+    record(Attempt(run_id, "out_of_sample", None, start, end, None, None, state="started"))
     result = None
     try:
         result = replay_window(
