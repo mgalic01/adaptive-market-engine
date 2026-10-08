@@ -103,6 +103,7 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
   - Recursive state carries across days with no spot bar: a day that fails the per-day rule, or a spot month excluded under §2. That state is the EMAs, R5's ATR, bands and trend, and R3's held position, so a missing day adds no update and resets nothing.
   - A month excluded on the futures side only (its futures klines or funding fail §2) keeps its spot bars. They go on updating the signals, and only the coin's target is 0 that month.
 - **A date with no spot bar for a coin:** for the decision after that date, the coin keeps its previous signal and takes no order (its position stays as it is), and any deferred order it already has stays pending. The other coins are decided as usual. Its σ and its Σ entries use its one-day returns as available (§2).
+  - **The mandatory close before an excluded month (§2) overrides this.** It does not depend on the signal, so it is made even when its decision day has no bar, and it cancels any deferred order the coin still has.
 - **A rule with too little history** for a coin gives 0 for that coin until it has enough: 50 closes for R1, 55 for R2, 56 bars for R3 (55 prior bars and the current one), a close at least 365 days earlier for R4, and 11 bars for R5.
 - **No other strategy family is in v3.** That covers mean reversion, scalping, breakout variants, pattern recognition, market structure, pairs trading and funding arbitrage (§10). Each extra rule is another trial, and more trials make a lucky pass more likely.
 
@@ -155,7 +156,7 @@ At each daily decision, after day d's close:
      - fills happen at the bar's open time: the daily decision's orders;
      - funding happens at its recorded timestamp, which is at or a few milliseconds after the open;
      - so, except on an exact tie, a fill at the open is charged that hour's funding on the post-fill quantity;
-     - on an exact tie, funding comes first.
+     - on an exact tie, funding comes first, and the pre-fill liquidation check (step 2) is repeated right after that funding, before the tied fill. A book the funding pushes through the threshold is liquidated there, and the fill is cancelled.
   4. **The post-fill mark:** equity after step 3, at the same open prices, so the fees, slippage and any realised loss of those fills, and that hour's funding, show at once.
   5. **The 1x-ceiling check,** on the quantities after the fills, at the open mark. If gross leverage exceeds 1.0, the delevering (below) fills at this same open, and the post-fill mark is taken again after it.
   6. **The post-fill liquidation check,** on the quantities after any delevering, at the bar's adverse extremes.
@@ -307,6 +308,7 @@ At each daily decision, after day d's close:
   - **a position still open when a run ends** is not closed: no fill, fee or slippage is charged. It is marked at the terminal mark (§8), its profit and loss stays unrealised, and its record is labelled censored, with that unrealised profit and loss. This holds for training runs and for the out-of-sample run;
   - its duration;
   - its maximum favourable and maximum adverse excursion, in USDT, before fees and funding. For each hour the position is open, two values are taken: the profit and loss realised so far in the lifecycle, plus the remaining position's unrealised profit and loss at the bar's favourable extreme, and the same at its adverse extreme. Both use the quantity and average entry price in force during that hour, and earlier hours are never recomputed against a later average entry. The excursions are the maximum and the minimum of these hourly values;
+  - **Each reducing or closing fill** adds one more excursion state: the lifecycle's realised profit and loss after that fill, plus the remaining position's unrealised profit and loss at the fill price. So a close after a favourable gap counts in the maximum favourable excursion, and profit given back cannot be negative;
   - the profit given back: the maximum favourable excursion minus the lifecycle's final profit and loss before fees and funding. For a closed position that is its total realised profit and loss. For a censored one it is the profit and loss realised so far plus the unrealised at the terminal mark;
   - its realised profit and loss, fees, and funding paid and received.
 - **Every walk-forward window:** each rule's training Sharpe ratio and validity, and the pick.
