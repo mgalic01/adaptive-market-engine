@@ -130,6 +130,7 @@ def test_callback_publishes_verified_artifacts_for_real_synthetic_replays(tmp_pa
     assert recorder.journal.pending() == ()
     for path in tmp_path.glob("*.finished.json"):
         doc = json.loads(path.read_text())["payload"]
+        assert doc["pick_schedule"] == [[t, None]]
         evidence = doc["evidence"]
         raw = (tmp_path / evidence["path"]).read_bytes()
         assert hashlib.sha256(raw).hexdigest() == evidence["sha256"]
@@ -148,6 +149,30 @@ def test_finish_metadata_cannot_change_started_identity(tmp_path):
     record(Attempt("one", "training", "R1", 0, 1, None, None, state="started"))
     with pytest.raises(ValueError, match="identity"):
         record(Attempt("one", "training", "R2", 0, 1, None, "failed"))
+    assert record.journal.pending() == ("one",)
+
+
+def test_finish_cannot_change_started_pick_schedule(tmp_path):
+    from crypto_grid_bot.trend.evidence_writer import AttemptRecorder
+
+    record = AttemptRecorder(tmp_path)
+    record(
+        Attempt(
+            "one",
+            "sensitivity",
+            None,
+            0,
+            1,
+            None,
+            None,
+            state="started",
+            pick_schedule=((0, "R1"),),
+        )
+    )
+    with pytest.raises(ValueError, match="identity"):
+        record(
+            Attempt("one", "sensitivity", None, 0, 1, None, "failed", pick_schedule=((0, "R2"),))
+        )
     assert record.journal.pending() == ("one",)
 
 
