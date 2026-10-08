@@ -37,3 +37,48 @@ def test_runner_forced_close_cancels_pending_entry_and_waits_for_unmasked_hour()
     assert r.account.positions["BTCUSDT"].quantity == 0
     assert r.lifecycles.completed[0].exit_reason == "excluded_month"
     assert r.lifecycles.completed[0].end_ms == start + 27 * hour
+
+
+def test_close_preflight_uses_first_unmasked_hour_and_reports_missing_close():
+    import pytest
+
+    from crypto_grid_bot.trend.exclusions import ExclusionCalendar, UnavailableClose
+
+    c = ExclusionCalendar({"BTCUSDT": frozenset({"2021-02"})})
+    start, end = stamp("2021-01-01"), stamp("2021-03-01")
+    last = stamp("2021-01-31")
+    plan = c.check_close_availability(
+        start, end, {"BTCUSDT": frozenset({last, last + 3 * 3600000})}
+    )
+    assert plan[0].decision_ms == last
+    assert plan[0].fill_ms == last + 3 * 3600000
+    assert plan[0].excluded_month == "2021-02"
+    with pytest.raises(UnavailableClose) as failure:
+        c.check_close_availability(start, end, {"BTCUSDT": frozenset({last})})
+    assert failure.value.requirements[0].fill_ms is None
+
+
+def test_fresh_run_inside_exclusion_and_consecutive_exclusions_need_no_new_close():
+    from crypto_grid_bot.trend.exclusions import ExclusionCalendar
+
+    c = ExclusionCalendar({"BTCUSDT": frozenset({"2021-02", "2021-03"})})
+    assert (
+        c.check_close_availability(
+            stamp("2021-02-01"), stamp("2021-04-01"), {"BTCUSDT": frozenset()}
+        )
+        == ()
+    )
+
+
+def test_close_preflight_rejects_missing_inventory_and_non_daily_run_bounds():
+    import pytest
+
+    from crypto_grid_bot.trend.exclusions import ExclusionCalendar
+
+    c = ExclusionCalendar({"BTCUSDT": frozenset({"2021-02"})})
+    with pytest.raises(ValueError, match="inventory"):
+        c.check_close_availability(stamp("2021-01-01"), stamp("2021-03-01"), {})
+    with pytest.raises(ValueError):
+        c.check_close_availability(
+            stamp("2021-01-01") + 1, stamp("2021-03-01"), {"BTCUSDT": frozenset()}
+        )

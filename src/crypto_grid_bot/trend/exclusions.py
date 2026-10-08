@@ -1,12 +1,31 @@
 """Daily target overrides from predeclared, reviewed data exclusions."""
 
 from collections.abc import Mapping, Set
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from crypto_grid_bot.backtest.klines import month_bounds_ms
 from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.parsing import symbol_name
+from crypto_grid_bot.trend.data import mandatory_close_hour
 
 DAY = 86400000
+
+
+@dataclass(frozen=True, slots=True)
+class CloseRequirement:
+    symbol: str
+    excluded_month: str
+    decision_ms: int
+    fill_ms: int | None
+
+
+class UnavailableClose(ValueError):
+    """Data-declared strategy invalidity, distinct from missing input evidence."""
+
+    def __init__(self, requirements: tuple[CloseRequirement, ...]) -> None:
+        super().__init__("no unmasked hour for a required pre-exclusion close")
+        self.requirements = requirements
 
 
 class ExclusionCalendar:
@@ -33,3 +52,45 @@ class ExclusionCalendar:
             for symbol, months in self._months.items()
             if month in months or next_month in months
         )
+
+    def check_close_availability(
+        self,
+        start_ms: int,
+        end_ms_exclusive: int,
+        unmasked_hours: Mapping[str, frozenset[int]],
+    ) -> tuple[CloseRequirement, ...]:
+        """Preflight a fresh flat run from validated execution-hour inventory.
+
+        The caller limits exclusions to the coin's portfolio lifetime. Runs start
+        and end at midnight. A run starting inside an exclusion starts flat; a
+        consecutive excluded month creates no new closing obligation.
+        """
+        self.zero_symbols(start_ms)
+        if (
+            type(end_ms_exclusive) is not int
+            or end_ms_exclusive % DAY
+            or end_ms_exclusive <= start_ms
+        ):
+            raise ValueError("invalid exclusive run end")
+        self.zero_symbols(end_ms_exclusive - DAY)
+        if not self._months.keys() <= unmasked_hours.keys():
+            raise ValueError("missing execution-hour inventory")
+        requirements = []
+        for symbol, months in sorted(self._months.items()):
+            for month in sorted(months):
+                boundary, _ = month_bounds_ms(month)
+                decision = boundary - DAY
+                previous = datetime.fromtimestamp(decision // 1000, UTC).strftime("%Y-%m")
+                if start_ms <= decision < end_ms_exclusive and previous not in months:
+                    requirements.append(
+                        CloseRequirement(
+                            symbol,
+                            month,
+                            decision,
+                            mandatory_close_hour(month, unmasked_hours[symbol]),
+                        )
+                    )
+        result = tuple(requirements)
+        if any(item.fill_ms is None for item in result):
+            raise UnavailableClose(result)
+        return result
