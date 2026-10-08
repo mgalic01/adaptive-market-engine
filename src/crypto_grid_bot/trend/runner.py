@@ -154,7 +154,8 @@ class TrendRunner:
         plans = dict(result.plans)
         delevered = {id(fill) for check in result.checkpoints for fill in check.fills}
         event_reasons = {}
-        for index, event in enumerate(self.account.events):
+        batch = self.account.events_since(self.lifecycles.event_count)
+        for index, event in enumerate(batch.events, batch.start):
             if not isinstance(event, FillEvent) or event.after.quantity != 0:
                 continue
             reasons = set(reasons_by_symbol.get(event.fill.symbol, ()))
@@ -173,7 +174,7 @@ class TrendRunner:
                 ):
                     reasons.add("minimum_quantity")
             event_reasons[index] = reasons
-        self.lifecycles.consume(self.account.events, event_reasons)
+        self.lifecycles.consume_batch(batch, event_reasons)
         for kind, mark in result.marks:
             if kind in ("favourable", "adverse"):
                 for symbol in self.lifecycles.active:
@@ -208,6 +209,13 @@ class TrendRunner:
                 drawdown = (self.peak - mark.equity) / self.peak
                 self.max_drawdown = max(self.max_drawdown, drawdown)
                 self.equity_path.append(EquityState(stamp, kind, mark.equity, self.peak, drawdown))
+        if result.reason in ("no_tradable_position", "leverage_not_restored"):
+            self.lifecycles.censor(
+                self.equity_path[-1].timestamp_ms,
+                self.account.positions,
+                result.marks[-1][1].prices,
+                result.reason,
+            )
         audit = self.account.audit(result.marks[-1][1].prices)
         self.audits.append(audit)
         if not audit.exact:

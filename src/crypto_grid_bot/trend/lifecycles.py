@@ -4,7 +4,7 @@ from collections.abc import Mapping, Set
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
-from crypto_grid_bot.trend.account import Fill, FillEvent, FundingEvent, Position
+from crypto_grid_bot.trend.account import Fill, FillEvent, FundingEvent, JournalBatch, Position
 
 ZERO = Decimal(0)
 EXIT_PRIORITY = (
@@ -61,7 +61,11 @@ class LifecycleLedger:
         self.active: dict[str, Lifecycle] = {}
         self.completed: list[Lifecycle] = []
         self._funding_clock = -1
-        self._consumed: tuple[FillEvent | FundingEvent, ...] = ()
+        self._consumed: list[FillEvent | FundingEvent] = []
+
+    @property
+    def event_count(self) -> int:
+        return len(self._consumed)
 
     def consume(
         self,
@@ -74,23 +78,34 @@ class LifecycleLedger:
         exit attribution is an engine error, never inferred from a zero quantity.
         """
         start = len(self._consumed)
-        if events[:start] != self._consumed:
+        if events[:start] != tuple(self._consumed):
             raise ValueError("account journal was truncated or changed")
-        for index in range(start, len(events)):
-            event = events[index]
+        self.consume_batch(
+            JournalBatch(start, events[start - 1] if start else None, events[start:]), exit_reasons
+        )
+
+    def consume_batch(self, batch: JournalBatch, exit_reasons: Mapping[int, Set[str]]) -> None:
+        """Consume only new events, checking cursor and immutable boundary identity.
+
+        Account journals append immutable entries; no historical prefix is copied
+        or scanned on this path. Full snapshot validation remains in consume().
+        """
+        previous = self._consumed[-1] if self._consumed else None
+        if batch.start != self.event_count or batch.previous is not previous:
+            raise ValueError("account journal batch is discontinuous")
+        for index, event in enumerate(batch.events, batch.start):
             if (
                 isinstance(event, FillEvent)
                 and event.after.quantity == ZERO
                 and not any(reason in EXIT_PRIORITY for reason in exit_reasons.get(index, set()))
             ):
                 raise ValueError("closing journal event needs an exit reason")
-        for index in range(start, len(events)):
-            event = events[index]
+        for index, event in enumerate(batch.events, batch.start):
             if isinstance(event, FillEvent):
                 self.fill(event.fill, event.before, event.after, exit_reasons.get(index, set()))
             else:
                 self.fund(event)
-            self._consumed = events[: index + 1]
+            self._consumed.append(event)
 
     def observe(self, symbol: str, position: Position, price: Decimal) -> None:
         life = self.active[symbol]
@@ -163,7 +178,12 @@ class LifecycleLedger:
         prices: Mapping[str, Decimal],
         reason: str,
     ) -> None:
-        if reason not in ("end_of_run", "liquidation"):
+        if reason not in (
+            "end_of_run",
+            "liquidation",
+            "no_tradable_position",
+            "leverage_not_restored",
+        ):
             raise ValueError("invalid censor reason")
         for symbol, life in self.active.items():
             if symbol not in positions or symbol not in prices:

@@ -200,3 +200,52 @@ def test_runner_flip_closes_old_trade_and_starts_new_trade():
     r.step(T + 25 * H, bar, {}, {})
     assert r.lifecycles.completed[0].exit_reason == "flip"
     assert r.lifecycles.active["BTCUSDT"].side == "short"
+
+
+@pytest.mark.parametrize(
+    "tradable_eth,reason", [(False, "no_tradable_position"), (True, "leverage_not_restored")]
+)
+def test_terminal_leverage_failure_censors_remaining_positions(tradable_eth, reason):
+    from crypto_grid_bot.trend.orders import OrderIntent
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES, "ETHUSDT": RULES}, multiple=1)
+    r.account.fill("BTCUSDT", OrderIntent(D(80), False), D(100), T)
+    bars = {"BTCUSDT": (D(100), D(100), D(100))}
+    if tradable_eth:
+        r.account.fill("ETHUSDT", OrderIntent(D(10), False), D(100), T)
+        bars["ETHUSDT"] = (D(100), D(100), D(100))
+    r.step(T, bars, {}, {})
+    stamp = T + H + 30
+    result = r.step(
+        T + H,
+        {"ETHUSDT": bars["ETHUSDT"]} if tradable_eth else {},
+        {},
+        {stamp: {"BTCUSDT": D(".4")}},
+    )
+    assert result.reason == reason
+    assert not r.lifecycles.active
+    btc = next(life for life in r.lifecycles.completed if life.symbol == "BTCUSDT")
+    assert btc.censored
+    assert btc.exit_reason == reason
+    assert btc.end_ms == stamp
+    assert btc.unrealized == D(-4)
+    assert btc.funding_paid == D(3200)
+    assert btc.duration_ms == H + 30
+
+
+def test_runner_consumes_event_suffix_without_reading_full_journal(monkeypatch):
+    from crypto_grid_bot.trend.account import FuturesAccount
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    def forbidden_full_snapshot(self):
+        raise AssertionError("runner must not copy the historical journal")
+
+    monkeypatch.setattr(FuturesAccount, "events", property(forbidden_full_snapshot))
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
+    bar = {"BTCUSDT": (D(100), D(100), D(100))}
+    r.step(T, bar, {"BTCUSDT": D(".1")}, {})
+    r.step(T + H, bar, {}, {})
+    r.step(T + 2 * H, bar, {}, {T + 2 * H: {"BTCUSDT": D(".01")}})
+    assert r.lifecycles.event_count == 2
+    assert r.lifecycles.active["BTCUSDT"].funding_paid == 10

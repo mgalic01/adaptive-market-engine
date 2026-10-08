@@ -200,3 +200,29 @@ def test_trade_totals_reconcile_with_account_for_closed_and_censored_positions()
     assert len(ledger.completed) == 2
     assert sum(life.funding_paid for life in ledger.completed) == 2
     assert sum(life.funding_received for life in ledger.completed) == 3
+
+
+def test_suffix_batches_reject_replay_skips_and_wrong_predecessor():
+    from dataclasses import replace
+
+    from crypto_grid_bot.trend.lifecycles import LifecycleLedger
+
+    a, ledger = FuturesAccount(), LifecycleLedger()
+    a.fill("BTCUSDT", OrderIntent(D(1), False), D(100), T)
+    first = a.events_since(0)
+    ledger.consume_batch(first, {})
+    with pytest.raises(ValueError, match="journal"):
+        ledger.consume_batch(first, {})
+    a.fund(T, {"BTCUSDT": D(".01")}, {"BTCUSDT": D(100)})
+    batch = a.events_since(ledger.event_count)
+    assert len(batch.events) == 1
+    for invalid in (replace(batch, start=2), replace(batch, previous=None)):
+        with pytest.raises(ValueError, match="journal"):
+            ledger.consume_batch(invalid, {})
+    ledger.consume_batch(batch, {})
+    ledger.consume_batch(a.events_since(ledger.event_count), {})
+    assert ledger.event_count == 2
+    assert ledger.active["BTCUSDT"].funding_paid == 1
+    for cursor in (-1, 3, True):
+        with pytest.raises(ValueError):
+            a.events_since(cursor)

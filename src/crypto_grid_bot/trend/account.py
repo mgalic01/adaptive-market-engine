@@ -70,6 +70,13 @@ class FundingEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class JournalBatch:
+    start: int
+    previous: FillEvent | FundingEvent | None
+    events: tuple[FillEvent | FundingEvent, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AccountMark:
     wallet: Decimal
     unrealized: Decimal
@@ -139,6 +146,14 @@ class FuturesAccount:
     def events(self) -> tuple[FillEvent | FundingEvent, ...]:
         """Actual insertion order, including ties between funding and fills."""
         return tuple(self._events)
+
+    def events_since(self, cursor: int) -> JournalBatch:
+        """Copy only the new suffix, anchored to the preceding immutable event."""
+        if type(cursor) is not int or not 0 <= cursor <= len(self._events):
+            raise ValueError("invalid account journal cursor")
+        return JournalBatch(
+            cursor, self._events[cursor - 1] if cursor else None, tuple(self._events[cursor:])
+        )
 
     @property
     def wallet(self) -> Decimal:
