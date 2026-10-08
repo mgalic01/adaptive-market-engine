@@ -17,9 +17,9 @@ These are project requirements, not claims that all features work today.
 The numeric thresholds are initial hypotheses, not validated trading advantages.
 
 - Monitor CoinMarketCap's top 100 assets plus Midnight (`NIGHT`).
-- Trade Binance spot markets. Futures and short positions are allowed only in historical
-  backtests and paper trading, at no more than 1x leverage; live futures trading needs a
-  separate owner decision (owner, 2026-10-08). No martingale.
+- Live trading, once approved, is spot-only on Binance. Futures and short positions are
+  allowed only in historical backtests and paper trading, at no more than 1x leverage;
+  live futures trading needs a separate owner decision (owner, 2026-10-08). No martingale.
 - Classify the broad market as range, bull, bear, transition, or stress.
 - Trade only when market regime, coin suitability, liquidity, costs, and news
   risk all pass deterministic checks.

@@ -33,7 +33,13 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 - **Integrity:** the 1h futures klines go through the repairing reader of the long-window data (#186, #189).
   - Spec v1 §5 rule 5, "Untraded basket symbols' repaired hours are masked", covers a symbol that has only its 1h archive, so a repaired hour cannot be checked against minutes. v3's futures are in the same position. So every hour the reader repairs is masked, and so is every missing hour (rule 1).
   - A coin-month with more than 17% of its hours masked is excluded, under spec v1 §5's 17% rule.
-  - So is a coin-month whose funding file is missing, or incomplete: fewer timestamps than the month's days × 3, the 8-hour schedule. A shorter interval, which gives more timestamps, is fine.
+  - So is a coin-month whose funding file is missing, or does not follow its own schedule:
+    - duplicate settlement timestamps;
+    - timestamps out of order;
+    - two consecutive settlements further apart than the earlier one's declared interval (`funding_interval_hours`) plus 60 seconds;
+    - a first settlement more than one interval after the month's start, or a last one more than one interval before its end.
+
+    Bob's funding audit found BTCUSDT's 2020–2024 records always at an 8-hour interval, with offsets of at most 47 ms (`docs/reviews/2026-09-25-bob-funding-cadence.md`).
   - **An excluded coin-month** gives that coin a target of 0 for the whole month, in every run: the out-of-sample account, the training runs and the hold benchmark.
     - An open position closes at the decision made after the close of the day before the previous month's last day. That decision fills at 01:00 UTC on the previous month's last day, so the coin is flat through every funding timestamp of the excluded month.
     - The coin trades again from the first decision whose fill falls after the excluded month.
@@ -59,7 +65,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 
 **The daily series** of a coin is its bars in date order, with missing days simply absent:
 - "n closes" means the last n available bars, and "the close 365 days earlier" (R4) means the last available close on or before that calendar date. If that close is more than 7 days before the date, R4 gives 0 for that day;
-- a daily return is the simple return between consecutive available closes, so a return across a gap spans the gap and counts once.
+- a daily return is the simple return between two consecutive available closes. It is a **one-day return** if the two bars are on consecutive UTC days. σ and Σ (§5) use only one-day returns: a return across a gap is left out of both.
 
 ## 3. Coins
 
@@ -100,10 +106,10 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
 At each daily decision, after day d's close:
 
 1. **Raw weight:** for each coin with a non-zero signal `s`, `raw = s × (1 / σ)`, where σ is the annualised volatility of the coin's daily spot simple returns over the last 60 days (sample standard deviation × √365).
-   - σ uses the coin's last 60 daily returns (§2). A coin with fewer than 60, or with σ = 0, gets a raw weight of 0.
+   - σ uses the coin's last 60 one-day returns (§2). A coin with fewer than 60, or with σ = 0, gets a raw weight of 0.
    - Spot history precedes every coin's futures history (§2), so a coin that joins mid-window normally already has its 60 returns.
 2. **Volatility target:** the portfolio's estimated volatility is `√(rawᵀ Σ raw)`, where Σ is the 60-day sample covariance matrix of the same returns, annualised, over the coins with a non-zero raw weight. All raw weights are scaled by `0.20 ÷ that estimate`, so the portfolio targets **20% volatility a year**.
-   - Σ uses the last 60 UTC days, keeping only the days on which every coin with a non-zero raw weight has a daily return (§2). If fewer than 40 such days remain, every target is 0.
+   - Σ uses the last 60 UTC days, keeping only the days on which every coin with a non-zero raw weight has a one-day return (§2), so every pair of returns spans the same calendar day. If fewer than 40 such days remain, every target is 0.
    - Σ is never inverted, so a singular Σ needs no special case.
    - σ (each coin's own last 60 returns) and Σ's diagonal (the common days only) can differ. That is intended: σ sets each coin's relative weight, and Σ estimates the whole book's risk.
    - If every raw weight is 0, or the estimate is 0, every target is 0: the book goes flat.
@@ -135,14 +141,20 @@ At each daily decision, after day d's close:
   - The price is that bar's open, or, if the bar is masked or missing, the open of the last unmasked bar before it.
   - Binance charges funding on the mark price, not on the last-trade price. Using the bar's open is a disclosed approximation: the two differ by the basis, which is small next to the funding rate's own variation.
   - **Order within an hour:** see "Order of events in an hour" below.
-  - Funding is charged at exactly the timestamps in the file. A month with an incomplete file is excluded (§2), so no included month has a missing payment.
+  - Funding is charged at exactly the timestamps in the file. A month whose file breaks its schedule is excluded (§2), so no included month has a missing payment.
 - **Order of events in an hour,** for every hour from the first to the last of the run:
-  1. funding at any of the hour's timestamps, on the quantity held before the hour's fills;
-  2. the open mark, so the open mark includes that hour's funding, and the daily 01:00 sample (§8) is this mark;
-  3. the hour's fills: the daily decision's, then any delevering ordered the hour before;
-  4. the post-fill mark: equity after the fills, at the same open prices, so the fees, slippage and any realised loss of those fills show at once;
-  5. the 1x-ceiling check, on the quantities after the fills, at the open mark;
-  6. the liquidation check, on those quantities, at the bar's adverse extremes.
+  1. **The open mark,** at the bar's open time, before any of the hour's fills or funding. The daily 01:00 sample (§8) is this mark, and no funding falls at 01:00.
+  2. **The pre-fill liquidation check,** on the quantities held at the open, at the open prices. A book that gapped through the threshold is liquidated at this open, the hour's fills are cancelled, and the run is invalid.
+  3. **The hour's events,** in the order of their raw timestamps:
+     - fills happen at the bar's open time (the daily decision's, then any delevering ordered the hour before);
+     - funding happens at its recorded timestamp, which is at or a few milliseconds after the open;
+     - so a fill at the open is charged that hour's funding on the post-fill quantity;
+     - on an exact tie, funding comes first.
+  4. **The post-fill mark:** equity after step 3, at the same open prices, so the fees, slippage and any realised loss of those fills, and that hour's funding, show at once.
+  5. **The 1x-ceiling check,** on the quantities after the fills, at the open mark.
+  6. **The post-fill liquidation check,** on those quantities, at the bar's adverse extremes.
+
+  **Within one hour's fills,** every order that reduces or closes a position goes first, then every order that opens or increases one, each group in alphabetical order of symbol.
 - **Marking:** equity is marked at every hour's open (the wallet and equity are defined under "Wallet and equity" below).
   - **A coin's mark price** in an hour is that hour's open.
   - **In a masked or missing hour,** which an included month may have (up to 17%), the coin's mark is the open of its last unmasked hour before it. Its funding price is the same (above), and its liquidation check uses that same price, since the hour has no usable high or low.
@@ -224,6 +236,7 @@ At each daily decision, after day d's close:
 - **The same as the account:** the sizing (§5: volatility target, caps, rebalancing band), the fees and slippage, the fill timing, the masked-hour rule, the excluded months (§2: both the futures exclusions, which decide when a coin is in the portfolio, and its own spot exclusions) and the order of events (§6).
 - **Its own account is a spot account,** 10,000 USDT:
   - a buy spends its notional plus its fee from cash, and a sell adds its notional minus its fee;
+  - sells go before buys, as in §6. A buy larger than the cash then available is cut to what the cash pays for, fee included, rounded down to the step. If that is below the minimum notional, it is skipped and reported. Neither case invalidates the run;
   - equity is cash plus each holding's quantity × its spot mark;
   - quantities round to the spot quantity step;
   - spot's minimum notional applies to buys and sells alike, as the project's spot execution refuses a sell below it (`simulation/execution.py`);
