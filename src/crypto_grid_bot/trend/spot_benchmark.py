@@ -2,6 +2,7 @@
 
 from bisect import bisect_right
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from fractions import Fraction
@@ -12,10 +13,23 @@ from crypto_grid_bot.market_data.parsing import symbol_name
 from crypto_grid_bot.trend.decisions import DAY, DailyDecision
 from crypto_grid_bot.trend.exclusions import ExclusionCalendar
 from crypto_grid_bot.trend.filters import OrderFilters
-from crypto_grid_bot.trend.pending import HOUR, DecisionDispatch, PendingDecisions
+from crypto_grid_bot.trend.pending import HOUR, DecisionDispatch, PendingDecision, PendingDecisions
 from crypto_grid_bot.trend.runner import EquityState
 from crypto_grid_bot.trend.sizing import daily_returns, size_portfolio
 from crypto_grid_bot.trend.spot_account import SpotAccount, SpotAudit, _finite, _floor
+
+
+@dataclass(frozen=True, slots=True)
+class SpotRebalance:
+    symbol: str
+    timestamp_ms: int
+    decision_ms: int
+    target_weight: Decimal
+    current_weight: Decimal
+    requested_change: Decimal
+    fill_start: int
+    fill_end: int
+    reason: str | None
 
 
 class SpotRunner:
@@ -31,6 +45,7 @@ class SpotRunner:
         self.pending = PendingDecisions()
         self.audits: list[SpotAudit] = []
         self.dispatches: list[tuple[int, DecisionDispatch]] = []
+        self.rebalances: list[SpotRebalance] = []
         self.samples: list[tuple[int, Decimal]] = []
         self.equity_path: list[EquityState] = []
         self.peak = self.account.initial
@@ -118,19 +133,41 @@ class SpotRunner:
         equity = self._mark(hour_ms, "open", prices)
         if hour_ms % DAY == HOUR:
             self.samples.append((hour_ms, equity))
-        orders = []
+        orders: list[tuple[str, Decimal, PendingDecision, Decimal, str | None]] = []
         for symbol, decision in dispatch.ready:
             held = self.account.holdings.get(symbol, Decimal(0))
             current = held * prices[symbol] / equity
             if decision.weight != 0 and abs(decision.weight - current) <= Decimal(".01"):
+                orders.append((symbol, Decimal(0), decision, current, "inside_band"))
                 continue
             step = self.filters[symbol].step_size
             target = _floor(Fraction(decision.weight * equity / prices[symbol]), step)
             change = target - held
+            orders.append(
+                (symbol, change, decision, current, "rounded_no_change" if not change else None)
+            )
+        for symbol, change, decision, current, reason in sorted(
+            orders, key=lambda row: (row[1] > 0, row[0])
+        ):
+            first_fill = len(self.account.fills)
             if change:
-                orders.append((symbol, change))
-        for symbol, change in sorted(orders, key=lambda row: (row[1] > 0, row[0])):
-            self.account.execute(symbol, change, prices[symbol], self.filters[symbol], hour_ms)
+                fills = self.account.execute(
+                    symbol, change, prices[symbol], self.filters[symbol], hour_ms
+                )
+                reason = next((fill.reason for fill in fills if fill.reason is not None), None)
+            self.rebalances.append(
+                SpotRebalance(
+                    symbol,
+                    hour_ms,
+                    decision.decision_ms,
+                    decision.weight,
+                    current,
+                    change,
+                    first_fill,
+                    len(self.account.fills),
+                    reason,
+                )
+            )
         self._mark(hour_ms, "post_fill", prices)
         # Frozen conservative order: favourable followed by adverse. All holdings
         # are long, so low and high apply across the portfolio together.

@@ -122,6 +122,25 @@ def test_replay_uses_window_closes_and_independent_cost_accounts():
     assert a.samples[-1] == (start + 48 * HOUR, D("9998.4995"))
     assert b.samples[-1][1] < a.samples[-1][1]
     assert len(a.account.fills) == 1  # second day's tiny weight drift stays inside band
+    assert a.rebalances[-1].reason == "inside_band"
+    assert a.rebalances[-1].fill_start == a.rebalances[-1].fill_end == 1
+    assert a.rebalances[0].requested_change == 10
+    assert a.rebalances[0].fill_end - a.rebalances[0].fill_start == 1
+
+
+def test_rounded_no_change_is_reported_separately_from_band_skip():
+    from crypto_grid_bot.trend.spot_benchmark import SpotRunner
+
+    rules = OrderFilters(*map(D, ("10", "100000", "10", "5", "10", "100000", "10", "1")))
+    r = SpotRunner({"BTCUSDT": rules})
+    r.step(T, {}, {"BTCUSDT": D(".011")})
+    r.step(T + HOUR, {"BTCUSDT": (D(100), D(100), D(100))})
+    assert not r.account.fills
+    record = r.rebalances[0]
+    assert record.reason == "rounded_no_change"
+    assert record.target_weight == D(".011")
+    assert record.current_weight == 0
+    assert record.requested_change == 0
 
 
 def test_rotation_sells_before_buys_and_counts_missing_held_hours():

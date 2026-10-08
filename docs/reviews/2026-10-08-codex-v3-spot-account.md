@@ -54,3 +54,13 @@ held-hour counts. Fifteen combined spot tests, Ruff and mypy pass. Historical so
 validation, pre-exclusion unavailable-close versus retained-dust classification,
 complete per-decision/skip evidence and durable reporting still need completion
 before this draft can be considered for merge or historical dispatch.
+
+Decision evidence follow-up: integrated the latest exclusion/orchestration repairs.
+Immutable SpotRebalance records retain original decision/fill timestamps, target
+and current weights, requested quantity change, journal slice and outcome reason.
+Band skips and rounded-no-change outcomes are distinct; actual fills carry cash
+clipping/minimum refusal reasons into the decision record. Sixteen spot tests pass;
+63 combined spot/replay/orchestration/metrics tests pass excluding the separately
+slow training-menu test. Ruff and mypy pass for the new module/tests. Durable
+serialization, spot exclusion/dust classification and acceptance integration remain
+pending; this is still a draft, with no historical performance or merge claim.
