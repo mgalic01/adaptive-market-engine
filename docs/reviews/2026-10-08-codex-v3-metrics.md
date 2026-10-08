@@ -42,3 +42,10 @@ residual passes reporting while a tiny wallet discrepancy still fails. All 76
 metric/account/runner/lifecycle tests pass, with Ruff and mypy. Renewed full CI and
 external review are required at the integrated head. The separate trade-total
 reconciliation remains exact and is not covered by that approval.
+
+Review follow-up: the summary tolerance test now covers both nonzero wallet and
+nonzero quantity residuals. Both remain rejected. Current metric-only verification
+is 14 test cases (13 functions, one parametrized), passing. Earlier 11/12 counts
+refer to prior revisions; 159 and 76 refer to different broader stack suites, not
+the metric-only count. Real lifecycle/equity grouping investigation remains open;
+no relaxation of exact trade reconciliation is authorized or implemented.
