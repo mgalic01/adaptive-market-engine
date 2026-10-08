@@ -40,12 +40,15 @@ def summarize(
     drawdown = maximum_drawdown(equity_path)
     growth = cagr(samples)
     with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+        net_pnl = samples[-1][1] - equity_path[0]
+        if sum(trade_net_results, ZERO) != net_pnl:
+            raise ValueError("trade results do not reconcile with account equity")
         changes = [samples[i][1] - samples[i - 1][1] for i in range(1, len(samples))]
         wins = sum(value > ZERO for value in trade_net_results)
         losses = sum(value < ZERO for value in trade_net_results)
         count = len(trade_net_results)
         return PerformanceSummary(
-            samples[-1][1] - equity_path[0],
+            net_pnl,
             sharpe(returns),
             growth,
             drawdown,

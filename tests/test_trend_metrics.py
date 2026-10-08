@@ -84,3 +84,10 @@ def test_summary_requires_path_to_end_at_terminal_equity():
 
     with pytest.raises(ValueError, match="terminal"):
         summarize([(0, D(100)), (86400000, D(105))], [D(100), D(99)], [])
+
+
+def test_summary_rejects_missing_trade_results():
+    from crypto_grid_bot.trend.metrics import summarize
+
+    with pytest.raises(ValueError, match="reconcile"):
+        summarize([(0, D(100)), (86400000, D(105))], [D(100), D(105)], [])
