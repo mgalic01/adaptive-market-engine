@@ -50,3 +50,11 @@ lifecycle ledger's single priority-selected final reason. All 50 decision/sizing
 lifecycle tests, Ruff and mypy pass. Signal-series state itself remains continuous.
 Deferred pick attribution and the all-invalid missing-bar interpretation remain
 open; this does not claim those review concerns are resolved.
+
+Deferred zero-target close attribution: replacing a pending zero target with another
+zero target now retains its initiating pick_change candidate. Dispatch consumes it;
+a nonzero replacement cancels that closing intention and does not inherit the cause.
+Regression reproduced lost attribution before the fix; all 32 pending/runner/decision
+tests, Ruff and mypy pass. This covers explicit zero-target closes, not a nonzero
+replacement that eventually rounds or reduces to zero; that broader case still needs
+review. All-invalid/no-bar specification interpretation also remains open.
