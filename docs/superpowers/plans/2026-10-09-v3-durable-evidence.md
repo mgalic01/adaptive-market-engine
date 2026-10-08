@@ -31,11 +31,17 @@ interruption and explicitly document platform limits.
 
 ## Task 2: Replay evidence adapter
 
-- [ ] Stream account state, events, fills, funding, lifecycle records, audits,
+- [x] Stream account state, events, fills, funding, lifecycle records, audits,
   decisions, equity path, samples and residuals into a separately hashed artifact.
 - [x] Connect Attempt callbacks: start before replay; completed evidence before finish.
-- [ ] Test invalid outcomes, corrupt evidence, serialization failures and termination.
-- [ ] Recover unfinished attempts explicitly; do not auto-rerun historical work.
+- [x] Test invalid outcomes, corrupt evidence, serialization failures and interrupted starts.
+- [x] Recover unfinished attempts explicitly as unconfirmed failures; do not auto-rerun historical work.
+
+Validation uses injected failures and KeyboardInterrupt, not an OS-kill or power-loss
+guarantee. Published malformed evidence remains blocked and unchanged. Confirm the
+old worker is stopped; retain the directory for investigation, record the failed
+attempt in the trial register, and use a fresh directory only for a separately
+authorized rerun. Reopening now rejects evidence appearing after a no-evidence finish.
 
 ## Task 3: Reports and integration
 

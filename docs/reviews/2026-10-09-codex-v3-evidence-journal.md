@@ -1,6 +1,6 @@
 # V3 immutable attempt metadata journal
 
-Index: Journal and replay writer implemented; recovery now verifies finished artifacts and refuses unfinished attempts; full decision and failed-replay evidence remain pending.
+Index: Durable futures decisions, partial failures, pick schedules and explicit interrupted-attempt recovery implemented; trial linkage and complete reports remain pending.
 
 EvidenceJournal records started/finished metadata as separate immutable JSON files.
 It fsyncs a temporary file before atomic hard-link publication, never replacing an
@@ -129,3 +129,14 @@ Final integration for this batch also merges metrics71d9422 (strict terminal
 sample boundary) and main08a9956 (reviewed replay) without rewriting history.
 79 focused metrics/replay/orchestration/writer/journal checks pass, as do Ruff
 lint/format and mypy. Historical execution remains gated; no data replay ran.
+
+## 2026-10-09 late orphan detection and plan refresh
+
+Bob's late-artifact case reproduced: a finished interruption record with null
+evidence could be reopened even if the same run's artifact appeared afterwards.
+Reopen now rejects that mismatch; the fail-first regression and all22 journal/
+writer checks pass, with Ruff format/lint and mypy. This detects a violated
+single-writer assumption; it does not replace exclusive ownership with a lock.
+Updated the index and completed Task2 items, stating injected-interruption coverage
+and the investigation/fresh-directory path for malformed artifacts. No deletion,
+retry, acceptance change or historical dispatch. Full CI/external review pending.
