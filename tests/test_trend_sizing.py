@@ -138,6 +138,8 @@ def test_covariance_calendar_overlap_boundary(common):
     assert (result.weights["BTCUSDT"] > 0) == (common == 40)
     if common == 39:
         assert result.flat_reason == "insufficient_common_days"
+        assert result.scaled_weights == dict.fromkeys(result.weights, None)
+        assert result.binding_caps == dict.fromkeys(result.weights, frozenset())
 
 
 def test_zero_and_excluded_signals_do_not_reduce_covariance_overlap():
@@ -160,6 +162,8 @@ def test_zero_volatility_and_exact_offset_singular_book_are_flat():
 
     zero = size_portfolio({"BTCUSDT": D(1)}, {"BTCUSDT": history(amplitude="0")}, START + 99 * DAY)
     assert zero.weights == {"BTCUSDT": D(0)}
+    assert zero.scaled_weights == {"BTCUSDT": None}
+    assert zero.binding_caps == {"BTCUSDT": frozenset()}
     result = size_portfolio(
         {"BTCUSDT": D(1), "ETHUSDT": D(-1)},
         {"BTCUSDT": history(), "ETHUSDT": history()},
@@ -167,6 +171,8 @@ def test_zero_volatility_and_exact_offset_singular_book_are_flat():
     )
     assert result.weights == {"BTCUSDT": D(0), "ETHUSDT": D(0)}
     assert result.flat_reason == "zero_portfolio_volatility"
+    assert result.scaled_weights == dict.fromkeys(result.weights, None)
+    assert result.binding_caps == dict.fromkeys(result.weights, frozenset())
 
 
 @pytest.mark.parametrize("multiple", [1, 2, 3])

@@ -140,3 +140,18 @@ single-writer assumption; it does not replace exclusive ownership with a lock.
 Updated the index and completed Task2 items, stating injected-interruption coverage
 and the investigation/fresh-directory path for malformed artifacts. No deletion,
 retry, acceptance change or historical dispatch. Full CI/external review pending.
+
+## 2026-10-09 flat-sizing evidence completeness
+
+The inline Cloud finding at46f4d2a remained unresolved: all three flat early
+returns omitted per-coin pre-cap values and cap sets. They now include every coin:
+scaled_weights is null when scaling was not computed, and binding_caps is an
+empty set when no cap was applied. Final zero weights, raw weights, volatility,
+flat reasons and all non-flat arithmetic are unchanged. Nullable scaled values
+are an intentional evidence-schema extension, not fabricated computed zeros.
+
+Fail-first assertions cover insufficient common days and zero portfolio variance;
+coverage also checks no nonzero raw weights. All78 sizing/decision/writer/replay
+checks pass; Ruff/mypy pass. Independent Codex reviewer ran58 focused checks and
+found no actionable defects. Prior exact-head approvals predate this diagnostic
+fix, so new full-head review/CI are required before merge. No historical dispatch.
