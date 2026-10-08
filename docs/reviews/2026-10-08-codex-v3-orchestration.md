@@ -27,3 +27,13 @@ durable evidence writer, sensitivity/cost scenarios, benchmarks and acceptance
 reporting. No historical market data was fetched or replayed, and no dispatch is
 authorized by this module. The separate exact lifecycle-total reconciliation remains
 unchanged; the approved equity-audit tolerance does not relax it.
+
+Combined integration verification: latest replay run-end correction, bounded daily
+sizing, deferred pick attribution, and both owner clarifications are integrated.
+All 65 orchestration/replay/metrics/pending/decisions/exclusions tests pass, including
+the complete twelve-account synthetic training test. Ruff passes; mypy checks all
+17 trend modules; trial register validates. Current trial is v3-candidate-space-5.
+Earlier exact trade-total reconciliation wording above is historical: the owner's
+separate approved bound now applies, with signed residual retained in summaries.
+No historical source or replay was used. Dependency reviews and completing
+registration remain required; this synthetic integration is not a profitability test.
