@@ -55,9 +55,9 @@ prerequisites and every variant on main.
   No variant passed C1–C6, and every one lost money on average.
 - **No winner is possible.** A winner must pass both stages, so stage 2 could not have
   produced one, and the reserved window stays closed.
-- **The owner's next step:** start v2, the mode-switching design, using this evidence.
-  Stage 2's long-window data work moves into v2: masking per spec §5, Bob's re-fetch,
-  the XRP measurement, and the long dataset specs and manifests.
+- **The owner's next step then (done):** v2, the mode-switching design, using this evidence,
+  with stage 2's long-window data work moved into it. v2 has since closed as failed (below),
+  and the next experiment is spec v3 (PR #207).
 
 **Spec v2, the spot mode switcher, closed as failed on 2026-10-08** (the owner's decision), on its
 verdict of 2026-10-07 (C1: drawdown 21.9% against a 10% limit;

@@ -149,7 +149,11 @@ At each daily decision, after day d's close:
    - **The band is 0.01 at every size m,** deliberately not scaled. It is a turnover control, not a size, and A5 compares runs at the same m (§8).
 5. **Quantity:** `target quantity = target weight × equity ÷ open`, where equity is the account's mark at the fill hour's open, before that hour's fills, and open is that hour's unslipped open (§6).
    - The quantity rounds toward zero to the symbol's quantity step (§2: the market-order step).
-   - **The market order's minimum and maximum quantity:** an order that opens or increases a position is not made if its quantity change is below the minimum quantity. That is a minimum-quantity refusal. It is recorded in the decision record (§8) and counts in the minimum account size (§8). An order above the maximum quantity is split into orders of at most the maximum, all at the same fill price, each paying its fee, and this is reported. At this account size that is not expected to happen.
+   - **The market order's minimum and maximum quantity:** an order that opens or increases a position is not made if its quantity change is below the minimum quantity. That is a minimum-quantity refusal. It is recorded in the decision record (§8) and counts in the minimum account size (§8). **An order above the maximum quantity** is split into the fewest orders, `n = ⌈quantity ÷ maximum⌉`, all at the same fill price, each paying its fee, and this is reported:
+     - each order is `quantity ÷ n` rounded down to the step, and the steps left over are added one each to the first orders. Every order is then a multiple of the step and at most the maximum, and at least about half the maximum;
+     - if any order would still be below the minimum quantity, no valid split exists, and the run is invalid (§8).
+
+     At this account size the maximum is not expected to bind at all.
    - A trade that opens or increases a position on one side is not made if its notional, `|quantity change| × open`, is below the symbol's minimum notional, and it is reported. A flip is never tested as one trade (below).
    - **A trade that reduces or closes a position** is always made. It ignores the minimum notional, as Binance's reduce-only exception allows, but it obeys the minimum quantity, which that exception does not cover:
      - a reduction smaller than the minimum quantity is raised to it, or to the whole position if that is smaller;
