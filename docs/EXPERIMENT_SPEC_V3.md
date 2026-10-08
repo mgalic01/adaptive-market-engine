@@ -29,6 +29,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
 - **Integrity:** the 1h futures klines go through the repairing reader of the long-window data (#186, #189).
   - As spec v1 §5 rule 5 treats a symbol that has only 1h archives, every hour the reader repairs, and every missing hour, is masked.
   - A coin-month with more than 17% of its hours masked is excluded, under spec v1 §5's 17% rule. So is a coin-month whose funding file is missing.
+  - **An excluded coin-month** gives that coin a target of 0 for the whole month, in every run: the out-of-sample account, the training runs and the hold benchmark. An open position closes at the first daily decision of the month (§6). If the month has no unmasked hour to fill in, the run is invalid (§8).
   - Spec v1 §5's other rules concern minute replay, the daily/hourly cross-check and spot quoting (rule 8, the actual-quotes test). They do not apply to v3, which neither replays minutes nor quotes inside the spread.
 
 **Spot data:**
@@ -38,14 +39,14 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
   - The integrity rules above apply to them too.
 - **Daily closes for signals** (§4) are aggregated from these spot 1h bars.
 - **The hold benchmark** (§8) uses the same spot 1h bars.
-- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06 gives every coin more than a year before its futures start (2019-10 at the earliest), except where a coin's spot listing is later (SOLUSDT, 2020-08). There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
+- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06 gives every coin more than a year before its futures data start (§3), except where a coin's spot listing is later (SOLUSDT, 2020-08). There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
 
 **Daily bars** are UTC days, built from 1h bars. A day with a masked hour still produces a daily close from its last unmasked hour, and is reported as such.
 
 ## 3. Coins
 
 BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, ADAUSDT, DOGEUSDT, LTCUSDT, LINKUSDT and TRXUSDT, as perpetuals.
-- **A coin joins the portfolio** at its first full month of futures klines, and leaves only for an excluded month (§2).
+- **A coin joins the portfolio** at its first month that has both a full month of futures klines and a funding file, and leaves only for an excluded month (§2). The fetch settles each coin's first month.
 - **Hindsight (disclosed):** these coins were chosen in 2026, and all of them are still large today. Coins that crashed or were delisted are not in the set, so the results are flattered. Only the reserved window can check a pass free of this bias.
 
 ## 4. The rules
@@ -69,28 +70,39 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
 At each daily decision, after day d's close:
 
 1. **Raw weight:** for each coin with a non-zero signal `s`, `raw = s × (1 / σ)`, where σ is the annualised volatility of the coin's daily spot simple returns over the last 60 days (sample standard deviation × √365).
-2. **Volatility target:** the portfolio's estimated volatility is `√(rawᵀ Σ raw)`, where Σ is the 60-day sample covariance matrix of the same returns, annualised. All raw weights are scaled by `0.20 ÷ that estimate`, so the portfolio targets **20% volatility a year**.
+   - A coin with fewer than 60 daily spot returns, or with σ = 0, gets a raw weight of 0.
+   - Spot history precedes every coin's futures history (§2), so a coin that joins mid-window normally already has its 60 returns.
+2. **Volatility target:** the portfolio's estimated volatility is `√(rawᵀ Σ raw)`, where Σ is the 60-day sample covariance matrix of the same returns, annualised, over the coins with a non-zero raw weight. All raw weights are scaled by `0.20 ÷ that estimate`, so the portfolio targets **20% volatility a year**.
+   - Σ is never inverted, so a singular Σ needs no special case.
+   - If every raw weight is 0, or the estimate is 0, every target is 0: the book goes flat.
 3. **Caps,** applied after scaling, in this order:
    - each coin's |weight| ≤ 0.10 of equity;
    - the sum of |weights| ≤ 0.80;
    - if the sum exceeds 0.80, every weight is scaled down proportionally.
 
    So leverage never exceeds 1x.
-4. **Rebalancing:** a coin trades to its target only if `|target − current| > 0.01` of equity, or if the signal changes sign or goes to or from 0. Otherwise its position stays.
-5. **Exchange filters:** a target below a symbol's minimum notional is not opened, and is reported. Quantities round toward zero to the symbol's quantity step.
+4. **Rebalancing:** a coin trades to its target only if `|target weight − current weight| > 0.01`, or if the signal changes sign or goes to or from 0. Otherwise its position stays.
+   - The current weight is `quantity × the fill hour's open ÷ equity at that open`.
+   - The band is tested on weights, before any rounding.
+5. **Quantity:** `target quantity = target weight × equity ÷ open`, where equity is the account's mark at the fill hour's open, before that hour's fills, and open is that hour's unslipped open (§6).
+   - The quantity rounds toward zero to the symbol's quantity step.
+   - A trade whose notional (quantity change × open) is below the symbol's minimum notional is not made, and is reported.
 
-The weights are computed in exact `Decimal`. The square root and the covariance are evaluated at 60 significant digits, with the bound the implementation states.
+**Precision:** every sizing computation runs in `Decimal` at 60 significant digits with `ROUND_HALF_EVEN`, including the covariance, the square roots (`Decimal.sqrt`) and the scaling. Prices and rates are used exactly as archived.
 
 ## 6. The account
 
 **One portfolio account** at 10,000 USDT, with cross margin, run on hourly futures bars.
-- **Fills:** each daily decision fills at the open of the 1h bar that starts one hour after the UTC day's close (01:00 UTC). A buy fills at `open × (1 + 0.0005)` and a sell at `open × (1 − 0.0005)`, which is the slippage. Each fill pays the taker fee, 0.05% of its notional (Binance USDⓈ-M, VIP 0).
+- **Fills:** each daily decision fills at the open of the 1h bar that starts one hour after the UTC day's close (01:00 UTC). A buy fills at `open × (1 + 0.0005)` and a sell at `open × (1 − 0.0005)`, which is the slippage. Each fill pays the taker fee, 0.05% (Binance USDⓈ-M, VIP 0), of its slipped notional: `quantity × fill price`. Quantities come from §5 step 5.
 - **A masked fill hour:** the fill moves to the open of the next unmasked hour of that coin, on the same terms.
 - **Funding:** at each funding timestamp in the coin's funding file, the position pays `quantity × the 1h bar's open at that hour × rate` if it is long and the rate is positive. A short receives it. A negative rate reverses both.
 - **Marking:** equity is marked at every hour's open. Total equity is cash plus the unrealised profit and loss of every position, after every fee and funding payment.
-- **Liquidation:** if equity at any hourly mark is ≤ 1% of the gross open notional, the account is liquidated at that hour's opens. The run fails (§8). It is expected never to happen at these sizes.
+- **Liquidation:** each hour, equity is also computed at each position's adverse extreme of that 1h bar: the low for a long, the high for a short, all at once.
+  - If that equity is ≤ 1% of the gross open notional, the account is liquidated at the next hour's opens, and the run fails (§8).
+  - The 1% threshold is Claude's design choice, deliberately conservative.
+  - It is expected never to happen at these sizes.
 - **Accounting identities,** exact and checked at the end of every run, as in spec v1 P6:
-  - cash = initial capital − the sum of buy notionals + the sum of sell notionals − fees ± funding;
+  - cash = initial capital − the sum of buy notionals + the sum of sell notionals − fees − funding paid + funding received, with notionals at fill prices;
   - each coin's quantity = its buys − its sells;
   - realised plus unrealised profit and loss equals the change in equity.
 
@@ -99,7 +111,8 @@ The weights are computed in exact `Decimal`. The square root and the covariance 
 ## 7. Walk-forward
 
 - **Windows:** train on 18 calendar months, then test on the next 3, and roll forward by 3.
-  - The first test quarter is the first calendar quarter that starts at least 18 months after BTCUSDT's first full futures month. With futures from 2019-09, that is expected to be **2021-Q2**, and the fetch confirms it.
+  - The first test quarter is the first calendar quarter that starts at least 18 months after BTCUSDT's first month in the portfolio (§3).
+  - If BTCUSDT's funding archives begin in 2020-01, as #137 found, that is **2021-Q3**, giving 14 test quarters. The fetch settles it, and the record states the count.
   - The last test quarter is **2024-Q4**.
 - **Picking:** in each training window, each of R1–R6 is run on the whole portfolio, with the sizing, costs and funding of §5–6. The rule with the highest Sharpe ratio (§8) over that window trades the next test quarter. A tie goes to the lower rule number.
 - **Continuity:** one account runs through all test quarters. At a quarter boundary where the pick changes, the book moves to the new rule's targets at the next daily decision. Training runs are separate, fresh accounts and never touch it.
@@ -125,6 +138,7 @@ The weights are computed in exact `Decimal`. The square root and the covariance 
 | A5 | The Sharpe ratio exceeds the hold benchmark's over the same days |
 
 **The hold benchmark:** long-only, equal signal (+1) for every coin in the portfolio at that time, on spot prices with no funding. It uses the same sizing (§5: volatility target, caps, rebalancing rule) and the same fees and slippage (§6). It answers one question: does timing add anything over just holding the same coins at the same risk?
+- **It holds spot, without funding, on purpose.** That is the realistic "just hold" alternative. In 2020–2024 funding was mostly positive (#137), so holding long perpetuals would have paid funding and done worse. The asymmetry leans in the benchmark's favour, against v3.
 
 **A run fails** if it is invalid: an accounting identity fails, a liquidation occurs, or a fill or funding payment the rules require cannot be made.
 
@@ -135,6 +149,8 @@ The weights are computed in exact `Decimal`. The square root and the covariance 
 - the long-versus-short split of profit and loss, per rule and per coin;
 - funding paid and received, fees, slippage and turnover;
 - the time invested, gross and net;
+- the realised portfolio volatility against the 20% target, and the share of days on which a cap bound. With few coins early on, the 10% cap can hold the book below target, and A4 is not scale-free;
+- a 95% interval for the Sharpe ratio, beside A1 and A5: a stationary block bootstrap of the daily returns, with 20-day blocks, 10,000 resamples and a fixed seed;
 - the double-cost results;
 - the worst drawdown's dates;
 - the picks quarter by quarter;
