@@ -74,8 +74,9 @@ class DailyDecisions:
         *,
         multiple: int = 2,
         pick_changed: bool = False,
+        run_end_ms: int | None = None,
     ) -> DailyDecision:
-        forced = self._exclusions.zero_symbols(decision_ms)
+        forced = self._exclusions.zero_symbols(decision_ms, run_end_ms=run_end_ms)
         if rule is not None and rule not in RULES:
             raise ValueError("unknown frozen rule")
         if type(multiple) is not int or multiple not in (1, 2, 3):

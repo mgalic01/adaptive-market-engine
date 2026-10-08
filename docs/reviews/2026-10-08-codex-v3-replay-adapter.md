@@ -55,3 +55,12 @@ failures were fixture assumptions about zero-quantity position entries and the
 average_entry field, corrected without production changes. This completes the
 adapter coverage requests above. Historical funding completeness and portfolio
 eligibility remain loader obligations, not claims established by these fixtures.
+
+Run-end exclusion fix complete in replay: future excluded months are omitted from
+the runner calendar, and daily decisions receive the exclusive run end so the next
+month cannot force a last-day close outside the window. Preflight boundary fix from
+#223 is integrated. Regression first showed an extra closing fill/fee; now compares
+identical fills and daily equity with/without the post-run exclusion and confirms
+terminal lifecycle censoring. All 31 replay/decision/exclusion tests and mypy pass.
+No strategy rule, market source or historical run changed. Latest #224 attribution
+and bounded-sizing corrections are integrated without conflicts.
