@@ -4,7 +4,7 @@ Index: Decimal60 Sharpe, CAGR, drawdown, Calmar, trade/daily profit factors and
 runner summary integration tested synthetically; no performance claim or replay.
 
 Purpose: compute the frozen evaluation statistics from inspectable runner evidence.
-Owner: Codex Desktop. Stacked on lifecycle integration; do not merge into dependency.
+Owner: Codex Desktop. PR 220 targets main and includes the current PR 224 decisions dependency. Merge commits must preserve registration ancestry; no squash.
 
 The implementation keeps trade profit factor separate from the daily diagnostic,
 uses sample return variance and sqrt(365) for Sharpe, timestamp-derived duration
@@ -13,15 +13,16 @@ zero variance, no winning/losing trades, zero drawdown and nonpositive terminal
 equity explicitly. Win rate includes zero-result trades in its denominator.
 
 The runner summary requires completed state, no open lifecycles and accepted audit
-evidence. Trade totals must reconcile exactly with total equity change; failure is
-an engine/evidence error, not a strategy rejection. This strict check may expose
-Decimal grouping differences. Its separate reconciliation remains exact; the
-owner-approved equity-audit tolerance does not change it. Timestamp/path provenance and full window coverage remain upstream
-obligations; these formulas alone do not validate a dataset or certify an experiment.
+evidence. Trade totals reconcile within the owner-approved inclusive absolute bound
+of 1e-18 USDT, with the signed residual retained; wallet and quantity audits stay exact.
+Every supplied sample must match the complete sequence of 01:00 open marks and the
+terminal mark in the ordered equity path. Dataset/source completeness remains an
+upstream obligation; these checks do not certify an experiment.
 
-Validation: 159 focused synthetic tests pass across the current V3 stack, including
-11 metric tests and a full synthetic runner-to-summary case including censored
-trade costs. Ruff, mypy and Bandit pass. Full CI and external review are pending.
+Current validation (2026-10-09): 25 metric cases pass. Two regressions first showed
+that dropping a sample or using a different hour passed; both now fail explicitly.
+A separate regression covers unordered path timestamps with otherwise matching
+samples. Earlier test counts below are historical, not current-head claims.
 
 Outstanding: Sortino and broader diagnostic definitions, bootstrap, benchmarks,
 acceptance gates, walk-forward orchestration, report serialization and actual data
@@ -80,3 +81,12 @@ all repository callers are updated. Tests also reject a real path value assigned
 to the wrong sample time. Twenty-two metric tests pass; the prior combined batch
 passed 96 tests before that additional timestamp regression. Ruff and mypy pass.
 No historical result, spec change or new dependency. Fresh review/CI required.
+
+Sample completeness follow-up: raw summarize and summarize_runner now enforce the
+same exact sample sequence. Hand-calculated fixtures use 01:00 marks; their interior
+non-sample peak is explicitly a favourable mark. No formulas, parameters or tolerances
+changed. The initial exact-reconciliation discussion below is historical and was
+superseded by the recorded owner approval. The registration pins were rechecked from
+raw Git blobs before this push; no data or historical dispatch occurred.
+
+Final focused check for this batch: 73 metrics/runner/lifecycle/decision/pending tests pass; full Ruff format/lint and mypy pass. A read-only internal reviewer independently passed 25 metric tests and checked the 01:00 terminal boundary. Raw spec blob SHA-256 at both e7ea68ad20d41aa6890fddc395b5698ac37463b3 and this branch is 1c541b38cb1858c8ac8262d9233813f31ef8c084bca74c017f8cf6bb23e42bca; the pinned commit is an ancestor. Full CI and Bob's latest-head review are still required.

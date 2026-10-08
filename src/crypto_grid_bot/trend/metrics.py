@@ -69,6 +69,14 @@ def summarize(
         a.timestamp_ms > b.timestamp_ms for a, b in zip(equity_path, equity_path[1:], strict=False)
     ):
         raise ValueError("equity path timestamps must be ordered")
+    expected_samples = [
+        (state.timestamp_ms, state.equity)
+        for state in equity_path
+        if state.kind == "terminal"
+        or (state.kind == "open" and state.timestamp_ms % 86400000 == 3600000)
+    ]
+    if list(samples) != expected_samples:
+        raise ValueError("samples must contain the complete 01:00 and terminal path marks")
     drawdown = maximum_drawdown([state.equity for state in equity_path])
     growth = cagr(samples)
     with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
