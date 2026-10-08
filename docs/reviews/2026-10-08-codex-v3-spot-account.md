@@ -181,3 +181,11 @@ Integrated the upstream late-orphan detection regression without conflict.
 53 combined spot/evidence/comparison checks now pass; Ruff lint/format, mypy and
 Bandit pass on the combined tree. This includes detection of same-run evidence
 appearing after a finish that declared no artifact.
+
+## 2026-10-09 flat diagnostics integration
+
+Integrated PR226's flat-path per-coin diagnostic fix. Actual JSONL read-back now
+asserts null scaled weights and empty cap arrays for both eligible coins on a
+flat decision, alongside the existing nullable-volatility check. All73 focused
+sizing/writer/spot/benchmark checks, Ruff lint/format and mypy pass. No trading
+arithmetic changed. Current-head CI and external review remain required.

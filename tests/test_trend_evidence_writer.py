@@ -44,6 +44,8 @@ def test_artifact_preserves_missing_and_measured_zero_volatility(tmp_path):
     assert volatility["ETHUSDT"] is None
     assert isinstance(volatility["BTCUSDT"], str)
     assert D(volatility["BTCUSDT"]) == 0
+    assert value["decision"]["sizing"]["scaled_weights"] == {"BTCUSDT": None, "ETHUSDT": None}
+    assert value["decision"]["sizing"]["binding_caps"] == {"BTCUSDT": [], "ETHUSDT": []}
 
 
 @pytest.mark.parametrize("orphan", [False, True])
