@@ -9,12 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from fetch_v3_data import (
+    MAX_ARCHIVE_BYTES,
     SYMBOLS,
+    ArchiveObject,
     InventoryTransport,
     PinnedArchive,
     V3Transport,
     archive_path,
+    assemble_manifest,
     collect_inventory,
+    inspect_archive,
 )
 
 from crypto_grid_bot.backtest.klines import month_bounds_ms
@@ -283,6 +287,61 @@ def _read_pinned(path: Path, digest: str, limit: int) -> bytes:
     return raw
 
 
+def _local(root: Path, relative: str) -> Path:
+    path = root / relative
+    if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+        raise ValueError("inventory file must stay inside its output directory")
+    return path
+
+
+def verify_inventory(output_dir: Path, expected_sha256: str) -> dict[str, Any]:
+    """Rehash and reinspect the saved inventory offline before evidence publication."""
+    raw = _read_pinned(
+        _local(output_dir, "inventory.manifest.json"), expected_sha256, 32 * 1024 * 1024
+    )
+    document = json.loads(raw, object_pairs_hook=_object)
+    if document.get("replay_ready") is not False:
+        raise ValueError("fetch inventory must remain unready for replay")
+    snapshots = {}
+    for market in ("spot", "futures"):
+        pin = document["snapshots"][market]
+        relative = f"snapshots/{market}.json"
+        if pin.get("path") != relative:
+            raise ValueError("noncanonical snapshot path")
+        snapshots[market] = _read_pinned(
+            _local(output_dir, relative), pin["sha256"], 8 * 1024 * 1024
+        )
+        if pin["bytes"] != len(snapshots[market]):
+            raise ValueError("snapshot byte count mismatch")
+    # Validate every identity/month/hash before opening any archive file.
+    rebuilt = json.loads(
+        assemble_manifest(
+            document["entries"], snapshots["spot"], snapshots["futures"], document["spec_sha256"]
+        )
+    )
+    if document["filters"] != rebuilt["filters"]:
+        raise ValueError("parsed filter metadata mismatch")
+    if document["coverage"] != coverage_diagnostics(document["entries"]):
+        raise ValueError("coverage diagnostics mismatch")
+    count = 0
+    for entry in document["entries"]:
+        archive = None
+        if entry["status"] != "missing":
+            relative = "archives/" + entry["path"].lstrip("/")
+            if entry.get("local_path") != relative:
+                raise ValueError("noncanonical local archive path")
+            content = _read_pinned(_local(output_dir, relative), entry["sha256"], MAX_ARCHIVE_BYTES)
+            archive = ArchiveObject(entry["path"], entry["sha256"], content)
+            count += 1
+        elif "local_path" in entry:
+            raise ValueError("missing archive cannot have local path")
+        checked = inspect_archive(archive, entry["kind"], entry["symbol"], entry["month"])
+        recorded = {key: value for key, value in entry.items() if key != "local_path"}
+        if checked != recorded:
+            raise ValueError("archive diagnostics do not match verified bytes")
+    return {"manifest_sha256": expected_sha256, "verified_archives": count, "verified_snapshots": 2}
+
+
 def main(argv: list[str] | None = None) -> int:
     """Explicit fetch command is only for the separately reviewed owner-started task."""
     import argparse
@@ -290,6 +349,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("plan", help="print discovery scope without opening any archives")
+    verify = commands.add_parser("verify", help="reinspect a hash-pinned local inventory offline")
+    verify.add_argument("--output", type=Path, required=True)
+    verify.add_argument("--manifest-sha256", required=True)
     fetch = commands.add_parser(
         "fetch", help="owner-started task only: collect public development data"
     )
@@ -300,6 +362,9 @@ def main(argv: list[str] | None = None) -> int:
     fetch.add_argument("--spot-manifest", type=Path, required=True)
     fetch.add_argument("--spot-manifest-sha256", required=True)
     args = parser.parse_args(argv)
+    if args.command == "verify":
+        print(json.dumps(verify_inventory(args.output, args.manifest_sha256), sort_keys=True))
+        return 0
     if args.command == "plan":
         requests = planned_requests()
         encoded = json.dumps(requests, separators=(",", ":")).encode("utf-8")

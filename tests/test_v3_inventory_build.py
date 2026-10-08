@@ -5,12 +5,17 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 
-def test_build_inventory_adds_coverage_and_source_provenance_without_network(tmp_path):
+@pytest.mark.parametrize("with_archive", [False, True])
+def test_build_inventory_adds_coverage_and_source_provenance_without_network(
+    tmp_path, with_archive
+):
     from fetch_v3_data import SYMBOLS, archive_path
-    from v3_inventory import build_inventory, planned_requests
+    from v3_inventory import build_inventory, main, planned_requests, verify_inventory
 
     rows = [
         {
@@ -44,10 +49,17 @@ def test_build_inventory_adds_coverage_and_source_provenance_without_network(tmp
         }
     ).encode()
     calls = []
+    archive_bytes = b"checksum-valid but unreadable synthetic archive"
+    archive_digest = hashlib.sha256(archive_bytes).hexdigest()
+    archive_request = archive_path("spot", "BTCUSDT", "2024-02")
 
     class Fake:
         def archive(self, path):
             calls.append(path)
+            if with_archive and path == archive_request:
+                return archive_bytes
+            if with_archive and path == archive_request + ".CHECKSUM":
+                return (archive_digest + "  " + archive_request.rsplit("/", 1)[1]).encode()
             return None
 
         def spot_filters(self):
@@ -69,4 +81,19 @@ def test_build_inventory_adds_coverage_and_source_provenance_without_network(tmp
     assert document["coverage"]["first_test_quarter_candidate"] is None
     assert document["replay_ready"] is False
     assert calls.count("spot") == calls.count("futures") == 1
-    assert len(calls) == 2712
+    assert len(calls) == 2712 + int(with_archive)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    verified = verify_inventory(path.parent, digest)
+    assert verified["verified_archives"] == int(with_archive)
+    assert verified["verified_snapshots"] == 2
+    assert verified["manifest_sha256"] == digest
+    assert main(["verify", "--output", str(path.parent), "--manifest-sha256", digest]) == 0
+    if with_archive:
+        local = path.parent / "archives" / archive_request.lstrip("/")
+        local.write_bytes(b"changed archive")
+        with pytest.raises(ValueError, match="hash"):
+            verify_inventory(path.parent, digest)
+        local.write_bytes(archive_bytes)
+    (path.parent / "snapshots/futures.json").write_bytes(b"changed snapshot")
+    with pytest.raises(ValueError, match="hash"):
+        verify_inventory(path.parent, digest)

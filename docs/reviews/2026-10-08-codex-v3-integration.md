@@ -27,7 +27,9 @@ f02ec0a0aa65aa4466c37b4ee7ba040f3ad901c1. The frozen V3 experiment remains uncha
   count of valid signal observations; rules must still check their own history.
 - `plan` is offline. `fetch` is explicit, checks spec/manifest content pins before
   constructing the transport, and is intended only for the reviewed owner-started
-  task. No task file or automatic trigger is added by this integration.
+  task. `verify` rehashes the inventory and files, re-parses archives and filters,
+  and recomputes coverage offline. It rejects changed files or diagnostic metadata.
+  No task file or automatic trigger is added by this integration.
 
 ## Evidence
 
@@ -42,8 +44,12 @@ and 46 recorded absences. Only committed metadata was read, not archive prices.
 Synthetic tests cover late listings, funding-delayed entry, distinct spot/futures
 close availability, complete request coverage, source tampering/duplicates, and
 end-to-end inventory assembly without real network. Initial missing APIs and metadata
-fields were observed failing before implementation. Full verification and independent
-review of this integration are pending; #211's evidence is separate.
+fields were observed failing before implementation. All 99 focused tests pass;
+repository Ruff, format, mypy and Bandit pass. An independent Codex reviewer found
+no actionable issues through 0df648384b4a423a3878f2e9f9fc36dc2635ca44 and independently
+ran 53 synthetic tests. The subsequent offline verifier has its own tamper tests;
+it was not in that review. External exact-head review and CI remain pending;
+#211's evidence is separate.
 
 ## Before an owner-started Bob fetch
 
@@ -62,6 +68,6 @@ The current Bob workflow has two concrete integration constraints:
    bounded artifact-delivery path (or an owner-started local Bob task retaining files)
    is needed; no publisher permission or size limit is broadened here.
 
-Codex owns the remaining delivery proposal, offline inventory re-verification and
-task preparation. The owner starts the actual fetch after exact-head external review.
+Codex owns the remaining delivery proposal and task preparation. The owner starts
+the actual fetch after exact-head external review.
 No replay runs before the reviewed manifest/code completing registration event.
