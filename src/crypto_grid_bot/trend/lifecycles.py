@@ -4,7 +4,7 @@ from collections.abc import Mapping, Set
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
-from crypto_grid_bot.trend.account import Fill, FundingEvent, Position
+from crypto_grid_bot.trend.account import Fill, FillEvent, FundingEvent, Position
 
 ZERO = Decimal(0)
 EXIT_PRIORITY = (
@@ -61,6 +61,33 @@ class LifecycleLedger:
         self.active: dict[str, Lifecycle] = {}
         self.completed: list[Lifecycle] = []
         self._funding_clock = -1
+        self._consumed: tuple[FillEvent | FundingEvent, ...] = ()
+
+    def consume(
+        self,
+        events: tuple[FillEvent | FundingEvent, ...],
+        exit_reasons: Mapping[int, Set[str]],
+    ) -> None:
+        """Consume an append-only journal; reason keys are absolute event indices.
+
+        This API must not be mixed with manually feeding the same events. Missing
+        exit attribution is an engine error, never inferred from a zero quantity.
+        """
+        start = len(self._consumed)
+        if events[:start] != self._consumed:
+            raise ValueError("account journal was truncated or changed")
+        for index in range(start, len(events)):
+            event = events[index]
+            if isinstance(event, FillEvent) and event.after.quantity == ZERO:
+                if not any(reason in EXIT_PRIORITY for reason in exit_reasons.get(index, set())):
+                    raise ValueError("closing journal event needs an exit reason")
+        for index in range(start, len(events)):
+            event = events[index]
+            if isinstance(event, FillEvent):
+                self.fill(event.fill, event.before, event.after, exit_reasons.get(index, set()))
+            else:
+                self.fund(event)
+            self._consumed = events[: index + 1]
 
     def observe(self, symbol: str, position: Position, price: Decimal) -> None:
         life = self.active[symbol]

@@ -151,3 +151,31 @@ def test_account_journal_preserves_same_time_fill_funding_reduction_order():
     assert a.events[0].after.quantity == 2
     assert a.events[2].before.quantity == 2
     assert a.events[2].after.quantity == 1
+
+
+def test_incremental_journal_consumption_preserves_ties_without_double_counting():
+    from crypto_grid_bot.trend.lifecycles import LifecycleLedger
+
+    a, ledger = FuturesAccount(), LifecycleLedger()
+    a.fill("BTCUSDT", OrderIntent(D(2), False), D(100), T)
+    ledger.consume(a.events, {})
+    a.fund(T, {"BTCUSDT": D(".01")}, {"BTCUSDT": D(100)})
+    a.fill("BTCUSDT", OrderIntent(D(-2), True), D(110), T)
+    ledger.consume(a.events, {2: {"signal_zero"}})
+    ledger.consume(a.events, {})
+    assert len(ledger.completed) == 1
+    assert ledger.completed[0].funding_paid == 2
+    assert len(ledger.completed[0].fills) == 2
+    assert ledger.completed[0].exit_reason == "signal_zero"
+
+
+def test_journal_without_close_reason_fails_before_consuming_batch():
+    from crypto_grid_bot.trend.lifecycles import LifecycleLedger
+
+    a, ledger = FuturesAccount(), LifecycleLedger()
+    a.fill("BTCUSDT", OrderIntent(D(1), False), D(100), T)
+    a.fill("BTCUSDT", OrderIntent(D(-1), True), D(110), T)
+    with pytest.raises(ValueError, match="reason"):
+        ledger.consume(a.events, {})
+    assert not ledger.active
+    assert not ledger.completed
