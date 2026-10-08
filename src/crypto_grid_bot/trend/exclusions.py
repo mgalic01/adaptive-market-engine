@@ -35,7 +35,7 @@ class ExclusionCalendar:
             symbol_name(symbol)
             self._months[symbol] = frozenset(development_month(month) for month in months)
 
-    def zero_symbols(self, decision_ms: int) -> frozenset[str]:
+    def zero_symbols(self, decision_ms: int, *, run_end_ms: int | None = None) -> frozenset[str]:
         """Midnight decision fills from 01:00; force the preceding last day too.
 
         This does not certify close availability. The manifest adapter must reject
@@ -47,6 +47,11 @@ class ExclusionCalendar:
         month = development_month(day.strftime("%Y-%m"))
         tomorrow = day + timedelta(days=1)
         next_month = tomorrow.strftime("%Y-%m") if tomorrow.day == 1 else None
+        if run_end_ms is not None:
+            if type(run_end_ms) is not int or run_end_ms % DAY or run_end_ms <= decision_ms:
+                raise ValueError("invalid exclusive run end")
+            if decision_ms + DAY >= run_end_ms:
+                next_month = None
         return frozenset(
             symbol
             for symbol, months in self._months.items()

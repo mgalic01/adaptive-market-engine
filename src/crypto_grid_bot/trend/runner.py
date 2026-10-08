@@ -66,15 +66,21 @@ class TrendRunner:
         self.equity_path: list[EquityState] = []
         self.daily_samples: list[tuple[int, Decimal]] = []
 
-    def finish(self, last_unmasked_closes: Mapping[str, Decimal]) -> AccountMark:
+    def finish(
+        self, last_unmasked_closes: Mapping[str, Decimal], *, reason: str = "end_of_run"
+    ) -> AccountMark:
         """Mark supplied in-window closes; never request a subsequent open.
 
         The data adapter must prove each close is the last unmasked close at or
         before the final processed hour. No closing trade or extra funding occurs.
+        For an unavailable mandatory close, the adapter stops at that decision
+        before processing its hour and preserves the prior hour's closing marks.
         """
         if self.stopped is not None:
             raise ValueError(f"runner stopped: {self.stopped}")
         try:
+            if reason not in ("end_of_run", "unavailable_exclusion_close"):
+                raise ValueError("invalid terminal reason")
             if self._hour is None:
                 raise ValueError("cannot finish before processing an hour")
             mark = self.account.mark(last_unmasked_closes)
@@ -91,10 +97,8 @@ class TrendRunner:
                     EquityState(stamp, "terminal", mark.equity, self.peak, drawdown)
                 )
             self.daily_samples.append((stamp, mark.equity))
-            self.lifecycles.censor(
-                stamp, self.account.positions, last_unmasked_closes, "end_of_run"
-            )
-            self.stopped = "completed"
+            self.lifecycles.censor(stamp, self.account.positions, last_unmasked_closes, reason)
+            self.stopped = "completed" if reason == "end_of_run" else reason
             return mark
         except Exception:
             self.stopped = "engine_failure"

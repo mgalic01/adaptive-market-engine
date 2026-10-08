@@ -54,7 +54,18 @@ class DailyDecisions:
         self._return_days = {
             symbol: tuple(p.day_ms for p in points) for symbol, points in self._returns.items()
         }
-        self._exclusions = ExclusionCalendar(excluded_months or {})
+        self._excluded_months = {
+            symbol: frozenset(months) for symbol, months in (excluded_months or {}).items()
+        }
+        self._exclusions = ExclusionCalendar(self._excluded_months)
+
+    @property
+    def first_months(self) -> dict[str, str]:
+        return dict(self._first)
+
+    @property
+    def excluded_months(self) -> dict[str, frozenset[str]]:
+        return dict(self._excluded_months)
 
     def at(
         self,
@@ -63,8 +74,9 @@ class DailyDecisions:
         *,
         multiple: int = 2,
         pick_changed: bool = False,
+        run_end_ms: int | None = None,
     ) -> DailyDecision:
-        forced = self._exclusions.zero_symbols(decision_ms)
+        forced = self._exclusions.zero_symbols(decision_ms, run_end_ms=run_end_ms)
         if rule is not None and rule not in RULES:
             raise ValueError("unknown frozen rule")
         if type(multiple) is not int or multiple not in (1, 2, 3):
