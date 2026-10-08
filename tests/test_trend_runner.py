@@ -95,3 +95,30 @@ def test_runner_next_unmasked_open_catches_gap_and_stops():
     assert r.stopped == "liquidation"
     with pytest.raises(ValueError, match="stopped"):
         r.step(T + 3 * H, {}, {}, {})
+
+
+def test_terminal_sample_uses_supplied_in_window_closes_and_stops():
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
+    last_hour = 1735686000000  # 2024-12-31 23:00; synthetic empty book.
+    r.step(last_hour, {}, {}, {})
+    mark = r.finish({})
+    assert mark.equity == 10000
+    assert r.daily_samples[-1] == (1735689600000, D(10000))
+    assert r.equity_path[-1].kind == "terminal"
+    assert r.stopped == "completed"
+    with pytest.raises(ValueError, match="stopped"):
+        r.finish({})
+
+
+def test_terminal_mark_requires_all_held_close_prices():
+    from crypto_grid_bot.trend.orders import OrderIntent
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
+    r.account.fill("BTCUSDT", OrderIntent(D(1), False), D(100), T)
+    r.step(T, {"BTCUSDT": (D(100), D(99), D(101))}, {}, {})
+    with pytest.raises(ValueError, match="missing"):
+        r.finish({})
+    assert r.stopped == "engine_failure"

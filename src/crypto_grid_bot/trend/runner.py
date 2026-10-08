@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
-from crypto_grid_bot.trend.account import AccountingAudit, FuturesAccount
+from crypto_grid_bot.trend.account import AccountingAudit, AccountMark, FuturesAccount
 from crypto_grid_bot.trend.execution import HourResult, execute_hour
 from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.pending import DecisionDispatch, PendingDecisions
@@ -52,6 +52,37 @@ class TrendRunner:
         self.max_drawdown = Decimal(0)
         self.equity_path: list[EquityState] = []
         self.daily_samples: list[tuple[int, Decimal]] = []
+
+    def finish(self, last_unmasked_closes: Mapping[str, Decimal]) -> AccountMark:
+        """Mark supplied in-window closes; never request a subsequent open.
+
+        The data adapter must prove each close is the last unmasked close at or
+        before the final processed hour. No closing trade or extra funding occurs.
+        """
+        if self.stopped is not None:
+            raise ValueError(f"runner stopped: {self.stopped}")
+        try:
+            if self._hour is None:
+                raise ValueError("cannot finish before processing an hour")
+            mark = self.account.mark(last_unmasked_closes)
+            audit = self.account.audit(last_unmasked_closes)
+            self.audits.append(audit)
+            if not audit.exact:
+                raise AccountingFailure(audit)
+            stamp = self._hour + HOUR
+            with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
+                self.peak = max(self.peak, mark.equity)
+                drawdown = (self.peak - mark.equity) / self.peak
+                self.max_drawdown = max(self.max_drawdown, drawdown)
+                self.equity_path.append(
+                    EquityState(stamp, "terminal", mark.equity, self.peak, drawdown)
+                )
+            self.daily_samples.append((stamp, mark.equity))
+            self.stopped = "completed"
+            return mark
+        except Exception:
+            self.stopped = "engine_failure"
+            raise
 
     def step(
         self,
