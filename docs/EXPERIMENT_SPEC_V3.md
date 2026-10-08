@@ -13,7 +13,7 @@
 
 ## 1. Question
 
-Does trend-following, long and short, on a portfolio of the 10 coins this project has vetted, earn a cost-aware, risk-adjusted edge out of sample, at twice the base risk budget (§5), over and above simply holding the same coins?
+Does trend-following, long and short or long only as the walk-forward picks (§4, §7), on a portfolio of the 10 coins this project has vetted, earn a cost-aware, risk-adjusted edge out of sample, at twice the base risk budget (§5), over and above simply holding the same coins?
 
 **Why this question:**
 - **v1's grids lost money,** and v2's mode switcher made about 4.9% a year with a 21.9% drawdown, capturing about 1.2–1.5% of buy-and-hold's six-year rise ([v2's verdict](backtests/2026-10-07-spec-v2-verdict.md)).
@@ -94,6 +94,8 @@ Each rule maps a coin's daily closes, up to and including day d, to a signal for
 | R4 | **12-month momentum** | close ÷ close 365 days earlier − 1: > 0 → +1; < 0 → −1; = 0 → 0. |
 | R5 | **Supertrend 10/3** | Defined in full below the table. Uptrend → +1, downtrend → −1. |
 | R6 | **Equal blend** | the mean of R1–R5's signals, a value in [−1, +1]. It is the only rule whose signal is not just −1, 0 or +1. A rule still warming up counts as 0 in the mean, which dilutes R6 early on, and that is intended. |
+
+**The long-only versions, R1L–R6L** (§11, decision 13). Each rule also has a long-only version: the same signal with every negative value set to 0. R6L is R6's signal with a negative value set to 0, not the mean of R1L–R5L. **The menu is these 12 rules:** R1–R6 and R1L–R6L. The walk-forward picks among all 12 (§7), so the short side is used only where it did better in the training window.
 
 **R5 in full**, on daily bars (H, L, C). Here `t − 1` is the previous available bar: a day with no bar (§4) adds no update, so the next bar's true range, bands and trend use the last bar before the gap.
 - **True range:** `TR_t = max(H_t − L_t, |H_t − C_{t−1}|, |L_t − C_{t−1}|)`, from the second bar on.
@@ -232,7 +234,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - The first test quarter is the first calendar quarter that starts at least 18 months after BTCUSDT's first month in the portfolio (§3).
   - **The fetch settles it.** BTCUSDT's first month in the portfolio, and so the first test quarter and the number of test quarters, come from the committed manifest, and the record states them. For example, a first month of 2019-10 gives 2021-Q2 and 15 test quarters, and 2020-01 gives 2021-Q3 and 14. Bob's funding audit covered 2020-01 to 2024-12 because that was its task's scope, so it does not say when the archive begins.
   - The last test quarter is **2024-Q4**.
-- **Picking:** in each training window, each of R1–R6 is run on the whole portfolio, with the sizing, costs and funding of §5–6. The rule with the highest Sharpe ratio (§8) over that window trades the next test quarter. A tie goes to the lower rule number.
+- **Picking:** in each training window, each of the 12 rules (R1–R6 and R1L–R6L, §4) is run on the whole portfolio, with the sizing, costs and funding of §5–6. The rule with the highest Sharpe ratio (§8) over that window trades the next test quarter. A tie goes to the earlier rule in the order R1–R6, then R1L–R6L.
 - **Continuity:** one account runs through all test quarters.
   - **The start:** it starts flat, with 10,000 USDT, at 00:00 UTC on the first test quarter's first day. Its first decision is the one made after the close of the day before, with that quarter's pick, and it fills at 01:00 on the quarter's first day.
   - **At each boundary:** the decision made after the last day of quarter q uses quarter q+1's pick, and fills on q+1's first day. The book moves to the new rule's targets there, by the normal band test.
@@ -251,9 +253,12 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - So the last daily return covers the window's final 23 hours, and no 2025 data is read.
 - The maximum drawdown includes this terminal mark.
 - **Sharpe ratio:** mean ÷ sample standard deviation (n − 1) of the daily simple returns, × √365, with a risk-free rate of 0. A5 compares the m = 1 run's and the hold benchmark's Sharpe ratios, by the same formula over the same days. With fewer than two returns, or a standard deviation of 0, the Sharpe ratio is 0. In training windows that means it cannot beat a rule with a positive one, and in A1 it fails.
-- **Profit factor:** the sum of the positive daily changes in equity (in USDT, between consecutive daily samples) ÷ the absolute sum of the negative ones.
-  - With no negative day and at least one positive day, it is +∞, and A2 passes.
-  - With no positive day, it is 0, and A2 fails.
+- **Profit factor (A2), per trade** (§11, decision 13): over the run's position lifecycles ("Every position's lifecycle", below), each one a trade.
+  - **A trade's net result** is its realised profit and loss, minus its fees, plus the funding it received, minus the funding it paid. A censored trade also adds its unrealised profit and loss at the terminal prices. Slippage is already in the fill prices.
+  - **The profit factor** is the sum of the positive net results ÷ the absolute sum of the negative ones. A trade whose net result is exactly 0 counts in neither sum.
+  - With no losing trade and at least one winning one, it is +∞, and A2 passes.
+  - With no winning trade, it is 0, and A2 fails.
+  - **The daily profit factor,** the sum of the positive daily changes in equity ÷ the absolute sum of the negative ones, is reported beside it and decides nothing.
 - **CAGR:** `(E_T ÷ E_0) ^ (365.25 ÷ d) − 1`, computed with `Decimal`'s power at the precision above:
   - `E_0` is the first daily sample, at 01:00 UTC on the run's first day, and `E_T` is the terminal sample;
   - `d` is the exact time between them, in days: the terminal sample's time minus the first sample's, in milliseconds, ÷ 86,400,000. The terminal sample's time is the end of the last 1h bar, 00:00 UTC on the day after the run's last day. For the out-of-sample run, that is from 2021-07-01 01:00 to 2025-01-01 00:00 if the first test quarter is 2021-Q3;
@@ -302,14 +307,14 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 **A run is invalid** if an accounting identity fails, a liquidation occurs, or a fill the rules require cannot be made.
 - **The out-of-sample account (m = 2), the m = 1 run or the hold benchmark invalid:** v3 fails.
 - **A training run invalid:** only that rule is out of the pick for that window, and the record says so.
-- **All six training runs invalid in a window:** every target is 0 for that test quarter, and the record says so. Open positions close at the quarter's first fill by the normal rules (§6), deferred if their hour is masked. Until they fill, they carry profit, loss and funding as usual, and the record reports that exposure.
+- **All 12 training runs invalid in a window:** every target is 0 for that test quarter, and the record says so. Open positions close at the quarter's first fill by the normal rules (§6), deferred if their hour is masked. Until they fill, they carry profit, loss and funding as usual, and the record reports that exposure.
 
 **Reported, deciding nothing:**
 - **The owner's monthly target:** every out-of-sample month's return, beside the owner's 20–30% target, and how many months reached 20%, for the main test and for m = 1 and m = 3.
   - A month's return runs from the first daily sample at or after its start, the 01:00 sample of its first day, to the first at or after the next month's start, as in spec v2 §8. The first month starts at the run's first sample, and the last ends at the terminal sample.
 - **The same out-of-sample run at m = 1 and m = 3** (§11, decision 12): the main test's quarterly picks, unchanged, with every size quantity of §5–6 scaled by m, each in its own account. They show what the same strategy would have made at half and at one and a half times the main test's risk. The m = 1 run also decides A5 (above). The m = 3 run decides nothing: a liquidation or an unrestorable limit makes it invalid, which is reported and does not fail v3;
-- each rule's full-period results, as if picked every quarter;
-- **each rule's long-only twin:** the same rule and sizing with every negative signal set to 0, including R6's fractional ones;
+- each of the 12 rules' full-period results, as if picked every quarter, with each rule's long-short and long-only versions side by side;
+- **how often a long-only version was picked,** quarter by quarter;
 - the long-versus-short split of profit and loss, per rule and per coin;
 - funding paid and received, fees, slippage and turnover;
 - the time invested, gross and net;
@@ -330,7 +335,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - at 01:00 UTC on the first test quarter's first day, it buys an equal share of its cash in each coin in the portfolio then, fees included;
   - it holds them to the terminal mark (§8). It never sells, and a coin that joins the portfolio later is not added;
   - it ignores excluded months. Where a coin has no spot bar, it is marked at its last unmasked spot price;
-- **variant D,** quoted from spec v1's published runs, not rerun. Its windows and engine differ from v3's, and the record says so. R1's long-only twin (above) is the like-for-like comparison inside v3;
+- **variant D,** quoted from spec v1's published runs, not rerun. Its windows and engine differ from v3's, and the record says so. R1L, R1's long-only version (§4), is the like-for-like comparison inside v3;
 - **the minimum account size:** computed by scaling, not by rerunning, on the main test's 10,000-USDT out-of-sample run. For each intended opening or increase of a position, with its unrounded quantity change `Δq` and its notional `|Δq| × open`, the required size is the larger of two ratios, × 10,000 USDT:
   - the symbol's minimum notional ÷ that notional;
   - the symbol's quantity step ÷ `|Δq|`.
@@ -344,7 +349,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 
 **Decision and trade records** (required outputs, written with every run, and never read back by any decision; §11, decision 10):
 - **Every daily decision, per coin:**
-  - the signal of every rule R1–R6, and which rule is picked;
+  - the signal of every rule R1–R6 (R1L–R6L follow from them), and which of the 12 is picked;
   - σ, the raw weight, the scaled weight and which cap bound;
   - the final target, and whether the band skipped the trade;
   - any minimum-notional refusal, or flat-after-flip;
@@ -372,11 +377,11 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - **The owner's go.**
 - **If it fails,** v3 ends with no pass, and nothing runs on the reserved window.
 
-**Trials:** six rules and one picking procedure, all fixed in this draft before any v3 result. The long-only twins are reported, never picked.
+**Trials:** 12 rules, six each in a long-short and a long-only version, and one picking procedure, all fixed in this draft before any v3 result (§11, decision 13).
 
 **Prior exposure (disclosed):**
 - **v2's runs** covered 2019–2024 on spot for BTCUSDT and ETHUSDT, with a different strategy. Their results, and D's, were seen before this design.
-- **#137** (2026-09-28) ran three published trend rules on BTCUSDT 2017–2024. Adding a short side made each one worse: 12-month momentum fell from +1,423% to +700%, a Donchian breakout from +2,643% to +377%, and 50/200 averages from +593% to +57%. This is why every report shows the long-only twins and the long-versus-short split (§11, decision 7).
+- **#137** (2026-09-28) ran three published trend rules on BTCUSDT 2017–2024. Adding a short side made each one worse: 12-month momentum fell from +1,423% to +700%, a Donchian breakout from +2,643% to +377%, and 50/200 averages from +593% to +57%. This is why the long-only versions are in the menu (§4; §11, decisions 7 and 13), and why every report shows the long-versus-short split.
 - **Codex's diagnosis of v2** (2026-10-08) informed v3's records, and the statement on lifetime drawdown (§11, decision 10).
 - **Where the settings come from:**
   - R1 is D's rule;
@@ -430,7 +435,7 @@ Each entry gives the question, and the option the owner chose.
 4. **Coins.** Question: "Which coins should v3 trade?" Chosen: **"Our 10 coins, bias stated"**.
 5. **The pass bar.** The owner first answered: "our strategy needs to make 20-30% profits per month." Claude explained that 20% a month is about +790% a year, and that at 1x leverage and a 20% risk budget it would need a Sharpe ratio near 30. (That figure was wrong. By §1's arithmetic, 20% a month at a 20% risk budget needs a Sharpe ratio of about 11.) Question: "Given that 20-30% a month can't be reached at 1x leverage and a 20-25% risk budget, how should v3 judge a pass?" Chosen: **"Realistic bar, report vs 20-30%"**. The option said: "Pass = the gate (Sharpe >= 1.0, profit factor >= 1.3) + Calmar >= 0.5 + at least 8% a year + beats holding the same coins at the same risk. Every report also shows monthly returns against your 20-30% target, so the gap is visible."
 6. **The rules.** Question: "How should v3 choose its trend rules?" Chosen: **"Walk-forward pick from a fixed menu"**: about six standard rules fixed in advance; in each 18-month window the best is picked and traded for the next 3 months; only those months count.
-7. **The short side, after #137.** Claude disclosed #137's finding that shorts made trend rules worse on BTCUSDT. Question: "How should v3 treat the short side?" Chosen: **"Keep long+short, report long-only alongside"**.
+7. **The short side, after #137.** Claude disclosed #137's finding that shorts made trend rules worse on BTCUSDT. Question: "How should v3 treat the short side?" Chosen: **"Keep long+short, report long-only alongside"**. Decision 13 later put the long-only versions into the menu.
 8. **The build approach.** Question: "Which way should the v3 test be built?" Chosen: **"A: new hourly backtester"**: its own module, hourly futures bars, exact decimals, real funding, fills at the next hour's open with slippage and fees.
 9. **The design sections.** The owner approved Claude's five design sections, on the data, the rules, sizing and costs, walk-forward and scoring, and the build, and asked for this draft: "Looks right, write the spec".
 10. **Codex's input.** The owner said: "Codex will send you his brainstorming and info on what he things we should do next, we should incorporate all of it in V3."
@@ -464,3 +469,14 @@ Each entry gives the question, and the option the owner chose.
     - Question: "The backtest needs Binance futures' order rules (minimum order size, quantity step). They are only published on fapi.binance.com, which isn't on SECURITY.md's list of allowed hosts. How should we get them?" Chosen: **"Allow one read-only fetch"**. The option said: "In the fetch you start, Bob makes one public, read-only request to fapi.binance.com/fapi/v1/exchangeInfo, with no keys and no trading. The response is saved with a checksum, and the backtester only reads the saved file. SECURITY.md gets a narrow exception naming this one fetch."
     - **A5's comparison.** Codex then found that, with the hold benchmark at 1x and the strategy at 2x, the rebalancing band, rounding, minimum order sizes and fees make the Sharpe ratios differ for reasons of size, not only timing. Question: "A5 asks whether v3 beats simply holding the same coins. The strategy now runs at 2x, but holding runs at 1x on spot, because spot can't borrow. At different sizes the comparison isn't exact. How should A5 compare them?" Chosen: **"Compare both at 1x"**. The option said: "A5 compares the same strategy run at 1x (same quarterly picks) with holding at 1x on spot. Same size, so only timing differs. The 1x run then counts for A5: if it's invalid, v3 fails. A1-A4 are still judged on the 2x main test."
     - **In this spec:** the size multiple m is in §5, the leverage limit in §6, the filters' source in §2, and the m = 1 and m = 3 runs and A5 in §8. README and SECURITY.md say no more than 3x, checked hourly and after funding, and name the one fetch.
+13. **The profit factor and the short side.** The owner asked whether v3 would be profitable, and how to improve it. Claude answered that nobody can know before the test runs, and that v3 as written would most likely fail for one fixable reason.
+    - **The evidence.** Claude computed the daily profit factor, as A2 then defined it, from the D runs in v2's third set of formal runs (`7d309a2`). The source is the full-range MS run's `results.json`, whose hourly equity was sampled every 24 hours over 2019–2024:
+      - D on BTCUSDT: Sharpe 1.48, daily profit factor 1.22, maximum drawdown 60%;
+      - D on ETHUSDT: Sharpe 1.06, daily profit factor 1.11, maximum drawdown 56%;
+      - holding BTCUSDT: Sharpe 1.15, daily profit factor 1.12.
+
+      For near-normal daily returns, the daily profit factor is about `1 + 2.5 ×` the daily Sharpe ratio, so 1.3 needs an annual Sharpe ratio of about 2.3. Even the project's best result fails it.
+    - Question: "How should A2 (profit factor >= 1.3) be measured?" Chosen: **"Per trade"**. The option said: "Profit of winning trades / loss of losing trades, after fees and funding, over the out-of-sample trades. The usual definition for trend-following. The spec will note this was changed after seeing that D fails the daily version."
+    - Question: "How should v3 handle shorts, given that #137 found they hurt trend rules on BTC?" Chosen: **"Let walk-forward choose"**. The option said: "The menu gets each rule in two versions, long-short and long-only (12 choices). Each quarter the best of the previous 18 months is picked, so shorts are used only where they helped before."
+    - **Disclosed:** A2's measure was changed after seeing D's 2019–2024 figures. It changes how the bar is measured, not the strategy. The 12-rule menu doubles the trials from six, which makes a lucky pass a little more likely. The out-of-sample-only scoring and the reserved window's multiple-testing rule (§8) are the guards.
+    - **In this spec:** the long-only versions are in §4, the 12-rule pick in §7, and A2's measure in §8.
