@@ -106,3 +106,162 @@ def test_duplicate_ids_rejected(tmp_path):
 def test_history_cannot_be_deleted_reordered_or_rewritten(replacement):
     with pytest.raises(ValueError):
         validate_append(encode(record()), replacement)
+
+
+def candidate():
+    event = record("registered")
+    event.update(trial_id="v3", event_type="registration")
+    event["payload"] = {
+        "preregistered": True,
+        "hypothesis": "directional edge",
+        "spec": {"path": "docs/spec.md", "commit": "a" * 40, "sha256": "b" * 64},
+        "candidates": ["R1-long"],
+        "sizes": [1, 2, 3],
+        "fees": "spec section 5",
+        "folds": "18/3 months",
+        "mask": "spec section 2",
+        "seeds": [],
+        "budget": "fixed candidate grid",
+        "stopping": "all declared folds",
+        "selection": "train Sharpe",
+        "data": None,
+        "code": None,
+    }
+    return event
+
+
+def completion():
+    event = record("completed")
+    event.update(trial_id="v3", event_type="completion")
+    event["payload"] = {
+        "registration_id": "registered",
+        "code_commit": "c" * 40,
+        "code_sha256": "d" * 64,
+        "code_paths": ["src/engine.py"],
+        "manifest": {"path": "config/manifest.json", "sha256": "e" * 64},
+        "config": {"path": "config/run.json", "sha256": "f" * 64},
+        "review": "https://github.com/example/project/pull/1#review",
+    }
+    return event
+
+
+def result_event():
+    event = record("result")
+    event.update(trial_id="v3", event_type="result")
+    event["payload"] = {
+        "completion_id": "completed",
+        "run_id": "run-1",
+        "status": "failed",
+        "provenance": "run log",
+        "report": "failure report",
+        "metrics": {},
+        "reason": "worker terminated",
+    }
+    return event
+
+
+def test_valid_registration_completion_and_failed_result(tmp_path):
+    path = tmp_path / "register.jsonl"
+    path.write_bytes(encode(candidate(), completion(), result_event()))
+    assert len(load_events(path)) == 3
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [completion()],
+        [candidate(), result_event()],
+        [completion(), candidate()],
+        [candidate(), candidate()],
+        [candidate(), completion(), completion()],
+    ],
+)
+def test_wrong_stage_or_duplicate_events_rejected(tmp_path, events):
+    path = tmp_path / "register.jsonl"
+    path.write_bytes(encode(*events))
+    with pytest.raises(ValueError):
+        load_events(path)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("code_commit", "short"),
+        ("code_sha256", "z" * 64),
+        ("code_paths", ["../escape"]),
+        ("registration_id", "missing"),
+        ("review", ""),
+    ],
+)
+def test_completion_rejects_invalid_pins(tmp_path, field, value):
+    event = completion()
+    event["payload"][field] = value
+    path = tmp_path / "register.jsonl"
+    path.write_bytes(encode(candidate(), event))
+    with pytest.raises(ValueError):
+        load_events(path)
+
+
+def test_result_cannot_reference_another_trial(tmp_path):
+    event = result_event()
+    event["trial_id"] = "another"
+    path = tmp_path / "register.jsonl"
+    path.write_bytes(encode(candidate(), completion(), event))
+    with pytest.raises(ValueError):
+        load_events(path)
+
+
+def test_duplicate_run_id_rejected_even_with_new_event_id(tmp_path):
+    event = result_event()
+    event["event_id"] = "another-result"
+    path = tmp_path / "register.jsonl"
+    path.write_bytes(encode(candidate(), completion(), result_event(), event))
+    with pytest.raises(ValueError):
+        load_events(path)
+
+
+def test_ready_requires_committed_completion_and_matching_blobs(tmp_path):
+    import hashlib
+    import subprocess
+
+    from trial_register import check_ready, code_digest
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args]).decode().strip()
+
+    git("init")
+    git("config", "user.name", "Synthetic Test")
+    git("config", "user.email", "test@example.invalid")
+    for name, content in {
+        "src/engine.py": b"pass\n",
+        "docs/spec.md": b"spec\n",
+        "config/manifest.json": b"{}\n",
+        "config/run.json": b"{}\n",
+    }.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    git("add", ".")
+    git("commit", "-m", "synthetic implementation")
+    code = git("rev-parse", "HEAD")
+    reg = candidate()
+    reg["payload"]["spec"].update(commit=code, sha256=hashlib.sha256(b"spec\n").hexdigest())
+    done = completion()
+    done["payload"].update(code_commit=code, code_sha256=code_digest({"src/engine.py": b"pass\n"}))
+    for key in ("manifest", "config"):
+        done["payload"][key]["sha256"] = hashlib.sha256(b"{}\n").hexdigest()
+    path = tmp_path / "docs/trials/register.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(encode(reg, done))
+    git("add", ".")
+    with pytest.raises(ValueError):
+        check_ready(tmp_path, "v3", code)
+    git("commit", "-m", "registration")
+    ready = git("rev-parse", "HEAD")
+    assert check_ready(tmp_path, "v3", ready)["event_id"] == "completed"
+    (tmp_path / "src/engine.py").write_bytes(b"changed\n")
+    git("add", ".")
+    git("commit", "-m", "unregistered code change")
+    with pytest.raises(ValueError, match="code"):
+        check_ready(tmp_path, "v3", git("rev-parse", "HEAD"))
+    assert check_ready(tmp_path, "v3", ready)["event_id"] == "completed"

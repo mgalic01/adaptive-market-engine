@@ -1,15 +1,16 @@
 """Offline trial-history validation. No dispatch or network operations.
 
-Initial schema slice: retrospective records only. Candidate/completion/result event
-support is deliberately rejected until its validation and readiness gates exist.
+Schema validation alone is not a dispatch authorization. Committed-file pin
+verification and runner integration are separate requirements.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -40,6 +41,9 @@ def _text(value: Any) -> bool:
 def validate_events(events: list[dict[str, Any]]) -> None:
     """Validate retrospective records; errors identify the offending line."""
     seen: set[str] = set()
+    prior: dict[str, dict[str, Any]] = {}
+    stages: set[tuple[str, str]] = set()
+    runs: set[str] = set()
     fields = {
         "schema_version",
         "event_id",
@@ -59,7 +63,7 @@ def validate_events(events: list[dict[str, Any]]) -> None:
                 raise ValueError("expected exactly the schema's common fields")
             if type(event["schema_version"]) is not int or event["schema_version"] != 1:
                 raise ValueError("unsupported schema version")
-            for field in ("event_id", "trial_id", "agent", "family", "recorded_at"):
+            for field in ("event_id", "trial_id", "agent", "family", "recorded_at", "event_type"):
                 if not _text(event[field]):
                     raise ValueError(f"invalid {field}")
             if event["event_id"] in seen:
@@ -76,7 +80,9 @@ def validate_events(events: list[dict[str, Any]]) -> None:
             if not isinstance(sources, list) or not sources or not all(map(_text, sources)):
                 raise ValueError("nonempty source references required")
             if event["event_type"] != "retrospective":
-                raise ValueError("event type not implemented; cannot authorize dispatch")
+                _forward(event, prior, stages, runs)
+                prior[event["event_id"]] = event
+                continue
             payload = event["payload"]
             if not isinstance(payload, dict) or set(payload) != {
                 "preregistered",
@@ -92,6 +98,7 @@ def validate_events(events: list[dict[str, Any]]) -> None:
             missing = payload["missing_fields"]
             if not isinstance(missing, list) or not all(map(_text, missing)):
                 raise ValueError("missing_fields must explicitly list historical unknowns")
+            prior[event["event_id"]] = event
         except ValueError as exc:
             raise ValueError(f"line {line}: {exc}") from exc
 
@@ -121,3 +128,207 @@ def validate_append(base: bytes, candidate: bytes) -> None:
     _parse(candidate)
     if not candidate.startswith(base):
         raise ValueError("historical bytes must remain an unchanged prefix")
+
+
+def _fields(payload: Any, names: set[str]) -> dict[str, Any]:
+    if not isinstance(payload, dict) or set(payload) != names:
+        raise ValueError("invalid payload fields")
+    return payload
+
+
+def _digest(value: Any, length: int) -> None:
+    if not isinstance(value, str) or re.fullmatch("[0-9a-f]{" + str(length) + "}", value) is None:
+        raise ValueError("invalid digest or commit")
+
+
+def _path(value: Any) -> None:
+    if not _text(value) or "\\" in value or ":" in value:
+        raise ValueError("expected relative repository path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts or str(path) != value or value == ".":
+        raise ValueError("expected canonical relative repository path")
+
+
+def _pin(value: Any, commit: bool = False) -> None:
+    fields = {"path", "sha256", "commit"} if commit else {"path", "sha256"}
+    pin = _fields(value, fields)
+    _path(pin["path"])
+    _digest(pin["sha256"], 64)
+    if commit:
+        _digest(pin["commit"], 40)
+
+
+def _reference(
+    event: dict[str, Any], prior: dict[str, dict[str, Any]], identity: Any, kind: str
+) -> None:
+    if not _text(identity) or identity not in prior:
+        raise ValueError("missing prior event reference")
+    other = prior[identity]
+    if other["trial_id"] != event["trial_id"] or other["event_type"] != kind:
+        raise ValueError("reference belongs to wrong trial or stage")
+    if other["family"] != event["family"] or other["parent_trial_id"] != event["parent_trial_id"]:
+        raise ValueError("trial family or parent changed")
+
+
+def _forward(
+    event: dict[str, Any],
+    prior: dict[str, dict[str, Any]],
+    stages: set[tuple[str, str]],
+    runs: set[str],
+) -> None:
+    kind = event["event_type"]
+    stage = (event["trial_id"], kind)
+    if kind in ("registration", "completion") and stage in stages:
+        raise ValueError("duplicate trial stage")
+    p = event["payload"]
+    if kind == "registration":
+        p = _fields(
+            p,
+            {
+                "preregistered",
+                "hypothesis",
+                "spec",
+                "candidates",
+                "sizes",
+                "fees",
+                "folds",
+                "mask",
+                "seeds",
+                "budget",
+                "stopping",
+                "selection",
+                "data",
+                "code",
+            },
+        )
+        if p["preregistered"] is not True or p["data"] is not None or p["code"] is not None:
+            raise ValueError("initial registration must disclose pending code and data")
+        _pin(p["spec"], commit=True)
+        for field in ("hypothesis", "fees", "folds", "mask", "budget", "stopping", "selection"):
+            if not _text(p[field]):
+                raise ValueError(f"missing {field}")
+        candidates = p["candidates"]
+        if (
+            not isinstance(candidates, list)
+            or not candidates
+            or not all(map(_text, candidates))
+            or len(set(candidates)) != len(candidates)
+        ):
+            raise ValueError("unique candidate descriptions required")
+        sizes = p["sizes"]
+        if (
+            not isinstance(sizes, list)
+            or not sizes
+            or any(type(x) is not int or x <= 0 for x in sizes)
+        ):
+            raise ValueError("positive integer sizes required")
+        if not isinstance(p["seeds"], list) or any(type(x) is not int for x in p["seeds"]):
+            raise ValueError("seeds must be explicit integers")
+        if any(e["trial_id"] == event["trial_id"] for e in prior.values()):
+            raise ValueError("registration cannot reuse an existing historical trial ID")
+    elif kind == "completion":
+        p = _fields(
+            p,
+            {
+                "registration_id",
+                "code_commit",
+                "code_sha256",
+                "code_paths",
+                "manifest",
+                "config",
+                "review",
+            },
+        )
+        _reference(event, prior, p["registration_id"], "registration")
+        _digest(p["code_commit"], 40)
+        _digest(p["code_sha256"], 64)
+        _pin(p["manifest"])
+        _pin(p["config"])
+        paths = p["code_paths"]
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("code paths required")
+        for path in paths:
+            _path(path)
+        if len(set(paths)) != len(paths):
+            raise ValueError("duplicate code paths")
+        if not _text(p["review"]):
+            raise ValueError("review provenance required")
+    elif kind == "result":
+        p = _fields(
+            p, {"completion_id", "run_id", "status", "provenance", "report", "metrics", "reason"}
+        )
+        _reference(event, prior, p["completion_id"], "completion")
+        for field in ("run_id", "status", "provenance", "report"):
+            if not _text(p[field]):
+                raise ValueError(f"missing {field}")
+        if p["status"] not in ("success", "invalid", "failed", "cancelled"):
+            raise ValueError("unknown result status")
+        if not isinstance(p["metrics"], dict):
+            raise ValueError("metrics must be an object")
+        if p["status"] != "success" and not _text(p["reason"]):
+            raise ValueError("unsuccessful attempt requires reason")
+        if p["status"] == "success" and p["reason"] is not None:
+            raise ValueError("successful result reason must be null")
+        if p["run_id"] in runs:
+            raise ValueError("duplicate run ID; append a correction instead")
+        runs.add(p["run_id"])
+    else:
+        raise ValueError("unsupported event type")
+    stages.add(stage)
+
+
+def code_digest(blobs: dict[str, bytes]) -> str:
+    """SHA256 of sorted UTF-8 paths and Git blobs, each prefixed by 8-byte length."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for path, blob in sorted(blobs.items()):
+        for part in (path.encode("utf-8"), blob):
+            digest.update(len(part).to_bytes(8, "big"))
+            digest.update(part)
+    return digest.hexdigest()
+
+
+def _git(root: Path, *args: str) -> bytes:
+    import subprocess  # nosec B404
+
+    # Fixed Git executable and separate arguments; no shell or repository hooks invoked.
+    process = subprocess.run(  # nosec B603, B607
+        ["git", "-C", str(root), *args], capture_output=True, check=False  # nosec B603, B607
+    )
+    if process.returncode:
+        raise ValueError("Git object or ancestry check failed")
+    return process.stdout
+
+
+def check_ready(root: Path, trial_id: str, revision: str) -> dict[str, Any]:
+    """Verify committed registration pins; caller still owns review/data-access gates."""
+    import hashlib
+
+    _digest(revision, 40)
+    if _git(root, "cat-file", "-t", revision).strip() != b"commit":
+        raise ValueError("revision must name a commit")
+    events = _parse(_git(root, "show", f"{revision}:docs/trials/register.jsonl"))
+    matches = [e for e in events if e["trial_id"] == trial_id and e["event_type"] == "completion"]
+    if len(matches) != 1:
+        raise ValueError("one committed completion required")
+    done = matches[0]
+    payload = done["payload"]
+    registration = next(e for e in events if e["event_id"] == payload["registration_id"])
+    spec = registration["payload"]["spec"]
+    for ancestor in (payload["code_commit"], spec["commit"]):
+        _git(root, "merge-base", "--is-ancestor", ancestor, revision)
+    for pin in (spec, payload["config"], payload["manifest"]):
+        blob = _git(root, "show", f"{revision}:{pin['path']}")
+        if hashlib.sha256(blob).hexdigest() != pin["sha256"]:
+            raise ValueError("committed file does not match pin")
+    if (
+        hashlib.sha256(_git(root, "show", f"{spec['commit']}:{spec['path']}")).hexdigest()
+        != spec["sha256"]
+    ):
+        raise ValueError("registered spec commit does not match pin")
+    for commit in (payload["code_commit"], revision):
+        blobs = {path: _git(root, "show", f"{commit}:{path}") for path in payload["code_paths"]}
+        if code_digest(blobs) != payload["code_sha256"]:
+            raise ValueError("committed code does not match pin")
+    return done
