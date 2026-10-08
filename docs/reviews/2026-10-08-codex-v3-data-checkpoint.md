@@ -21,3 +21,10 @@ to flag as invalid. Midnight and hours in the excluded month cannot satisfy it.
 The focused suite now has 31 passing tests; Ruff and strict mypy pass. Manifest
 serialization and runner consumption remain pending; this helper alone does not
 claim execution integration.
+
+Archive preparation helper added outside src with injected retrieval only. It admits
+only V3's ten symbols and canonical pre-2025 monthly names for spot/futures 1h and
+funding files. It rejects missing/malformed/mismatched checksums and enforces byte
+limits; no real network adapter or CLI dispatch exists yet. Combined data/helper
+suite: 45 passing tests, Ruff and strict mypy clean. Actual fetch task, committed
+manifest and filter snapshot still require completion and external review.
