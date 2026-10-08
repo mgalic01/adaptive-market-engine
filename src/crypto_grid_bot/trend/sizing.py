@@ -56,7 +56,7 @@ class SizingResult:
     common_days: tuple[int, ...]
     estimated_volatility: Decimal
     flat_reason: str | None
-    scaled_weights: dict[str, Decimal] = field(default_factory=dict)
+    scaled_weights: dict[str, Decimal | None] = field(default_factory=dict)
     binding_caps: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
@@ -99,6 +99,8 @@ def size_portfolio(
         raw = dict.fromkeys(names, ZERO)
         volatility: dict[str, Decimal | None] = dict.fromkeys(names, None)
         weights = dict.fromkeys(names, ZERO)
+        unscaled: dict[str, Decimal | None] = dict.fromkeys(names, None)
+        binding: dict[str, frozenset[str]] = dict.fromkeys(names, frozenset())
         for name in names:
             observations = list(history[name].values())[-60:]
             if len(observations) < 60:
@@ -113,13 +115,17 @@ def size_portfolio(
                 raw[name] = signals[name] * (ONE / sigma)
         active = [name for name in names if raw[name] != ZERO]
         if not active:
-            return SizingResult(weights, raw, volatility, (), ZERO, "no_nonzero_raw_weights")
+            return SizingResult(
+                weights, raw, volatility, (), ZERO, "no_nonzero_raw_weights", unscaled, binding
+            )
         common = set(range(day_ms - 59 * DAY_MS, day_ms + DAY_MS, DAY_MS))
         for name in active:
             common.intersection_update(history[name])
         days = tuple(sorted(common))
         if len(days) < 40:
-            return SizingResult(weights, raw, volatility, days, ZERO, "insufficient_common_days")
+            return SizingResult(
+                weights, raw, volatility, days, ZERO, "insufficient_common_days", unscaled, binding
+            )
         means = {
             name: sum((history[name][day] for day in days), ZERO) / Decimal(len(days))
             for name in active
@@ -143,11 +149,12 @@ def size_portfolio(
             raise ValueError("negative portfolio variance at frozen Decimal precision")
         estimate = variance.sqrt()
         if estimate == ZERO:
-            return SizingResult(weights, raw, volatility, days, ZERO, "zero_portfolio_volatility")
+            return SizingResult(
+                weights, raw, volatility, days, ZERO, "zero_portfolio_volatility", unscaled, binding
+            )
         scale = Decimal("0.20") * multiple / estimate
         cap = Decimal("0.10") * multiple
-        scaled = dict.fromkeys(names, ZERO)
-        binding: dict[str, frozenset[str]] = dict.fromkeys(names, frozenset())
+        scaled: dict[str, Decimal | None] = dict.fromkeys(names, ZERO)
         for name in active:
             target = raw[name] * scale
             scaled[name] = target
