@@ -55,7 +55,7 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
   - **A spot coin-month that is excluded** gives that coin a target of 0 for the same month, as a futures exclusion does, and its days drop out of the daily series.
 - **Daily bars for signals** (§4) are aggregated from these spot 1h bars: R5 needs highs and lows, and the other rules use closes.
 - **The hold benchmark** (§8) uses the same spot 1h bars.
-- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06, or from a coin's first full spot month if later, gives each coin more than a year before its futures data start (§3), except where the spot listing is too late for that: SOLUSDT's spot starts in 2020-08, which the fetch confirms and the record states. There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
+- **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06, or from a coin's first full spot month if later, gives each coin more than a year before its futures data start (§3), except where the spot listing is too late for that, as SOLUSDT's (2020-08) appears to be. The fetch records each coin's first spot month and first futures month in the manifest, and the record lists every coin with less than a year of spot history before its futures start. There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
 
 **Daily bars** are UTC days, built from the unmasked 1h bars of each day:
 - open is the first unmasked hour's open, and close is the last unmasked hour's close;
@@ -144,9 +144,9 @@ At each daily decision, after day d's close:
   - Funding is charged at exactly the timestamps in the file. A month whose file breaks its schedule is excluded (§2), so no included month has a missing payment.
 - **Order of events in an hour,** for every hour from the first to the last of the run:
   1. **The open mark,** at the bar's open time, before any of the hour's fills or funding. The daily 01:00 sample (§8) is this mark, and no funding falls at 01:00.
-  2. **The pre-fill liquidation check,** on the quantities held at the open, at the open prices. A book that gapped through the threshold is liquidated at this open, the hour's fills are cancelled, and the run is invalid.
+  2. **The pre-fill liquidation check,** on the quantities held at the open, at the open prices. A book that gapped through the threshold is liquidated (below), and the hour's fills are cancelled.
   3. **The hour's events,** in the order of their raw timestamps:
-     - fills happen at the bar's open time (the daily decision's, then any delevering ordered the hour before);
+     - fills happen at the bar's open time: first the daily decision's orders, then any delevering ordered the hour before (below);
      - funding happens at its recorded timestamp, which is at or a few milliseconds after the open;
      - so a fill at the open is charged that hour's funding on the post-fill quantity;
      - on an exact tie, funding comes first.
@@ -154,14 +154,18 @@ At each daily decision, after day d's close:
   5. **The 1x-ceiling check,** on the quantities after the fills, at the open mark.
   6. **The post-fill liquidation check,** on those quantities, at the bar's adverse extremes.
 
-  **Within one hour's fills,** every order that reduces or closes a position goes first, then every order that opens or increases one, each group in alphabetical order of symbol.
+  **Within one hour's fills:**
+  - **The daily decision's orders come first.** Among them, every order that reduces or closes a position goes first, then every order that opens or increases one, each group in alphabetical order of symbol.
+  - **Then the delevering,** if one was ordered: k is computed on the book after all of the hour's daily fills, and the delevering orders follow, in alphabetical order of symbol.
+  - **Step 5 then checks** the book after both. It orders a further delevering for the next hour only if gross leverage still exceeds 1.0.
 - **Marking:** equity is marked at every hour's open (the wallet and equity are defined under "Wallet and equity" below).
   - **A coin's mark price** in an hour is that hour's open.
   - **In a masked or missing hour,** which an included month may have (up to 17%), the coin's mark is the open of its last unmasked hour before it. Its funding price is the same (above), and its liquidation check uses that same price, since the hour has no usable high or low.
   - **At the first unmasked hour after a gap,** the mark, the adverse extremes and the liquidation check use that hour's own bar, so a move across the gap is caught there.
   - Hours with an open position and a masked bar are counted and reported.
 - **Liquidation:** each hour, equity is also computed at each position's adverse extreme of that 1h bar: the low for a long, the high for a short, all at once.
-  - If that equity is ≤ 1% of the gross open notional, the account is liquidated at the next hour's opens, and the run fails (§8). The gross open notional is `Σ |quantity| × price` at the same adverse-extreme prices.
+  - If that equity is ≤ 1% of the gross open notional, the account is liquidated.
+  - **Either kind of liquidation,** the pre-fill check at the open or this post-fill check, is recorded at the hour of the check, with each position's price in that check. The run is invalid from then on (§8), and no later order is simulated. The gross open notional is `Σ |quantity| × price` at the same adverse-extreme prices.
   - The 1% threshold is Claude's design choice, deliberately conservative. It is a simplified stand-in for Binance's tiered maintenance margin.
   - It is expected never to happen at these sizes.
 - **The 1x ceiling, on the actual book:** at every hourly mark, gross leverage is `Σ |quantity| × mark ÷ equity`.
@@ -291,7 +295,7 @@ At each daily decision, after day d's close:
 
 **Outcome:**
 - **If v3 passes,** the reserved 2025–26 window may run once, as a confirmation. Before it runs, two things are needed, and nothing in v3 runs on it before then:
-  - **A written rule,** as spec v1's C7, including a multiple-testing correction over the whole family tried on these years: v1's variants, v2's mode switcher, D, #137's rules, and v3's six rules with its picking procedure. Alternatively, the owner may waive that correction in writing.
+  - **A written rule,** as spec v1's C7 ([§6](EXPERIMENT_SPEC_V1.md#6-acceptance-and-selection-owner-decisions-2026-09-24)), including a multiple-testing correction over the whole family tried on these years: v1's variants, v2's mode switcher, D, #137's rules, and v3's six rules with its picking procedure. Alternatively, the owner may waive that correction in writing.
   - **The owner's go.**
 - **If it fails,** v3 ends with no pass, and nothing runs on the reserved window.
 
