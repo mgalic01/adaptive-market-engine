@@ -1,7 +1,7 @@
 """Pure volatility sizing for frozen V3; no account mutation or order execution."""
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
@@ -56,6 +56,8 @@ class SizingResult:
     common_days: tuple[int, ...]
     estimated_volatility: Decimal
     flat_reason: str | None
+    scaled_weights: dict[str, Decimal] = field(default_factory=dict)
+    binding_caps: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 def size_portfolio(
@@ -144,12 +146,21 @@ def size_portfolio(
             return SizingResult(weights, raw, volatility, days, ZERO, "zero_portfolio_volatility")
         scale = Decimal("0.20") * multiple / estimate
         cap = Decimal("0.10") * multiple
+        scaled = dict.fromkeys(names, ZERO)
+        binding: dict[str, frozenset[str]] = dict.fromkeys(names, frozenset())
         for name in active:
             target = raw[name] * scale
+            scaled[name] = target
+            if abs(target) > cap:
+                binding[name] = frozenset({"coin"})
             weights[name] = max(-cap, min(cap, target))
         gross = sum((abs(value) for value in weights.values()), ZERO)
         gross_cap = Decimal("0.80") * multiple
         if gross > gross_cap:
             factor = gross_cap / gross
+            binding = {
+                name: causes | {"gross"} if weights[name] != ZERO else causes
+                for name, causes in binding.items()
+            }
             weights = {name: value * factor for name, value in weights.items()}
-        return SizingResult(weights, raw, volatility, days, estimate, None)
+        return SizingResult(weights, raw, volatility, days, estimate, None, scaled, binding)

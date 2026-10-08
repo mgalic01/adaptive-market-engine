@@ -100,7 +100,7 @@ def test_callback_publishes_verified_artifacts_for_real_synthetic_replays(tmp_pa
         assert len(rows) == evidence["records"]
         assert len(raw) == evidence["bytes"]
         kinds = {row["kind"] for row in rows}
-        assert {"outcome", "account", "hour", "audit", "equity", "sample"} <= kinds
+        assert {"outcome", "decision", "account", "hour", "audit", "equity", "sample"} <= kinds
         assert rows[0]["value"]["trade_reconciliation_residual"] == "0"
 
 

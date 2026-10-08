@@ -64,3 +64,17 @@ scenario pass. Ruff and mypy pass. Compatibility: execution-time engine errors a
 now wrapped in ReplayExecutionError; preflight errors retain their original types.
 The earlier full-suite process tests the recovery-only snapshot f8c28db, not this
 subsequent change. Full decision evidence and report/recovery completion remain open.
+
+Daily decision evidence follow-up: ReplayResult now retains each decision timestamp,
+selected rule and DailyDecision, including all twelve raw rule signals, effective
+signals, final targets, exit candidates and sizing diagnostics. SizingResult now
+also records pre-cap scaled weights and the binding coin/gross caps without changing
+the arithmetic producing weights. The writer emits these as decision rows before
+account records; partial failures carry the decisions reached before the error.
+Tests reproduced absent replay decisions, absent serialized decisions and absent cap
+diagnostics before implementation. Sixty-eight focused sizing/decision/replay/writer
+tests pass; a nonempty synthetic record is read back to check exact signal, volatility,
+scaled-weight and cap preservation. The full-training orchestration scenario also
+passed for the preceding partial-error change (40 combined tests). Full latest-tree
+verification and external review remain required. Start-record pick schedule linkage,
+explicit recovery finalization and whole-experiment reports are still unfinished.

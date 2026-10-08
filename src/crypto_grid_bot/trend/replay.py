@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.backtest.window import development_month
-from crypto_grid_bot.trend.decisions import DailyDecisions
+from crypto_grid_bot.trend.decisions import DailyDecision, DailyDecisions
 from crypto_grid_bot.trend.exclusions import CloseRequirement, ExclusionCalendar, UnavailableClose
 from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.runner import HOUR, TrendRunner
@@ -22,6 +22,7 @@ class ReplayResult:
     reason: str | None
     close_requirements: tuple[CloseRequirement, ...]
     trade_reconciliation_residual: Decimal | None = None
+    daily_decisions: tuple[tuple[int, str | None, DailyDecision], ...] = ()
 
 
 class ReplayExecutionError(RuntimeError):
@@ -109,6 +110,7 @@ def replay_window(
     )
     closes: dict[str, Decimal] = {}
     current_rule = picks[start_ms]
+    daily_decisions: list[tuple[int, str | None, DailyDecision]] = []
     try:
         for hour in range(start_ms, end_ms_exclusive, HOUR):
             if any(
@@ -119,7 +121,12 @@ def replay_window(
                 for item in requirements
             ):
                 runner.finish(closes, reason="unavailable_exclusion_close")
-                return ReplayResult(runner, "unavailable_exclusion_close", requirements)
+                return ReplayResult(
+                    runner,
+                    "unavailable_exclusion_close",
+                    requirements,
+                    daily_decisions=tuple(daily_decisions),
+                )
             month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
             eligible = {
                 s
@@ -150,13 +157,19 @@ def replay_window(
                     run_end_ms=end_ms_exclusive,
                 )
                 targets, reasons = decision.targets, decision.exit_reasons
+                daily_decisions.append((hour, current_rule, decision))
             result = runner.step(hour, bars, targets, groups, exit_reasons=reasons)
             if result.reason is not None:
-                return ReplayResult(runner, result.reason, requirements)
+                return ReplayResult(
+                    runner, result.reason, requirements, daily_decisions=tuple(daily_decisions)
+                )
         runner.finish(closes)
-        return ReplayResult(runner, None, requirements)
+        return ReplayResult(runner, None, requirements, daily_decisions=tuple(daily_decisions))
     except Exception as exc:
         runner.stopped = "engine_failure"
         raise ReplayExecutionError(
-            exc, ReplayResult(runner, "engine_failure", requirements)
+            exc,
+            ReplayResult(
+                runner, "engine_failure", requirements, daily_decisions=tuple(daily_decisions)
+            ),
         ) from exc

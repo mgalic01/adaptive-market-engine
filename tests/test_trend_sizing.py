@@ -55,6 +55,21 @@ def history(days=range(100), amplitude="0.5"):
     return tuple(DailyReturn(START + day * DAY, value if day % 2 else -value) for day in days)
 
 
+def test_sizing_records_pre_cap_weights_and_binding_caps():
+    from crypto_grid_bot.trend.sizing import size_portfolio
+
+    names = [f"COIN{i}" for i in range(10)]
+    result = size_portfolio(
+        dict.fromkeys(names, D(1)),
+        {name: history(amplitude="0.001") for name in names},
+        START + 99 * DAY,
+    )
+    assert getattr(result, "scaled_weights", {})
+    assert all(result.scaled_weights[name] > D(".2") for name in names)
+    assert all(result.weights[name] == D(".16") for name in names)
+    assert all(result.binding_caps[name] == frozenset({"coin", "gross"}) for name in names)
+
+
 def test_sample_volatility_and_target_have_hand_calculated_values():
     from crypto_grid_bot.trend.sizing import size_portfolio
 

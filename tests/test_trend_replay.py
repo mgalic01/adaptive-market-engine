@@ -71,6 +71,47 @@ def decisions():
     )
 
 
+def test_replay_retains_daily_rule_and_sizing_evidence(tmp_path):
+    import json
+
+    from crypto_grid_bot.trend.evidence_writer import write_replay
+    from crypto_grid_bot.trend.replay import replay_window
+
+    start = T + 65 * DAY
+    book = decisions()
+    result = replay_window(
+        book,
+        {"BTCUSDT": FILTER},
+        {"BTCUSDT": [bar(start)]},
+        {},
+        start,
+        start + DAY,
+        {start: "R1"},
+    )
+    records = getattr(result, "daily_decisions", ())
+    assert len(records) == 1
+    stamp, rule, decision = records[0]
+    assert (stamp, rule) == (start, "R1")
+    assert decision == book.at(start, "R1", run_end_ms=start + DAY)
+    assert set(decision.all_rule_signals["BTCUSDT"]) == {
+        f"R{i}{suffix}" for i in range(1, 7) for suffix in ("", "L")
+    }
+    assert decision.sizing is not None
+    artifact = write_replay(tmp_path, "decision-record", result)
+    rows = [json.loads(line) for line in (tmp_path / artifact["path"]).read_text().splitlines()]
+    saved = next(row["value"]["decision"] for row in rows if row["kind"] == "decision")
+    assert saved["all_rule_signals"]["BTCUSDT"]["R1"] == str(
+        decision.all_rule_signals["BTCUSDT"]["R1"]
+    )
+    assert saved["sizing"]["volatility"]["BTCUSDT"] == str(decision.sizing.volatility["BTCUSDT"])
+    assert saved["sizing"]["scaled_weights"]["BTCUSDT"] == str(
+        decision.sizing.scaled_weights["BTCUSDT"]
+    )
+    assert set(saved["sizing"]["binding_caps"]["BTCUSDT"]) == set(
+        decision.sizing.binding_caps["BTCUSDT"]
+    )
+
+
 @pytest.mark.parametrize("end_delta", [DAY + 1, DAY + HOUR])
 def test_non_midnight_end_is_rejected_by_preflight(end_delta):
     from crypto_grid_bot.trend.replay import replay_window
