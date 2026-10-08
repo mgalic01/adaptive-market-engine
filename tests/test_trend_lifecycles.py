@@ -179,3 +179,24 @@ def test_journal_without_close_reason_fails_before_consuming_batch():
         ledger.consume(a.events, {})
     assert not ledger.active
     assert not ledger.completed
+
+
+def test_trade_totals_reconcile_with_account_for_closed_and_censored_positions():
+    from decimal import localcontext
+
+    from crypto_grid_bot.trend.lifecycles import LifecycleLedger
+
+    a, ledger = FuturesAccount(), LifecycleLedger()
+    a.fill("BTCUSDT", OrderIntent(D(2), False), D(100), T)
+    a.fill("ETHUSDT", OrderIntent(D(-3), False), D(100), T)
+    a.fund(T, {"BTCUSDT": D(".01"), "ETHUSDT": D(".01")}, {"BTCUSDT": D(100), "ETHUSDT": D(100)})
+    a.fill("BTCUSDT", OrderIntent(D(-2), True), D(110), T + 1000)
+    ledger.consume(a.events, {3: {"signal_zero"}})
+    prices = {"ETHUSDT": D(95)}
+    ledger.censor(T + 2000, a.positions, prices, "end_of_run")
+    with localcontext() as context:
+        context.prec = 60
+        assert sum(life.net for life in ledger.completed) == a.mark(prices).equity - a.initial
+    assert len(ledger.completed) == 2
+    assert sum(life.funding_paid for life in ledger.completed) == 2
+    assert sum(life.funding_received for life in ledger.completed) == 3
