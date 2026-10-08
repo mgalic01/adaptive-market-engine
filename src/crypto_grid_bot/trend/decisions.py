@@ -99,7 +99,7 @@ class DailyDecisions:
             why = set()
             if symbol in forced:
                 why.add("excluded_month")
-            if pick_changed:
+            if pick_changed or rule is None:
                 why.add("pick_change")
             if rule is not None:
                 if signals[symbol] == ZERO:
