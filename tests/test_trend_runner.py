@@ -68,6 +68,20 @@ def test_runner_stops_on_corrupt_account_instead_of_classifying_strategy():
     assert r.stopped == "engine_failure"
 
 
+def test_runner_does_not_silently_adopt_proposed_rounding_tolerance():
+    from crypto_grid_bot.trend.orders import OrderIntent
+    from crypto_grid_bot.trend.runner import AccountingFailure, TrendRunner
+
+    r = TrendRunner({"BTCUSDT": RULES}, multiple=1)
+    for quantity, price, reducing in [(1, 1, False), (6, 2, False), (-7, 2, True)]:
+        r.account.fill("BTCUSDT", OrderIntent(D(quantity), reducing), D(price), T)
+    with pytest.raises(AccountingFailure) as failure:
+        r.step(T, {}, {}, {})
+    assert failure.value.audit.equity_residual == D("-1e-59")
+    assert r.stopped == "engine_failure"
+    assert not r.hours
+
+
 def test_runner_next_unmasked_open_catches_gap_and_stops():
     from crypto_grid_bot.trend.orders import OrderIntent
     from crypto_grid_bot.trend.runner import TrendRunner
