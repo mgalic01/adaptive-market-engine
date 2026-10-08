@@ -103,3 +103,5 @@ coincidence; normal terminal time is exactly the exclusive end. Early invalid
 termination deliberately uses the prior processed-hour boundary. Dependency and
 index clarity corrected above. This remains a draft pending full verification,
 durable evidence and complete experiment reporting.
+
+Integration follow-up (2026-10-09): integrated f8c28db (metrics, evidence writer and startup recovery validation) and replay formatting correction 831d8a2. Thirty-seven spot account/benchmark/comparison and journal/writer tests pass, as do full Ruff lint/format and mypy. The earlier full-suite result at c9b7d36 does not validate this new combined head; full integrated validation remains pending. No spot trading-rule change, new dependency or known security regression in the merge. Evidence writer findings still listed on PR 226 remain open.
