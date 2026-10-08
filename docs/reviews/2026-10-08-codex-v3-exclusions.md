@@ -57,3 +57,20 @@ requires the excluded month's boundary strictly inside the run. Thirty exclusion
 runner/pending tests and Ruff pass. This is only the preflight correction: the
 replay adapter and daily decision calendar still need run-end scoping so they do
 not force a post-run exclusion close. Do not merge this partial fix alone.
+
+Current-main integration: #221 is merged and the full runner signature is now on
+main. _step explicitly receives exit_reasons, so non-midnight calls use that parameter;
+there is no unbound local. Thirty exclusion/runner/pending tests pass. Malformed
+inventory validation is in exclusions.py's inventory loop, including the explicit
+'invalid execution-hour inventory timestamp' error. The complementary run-end
+runtime fix is implemented and tested on #225; that dependency review remains open.
+This branch's preflight fix changes no standalone runner target scheduling.
+
+Cloud review follow-up: a fresh flat account starting on the mandatory decision
+itself cannot need a closing fill. The preflight now requires start < decision;
+a regression first reproduced the false invalidity and now passes. Thirty-one
+exclusion/runner/pending tests, Ruff and mypy pass. The separate Cloud finding
+about an already-flat strategy later in a run remains open: missing availability
+must remain a manifest fact, while invalidation must depend on an actual holding.
+That needs coordinated replay integration; do not merge this PR as fully resolved
+yet. No historical run, spec change or new dependency.
