@@ -16,7 +16,8 @@ numbers and duplicate event IDs fail validation.
   source summaries, not a complete count of all inspected historical attempts.
 - `registration`: preregistered=true, hypothesis, spec path/commit/SHA256, candidates,
   integer sizes, fees, folds, mask, integer seeds, budget, stopping and selection.
-  Code and data are null until completion. Empty seeds means no stochastic search.
+  Code and data are null until completion. Seeds include randomized diagnostics as
+  well as searches; V3 fixes bootstrap seed 20261008.
 - `completion`: registration_id, code_commit, code_sha256, code_paths, manifest and
   config path/SHA256 objects, and review provenance. One per registered trial.
 - `result`: completion_id, globally unique run_id, status (success, invalid, failed,
@@ -51,7 +52,10 @@ security boundary against someone authorized to change the checker itself.
 ## Completion identity
 
 Readiness reads only Git objects at the explicit full commit, never staged files or
-working-tree content. Code and spec commits must be ancestors of that revision.
+working-tree content. Code and spec commits must be ancestors of that revision. The identical initial
+registration must already exist in the code commit's first parent, and that parent
+register must remain an unchanged byte prefix. Review must still establish that
+strategy development did not begin before registration; ancestry alone cannot prove that.
 Spec bytes must match at both the registered spec commit and the dispatch revision;
 config and manifest bytes must match their pins at the dispatch revision.
 

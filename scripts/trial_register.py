@@ -319,7 +319,8 @@ def check_ready(root: Path, trial_id: str, revision: str) -> dict[str, Any]:
     _digest(revision, 40)
     if _git(root, "cat-file", "-t", revision).strip() != b"commit":
         raise ValueError("revision must name a commit")
-    events = _parse(_git(root, "show", f"{revision}:docs/trials/register.jsonl"))
+    committed_register = _git(root, "show", f"{revision}:docs/trials/register.jsonl")
+    events = _parse(committed_register)
     matches = [e for e in events if e["trial_id"] == trial_id and e["event_type"] == "completion"]
     if len(matches) != 1:
         raise ValueError("one committed completion required")
@@ -329,6 +330,14 @@ def check_ready(root: Path, trial_id: str, revision: str) -> dict[str, Any]:
         raise ValueError("corrected trial requires a new registration before dispatch")
     payload = done["payload"]
     registration = next(e for e in events if e["event_id"] == payload["registration_id"])
+    try:
+        earlier_bytes = _git(root, "show", f"{payload['code_commit']}^1:docs/trials/register.jsonl")
+        earlier = _parse(earlier_bytes)
+        validate_append(earlier_bytes, committed_register)
+    except ValueError as exc:
+        raise ValueError("registration must precede the implementation commit") from exc
+    if registration not in earlier:
+        raise ValueError("identical registration must precede the implementation commit")
     spec = registration["payload"]["spec"]
     for ancestor in (payload["code_commit"], spec["commit"]):
         _git(root, "merge-base", "--is-ancestor", ancestor, revision)

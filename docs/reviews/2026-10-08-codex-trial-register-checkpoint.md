@@ -35,3 +35,12 @@ exact head and CI passed; the failed Claude action was not treated as approval.
 The implementation branch includes that main merge; external review of the actual
 register implementation is still required. Execution now follows Superpowers with
 a per-plan ledger under .superpowers/sdd/2026-10-08-v3-trial-register/.
+
+Independent review of ce89996 found late-registration acceptance and an omitted
+bootstrap seed. Both were reproduced by failing tests and fixed. Registration must
+exist before the pinned implementation commit and remain an unchanged byte prefix.
+The seed correction is appended with a replacement registration, retaining the old
+record; V3 declares 20261008 for its diagnostic bootstrap. The register is forced to
+LF on Windows. There are now 42 passing focused tests, with repository-wide Ruff,
+format and mypy clean. The earlier full-suite run was cancelled to apply these fixes
+and is not claimed as passing. Stable-head full-suite and byte-identity checks remain.

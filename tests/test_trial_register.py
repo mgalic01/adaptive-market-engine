@@ -220,7 +220,7 @@ def test_duplicate_run_id_rejected_even_with_new_event_id(tmp_path):
         load_events(path)
 
 
-@pytest.mark.parametrize("change", ["modify", "add"])
+@pytest.mark.parametrize("change", ["modify", "add", "late-registration"])
 def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change):
     import hashlib
     import subprocess
@@ -234,7 +234,6 @@ def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change
     git("config", "user.name", "Synthetic Test")
     git("config", "user.email", "test@example.invalid")
     for name, content in {
-        "src/engine.py": b"pass\n",
         "docs/spec.md": b"spec\n",
         "config/manifest.json": b"{}\n",
         "config/run.json": b"{}\n",
@@ -242,23 +241,39 @@ def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
+    if change == "late-registration":
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src/engine.py").write_bytes(b"pass\n")
     git("add", ".")
-    git("commit", "-m", "synthetic implementation")
+    git("commit", "-m", "frozen spec and inputs")
     code = git("rev-parse", "HEAD")
     reg = candidate()
     reg["payload"]["spec"].update(commit=code, sha256=hashlib.sha256(b"spec\n").hexdigest())
+    path = tmp_path / "docs/trials/register.jsonl"
+    path.parent.mkdir(parents=True)
+    if change != "late-registration":
+        path.write_bytes(encode(reg))
+        git("add", ".")
+        git("commit", "-m", "candidate registration")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src/engine.py").write_bytes(b"pass\n")
+        git("add", ".")
+        git("commit", "-m", "synthetic implementation")
+        code = git("rev-parse", "HEAD")
     done = completion()
     done["payload"].update(code_commit=code, code_sha256=code_digest({"src/engine.py": b"pass\n"}))
     for key in ("manifest", "config"):
         done["payload"][key]["sha256"] = hashlib.sha256(b"{}\n").hexdigest()
-    path = tmp_path / "docs/trials/register.jsonl"
-    path.parent.mkdir(parents=True)
     path.write_bytes(encode(reg, done))
     git("add", ".")
     with pytest.raises(ValueError):
         check_ready(tmp_path, "v3", code)
     git("commit", "-m", "registration")
     ready = git("rev-parse", "HEAD")
+    if change == "late-registration":
+        with pytest.raises(ValueError, match="registration"):
+            check_ready(tmp_path, "v3", ready)
+        return
     assert check_ready(tmp_path, "v3", ready)["event_id"] == "completed"
     (tmp_path / ("src/engine.py" if change == "modify" else "src/new.py")).write_bytes(b"changed\n")
     git("add", ".")
@@ -322,3 +337,9 @@ def test_cli_validate_and_append(tmp_path, capsys):
     assert main(["validate", "--register", str(path)]) == 0
     assert main(["append", "--register", str(path), "--event", str(event)]) == 1
     assert "duplicate" in capsys.readouterr().err
+
+
+def test_registered_v3_bootstrap_seed_matches_frozen_spec():
+    events = load_events(Path(__file__).resolve().parents[1] / "docs/trials/register.jsonl")
+    registration = next(e for e in reversed(events) if e["event_type"] == "registration")
+    assert registration["payload"]["seeds"] == [20261008]
