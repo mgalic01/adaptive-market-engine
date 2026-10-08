@@ -120,3 +120,16 @@ def test_first_full_month_requires_eligible_archive_with_both_calendar_boundarie
     enable(entries, "futures", "2020-04")
     coin = coverage_diagnostics(entries)["coins"]["BTCUSDT"]
     assert coin["first_full_futures_month_candidate"] == "2020-04"
+
+
+def test_delayed_portfolio_join_requires_full_futures_month():
+    from v3_inventory import coverage_diagnostics
+
+    entries = inventory()
+    for month in ("2020-01", "2020-02", "2020-03"):
+        enable(entries, "spot", month)
+        enable(entries, "futures", month, first_offset=3600000 if month == "2020-02" else 0)
+    enable(entries, "funding", "2020-02")
+    enable(entries, "funding", "2020-03")
+    coin = coverage_diagnostics(entries)["coins"]["BTCUSDT"]
+    assert coin["first_portfolio_month_candidate"] == "2020-03"

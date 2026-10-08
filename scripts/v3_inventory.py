@@ -62,7 +62,8 @@ def spot_reuse_pins(
 
     The caller must supply the hash of the committed source manifest. Missing
     archives retain an explicit None pin, preventing any new request. Present archives
-    retain their original digest even if unreadable. Canonical cache paths are derived, never accepted from JSON.
+    retain their original digest even if unreadable. Canonical cache paths are derived,
+    never accepted from JSON.
     """
     if len(raw) > 32 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != expected_sha256:
         raise ValueError("source manifest hash or size mismatch")
@@ -199,7 +200,13 @@ def coverage_diagnostics(entries: list[dict[str, Any]]) -> dict[str, Any]:
                 for kind in ("spot", "futures", "funding")
             )
         }
-        joined = min(eligible) if eligible else None
+        joinable = {
+            month
+            for month in eligible
+            if _first_full([indexed[("futures", symbol, month)]]) == month
+        }
+        joined = min(joinable) if joinable else None
+        eligible = {month for month in eligible if joined is not None and month >= joined}
         days = None
         if spot_start is not None and futures_start is not None:
             days = max(

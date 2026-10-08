@@ -107,5 +107,10 @@ synthetic end-to-end tests now exercise fresh and recovered snapshots with and
 without archives. Invalid recovery inputs fail before network construction.
 New-head review and full CI are still required; earlier verdicts do not transfer.
 
-Local correction checks: 108 focused tests pass; Ruff, formatting, mypy (75
+Local correction checks: 109 focused tests pass; Ruff, formatting, mypy (75
 source files), Bandit and report checks pass (0 report problems).
+
+The independent correction review found one adjacent membership defect: after a
+full month lacking funding, the joining month could itself be truncated. A failing
+synthetic regression reproduced it. Initial membership now also requires full
+futures calendar endpoints; later months keep the existing masking allowance.
