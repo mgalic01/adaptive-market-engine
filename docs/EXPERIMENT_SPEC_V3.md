@@ -55,6 +55,8 @@ Does trend-following, long and short, on a portfolio of the 10 coins this projec
   - ADAUSDT is not in that dataset, so its files are fetched in the same Bob task.
   - The kline integrity rules above apply to them too: the repairing reader, hour masking, the 17% rule and the per-day completeness rule. The funding rules apply to futures months only, since spot has no funding.
   - **A spot coin-month that is excluded** gives that coin a target of 0 for the same month, as a futures exclusion does, and its days drop out of the daily series.
+    - It is an excluded coin-month under every rule above: the mandatory close on the previous month's last day, its fallback to the next unmasked hour, the invalid run if there is none, and the record's list. The mandatory close overrides the no-bar rule (§4).
+    - **Re-entry:** the first decision whose fill falls after the month is made after the close of the month's last day, which has no spot bar. So the no-bar rule (§4) applies to it: the coin takes no order there, and trades again from the first decision whose decision day has a bar.
 - **Daily bars for signals** (§4) are aggregated from these spot 1h bars: R5 needs highs and lows, and the other rules use closes.
 - **The hold benchmark** (§8) uses the same spot 1h bars.
 - **Why spot for signals:** the slow rules need up to a year of history. Spot history from 2018-06, or from a coin's first full spot month if later, gives each coin more than a year before its futures data start (§3), except where the spot listing is too late for that. The fetch records each coin's first spot month and first futures month in the manifest, and the record lists every coin with less than a year of spot history before its futures start. SOLUSDT, whose spot is listed from 2020-08 in `full-range-2017-2024`, is expected to be one. There, a rule gives 0 until it has enough history (§4). Signals from spot let a coin trade from its first futures day. Fills, profit and loss, and funding all use futures prices.
@@ -150,7 +152,7 @@ At each daily decision, after day d's close:
   - **Order within an hour:** see "Order of events in an hour" below.
   - Funding is charged at exactly the timestamps in the file. A month whose file breaks its schedule is excluded (§2), so no included month has a missing payment.
 - **Order of events in an hour,** for every hour from the first to the last of the run:
-  1. **The open mark,** at the bar's open time, before any of the hour's fills or funding. The daily 01:00 sample (§8) is this mark, and no funding falls at 01:00.
+  1. **The open mark,** at the bar's open time, before any of the hour's fills or funding. The daily 01:00 sample (§8) is this mark, so it is taken before any funding in the 01:00 hour. With an 8-hour interval none falls there; with a 1-hour interval, which §2 allows, one does.
   2. **The pre-fill liquidation check,** on the quantities held at the open, at the open prices. A book that gapped through the threshold is liquidated (below), and the hour's fills are cancelled.
   3. **The hour's events,** in the order of their raw timestamps:
      - fills happen at the bar's open time: the daily decision's orders;
@@ -162,7 +164,7 @@ At each daily decision, after day d's close:
   6. **The post-fill liquidation check,** on the quantities after any delevering, at the bar's adverse extremes.
 
   **Within one hour's fills:**
-  - **The daily decision's orders come first.** Among them, every order that reduces or closes a position goes first, then every order that opens or increases one, each group in alphabetical order of symbol.
+  - **The daily decision's orders come first.** Among them, every order that reduces or closes a position goes first, then every order that opens or increases one, each group in alphabetical order of symbol. A flip's closing order is in the first group, and its opening order in the second.
   - **Then any delevering** (step 5): k is computed on the book after all of the hour's daily fills, and its orders follow at the same open, in alphabetical order of symbol. One delevering per hour at most. It targets 0.80, so a book above 1.0 is brought well under it.
 - **Marking:** equity is marked at every hour's open (the wallet and equity are defined under "Wallet and equity" below).
   - **A coin's mark price** in an hour is that hour's open.
