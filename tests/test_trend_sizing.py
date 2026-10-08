@@ -70,6 +70,33 @@ def test_sizing_records_pre_cap_weights_and_binding_caps():
     assert all(result.binding_caps[name] == frozenset({"coin", "gross"}) for name in names)
 
 
+@pytest.mark.parametrize("inactive", ["zero_signal", "excluded"])
+def test_diagnostic_volatility_is_measured_even_without_exposure(inactive):
+    from crypto_grid_bot.trend.sizing import size_portfolio
+
+    returns = {"BTCUSDT": history(amplitude=".01")}
+    active = size_portfolio({"BTCUSDT": D(1)}, returns, START + 99 * DAY)
+    result = size_portfolio(
+        {"BTCUSDT": D(0 if inactive == "zero_signal" else 1)},
+        returns,
+        START + 99 * DAY,
+        excluded=frozenset({"BTCUSDT"}) if inactive == "excluded" else frozenset(),
+    )
+    assert result.volatility == active.volatility
+    assert result.weights["BTCUSDT"] == 0
+
+
+def test_unavailable_volatility_is_not_reported_as_measured_zero():
+    from crypto_grid_bot.trend.sizing import size_portfolio
+
+    short = size_portfolio({"BTCUSDT": D(1)}, {"BTCUSDT": history(range(59))}, START + 99 * DAY)
+    constant = size_portfolio(
+        {"BTCUSDT": D(1)}, {"BTCUSDT": history(amplitude="0")}, START + 99 * DAY
+    )
+    assert short.volatility["BTCUSDT"] is None
+    assert constant.volatility["BTCUSDT"] == 0
+
+
 def test_sample_volatility_and_target_have_hand_calculated_values():
     from crypto_grid_bot.trend.sizing import size_portfolio
 

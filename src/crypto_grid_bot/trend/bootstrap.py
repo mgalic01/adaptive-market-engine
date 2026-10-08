@@ -35,7 +35,8 @@ def sharpe_interval(returns: Sequence[Decimal]) -> tuple[Decimal, Decimal] | Non
         raise ValueError("finite Decimal returns required")
     if len(returns) < 60:
         return None
-    rng = random.Random(20261008)
+    # Frozen statistical resampling seed; never used for secrets or security.
+    rng = random.Random(20261008)  # nosec B311
     scores = []
     for _ in range(10000):
         indices = resample_indices(len(returns), rng)

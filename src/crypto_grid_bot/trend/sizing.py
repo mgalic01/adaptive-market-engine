@@ -52,7 +52,7 @@ def daily_returns(bars: Sequence[Kline]) -> tuple[DailyReturn, ...]:
 class SizingResult:
     weights: dict[str, Decimal]
     raw_weights: dict[str, Decimal]
-    volatility: dict[str, Decimal]
+    volatility: dict[str, Decimal | None]
     common_days: tuple[int, ...]
     estimated_volatility: Decimal
     flat_reason: str | None
@@ -97,11 +97,9 @@ def size_portfolio(
         history[name] = rows
     with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
         raw = dict.fromkeys(names, ZERO)
-        volatility = dict.fromkeys(names, ZERO)
+        volatility: dict[str, Decimal | None] = dict.fromkeys(names, None)
         weights = dict.fromkeys(names, ZERO)
         for name in names:
-            if name in excluded or signals[name] == ZERO:
-                continue
             observations = list(history[name].values())[-60:]
             if len(observations) < 60:
                 continue
@@ -109,6 +107,8 @@ def size_portfolio(
             variance = sum(((value - mean) ** 2 for value in observations), ZERO) / Decimal(59)
             sigma = variance.sqrt() * Decimal(365).sqrt()
             volatility[name] = sigma
+            if name in excluded or signals[name] == ZERO:
+                continue
             if sigma != ZERO:
                 raw[name] = signals[name] * (ONE / sigma)
         active = [name for name in names if raw[name] != ZERO]
