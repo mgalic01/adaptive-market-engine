@@ -225,3 +225,69 @@ def inspect_archive(
         except (DataError, zipfile.BadZipFile) as exc:
             entry.update(status="excluded", rows=0, reasons=[str(exc)])
     return entry
+
+
+def assemble_manifest(
+    entries: list[dict[str, object]],
+    spot_snapshot: bytes,
+    futures_snapshot: bytes,
+    spec_sha256: str,
+) -> bytes:
+    """Canonical inventory artifact; coverage/close diagnostics must precede replay readiness."""
+    import json
+    from dataclasses import asdict
+
+    from crypto_grid_bot.trend.filters import parse_filter_snapshot
+
+    if re.fullmatch(r"[0-9a-f]{64}", spec_sha256) is None:
+        raise ValueError("invalid spec hash")
+    seen: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        kind, symbol, month = entry.get("kind"), entry.get("symbol"), entry.get("month")
+        if not isinstance(kind, str) or not isinstance(symbol, str) or not isinstance(month, str):
+            raise ValueError("invalid manifest entry identity")
+        identity = (kind, symbol, month)
+        if identity in seen:
+            raise ValueError("duplicate manifest entry")
+        seen.add(identity)
+        if entry.get("path") != archive_path(kind, symbol, month):
+            raise ValueError("manifest archive path mismatch")
+        status = entry.get("status")
+        if status not in {"eligible", "excluded", "missing"}:
+            raise ValueError("invalid manifest entry status")
+        digest = entry.get("sha256")
+        if status == "missing":
+            if digest is not None:
+                raise ValueError("missing archive cannot have a content hash")
+        elif not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("present archive requires SHA256")
+    snapshots = {"spot": spot_snapshot, "futures": futures_snapshot}
+    parsed = {
+        market: {
+            symbol: {key: str(value) for key, value in asdict(filters).items()}
+            for symbol, filters in parse_filter_snapshot(
+                raw, tuple(sorted(SYMBOLS)), futures=market == "futures"
+            ).items()
+        }
+        for market, raw in snapshots.items()
+    }
+    document = {
+        "schema_version": 1,
+        "experiment": "v3",
+        "spec_sha256": spec_sha256,
+        "replay_ready": False,
+        "pending": [
+            "reviewed first-full-month coverage",
+            "mandatory-close diagnostics",
+            "committed snapshot paths and verified local file inventory",
+        ],
+        "entries": sorted(
+            entries, key=lambda item: (str(item["symbol"]), str(item["month"]), str(item["kind"]))
+        ),
+        "snapshots": {
+            market: {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+            for market, raw in snapshots.items()
+        },
+        "filters": parsed,
+    }
+    return (json.dumps(document, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")

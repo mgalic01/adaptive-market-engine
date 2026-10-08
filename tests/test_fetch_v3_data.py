@@ -258,3 +258,43 @@ def test_manifest_missing_and_corrupt_are_distinct():
     archive = synthetic_archive("futures")
     with pytest.raises(ValueError, match="hash"):
         inspect_archive(replace(archive, sha256="0" * 64), "futures", "BTCUSDT", "2024-02")
+
+
+def test_manifest_assembly_is_deterministic_and_pins_snapshots():
+    import json
+
+    from fetch_v3_data import SYMBOLS, assemble_manifest, inspect_archive
+
+    symbols = [
+        {
+            "symbol": symbol,
+            "quoteAsset": "USDT",
+            "contractType": "PERPETUAL",
+            "filters": [
+                {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "100", "stepSize": "0.001"},
+                {
+                    "filterType": "MARKET_LOT_SIZE",
+                    "minQty": "0.001",
+                    "maxQty": "100",
+                    "stepSize": "0",
+                },
+                {"filterType": "MIN_NOTIONAL", "notional": "5"},
+            ],
+        }
+        for symbol in sorted(SYMBOLS)
+    ]
+    snapshot = json.dumps({"symbols": symbols}).encode()
+    entries = [
+        inspect_archive(synthetic_archive(kind), kind, "BTCUSDT", "2024-02")
+        for kind in ("spot", "futures", "funding")
+    ]
+    a = assemble_manifest(entries, snapshot, snapshot, "a" * 64)
+    b = assemble_manifest(list(reversed(entries)), snapshot, snapshot, "a" * 64)
+    assert a == b
+    doc = json.loads(a)
+    assert doc["snapshots"]["futures"]["sha256"] == hashlib.sha256(snapshot).hexdigest()
+    assert len(doc["filters"]["futures"]) == 10
+    assert doc["filters"]["futures"]["BTCUSDT"]["step_size"] == "0.001"
+    assert doc["replay_ready"] is False
+    with pytest.raises(ValueError, match="duplicate"):
+        assemble_manifest([*entries, entries[0]], snapshot, snapshot, "a" * 64)

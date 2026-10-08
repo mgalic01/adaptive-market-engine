@@ -60,3 +60,9 @@ bad row. The V3 bridge now keeps only in-month mask hours before aggregation; th
 reader's documented contract says out-of-month hours do not count. A failing test
 reproduced the previous rejection and now passes. Focused data/helper suite: 71
 passed, strict mypy clean. The legacy reader remains unchanged.
+
+Deterministic inventory manifest assembly added: stable sorted JSON, duplicate entry
+rejection, canonical path/hash checks, raw snapshot hashes and parsed limits for all
+ten symbols. It remains replay_ready=false until coverage, close diagnostics and
+verified local snapshot/archive paths are integrated. Combined focused suite: 72
+passed; Ruff, mypy and Bandit clean. This is not a completed replay manifest.
