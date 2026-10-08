@@ -5,6 +5,8 @@ Index: Output-only selected Uptrend entry attribution, separating selected oppor
 Owner request: start implementing the diagnosis proposal. Named writer: Codex Desktop.
 Base: `0978e911141989fbbbad4600dc9430de7ee3c41d`.
 
+Detailed evidence: [V2 diagnosis and artifact provenance](../backtests/2026-10-08-spec-v2-diagnosis.md). Published at the owner's request after initially being omitted from this PR; recommendations are historical, with V2 closure explicitly noted.
+
 ## Why this exists
 
 The scored BTC result had 140 Uptrend selections but 48 completed trades. Those
