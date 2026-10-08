@@ -57,12 +57,12 @@ def spot_reuse_pins(
     expected_sha256: str,
     cache_root: Path,
     requests: list[tuple[str, str, str]],
-) -> dict[str, PinnedArchive]:
+) -> dict[str, PinnedArchive | None]:
     """Read metadata only; every requested non-ADA spot row must be accounted for.
 
     The caller must supply the hash of the committed source manifest. Missing
-    archives have no byte pin. Present archives retain their original digest even
-    if unreadable. Canonical cache paths are derived, never accepted from JSON.
+    archives retain an explicit None pin, preventing any new request. Present archives
+    retain their original digest even if unreadable. Canonical cache paths are derived, never accepted from JSON.
     """
     if len(raw) > 32 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != expected_sha256:
         raise ValueError("source manifest hash or size mismatch")
@@ -75,7 +75,7 @@ def spot_reuse_pins(
     if not isinstance(document, dict) or not isinstance(document.get("files"), list):
         raise ValueError("source manifest must contain files")
     seen: set[tuple[str, str]] = set()
-    pins: dict[str, PinnedArchive] = {}
+    pins: dict[str, PinnedArchive | None] = {}
     for row in document["files"]:
         if not isinstance(row, dict):
             raise ValueError("invalid source manifest row")
@@ -93,6 +93,7 @@ def spot_reuse_pins(
             raise ValueError("source row URL is not canonical spot archive")
         status, digest = row.get("status"), row.get("sha256")
         if status == "missing" and digest is None:
+            pins[path] = None
             continue
         if (
             status not in {"ok", "unreadable"}
@@ -117,14 +118,16 @@ def _month_name(number: int) -> str:
 
 
 def _first_full(rows: list[dict[str, Any]]) -> str | None:
-    observed = [row for row in rows if type(row.get("first_open_ms")) is int]
-    if not observed:
-        return None
-    first = min(observed, key=lambda row: row["first_open_ms"])
-    month = str(first["month"])
-    start, _ = month_bounds_ms(month)
-    # A partial initial archive cannot establish a full initial calendar month.
-    return month if first["first_open_ms"] == start else _month_name(_month_number(month) + 1)
+    candidates = []
+    for row in rows:
+        start, end = month_bounds_ms(row["month"])
+        if (
+            row.get("status") == "eligible"
+            and row.get("first_open_ms") == start
+            and row.get("last_open_ms") == end - 3_600_000
+        ):
+            candidates.append(str(row["month"]))
+    return min(candidates) if candidates else None
 
 
 def _unmasked(row: dict[str, Any]) -> frozenset[int]:
@@ -138,9 +141,9 @@ def _unmasked(row: dict[str, Any]) -> frozenset[int]:
 def coverage_diagnostics(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Derive review candidates from a complete fixed inventory, never authorize replay.
 
-    The earliest observed candle establishes a conservative candidate first full
-    month. An unavailable initial archive can hide earlier history; the raw inventory
-    and candidates require review. These diagnostics do not claim a listing date.
+    An eligible archive spanning both calendar boundaries establishes a conservative
+    candidate first full month. An unavailable initial archive can hide earlier history;
+    the raw inventory and candidates require review. These diagnostics do not claim a listing date.
     Missing close hours invalidate a run only when that run needs to close a position.
     Futures and spot-hold execution availability are reported separately.
     """
@@ -257,11 +260,20 @@ def build_inventory(
     source_spot_sha256: str,
     spec_sha256: str,
     transport: InventoryTransport,
+    *,
+    futures_snapshot: bytes | None = None,
 ) -> Path:
     """Complete the collection diagnostics, leaving reviewed replay pins outstanding."""
     requests = planned_requests()
     reuse = spot_reuse_pins(source_spot_manifest, source_spot_sha256, cache_root, requests)
-    path = collect_inventory(output_dir, requests, transport, spec_sha256, reuse=reuse)
+    path = collect_inventory(
+        output_dir,
+        requests,
+        transport,
+        spec_sha256,
+        reuse=reuse,
+        futures_snapshot=futures_snapshot,
+    )
     document = json.loads(path.read_bytes())
     document["source_spot_manifest_sha256"] = source_spot_sha256
     document["coverage"] = coverage_diagnostics(document["entries"])
@@ -361,6 +373,8 @@ def main(argv: list[str] | None = None) -> int:
     fetch.add_argument("--spec-sha256", required=True)
     fetch.add_argument("--spot-manifest", type=Path, required=True)
     fetch.add_argument("--spot-manifest-sha256", required=True)
+    fetch.add_argument("--reuse-futures-snapshot", type=Path)
+    fetch.add_argument("--futures-snapshot-sha256")
     args = parser.parse_args(argv)
     if args.command == "verify":
         print(json.dumps(verify_inventory(args.output, args.manifest_sha256), sort_keys=True))
@@ -384,6 +398,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if bool(args.reuse_futures_snapshot) != bool(args.futures_snapshot_sha256):
+        raise ValueError("saved futures snapshot and hash must be supplied together")
+    futures_snapshot = None
+    if args.reuse_futures_snapshot is not None:
+        from crypto_grid_bot.trend.filters import parse_filter_snapshot
+
+        futures_snapshot = _read_pinned(
+            args.reuse_futures_snapshot, args.futures_snapshot_sha256, 8 * 1024 * 1024
+        )
+        parse_filter_snapshot(futures_snapshot, tuple(sorted(SYMBOLS)), futures=True)
     _read_pinned(args.spec_file, args.spec_sha256, 1024 * 1024)
     source = _read_pinned(args.spot_manifest, args.spot_manifest_sha256, 32 * 1024 * 1024)
     # Validate the complete reuse map before constructing the concrete transport.
@@ -395,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
         args.spot_manifest_sha256,
         args.spec_sha256,
         V3Transport(),
+        futures_snapshot=futures_snapshot,
     )
     print(path)
     return 0

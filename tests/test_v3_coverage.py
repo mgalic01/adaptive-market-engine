@@ -103,3 +103,20 @@ def test_incomplete_or_duplicate_inventory_cannot_produce_coverage():
         coverage_diagnostics(entries[:-1])
     with pytest.raises(ValueError, match="duplicate"):
         coverage_diagnostics([*entries, entries[0]])
+
+
+@pytest.mark.parametrize("excluded", [False, True])
+def test_first_full_month_requires_eligible_archive_with_both_calendar_boundaries(excluded):
+    from v3_inventory import coverage_diagnostics
+
+    entries = inventory()
+    enable(entries, "spot", "2018-06")
+    row = enable(entries, "futures", "2020-01", first_offset=3600000)
+    if excluded:
+        row.update(status="excluded", first_open_ms=month_bounds_ms("2020-01")[0])
+    # February is absent; March ends early despite beginning on its first hour.
+    row = enable(entries, "futures", "2020-03")
+    row["last_open_ms"] -= 3600000
+    enable(entries, "futures", "2020-04")
+    coin = coverage_diagnostics(entries)["coins"]["BTCUSDT"]
+    assert coin["first_full_futures_month_candidate"] == "2020-04"

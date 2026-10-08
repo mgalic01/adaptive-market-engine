@@ -84,11 +84,13 @@ def test_spot_reuse_rejects_wrong_manifest_digest_and_duplicate_identity(tmp_pat
         spot_reuse_pins(raw, hashlib.sha256(raw).hexdigest(), tmp_path, requests)
 
 
-def test_spot_reuse_records_missing_as_no_pin_and_rejects_reserved_request(tmp_path):
+def test_spot_reuse_records_missing_as_explicit_pin_and_rejects_reserved_request(tmp_path):
     from v3_inventory import spot_reuse_pins
 
     raw = manifest_bytes(status="missing", sha256=None)
     digest = hashlib.sha256(raw).hexdigest()
-    assert spot_reuse_pins(raw, digest, tmp_path, [("spot", "BTCUSDT", "2024-02")]) == {}
+    assert spot_reuse_pins(raw, digest, tmp_path, [("spot", "BTCUSDT", "2024-02")]) == {
+        "/data/spot/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2024-02.zip": None
+    }
     with pytest.raises(ValueError):
         spot_reuse_pins(raw, digest, tmp_path, [("spot", "BTCUSDT", "2025-01")])
