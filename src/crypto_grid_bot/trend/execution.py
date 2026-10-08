@@ -186,10 +186,13 @@ def execute_hour(
                 break
     if reason is None:
         adverse = dict(prices)
+        favourable = dict(prices)
         for symbol, position in account.positions.items():
             if position.quantity != 0 and symbol in extremes:
                 low, high = extremes[symbol]
                 adverse[symbol] = low if position.quantity > 0 else high
+                favourable[symbol] = high if position.quantity > 0 else low
+        marks.append(("favourable", account.mark(favourable)))
         mark = account.check_liquidation(adverse, hour_ms + 3599999)
         marks.append(("adverse", mark))
         if account.liquidation is not None:

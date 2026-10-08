@@ -189,5 +189,6 @@ def test_funding_times_are_sorted_and_each_has_its_own_check():
         "post_fill",
         "funding",
         "funding",
+        "favourable",
         "adverse",
     ]
