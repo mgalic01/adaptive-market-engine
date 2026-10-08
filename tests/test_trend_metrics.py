@@ -4,6 +4,15 @@ from decimal import Decimal as D
 
 import pytest
 
+from crypto_grid_bot.trend.runner import EquityState
+
+
+def P(*values):
+    return [
+        EquityState(i * 86400000, "terminal" if i == len(values) - 1 else "open", D(v), D(v), D(0))
+        for i, v in enumerate(values)
+    ]
+
 
 def test_profit_factor_zero_and_infinite_boundaries():
     from crypto_grid_bot.trend.metrics import profit_factor
@@ -66,8 +75,8 @@ def test_summary_keeps_trade_and_daily_profit_factors_separate():
     from crypto_grid_bot.trend.metrics import summarize
 
     result = summarize(
-        [(0, D(100)), (86400000, D(110)), (172800000, D(105))],
-        [D(100), D(120), D(105)],
+        [(0, D(100)), (86400000, D(110)), (259200000, D(105))],
+        P(100, 110, 120, 105),
         [D(20), D(-15), D(0)],
     )
     assert result.net_pnl == 5
@@ -83,14 +92,14 @@ def test_summary_requires_path_to_end_at_terminal_equity():
     from crypto_grid_bot.trend.metrics import summarize
 
     with pytest.raises(ValueError, match="terminal"):
-        summarize([(0, D(100)), (86400000, D(105))], [D(100), D(99)], [])
+        summarize([(0, D(100)), (86400000, D(105))], P(100, 99), [])
 
 
 def test_summary_rejects_missing_trade_results():
     from crypto_grid_bot.trend.metrics import summarize
 
     with pytest.raises(ValueError, match="reconcile"):
-        summarize([(0, D(100)), (86400000, D(105))], [D(100), D(105)], [])
+        summarize([(0, D(100)), (86400000, D(105))], P(100, 105), [])
 
 
 def test_finished_runner_to_summary_includes_censored_trade_costs():
@@ -118,7 +127,7 @@ def test_summary_rejects_mismatched_initial_equity_even_when_trades_reconcile():
     from crypto_grid_bot.trend.metrics import summarize
 
     with pytest.raises(ValueError, match="initial"):
-        summarize([(0, D(100)), (86400000, D(110))], [D(90), D(110)], [D(20)])
+        summarize([(0, D(100)), (86400000, D(110))], P(90, 110), [D(20)])
 
 
 @pytest.mark.parametrize("bad_quantity", [False, True])
@@ -185,7 +194,7 @@ def test_real_round_trip_retains_accepted_trade_residual():
 def test_trade_reconciliation_accepts_inclusive_bound_and_reports_residual(residual):
     from crypto_grid_bot.trend.metrics import summarize
 
-    result = summarize([(0, D(100)), (86400000, D(100))], [D(100), D(100)], [residual])
+    result = summarize([(0, D(100)), (86400000, D(100))], P(100, 100), [residual])
     assert result.trade_reconciliation_residual == residual
 
 
@@ -196,4 +205,20 @@ def test_trade_reconciliation_rejects_outside_bound(residual):
     from crypto_grid_bot.trend.metrics import summarize
 
     with pytest.raises(ValueError, match="reconcile"):
-        summarize([(0, D(100)), (86400000, D(100))], [D(100), D(100)], [residual])
+        summarize([(0, D(100)), (86400000, D(100))], P(100, 100), [residual])
+
+
+def test_summary_rejects_interior_sample_absent_from_equity_path():
+    from crypto_grid_bot.trend.metrics import summarize
+
+    with pytest.raises(ValueError, match="sample.*path"):
+        summarize([(0, D(100)), (86400000, D(1000)), (172800000, D(110))], P(100, 90, 110), [D(10)])
+
+
+def test_summary_rejects_matching_value_at_wrong_path_time():
+    from crypto_grid_bot.trend.metrics import summarize
+
+    with pytest.raises(ValueError, match="sample.*path"):
+        summarize(
+            [(0, D(100)), (86400000, D(120)), (259200000, D(110))], P(100, 110, 120, 110), [D(10)]
+        )
