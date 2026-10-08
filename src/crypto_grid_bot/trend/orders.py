@@ -97,6 +97,8 @@ def plan_rebalance(
         orders: list[OrderIntent] = []
         refusals: list[str] = []
         adjustments: list[str] = []
+        if unrounded != ZERO and target == ZERO:
+            adjustments.append("quantity_rounded_to_zero")
 
         def reduce(magnitude: Decimal) -> None:
             minimum = (filters.min_quantity / step).to_integral_value(rounding=ROUND_CEILING) * step
@@ -111,7 +113,7 @@ def plan_rebalance(
 
         def increase(quantity: Decimal) -> None:
             if quantity == ZERO:
-                if intended_increase is not None:
+                if intended_increase is not None and "quantity_rounded_to_zero" not in adjustments:
                     adjustments.append("quantity_rounded_to_zero")
                 return
             if abs(quantity) < filters.min_quantity:

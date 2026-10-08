@@ -60,3 +60,14 @@ frozen text explicitly tests the complete quantity change and only names minimum
 quantity as its invalid-split condition. Bob and independent review found this
 faithful to the frozen text. It is not a claim that each child's minimum notional
 matches live exchange enforcement.
+
+## Zero-rounded sizing exits
+
+The next Cloud review identified the reduction counterpart: a nonzero target
+outside the band can round to zero and close the held position. It now carries
+`quantity_rounded_to_zero` even though it has no intended increase. Two long/short
+regressions failed before the fix and pass afterward; a third verifies explicit
+zero targets and within-band no-ops are not mislabeled. All31 order tests and43
+sizing/signal tests pass. Ruff, format, mypy and the report checker pass. This
+changes decision evidence only; emitted quantities and costs are unchanged.
+The future lifecycle consumer still applies the frozen exit-trigger precedence.
