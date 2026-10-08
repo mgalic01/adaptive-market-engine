@@ -149,7 +149,7 @@ At each daily decision, after day d's close:
    - **The band is 0.01 at every size m,** deliberately not scaled. It is a turnover control, not a size, and A5 compares runs at the same m (§8).
 5. **Quantity:** `target quantity = target weight × equity ÷ open`, where equity is the account's mark at the fill hour's open, before that hour's fills, and open is that hour's unslipped open (§6).
    - The quantity rounds toward zero to the symbol's quantity step (§2: the market-order step).
-   - **The market order's minimum and maximum quantity:** an order that opens or increases a position is not made if its quantity change is below the minimum quantity, and this is reported as a minimum-notional refusal is. An order above the maximum quantity is split into orders of at most the maximum, all at the same fill price, each paying its fee, and this is reported. At this account size that is not expected to happen.
+   - **The market order's minimum and maximum quantity:** an order that opens or increases a position is not made if its quantity change is below the minimum quantity. That is a minimum-quantity refusal. It is recorded in the decision record (§8) and counts in the minimum account size (§8). An order above the maximum quantity is split into orders of at most the maximum, all at the same fill price, each paying its fee, and this is reported. At this account size that is not expected to happen.
    - A trade that opens or increases a position on one side is not made if its notional, `|quantity change| × open`, is below the symbol's minimum notional, and it is reported. A flip is never tested as one trade (below).
    - **A trade that reduces or closes a position** is always made. It ignores the minimum notional, as Binance's reduce-only exception allows, but it obeys the minimum quantity, which that exception does not cover:
      - a reduction smaller than the minimum quantity is raised to it, or to the whole position if that is smaller;
@@ -195,7 +195,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 
   **Within one hour's trading:**
   - **The daily decision's orders come first.** Among them, every order that reduces or closes a position goes first, then every order that opens or increases one, each group in alphabetical order of symbol. A flip's closing order is in the first group, and its opening order in the second.
-  - **Then any delevering** (step 4): k is computed on the book after all of the hour's daily fills, and its orders follow at the same open, in alphabetical order of symbol. At most one delevering at step 4, and one after each funding event (step 5), each computed the same way on the book at that point. Each targets 0.80 × m, so a book above m is brought well under it.
+  - **Then any delevering** (step 4): k is computed on the book after all of the hour's daily fills, and its orders follow at the same open, in alphabetical order of symbol. At most one delevering at step 4, and one after each funding event (step 5), each computed the same way on the book at that point. For example, with an 8-hour funding interval, an hour has at most one funding event, so at most two deleverings. Each targets 0.80 × m, so a book above m is brought well under it.
 - **Marking:** equity is marked at every hour's open (the wallet and equity are defined under "Wallet and equity" below).
   - **A coin's mark price** in an hour is that hour's open.
   - **In a masked or missing hour,** which an included month may have (up to 17%), the coin's mark is the open of its last unmasked hour before it. Its funding price is the same (above), and its liquidation check uses that same price, since the hour has no usable high or low.
@@ -205,7 +205,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - If that equity is ≤ 1% of the gross open notional, the account is liquidated. A flat book, with gross notional 0, has nothing to liquidate, so every liquidation check skips it.
   - **Any liquidation,** at any of the checks above, is recorded at the hour of the check, with each position's price in that check. The run is invalid from then on (§8), and no later order is simulated. The gross open notional is `Σ |quantity| × price` at the same prices as the check's equity.
   - **No liquidation fill is simulated.** The run stops at the check: every open position stays open, marked at its price in that check, and that is the run's terminal mark. No fee or slippage is charged for it. Its lifecycle is recorded as censored, with liquidation as the reason (§8), and the accounting identities are checked at that mark.
-  - The 1% threshold is Claude's design choice, a simplified stand-in for Binance's tiered maintenance margin. That margin varies by symbol and position size, and it is not fetched, since its endpoint needs a signed request. So whether 1% is above or below a given symbol's real rate is not known, and the record says so. Checking at the open and at the bar's adverse extremes, all at once, leans against v3.
+  - The 1% threshold is Claude's design choice, a simplified stand-in for Binance's tiered maintenance margin. That margin varies by symbol and position size, and it is not fetched, since its endpoint needs a signed request. So whether 1% is above or below a given symbol's real rate is not known, and the record says so. If a real rate is later found to be above 1%, that is recorded as a limitation of the result, and the runs are not repeated. Checking at the open and at the bar's adverse extremes, all at once, leans against v3.
   - It is rare at m = 1, and more likely at m = 2 and 3: the larger the book, the smaller the move against it that reaches the threshold. The record gives each run's lowest margin ratio (§8).
 - **The leverage limit m, on the actual book:** at every hourly mark, gross leverage is `Σ |quantity| × mark ÷ equity`.
   - If it exceeds m, the account delevers **in the same hour, at the same open** (step 4 of the hour's order, before any funding), and again right after any funding event that takes it above m (step 5).
@@ -335,7 +335,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - block lengths are geometric, with a mean of 20 days, and blocks wrap around the end of the series (circular, as in Politis and Romano);
   - with fewer than 60 daily returns, no interval is reported;
   - 10,000 resamples;
-  - CPython's `random.Random(20261008)`, one generator for all resamples, as the only source of randomness;
+  - CPython's `random.Random(20261008)` as the only source of randomness. **Each series' interval uses its own generator, freshly seeded:** the main test's, the m = 1 run's and the hold benchmark's, and any other reported one. One generator serves all 10,000 resamples of its series. So the order in which series are processed does not change any interval, and series of equal length share the same resample paths;
   - **each resample,** of the n daily returns `r[0..n−1]`, in this exact draw order: `i = rng.randrange(n)`, and the first element is `r[i]`. Then, for each of the next n − 1 elements: `u = rng.random()`; if `u < 1/20`, a new block starts at `i = rng.randrange(n)`; otherwise `i = (i + 1) mod n`. The element is `r[i]`. Each resample has exactly n elements, so no block is truncated or restarted in any other way;
   - each resample's Sharpe ratio uses §8's formula, including its 0 for a standard deviation of 0;
   - the 2.5th and 97.5th percentiles of the 10,000 sorted Sharpe ratios, by the nearest-rank method: the 250th and the 9,750th values, counting from 1;
@@ -347,13 +347,13 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - it holds them to the terminal mark (§8). It never sells, and a coin that joins the portfolio later is not added;
   - it ignores excluded months. Where a coin has no spot bar, it is marked at its last unmasked spot price;
 - **variant D,** quoted from spec v1's published runs, not rerun. Its windows and engine differ from v3's, and the record says so. R1L, R1's long-only version (§4), is the like-for-like comparison inside v3;
-- **the minimum account size:** computed by scaling, not by rerunning, on the main test's 10,000-USDT out-of-sample run. For each intended opening or increase of a position, with its unrounded quantity change `Δq` and its notional `|Δq| × open`, the required size is the larger of two ratios, × 10,000 USDT:
+- **the minimum account size:** computed by scaling, not by rerunning, on the main test's 10,000-USDT out-of-sample run. For each intended opening or increase of a position, with its unrounded quantity change `Δq` and its notional `|Δq| × open`, the required size is the largest of three ratios, × 10,000 USDT:
   - the symbol's minimum notional ÷ that notional;
   - the symbol's quantity step ÷ `|Δq|`;
   - the symbol's minimum quantity ÷ `|Δq|`.
 
   The largest required size, rounded up to the next 10 USDT, is reported.
-  - **Every intended opening or increase counts,** made or not: one that was filled, one refused for minimum notional (§5), and one whose quantity rounded to 0 at the step, including a flip's opening order. A refusal or a rounding to 0 gives a value above 10,000 USDT, which shows that even 10,000 USDT was too small for it.
+  - **Every intended opening or increase counts,** made or not: one that was filled, one refused for minimum notional or minimum quantity (§5), and one whose quantity rounded to 0 at the step, including a flip's opening order. A refusal or a rounding to 0 gives a value above 10,000 USDT, which shows that even 10,000 USDT was too small for it.
   - If the run has no opening or increasing order at all, the record says so, and no size is reported.
   - It ignores how rounding and refusals at a different account size would change the later path, and the record says so.
 - **the capital that covers hosting** (R1, as in spec v1 §6), for the main test and for m = 1 and m = 3: `5 ÷ the mean out-of-sample monthly return`, as a fraction, from the monthly returns above. It is the capital at which the mean month would pay €5 of hosting, or "not reachable" if the mean is 0 or less. Running on the owner's own PC costs €0. As in v1, it treats the USDT return as the EUR return, so it ignores the EUR/USDT exchange rate. It is separate from the minimum account size above, which concerns the exchange's order filters;
@@ -364,12 +364,12 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
   - the signal of every rule R1–R6 (R1L–R6L follow from them), and which of the 12 is picked;
   - σ, the raw weight, the scaled weight and which cap bound;
   - the final target, and whether the band skipped the trade;
-  - any minimum-notional refusal, or flat-after-flip;
+  - any minimum-notional or minimum-quantity refusal, any quantity that rounded to 0 at the step, or flat-after-flip;
   - the fill hour (and whether it was deferred), the filled quantity, the fill price and the fee.
 - **Every position's lifecycle.** A position runs from flat to non-zero, and ends back at flat or at a flip. For each one:
   - the coin and side;
   - every fill, with its time, quantity and price;
-  - the exit's trigger, exactly one, the first that applies in this order: an excluded month; a flip; a pick change; the signal going to 0; sizing (a non-zero signal whose target is 0 under §5 steps 1–2, or whose target quantity rounds to 0); or a delevering that rounds the position to 0;
+  - the exit's trigger, exactly one, the first that applies in this order: an excluded month; a flip; a pick change; the signal going to 0; sizing (a non-zero signal whose target is 0 under §5 steps 1–2, or whose target quantity rounds to 0); a delevering that rounds the position to 0, or that the minimum quantity enlarges to the whole position; or the minimum quantity, when it enlarges an ordinary reduction to the whole position (§5);
   - **a position still open when a run ends,** at its last hour or at a liquidation (§6), is not closed: no fill, fee or slippage is charged. It is marked at the terminal mark (§8, or the liquidation check's prices), its profit and loss stays unrealised, and its record is labelled censored, with the reason (end of run or liquidation) and that unrealised profit and loss. This holds for training runs and for the out-of-sample run;
   - its duration;
   - its maximum favourable and maximum adverse excursion, in USDT, before fees and funding. For each hour the position is open, two values are taken: the profit and loss realised so far in the lifecycle, plus the remaining position's unrealised profit and loss at the bar's favourable extreme, and the same at its adverse extreme. Both use the quantity and average entry price in force during that hour, and earlier hours are never recomputed against a later average entry. The excursions are the maximum and the minimum of these hourly values;
