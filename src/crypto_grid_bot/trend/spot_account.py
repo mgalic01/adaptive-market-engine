@@ -22,6 +22,7 @@ class SpotFill:
     price: Decimal
     fee: Decimal
     reason: str | None
+    open_price: Decimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +145,9 @@ class SpotAccount:
             if cash < 0:
                 raise ValueError("cash affordability calculation overspent")
             holding = self.holdings.get(symbol, ZERO) + signed
-            result = SpotFill(symbol, timestamp_ms, quantity, signed, price, fee, reason)
+            result = SpotFill(
+                symbol, timestamp_ms, quantity, signed, price, fee, reason, open_price
+            )
             self.cash = cash
             self.holdings[symbol] = holding
             self.fills.append(result)
