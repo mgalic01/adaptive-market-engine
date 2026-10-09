@@ -98,6 +98,8 @@ def test_ineligible_coins_are_absent_and_all_invalid_pick_targets_flat():
     decision = book.at(T + 66 * DAY, None, pick_changed=True)
     assert decision.targets == {"BTCUSDT": D(0)}
     assert decision.exit_reasons["BTCUSDT"] == frozenset({"pick_change"})
+    assert decision.sizing is not None
+    assert decision.sizing.volatility["BTCUSDT"] > 0
 
 
 def test_daily_decision_flows_into_next_hour_runner_fill():

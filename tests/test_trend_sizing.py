@@ -55,6 +55,48 @@ def history(days=range(100), amplitude="0.5"):
     return tuple(DailyReturn(START + day * DAY, value if day % 2 else -value) for day in days)
 
 
+def test_sizing_records_pre_cap_weights_and_binding_caps():
+    from crypto_grid_bot.trend.sizing import size_portfolio
+
+    names = [f"COIN{i}" for i in range(10)]
+    result = size_portfolio(
+        dict.fromkeys(names, D(1)),
+        {name: history(amplitude="0.001") for name in names},
+        START + 99 * DAY,
+    )
+    assert getattr(result, "scaled_weights", {})
+    assert all(result.scaled_weights[name] > D(".2") for name in names)
+    assert all(result.weights[name] == D(".16") for name in names)
+    assert all(result.binding_caps[name] == frozenset({"coin", "gross"}) for name in names)
+
+
+@pytest.mark.parametrize("inactive", ["zero_signal", "excluded"])
+def test_diagnostic_volatility_is_measured_even_without_exposure(inactive):
+    from crypto_grid_bot.trend.sizing import size_portfolio
+
+    returns = {"BTCUSDT": history(amplitude=".01")}
+    active = size_portfolio({"BTCUSDT": D(1)}, returns, START + 99 * DAY)
+    result = size_portfolio(
+        {"BTCUSDT": D(0 if inactive == "zero_signal" else 1)},
+        returns,
+        START + 99 * DAY,
+        excluded=frozenset({"BTCUSDT"}) if inactive == "excluded" else frozenset(),
+    )
+    assert result.volatility == active.volatility
+    assert result.weights["BTCUSDT"] == 0
+
+
+def test_unavailable_volatility_is_not_reported_as_measured_zero():
+    from crypto_grid_bot.trend.sizing import size_portfolio
+
+    short = size_portfolio({"BTCUSDT": D(1)}, {"BTCUSDT": history(range(59))}, START + 99 * DAY)
+    constant = size_portfolio(
+        {"BTCUSDT": D(1)}, {"BTCUSDT": history(amplitude="0")}, START + 99 * DAY
+    )
+    assert short.volatility["BTCUSDT"] is None
+    assert constant.volatility["BTCUSDT"] == 0
+
+
 def test_sample_volatility_and_target_have_hand_calculated_values():
     from crypto_grid_bot.trend.sizing import size_portfolio
 
@@ -96,6 +138,8 @@ def test_covariance_calendar_overlap_boundary(common):
     assert (result.weights["BTCUSDT"] > 0) == (common == 40)
     if common == 39:
         assert result.flat_reason == "insufficient_common_days"
+        assert result.scaled_weights == dict.fromkeys(result.weights, None)
+        assert result.binding_caps == dict.fromkeys(result.weights, frozenset())
 
 
 def test_zero_and_excluded_signals_do_not_reduce_covariance_overlap():
@@ -118,6 +162,8 @@ def test_zero_volatility_and_exact_offset_singular_book_are_flat():
 
     zero = size_portfolio({"BTCUSDT": D(1)}, {"BTCUSDT": history(amplitude="0")}, START + 99 * DAY)
     assert zero.weights == {"BTCUSDT": D(0)}
+    assert zero.scaled_weights == {"BTCUSDT": None}
+    assert zero.binding_caps == {"BTCUSDT": frozenset()}
     result = size_portfolio(
         {"BTCUSDT": D(1), "ETHUSDT": D(-1)},
         {"BTCUSDT": history(), "ETHUSDT": history()},
@@ -125,6 +171,8 @@ def test_zero_volatility_and_exact_offset_singular_book_are_flat():
     )
     assert result.weights == {"BTCUSDT": D(0), "ETHUSDT": D(0)}
     assert result.flat_reason == "zero_portfolio_volatility"
+    assert result.scaled_weights == dict.fromkeys(result.weights, None)
+    assert result.binding_caps == dict.fromkeys(result.weights, frozenset())
 
 
 @pytest.mark.parametrize("multiple", [1, 2, 3])

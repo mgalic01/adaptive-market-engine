@@ -1,7 +1,7 @@
 """Pure volatility sizing for frozen V3; no account mutation or order execution."""
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
@@ -52,10 +52,12 @@ def daily_returns(bars: Sequence[Kline]) -> tuple[DailyReturn, ...]:
 class SizingResult:
     weights: dict[str, Decimal]
     raw_weights: dict[str, Decimal]
-    volatility: dict[str, Decimal]
+    volatility: dict[str, Decimal | None]
     common_days: tuple[int, ...]
     estimated_volatility: Decimal
     flat_reason: str | None
+    scaled_weights: dict[str, Decimal | None] = field(default_factory=dict)
+    binding_caps: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 def size_portfolio(
@@ -95,11 +97,11 @@ def size_portfolio(
         history[name] = rows
     with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
         raw = dict.fromkeys(names, ZERO)
-        volatility = dict.fromkeys(names, ZERO)
+        volatility: dict[str, Decimal | None] = dict.fromkeys(names, None)
         weights = dict.fromkeys(names, ZERO)
+        unscaled: dict[str, Decimal | None] = dict.fromkeys(names, None)
+        binding: dict[str, frozenset[str]] = dict.fromkeys(names, frozenset())
         for name in names:
-            if name in excluded or signals[name] == ZERO:
-                continue
             observations = list(history[name].values())[-60:]
             if len(observations) < 60:
                 continue
@@ -107,17 +109,23 @@ def size_portfolio(
             variance = sum(((value - mean) ** 2 for value in observations), ZERO) / Decimal(59)
             sigma = variance.sqrt() * Decimal(365).sqrt()
             volatility[name] = sigma
+            if name in excluded or signals[name] == ZERO:
+                continue
             if sigma != ZERO:
                 raw[name] = signals[name] * (ONE / sigma)
         active = [name for name in names if raw[name] != ZERO]
         if not active:
-            return SizingResult(weights, raw, volatility, (), ZERO, "no_nonzero_raw_weights")
+            return SizingResult(
+                weights, raw, volatility, (), ZERO, "no_nonzero_raw_weights", unscaled, binding
+            )
         common = set(range(day_ms - 59 * DAY_MS, day_ms + DAY_MS, DAY_MS))
         for name in active:
             common.intersection_update(history[name])
         days = tuple(sorted(common))
         if len(days) < 40:
-            return SizingResult(weights, raw, volatility, days, ZERO, "insufficient_common_days")
+            return SizingResult(
+                weights, raw, volatility, days, ZERO, "insufficient_common_days", unscaled, binding
+            )
         means = {
             name: sum((history[name][day] for day in days), ZERO) / Decimal(len(days))
             for name in active
@@ -141,15 +149,25 @@ def size_portfolio(
             raise ValueError("negative portfolio variance at frozen Decimal precision")
         estimate = variance.sqrt()
         if estimate == ZERO:
-            return SizingResult(weights, raw, volatility, days, ZERO, "zero_portfolio_volatility")
+            return SizingResult(
+                weights, raw, volatility, days, ZERO, "zero_portfolio_volatility", unscaled, binding
+            )
         scale = Decimal("0.20") * multiple / estimate
         cap = Decimal("0.10") * multiple
+        scaled: dict[str, Decimal | None] = dict.fromkeys(names, ZERO)
         for name in active:
             target = raw[name] * scale
+            scaled[name] = target
+            if abs(target) > cap:
+                binding[name] = frozenset({"coin"})
             weights[name] = max(-cap, min(cap, target))
         gross = sum((abs(value) for value in weights.values()), ZERO)
         gross_cap = Decimal("0.80") * multiple
         if gross > gross_cap:
             factor = gross_cap / gross
+            binding = {
+                name: causes | {"gross"} if weights[name] != ZERO else causes
+                for name, causes in binding.items()
+            }
             weights = {name: value * factor for name, value in weights.items()}
-        return SizingResult(weights, raw, volatility, days, estimate, None)
+        return SizingResult(weights, raw, volatility, days, estimate, None, scaled, binding)

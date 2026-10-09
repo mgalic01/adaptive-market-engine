@@ -2,7 +2,7 @@
 
 from bisect import bisect_right
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -23,6 +23,7 @@ class DailyDecision:
     signals: dict[str, Decimal]
     exit_reasons: dict[str, frozenset[str]]
     sizing: SizingResult | None
+    all_rule_signals: dict[str, dict[str, Decimal]] = field(default_factory=dict)
 
 
 class DailyDecisions:
@@ -85,11 +86,15 @@ class DailyDecisions:
         day = decision_ms - DAY
         eligible = sorted(symbol for symbol, first in self._first.items() if first <= month)
         signals = {}
+        all_rule_signals = {}
         available = set()
         returns = {}
         for symbol in eligible:
             index = bisect_right(self._days[symbol], day) - 1
             point = self._signals[symbol][index] if index >= 0 else None
+            all_rule_signals[symbol] = {
+                name: point.rule(name) if point is not None else ZERO for name in RULES
+            }
             signals[symbol] = (
                 point.rule(rule)
                 if point is not None and rule is not None and symbol not in forced
@@ -101,12 +106,8 @@ class DailyDecisions:
             # Last 60 observations also contain every available return in the
             # last 60 calendar days (at most one return per day).
             returns[symbol] = self._returns[symbol][max(0, end - 60) : end]
-        sizing = (
-            None
-            if rule is None
-            else size_portfolio(signals, returns, day, excluded=forced, multiple=multiple)
-        )
-        weights = dict.fromkeys(eligible, ZERO) if sizing is None else sizing.weights
+        sizing = size_portfolio(signals, returns, day, excluded=forced, multiple=multiple)
+        weights = sizing.weights
         targets = {
             symbol: weights[symbol]
             for symbol in eligible
@@ -131,4 +132,4 @@ class DailyDecisions:
             for symbol in eligible:
                 if symbol not in targets:
                     reasons[symbol] = frozenset({"pick_change"})
-        return DailyDecision(targets, signals, reasons, sizing)
+        return DailyDecision(targets, signals, reasons, sizing, all_rule_signals)
