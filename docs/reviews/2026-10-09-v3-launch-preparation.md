@@ -68,3 +68,7 @@ Bob reviews the results, arithmetic and A1-A5 conclusions; the publisher emits
 uncertified diagnostics, not automatic approval. Report all results and economic
 limitations, including an unfavorable outcome. No tuning, 2025+ market data,
 exchange credentials or live orders. No historical replay has yet occurred.
+
+## Local pre-dispatch validation
+
+Committed readiness passed at ba8553cc96adea245f0469998efd8dd348c20f5e; task hash matches the bootstrap. All ten configuration entries exactly match manifest coverage candidates; first test 2021-07 and 14 quarters confirmed. The two focused suites (trial register and registered inputs) passed under Python 3.12.14. Bootstrap syntax compiled without execution. No archives were loaded and no strategy run occurred.
