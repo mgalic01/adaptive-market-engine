@@ -7,3 +7,8 @@ config/datasets/*.digest.txt text eol=lf
 
 # Preserve exact append-only register bytes on every platform.
 docs/trials/register.jsonl text eol=lf
+
+# V3 delivery preserves raw collected JSON bytes and their SHA-256 identities.
+# Readable coverage and verification summaries accompany the large snapshots.
+config/datasets/v3-20261009/inventory.manifest.json -text diff
+config/datasets/v3-20261009/snapshots/*.json -text -diff

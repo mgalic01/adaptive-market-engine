@@ -1,0 +1,15 @@
+{
+  "source": "Original same-chat completed CommandExecution event; selected fields only, recovered after collection. Not a signed attestation.",
+  "timestamp": "2026-10-09T15:52:54.512Z",
+  "event_id": "exec-cd0b5b88-fb84-4c00-8758-624c2c6f67b6",
+  "command": [
+    "C:\\Users\\Marko\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe",
+    "-Command",
+    "$paths = @('E:/adaptive-market-engine/v3/collector-6fae092','E:/adaptive-market-engine/v3/inventory-20261009-02','E:/adaptive-market-engine/v3/logs-20261009-02')\n foreach ($path in $paths) { if (Test-Path -LiteralPath $path) { throw \"Existing recovery path requires inspection: $path\" } }\n if (Get-ChildItem 'E:/adaptive-market-engine/v3/spot-cache' -Force) { throw 'Spot cache no longer empty' }\n git worktree add --detach E:/adaptive-market-engine/v3/collector-6fae092 6fae09299bdcb382a26e02d094c7271cbfb60ebb\n New-Item -ItemType Directory -Path 'E:/adaptive-market-engine/v3/logs-20261009-02' | Out-Null"
+  ],
+  "cwd": "file:///C:/Users/Marko/.codex/worktrees/v3-snapshot-limit",
+  "status": "completed",
+  "stdout": "Preparing worktree (detached HEAD 6fae092)\nHEAD is now at 6fae092 Fix bounded V3 snapshot ceiling across collection and loading\n",
+  "stderr": "",
+  "exit_code": 0
+}

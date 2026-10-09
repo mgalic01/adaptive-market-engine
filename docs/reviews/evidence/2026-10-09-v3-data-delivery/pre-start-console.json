@@ -1,0 +1,14 @@
+{
+  "id": "exec-178594fe-cbcb-4b73-bc9e-f00b28950ee5",
+  "command": [
+    "C:\\Users\\Marko\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe",
+    "-Command",
+    "git rev-parse HEAD\n git status --porcelain --untracked-files=no\n Get-Content 'E:/adaptive-market-engine/v3/logs-20261009-02/preparation.json'\n Test-Path 'E:/adaptive-market-engine/v3/inventory-20261009-02'\n Get-CimInstance Win32_Process -Filter \"Name = 'python.exe'\" | Select-Object ProcessId,CommandLine\n Get-PSDrive E | Select-Object Name,Free"
+  ],
+  "cwd": "file:///E:/adaptive-market-engine/v3/collector-6fae092",
+  "status": "completed",
+  "stdout": "6fae09299bdcb382a26e02d094c7271cbfb60ebb\n{\r\n  \"at\": \"2026-10-09T15:53:12.448740+00:00\",\r\n  \"collector_commit\": \"6fae09299bdcb382a26e02d094c7271cbfb60ebb\",\r\n  \"task_head\": \"14f572db0faa3d168a14225173e214189e346d57\",\r\n  \"python\": \"3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]\",\r\n  \"locked_versions_match\": true,\r\n  \"raw_input_hashes_match\": true,\r\n  \"owner_recovery_start\": null,\r\n  \"network_attempt_started\": false,\r\n  \"preserved_attempt\": \"inventory-20261009-01\"\r\n}\r\nFalse\r\n\r\nName         Free\r\n----         ----\r\nE    729168007680\r\n\r\n",
+  "stderr": "",
+  "captured_at_utc": "2026-10-09T17:05:23.095Z",
+  "source": "Original same-chat CommandExecution event, extracted after collection; not a rerun"
+}

@@ -1,0 +1,14 @@
+{
+  "command": [
+    "E:\\adaptive-market-engine\\v3\\python312\\Scripts\\python.exe",
+    "scripts/v3_inventory.py",
+    "verify",
+    "--output",
+    "E:\\adaptive-market-engine\\v3\\inventory-20261009-02",
+    "--manifest-sha256",
+    "78d997a2f0a6e83705df339cc2ec0a0421faebdc18ee4337de8f07400a4b013a"
+  ],
+  "manifest_sha256": "78d997a2f0a6e83705df339cc2ec0a0421faebdc18ee4337de8f07400a4b013a",
+  "network": false,
+  "started_at_utc": "2026-10-09T20:05:51.515469+00:00"
+}

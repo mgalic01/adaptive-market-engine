@@ -1,0 +1,11 @@
+{
+  "at": "2026-10-09T15:53:12.448740+00:00",
+  "collector_commit": "6fae09299bdcb382a26e02d094c7271cbfb60ebb",
+  "task_head": "14f572db0faa3d168a14225173e214189e346d57",
+  "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+  "locked_versions_match": true,
+  "raw_input_hashes_match": true,
+  "owner_recovery_start": null,
+  "network_attempt_started": false,
+  "preserved_attempt": "inventory-20261009-01"
+}
