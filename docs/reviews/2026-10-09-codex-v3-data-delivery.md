@@ -96,3 +96,16 @@ The raw manifest now has a complete text diff while retaining `-text` to prevent
 checkout conversion. Only the large raw exchange snapshots suppress their diff;
 their parsed filters, sizes and hashes remain in the readable evidence. Reviewers
 can inspect all 2,710 manifest records, not merely the coverage projection.
+
+## Review follow-up: fresh collector checkout
+
+The original [checkout creation record](evidence/2026-10-09-v3-data-delivery/checkout-creation.json)
+records the successful command at 2026-10-09 15:52:54 UTC. Before creating the
+worktree, its explicit Test-Path guard throws if the collector, attempt output or
+log directory already exists. Git then reports the detached checkout at 6fae092
+and exits successfully. This establishes fresh creation rather than relying on
+the later tracked-only status check to exclude pre-existing untracked code.
+The record is recovered original output, not a retrospective rerun. It does not
+provide continuous filesystem surveillance between preparation and collection;
+the existing tracked checks and execution wrappers retain their stated scope.
+No archive request, replacement or replay was made for this follow-up.
