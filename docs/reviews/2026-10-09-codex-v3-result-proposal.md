@@ -76,3 +76,24 @@ Completed: implementation, deterministic mapping and byte-preservation tests.
 Next: parent review and integration. Still separate: complete history/scenario
 reconciliation and verdict. No push, PR, merge, market data, E: access or replay
 was performed for this task. Revert removes this optional proposal API only.
+
+## Attribution review clarification
+
+Attempt journals have no trial/completion pins. Therefore the input directory's
+association with the supplied registration is a caller-proposed, unverified claim.
+The index and every result event's provenance carry
+`attempt_registration_binding=caller_proposed_unverified`. Matching document hashes
+and schema-valid events do not authenticate the actual run's registration. Another
+otherwise valid registration can label the same observed directory only with this
+explicit unverified attribution. The regression test exercises that case.
+
+Before canonical append, a separately reviewed invocation record must establish
+the evidence-directory identity and registration/code/manifest pins actually used.
+The exporter neither creates that evidence nor approves an append. The future
+registered launcher must retain that invocation linkage. No new association API or
+journal schema is introduced in this proposal-only batch.
+
+Follow-up validation: the alternative-registration regression failed first because
+that explicit label was absent. After the fix, all 50 exporter tests passed in
+3.91 seconds; Ruff lint/format, mypy, Bandit, report validation and diff checks
+passed. No schema or journal changes were made.

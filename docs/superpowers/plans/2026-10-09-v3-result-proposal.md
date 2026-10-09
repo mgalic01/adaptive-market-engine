@@ -27,3 +27,8 @@ ResultProposal(index: bytes, events: bytes). No output writer or canonical appen
 Limits: committed-document provenance and exclusive quiescent ownership are caller
 prerequisites. Observed history is not all historical attempts, authenticated
 report derivation, audit recomputation or a verdict. No data access is authorized.
+
+Review clarification: journals have no registration pins. Label directory-to-trial
+attribution caller_proposed_unverified in the index and every event provenance.
+Even an otherwise valid alternative registration can yield only an unverified
+proposal; canonical append requires separately reviewed invocation linkage.

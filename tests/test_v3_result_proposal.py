@@ -346,3 +346,23 @@ def test_read_error_does_not_mutate_input(context, monkeypatch):
         with pytest.raises(PermissionError):
             build(context)
     assert {p.name: p.read_bytes() for p in context[0].iterdir()} == before
+
+
+def test_alternative_valid_registration_remains_explicitly_unverified(context):
+    root, register, docs = context
+    add(root)
+    events = [json.loads(line) for line in register.splitlines()]
+    for row in events:
+        row["trial_id"] = "another-valid-trial"
+    other_register = encode(*events)
+    other_docs = replace(docs, trial_id="another-valid-trial")
+    proposal = build((root, other_register, other_docs))
+    index = json.loads(proposal.index)
+    assert index["attempt_registration_binding"] == "caller_proposed_unverified"
+    for raw in proposal.events.splitlines():
+        row = json.loads(raw)
+        assert row["trial_id"] == "another-valid-trial"
+        provenance = json.loads(row["payload"]["provenance"])
+        assert provenance["attempt_registration_binding"] == "caller_proposed_unverified"
+    validate_append(other_register, other_register + proposal.events)
+    assert (root.parent / "register.jsonl").read_bytes() == register

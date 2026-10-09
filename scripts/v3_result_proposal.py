@@ -6,6 +6,9 @@ Pending dispositions are caller-reviewed claims, not authorization or inferred
 execution outcomes/timestamps. Success means a recorded run completed, not strategy
 acceptance. Full-size hold unavailability never decides A5 or an experiment verdict.
 Observed local attempts do not prove all-history coverage or report derivation.
+Journals have no registration pins: directory-to-trial attribution is explicitly
+caller-proposed and unverified. Canonical append requires separately reviewed
+invocation linkage; schema-valid proposal bytes are not append approval.
 """
 
 import hashlib
@@ -265,6 +268,7 @@ def build_result_proposal(
                 "schema": 1,
                 "status": "result_event_proposal_uncertified",
                 "experiment_verdict": None,
+                "attempt_registration_binding": "caller_proposed_unverified",
                 "status_scope": "recorded_run_only",
                 "identities": identities,
                 "register_sha256": _hash(register_bytes),
@@ -277,7 +281,13 @@ def build_result_proposal(
         )
         + b"\n"
     )
-    provenance = _encoded({"index_sha256": _hash(index), **identities}).decode()
+    provenance = _encoded(
+        {
+            "index_sha256": _hash(index),
+            "attempt_registration_binding": "caller_proposed_unverified",
+            **identities,
+        }
+    ).decode()
     events = []
     for attempt in attempts:
         run_id = attempt["run_id"]
