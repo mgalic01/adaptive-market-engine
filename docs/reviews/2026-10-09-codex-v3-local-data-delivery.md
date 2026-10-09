@@ -1,15 +1,14 @@
 # V3 local data delivery proposal
 
-Index: Local retention proposal; owner selected E: on 2026-10-09; fresh spec pins, executor access, reviewed task and owner start remain pending.
+Index: Current E: delivery proposal with verified pins and both-snapshot recovery; executor access or an owner-approved local Codex exception, reviewed task and owner start remain pending.
 
 ## Purpose and status
 
 **Update, 2026-10-09:** the owner selected E:, with dedicated root
 `E:/adaptive-market-engine/v3`; see [the decision record](2026-10-09-owner-v3-storage-and-hold-timing.md).
-This does not start the download. The spec pin below records this proposal's older
-version and must be replaced with the amended spec's raw Git pin in the final task.
-Do not execute this historical proposal as a current task. Snapshot reuse is now
-implemented; the earlier implementation gap below is superseded by PR 230.
+This does not start the download. Pins below were refreshed from main after PR 247.
+This remains a proposal, not an executable task. Both-snapshot reuse is implemented
+by PR 230.
 
 This prepares the evidence needed to judge the frozen V3 experiment. It does not
 change its strategies, sizing, criteria or reserved-window boundary. It is a
@@ -21,7 +20,7 @@ executor. Confirm that Bob has access to the selected local directory before
 finalizing that task. This proposal is not that executable task file.
 
 Collector source inspected at main
-`f6d4c5bd34340985a386b6c5dd03e1eb8f874bac`:
+`3b573ba0326a2487b43f7b00d18a1458b320029b`:
 `scripts/v3_inventory.py` and `scripts/fetch_v3_data.py`. This pins the collector
 for this proposal only. It is not the completing registration of replay code.
 
@@ -34,10 +33,9 @@ a Git manifest alone cannot recover an upstream archive that later disappears.
 
 ## Storage and inputs
 
-Do not put the archive inventory on C: with its approximately 5.3 GiB free at this
-check. E: and F: have ample observed free space, but the owner's choice is pending.
-Use a dedicated absolute root on the selected drive and record it in the execution
-handoff. Do not delete existing data to make room. The request plan is 2,710
+Use the selected root `E:/adaptive-market-engine/v3`. E: had 729,308,557,824 bytes
+(679.2 GiB) free at the follow-up check. Recheck before execution; free space is not
+an estimate of data size. Do not delete existing data to make room. The request plan is 2,710
 archive identities; at the collector's 64 MiB per-file ceiling, the theoretical
 archive ceiling is about 169.4 GiB, not an estimate of actual download size.
 Reserve additional space for snapshots, metadata and a retained backup.
@@ -52,14 +50,12 @@ Input SHA-256 pins (raw Git blob bytes at the collector commit):
 
 | Input | SHA-256 |
 |---|---|
-| `docs/EXPERIMENT_SPEC_V3.md` | `1c541b38cb1858c8ac8262d9233813f31ef8c084bca74c017f8cf6bb23e42bca` |
+| `docs/EXPERIMENT_SPEC_V3.md` | `9f559da41b33b704d22f1322ca6018ec06ba50f79a8270c81d35fb3cfe9a7b31` |
 | `config/datasets/full-range-2017-2024.manifest.json` | `069024759d2e999cd09801a17961c12f6b6f57e73bb66900748364261260b94e` |
 | Ordered request plan, compact JSON | `9a9bc20f1383aadd9fb9f0739dc4af1f8b07bc88a198f989d1eca5c6612e069d` |
 
-Windows checkout conversion changes the spec's bytes to CRLF. The observed
-checkout hash was `666b7409dcf09bd34a7d6062d405794887d34724fe484764318729fdbee4083e`;
-replacing CRLF with LF reproduces the registered Git blob exactly. Do not change
-the registered pin to accept that checkout hash. Export the raw blob with Python's
+Windows checkout conversion can change the spec's bytes to CRLF. Do not change
+the registered pin to accept a checkout hash. Export the raw blob with Python's
 `subprocess.check_output(["git", "show", commit + ":" + path])` and write it in
 binary mode. Avoid PowerShell text redirection, which can change encoding or
 line endings. Verify the exported bytes against the table before use.
@@ -107,14 +103,12 @@ replacement futures snapshot to make a run succeed.
 For an interrupted or failed attempt, first establish that its worker has stopped.
 If a valid raw futures snapshot was retained, a separately authorized recovery
 uses a fresh output directory plus both `--reuse-futures-snapshot <saved path>`
-and `--futures-snapshot-sha256 <verified digest>`. The CLI checks the digest and
-filter contents before constructing the transport, and the futures endpoint is
-not called. **Current recovery is incomplete for the frozen once-only filter
-rule:** it still fetches spot filters again. Before authorizing any recovery,
-add and review equivalent byte-pinned spot snapshot reuse; preserve both original
-responses. Do not use the existing futures-only recovery command to imply that
-both snapshots are retained. This is a required implementation follow-up, not an
-exception approved by this proposal. Recovery does not checkpoint archive
+and `--futures-snapshot-sha256 <verified digest>`, plus
+`--reuse-spot-snapshot <saved path>` and `--spot-snapshot-sha256 <verified digest>`
+when the original spot response is available. The CLI validates supplied digests
+and filter contents before constructing transport. With both saved responses,
+neither filter endpoint is called. Preserve both original responses and do not
+silently replace either. Recovery does not checkpoint archive
 downloads. The original attempt stays intact. If no valid snapshot survives,
 stop and report the state to the owner;
 another futures request needs an explicit decision, not an automatic retry.
@@ -146,6 +140,32 @@ replay code may the completing registration event pin that manifest and reviewed
 code to the trial ID. `replay_ready: false` in preparation is deliberate. No
 historical strategy replay, parameter selection or reserved-window access is
 authorized by this proposal or by successful inventory verification.
+
+## Executor decision required before an executable task
+
+The frozen spec sections 2 and 9 name Bob as the owner-started collector. The
+existing GitHub Bob runner cannot write to the owner's local E: drive and discards
+large raw artifacts after publishing its small report. A local Bob session with
+access to E: would preserve the rule; that access has not been established.
+
+If no such session is available, the recommended narrow replacement is:
+**allow Codex Desktop to execute this one owner-started, independently reviewed,
+pinned local data-collection task on E:, while Bob reviews the task and the
+delivered manifest/coverage.** Retain all endpoint restrictions, both original
+snapshots, fresh attempt directories, failure evidence, reserved-window prohibition
+and separate completing-registration gate. This does not delegate trading or
+change any strategy or acceptance criterion.
+
+Downside: Codex would prepare and execute the collector, reducing separation of
+implementation and execution. Independent Bob review and retained byte hashes help
+audit it but do not eliminate that loss of independence. Keeping Bob as executor
+instead requires a confirmed local Bob session or a separately reviewed transfer
+mechanism from the remote runner; either adds setup work.
+
+This paragraph is a proposal, not approval. If the owner chooses the exception,
+record it in the frozen spec and append a successor candidate registration before
+execution, then review the exact executable task. Ask for the final download go
+only after that task is concrete and reviewed. No market-data request has run.
 
 ## Checks performed for this proposal
 
