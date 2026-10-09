@@ -1,6 +1,7 @@
 # Experiment specification v3: trend-following, long and short, on perpetual futures (frozen 2026-10-08)
 
 **Status:** frozen on 2026-10-08. Claude wrote it from the owner's design decisions of that day (§11).
+**Current amendment version:** `v3-full-size-hold-timing-2026-10-09`, approved by the owner before historical execution; see [the decision record](reviews/2026-10-09-owner-v3-storage-and-hold-timing.md). The candidate registration must pin this amended file before its implementation.
 - **How it was frozen:**
   - The owner approved the spec: "approve" (§11, decision 14).
   - PR #207 settled every finding of 33 review rounds. At its final head, `e01eb2e`, Codex found no major issues, Bob reported NO ISSUES, the automated review approved, and CI passed. It landed as `2675941`.
@@ -360,6 +361,7 @@ Each formula is evaluated in the order it is written, with `Decimal` rounding af
 - the picks quarter by quarter;
 - **plain equal-weight buy-and-hold at full size:** a spot account of 10,000 USDT, with the hold benchmark's spot rules (fees, slippage, steps, minimum notional), but no volatility target, no caps and no rebalancing:
   - at 01:00 UTC on the first test quarter's first day, it buys an equal share of its cash in each coin in the portfolio then, fees included;
+    - **Owner amendment, 2026-10-09:** if a coin lacks that scheduled spot bar, its purchase waits for the first available unmasked spot hour before the experiment ends. Reserve its original equal share of starting cash, fees included; do not redistribute it. Record scheduled and actual purchase times. If no such bar exists, report this diagnostic unavailable with the affected coin and reason. No reserved-window bar may be used. The disclosed downside is changed entry timing and exposure, potentially different for each coin; this exception applies only to the full-size hold diagnostic.
   - it holds them to the terminal mark (§8). It never sells, and a coin that joins the portfolio later is not added;
   - it ignores excluded months. Where a coin has no spot bar, it is marked at its last unmasked spot price;
 - **variant D,** quoted from spec v1's published runs, not rerun. Its windows and engine differ from v3's, and the record says so. R1L, R1's long-only version (§4), is the like-for-like comparison inside v3;
