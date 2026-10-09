@@ -67,6 +67,79 @@ class WalkForwardResult:
     out_of_sample: ReplayResult
 
 
+def _recorded_replay(
+    decisions: DailyDecisions,
+    filters: Mapping[str, OrderFilters],
+    hourly: Mapping[str, Sequence[Kline]],
+    funding: Mapping[int, Mapping[str, Decimal]],
+    attempt: Attempt,
+    record: Callable[[Attempt], None],
+) -> ReplayResult:
+    record(attempt)
+    result = None
+    try:
+        result = replay_window(
+            decisions,
+            filters,
+            hourly,
+            funding,
+            attempt.start_ms,
+            attempt.end_ms_exclusive,
+            dict(attempt.pick_schedule),
+            multiple=attempt.multiple,
+            cost_multiple=attempt.cost_multiple,
+        )
+        result = reconcile_replay(result)
+        if result.reason is not None and result.reason not in INVALID:
+            raise ValueError("unknown strategy-invalid outcome")
+    except Exception as exc:
+        if isinstance(exc, ReplayExecutionError):
+            result = exc.partial_result
+        record(
+            replace(attempt, state="finished", result=result, error=f"{type(exc).__name__}: {exc}")
+        )
+        raise
+    record(replace(attempt, state="finished", result=result))
+    return result
+
+
+def replay_fixed_rules(
+    decisions: DailyDecisions,
+    filters: Mapping[str, OrderFilters],
+    hourly: Mapping[str, Sequence[Kline]],
+    funding: Mapping[int, Mapping[str, Decimal]],
+    main_picks: Mapping[int, str | None],
+    end_ms_exclusive: int,
+    *,
+    record: Callable[[Attempt], None],
+) -> dict[str, ReplayResult]:
+    """Report all twelve fixed rules over the main test's supplied boundaries.
+
+    Each fresh m=2/base-cost account uses one rule in every quarter. This does
+    not select a winner, replace main picks or authorize historical dispatch.
+    Invalid strategies remain in the results; engine failures abort the menu.
+    """
+    if not main_picks:
+        raise ValueError("main-test quarter boundaries are required")
+    boundaries = tuple(sorted(main_picks))
+    prefix = uuid4().hex
+    results = {}
+    for rule in RULES:
+        attempt = Attempt(
+            f"{prefix}-fixed-{rule}",
+            "fixed_rule",
+            rule,
+            boundaries[0],
+            end_ms_exclusive,
+            None,
+            None,
+            state="started",
+            pick_schedule=tuple((stamp, rule) for stamp in boundaries),
+        )
+        results[rule] = _recorded_replay(decisions, filters, hourly, funding, attempt, record)
+    return results
+
+
 def replay_sensitivities(
     decisions: DailyDecisions,
     filters: Mapping[str, OrderFilters],
@@ -92,72 +165,22 @@ def replay_sensitivities(
     results = {}
     for multiple, cost in ((1, 1), (3, 1), (1, 2), (2, 2), (3, 2)):
         run_id = f"{prefix}-sensitivity-m{multiple}-cost{cost}"
-        record(
-            Attempt(
-                run_id,
-                "sensitivity",
-                None,
-                start,
-                end_ms_exclusive,
-                None,
-                None,
-                multiple,
-                cost,
-                "started",
-                schedule,
-            )
+        attempt = Attempt(
+            run_id,
+            "sensitivity",
+            None,
+            start,
+            end_ms_exclusive,
+            None,
+            None,
+            multiple,
+            cost,
+            "started",
+            schedule,
         )
-        result = None
-        try:
-            result = replay_window(
-                decisions,
-                filters,
-                hourly,
-                funding,
-                start,
-                end_ms_exclusive,
-                fixed_picks,
-                multiple=multiple,
-                cost_multiple=cost,
-            )
-            result = reconcile_replay(result)
-            if result.reason is not None and result.reason not in INVALID:
-                raise ValueError("unknown strategy-invalid outcome")
-            if result.reason is None and result.runner is None:
-                raise ValueError("successful replay has no account evidence")
-        except Exception as exc:
-            if isinstance(exc, ReplayExecutionError):
-                result = exc.partial_result
-            record(
-                Attempt(
-                    run_id,
-                    "sensitivity",
-                    None,
-                    start,
-                    end_ms_exclusive,
-                    result,
-                    f"{type(exc).__name__}: {exc}",
-                    multiple,
-                    cost,
-                    pick_schedule=schedule,
-                )
-            )
-            raise
-        record(
-            Attempt(
-                run_id,
-                "sensitivity",
-                None,
-                start,
-                end_ms_exclusive,
-                result,
-                None,
-                multiple,
-                cost,
-                pick_schedule=schedule,
-            )
+        results[multiple, cost] = _recorded_replay(
+            decisions, filters, hourly, funding, attempt, record
         )
-        results[multiple, cost] = result
     return results
 
 
