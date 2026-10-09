@@ -15,6 +15,11 @@ from crypto_grid_bot.trend.acceptance import (
 )
 from crypto_grid_bot.trend.cost_diagnostics import MinimumAccountSize, minimum_account_size
 from crypto_grid_bot.trend.decisions import DailyDecisions
+from crypto_grid_bot.trend.full_size_hold import FullSizeHoldResult
+from crypto_grid_bot.trend.full_size_hold_report import (
+    FullSizeHoldReport,
+    build_full_size_hold_report,
+)
 from crypto_grid_bot.trend.metrics import sample_returns
 from crypto_grid_bot.trend.orchestration import WalkForwardResult
 from crypto_grid_bot.trend.replay import ReplayResult
@@ -31,7 +36,7 @@ REQUIRED = (
     "Committed completing registration and matching code/manifest/trial identities",
     "Registered hourly bars, funding, masks and both market filter snapshots",
     "All training score artifacts and attempt history, including failed attempts",
-    "Full-size equal-weight hold diagnostic (missing first purchase bar decision pending)",
+    "Full-size equal-weight hold diagnostic",
 )
 
 
@@ -70,6 +75,7 @@ class ExperimentReport:
     invalid_criterion_accounts: tuple[str, ...]
     intervals: dict[str, tuple[Decimal, Decimal] | None]
     minimum_account_size: MinimumAccountSize | None
+    full_size_hold: FullSizeHoldReport | None = None
     variant_d: HistoricalComparison = VARIANT_D
     required_before_verdict: tuple[str, ...] = REQUIRED
     verdict: None = None
@@ -139,6 +145,7 @@ def build_experiment_report(
     first_months: Mapping[str, str],
     futures_exclusions: Mapping[str, frozenset[str]] | None = None,
     spot_exclusions: Mapping[str, frozenset[str]] | None = None,
+    full_size_hold: FullSizeHoldResult | None = None,
 ) -> ExperimentReport:
     """Require all report scenarios and frozen calendar, but leave verdict unset.
 
@@ -161,6 +168,14 @@ def build_experiment_report(
     }
     selection = selection_report(walk.training, walk.picks, first_months, union)
     start, end = min(walk.picks), month_bounds_ms("2025-01")[0]
+    full_report = None
+    if full_size_hold is not None:
+        if full_size_hold.start_ms != start or full_size_hold.end_ms_exclusive != end:
+            raise ValueError("full-size hold period disagrees")
+        start_month = selection.quarters[0].test_month
+        if set(full_size_hold.budgets) != {s for s, m in first_months.items() if m <= start_month}:
+            raise ValueError("full-size hold initial membership disagrees")
+        full_report = build_full_size_hold_report(full_size_hold)
     source = DailyDecisions(spot_bars, first_months, union)
     all_results = {(2, 1): walk.out_of_sample, **sensitivities}
     main = walk.out_of_sample.runner
@@ -259,6 +274,8 @@ def build_experiment_report(
         invalid,
         intervals,
         minimum_account_size(main) if walk.out_of_sample.reason is None else None,
+        full_size_hold=full_report,
+        required_before_verdict=REQUIRED if full_report is None else REQUIRED[:-1],
     )
 
 
@@ -327,6 +344,42 @@ def experiment_markdown(report: ExperimentReport) -> str:
     lines += [
         "",
         "Slippage is already embedded in fill prices; it is not deducted again from net PnL.",
+    ]
+    if report.full_size_hold is not None:
+        h = report.full_size_hold
+        main = report.futures["m2-cost1"]
+        main_drawdown = (
+            (main.worst_drawdown.fraction if main.worst_drawdown else Decimal(0))
+            if main.reason is None
+            else None
+        )
+        lines += [
+            "",
+            "## Full-size hold diagnostic",
+            "",
+            "Reported only; this is not the risk-matched A5 benchmark.",
+            "",
+            "| Main strategy maximum drawdown | Full-size hold maximum drawdown |",
+            "|---:|---:|",
+            f"| {_number(main_drawdown, percent=True)} | {_number(h.max_drawdown, percent=True)} |",
+            "",
+            "| Status | Maximum drawdown | Net PnL (USDT) | Cash (USDT) | Fees (USDT) |",
+            "|---|---:|---:|---:|---:|",
+            f"| {_cell(h.reason or 'Completed')} | {_number(h.max_drawdown, percent=True)} | "
+            f"{_number(h.net_pnl)} | {_number(h.cash)} | {_number(h.fees)} |",
+            "",
+            f"Scheduled purchase (UTC Unix ms): {h.scheduled_ms}.",
+            "",
+            "| Coin | Attempt time (UTC Unix ms) |",
+            "|---|---:|",
+        ]
+        lines += [f"| {_cell(s)} | {t} |" for s, t in sorted(h.attempt_times.items())]
+        lines += [f"| {_cell(s)} | Unavailable before experiment end |" for s in h.missing_symbols]
+        lines += [
+            "",
+            "Attempt times include filter refusals; inspect linked fill evidence for quantities.",
+        ]
+    lines += [
         "",
         "## Selections",
         "",

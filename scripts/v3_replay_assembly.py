@@ -27,6 +27,7 @@ class ReplayInputs:
     funding: dict[int, dict[str, Decimal]]
     spot_exclusions: dict[str, frozenset[str]]
     futures_exclusions: dict[str, frozenset[str]]
+    hold_hourly: dict[str, tuple[Kline, ...]]
     replay_ready: Literal[False] = False
 
 
@@ -94,7 +95,12 @@ def assemble_replay_inputs(
     spot: dict[str, list[Kline]] = {s: [] for s in sorted(SYMBOLS)}
     futures: dict[str, list[Kline]] = {s: [] for s in sorted(SYMBOLS)}
     funding: dict[int, dict[str, Decimal]] = {}
+    hold: dict[str, list[Kline]] = {s: [] for s in sorted(SYMBOLS)}
     for (_, symbol, month), decoded in sorted(indexed.items()):
+        # Full-size hold ignores month eligibility, but never the hourly mask or
+        # the first-full-spot-month boundary. Never substitute strategy prices.
+        if decoded.kind == "spot" and month >= spot_first[symbol]:
+            hold[symbol].extend(decoded.hold_hourly)
         if decoded.status != "eligible":
             continue
         if decoded.kind == "spot":
@@ -133,4 +139,5 @@ def assemble_replay_inputs(
         dict(sorted(funding.items())),
         spot_exclusions,
         futures_exclusions,
+        ordered(hold),
     )

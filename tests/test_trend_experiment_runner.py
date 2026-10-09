@@ -17,6 +17,7 @@ def harness(monkeypatch, tmp_path):
         "replay_sensitivities",
         "replay_fixed_rules",
         "replay_spot_recorded",
+        "replay_full_size_hold_recorded",
         "build_experiment_report",
     )
     mocks = {name: Mock(name=name) for name in names}
@@ -29,6 +30,7 @@ def harness(monkeypatch, tmp_path):
         spot_bars={"BTCUSDT": []},
         first_months={"BTCUSDT": "2023-04"},
         spot_hourly={"BTCUSDT": []},
+        hold_hourly={"BTCUSDT": []},
         futures_hourly={"BTCUSDT": []},
         spot_filters={"BTCUSDT": object()},
         futures_filters={"BTCUSDT": object()},
@@ -68,11 +70,24 @@ def test_frozen_menu_uses_one_selection_and_market_specific_inputs(harness):
         calls["build_experiment_report"].call_args.kwargs["spot_exclusions"]
         == args["spot_exclusions"]
     )
+    full = calls["replay_full_size_hold_recorded"]
+    full.assert_called_once()
+    assert full.call_args.args[2] is args["hold_hourly"]
+    assert full.call_args.args[3] is args["first_months"]
+    assert full.call_args.args[4] is args["spot_filters"]
+    assert full.call_args.args[5:] == (min(walk.return_value.picks), month_bounds_ms("2025-01")[0])
+    assert calls["build_experiment_report"].call_args.kwargs["full_size_hold"] is full.return_value
 
 
 @pytest.mark.parametrize(
     "phase",
-    ["run_walk_forward", "replay_sensitivities", "replay_fixed_rules", "replay_spot_recorded"],
+    [
+        "run_walk_forward",
+        "replay_sensitivities",
+        "replay_fixed_rules",
+        "replay_spot_recorded",
+        "replay_full_size_hold_recorded",
+    ],
 )
 def test_component_failure_retains_directory_and_never_reports_or_retries(harness, phase):
     module, calls, args = harness

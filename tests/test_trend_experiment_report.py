@@ -85,6 +85,33 @@ def test_complete_menus_render_without_fabricating_experiment_verdict(bundle):
     assert "differ from V3" in text and "4.6615" in text
 
 
+def test_full_size_unavailable_is_reported_without_changing_acceptance(bundle):
+    from crypto_grid_bot.trend.experiment_report import build_experiment_report, experiment_markdown
+    from crypto_grid_bot.trend.full_size_hold import replay_full_size_hold
+
+    start = min(bundle["walk"].picks)
+    full = replay_full_size_hold(
+        {"BTCUSDT": []},
+        bundle["first_months"],
+        bundle["holds"][1].filters,
+        start,
+        month_bounds_ms("2025-01")[0],
+    )
+    original = build_experiment_report(**bundle)
+    report = build_experiment_report(**bundle, full_size_hold=full)
+    assert report.account_checks == original.account_checks
+    assert report.invalid_criterion_accounts == original.invalid_criterion_accounts
+    assert report.full_size_hold.reason == "unavailable_first_purchase"
+    assert report.full_size_hold.max_drawdown is None
+    assert not any("Full-size" in item for item in report.required_before_verdict)
+    text = experiment_markdown(report)
+    assert "unavailable_first_purchase" in text and "BTCUSDT" in text
+    assert report.verdict is None
+    full.start_ms += 3600000
+    with pytest.raises(ValueError, match="period"):
+        build_experiment_report(**bundle, full_size_hold=full)
+
+
 @pytest.mark.parametrize("multiple", [1, 2, 3])
 def test_actual_liquidation_retains_diagnostics_and_only_m1_blocks_checks(bundle, multiple):
     from crypto_grid_bot.trend.experiment_report import build_experiment_report

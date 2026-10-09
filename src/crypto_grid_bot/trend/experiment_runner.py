@@ -10,6 +10,7 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.evidence_writer import AttemptRecorder, replay_spot_recorded
 from crypto_grid_bot.trend.experiment_report import ExperimentReport, build_experiment_report
 from crypto_grid_bot.trend.filters import OrderFilters
+from crypto_grid_bot.trend.full_size_hold_evidence import replay_full_size_hold_recorded
 from crypto_grid_bot.trend.orchestration import (
     replay_fixed_rules,
     replay_sensitivities,
@@ -24,6 +25,7 @@ def run_experiment(
     spot_bars: Mapping[str, Sequence[Kline]],
     first_months: Mapping[str, str],
     spot_hourly: Mapping[str, Sequence[Kline]],
+    hold_hourly: Mapping[str, Sequence[Kline]],
     futures_hourly: Mapping[str, Sequence[Kline]],
     spot_filters: Mapping[str, OrderFilters],
     futures_filters: Mapping[str, OrderFilters],
@@ -38,12 +40,20 @@ def run_experiment(
     Each invocation requires a new evidence directory, retained on all failures;
     it does not resume or retry failed experiments. Strategy-invalid outcomes
     stay in the menu; engine or evidence failures abort before report assembly.
-    The full-size hold diagnostic and final certification remain separate.
+    hold_hourly is the dedicated unmasked full-size price stream; it must not be
+    substituted with eligible-only strategy prices. Final certification is upstream.
     """
     universe = set(first_months)
     if "BTCUSDT" not in universe or any(
         set(values) != universe
-        for values in (spot_bars, spot_hourly, futures_hourly, spot_filters, futures_filters)
+        for values in (
+            spot_bars,
+            spot_hourly,
+            hold_hourly,
+            futures_hourly,
+            spot_filters,
+            futures_filters,
+        )
     ):
         raise ValueError("all experiment inputs require the same BTC-containing universe")
     if not (set(futures_exclusions or {}) | set(spot_exclusions or {})) <= universe:
@@ -80,6 +90,15 @@ def run_experiment(
         )
         for cost in (1, 2)
     }
+    full_size = replay_full_size_hold_recorded(
+        directory,
+        f"{prefix}-full-size-hold",
+        hold_hourly,
+        first_months,
+        spot_filters,
+        min(walk.picks),
+        end,
+    )
     return build_experiment_report(
         walk,
         sensitivities,
@@ -89,4 +108,5 @@ def run_experiment(
         first_months=first_months,
         futures_exclusions=futures_exclusions,
         spot_exclusions=spot_exclusions,
+        full_size_hold=full_size,
     )
