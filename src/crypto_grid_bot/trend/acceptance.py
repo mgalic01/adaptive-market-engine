@@ -44,8 +44,7 @@ def validate_exclusion_calendar(
             symbol: frozenset(
                 month
                 for month in months
-                if month >= first_months[symbol]
-                and month_bounds_ms(month)[0] < end_ms_exclusive
+                if month >= first_months[symbol] and month_bounds_ms(month)[0] < end_ms_exclusive
             )
             for symbol, months in exclusions.items()
         }
