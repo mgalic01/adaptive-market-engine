@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -364,6 +365,52 @@ def check_ready(root: Path, trial_id: str, revision: str) -> dict[str, Any]:
         if code_digest(blobs) != payload["code_sha256"]:
             raise ValueError("committed code does not match pin")
     return done
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredDocuments:
+    trial_id: str
+    revision: str
+    registration_id: str
+    completion_id: str
+    code_commit: str
+    code_sha256: str
+    spec_sha256: str
+    manifest_path: str
+    manifest_sha256: str
+    manifest: bytes
+    config_path: str
+    config_sha256: str
+    config: bytes
+
+
+def read_registered_documents(root: Path, trial_id: str, revision: str) -> RegisteredDocuments:
+    """Return validated committed inputs, never mutable working-tree copies.
+
+    This validates Git objects, not the running interpreter or checkout. Callers
+    still enforce current reviewed code, approved input schemas, archive pins,
+    data-access authorization and dispatch gates. No market files are opened.
+    """
+    done = check_ready(root, trial_id, revision)
+    payload = done["payload"]
+    events = _parse(_git(root, "show", f"{revision}:docs/trials/register.jsonl"))
+    registration = next(e for e in events if e["event_id"] == payload["registration_id"])
+    manifest, config = payload["manifest"], payload["config"]
+    return RegisteredDocuments(
+        trial_id=trial_id,
+        revision=revision,
+        registration_id=registration["event_id"],
+        completion_id=done["event_id"],
+        code_commit=payload["code_commit"],
+        code_sha256=payload["code_sha256"],
+        spec_sha256=registration["payload"]["spec"]["sha256"],
+        manifest_path=manifest["path"],
+        manifest_sha256=manifest["sha256"],
+        manifest=_git(root, "show", f"{revision}:{manifest['path']}"),
+        config_path=config["path"],
+        config_sha256=config["sha256"],
+        config=_git(root, "show", f"{revision}:{config['path']}"),
+    )
 
 
 def append_event(path: Path, event: dict[str, Any]) -> None:
