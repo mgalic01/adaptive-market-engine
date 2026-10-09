@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-09T15:40:57.017240+00:00",
+  "command": [
+    "E:\\adaptive-market-engine\\v3\\python312\\Scripts\\python.exe",
+    "scripts/v3_inventory.py",
+    "fetch",
+    "--output",
+    "E:\\adaptive-market-engine\\v3\\inventory-20261009-01",
+    "--cache-dir",
+    "E:\\adaptive-market-engine\\v3\\spot-cache",
+    "--spec-file",
+    "E:\\adaptive-market-engine\\v3\\inputs-5822e0d\\EXPERIMENT_SPEC_V3.md",
+    "--spec-sha256",
+    "e337dbcaa89ca1bfeb5293f678aded60c3350aa8465c594e7a8c1c78aae3c191",
+    "--spot-manifest",
+    "E:\\adaptive-market-engine\\v3\\inputs-5822e0d\\spot-source.manifest.json",
+    "--spot-manifest-sha256",
+    "069024759d2e999cd09801a17961c12f6b6f57e73bb66900748364261260b94e"
+  ]
+}
