@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "trial_id": "v3-candidate-space-7",
+  "code_sha256": "da7192ac43ac90b1c8b5178bce78418d47728f7cd3146f2579581724d556f6f4",
+  "manifest_sha256": "78d997a2f0a6e83705df339cc2ec0a0421faebdc18ee4337de8f07400a4b013a",
+  "config_sha256": "49378c3dbce9ad7f29f6fa13ed3714b59d89176ab48881c1633cf7df28f3bdd2",
+  "inventory_root": "E:\\adaptive-market-engine\\v3\\inventory-20261009-02",
+  "output_root": "E:\\adaptive-market-engine\\v3\\replay-20261009-01",
+  "owner_approval_reference": "docs/reviews/2026-10-09-owner-v3-local-replay.md",
+  "review_reference": "https://github.com/mgalic01/adaptive-market-engine/pull/261"
+}

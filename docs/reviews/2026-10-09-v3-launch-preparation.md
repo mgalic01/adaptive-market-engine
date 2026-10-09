@@ -1,22 +1,70 @@
-# V3 launch preparation — pending authorization and data review
+# V3 local development execution task
 
-Index: Prepared code identity and candidate calendar for one V3 development invocation; no completing event or replay yet.
+Index: One local development invocation, owner approved; completing registration and calendar require PR261 full-head review before launch.
 
-Purpose: execute the frozen experiment with verifiable inputs and retained failure evidence.
+## Fixed inputs and scope
 
-Reviewed implementation merge: `f622d4b1b6ffe6d92aaf31cb6b194919301af30b` (PR260).
-Implementation digest: `da7192ac43ac90b1c8b5178bce78418d47728f7cd3146f2579581724d556f6f4` across 122 required source, script and dependency files, computed from raw Git blobs using the committed register implementation.
+Implementation commit `f622d4b1b6ffe6d92aaf31cb6b194919301af30b`, digest
+`da7192ac43ac90b1c8b5178bce78418d47728f7cd3146f2579581724d556f6f4`
+over 122 source/script/dependency files. PR260 passed Bob review and required CI.
+PR258 data delivery passed Bob review at `0446368e39e9d160e95ff34c7b29651772c2679e`.
+The manifest and config hashes are in the completing event and execution JSON.
+No implementation changes are part of this task.
 
-Candidate configuration is `config/v3-development-run.json`, derived from the verified inventory. Its working-byte digest is `49378c3dbce9ad7f29f6fa13ed3714b59d89176ab48881c1633cf7df28f3bdd2`; final committed-byte pin must be recomputed before registration. Calendar review remains pending. Proposed menu: 14 quarters, 168 training attempts and 21 other prescribed attempts. These are planned counts, not completed results.
+The ten first-month entries in `config/v3-development-run.json` match the manifest
+coverage candidates. First test quarter 2021-07, last 2024-10: 14 quarters,
+168 training and 21 other prescribed attempts. SOL's first full futures month is
+2020-10 and its 2022-11 funding exclusion remains. Warmup and masking rules govern
+actual usable observations. These are planned counts, not results.
 
-Pending sequence:
+## Executor exception and registration
 
-1. Obtain the explicit local replay executor decision. Existing permission is collection-only.
-2. Finish PR258 external review, including original checkout-creation provenance, and required checks.
-3. Review the candidate calendar and record the executor exception without silently rewriting the frozen strategy or raw manifest. Resolve registration annotation with Bob before committing completion.
-4. Pin final code, unchanged manifest, committed configuration and task references in the completing registration; validate readiness from committed bytes.
-5. Review a concrete isolated-process launch command and one fresh output directory. Create a clean pinned execution checkout outside the archive and output directories; preserve the exact environment and invocation.
-6. Execute once only after all gates pass. Preserve failures and interruptions; no retry, tuning or reserved-window data.
-7. Verify report receipt and evidence linkage; obtain independent result review before reporting an acceptance verdict or appending canonical results.
+The [owner decision](2026-10-09-owner-v3-local-replay.md) explicitly waives only
+section 9 step 6's workflow executor for this one local run. Frozen spec and raw
+manifest bytes remain unchanged. The candidate-space-7 registration predates
+implementation. Its completing event links this decision and this PR; it does
+not pretend the executor waiver predates code or data. No new strategy candidate
+is created for an operational executor change. Bob must explicitly assess this
+registration treatment before dispatch. The original proposal's pending status
+is historical and is superseded by the owner decision.
 
-No historical archive loading or strategy execution was performed by this preparation. No owner decision or review approval is fabricated by these draft notes.
+## One-shot procedure
+
+After latest full-head Bob review and required CI, merge PR261 preserving history.
+Record its resulting full main SHA as REVISION. Verify that implementation still
+matches the completing pin and that no later commits are included. Refuse if any
+of the following fresh paths already exists:
+
+- `E:/adaptive-market-engine/v3/replay-checkout-20261009-01`
+- `E:/adaptive-market-engine/v3/replay-20261009-01`
+- `E:/adaptive-market-engine/v3/replay-logs-20261009-01`
+
+Create a detached Git worktree at REVISION in that checkout path. Verify full
+clean status including untracked files, exact HEAD, Python 3.12.14, free disk,
+and no competing replay process. Record all commands, timestamps and outputs.
+The interpreter is `E:/adaptive-market-engine/v3/python312/Scripts/python.exe`.
+The isolated process disables site packages and bytecode, and ignores PYTHONPATH.
+
+Copy the raw committed [bootstrap](2026-10-09-v3-local-launch.py.txt) to the fresh
+log directory as `launch.py`; verify its SHA-256 against the Git blob. Invoke:
+
+```text
+E:/adaptive-market-engine/v3/python312/Scripts/python.exe -I -S -B E:/adaptive-market-engine/v3/replay-logs-20261009-01/launch.py REVISION
+```
+
+Capture stdout/stderr to exclusive fresh log files, record start/end and exit
+code. This is the only invocation. Monitor process and newly written attempt
+journals without modifying inputs or treating intermediate metrics as selection.
+Do not rerun after failure, interruption or ambiguous publication; retain every
+artifact and investigate first. This permission does not authorize a retry.
+
+## Results and validation
+
+Check terminal status and verify the report receipt against the registered
+documents. Reconcile expected attempts and preserve failed/invalid/cancelled
+outcomes. Export proposed trial events separately; do not silently append them.
+Review linkage of run evidence to this invocation before canonical append.
+Bob reviews the results, arithmetic and A1-A5 conclusions; the publisher emits
+uncertified diagnostics, not automatic approval. Report all results and economic
+limitations, including an unfavorable outcome. No tuning, 2025+ market data,
+exchange credentials or live orders. No historical replay has yet occurred.

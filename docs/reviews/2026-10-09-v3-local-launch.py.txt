@@ -1,0 +1,25 @@
+# Trusted bootstrap, invoked once with Python -I -S -B and full reviewed revision.
+import importlib.util
+import sys
+from pathlib import Path
+
+revision = sys.argv[1]
+root = Path("E:/adaptive-market-engine/v3/replay-checkout-20261009-01")
+spec = importlib.util.spec_from_file_location(
+    "v3_runtime_preflight", root / "scripts/v3_runtime_preflight.py"
+)
+runtime = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = runtime
+spec.loader.exec_module(runtime)
+snapshot = runtime.preflight_runtime(root, "v3-candidate-space-7", revision)
+import v3_dispatch
+runtime.recheck_runtime(snapshot)
+print("PREFLIGHT_OK; starting exactly one registered invocation", flush=True)
+receipt = v3_dispatch.dispatch_registered(
+    snapshot,
+    inventory_root=Path("E:/adaptive-market-engine/v3/inventory-20261009-02"),
+    output_root=Path("E:/adaptive-market-engine/v3/replay-20261009-01"),
+    execution_task="config/v3-development-execution.json",
+    execution_task_sha256="c28dc4fb9aef8f798f305f0c29e4e633351bcfb847b23b3bc23024e903bc486a",
+)
+print("UNCERTIFIED_REPORT_RECEIPT_SHA256=" + receipt, flush=True)
