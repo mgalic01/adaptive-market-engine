@@ -1,0 +1,19 @@
+Traceback (most recent call last):
+  File "E:\adaptive-market-engine\v3\collector-5822e0d\scripts\v3_inventory.py", line 451, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "E:\adaptive-market-engine\v3\collector-5822e0d\scripts\v3_inventory.py", line 436, in main
+    path = build_inventory(
+           ^^^^^^^^^^^^^^^^
+  File "E:\adaptive-market-engine\v3\collector-5822e0d\scripts\v3_inventory.py", line 277, in build_inventory
+    path = collect_inventory(
+           ^^^^^^^^^^^^^^^^^^
+  File "E:\adaptive-market-engine\v3\collector-5822e0d\scripts\fetch_v3_data.py", line 394, in collect_inventory
+    raw = saved if saved is not None else retrieve()
+                                          ^^^^^^^^^^
+  File "E:\adaptive-market-engine\v3\collector-5822e0d\scripts\fetch_v3_data.py", line 192, in spot_filters
+    content = self._get(SPOT_FILTER_HOST, "/api/v3/exchangeInfo", 8 * 1024 * 1024)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\adaptive-market-engine\v3\collector-5822e0d\scripts\fetch_v3_data.py", line 170, in _get
+    raise ValueError("public response exceeded size limit")
+ValueError: public response exceeded size limit

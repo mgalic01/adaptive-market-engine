@@ -9,7 +9,7 @@ from fetch_v3_data import MAX_ARCHIVE_BYTES, SYMBOLS
 from v3_inventory import _local, _object, _read_pinned, verify_inventory
 from v3_replay_inputs import DecodedMonth, decode_inventory_archive
 
-from crypto_grid_bot.trend.filters import OrderFilters, parse_filter_snapshot
+from crypto_grid_bot.trend.filters import MAX_SNAPSHOT_BYTES, OrderFilters, parse_filter_snapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +42,7 @@ def load_inventory_inputs(root: Path, manifest_sha256: str) -> InventoryInputs:
     filters = {}
     for market in ("spot", "futures"):
         pin = document["snapshots"][market]
-        raw = _read_pinned(_local(root, pin["path"]), pin["sha256"], 8 * 1024 * 1024)
+        raw = _read_pinned(_local(root, pin["path"]), pin["sha256"], MAX_SNAPSHOT_BYTES)
         filters[market] = parse_filter_snapshot(
             raw, tuple(sorted(SYMBOLS)), futures=market == "futures"
         )

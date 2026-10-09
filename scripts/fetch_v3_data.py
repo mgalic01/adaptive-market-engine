@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from crypto_grid_bot.backtest.window import development_month
+from crypto_grid_bot.trend.filters import MAX_SNAPSHOT_BYTES
 
 SYMBOLS = frozenset(
     {
@@ -167,7 +168,11 @@ class V3Transport:
                 )
             content = response.read(limit + 1)
             if len(content) > limit:
-                raise ValueError("public response exceeded size limit")
+                raise ValueError(
+                    f"public response exceeded size limit of {limit} bytes "
+                    f"for https://{host}{path}; "
+                    "complete response size unknown"
+                )
             return content
         except (OSError, HTTPException) as exc:
             raise ValueError("public data transport failed") from exc
@@ -183,13 +188,13 @@ class V3Transport:
         if self._futures_requested:
             raise ValueError("futures filters may be requested only once per fetch")
         self._futures_requested = True  # Failed requests do not authorize retries.
-        content = self._get(FUTURES_FILTER_HOST, "/fapi/v1/exchangeInfo", 8 * 1024 * 1024)
+        content = self._get(FUTURES_FILTER_HOST, "/fapi/v1/exchangeInfo", MAX_SNAPSHOT_BYTES)
         if content is None:
             raise ValueError("missing futures filter snapshot")
         return content
 
     def spot_filters(self) -> bytes:
-        content = self._get(SPOT_FILTER_HOST, "/api/v3/exchangeInfo", 8 * 1024 * 1024)
+        content = self._get(SPOT_FILTER_HOST, "/api/v3/exchangeInfo", MAX_SNAPSHOT_BYTES)
         if content is None:
             raise ValueError("missing spot filter snapshot")
         return content
@@ -392,7 +397,7 @@ def collect_inventory(
         ("futures", transport.futures_filters, futures_snapshot),
     ):
         raw = saved if saved is not None else retrieve()
-        if not isinstance(raw, bytes) or len(raw) > 8 * 1024 * 1024:
+        if not isinstance(raw, bytes) or len(raw) > MAX_SNAPSHOT_BYTES:
             raise ValueError("invalid or oversized snapshot response")
         (snapshot_dir / f"{market}.json").write_bytes(raw)
         parse_filter_snapshot(raw, tuple(sorted(SYMBOLS)), futures=market == "futures")

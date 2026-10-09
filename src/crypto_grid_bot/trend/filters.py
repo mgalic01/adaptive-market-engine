@@ -9,6 +9,8 @@ from typing import Any
 
 from crypto_grid_bot.market_data.parsing import amount, symbol_name
 
+MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class OrderFilters:
@@ -35,8 +37,8 @@ def parse_filter_snapshot(
     raw: bytes, symbols: tuple[str, ...], *, futures: bool
 ) -> dict[str, OrderFilters]:
     """Preserve both lot filters; effective market step falls back only when zero."""
-    if len(raw) > 8 * 1024 * 1024:
-        raise ValueError("filter snapshot exceeds size limit")
+    if len(raw) > MAX_SNAPSHOT_BYTES:
+        raise ValueError(f"filter snapshot exceeds size limit of {MAX_SNAPSHOT_BYTES} bytes")
     if not symbols or len(set(symbols)) != len(symbols):
         raise ValueError("unique requested symbols required")
     for symbol in symbols:
