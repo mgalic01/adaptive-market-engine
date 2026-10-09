@@ -86,6 +86,7 @@ class AccountMark:
     margin_ratio: Decimal | None
     gross_leverage: Decimal | None
     prices: Mapping[str, Decimal]
+    net_notional: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,7 +259,7 @@ class FuturesAccount:
 
     def mark(self, prices: Mapping[str, Decimal]) -> AccountMark:
         with localcontext(_context()):
-            unrealized = gross = ZERO
+            unrealized = gross = net = ZERO
             used = {}
             for symbol, held in sorted(self._positions.items()):
                 if held.quantity == ZERO:
@@ -270,12 +271,13 @@ class FuturesAccount:
                 used[symbol] = price
                 unrealized += held.quantity * (price - held.average_entry)
                 gross += abs(held.quantity) * price
+                net += held.quantity * price
             wallet = self.wallet
             equity = wallet + unrealized
             margin = equity / gross if gross != ZERO else None
             leverage = gross / equity if equity > ZERO else None
             return AccountMark(
-                wallet, unrealized, equity, gross, margin, leverage, MappingProxyType(used)
+                wallet, unrealized, equity, gross, margin, leverage, MappingProxyType(used), net
             )
 
     def check_liquidation(self, prices: Mapping[str, Decimal], timestamp_ms: int) -> AccountMark:
