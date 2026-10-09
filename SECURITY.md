@@ -46,6 +46,12 @@ It has no networked exchange implementation and does not read API credentials.
   outside `src/`, and no code under `src/` names that host, so the allowed-hosts list above
   is unchanged. It is a one-off fetch, not a collector or a stream, and it does not relax the
   next rule.
+  **Executor amendment, owner 2026-10-09:** Codex Desktop may execute that same one
+  reviewed, owner-started task locally on E:, with Bob reviewing the task and
+  delivered manifest/coverage. Only the executor changes; every endpoint,
+  once-only snapshot and no-trading restriction above remains. This amendment
+  does not start the download; see
+  [the decision record](docs/reviews/2026-10-09-owner-v3-local-executor.md).
 - Do not point collectors or streams at trading hosts, or add user-data (`listenKey`)
   streams, before the live-adapter review.
 - Never use protected reserve to fund a grid, an exit, or loss recovery.
