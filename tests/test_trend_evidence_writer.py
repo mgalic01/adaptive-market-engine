@@ -9,6 +9,45 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.orchestration import Attempt, replay_sensitivities
 
 
+def test_artifact_preserves_missing_and_measured_zero_volatility(tmp_path):
+    from decimal import Decimal as D
+
+    from crypto_grid_bot.backtest.klines import Kline
+    from crypto_grid_bot.trend.evidence_writer import AttemptRecorder
+    from crypto_grid_bot.trend.replay import ReplayResult
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    day, start = 86400000, 1577836800000
+    bars = [
+        Kline(start + i * day, D(100), D(100), D(100), D(100), D(1), D(100), D(".5"))
+        for i in range(61)
+    ]
+    stamp = start + 61 * day
+    book = DailyDecisions(
+        {"BTCUSDT": bars, "ETHUSDT": []},
+        {"BTCUSDT": "2020-01", "ETHUSDT": "2020-01"},
+    )
+    decision = book.at(stamp, None)
+    runner = TrendRunner({})
+    runner.step(stamp, {}, {}, {})
+    runner.finish({})
+    replay = ReplayResult(runner, None, (), daily_decisions=((stamp, None, decision),))
+    record = AttemptRecorder(tmp_path)
+    record(Attempt("nullable", "training", None, stamp, stamp + day, None, None, state="started"))
+    record(Attempt("nullable", "training", None, stamp, stamp + day, replay, None))
+    rows = [
+        json.loads(line) for line in (tmp_path / "nullable.evidence.jsonl").read_text().splitlines()
+    ]
+    value = next(row["value"] for row in rows if row["kind"] == "decision")
+    assert value["rule"] is None
+    volatility = value["decision"]["sizing"]["volatility"]
+    assert volatility["ETHUSDT"] is None
+    assert isinstance(volatility["BTCUSDT"], str)
+    assert D(volatility["BTCUSDT"]) == 0
+    assert value["decision"]["sizing"]["scaled_weights"] == {"BTCUSDT": None, "ETHUSDT": None}
+    assert value["decision"]["sizing"]["binding_caps"] == {"BTCUSDT": [], "ETHUSDT": []}
+
+
 @pytest.mark.parametrize("orphan", [False, True])
 def test_explicit_recovery_retains_evidence_but_never_adopts_success(tmp_path, orphan):
     from crypto_grid_bot.trend.evidence_writer import (

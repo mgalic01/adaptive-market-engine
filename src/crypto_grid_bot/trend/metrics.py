@@ -41,19 +41,12 @@ def summarize_runner(runner: "TrendRunner") -> PerformanceSummary:
     )
 
 
-def summarize(
+def validate_sample_path(
     samples: Sequence[tuple[int, Decimal]],
     equity_path: Sequence["EquityState"],
-    trade_net_results: Sequence[Decimal],
-) -> PerformanceSummary:
-    """Summarize supplied finalized evidence, without declaring acceptance/validity.
-
-    Samples start at the first 01:00 mark; the equity path includes the earlier
-    initial mark and every frozen drawdown state. Trade results include censored
-    terminal unrealized PnL. Zero-result trades count in the win-rate denominator.
-    """
-    returns = sample_returns(samples)
-    _validate(trade_net_results)
+) -> None:
+    """Require complete, ordered 01:00/terminal samples matching account evidence."""
+    _samples(samples)
     if (
         not equity_path
         or equity_path[-1].kind != "terminal"
@@ -81,6 +74,24 @@ def summarize(
     ]
     if list(samples) != expected_samples:
         raise ValueError("samples must contain the complete 01:00 and terminal path marks")
+
+
+def summarize(
+    samples: Sequence[tuple[int, Decimal]],
+    equity_path: Sequence["EquityState"],
+    trade_net_results: Sequence[Decimal],
+) -> PerformanceSummary:
+    """Summarize supplied finalized evidence, without declaring acceptance/validity.
+
+    Samples start at the first 01:00 mark; the equity path includes the earlier
+    initial mark and every frozen drawdown state. Their initial equities must be
+    equal, so no initial-to-first-sample gain or loss can be omitted. Trade results
+    include censored terminal unrealized PnL. Zero-result trades count in the
+    win-rate denominator.
+    """
+    returns = sample_returns(samples)
+    _validate(trade_net_results)
+    validate_sample_path(samples, equity_path)
     drawdown = maximum_drawdown([state.equity for state in equity_path])
     growth = cagr(samples)
     with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):

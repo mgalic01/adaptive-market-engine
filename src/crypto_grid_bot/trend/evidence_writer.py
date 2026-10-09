@@ -5,10 +5,10 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from crypto_grid_bot.trend.evidence_journal import (
     LIMIT,
@@ -19,6 +19,11 @@ from crypto_grid_bot.trend.evidence_journal import (
 )
 from crypto_grid_bot.trend.orchestration import Attempt
 from crypto_grid_bot.trend.replay import ReplayResult
+
+if TYPE_CHECKING:
+    from crypto_grid_bot.backtest.klines import Kline
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, SpotRunner
 
 
 def _value(value: Any) -> Any:
@@ -80,6 +85,95 @@ def replay_rows(result: ReplayResult) -> Iterator[tuple[str, Any]]:
 
 
 def write_replay(directory: Path, run_id: str, result: ReplayResult) -> dict[str, Any]:
+    return _write_rows(directory, run_id, replay_rows(result))
+
+
+def spot_rows(runner: "SpotRunner") -> Iterator[tuple[str, Any]]:
+    """Retain partial or completed spot evidence without asserting validity."""
+    yield (
+        "spot_account",
+        {
+            "initial": runner.account.initial,
+            "cash": runner.account.cash,
+            "holdings": runner.account.holdings,
+            "cost_multiple": runner.account.cost_multiple,
+            "stopped": runner.stopped,
+            "close_requirements": runner.close_requirements,
+            "masked_held_hours": runner.masked_held_hours,
+        },
+    )
+    for stamp, decision in runner.daily_decisions:
+        yield "spot_decision", {"timestamp_ms": stamp, "decision": decision}
+    for kind, values in (
+        ("spot_fill", runner.account.fills),
+        ("spot_audit", runner.audits),
+        ("spot_dispatch", runner.dispatches),
+        ("spot_rebalance", runner.rebalances),
+        ("spot_exclusion_dust", runner.exclusion_dust),
+        ("equity", runner.equity_path),
+        ("sample", runner.samples),
+    ):
+        for value in values:
+            yield kind, value
+
+
+def write_spot_replay(directory: Path, run_id: str, runner: "SpotRunner") -> dict[str, Any]:
+    """Publish exact spot diagnostics; caller must separately journal the attempt."""
+    return _write_rows(directory, run_id, spot_rows(runner))
+
+
+def replay_spot_recorded(
+    directory: Path,
+    run_id: str,
+    decisions: "HoldDecisions",
+    filters: Mapping[str, "OrderFilters"],
+    hourly: Mapping[str, Sequence["Kline"]],
+    start_ms: int,
+    end_ms_exclusive: int,
+    *,
+    cost_multiple: int = 1,
+) -> "SpotRunner":
+    """Journal a supplied spot replay; registered historical dispatch is upstream.
+
+    Record completion does not mean strategy acceptance: the account's stopped
+    reason and error must be inspected. Recording failures leave a pending start.
+    KeyboardInterrupt leaves the start unfinished and never triggers a retry.
+    """
+    from crypto_grid_bot.trend.spot_benchmark import (
+        SpotReplayExecutionError,
+        replay_spot_benchmark,
+    )
+
+    recorder = AttemptRecorder(directory)
+    identity = {
+        "phase": "spot_hold",
+        "start_ms": start_ms,
+        "end_ms_exclusive": end_ms_exclusive,
+        "cost_multiple": cost_multiple,
+    }
+    recorder.journal.record(run_id, "started", identity)
+    try:
+        runner = replay_spot_benchmark(
+            decisions, filters, hourly, start_ms, end_ms_exclusive, cost_multiple=cost_multiple
+        )
+    except Exception as exc:
+        evidence = (
+            write_spot_replay(recorder.journal.directory, run_id, exc.runner)
+            if isinstance(exc, SpotReplayExecutionError)
+            else None
+        )
+        recorder.journal.record(
+            run_id,
+            "finished",
+            {**identity, "error": f"{type(exc).__name__}: {exc}", "evidence": evidence},
+        )
+        raise
+    evidence = write_spot_replay(recorder.journal.directory, run_id, runner)
+    recorder.journal.record(run_id, "finished", {**identity, "error": None, "evidence": evidence})
+    return runner
+
+
+def _write_rows(directory: Path, run_id: str, rows: Iterator[tuple[str, Any]]) -> dict[str, Any]:
     _identity(run_id, "finished")
     filename = f"{run_id}.evidence.jsonl"
     digest = hashlib.sha256()
@@ -88,7 +182,7 @@ def write_replay(directory: Path, run_id: str, result: ReplayResult) -> dict[str
     try:
         with tempfile.NamedTemporaryFile(dir=directory, prefix=".evidence-", delete=False) as f:
             temporary = Path(f.name)
-            for kind, value in replay_rows(result):
+            for kind, value in rows:
                 data = (
                     json.dumps(
                         {"schema": 1, "kind": kind, "value": _value(value)},
