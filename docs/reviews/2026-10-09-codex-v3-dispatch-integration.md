@@ -41,6 +41,10 @@ Git registration containing the real project sources: preflight, dispatcher impo
 and origin recheck passed without third-party site initialization or market input.
 The pytest driver was Python 3.14.7. No historical replay was performed.
 
+Ruff lint/format, mypy and Bandit passed. A long line in the synthetic bootstrap
+string was corrected after the first local commit; that isolated bootstrap test
+was rerun and passed again. No functional code changed in that correction.
+
 Dependencies: runtime PR255, publication PR256 and reconciliation PR259. Existing
 engines and strategy parameters are unchanged. Full CI and Bob review of this
 integration remain required. Next: reviewed calendar/configuration, final code pin,

@@ -70,4 +70,7 @@ preserve the root for explicit inspection.
 - [ ] Obtain required external review and any still-missing owner authorization for the local replay executor. Collection approval is not replay approval.
 - [ ] Only then dispatch once. Inspect every terminal outcome and prepare the required trial result events through the separately reviewed exporter; do not mutate the canonical register inside the runtime checkout.
 
-Current status: design prepared while collection and independent prerequisite reviews run. No dispatcher code, completing event or historical replay has been created by this plan. The exact authorization contract and reconciler/exporter interfaces remain dependencies, so Task 1 implementation has not started.
+Current status: Task 1 is implemented with 26 passing synthetic tests, including
+the isolated Python 3.12 bootstrap. Its external review and full CI remain pending.
+The execution-task schema and reconciler interface above are implemented; the
+concrete approved task, completing registration and historical replay are not.

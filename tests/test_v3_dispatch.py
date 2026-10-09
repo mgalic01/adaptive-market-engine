@@ -315,7 +315,8 @@ def test_fresh_isolated_bootstrap_imports_real_dispatcher(tmp_path):
 import importlib.util, sys
 from pathlib import Path
 root = Path({str(root)!r})
-spec = importlib.util.spec_from_file_location('v3_runtime_preflight', root/'scripts/v3_runtime_preflight.py')
+spec = importlib.util.spec_from_file_location(
+    'v3_runtime_preflight', root/'scripts/v3_runtime_preflight.py')
 runtime = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = runtime
 spec.loader.exec_module(runtime)
