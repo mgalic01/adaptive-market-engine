@@ -235,8 +235,8 @@ def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change
     git("config", "user.email", "test@example.invalid")
     for name, content in {
         "docs/spec.md": b"spec\n",
-        "config/manifest.json": b"{}\n",
-        "config/run.json": b"{}\n",
+        "config/manifest.json": b'{"kind":"manifest"}\n',
+        "config/run.json": b'{"kind":"configuration"}\n',
     }.items():
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,7 +263,9 @@ def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change
     done = completion()
     done["payload"].update(code_commit=code, code_sha256=code_digest({"src/engine.py": b"pass\n"}))
     for key in ("manifest", "config"):
-        done["payload"][key]["sha256"] = hashlib.sha256(b"{}\n").hexdigest()
+        done["payload"][key]["sha256"] = hashlib.sha256(
+            (tmp_path / done["payload"][key]["path"]).read_bytes()
+        ).hexdigest()
     path.write_bytes(encode(reg, done))
     git("add", ".")
     with pytest.raises(ValueError):
@@ -275,6 +277,8 @@ def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change
     if change == "late-registration":
         with pytest.raises(ValueError, match="registration"):
             check_ready(tmp_path, "v3", ready)
+        with pytest.raises(ValueError, match="registration"):
+            read_registered_documents(tmp_path, "v3", ready)
         return
     assert check_ready(tmp_path, "v3", ready)["event_id"] == "completed"
     documents = read_registered_documents(tmp_path, "v3", ready)
@@ -284,10 +288,12 @@ def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change
     assert documents.code_commit == code
     assert documents.code_sha256 == done["payload"]["code_sha256"]
     assert documents.spec_sha256 == reg["payload"]["spec"]["sha256"]
-    assert documents.manifest == documents.config == b"{}\n"
-    assert (
-        documents.manifest_sha256 == documents.config_sha256 == hashlib.sha256(b"{}\n").hexdigest()
-    )
+    assert documents.manifest_path == "config/manifest.json"
+    assert documents.config_path == "config/run.json"
+    assert documents.manifest == b'{"kind":"manifest"}\n'
+    assert documents.config == b'{"kind":"configuration"}\n'
+    assert documents.manifest_sha256 == hashlib.sha256(documents.manifest).hexdigest()
+    assert documents.config_sha256 == hashlib.sha256(documents.config).hexdigest()
     # A local editor must not replace the committed inputs returned to a caller.
     (tmp_path / "config/run.json").write_bytes(b"dirty local configuration\n")
     (tmp_path / "config/manifest.json").write_bytes(b"dirty local manifest\n")
