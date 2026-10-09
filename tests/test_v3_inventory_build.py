@@ -11,9 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 
 @pytest.mark.parametrize("reuse_snapshot", [False, True])
+@pytest.mark.parametrize("reuse_spot", [False, True])
 @pytest.mark.parametrize("with_archive", [False, True])
 def test_build_inventory_adds_coverage_and_source_provenance_without_network(
-    tmp_path, with_archive, reuse_snapshot, monkeypatch
+    tmp_path, with_archive, reuse_snapshot, reuse_spot, monkeypatch
 ):
     from fetch_v3_data import SYMBOLS, archive_path
     from v3_inventory import build_inventory, main, planned_requests, verify_inventory
@@ -64,6 +65,7 @@ def test_build_inventory_adds_coverage_and_source_provenance_without_network(
             return None
 
         def spot_filters(self):
+            assert not reuse_spot, "saved spot snapshot must prevent a second GET"
             calls.append("spot")
             return snapshot
 
@@ -79,6 +81,8 @@ def test_build_inventory_adds_coverage_and_source_provenance_without_network(
         monkeypatch.setattr(v3_inventory, "V3Transport", Fake)
         saved = tmp_path / "saved-futures.json"
         saved.write_bytes(snapshot)
+        saved_spot = tmp_path / "saved-spot.json"
+        saved_spot.write_bytes(snapshot)
         spec = tmp_path / "spec.md"
         spec.write_bytes(b"pinned spec")
         source_file = tmp_path / "source.json"
@@ -103,6 +107,16 @@ def test_build_inventory_adds_coverage_and_source_provenance_without_network(
                     str(saved),
                     "--futures-snapshot-sha256",
                     hashlib.sha256(snapshot).hexdigest(),
+                    *(
+                        [
+                            "--reuse-spot-snapshot",
+                            str(saved_spot),
+                            "--spot-snapshot-sha256",
+                            hashlib.sha256(snapshot).hexdigest(),
+                        ]
+                        if reuse_spot
+                        else []
+                    ),
                 ]
             )
             == 0
@@ -111,17 +125,24 @@ def test_build_inventory_adds_coverage_and_source_provenance_without_network(
         assert (path.parent / "snapshots/futures.json").read_bytes() == snapshot
     else:
         path = build_inventory(
-            tmp_path / "output", tmp_path / "cache", source, source_hash, "a" * 64, Fake()
+            tmp_path / "output",
+            tmp_path / "cache",
+            source,
+            source_hash,
+            "a" * 64,
+            Fake(),
+            **({"spot_snapshot": snapshot} if reuse_spot else {}),
         )
+    assert (path.parent / "snapshots/spot.json").read_bytes() == snapshot
     document = json.loads(path.read_bytes())
     assert len(document["entries"]) == 2710
     assert document["source_spot_manifest_sha256"] == source_hash
     assert document["coverage"]["coverage_review_required"] is True
     assert document["coverage"]["first_test_quarter_candidate"] is None
     assert document["replay_ready"] is False
-    assert calls.count("spot") == 1
+    assert calls.count("spot") == int(not reuse_spot)
     assert calls.count("futures") == int(not reuse_snapshot)
-    assert len(calls) == 2001 + int(with_archive) - int(reuse_snapshot)
+    assert len(calls) == 2001 + int(with_archive) - int(reuse_snapshot) - int(reuse_spot)
     assert not any("/spot/" in call and "ADAUSDT" not in call for call in calls)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     verified = verify_inventory(path.parent, digest)

@@ -353,6 +353,7 @@ def collect_inventory(
     *,
     reuse: dict[str, PinnedArchive | None] | None = None,
     futures_snapshot: bytes | None = None,
+    spot_snapshot: bytes | None = None,
 ) -> Path:
     """Save one fresh inventory; a failed fetch leaves evidence but no final manifest.
 
@@ -380,17 +381,17 @@ def collect_inventory(
             raise ValueError("invalid pinned spot request")
     if futures_snapshot is not None:
         parse_filter_snapshot(futures_snapshot, tuple(sorted(SYMBOLS)), futures=True)
+    if spot_snapshot is not None:
+        parse_filter_snapshot(spot_snapshot, tuple(sorted(SYMBOLS)), futures=False)
     output_dir.mkdir(parents=True, exist_ok=False)
     snapshot_dir = output_dir / "snapshots"
     snapshot_dir.mkdir()
     snapshots = {}
-    for market, retrieve in (
-        ("spot", transport.spot_filters),
-        ("futures", transport.futures_filters),
+    for market, retrieve, saved in (
+        ("spot", transport.spot_filters, spot_snapshot),
+        ("futures", transport.futures_filters, futures_snapshot),
     ):
-        raw = (
-            futures_snapshot if market == "futures" and futures_snapshot is not None else retrieve()
-        )
+        raw = saved if saved is not None else retrieve()
         if not isinstance(raw, bytes) or len(raw) > 8 * 1024 * 1024:
             raise ValueError("invalid or oversized snapshot response")
         (snapshot_dir / f"{market}.json").write_bytes(raw)
