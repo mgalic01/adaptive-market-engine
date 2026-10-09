@@ -111,3 +111,39 @@ def test_missing_entry_is_explicit_and_cannot_hide_bytes():
     assert result.status == "missing" and not result.hourly
     with pytest.raises(ValueError):
         decode_inventory_archive(entry, b"unexpected")
+
+
+def test_full_size_hold_retains_unmasked_spot_marks_in_excluded_month():
+    from v3_replay_inputs import decode_inventory_archive
+
+    entry, raw = fixture("spot", missing=200)
+    result = decode_inventory_archive(entry, raw)
+    assert result.status == "excluded" and not result.hourly and not result.daily
+    assert len(result.hold_hourly) == 496
+    assert result.hold_hourly[0].open_ms == month_bounds_ms("2024-02")[0] + 200 * 3600000
+
+
+def test_hold_marks_never_restore_repaired_hours_or_use_futures():
+    from v3_replay_inputs import decode_inventory_archive
+
+    entry, raw = fixture("spot", repaired=True)
+    result = decode_inventory_archive(entry, raw)
+    assert result.hold_hourly == result.hourly
+    assert len(result.hold_hourly) == 695
+    for kind in ("futures", "funding"):
+        entry, raw = fixture(kind)
+        assert not decode_inventory_archive(entry, raw).hold_hourly
+
+
+def test_missing_or_corrupt_spot_archive_supplies_no_hold_prices():
+    from v3_replay_inputs import decode_inventory_archive
+
+    missing = inspect_archive(None, "spot", "BTCUSDT", "2024-02")
+    assert not decode_inventory_archive(missing, None).hold_hourly
+    raw = b"not a ZIP archive"
+    archive = ArchiveObject(
+        archive_path("spot", "BTCUSDT", "2024-02"), hashlib.sha256(raw).hexdigest(), raw
+    )
+    entry = inspect_archive(archive, "spot", "BTCUSDT", "2024-02")
+    assert entry["status"] == "excluded"
+    assert not decode_inventory_archive(entry, raw).hold_hourly

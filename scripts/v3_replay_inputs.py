@@ -22,10 +22,15 @@ class DecodedMonth:
     daily: tuple[Kline, ...] = ()
     funding: tuple[FundingRecord, ...] = ()
     masked_hours: frozenset[int] = frozenset()
+    # Full-size hold ignores monthly exclusions, but never individual hour masks.
+    hold_hourly: tuple[Kline, ...] = ()
 
 
 def decode_inventory_archive(entry: Mapping[str, object], content: bytes | None) -> DecodedMonth:
-    """Recheck one pinned entry and expose only its eligible, unmasked records.
+    """Recheck one pinned entry and expose eligible strategy records.
+
+    Separate hold_hourly spot prices also retain unmasked rows in a month
+    excluded by completeness. They must never replace strategy hourly/daily bars.
 
     The complete inventory, cross-market exclusions, coverage, registration and
     code identity still require validation by the enclosing historical adapter.
@@ -48,7 +53,8 @@ def decode_inventory_archive(entry: Mapping[str, object], content: bytes | None)
     if checked != {key: value for key, value in entry.items() if key != "local_path"}:
         raise ValueError("inventory diagnostics differ from pinned bytes")
     status = str(checked["status"])
-    if status != "eligible":
+    hold_only = kind == "spot" and status == "excluded" and "masked_hours" in checked
+    if status != "eligible" and not hold_only:
         return DecodedMonth(kind, symbol, month, status)
     if content is None:
         raise ValueError("eligible archive bytes missing")
@@ -65,12 +71,14 @@ def decode_inventory_archive(entry: Mapping[str, object], content: bytes | None)
         text = text.partition("\n")[2]
     read = parse_rows_repaired(text, "1h", month)
     checked_month = repaired_month(read, month)
+    unmasked = tuple(bar for bar in read.bars if bar.open_ms not in checked_month.masked_hours)
     return DecodedMonth(
         kind,
         symbol,
         month,
         status,
-        hourly=tuple(bar for bar in read.bars if bar.open_ms not in checked_month.masked_hours),
+        hourly=() if hold_only else unmasked,
         daily=checked_month.daily_bars,
         masked_hours=checked_month.masked_hours,
+        hold_hourly=unmasked if kind == "spot" else (),
     )
