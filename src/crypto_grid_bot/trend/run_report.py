@@ -54,7 +54,8 @@ def build_futures_report(result: ReplayResult) -> FuturesRunReport:
         raise ValueError("unknown or engine-failed run cannot receive a strategy report")
     result = reconcile_replay(result)
     runner = result.runner
-    assert runner is not None and result.trade_reconciliation_residual is not None
+    if runner is None or result.trade_reconciliation_residual is None:
+        raise ValueError("reconciled account and residual are required")
     days = [(stamp, decision) for stamp, _, decision in result.daily_decisions]
     expected_days = [stamp for stamp, _, _ in runner.hours if stamp % DAY == 0]
     if [stamp for stamp, _ in days] != expected_days:

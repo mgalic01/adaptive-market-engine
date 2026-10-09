@@ -30,3 +30,7 @@ sensitivity tables, bootstrap intervals, minimum-capital reporting and trial lin
 Those omissions are not represented as completed work. No historical data fetch,
 market replay, dependency or trading behavior changed. Codex owns the remaining
 integration. Full CI and substantive current-head external review precede merge.
+
+CI follow-up: the full test stage passed, but Bandit rejected the production
+assertion used for the reconciled result's type narrowing. Replaced it with an
+explicit ValueError guard, which remains present under optimized Python.
