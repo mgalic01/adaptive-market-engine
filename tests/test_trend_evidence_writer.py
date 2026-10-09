@@ -9,6 +9,23 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.orchestration import Attempt, replay_sensitivities
 
 
+def test_invalid_target_does_not_poison_failure_artifact(tmp_path):
+    from decimal import Decimal as D
+
+    from crypto_grid_bot.trend.evidence_writer import write_replay
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.replay import ReplayResult
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    filters = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    runner = TrendRunner({"BTCUSDT": filters})
+    with pytest.raises(ValueError):
+        runner.step(1609459200000, {}, {"BTCUSDT": D("NaN")}, {})
+    artifact = write_replay(tmp_path, "invalid-target", ReplayResult(runner, "engine_failure", ()))
+    assert artifact["records"] > 0
+    assert runner.decision_inputs == ()
+
+
 def test_artifact_preserves_missing_and_measured_zero_volatility(tmp_path):
     from decimal import Decimal as D
 
@@ -261,7 +278,13 @@ def test_trade_and_funding_evidence_is_exact_and_tampering_is_detected(tmp_path)
     rules = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
     runner = TrendRunner({"BTCUSDT": rules}, multiple=1)
     bars = {"BTCUSDT": (D(100), D(100), D(100))}
-    runner.step(t, bars, {"BTCUSDT": D(".1")}, {})
+    submitted = {"BTCUSDT": D(".1")}
+    reasons = {"BTCUSDT": frozenset({"pick_change"})}
+    runner.step(t, bars, submitted, {}, exit_reasons=reasons)
+    submitted.clear()
+    reasons.clear()
+    assert runner.decision_inputs[0].targets == (("BTCUSDT", D(".1")),)
+    assert runner.decision_inputs[0].exit_reasons == (("BTCUSDT", frozenset({"pick_change"})),)
     runner.step(t + 3600000, bars, {}, {t + 3600000: {"BTCUSDT": D(".001")}})
     runner.finish({"BTCUSDT": D(100)})
     result = reconcile_replay(ReplayResult(runner, None, ()))
@@ -276,6 +299,10 @@ def test_trade_and_funding_evidence_is_exact_and_tampering_is_detected(tmp_path)
     rows = [json.loads(line) for line in raw.splitlines()]
     assert [row["value"]["quantity"] for row in rows if row["kind"] == "fill"] == ["10"]
     assert len([row for row in rows if row["kind"] == "funding"]) == 1
+    inputs = [row["value"] for row in rows if row["kind"] == "strategy_input"]
+    assert len(inputs) == 2
+    assert inputs[0]["targets"] == [["BTCUSDT", "0.1"]]
+    assert inputs[0]["exit_reasons"] == [["BTCUSDT", ["pick_change"]]]
     (tmp_path / metadata["path"]).write_bytes(raw.replace(b"100", b"101", 1))
     with pytest.raises(ValueError, match="digest"):
         verify_artifact(tmp_path, metadata)

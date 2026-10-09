@@ -15,6 +15,13 @@ HOUR = 3600000
 
 
 @dataclass(frozen=True, slots=True)
+class FuturesDecisionInput:
+    timestamp_ms: int
+    targets: tuple[tuple[str, Decimal], ...]
+    exit_reasons: tuple[tuple[str, frozenset[str]], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class EquityState:
     timestamp_ms: int
     kind: str
@@ -65,6 +72,12 @@ class TrendRunner:
         self.max_drawdown = Decimal(0)
         self.equity_path: list[EquityState] = []
         self.daily_samples: list[tuple[int, Decimal]] = []
+        self._decision_inputs: list[FuturesDecisionInput] = []
+
+    @property
+    def decision_inputs(self) -> tuple[FuturesDecisionInput, ...]:
+        """Immutable adapter submissions, before mandatory exclusion overrides."""
+        return tuple(self._decision_inputs)
 
     def finish(
         self, last_unmasked_closes: Mapping[str, Decimal], *, reason: str = "end_of_run"
@@ -136,6 +149,11 @@ class TrendRunner:
             raise ValueError("unknown bar or target symbol")
         if any(not set(rates) <= self.filters.keys() for rates in funding.values()):
             raise ValueError("unknown funding symbol")
+        if any(
+            not isinstance(v, Decimal) or not v.is_finite() or v.copy_abs() > 1
+            for v in new_targets.values()
+        ):
+            raise ValueError("invalid target weight")
         prices = dict(self._prices)
         extremes = {}
         for symbol, (opened, low, high) in bars.items():
@@ -149,6 +167,13 @@ class TrendRunner:
         self.audits.append(pre_audit)
         if not pre_audit.accepted:
             raise AccountingFailure(pre_audit)
+        self._decision_inputs.append(
+            FuturesDecisionInput(
+                hour_ms,
+                tuple(sorted(new_targets.items())),
+                tuple(sorted((s, frozenset(v)) for s, v in (exit_reasons or {}).items())),
+            )
+        )
         if hour_ms % (24 * HOUR) == 0:
             forced = self.exclusions.zero_symbols(hour_ms)
             new_targets = {**new_targets, **dict.fromkeys(forced, Decimal(0))}
