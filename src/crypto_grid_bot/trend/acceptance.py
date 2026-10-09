@@ -65,6 +65,11 @@ def evaluate_accounts(
     or accounting in the other required training/report scenarios. All remain
     mandatory before any whole-experiment development verdict. Known invalid
     accounts must be classified by that enclosing report, not scored here.
+
+    In particular, hourly execution bars, funding, masking and each market's
+    filters must be linked upstream to the registered manifest. This helper
+    does not authenticate those inputs. Futures and spot prices/filters are
+    intentionally distinct; only the two futures filter sets must be equal.
     """
     schedules = []
     for result, multiple in ((main, 2), (smaller, 1)):

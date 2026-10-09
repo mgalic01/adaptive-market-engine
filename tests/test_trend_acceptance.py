@@ -10,6 +10,37 @@ from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, SpotRunner, repl
 T, HOUR, DAY = 1609459200000, 3600000, 86400000
 
 
+def test_nonzero_strategy_and_changed_pick_match_reconstructed_decisions():
+    from crypto_grid_bot.backtest.klines import Kline
+    from crypto_grid_bot.trend.acceptance import evaluate_accounts
+    from crypto_grid_bot.trend.filters import OrderFilters
+
+    def bar(stamp, price):
+        return Kline(stamp, price, price, price, price, D(1), price, D(".5"))
+
+    daily = {"BTCUSDT": [bar(T + (i - 64) * DAY, D(100 + i)) for i in range(66)]}
+    first = {"BTCUSDT": "2020-01"}
+    filters = {"BTCUSDT": OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))}
+    hourly = {"BTCUSDT": [bar(T + i * HOUR, D(164)) for i in range(48)]}
+    source = DailyDecisions(daily, first)
+    picks = {T: "R1", T + DAY: "R2"}
+    main = replay_window(source, filters, hourly, {}, T, T + 2 * DAY, picks)
+    smaller = replay_window(source, filters, hourly, {}, T, T + 2 * DAY, picks, multiple=1)
+    hold = replay_spot_benchmark(HoldDecisions(daily, first), filters, hourly, T, T + 2 * DAY)
+    assert main.runner.account.fills and smaller.runner.account.fills
+    assert main.daily_decisions[0][2].signals["BTCUSDT"] == 1
+    assert [rule for _, rule, _ in main.daily_decisions] == ["R1", "R2"]
+    assert len(evaluate_accounts(main, smaller, hold, spot_bars=daily, first_months=first)) == 5
+    stamp, rule, decision = smaller.daily_decisions[-1]
+    altered = replace(
+        smaller,
+        daily_decisions=smaller.daily_decisions[:-1]
+        + ((stamp, rule, replace(decision, signals={"BTCUSDT": D(0)})),),
+    )
+    with pytest.raises(ValueError, match="strategy decisions"):
+        evaluate_accounts(main, altered, hold, spot_bars=daily, first_months=first)
+
+
 def accounts(*, manual_hold=False):
     book = DailyDecisions({}, {})
     main = replay_window(book, {}, {}, {}, T, T + 2 * DAY, {T: None})
