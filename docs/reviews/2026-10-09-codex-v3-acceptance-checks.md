@@ -1,55 +1,50 @@
 # Frozen V3 criterion checks
 
-Index: Implemented A1-A5 checks on reconciled accounts, matching strategy decisions and actual hold submissions; historical provenance and experiment verdict remain upstream.
+Index: Account scorer validates prescribed quarterly picks, reconstructed decisions, actual futures/spot submissions and accounting; experiment certification remains upstream.
 
 A1-A4 use the main m=2 base-cost account: Sharpe >=1, trade profit factor >=1.3,
 Calmar >=0.5 and CAGR >=0.08. A5 requires base-cost m=1 Sharpe strictly above
-risk-matched spot hold Sharpe on identical samples. All accounts start at 10000
-USDT and pass existing accounting checks. Main/m=1 must have complete matching
-rule schedules and identical futures filters; spot filters remain separate.
+risk-matched spot hold Sharpe on identical samples. All start at 10000 USDT.
 
-Supplied daily spot history, portfolio-start months and the union of futures/spot
-exclusions reconstruct both strategy and hold decisions. Immutable snapshots of
-the hold targets/reasons actually submitted at every hour must match those
-reconstructed decisions. Artifacts retain these snapshots as spot_input rows.
+The caller supplies expected_picks from the frozen walk-forward selection.
+Account calendars must start at a quarter boundary, contain every required
+quarterly pick, and match that supplied schedule on every day. The experiment
+assembler independently recomputes picks from all twelve training scores; this
+account scorer does not authenticate training artifact provenance.
 
-Review found and reproduced four defects before their fixes: arbitrary cash could
-stand in for hold; copied daily metadata could disguise that cash-only execution;
-spot-only exclusions were omitted from strategy reconstruction; differing futures
-filters could pass. Regressions now reject these cases or accept the correctly
-excluded account. Actual nonzero R1/R2 strategy fills and a mid-window pick change
-are covered, including rejection of altered strategy signals.
+Both futures accounts must have identical filters. All account universes agree;
+spot uses its separate filters. Spot/futures exclusion unions reconstruct strategy
+and hold decisions. Frozen actual-submission snapshots bind those decisions to
+the futures and spot engines and are persisted as strategy_input/spot_input rows.
+Futures snapshots precede mandatory exclusion overrides. Nonfinite/invalid target
+weights are rejected before retention so partial engine-failure evidence remains
+serializable. Trading arithmetic is unchanged.
 
-Validation: 45 focused tests across test_trend_acceptance.py,
-test_trend_benchmark_comparison.py, test_trend_spot_benchmark.py and
- test_trend_evidence_writer.py pass. The complete trend test selection passed at
-356198fbff3eba28ab18e29a832bc32ff8e30ab0, before the additional coverage/doc changes.
-Ruff, mypy and Bandit pass. Independent review found no remaining concrete defect
-in the execution-receipt and exclusion/filter fixes. Full CI and substantive
-external review of the latest full head remain required before merge.
+## Verification
 
-## Limits and remaining integration
+Current focused command selects test_trend_acceptance.py,
+test_trend_benchmark_comparison.py, test_trend_spot_benchmark.py,
+test_trend_evidence_writer.py, test_trend_runner.py, test_trend_run_report.py and
+ test_trend_report_markdown.py: **75 tests pass**. Ruff, mypy and Bandit pass.
 
-This helper does not certify full experiment dates, committed registration,
-manifest identity, or completeness/accounting of every other required scenario.
-Hourly execution bars, funding, masking and each market's filter snapshot must be
-linked upstream to the registered manifest. Checking submitted targets does not
-authenticate execution inputs or deliberate private-state manipulation. Futures
-and spot use different instruments: their prices and filters must not be equated.
+Review-driven regressions reproduced arbitrary cash benchmarks, copied spot and
+futures metadata, omitted spot-only exclusions, differing futures filters,
+unprescribed/non-quarterly picks, and nonfinite target failure-artifact loss.
+The fixes reject these inputs or accept the correctly excluded account. Actual
+nonzero R1 strategy fills are covered. Full current-head CI and substantive Bob
+or Claude review remain required before merge.
 
-Unknown engine failures abort; invalid criterion accounts are classified by the
-enclosing experiment report rather than given fabricated scores. Legitimate
+## Limits
+
+The scorer does not certify full experiment dates, committed registration,
+manifest identity, or all other required scenarios. Hourly bars, funding, masking
+and each market filter snapshot must be linked to the registered manifest.
+Matching submission receipts does not authenticate those inputs or deliberate
+private-state manipulation. Futures and spot use different instruments, so their
+prices and filters must not be equated.
+
+Accounting/engine failures abort; known invalid criterion accounts are classified
+by the experiment report rather than assigned fabricated scores. Legitimate
 infinite ratios are supported. No whole-experiment verdict is produced here.
-No criterion, trading rule, dependency or data-access change. Codex owns remaining
-experiment assembly, provenance validation and registration. No historical replay
-has run and no historical performance claim is made.
-
-## Final execution-link follow-up
-
-Cloud also reproduced detached futures metadata: a cash-only futures replay with
-copied R1 decisions passed. A failing regression now covers that case for both
-m=2 and m=1. TrendRunner records frozen adapter submissions before exclusion
-overrides, and acceptance matches them to reconstructed daily targets/reasons.
-Artifacts retain strategy_input rows. Mutation of caller dictionaries does not
-alter the snapshots. The 64 focused acceptance/comparison/spot/evidence/runner
-checks pass, plus Ruff, mypy and Bandit. Input provenance limits above still apply.
+No rule, dependency or data-access change. Codex owns remaining experiment
+assembly, provenance validation and registration. No historical replay has run.

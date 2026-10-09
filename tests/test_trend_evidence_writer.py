@@ -9,6 +9,23 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.orchestration import Attempt, replay_sensitivities
 
 
+def test_invalid_target_does_not_poison_failure_artifact(tmp_path):
+    from decimal import Decimal as D
+
+    from crypto_grid_bot.trend.evidence_writer import write_replay
+    from crypto_grid_bot.trend.filters import OrderFilters
+    from crypto_grid_bot.trend.replay import ReplayResult
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    filters = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
+    runner = TrendRunner({"BTCUSDT": filters})
+    with pytest.raises(ValueError):
+        runner.step(1609459200000, {}, {"BTCUSDT": D("NaN")}, {})
+    artifact = write_replay(tmp_path, "invalid-target", ReplayResult(runner, "engine_failure", ()))
+    assert artifact["records"] > 0
+    assert runner.decision_inputs == ()
+
+
 def test_artifact_preserves_missing_and_measured_zero_volatility(tmp_path):
     from decimal import Decimal as D
 

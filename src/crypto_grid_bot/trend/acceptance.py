@@ -1,7 +1,9 @@
 """Frozen A1-A5 account checks; experiment readiness and verdict remain upstream."""
 
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from crypto_grid_bot.backtest.klines import Kline
@@ -57,6 +59,7 @@ def evaluate_accounts(
     *,
     spot_bars: Mapping[str, Sequence[Kline]],
     first_months: Mapping[str, str],
+    expected_picks: Mapping[int, str | None],
     futures_exclusions: Mapping[str, frozenset[str]] | None = None,
     spot_exclusions: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[Criterion, ...]:
@@ -96,6 +99,23 @@ def evaluate_accounts(
         raise ValueError("m=1 must retain the main account's rule picks")
     if main.runner is None or smaller.runner is None:
         raise ValueError("criterion account evidence missing")
+    boundaries = []
+    for stamp, _ in schedules[0]:
+        date = datetime.fromtimestamp(stamp // 1000, UTC)
+        if date.day == 1 and date.month in (1, 4, 7, 10):
+            boundaries.append(stamp)
+    if (
+        not boundaries
+        or set(expected_picks) != set(boundaries)
+        or boundaries[0] != main.runner.hours[0][0]
+        or any(rule is not None and rule not in RULES for rule in expected_picks.values())
+    ):
+        raise ValueError("expected quarterly picks must cover account quarters")
+    if any(
+        rule != expected_picks[boundaries[bisect_right(boundaries, stamp) - 1]]
+        for stamp, rule in schedules[0]
+    ):
+        raise ValueError("account rules disagree with expected quarterly picks")
     if main.runner.filters != smaller.runner.filters:
         raise ValueError("futures accounts require identical filters")
     if [stamp for stamp, _ in main.runner.daily_samples] != [
