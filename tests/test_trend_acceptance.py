@@ -94,6 +94,13 @@ def test_real_hold_source_is_accepted_and_changed_signals_or_calendar_are_reject
     smaller = replay_window(source, filters, hourly, {}, T, T + 2 * DAY, {T: None}, multiple=1)
     hold = replay_spot_benchmark(HoldDecisions(daily, first), filters, hourly, T, T + 2 * DAY)
     assert any(fill.quantity for fill in hold.account.fills)
+    cash_only = SpotRunner(filters)
+    for i in range(48):
+        cash_only.step(T + i * HOUR, {"BTCUSDT": (D(100), D(100), D(100))})
+    cash_only.finish({"BTCUSDT": D(100)})
+    cash_only.daily_decisions = list(hold.daily_decisions)
+    with pytest.raises(ValueError, match="submitted"):
+        evaluate_accounts(main, smaller, cash_only, spot_bars=daily, first_months=first)
     assert evaluate_accounts(main, smaller, hold, spot_bars=daily, first_months=first)[-1].passed
     with pytest.raises(ValueError, match="benchmark"):
         evaluate_accounts(

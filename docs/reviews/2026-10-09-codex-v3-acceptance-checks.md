@@ -35,3 +35,15 @@ retained decisions must match. A nonempty synthetic hold with actual fills is
 accepted; an arbitrary cash runner, altered signal or altered spot exclusion
 calendar is rejected. All 43 focused checks pass. Data provenance remains an
 upstream obligation; it is not inferred from this source-consistency check.
+
+A second independent review reproduced a cash-only account carrying copied valid
+hold metadata. Decision metadata alone therefore did not close the issue. The
+regression failed before the execution-link fix. SpotRunner now retains immutable
+snapshots of the targets/reasons actually submitted at every execution hour;
+acceptance compares them to the reconstructed frozen hold decisions. Evidence
+artifacts persist these snapshots as spot_input rows. This adds no replay.
+
+The cash-only/copied-metadata regression now passes. All 43 acceptance, benchmark,
+spot-engine and evidence-writer tests pass, including snapshot immutability and
+persisted exact inputs. Independent review found no remaining concrete defect.
+Source provenance and deliberate private-state manipulation are not certified.

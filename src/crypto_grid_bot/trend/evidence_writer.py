@@ -104,6 +104,8 @@ def spot_rows(runner: "SpotRunner") -> Iterator[tuple[str, Any]]:
     )
     for stamp, decision in runner.daily_decisions:
         yield "spot_decision", {"timestamp_ms": stamp, "decision": decision}
+    for receipt in runner.decision_inputs:
+        yield "spot_input", receipt
     for kind, values in (
         ("spot_fill", runner.account.fills),
         ("spot_audit", runner.audits),

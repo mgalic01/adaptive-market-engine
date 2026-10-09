@@ -11,7 +11,7 @@ from crypto_grid_bot.trend.metrics import summarize_runner
 from crypto_grid_bot.trend.orchestration import reconcile_replay
 from crypto_grid_bot.trend.replay import ReplayResult
 from crypto_grid_bot.trend.signals import RULES
-from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, SpotRunner
+from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, SpotDecisionInput, SpotRunner
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +121,19 @@ def evaluate_accounts(
     expected_hold = [(stamp, benchmark.at(stamp, run_end_ms=end)) for stamp, _ in schedules[0]]
     if hold.daily_decisions != expected_hold:
         raise ValueError("hold benchmark decisions do not match frozen source")
+    expected_by_day = dict(expected_hold)
+    expected_inputs = []
+    for stamp, _, _ in main.runner.hours:
+        decision = expected_by_day.get(stamp)
+        expected_inputs.append(
+            SpotDecisionInput(
+                stamp,
+                tuple(sorted(decision.targets.items())) if decision else (),
+                tuple(sorted(decision.exit_reasons.items())) if decision else (),
+            )
+        )
+    if hold.decision_inputs != tuple(expected_inputs):
+        raise ValueError("hold submitted targets do not match frozen benchmark decisions")
     metrics = summarize_runner(main.runner)
     comparison = compare_hold(smaller.runner, hold)
     return _score(
