@@ -147,3 +147,38 @@ def test_partial_listing_month_is_not_signal_warmup(inputs):
     assert partial not in result.spot_bars["BTCUSDT"]
     assert partial not in result.spot_hourly["BTCUSDT"]
     assert result.spot_bars["BTCUSDT"][0] == bar("2023-03")
+
+
+def test_full_size_hold_keeps_its_own_excluded_month_prices(inputs):
+    from v3_replay_assembly import assemble_replay_inputs
+
+    loaded, first = inputs
+    months = tuple(
+        replace(m, status="excluded", hold_hourly=(bar(m.month, 123),))
+        if m.kind == "spot" and m.symbol == "BTCUSDT" and m.month in {"2023-02", "2023-06"}
+        else replace(m, hold_hourly=m.hourly)
+        if m.kind == "spot"
+        else m
+        for m in loaded.months
+    )
+    result = assemble_replay_inputs(replace(loaded, months=months), first)
+    assert result.hold_hourly["BTCUSDT"] == (
+        bar("2023-03"),
+        bar("2023-05"),
+        bar("2023-06", 123),
+    )
+    assert bar("2023-06", 123) not in result.spot_hourly["BTCUSDT"]
+    assert bar("2023-06", 123) not in result.spot_bars["BTCUSDT"]
+    assert set(result.hold_hourly) == SYMBOLS
+    assert result.replay_ready is False
+
+
+def test_duplicate_full_size_prices_fail_assembly(inputs):
+    from v3_replay_assembly import assemble_replay_inputs
+
+    loaded, first = inputs
+    months = tuple(
+        replace(m, hold_hourly=m.hourly * 2) if m.kind == "spot" else m for m in loaded.months
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        assemble_replay_inputs(replace(loaded, months=months), first)
