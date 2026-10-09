@@ -1,7 +1,7 @@
 # Experiment specification v3: trend-following, long and short, on perpetual futures (frozen 2026-10-08)
 
 **Status:** frozen on 2026-10-08. Claude wrote it from the owner's design decisions of that day (§11).
-**Current amendment version:** `v3-full-size-hold-timing-2026-10-09`, approved by the owner before historical execution; see [the decision record](reviews/2026-10-09-owner-v3-storage-and-hold-timing.md). The candidate registration must pin this amended file before its implementation.
+**Current amendment version:** `v3-local-executor-2026-10-09`, approved by the owner before historical execution; see [the executor decision](reviews/2026-10-09-owner-v3-local-executor.md). This retains the [full-size hold timing amendment](reviews/2026-10-09-owner-v3-storage-and-hold-timing.md). The candidate registration must pin this amended file before execution.
 - **How it was frozen:**
   - The owner approved the spec: "approve" (§11, decision 14).
   - PR #207 settled every finding of 33 review rounds. At its final head, `e01eb2e`, Codex found no major issues, Bob reported NO ISSUES, the automated review approved, and CI passed. It landed as `2675941`.
@@ -11,7 +11,7 @@
 - **Scope:** historical replay only, on paper. Nothing here authorises live trading, exchange credentials, API keys or withdrawals. No v3 code places, signs or routes an order.
 - **The bot's operating rules, as amended for v3** (§11, decisions 11 and 12). The README and SECURITY.md said the bot trades "only Binance spot markets; no leverage, futures, or martingale". The owner amended both in the PR that adds this spec:
   - futures and short positions are allowed in historical backtests and paper trading, at no more than 3x leverage, checked at every hourly mark and after every funding payment;
-  - one public, read-only request to Binance's futures exchange information is allowed, in Bob's owner-started fetch only (§2);
+  - one public, read-only request to Binance's futures exchange information is allowed, in the owner-started fetch only (§2; local executor amendment below);
   - live futures trading still needs a separate owner decision.
   - v3 itself is historical replay only (above).
 - **Earlier specs:** [spec v1](EXPERIMENT_SPEC_V1.md) ended with no winner ([report](backtests/2026-10-06-spec-v1-stage-1.md)). [Spec v2](EXPERIMENT_SPEC_V2.md) failed on its drawdown criterion, C1 ([verdict](backtests/2026-10-07-spec-v2-verdict.md)). Both stay frozen as the records of their experiments.
@@ -33,6 +33,7 @@ Does trend-following, long and short or long only as the walk-forward picks (§4
 - **Source:** Binance USDⓈ-M perpetual-futures public archives (data.binance.vision): monthly 1h klines and monthly funding-rate files for the 10 coins of §3.
 - **Months:** from each coin's first full month of 1h futures klines to 2024-12. Nothing dated 2025 or later is fetched or read. The reserved window stays sealed (§8, "Outcome").
 - **Fetch:** by Bob, in a task file the owner starts, with a pinned script, as in #193.
+  - **Owner amendment, 2026-10-09:** for this one V3 collection task, Codex Desktop replaces Bob as executor and retains the data locally on E:. Bob independently reviews the pinned task and delivered manifest/coverage. The owner separately starts the final reviewed task. Endpoint restrictions, once-only snapshots, failure retention, no automatic retry and reserved-window prohibition are unchanged. The downside is reduced separation between preparation and execution. This exception governs references to the Bob fetch elsewhere in this spec; it does not authorize the download by itself.
   - Every archive is checked against Binance's published SHA-256.
   - Each file's checksum and statistics are recorded in a committed manifest.
   - The fetch also records today's exchange filters for the 10 symbols, once, in the manifest: the USDⓈ-M perpetuals' for the account, and spot's for the hold benchmark (§8). Historical filters are not published (spec v1 P4), so today's are used and the record says so.

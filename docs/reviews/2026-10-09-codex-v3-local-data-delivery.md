@@ -1,8 +1,14 @@
 # V3 local data delivery proposal
 
-Index: Current E: delivery proposal with verified pins and both-snapshot recovery; executor access or an owner-approved local Codex exception, reviewed task and owner start remain pending.
+Index: Delivery proposal superseded by the owner-approved local Codex executor and pinned task; final reviewed download start remains pending.
 
 ## Purpose and status
+
+**Latest decision:** the owner approved the local Codex executor exception;
+see [the decision](2026-10-09-owner-v3-local-executor.md) and the
+[pinned task](../tasks/2026-10-09-codex-v3-local-data.md). Those documents supersede
+this proposal's executor discussion and older input pins. The task still requires
+its final owner start; the following text preserves the reviewed proposal.
 
 **Update, 2026-10-09:** the owner selected E:, with dedicated root
 `E:/adaptive-market-engine/v3`; see [the decision record](2026-10-09-owner-v3-storage-and-hold-timing.md).
