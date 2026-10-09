@@ -1,0 +1,16 @@
+{
+  "at": "2026-10-09T17:11:18.730198+00:00",
+  "snapshots": {
+    "spot": {
+      "path": "snapshots/spot.json",
+      "bytes": 17744018,
+      "sha256": "d5dbeeb908dde49269e7e654359b59981e7958636b2ed61103999bdec826b05d"
+    },
+    "futures": {
+      "path": "snapshots/futures.json",
+      "bytes": 1147714,
+      "sha256": "db6a0c5bde5fc247224826f26be78729da74eecd2bc419a93728f255fd9244f4"
+    }
+  },
+  "collection_complete": false
+}
