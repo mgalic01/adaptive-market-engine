@@ -26,6 +26,7 @@ class OrderPlan:
     refusals: tuple[str, ...]
     adjustments: tuple[str, ...]
     intended_increase_quantity: Decimal | None = None
+    intended_increase_notional: Decimal | None = None
 
 
 def _split(quantity: Decimal, reduce_only: bool, filters: OrderFilters) -> tuple[OrderIntent, ...]:
@@ -131,7 +132,7 @@ def plan_rebalance(
         if _sign(target_weight) == _sign(held_quantity) and abs(target_weight - current) <= Decimal(
             ".01"
         ):
-            return OrderPlan(current, target, (), (), ())
+            return OrderPlan(current, target, (), (), (), None, ZERO)
         intended_increase = None
         if unrounded != ZERO:
             if _sign(unrounded) != _sign(held_quantity):
@@ -171,5 +172,11 @@ def plan_rebalance(
         else:
             increase(target - held_quantity)
         return OrderPlan(
-            current, target, tuple(orders), tuple(refusals), tuple(adjustments), intended_increase
+            current,
+            target,
+            tuple(orders),
+            tuple(refusals),
+            tuple(adjustments),
+            intended_increase,
+            abs(intended_increase) * open_price if intended_increase is not None else ZERO,
         )
