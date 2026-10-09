@@ -10,6 +10,7 @@ from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.metrics import summarize_runner
 from crypto_grid_bot.trend.orchestration import reconcile_replay
 from crypto_grid_bot.trend.replay import ReplayResult
+from crypto_grid_bot.trend.runner import FuturesDecisionInput
 from crypto_grid_bot.trend.signals import RULES
 from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, SpotDecisionInput, SpotRunner
 
@@ -118,13 +119,31 @@ def evaluate_accounts(
     end = main.runner.equity_path[-1].timestamp_ms
     for result, multiple in ((main, 2), (smaller, 1)):
         previous = result.daily_decisions[0][1] if result.daily_decisions else None
+        expected_strategy = {}
         for stamp, rule, recorded in result.daily_decisions:
             expected = source.at(
                 stamp, rule, multiple=multiple, pick_changed=rule != previous, run_end_ms=end
             )
             if recorded != expected:
                 raise ValueError("strategy decisions do not match supplied frozen source")
+            expected_strategy[stamp] = expected
             previous = rule
+        if result.runner is None:
+            raise ValueError("criterion account evidence missing")
+        submitted = tuple(
+            FuturesDecisionInput(
+                stamp,
+                tuple(sorted(expected_strategy[stamp].targets.items()))
+                if stamp in expected_strategy
+                else (),
+                tuple(sorted(expected_strategy[stamp].exit_reasons.items()))
+                if stamp in expected_strategy
+                else (),
+            )
+            for stamp, _, _ in result.runner.hours
+        )
+        if result.runner.decision_inputs != submitted:
+            raise ValueError("strategy submitted targets do not match frozen decisions")
     expected_hold = [(stamp, benchmark.at(stamp, run_end_ms=end)) for stamp, _ in schedules[0]]
     if hold.daily_decisions != expected_hold:
         raise ValueError("hold benchmark decisions do not match frozen source")

@@ -69,6 +69,7 @@ def replay_rows(result: ReplayResult) -> Iterator[tuple[str, Any]]:
         },
     )
     for kind, values in (
+        ("strategy_input", runner.decision_inputs),
         ("event", account.events),
         ("fill", account.fills),
         ("funding", account.funding),

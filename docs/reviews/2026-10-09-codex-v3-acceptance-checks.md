@@ -43,3 +43,13 @@ infinite ratios are supported. No whole-experiment verdict is produced here.
 No criterion, trading rule, dependency or data-access change. Codex owns remaining
 experiment assembly, provenance validation and registration. No historical replay
 has run and no historical performance claim is made.
+
+## Final execution-link follow-up
+
+Cloud also reproduced detached futures metadata: a cash-only futures replay with
+copied R1 decisions passed. A failing regression now covers that case for both
+m=2 and m=1. TrendRunner records frozen adapter submissions before exclusion
+overrides, and acceptance matches them to reconstructed daily targets/reasons.
+Artifacts retain strategy_input rows. Mutation of caller dictionaries does not
+alter the snapshots. The 64 focused acceptance/comparison/spot/evidence/runner
+checks pass, plus Ruff, mypy and Bandit. Input provenance limits above still apply.

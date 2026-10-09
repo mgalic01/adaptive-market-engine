@@ -10,7 +10,8 @@ from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, SpotRunner, repl
 T, HOUR, DAY = 1609459200000, 3600000, 86400000
 
 
-def test_nonzero_strategy_and_changed_pick_match_reconstructed_decisions():
+@pytest.mark.parametrize("copied_multiple", [1, 2])
+def test_nonzero_strategy_and_changed_pick_match_reconstructed_decisions(copied_multiple):
     from crypto_grid_bot.backtest.klines import Kline
     from crypto_grid_bot.trend.acceptance import evaluate_accounts
     from crypto_grid_bot.trend.filters import OrderFilters
@@ -31,6 +32,20 @@ def test_nonzero_strategy_and_changed_pick_match_reconstructed_decisions():
     assert main.daily_decisions[0][2].signals["BTCUSDT"] == 1
     assert [rule for _, rule, _ in main.daily_decisions] == ["R1", "R2"]
     assert len(evaluate_accounts(main, smaller, hold, spot_bars=daily, first_months=first)) == 5
+    cash = replay_window(
+        source, filters, hourly, {}, T, T + 2 * DAY, {T: None}, multiple=copied_multiple
+    )
+    cash = replace(
+        cash, daily_decisions=(main if copied_multiple == 2 else smaller).daily_decisions
+    )
+    with pytest.raises(ValueError, match="strategy submitted"):
+        evaluate_accounts(
+            cash if copied_multiple == 2 else main,
+            cash if copied_multiple == 1 else smaller,
+            hold,
+            spot_bars=daily,
+            first_months=first,
+        )
     stamp, rule, decision = smaller.daily_decisions[-1]
     altered = replace(
         smaller,
