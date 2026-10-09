@@ -11,7 +11,9 @@ human review and committed registration; agreement is not approval.
 Assemble each market's sorted hourly bars independently. Preserve raw funding
 timestamps, group simultaneous cross-coin events, and reject duplicates. Derive
 separate spot and futures/funding exclusions after each coin joins. Signal daily
-bars exclude the union after joining; retain eligible spot warmup before joining.
+bars exclude only spot-ineligible months; futures-only exclusions retain signal
+updates (section 4). Retain spot warmup from the first full spot month, not an
+eligible partial listing month, before joining.
 Do not substitute futures daily bars for spot signals. No fetching, market-file
 access, runs, full-size hold or final verdict.
 

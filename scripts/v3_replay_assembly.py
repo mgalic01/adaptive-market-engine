@@ -38,8 +38,9 @@ def assemble_replay_inputs(
     Caller must obtain inventory from load_inventory_inputs, review coverage and
     commit registration before historical dispatch. Matching this calendar is not
     approval; a disputed candidate must be resolved upstream. Pre-join eligible
-    spot history remains warmup. Post-join daily signals omit either market's
-    excluded months. Available hourly prices stay market-specific for accounting.
+    spot history from its first full month remains warmup. Futures-only exclusions
+    keep updating spot signals (spec section 4); only spot exclusions remove bars.
+    Available hourly prices stay market-specific for accounting.
     """
     if any(
         set(mapping) != SYMBOLS
@@ -53,6 +54,14 @@ def assemble_replay_inputs(
         for symbol, month in first.items()
     ):
         raise ValueError("explicit join calendar differs from verified coverage candidate")
+    spot_first = {}
+    for symbol in sorted(SYMBOLS):
+        candidate = coins[symbol].get("first_full_spot_month_candidate")
+        if not isinstance(candidate, str):
+            raise ValueError("first full spot month is required")
+        spot_first[symbol] = development_month(candidate)
+        if not "2018-06" <= candidate <= first[symbol]:
+            raise ValueError("first full spot month is outside the frozen data range")
     indexed = {(m.kind, m.symbol, m.month): m for m in inventory.months}
     if len(indexed) != len(inventory.months) or set(indexed) != set(planned_requests()):
         raise ValueError("complete unique fixed inventory required")
@@ -89,8 +98,10 @@ def assemble_replay_inputs(
         if decoded.status != "eligible":
             continue
         if decoded.kind == "spot":
+            if month < spot_first[symbol]:
+                continue
             spot[symbol].extend(decoded.hourly)
-            if month not in spot_exclusions[symbol] | futures_exclusions[symbol]:
+            if month not in spot_exclusions[symbol]:
                 daily[symbol].extend(decoded.daily)
         elif decoded.kind == "futures":
             futures[symbol].extend(decoded.hourly)

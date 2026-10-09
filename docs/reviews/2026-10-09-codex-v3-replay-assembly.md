@@ -11,9 +11,10 @@ join calendar equal to the verified coverage candidates. All join months must ha
 eligible spot, futures and funding entries. A disputed candidate must be resolved
 upstream; matching it is not human approval or completing registration.
 
-Spot and futures hourly bars remain separate. Spot daily signals omit post-join
-months excluded by either spot or futures/funding, while eligible spot warmup before
-joining remains. Original funding timestamps are retained, simultaneous coins share
+Spot and futures hourly bars remain separate. Spot daily signals omit spot-excluded
+months only; futures-only exclusions keep updating signals per section 4. Spot
+history starts at the first full spot month, retaining in-scope warmup before
+joining. Original funding timestamps are retained, simultaneous coins share
 one group, and duplicate bars or same-coin funding timestamps are rejected.
 Source manifest/spec hashes are carried through. `replay_ready` remains false.
 
@@ -29,3 +30,9 @@ raw archive contents or claim the mutable Python objects are a security boundary
 No files, network, historical replay, trading changes or dependencies. It does not
 implement the full-size hold's treatment of excluded months or certify a result.
 Current-head Bob review and required CI are still needed before merge.
+
+Cloud review caught two defects missed by the initial reviews: dropping valid spot
+bars during futures-only exclusions and admitting partial listing-month warmup.
+Both received failing regression tests before correction. The plan and description
+above now reflect the section 4 signal-continuity rule. No historical run occurred
+with either defect; the original head was not merged.

@@ -50,7 +50,15 @@ def inputs():
         tuple(months.values()),
         filters,
         filters,
-        {"coins": {s: {"first_portfolio_month_candidate": m} for s, m in first.items()}},
+        {
+            "coins": {
+                s: {
+                    "first_portfolio_month_candidate": m,
+                    "first_full_spot_month_candidate": "2023-03",
+                }
+                for s, m in first.items()
+            }
+        },
     )
     return loaded, first
 
@@ -64,7 +72,8 @@ def test_preserves_spot_warmup_separates_markets_and_combines_exclusions(inputs)
     assert result.manifest_sha256 == loaded.manifest_sha256
     assert result.spec_sha256 == loaded.spec_sha256
     assert result.replay_ready is False
-    assert result.spot_bars["BTCUSDT"] == (bar("2023-03"),)
+    # Futures/funding exclusion forces zero exposure, not stale spot signals (§4).
+    assert result.spot_bars["BTCUSDT"] == (bar("2023-03"), bar("2023-05"))
     assert result.spot_hourly["BTCUSDT"] == (bar("2023-03"), bar("2023-05"))
     assert result.futures_hourly["BTCUSDT"] == (bar("2023-05", 200), bar("2023-06", 200))
     assert "2023-05" in result.futures_exclusions["BTCUSDT"]
@@ -121,3 +130,20 @@ def test_duplicate_decoded_records_are_not_silently_overwritten(inputs, kind):
         changed.append(month)
     with pytest.raises(ValueError, match="duplicate"):
         assemble_replay_inputs(replace(loaded, months=tuple(changed)), first)
+
+
+def test_partial_listing_month_is_not_signal_warmup(inputs):
+    from v3_replay_assembly import assemble_replay_inputs
+
+    loaded, first = inputs
+    partial = bar("2023-02")
+    months = tuple(
+        replace(m, status="eligible", hourly=(partial,), daily=(partial,))
+        if (m.kind, m.symbol, m.month) == ("spot", "BTCUSDT", "2023-02")
+        else m
+        for m in loaded.months
+    )
+    result = assemble_replay_inputs(replace(loaded, months=months), first)
+    assert partial not in result.spot_bars["BTCUSDT"]
+    assert partial not in result.spot_hourly["BTCUSDT"]
+    assert result.spot_bars["BTCUSDT"][0] == bar("2023-03")
