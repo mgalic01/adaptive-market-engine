@@ -4,8 +4,10 @@ Validated RegisteredDocuments and an exclusively owned evidence directory are
 caller prerequisites. Metadata linkage cannot establish report derivation or
 complete historical attempt coverage. Runtime rechecks remain upstream. Completion
 is a hash-pinned receipt, never the presence of report files. Interrupted writes
-are retained and cannot be resumed here. Cleanup can fail after receipt publication:
-inspect and verify that receipt; never infer absence, delete evidence or retry.
+are retained and cannot be resumed here. Any exception after receipt publication,
+including cleanup or final verification, requires inspection and verification;
+never infer absence, delete evidence or retry. Unrelated files and unpublished
+temporary files are outside the receipt, not certified as absent or complete.
 No security or power-loss guarantee.
 """
 

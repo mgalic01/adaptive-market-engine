@@ -57,9 +57,11 @@ Revert removes this new optional API; retain any published/partial report eviden
 
 ## Review follow-up: ambiguous cleanup outcome
 
-If atomic receipt publication succeeds but removal of `.publication.tmp` fails,
-the API raises even though a complete receipt exists. Preserve both hard-linked
-files and the report; do not delete evidence or retry publication. Inspect the
+If atomic receipt publication succeeds, any later exception (temporary cleanup
+or final verification, including a read error or evidence drift) can leave a
+receipt despite the API raising. Preserve every remaining file and the report;
+do not delete evidence or retry publication. Receipt presence alone does not mean
+verification succeeded. Inspect the
 receipt and establish its digest deliberately, then call `verify_published_report`
 with the same registered documents. An inspection-derived digest checks current
 internal consistency, not the authenticity of a previously retained independent
@@ -71,3 +73,16 @@ all remaining prerequisites and an unset verdict, and Markdown includes that
 diagnostic. No replay is used. Follow-up focused result: **26 passed, 1 skipped**
 for `tests/test_v3_report_publication.py` (4.01 seconds, Python 3.14.7); the existing
 Windows symlink-permission skip remains. Production behavior is unchanged.
+
+Bob's review at `156cae3d2044d5bd3ab2639e229cba3a754e0e35` prompted an additional
+injected final-verification failure test and the broader wording above. The reader
+verifies the named report files and observed published journals/artifacts; it does
+not enumerate unrelated files in `report/` or pin unpublished `.journal-*` and
+`.evidence-*` temporaries. Preserve and inspect those separately after interruption.
+This receipt therefore does not certify that its directory has no other evidence
+or that every historical attempt is represented. The future invocation/history
+reconciliation owns that wider accounting. No cleanup or new rejection policy was
+introduced. The full-size-hold unavailable outcome remains the owner's accepted
+diagnostic exception, not an A5 failure.
+
+Parent follow-up validation: 27 passed, 1 Windows symlink skip on Python 3.12.14; changed-file Ruff lint/format and whitespace checks passed. No production behavior changed.

@@ -331,3 +331,27 @@ def test_full_size_hold_roundtrip_retains_remaining_prerequisites(prepared):
     assert value["required_before_verdict"] == list(REQUIRED[:-1])
     assert receipt["required_before_verdict"] == list(REQUIRED[:-1])
     assert "Full-size hold diagnostic" in (root / "report/experiment.md").read_text()
+
+
+def test_final_verify_failure_retains_receipt_without_retry(prepared, monkeypatch):
+    import v3_report_publication as publication
+
+    root, report, docs = prepared
+    original = publication.verify_published_report
+
+    def fail_verify(*args, **kwargs):
+        raise OSError("synthetic final verification read failure")
+
+    monkeypatch.setattr(publication, "verify_published_report", fail_verify)
+    with pytest.raises(OSError, match="final verification"):
+        publication.publish_experiment_report(root, report, docs)
+    receipt = root / "report/publication.json"
+    assert receipt.is_file()
+    assert not (root / "report/.publication.tmp").exists()
+    pin = hashlib.sha256(receipt.read_bytes()).hexdigest()
+    # Deliberate inspection checks current consistency, not independent authenticity.
+    assert original(root, pin, docs).receipt_sha256 == pin
+    before = receipt.read_bytes()
+    with pytest.raises(FileExistsError):
+        publication.publish_experiment_report(root, report, docs)
+    assert receipt.read_bytes() == before
