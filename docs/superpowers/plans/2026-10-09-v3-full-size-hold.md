@@ -40,3 +40,11 @@ records and hashed exact JSONL. Retain outcome, attempted timestamps, budgets,
 cash/holdings, fills, audits and equity/samples. A missing first price is recorded
 as unavailable; an engine error retains partial evidence and re-raises. An
 interruption or failed publication leaves a pending start, with no automatic retry.
+
+Budget representation: `budgets` is a Decimal60 display approximation; it is not
+an exact cash-ledger balance or a spent-cash reconciliation target. The exact
+allocation is the rational `initial / len(budgets)` (10000/N), reconstructible from
+the evidence. Purchase quantities use that exact rational before flooring to the
+market step; settlement then uses the existing Decimal60 account. Unspent cash
+includes market-step dust, refused allocations and reservations. Cash and quantity
+audits reconcile actual fills, never these displayed allocation approximations.
