@@ -77,7 +77,8 @@ def test_arbitrary_cash_spot_runner_is_not_frozen_benchmark_evidence():
         evaluate_accounts(main, smaller, hold, spot_bars={}, first_months={})
 
 
-def test_real_hold_source_is_accepted_and_changed_signals_or_calendar_are_rejected():
+@pytest.mark.parametrize("excluded", [False, True])
+def test_real_hold_source_is_accepted_and_changed_signals_or_calendar_are_rejected(excluded):
     from crypto_grid_bot.backtest.klines import Kline
     from crypto_grid_bot.trend.acceptance import evaluate_accounts
     from crypto_grid_bot.trend.filters import OrderFilters
@@ -89,10 +90,28 @@ def test_real_hold_source_is_accepted_and_changed_signals_or_calendar_are_reject
     first = {"BTCUSDT": "2020-01"}
     filters = {"BTCUSDT": OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))}
     hourly = {"BTCUSDT": [bar(T + i * HOUR, D(100)) for i in range(48)]}
-    source = DailyDecisions(daily, first)
+    exclusions = {"BTCUSDT": frozenset({"2021-01"})} if excluded else {}
+    source = DailyDecisions(daily, first, exclusions)
     main = replay_window(source, filters, hourly, {}, T, T + 2 * DAY, {T: None})
     smaller = replay_window(source, filters, hourly, {}, T, T + 2 * DAY, {T: None}, multiple=1)
-    hold = replay_spot_benchmark(HoldDecisions(daily, first), filters, hourly, T, T + 2 * DAY)
+    hold = replay_spot_benchmark(
+        HoldDecisions(daily, first, exclusions), filters, hourly, T, T + 2 * DAY
+    )
+    if excluded:
+        assert (
+            len(
+                evaluate_accounts(
+                    main,
+                    smaller,
+                    hold,
+                    spot_bars=daily,
+                    first_months=first,
+                    spot_exclusions=exclusions,
+                )
+            )
+            == 5
+        )
+        return
     assert any(fill.quantity for fill in hold.account.fills)
     cash_only = SpotRunner(filters)
     for i in range(48):
@@ -102,7 +121,11 @@ def test_real_hold_source_is_accepted_and_changed_signals_or_calendar_are_reject
     with pytest.raises(ValueError, match="submitted"):
         evaluate_accounts(main, smaller, cash_only, spot_bars=daily, first_months=first)
     assert evaluate_accounts(main, smaller, hold, spot_bars=daily, first_months=first)[-1].passed
-    with pytest.raises(ValueError, match="benchmark"):
+    smaller.runner.filters["BTCUSDT"] = replace(filters["BTCUSDT"], min_notional=D(10))
+    with pytest.raises(ValueError, match="filters"):
+        evaluate_accounts(main, smaller, hold, spot_bars=daily, first_months=first)
+    smaller.runner.filters["BTCUSDT"] = filters["BTCUSDT"]
+    with pytest.raises(ValueError, match="source"):
         evaluate_accounts(
             main,
             smaller,

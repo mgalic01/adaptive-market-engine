@@ -90,20 +90,22 @@ def evaluate_accounts(
         raise ValueError("m=1 must retain the main account's rule picks")
     if main.runner is None or smaller.runner is None:
         raise ValueError("criterion account evidence missing")
+    if main.runner.filters != smaller.runner.filters:
+        raise ValueError("futures accounts require identical filters")
     if [stamp for stamp, _ in main.runner.daily_samples] != [
         stamp for stamp, _ in smaller.runner.daily_samples
     ]:
         raise ValueError("criterion accounts require identical sample times")
     if hold.account.initial != Decimal(10000):
         raise ValueError("hold account must start with 10000 USDT")
-    source = DailyDecisions(spot_bars, first_months, futures_exclusions)
-    if not set(spot_exclusions or {}) <= set(first_months):
-        raise ValueError("unknown spot exclusion symbol")
+    if not (set(spot_exclusions or {}) | set(futures_exclusions or {})) <= set(first_months):
+        raise ValueError("unknown exclusion symbol")
     union = {
         symbol: (futures_exclusions or {}).get(symbol, frozenset())
         | (spot_exclusions or {}).get(symbol, frozenset())
         for symbol in first_months
     }
+    source = DailyDecisions(spot_bars, first_months, union)
     benchmark = HoldDecisions(spot_bars, first_months, union)
     universe = set(first_months)
     if any(set(runner.filters) != universe for runner in (main.runner, smaller.runner, hold)):

@@ -47,3 +47,10 @@ The cash-only/copied-metadata regression now passes. All 43 acceptance, benchmar
 spot-engine and evidence-writer tests pass, including snapshot immutability and
 persisted exact inputs. Independent review found no remaining concrete defect.
 Source provenance and deliberate private-state manipulation are not certified.
+
+Further Cloud review identified two comparison mismatches. Spec section 2 applies
+spot exclusions to futures decisions too: both decision sources now use the union
+of futures and spot exclusions. Main and m=1 accounts must also use identical
+futures filter snapshots; the hold retains its separate spot filters. Two failing
+regressions reproduced the prior behavior, then passed with these fixes. All 44
+focused acceptance/comparison/spot/evidence checks pass, plus lint/types/Bandit.
