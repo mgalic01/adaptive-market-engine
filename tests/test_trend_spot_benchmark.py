@@ -10,6 +10,40 @@ HOUR = 3600000
 FILTERS = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
 
 
+def test_submitted_inputs_are_immutable_snapshots_and_persisted(tmp_path):
+    import json
+    from dataclasses import FrozenInstanceError
+
+    import pytest
+
+    from crypto_grid_bot.trend.evidence_writer import write_spot_replay
+    from crypto_grid_bot.trend.spot_benchmark import SpotRunner
+
+    runner = SpotRunner({"BTCUSDT": FILTERS})
+    targets = {"BTCUSDT": D(".1")}
+    reasons = {"BTCUSDT": frozenset({"rotation"})}
+    runner.step(T, {}, targets, exit_reasons=reasons)
+    targets["BTCUSDT"] = D(0)
+    reasons.clear()
+    receipt = runner.decision_inputs[0]
+    assert receipt.targets == (("BTCUSDT", D(".1")),)
+    assert receipt.exit_reasons == (("BTCUSDT", frozenset({"rotation"})),)
+    with pytest.raises(FrozenInstanceError):
+        receipt.timestamp_ms = 0
+    with pytest.raises(AttributeError):
+        runner.decision_inputs = ()
+    metadata = write_spot_replay(tmp_path, "submitted", runner)
+    rows = [json.loads(line) for line in (tmp_path / metadata["path"]).read_text().splitlines()]
+    persisted = [row["value"] for row in rows if row["kind"] == "spot_input"]
+    assert persisted == [
+        {
+            "timestamp_ms": T,
+            "targets": [["BTCUSDT", "0.1"]],
+            "exit_reasons": [["BTCUSDT", ["rotation"]]],
+        }
+    ]
+
+
 def history(count):
     return [
         Kline(

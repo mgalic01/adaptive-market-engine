@@ -20,6 +20,13 @@ from crypto_grid_bot.trend.spot_account import SpotAccount, SpotAudit, _finite, 
 
 
 @dataclass(frozen=True, slots=True)
+class SpotDecisionInput:
+    timestamp_ms: int
+    targets: tuple[tuple[str, Decimal], ...]
+    exit_reasons: tuple[tuple[str, frozenset[str]], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class SpotRebalance:
     symbol: str
     timestamp_ms: int
@@ -50,6 +57,7 @@ class SpotRunner:
         self.exclusion_dust: list[tuple[int, str, Decimal, Decimal]] = []
         self.samples: list[tuple[int, Decimal]] = []
         self.daily_decisions: list[tuple[int, DailyDecision]] = []
+        self._decision_inputs: list[SpotDecisionInput] = []
         self.equity_path: list[EquityState] = []
         self.peak = self.account.initial
         self.max_drawdown = Decimal(0)
@@ -57,6 +65,11 @@ class SpotRunner:
         self._prices: dict[str, Decimal] = {}
         self._hour: int | None = None
         self.stopped: str | None = None
+
+    @property
+    def decision_inputs(self) -> tuple[SpotDecisionInput, ...]:
+        """Immutable snapshots of the targets actually delivered to execution."""
+        return tuple(self._decision_inputs)
 
     def _audit(self) -> None:
         audit = self.account.audit()
@@ -150,6 +163,15 @@ class SpotRunner:
                 raise ValueError("invalid bar")
             prices[symbol] = opened
         self._audit()
+        self._decision_inputs.append(
+            SpotDecisionInput(
+                hour_ms,
+                tuple(sorted(targets.items())),
+                tuple(
+                    sorted((symbol, frozenset(value)) for symbol, value in (reasons or {}).items())
+                ),
+            )
+        )
         dispatch = self.pending.advance(hour_ms, targets, set(bars), reasons)
         self.dispatches.append((hour_ms, dispatch))
         for symbol, quantity in self.account.holdings.items():
