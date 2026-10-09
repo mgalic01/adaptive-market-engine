@@ -1,14 +1,17 @@
 """Frozen A1-A5 account checks; experiment readiness and verdict remain upstream."""
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
+from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.trend.benchmark_comparison import compare_hold
+from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.metrics import summarize_runner
 from crypto_grid_bot.trend.orchestration import reconcile_replay
 from crypto_grid_bot.trend.replay import ReplayResult
 from crypto_grid_bot.trend.signals import RULES
-from crypto_grid_bot.trend.spot_benchmark import SpotRunner
+from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, SpotRunner
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +53,11 @@ def evaluate_accounts(
     main: ReplayResult,
     smaller: ReplayResult,
     hold: SpotRunner,
+    *,
+    spot_bars: Mapping[str, Sequence[Kline]],
+    first_months: Mapping[str, str],
+    futures_exclusions: Mapping[str, frozenset[str]] | None = None,
+    spot_exclusions: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[Criterion, ...]:
     """Validate the three criterion accounts, then report their five checks.
 
@@ -88,6 +96,31 @@ def evaluate_accounts(
         raise ValueError("criterion accounts require identical sample times")
     if hold.account.initial != Decimal(10000):
         raise ValueError("hold account must start with 10000 USDT")
+    source = DailyDecisions(spot_bars, first_months, futures_exclusions)
+    if not set(spot_exclusions or {}) <= set(first_months):
+        raise ValueError("unknown spot exclusion symbol")
+    union = {
+        symbol: (futures_exclusions or {}).get(symbol, frozenset())
+        | (spot_exclusions or {}).get(symbol, frozenset())
+        for symbol in first_months
+    }
+    benchmark = HoldDecisions(spot_bars, first_months, union)
+    universe = set(first_months)
+    if any(set(runner.filters) != universe for runner in (main.runner, smaller.runner, hold)):
+        raise ValueError("criterion benchmark and strategy universes disagree")
+    end = main.runner.equity_path[-1].timestamp_ms
+    for result, multiple in ((main, 2), (smaller, 1)):
+        previous = result.daily_decisions[0][1] if result.daily_decisions else None
+        for stamp, rule, recorded in result.daily_decisions:
+            expected = source.at(
+                stamp, rule, multiple=multiple, pick_changed=rule != previous, run_end_ms=end
+            )
+            if recorded != expected:
+                raise ValueError("strategy decisions do not match supplied frozen source")
+            previous = rule
+    expected_hold = [(stamp, benchmark.at(stamp, run_end_ms=end)) for stamp, _ in schedules[0]]
+    if hold.daily_decisions != expected_hold:
+        raise ValueError("hold benchmark decisions do not match frozen source")
     metrics = summarize_runner(main.runner)
     comparison = compare_hold(smaller.runner, hold)
     return _score(

@@ -25,3 +25,13 @@ review at the exact head remain required before merge.
 
 No criterion, strategy, dependency or data-access change. Codex owns the remaining
 experiment assembly and registration. No historical performance claim is made.
+
+Codex Cloud found that an arbitrary completed cash SpotRunner could be supplied
+as the benchmark. An explicit regression reproduced that acceptance. The API now
+requires the supplied daily spot source and first-portfolio months; it rebuilds
+both strategy and hold decisions from that same source, with separate futures
+exclusions and their union with spot exclusions for hold. Universes and complete
+retained decisions must match. A nonempty synthetic hold with actual fills is
+accepted; an arbitrary cash runner, altered signal or altered spot exclusion
+calendar is rejected. All 43 focused checks pass. Data provenance remains an
+upstream obligation; it is not inferred from this source-consistency check.

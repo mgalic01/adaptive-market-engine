@@ -5,12 +5,12 @@ import pytest
 
 from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.replay import replay_window
-from crypto_grid_bot.trend.spot_benchmark import SpotRunner
+from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, SpotRunner, replay_spot_benchmark
 
 T, HOUR, DAY = 1609459200000, 3600000, 86400000
 
 
-def accounts():
+def accounts(*, manual_hold=False):
     book = DailyDecisions({}, {})
     main = replay_window(book, {}, {}, {}, T, T + 2 * DAY, {T: None})
     smaller = replay_window(book, {}, {}, {}, T, T + 2 * DAY, {T: None}, multiple=1)
@@ -18,13 +18,15 @@ def accounts():
     for i in range(48):
         hold.step(T + i * HOUR, {})
     hold.finish({})
+    if not manual_hold:
+        hold = replay_spot_benchmark(HoldDecisions({}, {}), {}, {}, T, T + 2 * DAY)
     return main, smaller, hold
 
 
 def test_flat_actual_accounts_fail_all_frozen_checks_including_strict_a5():
     from crypto_grid_bot.trend.acceptance import evaluate_accounts
 
-    result = evaluate_accounts(*accounts())
+    result = evaluate_accounts(*accounts(), spot_bars={}, first_months={})
     assert [row.name for row in result] == ["A1", "A2", "A3", "A4", "A5"]
     assert not any(row.passed for row in result)
     assert result[-1].strict
@@ -63,4 +65,46 @@ def test_account_evidence_must_match_frozen_comparison(field):
     else:
         main = replace(main, reason="liquidation")
     with pytest.raises(ValueError):
-        evaluate_accounts(main, smaller, hold)
+        evaluate_accounts(main, smaller, hold, spot_bars={}, first_months={})
+
+
+def test_arbitrary_cash_spot_runner_is_not_frozen_benchmark_evidence():
+    from crypto_grid_bot.trend.acceptance import evaluate_accounts
+
+    main, smaller, hold = accounts(manual_hold=True)
+    assert hold.daily_decisions == []
+    with pytest.raises(ValueError, match="benchmark"):
+        evaluate_accounts(main, smaller, hold, spot_bars={}, first_months={})
+
+
+def test_real_hold_source_is_accepted_and_changed_signals_or_calendar_are_rejected():
+    from crypto_grid_bot.backtest.klines import Kline
+    from crypto_grid_bot.trend.acceptance import evaluate_accounts
+    from crypto_grid_bot.trend.filters import OrderFilters
+
+    def bar(stamp, price):
+        return Kline(stamp, price, price, price, price, D(1), price, D(".5"))
+
+    daily = {"BTCUSDT": [bar(T - (64 - i) * DAY, D(100 + i % 3)) for i in range(64)]}
+    first = {"BTCUSDT": "2020-01"}
+    filters = {"BTCUSDT": OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))}
+    hourly = {"BTCUSDT": [bar(T + i * HOUR, D(100)) for i in range(48)]}
+    source = DailyDecisions(daily, first)
+    main = replay_window(source, filters, hourly, {}, T, T + 2 * DAY, {T: None})
+    smaller = replay_window(source, filters, hourly, {}, T, T + 2 * DAY, {T: None}, multiple=1)
+    hold = replay_spot_benchmark(HoldDecisions(daily, first), filters, hourly, T, T + 2 * DAY)
+    assert any(fill.quantity for fill in hold.account.fills)
+    assert evaluate_accounts(main, smaller, hold, spot_bars=daily, first_months=first)[-1].passed
+    with pytest.raises(ValueError, match="benchmark"):
+        evaluate_accounts(
+            main,
+            smaller,
+            hold,
+            spot_bars=daily,
+            first_months=first,
+            spot_exclusions={"BTCUSDT": frozenset({"2021-01"})},
+        )
+    stamp, decision = hold.daily_decisions[0]
+    hold.daily_decisions[0] = (stamp, replace(decision, signals={"BTCUSDT": D(0)}))
+    with pytest.raises(ValueError, match="benchmark"):
+        evaluate_accounts(main, smaller, hold, spot_bars=daily, first_months=first)
