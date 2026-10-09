@@ -22,3 +22,16 @@ Full CI and substantive exact-head external review are still required.
 
 No dependency, trading behavior, cost or data-access change. No historical
 market run occurred. Codex owns the enclosing report assembly and registration.
+
+Review follow-up: Bob and Codex Cloud identified validation and explicit-row gaps.
+Seven new failing cases reproduced acceptance of empty-fill lifecycles, malformed
+numeric/symbol fields, inconsistent censor reasons and missing zero-side rows.
+They are fixed, and expanded coverage of rejection branches brings the focused
+breakdown/lifecycle total to 35 passing tests. Lint and mypy pass.
+Both sides now have explicit rows for every observed coin. A lifecycle must have
+fills and a recognized exit reason consistent with its censor flag.
+
+Per-rule splits will come from the twelve fixed-rule full-period accounts, each
+labelled with its rule. This helper supplies those groups when called on each
+account; it does not itself assemble that twelve-run report or assign main-run
+PnL across changing picks. These limits remain explicit until report assembly.

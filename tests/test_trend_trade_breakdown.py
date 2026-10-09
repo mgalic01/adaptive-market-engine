@@ -8,6 +8,14 @@ from crypto_grid_bot.trend.lifecycles import Lifecycle, LifecycleLedger
 from crypto_grid_bot.trend.orders import OrderIntent
 
 
+def finalized():
+    account, ledger = FuturesAccount(), LifecycleLedger()
+    fill = account.fill("BTCUSDT", OrderIntent(D(1), False), D(100), 0)
+    ledger.fill(fill, Position(), account.positions["BTCUSDT"])
+    ledger.censor(1, account.positions, {"BTCUSDT": D(100)}, "end_of_run")
+    return ledger.completed[0]
+
+
 def test_actual_closed_and_censored_accounts_group_costs_and_short_profit():
     from crypto_grid_bot.trend.trade_breakdown import trade_breakdown
 
@@ -42,7 +50,9 @@ def test_zero_and_empty_results_and_decimal_context_do_not_change_aggregation():
     from crypto_grid_bot.trend.trade_breakdown import trade_breakdown
 
     assert trade_breakdown([]).total.count == 0
-    life = Lifecycle("BTCUSDT", "long", 0, end_ms=1, exit_reason="sizing")
+    life = finalized()
+    life.realized = life.fees
+    life.unrealized = D(0)
     result = trade_breakdown([life])
     assert result.total.count == 1
     assert result.total.net == 0
@@ -62,13 +72,37 @@ def test_zero_and_empty_results_and_decimal_context_do_not_change_aggregation():
         {"fees": D("NaN")},
         {"funding_received": D(-1)},
         {"end_ms": -1},
+        {"fills": []},
+        {"fees": 1.0},
+        {"symbol": 42},
+        {"censored": False},
+        {"exit_reason": "signal_zero"},
+        {"exit_reason": "unknown"},
+        {"exit_reason": ""},
+        {"symbol": ""},
+        {"censored": 1},
+        {"start_ms": -1},
+        {"fees": D(-1)},
+        {"funding_paid": D(-1)},
+        {"realized": D("NaN")},
+        {"unrealized": D("NaN")},
     ],
 )
 def test_bad_or_unfinished_evidence_is_rejected(change):
     from crypto_grid_bot.trend.trade_breakdown import trade_breakdown
 
-    life = Lifecycle("BTCUSDT", "long", 0, end_ms=1, exit_reason="sizing")
+    life = finalized()
     for name, value in change.items():
         setattr(life, name, value)
     with pytest.raises(ValueError):
         trade_breakdown([life])
+
+
+def test_coin_side_rows_include_untraded_side_and_phantom_life_is_rejected():
+    from crypto_grid_bot.trend.trade_breakdown import trade_breakdown
+
+    report = trade_breakdown([finalized()])
+    assert report.by_coin_side[("BTCUSDT", "short")].count == 0
+    assert report.by_coin_side[("BTCUSDT", "short")].net == 0
+    with pytest.raises(ValueError):
+        trade_breakdown([Lifecycle("BTCUSDT", "long", 0, end_ms=1, exit_reason="sizing")])

@@ -5,9 +5,18 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from types import MappingProxyType
 
-from crypto_grid_bot.trend.lifecycles import Lifecycle
+from crypto_grid_bot.trend.lifecycles import EXIT_PRIORITY, Lifecycle
 
 ZERO = Decimal(0)
+CENSOR_REASONS = frozenset(
+    {
+        "end_of_run",
+        "liquidation",
+        "no_tradable_position",
+        "leverage_not_restored",
+        "unavailable_exclusion_close",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,20 +70,22 @@ def trade_breakdown(lives: Sequence[Lifecycle]) -> TradeBreakdown:
         )
         if (
             life.side not in ("long", "short")
+            or not isinstance(life.symbol, str)
             or not life.symbol
+            or not life.fills
             or type(life.start_ms) is not int
             or type(life.end_ms) is not int
             or life.start_ms < 0
             or life.end_ms < life.start_ms
             or type(life.censored) is not bool
-            or not life.exit_reason
-            or any(not value.is_finite() for value in values)
+            or life.exit_reason not in (CENSOR_REASONS if life.censored else EXIT_PRIORITY)
+            or any(not isinstance(value, Decimal) or not value.is_finite() for value in values)
             or any(value < ZERO for value in values[2:])
         ):
             raise ValueError("need finite finalized lifecycle evidence")
     with localcontext(Context(prec=60, rounding=ROUND_HALF_EVEN)):
         coins = sorted({life.symbol for life in lives})
-        pairs = sorted({(life.symbol, life.side) for life in lives})
+        pairs = [(coin, side) for coin in coins for side in ("long", "short")]
         return TradeBreakdown(
             _totals(lives),
             MappingProxyType(
