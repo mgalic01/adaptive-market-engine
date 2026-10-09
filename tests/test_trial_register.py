@@ -225,7 +225,7 @@ def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change
     import hashlib
     import subprocess
 
-    from trial_register import check_ready, code_digest
+    from trial_register import check_ready, code_digest, read_registered_documents
 
     def git(*args):
         return subprocess.check_output(["git", "-C", str(tmp_path), *args]).decode().strip()
@@ -268,6 +268,8 @@ def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change
     git("add", ".")
     with pytest.raises(ValueError):
         check_ready(tmp_path, "v3", code)
+    with pytest.raises(ValueError):
+        read_registered_documents(tmp_path, "v3", code)
     git("commit", "-m", "registration")
     ready = git("rev-parse", "HEAD")
     if change == "late-registration":
@@ -275,12 +277,31 @@ def test_ready_requires_committed_completion_and_matching_blobs(tmp_path, change
             check_ready(tmp_path, "v3", ready)
         return
     assert check_ready(tmp_path, "v3", ready)["event_id"] == "completed"
+    documents = read_registered_documents(tmp_path, "v3", ready)
+    assert documents.trial_id == "v3" and documents.revision == ready
+    assert documents.completion_id == "completed"
+    assert documents.registration_id == "registered"
+    assert documents.code_commit == code
+    assert documents.code_sha256 == done["payload"]["code_sha256"]
+    assert documents.spec_sha256 == reg["payload"]["spec"]["sha256"]
+    assert documents.manifest == documents.config == b"{}\n"
+    assert (
+        documents.manifest_sha256 == documents.config_sha256 == hashlib.sha256(b"{}\n").hexdigest()
+    )
+    # A local editor must not replace the committed inputs returned to a caller.
+    (tmp_path / "config/run.json").write_bytes(b"dirty local configuration\n")
+    (tmp_path / "config/manifest.json").write_bytes(b"dirty local manifest\n")
+    assert read_registered_documents(tmp_path, "v3", ready) == documents
+    git("restore", "config/run.json", "config/manifest.json")
     (tmp_path / ("src/engine.py" if change == "modify" else "src/new.py")).write_bytes(b"changed\n")
     git("add", ".")
     git("commit", "-m", "unregistered code change")
     with pytest.raises(ValueError, match="code"):
         check_ready(tmp_path, "v3", git("rev-parse", "HEAD"))
+    with pytest.raises(ValueError, match="code"):
+        read_registered_documents(tmp_path, "v3", git("rev-parse", "HEAD"))
     assert check_ready(tmp_path, "v3", ready)["event_id"] == "completed"
+    assert read_registered_documents(tmp_path, "v3", ready) == documents
 
 
 def test_atomic_append_preserves_history_on_invalid_event(tmp_path):
