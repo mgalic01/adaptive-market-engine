@@ -149,6 +149,11 @@ class TrendRunner:
             raise ValueError("unknown bar or target symbol")
         if any(not set(rates) <= self.filters.keys() for rates in funding.values()):
             raise ValueError("unknown funding symbol")
+        if any(
+            not isinstance(v, Decimal) or not v.is_finite() or v.copy_abs() > 1
+            for v in new_targets.values()
+        ):
+            raise ValueError("invalid target weight")
         prices = dict(self._prices)
         extremes = {}
         for symbol, (opened, low, high) in bars.items():
