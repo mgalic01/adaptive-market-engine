@@ -20,6 +20,14 @@ Futures snapshots precede mandatory exclusion overrides. Nonfinite/invalid targe
 weights are rejected before retention so partial engine-failure evidence remains
 serializable. Trading arithmetic is unchanged.
 
+The scorer also compares every retained midnight's actual runtime exclusion
+override with the supplied exclusion union, trimmed to portfolio lifetime and
+the replay end exactly as the replay adapter does. This catches an internal
+calendar that silently forces submitted nonzero targets to cash. The regression
+injects that calendar before execution for both m=1 and m=2, retains the correct
+nonzero strategy decisions, and confirms that scoring rejects the cash account.
+Both cases failed before the correction and pass afterwards.
+
 ## Verification
 
 Current focused command selects test_trend_acceptance.py,
