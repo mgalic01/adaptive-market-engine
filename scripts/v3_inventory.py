@@ -23,6 +23,7 @@ from fetch_v3_data import (
 
 from crypto_grid_bot.backtest.klines import month_bounds_ms
 from crypto_grid_bot.trend.data import mandatory_close_hour
+from crypto_grid_bot.trend.filters import MAX_SNAPSHOT_BYTES
 
 
 def planned_requests() -> list[tuple[str, str, str]]:
@@ -330,7 +331,7 @@ def verify_inventory(output_dir: Path, expected_sha256: str) -> dict[str, Any]:
         if pin.get("path") != relative:
             raise ValueError("noncanonical snapshot path")
         snapshots[market] = _read_pinned(
-            _local(output_dir, relative), pin["sha256"], 8 * 1024 * 1024
+            _local(output_dir, relative), pin["sha256"], MAX_SNAPSHOT_BYTES
         )
         if pin["bytes"] != len(snapshots[market]):
             raise ValueError("snapshot byte count mismatch")
@@ -418,7 +419,7 @@ def main(argv: list[str] | None = None) -> int:
         from crypto_grid_bot.trend.filters import parse_filter_snapshot
 
         futures_snapshot = _read_pinned(
-            args.reuse_futures_snapshot, args.futures_snapshot_sha256, 8 * 1024 * 1024
+            args.reuse_futures_snapshot, args.futures_snapshot_sha256, MAX_SNAPSHOT_BYTES
         )
         parse_filter_snapshot(futures_snapshot, tuple(sorted(SYMBOLS)), futures=True)
     spot_snapshot = None
@@ -426,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
         from crypto_grid_bot.trend.filters import parse_filter_snapshot
 
         spot_snapshot = _read_pinned(
-            args.reuse_spot_snapshot, args.spot_snapshot_sha256, 8 * 1024 * 1024
+            args.reuse_spot_snapshot, args.spot_snapshot_sha256, MAX_SNAPSHOT_BYTES
         )
         parse_filter_snapshot(spot_snapshot, tuple(sorted(SYMBOLS)), futures=False)
     _read_pinned(args.spec_file, args.spec_sha256, 1024 * 1024)
