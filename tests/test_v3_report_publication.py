@@ -254,3 +254,80 @@ def test_report_symlink_is_never_followed(prepared):
         pytest.skip("symlink creation unavailable")
     with pytest.raises(ValueError, match="regular"):
         verify_published_report(root, result.receipt_sha256, docs)
+
+
+def test_cleanup_failure_after_receipt_requires_inspection_not_retry(prepared, monkeypatch):
+    from v3_report_publication import publish_experiment_report, verify_published_report
+
+    root, report, docs = prepared
+    original = Path.unlink
+
+    def fail_cleanup(path, *args, **kwargs):
+        if path.name == ".publication.tmp":
+            raise OSError("synthetic cleanup failure after receipt publication")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_cleanup)
+    with pytest.raises(OSError, match="cleanup"):
+        publish_experiment_report(root, report, docs)
+    receipt = root / "report/publication.json"
+    assert receipt.is_file()
+    assert (root / "report/.publication.tmp").read_bytes() == receipt.read_bytes()
+    # Deliberate local inspection after an ambiguous API outcome obtains the pin.
+    # It is not a claim that an independently preserved pin was returned on failure.
+    pin = hashlib.sha256(receipt.read_bytes()).hexdigest()
+    verified = verify_published_report(root, pin, docs)
+    assert verified.receipt_sha256 == pin
+    before = {path.name: path.read_bytes() for path in (root / "report").iterdir()}
+    with pytest.raises(FileExistsError):
+        publish_experiment_report(root, report, docs)
+    assert {path.name: path.read_bytes() for path in (root / "report").iterdir()} == before
+
+
+def test_full_size_hold_roundtrip_retains_remaining_prerequisites(prepared):
+    from v3_report_publication import publish_experiment_report, verify_published_report
+
+    from crypto_grid_bot.trend.cost_diagnostics import CostDiagnostics
+    from crypto_grid_bot.trend.experiment_report import REQUIRED
+    from crypto_grid_bot.trend.exposure import exposure_diagnostics
+    from crypto_grid_bot.trend.full_size_hold_report import FullSizeHoldReport
+    from crypto_grid_bot.trend.risk_diagnostics import cap_diagnostics
+    from crypto_grid_bot.trend.run_report import FuturesRunReport
+    from crypto_grid_bot.trend.trade_breakdown import trade_breakdown
+
+    root, report, docs = prepared
+    zero = Decimal(0)
+    main = FuturesRunReport(
+        2,
+        1,
+        "synthetic-invalid",
+        zero,
+        None,
+        None,
+        None,
+        Decimal("0.4"),
+        CostDiagnostics(0, zero, zero, zero, zero, zero),
+        trade_breakdown(()),
+        exposure_diagnostics(()),
+        cap_diagnostics(()),
+        None,
+        (),
+    )
+    full = FullSizeHoldReport(
+        "unavailable_first_purchase", 1, {}, ("BTCUSDT",), Decimal(10000), zero, None, None
+    )
+    report = replace(
+        report,
+        futures={"m2-cost1": main},
+        full_size_hold=full,
+        required_before_verdict=REQUIRED[:-1],
+    )
+    result = publish_experiment_report(root, report, docs)
+    assert verify_published_report(root, result.receipt_sha256, docs) == result
+    value = json.loads((root / "report/experiment.json").read_bytes())
+    receipt = json.loads((root / "report/publication.json").read_bytes())
+    assert value["full_size_hold"]["reason"] == "unavailable_first_purchase"
+    assert value["verdict"] is None
+    assert value["required_before_verdict"] == list(REQUIRED[:-1])
+    assert receipt["required_before_verdict"] == list(REQUIRED[:-1])
+    assert "Full-size hold diagnostic" in (root / "report/experiment.md").read_text()

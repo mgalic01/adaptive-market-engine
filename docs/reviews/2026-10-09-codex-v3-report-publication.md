@@ -54,3 +54,20 @@ Queue: implementation and focused verification complete; parent Codex owns revie
 any fixes, publication integration and the separate scenario/history reconciliation
 work. No push, PR, merge, download, retry, run dispatch or final verdict was performed.
 Revert removes this new optional API; retain any published/partial report evidence.
+
+## Review follow-up: ambiguous cleanup outcome
+
+If atomic receipt publication succeeds but removal of `.publication.tmp` fails,
+the API raises even though a complete receipt exists. Preserve both hard-linked
+files and the report; do not delete evidence or retry publication. Inspect the
+receipt and establish its digest deliberately, then call `verify_published_report`
+with the same registered documents. An inspection-derived digest checks current
+internal consistency, not the authenticity of a previously retained independent
+pin. Runtime/provenance gates still apply. A verified receipt remains uncertified
+diagnostics. This behavior is covered by injected cleanup failure after link success.
+
+A second synthetic test covers the full-size-hold branch: JSON and receipt retain
+all remaining prerequisites and an unset verdict, and Markdown includes that
+diagnostic. No replay is used. Follow-up focused result: **26 passed, 1 skipped**
+for `tests/test_v3_report_publication.py` (4.01 seconds, Python 3.14.7); the existing
+Windows symlink-permission skip remains. Production behavior is unchanged.

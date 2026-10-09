@@ -4,7 +4,9 @@ Validated RegisteredDocuments and an exclusively owned evidence directory are
 caller prerequisites. Metadata linkage cannot establish report derivation or
 complete historical attempt coverage. Runtime rechecks remain upstream. Completion
 is a hash-pinned receipt, never the presence of report files. Interrupted writes
-are retained and cannot be resumed here. No security or power-loss guarantee.
+are retained and cannot be resumed here. Cleanup can fail after receipt publication:
+inspect and verify that receipt; never infer absence, delete evidence or retry.
+No security or power-loss guarantee.
 """
 
 import hashlib
