@@ -66,3 +66,33 @@ Full per-archive reasons, repaired/masked hours, first/last timestamps, daily ba
 [Delivery summary](evidence/2026-10-09-v3-data-delivery/delivery-summary.json) contains the complete candidate calendar and verification output. [Fetch end](evidence/2026-10-09-v3-data-delivery/fetch-end.json.txt), [verification start](evidence/2026-10-09-v3-data-delivery/verify-start.json.txt), [verification result](evidence/2026-10-09-v3-data-delivery/verify.stdout.log.txt), and [verification end](evidence/2026-10-09-v3-data-delivery/verify-end.json.txt) preserve the execution evidence.
 
 Goal served: provide fixed, inspectable inputs for an honest V3 experiment without changing strategy parameters or interpreting profitability. Next owner: Codex coordinates Bob data/coverage review and only then prepares the reviewed calendar/configuration.
+
+## Review follow-up: preflight, size provenance and readable manifest
+
+The original [preparation record](evidence/2026-10-09-v3-data-delivery/preparation.json.txt)
+and [offline plan](evidence/2026-10-09-v3-data-delivery/offline-plan.json.txt) are now
+included with their preserved preparation and one-shot execution wrappers. The
+preparation wrapper checks every locked dependency version, exact clean tracked
+HEAD and original input hashes before recording success. The execution wrapper
+checks absent output and empty cache again, then sets the exact checkout cwd and
+PYTHONPATH before invoking the collector. The earlier environment freeze is
+labelled earlier; the recovery preparation verifies those locked versions anew.
+
+The [pre-start console record](evidence/2026-10-09-v3-data-delivery/pre-start-console.json)
+was extracted from this chat's original command-execution event, timestamped
+2026-10-09 17:05:23 UTC, before the 17:05:42 collection start. It records the exact
+collector HEAD, clean tracked status, absent output, no listed Python process and
+**729,168,007,680 free bytes** on E:. This is recovered contemporaneous evidence,
+not a newly run check presented as historical evidence. Its source description
+and original command/output are retained. It is not a signed execution attestation.
+
+[Retained files](evidence/2026-10-09-v3-data-delivery/retained-files.csv) lists each
+relative path, raw size and SHA-256, generated after verification. Summing its
+1,917 rows (1,914 ZIPs, two snapshots and one manifest) reproduces exactly
+**68,680,581 bytes**. The original summary generator is also preserved as text.
+No collection file or raw manifest byte was changed to add this evidence.
+
+The raw manifest now has a complete text diff while retaining `-text` to prevent
+checkout conversion. Only the large raw exchange snapshots suppress their diff;
+their parsed filters, sizes and hashes remain in the readable evidence. Reviewers
+can inspect all 2,710 manifest records, not merely the coverage projection.

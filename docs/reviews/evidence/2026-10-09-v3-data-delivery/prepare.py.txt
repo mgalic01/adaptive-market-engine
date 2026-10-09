@@ -1,0 +1,19 @@
+from pathlib import Path
+import subprocess,sys,os,json,hashlib,importlib.metadata as md,datetime
+root=Path('E:/adaptive-market-engine/v3'); repo=root/'collector-6fae092'; logs=root/'logs-20261009-02'
+sha='6fae09299bdcb382a26e02d094c7271cbfb60ebb'
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip()==sha
+assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=repo)
+for name,digest in [('EXPERIMENT_SPEC_V3.md','e337dbcaa89ca1bfeb5293f678aded60c3350aa8465c594e7a8c1c78aae3c191'),('spot-source.manifest.json','069024759d2e999cd09801a17961c12f6b6f57e73bb66900748364261260b94e')]:
+ assert hashlib.sha256((root/'inputs-5822e0d'/name).read_bytes()).hexdigest()==digest
+for line in (repo/'requirements-dev.lock').read_text().splitlines():
+ if line and not line.startswith('#'):
+  name,version=line.split('=='); assert md.version(name)==version
+plan=subprocess.check_output([sys.executable,'scripts/v3_inventory.py','plan'],cwd=repo,env=dict(os.environ,PYTHONPATH=str(repo/'src')))
+p=json.loads(plan)
+assert p['request_count']==2710 and p['request_plan_sha256']=='9a9bc20f1383aadd9fb9f0739dc4af1f8b07bc88a198f989d1eca5c6612e069d' and p['fetch_authorized'] is False
+with (logs/'offline-plan.json').open('xb') as f: f.write(plan)
+assert not (root/'inventory-20261009-02').exists()
+record={'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'collector_commit':sha,'task_head':'14f572db0faa3d168a14225173e214189e346d57','python':sys.version,'locked_versions_match':True,'raw_input_hashes_match':True,'owner_recovery_start':None,'network_attempt_started':False,'preserved_attempt':'inventory-20261009-01'}
+with (logs/'preparation.json').open('x',encoding='utf-8') as f: json.dump(record,f,indent=2)
+print('Recovery checkout, dependency versions, input pins and offline plan verified. No recovery request made.')

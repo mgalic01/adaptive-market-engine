@@ -1,0 +1,15 @@
+"""Offline delivery summary; refuses unverified or unfinished collections."""
+from pathlib import Path
+import collections, hashlib, json
+root=Path('E:/adaptive-market-engine/v3'); output=root/'inventory-20261009-02'; logs=root/'logs-20261009-02'
+assert json.loads((logs/'fetch-end.json').read_text())['exit_code']==0
+assert json.loads((logs/'verify-end.json').read_text())['exit_code']==0
+raw=(output/'inventory.manifest.json').read_bytes(); digest=hashlib.sha256(raw).hexdigest()
+verification=json.loads((logs/'verify.stdout.log').read_bytes())
+assert verification['manifest_sha256']==digest
+manifest=json.loads(raw); assert manifest['replay_ready'] is False
+counts={kind:dict(collections.Counter(e['status'] for e in manifest['entries'] if e['kind']==kind)) for kind in ('spot','futures','funding')}
+files=[p for p in output.rglob('*') if p.is_file()]
+summary={'manifest_sha256':digest,'manifest_bytes':len(raw),'archive_identities':len(manifest['entries']),'status_counts':counts,'verification':verification,'coverage':manifest['coverage'],'snapshots':manifest['snapshots'],'retained_files':len(files),'retained_bytes':sum(p.stat().st_size for p in files),'source_spot_manifest_sha256':manifest['source_spot_manifest_sha256'],'spec_sha256':manifest['spec_sha256'],'replay_ready':False,'backup':'No independent backup verified'}
+with (logs/'delivery-summary.json').open('x',encoding='utf-8') as f: json.dump(summary,f,indent=2,sort_keys=True)
+print(json.dumps({k:summary[k] for k in ('manifest_sha256','archive_identities','status_counts','verification','retained_bytes')},indent=2))
