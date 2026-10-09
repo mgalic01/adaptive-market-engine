@@ -74,3 +74,43 @@ def test_fixed_rule_engine_failure_aborts_menu_and_records_failure(monkeypatch):
     assert len(records) == 2
     assert records[-1].error == "ArithmeticError: bad account"
     assert records[-1].rule == "R1"
+
+
+@pytest.mark.parametrize("menu", [o.replay_fixed_rules, o.replay_sensitivities])
+def test_both_menus_persist_partial_execution_failure(tmp_path, monkeypatch, menu):
+    import json
+
+    from crypto_grid_bot.trend.evidence_writer import AttemptRecorder
+    from crypto_grid_bot.trend.replay import ReplayExecutionError, ReplayResult
+    from crypto_grid_bot.trend.runner import TrendRunner
+
+    runner = TrendRunner({})
+    runner.step(T, {}, {}, {})
+    partial = ReplayResult(runner, "engine_failure", ())
+    recorder, records = AttemptRecorder(tmp_path), []
+
+    def record(attempt):
+        recorder(attempt)
+        records.append(attempt)
+
+    def broken(*args, **kwargs):
+        assert len(records) == 1 and records[0].state == "started"
+        raise ReplayExecutionError(ArithmeticError("partial account failure"), partial)
+
+    monkeypatch.setattr(o, "replay_window", broken)
+    with pytest.raises(ReplayExecutionError):
+        menu(DailyDecisions({}, {}), {}, {}, {}, {T: "R2"}, T + DAY, record=record)
+    assert len(records) == 2
+    assert records[-1].result is partial
+    assert "partial account failure" in records[-1].error
+    run_id = records[-1].run_id
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / f"{run_id}.evidence.jsonl").read_text().splitlines()
+    ]
+    assert any(row["kind"] == "hour" for row in rows)
+    assert any(row["kind"] == "account" for row in rows)
+    finish = json.loads((tmp_path / f"{run_id}.finished.json").read_text())
+    assert finish["payload"]["evidence"] is not None
+    assert "partial account failure" in finish["payload"]["error"]
+    assert not AttemptRecorder(tmp_path).journal.pending()

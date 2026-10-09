@@ -32,3 +32,11 @@ archives or authorize historical runs. The enclosing dispatch must validate data
 quarter boundaries and registration before use. No dependency, strategy, cost,
 selection criterion or permission changed. Codex owns the final report and
 registered integration, which remain separate work.
+
+Bob identified a direct coverage gap in the partial execution-error branch.
+Two new regressions now raise ReplayExecutionError through each menu, assert
+the same partial result reaches the finished attempt, and verify persisted hour
+and account rows alongside the error. Reopening the recorder verifies the linked
+artifact and leaves no pending attempt. All 33 focused tests pass. This is a
+test-only follow-up; no production behavior changed. The earlier 31-test coverage
+did not directly exercise partial ReplayExecutionError retention in both menus.
