@@ -1,4 +1,4 @@
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import replace
 from decimal import Decimal as D
 
@@ -85,7 +85,7 @@ def test_complete_menus_render_without_fabricating_experiment_verdict(bundle):
     assert "differ from V3" in text and "4.6615" in text
 
 
-@pytest.mark.parametrize("multiple", [1, 3])
+@pytest.mark.parametrize("multiple", [1, 2, 3])
 def test_actual_liquidation_retains_diagnostics_and_only_m1_blocks_checks(bundle, multiple):
     from crypto_grid_bot.trend.experiment_report import build_experiment_report
     from crypto_grid_bot.trend.orders import OrderIntent
@@ -103,13 +103,21 @@ def test_actual_liquidation_retains_diagnostics_and_only_m1_blocks_checks(bundle
     )
     result = ReplayResult(runner, "liquidation", (), daily_decisions=((start, "R1", decision),))
     args = dict(bundle)
-    args["sensitivities"] = {**bundle["sensitivities"], (multiple, 1): result}
+    if multiple == 2:
+        args["walk"] = replace(bundle["walk"], out_of_sample=result)
+    else:
+        args["sensitivities"] = {**bundle["sensitivities"], (multiple, 1): result}
     report = build_experiment_report(**args)
     assert report.futures[f"m{multiple}-cost1"].performance is None
     assert report.futures[f"m{multiple}-cost1"].costs.funding_paid == 100000
-    assert report.invalid_criterion_accounts == (("m1",) if multiple == 1 else ())
+    assert report.invalid_criterion_accounts == {1: ("m1",), 2: ("main",), 3: ()}[multiple]
     assert bool(report.account_checks) == (multiple == 3)
     assert report.verdict is None
+    if multiple == 2:
+        from crypto_grid_bot.trend.experiment_report import experiment_markdown
+
+        assert report.minimum_account_size is None
+        assert "Unavailable: main account is invalid" in experiment_markdown(report)
 
 
 @pytest.mark.parametrize(
@@ -123,6 +131,8 @@ def test_actual_liquidation_retains_diagnostics_and_only_m1_blocks_checks(bundle
         "wrong_rule",
         "engine",
         "truncated",
+        "runtime_exclusion",
+        "missing_decision",
     ],
 )
 def test_incomplete_or_inconsistent_scenarios_abort(bundle, damage):
@@ -148,6 +158,15 @@ def test_incomplete_or_inconsistent_scenarios_abort(bundle, damage):
         args["sensitivities"][(3, 2)] = replace(
             args["sensitivities"][(3, 2)], reason="engine_failure"
         )
+    elif damage == "runtime_exclusion":
+        from crypto_grid_bot.trend.exclusions import ExclusionCalendar
+
+        original = args["sensitivities"][(3, 2)]
+        damaged = replace(original, runner=copy(original.runner))
+        damaged.runner.exclusions = ExclusionCalendar({"BTCUSDT": frozenset({"2024-10"})})
+        args["sensitivities"][(3, 2)] = damaged
+    elif damage == "missing_decision":
+        args["sensitivities"][(3, 2)] = replace(args["sensitivities"][(3, 2)], daily_decisions=())
     else:
         damaged = deepcopy(args["holds"][2])
         damaged.equity_path[-1] = replace(

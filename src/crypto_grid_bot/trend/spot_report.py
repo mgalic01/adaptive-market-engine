@@ -20,6 +20,7 @@ class SpotRunReport:
     reason: str | None
     net_pnl: Decimal
     fees: Decimal
+    slippage_cost: Decimal
     traded_notional: Decimal
     sharpe: Decimal | None
     cagr: Decimal | None
@@ -60,12 +61,16 @@ def build_spot_report(runner: SpotRunner) -> SpotRunReport:
     with localcontext(Context(prec=60)):
         net = runner.equity_path[-1].equity - runner.account.initial
         fees = sum((f.fee for f in runner.account.fills), Decimal(0))
+        slippage = sum(
+            (f.quantity * (f.price - f.open_price) for f in runner.account.fills), Decimal(0)
+        )
         notional = sum((abs(f.quantity) * f.price for f in runner.account.fills), Decimal(0))
     return SpotRunReport(
         runner.account.cost_multiple,
         None if completed else runner.stopped,
         net,
         fees,
+        slippage,
         notional,
         sharpe(returns) if completed else None,
         cagr(runner.samples) if completed else None,

@@ -8,7 +8,11 @@ from decimal import Decimal
 
 from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.trend import bootstrap
-from crypto_grid_bot.trend.acceptance import Criterion, evaluate_accounts
+from crypto_grid_bot.trend.acceptance import (
+    Criterion,
+    evaluate_accounts,
+    validate_exclusion_calendar,
+)
 from crypto_grid_bot.trend.cost_diagnostics import MinimumAccountSize, minimum_account_size
 from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.metrics import sample_returns
@@ -95,6 +99,7 @@ def _futures_report(
     terminal = runner.equity_path[-1].timestamp_ms
     if not start <= terminal <= end or (result.reason is None and terminal != end):
         raise ValueError("futures scenario does not cover its required period")
+    validate_exclusion_calendar(runner, source.first_months, source.excluded_months, end)
     boundaries = sorted(picks)
     previous = picks[boundaries[0]]
     by_day = {}
@@ -253,7 +258,7 @@ def build_experiment_report(
         checks,
         invalid,
         intervals,
-        minimum_account_size(main),
+        minimum_account_size(main) if walk.out_of_sample.reason is None else None,
     )
 
 
@@ -309,15 +314,19 @@ def experiment_markdown(report: ExperimentReport) -> str:
         "",
         "## Spot comparisons",
         "",
-        "| Account | Status | Sharpe | CAGR | Net PnL (USDT) | Fees (USDT) |",
-        "|---|---|---:|---:|---:|---:|",
+        "| Account | Status | Sharpe | CAGR | Net PnL (USDT) | Fees (USDT) | "
+        "Slippage (USDT) | Traded notional (USDT) |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for name, s in report.holds.items():
         lines.append(
             f"| {name} | {_cell(s.reason or 'Completed')} | {_number(s.sharpe)} | "
-            f"{_number(s.cagr, percent=True)} | {_number(s.net_pnl)} | {_number(s.fees)} |"
+            f"{_number(s.cagr, percent=True)} | {_number(s.net_pnl)} | {_number(s.fees)} | "
+            f"{_number(s.slippage_cost)} | {_number(s.traded_notional)} |"
         )
     lines += [
+        "",
+        "Slippage is already embedded in fill prices; it is not deducted again from net PnL.",
         "",
         "## Selections",
         "",
@@ -378,7 +387,11 @@ def experiment_markdown(report: ExperimentReport) -> str:
         + (
             f"{_number(size.required_usdt)} USDT"
             if size
-            else "No intended opening/increase; no estimate."
+            else (
+                "Unavailable: main account is invalid; full-period intentions are unknown."
+                if report.futures["m2-cost1"].reason is not None
+                else "No intended opening/increase; no estimate."
+            )
         ),
         "Scaling ignores changed rounding/refusals and their effect on the later path.",
         "",
