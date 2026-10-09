@@ -1,8 +1,15 @@
 # V3 local data delivery proposal
 
-Index: Prepared local retention route and byte-exact input pins; no fetch or replay dispatched; storage choice, exact-head review and owner start remain pending.
+Index: Local retention proposal; owner selected E: on 2026-10-09; fresh spec pins, executor access, reviewed task and owner start remain pending.
 
 ## Purpose and status
+
+**Update, 2026-10-09:** the owner selected E:, with dedicated root
+`E:/adaptive-market-engine/v3`; see [the decision record](2026-10-09-owner-v3-storage-and-hold-timing.md).
+This does not start the download. The spec pin below records this proposal's older
+version and must be replaced with the amended spec's raw Git pin in the final task.
+Do not execute this historical proposal as a current task. Snapshot reuse is now
+implemented; the earlier implementation gap below is superseded by PR 230.
 
 This prepares the evidence needed to judge the frozen V3 experiment. It does not
 change its strategies, sizing, criteria or reserved-window boundary. It is a
