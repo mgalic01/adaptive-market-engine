@@ -269,6 +269,7 @@ def build_inventory(
     transport: InventoryTransport,
     *,
     futures_snapshot: bytes | None = None,
+    spot_snapshot: bytes | None = None,
 ) -> Path:
     """Complete the collection diagnostics, leaving reviewed replay pins outstanding."""
     requests = planned_requests()
@@ -280,6 +281,7 @@ def build_inventory(
         spec_sha256,
         reuse=reuse,
         futures_snapshot=futures_snapshot,
+        spot_snapshot=spot_snapshot,
     )
     document = json.loads(path.read_bytes())
     document["source_spot_manifest_sha256"] = source_spot_sha256
@@ -382,6 +384,8 @@ def main(argv: list[str] | None = None) -> int:
     fetch.add_argument("--spot-manifest-sha256", required=True)
     fetch.add_argument("--reuse-futures-snapshot", type=Path)
     fetch.add_argument("--futures-snapshot-sha256")
+    fetch.add_argument("--reuse-spot-snapshot", type=Path)
+    fetch.add_argument("--spot-snapshot-sha256")
     args = parser.parse_args(argv)
     if args.command == "verify":
         print(json.dumps(verify_inventory(args.output, args.manifest_sha256), sort_keys=True))
@@ -407,6 +411,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if bool(args.reuse_futures_snapshot) != bool(args.futures_snapshot_sha256):
         raise ValueError("saved futures snapshot and hash must be supplied together")
+    if bool(args.reuse_spot_snapshot) != bool(args.spot_snapshot_sha256):
+        raise ValueError("saved spot snapshot and hash must be supplied together")
     futures_snapshot = None
     if args.reuse_futures_snapshot is not None:
         from crypto_grid_bot.trend.filters import parse_filter_snapshot
@@ -415,6 +421,14 @@ def main(argv: list[str] | None = None) -> int:
             args.reuse_futures_snapshot, args.futures_snapshot_sha256, 8 * 1024 * 1024
         )
         parse_filter_snapshot(futures_snapshot, tuple(sorted(SYMBOLS)), futures=True)
+    spot_snapshot = None
+    if args.reuse_spot_snapshot is not None:
+        from crypto_grid_bot.trend.filters import parse_filter_snapshot
+
+        spot_snapshot = _read_pinned(
+            args.reuse_spot_snapshot, args.spot_snapshot_sha256, 8 * 1024 * 1024
+        )
+        parse_filter_snapshot(spot_snapshot, tuple(sorted(SYMBOLS)), futures=False)
     _read_pinned(args.spec_file, args.spec_sha256, 1024 * 1024)
     source = _read_pinned(args.spot_manifest, args.spot_manifest_sha256, 32 * 1024 * 1024)
     # Validate the complete reuse map before constructing the concrete transport.
@@ -427,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
         args.spec_sha256,
         V3Transport(),
         futures_snapshot=futures_snapshot,
+        spot_snapshot=spot_snapshot,
     )
     print(path)
     return 0

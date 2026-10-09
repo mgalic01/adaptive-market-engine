@@ -54,7 +54,8 @@ def test_fetch_cli_checks_spec_pin_before_transport(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["missing_hash", "wrong_hash", "invalid_content"])
-def test_saved_snapshot_is_validated_before_any_transport(tmp_path, monkeypatch, mode):
+@pytest.mark.parametrize("market", ["spot", "futures"])
+def test_saved_snapshot_is_validated_before_any_transport(tmp_path, monkeypatch, mode, market):
     import hashlib
 
     import v3_inventory
@@ -63,7 +64,7 @@ def test_saved_snapshot_is_validated_before_any_transport(tmp_path, monkeypatch,
         pytest.fail("invalid recovery input constructed transport")
 
     monkeypatch.setattr(v3_inventory, "V3Transport", forbidden)
-    saved = tmp_path / "futures.json"
+    saved = tmp_path / f"{market}.json"
     saved.write_bytes(b'{"symbols": []}')
     args = [
         "fetch",
@@ -79,14 +80,14 @@ def test_saved_snapshot_is_validated_before_any_transport(tmp_path, monkeypatch,
         str(tmp_path / "source"),
         "--spot-manifest-sha256",
         "b" * 64,
-        "--reuse-futures-snapshot",
+        f"--reuse-{market}-snapshot",
         str(saved),
     ]
     if mode != "missing_hash":
         digest = (
             "c" * 64 if mode == "wrong_hash" else hashlib.sha256(saved.read_bytes()).hexdigest()
         )
-        args.extend(["--futures-snapshot-sha256", digest])
+        args.extend([f"--{market}-snapshot-sha256", digest])
     with pytest.raises(ValueError):
         v3_inventory.main(args)
     assert not (tmp_path / "out").exists()
