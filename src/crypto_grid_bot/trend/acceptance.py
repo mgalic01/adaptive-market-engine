@@ -6,13 +6,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from crypto_grid_bot.backtest.klines import Kline
+from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.trend.benchmark_comparison import compare_hold
 from crypto_grid_bot.trend.decisions import DailyDecisions
+from crypto_grid_bot.trend.exclusions import ExclusionCalendar
 from crypto_grid_bot.trend.metrics import summarize_runner
 from crypto_grid_bot.trend.orchestration import reconcile_replay
 from crypto_grid_bot.trend.replay import ReplayResult
-from crypto_grid_bot.trend.runner import FuturesDecisionInput
+from crypto_grid_bot.trend.runner import FuturesDecisionInput, TrendRunner
 from crypto_grid_bot.trend.signals import RULES
 from crypto_grid_bot.trend.spot_benchmark import HoldDecisions, SpotDecisionInput, SpotRunner
 
@@ -24,6 +25,37 @@ class Criterion:
     threshold: Decimal
     strict: bool
     passed: bool
+
+
+def validate_exclusion_calendar(
+    runner: TrendRunner,
+    first_months: Mapping[str, str],
+    exclusions: Mapping[str, frozenset[str]],
+    end_ms_exclusive: int,
+) -> None:
+    """Bind effective runtime overrides to the replay's reviewed calendar.
+
+    Replay trims exclusions before a coin joins and beyond the window. Compare
+    each retained midnight's override, including pre-exclusion close days;
+    submitted input receipts alone precede these runtime overrides.
+    """
+    expected = ExclusionCalendar(
+        {
+            symbol: frozenset(
+                month
+                for month in months
+                if month >= first_months[symbol]
+                and month_bounds_ms(month)[0] < end_ms_exclusive
+            )
+            for symbol, months in exclusions.items()
+        }
+    )
+    if any(
+        runner.exclusions.zero_symbols(stamp) != expected.zero_symbols(stamp)
+        for stamp, _, _ in runner.hours
+        if stamp % 86400000 == 0
+    ):
+        raise ValueError("runner exclusion calendar differs from supplied source")
 
 
 def _score(
@@ -138,6 +170,9 @@ def evaluate_accounts(
         raise ValueError("criterion benchmark and strategy universes disagree")
     end = main.runner.equity_path[-1].timestamp_ms
     for result, multiple in ((main, 2), (smaller, 1)):
+        if result.runner is None:
+            raise ValueError("criterion account evidence missing")
+        validate_exclusion_calendar(result.runner, first_months, union, end)
         previous = result.daily_decisions[0][1] if result.daily_decisions else None
         expected_strategy = {}
         for stamp, rule, recorded in result.daily_decisions:
