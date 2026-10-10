@@ -11,7 +11,7 @@ is 11,604.11 USDT and open positions contribute 1,842.75 USDT of unrealized PnL.
 Liquidating them would introduce additional costs not represented by that mark.
 
 The return was inadequate for its risk: CAGR 8.82%, maximum drawdown 66.82%,
-Sharpe 0.412, trade profit factor 1.235 and Calmar 0.132. Frozen A1â€“A3 are below
+Sharpe 0.412, trade profit factor 1.235 and Calmar 0.132. Frozen A1–A3 are below
 their thresholds. The benchmark defect interrupted the overall invocation, so
 A5 and the final experiment receipt remain unavailable. Profitability and
 passing the experiment are different questions.
@@ -20,14 +20,14 @@ Calendar boundaries use saved hourly opening equity at 00:00 UTC on January 1, b
 
 | Calendar interval | Net change, USDT | Return on interval opening equity |
 | --- | ---: | ---: |
-| Julyâ€“December 2021 | +1,039.61 | +10.40% |
+| July–December 2021 | +1,039.61 | +10.40% |
 | 2022 | -5,218.22 | -47.27% |
 | 2023 | +1,155.33 | +19.85% |
 | 2024 | +6,470.14 | +92.74% |
 
 The four PnL rows reconcile to total profit. Returns compound; do not add them.
 Two of 42 months exceeded 30%, but that does not establish repeatable monthly
-20â€“30% profit. The earlier reviewed monthly results remain in PR263.
+20–30% profit. The earlier reviewed monthly results remain in PR263.
 
 ## Costs, funding and turnover
 
