@@ -12,3 +12,6 @@ docs/trials/register.jsonl text eol=lf
 # Readable coverage and verification summaries accompany the large snapshots.
 config/datasets/v3-20261009/inventory.manifest.json -text diff
 config/datasets/v3-20261009/snapshots/*.json -text -diff
+
+# Failure artifacts retain the original local bytes for evidence verification.
+docs/backtests/v3-20261010-failed-invocation/* -text diff
