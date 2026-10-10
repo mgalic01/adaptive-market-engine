@@ -20,19 +20,33 @@ FOUR_HOURS = 4 * HOUR
 DAY = 24 * HOUR
 
 
-def _validate(bars: Sequence[Kline], interval: int) -> tuple[list[Kline], tuple[int, ...]]:
-    previous = -1
+def _validate(
+    bars: Sequence[Kline], interval: int
+) -> tuple[list[Kline], tuple[int, ...], int | None]:
+    """Precompute the first time a timestamp integrity defect becomes visible.
+
+    An inversion is visible only when both bars have closed. A suffix minimum
+    finds all inversions (including across a still-future intervening bar) in O(n).
+    Sort the usable unique bars once so future disorder cannot hide an earlier
+    completed bar. Assessments at/after the first defect raise, never repair it.
+    Noninteger/negative timestamps have no supported causal placement and fail here.
+    """
+    times = [bar.open_ms for bar in bars]
+    if any(type(time) is not int or time < 0 for time in times):
+        raise ValueError("nonnegative integer market timestamp required")
+    errors = [time + interval for time in times if time % interval]
+    suffix_min: int | None = None
+    for time in reversed(times):
+        if suffix_min is not None and time >= suffix_min:
+            errors.append(time + interval)
+        suffix_min = time if suffix_min is None else min(suffix_min, time)
     valid: list[Kline] = []
     invalid: list[int] = []
+    seen: set[int] = set()
     for bar in bars:
-        if (
-            type(bar.open_ms) is not int
-            or bar.open_ms < 0
-            or bar.open_ms % interval
-            or bar.open_ms <= previous
-        ):
-            raise ValueError("unaligned, duplicate or unordered market timestamp")
-        previous = bar.open_ms
+        if bar.open_ms % interval or bar.open_ms in seen:
+            continue
+        seen.add(bar.open_ms)
         values = (
             bar.open,
             bar.high,
@@ -57,7 +71,11 @@ def _validate(bars: Sequence[Kline], interval: int) -> tuple[list[Kline], tuple[
             invalid.append(bar.open_ms)
         else:
             valid.append(bar)
-    return valid, tuple(invalid)
+    return (
+        sorted(valid, key=lambda bar: bar.open_ms),
+        tuple(sorted(invalid)),
+        min(errors, default=None),
+    )
 
 
 class _Gaps:
@@ -83,8 +101,11 @@ class AssessmentSeries:
 
     def __init__(self, symbol: str, hourly: Sequence[Kline], daily: Sequence[Kline]) -> None:
         symbol_name(symbol)
-        hourly, self._invalid_hours = _validate(hourly, HOUR)
-        daily, self._invalid_days = _validate(daily, DAY)
+        hourly, self._invalid_hours, hourly_error = _validate(hourly, HOUR)
+        daily, self._invalid_days, daily_error = _validate(daily, DAY)
+        self._timestamp_error = min(
+            (time for time in (hourly_error, daily_error) if time is not None), default=None
+        )
         self.symbol = symbol
         self._perception = Perception(hourly, daily)
         self._hour_times = frozenset(k.open_ms for k in hourly)
@@ -102,6 +123,8 @@ class AssessmentSeries:
     def at(self, decision_ms: int, quote_ms: int) -> Assessment:
         if type(decision_ms) is not int or decision_ms < 0 or type(quote_ms) is not int:
             raise ValueError("integer nonnegative decision timestamp required")
+        if self._timestamp_error is not None and decision_ms >= self._timestamp_error:
+            raise ValueError("visible unaligned, duplicate or unordered market timestamp")
         snap = self._perception.at(decision_ms)
         due_hour = decision_ms // HOUR * HOUR - HOUR
         due_four = decision_ms // FOUR_HOURS * FOUR_HOURS - FOUR_HOURS

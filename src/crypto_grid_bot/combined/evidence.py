@@ -23,6 +23,7 @@ class DecisionEvent:
     accepted: bool
     reasons: tuple[str, ...]
     details: tuple[tuple[str, str], ...]
+    source_refs: tuple[str, ...]
     schema: str = "combined-v1"
 
     def __post_init__(self) -> None:
@@ -39,6 +40,12 @@ class DecisionEvent:
             or self.schema != "combined-v1"
         ):
             raise ValueError("invalid decision event")
+        if (
+            not isinstance(self.source_refs, tuple)
+            or not self.source_refs
+            or any(not isinstance(ref, str) or not ref.strip() for ref in self.source_refs)
+        ):
+            raise ValueError("nonempty immutable source references required")
         if (
             not isinstance(self.reasons, tuple)
             or any(not isinstance(r, str) or not r for r in self.reasons)

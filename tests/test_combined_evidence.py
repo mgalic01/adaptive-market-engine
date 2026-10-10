@@ -17,7 +17,8 @@ def event(phase="detected", *, event_id="e1", time=1, accepted=True):
         phase,
         accepted,
         (),
-        (("source", "sha256:fixture"),),
+        (),
+        ("sha256:fixture",),
     )
 
 
@@ -89,3 +90,28 @@ def test_refusal_requires_reason_and_metadata_has_unique_keys():
         event(accepted=False)
     with pytest.raises(ValueError):
         replace(event(), details=(("x", "1"), ("x", "2")))
+
+
+def test_event_without_source_reference_is_rejected():
+    with pytest.raises((ValueError, TypeError)):
+        DecisionEvent("e", "o", 0, "BTCUSDT", "detected", True, (), ())
+
+
+@pytest.mark.parametrize("refs", [(), ("",), ("  ",), (None,), ["sha256:fixture"]])
+def test_source_references_must_be_nonempty_strings_in_an_immutable_tuple(refs):
+    with pytest.raises(ValueError, match="source references"):
+        replace(event(), source_refs=refs)
+
+
+def test_source_references_are_serialized_hashed_and_cannot_be_rewritten():
+    journal = Evidence()
+    original = event()
+    journal.record(original)
+    decoded = json.loads(journal.json_lines())
+    assert decoded["event"]["source_refs"] == ["sha256:fixture"]
+    changed = replace(original, source_refs=("sha256:other",))
+    with pytest.raises(ValueError, match="conflicting"):
+        journal.record(changed)
+    other = Evidence()
+    other.record(changed)
+    assert json.loads(other.json_lines())["hash"] != decoded["hash"]

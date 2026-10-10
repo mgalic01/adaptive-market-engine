@@ -50,6 +50,55 @@ def test_default_maintenance_matches_frozen_v3_one_percent_model():
     assert intent().maintenance_rate == D("0.01")
 
 
+def test_funding_uses_same_cost_inclusive_stop_risk_as_reservation():
+    answer = PortfolioRisk().reserve(
+        intent(
+            venue="futures",
+            owner="futures_trend",
+            stop=D(99),
+            funding_rate=D(".0009"),
+            funding_age_ms=0,
+            funding_interval_ms=28_800_000,
+        ),
+        view(),
+    )
+    assert answer.accepted
+
+
+def test_stressed_short_is_resized_to_shared_futures_backing():
+    order = intent(
+        venue="futures",
+        owner="futures_trend",
+        side=-1,
+        stop=D(1000),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+        min_notional=D(0),
+        step=D(".000001"),
+    )
+    answer = PortfolioRisk().reserve(order, view(free_cash=D(1), futures_backing=D(1)))
+    assert answer.accepted
+    stressed_gross = answer.quantity * D("1000.5")
+    assert D(1) - answer.risk >= 3 * D(".01") * stressed_gross
+    normal = PortfolioRisk().reserve(order, view(futures_backing=D(10000)))
+    assert normal.quantity > answer.quantity
+
+
+def test_pending_spot_spending_cannot_double_count_margin_backing():
+    book = PortfolioRisk()
+    book.reserve(intent("spot", "ETHUSDT"), view())
+    order = intent(
+        venue="futures",
+        owner="futures_trend",
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    answer = book.reserve(order, view(futures_backing=D(1000)))
+    assert not answer.accepted
+
+
 def test_asset_cap_and_fee_reserve_limit_size():
     answer = PortfolioRisk().reserve(intent(), view())
     assert answer.quantity == D("19.990")
@@ -282,3 +331,66 @@ def test_short_minimum_notional_uses_adverse_sell_execution_price():
     answer = PortfolioRisk().reserve(candidate, view())
     assert not answer.accepted
     assert answer.reason == "below_minimum"
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_spot_spending_preserves_existing_futures_stress_buffer(held):
+    book = PortfolioRisk()
+    snapshot = view(free_cash=D(100), futures_backing=D(100))
+    order = intent(
+        "future",
+        venue="futures",
+        owner="futures_trend",
+        side=-1,
+        stop=D(1000),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+        min_notional=D(0),
+        step=D(".000001"),
+    )
+    future = book.reserve(order, snapshot)
+    assert future.accepted
+    if held:
+        book.release("future", acknowledged=True)
+        snapshot = replace(
+            snapshot,
+            free_cash=D(100) - future.cash,
+            exposures=(
+                Exposure("BTCUSDT", "futures_trend", future.notional, future.risk, "unknown"),
+            ),
+        )
+    spot = book.reserve(intent("spot", "ETHUSDT"), snapshot)
+    assert spot.accepted
+    stressed_gross = future.notional + future.risk
+    assert D(100) - spot.cash - future.risk >= 3 * D(".01") * stressed_gross
+
+
+@pytest.mark.parametrize("gross, accepted", [(D(2000), True), (D(4000), False)])
+def test_spot_spending_preserves_futures_entry_buffer_and_rejects_negative_capacity(
+    gross, accepted
+):
+    snapshot = view(
+        free_cash=D(100),
+        futures_backing=D(100),
+        exposures=(Exposure("BTCUSDT", "futures_trend", gross, D(0), "unknown"),),
+    )
+    answer = PortfolioRisk().reserve(intent("spot", "ETHUSDT"), snapshot)
+    assert answer.accepted is accepted
+    if accepted:
+        assert D(100) - answer.cash >= 4 * D(".01") * gross
+    else:
+        assert answer.reason == "portfolio_capacity"
+
+
+def test_multiple_pending_spot_orders_share_remaining_futures_backing():
+    book = PortfolioRisk()
+    snapshot = view(
+        free_cash=D(100),
+        futures_backing=D(100),
+        exposures=(Exposure("BTCUSDT", "futures_trend", D(2000), D(0), "unknown"),),
+    )
+    first = book.reserve(intent("first", "ETHUSDT", requested_quantity=D(".1")), snapshot)
+    second = book.reserve(intent("second", "SOLUSDT"), snapshot)
+    assert first.accepted and second.accepted
+    assert D(100) - first.cash - second.cash >= D(80)

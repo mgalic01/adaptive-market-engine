@@ -158,3 +158,52 @@ def test_repeated_at_uses_precomputed_series_without_mutation(inputs):
     last = series.at(now, now)
     series.at(now - DAY, now - DAY)
     assert series.at(now, now) == last
+
+
+@pytest.mark.parametrize("timeframe,step", [("hourly", HOUR), ("daily", DAY)])
+@pytest.mark.parametrize("defect", ["duplicate", "unaligned", "unordered"])
+def test_future_timestamp_error_only_raises_when_visible(inputs, timeframe, step, defect):
+    hourly, daily, now = inputs
+    expected = assess("BTCUSDT", now, hourly, daily, now)
+    source = hourly if timeframe == "hourly" else daily
+    future = replace(source[-1], open_ms=now + step)
+    if defect == "duplicate":
+        source.extend((future, future))
+        visible = now + 2 * step
+    elif defect == "unaligned":
+        source.append(replace(future, open_ms=now + 1))
+        visible = now + step + 1
+    else:
+        source.extend((future, replace(future, open_ms=now)))
+        visible = now + 2 * step
+    series = AssessmentSeries("BTCUSDT", hourly, daily)
+    assert series.at(now, now) == expected
+    series.at(visible - 1, visible - 1)
+    with pytest.raises(ValueError, match="timestamp"):
+        series.at(visible, visible)
+    assert series.at(now, now) == expected
+
+
+def test_unordered_future_bar_does_not_hide_an_earlier_completed_bar(inputs):
+    hourly, daily, now = inputs
+    earlier = replace(hourly[-1], open_ms=now)
+    later = replace(hourly[-1], open_ms=now + 10 * HOUR)
+    expected = assess("BTCUSDT", now + HOUR, hourly + [earlier], daily, now + HOUR)
+    series = AssessmentSeries("BTCUSDT", hourly + [later, earlier], daily)
+    assert series.at(now + HOUR, now + HOUR) == expected
+
+
+@pytest.mark.parametrize("timestamp", [True, 1.5, "tomorrow"])
+def test_noninteger_timestamp_is_an_unplaceable_constructor_error(inputs, timestamp):
+    hourly, daily, _ = inputs
+    with pytest.raises(ValueError, match="timestamp"):
+        AssessmentSeries("BTCUSDT", hourly + [replace(hourly[-1], open_ms=timestamp)], daily)
+
+
+def test_visible_inversion_is_detected_across_a_still_future_bar(inputs):
+    hourly, daily, now = inputs
+    suffix = [replace(hourly[-1], open_ms=now + i * HOUR) for i in (1, 100, 0)]
+    series = AssessmentSeries("BTCUSDT", hourly + suffix, daily)
+    series.at(now + HOUR, now + HOUR)
+    with pytest.raises(ValueError, match="timestamp"):
+        series.at(now + 2 * HOUR, now + 2 * HOUR)
