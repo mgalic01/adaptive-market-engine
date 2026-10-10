@@ -95,6 +95,9 @@ def test_stale_held_quote_cancels_remaining_increase():
     state = engine.observe(3_600_001, {}, RULES)
     assert state.close_required == ("BTCUSDT",)
     assert engine.reservations == ()
+    restored = engine.observe(3_600_002, {"BTCUSDT": Quote(D(100), 3_600_002)}, RULES)
+    assert restored.close_required == ("BTCUSDT",)
+    assert "stale_position_or_missing_filters" in restored.reasons
 
 
 def test_margin_close_cancels_all_pending_increases_without_drawdown_halt():
