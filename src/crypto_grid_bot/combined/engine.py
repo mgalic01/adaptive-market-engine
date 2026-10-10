@@ -267,7 +267,7 @@ class PortfolioEngine:
                 ),
             )
 
-    def submit(
+    def preview(
         self,
         intent: Intent,
         qualification: Qualification,
@@ -275,6 +275,12 @@ class PortfolioEngine:
         rules: Mapping[str, VenueRules],
         groups: tuple[tuple[str, str], ...] = (),
     ) -> Admission:
+        """Check normal admissible size without reservation or recovery promotion.
+
+        This is not pure: fresh observations still update protective/recovery state
+        and can cancel unsafe pending orders. It never spends cash or qualifies a
+        restart. Submit repeats these checks under the same engine event lock.
+        """
         with self._lock, localcontext(Context(prec=60)):
             now = qualification.decision_ms
             if intent.intent_id in self._known_orders:
@@ -326,10 +332,21 @@ class PortfolioEngine:
                 or self._integrity_failure
             ):
                 return refuse("protective_reduction_pending")
-            normal = self._risk.preview(intent, self._view(state.account, Decimal(1), groups))
+            return self._risk.preview(intent, self._view(state.account, Decimal(1), groups))
+
+    def submit(
+        self,
+        intent: Intent,
+        qualification: Qualification,
+        quotes: Mapping[str, Quote],
+        rules: Mapping[str, VenueRules],
+        groups: tuple[tuple[str, str], ...] = (),
+    ) -> Admission:
+        with self._lock, localcontext(Context(prec=60)):
+            normal = self.preview(intent, qualification, quotes, rules, groups)
             if not normal.accepted:
                 return normal
-            state = self.observe(now, quotes, rules, qualified=True)
+            state = self.observe(qualification.decision_ms, quotes, rules, qualified=True)
             answer = self._risk.reserve(
                 intent, self._view(state.account, state.recovery.risk_fraction, groups)
             )

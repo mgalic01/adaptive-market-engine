@@ -16,6 +16,16 @@ RULES = {"BTCUSDT": RULE, "ETHUSDT": RULE}
 QUOTES = {"BTCUSDT": Quote(D(100), 0), "ETHUSDT": Quote(D(100), 0)}
 
 
+def test_preview_validates_normal_capacity_without_reserving_or_restarting():
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    answer = engine.preview(order, candidate(order), QUOTES, RULES)
+    assert answer.accepted
+    assert engine.reservations == ()
+    assert engine.observe(0, QUOTES, RULES).account.free_cash == 10000
+    assert engine.submit(order, candidate(order), QUOTES, RULES).quantity == answer.quantity
+
+
 def candidate(order):
     return Qualification(order.symbol, 0, True, order.owner, order.side, D(1), ())
 
@@ -372,6 +382,10 @@ def test_verified_dust_preserves_ownership_without_blocking_other_asset_recovery
     now = 86_400_002
     quotes = {symbol: Quote(D(100), now) for symbol in QUOTES}
     other = intent("eth", "ETHUSDT")
+    preview = engine.preview(other, replace(candidate(other), decision_ms=now), quotes, RULES)
+    assert preview.accepted
+    assert engine.reservations == ()
+    assert engine.observe(now, quotes, RULES).recovery.risk_fraction == 0
     admitted = engine.submit(other, replace(candidate(other), decision_ms=now), quotes, RULES)
     assert admitted.accepted
     state = engine.observe(now, quotes, RULES)
