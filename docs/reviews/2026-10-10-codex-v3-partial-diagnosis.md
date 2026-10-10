@@ -66,7 +66,12 @@ The extractor reads no market archives, calls no replay/selection routine, check
 
 The analysis uses the reporting/accounting dependencies from main `242faacc0041a00571902320cae95315bf8c551f`. A Git diff confirmed metrics.py, monthly.py, account.py, runner.py, lifecycles.py and evidence_journal.py are unchanged from original execution revision `4d1e37c0637f8401f3903ea56d036f34c3bfd5cd`. The original code pin was `f622d4b1b6ffe6d92aaf31cb6b194919301af30b`; the source inventory is retained in the invocation start. Directory-to-trial attribution remains an operator-reviewed linkage, not cryptographic authentication.
 
-To reproduce on the owner machine, copy the `.py.txt` source to a separate scratch `.py` file and run it with the existing Python 3.12 environment. It uses the three explicit repository/evidence/output paths near its top; other machines need those paths adjusted and the same original journals and reporting code. Outputs are diagnostic files only; it does not append the trial register. Full all-attempt result-event verification/export is separately in progress; no final publication receipt exists.
+The revised extractor imports a private temporary copy of the exact pinned Git
+sources, never the mutable worktree. Its output records every extracted source
+SHA-256 before calculation. Recalculation reproduced all 18 diagnostic objects
+exactly; only the source inventory was added to the JSON.
+
+To reproduce on the owner machine, copy the `.py.txt` source to a separate scratch `.py` file and run it with the existing Python 3.12 environment. It uses the three explicit repository/evidence/output paths near its top; choose a fresh output directory because an existing one is refused. Other machines need those paths adjusted and the same original journals and Git objects. Outputs are diagnostic files only; it does not append the trial register. [All-attempt result-event verification/export](2026-10-10-codex-v3-attempt-reconciliation.md) has completed for 187 attempts and awaits independent linkage review and canonical append; no final publication receipt exists.
 
 ## Handoff and recovery decision
 

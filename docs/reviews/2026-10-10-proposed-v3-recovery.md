@@ -40,7 +40,10 @@ thresholds, random seeds, evaluation and A1–A5 rules. Repeat the same complete
 189-attempt menu; no outcome is discarded or retuned. Use the existing collected
 manifest with SHA-256
 `78d997a2f0a6e83705df339cc2ec0a0421faebdc18ee4337de8f07400a4b013a`
-and the existing local archives, ending at 2024-12. No fresh market download,
+and configuration `config/v3-development-run.json` with SHA-256
+`49378c3dbce9ad7f29f6fa13ed3714b59d89176ab48881c1633cf7df28f3bdd2`.
+Both must match the failed invocation, not merely a new registration's pins.
+Use the existing local archives, ending at 2024-12. No fresh market download,
 2025+ market-data access, credentials or live trading.
 
 Proposed fresh output: `E:/adaptive-market-engine/v3/replay-20261010-02`.
@@ -69,15 +72,33 @@ building one now adds implementation and audit work before obtaining results.
 1. Finish verification and recording of the original failed invocation. Keep its
    original files and identities; proposed result events require reviewed linkage
    before any canonical-register append.
-2. Record the owner's explicit recovery decision. Prepare a separate completing
-   registration and execution task pinning the corrected code and unchanged data.
-   Disclose this as an implementation correction after an engine failure, not as
-   preregistration before the failed run. Bob or Claude must review this treatment,
-   task and latest full head, and required checks must pass before launch.
+2. Record the owner's explicit recovery decision. Use a new trial ID; never add a
+   second completion to `v3-candidate-space-7`. Commit its registration first
+   (commit R), explicitly disclosing known original results and the unchanged
+   frozen menu. Then make a later code-pin commit P whose first parent contains
+   that identical registration. P inherits the corrected implementation from
+   `242faacc0041a00571902320cae95315bf8c551f`; record that unchanged inheritance
+   in a documentation marker and verify the full code inventory/digest matches
+   that base. P is a new pinning commit, not a claim that the implementation was
+   developed after R. Finally commit the new completion and execution task,
+   referencing P and the exact manifest/configuration pins above. Validate the
+   append-only register and run `check-ready` on the final execution revision.
+   Do not directly use the already-merged base as this new trial's code pin:
+   its parent cannot contain R. This is disclosed post-failure recovery, not
+   preregistration before the original results. Bob must independently review
+   this registration treatment, execution task and latest full head before
+   launch, as required by the local-executor waiver. Claude review may supplement
+   but cannot replace Bob. Required checks must also pass.
 3. Run once in a fresh pinned checkout/output with the original isolated launch
    protections. Do not change inputs during execution or retry automatically.
 4. Verify receipts and all outcomes; report returns, drawdown, costs, benchmark
-   comparisons, A1–A5 and limitations. Obtain external review of the final report.
+   comparisons, A1–A5 and limitations. Generate result events for every started
+   recovery run, including failed, invalid or cancelled runs, referencing its new
+   completing registration. Obtain Bob's independent review of the results,
+   provenance and proposed events; append the reviewed events to the canonical
+   trial register and validate it before calling recovery complete. The read-only
+   exporter does not perform this append. Obtain required latest-head external
+   review and passing checks for the final report/register changes.
    A further engine failure is retained and diagnosed without automatic retry.
 
 Approval of this proposal is approval of the one bounded execution after those

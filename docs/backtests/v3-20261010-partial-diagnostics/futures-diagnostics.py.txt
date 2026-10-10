@@ -1,18 +1,38 @@
 """Partial-invocation diagnostics from saved evidence only; no market load/replay."""
-import hashlib,json,sys
+import hashlib,json,sys,subprocess,tempfile,io,zipfile
 from pathlib import Path
 from decimal import Decimal as D, localcontext, Context, ROUND_HALF_EVEN
 from dataclasses import asdict
 from collections import defaultdict
 root=Path('C:/Users/Marko/.codex/worktrees/v3-launch-registration')
-sys.path.insert(0,str(root/'src'))
+analysis_revision='242faacc0041a00571902320cae95315bf8c551f'
+# Import exact committed sources in a fresh private directory, never this worktree.
+# git archive reads the pinned object even when the worktree is dirty or moves.
+archive=subprocess.run(['git','-C',str(root),'archive','--format=zip',analysis_revision,'src'],check=True,capture_output=True).stdout
+source_directory=tempfile.TemporaryDirectory(prefix='v3-diagnostic-sources-')
+source_root=Path(source_directory.name)
+source_hashes={}
+with zipfile.ZipFile(io.BytesIO(archive)) as source_archive:
+    for entry in source_archive.infolist():
+        if entry.is_dir(): continue
+        relative=Path(entry.filename)
+        assert not relative.is_absolute() and '..' not in relative.parts
+        data=source_archive.read(entry)
+        target=source_root/relative
+        target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(data)
+        assert hashlib.sha256(target.read_bytes()).hexdigest()==hashlib.sha256(data).hexdigest()
+        source_hashes[entry.filename]=hashlib.sha256(data).hexdigest()
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(source_root/'src'))
 from crypto_grid_bot.trend.metrics import summarize
 from crypto_grid_bot.trend.monthly import monthly_diagnostics
 from crypto_grid_bot.trend.runner import EquityState
 from crypto_grid_bot.trend.account import AccountingAudit
 from crypto_grid_bot.trend.evidence_journal import _object, LIMIT
 folder=Path('E:/adaptive-market-engine/v3/replay-20261009-01/attempts')
-output=Path('E:/adaptive-market-engine/v3/failure-analysis-20261010-01')
+output=Path('E:/adaptive-market-engine/v3/failure-analysis-20261010-03')
+output.mkdir(exist_ok=False)
 results=[]
 for metadata in sorted(folder.glob('*.finished.json')):
     receipt=json.loads(metadata.read_bytes()); payload=receipt['payload']
@@ -52,6 +72,6 @@ for metadata in sorted(folder.glob('*.finished.json')):
         results.append(result)
         print(receipt['run_id'],outcomes[0]['reason'] or 'completed',flush=True)
 assert len(results)==18
-report={'status':'partial_invocation_diagnostics_not_final_verdict','experiment_verdict':None,'analysis_code_base':'242faacc0041a00571902320cae95315bf8c551f','original_execution_revision':'4d1e37c0637f8401f3903ea56d036f34c3bfd5cd','limitations':['Original invocation failed at first holding comparison; two comparisons unstarted','No A5 comparison or final report receipt','Lifecycle attribution assigns full net to exit reason; it is not causal proof','Uses recorded accounting evidence, not independent fill reconstruction','No replay, tuning, fresh data or reserved-window access'],'runs':results}
+report={'status':'partial_invocation_diagnostics_not_final_verdict','experiment_verdict':None,'analysis_code_base':analysis_revision,'analysis_source_sha256':source_hashes,'original_execution_revision':'4d1e37c0637f8401f3903ea56d036f34c3bfd5cd','limitations':['Original invocation failed at first holding comparison; two comparisons unstarted','No A5 comparison or final report receipt','Lifecycle attribution assigns full net to exit reason; it is not causal proof','Uses recorded accounting evidence, not independent fill reconstruction','No replay, tuning, fresh data or reserved-window access'],'runs':results}
 (output/'futures-diagnostics.json').write_text(json.dumps(report,default=lambda x:str(x) if isinstance(x,D) else dict(x),indent=2)+'\n',encoding='utf-8')
 print('Wrote 18 diagnostic runs',flush=True)
