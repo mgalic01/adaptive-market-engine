@@ -322,3 +322,63 @@ def test_mismatched_attempt_cannot_supply_attributable_failure() -> None:
         ),
     )
     assert result.status == "incomplete" and not result.failures
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"max_drawdown": D(".5")},
+        {"liquidations": 1},
+        {"accounting_residual": D(1)},
+        {"wallet_quantity_exact": False},
+    ],
+)
+def test_pending_registration_preserves_attributable_safety_failures(updates):
+    reg = registration()
+    result = evaluate(replace(reg, pending=("review",)), change(outcomes(reg), **updates))
+    assert result.status == "fail"
+    assert result.failures and result.incomplete_reasons
+
+
+@pytest.mark.parametrize("alter", ["window", "capital", "arm", "profile", "identity"])
+def test_incomplete_registration_does_not_attribute_ambiguous_or_invalid_identity(alter):
+    reg = registration()
+    rows = change(outcomes(reg), max_drawdown=D(".5"))
+    if alter == "window":
+        reg = replace(reg, windows=reg.windows * 2)
+    elif alter == "capital":
+        reg = replace(reg, capitals=reg.capitals + (reg.capitals[0],))
+    elif alter == "arm":
+        reg = replace(reg, arms=reg.arms + ("combined",))
+    elif alter == "profile":
+        reg = replace(reg, cost_profiles=reg.cost_profiles + (reg.cost_profiles[0],))
+    else:
+        rows = tuple(
+            replace(row, identity=replace(row.identity, code_pin="d" * 40)) for row in rows
+        )
+        reg = replace(reg, pending=("review",))
+    result = evaluate(reg, rows)
+    assert result.status == "incomplete" and not result.failures
+
+
+@pytest.mark.parametrize("alter", ["pin", "boolean_time", "capital_mismatch", "baseline"])
+def test_registration_failure_does_not_promote_unattributable_safety_metrics(alter):
+    reg = replace(registration(), pending=("review",))
+    rows = change(outcomes(reg), max_drawdown=D(".5"), liquidations=1)
+    if alter == "pin":
+        reg = replace(reg, code_pin="invalid")
+    elif alter == "boolean_time":
+        rows = tuple(replace(row, identity=replace(row.identity, start_ms=False)) for row in rows)
+    elif alter == "capital_mismatch":
+        rows = change(rows, initial_equity=D(9999))
+    else:
+        reg = replace(reg, baseline_arms=(*reg.baseline_arms, "combined"))
+    result = evaluate(reg, rows)
+    assert result.status == "incomplete" and not result.failures
+
+
+def test_unrelated_duplicate_capital_does_not_erase_unique_research_failure():
+    reg = registration()
+    rows = change(outcomes(reg), max_drawdown=D(".5"))
+    result = evaluate(replace(reg, capitals=reg.capitals + (reg.capitals[1],)), rows)
+    assert result.status == "fail" and result.incomplete_reasons

@@ -204,6 +204,79 @@ def _metrics_valid(row: RunOutcome) -> bool:
     )
 
 
+def _safety_failures(observed: RunOutcome) -> list[str]:
+    identity = observed.identity
+    key = _key(identity)
+    failures: list[str] = []
+    if identity.arm in _COMPONENTS:
+        if type(observed.liquidations) is int and observed.liquidations > 0:
+            failures.append(f"{key}: observed liquidation")
+        if observed.wallet_quantity_exact is False:
+            failures.append(f"{key}: wallet/quantity exactness not verified")
+        if _finite(observed.accounting_residual):
+            residual = abs(Fraction(observed.accounting_residual))
+            if residual > Fraction(1, 10**18) or (
+                residual and observed.accounting_explained is False
+            ):
+                failures.append(f"{key}: observed invalid accounting")
+    if (
+        identity.arm == "combined"
+        and _finite(observed.max_drawdown)
+        and observed.max_drawdown > Decimal(".30")
+    ):
+        failures.append(f"{key}: full maximum drawdown exceeds30%")
+    return failures
+
+
+def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
+    """Incomplete registration cannot authorize comparisons or erase known failures.
+
+    Require a unique cell and complete valid identity pins. Ambiguous duplicate
+    declarations are never collapsed, even when they happen to have equal values.
+    """
+    identity = row.identity
+    if (
+        identity.arm not in _COMPONENTS
+        or reg.arms.count(identity.arm) != 1
+        or identity.arm in reg.baseline_arms
+        or not _pin(reg.code_pin, 40)
+        or not _pin(reg.config_pin)
+        or identity.code_pin != reg.code_pin
+        or identity.config_pin != reg.config_pin
+        or any(
+            type(value) is not int
+            for value in (identity.start_ms, identity.end_ms, identity.cost_multiple)
+        )
+    ):
+        return []
+    windows = [w for w in reg.windows if w.id == identity.window]
+    capitals = [c for c in reg.capitals if c.id == identity.capital]
+    profiles = [p for p in reg.cost_profiles if p[0] == identity.cost_multiple]
+    if len(windows) != 1 or len(capitals) != 1 or len(profiles) != 1:
+        return []
+    window, capital, profile = windows[0], capitals[0], profiles[0]
+    if (
+        not isinstance(window.id, str)
+        or not window.id
+        or type(window.start_ms) is not int
+        or type(window.end_ms) is not int
+        or not 0 <= window.start_ms < window.end_ms <= _RESERVED
+        or not _pin(window.data_pin)
+        or (identity.start_ms, identity.end_ms, identity.data_pin)
+        != (window.start_ms, window.end_ms, window.data_pin)
+        or type(profile[0]) is not int
+        or profile[0] not in {1, 2}
+        or not _pin(profile[1])
+        or identity.cost_profile_pin != profile[1]
+        or capital.id not in {"research", "owner_small"}
+        or not _finite(capital.initial_equity, True)
+        or not _finite(row.initial_equity, True)
+        or row.initial_equity != capital.initial_equity
+    ):
+        return []
+    return _safety_failures(row)
+
+
 def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> AcceptanceResult:
     """Evaluate every registered cell; known failures and missing evidence both survive.
 
@@ -215,7 +288,15 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
     retained = tuple(outcomes)
     incomplete = _registration_errors(registration)
     if incomplete:
-        return AcceptanceResult("incomplete", (), tuple(incomplete), retained)
+        observed_failures = tuple(
+            failure for row in retained for failure in _matched_safety_failures(registration, row)
+        )
+        return AcceptanceResult(
+            "fail" if observed_failures else "incomplete",
+            observed_failures,
+            tuple(incomplete),
+            retained,
+        )
     failures: list[str] = []
     expected: dict[tuple[str, str, str, int], tuple[RunIdentity, Decimal]] = {}
     for arm, window, capital, profile in product(
@@ -257,23 +338,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
                 )
             ):
                 continue
-            if identity.arm not in registration.baseline_arms:
-                if type(observed.liquidations) is int and observed.liquidations > 0:
-                    failures.append(f"{key}: observed liquidation")
-                if observed.wallet_quantity_exact is False:
-                    failures.append(f"{key}: wallet/quantity exactness not verified")
-                if _finite(observed.accounting_residual):
-                    residual = abs(Fraction(observed.accounting_residual))
-                    if residual > Fraction(1, 10**18) or (
-                        residual and observed.accounting_explained is False
-                    ):
-                        failures.append(f"{key}: observed invalid accounting")
-            if (
-                identity.arm == "combined"
-                and _finite(observed.max_drawdown)
-                and observed.max_drawdown > Decimal(".30")
-            ):
-                failures.append(f"{key}: full maximum drawdown exceeds30%")
+            failures.extend(_safety_failures(observed))
         if len(rows) != 1:
             incomplete.append(f"{key}: missing or repeated cell ({len(rows)} outcomes)")
             continue
