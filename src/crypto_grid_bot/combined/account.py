@@ -144,8 +144,12 @@ class CombinedAccount:
             raise ValueError("event ID required")
         if type(event.timestamp_ms) is not int or event.timestamp_ms < 0:
             raise ValueError("nonnegative integer timestamp required")
+        if not isinstance(event.symbol, str):
+            raise ValueError("symbol must be a string")
         symbol_name(event.symbol)
         if isinstance(event, FillEvent):
+            if not isinstance(event.owner, str) or not isinstance(event.venue, str):
+                raise ValueError("owner and venue must be strings")
             if type(event.side) is not int or event.side not in {-1, 1}:
                 raise ValueError("side must be +1 or -1")
             _number(event.quantity, positive=True)

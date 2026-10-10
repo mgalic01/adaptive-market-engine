@@ -211,3 +211,12 @@ def test_malformed_equal_duplicate_cannot_bypass_side_validation() -> None:
     with pytest.raises(ValueError):
         account.apply(replace(event, side=True))
     assert account.snapshot() == result
+
+
+@pytest.mark.parametrize("field,value", [("symbol", None), ("owner", []), ("venue", [])])
+def test_malformed_fill_text_is_value_error_before_mutation(field, value):
+    account = CombinedAccount(D(10000))
+    before = account.snapshot()
+    with pytest.raises(ValueError):
+        account.apply(replace(fill("bad"), **{field: value}))
+    assert account.snapshot() == before

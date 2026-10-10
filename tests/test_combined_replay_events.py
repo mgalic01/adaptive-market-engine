@@ -132,3 +132,41 @@ def test_malformed_suffix_does_not_affect_earlier_failure_evidence():
     assert len(result.snapshots) == 1
     assert result.failure.batch_id == "bad"
     assert result.unprocessed_ids == ("<unavailable:2>",)
+
+
+def test_malformed_quote_symbol_preserves_valid_prefix():
+    result = replay_events(
+        PortfolioEngine(D(10000)),
+        (batch(), batch("bad", 2, quotes=((None, next(iter(QUOTES.values()))),))),
+    )
+    assert len(result.snapshots) == 1 and result.failure is not None
+
+
+def test_valid_funding_before_malformed_funding_preserves_wallet_and_failure():
+    engine = PortfolioEngine(D(10000))
+    order = intent(
+        owner="futures_trend",
+        venue="futures",
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28800000,
+    )
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    fill = FillEvent("entry", 1, "BTCUSDT", "futures_trend", "futures", 1, D(1), D(100), D(0))
+    result = replay_events(
+        engine,
+        (
+            batch(increases=((order.intent_id, fill),)),
+            batch(
+                "bad",
+                2,
+                funding=(
+                    FundingEvent("valid", 2, "BTCUSDT", D(-2)),
+                    FundingEvent("invalid", 2, None, D(-2)),
+                ),
+            ),
+        ),
+    )
+    assert len(result.snapshots) == 1
+    assert result.failure.terminal_snapshot.account.equity == 9998
+    assert "execution_integrity_failure" in result.failure.terminal_snapshot.reasons

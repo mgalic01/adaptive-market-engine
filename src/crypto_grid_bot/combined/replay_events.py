@@ -63,6 +63,8 @@ def _validate(batch: SettledBatch, previous: int) -> None:
             if not isinstance(pair, tuple) or len(pair) != 2:
                 raise ValueError("market record pair required")
             name, value = pair
+            if not isinstance(name, str):
+                raise ValueError("market symbol must be a string")
             symbol_name(name)
             if name in names or not isinstance(value, kind):
                 raise ValueError("duplicate or malformed market record")
@@ -153,14 +155,14 @@ def replay_events(engine: PortfolioEngine, batches: tuple[SettledBatch, ...]) ->
                 )
             ):
                 raise ValueError("settled snapshot reports engineering failure")
-        except (ValueError, ArithmeticError) as exc:
+        except (ValueError, ArithmeticError, TypeError, AttributeError) as exc:
             terminal = None
             unavailable: str | None = "validation failed before settlement"
             if attempted:
                 try:
                     terminal = engine.observe(batch.timestamp_ms, {}, dict(batch.rules))
                     unavailable = None
-                except (ValueError, ArithmeticError) as terminal_error:
+                except (ValueError, ArithmeticError, TypeError, AttributeError) as terminal_error:
                     unavailable = str(terminal_error)
             failure = ReplayFailure(identity, index, str(exc), terminal, unavailable)
             return ReplayResult(
