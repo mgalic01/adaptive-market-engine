@@ -92,6 +92,17 @@ def _validate(batch: SettledBatch, previous: int) -> None:
             raise ValueError("admission identity and fill required")
 
 
+def _identity(batch: object, index: int) -> str:
+    """Label unavailable identities without inspecting unprocessed payloads."""
+    if (
+        isinstance(batch, SettledBatch)
+        and isinstance(batch.batch_id, str)
+        and batch.batch_id.strip()
+    ):
+        return batch.batch_id
+    return f"<unavailable:{index}>"
+
+
 def replay_events(engine: PortfolioEngine, batches: tuple[SettledBatch, ...]) -> ReplayResult:
     """Settle unique batches once, retaining failure evidence without automatic retry.
 
@@ -108,7 +119,12 @@ def replay_events(engine: PortfolioEngine, batches: tuple[SettledBatch, ...]) ->
     previous = -1
     for index, batch in enumerate(batches):
         attempted = False
+        identity = _identity(batch, index)
         try:
+            if not isinstance(batch, SettledBatch):
+                raise ValueError("settled batch record required")
+            if not isinstance(batch.batch_id, str) or not batch.batch_id.strip():
+                raise ValueError("nonempty batch identity required")
             if batch.batch_id in seen:
                 if seen[batch.batch_id] != batch:
                     raise ValueError("conflicting duplicate batch")
@@ -146,11 +162,14 @@ def replay_events(engine: PortfolioEngine, batches: tuple[SettledBatch, ...]) ->
                     unavailable = None
                 except (ValueError, ArithmeticError) as terminal_error:
                     unavailable = str(terminal_error)
-            failure = ReplayFailure(batch.batch_id, index, str(exc), terminal, unavailable)
+            failure = ReplayFailure(identity, index, str(exc), terminal, unavailable)
             return ReplayResult(
                 tuple(snapshots),
                 tuple(duplicates),
                 failure,
-                tuple(row.batch_id for row in batches[index + 1 :]),
+                tuple(
+                    _identity(row, offset)
+                    for offset, row in enumerate(batches[index + 1 :], start=index + 1)
+                ),
             )
     return ReplayResult(tuple(snapshots), tuple(duplicates), None, ())

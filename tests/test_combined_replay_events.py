@@ -114,3 +114,21 @@ def test_reserved_input_never_touches_engine():
     result = replay_events(engine, (batch("reserved", 1735689600000),))
     assert result.failure and result.failure.terminal_snapshot is None
     assert replay_events(engine, (batch(),)).failure is None
+
+
+def test_malformed_reached_batches_preserve_prefix_and_safe_suffix_identities():
+    for malformed in (None, batch("bad", 2, batch_id=[])):
+        result = replay_events(
+            PortfolioEngine(D(10000)), (batch(), malformed, None, batch("later", 3))
+        )
+        assert len(result.snapshots) == 1
+        assert result.failure is not None
+        assert result.failure.batch_id == "<unavailable:1>"
+        assert result.unprocessed_ids == ("<unavailable:2>", "later")
+
+
+def test_malformed_suffix_does_not_affect_earlier_failure_evidence():
+    result = replay_events(PortfolioEngine(D(10000)), (batch(), batch("bad", 1735689600000), None))
+    assert len(result.snapshots) == 1
+    assert result.failure.batch_id == "bad"
+    assert result.unprocessed_ids == ("<unavailable:2>",)
