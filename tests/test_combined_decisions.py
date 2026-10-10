@@ -143,6 +143,19 @@ def test_understated_complete_cost_refuses_before_reservation(setup):
     assert engine.reservations == ()
 
 
+def test_zero_complete_grid_cost_cannot_override_positive_execution_costs(setup):
+    coordinator, engine, journal, args = setup
+    args["assessment"] = replace(
+        args["assessment"], daily=TrendState.RANGE, four_hour=TrendState.RANGE
+    )
+    args["routing"] = RoutingContext(flow_allowed=True)
+    args["spot"] = replace(args["spot"], costs=Costs(D(".001"), D(".0005"), D(0)))
+    result = coordinator.decide(**args)
+    assert result.admission is None
+    assert "round_trip_cost_understated" in result.qualification.reasons
+    assert engine.reservations == ()
+
+
 def test_unavailable_assessment_retains_independent_blockers(setup):
     coordinator, engine, journal, args = setup
     args["assessment"] = replace(

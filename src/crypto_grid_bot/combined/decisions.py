@@ -75,6 +75,7 @@ class DecisionResult:
     intent: Intent | None
     admission: Admission | None
     events: tuple[DecisionEvent, ...]
+    venue_inputs: VenueInputs | None = None
 
 
 class DecisionCoordinator:
@@ -269,6 +270,9 @@ class DecisionCoordinator:
                             ),
                         ),
                     )
-            result = DecisionResult(qualification, plan, intent, admission, tuple(events))
+            venue_inputs = futures if qualification.owner == "futures_trend" else spot
+            result = DecisionResult(
+                qualification, plan, intent, admission, tuple(events), venue_inputs
+            )
             self._seen[opportunity_id] = identity, result
             return result
