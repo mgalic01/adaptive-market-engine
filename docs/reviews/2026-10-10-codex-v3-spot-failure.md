@@ -62,6 +62,10 @@ concurrent commit, and a workflow-shell test selected Windows WSL Bash rather
 than Git Bash. The shell test passes with Git Bash; the pool test passes when rerun
 without commits. Do not describe that original local suite as passing.
 
+The retained start, finish and journal files live in the `attempts/` subdirectory,
+separate from invocation/process metadata. The receipt regression also calls the
+directory-level journal reader and verifies that no attempt remains pending.
+
 ### Reproduce the census
 
 This PowerShell command requires the original local completion records and does
