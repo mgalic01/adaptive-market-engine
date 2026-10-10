@@ -36,9 +36,7 @@ def test_negative_market_minimum_is_rejected_without_mutation(method):
 
     account = SpotAccount()
     with pytest.raises(ValueError):
-        getattr(account, method)(
-            "BTCUSDT", D(10), D(100), replace(FILTERS, min_quantity=D(-1)), T
-        )
+        getattr(account, method)("BTCUSDT", D(10), D(100), replace(FILTERS, min_quantity=D(-1)), T)
     assert account.cash == 10000 and not account.fills and not account.holdings
 
 
