@@ -363,7 +363,13 @@ def render_report(
     raw = json.dumps(payload, default=str, ensure_ascii=False, indent=2)
     download = "data:application/json;charset=utf-8," + quote(raw, safe="")
     badge = "Synthetic demonstration — not market performance" if synthetic else "Evidence review"
-    status = "Structurally complete" if report.complete else "Incomplete evidence"
+    status = (
+        "Required report metrics complete"
+        if report.complete
+        else "Required report metrics incomplete"
+        if report.structural_complete
+        else "Incomplete evidence"
+    )
     status_class = "badge" if report.complete else "badge warning"
     cards = "".join(
         f'<div class="metric"><span>{_text(label)}</span><strong>{_text(value)}</strong></div>'
@@ -373,6 +379,24 @@ def render_report(
             ("Lifetime drawdown", _number(report.max_drawdown, percent=True)),
             ("Net profit · USDT", _number(report.net_profit)),
         )
+    )
+    metric_labels = {
+        "cagr": "CAGR",
+        "return_drawdown": "Return / drawdown",
+        "sharpe": "Sharpe",
+        "utilization": "Capital utilization",
+    }
+    metric_table = _table(
+        ("Metric", "Value", "Definition", "Unavailable reason"),
+        [
+            (
+                metric_labels[row.name],
+                _number(row.value, percent=row.name in {"cagr", "utilization"}),
+                row.definition,
+                row.unavailable_reason or "Available",
+            )
+            for row in report.metrics
+        ],
     )
     warning_html = "".join(f'<p class="warning-text">{_text(warning)}</p>' for warning in warnings)
     issues = "".join(f"<li>{_text(issue)}</li>" for issue in report.issues)
@@ -491,7 +515,10 @@ script-src 'none'; base-uri 'none'; form-action 'none'">
 <p class="muted">One account, visible costs, preserved losses.
 Source validation is not implied.</p>
 </header>
-{cards}<section class="panel">
+{cards}<section class="panel"><h2>Required performance metrics</h2>{metric_table}
+<p class="muted">Definitions are descriptive reporting conventions, not changes to acceptance.
+Evidence structure alone does not establish complete metrics or source validation.</p></section>
+<section class="panel">
 <h2>Equity and original lifetime peak</h2>
 {equity_chart}{warning_html}
 <p class="muted">Provided comparison curves only. Matching times and first capital do not

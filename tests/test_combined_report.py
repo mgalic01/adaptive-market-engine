@@ -8,6 +8,7 @@ from crypto_grid_bot.combined.report import (
     EquityPoint,
     Opportunity,
     RecoveryEpisode,
+    UtilizationInterval,
     analyze,
 )
 
@@ -57,7 +58,7 @@ def curve():
 
 def test_accounting_and_dimensions_include_open_marks_with_signed_funding() -> None:
     report = analyze(D(100), curve(), contributions(), (), (), ("artifact-pin",))
-    assert report.complete
+    assert report.structural_complete
     assert report.net_profit == 5 and report.net_return == D(".05")
     assert report.fees == 3 and report.funding_signed == -1 and report.turnover == 40
     assert report.reconciliation_residual == 0
@@ -221,7 +222,7 @@ def test_recovery_exact_observed_endpoints_preserve_actual_loss() -> None:
     report = analyze(
         D(100), curve(), contributions(), (), (RecoveryEpisode(1, 2, D(110), D(105)),), ("source",)
     )
-    assert report.complete
+    assert report.structural_complete
     assert report.recovery_changes[0].marked_change == -5
 
 
@@ -250,3 +251,146 @@ def test_recovery_missing_start_mark_is_not_interpolated() -> None:
     )
     assert not report.complete
     assert report.recovery_changes[0].marked_change is None
+
+
+# Required performance metrics use explicitly supplied evidence, never event-count annualization.
+
+DAY = 86_400_000
+
+
+def metrics_report(points, **kwargs):
+    return analyze(D(100), points, (), (), (), ("synthetic",), **kwargs)
+
+
+def metric(report, name):
+    return next(item for item in report.metrics if item.name == name)
+
+
+def test_cagr_requires_verified_opening_time_and_uses_365_25_days():
+    points = (EquityPoint(0, D(100)), EquityPoint(31_557_600_000, D(121)))
+    result = metrics_report(points, metrics_start_ms=0)
+    assert metric(result, "cagr").value == D(".21")
+    assert metric(metrics_report(points), "cagr").unavailable_reason == "opening_time_unavailable"
+    bad = (EquityPoint(0, D(99)), points[-1])
+    assert metric(metrics_report(bad, metrics_start_ms=0), "cagr").value is None
+
+
+def test_return_drawdown_zero_is_indeterminate_not_infinite():
+    up = (EquityPoint(0, D(100)), EquityPoint(DAY, D(110)))
+    assert metric(metrics_report(up), "return_drawdown").unavailable_reason == "zero_drawdown"
+    down = (EquityPoint(0, D(100)), EquityPoint(DAY, D(90)))
+    assert metric(metrics_report(down), "return_drawdown").value == -1
+
+
+def test_sharpe_uses_only_explicit_regular_daily_samples_and_sample_sd():
+    points = (EquityPoint(0, D(100)), EquityPoint(DAY, D(110)), EquityPoint(2 * DAY, D(99)))
+    result = metrics_report(points, metrics_start_ms=0, daily_samples=points)
+    assert metric(result, "sharpe").value == 0
+    assert "sample standard deviation" in metric(result, "sharpe").definition
+    assert metric(metrics_report(points), "sharpe").value is None
+    gapped = (points[0], points[-1])
+    assert (
+        metric(metrics_report(points, metrics_start_ms=0, daily_samples=gapped), "sharpe").value
+        is None
+    )
+    repeated = (points[0], points[1], points[1], points[-1])
+    assert (
+        metric(metrics_report(points, metrics_start_ms=0, daily_samples=repeated), "sharpe").value
+        is None
+    )
+
+
+def test_constant_returns_and_zero_duration_are_indeterminate():
+    points = tuple(EquityPoint(i * DAY, D(100)) for i in range(3))
+    result = metrics_report(points, metrics_start_ms=0, daily_samples=points)
+    assert metric(result, "sharpe").unavailable_reason == "zero_variance"
+    result = metrics_report((EquityPoint(0, D(100)),), metrics_start_ms=0)
+    assert metric(result, "cagr").value is None
+
+
+def test_utilization_is_duration_weighted_capital_not_futures_notional():
+    points = (EquityPoint(0, D(100)), EquityPoint(DAY, D(100)), EquityPoint(3 * DAY, D(100)))
+    supplied = (
+        UtilizationInterval(0, DAY, D(20), D(30), D(100)),
+        UtilizationInterval(DAY, 3 * DAY, D(10), D(15), D(100)),
+    )
+    result = metrics_report(points, metrics_start_ms=0, utilization=supplied)
+    assert abs(metric(result, "utilization").value - D(1) / D(3)) < D("1e-27")
+    assert result.utilization == supplied
+    assert (
+        metric(
+            metrics_report(points, metrics_start_ms=0, utilization=supplied[1:]), "utilization"
+        ).value
+        is None
+    )
+
+
+def test_missing_required_metrics_prevents_complete_report_but_keeps_structural_status():
+    result = metrics_report((EquityPoint(0, D(100)),))
+    assert result.structural_complete and not result.complete
+    assert any("metric_unavailable" in issue for issue in result.issues)
+
+
+def test_supplied_metrics_can_make_reconciled_report_complete():
+    points = (EquityPoint(0, D(100)), EquityPoint(DAY, D(110)), EquityPoint(2 * DAY, D(100)))
+    utilization = (UtilizationInterval(0, 2 * DAY, D(0), D(0), D(100)),)
+    result = metrics_report(
+        points, metrics_start_ms=0, daily_samples=points, utilization=utilization
+    )
+    assert result.complete and all(item.value is not None for item in result.metrics)
+
+
+def test_nonpositive_equity_metrics_and_invalid_utilization_values():
+    points = (EquityPoint(0, D(100)), EquityPoint(DAY, D(0)), EquityPoint(2 * DAY, D(-1)))
+    result = metrics_report(points, metrics_start_ms=0, daily_samples=points)
+    assert metric(result, "cagr").value is None and metric(result, "sharpe").value is None
+    with pytest.raises(ValueError):
+        metrics_report(
+            points,
+            metrics_start_ms=0,
+            utilization=(UtilizationInterval(0, DAY, D(-1), D(0), D(100)),),
+        )
+
+
+def test_nonzero_sharpe_matches_analytical_sample_variance():
+    points = (EquityPoint(0, D(100)), EquityPoint(DAY, D(110)), EquityPoint(2 * DAY, D(132)))
+    result = metrics_report(points, metrics_start_ms=0, daily_samples=points)
+    with localcontext() as ctx:
+        ctx.prec = 60
+        expected = D(".15") / D(".005").sqrt() * D(365).sqrt()
+    assert metric(result, "sharpe").value == expected
+    unmatched = (points[0], EquityPoint(DAY, D(109)), points[-1])
+    result = metrics_report(points, metrics_start_ms=0, daily_samples=unmatched)
+    assert metric(result, "sharpe").value is None
+
+
+def test_utilization_gap_overlap_and_unknown_mark_do_not_get_interpolated():
+    points = (EquityPoint(0, D(100)), EquityPoint(DAY, D(100)), EquityPoint(2 * DAY, D(100)))
+    for intervals in (
+        (
+            UtilizationInterval(0, DAY - 1, D(20), D(0), D(100)),
+            UtilizationInterval(DAY, 2 * DAY, D(20), D(0), D(100)),
+        ),
+        (
+            UtilizationInterval(0, DAY + 1, D(20), D(0), D(100)),
+            UtilizationInterval(DAY, 2 * DAY, D(20), D(0), D(100)),
+        ),
+        (UtilizationInterval(0, 2 * DAY, D(20), D(0), D(101)),),
+    ):
+        result = metrics_report(points, metrics_start_ms=0, utilization=intervals)
+        assert metric(result, "utilization").value is None
+
+
+def test_millisecond_cagr_overflow_is_unavailable_without_crashing_report():
+    points = (EquityPoint(0, D(100)), EquityPoint(1, D(200)))
+    result = metrics_report(points, metrics_start_ms=0)
+    assert metric(result, "cagr").value is None
+    assert metric(result, "cagr").unavailable_reason == "numeric_range"
+    assert result.final_equity == 200 and result.net_return == 1
+
+
+def test_missing_daily_endpoint_is_unavailable_without_using_partial_period():
+    points = (EquityPoint(0, D(100)), EquityPoint(DAY, D(110)), EquityPoint(2 * DAY, D(99)))
+    result = metrics_report(points, metrics_start_ms=0, daily_samples=points[:-1])
+    assert metric(result, "sharpe").value is None
+    assert metric(result, "sharpe").unavailable_reason == "incomplete_or_unmatched_daily_samples"

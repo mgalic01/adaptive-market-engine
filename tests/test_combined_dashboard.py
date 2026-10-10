@@ -164,3 +164,21 @@ def test_synthetic_flag_requires_real_boolean_and_false_does_not_claim_live_resu
     text = " ".join(Elements(render_report(report(), synthetic=False)).text)
     assert "Evidence review" in text
     assert "Source validation is not implied" in text
+
+
+def test_required_metrics_and_sampling_definitions_are_visible_even_when_unknown():
+    html = render_report(report())
+    text = " ".join(" ".join(Elements(html).text).split())
+    for label in (
+        "CAGR",
+        "Return / drawdown",
+        "Sharpe",
+        "Capital utilization",
+        "sample standard deviation",
+        "365.25",
+        "daily_samples_unavailable",
+        "utilization_unavailable",
+        "Required report metrics incomplete",
+    ):
+        assert label in text
+    assert "Structurally complete</span>" not in html

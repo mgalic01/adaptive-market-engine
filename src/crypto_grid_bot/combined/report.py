@@ -7,7 +7,7 @@ source reference strings are retained, not fetched or cryptographically verified
 
 from collections import Counter
 from dataclasses import dataclass
-from decimal import Context, Decimal, localcontext
+from decimal import Context, Decimal, DecimalException, localcontext
 from fractions import Fraction
 
 
@@ -93,6 +93,29 @@ class RecoveryChange:
 
 
 @dataclass(frozen=True, slots=True)
+class Metric:
+    name: str
+    value: Decimal | None
+    definition: str
+    unavailable_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class UtilizationInterval:
+    """Supplied left-constant marked capital observation over [start_ms, end_ms).
+
+    Spot inventory value plus futures collateral, divided by equity. This is not
+    gross exposure/leverage or pending-order cash. No interpolation is inferred.
+    """
+
+    start_ms: int
+    end_ms: int
+    spot_value: Decimal
+    futures_collateral: Decimal
+    equity: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class Report:
     initial_equity: Decimal
     final_equity: Decimal | None
@@ -125,6 +148,11 @@ class Report:
     opportunities: tuple[Opportunity, ...]
     recovery: tuple[RecoveryEpisode, ...]
     source_refs: tuple[str, ...]
+    metrics: tuple[Metric, ...]
+    metrics_start_ms: int | None
+    daily_samples: tuple[EquityPoint, ...]
+    utilization: tuple[UtilizationInterval, ...]
+    structural_complete: bool
 
 
 def _number(value: Decimal, *, nonnegative: bool = False) -> Fraction:
@@ -223,6 +251,129 @@ def _opportunity_episodes(
     return tuple(results)
 
 
+def _metrics(
+    initial: Decimal,
+    points: tuple[EquityPoint, ...],
+    start: int | None,
+    samples: tuple[EquityPoint, ...],
+    utilization: tuple[UtilizationInterval, ...],
+    net_return: Decimal | None,
+    drawdown: Decimal | None,
+) -> tuple[Metric, ...]:
+    definitions = {
+        "cagr": "Compounded net growth over elapsed time; 365.25-day year; no external transfers.",
+        "return_drawdown": "Net return divided by observed lifetime maximum drawdown; not CAGR/DD.",
+        "sharpe": "UTC daily boundary simple net returns; zero risk-free rate; "
+        "sample standard deviation (n-1); annualization sqrt(365).",
+        "utilization": "Time-weighted left-constant (marked spot inventory + futures collateral) "
+        "/ equity; excludes pending cash and futures notional; supplied intervals only.",
+    }
+    result: list[Metric] = []
+
+    def add(name: str, value: Decimal | None, reason: str | None = None) -> None:
+        result.append(Metric(name, value, definitions[name], reason))
+
+    if start is not None:
+        _time(start)
+    for point in samples:
+        _time(point.timestamp_ms)
+        _number(point.equity)
+    for interval in utilization:
+        _time(interval.start_ms)
+        _time(interval.end_ms)
+        _number(interval.spot_value, nonnegative=True)
+        _number(interval.futures_collateral, nonnegative=True)
+        _number(interval.equity)
+        if interval.end_ms <= interval.start_ms:
+            raise ValueError("positive utilization interval required")
+    opening_known = bool(
+        points
+        and start is not None
+        and points[0].timestamp_ms == start
+        and points[0].equity == initial
+    )
+    end = points[-1].timestamp_ms if points else None
+    duration = end - start if end is not None and start is not None else 0
+    if not opening_known:
+        add("cagr", None, "opening_time_unavailable")
+    elif duration <= 0:
+        add("cagr", None, "nonpositive_duration")
+    elif points[-1].equity <= 0:
+        add("cagr", None, "nonpositive_terminal_equity")
+    else:
+        try:
+            with localcontext(Context(prec=60)):
+                value = (points[-1].equity / initial) ** (Decimal(31_557_600_000) / duration) - 1
+            add("cagr", value)
+        except DecimalException:
+            add("cagr", None, "numeric_range")
+    if net_return is None or drawdown is None:
+        add("return_drawdown", None, "equity_unavailable")
+    elif drawdown == 0:
+        add("return_drawdown", None, "zero_drawdown")
+    else:
+        add("return_drawdown", _decimal(Fraction(net_return) / Fraction(drawdown), ratio=True))
+    marks = {(p.timestamp_ms, p.equity) for p in points}
+    if not samples:
+        add("sharpe", None, "daily_samples_unavailable")
+    elif (
+        not opening_known
+        or len(samples) < 3
+        or samples[0] != points[0]
+        or samples[-1] != points[-1]
+        or any(
+            p.timestamp_ms % 86_400_000 or (p.timestamp_ms, p.equity) not in marks for p in samples
+        )
+        or any(
+            b.timestamp_ms - a.timestamp_ms != 86_400_000
+            for a, b in zip(samples, samples[1:], strict=False)
+        )
+    ):
+        add("sharpe", None, "incomplete_or_unmatched_daily_samples")
+    elif any(p.equity <= 0 for p in samples):
+        add("sharpe", None, "nonpositive_daily_equity")
+    else:
+        returns = [
+            Fraction(b.equity) / Fraction(a.equity) - 1
+            for a, b in zip(samples, samples[1:], strict=False)
+        ]
+        mean = sum(returns, Fraction(0)) / len(returns)
+        variance = sum(((r - mean) * (r - mean) for r in returns), Fraction(0)) / (len(returns) - 1)
+        if not variance:
+            add("sharpe", None, "zero_variance")
+        else:
+            with localcontext(Context(prec=60)):
+                value = (
+                    _decimal(mean, ratio=True)
+                    / _decimal(variance, ratio=True).sqrt()
+                    * Decimal(365).sqrt()
+                )
+            add("sharpe", value)
+    if not utilization:
+        add("utilization", None, "utilization_unavailable")
+    elif (
+        not opening_known
+        or duration <= 0
+        or utilization[0].start_ms != start
+        or utilization[-1].end_ms != end
+        or any(a.end_ms != b.start_ms for a, b in zip(utilization, utilization[1:], strict=False))
+        or any(row.equity <= 0 or (row.start_ms, row.equity) not in marks for row in utilization)
+    ):
+        add("utilization", None, "incomplete_or_unmatched_utilization")
+    else:
+        weighted = sum(
+            (
+                (Fraction(row.spot_value) + Fraction(row.futures_collateral))
+                / Fraction(row.equity)
+                * (row.end_ms - row.start_ms)
+                for row in utilization
+            ),
+            Fraction(0),
+        )
+        add("utilization", _decimal(weighted / duration, ratio=True))
+    return tuple(result)
+
+
 def analyze(
     initial: Decimal,
     equitypoints: tuple[EquityPoint, ...],
@@ -232,6 +383,9 @@ def analyze(
     source_refs: tuple[str, ...],
     *,
     opportunity_gap_ms: int = 3_600_000,
+    metrics_start_ms: int | None = None,
+    daily_samples: tuple[EquityPoint, ...] = (),
+    utilization: tuple[UtilizationInterval, ...] = (),
 ) -> Report:
     """Summarize observations without counterfactual claims or silent deduplication.
 
@@ -240,7 +394,10 @@ def analyze(
     change is end minus start equity under the no-external-transfer account model,
     NOT an incremental causal benefit. Ratios use Decimal precision60; money sums
     and the reconciliation residual remain exact. Optional unknown fields do not
-    themselves make structurally valid evidence incomplete.
+    themselves make structurally valid evidence incomplete. Required performance metrics
+    must be available for complete=True; structural_complete separately describes the
+    original evidence checks. Explicit daily samples and utilization intervals are
+    reporting conventions only, never strategy inputs or acceptance-rule changes.
     """
     opening = _number(initial)
     if opening <= 0 or type(opportunity_gap_ms) is not int or opportunity_gap_ms <= 0:
@@ -381,6 +538,13 @@ def analyze(
         unknown.add("entry_delay")
     if any(change.marked_change is None for change in changes):
         unknown.add("recovery_endpoint")
+    structural_complete = not issues
+    metrics = _metrics(
+        initial, points, metrics_start_ms, tuple(daily_samples), tuple(utilization), ratio, drawdown
+    )
+    issues.extend(
+        f"metric_unavailable:{m.name}:{m.unavailable_reason}" for m in metrics if m.value is None
+    )
     return Report(
         initial,
         final,
@@ -413,4 +577,9 @@ def analyze(
         events,
         episodes,
         sources,
+        metrics,
+        metrics_start_ms,
+        tuple(daily_samples),
+        tuple(utilization),
+        structural_complete,
     )
