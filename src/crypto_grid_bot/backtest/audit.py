@@ -17,60 +17,31 @@ from __future__ import annotations
 
 import csv
 import io
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
 
-from crypto_grid_bot.backtest.klines import (
-    INTERVAL_MS,
-    Kline,
-    aggregate,
-    month_bounds_ms,
-    parse_rows,
-)
-from crypto_grid_bot.backtest.replay import compare_bars
+from crypto_grid_bot.backtest.klines import INTERVAL_MS, aggregate, parse_rows
 
 # Re-exported: audit_run, the tests and the hash-pinned data/*.py appendices import
 # these from here, so the `as` form keeps them public (and stops ruff removing them).
+# The hour helpers moved to masking.py, which audit imports and never the reverse.
+from crypto_grid_bot.backtest.masking import ABSENT_BOTH as ABSENT_BOTH
+from crypto_grid_bot.backtest.masking import ABSENT_HOURLY as ABSENT_HOURLY
+from crypto_grid_bot.backtest.masking import ABSENT_MINUTES as ABSENT_MINUTES
+from crypto_grid_bot.backtest.masking import HOUR_MS as HOUR_MS
+from crypto_grid_bot.backtest.masking import PRESENT_BOTH as PRESENT_BOTH
+from crypto_grid_bot.backtest.masking import PRICE_FIELDS as PRICE_FIELDS
+from crypto_grid_bot.backtest.masking import _with_prices_of as _with_prices_of
+from crypto_grid_bot.backtest.masking import differing_fields as differing_fields
+from crypto_grid_bot.backtest.masking import expected_hours as expected_hours
+from crypto_grid_bot.backtest.masking import hour_statuses as hour_statuses
 from crypto_grid_bot.backtest.window import DEVELOPMENT_END as DEVELOPMENT_END
 from crypto_grid_bot.backtest.window import development_month as development_month
 from crypto_grid_bot.market_data.parsing import DataError
 
-HOUR_MS = INTERVAL_MS["1h"]
-PRESENT_BOTH = "present_both"
-ABSENT_MINUTES = "absent_minutes"
-ABSENT_HOURLY = "absent_hourly"
-ABSENT_BOTH = "absent_both"
-PRICE_FIELDS = ("open", "high", "low", "close")
 Rule = Literal["narrow", "refined"]
-
-
-def expected_hours(first_hour_ms: int, month: str) -> range:
-    """Every hour of ``month`` from the pair's first listed hour on (end exclusive)."""
-    start, end = month_bounds_ms(development_month(month))
-    return range(max(first_hour_ms // HOUR_MS * HOUR_MS, start), end, HOUR_MS)
-
-
-def hour_statuses(
-    minute_hours: Iterable[int], official_hours: Iterable[int], expected: Iterable[int]
-) -> dict[int, str]:
-    """Status of each expected hour: whether it has minutes, an official 1h bar, both
-    or neither. An hour with any 1m bar counts as having minutes."""
-    minutes = {h // HOUR_MS * HOUR_MS for h in minute_hours}
-    official = set(official_hours)
-    statuses = {}
-    for hour in expected:
-        has_minutes, has_official = hour in minutes, hour in official
-        if has_minutes and has_official:
-            statuses[hour] = PRESENT_BOTH
-        elif has_official:
-            statuses[hour] = ABSENT_MINUTES
-        elif has_minutes:
-            statuses[hour] = ABSENT_HOURLY
-        else:
-            statuses[hour] = ABSENT_BOTH
-    return statuses
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,34 +91,6 @@ def outage_events(
         run.append(hour)
     close_run()
     return events
-
-
-def differing_fields(
-    ours: Kline, theirs: Kline, tolerance: Decimal | None = None
-) -> tuple[str, ...]:
-    """The fields that make ``compare_bars`` report a mismatch; empty otherwise.
-
-    Volume is listed only when it alone would fail the tolerance, so a price mismatch
-    with drifting volume reads as the price field, as in PR #66's table.
-    """
-    if compare_bars(ours, theirs, tolerance) != "mismatch":
-        return ()
-    prices = tuple(f for f in PRICE_FIELDS if getattr(ours, f) != getattr(theirs, f))
-    volume_ok = compare_bars(_with_prices_of(ours, theirs), theirs, tolerance) != "mismatch"
-    return prices if volume_ok else (*prices, "volume")
-
-
-def _with_prices_of(bar: Kline, reference: Kline) -> Kline:
-    return Kline(
-        bar.open_ms,
-        reference.open,
-        reference.high,
-        reference.low,
-        reference.close,
-        bar.volume,
-        bar.quote_volume,
-        bar.taker_buy_base,
-    )
 
 
 def close_class(open_ms: int, close_ms: int, step: int) -> str:

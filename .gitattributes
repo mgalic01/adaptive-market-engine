@@ -1,0 +1,19 @@
+# A dataset manifest, and the digest a manifest is rebuilt from, is pinned by its SHA-256
+# (the backtest workflow's manifest guard, the acceptance scorer, and
+# tests/test_full_range_manifests.py). Keep them LF in every working tree, whatever
+# core.autocrlf says, so a file on disk hashes as its blob does.
+config/datasets/*.manifest.json text eol=lf
+config/datasets/*.digest.txt text eol=lf
+
+# Preserve exact append-only register bytes on every platform.
+docs/trials/register.jsonl text eol=lf
+
+# V3 delivery preserves raw collected JSON bytes and their SHA-256 identities.
+# Readable coverage and verification summaries accompany the large snapshots.
+config/datasets/v3-20261009/inventory.manifest.json -text diff
+config/datasets/v3-20261009/snapshots/*.json -text -diff
+
+# Failure artifacts retain the original local bytes for evidence verification.
+docs/backtests/v3-20261010-failed-invocation/** -text diff
+docs/backtests/v3-20261010-partial-diagnostics/** -text diff
+docs/backtests/v3-20261010-return-diagnosis/** -text diff

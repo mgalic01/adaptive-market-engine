@@ -1,0 +1,19 @@
+import datetime, json, os, subprocess, sys, hashlib
+from pathlib import Path
+root=Path('E:/adaptive-market-engine/v3'); logs=root/'logs-20261009-02'; output=root/'inventory-20261009-02'; repo=root/'collector-6fae092'
+assert not output.exists(), 'Existing output: no retry'
+assert not list((root/'spot-cache').iterdir())
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip()=='6fae09299bdcb382a26e02d094c7271cbfb60ebb'
+assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=repo)
+for name,digest in [('EXPERIMENT_SPEC_V3.md','e337dbcaa89ca1bfeb5293f678aded60c3350aa8465c594e7a8c1c78aae3c191'),('spot-source.manifest.json','069024759d2e999cd09801a17961c12f6b6f57e73bb66900748364261260b94e')]:
+ assert hashlib.sha256((root/'inputs-5822e0d'/name).read_bytes()).hexdigest()==digest
+now=lambda:datetime.datetime.now(datetime.timezone.utc).isoformat()
+with (logs/'owner-start.json').open('x',encoding='utf-8') as f:
+ json.dump({'at':now(),'owner_message':'yes','question':'May I run one recovery attempt with the corrected 32 MiB limit?','task_head':'14f572db0faa3d168a14225173e214189e346d57','bob_review':'https://github.com/mgalic01/adaptive-market-engine/pull/254#issuecomment-6084373313','merged_commit':'c906216621da0e0f21f7768436b48c086a89a95b','scope':'one recovery attempt, no automatic retries'},f,indent=2)
+cmd=[sys.executable,'scripts/v3_inventory.py','fetch','--output',str(output),'--cache-dir',str(root/'spot-cache'),'--spec-file',str(root/'inputs-5822e0d/EXPERIMENT_SPEC_V3.md'),'--spec-sha256','e337dbcaa89ca1bfeb5293f678aded60c3350aa8465c594e7a8c1c78aae3c191','--spot-manifest',str(root/'inputs-5822e0d/spot-source.manifest.json'),'--spot-manifest-sha256','069024759d2e999cd09801a17961c12f6b6f57e73bb66900748364261260b94e']
+with (logs/'fetch-start.json').open('x',encoding='utf-8') as f: json.dump({'at':now(),'command':cmd},f,indent=2)
+with (logs/'fetch.stdout.log').open('xb') as out,(logs/'fetch.stderr.log').open('xb') as err:
+ result=subprocess.run(cmd,cwd=repo,env=dict(os.environ,PYTHONPATH=str(repo/'src'),PYTHONUNBUFFERED='1'),stdout=out,stderr=err)
+with (logs/'fetch-end.json').open('x',encoding='utf-8') as f: json.dump({'at':now(),'exit_code':result.returncode},f,indent=2)
+print('Recovery collection exit code:',result.returncode,flush=True)
+sys.exit(result.returncode)

@@ -1,0 +1,16 @@
+{
+  "experiment": "v3",
+  "first_months": {
+    "ADAUSDT": "2020-02",
+    "BNBUSDT": "2020-03",
+    "BTCUSDT": "2020-01",
+    "DOGEUSDT": "2020-08",
+    "ETHUSDT": "2020-01",
+    "LINKUSDT": "2020-02",
+    "LTCUSDT": "2020-02",
+    "SOLUSDT": "2020-10",
+    "TRXUSDT": "2020-02",
+    "XRPUSDT": "2020-02"
+  },
+  "schema_version": 1
+}

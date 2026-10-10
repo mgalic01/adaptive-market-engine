@@ -22,7 +22,7 @@ from test_backtest_replay import HOUR_MS, START_MS, WARMUP, candle, engine_for, 
 
 from crypto_grid_bot.backtest import __main__ as cli
 from crypto_grid_bot.backtest.dataset import fetch_dataset, load_spec, write_manifest
-from crypto_grid_bot.backtest.jobs import run_job
+from crypto_grid_bot.backtest.jobs import SymbolMask, run_job
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import RunConfig, bar_quotes, replay
 from crypto_grid_bot.backtest.trend_benchmark import (
@@ -405,7 +405,7 @@ class AccountingTests(unittest.TestCase):
         spec = load_spec(Path(SPEC))
         self.assertEqual([], daily_history_problems(spec))
         with tempfile.TemporaryDirectory() as temp:
-            text = Path(SPEC).read_text().replace('daily_warmup_start = "2023-05"\n', "")
+            text = Path(SPEC).read_text().replace('daily_warmup_start = "2020-05"\n', "")
             path = Path(temp) / "no-daily.toml"
             path.write_text(text)
             (problem,) = daily_history_problems(load_spec(path))
@@ -428,7 +428,11 @@ class Inline:
 
     def submit(self, fn, *args):
         self.submitted.append((fn, args))
-        if fn.__name__ == "cross_check_job":
+        # A check is submitted as a partial binding its config (and its symbol's mask).
+        name = getattr(fn, "func", fn).__name__
+        if name == "mask_job":
+            return Done(SymbolMask(args[2], None, ()))
+        if name == "cross_check_job":
             return Done({"symbol": args[2], **CLEAN})
         if fn is trend_job:
             return Done({**good_result(args[3], args[4], False), "variant": "D"})

@@ -44,14 +44,38 @@ Continue broader infrastructure only if the results justify it.
 Status (v0.8): harness v1 is implemented and verified on two pairs over a development
 window ([method](docs/BACKTEST_METHOD.md), [report](docs/backtests/verify-2024h1.md)).
 The owner confirmed the acceptance criteria (C1–C6) on 2026-09-24
-([record](docs/reviews/2026-09-24-owner-decisions-confirmed.md)); spec v1 is still a draft
-and is not yet frozen. The reserved window is the **last** step, not the next one. In
-order (spec v1 §§2-7): freeze spec v1, build and review the §2 prerequisites, implement
-the variants, run the development practice matrix, and select a winner deterministically
-under C1-C6. The one-use reserved run needs two more things: **C7 settled and passed, or
-explicitly waived by the owner** (its return series, its trial family and the other
-agents' agreement are all open), and the owner's go. If no variant passes, v1 ends with
-"no winner" and nothing runs on that window.
+([record](docs/reviews/2026-09-24-owner-decisions-confirmed.md)). Spec v1 was frozen on
+2026-10-06 (owner decision 12,
+[record](docs/reviews/2026-10-05-claude-owner-decisions-test-plan.md)), with its §2
+prerequisites and every variant on main.
+
+**v1 has ended with no winner** (2026-10-06,
+[report](docs/backtests/2026-10-06-spec-v1-stage-1.md)).
+- **Stage 1** ran 12 strategies on the two development windows, from the frozen commit.
+  No variant passed C1–C6, and every one lost money on average.
+- **No winner is possible.** A winner must pass both stages, so stage 2 could not have
+  produced one, and the reserved window stays closed.
+- **The owner's next step then (done):** v2, the mode-switching design, using this evidence,
+  with stage 2's long-window data work moved into it. v2 has since closed as failed (below),
+  and the next experiment is spec v3 (PR #207).
+
+**Spec v2, the spot mode switcher, closed as failed on 2026-10-08** (the owner's decision), on its
+verdict of 2026-10-07 (C1: drawdown 21.9% against a 10% limit;
+[verdict](docs/backtests/2026-10-07-spec-v2-verdict.md)). Spec v3, trend-following on
+perpetual-futures data, was frozen on 2026-10-08 (reviewed draft PR #207, freeze PR #209,
+[spec](docs/EXPERIMENT_SPEC_V3.md)); its build starts with the trial register. What follows is v2's record. It was frozen on 2026-10-06
+([spec](docs/EXPERIMENT_SPEC_V2.md), PR #174 and its freezing PR). Each pair, every hour,
+chooses Grid (v1's grid with F's block), Uptrend (one long position with a trailing stop)
+or Cash, under v1's unchanged risk limits.
+- **The build (done):** the implementation plan
+  ([plan](docs/superpowers/plans/2026-10-06-mode-switcher.md)), in reviewed PRs, and the
+  long-window data (the reader's repair rule and masking, Bob's re-fetch, the dataset
+  specs and manifests).
+- **The evaluation (done):** on `full-range-2017-2024`, from one frozen commit, against
+  spec v2 §8. It failed C1 and passed C2–C6
+  ([verdict](docs/backtests/2026-10-07-spec-v2-verdict.md)).
+- **The reserved 2025–26 window stays closed.** v2 did not pass, so no v2 step remains.
+  The next experiment is spec v3 (reviewed draft PR #207, freeze PR #209), frozen on 2026-10-08.
 
 ## 3. Read-only market-data shadow mode (partly implemented; expansion deferred)
 

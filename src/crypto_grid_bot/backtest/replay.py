@@ -30,15 +30,21 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from crypto_grid_bot.backtest.dataset import funding_local_path, is_funding, local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
-from crypto_grid_bot.backtest.funding import FundingRecord, FundingSignal, read_funding_archive
-from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive
+from crypto_grid_bot.backtest.funding import (
+    FIRST_ARCHIVE_MONTH,
+    FundingRecord,
+    FundingSignal,
+    read_funding_archive,
+)
+from crypto_grid_bot.backtest.klines import Kline, aggregate, read_archive, read_archive_repaired
 from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.domain import CandidateMetrics, MarketSignals, RiskDecision
-from crypto_grid_bot.simulation.execution import exit_state
+from crypto_grid_bot.market_data.parsing import DataError
+from crypto_grid_bot.simulation.execution import exit_price, exit_state, unpaired_inventory
 from crypto_grid_bot.simulation.inventory_cap import mark as unit_mark
 from crypto_grid_bot.simulation.models import (
     ONE,
@@ -50,10 +56,20 @@ from crypto_grid_bot.simulation.models import (
     floor_step,
     timestamp,
 )
-from crypto_grid_bot.simulation.runner import Frame, PaperSimulator, SimulationPolicy
+from crypto_grid_bot.simulation.runner import (
+    DECISION_HALTED,
+    DECISION_SKIPPED_HOLDING,
+    MODE_SWITCH,
+    Frame,
+    PaperSimulator,
+    SimulationPolicy,
+)
 from crypto_grid_bot.simulation.trend_switch import MINIMUM_DAILY_WARMUP, TrendSchedule
+from crypto_grid_bot.simulation.uptrend import UptrendPosition
 from crypto_grid_bot.strategy.cycle import CycleSchedule, CycleSignal
+from crypto_grid_bot.strategy.mode_selector import Mode
 from crypto_grid_bot.strategy.order_flow import FLOW_BARS, taker_buy_share
+from crypto_grid_bot.strategy.perception import Perception
 from crypto_grid_bot.strategy.volume_exit import VolumeHistory
 
 PATH_MODES = ("high_first", "low_first")
@@ -71,6 +87,9 @@ HOUR_MS = 3_600_000
 # Revolut X allows 1,000 order-placement requests per day. Cancellations are counted
 # too, which is conservative if the exchange meters them separately.
 DAILY_REQUEST_BUDGET = 1000
+# The strategy of spec v2's mode-switcher rows, never v1's "gated grid (...)", which spec
+# v1's scorer reads as one of its own grids.
+MODE_SWITCH_STRATEGY = "mode switcher (spec-v2)"
 
 
 @dataclass(frozen=True)
@@ -197,6 +216,106 @@ def candidate_for(
 
 
 @dataclass
+class ModeDecisions:
+    """Spec v2 §4's hourly decisions in a mode-switcher run, and why each went as it did, from
+    each frame's ``mode_reasons`` (``PaperSimulator._decide_mode``), for the row's
+    ``modes.decisions``. Reporting only (spec v2 §8, "Behaviour"): no criterion reads it, and
+    nothing here reaches a decision.
+
+    Each UTC hour has at most one outcome: a decision made, a decision skipped while an uptrend
+    position exists, or the hour held back by a halt. A halted hour counts once, however many of
+    its frames report it, and not at all if the halt ends within it (an automatic restart) and a
+    later frame of the hour decides after all. An hour with no valid frame (masked, missing or
+    transient) has no outcome.
+
+    A dataclass, so that two runs' ``Metrics`` compare by value (``asdict``)."""
+
+    # The counts each month repeats, sorted: all but Grid's.
+    MONTHLY: ClassVar[tuple[str, ...]] = (
+        "by_mode",
+        "halted",
+        "made",
+        "skipped_holding",
+        "uptrend_blocked_by",
+        "uptrend_sole_blocker",
+    )
+
+    # hour open (ms) -> (mode, Uptrend's failures, Grid's failures)
+    made: dict[int, tuple[str, tuple[str, ...], tuple[str, ...]]] = field(default_factory=dict)
+    skipped: set[int] = field(default_factory=set)
+    halted: set[int] = field(default_factory=set)
+
+    def record(self, reasons: dict[str, Any]) -> None:
+        hour, outcome = reasons["hour_ms"], reasons["outcome"]
+        if outcome == DECISION_HALTED:
+            self.halted.add(hour)
+            return
+        if hour in self.made or hour in self.skipped:
+            # Cannot happen: ``_decide_mode`` takes each hour once.
+            raise RuntimeError(f"the hour opening at {hour} ms was decided twice")
+        if outcome == DECISION_SKIPPED_HOLDING:
+            self.skipped.add(hour)
+        else:
+            uptrend, grid = reasons["uptrend_failures"], reasons["grid_failures"]
+            self.made[hour] = (reasons["mode"], tuple(uptrend), tuple(grid))
+
+    def report(self) -> dict[str, Any]:
+        """The ``modes.decisions`` block, integers only and every mapping's keys sorted:
+
+        * ``made``, ``skipped_holding`` and ``halted``: the hours of each outcome;
+        * ``by_mode``: the decisions made, by the mode chosen, every mode listed;
+        * ``uptrend_blocked_by`` and ``grid_blocked_by``: over the decisions where that mode
+          was not chosen, how many listed each code (``mode_selector.UPTREND_CODES`` and
+          ``GRID_CODES``); one decision can list several;
+        * ``uptrend_sole_blocker`` and ``grid_sole_blocker``: the same, over the decisions where
+          exactly one condition failed, the single rule that kept the mode out;
+        * ``by_month``: for each UTC month ``YYYY-MM`` with an outcome, its ``made``,
+          ``skipped_holding``, ``halted``, ``by_mode``, ``uptrend_blocked_by`` and
+          ``uptrend_sole_blocker``.
+
+        A code that never counted is left out of its mapping."""
+        halted = self.halted - self.made.keys() - self.skipped
+        # month -> its hours of each outcome: made, skipped, halted
+        months: dict[str, tuple[list[int], list[int], list[int]]] = {}
+        for index, hours in enumerate((self.made, self.skipped, halted)):
+            for hour in hours:
+                month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
+                months.setdefault(month, ([], [], []))[index].append(hour)
+        by_month: dict[str, dict[str, Any]] = {}
+        for month, (made, skipped, held) in sorted(months.items()):
+            counts = self._counts(made, len(skipped), len(held))
+            by_month[month] = {key: counts[key] for key in self.MONTHLY}
+        block = self._counts(list(self.made), len(self.skipped), len(halted))
+        block["by_month"] = by_month
+        return dict(sorted(block.items()))
+
+    def _counts(self, hours: list[int], skipped: int, halted: int) -> dict[str, Any]:
+        """The block's counts over the decisions made in ``hours``, with ``skipped`` and
+        ``halted`` hours, keys sorted."""
+        by_mode: Counter[str] = Counter()
+        blocked: dict[Mode, Counter[str]] = {Mode.UPTREND: Counter(), Mode.GRID: Counter()}
+        sole: dict[Mode, Counter[str]] = {Mode.UPTREND: Counter(), Mode.GRID: Counter()}
+        for hour in hours:
+            chosen, uptrend, grid = self.made[hour]
+            by_mode[chosen] += 1
+            for mode, failures in ((Mode.UPTREND, uptrend), (Mode.GRID, grid)):
+                if chosen != mode.value:
+                    blocked[mode].update(failures)
+                    if len(failures) == 1:
+                        sole[mode].update(failures)
+        return {
+            "by_mode": {mode.value: by_mode[mode.value] for mode in sorted(Mode)},
+            "grid_blocked_by": dict(sorted(blocked[Mode.GRID].items())),
+            "grid_sole_blocker": dict(sorted(sole[Mode.GRID].items())),
+            "halted": halted,
+            "made": len(hours),
+            "skipped_holding": skipped,
+            "uptrend_blocked_by": dict(sorted(blocked[Mode.UPTREND].items())),
+            "uptrend_sole_blocker": dict(sorted(sole[Mode.UPTREND].items())),
+        }
+
+
+@dataclass
 class Metrics:
     bars: int = 0
     warmup_bars: int = 0
@@ -268,6 +387,26 @@ class Metrics:
     # Spec v1 §3's "Reported" values of variants E, G and H, as row fields
     # (``VariantReport``); empty in any other run, whose rows keep their exact layout.
     variant: dict[str, Any] = field(default_factory=dict)
+    # Spec v1 §5 rule 1's per-run mask report (``MaskCounts``); zero in a run with no mask,
+    # whose rows keep their exact layout.
+    masked_hours: int = 0
+    days_skipped_for_masks: int = 0
+    fills_after_masked_span: int = 0
+    # Spec v2 §8's behaviour readouts, filled only in a mode-switcher run (``mode_switch``),
+    # whose rows alone carry them (``modes_report``): the time in each mode in ms, weighted
+    # by elapsed time over the evaluation window; the changes of mode, as the account counts
+    # them; the completed uptrend round trips (C5), and the stops and fades among their exits;
+    # and the uptrend position still held at the end, which is not an exit owed (section 6):
+    # its quantity and its value at the exit mark. ``mode_decisions``: each hour's decision and
+    # why it went as it did, reported only (``ModeDecisions``).
+    mode_switch: bool = False
+    mode_ms: Counter[str] = field(default_factory=Counter)
+    mode_switches: int = 0
+    uptrend_trades: int = 0
+    uptrend_stops: int = 0
+    uptrend_fades: int = 0
+    held_at_end: tuple[Decimal, Decimal] = (ZERO, ZERO)
+    mode_decisions: ModeDecisions = field(default_factory=ModeDecisions)
 
 
 def record_exit_block(metrics: Metrics, blocked: str, notional: Decimal) -> None:
@@ -328,8 +467,9 @@ def order_requests(
     orders: RequestCountingOrders, since: int, fills: Sequence[dict[str, Any]]
 ) -> int:
     """Requests sent during one step: book operations since ``since`` plus marketable
-    exits, which are placed and filled at once without entering the book."""
-    exits = sum(1 for fill in fills if str(fill["order_id"]).startswith("exit/"))
+    exits, and spec v2's marketable uptrend buys, which are placed and filled at once
+    without entering the book."""
+    exits = sum(1 for fill in fills if str(fill["order_id"]).startswith(("exit/", "uptrend/")))
     return orders.requests - since + exits
 
 
@@ -403,6 +543,124 @@ def _record_fills(
             else:
                 metrics.grid_sell_pnl += pnl
     return exits
+
+
+class MaskCounts(Protocol):
+    """Spec v1 §5 rule 1's per-run mask report, which the grid replay and variant D both
+    keep (``Metrics``, ``TrendMetrics``): "Each run reports its masked hours, skipped days
+    (rule 3) and fills after a masked span (rule 4)"."""
+
+    masked_hours: int
+    days_skipped_for_masks: int
+    fills_after_masked_span: int
+
+
+def mask_report(counts: MaskCounts) -> dict[str, int]:
+    """The mask report's row fields, each only when non-zero, so that a run with no mask
+    keeps its exact row (spec v1 §6: the stage-1 identity check lets these fields differ
+    only as empty or zero)."""
+    fields = {
+        "masked_hours": counts.masked_hours,
+        "days_skipped_for_masks": counts.days_skipped_for_masks,
+        "fills_after_masked_span": counts.fills_after_masked_span,
+    }
+    return {key: value for key, value in fields.items() if value}
+
+
+def record_uptrend(
+    metrics: Metrics, report: dict[str, Any], position: UptrendPosition | None
+) -> None:
+    """Count one frame's completed uptrend trade (spec v2 §8, C5), and its exit if that was a
+    stop or a fade (reported only). A trade is a position that bought something and whose exit
+    has sold it, on the frame that reports ``uptrend_ended``. An entry that bought nothing
+    reports ``uptrend_abandoned`` instead and counts nothing, its stop included.
+
+    ``position`` is the one held before the frame, which is the one the frame ended. A position
+    never ends on the frame its entry starts on: that frame checks exits 1 and 2 before the
+    entry starts, and only an exiting position ends (``PaperSimulator._finish_uptrend``), before
+    the frame's last risk check and harvest, which could begin an exit. Its exit reason was set
+    once, when the exit began."""
+    if not report.get("uptrend_ended"):
+        return
+    if position is None:
+        raise RuntimeError("a frame ended an uptrend trade that was not held before it")
+    metrics.uptrend_trades += 1
+    metrics.uptrend_stops += int(position.exit_reason == "stop")
+    metrics.uptrend_fades += int(position.exit_reason == "fade")
+
+
+def exit_fields(
+    account: Account, quote: Quote, rules: MarketRules, held: Decimal, position: Decimal
+) -> tuple[str, Decimal]:
+    """A row's end-of-run exit fields, ``final_exit_blocked`` and ``final_unsellable_notional``
+    (``execution.exit_state``). ``held`` is variant F's held fragments, reported as dust and
+    never owed. ``position`` is spec v2's uptrend position while it is still held or entering
+    (``PaperSimulator.uptrend_held``), which is neither an exit owed nor grid inventory (section
+    6): the verdict leaves it out as it leaves F's fragments, and both fields are of the rest of
+    the unpaired inventory, so a run that holds nothing else ends with "" and 0. Without a
+    position, the fields are exactly ``exit_state``'s."""
+    if not position:
+        return exit_state(account, quote, rules, held)
+    rest = unpaired_inventory(account) - position
+    if rest <= ZERO:
+        return "", ZERO
+    blocked, _ = exit_state(account, quote, rules, held + position)
+    return blocked, exit_price(quote, rules) * rest
+
+
+def modes_report(metrics: Metrics) -> dict[str, Any]:
+    """A mode-switcher row's own fields (spec v2 §8): its variant, and its readouts under
+    ``modes``. Empty in any other run, whose rows keep their exact layout. The grid's
+    completed cycles are not copied in: C5 and the readout take them from the row's own
+    ``completed_cycles``, so the two counts can never disagree. ``modes.decisions`` is each
+    hour's decision and why it went as it did (``ModeDecisions.report``): reported only, and
+    read by no criterion."""
+    if not metrics.mode_switch:
+        return {}
+    quantity, value = metrics.held_at_end
+    return {
+        "variant": MODE_SWITCH,
+        "modes": {
+            "time_ms": {mode.value: metrics.mode_ms[mode.value] for mode in sorted(Mode)},
+            "switches": metrics.mode_switches,
+            "uptrend_trades": metrics.uptrend_trades,
+            "stops": metrics.uptrend_stops,
+            "fades": metrics.uptrend_fades,
+            "held_at_end": {"quantity": str(quantity), "value": str(value)},
+            "buy_and_hold_final": str(metrics.hold_final),
+            "decisions": metrics.mode_decisions.report(),
+        },
+    }
+
+
+class MaskedSpans:
+    """The pair's masked hours as a replay meets them (spec v1 §5 rules 1 and 4).
+
+    ``hours`` is the number of masked hours inside the evaluation ``window`` [start, end),
+    which a mask needs. ``first_after(open_ms)``, called once for each replayed minute in
+    time order, says whether that minute is the first after a masked span: a masked hour
+    lies after the previous replayed minute's hour and before this minute's, or is the
+    hour just before this minute's. A gap that no masked hour explains, such as feature
+    warm-up or minutes missing without a mask, is not a masked span, and a run's first
+    replayed minute has no minute before it.
+    """
+
+    def __init__(self, masked: frozenset[int], window: tuple[int, int] | None) -> None:
+        if window is None:
+            raise ValueError("masked hours are reported against the evaluation window")
+        start, end = window
+        self.hours = sum(1 for hour in masked if start <= hour < end)
+        self._masked = masked
+        self._sorted = sorted(masked)
+        self._previous: int | None = None
+
+    def first_after(self, open_ms: int) -> bool:
+        hour = open_ms // HOUR_MS * HOUR_MS
+        previous, self._previous = self._previous, hour
+        if previous is None or hour == previous:
+            return False
+        between = bisect_left(self._sorted, hour) - bisect_left(self._sorted, previous + HOUR_MS)
+        return between > 0 or hour - HOUR_MS in self._masked
 
 
 class BuyAndHold:
@@ -635,12 +893,29 @@ def replay(
     daily: Sequence[Kline] | None = None,
     hourly: Sequence[Kline] | None = None,
     funding: Sequence[FundingRecord] | None = None,
+    *,
+    window: tuple[int, int] | None = None,
+    masked: frozenset[int] = frozenset(),
+    days_skipped_for_masks: int = 0,
 ) -> tuple[Metrics, Account]:
     """``daily`` is the traded pair's completed 1d history (P3), read only by variant A
     (``policy.trend_switch``) and variant H (``policy.cycle_gate``); ``hourly`` is its 1h
     history, read only by variant E (``policy.volume_exit``); ``funding`` is the BTCUSDT
-    funding records, read only by variant G (``policy.funding_gate``). Each variant
-    refuses to run without its history."""
+    funding records, read only by variant G (``policy.funding_gate``). Spec v2's mode
+    switcher (``policy.mode_switch``) reads both ``daily`` and ``hourly``, through its
+    perception, and measures its time in each mode over ``window``. Each variant refuses to
+    run without its history.
+
+    ``window`` is the evaluation window [start, end) in ms; ``masked`` is the pair's own
+    masked hours, whose minutes the caller has already dropped; ``days_skipped_for_masks``
+    is how many days the pair's daily/hourly check skips for them, which the caller counts
+    (``jobs.skipped_days_for_masks``). They change no decision: the metrics report the
+    masked hours inside ``window`` and, on the first replayed minute after a masked span
+    (``MaskedSpans``), the fills of the orders that were resting when the span began (spec
+    v1 §5 rules 1 and 4: "Orders across a masked span stay open and can fill on the next
+    replayed bar. Those fills are flagged and reported."). A mask needs the window. With
+    no mask the replay is exactly as without these arguments."""
+    masked_spans = MaskedSpans(masked, window) if masked else None
     schedule: TrendSchedule | None = None
     if policy is not None and policy.trend_switch:
         if daily is None:
@@ -670,6 +945,19 @@ def replay(
         if policy is not None and (policy.volume_exit or policy.funding_gate or policy.cycle_gate)
         else None
     )
+    # Spec v2's mode switcher: its perception of the pair's three timeframes (section 3), built
+    # once, and the evaluation window [start, end) over which its time in each mode is measured.
+    perception: Perception | None = None
+    start_ms = end_ms = 0
+    if policy is not None and policy.mode_switch:
+        if hourly is None or daily is None:
+            raise ValueError("the mode switcher needs the pair's hourly and daily history")
+        if window is None:
+            raise ValueError("the mode switcher's time in each mode needs the evaluation window")
+        if not run.gated:
+            raise ValueError("the mode switcher runs gated; a run's ungated rows are V0's baseline")
+        start_ms, end_ms = window
+        perception = Perception(hourly, daily)
     # ":memory:" gives the simulator an in-memory SQLite store; replay never writes to it.
     simulator = PaperSimulator(Path(":memory:"), config, run.rules, run.initial_quote, policy)
     simulator.volumes = volumes
@@ -679,6 +967,12 @@ def replay(
         raise ValueError("replay must start from an empty order book")
     orders = account.orders = RequestCountingOrders()
     metrics = Metrics(peak_equity=run.initial_quote, final_equity=run.initial_quote)
+    metrics.masked_hours = masked_spans.hours if masked_spans is not None else 0
+    metrics.days_skipped_for_masks = days_skipped_for_masks
+    metrics.mode_switch = perception is not None
+    # Spec v2 §8: the mode in force, since ``mode_since`` (ms). Every account starts in Cash,
+    # which so holds from the evaluation's start to the first replayed quote.
+    mode, mode_since = account.mode, start_ms
 
     def observe_risk(
         equity: Decimal, high: Decimal, reference: Decimal, decision: RiskDecision
@@ -711,8 +1005,16 @@ def replay(
                 raise ValueError("variant A needs 200 completed daily bars before evaluation")
             hold = BuyAndHold(run, kline)
             metrics.first_bar_ms = kline.open_ms
+        if perception is not None and not start_ms <= kline.open_ms <= end_ms - 60_000:
+            raise ValueError("the mode switcher's minutes must lie inside the evaluation window")
         metrics.bars += 1
         metrics.last_bar_ms = kline.open_ms
+        # Rule 4: orders stay open across a masked span. On the first minute after one, the
+        # fills of the orders resting since before it are flagged; an order placed in this
+        # minute is not (a resting limit cannot fill in its own bar anyway, and a
+        # marketable exit never enters the book).
+        after_span = masked_spans is not None and masked_spans.first_after(kline.open_ms)
+        resting = frozenset(account.orders) if after_span else frozenset()
         bar_time = datetime.fromtimestamp(kline.open_ms / 1000, UTC)
         signals = signals_for(inputs, bar_time, gated=run.gated)
         # A flat history has zero ATR, which the engine rejects as corrupt input. The
@@ -724,6 +1026,11 @@ def replay(
         # Variant F likewise reads only the bars complete at this minute's start, for all
         # four quotes: the 15 before it.
         share = taker_buy_share(flow, kline.open_ms) if flow is not None else None
+        # Spec v2's mode switcher likewise: the three timeframes as they stand at this minute's
+        # start, one snapshot for all four quotes, whose completed bars are the same. Never a
+        # later time in the minute: the minute's end can be the next day's start, where the day
+        # just ending would count as closed before the minute's quotes were observed.
+        snapshot = perception.at(kline.open_ms) if perception is not None else None
         report: dict[str, Any] = {}
         cycle: CycleSignal | None = None
         quotes = bar_quotes(kline, run.symbol, run.path_mode, run.spread, run.rules.tick_size)
@@ -753,10 +1060,22 @@ def replay(
                 flow_share=share,
                 funding_blocks=funding_blocks,
                 cycle=cycle,
+                perception=snapshot,
             )
             since, done = orders.requests, len(orders.completed)
+            if perception is not None:
+                # Spec v2 §8: the time since the previous quote, or since the evaluation's
+                # start, goes to the mode in force after that quote's step: its own span within
+                # a minute, the whole gap across a masked or missing span.
+                metrics.mode_ms[mode] += at_ms - mode_since
+                position = account.uptrend  # the uptrend trade this frame can end
             report = simulator.step(account, frame)
             last_quote = quote
+            if perception is not None:
+                mode, mode_since = account.mode, at_ms
+                record_uptrend(metrics, report, position)
+                if "mode_reasons" in report:
+                    metrics.mode_decisions.record(report["mode_reasons"])  # reported only
             metrics.requests_by_day[quote.observed_at[:10]] += order_requests(
                 orders, since, report["fills"]
             )
@@ -766,6 +1085,10 @@ def replay(
                 year, week, _ = timestamp(quote.observed_at).isocalendar()
                 metrics.cycles_by_week[f"{year}-W{week:02d}"] += cycles
             metrics.frames += 1
+            if resting:
+                metrics.fills_after_masked_span += sum(
+                    1 for fill in report["fills"] if str(fill["order_id"]) in resting
+                )
             exit_pnl = _record_fills(metrics, report["fills"], report.get("exit_reason"))
             # Only frames that attempted an exit carry the key. A rejected or halting
             # frame attempted none, and must not reset the streak or count as cleared.
@@ -824,11 +1147,25 @@ def replay(
     if hold is not None:
         metrics.hold_final, metrics.hold_max_drawdown = hold.value, hold.max_drawdown
     if last_quote is not None:
-        # Variant F's held fragments are reported as dust, never as an exit owed.
+        # Variant F's held fragments are reported as dust, never as an exit owed, and spec v2's
+        # uptrend position still held or entering is not owed either (section 6): it is
+        # reported apart, valued at the exit mark, as equity values it. An exit or a risk drain
+        # under way is owed, as in v1.
         held = simulator.held_fragments(account) if flow is not None else ZERO
-        metrics.final_exit_blocked, metrics.final_blocked_notional = exit_state(
-            account, last_quote, run.rules, held
+        position_held = simulator.uptrend_held(account) if perception is not None else ZERO
+        metrics.final_exit_blocked, metrics.final_blocked_notional = exit_fields(
+            account, last_quote, run.rules, held, position_held
         )
+        if position_held:
+            with localcontext() as context:
+                context.prec = 50  # the simulator's precision, at which equity marks it
+                value = position_held * unit_mark(last_quote, run.rules)
+            metrics.held_at_end = (position_held, value)
+    if perception is not None:
+        # The last mode stays in force to the evaluation's end. The account counted each
+        # change of mode, a halt's Cash included, as it happened.
+        metrics.mode_ms[mode] += end_ms - mode_since
+        metrics.mode_switches = account.mode_switches
     if reported is not None:
         metrics.variant = reported.fields(last_quote, metrics.final_equity)
     return metrics, account
@@ -864,7 +1201,12 @@ def check_accounting(run: RunConfig, metrics: Metrics, account: Account) -> list
             change = metrics.final_equity - run.initial_quote
             if abs(realised + unrealised - change) > Decimal("1e-18"):
                 problems.append(f"P&L reconciliation failed: {realised} + {unrealised} != {change}")
-            if sum(metrics.exit_pnl_by_reason.values(), ZERO) != metrics.exit_pnl:
+            # Each reason's sum and the total are accumulated fill by fill at the
+            # simulator's precision (50 digits), so with two reasons or more they round
+            # differently, far below 1e-18 (the full-range formal runs of 2026-10-07 differ
+            # by about 1e-46); P6's tolerance applies.
+            by_reason = sum(metrics.exit_pnl_by_reason.values(), ZERO)
+            if abs(by_reason - metrics.exit_pnl) > Decimal("1e-18"):
                 problems.append("exit P&L by reason does not sum to the exit total")
     return problems
 
@@ -884,21 +1226,87 @@ def _read_month(data_dir: Path, symbol: str, interval: str, month: str) -> list[
     return rows
 
 
-def load_candles(
-    data_dir: Path, manifest: dict[str, Any], symbol: str, interval: str
+def _read_month_masked(
+    data_dir: Path,
+    symbol: str,
+    interval: str,
+    month: str,
+    mask: frozenset[int],
+    excluded: Sequence[tuple[int, int]],
 ) -> list[Kline]:
-    """Every verified candle of the pair at one interval, sorted by open time."""
+    """The month's bars from the repairing reader (spec v1 §5 rule 1), less every bar in a
+    masked hour, every bar in an hour the reader distrusts (``masked_hours``) and every
+    bar inside a documented ``excluded`` [start, end) range.
+
+    ``mask_job``'s masks already hold every distrusted hour of the month; dropping them
+    here too keeps the reader's kept copy of a duplicated row out of a load whose mask was
+    made by hand. The manifest lists the archive as ok, so an archive the reader cannot
+    read is not masked here: it raises, fail-closed, as the strict reader does. Only a
+    manifest entry that is not ok gives no bars, and ``_archive_months`` never lists one."""
+    read = read_archive_repaired(
+        local_path(data_dir, symbol, interval, month), symbol, interval, month
+    )
+    if read.unreadable:
+        raise DataError(
+            f"{symbol} {interval} {month}: the manifest lists the archive as ok, but it is "
+            f"unreadable: {read.unreadable}"
+        )
+    dropped = mask | read.masked_hours
+    bars = [kline for kline in read.bars if kline.open_ms // HOUR_MS * HOUR_MS not in dropped]
+    if excluded:
+        bars = [k for k in bars if not any(a <= k.open_ms < b for a, b in excluded)]
+    return bars
+
+
+def _month_bars(
+    data_dir: Path,
+    symbol: str,
+    interval: str,
+    month: str,
+    mask: frozenset[int] | None,
+    excluded: Sequence[tuple[int, int]],
+) -> list[Kline]:
+    """Today's strict read when ``mask`` is None; the masked read otherwise."""
+    if mask is None:
+        return _read_month(data_dir, symbol, interval, month)
+    return _read_month_masked(data_dir, symbol, interval, month, mask, excluded)
+
+
+def load_candles(
+    data_dir: Path,
+    manifest: dict[str, Any],
+    symbol: str,
+    interval: str,
+    *,
+    mask: frozenset[int] | None = None,
+    excluded: Sequence[tuple[int, int]] = (),
+) -> list[Kline]:
+    """Every verified candle of the pair at one interval, sorted by open time.
+
+    With ``mask`` None, the strict reader, which refuses an archive with a repaired or
+    dropped row, and nothing is dropped: ``excluded`` is not read. With a mask, even an
+    empty one, 1m and 1h archives are read by the repairing reader, and every bar in a
+    masked hour, in an hour the reader distrusts, or inside an ``excluded`` [start, end)
+    range, the symbol's documented absences, is dropped (spec v1 §4 and §5). Daily bars
+    are never masked (rule 3): the repairing reader refuses them."""
     candles = [
         kline
         for month in _archive_months(manifest, symbol, interval)
-        for kline in _read_month(data_dir, symbol, interval, month)
+        for kline in _month_bars(data_dir, symbol, interval, month, mask, excluded)
     ]
     candles.sort(key=lambda k: k.open_ms)
     return candles
 
 
-def load_hourly(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kline]:
-    return load_candles(data_dir, manifest, symbol, "1h")
+def load_hourly(
+    data_dir: Path,
+    manifest: dict[str, Any],
+    symbol: str,
+    *,
+    mask: frozenset[int] | None = None,
+    excluded: Sequence[tuple[int, int]] = (),
+) -> list[Kline]:
+    return load_candles(data_dir, manifest, symbol, "1h", mask=mask, excluded=excluded)
 
 
 def load_daily(data_dir: Path, manifest: dict[str, Any], symbol: str) -> list[Kline]:
@@ -912,19 +1320,22 @@ def load_funding(
     archives the manifest lists as present (spec v1 P8), whose checksums
     ``verify_dataset`` checks before any replay.
 
-    Every one of ``months``, the run's evaluation months, needs its archive: without
-    one, G would block every new grid that month whatever the funding was, a result
-    that says nothing about funding, so the run is refused instead. Every committed
-    manifest lacks them until P8's entries are added."""
+    Every one of ``months``, the run's evaluation months, from ``FIRST_ARCHIVE_MONTH``
+    on needs its archive: without one, G would block every new grid that month whatever
+    the funding was, a result that says nothing about funding, so the run is refused
+    instead. Before that month no archive exists, so none is needed: G is unavailable
+    there, without three usable records, and blocks every new grid (spec v1 §5 rule 9)."""
     present = [
         entry["month"]
         for entry in manifest["files"]
         if is_funding(entry) and entry["symbol"] == symbol and entry["status"] == "ok"
     ]
-    if absent := [month for month in months if month not in present]:
+    expected = [month for month in months if month >= FIRST_ARCHIVE_MONTH]
+    if absent := [month for month in expected if month not in present]:
         raise ValueError(
-            f"variant G needs {symbol}'s funding archive for every evaluation month in the "
-            f"manifest (spec v1 P8); it lists none for {', '.join(absent)}"
+            f"variant G needs {symbol}'s funding archive for every evaluation month from "
+            f"{FIRST_ARCHIVE_MONTH} in the manifest (spec v1 P8); it lists none for "
+            f"{', '.join(absent)}"
         )
     return [
         record
@@ -938,6 +1349,28 @@ def load_funding(
 DAY_MS = 86_400_000
 
 
+# Owner decision 14 (2026-10-07), an exception on record to spec v1 §5 rule 3 and P3:
+# days, as UTC dates, whose official 1d bar disagrees in volume with its 24 official 1h
+# bars through a defect of Binance's archive that was documented before any result that
+# reads the day existed. For every symbol, ``cross_check_daily`` excuses only the volume
+# of such a day: it still compares the day's prices with its hours, exactly, and counts
+# the excuse. The rest of the check treats the day as any other.
+DOCUMENTED_DAILY_DEFECTS: dict[str, str] = {
+    "2021-01-21": (
+        "the official 1d bars have about 2% less volume than their 24 official 1h bars "
+        "(BTCUSDT 2.4%, DOGEUSDT 1.7%, with identical prices; "
+        "docs/reviews/2026-09-26-bob-hourly-defect-calendar.md, Day-Level Defects); the "
+        "volume alone is excused by the owner's exception of 2026-10-07, decision 14 in "
+        "docs/reviews/2026-10-07-claude-v2-decisions-after-first-read.md"
+    ),
+}
+
+
+def _utc_date(open_ms: int) -> str:
+    """The UTC date of ``open_ms`` as ``YYYY-MM-DD``."""
+    return datetime.fromtimestamp(open_ms // 1000, UTC).strftime("%Y-%m-%d")
+
+
 def cross_check_daily(
     daily: Sequence[Kline],
     hourly: Sequence[Kline],
@@ -945,13 +1378,31 @@ def cross_check_daily(
     hourly_window: tuple[int, int],
     evaluation_start_ms: int,
     volume_tolerance: Decimal | None = None,
-) -> dict[str, int]:
+    *,
+    masked_days: frozenset[int] = frozenset(),
+) -> dict[str, int | list[str]]:
     """Spec v1 P3: daily bars must be complete, unique and agree with their hours.
 
     ``daily_window`` is the [start, end) span the 1d archives cover; every UTC day in it
     must appear exactly once. Over ``hourly_window`` each day must also equal the
     aggregation of its 24 unique contiguous 1h bars (an OHLCV match alone cannot show
     missing hours). The warm-up count is completed days before the evaluation start.
+
+    ``masked_days`` are the day opens that hold a masked hour (spec v1 §5 rule 3): each in
+    ``hourly_window`` is skipped in the 24-hour comparison and counted in
+    ``daily_days_skipped_for_masks``, a key written only when non-zero. Its official 1d
+    bar still counts: daily bars are never masked, so a missing or duplicated one stays
+    a failure.
+
+    A day in ``DOCUMENTED_DAILY_DEFECTS`` (owner decision 14) goes through the
+    completeness check and the official-bar lookup like any other, and counts as
+    compared. Only its volume is excused: when its open, high, low and close equal its
+    hours' exactly, it counts in ``daily_days_volume_excused`` whatever its volume, and
+    as neither a mismatch nor drift; a price that differs is a mismatch, as on any other
+    day. The key is written only when non-zero. A listed day that holds a masked hour
+    takes the masked path. A day that mismatches is named in ``daily_mismatched_days``,
+    in date order, a key written only when one does. A window whose hourly span holds no
+    listed day and no mismatch, as every stage-1 window, gives today's record.
     """
     opens = [k.open_ms for k in daily]
     present = set(opens)
@@ -961,8 +1412,12 @@ def cross_check_daily(
         if hourly_window[0] <= kline.open_ms < hourly_window[1]:
             by_day.setdefault(kline.open_ms // DAY_MS * DAY_MS, []).append(kline)
     official = {k.open_ms: k for k in daily}
-    compared = mismatched = incomplete = drift = 0
+    compared = mismatched = incomplete = drift = skipped = excused = 0
+    mismatched_days: list[str] = []
     for day in range(hourly_window[0], hourly_window[1], DAY_MS):
+        if day in masked_days:
+            skipped += 1
+            continue
         hours = by_day.get(day, [])
         if len({h.open_ms for h in hours}) != 24 or len(hours) != 24:
             incomplete += 1
@@ -972,11 +1427,20 @@ def cross_check_daily(
             continue  # counted as missing below
         compared += 1
         (merged,) = aggregate(sorted(hours, key=lambda h: h.open_ms), DAY_MS)
-        outcome = compare_bars(merged, reference, volume_tolerance)
-        mismatched += int(outcome == "mismatch")
+        if _utc_date(day) in DOCUMENTED_DAILY_DEFECTS:
+            # Decision 14 excuses the volume only: the prices must still match exactly.
+            prices = (merged.open, merged.high, merged.low, merged.close)
+            same = prices == (reference.open, reference.high, reference.low, reference.close)
+            outcome = "excused" if same else "mismatch"
+        else:
+            outcome = compare_bars(merged, reference, volume_tolerance)
+        if outcome == "mismatch":
+            mismatched += 1
+            mismatched_days.append(_utc_date(day))
         drift += int(outcome == "drift")
+        excused += int(outcome == "excused")
     warmup = sum(1 for o in opens if o + DAY_MS <= evaluation_start_ms)
-    return {
+    result: dict[str, int | list[str]] = {
         "daily_days_compared": compared,
         "daily_days_mismatched": mismatched,
         "daily_days_volume_drift": drift,
@@ -986,12 +1450,31 @@ def cross_check_daily(
         "daily_warmup_days": warmup,
         "daily_warmup_short": int(warmup < MINIMUM_DAILY_WARMUP),
     }
+    if skipped:  # Written only when non-zero, so an unmasked record is today's.
+        result["daily_days_skipped_for_masks"] = skipped
+    # Each written only when non-zero or non-empty, for the same reason (decision 14).
+    if excused:
+        result["daily_days_volume_excused"] = excused
+    if mismatched_days:
+        result["daily_mismatched_days"] = mismatched_days
+    return result
 
 
-def load_minutes(data_dir: Path, manifest: dict[str, Any], symbol: str) -> Iterator[Kline]:
-    """The pair's 1m bars in time order, read lazily one month archive at a time."""
+def load_minutes(
+    data_dir: Path,
+    manifest: dict[str, Any],
+    symbol: str,
+    *,
+    mask: frozenset[int] | None = None,
+    excluded: Sequence[tuple[int, int]] = (),
+) -> Iterator[Kline]:
+    """The pair's 1m bars in time order, read lazily one month archive at a time.
+
+    ``mask`` and ``excluded`` as for ``load_candles``: None reads strictly and drops
+    nothing; a mask reads with the repairing reader and drops the masked hours' minutes
+    and those inside ``excluded``."""
     for month in sorted(_archive_months(manifest, symbol, "1m")):
-        yield from _read_month(data_dir, symbol, "1m", month)
+        yield from _month_bars(data_dir, symbol, "1m", month, mask, excluded)
 
 
 # Owner decision (2026-09-24): Binance archives sometimes disagree on volume only. With
@@ -1040,13 +1523,21 @@ def cross_check_hourly(
     hourly: Sequence[Kline],
     window: tuple[int, int],
     volume_tolerance: Decimal | None = None,
+    *,
+    masked: frozenset[int] = frozenset(),
 ) -> dict[str, int]:
     """Compare 1m bars aggregated to hours against Binance's own 1h archive.
 
     ``window`` is the [start, end) span the minute archives cover. Official hours in
     it with no minute data at all are counted too, so a wholly missing hour cannot
     pass the check silently.
+
+    ``masked`` hours leave the expected set (spec v1 §5, "The post-mask expected set"):
+    their minutes and 1h bars are set aside, and none of them is counted anywhere.
     """
+    if masked:
+        minutes = (k for k in minutes if k.open_ms // HOUR_MS * HOUR_MS not in masked)
+        hourly = [k for k in hourly if k.open_ms // HOUR_MS * HOUR_MS not in masked]
     official = {k.open_ms: k for k in hourly}
     compared = mismatched = missing = drift = 0
     per_hour: dict[int, int] = {}
@@ -1070,7 +1561,9 @@ def cross_check_hourly(
         drift += int(outcome == "drift")
     in_window = range(window[0], window[1], HOUR_MS)
     absent = sum(1 for o in official if window[0] <= o < window[1] and o not in seen)
-    absent_both = sum(1 for o in in_window if o not in official and o not in seen)
+    absent_both = sum(
+        1 for o in in_window if o not in official and o not in seen and o not in masked
+    )
     # An exact OHLCV match cannot reveal missing zero-volume minutes, so count them.
     incomplete = [
         60 - n for hour, n in per_hour.items() if window[0] <= hour < window[1] and n < 60
@@ -1091,17 +1584,27 @@ def check_hourly_series(
     hourly: Sequence[Kline],
     window: tuple[int, int],
     excluded: Sequence[tuple[int, int]] = (),
+    *,
+    masked: frozenset[int] = frozenset(),
 ) -> dict[str, int]:
     """Completeness of an hourly series with no minute data behind it (an untraded market
     proxy or breadth-basket symbol): every hour in the [start, end) ``window`` exactly
-    once, except hours inside a documented ``excluded`` [start, end) range."""
-    opens = [k.open_ms for k in hourly if window[0] <= k.open_ms < window[1]]
+    once, except hours inside a documented ``excluded`` [start, end) range and
+    ``masked`` hours, which leave the expected set (spec v1 §5, "The post-mask expected
+    set"): a masked hour's bars are set aside, and it is never missing."""
+    opens = [
+        k.open_ms
+        for k in hourly
+        if window[0] <= k.open_ms < window[1] and k.open_ms // HOUR_MS * HOUR_MS not in masked
+    ]
     present = set(opens)
     hours = range(window[0], window[1], HOUR_MS)
     documented = {h for h in hours if any(a <= h < b for a, b in excluded)}
     return {
         "series_hours_present": len(present),
-        "series_hours_missing": sum(1 for h in hours if h not in present and h not in documented),
+        "series_hours_missing": sum(
+            1 for h in hours if h not in present and h not in documented and h not in masked
+        ),
         "series_hours_duplicated": len(opens) - len(present),
         "series_hours_excluded": len(documented),
     }
@@ -1120,9 +1623,12 @@ def summarise(
     feature_version: str = FEATURE_VERSION,
 ) -> dict[str, Any]:
     """``feature_version`` names the features the run used (STRUCTURE_FEATURE_VERSION
-    under SimulationPolicy.structure); a V0 row keeps its exact labels."""
+    under SimulationPolicy.structure); a V0 row keeps its exact labels. A mode-switcher row
+    carries its own strategy, its variant and its readouts (``modes_report``)."""
     initial = run.initial_quote
-    if run.gated:
+    if metrics.mode_switch:
+        strategy = MODE_SWITCH_STRATEGY
+    elif run.gated:
         strategy = f"gated grid ({feature_version})"
     elif feature_version == FEATURE_VERSION:
         strategy = "ungated grid baseline"
@@ -1194,6 +1700,8 @@ def summarise(
         "rules": {key: str(value) for key, value in run.rules.identity().items()},
         "assumed_spread_pct": str(run.spread * 100),
         **metrics.variant,
+        **mask_report(metrics),
+        **modes_report(metrics),
         "hourly_equity": metrics.hourly_equity,
     }
 

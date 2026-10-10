@@ -1,10 +1,35 @@
-# Experiment specification v1 (DRAFT for review, not yet frozen)
+# Experiment specification v1 (frozen 2026-10-06)
 
-**Status:** draft by Claude. It becomes frozen only when Codex has reviewed it and the
-owner has confirmed the acceptance criteria in §6. After that, a change requires a new
-version (v2), and results under v1 stay reported. **No strategy code exists for these
-variants yet.** This document fixes what will be built and how it will be judged,
-*before* any variant is run.
+**Status: frozen on 2026-10-06**, the day #171 merged (owner decision 12,
+[record](reviews/2026-10-05-claude-owner-decisions-test-plan.md), "Later decisions").
+- **The freeze condition is met.** This header made the freeze wait until Codex had
+  reviewed the spec and the owner had confirmed the acceptance criteria in §6.
+  - **Codex's reviews.** Codex approved the consolidated v1 draft on #16 (final review
+    at `9678365`, [record](reviews/2026-09-25-codex-pr16-final-review.md)). It reviewed
+    amendments 2 and 3 on #163, amendment 4 on #168 and the later spec edits on #170,
+    each ending with no findings. Amendment 1 (#124)
+    went in while Codex was unavailable, and its review stayed owed (#134). Codex
+    Desktop gave it before the freeze, as the owner required (decision 14): it reviewed
+    amendment 1's text, code and tests at #171's head `c7a45f4` and found no issues
+    ([verdict](https://github.com/mgalic01/adaptive-market-engine/issues/134#issuecomment-6012217278)).
+  - **The owner's criteria.** The owner confirmed C1–C6 on 2026-09-24 and amended C2
+    on 2026-10-05.
+  - **No open readings.** Every reading the spec had left open to the owner is now the
+    owner's decision (decisions 13 and 15–22). The one choice left open to review, not
+    running the un-amended fixed V0, is settled at the freeze: v1 does not run it (§3,
+    V0). Only whether stage 2 also runs the reported-only sensitivities is left for
+    later, and those decide nothing.
+  - **Open by design, gating only the reserved-window run.** C7 is adopted in principle
+    but not yet binding (§6): its return series, its family and Codex's acknowledgment
+    are still owed. The `N_family` floors are working figures that the trial register
+    will settle (§6). Neither gates stage 1, stage 2 or the development selection,
+    which C1–C6 decide. Until C7 is settled or the owner waives it in writing, nothing
+    runs on the reserved window.
+- **From now on,** a change requires a new version (v2), and results under v1 stay
+  reported.
+- **Every variant is implemented on main**, the last of them by #170 (the full stack).
+  Stage 1 runs on these frozen rules, which were fixed before any stage-1 or stage-2
+  result existed.
 
 **Test-plan amendment (amendment 4, owner decisions of 2026-10-05,
 [record](reviews/2026-10-05-claude-owner-decisions-test-plan.md)):**
@@ -20,9 +45,10 @@ variants yet.** This document fixes what will be built and how it will be judged
 - C2 and the selection use compound annualised returns, and `N_family` grows (§6).
 
 Where the owner accepted a reading of Claude's rather than choosing the words himself,
-the text says so. The full stack's combination order (§3) remains a reading open to
-Codex's and Bob's review. Whether stage 2 also runs the reported-only sensitivities is
-left for the owner to decide later; they decide nothing.
+the text says so. The full stack's combination order (§3) was a reading left open to
+Codex's and Bob's review. They reviewed it on #168 and #170 and raised nothing against
+it before the freeze. Whether stage 2 also runs the reported-only sensitivities is left
+for the owner to decide later; they decide nothing.
 
 The scope is paper trading and historical replay only. Nothing here authorises live
 trading, API keys or withdrawals. The default risk limits (3% daily pause, 8% soft and
@@ -169,7 +195,8 @@ common to all:
   `N_family` includes. `exit-residue-v1` names the exit fix alone (PR #122); no V0
   result on it has been run or inspected. Running the un-amended fixed V0 is not planned,
   a choice made here and open to review; if it is ever run and inspected it is one
-  further trial and `N_family` gains one more.
+  further trial and `N_family` gains one more. *Settled at the freeze (2026-10-06):* v1
+  does not run it, so it adds no trial (Codex's review of #171).
 
 ### Range-exit clock paused during halts (amendment 3, owner decision 2026-10-02, D16)
 
@@ -388,7 +415,11 @@ precondition 2: refused while `exit_state` is `incomplete`, admitted with a `dus
 remainder, which stays held and marked and is drained or settled exactly as after today's
 resume. The refusal text still names the inventory held when the liquidation is
 incomplete. **This reverses a rule PR #122 merged on 2026-09-28 and is a design decision
-made in this amendment, open to the owner's, Bob's and Codex's review.**
+made in this amendment, open to the owner's, Bob's and Codex's review.** *Outcome before
+the freeze:* Bob reviewed it on #124, the owner accepted it on 2026-10-06 (decision 19
+in the [test-plan record](reviews/2026-10-05-claude-owner-decisions-test-plan.md)), and Codex
+Desktop reviewed it at #171's head `c7a45f4` and found no issues, as the owner required
+before the freeze (decision 14).
 
 **The manual resume's risk check (owner decisions D17 and D18, 2026-10-05).**
 - An `exhaustion` halt is refused by name, before any risk check: the active account
@@ -664,6 +695,16 @@ indicates a data-source problem. Consequences:
   selection. E becomes eligible for selection only after Codex has reviewed its
   implementation and the boundary tests above; until then it is run and reported but
   **not eligible**.
+- **Implementation review, recorded 2026-10-05: E is eligible.**
+  - Codex reviewed E's implementation and the boundary tests above on PR #165, over five
+    rounds.
+  - Its first round found that E's milestones must stay on the clock from the original
+    `t0`, and that was fixed.
+  - Its fifth review, of `7045b72` (merged as `396041f`), found no issues. E's code is
+    unchanged since then.
+  - The owner confirmed the same day that E is selectable
+    ([record](reviews/2026-10-05-claude-owner-decisions-test-plan.md), "Later
+    decisions").
 
 ### F: order-flow entry block
 F blocks new buys only. It is **not** a V0 pause: it never sets `draining`, never
@@ -725,17 +766,22 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   values are 1, 2, 4 and 8 hours; any other value, or a missing field, makes that
   record's successor unknown, so G is unavailable (below) until three consecutive
   valid records exist again.
-- **Pending P8 evidence (G cannot be frozen until resolved):**
+- **P8 evidence (resolved before the freeze):** each item below records its outcome. The
+  data supports flooring to the hour, and the 60-second publication allowance stays a
+  labelled assumption.
   - **Interval meaning: resolved by convention (2026-09-25, PR #19 discussion).** The
     archives cannot tell whether a record's interval is the interval **to its next**
     settlement or the interval **ending at** it. G therefore uses the
     **uniform-cadence rule** below. It gives the same decision under both readings
     whenever the latest three records agree, and it is unavailable otherwise.
   - **Missing field:** if some archive months have no interval field, the spec is
-    amended before freeze; nothing is assumed.
+    amended before freeze; nothing is assumed. *Outcome:* every month from 2020-01 to
+    2024-12 has the field (Bob's cadence survey, below), so no amendment was needed.
   - **Modelling conventions, not verified facts:** flooring `calc_time` to the hour
     and the 60-second publication allowance are **assumptions**. Bob's report is
-    assessed against them before freeze.
+    assessed against them before freeze. *Outcome:* the survey below supports
+    flooring, and the allowance cannot be verified from archives, so it stays an
+    assumption.
   - **Bob's P8 survey (2026-09-25, `bob/p8-data-survey` `761b2ee`):**
     - Funding archives exist for all 60 months, 2020-01 to 2024-12, with no errors.
     - One sampled month (2022-06) has the header
@@ -759,8 +805,8 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
     - The 60-second publication allowance cannot be verified from archives. It stays a
       labelled assumption.
 - **Timing:** a record becomes usable at `calc_time + 60 s` (a fixed publication
-  allowance, an **assumption** pending P8), at the first valid observation at or after
-  that instant.
+  allowance, an **assumption** P8 could not verify, above), at the first valid
+  observation at or after that instant.
 - **Uniform-cadence rule (latest three):** at an observation at time `t`, take the
   newest usable record `r3` and the two usable records before it, `r1` and `r2`.
   - **Insufficient history:** if fewer than three usable records exist, including at
@@ -922,7 +968,7 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   - A separate count would need V0's five-signal label computed beside V2's on every
     frame.
   - This is Claude's reading of the spec as it stands, from Codex's review of #168,
-    and it is open to the owner.
+    which the owner accepted on 2026-10-06 (decision 21 in the test-plan record).
 - **Runs:** V2 alone, and inside the full stack.
 
 ### The full stack: C+F+G+H+V2, a declared combination (test-plan amendment, owner decision 2026-10-05)
@@ -935,8 +981,8 @@ market-sells inventory and never clears or delays any other pause, halt or exit.
   single variants, run in the same batch, show which parts carry it.
 - **Exceptions:** only its parts', which are H3's and V2's.
 - **How the parts combine.** This is Claude's reading of the sections above and the code
-  on main. It was not among the readings put to the owner, and it is open to Codex's and
-  Bob's review before the freeze, like D19's details.
+  on main. It was not among the readings put to the owner. Codex and Bob reviewed it
+  before the freeze, on #168 and #170, and raised nothing against it.
   - **New grids.** A new grid opens only when every part allows it:
     - A is in Up with no running Down sequence;
     - F's `flow_block` is off;
@@ -1123,7 +1169,8 @@ cross-check.
 - **Scope.** This applies to every window. The current windows have no masked hours, so
   nothing changes for them.
 - **Provenance.** This is Claude's reading of the owner's masking rules, from Codex's
-  review of #168, and it is open to the owner.
+  review of #168, which the owner accepted on 2026-10-05 (decision 15 in the
+  [test-plan record](reviews/2026-10-05-claude-owner-decisions-test-plan.md)).
 
 A pair-window that fails any of them, on the post-mask expected set, is **excluded for
 every variant alike** and listed with the reason. Exclusion is per pair-window: a pair can be excluded from one window
@@ -1131,6 +1178,23 @@ and kept in another. The mask is written to the results before scoring and canno
 change afterwards. Every current `practice-2022` SOL pair-window fails the filter check
 unless P4 sources historical filters
 ([fee-levels-2026-09.md](backtests/fee-levels-2026-09.md), tick-size mismatch).
+
+**Failures that reach every pair-window.** Some data feeds every pair, so a failure in it
+excludes every pair-window of the window:
+- an untraded market proxy's or untraded basket member's failure;
+- a traded market proxy's failure that leaves one of its 1h bars, which feed every
+  pair's features, missing, in doubt or unchecked. That covers:
+  - a missing or duplicated hour;
+  - a 1m or 1d bar that disagrees with its hours, since the check cannot show which
+    archive is wrong;
+  - an hour with no minutes to check it against, or no hour compared at all.
+
+A traded proxy's 1m and 1d bars feed only its own runs. Its other failures therefore
+exclude only its own pair-window: minutes missing inside an hour whose 1h bar they still
+match, and a missing, duplicated or short daily history. Every other traded pair's
+failures are its own too, even when it votes in the basket. *(Owner decision,
+2026-10-05, on the traded proxy's split, which came out of Codex's review of #170;
+[record](reviews/2026-10-05-claude-owner-decisions-test-plan.md), "Later decisions".)*
 
 **Minimum evidence:** each development window must keep at least 2 included pairs.
 Otherwise the outcome is "insufficient evidence", not a winner.
@@ -1156,8 +1220,9 @@ Rules 1–5 and 7 apply to every window v1 replays, including the one-time 2025�
 (§7 applies §5's rules there). The owner confirmed this on 2026-10-05: "The masking and
 annualisation rules also bind the one-time 2025–26 run." Rules 6, 8 and 9 name their
 windows. Several details go beyond the owner's answers. Each is Claude's reading and is
-marked where it stands, either as accepted by the owner on 2026-10-05 or as from a
-review of #168 and open to him.
+marked where it stands: either as accepted by the owner on 2026-10-05, or as from a
+review of #168 and since accepted by him (decisions 15, 16, 20 and 22 in the test-plan
+record).
 
 1. **Hour-level masking.** An hour of a traded pair in its evaluation months, where the
    dataset holds both its 1m and its 1h archive, enters the replay only if all of these
@@ -1169,7 +1234,8 @@ review of #168 and open to him.
      holds exactly one bar at each of the hour's 60 expected minute timestamps, and
      none at any other timestamp within the hour. A duplicate, a missing timestamp or
      an extra timestamp masks the hour; rule 2 is the missing-minute case. This
-     condition is Claude's reading, from Codex's review of #168, open to the owner.
+     condition is Claude's reading, from Codex's review of #168, which the owner accepted
+     on 2026-10-06 (decision 20 in the test-plan record).
    - **A match.** Its aggregated minutes match its 1h bar under `drift-tolerance-v1`.
      If the hour holds a repaired row, the match must be exact (`Decimal(0)`, prices
      and volume).
@@ -1195,8 +1261,8 @@ review of #168 and open to him.
      - for traded pairs' warm-up months, it was Claude's reading, which the owner
        accepted on 2026-10-05 ("Repaired hours in hourly-only warm-up months are
        masked");
-     - for an untraded proxy, it is Claude's reading, from Codex's review of #168, open
-       to the owner.
+     - for an untraded proxy, it is Claude's reading, from Codex's review of #168, which
+       the owner accepted on 2026-10-06 (decision 22 in the test-plan record).
 
      Traded pairs are also basket members, but their evaluation months always have both
      archives. Those months follow the conditions above, never this branch.
@@ -1253,7 +1319,8 @@ review of #168 and open to him.
      in a window, XRP's pair-window is excluded there for every variant. Otherwise XRP
      stays.
    - **The statistic.** This is Claude's reading of the owner's accepted rule, from
-     Codex's review of #168, and it is open to the owner. It replaces an earlier
+     Codex's review of #168, which the owner accepted on 2026-10-06 (decision 16 in the
+     test-plan record). It replaces an earlier
      reading, "any 1m low below 2/15 USDT", which was stronger than the owner's rule.
      It is fixed before Bob measures.
      - XRP is excluded from a window if any quote that `bar_quotes` synthesizes from the
@@ -1341,7 +1408,8 @@ lengths weigh fairly:
 - **The tie band.** The selection's 0.25-point band (step 2) applies to the mean of the
   runs' compound-annualised returns, in percentage points.
 - **Provenance of these two rules.** Both are Claude's readings, from the automated
-  review of #168, and both are open to the owner.
+  review of #168, which the owner accepted on 2026-10-06 (decision 17 in the test-plan
+  record).
 - **Raw returns** are still reported beside the annualised ones.
 - **Not annualised:** C6 and R1 keep raw returns, since the owner's rule names only C2
   and the selection.
@@ -1377,16 +1445,17 @@ but it does not change any criterion, any ranking or any acceptance decision.
   It answers the strategic question; it does not add a trial to the family count.
 
 **Selection (deterministic):**
-1. The **eligible set** is the passing variants among V0, A, B, C, E (only after Codex's
-   implementation review, §3 E), F, G, C+G, H, C+H, V2 and C+F+G+H+V2 (the last two
-   added 2026-10-05). How the two stages combine into "passing" is set under "Two
-   stages", below. D is excluded before ranking.
+1. The **eligible set** is the passing variants among V0, A, B, C, E (eligible since
+   Codex's implementation review, recorded in §3 E), F, G, C+G, H, C+H, V2 and
+   C+F+G+H+V2 (the last two added 2026-10-05). How the two stages combine into
+   "passing" is set under "Two stages", below. D is excluded before ranking.
 2. Let `M` be the highest mean return in the eligible set, annualised since 2026-10-05
    ("Annualised returns", above), in percentage points rounded
    to 6 decimals. The **tie set** is every eligible variant with mean return ≥ `M − 0.25`
    (inclusive). *(Since 2026-10-05, the mean is taken over the runs' compound-annualised
    returns, and the 0.25-point band applies to that value. This is Claude's reading,
-   from the automated review of #168, and it is open to the owner.)*
+   from the automated review of #168, which the owner accepted on 2026-10-06, decision 17
+   in the test-plan record.)*
 3. Within the tie set, pick the lowest mean total-equity max drawdown, rounded the same
    way.
 4. If still tied, pick the first in the fixed simplicity order V0, A, B, F, G, H, E, V2,
@@ -1434,7 +1503,8 @@ waived by the owner (see its row).
         empty or zero on every stage-1 run.
     - **Any other new or renamed field breaks the identity.**
     - **Why this is a reading.** It is Claude's reading of the owner's
-      "byte-identical", from the automated review of #168, and it is open to the owner.
+      "byte-identical", from the automated review of #168, which the owner accepted on
+      2026-10-06 (decision 18 in the test-plan record).
       Taken literally, byte-identity could not hold once the mask-report fields exist.
   - **Datasets.** The long windows' definitions are frozen in §4 now. The long-window
     data PR's dataset specs must match them exactly, and the manifests record Bob's
@@ -1528,7 +1598,7 @@ unseen regime:
 - Failures on it are recorded as they are. No variant is retuned and rerun on the same
   window, and a failed attempt is never replaced or reused as a fresh evaluation.
 
-**Prior exposure record (as of this draft):**
+**Prior exposure record (as of the freeze, 2026-10-06):**
 - **Seen in chat:** Claude read public reports of the 2025–26 BTC regime (the peak on
   2025-10-06, the roughly 50% decline and the June 2026 low).
 - **Not done:** no 2025–26 archive data has been downloaded, and no 2025–26 replay,

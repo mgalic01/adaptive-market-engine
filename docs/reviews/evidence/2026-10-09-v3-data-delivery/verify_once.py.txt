@@ -1,0 +1,21 @@
+"""One offline verification of completed attempt02; never starts collection."""
+import datetime, hashlib, json, os, pathlib, subprocess, sys
+base=pathlib.Path('E:/adaptive-market-engine/v3')
+logs=base/'logs-20261009-02'
+output=base/'inventory-20261009-02'
+checkout=base/'collector-6fae092'
+assert json.loads((logs/'fetch-end.json').read_bytes())['exit_code']==0
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=checkout,text=True).strip()=='6fae09299bdcb382a26e02d094c7271cbfb60ebb'
+manifest_sha256=hashlib.sha256((output/'inventory.manifest.json').read_bytes()).hexdigest()
+def record(name,value):
+    with (logs/name).open('x',encoding='utf-8') as f:
+        json.dump(value,f,indent=2,sort_keys=True)
+        f.write('\n')
+command=[sys.executable,'scripts/v3_inventory.py','verify','--output',str(output),'--manifest-sha256',manifest_sha256]
+record('verify-start.json',{'started_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'command':command,'manifest_sha256':manifest_sha256,'network':False})
+environment=dict(os.environ,PYTHONPATH=str(checkout/'src'))
+with (logs/'verify.stdout.log').open('xb') as out, (logs/'verify.stderr.log').open('xb') as err:
+    result=subprocess.run(command,cwd=checkout,env=environment,stdout=out,stderr=err,check=False)
+record('verify-end.json',{'finished_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'exit_code':result.returncode,'manifest_sha256':manifest_sha256})
+print(json.dumps({'exit_code':result.returncode,'manifest_sha256':manifest_sha256}))
+sys.exit(result.returncode)

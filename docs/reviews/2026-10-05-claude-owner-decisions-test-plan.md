@@ -3,12 +3,16 @@
 Index: **Owner decisions, 2026-10-05 (test plan).** Everything runs in one batch. V2 joins v1, reversing D20's "outside v1". A registered full stack, C+F+G+H+V2, runs beside every single variant, and E stays alone. V2's two behaviours beyond V0's restrictions become a fourth named exception. Both current windows get daily history from 2020-05. Claude builds the C1–C6 scorer (#167) and Codex reviews it. #156 closes after #165 merges, and its branch is kept. Two stages, with every rule fixed now: a variant must pass C1–C6 in stage 1 (the current windows) and in stage 2 (full-range-2017-2024, judged on its own). The winner is ranked on 2017–2024, and full-range-2019-2024 is reported only. Stage 2 runs on stage 1's strategy code. Only the long-window data handling may land in between, and it must leave every stage-1 result unchanged. All nine data rules are accepted (hour-level masking, compound annualised returns, XRP excluded below the tick limit), together with six readings. Spec v1 and the V2 pre-registration are amended. Docs only.
 
 - **Date and author:** 2026-10-05, written by Claude (session `b9db01ca`).
-- **Owner:** answered in Claude's session on 2026-10-05. Approximate times, UTC:
+- **Owner:** answered in Claude's session on 2026-10-05 and 2026-10-06. Approximate times, UTC:
   - about 12:05: test plan, daily data, scorer (decisions 1–3);
   - about 13:15: #156 and the first long-data answer (decisions 4 and 5);
   - about 13:40: two stages and the nine data rules (decisions 5 and 6);
   - about 14:10: V2's exception, how the stages combine, the six readings (decisions 7–9);
-  - about 14:25: the code each stage runs on (decision 10).
+  - about 14:25: the code each stage runs on (decision 10);
+  - about 18:18, after #168 merged: variant E and the freeze (decisions 11 and 12, under "Later decisions");
+  - about 20:33, during #170's review: a traded market proxy's defects (decision 13);
+  - about 22:36, during #171's review: amendment 1's owed Codex review and the post-mask expected set (decisions 14 and 15);
+  - 2026-10-06, about 07:34 and 07:37: the remaining readings and amendment 1's resume rule (decisions 16–22).
 - **How:** multiple-choice questions. Claude recommended every chosen option except the first long-data answer, which a later answer superseded.
 - **Scope:** this record, the spec v1 amendment (`docs/EXPERIMENT_SPEC_V1.md`, "test-plan amendment") and a dated amendment to `docs/STRUCTURE_PREREGISTRATION.md`. No code, config, dataset spec or manifest changes; separate PRs carry those.
 - **Why now:** the project forbids changing parameters or criteria after seeing results. This record fixes the test plan before any result of the coming batch exists. No market data, backtest result or strategy result was read for it, and none of #156's result reports was opened.
@@ -188,15 +192,81 @@ Claude's first draft (local commit `216a1d8`, never pushed) said the 2017–2024
 - From 2018-06-01 to 2019-01-01 there are 214 completed days, above P3's 200, so the warm-up passes.
 - The corrected values are frozen in spec §4, with the listing-hour basket exclusions, and the long-window data PR's specs must match them.
 
+## Later decisions
+
+After #168 merged, the owner answered twelve more questions in Claude's session:
+- decisions 11 and 12 on 2026-10-05 at about 18:18 UTC;
+- decision 13 on 2026-10-05 at about 20:33 UTC, during #170's review;
+- decisions 14–22 during #171's review: 14 and 15 on 2026-10-05 at about 22:36 UTC, 16–19 on 2026-10-06 at about 07:34 UTC, and 20–22 at about 07:37 UTC.
+
+Claude recommended every chosen option.
+
+11. **Variant E.**
+    - Question: "Variant E (the longer range exit on low volume) may only be picked as the winner 'after Codex has reviewed its implementation and the boundary tests'. Codex reviewed exactly that across #165's five rounds, ending with no findings. Make E selectable?"
+    - Chosen: **"Yes, make E selectable"**. Option text: "The freeze PR records that #165's Codex reviews cover E, and switches the scorer's E flag on. E competes like every other variant."
+    - Where it landed: in #170 instead of the freeze PR, because Codex's review of #170 asked for E to be enabled before the freeze. The substance is unchanged: spec §3 E records the review, and the scorer's `E_ELIGIBLE` is on.
+12. **Freezing spec v1.**
+    - Question: "Freezing spec v1: its header says it becomes frozen 'only when Codex has reviewed it and the owner has confirmed the acceptance criteria in §6'. Codex has reviewed every amendment, ending clean on #168, and you confirmed C1–C6 on 2026-09-24 and amended C2 today. Freeze it once the full-test-setup PR merges, before stage 1?"
+    - Chosen: **"Yes, freeze then"**. Option text: "I open a small PR that marks spec v1 frozen with today's date and replaces the stale 'no strategy code exists' line. From then on any rule change needs a new spec version, and stage 1 runs on the frozen rules."
+13. **A traded market proxy's defects.**
+    - Context: Codex's review of #170 asked that a BTC daily defect exclude BTC alone. The automated review then asked that an unchecked BTC hour reach every pair, and that the owner confirm the split before stage 1.
+    - Question: "BTC is both a traded pair and the 'market proxy' whose hourly bars every other pair reads. When BTC's data has a defect in a test window, which pairs should be excluded from scoring?"
+    - Chosen: **"Split by data"**. Option text: "A defect in BTC's hourly bars, or one that leaves them unchecked, excludes every pair (they all read those bars). A defect only in BTC's daily or minute data excludes just BTC; the other pairs still run. This is what #170 now does."
+    - The other option was "Any BTC defect: all pairs". Option text: "The previous behaviour: any BTC data defect, even daily-only, excludes every pair in that window. Simpler and stricter, but a BTC daily-bar problem would throw away valid ADA/XRP/SOL results."
+    - Where it landed: spec §5, "Failures that reach every pair-window", and `scoped_failures` in #170. It applies to whichever symbol is the traded proxy; BTCUSDT is the proxy in every registered window.
+
+**Context for decisions 14–22.** Codex's review of #171 at `2b69c5c` found two gaps.
+- First, the freeze question (decision 12) said "Codex has reviewed every amendment". That was wrong: amendment 1 (#124, merged as `c8cddc2` while Codex's allowance was exhausted) never had its Codex review, which #134 lists as owed.
+- Second, several rules that decide which runs count and who wins were still marked as Claude's readings, open to the owner.
+
+Claude told the owner both, and asked these questions. Where a question allowed several answers, every unselected option was put to the owner again.
+
+14. **Amendment 1's owed Codex review.**
+    - Question: "Amendment 1 (drawdown recovery: the 24 h cool-off rebase, the automatic restart after a hard-drawdown halt, and the manual-resume change) was merged while Codex was out, and its Codex review is still owed. How should the freeze handle that?"
+    - Chosen: **"Get Codex's review first"**. Option text: "I ask Codex to review amendment 1 now (on the freeze PR and the tracking issue #134) and record its verdict. The freeze, and so stage 1, waits until it comes back clean. You may need to nudge Codex Desktop if Codex online doesn't answer clearly."
+    - The other option was "Freeze now, record the gap".
+15. **The post-mask expected set (spec §5).**
+    - Question: "Four rules in the spec are still marked as my reading, open to you. Which do you accept exactly as written? Select every one you accept; any you leave out, I'll come back to before the freeze."
+    - Selected: **"Checks after masking"**. Option text: "Stage 2: an hour hidden by the masking rules never fails an integrity check. Defects masking can't hide (a missing daily bar, short warm-up, bad checksum, missing exchange filter) still fail, as before."
+    - The other three options were not selected, so Claude put each to the owner again, with its alternatives (decisions 16–18).
+16. **XRP's statistic (spec §5, rule 8).**
+    - Question: "XRP's price tick is 0.0001 USDT. When XRP trades below about 0.133 USDT, the replay's simulated quotes get too wide (over the engine's 0.15% bad-data limit) and its runs become invalid. Bob measures this before stage 2. Which test should exclude XRP from a window?"
+    - Chosen: **"Actual quotes"**. Option text: "Exclude XRP from a window only if a quote the replay would really use breaks the 0.15% limit. Matches exactly when XRP's runs would fail; keeps XRP whenever it can run cleanly. Stage-1 windows unaffected."
+    - The other options were "Stricter price test" (any 1m low below 2/15 USDT) and "Drop XRP from stage 2".
+17. **The tie band and annualising (spec §6).**
+    - Question: "Selection treats variants within 0.25 points of the best mean return as tied, and the simpler one wins. Returns are now annualised. What should that 0.25-point band be measured on?"
+    - Chosen: **"Annualised returns"**. Option text: "Band on the mean annualised return (and a run ending at zero equity counts as -100%/year). Keeps the band about as wide, per year, as on the short windows it was designed for, so the simplicity tie-break still works on the 6-year window."
+    - The other option was "Raw total returns".
+18. **The stage-1 identity check (spec §6, "Two stages").**
+    - Question: "Your rule: the stage-2 data code must leave every stage-1 result byte-identical. Literally that is impossible, because any code change alters the code-fingerprint fields every result records. How strict should the check be?"
+    - Chosen: **"Fingerprints + mask fields"**. Option text: "Identical except the two code-fingerprint fields and the new mask-report fields, which must be empty/zero on every stage-1 run. Any other difference fails. Lets the data PR record its mask report inside the results."
+    - The other option was "Fingerprints only".
+19. **Amendment 1's manual-resume rule (spec §3).**
+    - Question: "Amendment 1 changed manual resume(): it is refused while a forced sale (liquidation) is still incomplete, and allowed when only unsellable 'dust' is left, which stays held and is settled as usual. The old rule (#122) required exactly zero inventory, which unsellable dust could block forever. Accept the change?"
+    - Chosen: **"Accept the change"**. Option text: "Keep amendment 1's rule: resume waits for the liquidation to finish, but a few cents of unsellable dust no longer block it. Bob reviewed it; Codex's review is the one being requested now."
+    - The other option was "Back to exactly zero".
+20. **The unique-bars condition of hour masking (spec §5, rule 1).**
+    - Question: "Stage-2 masking: an hour of a traded pair is used only if its data is clean. My reading: the hour is masked (left out) if the 1-hour archive doesn't hold exactly one bar for it, or the 1-minute archive has a duplicate, missing or extra minute timestamp inside it. Accept?"
+    - Chosen: **"Accept as written"**. Option text: "Every hour used is backed by exactly one bar per expected timestamp; anything ambiguous is left out, like a missing hour. Masked hours count toward the 17% coin-month rule. Simplest and strictest."
+    - The other option was "Drop exact duplicates".
+21. **V2's gate-loosening report (spec §3, V2).**
+    - Question: "V2's sixth regime vote can let a grid open where V0 would pause. My reading: v1 needs no separate count of those extra grids; their effect shows in V2's results next to V0's. This affects reporting only, never a result. Accept?"
+    - Chosen: **"Accept, no extra count"**. Option text: "Nothing to build; stage 1 is not delayed. V2's effect is visible by comparing its results with V0's in the same runs."
+    - The other option was "Add the count".
+22. **An untraded proxy's repaired hours (spec §5, rule 1, "Hours with no minute data").**
+    - Question: "If a window's market proxy were not traded, my reading masks its repaired hours (as for basket coins). No registered window has an untraded proxy (BTC is traded in all), so this cannot change any v1 result. Accept, to close the last open item?"
+    - Chosen: **"Accept"**. Option text: "Same treatment as untraded basket coins. Inert for every registered window; it only matters for a future dataset."
+    - The other option was "Leave it open".
+
 ## Still open
 
-- **Three readings from the automated review of #168, open to the owner.** Each is written into the spec as Claude's reading.
-  1. The stage-1 identity check leaves out only `code_commit`, `code_sha256` and the new mask-report fields, which must be empty or zero on every stage-1 run (spec §6, "Two stages"). A literal byte-identity could not hold once those fields exist.
-  2. XRP's statistic, fixed before Bob measures. This reading was replaced after Codex's review (see "Changes after review on #168"). XRP is now excluded from a window if any quote synthesized from its replayed 1m bars has a spread above 0.15% (spec §5, rule 8).
-  3. The 0.25-point tie band applies to the mean compound-annualised return, and a final equity of 0 or less annualises to −100% (spec §6, "Annualised returns" and selection step 2).
+- **Settled since (2026-10-05 and 2026-10-06, decisions 13–22 above):**
+  - the three readings from the automated review of #168, which this section listed: the stage-1 identity check (decision 18), XRP's statistic (decision 16), and the tie band with a final equity of 0 or less annualising to −100% (decision 17);
+  - every other reading the spec left open to the owner (decisions 15 and 19–22);
+  - how the full stack's parts combine (spec §3), which was open to Codex's and Bob's review: they reviewed it on #168 and #170 and raised nothing against it;
+  - amendment 1's Codex review (decision 14): Codex Desktop reviewed amendment 1's text, its code (`runner.py`, `models.py`) and its tests at #171's head `c7a45f4` on 2026-10-06, and found no issues: ["AMENDMENT 1: NO ISSUES at c7a45f42f937e0d5be0021a7d64f2ea4d07809b3"](https://github.com/mgalic01/adaptive-market-engine/issues/134#issuecomment-6012217278).
 - **Stage-2 sensitivity runs.** The owner decides later. They are reported only and decide nothing.
 - **The trial count.** The `N_family` floors in spec §6 are working figures, to be settled by the trial register. C7's condition (b) stands, and C7 is not yet binding.
-- **For review, not the owner.** How the full stack's parts combine (spec §3) is Claude's reading of the sections and of the code on main. It was not among the six readings, and it is open to Codex's and Bob's review before the freeze.
 - **Data work before stage 2, with no owner decision needed:**
   - dataset specs that match spec §4's frozen values;
   - Bob's XRP quote-spread measurement;

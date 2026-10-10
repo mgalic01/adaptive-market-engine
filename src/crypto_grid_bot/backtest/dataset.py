@@ -5,11 +5,15 @@ funding archives (``.../futures/um/monthly/fundingRate/...``) are read. Every zi
 verified against Binance's published SHA-256 before it is stored, and the manifest
 records what was used so a replay can prove it ran on identical inputs. A month
 that Binance does not publish (for example before listing) is recorded as missing;
-nothing is invented to fill it.
+nothing is invented to fill it. A 1m or 1h archive that is published and verified but
+that the strict parser rejects is read by the repairing reader (spec v1 section 5 rule 1):
+a fetch records it as ok when that can read it, and as unreadable, with the reason,
+when not.
 """
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import http.client
 import json
@@ -25,7 +29,14 @@ from pathlib import Path
 from typing import Any, cast
 
 from crypto_grid_bot.backtest.funding import read_funding_archive
-from crypto_grid_bot.backtest.klines import INTERVAL_MS, month_bounds_ms, read_archive
+from crypto_grid_bot.backtest.klines import (
+    INTERVAL_MS,
+    member_compression,
+    month_bounds_ms,
+    read_archive,
+    read_archive_repaired,
+    undecodable,
+)
 from crypto_grid_bot.backtest.window import development_month
 from crypto_grid_bot.market_data.client import FeedError, PublicClient, https_connection
 from crypto_grid_bot.market_data.parsing import DataError, amount, parse_instrument, symbol_name
@@ -385,26 +396,37 @@ def _fetch_verified(path: str, target: Path, fetcher: Fetcher) -> str | None:
     return expected
 
 
-def fetch_file(
-    data_dir: Path, symbol: str, interval: str, month: str, fetcher: Fetcher
-) -> dict[str, Any]:
-    development_month(month)  # refuse the reserved window before any network or cache access
-    path = archive_path(symbol, interval, month)
-    entry: dict[str, Any] = {
+def _kline_entry(symbol: str, interval: str, month: str) -> dict[str, Any]:
+    """The identity every manifest entry of a kline archive starts with."""
+    return {
         "symbol": symbol,
         "interval": interval,
         "month": month,
-        "url": f"https://{ARCHIVE_HOST}{path}",
+        "url": f"https://{ARCHIVE_HOST}{archive_path(symbol, interval, month)}",
     }
+
+
+def _stored_kline(
+    data_dir: Path, symbol: str, interval: str, month: str, fetcher: Fetcher
+) -> tuple[dict[str, Any], Path, str | None]:
+    """A kline archive's entry identity, its local path and its published SHA-256, once
+    ``_fetch_verified`` has stored it (None when Binance does not publish it)."""
+    development_month(month)  # refuse the reserved window before any network or cache access
+    path = archive_path(symbol, interval, month)
+    entry = _kline_entry(symbol, interval, month)
     target = local_path(data_dir, symbol, interval, month)
-    expected = _fetch_verified(path, target, fetcher)
-    if expected is None:
-        return {**entry, "status": "missing"}
+    return entry, target, _fetch_verified(path, target, fetcher)
+
+
+def _strict_entry(
+    entry: dict[str, Any], target: Path, expected: str, symbol: str, interval: str, month: str
+) -> dict[str, Any]:
+    """The ok entry of a stored, verified archive that ``read_archive`` parses."""
     try:
         _, stats = read_archive(target, symbol, interval, month)
     except DataError as exc:
         # Only this boundary is safe for an audit to inspect as unparsed content.
-        # Checksum, missing-body and hash failures above must never reach that path.
+        # Checksum, missing-body and hash failures before it must never reach that path.
         raise ArchiveParseError(str(exc)) from exc
     return {
         **entry,
@@ -413,6 +435,51 @@ def fetch_file(
         "bytes": target.stat().st_size,
         **asdict(stats),
     }
+
+
+def fetch_file(
+    data_dir: Path, symbol: str, interval: str, month: str, fetcher: Fetcher
+) -> dict[str, Any]:
+    entry, target, expected = _stored_kline(data_dir, symbol, interval, month, fetcher)
+    if expected is None:
+        return {**entry, "status": "missing"}
+    return _strict_entry(entry, target, expected, symbol, interval, month)
+
+
+def _fetch_kline(
+    data_dir: Path, symbol: str, interval: str, month: str, fetcher: Fetcher
+) -> dict[str, Any]:
+    """``fetch_file``, with spec v1 section 5 rule 1's reader for what its strict parse refuses.
+
+    A 1m or 1h archive that is stored and verified against Binance's checksum but fails the
+    strict parse is read by ``read_archive_repaired``. The manifest then records it as ok,
+    with the repaired read's stats, or as unreadable, with its checksum, size and the
+    reason. The entry of an archive that parses strictly is ``fetch_file``'s, unchanged.
+    The fallback is here and not in ``fetch_file``, which the audit relies on to raise. A
+    daily bar is never masked, so a daily archive that fails its parse stays fatal; so does
+    any failure to download or verify one, which happens before the parse is tried.
+    """
+    entry, target, expected = _stored_kline(data_dir, symbol, interval, month, fetcher)
+    if expected is None:
+        return {**entry, "status": "missing"}
+    try:
+        return _strict_entry(entry, target, expected, symbol, interval, month)
+    except Exception as exc:
+        # Only the strict parse is in this try: ``_strict_entry`` converts a DataError into
+        # ArchiveParseError and lets ``read_member``'s decoding failures through, and csv's
+        # own ``csv.Error`` (a field over ``csv.field_size_limit()``), which ``parse_rows``
+        # does not convert (Codex review of #189). A FeedError is a RuntimeError too, so a
+        # download failure must never get here.
+        unparsed = isinstance(exc, ArchiveParseError | csv.Error) or undecodable(
+            exc, member_compression(target)
+        )
+        if not unparsed or interval not in ("1m", "1h"):
+            raise
+    stored = {"sha256": expected, "bytes": target.stat().st_size}
+    read = read_archive_repaired(target, symbol, interval, month)
+    if read.unreadable:
+        return {**entry, "status": "unreadable", **stored, "reason": read.unreadable}
+    return {**entry, "status": "ok", **stored, **asdict(read.stats)}
 
 
 def fetch_funding_file(data_dir: Path, symbol: str, month: str, fetcher: Fetcher) -> dict[str, Any]:
@@ -459,7 +526,7 @@ def fetch_dataset(
     manifest being refreshed, if any: the funding archives it lists (spec v1 P8, variant
     G), which the spec does not name, are fetched and verified again and kept after the
     klines, so a re-fetch never drops them."""
-    files = [fetch_file(data_dir, s, i, m, fetcher) for s, i, m in spec.required()]
+    files = [_fetch_kline(data_dir, s, i, m, fetcher) for s, i, m in spec.required()]
     kept = [entry for entry in previous["files"] if is_funding(entry)] if previous else []
     files += [fetch_funding_file(data_dir, f["symbol"], f["month"], fetcher) for f in kept]
     fetched_at = now().isoformat(timespec="seconds")
@@ -542,19 +609,29 @@ def _validate_manifest(manifest: Any) -> None:
         # The replay loaders read every file a manifest lists, so a hand-edited manifest
         # would otherwise bypass load_spec's window check. Refuse it here too.
         development_month(month)
-        if status not in ("ok", "missing"):
+        if status not in ("ok", "missing", "unreadable"):
             raise DataError("dataset manifest file status is invalid")
-        if status == "ok" and (
+        if status in ("ok", "unreadable") and (
             not isinstance(entry.get("sha256"), str)
             or re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]) is None
         ):
             raise DataError("dataset manifest file checksum is invalid")
+        if status == "unreadable":
+            # Spec v1 section 5 rule 1: only a 1m or 1h kline archive can be left unreadable;
+            # a fetch fails on a daily or a funding archive that does not parse.
+            if interval not in ("1m", "1h"):
+                raise DataError("dataset manifest lists an unreadable archive that is not 1m or 1h")
+            reason = entry.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise DataError("dataset manifest unreadable entry needs a reason")
 
 
 def verify_dataset(spec: DatasetSpec, manifest: dict[str, Any], data_dir: Path) -> None:
     """Fail unless the manifest's klines cover exactly the spec and every local file
     matches it. Funding archives are optional: each may be listed once, and one listed
-    is verified like a kline archive."""
+    is verified like a kline archive. An unreadable archive is checked against its SHA-256
+    like an ok one: the loaders give no bars for it, so its hours are absent, then masked
+    (spec v1 section 5 rule 1, "The reader")."""
     _validate_manifest(manifest)
     if manifest["dataset"] != spec.name:
         raise DataError("manifest belongs to a different dataset")
