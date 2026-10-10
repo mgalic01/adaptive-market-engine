@@ -57,6 +57,7 @@ class VenueInputs:
     costs: Costs
     funding: FundingEstimate | None = None
     funding_admission: bool = True
+    quote: Quote | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -64,6 +65,7 @@ class VenueInputs:
             or not isinstance(self.costs, Costs)
             or (self.funding is not None and not isinstance(self.funding, FundingEstimate))
             or type(self.funding_admission) is not bool
+            or (self.quote is not None and not isinstance(self.quote, Quote))
         ):
             raise ValueError("invalid venue inputs")
 
@@ -85,6 +87,9 @@ class DecisionCoordinator:
     funding and correlation snapshot. Source verification remains the adapter's
     responsibility. No caller-provided spot-executable Boolean authorizes fallback:
     only an actual normal-size spot preview below the venue minimum can do so.
+    Each VenueInputs must provide its own fresh quote. The separate quotes and
+    position_rules mappings are authoritative HELD position marks and filters;
+    candidate venue inputs never replace them, including during spot fallback.
     """
 
     def __init__(self, engine: PortfolioEngine, evidence: Evidence) -> None:
@@ -164,12 +169,15 @@ class DecisionCoordinator:
                 venue = futures if qualification.owner == "futures_trend" else spot
                 plan = None
                 reason = ""
-                quote = quotes.get(assessment.symbol)
+                quote = None if venue is None else venue.quote
                 if qualification.allowed:
                     if venue is None:
                         reason = "venue_inputs_unavailable"
-                    elif quote is None:
-                        reason = "quote_unavailable"
+                    elif (
+                        quote is None
+                        or not 0 <= assessment.decision_ms - quote.timestamp_ms <= 3_600_000
+                    ):
+                        reason = "venue_quote_unavailable"
                     else:
                         plan = component_plan(
                             assessment,
@@ -195,7 +203,6 @@ class DecisionCoordinator:
                 rules = dict(held_rules)
                 if not qualification.allowed or plan is None or venue is None:
                     return qualification, plan, None, rules
-                rules[assessment.symbol] = venue.rules
                 funding = venue.funding
                 intent = Intent(
                     intent_id=f"{prefix}:intent:{plan.venue}",
@@ -226,8 +233,16 @@ class DecisionCoordinator:
             context = replace(routing, spot_executable=True if spot is not None else None)
             qualification, plan, intent, rules = prepare(context)
             detail: tuple[tuple[str, str], ...] = ()
-            if intent is not None and intent.owner == "spot_trend":
-                preview = self._engine.preview(intent, qualification, quotes, rules, groups)
+            if intent is not None and intent.owner == "spot_trend" and spot is not None:
+                preview = self._engine.preview(
+                    intent,
+                    qualification,
+                    quotes,
+                    rules,
+                    groups,
+                    candidate_quote=spot.quote,
+                    candidate_rules=spot.rules,
+                )
                 if preview.reason == "below_minimum" and routing.futures_trend:
                     detail = (("spot_refusal", "spot_normal_size_below_venue_minimum"),)
                     qualification, plan, intent, rules = prepare(
@@ -235,8 +250,17 @@ class DecisionCoordinator:
                     )
             record("qualified", qualification.allowed, qualification.reasons, detail)
             admission = None
-            if qualification.allowed and intent is not None:
-                admission = self._engine.submit(intent, qualification, quotes, rules, groups)
+            venue_inputs = futures if qualification.owner == "futures_trend" else spot
+            if qualification.allowed and intent is not None and venue_inputs is not None:
+                admission = self._engine.submit(
+                    intent,
+                    qualification,
+                    quotes,
+                    rules,
+                    groups,
+                    candidate_quote=venue_inputs.quote,
+                    candidate_rules=venue_inputs.rules,
+                )
                 record(
                     "risk_approved",
                     admission.accepted,
@@ -270,7 +294,6 @@ class DecisionCoordinator:
                             ),
                         ),
                     )
-            venue_inputs = futures if qualification.owner == "futures_trend" else spot
             result = DecisionResult(
                 qualification, plan, intent, admission, tuple(events), venue_inputs
             )

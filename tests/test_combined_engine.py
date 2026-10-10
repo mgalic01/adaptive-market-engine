@@ -26,6 +26,45 @@ def test_preview_validates_normal_capacity_without_reserving_or_restarting():
     assert engine.submit(order, candidate(order), QUOTES, RULES).quantity == answer.quantity
 
 
+def test_venue_candidate_quote_does_not_require_or_populate_a_held_mark():
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    assert engine.preview(
+        order, candidate(order), {}, RULES, candidate_quote=Quote(D(100), 0)
+    ).accepted
+    stale = replace(candidate(order), decision_ms=3_600_001)
+    assert engine.preview(order, stale, {}, RULES).reason == "stale_or_missing_quote"
+    assert engine.reservations == ()
+
+
+def test_candidate_filters_cannot_classify_an_existing_holding_as_dust():
+    engine = PortfolioEngine(D(10000))
+    order, _, _ = open_partial(engine)
+    engine.cancel(order.intent_id)
+    engine.observe(2, {"BTCUSDT": Quote(D(10000), 2)}, RULES)
+    current = {"BTCUSDT": Quote(D(100), 3)}
+    assert engine.observe(3, current, RULES).recovery.close
+    future = intent(
+        "future",
+        owner="futures_trend",
+        venue="futures",
+        min_notional=D(100000),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    result = engine.preview(
+        future,
+        replace(candidate(future), decision_ms=3),
+        current,
+        RULES,
+        candidate_quote=Quote(D(101), 3),
+        candidate_rules=replace(RULE, min_notional=D(100000)),
+    )
+    assert result.reason == "asset_owned"
+    assert engine.observe(3, {}, RULES).recovery.close
+
+
 def candidate(order):
     return Qualification(order.symbol, 0, True, order.owner, order.side, D(1), ())
 

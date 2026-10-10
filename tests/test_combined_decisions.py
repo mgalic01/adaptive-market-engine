@@ -24,8 +24,10 @@ def setup():
     rules = VenueRules(D(".001"), D(0), D(1000), D(5), D(".01"))
     costs = Costs(D(".001"), D(".0005"), D(".004"))
     now = assessment.decision_ms
-    spot = VenueInputs(rules, costs)
-    futures = VenueInputs(rules, costs, FundingEstimate(D(0), now, 28_800_000))
+    spot = VenueInputs(rules, costs, quote=Quote(D(100), now))
+    futures = VenueInputs(
+        rules, costs, FundingEstimate(D(0), now, 28_800_000), quote=Quote(D(100), now)
+    )
     engine, journal = PortfolioEngine(D(10000)), Evidence()
     coordinator = DecisionCoordinator(engine, journal)
     args = dict(
@@ -154,6 +156,77 @@ def test_zero_complete_grid_cost_cannot_override_positive_execution_costs(setup)
     assert result.admission is None
     assert "round_trip_cost_understated" in result.qualification.reasons
     assert engine.reservations == ()
+
+
+def test_fallback_uses_its_own_futures_quote_even_if_older_than_spot_quote(setup):
+    coordinator, engine, _, args = setup
+    now = args["assessment"].decision_ms
+    args["spot"] = replace(
+        args["spot"],
+        quote=Quote(D(100), now),
+        rules=replace(args["spot"].rules, min_notional=D(3000)),
+    )
+    args["futures"] = replace(args["futures"], quote=Quote(D(105), now - 1000))
+    args["quotes"] = {}  # no held assets; candidate quotes are venue-specific
+    result = coordinator.decide(**args)
+    assert result.admission.accepted
+    assert result.intent.price == result.plan.reference_price == D(105)
+    assert result.plan.quote_ms == now - 1000
+    assert result.plan.stop == D(101)
+    assert len(engine.reservations) == 1
+
+
+@pytest.mark.parametrize("quote", [None, Quote(D(100), 0)])
+def test_missing_or_stale_selected_venue_quote_refuses_even_with_fresh_symbol_mark(setup, quote):
+    coordinator, engine, _, args = setup
+    args["routing"] = RoutingContext(spot_trend=False)
+    args["futures"] = replace(args["futures"], quote=quote)
+    result = coordinator.decide(**args)
+    assert result.admission is None
+    assert "venue_quote_unavailable" in result.qualification.reasons
+    assert engine.reservations == ()
+
+
+def test_missing_spot_quote_cannot_be_used_as_fallback_proof(setup):
+    coordinator, engine, _, args = setup
+    args["spot"] = replace(args["spot"], quote=None)
+    result = coordinator.decide(**args)
+    assert result.admission is None
+    assert result.qualification.owner == "spot_trend"
+    assert "venue_quote_unavailable" in result.qualification.reasons
+    assert engine.reservations == ()
+
+
+def test_futures_candidate_cannot_revalue_existing_spot_inventory(setup):
+    from crypto_grid_bot.combined.account import FillEvent
+
+    coordinator, engine, _, args = setup
+    args["spot"] = replace(args["spot"], quote=args["quotes"]["BTCUSDT"])
+    entry = coordinator.decide(**args)
+    now = args["assessment"].decision_ms + 1
+    fill = FillEvent("entry", now, "BTCUSDT", "spot_trend", "spot", 1, D(1), D(100), D(0))
+    engine.settle(
+        "entry",
+        now,
+        args["quotes"],
+        {"BTCUSDT": args["spot"].rules},
+        increases=((entry.intent.intent_id, fill),),
+    )
+    engine.cancel(entry.intent.intent_id)
+    held = {"BTCUSDT": Quote(D(110), now)}
+    args.update(
+        opportunity_id="other",
+        assessment=replace(args["assessment"], decision_ms=now),
+        routing=RoutingContext(spot_trend=False),
+        quotes=held,
+        futures=replace(args["futures"], quote=Quote(D(200), now)),
+        position_rules={"BTCUSDT": args["spot"].rules},
+    )
+    result = coordinator.decide(**args)
+    assert result.admission.reason == "asset_owned"
+    state = engine.observe(now, {}, args["position_rules"])
+    assert state.account.positions[0].mark == D(110)
+    assert state.account.equity == D(10010)
 
 
 def test_unavailable_assessment_retains_independent_blockers(setup):

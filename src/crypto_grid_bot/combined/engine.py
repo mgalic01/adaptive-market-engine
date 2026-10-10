@@ -274,12 +274,17 @@ class PortfolioEngine:
         quotes: Mapping[str, Quote],
         rules: Mapping[str, VenueRules],
         groups: tuple[tuple[str, str], ...] = (),
+        *,
+        candidate_quote: Quote | None = None,
+        candidate_rules: VenueRules | None = None,
     ) -> Admission:
         """Check normal admissible size without reservation or recovery promotion.
 
         This is not pure: fresh observations still update protective/recovery state
         and can cancel unsafe pending orders. It never spends cash or qualifies a
         restart. Submit repeats these checks under the same engine event lock.
+        Explicit candidate quote/filters are venue-specific and never overwrite
+        the authoritative held-position marks/filters supplied in the mappings.
         """
         with self._lock, localcontext(Context(prec=60)):
             now = qualification.decision_ms
@@ -301,15 +306,24 @@ class PortfolioEngine:
 
             if not qualification.allowed or qualification.reasons:
                 return refuse("unqualified")
-            if not self._fresh(intent.symbol, now) or any(
-                not self._fresh(p.symbol, now) for p in state.account.positions
+            if candidate_quote is not None and any(
+                p.symbol == intent.symbol for p in state.account.positions
             ):
-                return refuse("stale_or_missing_quote")
-            if intent.symbol not in rules:
-                return refuse("filters_unavailable")
-            rule = rules[intent.symbol]
+                return refuse("asset_owned")
+            quote = (
+                candidate_quote if candidate_quote is not None else self._quotes.get(intent.symbol)
+            )
             if (
-                intent.price != self._quotes[intent.symbol].price
+                not isinstance(quote, Quote) or not 0 <= now - quote.timestamp_ms <= 3_600_000
+            ) or any(not self._fresh(p.symbol, now) for p in state.account.positions):
+                return refuse("stale_or_missing_quote")
+            rule = candidate_rules if candidate_rules is not None else rules.get(intent.symbol)
+            if rule is None:
+                return refuse("filters_unavailable")
+            if not isinstance(rule, VenueRules):
+                raise ValueError("invalid candidate venue rules")
+            if (
+                intent.price != quote.price
                 or intent.step != rule.step
                 or intent.min_quantity != rule.min_qty
                 or intent.max_quantity != rule.max_qty
@@ -341,9 +355,20 @@ class PortfolioEngine:
         quotes: Mapping[str, Quote],
         rules: Mapping[str, VenueRules],
         groups: tuple[tuple[str, str], ...] = (),
+        *,
+        candidate_quote: Quote | None = None,
+        candidate_rules: VenueRules | None = None,
     ) -> Admission:
         with self._lock, localcontext(Context(prec=60)):
-            normal = self.preview(intent, qualification, quotes, rules, groups)
+            normal = self.preview(
+                intent,
+                qualification,
+                quotes,
+                rules,
+                groups,
+                candidate_quote=candidate_quote,
+                candidate_rules=candidate_rules,
+            )
             if not normal.accepted:
                 return normal
             state = self.observe(qualification.decision_ms, quotes, rules, qualified=True)
