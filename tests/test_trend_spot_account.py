@@ -10,6 +10,38 @@ T = 1609459200000
 FILTERS = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
 
 
+@pytest.mark.parametrize("method", ["fill", "execute"])
+def test_zero_market_minimum_allows_settlement_and_keeps_notional_guard(method):
+    from dataclasses import replace
+
+    from crypto_grid_bot.trend.spot_account import SpotAccount
+
+    filters = replace(FILTERS, min_quantity=D(0))
+    account = SpotAccount()
+    getattr(account, method)("BTCUSDT", D(10), D(100), filters, T)
+    assert account.holdings["BTCUSDT"] == 10
+    getattr(account, method)("BTCUSDT", D(-10), D(100), filters, T + 1)
+    assert account.cash == D(9997)
+    getattr(account, method)("BTCUSDT", D(1), D(1), filters, T + 2)
+    assert account.fills[-1].reason == "minimum_notional"
+    assert account.fills[-1].quantity == 0
+    assert account.audit().exact
+
+
+@pytest.mark.parametrize("method", ["fill", "execute"])
+def test_negative_market_minimum_is_rejected_without_mutation(method):
+    from dataclasses import replace
+
+    from crypto_grid_bot.trend.spot_account import SpotAccount
+
+    account = SpotAccount()
+    with pytest.raises(ValueError):
+        getattr(account, method)(
+            "BTCUSDT", D(10), D(100), replace(FILTERS, min_quantity=D(-1)), T
+        )
+    assert account.cash == 10000 and not account.fills and not account.holdings
+
+
 def test_round_trip_uses_spot_fee_and_never_borrows():
     from crypto_grid_bot.trend.spot_account import SpotAccount
 

@@ -71,8 +71,11 @@ class SpotAccount:
     ) -> tuple[SpotFill, ...]:
         """Balanced maximum-quantity splitting; each child obeys spot cash limits."""
         _finite(quantity)
-        for value in (filters.step_size, filters.max_quantity, filters.min_quantity):
+        for value in (filters.step_size, filters.max_quantity):
             _finite(value, positive=True)
+        _finite(filters.min_quantity)
+        if filters.min_quantity < 0:
+            raise ValueError("invalid order filters")
         if quantity < 0 and quantity.copy_abs() > self.holdings.get(symbol, ZERO):
             raise ValueError("spot cannot sell unowned quantity")
         if quantity.copy_abs() <= filters.max_quantity:
@@ -114,10 +117,15 @@ class SpotAccount:
         if type(timestamp_ms) is not int or timestamp_ms < 0 or timestamp_ms < self._clock:
             raise ValueError("chronological timestamp required")
         development_month(datetime.fromtimestamp(timestamp_ms // 1000, UTC).strftime("%Y-%m"))
-        for value in (filters.step_size, filters.min_quantity, filters.max_quantity):
+        for value in (filters.step_size, filters.max_quantity):
             _finite(value, positive=True)
+        _finite(filters.min_quantity)
         _finite(filters.min_notional)
-        if filters.min_notional < 0 or filters.min_quantity > filters.max_quantity:
+        if (
+            filters.min_notional < 0
+            or filters.min_quantity < 0
+            or filters.min_quantity > filters.max_quantity
+        ):
             raise ValueError("invalid order filters")
         if quantity.copy_abs() > filters.max_quantity:
             raise ValueError("split order above maximum quantity before settlement")
