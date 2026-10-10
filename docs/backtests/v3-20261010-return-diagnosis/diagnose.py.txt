@@ -1,0 +1,137 @@
+"""Read-only saved-journal diagnosis. No market data loads or strategy replay."""
+import bisect
+import hashlib
+import json
+from collections import defaultdict, Counter
+from decimal import Decimal as D, getcontext
+from pathlib import Path
+from datetime import datetime, UTC
+
+getcontext().prec = 60
+BASE = Path('E:/adaptive-market-engine/v3/replay-20261009-01/attempts')
+RUN = 'a16aa7a730c6476da353dc48ad7e9d81-out-of-sample-m2'
+OUT = Path(__file__).parent
+def require(condition, message):
+    if not condition: raise ValueError(message)
+def stamp(t): return datetime.fromtimestamp(t / 1000, UTC).isoformat()
+def unique(pairs):
+    d = {}
+    for k,v in pairs:
+        require(k not in d, 'duplicate JSON key'); d[k]=v
+    return d
+rows=defaultdict(list); digest=hashlib.sha256(); size=count=0
+with (BASE/(RUN+'.evidence.jsonl')).open('rb') as source:
+    for raw in source:
+        digest.update(raw); size+=len(raw); count+=1
+        r=json.loads(raw,object_pairs_hook=unique)
+        require(r['schema']==1,'schema'); rows[r['kind']].append(r['value'])
+receipt=json.loads((BASE/(RUN+'.finished.json')).read_bytes())
+ref=receipt['payload']['evidence']
+require((digest.hexdigest(),size,count)==(ref['sha256'],ref['bytes'],ref['records']),'evidence hash/count')
+require(receipt['payload']['error'] is None,'recorded error')
+fills=rows['fill']; lives=rows['lifecycle']; equity=rows['equity']; decisions=rows['decision']
+require(len(rows['account'])==1 and len(rows['outcome'])==1,'terminal records')
+account=rows['account'][0]; initial=D(account['initial']); terminal=D(rows['sample'][-1][1]); net=terminal-initial
+fees=sum((D(x['fee']) for x in fills),D(0))
+slippage=sum((D(x['quantity'])*(D(x['price'])-D(x['open_price'])) for x in fills),D(0))
+notional=sum((abs(D(x['quantity']))*D(x['price']) for x in fills),D(0))
+payments=[dict(p,timestamp_ms=f['timestamp_ms']) for f in rows['funding'] for p in f['payments']]
+paid=sum((max(D(0),D(p['payment'])) for p in payments),D(0))
+received=sum((max(D(0),-D(p['payment'])) for p in payments),D(0))
+def pnl(l): return D(l['realized'])+D(l['unrealized'])-D(l['fees'])-D(l['funding_paid'])+D(l['funding_received'])
+require(abs(sum(map(pnl,lives),D(0))-net)<=D('1e-18'),'lifecycle reconciliation')
+require(abs(sum((D(l['fees']) for l in lives),D(0))-fees)<=D('1e-18'),'fee reconciliation')
+require(abs(sum((D(l['funding_paid'])-D(l['funding_received']) for l in lives),D(0))-(paid-received))<=D('1e-18'),'funding reconciliation')
+def group_lives(key):
+    out={}
+    for l in lives:
+        k=key(l); r=out.setdefault(k,{'trades':0,'wins':0,'net':D(0),'fees':D(0),'funding_net_paid':D(0),'censored':0})
+        r['trades']+=1;r['wins']+=pnl(l)>0;r['net']+=pnl(l);r['fees']+=D(l['fees']);r['funding_net_paid']+=D(l['funding_paid'])-D(l['funding_received']);r['censored']+=l['censored']
+    require(abs(sum((r['net'] for r in out.values()),D(0))-net)<=D('1e-18'),'group reconciliation')
+    return out
+times=[d['timestamp_ms'] for d in decisions]
+require(times==sorted(set(times)),'decision order')
+def entry_group(l):
+    i=bisect.bisect_left(times,l['start_ms'])-1
+    if i<0:return 'no_prior_decision'
+    s=decisions[i]['decision']['all_rule_signals'].get(l['symbol'],{})
+    a,b=D(s.get('R1','0')),D(s.get('R2','0'))
+    return 'both_trend_rules_positive' if a>0 and b>0 else 'both_trend_rules_negative' if a<0 and b<0 else 'mixed_or_neutral'
+
+peak=0; worst=D(0); pair=None; episodes=[]; start_peak=0; trough=0; in_dd=False
+for i,e in enumerate(equity):
+    value=D(e['equity']); high=D(equity[peak]['equity'])
+    if value>=high:
+        if in_dd:
+            episodes.append({'peak':equity[start_peak],'trough':equity[trough],'recovery':e,'fraction':(D(equity[start_peak]['equity'])-D(equity[trough]['equity']))/D(equity[start_peak]['equity'])})
+        peak=i; in_dd=False
+    else:
+        if not in_dd:start_peak=peak;trough=i;in_dd=True
+        if value<D(equity[trough]['equity']):trough=i
+    dd=(D(equity[peak]['equity'])-value)/D(equity[peak]['equity'])
+    if dd>worst:worst=dd;pair=(equity[peak],e)
+if in_dd:episodes.append({'peak':equity[start_peak],'trough':equity[trough],'recovery':None,'fraction':(D(equity[start_peak]['equity'])-D(equity[trough]['equity']))/D(equity[start_peak]['equity'])})
+hours={h[0]:h[2] for h in rows['hour']}
+def asset_pnl_at(e):
+    t=e['timestamp_ms']; mark=dict(hours[t//3600000*3600000]['marks'])[e['kind']]
+    books=defaultdict(lambda:{'quantity':D(0),'average':D(0),'realized':D(0),'fees':D(0),'funding':D(0)})
+    for f in fills:
+        if f['timestamp_ms']>t:continue
+        b=books[f['symbol']];q=D(f['quantity']);old=b['quantity'];price=D(f['price'])
+        if old==0 or old*q>0:b['average']=(abs(old)*b['average']+abs(q)*price)/abs(old+q)
+        else: require(abs(q)<=abs(old),'unexpected unsplit flip')
+        b['quantity']+=q;b['realized']+=D(f['realized']);b['fees']+=D(f['fee'])
+    for p in payments:
+        if p['timestamp_ms']<=t:books[p['symbol']]['funding']+=D(p['payment'])
+    result={s:b['realized']+b['quantity']*(D(mark['prices'].get(s,'0'))-b['average'])-b['fees']-b['funding'] for s,b in books.items()}
+    require(abs(initial+sum(result.values(),D(0))-D(e['equity']))<=D('1e-18'),'endpoint asset reconciliation')
+    return result
+peak_assets=asset_pnl_at(pair[0]);trough_assets=asset_pnl_at(pair[1])
+drawdown_assets={s:trough_assets.get(s,D(0))-peak_assets.get(s,D(0)) for s in sorted(peak_assets.keys()|trough_assets.keys())}
+start,end=pair[0]['timestamp_ms'],pair[1]['timestamp_ms']
+dd_fees=sum((D(f['fee']) for f in fills if start<f['timestamp_ms']<=end),D(0))
+dd_funding=sum((D(p['payment']) for p in payments if start<p['timestamp_ms']<=end),D(0))
+hold_hours=sorted(D(l['end_ms']-l['start_ms'])/3600000 for l in lives)
+negative=[l for l in lives if pnl(l)<0]
+changes=sum(decisions[i]['rule']!=decisions[i-1]['rule'] for i in range(1,len(decisions)))
+schedule=[]
+for d in decisions:
+    if not schedule or schedule[-1]['rule']!=d['rule']:schedule.append({'timestamp':stamp(d['timestamp_ms']),'rule':d['rule']})
+bound=sum(any(d['decision']['sizing']['binding_caps'].values()) for d in decisions if d['decision']['sizing'])
+gross=[]
+for h in rows['hour']:
+    for kind,m in h[2]['marks']:
+        if kind=='post_fill':gross.append(D(m['gross_leverage']) if m['gross_leverage'] is not None else D(0))
+report={'run_id':RUN,'source':ref,'scope':'saved primary futures account; no replay; no final experiment verdict',
+ 'profit':{'initial':initial,'terminal_equity':terminal,'net':net,'wallet':D(account['wallet']),'terminal_unrealized':terminal-D(account['wallet']),'net_before_fees_and_funding':net+fees+paid-received},
+ 'costs':{'fills':len(fills),'fees':fees,'funding_paid':paid,'funding_received':received,'funding_net_paid':paid-received,'slippage_embedded':slippage,'gross_traded_notional':notional,'notional_over_initial':notional/initial,'mean_daily_notional_over_initial':notional/initial/(D(receipt['payload']['end_ms_exclusive']-receipt['payload']['start_ms'])/86400000)},
+ 'by_asset':group_lives(lambda l:l['symbol']),'by_side':group_lives(lambda l:l['side']),'by_exit':group_lives(lambda l:l['exit_reason']),
+ 'entry_trend_proxy':{'definition':'Per-asset R1/R2 signs from latest strictly earlier recorded daily decision; entire lifecycle PnL attributed to entry group, not period regime PnL. No volatility/range classification is claimed.','groups':group_lives(entry_group)},
+ 'drawdown':{'fraction':worst,'peak':pair[0],'trough':pair[1],'peak_utc':stamp(start),'trough_utc':stamp(end),'days_to_trough':D(end-start)/86400000,'recovered_by_end':terminal>=D(pair[0]['equity']),'asset_change_peak_to_trough':drawdown_assets,'fees_in_episode':dd_fees,'funding_net_in_episode':dd_funding,'largest_episodes':sorted(episodes,key=lambda x:x['fraction'],reverse=True)[:5]},
+ 'decisions':{'count':len(decisions),'rule_changes':changes,'schedule':schedule,'cap_bound_days':bound,'mean_postfill_gross_leverage':sum(gross,D(0))/len(gross),'max_postfill_gross_leverage':max(gross),'median_lifecycle_hours':(hold_hours[(len(hold_hours)-1)//2]+hold_hours[len(hold_hours)//2])/2,'losing_lifecycles_with_positive_favourable_excursion':sum(D(l['favourable'])>0 for l in negative),'losing_lifecycles':len(negative)},
+ 'limits':['Costs are accounting attribution, not a no-cost counterfactual','Slippage is already embedded in net PnL; do not subtract twice','Favourable/adverse equity uses the frozen intrabar marking convention, not observed simultaneous portfolio ticks','No genuine four-regime labels or compute/network latency are present in this evidence','Terminal equity includes unrealized PnL; censored lifecycle attribution is not cash settlement']}
+# Use exact UTC year boundaries from saved hourly opening marks, before
+# that hour's fills/funding. Daily 01:00 samples cannot define calendar years.
+periods={}; previous=initial
+start_ms=receipt['payload']['start_ms']; end_ms=receipt['payload']['end_ms_exclusive']
+first_year=datetime.fromtimestamp(start_ms/1000,UTC).year
+last_year=datetime.fromtimestamp((end_ms-1)/1000,UTC).year
+for year in range(first_year,last_year+1):
+    boundary=min(end_ms,int(datetime(year+1,1,1,tzinfo=UTC).timestamp()*1000))
+    if boundary==end_ms:
+        value=terminal
+    else:
+        require(boundary in hours,'missing annual boundary hour')
+        require(hours[boundary]['marks'][0][0]=='open','annual boundary must be opening mark')
+        value=D(hours[boundary]['marks'][0][1]['equity'])
+    periods[str(year)]={'initial':previous,'terminal':value,'net':value-previous,'return':value/previous-1}
+    previous=value
+require(abs(sum((p['net'] for p in periods.values()),D(0))-net)<=D('1e-18'),'year reconciliation')
+report['calendar_periods']=periods
+report['calendar_period_definition']='UTC Jan 1 00:00 opening equity before fills/funding; first period starts at invocation start, last ends at terminal mark'
+main_episode=max(episodes,key=lambda e:e['fraction'])
+report['drawdown']['terminal_above_old_peak']=report['drawdown'].pop('recovered_by_end')
+report['drawdown']['recovery_utc']=stamp(main_episode['recovery']['timestamp_ms']) if main_episode['recovery'] else None
+(OUT/'diagnosis.json').write_text(json.dumps(report,default=str,indent=2)+'\n',encoding='utf-8',newline='\n')
+print(json.dumps({k:v for k,v in report.items() if k not in ('drawdown','source')},default=str,indent=2))
+print('DRAWDOWN',json.dumps({k:v for k,v in report['drawdown'].items() if k!='largest_episodes'},default=str,indent=2))

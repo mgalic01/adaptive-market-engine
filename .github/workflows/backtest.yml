@@ -115,8 +115,11 @@ jobs:
             git checkout -- "$manifest"
           fi
 
-      # run_nopool.py is the CLI's run with --jobs 1: it verifies the dataset and runs
-      # the integrity cross-checks before any replay. The fee inputs default to spec v1's
+      # The CLI's run verifies the dataset and runs the integrity cross-checks before any
+      # replay. It runs its jobs (the masks, the checks, then each pair, path and row) in a
+      # pool of 4, one per CPU of the hosted runner: one at a time, as run_nopool.py does,
+      # a full-range run exceeds the runner's 6-hour job limit. The results do not depend
+      # on the pool size (tests/test_backtest_pool.py). The fee inputs default to spec v1's
       # primary fees, so a dispatch left at its defaults writes runs the acceptance scorer
       # accepts; an emptied input falls back to the dataset spec's fee. --record-commit
       # records the code commit and its source hash in every results.json, which the
@@ -131,7 +134,7 @@ jobs:
           MAKER_FEE: ${{ github.event.inputs.maker_fee }}
           TAKER_FEE: ${{ github.event.inputs.taker_fee }}
         run: |
-          set -- "$SPEC" --record-commit
+          set -- --record-commit
           case "$VARIANT" in
             A) set -- "$@" --variant-a ;;
             B) set -- "$@" --variant-b ;;
@@ -157,7 +160,7 @@ jobs:
           if [ -n "$TAKER_FEE" ]; then
             set -- "$@" --taker-fee "$TAKER_FEE"
           fi
-          python scripts/run_nopool.py "$@"
+          python -m crypto_grid_bot.backtest run --spec "config/datasets/$SPEC.toml" "$@" --jobs 4
 
       # An invalid run (exit 2) still writes results.json: upload it for diagnosis.
       - name: Upload results

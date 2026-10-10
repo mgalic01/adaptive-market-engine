@@ -1,0 +1,6 @@
+{
+  "at": "2026-10-09T15:40:57.017240+00:00",
+  "owner_message": "yes start it",
+  "task_head": "3379058f86214e3b0fa663ea22862ae328f65f80",
+  "scope": "one reviewed collection attempt through 2024-12, no automatic retry"
+}

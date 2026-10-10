@@ -1,0 +1,5 @@
+{
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-09T20:07:28.141277+00:00",
+  "manifest_sha256": "78d997a2f0a6e83705df339cc2ec0a0421faebdc18ee4337de8f07400a4b013a"
+}

@@ -1,0 +1,77 @@
+"""Partial-invocation diagnostics from saved evidence only; no market load/replay."""
+import hashlib,json,sys,subprocess,tempfile,io,zipfile
+from pathlib import Path
+from decimal import Decimal as D, localcontext, Context, ROUND_HALF_EVEN
+from dataclasses import asdict
+from collections import defaultdict
+root=Path('C:/Users/Marko/.codex/worktrees/v3-launch-registration')
+analysis_revision='242faacc0041a00571902320cae95315bf8c551f'
+# Import exact committed sources in a fresh private directory, never this worktree.
+# git archive reads the pinned object even when the worktree is dirty or moves.
+archive=subprocess.run(['git','-C',str(root),'archive','--format=zip',analysis_revision,'src'],check=True,capture_output=True).stdout
+source_directory=tempfile.TemporaryDirectory(prefix='v3-diagnostic-sources-')
+source_root=Path(source_directory.name)
+source_hashes={}
+with zipfile.ZipFile(io.BytesIO(archive)) as source_archive:
+    for entry in source_archive.infolist():
+        if entry.is_dir(): continue
+        relative=Path(entry.filename)
+        assert not relative.is_absolute() and '..' not in relative.parts
+        data=source_archive.read(entry)
+        target=source_root/relative
+        target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(data)
+        assert hashlib.sha256(target.read_bytes()).hexdigest()==hashlib.sha256(data).hexdigest()
+        source_hashes[entry.filename]=hashlib.sha256(data).hexdigest()
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(source_root/'src'))
+from crypto_grid_bot.trend.metrics import summarize
+from crypto_grid_bot.trend.monthly import monthly_diagnostics
+from crypto_grid_bot.trend.runner import EquityState
+from crypto_grid_bot.trend.account import AccountingAudit
+from crypto_grid_bot.trend.evidence_journal import _object, LIMIT
+folder=Path('E:/adaptive-market-engine/v3/replay-20261009-01/attempts')
+output=Path('E:/adaptive-market-engine/v3/failure-analysis-20261010-03')
+output.mkdir(exist_ok=False)
+results=[]
+for metadata in sorted(folder.glob('*.finished.json')):
+    receipt=json.loads(metadata.read_bytes()); payload=receipt['payload']
+    if payload['phase'] not in ('out_of_sample','sensitivity','fixed_rule'): continue
+    assert payload['error'] is None
+    ref=payload['evidence']; digest=hashlib.sha256(); size=0; count=0; audits=0; active=0
+    samples=[]; equity=[]; nets=[]; outcomes=[]; accounts=[]; lives=[]
+    with (folder/ref['path']).open('rb') as source, localcontext(Context(prec=60,rounding=ROUND_HALF_EVEN)):
+        for raw in source:
+            assert len(raw)<=LIMIT and raw.endswith(b'\n')
+            digest.update(raw); size+=len(raw); count+=1
+            row=json.loads(raw,object_pairs_hook=_object); assert row['schema']==1
+            kind,v=row['kind'],row['value']
+            if kind=='sample': samples.append((v[0],D(v[1])))
+            elif kind=='equity': equity.append(EquityState(v['timestamp_ms'],v['kind'],D(v['equity']),D(v['peak']),D(v['drawdown'])))
+            elif kind=='lifecycle':
+                net=D(v['realized'])+D(v['unrealized'])-D(v['fees'])-D(v['funding_paid'])+D(v['funding_received'])
+                nets.append(net); lives.append((v,net))
+            elif kind=='audit':
+                assert AccountingAudit(D(v['wallet_residual']),{k:D(x) for k,x in v['quantity_residuals'].items()},D(v['equity_residual'])).accepted
+                audits+=1
+            elif kind=='outcome': outcomes.append(v)
+            elif kind=='account': accounts.append(v)
+            elif kind=='active_lifecycle': active+=1
+        assert (digest.hexdigest(),size,count)==(ref['sha256'],ref['bytes'],ref['records'])
+        assert len(outcomes)==1
+        result={'run_id':receipt['run_id'],'phase':payload['phase'],'multiple':payload.get('multiple'),'cost_multiple':payload.get('cost_multiple'),'rule':payload.get('rule'),'evidence':ref,'outcome':outcomes[0],'audits_accepted':audits,'start_ms':payload['start_ms'],'end_ms_exclusive':payload['end_ms_exclusive']}
+        if outcomes[0]['reason'] is None:
+            assert len(accounts)==1 and accounts[0]['stopped']=='completed' and accounts[0]['liquidation'] is None and audits>0 and active==0
+            metric=summarize(samples,equity,nets)
+            monthly=monthly_diagnostics(samples)
+            groups={axis:defaultdict(lambda:{'trades':0,'net':D(0),'fees':D(0),'funding_net_paid':D(0)}) for axis in ('symbol','side','exit_reason')}
+            for life,net in lives:
+                for axis,group in groups.items():
+                    row=group[str(life[axis])]; row['trades']+=1; row['net']+=net; row['fees']+=D(life['fees']); row['funding_net_paid']+=D(life['funding_paid'])-D(life['funding_received'])
+            result.update({'initial_equity':equity[0].equity,'terminal_equity':samples[-1][1],'metrics':asdict(metric),'monthly':asdict(monthly),'lifecycle_attribution':groups})
+        results.append(result)
+        print(receipt['run_id'],outcomes[0]['reason'] or 'completed',flush=True)
+assert len(results)==18
+report={'status':'partial_invocation_diagnostics_not_final_verdict','experiment_verdict':None,'analysis_code_base':analysis_revision,'analysis_source_sha256':source_hashes,'original_execution_revision':'4d1e37c0637f8401f3903ea56d036f34c3bfd5cd','limitations':['Original invocation failed at first holding comparison; two comparisons unstarted','No A5 comparison or final report receipt','Lifecycle attribution assigns full net to exit reason; it is not causal proof','Uses recorded accounting evidence, not independent fill reconstruction','No replay, tuning, fresh data or reserved-window access'],'runs':results}
+(output/'futures-diagnostics.json').write_text(json.dumps(report,default=lambda x:str(x) if isinstance(x,D) else dict(x),indent=2)+'\n',encoding='utf-8')
+print('Wrote 18 diagnostic runs',flush=True)

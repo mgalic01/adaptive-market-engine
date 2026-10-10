@@ -12,6 +12,7 @@ import json
 import multiprocessing
 import os
 import pickle
+import re
 import shutil
 import subprocess
 import sys
@@ -215,6 +216,15 @@ class Logged:
         self.events.append(("result", *self.job))
         return self.value
 
+    def add_done_callback(self, callback):
+        callback(self)  # a finished future calls it at once; the timeline logs results only
+
+    def cancelled(self):
+        return False
+
+    def exception(self):
+        return None
+
 
 class CrossCheckParallelismTests(unittest.TestCase):
     def test_every_cross_check_is_submitted_before_any_result_is_awaited(self):
@@ -301,3 +311,48 @@ class SpawnedCliTests(unittest.TestCase):
             {symbol: ["2023-12", "2024-01"] for symbol in ("BTCUSDT", "ETHUSDT")},
             {s: entry["excluded_months"] for s, entry in report["comparison_mask"].items()},
         )
+        # The progress lines of a real pool, on stderr and never on stdout (parsed above as
+        # the one report): each mask and each check is reported started as it is submitted
+        # and done as its future finishes, in whatever order the workers finish them.
+        self.assertNotIn("progress:", done.stdout)
+        lines = "\n".join(x for x in done.stderr.splitlines() if x.startswith("progress: "))
+        stamp = r"^progress: \[\d+:\d\d:\d\d\] "
+        for phase in ("mask", "cross-check"):
+            wanted = [
+                rf"{phase} start \(2 jobs\)",
+                rf"{phase} done in \d+:\d\d:\d\d",
+                *(rf"{phase} \d/2 start {symbol}" for symbol in ("BTCUSDT", "ETHUSDT")),
+                *(
+                    rf"{phase} \d/2 done {symbol} in \d+:\d\d:\d\d"
+                    for symbol in ("BTCUSDT", "ETHUSDT")
+                ),
+            ]
+            for pattern in wanted:
+                self.assertRegex(lines, re.compile(stamp + pattern + "$", re.M))
+
+
+class PoolSizeTests(unittest.TestCase):
+    """The backtest workflow runs the CLI with ``--jobs 4``, one job per CPU of the hosted
+    runner. A pool must write exactly the results that one in-process job writes. The mode
+    switcher's run with D submits every kind of replay job (the gated and ungated V0 rows,
+    the mode switcher's and D's), so it stands for the workflow's runs; V0 with D and F
+    were checked the same way when the workflow moved to a pool."""
+
+    def test_a_pool_of_four_writes_the_results_of_one_job(self):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        self.addCleanup(sys.path.remove, str(ROOT / "scripts"))
+        import byte_identity
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        work = root / "up"
+        byte_identity.build_dataset(work, "up")
+        runs = {"MS+D": ("--mode-switch", "--trend-benchmark")}
+        for name, flags in runs.items():
+            with self.subTest(run=name):
+                one = byte_identity.run_cli(work, root / f"{name}-1", flags)
+                # run_cli passes --jobs 1 before the flags; the last --jobs wins.
+                pool = byte_identity.run_cli(work, root / f"{name}-4", (*flags, "--jobs", "4"))
+                self.assertTrue(one["results"])
+                self.assertEqual(byte_identity.set_aside(one), byte_identity.set_aside(pool), name)

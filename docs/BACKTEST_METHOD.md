@@ -29,6 +29,19 @@ API. `verify` and `run` are offline. `run` refuses to start unless every local f
 matches the committed manifest's SHA-256. Results go to `data/backtests/<dataset>/<UTC
 time>/` (`results.json` and `summary.md`), which is not committed.
 
+`run`, `verify` and `mask-report` print progress lines on stderr, flushed as they happen and
+prefixed `progress: `, so a long run shows what stage it is at: each phase as it starts and
+ends (manifest verification, the hour masks, the integrity cross-checks, the replay), and
+each job (one symbol's mask or check, one pair's replay on one path) as it starts and as it
+finishes, as `k/N`, with its own time and the time since the command began, as `H:MM:SS`.
+For example, `progress: [1:12:03] replay 3/8 done BTCUSDT high_first MS in 0:41:10`. With a
+process pool (`--jobs` above 1) every job of a phase starts at once and its time runs from
+its submission. A job or a phase that raises is reported as `failed ... after H:MM:SS`
+before the exception goes on as before, and a phase's `done` line follows its last job's.
+The lines are never part of the results: stdout, `results.json` and
+`summary.md` are exactly what they would be without them, and the clock behind them is read
+nowhere else. Filter a log with `grep '^progress: '`.
+
 ## Data
 
 - **Source:** Binance monthly spot kline archives (`data/spot/monthly/klines/<SYMBOL>/<1m|1h|1d>/`).
@@ -301,6 +314,51 @@ holds spec v2 §8's readouts:
 The position's sales are labelled `uptrend_stop`, `uptrend_fade` or `uptrend_risk` in
 `realised_exit_pnl_by_reason`.
 
+**Why each decision went as it did** (`modes.decisions`). This block is reporting only. No
+criterion reads it, and the run never reads it back, so it changes no decision and no other
+number.
+- **Outcomes.** Each UTC hour has at most one:
+  - `made`: a decision.
+  - `skipped_holding`: an uptrend position existed, so nothing was decided (spec v2 §4,
+    "Entering versus staying").
+  - `halted`: a halt held the decision back, and Cash was forced. The frame that restarts
+    the account decides nothing; if a later valid frame of the same hour decides, that hour
+    counts as `made` instead.
+  - An hour with no valid frame (masked, missing or transient) has no outcome.
+- **The codes.** `by_mode` counts the decisions made by the mode chosen. Every condition of
+  the Uptrend and Grid rows (§4) that does not hold is a code, and each condition is checked
+  on its own, so one decision can fail several.
+  - Uptrend: `h4_or_d1_unavailable`, `d1_rsi_or_atr_missing`, `d1_not_up`, `h4_not_up`,
+    `d1_rsi_overbought` (daily RSI ≥ 75), `input_quality`, `regime_bear_or_stress` and
+    `reentry_pause`.
+  - Grid: `h4_or_d1_unavailable`, `h1_unavailable` (any 1h input missing),
+    `regime_not_range`, `range_decisions_below_4`, `h4_not_range_or_unclear`,
+    `d1_not_up_range_or_unclear`, `h1_rsi_outside_35_65`, `h1_adx_20_or_above` and
+    `h1_width_above_median`.
+  - An Unavailable 4h or daily state gives `h4_or_d1_unavailable`, never the not-Up or
+    not-Range codes, which are for an available state. A missing daily bar also leaves the
+    daily RSI and ATR missing, so Uptrend lists `d1_rsi_or_atr_missing` beside it, and
+    neither is then a sole blocker. A threshold is checked only on a value that is present.
+- **`uptrend_blocked_by` and `grid_blocked_by`** count, over the decisions where that mode
+  was not chosen, how many listed each code. A decision can list several, so they do not sum
+  to the decisions.
+- **`uptrend_sole_blocker` and `grid_sole_blocker`** count only the decisions where exactly
+  one condition failed: each would have met the row but for that one rule. Read them as
+  "which single rule kept the mode out". A code that is frequent under `blocked_by` but rare
+  as a sole blocker failed alongside others, so relaxing it alone would change few of those
+  hours.
+  - A decision that is not RANGE restarts the RANGE count, so `regime_not_range` always comes
+    with `range_decisions_below_4`. `range_decisions_below_4` alone means RANGE, but for fewer
+    than four consecutive decisions.
+  - Uptrend is checked first, so an Uptrend decision also lists Grid's failures, at least
+    `h4_not_range_or_unclear`.
+- **`by_month`:** each UTC month `YYYY-MM` with an outcome, with its `made`,
+  `skipped_holding`, `halted`, `by_mode`, `uptrend_blocked_by` and `uptrend_sole_blocker`. It
+  answers questions such as "why no entry during that month's rally".
+- **Format:** integers only, with every mapping's keys sorted. `by_mode` lists every mode,
+  and a code that never counted is left out. Each decision's own record is in that frame's
+  report as `mode_reasons`, which replay counts and does not save.
+
 **The end of a run** (spec v2 §6):
 - A position still held, or an entry still buying, is not an exit owed, so the run stays
   valid. `final_exit_blocked` and `final_unsellable_notional` leave it out, so they are null
@@ -347,8 +405,59 @@ Every run uses the same capital, window, fee, slippage and assumed spread:
       `_hours_incomplete`). Prices must match exactly; volume within the same 0.1%
       tolerance, reported as `daily_days_volume_drift`. Days before the hourly window
       are checked for presence, never for equality.
-  - Any non-zero count of those fields fails its check. `hours_volume_drift` and
-    `daily_days_volume_drift` are reported but are not among them.
+    - when a day mismatches, the record also names it: `daily_mismatched_days` lists
+      every mismatched day as `YYYY-MM-DD`, in date order. The key is written only when
+      the list is not empty, so a passing record keeps its layout.
+    - **A documented defect day has its volume excused, and only its volume.** The day
+      goes through the completeness check and the official-bar lookup like any other,
+      and counts in `daily_days_compared`. Its open, high, low and close are then
+      compared with its 24 hours' exactly, for every symbol and whatever
+      `--strict-volume` says:
+      - if they are equal, the day counts in `daily_days_volume_excused`, whatever its
+        volume, and as neither a mismatch nor drift;
+      - if any price differs, the day is a mismatch, as on any other day: it counts in
+        `daily_days_mismatched` and is named in `daily_mismatched_days`, and its pair
+        fails;
+      - missing hours make it incomplete, and a missing or duplicated 1d bar fails, as
+        on any other day. A listed day that holds a masked hour takes the masked path
+        (rule 3) first, unchanged.
+
+      `daily_days_volume_excused` is written only when non-zero, and it is not an
+      integrity failure field. An excused day counts as compared because its prices
+      were compared, and so that every mismatched day, the listed one included, is
+      among the compared days.
+      - The list is `DOCUMENTED_DAILY_DEFECTS` in `backtest/replay.py`. It holds one day,
+        **2021-01-21**. On that day the official 1d bars have about 2% less volume than
+        the sum of their 24 official 1h bars: BTCUSDT 2.4% (131803.182926 against
+        135004.076658) and DOGEUSDT 1.7%, with identical prices for both. Bob's defect
+        calendar documented this on 2026-09-26 ([its "Day-Level Defects"
+        section](reviews/2026-09-26-bob-hourly-defect-calendar.md)), before any
+        2019-2024 result existed. It lists the day as a mismatch for each of its 10
+        pairs, but shows the figures only for those two.
+      - In `full-range-2017-2024`, `verify` reported one mismatched day under the 0.1%
+        tolerance for each of BTCUSDT, ETHUSDT and XRPUSDT. XRPUSDT is excluded by its
+        quote test anyway (rule 8), so no pair would have been left. `verify` reported
+        counts only; the record now names the days (`daily_mismatched_days`), so the
+        next `verify` shows whether 2021-01-21 was the only one.
+      - The owner granted the exception on 2026-10-07, on record, to spec v1 §5 rule 3
+        and P3 ([decision
+        14](reviews/2026-10-07-claude-v2-decisions-after-first-read.md)). The grant
+        rests on the prices agreeing exactly and on the mode switcher never reading
+        daily volume (it does read daily prices). The check is narrower than the
+        option's words, which skipped the day: it still compares the prices, so every
+        `verify` checks the grant's premise for each pair. No strategy rule changes,
+        and spec v1 and v2 stay frozen.
+      - The day is in the hourly window of `full-range-2017-2024` (from 2018-06) and of
+        `full-range-2019-2024` (from 2019-01), so the exception reaches both, and also
+        spec v1's stage-2 scoring of `full-range-2017-2024`. That changes nothing in
+        practice: every v1 variant failed stage 1, so v1's stage 2 decides nothing
+        ([stage 1's record](backtests/2026-10-06-spec-v1-stage-1.md)).
+      - Stage 1's windows hold the day in their daily window but not in their hourly
+        window, so it is never compared there, and their records carry neither new key.
+  - Any non-zero count of those fields fails its check. `hours_volume_drift`,
+    `daily_days_volume_drift`, `daily_days_skipped_for_masks` and
+    `daily_days_volume_excused` are reported but are not among them, and
+    `daily_mismatched_days` only names what `daily_days_mismatched` counts.
   - A failed check of a traded pair's own data excludes that pair-window only (spec v1
     §5). The pair is not replayed and has no rows. Its failing check stays in
     `hourly_cross_checks`, `excluded_pairs` lists it with its failures, and the other
@@ -589,6 +698,13 @@ decimals (below).
     check;
   - each run's mask report (`masked_hours`, `days_skipped_for_masks` and
     `fills_after_masked_span`) is in its row and scored by no criterion.
+  - the daily check's volume excuse for a documented defect day (owner decision 14,
+    under "Verification in every run") reaches the scorer only as
+    `daily_days_volume_excused` in the pair's cross-check record, a count that
+    excludes nothing. A price difference that day is a mismatch, which excludes the
+    pair as any failed check does. `daily_mismatched_days` only names the days a
+    failed check counts. Both scorers read neither key, so neither changes a
+    comparison mask.
 
   A defect that masking does not cover, such as a missing or duplicated daily bar or a
   short warm-up, still fails its check and excludes the pair-window, as in stage 1.

@@ -62,11 +62,23 @@ CLEAN = {
 
 
 class Done:
+    """A finished future: the CLI reads its result, and reports the job done through the
+    callback it adds, which a finished future calls at once."""
+
     def __init__(self, value):
         self.value = value
 
     def result(self):
         return self.value
+
+    def add_done_callback(self, callback):
+        callback(self)
+
+    def cancelled(self):
+        return False
+
+    def exception(self):
+        return None
 
 
 class Inline:
@@ -1272,6 +1284,32 @@ class QuoteIntegrityTests(unittest.TestCase):
         self.assertEqual(
             ([], {"XRPUSDT": ["XRPUSDT: tick_limit_quotes=4"]}), cli.scoped_failures(spec, checks)
         )
+
+
+class DocumentedDailyDefectIntegrityTests(unittest.TestCase):
+    """Owner decision 14 (2026-10-07): a documented defect day whose volume the daily
+    check excuses is a count, not a failure, and the mismatched days a record names fail
+    only through their count."""
+
+    def test_an_excused_volume_is_no_failure(self):
+        pair = {"symbol": "BTCUSDT", "hours_compared": 10, **CLEAN_FIELDS}
+        daily = {"daily_days_compared": 10, **dict.fromkeys(cli.DAILY_INTEGRITY_FIELDS, 0)}
+        for field in ("daily_days_volume_excused", "daily_mismatched_days"):
+            self.assertNotIn(field, cli.DAILY_INTEGRITY_FIELDS)
+            self.assertNotIn(field, cli.PROXY_HOURLY_FIELDS)
+        excused = pair | daily | {"daily_days_volume_excused": 1}
+        self.assertEqual([], cli.integrity_failures([excused]))
+        mismatched = excused | {"daily_days_mismatched": 1, "daily_mismatched_days": ["2021-01-22"]}
+        self.assertEqual(["BTCUSDT: daily_days_mismatched=1"], cli.integrity_failures([mismatched]))
+        # On a window's checks, the excuse excludes nothing, as a masked day's skip does not.
+        spec = jobs.load_spec(ROOT / "config/datasets/practice-2022.toml")
+        checks = []
+        for symbol in cli.checked_symbols(spec):
+            if symbol in spec.traded:
+                checks.append(excused | {"symbol": symbol})
+            else:
+                checks.append({"symbol": symbol, **PROXY_CLEAN, "role": "breadth_basket"})
+        self.assertEqual(([], {}), cli.scoped_failures(spec, checks))
 
 
 XRP_WINDOW = """name = "xrp-window"

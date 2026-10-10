@@ -1,0 +1,20 @@
+{
+  "fetch_authorized": false,
+  "futures_discovery_start": "2017-01",
+  "last_month": "2024-12",
+  "request_count": 2710,
+  "request_plan_sha256": "9a9bc20f1383aadd9fb9f0739dc4af1f8b07bc88a198f989d1eca5c6612e069d",
+  "spot_start": "2018-06",
+  "symbols": [
+    "ADAUSDT",
+    "BNBUSDT",
+    "BTCUSDT",
+    "DOGEUSDT",
+    "ETHUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "SOLUSDT",
+    "TRXUSDT",
+    "XRPUSDT"
+  ]
+}

@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from crypto_grid_bot.backtest.dataset import funding_local_path, is_funding, local_path
 from crypto_grid_bot.backtest.features import FEATURE_VERSION, FeatureEngine, Inputs
@@ -56,7 +56,14 @@ from crypto_grid_bot.simulation.models import (
     floor_step,
     timestamp,
 )
-from crypto_grid_bot.simulation.runner import MODE_SWITCH, Frame, PaperSimulator, SimulationPolicy
+from crypto_grid_bot.simulation.runner import (
+    DECISION_HALTED,
+    DECISION_SKIPPED_HOLDING,
+    MODE_SWITCH,
+    Frame,
+    PaperSimulator,
+    SimulationPolicy,
+)
 from crypto_grid_bot.simulation.trend_switch import MINIMUM_DAILY_WARMUP, TrendSchedule
 from crypto_grid_bot.simulation.uptrend import UptrendPosition
 from crypto_grid_bot.strategy.cycle import CycleSchedule, CycleSignal
@@ -209,6 +216,106 @@ def candidate_for(
 
 
 @dataclass
+class ModeDecisions:
+    """Spec v2 §4's hourly decisions in a mode-switcher run, and why each went as it did, from
+    each frame's ``mode_reasons`` (``PaperSimulator._decide_mode``), for the row's
+    ``modes.decisions``. Reporting only (spec v2 §8, "Behaviour"): no criterion reads it, and
+    nothing here reaches a decision.
+
+    Each UTC hour has at most one outcome: a decision made, a decision skipped while an uptrend
+    position exists, or the hour held back by a halt. A halted hour counts once, however many of
+    its frames report it, and not at all if the halt ends within it (an automatic restart) and a
+    later frame of the hour decides after all. An hour with no valid frame (masked, missing or
+    transient) has no outcome.
+
+    A dataclass, so that two runs' ``Metrics`` compare by value (``asdict``)."""
+
+    # The counts each month repeats, sorted: all but Grid's.
+    MONTHLY: ClassVar[tuple[str, ...]] = (
+        "by_mode",
+        "halted",
+        "made",
+        "skipped_holding",
+        "uptrend_blocked_by",
+        "uptrend_sole_blocker",
+    )
+
+    # hour open (ms) -> (mode, Uptrend's failures, Grid's failures)
+    made: dict[int, tuple[str, tuple[str, ...], tuple[str, ...]]] = field(default_factory=dict)
+    skipped: set[int] = field(default_factory=set)
+    halted: set[int] = field(default_factory=set)
+
+    def record(self, reasons: dict[str, Any]) -> None:
+        hour, outcome = reasons["hour_ms"], reasons["outcome"]
+        if outcome == DECISION_HALTED:
+            self.halted.add(hour)
+            return
+        if hour in self.made or hour in self.skipped:
+            # Cannot happen: ``_decide_mode`` takes each hour once.
+            raise RuntimeError(f"the hour opening at {hour} ms was decided twice")
+        if outcome == DECISION_SKIPPED_HOLDING:
+            self.skipped.add(hour)
+        else:
+            uptrend, grid = reasons["uptrend_failures"], reasons["grid_failures"]
+            self.made[hour] = (reasons["mode"], tuple(uptrend), tuple(grid))
+
+    def report(self) -> dict[str, Any]:
+        """The ``modes.decisions`` block, integers only and every mapping's keys sorted:
+
+        * ``made``, ``skipped_holding`` and ``halted``: the hours of each outcome;
+        * ``by_mode``: the decisions made, by the mode chosen, every mode listed;
+        * ``uptrend_blocked_by`` and ``grid_blocked_by``: over the decisions where that mode
+          was not chosen, how many listed each code (``mode_selector.UPTREND_CODES`` and
+          ``GRID_CODES``); one decision can list several;
+        * ``uptrend_sole_blocker`` and ``grid_sole_blocker``: the same, over the decisions where
+          exactly one condition failed, the single rule that kept the mode out;
+        * ``by_month``: for each UTC month ``YYYY-MM`` with an outcome, its ``made``,
+          ``skipped_holding``, ``halted``, ``by_mode``, ``uptrend_blocked_by`` and
+          ``uptrend_sole_blocker``.
+
+        A code that never counted is left out of its mapping."""
+        halted = self.halted - self.made.keys() - self.skipped
+        # month -> its hours of each outcome: made, skipped, halted
+        months: dict[str, tuple[list[int], list[int], list[int]]] = {}
+        for index, hours in enumerate((self.made, self.skipped, halted)):
+            for hour in hours:
+                month = datetime.fromtimestamp(hour // 1000, UTC).strftime("%Y-%m")
+                months.setdefault(month, ([], [], []))[index].append(hour)
+        by_month: dict[str, dict[str, Any]] = {}
+        for month, (made, skipped, held) in sorted(months.items()):
+            counts = self._counts(made, len(skipped), len(held))
+            by_month[month] = {key: counts[key] for key in self.MONTHLY}
+        block = self._counts(list(self.made), len(self.skipped), len(halted))
+        block["by_month"] = by_month
+        return dict(sorted(block.items()))
+
+    def _counts(self, hours: list[int], skipped: int, halted: int) -> dict[str, Any]:
+        """The block's counts over the decisions made in ``hours``, with ``skipped`` and
+        ``halted`` hours, keys sorted."""
+        by_mode: Counter[str] = Counter()
+        blocked: dict[Mode, Counter[str]] = {Mode.UPTREND: Counter(), Mode.GRID: Counter()}
+        sole: dict[Mode, Counter[str]] = {Mode.UPTREND: Counter(), Mode.GRID: Counter()}
+        for hour in hours:
+            chosen, uptrend, grid = self.made[hour]
+            by_mode[chosen] += 1
+            for mode, failures in ((Mode.UPTREND, uptrend), (Mode.GRID, grid)):
+                if chosen != mode.value:
+                    blocked[mode].update(failures)
+                    if len(failures) == 1:
+                        sole[mode].update(failures)
+        return {
+            "by_mode": {mode.value: by_mode[mode.value] for mode in sorted(Mode)},
+            "grid_blocked_by": dict(sorted(blocked[Mode.GRID].items())),
+            "grid_sole_blocker": dict(sorted(sole[Mode.GRID].items())),
+            "halted": halted,
+            "made": len(hours),
+            "skipped_holding": skipped,
+            "uptrend_blocked_by": dict(sorted(blocked[Mode.UPTREND].items())),
+            "uptrend_sole_blocker": dict(sorted(sole[Mode.UPTREND].items())),
+        }
+
+
+@dataclass
 class Metrics:
     bars: int = 0
     warmup_bars: int = 0
@@ -290,7 +397,8 @@ class Metrics:
     # by elapsed time over the evaluation window; the changes of mode, as the account counts
     # them; the completed uptrend round trips (C5), and the stops and fades among their exits;
     # and the uptrend position still held at the end, which is not an exit owed (section 6):
-    # its quantity and its value at the exit mark.
+    # its quantity and its value at the exit mark. ``mode_decisions``: each hour's decision and
+    # why it went as it did, reported only (``ModeDecisions``).
     mode_switch: bool = False
     mode_ms: Counter[str] = field(default_factory=Counter)
     mode_switches: int = 0
@@ -298,6 +406,7 @@ class Metrics:
     uptrend_stops: int = 0
     uptrend_fades: int = 0
     held_at_end: tuple[Decimal, Decimal] = (ZERO, ZERO)
+    mode_decisions: ModeDecisions = field(default_factory=ModeDecisions)
 
 
 def record_exit_block(metrics: Metrics, blocked: str, notional: Decimal) -> None:
@@ -503,7 +612,9 @@ def modes_report(metrics: Metrics) -> dict[str, Any]:
     """A mode-switcher row's own fields (spec v2 §8): its variant, and its readouts under
     ``modes``. Empty in any other run, whose rows keep their exact layout. The grid's
     completed cycles are not copied in: C5 and the readout take them from the row's own
-    ``completed_cycles``, so the two counts can never disagree."""
+    ``completed_cycles``, so the two counts can never disagree. ``modes.decisions`` is each
+    hour's decision and why it went as it did (``ModeDecisions.report``): reported only, and
+    read by no criterion."""
     if not metrics.mode_switch:
         return {}
     quantity, value = metrics.held_at_end
@@ -517,6 +628,7 @@ def modes_report(metrics: Metrics) -> dict[str, Any]:
             "fades": metrics.uptrend_fades,
             "held_at_end": {"quantity": str(quantity), "value": str(value)},
             "buy_and_hold_final": str(metrics.hold_final),
+            "decisions": metrics.mode_decisions.report(),
         },
     }
 
@@ -962,6 +1074,8 @@ def replay(
             if perception is not None:
                 mode, mode_since = account.mode, at_ms
                 record_uptrend(metrics, report, position)
+                if "mode_reasons" in report:
+                    metrics.mode_decisions.record(report["mode_reasons"])  # reported only
             metrics.requests_by_day[quote.observed_at[:10]] += order_requests(
                 orders, since, report["fills"]
             )
@@ -1087,7 +1201,12 @@ def check_accounting(run: RunConfig, metrics: Metrics, account: Account) -> list
             change = metrics.final_equity - run.initial_quote
             if abs(realised + unrealised - change) > Decimal("1e-18"):
                 problems.append(f"P&L reconciliation failed: {realised} + {unrealised} != {change}")
-            if sum(metrics.exit_pnl_by_reason.values(), ZERO) != metrics.exit_pnl:
+            # Each reason's sum and the total are accumulated fill by fill at the
+            # simulator's precision (50 digits), so with two reasons or more they round
+            # differently, far below 1e-18 (the full-range formal runs of 2026-10-07 differ
+            # by about 1e-46); P6's tolerance applies.
+            by_reason = sum(metrics.exit_pnl_by_reason.values(), ZERO)
+            if abs(by_reason - metrics.exit_pnl) > Decimal("1e-18"):
                 problems.append("exit P&L by reason does not sum to the exit total")
     return problems
 
@@ -1230,6 +1349,28 @@ def load_funding(
 DAY_MS = 86_400_000
 
 
+# Owner decision 14 (2026-10-07), an exception on record to spec v1 §5 rule 3 and P3:
+# days, as UTC dates, whose official 1d bar disagrees in volume with its 24 official 1h
+# bars through a defect of Binance's archive that was documented before any result that
+# reads the day existed. For every symbol, ``cross_check_daily`` excuses only the volume
+# of such a day: it still compares the day's prices with its hours, exactly, and counts
+# the excuse. The rest of the check treats the day as any other.
+DOCUMENTED_DAILY_DEFECTS: dict[str, str] = {
+    "2021-01-21": (
+        "the official 1d bars have about 2% less volume than their 24 official 1h bars "
+        "(BTCUSDT 2.4%, DOGEUSDT 1.7%, with identical prices; "
+        "docs/reviews/2026-09-26-bob-hourly-defect-calendar.md, Day-Level Defects); the "
+        "volume alone is excused by the owner's exception of 2026-10-07, decision 14 in "
+        "docs/reviews/2026-10-07-claude-v2-decisions-after-first-read.md"
+    ),
+}
+
+
+def _utc_date(open_ms: int) -> str:
+    """The UTC date of ``open_ms`` as ``YYYY-MM-DD``."""
+    return datetime.fromtimestamp(open_ms // 1000, UTC).strftime("%Y-%m-%d")
+
+
 def cross_check_daily(
     daily: Sequence[Kline],
     hourly: Sequence[Kline],
@@ -1239,7 +1380,7 @@ def cross_check_daily(
     volume_tolerance: Decimal | None = None,
     *,
     masked_days: frozenset[int] = frozenset(),
-) -> dict[str, int]:
+) -> dict[str, int | list[str]]:
     """Spec v1 P3: daily bars must be complete, unique and agree with their hours.
 
     ``daily_window`` is the [start, end) span the 1d archives cover; every UTC day in it
@@ -1252,6 +1393,16 @@ def cross_check_daily(
     ``daily_days_skipped_for_masks``, a key written only when non-zero. Its official 1d
     bar still counts: daily bars are never masked, so a missing or duplicated one stays
     a failure.
+
+    A day in ``DOCUMENTED_DAILY_DEFECTS`` (owner decision 14) goes through the
+    completeness check and the official-bar lookup like any other, and counts as
+    compared. Only its volume is excused: when its open, high, low and close equal its
+    hours' exactly, it counts in ``daily_days_volume_excused`` whatever its volume, and
+    as neither a mismatch nor drift; a price that differs is a mismatch, as on any other
+    day. The key is written only when non-zero. A listed day that holds a masked hour
+    takes the masked path. A day that mismatches is named in ``daily_mismatched_days``,
+    in date order, a key written only when one does. A window whose hourly span holds no
+    listed day and no mismatch, as every stage-1 window, gives today's record.
     """
     opens = [k.open_ms for k in daily]
     present = set(opens)
@@ -1261,7 +1412,8 @@ def cross_check_daily(
         if hourly_window[0] <= kline.open_ms < hourly_window[1]:
             by_day.setdefault(kline.open_ms // DAY_MS * DAY_MS, []).append(kline)
     official = {k.open_ms: k for k in daily}
-    compared = mismatched = incomplete = drift = skipped = 0
+    compared = mismatched = incomplete = drift = skipped = excused = 0
+    mismatched_days: list[str] = []
     for day in range(hourly_window[0], hourly_window[1], DAY_MS):
         if day in masked_days:
             skipped += 1
@@ -1275,11 +1427,20 @@ def cross_check_daily(
             continue  # counted as missing below
         compared += 1
         (merged,) = aggregate(sorted(hours, key=lambda h: h.open_ms), DAY_MS)
-        outcome = compare_bars(merged, reference, volume_tolerance)
-        mismatched += int(outcome == "mismatch")
+        if _utc_date(day) in DOCUMENTED_DAILY_DEFECTS:
+            # Decision 14 excuses the volume only: the prices must still match exactly.
+            prices = (merged.open, merged.high, merged.low, merged.close)
+            same = prices == (reference.open, reference.high, reference.low, reference.close)
+            outcome = "excused" if same else "mismatch"
+        else:
+            outcome = compare_bars(merged, reference, volume_tolerance)
+        if outcome == "mismatch":
+            mismatched += 1
+            mismatched_days.append(_utc_date(day))
         drift += int(outcome == "drift")
+        excused += int(outcome == "excused")
     warmup = sum(1 for o in opens if o + DAY_MS <= evaluation_start_ms)
-    result = {
+    result: dict[str, int | list[str]] = {
         "daily_days_compared": compared,
         "daily_days_mismatched": mismatched,
         "daily_days_volume_drift": drift,
@@ -1291,6 +1452,11 @@ def cross_check_daily(
     }
     if skipped:  # Written only when non-zero, so an unmasked record is today's.
         result["daily_days_skipped_for_masks"] = skipped
+    # Each written only when non-zero or non-empty, for the same reason (decision 14).
+    if excused:
+        result["daily_days_volume_excused"] = excused
+    if mismatched_days:
+        result["daily_mismatched_days"] = mismatched_days
     return result
 
 

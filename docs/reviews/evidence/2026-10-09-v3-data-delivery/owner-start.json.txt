@@ -1,0 +1,9 @@
+{
+  "at": "2026-10-09T17:05:42.145759+00:00",
+  "owner_message": "yes",
+  "question": "May I run one recovery attempt with the corrected 32 MiB limit?",
+  "task_head": "14f572db0faa3d168a14225173e214189e346d57",
+  "bob_review": "https://github.com/mgalic01/adaptive-market-engine/pull/254#issuecomment-6084373313",
+  "merged_commit": "c906216621da0e0f21f7768436b48c086a89a95b",
+  "scope": "one recovery attempt, no automatic retries"
+}

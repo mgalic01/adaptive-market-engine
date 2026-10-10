@@ -1,0 +1,25 @@
+{
+  "status": "local_retained_invocation_linkage_checks_passed",
+  "checked_at": "2026-10-10T05:42:24.149444Z",
+  "revision": "4d1e37c0637f8401f3903ea56d036f34c3bfd5cd",
+  "runtime_inventory_entries_verified": 122,
+  "identities": {
+    "code_commit": "f622d4b1b6ffe6d92aaf31cb6b194919301af30b",
+    "code_sha256": "da7192ac43ac90b1c8b5178bce78418d47728f7cd3146f2579581724d556f6f4",
+    "completion_id": "v3-candidate-space-7-complete",
+    "config_sha256": "49378c3dbce9ad7f29f6fa13ed3714b59d89176ab48881c1633cf7df28f3bdd2",
+    "manifest_sha256": "78d997a2f0a6e83705df339cc2ec0a0421faebdc18ee4337de8f07400a4b013a",
+    "registration_id": "v3-candidate-space-7-record",
+    "revision": "4d1e37c0637f8401f3903ea56d036f34c3bfd5cd",
+    "spec_sha256": "e337dbcaa89ca1bfeb5293f678aded60c3350aa8465c594e7a8c1c78aae3c191",
+    "trial_id": "v3-candidate-space-7"
+  },
+  "terminal_status": "failed",
+  "task_sha256": "c28dc4fb9aef8f798f305f0c29e4e633351bcfb847b23b3bc23024e903bc486a",
+  "bootstrap_sha256": "737b9d45d354507674b61931debd248c4a03d5ee3ba98798772ecd71535f34ef",
+  "limitations": [
+    "Checks retained current bytes against recorded start hashes, not a reconstruction of past process memory",
+    "Local records are operator evidence, not authenticated authorization",
+    "Attempt-to-invocation linkage requires external review before canonical result-event append"
+  ]
+}

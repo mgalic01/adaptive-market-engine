@@ -5,6 +5,9 @@
     python -m crypto_grid_bot.backtest run    --spec config/datasets/verify-2024h1.toml \\
         --config config/default.toml
     python -m crypto_grid_bot.backtest mask-report --spec config/datasets/verify-2024h1.toml
+
+``verify``, ``run`` and ``mask-report`` write ``progress: ...`` lines to stderr as each phase and
+job starts and ends (``progress.py``). stdout, results.json and summary.md hold none of them.
 """
 
 from __future__ import annotations
@@ -53,6 +56,7 @@ from crypto_grid_bot.backtest.masking import (
     MonthMask,
     real_defect_share,
 )
+from crypto_grid_bot.backtest.progress import Progress
 from crypto_grid_bot.backtest.replay import (
     ENGINE_VERSION,
     INTEGRITY_RULES,
@@ -425,6 +429,13 @@ class InProcess:
         return future
 
 
+def arm_label(variant: str | None, structure: bool) -> str:
+    """What a progress line calls the gated rows of a run: its variant ("V0" for none), with
+    "+V2" when the V2 structure features are on, as the byte-identity check labels them."""
+    name = variant or "V0"
+    return f"{name}+V2" if structure else name
+
+
 def _table(results: list[dict[str, Any]]) -> str:
     lines = [
         "| Pair | Path | Strategy | Return % | Max DD % | Buy&hold % | B&H DD % | Fees | "
@@ -448,6 +459,8 @@ def _table(results: list[dict[str, Any]]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Progress lines (stderr only; see progress.py) are timed from here.
+    progress = Progress()
     parser = argparse.ArgumentParser(prog="python -m crypto_grid_bot.backtest")
     parser.add_argument("command", choices=("fetch", "verify", "run", "mask-report"))
     parser.add_argument("--spec", type=Path, required=True)
@@ -597,8 +610,9 @@ def main(argv: list[str] | None = None) -> int:
     # #160). Every run that is not plain V0 records it; V0 keeps its exact layout.
     recorded = policy is not None or args.trend_benchmark or args.record_commit or fill is not None
     commit = code_commit() if recorded else None
-    manifest = load_manifest(manifest_path(args.spec))
-    verify_dataset(spec, manifest, args.data_dir)
+    with progress.phase("manifest verification"):
+        manifest = load_manifest(manifest_path(args.spec))
+        verify_dataset(spec, manifest, args.data_dir)
     integrity = {
         "version": STRICT_INTEGRITY_RULES if args.strict_volume else INTEGRITY_RULES,
         "volume_drift_tolerance": "0" if args.strict_volume else str(VOLUME_DRIFT_TOLERANCE),
@@ -619,26 +633,41 @@ def main(argv: list[str] | None = None) -> int:
         # joins it after the checks, before any replay). Every mask is submitted before any
         # is awaited, so they run in parallel, as the checks do.
         symbols = checked_symbols(spec)
-        pending = [pool.submit(mask_job, args.spec, args.data_dir, s) for s in symbols]
-        symbol_masks = [symbol_mask.result() for symbol_mask in pending]
+        with progress.phase("mask", len(symbols)) as masking:
+            pending = [
+                masking.submit(pool, s, mask_job, args.spec, args.data_dir, s) for s in symbols
+            ]
+            symbol_masks = [symbol_mask.result() for symbol_mask in pending]
         mask = comparison_mask(symbol_masks)
         masks = {symbol_mask.symbol: symbol_mask.mask for symbol_mask in symbol_masks}
+        if mask:
+            progress.note(
+                f"mask found masked hours or excluded months in {len(mask)} of {len(symbols)} "
+                f"symbols: {', '.join(mask)}"
+            )
         if args.command == "mask-report":
             # Rule 8's statistic, on XRPUSDT's own mask: the same one its check records.
-            quote = (
-                pool.submit(
-                    quote_test_job,
-                    args.spec,
-                    args.data_dir,
-                    args.config,
-                    masks[QUOTE_TESTED_SYMBOL],
-                ).result()
-                if quoted(spec, QUOTE_TESTED_SYMBOL)
-                else None
-            )
-            if quote is not None:
-                mask = with_quote_breaches(mask, {QUOTE_TESTED_SYMBOL: quote["tick_limit_quotes"]})
-            print(json.dumps(mask_report(spec, symbol_masks, mask, quote), indent=1))
+            tested = quoted(spec, QUOTE_TESTED_SYMBOL)
+            with progress.phase("mask report", int(tested)) as reporting:
+                quote = (
+                    reporting.submit(
+                        pool,
+                        f"{QUOTE_TESTED_SYMBOL} quote test",
+                        quote_test_job,
+                        args.spec,
+                        args.data_dir,
+                        args.config,
+                        masks[QUOTE_TESTED_SYMBOL],
+                    ).result()
+                    if tested
+                    else None
+                )
+                if quote is not None:
+                    mask = with_quote_breaches(
+                        mask, {QUOTE_TESTED_SYMBOL: quote["tick_limit_quotes"]}
+                    )
+                report = mask_report(spec, symbol_masks, mask, quote)
+            print(json.dumps(report, indent=1))
             return 0
         # The month tables (every month's expected hours) served only the comparison mask and
         # the map; only the masked hours go on, so a long window's tables do not outlive this
@@ -649,17 +678,20 @@ def main(argv: list[str] | None = None) -> int:
         # runs on its symbol's post-mask expected set; a symbol whose mask is None (every
         # stage-1 symbol) is checked exactly as before masks existed. Every check gets the
         # config, which XRPUSDT's actual-quotes test reads (spec v1 section 5 rule 8).
-        checks = [
-            pool.submit(
-                check_job(masks[symbol], args.config),
-                args.spec,
-                args.data_dir,
-                symbol,
-                args.strict_volume,
-            )
-            for symbol in symbols
-        ]
-        cross_checks = [check.result() for check in checks]
+        with progress.phase("cross-check", len(symbols)) as checking:
+            checks = [
+                checking.submit(
+                    pool,
+                    symbol,
+                    check_job(masks[symbol], args.config),
+                    args.spec,
+                    args.data_dir,
+                    symbol,
+                    args.strict_volume,
+                )
+                for symbol in symbols
+            ]
+            cross_checks = [check.result() for check in checks]
         # Rule 8's breach is found by XRPUSDT's check, after the masks, and joins the mask
         # here, before any replay or scoring.
         mask = with_quote_breaches(
@@ -703,34 +735,47 @@ def main(argv: list[str] | None = None) -> int:
         }
         grid_job = partial(run_job, **options) if options else run_job
         benchmark_job = partial(trend_job, masks=masks) if masked else trend_job
-        futures = [
-            pool.submit(
-                grid_job,
-                args.spec,
-                args.config,
-                args.data_dir,
-                s,
-                mode,
-                gated,
-                (maker, taker),
-                # The ungated rows are always the spec's ungated V0 baseline, which C6
-                # compares a variant with, never the variant without its gate (Codex
-                # review of #160).
-                policy if gated else None,
-            )
-            for s in pairs
-            for mode in PATH_MODES
-            for gated in (True, False)
-        ]
-        if args.trend_benchmark:
-            futures += [
-                pool.submit(
-                    benchmark_job, args.spec, args.config, args.data_dir, s, mode, (maker, taker)
+        arm = arm_label(args.variant, args.structure)
+        replays = len(pairs) * len(PATH_MODES) * (3 if args.trend_benchmark else 2)
+        with progress.phase("replay", replays) as replaying:
+            futures = [
+                replaying.submit(
+                    pool,
+                    f"{s} {mode} {arm if gated else 'ungated'}",
+                    grid_job,
+                    args.spec,
+                    args.config,
+                    args.data_dir,
+                    s,
+                    mode,
+                    gated,
+                    (maker, taker),
+                    # The ungated rows are always the spec's ungated V0 baseline, which C6
+                    # compares a variant with, never the variant without its gate (Codex
+                    # review of #160).
+                    policy if gated else None,
                 )
                 for s in pairs
                 for mode in PATH_MODES
+                for gated in (True, False)
             ]
-        results = [f.result() for f in futures]
+            if args.trend_benchmark:
+                futures += [
+                    replaying.submit(
+                        pool,
+                        f"{s} {mode} D",
+                        benchmark_job,
+                        args.spec,
+                        args.config,
+                        args.data_dir,
+                        s,
+                        mode,
+                        (maker, taker),
+                    )
+                    for s in pairs
+                    for mode in PATH_MODES
+                ]
+            results = [f.result() for f in futures]
     failures = result_failures(results)
     if commit is not None and (after := code_commit()) != commit:
         # Spawned workers import the code from disk when they start, so after a change of
@@ -786,9 +831,10 @@ def main(argv: list[str] | None = None) -> int:
         "hourly_cross_checks": cross_checks,
         "results": results,
     }
-    (out / "results.json").write_text(json.dumps(document, indent=1, default=str) + "\n")
-    table = _table(results)
-    (out / "summary.md").write_text(table + "\n")
+    with progress.phase("write results"):
+        (out / "results.json").write_text(json.dumps(document, indent=1, default=str) + "\n")
+        table = _table(results)
+        (out / "summary.md").write_text(table + "\n")
     brief = [{k: v for k, v in r.items() if k != "hourly_equity"} for r in results]
     shown = {
         "out": str(out),

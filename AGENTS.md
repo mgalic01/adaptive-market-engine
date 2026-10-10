@@ -27,6 +27,35 @@ Stop when the authorized work is complete or genuinely needs external action; na
 the blocker and its owner. This does not bypass branch ownership, required checks,
 external review, reserved-data gates or the owner's other constraints.
 
+## Continue until the active goal is complete (owner, 2026-10-09)
+
+Do not end a work turn while an authorized, actionable item remains for the active
+goal. A status update, passing test, commit, PR, review request or completed subtask
+is a checkpoint, not a stopping point. Continue directly to the next necessary item
+without asking the owner to say "continue".
+
+- Maintain a short queue of completed, active, next and blocked items in the project
+  tracker. Before ending, inspect the queue and choose the next executable item.
+- While CI, reviews or an owner decision are pending, continue independent work
+  within the approved scope. A blocked download does not block offline implementation,
+  tests, documentation or review. Wait for pending work when no independent item is
+  available; avoid tight polling and keep the owner informed of meaningful progress.
+- Ask only for genuinely missing decisions or authorization. Complete all preparation
+  first, identify the exact governing rule, and do not ask again for approval already
+  given. Keep required questions pending; silence is not approval.
+- End only when the active goal is complete, the owner asks to stop, a platform limit
+  prevents continuation, or every remaining necessary item is genuinely blocked.
+  Identify each blocker, its owner, the action needed and the preserved work location.
+  Do not claim background work continues after the turn ends unless a real process
+  or scheduled automation is running.
+- Apply this to the active goal, not every unrelated open issue or PR. Do not invent
+  extra work merely to stay busy. Preserve external review, branch ownership, data
+  gates, no-retry rules and all other explicit owner constraints.
+
+Reason and tradeoff: premature stops make the owner manually restart normal work.
+An unlimited "anything open" rule could instead cause scope creep, wasted compute
+or unauthorized actions. This bounded rule requires persistence without that cost.
+
 **Owner rule, 2026-09-26: Codex must not merge its own work until Claude or Bob has
 reviewed the latest full commit SHA and posted substantive feedback on the PR.**
 Codex chooses the reviewer, addresses blocking findings and verifies required checks.

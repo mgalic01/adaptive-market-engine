@@ -21,6 +21,7 @@ import unittest
 from decimal import Decimal
 from fractions import Fraction as F
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from crypto_grid_bot.backtest import __main__ as cli
@@ -599,6 +600,99 @@ class FileTests(ScorerFiles):
         documents = self.files()
         del documents[FULL, "MS"]["results"][0]["modes"]["time_ms"]
         self.refused(documents.values(), "an MS row lacks modes.time_ms")
+
+    def test_a_row_carrying_the_decision_reasons_is_scored_as_before(self) -> None:
+        # modes.decisions is reported only: the scorer reads the modes keys it needs, and no
+        # criterion reads this one, so every MS row carrying it scores exactly as before.
+        decisions = {
+            "by_mode": {"cash": 30, "grid": 8, "uptrend": 2},
+            "by_month": {
+                "2019-01": {
+                    "by_mode": {"cash": 30, "grid": 8, "uptrend": 2},
+                    "halted": 0,
+                    "made": 40,
+                    "skipped_holding": 12,
+                    "uptrend_blocked_by": {"d1_rsi_overbought": 9, "h4_not_up": 30},
+                    "uptrend_sole_blocker": {"d1_rsi_overbought": 7},
+                }
+            },
+            "grid_blocked_by": {"h4_not_range_or_unclear": 32},
+            "grid_sole_blocker": {"h4_not_range_or_unclear": 20},
+            "halted": 0,
+            "made": 40,
+            "skipped_holding": 12,
+            "uptrend_blocked_by": {"d1_rsi_overbought": 9, "h4_not_up": 30},
+            "uptrend_sole_blocker": {"d1_rsi_overbought": 7},
+        }
+        _, _, _, before = self.run_scorer(self.files().values())
+        documents = self.files()
+        carrying = 0
+        for data in documents.values():
+            for result in data["results"]:
+                if result.get("variant") == "MS":
+                    result["modes"]["decisions"] = decisions
+                    carrying += 1
+        self.assertGreater(carrying, 0)
+        code, _, stderr, after = self.run_scorer(documents.values())
+        self.assertEqual(code, 0, stderr)
+
+        def scored(verdict: dict[str, Any]) -> dict[str, Any]:
+            # The inputs' paths and file digests differ by construction; nothing else may.
+            inputs = [
+                {k: v for k, v in item.items() if k not in ("path", "sha256")}
+                for item in verdict["inputs"]
+            ]
+            return {k: v for k, v in verdict.items() if k != "inputs"} | {"inputs": inputs}
+
+        self.assertEqual(scored(after), scored(before))
+        self.assertEqual(after["outcome"], "pass")
+
+    def test_a_check_carrying_the_documented_volume_excuse_is_scored_as_before(self) -> None:
+        # Owner decision 14 (2026-10-07): the daily check excuses 2021-01-21's volume, its
+        # prices agreeing, and counts it in daily_days_volume_excused. v2 reads the checks
+        # through spec v1's window_of, which reads only the integrity fields, so the count
+        # changes no verdict. Here, as expected on the real data, XRPUSDT is excluded by
+        # its quote test (rule 8) and BTCUSDT and ETHUSDT stay in: two pairs, enough for a
+        # verdict.
+        self.assertIs(v2.window_of, score.window_of)
+
+        def files(excused: bool) -> dict[tuple[str, str], dict[str, Any]]:
+            documents = self.files()
+            for (dataset, _), data in documents.items():
+                for check in data["hourly_cross_checks"]:
+                    if dataset != FULL:
+                        continue
+                    if check["symbol"] == "XRPUSDT":
+                        check["tick_limit_quotes"] = 3
+                    if excused and "daily_days_compared" in check:
+                        check["daily_days_volume_excused"] = 1
+            return documents
+
+        _, _, _, before = self.run_scorer(files(False).values())
+        documents = files(True)
+        carrying = [
+            check["symbol"]
+            for check in documents[FULL, "MS"]["hourly_cross_checks"]
+            if "daily_days_volume_excused" in check
+        ]
+        self.assertEqual(carrying, ["BTCUSDT", "ETHUSDT", "XRPUSDT"])
+        code, _, stderr, after = self.run_scorer(documents.values())
+        self.assertEqual(code, 0, stderr)
+
+        def scored(verdict: dict[str, Any]) -> dict[str, Any]:
+            # The inputs' paths and file digests differ by construction; nothing else may.
+            inputs = [
+                {k: v for k, v in item.items() if k not in ("path", "sha256")}
+                for item in verdict["inputs"]
+            ]
+            return {k: v for k, v in verdict.items() if k != "inputs"} | {"inputs": inputs}
+
+        self.assertEqual(scored(after), scored(before))
+        self.assertEqual(after["outcome"], "pass")
+        mask = after["comparison_mask"][FULL]
+        self.assertTrue(mask["minimum_evidence"])
+        included = sorted(pair for pair, item in mask["pairs"].items() if item["included"])
+        self.assertEqual(included, ["BTCUSDT", "ETHUSDT"])
 
     def test_reported_windows_decide_nothing_and_a_failed_criterion_fails(self) -> None:
         losing = {("practice-2022", "MS"): "-1", ("verify-2024h1", "MS"): "-1"}

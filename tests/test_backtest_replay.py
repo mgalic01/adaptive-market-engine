@@ -1061,6 +1061,24 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual([], check_accounting(run, metrics, account))  # includes P6
         return metrics, account
 
+    def test_exit_reasons_reconcile_within_the_simulators_rounding(self):
+        # The full-range formal runs (2026-10-07): each reason's exit P&L and the exit total
+        # are summed at the simulator's precision (50 digits), fill by fill, so with two
+        # reasons the two sums round differently, here by 1e-46. An exact comparison failed
+        # every such run; the tolerance is the P&L reconciliation's (P6), 1e-18.
+        minutes = self.flat(0, 60, self.fair) + self.flat(60, 540, self.fair * 0.95)
+        run = RunConfig("TESTUSDT", "high_first", False, RULES, D(100), D("0.0005"))
+        metrics, account = replay(self.config, run, minutes, self.engine)
+        total = metrics.exit_pnl_by_reason["range_exit"]
+        metrics.exit_pnl_by_reason = {"range_exit": total + D("1e-45"), "liquidation": D("-9e-46")}
+        self.assertEqual([], check_accounting(run, metrics, account))
+        # A real gap still fails.
+        metrics.exit_pnl_by_reason = {"range_exit": total, "liquidation": D("-0.000001")}
+        self.assertEqual(
+            ["exit P&L by reason does not sum to the exit total"],
+            check_accounting(run, metrics, account),
+        )
+
     def test_range_exit_losses_are_labelled_and_reconcile(self):
         minutes = self.flat(0, 60, self.fair) + self.flat(60, 540, self.fair * 0.95)
         metrics, _ = self.run_replay(minutes)
@@ -1177,6 +1195,192 @@ class DailyCrossCheckTests(unittest.TestCase):
         self.assertEqual(1, self.check([*daily, daily[2]], hours)["daily_days_duplicated"])
         gap = hours[:30] + hours[31:]  # one hour of day 2 absent
         self.assertEqual(1, self.check(daily, gap)["daily_days_hours_incomplete"])
+
+
+class DocumentedDailyDefectTests(unittest.TestCase):
+    """Owner decision 14 (2026-10-07), as narrowed on review: on 2021-01-21, a documented
+    Binance volume defect, the daily check excuses only the volume. The day's prices are
+    still compared with its 24 hours, so the premise of the grant (identical prices) is
+    checked on every run. A record with a mismatch names the mismatched days. Synthetic
+    bars only."""
+
+    DAY = 86_400_000
+    DEFECT = int(datetime(2021, 1, 21, tzinfo=UTC).timestamp() * 1000)
+    START = DEFECT - DAY  # three days: 2021-01-20, the listed 21st and the 22nd
+    # The fields a daily record had before this decision; neither new key is among them.
+    FIELDS = {
+        "daily_days_compared",
+        "daily_days_mismatched",
+        "daily_days_volume_drift",
+        "daily_days_missing",
+        "daily_days_duplicated",
+        "daily_days_hours_incomplete",
+        "daily_warmup_days",
+        "daily_warmup_short",
+    }
+
+    def bars(self, start=START):
+        from crypto_grid_bot.backtest.klines import aggregate
+
+        hours = hourly(72, start_ms=start)
+        return list(aggregate(hours, self.DAY)), hours
+
+    def check(self, daily, hours, hourly_start=START, tolerance=None, masked_days=frozenset()):
+        end = self.START + 3 * self.DAY
+        return cross_check_daily(
+            daily,
+            hours,
+            (self.START, end),
+            (hourly_start, end),
+            end,
+            tolerance,
+            masked_days=masked_days,
+        )
+
+    @staticmethod
+    def short_volume(bar):
+        """``bar`` with 2.4% less volume and its prices unchanged, as Bob's defect calendar
+        found BTCUSDT's official 1d bar of 2021-01-21 against its 24 hours (131803.182926
+        against 135004.076658)."""
+        return replace(bar, volume=bar.volume * D("0.976"))
+
+    def test_the_listed_days_volume_is_excused_and_counted(self):
+        from crypto_grid_bot.backtest.replay import DOCUMENTED_DAILY_DEFECTS
+
+        self.assertEqual(["2021-01-21"], list(DOCUMENTED_DAILY_DEFECTS))
+        reason = DOCUMENTED_DAILY_DEFECTS["2021-01-21"]
+        self.assertNotIn("\n", reason)
+        self.assertIn("2026-09-26-bob-hourly-defect-calendar.md", reason)
+        self.assertIn("2026-10-07-claude-v2-decisions-after-first-read.md", reason)
+        daily, hours = self.bars()
+        clean = self.check(daily, hours)
+        daily[1] = self.short_volume(daily[1])
+        result = self.check(daily, hours)
+        # The day is compared: its prices equal its hours', so its volume is excused,
+        # counted neither as a mismatch nor as drift.
+        self.assertEqual(
+            {
+                "daily_days_compared": 3,
+                "daily_days_mismatched": 0,
+                "daily_days_volume_drift": 0,
+                "daily_days_missing": 0,
+                "daily_days_duplicated": 0,
+                "daily_days_hours_incomplete": 0,
+                "daily_warmup_days": 3,
+                "daily_warmup_short": 1,
+                "daily_days_volume_excused": 1,
+            },
+            result,
+        )
+        # Whatever its volume: a bar that agrees in full is excused alike.
+        self.assertEqual(result, clean)
+        # With strict volume (--strict-volume) as well.
+        self.assertEqual(result, self.check(daily, hours, tolerance=D(0)))
+        # The day goes through the presence and completeness checks like any other: a
+        # missing bar is missing, a duplicated one duplicated, and a missing hour makes
+        # the day incomplete. A day not compared is not excused.
+        without = self.check([daily[0], daily[2]], hours)
+        self.assertEqual(1, without["daily_days_missing"])
+        self.assertEqual(2, without["daily_days_compared"])
+        self.assertNotIn("daily_days_volume_excused", without)
+        twice = self.check([*daily, daily[1]], hours)
+        self.assertEqual(1, twice["daily_days_duplicated"])
+        gap = self.check(daily, hours[:30] + hours[31:])  # one hour of the 21st absent
+        self.assertEqual(1, gap["daily_days_hours_incomplete"])
+        self.assertEqual(2, gap["daily_days_compared"])
+        self.assertNotIn("daily_days_volume_excused", gap)
+
+    def test_a_price_difference_on_the_listed_day_is_a_named_mismatch(self):
+        """Only the volume is excused. A price that differs from the 24 hours' on the
+        listed day is a mismatch as on any other day, named 2021-01-21, so a 1d price
+        error that day fails its pair. Bob's calendar shows identical prices that day only
+        for BTCUSDT and DOGEUSDT; every run now checks it for each pair."""
+        daily, hours = self.bars()
+        bar = self.short_volume(daily[1])
+        moved = {
+            "open": replace(bar, open=bar.open + D("0.0001")),
+            "high": replace(bar, high=bar.high + D("0.0001")),
+            "low": replace(bar, low=bar.low - D("0.0001")),
+            "close": replace(bar, close=bar.close + D("0.0001")),
+        }
+        for field, changed in moved.items():
+            for tolerance in (None, D(0)):
+                with self.subTest(field=field, strict=tolerance is not None):
+                    result = self.check([daily[0], changed, daily[2]], hours, tolerance=tolerance)
+                    self.assertEqual(1, result["daily_days_mismatched"])
+                    self.assertEqual(["2021-01-21"], result["daily_mismatched_days"])
+                    self.assertEqual(0, result["daily_days_volume_drift"])
+                    self.assertEqual(3, result["daily_days_compared"])
+                    self.assertNotIn("daily_days_volume_excused", result)
+
+    def test_the_same_difference_on_another_day_fails_and_is_named(self):
+        daily, hours = self.bars()
+        for index, name in ((0, "2021-01-20"), (2, "2021-01-22")):
+            with self.subTest(name):
+                bad = list(daily)
+                bad[index] = self.short_volume(bad[index])
+                result = self.check(bad, hours)
+                self.assertEqual(1, result["daily_days_mismatched"])
+                self.assertEqual([name], result["daily_mismatched_days"])
+                self.assertEqual(3, result["daily_days_compared"])
+                self.assertEqual(1, result["daily_days_volume_excused"])
+        # Every mismatched day is named, in date order; a drift within the tolerance is
+        # not a mismatch and is not named.
+        bad = [self.short_volume(daily[0]), daily[1], self.short_volume(daily[2])]
+        result = self.check(bad, hours)
+        self.assertEqual(2, result["daily_days_mismatched"])
+        self.assertEqual(["2021-01-20", "2021-01-22"], result["daily_mismatched_days"])
+        drift = [replace(daily[0], volume=daily[0].volume * D("1.001")), *daily[1:]]
+        result = self.check(drift, hours)
+        self.assertEqual(1, result["daily_days_volume_drift"])
+        self.assertEqual(0, result["daily_days_mismatched"])
+        self.assertNotIn("daily_mismatched_days", result)
+        # In a window without the listed day, a mismatch is named the same way.
+        early, early_hours = self.bars(start=START_MS)
+        early[1] = replace(early[1], close=early[1].close + D("0.0001"))
+        window = (START_MS, START_MS + 3 * self.DAY)
+        result = cross_check_daily(early, early_hours, window, window, window[1])
+        self.assertEqual(["2024-01-02"], result["daily_mismatched_days"])
+        self.assertNotIn("daily_days_volume_excused", result)
+
+    def test_a_masked_listed_day_takes_the_masked_path(self):
+        # A listed day that also holds a masked hour is skipped and counted as masked, as
+        # before, so daily_days_skipped_for_masks stays the count
+        # jobs.skipped_days_for_masks gives.
+        daily, hours = self.bars()
+        daily[1] = replace(self.short_volume(daily[1]), high=daily[1].high + D(1))
+        result = self.check(daily, hours, masked_days=frozenset({self.DEFECT}))
+        self.assertEqual(1, result["daily_days_skipped_for_masks"])
+        self.assertNotIn("daily_days_volume_excused", result)
+        self.assertEqual((2, 0), (result["daily_days_compared"], result["daily_days_mismatched"]))
+
+    def test_stage_1_like_records_carry_neither_new_key(self):
+        # Stage 1's daily windows start in 2020-05 and hold 2021-01-21, but their hourly
+        # windows start in 2022-04 and 2023-11: the day is checked for presence only, never
+        # compared, so it is neither excused nor counted, whatever its bar.
+        from crypto_grid_bot.backtest.dataset import load_spec
+        from crypto_grid_bot.backtest.jobs import hourly_window
+        from crypto_grid_bot.backtest.klines import month_bounds_ms
+
+        for name in ("practice-2022", "verify-2024h1"):
+            with self.subTest(name):
+                spec = load_spec(ROOT / "config" / "datasets" / f"{name}.toml")
+                self.assertLess(month_bounds_ms(spec.daily_warmup_start)[0], self.DEFECT)
+                self.assertGreater(hourly_window(spec)[0], self.DEFECT)
+        daily, hours = self.bars()
+        daily[1] = replace(self.short_volume(daily[1]), high=daily[1].high + D(1))
+        later = self.START + 2 * self.DAY
+        result = self.check(daily, hours, hourly_start=later)
+        self.assertEqual(self.FIELDS, set(result))
+        self.assertEqual(1, result["daily_days_compared"])  # the 22nd alone
+        self.assertEqual(0, result["daily_days_mismatched"])
+        self.assertEqual(0, result["daily_days_missing"])
+        # A clean window without the day carries neither key either.
+        clean, clean_hours = self.bars(start=START_MS)
+        window = (START_MS, START_MS + 3 * self.DAY)
+        self.assertEqual(
+            self.FIELDS, set(cross_check_daily(clean, clean_hours, window, window, window[1]))
+        )
 
 
 class BasketGapTests(unittest.TestCase):

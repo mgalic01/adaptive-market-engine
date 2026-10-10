@@ -7,6 +7,8 @@ integrity cross-checks run before any replay (a pair whose own check fails is ex
 and not replayed, spec v1 §5), fees come from the spec unless a fee flag overrides
 them, and results are marked valid only when every replayed run is.
 Results are written to data/backtests/<spec>/<stamp>/results.json and summary.md.
+Progress lines (``progress: [H:MM:SS] ...``: each phase and each job, as it starts and
+ends) go to stderr while it runs; they are not part of the results.
 
 Usage:
     python scripts/run_nopool.py long-recovery-2023-2024
