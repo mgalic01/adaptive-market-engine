@@ -96,5 +96,15 @@ metric completeness. This is an intentional compatibility change, not a strategy
 or acceptance-threshold change. Grid stop-reference bounds do not guarantee a
 maximum loss through an adverse gap; actual worse fills must still be booked.
 
+Adjacent-risk inspection then reproduced the same tick omission in trend admission
+and held-position reserves: entry100, stop98 and tick10 admitted20 units with40
+reserved loss although the executable stop90 implied200. Intent now requires an
+explicit tick verified against candidate venue rules. Planned entry, stop, fees,
+cash and held exit reserves use adverse tick rounding; the example now admits5
+units with50 planned risk. Actual fills remain booked and worse-than-admitted
+entries request protection. At `70eab91`, 534 focused tests pass with one OS skip,
+plus static/report checks; a separate critic passed138 risk/engine/allocation/
+decision tests. This does not replace current-head external review and CI.
+
 The separate intrabar proposal in this branch is pending an owner decision. It
 does not amend the approved specification or silently change acceptance metrics.
