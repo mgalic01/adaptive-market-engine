@@ -8,6 +8,28 @@ from crypto_grid_bot.combined.account import CombinedAccount, FillEvent, Funding
 D = Decimal
 
 
+def test_wallet_conversion_ignores_restrictive_decimal_context() -> None:
+    account = CombinedAccount(D(10000))
+    with localcontext() as context:
+        context.prec = 2
+        context.Emax = 2
+        context.Emin = -2
+        for signal in context.traps:
+            context.traps[signal] = True
+        result = account.apply(fill("context", fee="1"))
+    assert result.free_cash == 9989
+    assert result.equity == 9999
+    assert result.reconciliation_residual == 0
+
+
+def test_extreme_decimal_input_rejected_before_wallet_mutation() -> None:
+    account = CombinedAccount(D(10000))
+    before = account.snapshot()
+    with pytest.raises(ValueError):
+        account.apply(fill("extreme", price="1e5000"))
+    assert account.snapshot() == before
+
+
 def fill(
     event: str,
     symbol: str = "BTCUSDT",

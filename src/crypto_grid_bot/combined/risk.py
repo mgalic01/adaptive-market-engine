@@ -54,6 +54,7 @@ class Intent:
     funding_interval_ms: int | None = None
     funding_admission: bool = True
     maintenance_rate: Decimal = Decimal("0.005")
+    risk_multiplier: Decimal = Decimal(1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +93,7 @@ def _validate(intent: Intent, view: PortfolioView) -> None:
         intent.min_quantity,
         intent.min_notional,
         intent.maintenance_rate,
+        intent.risk_multiplier,
     ):
         _number(value)
     if (
@@ -107,6 +109,7 @@ def _validate(intent: Intent, view: PortfolioView) -> None:
         or intent.step > intent.max_quantity
         or intent.fee_rate >= 1
         or intent.slippage_rate >= 1
+        or intent.risk_multiplier not in {Decimal("0.5"), Decimal(1)}
     ):
         raise ValueError("invalid admission contract")
     if (intent.venue == "spot" and (intent.side != 1 or intent.owner == "futures_trend")) or (
@@ -271,7 +274,7 @@ class PortfolioRisk:
         fraction = view.risk_fraction
         normal = min(
             intent.requested_quantity,
-            view.equity * Decimal("0.005") / unit_risk,
+            view.equity * Decimal("0.005") * intent.risk_multiplier / unit_risk,
             view.equity * Decimal("0.20") / unit_notional,
             view.free_cash / unit_cash,
             intent.max_quantity,

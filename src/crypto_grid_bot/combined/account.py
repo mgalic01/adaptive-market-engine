@@ -8,7 +8,7 @@ Fill marks are explicitly identified historical observations, never fresh quotes
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from decimal import Decimal, localcontext
+from decimal import Decimal
 from fractions import Fraction
 
 from crypto_grid_bot.market_data.parsing import symbol_name
@@ -87,16 +87,30 @@ class _Lot:
 
 
 def _decimal(value: Fraction) -> Decimal:
-    # All ledger operations preserve terminating fractions: only division by two.
-    # Dynamic precision accommodates decimal inputs without rounding or caller context.
-    with localcontext() as context:
-        context.prec = len(str(abs(value.numerator))) + 4 * len(str(value.denominator)) + 10
-        return Decimal(value.numerator) / Decimal(value.denominator)
+    # All ledger operations preserve terminating fractions. Construct the exact
+    # coefficient/exponent directly, independent of precision, exponent or traps.
+    denominator = value.denominator
+    twos = fives = 0
+    while denominator % 2 == 0:
+        denominator //= 2
+        twos += 1
+    while denominator % 5 == 0:
+        denominator //= 5
+        fives += 1
+    if denominator != 1:
+        raise ValueError("nonterminating ledger fraction")
+    scale = max(twos, fives)
+    coefficient = abs(value.numerator) * 2 ** (scale - twos) * 5 ** (scale - fives)
+    digits = Decimal(coefficient).as_tuple().digits
+    return Decimal((int(value < 0), digits, -scale))
 
 
 def _number(value: Decimal, *, positive: bool = False, signed: bool = False) -> Fraction:
     if not isinstance(value, Decimal) or not value.is_finite():
         raise ValueError("finite Decimal required")
+    exponent = value.as_tuple().exponent
+    if value.copy_abs() > Decimal("1e36") or not isinstance(exponent, int) or exponent < -100:
+        raise ValueError("account input exceeds bounded precision or magnitude")
     if (positive and value <= 0) or (not signed and value < 0):
         raise ValueError("invalid quantity, price or fee sign")
     return Fraction(value)

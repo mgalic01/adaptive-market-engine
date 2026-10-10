@@ -35,6 +35,17 @@ def view(**changes):
     return replace(PortfolioView(D(10000), D(10000), (), D(1)), **changes)
 
 
+def test_extended_entry_halves_stop_risk_before_recovery_scaling():
+    answer = PortfolioRisk().reserve(intent(risk_multiplier=D("0.5")), view())
+    assert answer.accepted and answer.risk <= 25
+    recovered = PortfolioRisk().reserve(
+        intent(risk_multiplier=D("0.5")), view(risk_fraction=D("0.25"))
+    )
+    assert recovered.risk <= D("6.25")
+    with pytest.raises(ValueError):
+        PortfolioRisk().reserve(intent(risk_multiplier=D(2)), view())
+
+
 def test_asset_cap_and_fee_reserve_limit_size():
     answer = PortfolioRisk().reserve(intent(), view())
     assert answer.quantity == D("19.990")
