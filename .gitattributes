@@ -17,3 +17,6 @@ config/datasets/v3-20261009/snapshots/*.json -text -diff
 docs/backtests/v3-20261010-failed-invocation/** -text diff
 docs/backtests/v3-20261010-partial-diagnostics/** -text diff
 docs/backtests/v3-20261010-return-diagnosis/** -text diff
+
+# Preserve cross-version diagnostic evidence bytes.
+docs/backtests/cross-version-20261010/** -text diff
