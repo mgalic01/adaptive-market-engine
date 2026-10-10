@@ -127,7 +127,10 @@ def allocate_grid(result: DecisionResult) -> GridAllocation:
     denominator = sum(inverse)
     weights = tuple(value / denominator for value in inverse)
     fee, slip = Fraction(costs.fee_rate), Fraction(costs.slippage_rate)
-    exit_price = stop * (1 - slip)
+    # Match adverse sell execution: slippage first, then floor to the venue tick.
+    exit_price = (stop * (1 - slip) // tick) * tick
+    if exit_price <= 0:
+        return finish("invalid_stop_execution_price")
     children = []
     for index, (price, weight) in enumerate(zip(prices, weights, strict=True), start=1):
         quantity = (total_quantity * weight // step) * step
@@ -139,7 +142,7 @@ def allocate_grid(result: DecisionResult) -> GridAllocation:
         ):
             return finish("child_below_minimum")
         fees = (price + exit_price) * fee
-        execution_cost = stop * slip + fees
+        execution_cost = stop - exit_price + fees
         if execution_cost > cost_bound:
             return finish("round_trip_cost_understated")
         children.append(
