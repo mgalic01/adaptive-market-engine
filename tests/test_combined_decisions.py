@@ -297,3 +297,14 @@ def test_unavailable_assessment_retains_independent_blockers(setup):
     assert result.admission is None
     assert {"missing_daily_bar", "assessment_unavailable"} <= set(journal.events[-1].reasons)
     assert engine.reservations == ()
+
+
+def test_tick_cost_cannot_be_hidden_by_zero_fee_and_slippage(setup):
+    coordinator, engine, _, args = setup
+    args["spot"] = replace(
+        args["spot"], rules=replace(args["spot"].rules, tick=D(10)), costs=Costs(D(0), D(0), D(0))
+    )
+    result = coordinator.decide(**args)
+    assert result.admission is None
+    assert "round_trip_cost_understated" in result.qualification.reasons
+    assert engine.reservations == ()

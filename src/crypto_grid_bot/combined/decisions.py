@@ -16,7 +16,7 @@ from crypto_grid_bot.combined.engine import PortfolioEngine, Quote
 from crypto_grid_bot.combined.evidence import DecisionEvent, Evidence
 from crypto_grid_bot.combined.execution import VenueRules
 from crypto_grid_bot.combined.models import Assessment, assessment_source_reasons
-from crypto_grid_bot.combined.risk import Admission, Intent
+from crypto_grid_bot.combined.risk import Admission, Intent, planned_price
 from crypto_grid_bot.combined.routing import Qualification, RoutingContext, qualify
 
 
@@ -198,9 +198,14 @@ class DecisionCoordinator:
                         else:
                             price, stop_price = plan.reference_price, plan.stop
                             fee, slip = venue.costs.fee_rate, venue.costs.slippage_rate
-                            entry = price * (1 + plan.side * slip)
-                            exit_price = stop_price * (1 - plan.side * slip)
-                            required_cost = (price + stop_price) * slip + (entry + exit_price) * fee
+                            entry = planned_price(price, plan.side, slip, venue.rules.tick)
+                            exit_price = planned_price(
+                                stop_price, -plan.side, slip, venue.rules.tick
+                            )
+                            required_cost = (
+                                plan.side * (entry - price + stop_price - exit_price)
+                                + (entry + exit_price) * fee
+                            )
                             if price * venue.costs.round_trip_cost_rate < required_cost:
                                 reason = "round_trip_cost_understated"
                 if reason:
@@ -223,6 +228,7 @@ class DecisionCoordinator:
                     fee_rate=venue.costs.fee_rate,
                     slippage_rate=venue.costs.slippage_rate,
                     step=venue.rules.step,
+                    tick=venue.rules.tick,
                     min_quantity=venue.rules.min_qty,
                     max_quantity=venue.rules.max_qty,
                     min_notional=venue.rules.min_notional,

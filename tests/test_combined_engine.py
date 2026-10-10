@@ -278,7 +278,7 @@ def test_filled_positions_keep_exit_cost_cash_reserved():
     engine.settle("batch", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
     engine.cancel(order.intent_id)
     state = engine.observe(2, QUOTES, RULES)
-    assert state.available_cash == D("9899.753049")
+    assert state.available_cash == D("9899.75205")
 
 
 def open_partial(engine, *, side=1):
@@ -487,3 +487,76 @@ def test_verified_dust_preserves_ownership_without_blocking_other_asset_recovery
     state = engine.observe(now, quotes, RULES)
     assert state.recovery.risk_fraction == D(".25")
     assert state.account.positions[0].quantity == D(".001")
+
+
+def test_engine_reserves_verified_tick_and_held_exit_cost():
+    engine = PortfolioEngine(D(10000))
+    order = intent(fee_rate=D(0), slippage_rate=D(0), tick=D(10))
+    rules = {"BTCUSDT": replace(RULE, tick=D(10))}
+    answer = engine.submit(order, candidate(order), QUOTES, rules)
+    assert answer.quantity == 5
+    assert answer.risk == 50
+    fill = FillEvent("tick-fill", 1, "BTCUSDT", "spot_trend", "spot", 1, D(5), D(100), D(0))
+    state = engine.settle("tick-batch", 1, QUOTES, rules, increases=((order.intent_id, fill),))
+    assert state.available_cash == 9460
+    assert engine._view(state.account, D(1), ()).exposures[0].stop_risk == 50
+
+
+def test_engine_refuses_explicit_tick_mismatch():
+    engine = PortfolioEngine(D(10000))
+    order = intent(tick=D(".01"))
+    with pytest.raises(ValueError, match="venue rules"):
+        engine.submit(order, candidate(order), QUOTES, {"BTCUSDT": replace(RULE, tick=D(10))})
+    assert engine.reservations == ()
+
+
+@pytest.mark.parametrize("side,stop,entry", [(1, "98", "110"), (-1, "102", "90")])
+def test_rounded_entry_bound_and_authoritative_held_tick(side, stop, entry):
+    engine = PortfolioEngine(D(10000))
+    order = intent(
+        side=side,
+        stop=D(stop),
+        venue="futures",
+        owner="futures_trend",
+        fee_rate=D(0),
+        slippage_rate=D(".001"),
+        tick=D(10),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    rules = {"BTCUSDT": replace(RULE, tick=D(10))}
+    answer = engine.submit(order, candidate(order), QUOTES, rules)
+    assert answer.accepted
+    fill = FillEvent(
+        "rounded", 1, "BTCUSDT", "futures_trend", "futures", side, D(1), D(entry), D(0)
+    )
+    state = engine.settle("rounded-batch", 1, QUOTES, rules, increases=((order.intent_id, fill),))
+    assert "post_fill_risk_breach" not in state.reasons
+    assert engine._view(state.account, D(1), ()).exposures[0].stop_risk == 10
+    # Held rules update the held exit; candidate filters cannot override them.
+    engine.observe(2, QUOTES, {"BTCUSDT": replace(RULE, tick=D(20))})
+    expected = D(20)
+    assert engine._view(state.account, D(1), ()).exposures[0].stop_risk == expected
+
+
+def test_tick_aware_engine_settlement_ignores_restrictive_decimal_context():
+    from decimal import localcontext
+
+    order = intent(fee_rate=D(0), slippage_rate=D(0), tick=D(10))
+    rules = {"BTCUSDT": replace(RULE, tick=D(10))}
+    engine = PortfolioEngine(D(10000))
+    qualification = candidate(order)
+    fill = FillEvent("context-fill", 1, "BTCUSDT", "spot_trend", "spot", 1, D(5), D(100), D(0))
+    with localcontext() as context:
+        context.prec = 2
+        context.Emax = 1
+        context.Emin = -1
+        for signal in context.traps:
+            context.traps[signal] = True
+        answer = engine.submit(order, qualification, QUOTES, rules)
+        state = engine.settle(
+            "context-batch", 1, QUOTES, rules, increases=((order.intent_id, fill),)
+        )
+    assert answer.quantity == 5
+    assert state.available_cash == 9460

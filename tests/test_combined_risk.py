@@ -26,6 +26,7 @@ def intent(key="one", symbol="BTCUSDT", **changes):
             D(1000),
             D(5),
             "unknown",
+            D(".01"),
         ),
         **changes,
     )
@@ -102,8 +103,8 @@ def test_pending_spot_spending_cannot_double_count_margin_backing():
 def test_asset_cap_and_fee_reserve_limit_size():
     answer = PortfolioRisk().reserve(intent(), view())
     assert answer.quantity == D("19.990")
-    assert answer.cash == D("2004.93704999")
-    assert answer.risk == D("45.91704999")
+    assert answer.cash == D("2004.95702000")
+    assert answer.risk == D("45.93702000")
     assert answer.accepted
 
 
@@ -163,7 +164,7 @@ def test_futures_short_funding_and_margin_admission():
     assert refused.reason == "adverse_funding"
     accepted = PortfolioRisk().reserve(replace(candidate, funding_rate=D("0.0001")), view())
     assert accepted.accepted
-    assert accepted.cash == D("1006.06002")
+    assert accepted.cash == D("1006.24020000")
 
 
 @pytest.mark.parametrize(
@@ -394,3 +395,79 @@ def test_multiple_pending_spot_orders_share_remaining_futures_backing():
     second = book.reserve(intent("second", "SOLUSDT"), snapshot)
     assert first.accepted and second.accepted
     assert D(100) - first.cash - second.cash >= D(80)
+
+
+@pytest.mark.parametrize("side,stop", [(1, "98"), (-1, "102")])
+def test_admission_reserves_actual_adverse_ticks(side, stop):
+    order = intent(
+        side=side,
+        stop=D(stop),
+        venue="futures",
+        owner="futures_trend",
+        fee_rate=D(0),
+        slippage_rate=D(0),
+        tick=D(10),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    answer = PortfolioRisk().reserve(order, view())
+    assert answer.accepted
+    assert answer.quantity == 5
+    assert answer.risk == 50
+
+
+def test_spot_tick_risk_and_cash_match_executable_stop():
+    answer = PortfolioRisk().reserve(intent(fee_rate=D(0), slippage_rate=D(0), tick=D(10)), view())
+    assert answer.quantity == 5
+    assert answer.risk == 50
+    assert answer.cash == 540
+
+
+@pytest.mark.parametrize("tick", [".01", "10"])
+def test_tick_admission_is_independent_of_restrictive_decimal_context(tick):
+    from decimal import localcontext
+
+    order = intent(tick=D(tick))
+    account = view()
+    expected = PortfolioRisk().reserve(order, account)
+    with localcontext() as context:
+        context.prec = 2
+        context.Emax = 1
+        context.Emin = -1
+        for signal in context.traps:
+            context.traps[signal] = True
+        assert PortfolioRisk().reserve(order, account) == expected
+
+
+def test_no_positive_sell_tick_refuses_admission():
+    result = PortfolioRisk().reserve(intent(tick=D(100)), view())
+    assert not result.accepted
+    assert result.reason == "invalid_execution_price"
+
+
+@pytest.mark.parametrize("side,stop,unit_cash", [(1, "98", "73.2"), (-1, "102", "68.2")])
+def test_both_side_ticks_include_actual_entry_exit_fees_and_cash(side, stop, unit_cash):
+    order = intent(
+        side=side,
+        stop=D(stop),
+        owner="futures_trend",
+        venue="futures",
+        tick=D(10),
+        fee_rate=D(".001"),
+        slippage_rate=D(".001"),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    answer = PortfolioRisk().reserve(order, view())
+    # Executions are 110/90 for long, 90/110 for short; fees = .2 per unit.
+    assert answer.quantity == D("2.475")
+    assert answer.risk == answer.quantity * D("20.2")
+    assert answer.cash == answer.quantity * D(unit_cash)
+
+
+@pytest.mark.parametrize("tick", [None, D(0), D(-1), D("NaN")])
+def test_tick_is_explicit_positive_and_finite(tick):
+    with pytest.raises(ValueError):
+        PortfolioRisk().reserve(intent(tick=tick), view())

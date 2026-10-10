@@ -19,7 +19,14 @@ from crypto_grid_bot.combined.account import (
 )
 from crypto_grid_bot.combined.execution import VenueRules, executable_reduction, futures_margin
 from crypto_grid_bot.combined.recovery import Recovery, RecoveryDecision
-from crypto_grid_bot.combined.risk import Admission, Exposure, Intent, PortfolioRisk, PortfolioView
+from crypto_grid_bot.combined.risk import (
+    Admission,
+    Exposure,
+    Intent,
+    PortfolioRisk,
+    PortfolioView,
+    planned_price,
+)
 from crypto_grid_bot.combined.routing import Qualification
 
 
@@ -65,6 +72,7 @@ class PortfolioEngine:
         self._quotes: dict[str, Quote] = {}
         self._orders: dict[str, tuple[Intent, Decimal]] = {}
         self._known_orders: dict[str, tuple[Intent, Decimal]] = {}
+        self._ticks: dict[str, Decimal] = {}
         self._stops: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
         self._close: set[str] = set()
         self._close_reasons: dict[str, set[str]] = {}
@@ -184,7 +192,7 @@ class PortfolioEngine:
         for position in account.positions:
             stop, fee, slip = self._stops[position.symbol]
             side = 1 if position.quantity > 0 else -1
-            exit_price = stop * (1 - side * slip)
+            exit_price = planned_price(stop, -side, slip, self._ticks[position.symbol])
             unit_risk = max(Decimal(0), side * (position.mark - exit_price)) + exit_price * fee
             exposures.append(
                 Exposure(
@@ -209,7 +217,8 @@ class PortfolioEngine:
         for position in account.positions:
             stop, fee, slip = self._stops[position.symbol]
             side = 1 if position.quantity > 0 else -1
-            reserve += abs(position.quantity) * (stop * slip + stop * (1 - side * slip) * fee)
+            exit_price = planned_price(stop, -side, slip, self._ticks[position.symbol])
+            reserve += abs(position.quantity) * (side * (stop - exit_price) + exit_price * fee)
         return reserve
 
     def observe(
@@ -226,6 +235,8 @@ class PortfolioEngine:
             reasons: list[str] = []
             flat = not self._orders
             for position in account.positions:
+                if position.symbol in rules:
+                    self._ticks[position.symbol] = rules[position.symbol].tick
                 if not self._fresh(position.symbol, timestamp_ms) or position.symbol not in rules:
                     flat = False
                     self._require_close(position.symbol, "stale_position_or_missing_filters")
@@ -339,6 +350,7 @@ class PortfolioEngine:
                 raise ValueError("invalid candidate venue rules")
             if (
                 intent.price != quote.price
+                or intent.tick != rule.tick
                 or intent.step != rule.step
                 or intent.min_quantity != rule.min_qty
                 or intent.max_quantity != rule.max_qty
@@ -361,7 +373,9 @@ class PortfolioEngine:
                 or self._integrity_failure
             ):
                 return refuse("protective_reduction_pending")
-            return self._risk.preview(intent, self._view(state.account, Decimal(1), groups))
+            return self._risk.preview(
+                replace(intent, tick=rule.tick), self._view(state.account, Decimal(1), groups)
+            )
 
     def submit(
         self,
@@ -387,10 +401,13 @@ class PortfolioEngine:
             if not normal.accepted:
                 return normal
             state = self.observe(qualification.decision_ms, quotes, rules, qualified=True)
+            rule = candidate_rules if candidate_rules is not None else rules[intent.symbol]
             answer = self._risk.reserve(
-                intent, self._view(state.account, state.recovery.risk_fraction, groups)
+                replace(intent, tick=rule.tick),
+                self._view(state.account, state.recovery.risk_fraction, groups),
             )
             if answer.accepted and intent.intent_id not in self._orders:
+                self._ticks[intent.symbol] = rule.tick
                 self._orders[intent.intent_id] = (intent, answer.quantity)
                 self._known_orders[intent.intent_id] = (intent, answer.quantity)
             return answer
@@ -508,7 +525,9 @@ class PortfolioEngine:
                 else:
                     self._orders.pop(key, None)
                 self._fills[event.event_id] = event
-                adverse = intent.price * (1 + intent.side * intent.slippage_rate)
+                adverse = planned_price(
+                    intent.price, intent.side, intent.slippage_rate, intent.tick
+                )
                 if (
                     not was_pending
                     or intent.side * (event.price - adverse) > 0
