@@ -175,8 +175,172 @@ def test_filled_positions_keep_exit_cost_cash_reserved():
     assert state.available_cash == D("9899.753049")
 
 
-def test_pre_exit_liquidation_at_new_mark_cannot_be_hidden_by_close():
+def open_partial(engine, *, side=1):
+    order = (
+        intent()
+        if side == 1
+        else intent(
+            owner="futures_trend",
+            venue="futures",
+            side=-1,
+            stop=D(102),
+            funding_rate=D(0),
+            funding_age_ms=0,
+            funding_interval_ms=28_800_000,
+        )
+    )
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    fill = FillEvent("entry", 1, order.symbol, order.owner, order.venue, side, D(1), D(100), D(0))
+    state = engine.settle("entry", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    return order, fill, state
+
+
+def test_requested_close_cancels_asset_increases_and_survives_partial_and_missing_prices():
     engine = PortfolioEngine(D(10000))
+    order, fill, before = open_partial(engine)
+    engine.request_close(order.symbol, order.owner, 1, reason="regime_exit")
+    assert engine.reservations == ()
+    state = engine.observe(2, {}, RULES)
+    assert state.account == before.account
+    assert state.close_required == ("BTCUSDT",)
+    assert "regime_exit" in state.reasons
+    engine.request_close(order.symbol, order.owner, 1, reason="regime_exit")
+    state = engine.settle(
+        "part",
+        3,
+        QUOTES,
+        RULES,
+        reductions=(replace(fill, event_id="part", timestamp_ms=3, side=-1, quantity=D(".5")),),
+    )
+    assert state.close_required == ("BTCUSDT",)
+    state = engine.settle(
+        "flat",
+        4,
+        QUOTES,
+        RULES,
+        reductions=(replace(fill, event_id="flat", timestamp_ms=4, side=-1, quantity=D(".5")),),
+    )
+    assert state.close_required == ()
+    assert "regime_exit" not in state.reasons
+
+
+@pytest.mark.parametrize("side,stop,wider", [(1, D(99), D(98)), (-1, D(101), D(102))])
+def test_tightened_stop_survives_later_partial_entry_fill(side, stop, wider):
+    engine = PortfolioEngine(D(10000))
+    order, fill, _ = open_partial(engine, side=side)
+    engine.tighten_stop(order.symbol, order.owner, side, stop)
+    engine.tighten_stop(order.symbol, order.owner, side, stop)
+    engine.settle(
+        "more",
+        2,
+        QUOTES,
+        RULES,
+        increases=(
+            (
+                order.intent_id,
+                replace(fill, event_id="more", timestamp_ms=2),
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="widen"):
+        engine.tighten_stop(order.symbol, order.owner, side, wider)
+
+
+@pytest.mark.parametrize("api", ["close", "stop"])
+def test_protective_api_rejects_wrong_owner_or_side_without_cancelling_orders(api):
+    engine = PortfolioEngine(D(10000))
+    order, _, before = open_partial(engine)
+    pending = engine.reservations
+    for owner, side in (("spot_grid", 1), (order.owner, -1), (order.owner, True)):
+        with pytest.raises(ValueError):
+            if api == "close":
+                engine.request_close(order.symbol, owner, side, reason="exit")
+            else:
+                engine.tighten_stop(order.symbol, owner, side, D(99))
+    assert engine.reservations == pending
+    assert engine.observe(2, {}, RULES).account == before.account
+
+
+def test_tightening_through_observed_mark_requests_close_without_a_fill():
+    engine = PortfolioEngine(D(10000))
+    order, _, before = open_partial(engine)
+    engine.tighten_stop(order.symbol, order.owner, 1, D(101))
+    state = engine.observe(2, {}, RULES)
+    assert state.account == before.account
+    assert state.close_required == (order.symbol,)
+    assert engine.reservations == ()
+
+
+def test_disabling_automatic_recovery_keeps_stop_and_prevents_qualified_restart():
+    engine = PortfolioEngine(D(10000), automatic_recovery=False)
+    order, fill, _ = open_partial(engine)
+    engine.cancel(order.intent_id)
+    engine.observe(2, {"BTCUSDT": Quote(D(10000), 2)}, RULES)
+    stopped = engine.observe(3, {"BTCUSDT": Quote(D(100), 3)}, RULES)
+    assert stopped.close_required == (order.symbol,)
+    closed = engine.settle(
+        "flat", 4, {}, RULES, reductions=(replace(fill, event_id="exit", timestamp_ms=4, side=-1),)
+    )
+    now = 86_400_004
+    fresh = {symbol: Quote(D(100), now) for symbol in QUOTES}
+    other = intent("other", "ETHUSDT")
+    result = engine.submit(other, replace(candidate(other), decision_ms=now), fresh, RULES)
+    assert not result.accepted
+    state = engine.observe(now, fresh, RULES, qualified=True)
+    assert state.recovery.risk_fraction == 0
+    assert state.recovery.max_drawdown == closed.recovery.max_drawdown
+
+
+def test_automatic_recovery_option_requires_a_boolean():
+    with pytest.raises(ValueError):
+        PortfolioEngine(D(10000), automatic_recovery=0)
+
+
+def test_explicit_close_keeps_dust_owned_without_blocking_an_unrelated_asset():
+    engine = PortfolioEngine(D(10000))
+    order, fill, _ = open_partial(engine)
+    engine.request_close(order.symbol, order.owner, 1, reason="range_exit")
+    state = engine.settle(
+        "dust",
+        2,
+        QUOTES,
+        RULES,
+        reductions=(replace(fill, event_id="dust", timestamp_ms=2, side=-1, quantity=D(".999")),),
+    )
+    assert state.account.positions[0].quantity == D(".001")
+    assert state.close_required == (order.symbol,)
+    assert "range_exit" in state.reasons
+    other = intent("other", "ETHUSDT")
+    assert engine.submit(other, replace(candidate(other), decision_ms=3), QUOTES, RULES).accepted
+
+
+def test_pending_only_close_cancels_only_its_asset_and_late_fill_is_honestly_booked():
+    engine = PortfolioEngine(D(10000))
+    order, other = intent(), intent("other", "ETHUSDT")
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    engine.submit(other, candidate(other), QUOTES, RULES)
+    engine.request_close(order.symbol, order.owner, 1, reason="signal_lost")
+    assert [a.intent_id for a in engine.reservations] == [other.intent_id]
+    fill = FillEvent("late", 1, order.symbol, order.owner, order.venue, 1, D(1), D(100), D(0))
+    state = engine.settle("late", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    assert state.account.positions[0].quantity == 1
+    assert state.close_required == (order.symbol,)
+
+
+@pytest.mark.parametrize("stop", [D("NaN"), D("Infinity"), D(0), D(-1)])
+def test_invalid_tightening_does_not_release_reservations_or_change_account(stop):
+    engine = PortfolioEngine(D(10000))
+    order, _, before = open_partial(engine)
+    pending = engine.reservations
+    with pytest.raises(ValueError):
+        engine.tighten_stop(order.symbol, order.owner, 1, stop)
+    assert engine.reservations == pending
+    assert engine.observe(2, {}, RULES).account == before.account
+
+
+@pytest.mark.parametrize("automatic_recovery", [True, False])
+def test_pre_exit_liquidation_at_new_mark_cannot_be_hidden_by_close(automatic_recovery):
+    engine = PortfolioEngine(D(10000), automatic_recovery=automatic_recovery)
     order = intent(
         owner="futures_trend",
         venue="futures",

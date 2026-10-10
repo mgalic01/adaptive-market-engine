@@ -15,6 +15,7 @@ from crypto_grid_bot.combined.account import (
     CombinedAccount,
     FillEvent,
     FundingEvent,
+    PositionSnapshot,
 )
 from crypto_grid_bot.combined.execution import VenueRules, executable_reduction, futures_margin
 from crypto_grid_bot.combined.recovery import Recovery, RecoveryDecision
@@ -52,7 +53,10 @@ class EngineSnapshot:
 class PortfolioEngine:
     """One account and one event lock, including acknowledged reservation transfers."""
 
-    def __init__(self, initial_cash: Decimal) -> None:
+    def __init__(self, initial_cash: Decimal, *, automatic_recovery: bool = True) -> None:
+        if type(automatic_recovery) is not bool:
+            raise ValueError("automatic_recovery must be Boolean")
+        self._automatic_recovery = automatic_recovery
         self._account = CombinedAccount(initial_cash)
         self._risk = PortfolioRisk()
         self._recovery = Recovery()
@@ -63,6 +67,7 @@ class PortfolioEngine:
         self._known_orders: dict[str, tuple[Intent, Decimal]] = {}
         self._stops: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
         self._close: set[str] = set()
+        self._close_reasons: dict[str, set[str]] = {}
         self._liquidation = False
         self._integrity_failure = False
         self._batches: dict[str, tuple[object, EngineSnapshot]] = {}
@@ -78,6 +83,69 @@ class PortfolioEngine:
         with self._lock:
             self._risk.release(intent_id, acknowledged=True)
             self._orders.pop(intent_id, None)
+
+    def _protective_owner(self, symbol: str, owner: str, side: int) -> PositionSnapshot | None:
+        if type(side) is not int or side not in {-1, 1}:
+            raise ValueError("held side must be exactly +1 or -1")
+        position = next((p for p in self._account.snapshot().positions if p.symbol == symbol), None)
+        pending = [i for i, _ in self._orders.values() if i.symbol == symbol]
+        if position is None and not pending:
+            raise ValueError("asset has no held or pending owner")
+        if (
+            position is not None
+            and (position.owner != owner or (1 if position.quantity > 0 else -1) != side)
+        ) or any(i.owner != owner or i.side != side for i in pending):
+            raise ValueError("protective request differs from asset owner or held side")
+        return position
+
+    def request_close(self, symbol: str, owner: str, side: int, *, reason: str) -> None:
+        """Persist a close obligation and cancel this asset's simulator increases.
+
+        Caller supplies the owning strategy and HELD side, not the exit side.
+        Repeated requests are idempotent while owned. Missing prices and partial
+        fills cannot clear the obligation; verified dust stays valued and owned.
+        Only settled reductions change inventory. A pending-only request cancels
+        its order; any subsequent actual late fill is still booked and closed.
+        """
+        with self._lock:
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError("nonempty protective close reason required")
+            position = self._protective_owner(symbol, owner, side)
+            for key, (intent, _) in tuple(self._orders.items()):
+                if intent.symbol == symbol:
+                    self.cancel(key)
+            if position is not None:
+                self._close.add(symbol)
+                self._close_reasons.setdefault(symbol, set()).add(reason)
+
+    def tighten_stop(self, symbol: str, owner: str, side: int, stop: Decimal) -> None:
+        """Accept an externally computed completed-information stop, never widen it.
+
+        Replay verifies ATR/activation and old-stop OHLC ordering before calling.
+        It first observes the current completed close. A stop through that fresh
+        mark requests a close at the next available execution, never a fictional fill.
+        """
+        with self._lock:
+            if (
+                not isinstance(stop, Decimal)
+                or not stop.is_finite()
+                or not 0 < stop <= Decimal("1e36")
+            ):
+                raise ValueError("finite positive bounded stop required")
+            position = self._protective_owner(symbol, owner, side)
+            if position is None:
+                raise ValueError("stop tightening requires held inventory")
+            prior, fee, slip = self._stops[symbol]
+            if (stop < prior) if side == 1 else (stop > prior):
+                raise ValueError("protective stop cannot widen")
+            self._stops[symbol] = (stop, fee, slip)
+            quote = self._quotes.get(symbol)
+            if (
+                quote is not None
+                and self._fresh(symbol, self._clock)
+                and ((quote.price <= stop) if side == 1 else (quote.price >= stop))
+            ):
+                self.request_close(symbol, owner, side, reason="tightened_stop_crossed")
 
     def _prices(self, now: int, quotes: Mapping[str, Quote]) -> dict[str, Decimal]:
         if type(now) is not int or not 0 <= now < 1_735_689_600_000 or now < self._clock:
@@ -165,7 +233,7 @@ class PortfolioEngine:
                 timestamp_ms,
                 account.equity,
                 flat,
-                qualified,
+                qualified and self._automatic_recovery,
                 account.integrity_ok and not self._liquidation and not self._integrity_failure,
             )
             if recovery.close or recovery.risk_fraction == 0:
@@ -176,6 +244,12 @@ class PortfolioEngine:
                 reasons.append(recovery.reason)
             held = {p.symbol for p in account.positions}
             self._close.intersection_update(held)
+            self._close_reasons = {
+                symbol: why for symbol, why in self._close_reasons.items() if symbol in held
+            }
+            reasons.extend(
+                sorted({why for values in self._close_reasons.values() for why in values})
+            )
             if self._integrity_failure:
                 reasons.append("execution_integrity_failure")
             return EngineSnapshot(
@@ -359,8 +433,15 @@ class PortfolioEngine:
                     intent.side,
                 ) or event.quantity > remaining:
                     raise ValueError("fill differs from pending order")
+                already_held = any(
+                    p.symbol == event.symbol for p in self._account.snapshot().positions
+                )
                 self._account.apply(event)
-                self._stops[event.symbol] = (intent.stop, intent.fee_rate, intent.slippage_rate)
+                stop = intent.stop
+                if already_held:
+                    prior_stop = self._stops[event.symbol][0]
+                    stop = max(stop, prior_stop) if intent.side == 1 else min(stop, prior_stop)
+                self._stops[event.symbol] = (stop, intent.fee_rate, intent.slippage_rate)
                 remaining -= event.quantity
                 self._known_orders[key] = (intent, remaining)
                 if was_pending:
