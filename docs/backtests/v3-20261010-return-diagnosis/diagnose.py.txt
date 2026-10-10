@@ -87,7 +87,7 @@ def asset_pnl_at(e):
     require(abs(initial+sum(result.values(),D(0))-D(e['equity']))<=D('1e-18'),'endpoint asset reconciliation')
     return result
 peak_assets=asset_pnl_at(pair[0]);trough_assets=asset_pnl_at(pair[1])
-drawdown_assets={s:trough_assets.get(s,D(0))-peak_assets.get(s,D(0)) for s in peak_assets.keys()|trough_assets.keys()}
+drawdown_assets={s:trough_assets.get(s,D(0))-peak_assets.get(s,D(0)) for s in sorted(peak_assets.keys()|trough_assets.keys())}
 start,end=pair[0]['timestamp_ms'],pair[1]['timestamp_ms']
 dd_fees=sum((D(f['fee']) for f in fills if start<f['timestamp_ms']<=end),D(0))
 dd_funding=sum((D(p['payment']) for p in payments if start<p['timestamp_ms']<=end),D(0))
@@ -110,18 +110,28 @@ report={'run_id':RUN,'source':ref,'scope':'saved primary futures account; no rep
  'drawdown':{'fraction':worst,'peak':pair[0],'trough':pair[1],'peak_utc':stamp(start),'trough_utc':stamp(end),'days_to_trough':D(end-start)/86400000,'recovered_by_end':terminal>=D(pair[0]['equity']),'asset_change_peak_to_trough':drawdown_assets,'fees_in_episode':dd_fees,'funding_net_in_episode':dd_funding,'largest_episodes':sorted(episodes,key=lambda x:x['fraction'],reverse=True)[:5]},
  'decisions':{'count':len(decisions),'rule_changes':changes,'schedule':schedule,'cap_bound_days':bound,'mean_postfill_gross_leverage':sum(gross,D(0))/len(gross),'max_postfill_gross_leverage':max(gross),'median_lifecycle_hours':(hold_hours[(len(hold_hours)-1)//2]+hold_hours[len(hold_hours)//2])/2,'losing_lifecycles_with_positive_favourable_excursion':sum(D(l['favourable'])>0 for l in negative),'losing_lifecycles':len(negative)},
  'limits':['Costs are accounting attribution, not a no-cost counterfactual','Slippage is already embedded in net PnL; do not subtract twice','Favourable/adverse equity uses the frozen intrabar marking convention, not observed simultaneous portfolio ticks','No genuine four-regime labels or compute/network latency are present in this evidence','Terminal equity includes unrealized PnL; censored lifecycle attribution is not cash settlement']}
+# Use exact UTC year boundaries from saved hourly opening marks, before
+# that hour's fills/funding. Daily 01:00 samples cannot define calendar years.
 periods={}; previous=initial
-for t,value in rows['sample']:
-    # Terminal sample at exclusive endpoint belongs to the preceding interval.
-    year=str(datetime.fromtimestamp((t-1)/1000,UTC).year)
-    p=periods.setdefault(year,{'initial':previous,'terminal':previous,'net':D(0)})
-    p['net']+=D(value)-previous;p['terminal']=D(value);previous=D(value)
-for p in periods.values():p['return']=p['terminal']/p['initial']-1
+start_ms=receipt['payload']['start_ms']; end_ms=receipt['payload']['end_ms_exclusive']
+first_year=datetime.fromtimestamp(start_ms/1000,UTC).year
+last_year=datetime.fromtimestamp((end_ms-1)/1000,UTC).year
+for year in range(first_year,last_year+1):
+    boundary=min(end_ms,int(datetime(year+1,1,1,tzinfo=UTC).timestamp()*1000))
+    if boundary==end_ms:
+        value=terminal
+    else:
+        require(boundary in hours,'missing annual boundary hour')
+        require(hours[boundary]['marks'][0][0]=='open','annual boundary must be opening mark')
+        value=D(hours[boundary]['marks'][0][1]['equity'])
+    periods[str(year)]={'initial':previous,'terminal':value,'net':value-previous,'return':value/previous-1}
+    previous=value
 require(abs(sum((p['net'] for p in periods.values()),D(0))-net)<=D('1e-18'),'year reconciliation')
 report['calendar_periods']=periods
+report['calendar_period_definition']='UTC Jan 1 00:00 opening equity before fills/funding; first period starts at invocation start, last ends at terminal mark'
 main_episode=max(episodes,key=lambda e:e['fraction'])
 report['drawdown']['terminal_above_old_peak']=report['drawdown'].pop('recovered_by_end')
 report['drawdown']['recovery_utc']=stamp(main_episode['recovery']['timestamp_ms']) if main_episode['recovery'] else None
-(OUT/'diagnosis.json').write_text(json.dumps(report,default=str,indent=2)+'\n',encoding='utf-8')
+(OUT/'diagnosis.json').write_text(json.dumps(report,default=str,indent=2)+'\n',encoding='utf-8',newline='\n')
 print(json.dumps({k:v for k,v in report.items() if k not in ('drawdown','source')},default=str,indent=2))
 print('DRAWDOWN',json.dumps({k:v for k,v in report['drawdown'].items() if k!='largest_episodes'},default=str,indent=2))
