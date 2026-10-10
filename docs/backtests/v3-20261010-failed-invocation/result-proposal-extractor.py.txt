@@ -1,0 +1,17 @@
+from pathlib import Path
+from datetime import datetime, UTC
+import subprocess, sys
+root=Path('C:/Users/Marko/.codex/worktrees/v3-launch-registration')
+sys.path[:0]=[str(root/'src'),str(root/'scripts')]
+from trial_register import read_registered_documents
+from v3_result_proposal import build_result_proposal
+revision='4d1e37c0637f8401f3903ea56d036f34c3bfd5cd'
+out=Path('E:/adaptive-market-engine/v3/failure-analysis-20261010-02')
+out.mkdir(exist_ok=False)
+print('Verifying preserved attempt journals; no replay execution',flush=True)
+docs=read_registered_documents(root,'v3-candidate-space-7',revision)
+register=subprocess.check_output(['git','show',f'{revision}:docs/trials/register.jsonl'],cwd=root)
+p=build_result_proposal(register,docs,Path('E:/adaptive-market-engine/v3/replay-20261009-01/attempts'),index_path='docs/backtests/v3-20261010-failed-invocation/result-proposal-index.json',evidence_source='E:/adaptive-market-engine/v3/replay-20261009-01',recorded_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),agent='Codex Desktop',pending_dispositions={})
+(out/'result-proposal-index.json').write_bytes(p.index)
+(out/'result-proposal-events.jsonl').write_bytes(p.events)
+print('Verified proposal written; canonical register unchanged',flush=True)

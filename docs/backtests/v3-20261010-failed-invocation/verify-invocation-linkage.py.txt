@@ -1,0 +1,23 @@
+import json,hashlib,subprocess
+from pathlib import Path
+from datetime import datetime,UTC
+repo=Path('C:/Users/Marko/.codex/worktrees/v3-launch-registration')
+run=Path('E:/adaptive-market-engine/v3/replay-20261009-01')
+checkout=Path('E:/adaptive-market-engine/v3/replay-checkout-20261009-01')
+logs=Path('E:/adaptive-market-engine/v3/replay-logs-20261009-01')
+s=json.loads((run/'started.json').read_bytes()); f=json.loads((run/'finished.json').read_bytes()); rev=s['identities']['revision']
+assert f['identities']==s['identities'] and f['status']=='failed'
+assert subprocess.check_output(['git','-C',str(checkout),'rev-parse','HEAD']).decode().strip()==rev
+for name,blob_sha,runtime_sha in s['runtime_files']:
+    blob=subprocess.check_output(['git','-C',str(repo),'show',f'{rev}:{name}'])
+    assert hashlib.sha256(blob).hexdigest()==blob_sha,name
+    assert hashlib.sha256((checkout/name).read_bytes()).hexdigest()==runtime_sha,name
+raw=(run/'execution-task.json').read_bytes()
+assert hashlib.sha256(raw).hexdigest()==s['execution_task_sha256']
+assert raw==subprocess.check_output(['git','-C',str(repo),'show',rev+':'+s['execution_task']])
+prep=json.loads((logs/'preparation.json').read_bytes())
+assert hashlib.sha256((logs/'launch.py').read_bytes()).hexdigest()==prep['bootstrap_sha256']
+assert (logs/'launch.py').read_bytes()==subprocess.check_output(['git','-C',str(repo),'show',rev+':docs/reviews/2026-10-09-v3-local-launch.py.txt'])
+result={'status':'local_retained_invocation_linkage_checks_passed','checked_at':datetime.now(UTC).isoformat().replace('+00:00','Z'),'revision':rev,'runtime_inventory_entries_verified':len(s['runtime_files']),'identities':s['identities'],'terminal_status':f['status'],'task_sha256':s['execution_task_sha256'],'bootstrap_sha256':prep['bootstrap_sha256'],'limitations':['Checks retained current bytes against recorded start hashes, not a reconstruction of past process memory','Local records are operator evidence, not authenticated authorization','Attempt-to-invocation linkage requires external review before canonical result-event append']}
+Path('E:/adaptive-market-engine/v3/failure-analysis-20261010-01/invocation-linkage-check.json').write_text(json.dumps(result,indent=2)+'\n')
+print(json.dumps(result,indent=2))

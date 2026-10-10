@@ -1,0 +1,23 @@
+{
+  "futures-diagnostics.json": "6be7d3f6a7de292948ea61da4c46bf49deb84514d2500353b6eacef1ca4e7ac4",
+  "futures-diagnostics.py.txt": "3a63c82a0dc304ee79e887dfbb1f0dc8b30af8fa55ab2f9b97ce9fec4d3b4b8a",
+  "invocation-started.json": "e165271f7e3c0c0e03e44780f319efb7ee74e17d4c596675400fdc2f3d4a7280",
+  "receipts/0781399b83e1474ea5f519984185d9f5-sensitivity-m1-cost1.finished.json": "ffea81b8620d790281cc37cc6a1289990d3198b6936565b6f5ae36a66baaffee",
+  "receipts/0781399b83e1474ea5f519984185d9f5-sensitivity-m1-cost2.finished.json": "6c18b7a502c0f87206bb00330d9ebb4ff07bd148341669002b81f5bb7f3dd483",
+  "receipts/0781399b83e1474ea5f519984185d9f5-sensitivity-m2-cost2.finished.json": "e25a9a42b82aa649b8771a827e466405c0e9c57d39caaf00987fa4ebef538f17",
+  "receipts/0781399b83e1474ea5f519984185d9f5-sensitivity-m3-cost1.finished.json": "02ef017f6b67e9e6c875c177d6a563766db5877b71bc33947fae2264ff9e9dc7",
+  "receipts/0781399b83e1474ea5f519984185d9f5-sensitivity-m3-cost2.finished.json": "00ec9272b676eab49ff347867f6796f88bc47a1644698bf2c47411a3f2715b8e",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R1.finished.json": "2d79ae54d4c627f7cc7813f263fc799c24c49400146545524ce639619898b968",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R1L.finished.json": "5e182f608573c48db010d684ed85e47b809c8b11b995a063ac52e3960538884e",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R2.finished.json": "a3e33b9703597a46c188d669012efdfdff0659ce58cf2515a18bd138a7adcd4e",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R2L.finished.json": "9596f45973e427ba0c2ed40305766fe730ee46652335b3fa111b2b0278d74399",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R3.finished.json": "fc881cb0a0e96ce4e98e465543648c133c59f0d3168ce71b14d45f7e7f110a7a",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R3L.finished.json": "e5eed6874f6c638731da6bfb6e7b497044233888630008f56dcd9b942eb42976",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R4.finished.json": "ce671b9a815127227995e2210c1de14ec07e765a61c1266383b196aa29b1956f",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R4L.finished.json": "6113453d34ce528cdd26c91b2495e5aa35c8d92e32acf8385d4e1d2d33500e9f",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R5.finished.json": "b2cbfce0a45238536065b8f3baab4cdccb44be6b201f19382e6c2cfe670443fd",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R5L.finished.json": "0fa676e7360722e57f0a8bdf0a444eed0503faaebb0d657eb30c62275fb55f68",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R6.finished.json": "e0853d5dd9fd8f2772d77220bc441bddfdbf3b9e3730ee312338c01caa338afb",
+  "receipts/75e22c238475445ea77be621fd2dbe6d-fixed-R6L.finished.json": "c6abac40b6aa627b038956404b71f5c111b6743407284976ce28eb1f63e3a723",
+  "receipts/a16aa7a730c6476da353dc48ad7e9d81-out-of-sample-m2.finished.json": "f27eecdc78b33645d8b9ba3b799066f444c56be4740f6806e32d646aae51a3ea"
+}
