@@ -69,6 +69,60 @@ def candidate(order):
     return Qualification(order.symbol, 0, True, order.owner, order.side, D(1), ())
 
 
+def test_worse_partial_fill_cancels_remainder_and_late_fill_stays_flagged():
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    fill = FillEvent("worse-partial", 1, "BTCUSDT", "spot_trend", "spot", 1, D(1), D(150), D(0))
+    state = engine.settle("worse", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    assert "BTCUSDT" in state.close_required
+    assert engine.reservations == ()
+    late = replace(fill, event_id="late-partial", timestamp_ms=2, price=D(100))
+    state = engine.settle("late", 2, QUOTES, RULES, increases=((order.intent_id, late),))
+    assert state.account.positions[0].quantity == D(2)
+    assert "post_fill_risk_breach" in state.reasons
+    assert engine.reservations == ()
+
+
+def test_stale_held_quote_cancels_remaining_increase():
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    fill = FillEvent(
+        "partial-before-stale", 1, "BTCUSDT", "spot_trend", "spot", 1, D(1), D(100), D(0)
+    )
+    engine.settle("partial", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    state = engine.observe(3_600_001, {}, RULES)
+    assert state.close_required == ("BTCUSDT",)
+    assert engine.reservations == ()
+
+
+def test_margin_close_cancels_all_pending_increases_without_drawdown_halt():
+    engine = PortfolioEngine(D(10000))
+    future = intent(
+        owner="futures_trend",
+        venue="futures",
+        side=-1,
+        stop=D(102),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    spot = intent(intent_id="spot", symbol="ETHUSDT")
+    engine.submit(future, candidate(future), QUOTES, RULES)
+    engine.submit(spot, candidate(spot), QUOTES, RULES)
+    f = FillEvent("f", 1, "BTCUSDT", "futures_trend", "futures", -1, D(1), D(100), D(0))
+    s = FillEvent("s", 1, "ETHUSDT", "spot_trend", "spot", 1, D(1), D(100), D(0))
+    engine.settle(
+        "entries", 1, QUOTES, RULES, increases=((future.intent_id, f), (spot.intent_id, s))
+    )
+    state = engine.observe(2, {"BTCUSDT": Quote(D(9900), 2), "ETHUSDT": Quote(D(10000), 2)}, RULES)
+    assert state.account.equity == D(10100)
+    assert state.recovery.risk_fraction == 1 and not state.liquidation
+    assert "margin_reduction" in state.reasons
+    assert engine.reservations == ()
+
+
 def test_admission_snapshot_includes_futures_collateral_but_not_spot_inventory():
     engine = PortfolioEngine(D(10000))
     order = intent(

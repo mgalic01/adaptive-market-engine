@@ -84,6 +84,19 @@ class PortfolioEngine:
             self._risk.release(intent_id, acknowledged=True)
             self._orders.pop(intent_id, None)
 
+    def _require_close(self, symbol: str, reason: str) -> None:
+        """Caller holds the event lock; cancel increases but retain late-fill identity."""
+        portfolio_protection = reason in {
+            "stale_position_or_missing_filters",
+            "margin_reduction",
+            "post_fill_risk_breach",
+        }
+        for key, (intent, _) in tuple(self._orders.items()):
+            if portfolio_protection or intent.symbol == symbol:
+                self.cancel(key)
+        self._close.add(symbol)
+        self._close_reasons.setdefault(symbol, set()).add(reason)
+
     def _protective_owner(self, symbol: str, owner: str, side: int) -> PositionSnapshot | None:
         if type(side) is not int or side not in {-1, 1}:
             raise ValueError("held side must be exactly +1 or -1")
@@ -115,8 +128,7 @@ class PortfolioEngine:
                 if intent.symbol == symbol:
                     self.cancel(key)
             if position is not None:
-                self._close.add(symbol)
-                self._close_reasons.setdefault(symbol, set()).add(reason)
+                self._require_close(symbol, reason)
 
     def tighten_stop(self, symbol: str, owner: str, side: int, stop: Decimal) -> None:
         """Accept an externally computed completed-information stop, never widen it.
@@ -216,7 +228,7 @@ class PortfolioEngine:
             for position in account.positions:
                 if not self._fresh(position.symbol, timestamp_ms) or position.symbol not in rules:
                     flat = False
-                    self._close.add(position.symbol)
+                    self._require_close(position.symbol, "stale_position_or_missing_filters")
                     reasons.append("stale_position_or_missing_filters")
                 elif executable_reduction(
                     abs(position.quantity), position.mark, rules[position.symbol]
@@ -227,7 +239,9 @@ class PortfolioEngine:
                 self._liquidation = True
                 reasons.append("simulated_liquidation")
             if margin.maintenance > 0 and margin.backing < 3 * margin.maintenance:
-                self._close.update(p.symbol for p in account.positions if p.venue == "futures")
+                for position in account.positions:
+                    if position.venue == "futures":
+                        self._require_close(position.symbol, "margin_reduction")
                 reasons.append("margin_reduction")
             recovery = self._recovery.update(
                 timestamp_ms,
@@ -240,7 +254,8 @@ class PortfolioEngine:
                 for key in tuple(self._orders):
                     self.cancel(key)
             if recovery.close:
-                self._close.update(p.symbol for p in account.positions)
+                for position in account.positions:
+                    self._require_close(position.symbol, recovery.reason)
                 reasons.append(recovery.reason)
             held = {p.symbol for p in account.positions}
             self._close.intersection_update(held)
@@ -402,7 +417,7 @@ class PortfolioEngine:
                     reductions=reductions,
                     increases=increases,
                 )
-            except (ValueError, ArithmeticError):
+            except (ValueError, ArithmeticError, TypeError, AttributeError):
                 self._integrity_failure = True
                 for key in tuple(self._orders):
                     self.cancel(key)
@@ -499,7 +514,7 @@ class PortfolioEngine:
                     or intent.side * (event.price - adverse) > 0
                     or event.fee > event.quantity * event.price * intent.fee_rate
                 ):
-                    self._close.add(event.symbol)
+                    self._require_close(event.symbol, "post_fill_risk_breach")
                     breached = True
                 self.observe(timestamp_ms, quotes, rules)
             result = self.observe(timestamp_ms, quotes, rules)
