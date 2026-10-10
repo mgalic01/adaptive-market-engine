@@ -36,6 +36,11 @@ Command: python -B scripts/preflight.py --tests tests/test_combined_assessment.p
 Full-suite CI and external full-head review remain required; local focused success
 is not a full-suite pass. An older isolated risk-branch full-suite run is incomplete.
 
+Integration follow-up: the admission maintenance default is corrected to 1% of
+gross, matching the frozen V3 liquidation model, rather than 0.5%. A new regression
+failed before this correction and passes after it; the focused total is now107.
+This corrects implementation against the pinned model before execution, not tuning.
+
 ## Integration obligations and limits
 
 The engine must provide the same authoritative account/correlation snapshot under

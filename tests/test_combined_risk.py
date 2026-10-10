@@ -46,6 +46,10 @@ def test_extended_entry_halves_stop_risk_before_recovery_scaling():
         PortfolioRisk().reserve(intent(risk_multiplier=D(2)), view())
 
 
+def test_default_maintenance_matches_frozen_v3_one_percent_model():
+    assert intent().maintenance_rate == D("0.01")
+
+
 def test_asset_cap_and_fee_reserve_limit_size():
     answer = PortfolioRisk().reserve(intent(), view())
     assert answer.quantity == D("19.990")

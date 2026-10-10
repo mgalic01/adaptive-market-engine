@@ -53,7 +53,7 @@ class Intent:
     funding_age_ms: int | None = None
     funding_interval_ms: int | None = None
     funding_admission: bool = True
-    maintenance_rate: Decimal = Decimal("0.005")
+    maintenance_rate: Decimal = Decimal("0.01")
     risk_multiplier: Decimal = Decimal(1)
 
 
