@@ -15,7 +15,7 @@ from crypto_grid_bot.combined.components import ComponentPlan, component_plan
 from crypto_grid_bot.combined.engine import PortfolioEngine, Quote
 from crypto_grid_bot.combined.evidence import DecisionEvent, Evidence
 from crypto_grid_bot.combined.execution import VenueRules
-from crypto_grid_bot.combined.models import Assessment
+from crypto_grid_bot.combined.models import Assessment, assessment_source_reasons
 from crypto_grid_bot.combined.risk import Admission, Intent
 from crypto_grid_bot.combined.routing import Qualification, RoutingContext, qualify
 
@@ -166,6 +166,13 @@ class DecisionCoordinator:
                 context: RoutingContext,
             ) -> tuple[Qualification, ComponentPlan | None, Intent | None, dict[str, VenueRules]]:
                 qualification = qualify(assessment, context)
+                source_reasons = assessment_source_reasons(assessment)
+                if source_reasons:
+                    qualification = replace(
+                        qualification,
+                        allowed=False,
+                        reasons=tuple(dict.fromkeys((*qualification.reasons, *source_reasons))),
+                    )
                 venue = futures if qualification.owner == "futures_trend" else spot
                 plan = None
                 reason = ""

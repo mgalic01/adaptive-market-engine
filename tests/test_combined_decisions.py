@@ -197,6 +197,65 @@ def test_missing_spot_quote_cannot_be_used_as_fallback_proof(setup):
     assert engine.reservations == ()
 
 
+@pytest.mark.parametrize(
+    "field,step",
+    [
+        ("hourly_closed_ms", 3_600_000),
+        ("four_hour_closed_ms", 14_400_000),
+        ("daily_closed_ms", 86_400_000),
+    ],
+)
+@pytest.mark.parametrize("defect", ["stale", "future", "missing", "boolean"])
+def test_source_boundaries_must_be_exactly_due_even_when_available_is_true(
+    setup, field, step, defect
+):
+    coordinator, engine, journal, args = setup
+    now = args["assessment"].decision_ms
+    bad = {"stale": now - step, "future": now + step, "missing": None, "boolean": True}[defect]
+    args["assessment"] = replace(args["assessment"], **{field: bad})
+    result = coordinator.decide(**args)
+    assert result.admission is None
+    assert not result.qualification.allowed
+    assert f"{field}_not_due" in result.qualification.reasons
+    assert journal.events[-1].phase == "qualified" and not journal.events[-1].accepted
+    assert engine.reservations == ()
+
+
+@pytest.mark.parametrize("defect", ["stale", "future", "missing", "boolean"])
+def test_assessment_quote_timestamp_must_be_causal_despite_fresh_venue_quote(setup, defect):
+    coordinator, engine, _, args = setup
+    now = args["assessment"].decision_ms
+    bad = {"stale": now - 3_600_001, "future": now + 1, "missing": None, "boolean": True}[defect]
+    args["assessment"] = replace(args["assessment"], quote_ms=bad)
+    result = coordinator.decide(**args)
+    assert result.admission is None
+    assert "assessment_quote_unavailable" in result.qualification.reasons
+    assert engine.reservations == ()
+
+
+def test_intraperiod_decision_uses_latest_due_boundaries_not_decision_timestamp(setup):
+    coordinator, engine, _, args = setup
+    now = args["assessment"].decision_ms + 37 * 60_000
+    args["assessment"] = replace(args["assessment"], decision_ms=now)
+    result = coordinator.decide(**args)
+    assert result.admission.accepted
+    assert len(engine.reservations) == 1
+
+
+def test_all_missing_sources_preserve_independent_reasons(setup):
+    coordinator, engine, _, args = setup
+    args["assessment"] = replace(
+        args["assessment"], hourly_closed_ms=None, four_hour_closed_ms=None, daily_closed_ms=None
+    )
+    result = coordinator.decide(**args)
+    assert {
+        "hourly_closed_ms_not_due",
+        "four_hour_closed_ms_not_due",
+        "daily_closed_ms_not_due",
+    } <= set(result.qualification.reasons)
+    assert engine.reservations == ()
+
+
 def test_futures_candidate_cannot_revalue_existing_spot_inventory(setup):
     from crypto_grid_bot.combined.account import FillEvent
 
