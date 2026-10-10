@@ -1,0 +1,32 @@
+Traceback (most recent call last):
+  File "E:\adaptive-market-engine\v3\replay-checkout-20261009-01\src\crypto_grid_bot\trend\spot_benchmark.py", line 380, in replay_spot_benchmark
+    runner.step(hour, bars, targets, exit_reasons=reasons)
+  File "E:\adaptive-market-engine\v3\replay-checkout-20261009-01\src\crypto_grid_bot\trend\spot_benchmark.py", line 140, in step
+    self._step(hour_ms, bars, new_targets or {}, exit_reasons)
+  File "E:\adaptive-market-engine\v3\replay-checkout-20261009-01\src\crypto_grid_bot\trend\spot_benchmark.py", line 201, in _step
+    fills = self.account.execute(
+            ^^^^^^^^^^^^^^^^^^^^^
+  File "E:\adaptive-market-engine\v3\replay-checkout-20261009-01\src\crypto_grid_bot\trend\spot_account.py", line 75, in execute
+    _finite(value, positive=True)
+  File "E:\adaptive-market-engine\v3\replay-checkout-20261009-01\src\crypto_grid_bot\trend\spot_account.py", line 46, in _finite
+    raise ValueError("positive value required")
+ValueError: positive value required
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "E:\adaptive-market-engine\v3\replay-logs-20261009-01\launch.py", line 18, in <module>
+    receipt = v3_dispatch.dispatch_registered(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\adaptive-market-engine\v3\replay-checkout-20261009-01\scripts\v3_dispatch.py", line 121, in dispatch_registered
+    report = run_experiment(
+             ^^^^^^^^^^^^^^^
+  File "E:\adaptive-market-engine\v3\replay-checkout-20261009-01\src\crypto_grid_bot\trend\experiment_runner.py", line 81, in run_experiment
+    cost: replay_spot_recorded(
+          ^^^^^^^^^^^^^^^^^^^^^
+  File "E:\adaptive-market-engine\v3\replay-checkout-20261009-01\src\crypto_grid_bot\trend\evidence_writer.py", line 159, in replay_spot_recorded
+    runner = replay_spot_benchmark(
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\adaptive-market-engine\v3\replay-checkout-20261009-01\src\crypto_grid_bot\trend\spot_benchmark.py", line 384, in replay_spot_benchmark
+    raise SpotReplayExecutionError(exc, runner) from exc
+crypto_grid_bot.trend.spot_benchmark.SpotReplayExecutionError: ValueError: positive value required
