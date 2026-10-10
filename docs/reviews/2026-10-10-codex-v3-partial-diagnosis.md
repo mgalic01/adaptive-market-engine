@@ -45,7 +45,7 @@ All percentages below are percentages, not fractions. Fixed rules are reported c
 
 ## What the saved evidence shows
 
-- **More size did not produce better compounded return.** At ordinary costs, size 1 has 6.81% CAGR and 40.29% drawdown, size 2 has 8.82% and 66.82%, and size 3 has 6.79% and 82.78%. This is direct evidence against merely increasing leverage for this menu.
+- **Size 2 improves CAGR over size 1 at much greater drawdown; size 3 reduces CAGR.** At ordinary costs, size 1 has 6.81% CAGR and 40.29% drawdown, size 2 has 8.82% and 66.82%, and size 3 has 6.79% and 82.78%. Calmar declines from 0.169 to 0.132 to 0.082. Increasing leverage therefore does not consistently improve compounded return or return relative to drawdown for this menu.
 - **Short lifecycles lost money in the selected account.** Longs: 236 lifecycles, +7,369.11 USDT net. Shorts: 106 lifecycles, -3,922.24 USDT net. That is attribution, not proof that removing shorts from the selected account would reproduce the same longs or equity path.
 - **Costs matter, but maker-fee engineering alone is not the whole answer.** The primary account pays 442.68 USDT in explicit fees and 1,481.82 USDT net funding. Slippage is already embedded in prices and not separately isolated here. At doubled fees/slippage, size-2 CAGR falls to 5.11% and drawdown reaches 68.71%.
 - **Selection deserves investigation.** Several fixed long-only comparisons exceed the selected account. R4L reports 34.90% CAGR, Sharpe 1.017 and 46.46% drawdown. This is a hindsight diagnostic across 12 comparisons, not permission to promote R4L or claim it passes A5.
@@ -71,7 +71,7 @@ sources, never the mutable worktree. Its output records every extracted source
 SHA-256 before calculation. Recalculation reproduced all 18 diagnostic objects
 exactly; only the source inventory was added to the JSON.
 
-To reproduce on the owner machine, copy the `.py.txt` source to a separate scratch `.py` file and run it with the existing Python 3.12 environment. It uses the three explicit repository/evidence/output paths near its top; choose a fresh output directory because an existing one is refused. Other machines need those paths adjusted and the same original journals and Git objects. Outputs are diagnostic files only; it does not append the trial register. [All-attempt result-event verification/export](2026-10-10-codex-v3-attempt-reconciliation.md) has completed for 187 attempts and awaits independent linkage review and canonical append; no final publication receipt exists.
+To reproduce on the owner machine, copy the `.py.txt` source to a separate scratch `.py` file and run it with the existing Python 3.12 environment without `-O` (the script uses assertions). It uses the three explicit repository/evidence/output paths near its top; choose a fresh output directory because an existing one is refused. Other machines need those paths adjusted and the same original journals and Git objects. Outputs are diagnostic files only; it does not append the trial register. [All-attempt result-event verification/export](2026-10-10-codex-v3-attempt-reconciliation.md) has completed for 187 attempts. Bob reviewed linkage and their exact events are appended on this branch, pending latest-head review/checks before merge; no final publication receipt exists.
 
 ## Handoff and recovery decision
 
