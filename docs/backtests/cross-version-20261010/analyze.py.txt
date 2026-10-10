@@ -1,0 +1,36 @@
+from pathlib import Path
+import re,json,hashlib
+from decimal import Decimal as D,getcontext
+from collections import defaultdict
+getcontext().prec=60
+root=Path('E:/adaptive-market-engine/cross-version-diagnosis-20261010');out={'sources':[],'v1':{},'v2':[]}
+groups=defaultdict(list)
+for doc in ['2026-10-06-spec-v1-stage-1.md','2026-10-07-spec-v2-verdict.md']:
+ s=Path('docs/backtests',doc).read_text(encoding='utf-8')
+ for line in s.splitlines():
+  m=re.search(r'actions/runs/(\d+).*?`([0-9a-f]{64})`',line)
+  if not m:continue
+  run,expected=m.groups(); matches=list((root/run).rglob('results.json'))
+  if len(matches)!=1:raise ValueError((run,len(matches)))
+  p=matches[0];raw=p.read_bytes();actual=hashlib.sha256(raw).hexdigest()
+  if actual!=expected:raise ValueError(('hash',run,actual,expected))
+  d=json.loads(raw);out['sources'].append({'run':run,'sha256':actual,'code_commit':d['code_commit'],'dataset':d['dataset']})
+  for r in d['results']:
+   if r['strategy'].startswith(('ungated','trend benchmark')):continue
+   record={k:r.get(k) for k in ['symbol','path_mode','variant','return_pct','max_drawdown_pct','active_max_drawdown_pct','fees','turnover','realised_grid_sell_pnl','realised_exit_pnl','realised_exit_pnl_by_reason','completed_cycles','soft_drawdown_rebases','exit_blocked_frames','time_with_inventory_pct','mean_exposure_when_invested_pct','top_reasons_by_bar','final_inventory','accounting_problems']}
+   record.update(run=run,dataset=d['dataset'])
+   # These included rows must reconcile realized contributions when flat.
+   if D(r['final_inventory'])==0:
+    residual=D(r['realised_grid_sell_pnl'])+D(r['realised_exit_pnl'])-(D(r['final_total_equity'])-D(r['initial_quote']))
+    if abs(residual)>D('1e-18'):raise ValueError(('pnl',run,r['symbol'],residual))
+   if 'stage-1' in doc:
+    label=r.get('variant','V0')
+    if '+structure-v2' in r['feature_version']:label='V2-structure' if label=='V0' else label+'+V2-structure'
+    groups[label].append(record)
+   elif r.get('variant')=='MS':
+    record['modes']=r.get('modes');out['v2'].append(record)
+for name,rows in groups.items():
+ n=D(len(rows));out['v1'][name]={'runs':len(rows),'mean_return_pct':sum(D(str(r['return_pct'])) for r in rows)/n,'mean_grid_pnl':sum(D(r['realised_grid_sell_pnl']) for r in rows)/n,'mean_exit_pnl':sum(D(r['realised_exit_pnl']) for r in rows)/n,'mean_fees':sum(D(r['fees']) for r in rows)/n,'mean_inventory_time_pct':sum(D(str(r['time_with_inventory_pct'])) for r in rows)/n,'mean_cycles':sum(D(r['completed_cycles']) for r in rows)/n,'rows':rows}
+(root/'cross-version-evidence.json').write_text(json.dumps(out,default=str,indent=2,sort_keys=True)+'\n',encoding='utf-8',newline='\n')
+print('Verified original files:',len(out['sources']))
+for n,v in out['v1'].items():print(n,*(f'{D(str(v[k])):.4f}' for k in ['mean_return_pct','mean_grid_pnl','mean_exit_pnl','mean_fees','mean_inventory_time_pct','mean_cycles']))
