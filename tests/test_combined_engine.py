@@ -20,6 +20,25 @@ def candidate(order):
     return Qualification(order.symbol, 0, True, order.owner, order.side, D(1), ())
 
 
+def test_admission_snapshot_includes_futures_collateral_but_not_spot_inventory():
+    engine = PortfolioEngine(D(10000))
+    order = intent(
+        owner="futures_trend",
+        venue="futures",
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    fill = FillEvent(
+        "margin-entry", 1, "BTCUSDT", "futures_trend", "futures", 1, D(1), D(100), D(0)
+    )
+    state = engine.settle("margin-batch", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    view = engine._view(state.account, D(1), ())
+    assert view.futures_backing == D(10000)
+    assert view.free_cash < view.futures_backing
+
+
 def test_filled_quantity_transfers_from_reservation_to_real_wallet():
     engine = PortfolioEngine(D(10000))
     order = intent()

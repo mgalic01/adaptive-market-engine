@@ -121,6 +121,7 @@ class PortfolioEngine:
             tuple(exposures),
             fraction,
             groups,
+            max(Decimal(0), futures_margin(account.free_cash, account.positions).backing),
         )
 
     def _exit_reserve(self, account: AccountSnapshot) -> Decimal:
