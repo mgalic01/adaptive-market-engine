@@ -254,3 +254,71 @@ def test_reused_attempt_id_across_different_cells_is_not_independent_evidence() 
     rows = list(outcomes(reg))
     rows[1] = replace(rows[1], attempt_id=rows[0].attempt_id)
     assert evaluate(reg, tuple(rows)).status == "incomplete"
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"failed": True, "liquidations": 1},
+        {"complete": False, "max_drawdown": D(".5")},
+    ],
+)
+def test_unfinished_attempt_preserves_known_failure(updates) -> None:
+    reg = registration()
+    result = evaluate(reg, change(outcomes(reg), **updates))
+    assert result.status == "fail"
+    assert result.failures and result.incomplete_reasons
+
+
+def test_repeated_attempt_preserves_known_failure() -> None:
+    reg = registration()
+    rows = outcomes(reg)
+    full = next(row for row in rows if row.identity.arm == "combined")
+    result = evaluate(reg, rows + (replace(full, attempt_id="retry", max_drawdown=D(".5")),))
+    assert result.status == "fail"
+    assert result.failures and result.incomplete_reasons
+
+
+def test_doubled_cost_must_beat_matched_baselines() -> None:
+    reg = registration()
+    result = evaluate(reg, change(outcomes(reg), arm="matched_v2", cost=2, final_equity=D(20000)))
+    assert result.status == "fail"
+
+
+def test_doubled_cost_zero_drawdown_is_indeterminate() -> None:
+    reg = registration()
+    result = evaluate(reg, change(outcomes(reg), cost=2, max_drawdown=D(0)))
+    assert result.status == "incomplete"
+
+
+def test_partial_observation_does_not_fail_unfinished_profit() -> None:
+    reg = registration()
+    result = evaluate(reg, change(outcomes(reg), cost=2, complete=False, final_equity=D(9000)))
+    assert result.status == "incomplete" and not result.failures
+
+
+def test_partial_accounting_failure_survives_invalid_final_metric() -> None:
+    reg = registration()
+    result = evaluate(
+        reg, change(outcomes(reg), complete=False, final_equity=D("NaN"), accounting_residual=D(1))
+    )
+    assert result.status == "fail" and result.incomplete_reasons
+
+
+def test_mismatched_attempt_cannot_supply_attributable_failure() -> None:
+    reg = registration()
+    rows = outcomes(reg)
+    full = next(row for row in rows if row.identity.arm == "combined")
+    result = evaluate(
+        reg,
+        rows
+        + (
+            replace(
+                full,
+                attempt_id="foreign",
+                identity=replace(full.identity, code_pin="d" * 40),
+                max_drawdown=D(".5"),
+            ),
+        ),
+    )
+    assert result.status == "incomplete" and not result.failures

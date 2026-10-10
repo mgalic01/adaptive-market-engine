@@ -245,6 +245,35 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
     valid: dict[tuple[str, str, str, int], RunOutcome] = {}
     for key, (identity, expected_capital) in expected.items():
         rows = grouped.get(key, [])
+        # Comparability requires one complete attempt; observed safety failures do not.
+        # Inspect every attributable attempt before rejecting duplicates or partial runs.
+        for observed in rows:
+            if observed.identity != identity or any(
+                type(value) is not int
+                for value in (
+                    observed.identity.cost_multiple,
+                    observed.identity.start_ms,
+                    observed.identity.end_ms,
+                )
+            ):
+                continue
+            if identity.arm not in registration.baseline_arms:
+                if type(observed.liquidations) is int and observed.liquidations > 0:
+                    failures.append(f"{key}: observed liquidation")
+                if observed.wallet_quantity_exact is False:
+                    failures.append(f"{key}: wallet/quantity exactness not verified")
+                if _finite(observed.accounting_residual):
+                    residual = abs(Fraction(observed.accounting_residual))
+                    if residual > Fraction(1, 10**18) or (
+                        residual and observed.accounting_explained is False
+                    ):
+                        failures.append(f"{key}: observed invalid accounting")
+            if (
+                identity.arm == "combined"
+                and _finite(observed.max_drawdown)
+                and observed.max_drawdown > Decimal(".30")
+            ):
+                failures.append(f"{key}: full maximum drawdown exceeds30%")
         if len(rows) != 1:
             incomplete.append(f"{key}: missing or repeated cell ({len(rows)} outcomes)")
             continue
@@ -276,18 +305,22 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             (incomplete if identity.arm in registration.baseline_arms else failures).append(message)
             continue
         valid[key] = row
-        if identity.arm == "combined":
-            if row.max_drawdown > Decimal(".30"):
-                failures.append(f"{key}: full maximum drawdown exceeds30%")
-            if identity.cost_multiple == 2 and row.final_equity <= row.initial_equity:
-                failures.append(f"{key}: doubled-cost full profit is not positive")
-    for window, capital in product(registration.windows, registration.capitals):
-        full = valid.get(("combined", window.id, capital.id, 1))
+        if (
+            identity.arm == "combined"
+            and identity.cost_multiple == 2
+            and row.final_equity <= row.initial_equity
+        ):
+            failures.append(f"{key}: doubled-cost full profit is not positive")
+    for window, capital, profile in product(
+        registration.windows, registration.capitals, registration.cost_profiles
+    ):
+        multiple, _ = profile
+        full = valid.get(("combined", window.id, capital.id, multiple))
         if full is None:
             continue
         full_return = Fraction(full.final_equity) / Fraction(full.initial_equity) - 1
         for baseline in registration.baseline_arms:
-            key = (baseline, window.id, capital.id, 1)
+            key = (baseline, window.id, capital.id, multiple)
             other = valid.get(key)
             if other is None:
                 continue  # The missing/invalid cell already has a visible reason.
