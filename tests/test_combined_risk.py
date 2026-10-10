@@ -35,6 +35,10 @@ def view(**changes):
     return replace(PortfolioView(D(10000), D(10000), (), D(1)), **changes)
 
 
+def test_default_maintenance_matches_frozen_v3_one_percent_model():
+    assert intent().maintenance_rate == D("0.01")
+
+
 def test_asset_cap_and_fee_reserve_limit_size():
     answer = PortfolioRisk().reserve(intent(), view())
     assert answer.quantity == D("19.990")
