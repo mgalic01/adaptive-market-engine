@@ -80,5 +80,21 @@ these synthetic results demonstrate improved returns. Historical execution requi
 the separately authorized registered run; reserved 2025+ data and live trading
 remain prohibited.
 
+The subsequent GitHub review also identified understated grid stop tick costs,
+known failures hidden by an incomplete registration, and omitted mandatory report
+metrics. The revised allocator includes adverse sell tick rounding in stop costs
+and refuses insufficient bounds. Acceptance retains uniquely attributable safety
+failures alongside registration errors without permitting incomplete comparisons.
+Reports now include CAGR, return/drawdown, daily Sharpe and time-weighted committed
+capital utilization, each with its definition and unavailable reason. Explicit
+opening-time, daily sampling and utilization evidence is required; arbitrary event
+marks and turnover cannot substitute for those inputs. Missing mandatory metrics
+prevent a complete report even when its narrower structural checks pass.
+
+Existing report callers must supply the new sampling evidence before claiming
+metric completeness. This is an intentional compatibility change, not a strategy
+or acceptance-threshold change. Grid stop-reference bounds do not guarantee a
+maximum loss through an adverse gap; actual worse fills must still be booked.
+
 The separate intrabar proposal in this branch is pending an owner decision. It
 does not amend the approved specification or silently change acceptance metrics.
