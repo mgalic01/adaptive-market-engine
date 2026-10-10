@@ -41,6 +41,22 @@ gross, matching the frozen V3 liquidation model, rather than 0.5%. A new regress
 failed before this correction and passes after it; the focused total is now107.
 This corrects implementation against the pinned model before execution, not tuning.
 
+The subsequent review batch makes future timestamp defects causal, requires
+nonempty source references in every decision record, and compares funding against
+cost-inclusive stop risk. Shared futures backing now bounds both entry maintenance
+and stressed-stop maintenance, including held and pending positions. Spot spending
+must preserve those same buffers: admission order cannot let spot consume cash
+already supporting futures. This uses the existing cross-margin model, not an
+assumed isolated-margin liquidation price. The integrating account must supply
+free cash plus futures collateral and marked P&L as backing, excluding spot assets.
+The conservative fallback counts free cash only.
+
+The six-file focused preflight above now passes 133 tests, repository-wide lint,
+format, types, security and report checks. This remains synthetic engineering
+evidence, not a historical result. The older isolated full-suite run had one
+Windows shell-resolution failure; that test passes with Git Bash on PATH, but
+this is not claimed as a successful full-suite rerun.
+
 ## Integration obligations and limits
 
 The engine must provide the same authoritative account/correlation snapshot under

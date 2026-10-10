@@ -30,6 +30,7 @@ class PortfolioView:
     exposures: tuple[Exposure, ...]
     risk_fraction: Decimal
     correlation_groups: tuple[tuple[str, str], ...] = ()
+    futures_backing: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +81,8 @@ def _number(value: Decimal, positive: bool = False) -> None:
 
 def _validate(intent: Intent, view: PortfolioView) -> None:
     symbol_name(intent.symbol)
+    if view.futures_backing is not None:
+        _number(view.futures_backing)
     for value in (intent.price, intent.stop, intent.step, intent.max_quantity):
         _number(value, True)
     for value in (
@@ -247,7 +250,7 @@ class PortfolioRisk:
             if (
                 intent.funding_admission
                 and max(ZERO, intent.funding_rate * intent.side) * 3 * intent.price
-                > Decimal("0.25") * distance
+                > Decimal("0.25") * unit_risk
             ):
                 return no("adverse_funding")
         cash = view.free_cash - sum((a.cash for _, a in pending), ZERO)
@@ -276,6 +279,34 @@ class PortfolioRisk:
             view.free_cash / unit_cash,
             intent.max_quantity,
         )
+        # Shared futures backing includes free cash and futures collateral/P&L,
+        # never spot inventory. With no explicit snapshot use only free cash.
+        backing = view.free_cash if view.futures_backing is None else view.futures_backing
+        backing -= sum((a.cash for i, a in pending if i.venue == "spot"), ZERO)
+        held = tuple(e for e in view.exposures if e.owner == "futures_trend")
+        gross = sum((e.notional for e in held), ZERO)
+        stress = sum((e.stop_risk for e in held), ZERO)
+        gross += sum((a.notional for i, a in pending if i.venue == "futures"), ZERO)
+        pending_risk = sum((a.risk for i, a in pending if i.venue == "futures"), ZERO)
+        stress += pending_risk
+        rate = intent.maintenance_rate if intent.venue == "futures" else Decimal("0.01")
+        if intent.venue == "futures":
+            # gross+stop risk bounds short notional growth at stressed exits, and
+            # conservatively overstates it for longs. Existing risks are not reset.
+            stop_capacity = (backing - stress - 3 * rate * (gross + stress)) / (
+                unit_risk + 3 * rate * max(unit_notional, stop_exit)
+            )
+            entry_capacity = (backing - pending_risk - 4 * rate * gross) / (
+                entry * intent.fee_rate + entry_slippage + 4 * rate * unit_notional
+            )
+            normal = min(normal, stop_capacity, entry_capacity)
+        elif held or any(i.venue == "futures" for i, _ in pending):
+            # Spot spending removes eligible backing too. Preserve both buffers
+            # for already held/reserved futures regardless of admission order.
+            stop_capacity = (backing - stress - 3 * rate * (gross + stress)) / unit_cash
+            entry_capacity = (backing - pending_risk - 4 * rate * gross) / unit_cash
+            normal = min(normal, stop_capacity, entry_capacity)
+
         quantity = min(
             normal * fraction,
             cash / unit_cash,
