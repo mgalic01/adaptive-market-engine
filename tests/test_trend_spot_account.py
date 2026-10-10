@@ -10,6 +10,35 @@ T = 1609459200000
 FILTERS = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1")))
 
 
+def test_zero_minimum_balanced_splitting_preserves_quantity():
+    from dataclasses import replace
+
+    from crypto_grid_bot.trend.spot_account import SpotAccount
+
+    account = SpotAccount()
+    filters = replace(FILTERS, min_quantity=D(0), max_quantity=D(5))
+    fills = account.execute("BTCUSDT", D(13), D(100), filters, T)
+    assert [fill.quantity for fill in fills] == [D(5), D(4), D(4)]
+    assert account.holdings["BTCUSDT"] == 13
+    assert account.audit().exact
+
+
+@pytest.mark.parametrize("method", ["fill", "execute"])
+def test_zero_minimum_keeps_cash_clipped_reason(method):
+    from dataclasses import replace
+
+    from crypto_grid_bot.trend.spot_account import SpotAccount
+
+    account = SpotAccount()
+    filters = replace(FILTERS, min_quantity=D(0), min_notional=D(0))
+    account.fill("BTCUSDT", D(1000), D(100), filters, T)
+    assert account.holdings["BTCUSDT"] == 99
+    getattr(account, method)("BTCUSDT", D(1), D(100), filters, T + 1)
+    assert account.fills[-1].quantity == 0
+    assert account.fills[-1].reason == "cash_clipped"
+    assert account.audit().exact
+
+
 @pytest.mark.parametrize("method", ["fill", "execute"])
 @pytest.mark.parametrize("notional", [D(0), D(5)])
 def test_zero_minimum_does_not_accept_order_rounded_to_zero(method, notional):

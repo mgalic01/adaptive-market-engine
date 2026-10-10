@@ -54,6 +54,34 @@ retaining `cash_clipped`) for zero-sized orders with a zero minimum. Positive-mi
 behavior is unchanged. Full-suite verification and latest-head review remain
 required; the first CI revision's required checks passed before these review fixes.
 
+The next review requested direct receipt-verification coverage, zero-minimum
+splitting and cash-clipped refusal coverage. These are now executable regressions
+in `tests/test_v3_retained_failure.py` and `tests/test_trend_spot_account.py`.
+The original local full suite was not clean: one synthetic pool test detected a
+concurrent commit, and a workflow-shell test selected Windows WSL Bash rather
+than Git Bash. The shell test passes with Git Bash; the pool test passes when rerun
+without commits. Do not describe that original local suite as passing.
+
+### Reproduce the census
+
+This PowerShell command requires the original local completion records and does
+not open market data or execute a replay. It reconstructs the four CSV columns;
+the large journals themselves remain local. The receipt test independently
+verifies only the retained holding journal, not all futures journals.
+
+```powershell
+Get-ChildItem 'E:/adaptive-market-engine/v3/replay-20261009-01/attempts' -Filter '*.finished.json' |
+  ForEach-Object {
+    $j = Get-Content $_.FullName -Raw | ConvertFrom-Json
+    [pscustomobject]@{
+      run_id = $j.run_id
+      phase = $j.payload.phase
+      error = $j.payload.error
+      evidence_sha256 = $j.payload.evidence.sha256
+    }
+  } | Export-Csv -NoTypeInformation -Path 'attempt-outcomes.csv'
+```
+
 ## Recovery boundary
 
 No historical replay was retried or resumed. The original invocation and inputs
