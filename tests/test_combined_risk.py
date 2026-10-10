@@ -37,9 +37,9 @@ def view(**changes):
 
 def test_asset_cap_and_fee_reserve_limit_size():
     answer = PortfolioRisk().reserve(intent(), view())
-    assert answer.quantity == 20
-    assert answer.cash == D("2003.001")
-    assert answer.risk == D("46.002")
+    assert answer.quantity == D("19.990")
+    assert answer.cash == D("2004.93704999")
+    assert answer.risk == D("45.91704999")
     assert answer.accepted
 
 
@@ -63,7 +63,7 @@ def test_pending_cash_cannot_be_spent_twice():
 def test_unknown_correlation_groups_all_assets_together():
     book = PortfolioRisk()
     answers = [
-        book.reserve(intent(str(i), symbol), view())
+        book.reserve(intent(str(i), symbol, slippage_rate=D(0)), view())
         for i, symbol in enumerate(("BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT"))
     ]
     assert sum(a.notional for a in answers) <= 8000
@@ -72,7 +72,7 @@ def test_unknown_correlation_groups_all_assets_together():
 
 
 def test_recovery_quarters_even_asset_capped_size():
-    answer = PortfolioRisk().reserve(intent(), view(risk_fraction=D("0.25")))
+    answer = PortfolioRisk().reserve(intent(slippage_rate=D(0)), view(risk_fraction=D("0.25")))
     assert answer.quantity == 5
     assert answer.notional == 500
 
@@ -99,7 +99,7 @@ def test_futures_short_funding_and_margin_admission():
     assert refused.reason == "adverse_funding"
     accepted = PortfolioRisk().reserve(replace(candidate, funding_rate=D("0.0001")), view())
     assert accepted.accepted
-    assert accepted.cash == D("1003.001")
+    assert accepted.cash == D("1006.06002")
 
 
 @pytest.mark.parametrize(
@@ -174,7 +174,7 @@ def test_strategy_cannot_invent_a_correlation_group_to_bypass_shared_cap():
 
 def test_partial_fill_ack_releases_only_remaining_fraction():
     book = PortfolioRisk()
-    first = book.reserve(intent(), view())
+    first = book.reserve(intent(slippage_rate=D(0)), view())
     with pytest.raises(ValueError):
         book.acknowledge_remaining("one", D(10), acknowledged=False)
     book.acknowledge_remaining("one", D(10), acknowledged=True)
@@ -198,3 +198,72 @@ def test_two_concurrent_strategies_cannot_reserve_same_cash():
         )
     assert sum(a.cash for a in answers) <= 100
     assert sum(a.accepted for a in answers) == 1
+
+
+@pytest.mark.parametrize("slippage", [D(0), D("0.01")])
+def test_short_stop_execution_costs_stay_within_asset_risk(slippage):
+    candidate = intent(
+        venue="futures",
+        owner="futures_trend",
+        side=-1,
+        stop=D(150),
+        fee_rate=D("0.01"),
+        slippage_rate=slippage,
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    answer = PortfolioRisk().reserve(candidate, view())
+    entry = D(100) * (1 - slippage)
+    exit_price = D(150) * (1 + slippage)
+    actual_risk = answer.quantity * (exit_price - entry + (entry + exit_price) * D("0.01"))
+    assert answer.accepted
+    assert actual_risk <= D(50)
+    assert answer.risk >= actual_risk
+
+
+@pytest.mark.parametrize("venue", ["spot", "futures"])
+def test_cash_keeps_entry_and_stop_exit_fees_reserved(venue):
+    candidate = intent(
+        venue=venue,
+        owner="spot_trend" if venue == "spot" else "futures_trend",
+        stop=D(99),
+        fee_rate=D("0.01"),
+        slippage_rate=D(0),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    account = view(free_cash=D(1010))
+    answer = PortfolioRisk().reserve(candidate, account)
+    principal = D(100) if venue == "spot" else D(50)
+    required = answer.quantity * (principal + D(1) + D("0.99"))
+    assert answer.accepted
+    assert answer.cash >= required
+    assert required <= account.free_cash
+
+
+def test_expected_buy_execution_notional_respects_asset_cap():
+    answer = PortfolioRisk().reserve(intent(), view())
+    assert answer.accepted
+    execution_notional = answer.quantity * D("100.05")
+    assert execution_notional <= D(2000)
+    assert answer.notional >= execution_notional
+
+
+def test_short_minimum_notional_uses_adverse_sell_execution_price():
+    candidate = intent(
+        venue="futures",
+        owner="futures_trend",
+        side=-1,
+        stop=D(102),
+        requested_quantity=D(1),
+        min_notional=D(100),
+        slippage_rate=D("0.01"),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    answer = PortfolioRisk().reserve(candidate, view())
+    assert not answer.accepted
+    assert answer.reason == "below_minimum"

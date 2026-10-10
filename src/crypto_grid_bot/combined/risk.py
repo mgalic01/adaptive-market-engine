@@ -217,13 +217,22 @@ class PortfolioRisk:
         ):
             return no("asset_owned")
         distance = abs(intent.price - intent.stop)
-        # Fees apply to the slipped execution price, not the unslipped quote.
-        one_way_cost = intent.price * (
-            intent.slippage_rate + intent.fee_rate * (1 + intent.slippage_rate)
-        )
-        unit_risk = distance + 2 * one_way_cost
-        unit_cash = intent.price * (Decimal(1) if intent.venue == "spot" else Decimal("0.5"))
-        unit_cash += one_way_cost
+        # Bounds run from the quote to the adverse execution price. Entry and
+        # stop-exit fees use their own prices, especially for short buybacks.
+        entry = intent.price * (1 + intent.side * intent.slippage_rate)
+        stop_exit = intent.stop * (1 - intent.side * intent.slippage_rate)
+        fees = (entry + stop_exit) * intent.fee_rate
+        entry_slippage = intent.price * intent.slippage_rate
+        exit_slippage = intent.stop * intent.slippage_rate
+        unit_risk = distance + entry_slippage + exit_slippage + fees
+        unit_notional = max(intent.price, entry)
+        minimum_price = min(intent.price, entry)
+        collateral_fraction = Decimal(1) if intent.venue == "spot" else Decimal("0.5")
+        unit_cash = unit_notional * collateral_fraction + fees + exit_slippage
+        if intent.venue == "futures":
+            # Spot principal already includes its adverse entry price; futures
+            # must also retain cash for the entry execution loss against the mark.
+            unit_cash += entry_slippage
         if intent.venue == "futures":
             if (
                 not isinstance(intent.funding_rate, Decimal)
@@ -263,7 +272,7 @@ class PortfolioRisk:
         normal = min(
             intent.requested_quantity,
             view.equity * Decimal("0.005") / unit_risk,
-            view.equity * Decimal("0.20") / intent.price,
+            view.equity * Decimal("0.20") / unit_notional,
             view.free_cash / unit_cash,
             intent.max_quantity,
         )
@@ -271,8 +280,8 @@ class PortfolioRisk:
             normal * fraction,
             cash / unit_cash,
             (view.equity * Decimal("0.03") * fraction - used_risk) / unit_risk,
-            (view.equity * Decimal("1.6") * fraction - used_gross) / intent.price,
-            (view.equity * Decimal("0.8") * fraction - group) / intent.price,
+            (view.equity * Decimal("1.6") * fraction - used_gross) / unit_notional,
+            (view.equity * Decimal("0.8") * fraction - group) / unit_notional,
         )
         if quantity <= 0:
             return no("portfolio_capacity")
@@ -280,7 +289,7 @@ class PortfolioRisk:
         if (
             quantity == 0
             or quantity < intent.min_quantity
-            or quantity * intent.price < intent.min_notional
+            or quantity * minimum_price < intent.min_notional
         ):
             return no("below_minimum")
         return Admission(
@@ -290,5 +299,5 @@ class PortfolioRisk:
             quantity,
             quantity * unit_cash,
             quantity * unit_risk,
-            quantity * intent.price,
+            quantity * unit_notional,
         )
