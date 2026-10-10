@@ -47,8 +47,9 @@ no exchange connection, historical launcher or new dependency.
 
 At integrated revision `7e7a722`, the focused preflight passed 351 synthetic tests,
 repository-wide lint/format, mypy, Bandit and report checks. A separate full suite
-was started at that unchanged revision; its result must be recorded before claiming
-full-suite success. Later integration additions require their own focused checks.
+at that unchanged revision subsequently passed 2,928 tests, with eight skips and
+1,595 subtests, in 802 seconds. This is not current-head CI. Later integration
+additions require their own focused checks and required full-suite CI.
 
 Regressions cover real review findings: narrow Decimal contexts, duplicate events,
 pre-exit liquidation, recovery with dust, stop preservation across partial entries,
@@ -61,6 +62,17 @@ mypy, Bandit and report checks pass. Browser tooling could not produce screensho
 so visual verification is explicitly unfinished. Read-only local critics also
 checked bundle integrity and replay failure preservation; malformed reached rows
 now retain the successful prefix and safe unavailable identity labels.
+
+The fresh whole-package critic then reproduced three important integration defects:
+automatic close obligations left pending increases active; entry coordination could
+trust stale assessment source timestamps; and malformed symbol types could bypass
+settlement integrity shutdown and replay failure preservation. Regressions reproduced
+each before fixes. Automatic stale/margin/post-fill protection now cancels portfolio
+increases while retaining late-fill identities; entry checks completed source
+boundaries; malformed account fields normalize to validation failures and replay
+retains the booked terminal wallet. At `e1470ca`, 482 focused tests pass with one
+OS permission skip, plus all static/report checks. A fresh review of this batch and
+external latest-full-head review remain required before merge.
 
 Full market replay, baseline adapters, exact data/config/code
 registration and external full-head review are still delivery obligations. None of
