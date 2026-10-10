@@ -4,6 +4,14 @@ Index: Owner decision needed for one full unchanged-menu recovery run after revi
 
 ## Decision requested
 
+**Updated after recovering partial futures diagnostics:** defer the full repeat
+while reviewing the [saved-run diagnosis](2026-10-10-codex-v3-partial-diagnosis.md).
+The primary account's recovered Sharpe, trade profit factor and Calmar miss
+A1–A3. Another unchanged invocation could complete the missing comparisons and
+report, but does not improve the strategy. The decision below therefore concerns
+report completeness and cost, not an expectation of a passing result. No owner
+approval has been inferred from the earlier pending question.
+
 Approve one additional local V3 development invocation on E:, after the corrected
 implementation and its new registration/task have passed external review and
 required checks. This explicitly extends the local-executor waiver to one recovery
