@@ -190,3 +190,63 @@ def test_equity_order_invalid_sources_and_observation_gap_are_not_silently_repai
         analyze(D(100), curve(), contributions(), (), (), ("",))
     with pytest.raises(ValueError):
         analyze(D(100), curve(), contributions(), (), (), ("source",), opportunity_gap_ms=0)
+
+
+def test_future_contributions_cannot_produce_complete_report() -> None:
+    rows = tuple(
+        replace(row, entry_ms=100, exit_ms=101 if row.status == "closed" else None)
+        for row in contributions()
+    )
+    report = analyze(D(100), curve(), rows, (), (), ("source",))
+    assert not report.complete
+    assert "contribution_outside_equity_window" in report.issues
+
+
+@pytest.mark.parametrize(
+    "episode",
+    [
+        RecoveryEpisode(1, 2, D(100), D(150)),
+        RecoveryEpisode(1, 3, D(110), D(105)),
+    ],
+)
+def test_recovery_unverified_or_contradictory_endpoints_have_no_attribution(episode) -> None:
+    report = analyze(D(100), curve(), contributions(), (), (episode,), ("source",))
+    assert not report.complete
+    assert report.recovery_changes[0].marked_change is None
+    assert report.recovery_changes[0].return_fraction is None
+    assert "recovery_endpoint" in report.unknown_fields
+
+
+def test_recovery_exact_observed_endpoints_preserve_actual_loss() -> None:
+    report = analyze(
+        D(100), curve(), contributions(), (), (RecoveryEpisode(1, 2, D(110), D(105)),), ("source",)
+    )
+    assert report.complete
+    assert report.recovery_changes[0].marked_change == -5
+
+
+def test_recovery_does_not_choose_between_different_same_timestamp_marks() -> None:
+    points = (
+        EquityPoint(0, D(100)),
+        EquityPoint(1, D(110)),
+        EquityPoint(1, D(109)),
+        EquityPoint(2, D(105)),
+    )
+    report = analyze(
+        D(100), points, contributions(), (), (RecoveryEpisode(1, 2, D(110), D(105)),), ("source",)
+    )
+    assert not report.complete
+    assert report.recovery_changes[0].marked_change is None
+
+
+def test_recovery_missing_start_mark_is_not_interpolated() -> None:
+    report = analyze(
+        D(100),
+        (curve()[0], curve()[2]),
+        contributions(),
+        (),
+        (RecoveryEpisode(1, 2, D(110), D(105)),),
+        ("source",),
+    )
+    assert not report.complete
+    assert report.recovery_changes[0].marked_change is None

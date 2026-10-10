@@ -249,6 +249,8 @@ def analyze(
     events, episodes, sources = tuple(opportunities), tuple(recovery), tuple(source_refs)
     for source in sources:
         _text(source)
+    issues: list[str] = []
+    marks: dict[int, set[Decimal]] = {}
     previous = -1
     for point in points:
         _time(point.timestamp_ms)
@@ -256,6 +258,7 @@ def analyze(
         if point.timestamp_ms < previous:
             raise ValueError("equity observations must be chronological")
         previous = point.timestamp_ms
+        marks.setdefault(point.timestamp_ms, set()).add(point.equity)
     ids: set[str] = set()
     for row in rows:
         for text in (row.id, row.strategy, row.asset, row.direction):
@@ -272,6 +275,11 @@ def analyze(
                 raise ValueError("exit precedes entry")
         if (row.status == "closed") != (row.exit_ms is not None):
             raise ValueError("status and exit timestamp disagree")
+        if points and (
+            not points[0].timestamp_ms <= row.entry_ms <= points[-1].timestamp_ms
+            or (row.exit_ms is not None and row.exit_ms > points[-1].timestamp_ms)
+        ):
+            issues.append("contribution_outside_equity_window")
         for optional_text in (row.regime, row.exit_reason):
             if optional_text is not None:
                 _text(optional_text)
@@ -303,7 +311,17 @@ def analyze(
             _time(episode.end_ms)
             if episode.end_ms < episode.start_ms:
                 raise ValueError("recovery end precedes start")
-            delta = _number(episode.equity_end) - start
+            end = _number(episode.equity_end)
+            # Timestamp alone cannot identify an endpoint when several distinct
+            # event marks share it. Never choose a favorable mark or interpolate.
+            if marks.get(episode.start_ms) == {episode.equity_start} and marks.get(
+                episode.end_ms
+            ) == {episode.equity_end}:
+                delta = end - start
+            else:
+                issues.append("unverified_recovery_endpoint")
+        else:
+            issues.append("unverified_recovery_endpoint")
         changes.append(
             RecoveryChange(
                 episode,
@@ -314,7 +332,6 @@ def analyze(
     fees, funding, gross, turnover = (
         _sum(rows, field) for field in ("fees", "funding_signed", "gross_pnl", "turnover")
     )
-    issues = []
     if not sources:
         issues.append("missing_source_refs")
     final, profit, ratio, drawdown, residual = None, None, None, None, None
