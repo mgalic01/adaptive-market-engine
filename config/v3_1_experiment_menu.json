@@ -1,0 +1,43 @@
+{
+  "schema": "v3.1-menu-1",
+  "status": "NOT_AUTHORIZED_FOR_EXECUTION",
+  "cost_multiples": [1, 2],
+  "capital_scenarios": [
+    {"id": "research", "usdt": "10000"},
+    {"id": "owner_small", "eur": "100", "eur_usdt_pin": null}
+  ],
+  "arms": [
+    "unchanged_v3_selector",
+    "unchanged_v3_r1_long_only",
+    "unchanged_v3_r2_long_only",
+    "unchanged_v3_r3_long_only",
+    "unchanged_v3_r4_long_only",
+    "unchanged_v3_r5_long_only",
+    "unchanged_v3_r6_long_only",
+    "matched_spot_hold",
+    "matched_spot_baselines",
+    "spot_trend",
+    "futures_trend",
+    "futures_trend_long_only",
+    "spot_grid",
+    "combined",
+    "combined_without_continuation",
+    "combined_without_full_short_qualification",
+    "combined_without_discretionary_trailing",
+    "combined_without_funding_admission",
+    "combined_without_recovery"
+  ],
+  "pending_registration": [
+    "reviewed_full_code_and_configuration_hashes",
+    "finite_expansion_of_matched_spot_baselines",
+    "exact_comparable_dates_and_input_availability",
+    "data_and_filter_manifest_hashes",
+    "grid_flow_coverage",
+    "fx_assumption",
+    "base_cost_profile_and_benchmark_adapters",
+    "separate_owner_historical_run_authorization"
+  ],
+  "mandatory_safeguards": ["accounting", "liquidation", "reserved_data_boundary"],
+  "preserve_failed_attempts": true,
+  "automatic_retry": false
+}
