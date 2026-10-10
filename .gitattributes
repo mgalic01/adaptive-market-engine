@@ -16,3 +16,4 @@ config/datasets/v3-20261009/snapshots/*.json -text -diff
 # Failure artifacts retain the original local bytes for evidence verification.
 docs/backtests/v3-20261010-failed-invocation/** -text diff
 docs/backtests/v3-20261010-partial-diagnostics/** -text diff
+docs/backtests/v3-20261010-return-diagnosis/** -text diff
