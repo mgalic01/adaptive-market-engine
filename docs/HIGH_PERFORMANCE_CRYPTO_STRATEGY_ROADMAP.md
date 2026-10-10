@@ -1,5 +1,29 @@
 # High-Performance Crypto Strategy Roadmap
 
+## Current status — 2026-10-10
+
+The [maintained research index](RESEARCH_INDEX.md) is the current entry point.
+It separates implemented V1–V3 capabilities, completed and incomplete evidence,
+owner-approved V3.1 commitments, and deferred hypotheses. The baseline integrated
+for this consolidation is `5fd961cace769bdfda9eed2fb5c86316247648e7`.
+
+Everything after this status section is a **dated historical research record**.
+References there to “current v2”, missing futures infrastructure, delivery order,
+and proposed numerical settings describe the cited October 5–7 baseline, not
+current main. V1 ended without a winner; V2 failed C1. V3 futures implementation
+and saved primary evidence now exist, but the failed overall invocation left A5
+and the final experiment receipt unavailable. No V3 pass is asserted.
+
+The owner approved the combined V3.1 spot trend/grid and futures long/short design
+work described in the index. This approval does not adopt every historical
+proposal. Publication or merge of research neither authorizes every experiment
+nor reopens frozen V1–V3 results. No historical execution, 2025-onward data access,
+live-price paper run, credentials or live trading is authorized here. The 10–20%+
+monthly figures below are historical aspirations, never targets or guarantees.
+
+## Historical record begins
+
+
 ## V2 Expansion and V3 Futures Long/Short Architecture
 
 Status: planning proposal, 2026-10-05. Named writer: Codex Desktop.
