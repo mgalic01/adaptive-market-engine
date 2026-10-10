@@ -122,8 +122,8 @@ def component_plan(
         or not _consistent(assessment, qualification)
     ):
         return None
-    assert quote_price is not None and assessment.atr is not None
-    assert qualification.owner is not None
+    if quote_price is None or assessment.atr is None or qualification.owner is None:
+        return None
     price, atr = Fraction(quote_price), Fraction(assessment.atr)
     cost = price * Fraction(round_trip_cost_rate)
     owner = qualification.owner
@@ -170,5 +170,6 @@ def grid_target(plan: ComponentPlan, actual_fill: Decimal) -> Decimal:
         or not _finite(actual_fill)
     ):
         raise ValueError("positive fill and valid spot grid required")
-    assert plan.spacing is not None
+    if plan.spacing is None:
+        raise ValueError("grid spacing unavailable")
     return _decimal(Fraction(actual_fill) + Fraction(plan.spacing))

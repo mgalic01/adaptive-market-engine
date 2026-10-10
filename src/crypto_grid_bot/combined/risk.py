@@ -184,6 +184,13 @@ class PortfolioRisk:
                     ),
                 )
 
+    def preview(self, intent: Intent, view: PortfolioView) -> Admission:
+        """Read-only eligibility check; no ID or capacity is reserved."""
+        _validate(intent, view)
+        with self._lock, localcontext() as context:
+            context.prec = 60
+            return self._admit(intent, view)
+
     def reserve(self, intent: Intent, view: PortfolioView) -> Admission:
         _validate(intent, view)
         with self._lock, localcontext() as context:
