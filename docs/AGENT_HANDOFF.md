@@ -793,9 +793,18 @@ Credits are limited, so every agent works on demand, not by polling:
     commit, never `main` as it is when a queued job starts. Before Bob starts, the
     worker stops unless the commit is on `main`'s first-parent line
     (`git log --first-parent main`: merges and pushes to `main`, not a commit from
-    inside a merged branch) and the task file is in it. The intermediate commits of a
-    multi-commit push to `main` are on that line too, so whoever posts `/bob-run` names
-    the merge commit or the pushed head, never a commit in between. The worker then
+    inside a merged branch) and the task file is in it. First-parent membership alone
+    does not prove that `main` pointed at a commit. For manual triggers, resolve also
+    requires the exact requested SHA as the `after` of a `push` or `pr_merge` activity
+    on `refs/heads/main`, timestamped no later than the comment or workflow creation.
+    It uses the verifier from the workflow's own commit on a separate trusted runner.
+    Missing, malformed, unavailable or incomplete evidence stops the run; no SHA is
+    substituted. The bounded API lookup follows at most 20 pages of 100 records, with
+    10-second request timeouts and 2 MB response limits. A legitimate old revision
+    beyond available evidence therefore also stops. Resolve failures appear in the
+    Actions log; no worker or publisher starts. These checks establish a historical
+    main head, not human approval: the linked approval or owner go is still required.
+    Automatic pushes use the event's pushed SHA directly. The worker then
     freezes the repository at that commit: `main` and `origin/main` name it, no other
     branch, tag or remote is left, and every object outside the commit's history is
     purged, with no snapshot of the newer state left on the machine (Codex's reviews of

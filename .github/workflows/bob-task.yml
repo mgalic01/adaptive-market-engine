@@ -9,6 +9,8 @@ name: IBM Bob task run
 # - a comment "/bob-run docs/tasks/<date>-bob-<topic>.md <full commit SHA>" from the
 #   repository owner. Without the SHA nothing runs;
 # - "Run workflow" by the repository owner, with the task path and the full commit SHA.
+# Manual triggers require that exact SHA as an activity API push/pr_merge after on main,
+# recorded no later than the trigger. Missing or unavailable evidence stops in resolve.
 # The worker checks out the run revision, never "main when the job starts", and stops
 # before Bob unless the commit is on main's first-parent line (merges and pushes to main,
 # not a commit from inside a merged branch; the poster names a merge commit or pushed
@@ -45,7 +47,7 @@ on:
         description: "Task file, e.g. docs/tasks/2026-09-25-bob-v0-trace-hash-crosscheck.md"
         required: true
       revision:
-        description: "Full 40-character SHA to run at: a merge commit or pushed head on main (git log --first-parent main)"
+        description: "Full 40-character SHA: a recorded main push or merge head before this trigger; unknown evidence stops the run"
         required: true
 
 # Default for every job; only the publish job is granted write access.
@@ -54,6 +56,10 @@ permissions:
 
 jobs:
   resolve:
+    # Only resolve reads API evidence; no credential or activity snapshot reaches Bob.
+    permissions:
+      contents: read
+      actions: read
     # Only the owner, on every trigger (Bob's review of PR #27: "Run workflow" is otherwise
     # open to anyone with write access). Merges made with GITHUB_TOKEN start no runs.
     if: >-
@@ -69,8 +75,9 @@ jobs:
       revision: ${{ steps.list.outputs.revision }}
     steps:
       - uses: actions/checkout@v4
-        if: github.event_name == 'push'
         with:
+          # Verifier code is from the workflow revision, never the requested old task.
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -125,6 +132,17 @@ jobs:
           echo "Run revision: ${revision:-none}"
           echo "tasks=$tasks" >> "$GITHUB_OUTPUT"
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the requested revision was a recorded main head before the trigger
+        id: evidence
+        if: github.event_name != 'push' && steps.list.outputs.tasks != '[]'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          REVISION: ${{ steps.list.outputs.revision }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          COMMENT_CREATED_AT: ${{ github.event.comment.created_at }}
+        run: python3 scripts/verify_bob_revision.py
 
   bob-task:
     needs: resolve
