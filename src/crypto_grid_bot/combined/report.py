@@ -313,7 +313,11 @@ def _metrics(
         add("return_drawdown", None, "zero_drawdown")
     else:
         add("return_drawdown", _decimal(Fraction(net_return) / Fraction(drawdown), ratio=True))
-    marks = {(p.timestamp_ms, p.equity) for p in points}
+    marks: dict[int, set[Decimal]] = {}
+    for point in points:
+        marks.setdefault(point.timestamp_ms, set()).add(point.equity)
+    # Timestamp-only samples cannot choose among distinct same-time event marks.
+    # Repeated identical values are unambiguous; no implicit last-mark rule applies.
     if not samples:
         add("sharpe", None, "daily_samples_unavailable")
     elif (
@@ -322,7 +326,7 @@ def _metrics(
         or samples[0] != points[0]
         or samples[-1] != points[-1]
         or any(
-            p.timestamp_ms % 86_400_000 or (p.timestamp_ms, p.equity) not in marks for p in samples
+            p.timestamp_ms % 86_400_000 or marks.get(p.timestamp_ms) != {p.equity} for p in samples
         )
         or any(
             b.timestamp_ms - a.timestamp_ms != 86_400_000
@@ -357,7 +361,7 @@ def _metrics(
         or utilization[0].start_ms != start
         or utilization[-1].end_ms != end
         or any(a.end_ms != b.start_ms for a, b in zip(utilization, utilization[1:], strict=False))
-        or any(row.equity <= 0 or (row.start_ms, row.equity) not in marks for row in utilization)
+        or any(row.equity <= 0 or marks.get(row.start_ms) != {row.equity} for row in utilization)
     ):
         add("utilization", None, "incomplete_or_unmatched_utilization")
     else:

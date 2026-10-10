@@ -394,3 +394,42 @@ def test_missing_daily_endpoint_is_unavailable_without_using_partial_period():
     result = metrics_report(points, metrics_start_ms=0, daily_samples=points[:-1])
     assert metric(result, "sharpe").value is None
     assert metric(result, "sharpe").unavailable_reason == "incomplete_or_unmatched_daily_samples"
+
+
+def test_ambiguous_daily_marks_cannot_select_favorable_sharpe_or_utilization():
+    points = (
+        EquityPoint(0, D(100)),
+        EquityPoint(DAY, D(110)),
+        EquityPoint(DAY, D(90)),
+        EquityPoint(2 * DAY, D(100)),
+    )
+    for selected in (D(110), D(90)):
+        samples = (points[0], EquityPoint(DAY, selected), points[-1])
+        intervals = (
+            UtilizationInterval(0, DAY, D(20), D(0), D(100)),
+            UtilizationInterval(DAY, 2 * DAY, D(20), D(0), selected),
+        )
+        result = metrics_report(
+            points, metrics_start_ms=0, daily_samples=samples, utilization=intervals
+        )
+        assert metric(result, "sharpe").value is None
+        assert metric(result, "utilization").value is None
+        assert not result.complete
+
+
+def test_equal_value_duplicate_daily_marks_remain_unambiguous():
+    points = (
+        EquityPoint(0, D(100)),
+        EquityPoint(DAY, D(110)),
+        EquityPoint(DAY, D(110)),
+        EquityPoint(2 * DAY, D(100)),
+    )
+    samples = (points[0], points[1], points[-1])
+    intervals = (
+        UtilizationInterval(0, DAY, D(20), D(0), D(100)),
+        UtilizationInterval(DAY, 2 * DAY, D(20), D(0), D(110)),
+    )
+    result = metrics_report(
+        points, metrics_start_ms=0, daily_samples=samples, utilization=intervals
+    )
+    assert result.complete
