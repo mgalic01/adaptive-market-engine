@@ -45,8 +45,14 @@ Baseline spot-account tests: 7 passed. Added tests failed at both affected metho
 before the correction. After correction, all 38 spot account, benchmark, evidence
 and report tests passed. Regression coverage includes a zero-minimum buy/sell
 round trip, minimum-notional rejection and negative-minimum rejection without
-state mutation. Targeted lint passed. Full-suite verification and external review
-are pending at preparation time.
+state mutation. Targeted lint passed. Review subsequently identified missing
+rounding-refusal attribution with zero minima and shortened artifact filenames.
+The retained attempt now uses its original start/finish/journal filenames. Four
+additional regressions reproduce the rounding finding before correction; all 42
+focused tests pass after explicitly recording `quantity_rounded_to_zero` (or
+retaining `cash_clipped`) for zero-sized orders with a zero minimum. Positive-minimum
+behavior is unchanged. Full-suite verification and latest-head review remain
+required; the first CI revision's required checks passed before these review fixes.
 
 ## Recovery boundary
 

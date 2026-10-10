@@ -143,7 +143,9 @@ class SpotAccount:
                 )
                 if affordable < size:
                     size, reason = affordable, "cash_clipped"
-            if size < filters.min_quantity:
+            if size == 0 and filters.min_quantity == 0:
+                reason = reason or "quantity_rounded_to_zero"
+            elif size < filters.min_quantity:
                 size, reason = ZERO, "minimum_quantity"
             elif size * price < filters.min_notional:
                 size, reason = ZERO, "minimum_notional"

@@ -11,6 +11,21 @@ FILTERS = OrderFilters(*map(D, ("1", "100000", "1", "5", "1", "100000", "1", "1"
 
 
 @pytest.mark.parametrize("method", ["fill", "execute"])
+@pytest.mark.parametrize("notional", [D(0), D(5)])
+def test_zero_minimum_does_not_accept_order_rounded_to_zero(method, notional):
+    from dataclasses import replace
+
+    from crypto_grid_bot.trend.spot_account import SpotAccount
+
+    account = SpotAccount()
+    filters = replace(FILTERS, min_quantity=D(0), min_notional=notional)
+    getattr(account, method)("BTCUSDT", D(".1"), D(100), filters, T)
+    assert account.fills[-1].quantity == 0
+    assert account.fills[-1].reason == "quantity_rounded_to_zero"
+    assert account.cash == 10000 and account.audit().exact
+
+
+@pytest.mark.parametrize("method", ["fill", "execute"])
 def test_zero_market_minimum_allows_settlement_and_keeps_notional_guard(method):
     from dataclasses import replace
 
