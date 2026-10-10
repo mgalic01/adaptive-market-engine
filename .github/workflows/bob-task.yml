@@ -1,11 +1,25 @@
 name: IBM Bob task run
 
 # Owner instruction (2026-09-25): Bob, who has the largest credit pool, runs reviewed task
-# files on GitHub's machines with command access. A run starts in one of three ways:
+# files on GitHub's machines with command access. A run starts in one of three ways, and
+# each fixes one commit, the run revision:
 # - automatically, when a merge to main ADDS a task file docs/tasks/<date>-bob-<topic>.md
-#   (owner request: the merge is the go; edits to existing task files never start a run);
-# - a comment "/bob-run docs/tasks/<date>-bob-<topic>.md" from the repository owner;
-# - "Run workflow" by the repository owner, with the task path.
+#   (owner request: the merge is the go; edits to existing task files never start a run).
+#   The revision is the pushed commit (github.sha);
+# - a comment "/bob-run docs/tasks/<date>-bob-<topic>.md <full commit SHA>" from the
+#   repository owner. Without the SHA nothing runs;
+# - "Run workflow" by the repository owner, with the task path and the full commit SHA.
+# Manual triggers require that exact SHA as an activity API push/pr_merge after on main,
+# recorded no later than the trigger. Missing or unavailable evidence stops in resolve.
+# The worker checks out the run revision, never "main when the job starts", and stops
+# before Bob unless the commit is on main's first-parent line (merges and pushes to main,
+# not a commit from inside a merged branch; the poster names a merge commit or pushed
+# head). It then freezes the repository there: main and origin/main name the revision,
+# no other branch, tag or remote is left, and .git holds only the revision's history.
+# So a commit merged while a run waits in the bob-task queue cannot change what the run
+# reads (Codex's reviews of PRs #193 and #194). This is a consistency guard, not a
+# security boundary: with sudo and an open network Bob could still fetch by URL, which
+# only his prompt forbids.
 # The comment keyword is not "@bob", so the read-only review workflow does not also fire.
 #
 # Containment (Codex's audit, 2026-09-25): Bob's commands and the repository-write token
@@ -32,6 +46,9 @@ on:
       task:
         description: "Task file, e.g. docs/tasks/2026-09-25-bob-v0-trace-hash-crosscheck.md"
         required: true
+      revision:
+        description: "Full 40-character SHA: a recorded main push or merge head before this trigger; unknown evidence stops the run"
+        required: true
 
 # Default for every job; only the publish job is granted write access.
 permissions:
@@ -39,6 +56,10 @@ permissions:
 
 jobs:
   resolve:
+    # Only resolve reads API evidence; no credential or activity snapshot reaches Bob.
+    permissions:
+      contents: read
+      actions: read
     # Only the owner, on every trigger (Bob's review of PR #27: "Run workflow" is otherwise
     # open to anyone with write access). Merges made with GITHUB_TOKEN start no runs.
     if: >-
@@ -51,10 +72,12 @@ jobs:
     timeout-minutes: 5
     outputs:
       tasks: ${{ steps.list.outputs.tasks }}
+      revision: ${{ steps.list.outputs.revision }}
     steps:
       - uses: actions/checkout@v4
-        if: github.event_name == 'push'
         with:
+          # Verifier code is from the workflow revision, never the requested old task.
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -64,28 +87,62 @@ jobs:
           EVENT: ${{ github.event_name }}
           BODY: ${{ github.event.comment.body }}
           INPUT_TASK: ${{ github.event.inputs.task }}
+          INPUT_REVISION: ${{ github.event.inputs.revision }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
         run: |
           case "$EVENT" in
             push)
-              # Only task files ADDED by this push; edits never start a run.
+              # Only task files ADDED by this push; edits never start a run. The run
+              # revision is the pushed commit itself.
+              revision="$AFTER"
               if printf '%s' "$BEFORE" | grep -qE '^0+$'; then
                 candidates=""
               else
                 candidates=$(git diff --diff-filter=A --name-only "$BEFORE" "$AFTER" -- docs/tasks)
               fi ;;
-            workflow_dispatch) candidates="$INPUT_TASK" ;;
+            workflow_dispatch)
+              candidates="$INPUT_TASK"
+              revision="$INPUT_REVISION" ;;
             *)
-              candidates=$(printf '%s\n' "$BODY" \
-                | grep -oE '(^|[[:space:]])/bob-run[[:space:]]+docs/tasks/[A-Za-z0-9._-]+\.md' \
-                | head -1 | awk '{print $NF}' || true) ;;
+              # "/bob-run <task file> <full commit SHA>" on one line. Without the SHA
+              # nothing runs: a run never falls back to main's current head.
+              command=$(printf '%s\n' "$BODY" \
+                | grep -oE '(^|[[:space:]])/bob-run[[:space:]]+docs/tasks/[A-Za-z0-9._-]+\.md[[:space:]]+[0-9a-f]{40}([[:space:]]|$)' \
+                | head -1 || true)
+              candidates=$(printf '%s\n' "$command" | awk '{print $2}')
+              revision=$(printf '%s\n' "$command" | awk '{print $3}')
+              # Only the first such line runs, as before. No reply is posted here: this
+              # job cannot write, and a reply would also answer comments that merely
+              # mention the command. The run log says why nothing ran.
+              if [ -z "$command" ]; then
+                echo "No line '/bob-run docs/tasks/<file>.md <full 40-character SHA>'; nothing runs."
+              fi ;;
           esac
           tasks=$(printf '%s\n' "$candidates" \
             | grep -E '^docs/tasks/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[a-z0-9-]+\.md$' \
             | jq -R -s -c 'split("\n") | map(select(length > 0))' || echo '[]')
+          # One full commit SHA per run, fixed here at the trigger. The worker checks
+          # out exactly this commit and checks that it is on main's first-parent line.
+          if [ "$tasks" != '[]' ] && ! [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The run revision must be a full 40-character commit SHA; nothing runs."
+            exit 1
+          fi
           echo "Tasks to run: $tasks"
+          echo "Run revision: ${revision:-none}"
           echo "tasks=$tasks" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the requested revision was a recorded main head before the trigger
+        id: evidence
+        if: github.event_name != 'push' && steps.list.outputs.tasks != '[]'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          REVISION: ${{ steps.list.outputs.revision }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          COMMENT_CREATED_AT: ${{ github.event.comment.created_at }}
+        run: python3 scripts/verify_bob_revision.py
 
   bob-task:
     needs: resolve
@@ -98,7 +155,7 @@ jobs:
     # cancel a queued /bob-run. Skipped runs never join this group. `queue: max` keeps
     # up to 100 real task runs pending instead of GitHub's default of one, so a second
     # trigger no longer replaces the first. The group also serialises matrix entries,
-    # on top of max-parallel: 1.
+    # on top of max-parallel: 1. A queued run keeps the revision its trigger fixed.
     concurrency:
       group: bob-task
       cancel-in-progress: false
@@ -111,10 +168,11 @@ jobs:
       matrix:
         task: ${{ fromJSON(needs.resolve.outputs.tasks) }}
     steps:
-      - name: Check the task path
+      - name: Check the task path and the run revision
         id: gate
         env:
           TASK_IN: ${{ matrix.task }}
+          REVISION: ${{ needs.resolve.outputs.revision }}
         run: |
           if ! printf '%s' "$TASK_IN" \
             | grep -qE '^docs/tasks/[0-9]{4}-[0-9]{2}-[0-9]{2}-bob-[a-z0-9-]+\.md$'; then
@@ -122,23 +180,87 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Never an empty or symbolic ref: actions/checkout would fall back to the
+          # event's ref, or follow a branch that has moved since the trigger.
+          if ! [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "No full commit SHA to run at; nothing runs."
+            exit 1
+          fi
           echo "ok=true" >> "$GITHUB_OUTPUT"
           echo "task=$TASK_IN" >> "$GITHUB_OUTPUT"
           echo "slug=$(basename "$TASK_IN" .md)" >> "$GITHUB_OUTPUT"
+          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
 
+      # The run revision, not main as it is when this job starts: a queued run would
+      # otherwise read commits merged after its trigger.
       - uses: actions/checkout@v4
         if: steps.gate.outputs.ok == 'true'
         with:
-          ref: main
+          ref: ${{ steps.gate.outputs.revision }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Require the task file on main
+      - name: Require the run revision on main, with the task file in it
         id: exists
         if: steps.gate.outputs.ok == 'true'
         env:
           TASK: ${{ steps.gate.outputs.task }}
-        run: test -f "$TASK" || { echo "$TASK is not on main"; exit 1; }
+          REVISION: ${{ steps.gate.outputs.revision }}
+        run: |
+          # Exactly the recorded commit, on main's first-parent line (a merge or a push to
+          # main, not a commit from inside a merged branch), with the task file in it.
+          # Checked before Bob starts. Nothing here or in the freeze is written to disk:
+          # main's line and the fetched refs are newer than the trigger, and Bob, with
+          # sudo, could read any file left on this machine (Codex, PR #194).
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$REVISION" ]; then
+            echo "Checked out $head, not the run revision $REVISION"
+            exit 1
+          fi
+          if ! grep -qxF "$REVISION" <(git rev-list --first-parent refs/remotes/origin/main); then
+            echo "$REVISION is not on main's first-parent line"
+            exit 1
+          fi
+          test -f "$TASK" || { echo "$TASK is not in $REVISION"; exit 1; }
+          echo "Running $TASK at $REVISION"
+
+      # fetch-depth 0 fetched every branch and tag as they are at job start, and those
+      # can be newer than the trigger (Codex, PR #194). Afterwards no ref names anything
+      # but the run revision: main and origin/main point to it, and no other branch,
+      # tag, FETCH_HEAD or remote is left. The objects fetched with them are purged too,
+      # since git fsck and git show would read them without a ref (Codex, PR #194), so
+      # .git holds the run revision's history and nothing else. A consistency guard,
+      # not a security boundary: Bob could still fetch by URL, which only his prompt
+      # forbids.
+      - name: Freeze the repository at the run revision
+        id: freeze
+        if: steps.gate.outputs.ok == 'true'
+        env:
+          REVISION: ${{ steps.gate.outputs.revision }}
+        run: |
+          git remote remove origin
+          # Ref names never hold spaces or glob characters, so word splitting is safe.
+          for ref in $(git for-each-ref --format='%(refname)'); do git update-ref -d "$ref"; done
+          rm -f "$(git rev-parse --git-path FETCH_HEAD)"
+          git checkout --quiet -B main "$REVISION"
+          git update-ref refs/remotes/origin/main "$REVISION"
+          git reflog expire --expire=now --expire-unreachable=now --all
+          git gc --quiet --prune=now
+          refs_left=$(git for-each-ref --format='%(objectname) %(refname)')
+          echo "$refs_left"
+          if [ "$refs_left" != "$REVISION refs/heads/main"$'\n'"$REVISION refs/remotes/origin/main" ]; then
+            echo "Refs other than the run revision remain"
+            exit 1
+          fi
+          test -z "$(git remote)" && test "$(git rev-parse HEAD)" = "$REVISION"
+          # Every object left must be reachable from the revision.
+          objects_left=$(git cat-file --batch-all-objects --batch-check='%(objectname)' | sort)
+          reachable=$(git rev-list --objects "$REVISION" | cut -d' ' -f1 | sort -u)
+          if [ "$objects_left" != "$reachable" ]; then
+            echo "Objects outside the run revision's history remain"
+            exit 1
+          fi
+          echo "$(printf '%s\n' "$objects_left" | wc -l) objects, all in $REVISION's history"
 
       - uses: actions/setup-python@v5
         if: steps.gate.outputs.ok == 'true'
@@ -212,12 +334,17 @@ jobs:
         env:
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
           TASK: ${{ steps.gate.outputs.task }}
+          REVISION: ${{ steps.gate.outputs.revision }}
         run: |
           PROMPT="
           You are IBM Bob on the adaptive-market-engine project, running a reviewed task
           file on a GitHub Actions machine at the owner's request.
 
           Task file (your instructions): $TASK
+          The repository is frozen at commit $REVISION, the revision this run was
+          started for: main and origin/main point to it, and it holds that commit's
+          history and nothing else. It can be older than main on GitHub; that is
+          intended. Do not fetch or add a remote.
           Read docs/START_HERE.md step 0 (what the project is for) and step 1 (the rules
           that override everything) first, then the task file, and follow the task
           exactly. Step 0 is context for judging your results, not licence to widen the
@@ -372,7 +499,9 @@ jobs:
           echo "task=$TASK_IN" >> "$GITHUB_OUTPUT"
           echo "slug=$(basename "$TASK_IN" .md)" >> "$GITHUB_OUTPUT"
 
-      # A clean checkout on a machine Bob never touched.
+      # A clean checkout on a machine Bob never touched. It stays on main, not the run
+      # revision: it runs no task content, only main's validator, and the report branch
+      # starts from main so its PR adds one file.
       - uses: actions/checkout@v4
         with:
           ref: main
@@ -416,6 +545,7 @@ jobs:
           REPORT: ${{ steps.validate.outputs.report }}
           SLUG: ${{ steps.task.outputs.slug }}
           TASK: ${{ steps.task.outputs.task }}
+          REVISION: ${{ needs.resolve.outputs.revision }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           branch="bob/task-${SLUG}-${GITHUB_RUN_ID}"
@@ -424,12 +554,14 @@ jobs:
           git checkout -b "$branch"
           cp -- "$IN_DIR/report/$REPORT" "docs/reviews/$REPORT"
           git add -- "docs/reviews/$REPORT"
-          git commit -m "Bob task report: $SLUG" -m "Task: $TASK" -m "Run: $RUN_URL"
+          git commit -m "Bob task report: $SLUG" -m "Task: $TASK" -m "Revision: $REVISION" \
+            -m "Run: $RUN_URL"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$branch"
           {
             echo "Report from an automated Bob task run."
             echo
             echo "- Task: \`$TASK\`"
+            echo "- Run at revision: \`$REVISION\`"
             echo "- Run log (every command): $RUN_URL"
             echo
             echo "## Bob's summary"
@@ -463,6 +595,7 @@ jobs:
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number }}
           TASK: ${{ matrix.task }}
+          REVISION: ${{ needs.resolve.outputs.revision }}
           PR_URL: ${{ steps.publish.outputs.pr_url }}
           BRANCH: ${{ steps.publish.outputs.branch }}
           IN_DIR: ${{ runner.temp }}/in
@@ -471,6 +604,7 @@ jobs:
         run: |
           {
             echo "**Bob task run finished.** Run log: $RUN_URL"
+            echo; echo "Run at revision: \`$REVISION\`"
             if [ -n "$PR_URL" ]; then
               echo; echo "Report PR: $PR_URL"
             elif [ -n "$BRANCH" ]; then
@@ -499,6 +633,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           NUMBER: ${{ github.event.issue.number }}
           TASK: ${{ matrix.task }}
+          REVISION: ${{ needs.resolve.outputs.revision }}
           BRANCH: ${{ steps.publish.outputs.branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           OUTCOMES: >-
@@ -521,6 +656,7 @@ jobs:
             "@$OWNER: $committed" \
             "" \
             "- Run log: $RUN_URL" \
+            "- Run revision: \`$REVISION\`" \
             "- Outcomes: $OUTCOMES" \
             "" \
             "Claude: diagnose from the run log and report to the owner." \
