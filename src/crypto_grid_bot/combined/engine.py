@@ -247,6 +247,16 @@ class PortfolioEngine:
             reserve += abs(position.quantity) * (side * (stop - exit_price) + exit_price * fee)
         return reserve
 
+    def _unresolved_canceled_fill(self, symbol: str | None = None) -> bool:
+        """Caller holds the lock; cancellation alone cannot prove execution finality."""
+        return any(
+            (symbol is None or known.symbol == symbol)
+            and remaining > 0
+            and key not in self._orders
+            and key not in self._finality
+            for key, (known, remaining) in self._known_orders.items()
+        )
+
     def observe(
         self,
         timestamp_ms: int,
@@ -259,7 +269,7 @@ class PortfolioEngine:
             prices = self._prices(timestamp_ms, quotes)
             account = self._account.snapshot(prices)
             reasons: list[str] = []
-            flat = not self._orders
+            flat = not self._orders and not self._unresolved_canceled_fill()
             for position in account.positions:
                 if position.symbol in rules:
                     self._ticks[position.symbol] = rules[position.symbol].tick
@@ -362,13 +372,7 @@ class PortfolioEngine:
                 p.symbol == intent.symbol for p in state.account.positions
             ):
                 return refuse("asset_owned")
-            if any(
-                known.symbol == intent.symbol
-                and remaining > 0
-                and key not in self._orders
-                and key not in self._finality
-                for key, (known, remaining) in self._known_orders.items()
-            ):
+            if self._unresolved_canceled_fill(intent.symbol):
                 return refuse("canceled_fill_finality_pending")
 
             quote = (

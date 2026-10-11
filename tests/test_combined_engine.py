@@ -475,6 +475,8 @@ def test_verified_dust_preserves_ownership_without_blocking_other_asset_recovery
     engine.settle("open", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
     close = replace(fill, event_id="close", timestamp_ms=2, side=-1, quantity=D(".999"), fee=D(0))
     engine.settle("close", 2, QUOTES, RULES, reductions=(close,))
+    engine.acknowledge_finality(order.intent_id, source_refs=("sim:cancel:dust",))
+    engine.observe(2, QUOTES, RULES)
     now = 86_400_002
     quotes = {symbol: Quote(D(100), now) for symbol in QUOTES}
     other = intent("eth", "ETHUSDT")
@@ -626,3 +628,52 @@ def test_cancel_finality_requires_evidence_and_preserves_conflicting_fill_identi
     with pytest.raises(ValueError, match="contradicts acknowledged finality"):
         engine.settle("false-finality", 2, QUOTES, RULES, increases=((old.intent_id, late),))
     assert "execution_integrity_failure" in engine.observe(2, QUOTES, RULES).reasons
+
+
+@pytest.mark.parametrize("dust", [D(0), D(".001")])
+def test_recovery_cooldown_waits_for_canceled_remainder_finality(dust):
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    fill = FillEvent("entry", 1, order.symbol, order.owner, order.venue, 1, D(1), D(100), D(3000))
+    state = engine.settle("open", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    assert state.recovery.state == "Closing"
+    close = replace(fill, event_id="close", timestamp_ms=2, side=-1, quantity=D(1) - dust, fee=D(0))
+    state = engine.settle("close", 2, QUOTES, RULES, reductions=(close,))
+    assert state.recovery.state == "Closing"
+    now = 86_400_002
+    quotes = {symbol: Quote(D(100), now) for symbol in QUOTES}
+    other = intent("eth", "ETHUSDT")
+    assert not engine.submit(
+        other, replace(candidate(other), decision_ms=now), quotes, RULES
+    ).accepted
+    assert engine.observe(now, quotes, RULES).recovery.state == "Closing"
+    engine.acknowledge_finality(order.intent_id, source_refs=("sim:cancel:complete",))
+    assert engine.observe(now, quotes, RULES).recovery.state == "Cooldown"
+    other = replace(other, intent_id="eth-during-cooldown")
+    assert not engine.submit(
+        other, replace(candidate(other), decision_ms=now), quotes, RULES
+    ).accepted
+    now += 86_400_000
+    quotes = {symbol: Quote(D(100), now) for symbol in QUOTES}
+    other = replace(other, intent_id="eth-after-cooldown")
+    assert engine.submit(other, replace(candidate(other), decision_ms=now), quotes, RULES).accepted
+
+
+def test_fully_settled_late_remainder_needs_no_cancel_finality_for_recovery():
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    admission = engine.submit(order, candidate(order), QUOTES, RULES)
+    fill = FillEvent("entry", 1, order.symbol, order.owner, order.venue, 1, D(1), D(100), D(3000))
+    engine.settle("open", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    close = replace(fill, event_id="close", timestamp_ms=2, side=-1, fee=D(0))
+    assert engine.settle("close", 2, QUOTES, RULES, reductions=(close,)).recovery.state == "Closing"
+    late = replace(
+        fill, event_id="late", timestamp_ms=3, quantity=admission.quantity - D(1), fee=D(0)
+    )
+    state = engine.settle("late", 3, QUOTES, RULES, increases=((order.intent_id, late),))
+    assert state.recovery.state == "Closing"
+    close_late = replace(late, event_id="close-late", timestamp_ms=4, side=-1)
+    state = engine.settle("close-late", 4, QUOTES, RULES, reductions=(close_late,))
+    assert state.recovery.state == "Cooldown"
+    assert engine.finality_evidence == ()
