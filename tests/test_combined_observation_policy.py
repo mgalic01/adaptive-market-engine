@@ -17,9 +17,20 @@ def evidence():
         POLICY_ID,
         "adapter-sha256",
         (
-            Boundary(0, "opening", ("initial",), "initial", "cash", ("source",)),
-            Boundary(10, "settled", ("funding", "exit", "entry"), "entry", "held", ("source",)),
-            Boundary(20, "terminal", ("close", "flat"), "flat", "end", ("source",)),
+            Boundary(0, "opening", ("initial",), "initial", "cash", ("source",), 0, 3600000),
+            Boundary(
+                3600000,
+                "settled",
+                ("funding", "exit", "entry"),
+                "entry",
+                "held",
+                ("source",),
+                3600000,
+                7200000,
+            ),
+            Boundary(
+                7200000, "terminal", ("close", "flat"), "flat", "end", ("source",), 3600000, 7200000
+            ),
         ),
     )
 
@@ -27,19 +38,19 @@ def evidence():
 def observations():
     return (
         (0, "initial"),
-        (10, "funding"),
-        (10, "exit"),
-        (10, "entry"),
-        (20, "close"),
-        (20, "flat"),
+        (3600000, "funding"),
+        (3600000, "exit"),
+        (3600000, "entry"),
+        (7200000, "close"),
+        (7200000, "flat"),
     )
 
 
 def test_boundary_policy_requires_all_ordered_marks_and_selects_final_settlement():
     result = validate_boundaries(evidence(), observations())
-    assert result[10].selected_equity_id == "entry"
+    assert result[3600000].selected_equity_id == "entry"
     assert result[0].role == "opening"
-    assert result[20].role == "terminal"
+    assert result[7200000].role == "terminal"
 
 
 @pytest.mark.parametrize(
@@ -51,6 +62,8 @@ def test_boundary_policy_requires_all_ordered_marks_and_selects_final_settlement
         {"source_refs": ()},
         {"capital_id": ""},
         {"role": "terminal"},
+        {"interval_start_ms": -1},
+        {"interval_end_ms": None},
     ],
 )
 def test_incomplete_or_favorable_boundary_is_rejected(change):
@@ -71,7 +84,7 @@ def test_unknown_policy_and_missing_adapter_are_rejected():
 
 def test_uncovered_same_time_observation_cannot_be_dropped():
     with pytest.raises(ValueError):
-        validate_boundaries(evidence(), observations() + ((20, "late"),))
+        validate_boundaries(evidence(), observations() + ((7200000, "late"),))
 
 
 def policy_report(*, omit_interior=False, terminal_role="terminal", policy_id=POLICY_ID):
@@ -102,9 +115,27 @@ def policy_report(*, omit_interior=False, terminal_role="terminal", policy_id=PO
         POLICY_ID,
         "adapter-pin",
         (
-            Boundary(0, "opening", ("initial", "cost"), "initial", "cash", ("source",)),
-            Boundary(day, "settled", ("funding", "exit", "entry"), "entry", "held", ("source",)),
-            Boundary(2 * day, "terminal", ("close", "flat"), "flat", "end", ("source",)),
+            Boundary(0, "opening", ("initial", "cost"), "initial", "cash", ("source",), 0, 3600000),
+            Boundary(
+                day,
+                "settled",
+                ("funding", "exit", "entry"),
+                "entry",
+                "held",
+                ("source",),
+                day,
+                day + 3600000,
+            ),
+            Boundary(
+                2 * day,
+                "terminal",
+                ("close", "flat"),
+                "flat",
+                "end",
+                ("source",),
+                2 * day - 3600000,
+                2 * day,
+            ),
         ),
     )
     capitals = tuple(

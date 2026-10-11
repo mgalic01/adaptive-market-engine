@@ -92,6 +92,20 @@ def test_failed_settlement_retains_prefix_and_cannot_be_retried():
     assert engine.settlement_observations("failed") == prefix
 
 
+def test_snapshot_retains_active_and_canceled_execution_obligations():
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    assert engine.submit(order, candidate(order), QUOTES, RULES).accepted
+    active = engine.observe(0, QUOTES, RULES)
+    assert active.unresolved_execution == (order.intent_id,)
+    engine.cancel(order.intent_id)
+    canceled = engine.observe(0, QUOTES, RULES)
+    assert canceled.unresolved_execution == active.unresolved_execution
+    engine.acknowledge_finality(order.intent_id, source_refs=("synthetic-cancel-final",))
+    assert engine.observe(0, QUOTES, RULES).unresolved_execution == ()
+    assert canceled.unresolved_execution == (order.intent_id,)  # No retroactive rewrite.
+
+
 def test_worse_partial_fill_cancels_remainder_and_late_fill_stays_flagged():
     engine = PortfolioEngine(D(10000))
     order = intent()

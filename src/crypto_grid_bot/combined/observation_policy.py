@@ -18,6 +18,8 @@ class Boundary:
     selected_equity_id: str
     capital_id: str
     source_refs: tuple[str, ...]
+    interval_start_ms: int | None = None
+    interval_end_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +83,13 @@ def validate_boundaries(
             type(boundary.timestamp_ms) is not int
             or boundary.timestamp_ms <= previous
             or boundary.role != role
+            or type(boundary.interval_start_ms) is not int
+            or type(boundary.interval_end_ms) is not int
+            or not 0 <= boundary.interval_start_ms < boundary.interval_end_ms < 1_735_689_600_000
+            or boundary.interval_start_ms % 3_600_000
+            or boundary.interval_end_ms - boundary.interval_start_ms != 3_600_000
+            or boundary.timestamp_ms
+            != (boundary.interval_end_ms if role == "terminal" else boundary.interval_start_ms)
             or not isinstance(boundary.observation_ids, tuple)
             or not boundary.observation_ids
             or tuple(groups.get(boundary.timestamp_ms, ())) != boundary.observation_ids

@@ -193,6 +193,8 @@ def with_report(row):
                     point.id,
                     f"capital-{index}",
                     ("synthetic-capital",),
+                    point.timestamp_ms - (3_600_000 if index == 2 else 0),
+                    point.timestamp_ms + (0 if index == 2 else 3_600_000),
                 )
                 for index, point in enumerate(points)
             ),

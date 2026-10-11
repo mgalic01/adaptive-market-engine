@@ -61,6 +61,7 @@ class EngineSnapshot:
     reasons: tuple[str, ...]
     liquidation: bool
     available_cash: Decimal
+    unresolved_execution: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,6 +422,13 @@ class PortfolioEngine:
                     account.free_cash
                     - self._exit_reserve(account)
                     - sum((a.cash for a in self.reservations), Decimal(0)),
+                ),
+                tuple(
+                    sorted(
+                        key
+                        for key, (_, remaining) in self._known_orders.items()
+                        if remaining > 0 and key not in self._finality
+                    )
                 ),
             )
 

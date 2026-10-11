@@ -93,3 +93,21 @@ def test_terminal_cannot_promote_unfinished_protective_close():
             interval_end_ms=3_600_000,
             source_refs=("source",),
         )
+
+
+def test_terminal_cannot_promote_unresolved_canceled_remainder():
+    engine = PortfolioEngine(D(100))
+    engine.settle("terminal", 3_600_000, {}, {})
+    trace = engine.settlement_observations("terminal")
+    unfinished = replace(
+        trace[-1], snapshot=replace(trace[-1].snapshot, unresolved_execution=("canceled-order",))
+    )
+    with pytest.raises(ValueError, match="obligations"):
+        emit_boundary(
+            "terminal",
+            (trace[0], unfinished),
+            role="terminal",
+            interval_start_ms=0,
+            interval_end_ms=3_600_000,
+            source_refs=("source",),
+        )

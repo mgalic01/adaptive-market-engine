@@ -27,6 +27,10 @@ successfully observed prefix when a later event fails. A completed duplicate ret
 the same trace; a failed batch cannot be retried. The boundary adapter preserves
 all marks, requires a genuine hourly interval identity and rejects funding/new
 entries in terminal settlement. It does not infer source prices or re-label events.
+Snapshots retain active/canceled order remainders lacking reconciled finality;
+terminal mapping refuses these obligations even when there is no held position.
+Later acknowledgments do not rewrite earlier snapshots. Boundary records retain
+the complete original trace, including integrity and liquidation flags.
 
 Full OHLC scenario replay, common-boundary cross-version comparisons, baseline
 conformance, endpoint-at-reserved-boundary support, visual QA and exact execution
@@ -372,3 +376,5 @@ are unchanged. Owner observation-policy decision and final full-head external re
 remain outstanding, with adapters, visual QA and exact registration unfinished.
 
 Verification for approved observation package: 903 combined tests passed, one OS skip; Ruff, format, mypy, Bandit and report checks passed. Independent critic found sampling fallback, terminal phase, invalid-policy safety preservation and unresolved terminal-close issues; each was reproduced and fixed. Full historical replay and final external review remain pending.
+
+Finality/interval follow-up: 907 combined tests passed, one OS skip; static/report checks passed. EngineSnapshot retains unresolved execution IDs. Boundary evidence itself now includes the genuine interval start/end, so report serialization cannot discard terminal interval identity. No historical execution.

@@ -78,7 +78,10 @@ def emit_boundary(
     opening = trace[0].snapshot.account
     final = trace[-1].snapshot
     if role == "terminal" and (
-        final.close_required or final.liquidation or not final.account.integrity_ok
+        final.close_required
+        or final.unresolved_execution
+        or final.liquidation
+        or not final.account.integrity_ok
     ):
         raise ValueError("unresolved terminal obligations or integrity failure")
     if role == "opening" and (
@@ -122,6 +125,8 @@ def emit_boundary(
         f"{batch_id}:observation:{0 if role == 'opening' else len(trace) - 1}",
         f"{batch_id}:capital:{len(trace) - 1}",
         source_refs,
+        interval_start_ms,
+        interval_end_ms,
     )
     return BoundaryRecords(
         interval_start_ms, interval_end_ms, boundary, tuple(points), tuple(capitals), trace

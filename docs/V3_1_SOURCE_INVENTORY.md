@@ -47,7 +47,7 @@ adapter or capital-specific historical result is claimed here.
 V3 records open/post-fill and modeled intrabar extrema, rather than a regular
 hourly-close series. V0–V2's hourly sample is taken after the first evaluated
 minute's path despite carrying that minute's opening timestamp. These observations
-cannot simply be relabeled as one common boundary series. The pending
+cannot simply be relabeled as one common boundary series. The owner-approved
 [observation proposal](superpowers/specs/2026-10-10-v3-1-intrabar-proposal.md)
 requires real matching observations or an explicitly incomplete comparison.
 Native intrabar diagnostics must also remain available and labeled by version.
