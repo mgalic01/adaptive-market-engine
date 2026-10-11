@@ -19,14 +19,26 @@ engine treats as stale and requires closed. An obligation on a coin without a pr
 is carried to the opening quote of its next bar. A holding without a bar in the
 window's last hour is valued at its last available close, as a stale terminal mark.
 
-Funding is charged from the published records alone, whatever their cadence. A slot
-that a record's own interval implies, with no record before the next one, is a
-missing settlement and never assumed zero: a futures position held there stops the
-run (``funding_record_missing``). A record settled off the hour is booked at the next
-hourly boundary, on the holdings that survived to it, and its payment keeps both
-times. A slot without its futures bar is valued at the last close before it, which
-the payment records as a stale mark. Admission reads only the latest record published
-at decision time, so a cadence change or a gap refuses futures increases by itself.
+Funding is charged from the published records alone, whatever their cadence, and
+only on futures holdings. A record within a minute of an hour, on either side,
+settles on that hour. Any other record is off the hour: it is booked at the next
+hour, on the holdings that survived to it, valued at that boundary's price up to an
+hour after its own time, and its payment keeps both times. If its holding left during
+that hour it is not charged; the trace records it. An off-hour record of the last hour
+would book at the terminal boundary, which books no funding, so a holding it charges
+stops the run (``funding_record_unbooked``).
+
+Which end of an interval a record's ``interval_hours`` names at a cadence change is
+not pinned yet, so the schedule is judged either way. Two consecutive records miss
+settlements only when the spacing of their settlement hours exceeds both intervals;
+every hour the earlier one's interval implies before the later one is then missing,
+never assumed zero, and a futures position held there stops the run
+(``funding_record_missing``). Any other pair not exactly one shared interval apart is
+irregular: accepted and recorded in the trace. Two records booked at one boundary stop
+the run only when that coin is held on futures there (``funding_records_collide``).
+A settlement without its futures bar is valued at the last close before it, which the
+payment records as a stale mark. Admission reads only the latest record published at
+decision time, so a cadence change or a gap refuses futures increases by itself.
 
 Each hourly boundary T is processed in the owner-approved order:
 
@@ -48,6 +60,7 @@ management and entries. Engine timestamps denote availability, not intrabar time
 """
 
 from bisect import bisect_right
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
@@ -76,7 +89,7 @@ HOUR = 3_600_000
 FOUR_HOURS = 4 * HOUR
 DAY = 24 * HOUR
 _RESERVED = 1_735_689_600_000
-# A funding record more than this past its hour settled off the hour.
+# A funding record more than this from the nearest hour, either side, is off the hour.
 _ON_HOUR_MS = 60_000
 _TREND = frozenset({"spot_trend", "futures_trend"})
 # Opening refusals that leave nothing booked: the admission is canceled and final.
@@ -180,6 +193,12 @@ class StrategyTrace:
     # Holdings without a bar in the window's last hour: each was valued at its last
     # available close, recorded here with the time that close became available.
     stale_terminal_marks: tuple[tuple[str, int], ...]
+    # Consecutive funding records spaced irregularly with no settlement missing, as
+    # (symbol, earlier record's time, its interval hours, later time, its hours).
+    funding_schedule_irregular: tuple[tuple[str, int, int, int, int], ...]
+    # Off-hour records never charged because the futures holding left during the hour
+    # before their booking: (symbol, record time, booking boundary).
+    funding_records_unbooked_after_exit: tuple[tuple[str, int, int], ...]
     failure: str | None
 
 
@@ -237,26 +256,40 @@ def _fixing_mark(bars: dict[int, Kline], symbol: str, hour: int) -> tuple[Decima
     return last.close, last.open_ms + HOUR
 
 
-def _booked_ms(record: FundingRecord) -> int:
-    """The first hourly boundary at or after a record's own time.
+def _nearest_hour(stamp: int) -> int:
+    return (stamp + HOUR // 2) // HOUR * HOUR
 
-    A record within a minute of its hour settled on that hour, as in the V3 inventory's
-    "record off scheduled slot" rule; a later one is off the hour, booked at the next.
-    """
-    if record.calc_time_ms - record.scheduled_ms > _ON_HOUR_MS:
-        return record.scheduled_ms + HOUR
-    return record.scheduled_ms
+
+def _off_hour(record: FundingRecord) -> bool:
+    """Settled more than a minute from the nearest hour, on either side."""
+    return abs(record.calc_time_ms - _nearest_hour(record.calc_time_ms)) > _ON_HOUR_MS
+
+
+def _slot_ms(record: FundingRecord) -> int:
+    """The hour a record settles: the nearest one, or an off-hour record's own hour."""
+    return record.scheduled_ms if _off_hour(record) else _nearest_hour(record.calc_time_ms)
+
+
+def _booked_ms(record: FundingRecord) -> int:
+    """The settlement hour that books a record; an off-hour record books the next hour."""
+    return _slot_ms(record) + (HOUR if _off_hour(record) else 0)
+
+
+def _interval_ms(record: FundingRecord) -> int:
+    return (record.interval_hours or 0) * HOUR  # a valid record's interval is positive
 
 
 def _funding(
     records: tuple[FundingRecord, ...], start: int, end: int, symbol: str
 ) -> tuple[FundingRecord, ...]:
-    """The records the window reads, each valid, on its own slot and its own boundary.
+    """The records the window reads, each valid and distinct.
 
-    Needed are the latest record at or before the start (the first estimate) through
-    the last one scheduled before the end. A cadence change is accepted; a missing
-    settlement is the replay's to judge, never assumed zero. Older history and later
-    records are not read, so a defect there cannot change this run (Codex 4242566622).
+    Needed are the latest record settled at or before the start (the first estimate)
+    through the last one settled before the end; an off-hour record of the last hour is
+    needed, though it books at the end. The schedule itself is the replay's to judge.
+    Two records at one time would make the estimate depend on input order. Older
+    history and later records are not read, so a defect there cannot change this run
+    (Codex 4242566622).
     """
     if not isinstance(records, tuple) or not records:
         raise ValueError(f"{symbol}: funding records required with futures inputs")
@@ -264,35 +297,50 @@ def _funding(
         raise ValueError(f"{symbol}: funding records required with futures inputs")
     _sealed([r.calc_time_ms for r in records], f"{symbol} funding")
     ordered = sorted(records, key=lambda r: r.calc_time_ms)
-    starts = [r for r in ordered if r.scheduled_ms <= start]
+    starts = [r for r in ordered if _slot_ms(r) <= start]
     if not starts:
         raise ValueError(f"{symbol}: a funding record at or before the window start required")
-    needed = [r for r in ordered if starts[-1].scheduled_ms <= r.scheduled_ms < end]
+    needed = [r for r in ordered if _slot_ms(starts[-1]) <= _slot_ms(r) < end]
     if any(not r.valid for r in needed):
         raise ValueError(f"{symbol}: valid funding records required")
-    slots = [r.scheduled_ms for r in needed]
-    if len(set(slots)) != len(slots):
-        raise ValueError(f"{symbol}: duplicate funding slot")
-    booked = [_booked_ms(r) for r in needed]
-    if len(set(booked)) != len(booked):
-        raise ValueError(f"{symbol}: two funding records book at one boundary")
+    times = [r.calc_time_ms for r in needed]
+    if len(set(times)) != len(times):
+        raise ValueError(f"{symbol}: duplicate funding record")
     return tuple(needed)
 
 
-def _missing_settlements(
+def _schedule_gaps(
     records: tuple[FundingRecord, ...], start: int, end: int
-) -> frozenset[int]:
-    """Window slots a record's own interval implies with no record before the next one.
+) -> tuple[frozenset[int], tuple[tuple[int, int, int, int], ...]]:
+    """Missing settlement slots, and irregular pairs of consecutive records.
 
-    A declared cadence change that settles before the old cadence's next slot leaves
-    nothing missing. Slots before the start never matter: nothing is held there.
+    Which end of an interval ``interval_hours`` names at a cadence change is not pinned
+    yet, so a pair misses settlements only when the spacing of their booking hours
+    exceeds both intervals: then every hour the earlier record's interval implies before
+    the later one is missing. An off-hour later record may settle the hour before its
+    booking, so that hour bounds it. Any other pair not exactly one shared interval
+    apart is irregular, as (earlier time, its hours, later time, its hours): accepted,
+    never a failure. After the last record, its own interval applies up to the end.
+    Slots before the start never matter: nothing is held there.
     """
     missing: set[int] = set()
-    following = [r.scheduled_ms for r in records[1:]] + [end]
-    for record, until in zip(records, following, strict=True):
-        step = (record.interval_hours or 0) * HOUR  # valid records have a positive interval
-        missing.update(s for s in range(record.scheduled_ms + step, until, step) if s >= start)
-    return frozenset(missing)
+    irregular: list[tuple[int, int, int, int]] = []
+    for before, after in zip(records, records[1:], strict=False):
+        first, step, until = _booked_ms(before), _interval_ms(before), _slot_ms(after)
+        if until - first > max(step, _interval_ms(after)):
+            missing.update(range(first + step, until, step))
+        elif _booked_ms(after) - first != step or step != _interval_ms(after):
+            irregular.append(
+                (
+                    before.calc_time_ms,
+                    step // HOUR,
+                    after.calc_time_ms,
+                    _interval_ms(after) // HOUR,
+                )
+            )
+    last = records[-1]
+    missing.update(range(_booked_ms(last) + _interval_ms(last), end, _interval_ms(last)))
+    return frozenset(slot for slot in missing if slot >= start), tuple(irregular)
 
 
 def _validate(run: ReplayRun, markets: tuple[SymbolMarket, ...], futures_required: bool) -> None:
@@ -397,10 +445,16 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         if index is not None and (hours := _missing_hours(index, run.start_ms, run.end_ms))
     )
     needed = {s: _funding(by_symbol[s].funding, run.start_ms, run.end_ms, s) for s in futures}
-    funding_at = {s: {_booked_ms(r): r for r in needed[s]} for s in futures}
-    missing_funding = {
-        s: _missing_settlements(needed[s], run.start_ms, run.end_ms) for s in futures
+    bookings = {s: [_booked_ms(r) for r in needed[s]] for s in futures}
+    # Two records booked at one boundary cannot both be charged there: neither is.
+    collided = {s: {b for b, n in Counter(bookings[s]).items() if n > 1} for s in futures}
+    funding_at = {
+        s: {b: r for b, r in zip(bookings[s], needed[s], strict=True) if b not in collided[s]}
+        for s in futures
     }
+    schedules = {s: _schedule_gaps(needed[s], run.start_ms, run.end_ms) for s in futures}
+    missing_funding = {s: schedules[s][0] for s in futures}
+    irregular = tuple((s, *pair) for s in sorted(futures) for pair in schedules[s][1])
     published = {s: sorted(needed[s], key=lambda r: r.usable_ms) for s in futures}
     published_ms = {s: [r.usable_ms for r in published[s]] for s in futures}
     series = {s: AssessmentSeries(s, by_symbol[s].spot.hourly, by_symbol[s].daily) for s in symbols}
@@ -427,6 +481,8 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     pending_ids: list[str] = []
     withheld: dict[str, list[int]] = {}
     stale_marks: list[tuple[str, int]] = []
+    unbooked_after_exit: list[tuple[str, int, int]] = []
+    entering: set[str] = set()  # futures holdings entering the latest interval
     dust: tuple[str, ...] = ()
 
     def venue_bar(symbol: str, venue: str, hour: int) -> Kline | None:
@@ -517,9 +573,26 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             hour,
             record.rate,
             mark,
-            scheduled_ms=None if hour == record.scheduled_ms else record.calc_time_ms,
+            scheduled_ms=record.calc_time_ms if _off_hour(record) else None,
             stale_mark_ms=stale_since,
         )
+
+    def unchargeable(hour: int, holders: list[str]) -> str | None:
+        """A held futures position's settlement at ``hour`` that cannot be charged.
+
+        A missing record or two records booked here stop the run; nothing is assumed.
+        An off-hour record whose holding left during the hour before is kept as evidence.
+        """
+        for symbol in holders:
+            if hour in missing_funding[symbol]:
+                return f"funding_record_missing:{symbol}:{hour}"
+            if hour in collided[symbol]:
+                return f"funding_records_collide:{symbol}:{hour}"
+        for symbol in sorted(entering - set(holders)):
+            record = funding_at[symbol].get(hour)
+            if record is not None and _off_hour(record):
+                unbooked_after_exit.append((symbol, record.calc_time_ms, hour))
+        return None
 
     def estimate(symbol: str, hour: int) -> FundingEstimate | None:
         index = bisect_right(published_ms[symbol], hour)
@@ -532,6 +605,8 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         """Bar [hour, hour+1h), stamped at its availability hour+1h."""
         nonlocal dust
         held = {p.symbol: p for p, *_ in engine.held_execution_terms()}
+        entering.clear()
+        entering.update(s for s, p in held.items() if p.venue == "futures")
         # The gate as the opening frame left it: blocked flow withholds the resting buys
         # (not canceled: levels and reservation stay), and sales bypass the gate.
         for symbol, basket in sorted(books.items()):
@@ -661,9 +736,9 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     def frame(hour: int) -> str | None:
         # Funding is due only on the futures holdings that survived the previous interval.
         holders = held_futures()
-        for symbol in holders:
-            if hour in missing_funding[symbol]:
-                return f"funding_record_missing:{symbol}:{hour}"  # never assumed zero
+        failure = unchargeable(hour, holders)
+        if failure is not None:
+            return failure
         day = hour // DAY
         if day not in groups_by_day:
             groups_by_day[day] = correlation_groups(daily, hour)
@@ -874,6 +949,8 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         if failure is None:
             failure = interval(run.end_ms - HOUR)
         if failure is None:
+            failure = unchargeable(run.end_ms, held_futures())
+        if failure is None:
             # A record settled off the hour in the last hour books at the terminal
             # boundary, which books no funding: a holding it charges stops the run.
             failure = next(
@@ -917,5 +994,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         missing_inputs,
         gaps,
         tuple(stale_marks),
+        irregular,
+        tuple(unbooked_after_exit),
         failure,
     )

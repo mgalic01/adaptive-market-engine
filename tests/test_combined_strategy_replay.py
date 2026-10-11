@@ -841,12 +841,29 @@ def test_a_funding_slot_without_a_futures_bar_on_an_unheld_coin_charges_nothing(
     assert window_hours(p.timestamp_ms for p in payments(trace)) == [16, 24, 32, 40]
 
 
+def hour_ms(hour):
+    return fx.START + hour * HOUR
+
+
 def funding_records(*spans, rate=".001"):
     """Records over ``(first, stop, interval)`` spans, in hours into the window."""
     return tuple(
-        FundingRecord(fx.START + hour * HOUR, interval, D(rate))
+        FundingRecord(hour_ms(hour), interval, D(rate))
         for first, stop, interval in spans
         for hour in range(first, stop, interval)
+    )
+
+
+def move_record(market, hour, offset_ms):
+    """``market`` with the record settled at ``hour`` moved by ``offset_ms``."""
+    return replace(
+        market,
+        funding=tuple(
+            replace(r, calc_time_ms=r.calc_time_ms + offset_ms)
+            if r.calc_time_ms == hour_ms(hour)
+            else r
+            for r in market.funding
+        ),
     )
 
 
@@ -878,6 +895,8 @@ def test_a_cadence_change_charges_every_record_and_refuses_increases_after_it():
     for payment in charged:
         expected = entry.quantity * D(".001") * futures_open(changed, payment.timestamp_ms)
         assert payment.amount == expected
+    # 8h at 16 then 4h at 20 matches only one of the two intervals: irregular, not missing.
+    assert trace.funding_schedule_irregular == (("BTCUSDT", hour_ms(16), 8, hour_ms(20), 4),)
     # The latest published record now declares a 4-hour cadence: every re-entry the
     # control admitted at hour 41 is refused, then and at each later decision.
     after = [d for d in trace.decisions if d.assessment.decision_ms >= stopped]
@@ -885,6 +904,25 @@ def test_a_cadence_change_charges_every_record_and_refuses_increases_after_it():
     assert all(d.result.admission.reason == "funding_unavailable" for d in after)
     report = strategy_report(trace, adapter_pin=PIN)
     assert report.reconciliation_residual == 0
+
+
+def test_a_lengthening_cadence_change_on_a_held_short_is_irregular_not_missing():
+    # 8-hour records to hour 8, 4-hour records from 12 to 24, 8-hour again from 32, all
+    # while the hour-1 short is held. Whichever end of the interval ``interval_hours``
+    # names, 4h at 24 then 8h at 32 leaves no slot missing (no 28h settlement owed).
+    market = fx.market("BTCUSDT", fx.downtrend, 3, futures=True)
+    changed = replace(market, funding=funding_records((-8, 9, 8), (12, 25, 4), (32, 80, 8)))
+    trace = replay_strategy(fx.run("futures_trend", 3), (changed,))
+    assert trace.failure is None and trace.boundaries[-1].role == "terminal"
+    assert [e.increase for e in fills(trace)] == [True]
+    assert window_hours(p.timestamp_ms for p in payments(trace)) == [
+        *(8, 12, 16, 20, 24),
+        *(32, 40, 48, 56, 64),
+    ]
+    assert trace.funding_schedule_irregular == (
+        ("BTCUSDT", hour_ms(8), 8, hour_ms(12), 4),
+        ("BTCUSDT", hour_ms(24), 4, hour_ms(32), 8),
+    )
 
 
 def test_a_funding_gap_on_a_flat_book_refuses_entries_and_charges_nothing():
@@ -915,15 +953,19 @@ def test_a_missing_settlement_without_a_futures_holding_does_not_stop_the_run():
 
 
 @pytest.mark.parametrize(
-    "keep",
+    "records",
     [
-        lambda stamp: stamp != fx.START + DAY,  # one slot missing inside the window
-        lambda stamp: stamp < fx.START + DAY,  # records end before the window does
+        # One slot missing inside the window: 16h and 32h are 16 hours apart.
+        lambda rs: tuple(r for r in rs if r.calc_time_ms != hour_ms(24)),
+        # Records end before the window does: the last one's own interval applies.
+        lambda rs: tuple(r for r in rs if r.calc_time_ms < hour_ms(24)),
+        # 8h at 16h then 4h at 28h: 12 hours exceed both intervals, so 24h is missing.
+        lambda rs: funding_records((-8, 17, 8), (28, 56, 4), rate=".0001"),
     ],
 )
-def test_a_missing_settlement_on_a_held_futures_position_stops_the_run(keep):
+def test_a_missing_settlement_on_a_held_futures_position_stops_the_run(records):
     market = fx.market("BTCUSDT", fx.downtrend, 2, futures=True)
-    gapped = replace(market, funding=tuple(r for r in market.funding if keep(r.calc_time_ms)))
+    gapped = replace(market, funding=records(market.funding))
     trace = replay_strategy(fx.run("futures_trend", 2), (gapped,))
     slot = fx.START + DAY
     # Never assumed zero: the run stops at the slot, keeping everything before it.
@@ -938,51 +980,126 @@ def test_a_missing_settlement_on_a_held_futures_position_stops_the_run(keep):
 @pytest.mark.parametrize(
     ("offset_ms", "booked_hour", "off_hour"),
     [
-        (30_000, 16, False),  # within a minute of its hour: settled on that hour
+        (30_000, 16, False),  # within a minute after its hour: settled on that hour
+        (-2, 16, False),  # 15:59:59.998, within a minute before 16:00: settled at 16:00
         (15 * 60_000, 17, True),  # off the hour: booked at the next hourly boundary
+        (-2 * 60_000, 16, True),  # 15:58, off the hour: booked at 16:00
     ],
 )
 def test_an_off_hour_record_is_charged_at_the_next_boundary_with_both_times(
     offset_ms, booked_hour, off_hour
 ):
-    market = fx.market("BTCUSDT", fx.downtrend, 2, futures=True)
-    slot = fx.START + 16 * HOUR
-    moved = replace(
-        market,
-        funding=tuple(
-            replace(r, calc_time_ms=slot + offset_ms) if r.calc_time_ms == slot else r
-            for r in market.funding
-        ),
-    )
-    trace = replay_strategy(fx.run("futures_trend", 2), (moved,))
+    # The 16h record of the held short's 8-hour schedule settles early or late.
+    market = move_record(fx.market("BTCUSDT", fx.downtrend, 2, futures=True), 16, offset_ms)
+    trace = replay_strategy(fx.run("futures_trend", 2), (market,))
     assert trace.failure is None
     entry = fills(trace)[0].fill
     charged = payments(trace)
     assert window_hours(p.timestamp_ms for p in charged) == [8, booked_hour, 24, 32, 40]
     late = charged[1]
     # Charged on the holdings that survived to the booking boundary, at its mark.
-    assert late.amount == entry.quantity * D(".0001") * futures_open(moved, late.timestamp_ms)
-    assert late.scheduled_ms == (slot + offset_ms if off_hour else None)
+    assert late.amount == entry.quantity * D(".0001") * futures_open(market, late.timestamp_ms)
+    assert late.scheduled_ms == (hour_ms(16) + offset_ms if off_hour else None)
     assert all(p.scheduled_ms is None for p in charged if p is not late)
 
 
-def test_an_off_hour_record_due_at_the_terminal_boundary_stops_a_held_run():
+def test_an_off_hour_record_without_its_booking_bar_keeps_both_times_and_a_stale_mark():
+    # The 16h record settles at 16:15 and books at 17h, whose futures bar is missing:
+    # it is valued at bar 16's close, available at 17h.
+    base = masked(fx.market("BTCUSDT", fx.downtrend, 2, futures=True), "futures", (17,))
+    market = move_record(base, 16, 15 * 60_000)
+    trace = replay_strategy(fx.run("futures_trend", 2), (market,))
+    assert trace.failure is None
+    entry = fills(trace)[0].fill
+    late = next(p for p in payments(trace) if p.scheduled_ms is not None)
+    assert (late.timestamp_ms, late.scheduled_ms, late.stale_mark_ms) == (
+        hour_ms(17),
+        hour_ms(16) + 15 * 60_000,
+        hour_ms(17),
+    )
+    last_close = bar_at(market.futures.hourly, hour_ms(16)).close
+    assert late.amount == entry.quantity * D(".0001") * last_close
+
+
+def test_an_off_hour_record_after_its_holding_exited_is_kept_as_evidence():
+    # A spike in bar 40 stops the hour-1 short out intrabar (at 41h). The 40h record,
+    # settled at 40:15, books at 41h, when the short is gone: never charged, recorded.
+    base = fx.market("BTCUSDT", crash_after(fx.downtrend, 40, -0.15), 3, futures=True)
+    market = move_record(base, 40, 15 * 60_000)
+    trace = replay_strategy(fx.run("futures_trend", 3), (market,))
+    assert trace.failure is None
+    assert [(e.fill.timestamp_ms, e.increase) for e in fills(trace)][:2] == [
+        (hour_ms(1), True),
+        (hour_ms(41), False),
+    ]
+    assert trace.funding_records_unbooked_after_exit == (
+        ("BTCUSDT", hour_ms(40) + 15 * 60_000, hour_ms(41)),
+    )
+    assert hour_ms(41) not in [p.timestamp_ms for p in payments(trace)]
+
+
+@pytest.mark.parametrize("spike", [False, True])
+def test_an_off_hour_record_due_at_the_terminal_boundary_stops_a_held_run(spike):
     # The terminal boundary books no funding, so a record settled in the last hour
-    # cannot be charged there; with the short still held, the run stops.
-    market = fx.market("BTCUSDT", fx.downtrend, 2, futures=True)
-    late = FundingRecord(fx.START + 2 * DAY - 45 * 60_000, 8, D(".0001"))
+    # cannot be charged there: with the short still held, the run stops. If a spike in
+    # that last bar stopped the short out first, the record is evidence instead.
+    path = crash_after(fx.downtrend, 47, -0.15) if spike else fx.downtrend
+    market = fx.market("BTCUSDT", path, 2, futures=True)
+    late = FundingRecord(hour_ms(48) - 45 * 60_000, 8, D(".0001"))
     trace = replay_strategy(
         fx.run("futures_trend", 2), (replace(market, funding=(*market.funding, late)),)
     )
-    assert trace.failure == f"funding_record_unbooked:BTCUSDT:{late.calc_time_ms}"
-    assert trace.boundaries[-1].role != "terminal"
-
-
-def test_two_records_booked_at_one_boundary_are_refused_before_any_replay():
-    # An off-hour record at 23:15 books at hour 24, where the next record settles.
-    market = fx.market("BTCUSDT", fx.downtrend, 2, futures=True)
-    early = FundingRecord(fx.START + DAY - 45 * 60_000, 8, D(".0001"))
-    with pytest.raises(ValueError, match="one boundary"):
-        replay_strategy(
-            fx.run("futures_trend", 2), (replace(market, funding=(*market.funding, early)),)
+    if spike:
+        assert trace.failure is None and trace.boundaries[-1].role == "terminal"
+        assert trace.funding_records_unbooked_after_exit == (
+            ("BTCUSDT", late.calc_time_ms, hour_ms(48)),
         )
+    else:
+        assert trace.failure == f"funding_record_unbooked:BTCUSDT:{late.calc_time_ms}"
+        assert trace.boundaries[-1].role != "terminal"
+
+
+@pytest.mark.parametrize(
+    ("arm", "path", "failure"),
+    [
+        ("futures_trend", fx.downtrend, f"funding_records_collide:BTCUSDT:{hour_ms(24)}"),
+        ("combined", fx.uptrend, None),  # held on spot: nothing is due, nothing fails
+    ],
+)
+def test_two_records_booked_at_one_boundary_stop_only_a_held_run(arm, path, failure):
+    # An off-hour record at 23:15 books at hour 24, where the next record settles.
+    market = fx.market("BTCUSDT", path, 2, futures=True)
+    early = FundingRecord(hour_ms(24) - 45 * 60_000, 8, D(".0001"))
+    trace = replay_strategy(fx.run(arm, 2), (replace(market, funding=(*market.funding, early)),))
+    assert trace.failure == failure
+    if failure is None:
+        assert trace.boundaries[-1].role == "terminal" and payments(trace) == []
+    else:
+        assert window_hours(p.timestamp_ms for p in payments(trace)) == [8, 16]
+
+
+@pytest.mark.parametrize("collide", [False, True])
+def test_a_four_hour_cadence_books_an_off_hour_record_without_a_collision(collide):
+    # The held short's schedule turns 4-hourly at 20h; the 28h record settles at 28:30
+    # and books at 29h, an hour clear of the 32h record. Only a record that truly books
+    # at 32h beside it (one at 31:30) collides, and the held run stops there.
+    market = fx.market("BTCUSDT", fx.downtrend, 3, futures=True)
+    records = funding_records((-8, 17, 8), (20, 80, 4), rate=".0001")
+    if collide:
+        records = (*records, FundingRecord(hour_ms(32) - 30 * 60_000, 4, D(".0001")))
+    trace = replay_strategy(
+        fx.run("futures_trend", 3),
+        (move_record(replace(market, funding=records), 28, 30 * 60_000),),
+    )
+    charged = payments(trace)
+    if collide:
+        assert trace.failure == f"funding_records_collide:BTCUSDT:{hour_ms(32)}"
+        assert window_hours(p.timestamp_ms for p in charged) == [8, 16, 20, 24, 29]
+    else:
+        assert trace.failure is None
+        assert window_hours(p.timestamp_ms for p in charged) == [
+            *(8, 16, 20, 24, 29),
+            *range(32, 72, 4),
+        ]
+    late = next(p for p in charged if p.timestamp_ms == hour_ms(29))
+    assert late.scheduled_ms == hour_ms(28) + 30 * 60_000
