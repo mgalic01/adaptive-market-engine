@@ -322,6 +322,8 @@ def _safety_failures(observed: RunOutcome) -> list[str]:
     key = _key(identity)
     failures: list[str] = []
     if identity.arm in _COMPONENTS:
+        if _finite(observed.final_equity) and observed.final_equity <= 0:
+            failures.append(f"{key}: observed capital exhaustion")
         if type(observed.liquidations) is int and observed.liquidations > 0:
             failures.append(f"{key}: observed liquidation")
         if observed.wallet_quantity_exact is False:
@@ -356,6 +358,7 @@ def _observed_safety_failures(row: RunOutcome, initial_equity: Decimal) -> list[
     if (
         report is not None
         and row.identity.arm in _COMPONENTS
+        and report.final_equity is not None
         and report.max_drawdown is not None
         and report.reconciliation_residual is not None
     ):
@@ -363,6 +366,7 @@ def _observed_safety_failures(row: RunOutcome, initial_equity: Decimal) -> list[
             _safety_failures(
                 replace(
                     row,
+                    final_equity=report.final_equity,
                     max_drawdown=report.max_drawdown,
                     accounting_residual=report.reconciliation_residual,
                     liquidations=0,
@@ -385,7 +389,6 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
     if (
         identity.arm not in _COMPONENTS
         or reg.arms.count(identity.arm) != 1
-        or identity.arm in reg.baseline_arms
         or not _pin(reg.code_pin, 40)
         or not _pin(reg.config_pin)
         or identity.code_pin != reg.code_pin

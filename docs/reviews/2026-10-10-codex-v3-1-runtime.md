@@ -256,3 +256,17 @@ Verification:708 combined tests passed,one OS skip; all static/report checks pas
 Independent critic115report/dashboard,57replay/artifact(one skip),7window-ID cases.
 No historical execution. Owner observation-policy and PR267 merge decisions remain
 pending; final full-head external review, adapter work and registration remain open.
+
+## Scalar exhaustion and fixed component classification
+
+Identity- and capital-matched finite terminal equity at or below zero now retains
+an observed capital-exhaustion failure even without a valid detailed report. The
+fixed component menu controls safety classification; a malformed baseline list
+cannot hide component failures. Report-derived safety uses the report's own terminal
+equity so wrong-capital wrapper values cannot leak through a matching report.
+
+Verification:712 combined tests passed,one OS skip; static/report checks passed.
+Independent critic8targeted cases and attribution/deduplication probes passed. Three
+new defect regressions failed before the fix. No strategy, source, sampling policy
+or historical execution changed. The pending owner decisions and final review gate
+remain unchanged; older full-head approvals do not apply to this batch.

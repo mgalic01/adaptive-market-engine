@@ -452,7 +452,7 @@ def test_incomplete_registration_does_not_attribute_ambiguous_or_invalid_identit
     assert result.status == "incomplete" and not result.failures
 
 
-@pytest.mark.parametrize("alter", ["pin", "boolean_time", "capital_mismatch", "baseline"])
+@pytest.mark.parametrize("alter", ["pin", "boolean_time", "capital_mismatch"])
 def test_registration_failure_does_not_promote_unattributable_safety_metrics(alter):
     reg = replace(registration(), pending=("review",))
     rows = change(outcomes(reg), max_drawdown=D(".5"), liquidations=1)
@@ -462,8 +462,6 @@ def test_registration_failure_does_not_promote_unattributable_safety_metrics(alt
         rows = tuple(replace(row, identity=replace(row.identity, start_ms=False)) for row in rows)
     elif alter == "capital_mismatch":
         rows = change(rows, initial_equity=D(9999))
-    else:
-        reg = replace(reg, baseline_arms=(*reg.baseline_arms, "combined"))
     result = evaluate(reg, rows)
     assert result.status == "incomplete" and not result.failures
 
@@ -840,3 +838,33 @@ def test_window_identity_requires_nonblank_string(window_id):
     result = evaluate(reg, outcomes(reg))
     assert result.status == "incomplete"
     assert "registration: invalid window dates or data pin" in result.incomplete_reasons
+
+
+@pytest.mark.parametrize("equity", [D(0), D(-1)])
+def test_scalar_terminal_exhaustion_survives_missing_report(equity):
+    reg = registration()
+    rows = change(outcomes(reg), arm="spot_trend", final_equity=equity)
+    rows = tuple(replace(row, report_evidence=None) for row in rows)
+    result = evaluate(reg, rows)
+    assert result.status == "fail"
+    assert any("observed capital exhaustion" in reason for reason in result.failures)
+
+
+def test_malformed_baseline_classification_cannot_hide_component_failure():
+    reg = registration()
+    rows = change(outcomes(reg), liquidations=1, max_drawdown=D(".5"))
+    malformed = replace(reg, baseline_arms=(*reg.baseline_arms, "combined"))
+    result = evaluate(malformed, rows)
+    assert result.status == "fail" and result.incomplete_reasons
+    assert any("observed liquidation" in reason for reason in result.failures)
+    assert any("maximum drawdown" in reason for reason in result.failures)
+
+
+@pytest.mark.parametrize("wrong_capital", [D(9999), D("NaN")])
+def test_foreign_scalar_exhaustion_not_imported_through_matching_report(wrong_capital):
+    reg = registration()
+    rows = list(outcomes(reg))
+    index = next(i for i, row in enumerate(rows) if row.identity.arm == "spot_trend")
+    rows[index] = replace(rows[index], initial_equity=wrong_capital, final_equity=D(0))
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete" and not result.failures
