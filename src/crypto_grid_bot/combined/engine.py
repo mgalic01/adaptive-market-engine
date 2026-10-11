@@ -72,6 +72,7 @@ class PortfolioEngine:
         self._quotes: dict[str, Quote] = {}
         self._orders: dict[str, tuple[Intent, Decimal]] = {}
         self._known_orders: dict[str, tuple[Intent, Decimal]] = {}
+        self._finality: dict[str, tuple[str, ...]] = {}
         self._ticks: dict[str, Decimal] = {}
         self._stops: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
         self._close: set[str] = set()
@@ -87,10 +88,35 @@ class PortfolioEngine:
         return self._risk.reservations
 
     def cancel(self, intent_id: str) -> None:
-        """Acknowledged local-simulator cancellation, never a live cancellation request."""
+        """Cancel increases locally; this does not attest that all fills are reconciled."""
         with self._lock:
             self._risk.release(intent_id, acknowledged=True)
             self._orders.pop(intent_id, None)
+
+    def acknowledge_finality(self, intent_id: str, *, source_refs: tuple[str, ...]) -> None:
+        """Attest all fills reconciled and zero remaining executable quantity.
+
+        The replay adapter must establish this from its execution evidence. A cancel
+        request/ack alone is insufficient. Provenance and original remaining capacity
+        are retained; a later novel fill contradicts finality and fails integrity.
+        """
+        with self._lock:
+            if (
+                intent_id not in self._known_orders
+                or intent_id in self._orders
+                or not isinstance(source_refs, tuple)
+                or not source_refs
+                or any(not isinstance(ref, str) or not ref.strip() for ref in source_refs)
+            ):
+                raise ValueError("canceled recorded admission and finality evidence required")
+            if intent_id in self._finality and self._finality[intent_id] != source_refs:
+                raise ValueError("conflicting finality evidence")
+            self._finality[intent_id] = source_refs
+
+    @property
+    def finality_evidence(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        with self._lock:
+            return tuple(sorted(self._finality.items()))
 
     def _require_close(self, symbol: str, reason: str) -> None:
         """Caller holds the event lock; cancel increases but retain late-fill identity."""
@@ -336,6 +362,15 @@ class PortfolioEngine:
                 p.symbol == intent.symbol for p in state.account.positions
             ):
                 return refuse("asset_owned")
+            if any(
+                known.symbol == intent.symbol
+                and remaining > 0
+                and key not in self._orders
+                and key not in self._finality
+                for key, (known, remaining) in self._known_orders.items()
+            ):
+                return refuse("canceled_fill_finality_pending")
+
             quote = (
                 candidate_quote if candidate_quote is not None else self._quotes.get(intent.symbol)
             )
@@ -490,7 +525,6 @@ class PortfolioEngine:
                 self._account.apply(event)
                 self._fills[event.event_id] = event
                 self.observe(timestamp_ms, quotes, rules)
-            breached = False
             for key, event in increases:
                 if event.event_id in self._fills:
                     if self._fills[event.event_id] != event:
@@ -498,6 +532,8 @@ class PortfolioEngine:
                     continue
                 if key not in self._known_orders:
                     raise ValueError("fill has no recorded admission")
+                if key in self._finality:
+                    raise ValueError("novel fill contradicts acknowledged finality")
                 intent, remaining = self._known_orders[key]
                 was_pending = key in self._orders
                 if (event.symbol, event.owner, event.venue, event.side) != (
@@ -534,10 +570,7 @@ class PortfolioEngine:
                     or event.fee > event.quantity * event.price * intent.fee_rate
                 ):
                     self._require_close(event.symbol, "post_fill_risk_breach")
-                    breached = True
                 self.observe(timestamp_ms, quotes, rules)
             result = self.observe(timestamp_ms, quotes, rules)
-            if breached:
-                result = replace(result, reasons=(*result.reasons, "post_fill_risk_breach"))
             self._batches[batch_id] = (identity, result)
             return result

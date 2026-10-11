@@ -560,3 +560,69 @@ def test_tick_aware_engine_settlement_ignores_restrictive_decimal_context():
         )
     assert answer.quantity == 5
     assert state.available_cash == 9460
+
+
+@pytest.mark.parametrize("replacement", ["grid", "futures", "opposite", "same"])
+def test_canceled_remainder_quarantines_symbol_before_new_owner_can_fill(replacement):
+    engine = PortfolioEngine(D(10000))
+    old = intent()
+    if replacement == "opposite":
+        old = replace(
+            old,
+            owner="futures_trend",
+            venue="futures",
+            funding_rate=D(0),
+            funding_age_ms=0,
+            funding_interval_ms=28_800_000,
+        )
+    engine.submit(old, candidate(old), QUOTES, RULES)
+    engine.cancel(old.intent_id)
+    new = replace(old, intent_id="replacement")
+    if replacement == "grid":
+        new = replace(new, owner="spot_grid")
+    elif replacement == "futures":
+        new = replace(
+            new,
+            owner="futures_trend",
+            venue="futures",
+            funding_rate=D(0),
+            funding_age_ms=0,
+            funding_interval_ms=28_800_000,
+        )
+    elif replacement == "opposite":
+        new = replace(new, side=-1, stop=D(102))
+    answer = engine.submit(new, candidate(new), QUOTES, RULES)
+    assert not answer.accepted
+    assert answer.reason == "canceled_fill_finality_pending"
+    late = FillEvent(
+        "late-owner", 1, old.symbol, old.owner, old.venue, old.side, D(1), D(100), D(0)
+    )
+    state = engine.settle("late-owner-batch", 1, QUOTES, RULES, increases=((old.intent_id, late),))
+    assert state.account.positions[0].owner == old.owner
+    assert state.account.positions[0].quantity == old.side
+    assert state.reasons.count("post_fill_risk_breach") == 1
+    assert engine.observe(1, QUOTES, RULES).reasons == state.reasons
+
+
+def test_cancel_finality_requires_evidence_and_preserves_conflicting_fill_identity():
+    engine = PortfolioEngine(D(10000))
+    old = intent()
+    engine.submit(old, candidate(old), QUOTES, RULES)
+    with pytest.raises(ValueError):
+        engine.acknowledge_finality(old.intent_id, source_refs=("sim:cancel:one",))
+    engine.cancel(old.intent_id)
+    for refs in ((), ("",), ["sim:cancel:one"]):
+        with pytest.raises(ValueError):
+            engine.acknowledge_finality(old.intent_id, source_refs=refs)
+    engine.acknowledge_finality(old.intent_id, source_refs=("sim:cancel:one",))
+    engine.acknowledge_finality(old.intent_id, source_refs=("sim:cancel:one",))
+    replacement = intent("new", owner="spot_grid")
+    assert engine.submit(replacement, candidate(replacement), QUOTES, RULES).accepted
+    new_fill = FillEvent("new-fill", 1, old.symbol, "spot_grid", "spot", 1, D(1), D(100), D(0))
+    engine.settle(
+        "new-fill-batch", 1, QUOTES, RULES, increases=((replacement.intent_id, new_fill),)
+    )
+    late = replace(new_fill, event_id="contradiction", owner=old.owner, timestamp_ms=2)
+    with pytest.raises(ValueError, match="contradicts acknowledged finality"):
+        engine.settle("false-finality", 2, QUOTES, RULES, increases=((old.intent_id, late),))
+    assert "execution_integrity_failure" in engine.observe(2, QUOTES, RULES).reasons
