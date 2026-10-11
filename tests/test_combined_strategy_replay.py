@@ -174,6 +174,87 @@ def test_grid_without_minute_flow_is_unavailable_not_ungated():
     assert "flow_blocked" in reasons
 
 
+def flow_market(days: int, steps):
+    """A ranging market whose minute taker-buy share steps at window hours.
+
+    ``steps`` is ``((from_hour, share), ...)``; the first starts at hour -1, the
+    fixture's first minute. The gate reads the fifteen minutes before each hour, so at
+    the frame of hour h it sees the step in force just before h: a step at hour K
+    leaves every frame up to K on the old share and every frame after K on the new.
+    """
+    base = fx.market("BTCUSDT", fx.ranging, days)
+    edges = [fx.START + hour * HOUR for hour, _ in steps] + [fx.START + days * DAY]
+    minutes = tuple(
+        bar
+        for (_, share), start, stop in zip(steps, edges, edges[1:], strict=False)
+        for bar in fx.minutes(start, stop, share)
+    )
+    return replace(base, minutes=minutes)
+
+
+def grid_buys(trace):
+    return [e.fill for e in fills(trace) if e.increase]
+
+
+def test_a_blocked_flow_gate_withholds_the_resting_grid_buys():
+    # Probe: flow is healthy at hour 0, so a basket is admitted, and blocked from the
+    # frame of hour 3 on. The control (flow always healthy) fills a buy at hour 26.
+    control = replay_strategy(
+        fx.run("spot_grid", 3), (fx.market("BTCUSDT", fx.ranging, 3, flow=True),)
+    )
+    blocked = replay_strategy(fx.run("spot_grid", 3), (flow_market(3, ((-1, ".6"), (2, ".3"))),))
+    assert control.failure is None and blocked.failure is None
+    assert grid_buys(control)[0].timestamp_ms == fx.START + 26 * HOUR
+    first = blocked.decisions[0]
+    assert first.assessment.decision_ms == fx.START and first.result.admission.accepted
+    # No interval that opens with the gate blocked contains a fill of the resting buys.
+    assert grid_buys(blocked) == []
+    withheld = dict(blocked.withheld_buys)["BTCUSDT"]
+    assert withheld == tuple(fx.START + hour * HOUR for hour in range(3, 72))
+    # Withheld, not canceled: the basket and its reservation are still standing.
+    assert blocked.finality == () and len(blocked.decisions) == 1
+    last = blocked.observations[-1].snapshot
+    assert last.available_cash < last.account.free_cash
+
+
+def test_withheld_grid_buys_fill_again_at_their_levels_once_flow_recovers():
+    control = replay_strategy(
+        fx.run("spot_grid", 4), (fx.market("BTCUSDT", fx.ranging, 4, flow=True),)
+    )
+    # Blocked for the frames of hours 3-30, healthy again from the frame of hour 31.
+    recovered = replay_strategy(
+        fx.run("spot_grid", 4), (flow_market(4, ((-1, ".6"), (2, ".3"), (30, ".6"))),)
+    )
+    assert recovered.failure is None
+    resumed = grid_buys(recovered)
+    assert resumed and min(f.timestamp_ms for f in resumed) > fx.START + 31 * HOUR
+    # The same untouched level of the same hour-0 basket, not a rebuild at a new price.
+    first, level = resumed[0], grid_buys(control)[0]
+    assert (first.lot_id, first.price) == (level.lot_id, level.price)
+    placed = [d for d in recovered.decisions if d.assessment.decision_ms < first.timestamp_ms]
+    assert len(placed) == 1
+    assert dict(recovered.withheld_buys)["BTCUSDT"] == tuple(
+        fx.START + hour * HOUR for hour in range(3, 31)
+    )
+    report = strategy_report(recovered, adapter_pin=PIN)
+    assert report.reconciliation_residual == 0
+
+
+def test_a_held_grid_lot_still_sells_at_its_target_while_flow_is_blocked():
+    # Healthy through the frame of hour 25 (the buy fills in bar 25), blocked after.
+    trace = replay_strategy(fx.run("spot_grid", 3), (flow_market(3, ((-1, ".6"), (25, ".3"))),))
+    assert trace.failure is None
+    assert [f.timestamp_ms for f in grid_buys(trace)] == [fx.START + 26 * HOUR]
+    sells = [e for e in fills(trace) if not e.increase]
+    assert [(e.exit_reason, e.fill.timestamp_ms) for e in sells] == [
+        ("grid_target", fx.START + 27 * HOUR)
+    ]
+    # The target sold in an interval whose other resting buys were withheld.
+    assert fx.START + 26 * HOUR in dict(trace.withheld_buys)["BTCUSDT"]
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert report.reconciliation_residual == 0
+
+
 def test_replay_is_deterministic_and_independent_of_input_order():
     markets = (
         fx.market("BTCUSDT", fx.uptrend, 2, futures=True, flow=True),

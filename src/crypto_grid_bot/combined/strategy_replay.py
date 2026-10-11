@@ -9,7 +9,9 @@ Each hourly boundary T is processed in the owner-approved order:
 
 1. the previous bar's modeled intrabar path, stamped at its availability T: old
    stops before targets, resting grid buys before that vertex's stop, no same-bar
-   target for an intrabar purchase (``portfolio_path``);
+   target for an intrabar purchase (``portfolio_path``). A symbol whose flow gate is
+   blocked at the bar's opening frame has its resting buys withheld for that bar: its
+   levels and reservation stay, and held lots keep their stops and targets;
 2. completed-bar management at T: trend reversal and grid range exits become close
    obligations, and trailing stops tighten from completed information only. The
    path already executed every old stop, so management never executes one again;
@@ -143,6 +145,8 @@ class StrategyTrace:
     finality: tuple[tuple[str, tuple[str, ...]], ...]
     releases: tuple[tuple[str, tuple[tuple[Decimal, tuple[str, ...]], ...]], ...]
     retained_dust: tuple[str, ...]
+    # Per symbol, the intervals (by opening hour) whose resting grid buys the flow gate withheld.
+    withheld_buys: tuple[tuple[str, tuple[int, ...]], ...]
     failure: str | None
 
 
@@ -322,6 +326,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     protection: dict[str, ProtectionState] = {}
     groups_by_day: dict[int, tuple[tuple[str, str], ...]] = {}
     pending_ids: list[str] = []
+    withheld: dict[str, list[int]] = {}
     dust: tuple[str, ...] = ()
 
     def venue_bar(symbol: str, venue: str, hour: int) -> Kline:
@@ -401,7 +406,17 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         """Bar [hour, hour+1h), stamped at its availability hour+1h."""
         nonlocal dust
         held = {p.symbol: p for p, *_ in engine.held_execution_terms()}
-        resting = tuple(row for book in books.values() for row in book.pending.values())
+        # The gate as the opening frame left it: blocked flow withholds the resting buys
+        # (not canceled: levels and reservation stay), and sales bypass the gate.
+        for symbol, basket in sorted(books.items()):
+            if basket.pending and not gates[symbol].allowed:
+                withheld.setdefault(symbol, []).append(hour)
+        resting = tuple(
+            row
+            for symbol, book in books.items()
+            if gates[symbol].allowed
+            for row in book.pending.values()
+        )
         need = set(held) | {row.symbol for row in resting}
         if not need:
             return None
@@ -740,5 +755,6 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         engine.finality_evidence,
         engine.release_evidence,
         dust,
+        tuple((symbol, tuple(hours)) for symbol, hours in sorted(withheld.items())),
         failure,
     )
