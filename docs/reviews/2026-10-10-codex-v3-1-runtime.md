@@ -316,3 +316,33 @@ or additional security findings. The stricter post-fill reductions can change fu
 simulation behavior; this corrects the approved caps rather than changing thresholds.
 Owner observation-policy approval, adapter implementation and final substantive
 full-head external review remain required. Earlier head approvals are stale.
+
+## Continuous caps, planned entry costs and pending dispositions
+
+Portfolio caps now run on every account valuation and funding event as well as fills.
+Routine breaches request portfolio_cap_reduction, which remains protective management
+rather than a replay engineering failure. Adverse or unapproved fills retain their
+separate post_fill_risk_breach classification. Pending close dispositions attach to
+admission IDs, survive a held position closing before a late remainder arrives, and
+cannot leak into a later fresh order.
+
+Review also reproduced a planned-cost sizing defect: an order at the pre-fill asset
+cap could immediately exceed it after its expected fee reduced equity. Admission now
+solves the unchanged asset, aggregate and correlation limits against equity after
+planned entry fees and adverse entry mark losses, including remaining pending costs.
+It preserves headroom for existing holdings and other groups. Exit costs remain in
+stop-risk/cash reserves. Exposure adds risk_multiplier with default one; the engine
+supplies each holding's retained multiplier so extended-entry limits stay intact.
+
+Arm and baseline collections validate shape and nonblank string entries before set
+construction. Malformed declarations remain incomplete and cannot hide attributable
+fixed-component safety failures.
+
+Verification:878 combined tests passed,one OS skip; static/report checks passed.
+Independent critic196engine/risk/recovery/replay,73risk and229experiment tests passed.
+Regressions reproduced the defects before fixes. Existing fixtures that needed a
+second fee-paying admission now reserve headroom; their original assertions remain.
+No historical execution, dependencies or additional security findings. Sizing can be
+slightly smaller and continuous exposure reductions more frequent; approved thresholds
+are unchanged. Owner observation-policy decision and final full-head external review
+remain outstanding, with adapters, visual QA and exact registration unfinished.
