@@ -6,7 +6,7 @@ from test_combined_engine import QUOTES, RULES, candidate
 from test_combined_ohlc_path import bar
 from test_combined_risk import intent
 
-from crypto_grid_bot.combined.account import FillEvent
+from crypto_grid_bot.combined.account import FillEvent, FundingEvent
 from crypto_grid_bot.combined.engine import PortfolioEngine
 
 
@@ -267,6 +267,106 @@ def test_true_opening_gap_liquidation_is_not_erased_by_exit():
     )
     assert result.failure == "portfolio_safety_failure"
     assert result.observations[0].snapshot.liquidation
+
+
+def near_lifetime_stop(*holdings):
+    """Futures holdings of 14 at 100, with lifetime drawdown already at 29.95%."""
+    engine = PortfolioEngine(D(20000))
+    for symbol, side, stop in holdings:
+        order = intent(
+            key=symbol,
+            symbol=symbol,
+            owner="futures_trend",
+            venue="futures",
+            side=side,
+            stop=D(stop),
+            requested_quantity=D(14),
+            fee_rate=D(0),
+            slippage_rate=D(0),
+            funding_rate=D(0),
+            funding_age_ms=0,
+            funding_interval_ms=28_800_000,
+        )
+        assert engine.submit(order, candidate(order), QUOTES, RULES).quantity == 14
+        fill = FillEvent(symbol, 0, symbol, order.owner, order.venue, side, D(14), D(100), D(0))
+        engine.settle(symbol, 0, QUOTES, RULES, increases=((order.intent_id, fill),))
+    # Equity 14010 against the 20000 peak: one more loss of 28 crosses the 30% lifetime
+    # stop, which requires closing every holding.
+    debit = FundingEvent("debit", 0, holdings[0][0], D(-5990))
+    engine.settle("debit", 0, QUOTES, RULES, funding=(debit,))
+    assert engine.observe(0, QUOTES, RULES).recovery.lifetime_drawdown == D(".2995")
+    return engine
+
+
+@pytest.mark.parametrize(
+    ("scenario", "previous_vertex"),
+    [("open_low_high_close", 100), ("open_high_low_close", 101)],
+)
+def test_a_forced_close_at_another_stop_fills_at_its_own_touched_stop(scenario, previous_vertex):
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    engine = near_lifetime_stop(("BTCUSDT", 1, 98), ("ETHUSDT", 1, 98))
+    rows = tuple((symbol, bar(high=101, low=90, close=95)) for symbol in ("BTCUSDT", "ETHUSDT"))
+    result = replay_held_portfolio(engine, rows, RULES, scenario, source_refs=("s",))
+    assert result.failure is None
+    # BTCUSDT's stop crosses 30%. ETHUSDT's own stop at 98 is touched in the same phase,
+    # so its forced close is no better than 98, never the previous vertex.
+    assert [(f.symbol, f.side, f.quantity, f.price) for f in result.fills] == [
+        ("BTCUSDT", -1, D(14), D(98)),
+        ("ETHUSDT", -1, D(14), D(98)),
+    ]
+    # The drawdown mark still values ETHUSDT at the previous vertex.
+    crossing = next(row for row in result.observations if row.phase == "low:stop")
+    assert "lifetime_stop" in crossing.snapshot.reasons
+    marks = {p.symbol: p.mark for p in crossing.snapshot.account.positions}
+    assert marks == {"BTCUSDT": D(98), "ETHUSDT": D(previous_vertex)}
+
+
+@pytest.mark.parametrize("scenario", ["open_low_high_close", "open_high_low_close"])
+@pytest.mark.parametrize(
+    ("side", "stops", "bars", "price"),
+    [
+        (
+            1,
+            (98, 97),
+            (bar(high=101, low=90, close=95), bar(high=101, low="97.5", close=99)),
+            D("97.5"),
+        ),
+        (
+            -1,
+            (102, 103),
+            (bar(high=105, low=99, close=100), bar(high="102.5", low=99, close=100)),
+            D("102.5"),
+        ),
+    ],
+)
+def test_a_forced_close_without_its_own_stop_fills_at_the_adverse_phase_vertex(
+    scenario, side, stops, bars, price
+):
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    engine = near_lifetime_stop(("BTCUSDT", side, stops[0]), ("ETHUSDT", side, stops[1]))
+    rows = (("BTCUSDT", bars[0]), ("ETHUSDT", bars[1]))
+    result = replay_held_portfolio(engine, rows, RULES, scenario, source_refs=("s",))
+    assert result.failure is None
+    # BTCUSDT's stop crosses 30%. ETHUSDT's stop is untouched in that phase, so its forced
+    # close takes the worse of its phase-start quote and its phase-end low (long) or high.
+    assert [(f.symbol, f.side, f.price) for f in result.fills] == [
+        ("BTCUSDT", -side, D(stops[0])),
+        ("ETHUSDT", -side, price),
+    ]
+
+
+@pytest.mark.parametrize("scenario", ["open_low_high_close", "open_high_low_close"])
+def test_a_forced_close_created_at_the_phase_vertex_fills_at_the_vertex(scenario):
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    engine = near_lifetime_stop(("BTCUSDT", 1, 98), ("ETHUSDT", 1, 98))
+    rows = tuple((symbol, bar(high=101, low=99, close=100)) for symbol in ("BTCUSDT", "ETHUSDT"))
+    result = replay_held_portfolio(engine, rows, RULES, scenario, source_refs=("s",))
+    assert result.failure is None
+    assert [(f.symbol, f.price) for f in result.fills] == [("BTCUSDT", D(99)), ("ETHUSDT", D(99))]
+    assert {row.phase for row in result.observations if ":fill:" in row.id} == {"low"}
 
 
 def grid_portfolio():

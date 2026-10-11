@@ -101,7 +101,11 @@ def replay_held_portfolio(
 
     Within a phase old stops execute in symbol order against the previously available
     other-asset marks, then the full vector advances together to the vertex. Any
-    resulting portfolio close is settled immediately at that available vector.
+    resulting portfolio close is settled immediately at that available vector. A close
+    or cut-back of another asset forced at a sub-event (a buy, stop or target inside a
+    phase) keeps those marks but executes at that asset's own stop when it is touched
+    in this phase and not yet executed, else at the adverse one of its quote at the
+    start of the phase and its vertex at the end: no favorable intrabar choice.
     Venue maximums split reductions; minimum-size dust remains valued and owned,
     keeps its close obligation and is reported as retained dust, not a failure.
     A finite 10,000-fill safety budget fails incomplete rather than looping without
@@ -181,6 +185,13 @@ def replay_held_portfolio(
         )
         for symbol in sorted(symbols)
     )
+    # Each asset's planned stop fill by phase; the path already applies gap handling.
+    stop_prices = {
+        (symbol, event.phase): event.price
+        for symbol, path in paths
+        for event in path.events
+        if event.kind == "stop"
+    }
     target_paths = tuple(
         (
             symbol,
@@ -200,6 +211,10 @@ def replay_held_portfolio(
     now = paths[0][1].interval_end_ms
     prefix = f"portfolio:{paths[0][1].interval_start_ms}:{scenario}"
     quotes = {symbol: Quote(market[symbol].open, now) for symbol in symbols}
+    # The current phase's quotes before any of its sub-events, and the assets whose
+    # stop has executed in it.
+    opening = dict(quotes)
+    stopped: set[str] = set()
     observations: list[PortfolioObservation] = []
     fills: list[FillEvent] = []
     filled: list[str] = []
@@ -313,15 +328,41 @@ def replay_held_portfolio(
         if engine.booked_fill(identity) is not None:
             filled.append(row.child_id)
 
-    def drain(phase: str, snapshot: EngineSnapshot) -> EngineSnapshot:
+    def forced_reference(symbol: str, phase: str) -> Decimal:
+        """Where another asset's reduction forced at a sub-event of ``phase`` executes.
+
+        Its own stop, touched in this phase and not yet executed, fills when touched,
+        so an earlier forced exit is no worse; otherwise the adverse one of its quote
+        at the start of the phase and its vertex at the end of it.
+        """
+        own = stop_prices.get((symbol, phase))
+        if own is not None and symbol not in stopped:
+            return own
+        vertex: Decimal = getattr(market[symbol], phase)
+        ends = (opening[symbol].price, vertex)
+        return min(ends) if side_of(symbol) == 1 else max(ends)
+
+    def drain(phase: str, snapshot: EngineSnapshot, trigger: str | None = None) -> EngineSnapshot:
+        """Settle obligations; at a sub-event, ``trigger`` is the asset whose event it is."""
+
+        def reference(symbol: str) -> Decimal | None:
+            if trigger is None or symbol == trigger or symbol not in market:
+                return None  # vertex drains and the triggering asset keep their quote
+            return forced_reference(symbol, phase.split(":")[0])
+
         # Full closes first, then cut-backs to their targets (owner decision 2026-10-11).
         while snapshot.close_required or snapshot.reduce_to:
             progressed = False
             targets = {s: k for s, k in snapshot.reduce_to if s not in snapshot.close_required}
             for symbol in sorted(snapshot.close_required):
-                progressed = reduce(symbol, phase) or progressed
+                progressed = (
+                    reduce(symbol, phase, execution_reference=reference(symbol)) or progressed
+                )
             for symbol, kept in sorted(targets.items()):
-                progressed = reduce(symbol, phase, keep=kept) or progressed
+                progressed = (
+                    reduce(symbol, phase, execution_reference=reference(symbol), keep=kept)
+                    or progressed
+                )
             if not progressed:
                 break
             snapshot = observations[-1].snapshot
@@ -334,6 +375,7 @@ def replay_held_portfolio(
     )
     try:
         for phase in phases:
+            opening, stopped = dict(quotes), set()
             if phase == "open":
                 drain(phase, observe(phase))
             # A canceled basket (a close request cancels its pending order) stops resting.
@@ -345,7 +387,7 @@ def replay_held_portfolio(
                 elif vertex <= row.limit:
                     pending.remove(row)
                     buy(row, f"{phase}:buy")
-                    drain(f"{phase}:buy", observations[-1].snapshot)
+                    drain(f"{phase}:buy", observations[-1].snapshot, row.symbol)
                     active = {a.intent_id for a in engine.reservations}
             for symbol, path in paths:
                 stops = [
@@ -361,7 +403,8 @@ def replay_held_portfolio(
                 engine.request_close(
                     symbol, position.owner, 1 if position.quantity > 0 else -1, reason="stop"
                 )
-                drain(f"{phase}:stop", observe(f"{phase}:stop"))
+                stopped.add(symbol)
+                drain(f"{phase}:stop", observe(f"{phase}:stop"), symbol)
             for symbol, lot_id, path in target_paths:
                 targets = [
                     event
@@ -377,9 +420,9 @@ def replay_held_portfolio(
                     continue
                 if phase != "open":
                     quotes[symbol] = Quote(targets[0].price, now)
-                drain(f"{phase}:target", observe(f"{phase}:target"))
+                drain(f"{phase}:target", observe(f"{phase}:target"), symbol)
                 while reduce(symbol, f"{phase}:target", lot_id, targets[0].price):
-                    drain(f"{phase}:target", observations[-1].snapshot)
+                    drain(f"{phase}:target", observations[-1].snapshot, symbol)
             if phase != "open":
                 quotes = {symbol: Quote(getattr(bar, phase), now) for symbol, bar in market.items()}
                 drain(phase, observe(phase))
