@@ -263,6 +263,15 @@ def _validate(run: ReplayRun, markets: tuple[SymbolMarket, ...], futures_require
             raise ValueError(f"{market.symbol}: daily and minute klines required")
         _sealed([bar.open_ms for bar in market.daily], f"{market.symbol} daily")
         _sealed([bar.open_ms for bar in market.minutes], f"{market.symbol} minutes")
+        # The flow gate reads the fifteen minutes before each window hour; a duplicate
+        # or misaligned minute there would make the result depend on input order.
+        relevant = [
+            bar.open_ms
+            for bar in market.minutes
+            if run.start_ms - 15 * 60_000 <= bar.open_ms < run.end_ms
+        ]
+        if any(stamp % 60_000 for stamp in relevant) or len(set(relevant)) != len(relevant):
+            raise ValueError(f"{market.symbol}: unique aligned minute bars required")
 
 
 def _regime(assessment: Assessment) -> str:

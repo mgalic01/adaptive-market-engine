@@ -462,3 +462,10 @@ def test_a_failed_trace_is_an_explicitly_incomplete_report(monkeypatch):
     assert "replay_failure:portfolio_safety_failure" in report.issues
     assert report.producer_issues == ("replay_failure:portfolio_safety_failure",)
     assert not report.complete
+
+
+def test_duplicate_minute_bars_are_refused_before_any_replay():
+    market = fx.market("BTCUSDT", fx.ranging, 2, flow=True)
+    duplicated = replace(market, minutes=(*market.minutes, market.minutes[100]))
+    with pytest.raises(ValueError, match="minute"):
+        replay_strategy(fx.run("spot_grid", 2), (duplicated,))
