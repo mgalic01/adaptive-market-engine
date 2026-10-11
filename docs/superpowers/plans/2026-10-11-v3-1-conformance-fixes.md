@@ -14,7 +14,7 @@ Branch `codex/v3-1-runtime-integration`, base of this plan `8244cb3`.
 - Money, price, quantity and ratio math in `Decimal` or `Fraction`, never `float`
   (SVG coordinates in `dashboard.py` are the only exception).
 - No network, no credential or environment access, no new dependency, no market data:
-  tests use synthetic in-memory inputs (the fixtures in `tests/combined_fixtures.py` and
+  tests use synthetic in-memory inputs (the fixtures in `tests/combined_market_fixtures.py` and
   the existing test modules). Never read anything at or after 2025-01-01
   (`1_735_689_600_000` ms); inputs at or after it are refused, not ignored.
 - Fail closed: a missing input or unverifiable condition makes an outcome unavailable,
