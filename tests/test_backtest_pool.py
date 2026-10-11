@@ -336,7 +336,17 @@ class PoolSizeTests(unittest.TestCase):
     runner. A pool must write exactly the results that one in-process job writes. The mode
     switcher's run with D submits every kind of replay job (the gated and ungated V0 rows,
     the mode switcher's and D's), so it stands for the workflow's runs; V0 with D and F
-    were checked the same way when the workflow moved to a pool."""
+    were checked the same way when the workflow moved to a pool.
+
+    A replay steps the engine four times a minute, and a whole month of them made this
+    the suite's slowest test by far (about four minutes). Only the month's first
+    ``REPLAYED_DAYS`` days replay: BTCUSDT's later hours are open-only
+    (``byte_identity.build_dataset``), which the masks drop, minutes included, without
+    counting toward the 17% rule. The run stays valid, and its jobs reach the pool as on
+    real archives, each with every symbol's mask."""
+
+    # The fewest days in which every row trades and the mode switcher holds each mode.
+    REPLAYED_DAYS = 6
 
     def test_a_pool_of_four_writes_the_results_of_one_job(self):
         sys.path.insert(0, str(ROOT / "scripts"))
@@ -347,12 +357,25 @@ class PoolSizeTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         work = root / "up"
-        byte_identity.build_dataset(work, "up")
+        byte_identity.build_dataset(work, "up", replayed_days=self.REPLAYED_DAYS)
         runs = {"MS+D": ("--mode-switch", "--trend-benchmark")}
         for name, flags in runs.items():
             with self.subTest(run=name):
                 one = byte_identity.run_cli(work, root / f"{name}-1", flags)
                 # run_cli passes --jobs 1 before the flags; the last --jobs wins.
                 pool = byte_identity.run_cli(work, root / f"{name}-4", (*flags, "--jobs", "4"))
+                self.assertTrue(one["valid"])
+                masked = {"from": "2024-01-07T00:00Z", "to": "2024-02-01T00:00Z"}
+                masked["reason"] = "open-only difference"
+                mask = {"BTCUSDT": {"masked": [masked], "excluded_months": []}}
+                self.assertEqual(mask, one["comparison_mask"])
+                # The comparison shows a moved fill only if there are fills: every row
+                # buys, and the mode switcher spends time in each of its modes. A change
+                # that fails this wants more REPLAYED_DAYS, not a weaker check.
                 self.assertTrue(one["results"])
+                for row in one["results"]:
+                    label = f"{row['path_mode']} {row['strategy']}"
+                    self.assertGreater(row["buys"], 0, label)
+                    if row.get("modes") is not None:
+                        self.assertTrue(all(row["modes"]["time_ms"].values()), label)
                 self.assertEqual(byte_identity.set_aside(one), byte_identity.set_aside(pool), name)

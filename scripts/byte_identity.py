@@ -210,11 +210,25 @@ class FakeArchive:
         return self.objects.get(path)
 
 
-def build_dataset(work: Path, name: str) -> None:
+def open_only(bar: Bar) -> Bar:
+    """``bar`` with its open moved to its close: an hourly bar that differs from its
+    minutes in the open alone, the open-only convention class (spec v1 section 5)."""
+    t, o, h, low, c, volume = bar
+    if f"{o:.2f}" == f"{c:.2f}":
+        raise ValueError(f"the hour at {t} opens at its close; it cannot differ in the open")
+    return (t, c, h, low, c, volume)
+
+
+def build_dataset(work: Path, name: str, *, replayed_days: int | None = None) -> None:
     """Build dataset ``name`` (a key of ``DATASETS``) in ``work``: ``synth.toml``, the
     archives under ``data/`` and ``synth.manifest.json``, through ``fetch_dataset``.
     The month before the evaluation month is warm-up, so the CLI's integrity checks pass
-    over the whole evaluation month."""
+    over the whole evaluation month.
+
+    ``replayed_days`` leaves only that many days of the evaluation month to replay: every
+    later hour of BTCUSDT's 1h archive is ``open_only``, which the masks drop, minutes
+    included, without counting it toward the 17% rule. Every archive stays complete, so
+    the run is valid. None, as for every run of this check, builds every hour as is."""
     drift, daily = DATASETS[name]
     work.mkdir(parents=True, exist_ok=True)
     spec_path = work / "synth.toml"
@@ -245,6 +259,9 @@ def build_dataset(work: Path, name: str) -> None:
             factor = math.exp(drift * (t - start) / DAY)
             bars.append((t, o * factor, h * factor, low * factor, c * factor, volume))
         hours = [bar for bar in aggregate(bars, HOUR) if bar[0] >= warm]
+        if symbol == "BTCUSDT" and replayed_days is not None:
+            cut = eval_start + replayed_days * DAY
+            hours = [open_only(bar) if bar[0] >= cut else bar for bar in hours]
         for month, rows in by_month(hours).items():
             text = "\n".join(csv_row(bar, HOUR) for bar in rows) + "\n"
             archive.add(archive_path(symbol, "1h", month), text)
