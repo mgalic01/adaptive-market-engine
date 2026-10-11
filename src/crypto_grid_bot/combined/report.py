@@ -584,6 +584,8 @@ def analyze(
     opening = _number(initial)
     if opening <= 0 or type(opportunity_gap_ms) is not int or opportunity_gap_ms <= 0:
         raise ValueError("positive initial equity and observation gap required")
+    if isinstance(source_refs, str):
+        raise ValueError("source_refs must be a collection, not a string")
     points, rows = tuple(equitypoints), tuple(contributions)
     events, episodes, sources = tuple(opportunities), tuple(recovery), tuple(source_refs)
     capital_observations = tuple(capital_observations)
@@ -706,7 +708,12 @@ def analyze(
                 delta = end - start
             else:
                 issues.append("unverified_recovery_endpoint")
-        else:
+        elif (
+            marks.get(episode.start_ms) != {episode.equity_start}
+            or sum(point.timestamp_ms == episode.start_ms for point in points) != 1
+        ):
+            # An ongoing final episode has no return yet. Its sourced opening
+            # must still identify one retained in-window mark; no phase is chosen.
             issues.append("unverified_recovery_endpoint")
         changes.append(
             RecoveryChange(

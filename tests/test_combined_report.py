@@ -834,7 +834,7 @@ def test_recovered_equity_cannot_hide_nonpositive_retained_mark(equity):
 
 def test_utilization_interval_cannot_skip_equity_without_capital_observation():
     points, observation, interval, later, second, terminal = capital_fixture()
-    result = capital_report(points, (observation,), (replace(interval, end_ms=2 * DAY),))
+    result = capital_report(points, (observation, terminal), (replace(interval, end_ms=2 * DAY),))
     assert metric(result, "utilization").value is None
 
 
@@ -1043,3 +1043,67 @@ def test_multiple_terminal_capital_phases_are_not_selected_by_equal_equity():
         metric(result, "utilization").unavailable_reason
         == "unverified_terminal_capital_observation"
     )
+
+
+def test_valid_terminal_open_recovery_keeps_unknown_return_without_integrity_issue():
+    points, observation, interval, later, second, terminal = capital_fixture()
+    episode = RecoveryEpisode(DAY, None, D(110), None, "ongoing", ("source",))
+    result = analyze(
+        D(100),
+        points,
+        (),
+        (),
+        (episode,),
+        ("source",),
+        metrics_start_ms=0,
+        daily_samples=points,
+        utilization=(interval, second),
+        capital_observations=(observation, later, terminal),
+    )
+    assert result.complete and result.structural_complete
+    assert result.recovery_changes[0].marked_change is None
+    assert result.recovery_changes[0].return_fraction is None
+    assert "recovery_endpoint" in result.unknown_fields
+
+
+@pytest.mark.parametrize(
+    "change", [{"start_ms": 3 * DAY}, {"equity_start": D(111)}, {"source_refs": ()}]
+)
+def test_open_recovery_requires_in_window_verified_start_and_sources(change):
+    points, observation, interval, later, second, terminal = capital_fixture()
+    episode = replace(RecoveryEpisode(DAY, None, D(110), None, "ongoing", ("source",)), **change)
+    result = analyze(
+        D(100),
+        points,
+        (),
+        (),
+        (episode,),
+        ("source",),
+        metrics_start_ms=0,
+        daily_samples=points,
+        utilization=(interval, second),
+        capital_observations=(observation, later, terminal),
+    )
+    assert not result.complete and not result.structural_complete
+    assert result.recovery_changes[0].marked_change is None
+
+
+def test_report_level_source_collection_cannot_be_plain_string():
+    with pytest.raises(ValueError, match="source_refs"):
+        analyze(D(100), curve(), contributions(), (), (), "artifact")
+
+
+def test_open_recovery_does_not_select_between_same_time_start_phases():
+    points = (curve()[0], curve()[1], replace(curve()[1], id="other-phase"), curve()[2])
+    episode = RecoveryEpisode(1, None, D(110), None, "ongoing", ("source",))
+    result = analyze(D(100), points, contributions(), (), (episode,), ("source",))
+    assert not result.structural_complete
+    assert "unverified_recovery_endpoint" in result.issues
+    assert result.recovery_changes[0].return_fraction is None
+
+
+def test_open_recovery_before_first_retained_mark_is_not_verified():
+    episode = RecoveryEpisode(0, None, D(100), None, "ongoing", ("source",))
+    result = analyze(D(100), curve()[1:], (), (), (episode,), ("source",))
+    assert not result.structural_complete
+    assert "unverified_recovery_endpoint" in result.issues
