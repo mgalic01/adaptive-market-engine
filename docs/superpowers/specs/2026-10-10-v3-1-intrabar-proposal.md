@@ -91,3 +91,18 @@ observation convention proves a real-world drawdown ceiling or profitability.
 Alternative: defer this convention and retain a blocked replay registration until
 a different comparable execution/observation model is agreed. Engineering of the
 account, decision records, controls and dashboard can continue independently.
+
+### Held-position replay fragment
+
+The implementation now includes a pure old-stop/target event schedule for both
+approved scenarios and a single-held-asset protective execution fragment. It keeps
+all valuation vertices, executes legal stop reductions before later adverse marks,
+and retains partial inventory, unresolved obligations and booked-fill evidence
+when a later settlement mark fails. Other portfolio close obligations make the
+fragment incomplete even if a later stop happens to flatten the holding.
+
+Its engine timestamps mean completed-bar availability, not observed intrabar
+occurrence times. Interval and modeled phase remain explicit. These records must
+not be promoted to native common-boundary evidence by renaming timestamps. This
+fragment is not the full multi-asset strategy replay: coordinated funding, entries,
+grid lots, trailing/reversal exits, finality and terminal endpoint remain required.

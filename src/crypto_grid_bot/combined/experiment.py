@@ -328,7 +328,9 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
         return None
     if (
         evidence.identity != row.identity
-        or not row.attempt_id
+        or not isinstance(row.attempt_id, str)
+        or not row.attempt_id.strip()
+        or not isinstance(evidence.attempt_id, str)
         or evidence.attempt_id != row.attempt_id
         or any(
             type(value) is not int
@@ -341,9 +343,10 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
     ):
         return None
     report = evidence.report
-    if (
-        isinstance(report.policy_evidence, PolicyEvidence)
-        and report.policy_evidence.scenario != row.identity.scenario
+    if isinstance(report.policy_evidence, PolicyEvidence) and (
+        report.policy_evidence.scenario != row.identity.scenario
+        or report.policy_evidence.policy_id != row.identity.observation_policy
+        or report.policy_evidence.adapter_pin != row.identity.adapter_pin
     ):
         return None
     try:
@@ -588,7 +591,8 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             incomplete.append("invalid scenario identity retained")
             continue
         grouped.setdefault(_key(row.identity), []).append(row)
-        attempts[row.attempt_id] = attempts.get(row.attempt_id, 0) + 1
+        if isinstance(row.attempt_id, str) and row.attempt_id.strip():
+            attempts[row.attempt_id] = attempts.get(row.attempt_id, 0) + 1
     for key in grouped.keys() - expected.keys():
         incomplete.append(f"{key}: unregistered outcome")
     valid: dict[tuple[str, str, str, int, str | None], RunOutcome] = {}
@@ -612,7 +616,11 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             incomplete.append(f"{key}: missing or repeated cell ({len(rows)} outcomes)")
             continue
         row = rows[0]
-        if not row.attempt_id or attempts[row.attempt_id] != 1:
+        if (
+            not isinstance(row.attempt_id, str)
+            or not row.attempt_id.strip()
+            or attempts[row.attempt_id] != 1
+        ):
             incomplete.append(f"{key}: missing or repeated attempt identity")
             continue
         if row.identity != identity or any(

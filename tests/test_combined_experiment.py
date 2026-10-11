@@ -262,7 +262,7 @@ def test_report_sampling_policy_cannot_differ_from_run_identity():
 
 
 @pytest.mark.parametrize("malformed", [False, True])
-def test_invalid_policy_retains_recomputed_risk_failure(malformed):
+def test_missing_policy_retains_risk_but_explicit_foreign_policy_is_unattributable(malformed):
     reg = registration()
     rows = outcomes(reg)
     row = next(r for r in rows if r.identity.arm == "combined")
@@ -281,11 +281,12 @@ def test_invalid_policy_retains_recomputed_risk_failure(malformed):
         capital_observations=report.capital_observations,
         policy_evidence={} if malformed else replace(report.policy_evidence, policy_id="invalid"),
     )
-    # The wrapper understates risk. Raw attributable observations must still fail.
+    # Missing policy cannot hide attributable raw risk; an explicitly different
+    # policy identifies foreign evidence and cannot assign its risk to this run.
     adverse = replace(row, report_evidence=ReportEvidence(row.identity, row.attempt_id, rebuilt))
     result = evaluate(reg, tuple(adverse if r is row else r for r in rows))
-    assert result.status == "fail"
-    assert any("drawdown" in failure for failure in result.failures)
+    assert result.status == ("fail" if malformed else "incomplete")
+    assert any("drawdown" in failure for failure in result.failures) is malformed
 
 
 def test_full_must_beat_every_baseline_on_both_measures_not_best_ablation() -> None:
@@ -1241,3 +1242,31 @@ def test_foreign_scenario_report_cannot_assign_its_drawdown_to_other_account():
     result = evaluate(reg, tuple(rows))
     assert result.status == "incomplete"
     assert not result.failures
+
+
+@pytest.mark.parametrize("field", ["policy_id", "adapter_pin"])
+def test_foreign_adapter_report_cannot_assign_safety(field):
+    reg = registration()
+    rows = list(outcomes(reg))
+    index = next(i for i, row in enumerate(rows) if row.identity.arm == "combined")
+    original = rows[index]
+    adverse = with_report(replace(original, max_drawdown=D(".4"))).report_evidence
+    foreign = replace(adverse.report.policy_evidence, **{field: "foreign"})
+    rows[index] = replace(
+        original,
+        report_evidence=replace(adverse, report=replace(adverse.report, policy_evidence=foreign)),
+    )
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete"
+    assert not result.failures
+
+
+@pytest.mark.parametrize("attempt", [1, True, [], "   "])
+def test_malformed_attempt_id_is_incomplete(attempt):
+    reg = registration()
+    rows = list(outcomes(reg))
+    row = rows[0]
+    rows[0] = replace(
+        row, attempt_id=attempt, report_evidence=replace(row.report_evidence, attempt_id=attempt)
+    )
+    assert evaluate(reg, tuple(rows)).status == "incomplete"

@@ -111,3 +111,20 @@ def test_terminal_cannot_promote_unresolved_canceled_remainder():
             interval_end_ms=3_600_000,
             source_refs=("source",),
         )
+
+
+def test_stale_interior_held_marks_cannot_become_common_equity():
+    from test_combined_engine import RULES
+    from test_combined_ohlc_path import held_short
+
+    engine = held_short()
+    engine.settle("stale", 7_200_000, {}, RULES)
+    with pytest.raises(ValueError, match="stale"):
+        emit_boundary(
+            "stale",
+            engine.settlement_observations("stale"),
+            role="settled",
+            interval_start_ms=7_200_000,
+            interval_end_ms=10_800_000,
+            source_refs=("synthetic",),
+        )

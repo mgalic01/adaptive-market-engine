@@ -107,6 +107,20 @@ class PortfolioEngine:
     def reservations(self) -> tuple[Admission, ...]:
         return self._risk.reservations
 
+    @property
+    def clock(self) -> int:
+        """Last accepted observation time; adapters may reject overlapping intervals."""
+        with self._lock:
+            return self._clock
+
+    def held_execution_terms(
+        self,
+    ) -> tuple[tuple[PositionSnapshot, Decimal, Decimal, Decimal], ...]:
+        """Immutable current inventory and its authoritative stop, fee and slippage."""
+        with self._lock:
+            account = self._account.snapshot({s: q.price for s, q in self._quotes.items()})
+            return tuple((p, *self._stops[p.symbol]) for p in account.positions)
+
     def settlement_observations(self, batch_id: str) -> tuple[SettlementObservation, ...]:
         """Retained event marks, including a successfully observed prefix after failure.
 
@@ -115,6 +129,12 @@ class PortfolioEngine:
         """
         with self._lock:
             return self._batch_observations.get(batch_id, ())
+
+    def booked_fill(self, event_id: str) -> FillEvent | None:
+        """Execution evidence even when a subsequent settlement mark failed."""
+        with self._lock:
+            recorded = self._fills.get(event_id)
+            return recorded[2] if recorded is not None else None
 
     def cancel(self, intent_id: str) -> None:
         """Cancel increases locally; this does not attest that all fills are reconciled."""
