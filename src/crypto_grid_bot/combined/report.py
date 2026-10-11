@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from decimal import Context, Decimal, DecimalException, localcontext
 from fractions import Fraction
 
+from crypto_grid_bot.combined.evidence import PHASES
+
 
 @dataclass(frozen=True, slots=True)
 class EquityPoint:
@@ -158,7 +160,7 @@ class UtilizationInterval:
 
     Spot inventory value plus futures collateral, divided by equity. This is not
     gross exposure/leverage or pending-order cash. The supplied constancy claim
-    is not authenticated; it cannot skip another retained capital observation.
+    is not authenticated; it cannot skip a retained capital or equity observation.
     No interpolation or sampling convention is inferred.
     """
 
@@ -302,7 +304,7 @@ def _dimensions(rows: tuple[Contribution, ...], field: str) -> tuple[DimensionTo
 
 
 def _opportunity_episodes(
-    events: tuple[Opportunity, ...], gap: int
+    events: tuple[Opportunity, ...], gap: int, issues: list[str]
 ) -> tuple[OpportunityEpisode, ...]:
     groups: list[list[Opportunity]] = []
     # Stable time sorting per asset preserves same-timestamp stage order as supplied.
@@ -324,6 +326,29 @@ def _opportunity_episodes(
             groups.append(current)
     results = []
     for group in groups:
+        # These are sparse episode observations, not a complete DecisionEvent journal.
+        # A repeated detection restarts the local funnel without inventing an episode.
+        prior_rank: int | None = None
+        blocked = False
+        for event in group:
+            if event.stage == "detected":
+                prior_rank, blocked = 0, False
+            elif event.stage == "blocked":
+                if (
+                    prior_rank is None
+                    or prior_rank == len(PHASES) - 1
+                    or blocked
+                    or not event.reason
+                ):
+                    issues.append(f"invalid_opportunity_stage_order:{event.id}")
+                blocked = True
+            elif event.stage not in PHASES:
+                issues.append(f"invalid_opportunity_stage:{event.id}")
+            else:
+                rank = PHASES.index(event.stage)
+                if prior_rank is None or rank < prior_rank or blocked:
+                    issues.append(f"invalid_opportunity_stage_order:{event.id}")
+                prior_rank = rank
         detections = [event.timestamp_ms for event in group if event.stage == "detected"]
         fills = [event.timestamp_ms for event in group if event.stage == "filled"]
         delay = (
@@ -477,6 +502,9 @@ def _metrics(
                 interval.start_ms < row.timestamp_ms < interval.end_ms
                 for row in capital_observations
             )
+            and not any(
+                interval.start_ms < point.timestamp_ms < interval.end_ms for point in points
+            )
             and observation.timestamp_ms == point.timestamp_ms == interval.start_ms
             and observation.equity == point.equity == interval.equity
             and observation.spot_value == interval.spot_value
@@ -560,6 +588,8 @@ def analyze(
     for point in points:
         _time(point.timestamp_ms)
         _number(point.equity)
+        if point.equity <= 0:
+            issues.append("nonpositive_equity_observation")
         if point.timestamp_ms < previous:
             raise ValueError("equity observations must be chronological")
         previous = point.timestamp_ms
@@ -608,6 +638,8 @@ def analyze(
             or (row.exit_ms is not None and row.exit_ms > points[-1].timestamp_ms)
         ):
             issues.append("contribution_outside_equity_window")
+        if row.status == "open_marked" and row.exit_reason is not None:
+            issues.append("open_marked_exit_reason")
         for optional_text in (row.regime, row.exit_reason):
             if optional_text is not None:
                 _text(optional_text)
@@ -699,7 +731,7 @@ def analyze(
     assets = _dimensions(rows, "asset")
     winners = [Fraction(asset.net_pnl) for asset in assets if asset.net_pnl > 0]
     concentration = _decimal(max(winners) / sum(winners), ratio=True) if winners else None
-    opportunity_groups = _opportunity_episodes(events, opportunity_gap_ms)
+    opportunity_groups = _opportunity_episodes(events, opportunity_gap_ms, issues)
     exits = Counter(row.exit_reason for row in rows if row.status == "closed")
     unknown = set()
     for field in ("regime", "mfe", "giveback"):

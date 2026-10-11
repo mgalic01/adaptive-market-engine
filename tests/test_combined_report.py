@@ -376,13 +376,26 @@ def test_supplied_metrics_can_make_reconciled_report_complete():
     observation = CapitalObservation(
         0, D(100), D(0), D(0), "account-0", "phase-0", "mark-0", ("source",)
     )
-    utilization = (replace(utilization[0], observation_id="account-0"),)
+    later = replace(
+        observation,
+        id="account-1",
+        timestamp_ms=DAY,
+        equity=D(110),
+        phase_id="phase-1",
+        equity_observation_id="mark-1",
+    )
+    utilization = (
+        replace(utilization[0], end_ms=DAY, observation_id="account-0"),
+        replace(
+            utilization[0], id="interval-1", start_ms=DAY, equity=D(110), observation_id="account-1"
+        ),
+    )
     result = metrics_report(
         points,
         metrics_start_ms=0,
         daily_samples=points,
         utilization=utilization,
-        capital_observations=(observation,),
+        capital_observations=(observation, later),
     )
     assert result.complete and all(item.value is not None for item in result.metrics)
 
@@ -604,7 +617,7 @@ def capital_fixture():
     )
     interval = UtilizationInterval(
         0,
-        2 * DAY,
+        DAY,
         D(20),
         D(30),
         D(100),
@@ -612,7 +625,29 @@ def capital_fixture():
         ("synthetic#interval-0",),
         observation_id="capital-0",
     )
-    return points, observation, interval
+    later = replace(
+        observation,
+        timestamp_ms=DAY,
+        equity=D(110),
+        spot_value=D(22),
+        futures_collateral=D(33),
+        id="capital-1",
+        phase_id="phase-1",
+        equity_observation_id="equity-1",
+        source_refs=("synthetic#capital-1",),
+    )
+    second = replace(
+        interval,
+        start_ms=DAY,
+        end_ms=2 * DAY,
+        equity=D(110),
+        spot_value=D(22),
+        futures_collateral=D(33),
+        id="interval-1",
+        observation_id="capital-1",
+        source_refs=("synthetic#interval-1",),
+    )
+    return points, observation, interval, later, second
 
 
 def capital_report(points, observations, intervals):
@@ -626,11 +661,11 @@ def capital_report(points, observations, intervals):
 
 
 def test_exact_capital_observation_allows_utilization_and_is_retained():
-    points, observation, interval = capital_fixture()
-    result = capital_report(points, (observation,), (interval,))
+    points, observation, interval, later, second = capital_fixture()
+    result = capital_report(points, (observation, later), (interval, second))
     assert result.complete
     assert metric(result, "utilization").value == D(".5")
-    assert result.capital_observations == (observation,)
+    assert result.capital_observations == (observation, later)
 
 
 @pytest.mark.parametrize(
@@ -644,8 +679,8 @@ def test_exact_capital_observation_allows_utilization_and_is_retained():
     ],
 )
 def test_utilization_rejects_unlinked_or_altered_capital_components(change):
-    points, observation, interval = capital_fixture()
-    result = capital_report(points, (observation,), (replace(interval, **change),))
+    points, observation, interval, later, second = capital_fixture()
+    result = capital_report(points, (observation, later), (replace(interval, **change), second))
     assert not result.complete and metric(result, "utilization").value is None
 
 
@@ -660,13 +695,13 @@ def test_utilization_rejects_unlinked_or_altered_capital_components(change):
     ],
 )
 def test_capital_observation_requires_exact_equity_identity_and_provenance(change):
-    points, observation, interval = capital_fixture()
-    result = capital_report(points, (replace(observation, **change),), (interval,))
+    points, observation, interval, later, second = capital_fixture()
+    result = capital_report(points, (replace(observation, **change), later), (interval, second))
     assert not result.complete and metric(result, "utilization").value is None
 
 
 def test_equal_equity_capital_phase_ambiguity_remains_incomplete():
-    points, observation, interval = capital_fixture()
+    points, observation, interval, later, second = capital_fixture()
     after = replace(points[0], id="after-buy", source_refs=("synthetic#after-buy",))
     after_capital = replace(
         observation,
@@ -677,7 +712,7 @@ def test_equal_equity_capital_phase_ambiguity_remains_incomplete():
     )
     retained = (points[0], after, *points[1:])
     for observations in ((observation,), (observation, after_capital)):
-        result = capital_report(retained, observations, (interval,))
+        result = capital_report(retained, (*observations, later), (interval, second))
         assert metric(result, "utilization").value is None
         assert not result.complete
 
@@ -687,19 +722,19 @@ def test_equal_equity_capital_phase_ambiguity_remains_incomplete():
     [{"id": ""}, {"phase_id": " "}, {"spot_value": D(-1)}, {"source_refs": ("same", "same")}],
 )
 def test_invalid_capital_observation_is_rejected(change):
-    points, observation, interval = capital_fixture()
+    points, observation, interval, later, second = capital_fixture()
     with pytest.raises(ValueError):
-        capital_report(points, (replace(observation, **change),), (interval,))
+        capital_report(points, (replace(observation, **change), later), (interval, second))
 
 
 def test_capital_observation_duplicate_ids_are_not_deduplicated():
-    points, observation, interval = capital_fixture()
+    points, observation, interval, later, second = capital_fixture()
     with pytest.raises(ValueError):
         capital_report(points, (observation, observation), (interval,))
 
 
 def test_utilization_interval_cannot_skip_an_intervening_capital_observation():
-    points, observation, interval = capital_fixture()
+    points, observation, interval, later, second = capital_fixture()
     later = replace(
         observation,
         timestamp_ms=DAY,
@@ -709,13 +744,13 @@ def test_utilization_interval_cannot_skip_an_intervening_capital_observation():
         phase_id="phase-1",
         equity_observation_id="equity-1",
     )
-    result = capital_report(points, (observation, later), (interval,))
+    result = capital_report(points, (observation, later), (replace(interval, end_ms=2 * DAY),))
     assert metric(result, "utilization").value is None and not result.complete
 
 
 def test_complete_report_cannot_hide_out_of_window_opportunity():
-    points, observation, interval = capital_fixture()
-    assert capital_report(points, (observation,), (interval,)).complete
+    points, observation, interval, later, second = capital_fixture()
+    assert capital_report(points, (observation, later), (interval, second)).complete
     event = Opportunity(
         2 * DAY + 1, "BTCUSDT", "long", "breakout", "detected", None, "event", ("source",)
     )
@@ -728,22 +763,22 @@ def test_complete_report_cannot_hide_out_of_window_opportunity():
         ("global",),
         metrics_start_ms=0,
         daily_samples=points,
-        utilization=(interval,),
-        capital_observations=(observation,),
+        utilization=(interval, second),
+        capital_observations=(observation, later),
     )
     assert "opportunity_outside_equity_window" in result.issues
     assert not result.complete and result.opportunities == (event,)
 
 
 def test_same_time_capital_phases_are_ambiguous_even_with_one_equity_record():
-    points, observation, interval = capital_fixture()
+    points, observation, interval, later, second = capital_fixture()
     other = replace(observation, id="other", phase_id="other-phase", spot_value=D(70))
-    result = capital_report(points, (observation, other), (interval,))
+    result = capital_report(points, (observation, other, later), (interval, second))
     assert not result.complete and metric(result, "utilization").value is None
 
 
 def test_capital_source_refs_are_immutable_and_opportunities_without_equity_are_incomplete():
-    points, observation, interval = capital_fixture()
+    points, observation, interval, later, second = capital_fixture()
     refs = ["source"]
     observation = replace(observation, source_refs=refs)
     refs.append("mutated")
@@ -752,3 +787,127 @@ def test_capital_source_refs_are_immutable_and_opportunities_without_equity_are_
     result = analyze(D(100), (), (), (event,), (), ("global",))
     assert not result.complete and "missing_equity_observations" in result.issues
     assert result.opportunities == (event,)
+
+
+@pytest.mark.parametrize("equity", [D(0), D(-1)])
+def test_recovered_equity_cannot_hide_nonpositive_retained_mark(equity):
+    points = (
+        EquityPoint(0, D(100), "start", ("source",)),
+        EquityPoint(1, equity, "failure", ("source",)),
+        EquityPoint(2, D(100), "end", ("source",)),
+    )
+    result = analyze(D(100), points, (), (), (), ("global",))
+    assert "nonpositive_equity_observation" in result.issues
+    assert not result.structural_complete and result.final_equity == 100
+
+
+def test_utilization_interval_cannot_skip_equity_without_capital_observation():
+    points, observation, interval, later, second = capital_fixture()
+    result = capital_report(points, (observation,), (replace(interval, end_ms=2 * DAY),))
+    assert metric(result, "utilization").value is None
+
+
+@pytest.mark.parametrize(
+    "stages",
+    [
+        ("filled", "detected"),
+        ("detected", "submitted", "qualified"),
+        ("detected", "blocked", "filled"),
+        ("invented",),
+    ],
+)
+def test_invalid_opportunity_stages_remain_visible_but_incomplete(stages):
+    events = tuple(
+        Opportunity(
+            i,
+            "BTCUSDT",
+            "long",
+            "breakout",
+            stage,
+            "cost" if stage == "blocked" else None,
+            f"event-{i}",
+            ("source",),
+        )
+        for i, stage in enumerate(stages)
+    )
+    points = (curve()[0], replace(curve()[-1], timestamp_ms=len(stages)))
+    result = analyze(D(100), points, contributions(), events, (), ("global",))
+    assert any(issue.startswith("invalid_opportunity_") for issue in result.issues)
+    assert not result.structural_complete and result.opportunities == events
+
+
+def test_repeated_detections_restart_local_funnel_without_splitting_episode():
+    stages = ("detected", "qualified", "detected", "detected", "qualified", "filled", "filled")
+    events = tuple(
+        Opportunity(i, "BTCUSDT", "long", "breakout", stage, None, f"event-{i}", ("source",))
+        for i, stage in enumerate(stages)
+    )
+    points = (curve()[0], replace(curve()[-1], timestamp_ms=len(stages)))
+    result = analyze(D(100), points, contributions(), events, (), ("global",))
+    assert result.structural_complete and len(result.opportunity_episodes) == 1
+
+
+def test_open_marked_lifecycle_with_exit_reason_is_incomplete():
+    rows = (contributions()[0], replace(contributions()[1], exit_reason="trail"))
+    result = analyze(D(100), curve(), rows, (), (), ("global",))
+    assert "open_marked_exit_reason" in result.issues
+    assert not result.structural_complete and result.contributions == rows
+
+
+@pytest.mark.parametrize("equity", [D(0), D(-1)])
+def test_nonpositive_interior_mark_is_not_hidden_by_positive_daily_samples(equity):
+    daily, observation, interval, later, second = capital_fixture()
+    failed = EquityPoint(DAY // 2, equity, "failed", ("source",))
+    points = (daily[0], failed, *daily[1:])
+    result = analyze(
+        D(100),
+        points,
+        (),
+        (),
+        (),
+        ("global",),
+        metrics_start_ms=0,
+        daily_samples=daily,
+        utilization=(interval, second),
+        capital_observations=(observation, later),
+    )
+    assert metric(result, "sharpe").value is not None
+    assert result.final_equity == 100 and "nonpositive_equity_observation" in result.issues
+    assert not result.complete and not result.structural_complete
+
+
+@pytest.mark.parametrize(
+    "stages,reasons",
+    [
+        (("filled", "detected"), (None, None)),
+        (("blocked",), ("cost",)),
+        (("detected", "blocked"), (None, None)),
+    ],
+)
+def test_same_time_reversed_or_unexplained_blocked_observations_are_incomplete(stages, reasons):
+    events = tuple(
+        Opportunity(0, "BTCUSDT", "long", "breakout", stage, reason, f"event-{i}", ("source",))
+        for i, (stage, reason) in enumerate(zip(stages, reasons, strict=True))
+    )
+    result = analyze(D(100), curve(), contributions(), events, (), ("source",))
+    assert not result.structural_complete and result.opportunities == events
+    assert any(issue.startswith("invalid_opportunity_stage_order") for issue in result.issues)
+
+
+def test_new_detection_can_follow_blocked_disposition_in_same_episode():
+    stages = ("detected", "blocked", "detected", "filled")
+    events = tuple(
+        Opportunity(
+            0,
+            "BTCUSDT",
+            "long",
+            "breakout",
+            stage,
+            "cost" if stage == "blocked" else None,
+            f"event-{i}",
+            ("source",),
+        )
+        for i, stage in enumerate(stages)
+    )
+    result = analyze(D(100), curve(), contributions(), events, (), ("source",))
+    assert result.structural_complete and len(result.opportunity_episodes) == 1

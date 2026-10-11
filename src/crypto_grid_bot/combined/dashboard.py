@@ -618,7 +618,9 @@ assuming no external cash transfers. This is not a causal benefit estimate.</p>
 <p class="muted">{len(report.opportunity_episodes)} distinct observed episodes; observations
 separated by more than {report.observation_gap_ms / 1000:g} seconds or changed direction/structure
 start a new episode. Hourly samples are not independent
-opportunities.</p>{opportunities}</section>
+opportunities. Stages are sparse episode summaries; they do not prove a complete
+DecisionEvent journal. Entry delay measures episode detection to first observed fill.</p>
+{opportunities}</section>
 <section class="panel">
 <h2>Unfavorable intervals</h2>
 <p class="muted">Adjacent observed equity marks, not calendar-period returns or independent
