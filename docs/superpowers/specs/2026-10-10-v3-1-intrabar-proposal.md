@@ -106,3 +106,12 @@ occurrence times. Interval and modeled phase remain explicit. These records must
 not be promoted to native common-boundary evidence by renaming timestamps. This
 fragment is not the full multi-asset strategy replay: coordinated funding, entries,
 grid lots, trailing/reversal exits, finality and terminal endpoint remain required.
+
+The held-portfolio coordinator advances full price vectors at each modeled vertex,
+orders old-stop executions by symbol against prior other-asset marks, and settles
+new portfolio close obligations immediately at the available vector. Venue maximum
+order quantities split reductions; unsellable remainders remain valued and owned.
+A finite 10,000-fill processing limit returns an execution failure with retained
+history rather than silently truncating or retrying. Stable observation IDs retain
+phase and settlement-prefix evidence. This coordinator still does not generate
+strategy entries, grid targets, funding or finality acknowledgements.
