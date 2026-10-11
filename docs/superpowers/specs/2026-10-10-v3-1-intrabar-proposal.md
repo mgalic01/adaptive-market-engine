@@ -72,8 +72,9 @@ The proposed convention must therefore also declare, before registration:
   and bound into report evidence. Baselines require the same declared economic
   boundaries; native output timestamps alone are insufficient proof.
 
-This addition was included in the owner approval above. It has not yet been
-implemented or used to permit complete reports. Current registration rejects an
+This addition was included in the owner approval above. Settlement evidence and
+common-hourly selection are implemented; full two-scenario replay and baseline
+adapter conformance remain unfinished. Current registration rejects an
 endpoint at the reserved boundary because the current engine cannot emit that
 event; an interval-end adapter needs separate reviewed implementation after the
 observation contract is approved. The downside is additional adapter complexity

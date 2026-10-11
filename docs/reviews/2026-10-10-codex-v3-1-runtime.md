@@ -378,3 +378,19 @@ remain outstanding, with adapters, visual QA and exact registration unfinished.
 Verification for approved observation package: 903 combined tests passed, one OS skip; Ruff, format, mypy, Bandit and report checks passed. Independent critic found sampling fallback, terminal phase, invalid-policy safety preservation and unresolved terminal-close issues; each was reproduced and fixed. Full historical replay and final external review remain pending.
 
 Finality/interval follow-up: 907 combined tests passed, one OS skip; static/report checks passed. EngineSnapshot retains unresolved execution IDs. Boundary evidence itself now includes the genuine interval start/end, so report serialization cannot discard terminal interval identity. No historical execution.
+
+
+### Common hourly comparison follow-up
+
+Cross-version return/drawdown now uses every approved hourly economic boundary,
+selected from retained observations by identity. Opening selects before-cost equity;
+interior and terminal samples select completed settlements. Missing hours are
+incomplete, with no interpolation or timestamp relabeling. Exact rational return and
+drawdown calculations leave native intrabar observations and the 30% risk gate intact.
+A critic identified a misplaced doubled-cost profit gate; its sparse-series loss
+regression failed first and passed after moving the native profit check before common
+comparison construction. Native complete daily-only reports remain valid diagnostics
+but cannot establish common-hourly comparability. Full scenario replay, baseline
+adapters, endpoint support and historical authorization remain outstanding.
+
+Verification: 916 combined tests passed, one OS skip; static analysis, formatting and report checks passed. Synthetic evidence only.

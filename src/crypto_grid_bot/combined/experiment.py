@@ -11,6 +11,7 @@ from decimal import Decimal
 from fractions import Fraction
 from itertools import product
 
+from .common_series import CommonSeries, common_hourly_series
 from .observation_policy import POLICY_ID, PolicyEvidence
 from .report import Report, analyze
 
@@ -556,6 +557,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
     for key in grouped.keys() - expected.keys():
         incomplete.append(f"{key}: unregistered outcome")
     valid: dict[tuple[str, str, str, int], RunOutcome] = {}
+    common: dict[tuple[str, str, str, int], CommonSeries] = {}
     for key, (identity, expected_capital) in expected.items():
         rows = grouped.get(key, [])
         # Comparability requires one complete attempt; observed safety failures do not.
@@ -609,13 +611,26 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
                 incomplete.append(message)
             # Component failures were recorded specifically during the safety scan.
             continue
-        valid[key] = row
         if (
             identity.arm == "combined"
             and identity.cost_multiple == 2
             and row.final_equity <= row.initial_equity
         ):
             failures.append(f"{key}: doubled-cost full profit is not positive")
+        report = row.report_evidence.report if row.report_evidence is not None else None
+        try:
+            if report is None or report.policy_evidence is None:
+                raise ValueError("missing policy")
+            common[key] = common_hourly_series(
+                report.equity_points,
+                report.policy_evidence,
+                start_ms=identity.start_ms,
+                end_ms=identity.end_ms,
+            )
+        except (ValueError, TypeError, AttributeError, ArithmeticError):
+            incomplete.append(f"{key}: common hourly comparison evidence unavailable")
+            continue
+        valid[key] = row
     for window, capital, profile in product(
         registration.windows, registration.capitals, registration.cost_profiles
     ):
@@ -623,20 +638,20 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         full = valid.get(("combined", window.id, capital.id, multiple))
         if full is None:
             continue
-        full_return = Fraction(full.final_equity) / Fraction(full.initial_equity) - 1
+        full_series = common[("combined", window.id, capital.id, multiple)]
+        full_return = full_series.net_return
         for baseline in registration.baseline_arms:
             key = (baseline, window.id, capital.id, multiple)
             other = valid.get(key)
             if other is None:
                 continue  # The missing/invalid cell already has a visible reason.
-            other_return = Fraction(other.final_equity) / Fraction(other.initial_equity) - 1
+            other_series = common[key]
+            other_return = other_series.net_return
             if full_return <= other_return:
                 failures.append(f"{key}: full return does not strictly beat baseline")
-            if full.max_drawdown == 0 or other.max_drawdown == 0:
+            if full_series.max_drawdown == 0 or other_series.max_drawdown == 0:
                 incomplete.append(f"{key}: return/drawdown is indeterminate at zero drawdown")
-            elif full_return / Fraction(full.max_drawdown) <= other_return / Fraction(
-                other.max_drawdown
-            ):
+            elif full_return / full_series.max_drawdown <= other_return / other_series.max_drawdown:
                 failures.append(f"{key}: full return/drawdown does not strictly beat baseline")
     status = "fail" if failures else "incomplete" if incomplete else "pass"
     return AcceptanceResult(status, tuple(failures), tuple(incomplete), retained)

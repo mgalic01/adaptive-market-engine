@@ -104,7 +104,7 @@ def outcomes(reg: Registration) -> tuple[RunOutcome, ...]:
     return tuple(with_report(row) for row in rows)
 
 
-def with_report(row):
+def with_report(row, *, hourly=True):
     if not all(
         value.is_finite()
         for value in (
@@ -116,15 +116,18 @@ def with_report(row):
     ):
         return row
     start, end = row.identity.start_ms, row.identity.end_ms
-    points = (
-        EquityPoint(start, row.initial_equity, "opening", ("synthetic-opening",)),
+    points = tuple(
         EquityPoint(
-            start + DAY,
-            row.initial_equity * (1 - row.max_drawdown),
-            "trough",
-            ("synthetic-trough",),
-        ),
-        EquityPoint(end, row.final_equity, "closing", ("synthetic-closing",)),
+            timestamp,
+            row.initial_equity
+            if timestamp == start
+            else row.final_equity
+            if timestamp == end
+            else row.initial_equity * (1 - row.max_drawdown),
+            f"point-{timestamp}",
+            ("synthetic-hourly",),
+        )
+        for timestamp in range(start, end + 1, 3_600_000 if hourly else DAY)
     )
     with localcontext() as ctx:
         ctx.prec = 80
@@ -155,7 +158,7 @@ def with_report(row):
         (),
         ("synthetic-source",),
         metrics_start_ms=start,
-        daily_samples=points,
+        daily_samples=tuple(p for p in points if (p.timestamp_ms - start) % DAY == 0),
         utilization=tuple(
             UtilizationInterval(
                 point.timestamp_ms,
@@ -176,7 +179,13 @@ def with_report(row):
                 D(0),
                 D(0),
                 id=f"capital-{index}",
-                phase_id=("opening", "settled", "terminal")[index],
+                phase_id=(
+                    "opening"
+                    if index == 0
+                    else "terminal"
+                    if index == len(points) - 1
+                    else "settled"
+                ),
                 equity_observation_id=point.id,
                 source_refs=("synthetic-capital",),
             )
@@ -188,13 +197,19 @@ def with_report(row):
             tuple(
                 Boundary(
                     point.timestamp_ms,
-                    ("opening", "settled", "terminal")[index],
+                    (
+                        "opening"
+                        if index == 0
+                        else "terminal"
+                        if index == len(points) - 1
+                        else "settled"
+                    ),
                     (point.id,),
                     point.id,
                     f"capital-{index}",
                     ("synthetic-capital",),
-                    point.timestamp_ms - (3_600_000 if index == 2 else 0),
-                    point.timestamp_ms + (0 if index == 2 else 3_600_000),
+                    point.timestamp_ms - (3_600_000 if index == len(points) - 1 else 0),
+                    point.timestamp_ms + (0 if index == len(points) - 1 else 3_600_000),
                 )
                 for index, point in enumerate(points)
             ),
@@ -708,7 +723,7 @@ def test_component_recovery_cannot_hide_capital_exhaustion(equity):
     original = evidence.report
     points = (
         original.equity_points[0],
-        EquityPoint(row.identity.start_ms + DAY // 2, equity, "exhaustion", ("synthetic",)),
+        EquityPoint(row.identity.start_ms + 1_800_000, equity, "exhaustion", ("synthetic",)),
         *original.equity_points[1:],
     )
     report = analyze(
@@ -1118,3 +1133,21 @@ def test_complete_arm_menu_in_unsupported_collection_is_incomplete(field, contai
     reg = registration()
     result = evaluate(replace(reg, **{field: container(getattr(reg, field))}), outcomes(reg))
     assert result.status == "incomplete" and not result.failures
+
+
+def test_common_hourly_comparison_refuses_sparse_native_boundary_series():
+    reg = registration()
+    rows = outcomes(reg)
+    changed = with_report(rows[0], hourly=False)
+    result = evaluate(reg, (changed, *rows[1:]))
+    assert result.status == "incomplete"
+    assert any("common hourly" in issue for issue in result.incomplete_reasons)
+
+
+def test_missing_common_hourly_series_does_not_hide_verified_doubled_cost_loss():
+    reg = registration()
+    rows = change(outcomes(reg), cost=2, final_equity=D(9000))
+    rows = tuple(with_report(row, hourly=False) for row in rows)
+    result = evaluate(reg, rows)
+    assert result.status == "fail"
+    assert any("profit is not positive" in reason for reason in result.failures)
