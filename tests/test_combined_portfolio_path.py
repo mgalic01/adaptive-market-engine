@@ -193,3 +193,89 @@ def test_true_opening_gap_liquidation_is_not_erased_by_exit():
     )
     assert result.failure == "portfolio_safety_failure"
     assert result.observations[0].snapshot.liquidation
+
+
+def grid_portfolio():
+    engine = PortfolioEngine(D(10000))
+    order = intent(
+        owner="spot_grid", requested_quantity=D(2), stop=D(95), fee_rate=D(0), slippage_rate=D(0)
+    )
+    assert engine.submit(order, candidate(order), QUOTES, RULES).accepted
+    for lot, price in (("lot-one", 100), ("lot-two", 99)):
+        engine.settle(
+            lot,
+            0,
+            QUOTES,
+            RULES,
+            increases=(
+                (
+                    order.intent_id,
+                    FillEvent(lot, 0, "BTCUSDT", "spot_grid", "spot", 1, D(1), D(price), D(0), lot),
+                ),
+            ),
+        )
+    return engine
+
+
+def test_grid_target_closes_matching_lot_using_its_actual_fill_price():
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    result = replay_held_portfolio(
+        grid_portfolio(),
+        (("BTCUSDT", bar(high="101.5", low=97, close="100.5")),),
+        RULES,
+        "open_low_high_close",
+        source_refs=("s",),
+        grid_spacing=(("BTCUSDT", D(2)),),
+    )
+    assert result.failure is None
+    assert len(result.fills) == 1
+    assert result.fills[0].lot_id == "lot-two"
+    assert result.fills[0].price == 101
+    held = result.observations[-1].snapshot.account.positions[0]
+    assert held.lots[0].lot_id == "lot-one"
+    assert held.entry_cost == 100
+    assert result.observations[-1].snapshot.account.equity == D("10002.5")
+
+
+def test_grid_old_stop_suppresses_all_favorable_lot_targets():
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    result = replay_held_portfolio(
+        grid_portfolio(),
+        (("BTCUSDT", bar(low=90)),),
+        RULES,
+        "open_high_low_close",
+        source_refs=("s",),
+        grid_spacing=(("BTCUSDT", D(2)),),
+    )
+    assert result.failure is None
+    assert [fill.price for fill in result.fills] == [95]
+    assert result.observations[-1].snapshot.account.equity == 9991
+
+
+def test_grid_spacing_is_mandatory_before_any_mutation():
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    engine = grid_portfolio()
+    with pytest.raises(ValueError):
+        replay_held_portfolio(
+            engine, (("BTCUSDT", bar()),), RULES, "open_low_high_close", source_refs=("s",)
+        )
+    assert engine.clock == 0
+
+
+def test_open_gap_target_does_not_reprice_remaining_inventory_to_limit():
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    result = replay_held_portfolio(
+        grid_portfolio(),
+        (("BTCUSDT", bar(open=110, high=110, low=100)),),
+        RULES,
+        "open_low_high_close",
+        source_refs=("s",),
+        grid_spacing=(("BTCUSDT", D(2)),),
+    )
+    reduced = [row for row in result.observations if row.id.endswith(":reduction")]
+    assert reduced[0].snapshot.account.positions[0].mark == 110
+    assert [fill.price for fill in result.fills] == [101, 102]

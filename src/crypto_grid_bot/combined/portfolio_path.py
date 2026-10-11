@@ -7,6 +7,7 @@ interval. Phase timestamps denote bar availability, never observed tick times.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from fractions import Fraction
 
 from crypto_grid_bot.backtest.klines import Kline
@@ -31,6 +32,7 @@ class PortfolioInterval:
     observations: tuple[PortfolioObservation, ...]
     fills: tuple[FillEvent, ...]
     failure: str | None
+    grid_spacing: tuple[tuple[str, Decimal], ...] = ()
 
 
 def replay_held_portfolio(
@@ -40,15 +42,19 @@ def replay_held_portfolio(
     scenario: str,
     *,
     source_refs: tuple[str, ...],
+    grid_spacing: tuple[tuple[str, Decimal], ...] = (),
 ) -> PortfolioInterval:
     """Settle stops and portfolio closes before proceeding to later phase marks.
 
     Within a phase old stops execute in symbol order against the previously available
-        other-asset marks, then the full vector advances together to the vertex. Any
-        resulting portfolio close is settled immediately at that available vector.
-        Venue maximums split reductions; minimum-size dust remains valued and owned.
-        A finite 10,000-fill safety budget fails incomplete rather than looping without
-        bound on malformed or impractically tiny venue order limits.
+    other-asset marks, then the full vector advances together to the vertex. Any
+    resulting portfolio close is settled immediately at that available vector.
+    Venue maximums split reductions; minimum-size dust remains valued and owned.
+    A finite 10,000-fill safety budget fails incomplete rather than looping without
+    bound on malformed or impractically tiny venue order limits.
+    Grid spacing must come from retained admitted geometry; the full strategy
+    coordinator binds that provenance. Targets derive from actual lot entry prices.
+    Every lot here is held at open; intrabar purchases need separate eligibility.
     """
     terms = {row[0].symbol: row for row in engine.held_execution_terms()}
     if (
@@ -62,6 +68,23 @@ def replay_held_portfolio(
     ):
         raise ValueError("complete unique held-asset bars and venue filters required")
     market = dict(bars)
+    grid_symbols = {symbol for symbol, row in terms.items() if row[0].owner == "spot_grid"}
+    if (
+        not isinstance(grid_spacing, tuple)
+        or any(
+            not isinstance(pair, tuple)
+            or len(pair) != 2
+            or not isinstance(pair[0], str)
+            or not isinstance(pair[1], Decimal)
+            or not pair[1].is_finite()
+            or not 0 < pair[1] <= Decimal("1e36")
+            for pair in grid_spacing
+        )
+        or len({symbol for symbol, _ in grid_spacing}) != len(grid_spacing)
+        or {symbol for symbol, _ in grid_spacing} != grid_symbols
+    ):
+        raise ValueError("one retained positive spacing per held grid required")
+    spacing = dict(grid_spacing)
     starts = {bar.open_ms for bar in market.values()}
     if len(starts) != 1 or next(iter(starts)) < engine.clock:
         raise ValueError("one nonoverlapping portfolio interval required")
@@ -78,6 +101,22 @@ def replay_held_portfolio(
         )
         for symbol in sorted(terms)
     )
+    target_paths = tuple(
+        (
+            symbol,
+            lot.lot_id,
+            plan_held_path(
+                market[symbol],
+                scenario,
+                side=1,
+                stop=terms[symbol][1],
+                target=_decimal(Fraction(lot.entry_price) + Fraction(spacing[symbol])),
+                source_refs=source_refs,
+            ),
+        )
+        for symbol in sorted(grid_symbols)
+        for lot in sorted(terms[symbol][0].lots, key=lambda item: (item.entry_price, item.lot_id))
+    )
     now = paths[0][1].interval_end_ms
     prefix = f"portfolio:{paths[0][1].interval_start_ms}:{scenario}"
     quotes = {symbol: Quote(market[symbol].open, now) for symbol in terms}
@@ -93,17 +132,26 @@ def replay_held_portfolio(
         observations.append(PortfolioObservation(now, phase, f"{prefix}:mark:{sequence}", snapshot))
         return snapshot
 
-    def reduce(symbol: str, phase: str) -> bool:
+    def reduce(
+        symbol: str,
+        phase: str,
+        lot_id: str | None = None,
+        execution_reference: Decimal | None = None,
+    ) -> bool:
         nonlocal sequence
         current = {row[0].symbol: row for row in engine.held_execution_terms()}
         if symbol not in current:
             return False
         position, _, fee, slip = current[symbol]
+        quantity = abs(position.quantity)
+        if lot_id is not None:
+            lot = next((lot for lot in position.lots if lot.lot_id == lot_id), None)
+            if lot is None:
+                return False
+            quantity = abs(lot.quantity)
         side = -1 if position.quantity > 0 else 1
-        quote = quotes[symbol].price
-        reduction = executable_reduction(
-            abs(position.quantity), quote, rules[symbol], side=side, slippage=slip
-        )
+        quote = quotes[symbol].price if execution_reference is None else execution_reference
+        reduction = executable_reduction(quantity, quote, rules[symbol], side=side, slippage=slip)
         if not reduction.quantity:
             return False
         if len(fills) >= 10_000:
@@ -125,6 +173,7 @@ def replay_held_portfolio(
             reduction.quantity,
             price,
             _decimal(Fraction(reduction.quantity) * Fraction(price) * Fraction(fee)),
+            lot_id,
         )
         try:
             engine.settle(identity, now, quotes, rules, reductions=(fill,))
@@ -172,6 +221,24 @@ def replay_held_portfolio(
                     symbol, position.owner, 1 if position.quantity > 0 else -1, reason="stop"
                 )
                 drain(f"{phase}:stop", observe(f"{phase}:stop"))
+            for symbol, lot_id, path in target_paths:
+                targets = [
+                    event
+                    for event in path.events
+                    if event.phase == phase and event.kind == "target"
+                ]
+                if not targets:
+                    continue
+                current = {row[0].symbol: row for row in engine.held_execution_terms()}
+                if symbol not in current or not any(
+                    lot.lot_id == lot_id for lot in current[symbol][0].lots
+                ):
+                    continue
+                if phase != "open":
+                    quotes[symbol] = Quote(targets[0].price, now)
+                drain(f"{phase}:target", observe(f"{phase}:target"))
+                while reduce(symbol, f"{phase}:target", lot_id, targets[0].price):
+                    drain(f"{phase}:target", observations[-1].snapshot)
             if phase != "open":
                 quotes = {symbol: Quote(getattr(bar, phase), now) for symbol, bar in market.items()}
                 drain(phase, observe(phase))
@@ -185,4 +252,6 @@ def replay_held_portfolio(
             failure = "portfolio_safety_failure"
     except (ValueError, ArithmeticError, TypeError, AttributeError) as exc:
         failure = f"execution_failure:{type(exc).__name__}"
-    return PortfolioInterval(paths, tuple(observations), tuple(fills), failure)
+    return PortfolioInterval(
+        paths, tuple(observations), tuple(fills), failure, tuple(sorted(grid_spacing))
+    )

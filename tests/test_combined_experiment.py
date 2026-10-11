@@ -1270,3 +1270,18 @@ def test_malformed_attempt_id_is_incomplete(attempt):
         row, attempt_id=attempt, report_evidence=replace(row.report_evidence, attempt_id=attempt)
     )
     assert evaluate(reg, tuple(rows)).status == "incomplete"
+
+
+@pytest.mark.parametrize("field", ["observation_policy", "adapter_pin"])
+def test_pending_registration_rejects_foreign_scalar_policy_identity(field):
+    reg = replace(registration(), pending=("review",))
+    row = next(row for row in outcomes(reg) if row.identity.arm == "combined")
+    row = replace(
+        row,
+        report_evidence=None,
+        liquidations=1,
+        identity=replace(row.identity, **{field: "d" * 64}),
+    )
+    result = evaluate(reg, (row,))
+    assert result.status == "incomplete"
+    assert not result.failures

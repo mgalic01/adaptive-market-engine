@@ -114,4 +114,10 @@ order quantities split reductions; unsellable remainders remain valued and owned
 A finite 10,000-fill processing limit returns an execution failure with retained
 history rather than silently truncating or retrying. Stable observation IDs retain
 phase and settlement-prefix evidence. This coordinator still does not generate
-strategy entries, grid targets, funding or finality acknowledgements.
+strategy entries, intrabar grid purchases, funding or finality acknowledgements.
+Held-at-open grid lots now have targets at their actual entry price plus retained
+admitted spacing, selling the matching lot. A bar touching the old common stop
+suppresses favorable targets. Gap-open target executions receive no gap credit,
+while remaining inventory is valued at the actual opening quote. The complete
+strategy driver must bind spacing to admitted geometry and distinguish intrabar
+purchases from lots already held at open.

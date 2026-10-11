@@ -494,6 +494,24 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
         for records in (reg.windows, reg.capitals, reg.cost_profiles)
     ):
         return []
+    if (
+        reg.observation_policy != POLICY_ID
+        or identity.observation_policy != reg.observation_policy
+        or not isinstance(reg.adapter_pins, (tuple, list))
+    ):
+        return []
+    adapters = [
+        pair
+        for pair in reg.adapter_pins
+        if isinstance(pair, (tuple, list)) and pair and pair[0] == identity.arm
+    ]
+    if (
+        len(adapters) != 1
+        or len(adapters[0]) != 2
+        or not _pin(adapters[0][1])
+        or identity.adapter_pin != adapters[0][1]
+    ):
+        return []
     # Unrelated malformed records cannot erase a uniquely attributable failure.
     windows = [w for w in reg.windows if isinstance(w, Window) and w.id == identity.window]
     capitals = [c for c in reg.capitals if isinstance(c, Capital) and c.id == identity.capital]
