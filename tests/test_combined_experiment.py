@@ -966,6 +966,7 @@ def test_legacy_research_identity_needs_no_fx_conversion_pin():
     assert all(row.identity.fx_pin == PIN for row in rows if row.identity.capital == "owner_small")
     assert evaluate(reg, rows).status == "pass"
 
+
 @pytest.mark.parametrize("field", ["windows", "capitals"])
 @pytest.mark.parametrize("bad", [None, {}, [], 1, "record"])
 def test_malformed_registration_record_is_retained_as_incomplete(field, bad):

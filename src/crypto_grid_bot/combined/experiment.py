@@ -340,10 +340,9 @@ def _report_valid(row: RunOutcome) -> bool:
         return False
     # Preserve the frozen explained trade/equity tolerance. This is the only
     # structural issue acceptance may forgive; all required metrics remain mandatory.
-    tolerated = (
-        row.accounting_explained is True
-        and abs(Fraction(row.accounting_residual)) <= Fraction(1, 10**18)
-    )
+    tolerated = row.accounting_explained is True and abs(
+        Fraction(row.accounting_residual)
+    ) <= Fraction(1, 10**18)
     return all(_finite(metric.value) for metric in report.metrics) and not (
         set(report.issues) - ({"contribution_equity_residual"} if tolerated else set())
     )

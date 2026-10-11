@@ -292,3 +292,27 @@ reproduced failures before fixes. No historical execution or new dependencies. N
 additional security findings known; stricter capacity quarantine and API/provenance
 requirements are compatibility changes. Owner observation-policy approval and final
 full-head external review remain required, with replay/registration still unfinished.
+
+## Post-fill portfolio caps and malformed evidence
+
+Every increase fill rechecks asset, aggregate stop risk, gross and correlation caps
+against current equity after booking. Held exposure and unresolved order remainders
+are counted once. Asset breaches require closing the affected asset; shared breaches
+conservatively close all holdings and cancel increases. The last successfully admitted
+causal correlation map is retained; missing symbols remain unknown. Exact-cap,
+partial-fill, canceled-order and finality controls preserve reservation accounting.
+
+Registration validates window and capital record shapes before dereferencing them.
+Only exact True grants the explained-residual tolerance; malformed flags cannot hide
+an attributable accounting failure. Closed recovery endpoints require unique retained
+observations even when distinct same-time marks have equal equity; ambiguity remains
+incomplete, without selecting an unapproved observation phase.
+
+Verification:809 combined tests passed,one OS skip; repository static/report checks
+passed. Independent critic160engine/risk/recovery/replay and196experiment tests passed.
+New defect regressions failed before fixes. Integration corrected two formatting
+mismatches before the successful preflight. No historical execution, new dependencies
+or additional security findings. The stricter post-fill reductions can change future
+simulation behavior; this corrects the approved caps rather than changing thresholds.
+Owner observation-policy approval, adapter implementation and final substantive
+full-head external review remain required. Earlier head approvals are stale.
