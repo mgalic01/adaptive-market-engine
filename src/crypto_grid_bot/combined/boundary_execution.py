@@ -28,6 +28,10 @@ class FundingFixing:
     timestamp_ms: int
     rate: Decimal
     mark: Decimal
+    # Recorded on the payment: an off-hour record's own time, booked at this boundary,
+    # and, for a stale mark (an earlier close), when that close was available.
+    scheduled_ms: int | None = None
+    stale_mark_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +151,17 @@ class BoundaryExecutor:
                         and isinstance(f.mark, Decimal)
                         and f.mark.is_finite()
                         and 0 < f.mark <= Decimal("1e36")
+                        and (
+                            f.scheduled_ms is None
+                            or (type(f.scheduled_ms) is int and 0 <= f.scheduled_ms < timestamp_ms)
+                        )
+                        and (
+                            f.stale_mark_ms is None
+                            or (
+                                type(f.stale_mark_ms) is int
+                                and 0 <= f.stale_mark_ms <= timestamp_ms
+                            )
+                        )
                         for f in fixings
                     )
                     and set(unpriced) <= set(held)
@@ -176,6 +191,8 @@ class BoundaryExecutor:
                                 timestamp_ms,
                                 fixing.symbol,
                                 funding_cashflow(position, fixing.rate, fixing.mark),
+                                fixing.scheduled_ms,
+                                fixing.stale_mark_ms,
                             )
                         )
                 funding_batch = f"{prefix}:funding"

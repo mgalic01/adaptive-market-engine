@@ -30,10 +30,17 @@ class FillEvent:
 
 @dataclass(frozen=True, slots=True)
 class FundingEvent:
+    """A booked settlement; ``timestamp_ms`` is the boundary that booked it."""
+
     event_id: str
     timestamp_ms: int
     symbol: str
     amount: Decimal
+    # A record settled off the hour is booked at a later boundary: its own time.
+    scheduled_ms: int | None = None
+    # A fixing without its own bar is valued at an earlier close: when that close was
+    # available. None means the mark is the booking boundary's own price.
+    stale_mark_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +164,15 @@ class CombinedAccount:
             _number(event.fee)
         else:
             _number(event.amount, signed=True)
+            scheduled, stale = event.scheduled_ms, event.stale_mark_ms
+            if scheduled is not None and (
+                type(scheduled) is not int or not 0 <= scheduled < event.timestamp_ms
+            ):
+                raise ValueError("a scheduled time must precede its booking")
+            if stale is not None and (
+                type(stale) is not int or not 0 <= stale <= event.timestamp_ms
+            ):
+                raise ValueError("a stale mark must not follow its booking")
         old = self._events.get(event.event_id)
         if old is not None:
             if old != event:

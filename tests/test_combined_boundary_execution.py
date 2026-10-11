@@ -130,6 +130,18 @@ def test_positive_rate_long_pays_and_short_receives_at_the_fixing_mark():
     assert result.final.account.funding == 0
 
 
+def test_a_late_or_stale_fixing_is_recorded_on_its_payment():
+    engine = held_short()
+    late = replace(fixing("BTCUSDT"), scheduled_ms=0, stale_mark_ms=1)
+    result = settle(engine, fixings=(late,))
+    assert result.failure is None
+    payment = result.funding[0]
+    assert (payment.timestamp_ms, payment.scheduled_ms, payment.stale_mark_ms) == (1, 0, 1)
+    assert payment.amount == D(1)
+    plain = settle(held_short(), fixings=(fixing("BTCUSDT"),)).funding[0]
+    assert (plain.scheduled_ms, plain.stale_mark_ms) == (None, None)
+
+
 def test_spot_holding_and_unheld_symbols_never_pay_futures_funding():
     engine = held(("BTCUSDT", "spot_trend", "spot", 1))
     before = engine.observe(0, QUOTES, RULES).account.free_cash
@@ -149,6 +161,10 @@ def test_spot_holding_and_unheld_symbols_never_pay_futures_funding():
         (fixing("BTCUSDT", mark=0),),
         (replace(fixing("BTCUSDT"), rate=D("NaN")),),
         (replace(fixing("BTCUSDT"), event_id=" "),),
+        (replace(fixing("BTCUSDT"), scheduled_ms=1),),  # not before its booking
+        (replace(fixing("BTCUSDT"), scheduled_ms=True),),
+        (replace(fixing("BTCUSDT"), stale_mark_ms=2),),  # a mark from after the booking
+        (replace(fixing("BTCUSDT"), stale_mark_ms="0"),),
     ],
 )
 def test_malformed_fixings_are_refused_before_any_mutation(fixings):

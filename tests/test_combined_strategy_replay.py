@@ -6,6 +6,7 @@ from decimal import Decimal as D
 import combined_market_fixtures as fx
 import pytest
 
+from crypto_grid_bot.backtest.funding import FundingRecord
 from crypto_grid_bot.combined.account import FundingEvent
 from crypto_grid_bot.combined.replay_records import strategy_report
 from crypto_grid_bot.combined.strategy_replay import TraceFill, replay_strategy
@@ -17,6 +18,14 @@ DAY = fx.DAY
 
 def fills(trace):
     return [event for event in trace.events if isinstance(event, TraceFill)]
+
+
+def payments(trace):
+    return [event for event in trace.events if isinstance(event, FundingEvent)]
+
+
+def window_hours(stamps):
+    return [(stamp - fx.START) // HOUR for stamp in stamps]
 
 
 def comparable(trace):
@@ -288,11 +297,6 @@ def test_a_longer_window_never_changes_what_a_shorter_one_observed():
         # A missing window hour is a data gap; a duplicated one is a defect.
         lambda m, r: (
             replace(m, spot=replace(m.spot, hourly=(*m.spot.hourly, m.spot.hourly[-1]))),
-            r,
-        ),
-        # A settlement missing inside the window is never assumed to be zero.
-        lambda m, r: (
-            replace(m, funding=tuple(f for f in m.funding if f.calc_time_ms != fx.START + DAY)),
             r,
         ),
         # A futures-enabled arm judges its whole universe: no silent spot-only symbol.
@@ -740,21 +744,16 @@ def test_a_coin_without_its_bar_buys_nothing_from_its_resting_basket():
     assert report.reconciliation_residual == 0
 
 
-def test_a_held_futures_position_waits_out_a_72_hour_gap(monkeypatch):
-    from crypto_grid_bot.combined import strategy_replay
-
-    def last_close_mark(bars, symbol, hour):
-        # The mark of a funding slot without its futures bar is a separate rule; any
-        # verified-looking mark isolates the carried close here.
-        row = bars.get(hour)
-        return row.open if row is not None else bars[max(h for h in bars if h < hour)].close
-
-    monkeypatch.setattr(strategy_replay, "_fixing_mark", last_close_mark)
+def test_a_held_futures_position_waits_out_a_72_hour_gap():
     market = masked(fx.market("BTCUSDT", fx.downtrend, 6, futures=True), "futures", range(24, 96))
     trace = replay_strategy(fx.run("futures_trend", 6), (market,))
     assert trace.failure is None and trace.boundaries[-1].role == "terminal"
     first, back = fx.START + 24 * HOUR, fx.START + 96 * HOUR
     assert trace.data_gaps == (("BTCUSDT", "futures", tuple(range(first, back, HOUR))),)
+    # Every slot inside the gap is still charged, at bar 23's close as a stale mark.
+    in_gap = [p for p in payments(trace) if first <= p.timestamp_ms < back]
+    assert [p.timestamp_ms for p in in_gap] == list(range(first, back, 8 * HOUR))
+    assert all(p.stale_mark_ms == first for p in in_gap)
     booked = fills(trace)
     assert booked[0].increase and booked[0].fill.timestamp_ms == fx.START + HOUR
     # No fill while the bars are missing; the carried close executes at the first
@@ -807,10 +806,183 @@ def test_a_holding_without_the_last_bar_is_marked_at_its_last_close_as_stale():
     assert report.reconciliation_residual == 0
 
 
-def test_a_funding_slot_without_its_futures_bar_is_a_retained_failure():
-    # No verified fixing mark exists, so none is assumed (hour 8 is a funding slot).
-    market = masked(fx.market("BTCUSDT", fx.downtrend, 2, futures=True), "futures", (8,))
+def futures_open(market, stamp):
+    return bar_at(market.futures.hourly, stamp).open
+
+
+def test_a_funding_slot_inside_a_futures_gap_is_charged_at_the_last_close_as_stale():
+    # Futures bars 6-17 are missing while the hour-1 short is held: slots 8 and 16 have
+    # no bar, so each is still charged, valued at bar 5's close, available at hour 6.
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 2, futures=True), "futures", range(6, 18))
     trace = replay_strategy(fx.run("futures_trend", 2), (market,))
-    assert trace.failure is not None
-    assert trace.failure.startswith("replay_failure:ValueError:")
-    assert "has no futures bar" in trace.failure
+    assert trace.failure is None and trace.boundaries[-1].role == "terminal"
+    entry = fills(trace)[0].fill
+    assert entry.timestamp_ms == fx.START + HOUR
+    stale_since = fx.START + 6 * HOUR
+    last_close = bar_at(market.futures.hourly, fx.START + 5 * HOUR).close
+    charged = payments(trace)
+    in_gap = [p for p in charged if p.stale_mark_ms is not None]
+    assert window_hours(p.timestamp_ms for p in in_gap) == [8, 16]
+    assert all(p.stale_mark_ms == stale_since for p in in_gap)
+    # A short receives a positive rate on its full quantity at that stale mark.
+    assert all(p.amount == entry.quantity * D(".0001") * last_close for p in in_gap)
+    assert all(p.scheduled_ms is None for p in charged)
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert report.reconciliation_residual == 0
+
+
+def test_a_funding_slot_without_a_futures_bar_on_an_unheld_coin_charges_nothing():
+    # Futures bars 0-8 are missing: slots 0 and 8 have no bar and no earlier window
+    # close, but nothing is held there, so nothing is due. Entries wait for a quote.
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 2, futures=True), "futures", range(9))
+    trace = replay_strategy(fx.run("futures_trend", 2), (market,))
+    assert trace.failure is None and trace.boundaries[-1].role == "terminal"
+    assert fills(trace)[0].fill.timestamp_ms == fx.START + 9 * HOUR
+    assert window_hours(p.timestamp_ms for p in payments(trace)) == [16, 24, 32, 40]
+
+
+def funding_records(*spans, rate=".001"):
+    """Records over ``(first, stop, interval)`` spans, in hours into the window."""
+    return tuple(
+        FundingRecord(fx.START + hour * HOUR, interval, D(rate))
+        for first, stop, interval in spans
+        for hour in range(first, stop, interval)
+    )
+
+
+def test_a_cadence_change_charges_every_record_and_refuses_increases_after_it():
+    # A spike in bar 40 stops the hour-1 short out at hour 41. With an eight-hour
+    # cadence throughout, the short is re-entered at once (control). With 8-hour
+    # records until hour 16 and 4-hour records from hour 20, every record is charged
+    # while the short is held, and no increase is admitted after the change.
+    base = fx.market("BTCUSDT", crash_after(fx.downtrend, 40, -0.15), 3, futures=True)
+    control = replay_strategy(
+        fx.run("futures_trend", 3), (replace(base, funding=funding_records((-8, 80, 8))),)
+    )
+    changed = replace(base, funding=funding_records((-8, 17, 8), (20, 80, 4)))
+    trace = replay_strategy(fx.run("futures_trend", 3), (changed,))
+    assert control.failure is None and trace.failure is None
+    stopped = fx.START + 41 * HOUR
+    assert [(e.fill.timestamp_ms, e.increase) for e in fills(control)][:3] == [
+        (fx.START + HOUR, True),
+        (stopped, False),
+        (stopped, True),
+    ]
+    assert [(e.fill.timestamp_ms, e.increase) for e in fills(trace)] == [
+        (fx.START + HOUR, True),
+        (stopped, False),
+    ]
+    entry = fills(trace)[0].fill
+    charged = payments(trace)
+    assert window_hours(p.timestamp_ms for p in charged) == [8, 16, 20, 24, 28, 32, 36, 40]
+    for payment in charged:
+        expected = entry.quantity * D(".001") * futures_open(changed, payment.timestamp_ms)
+        assert payment.amount == expected
+    # The latest published record now declares a 4-hour cadence: every re-entry the
+    # control admitted at hour 41 is refused, then and at each later decision.
+    after = [d for d in trace.decisions if d.assessment.decision_ms >= stopped]
+    assert after and after[0].assessment.decision_ms == stopped
+    assert all(d.result.admission.reason == "funding_unavailable" for d in after)
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert report.reconciliation_residual == 0
+
+
+def test_a_funding_gap_on_a_flat_book_refuses_entries_and_charges_nothing():
+    # The records at hours -8 and 0 are missing; nothing is held at either slot.
+    market = fx.market("BTCUSDT", fx.downtrend, 2, futures=True)
+    gone = {fx.START - 8 * HOUR, fx.START}
+    gapped = replace(market, funding=tuple(r for r in market.funding if r.calc_time_ms not in gone))
+    trace = replay_strategy(fx.run("futures_trend", 2), (gapped,))
+    assert trace.failure is None and trace.boundaries[-1].role == "terminal"
+    # The latest published record is older than eight hours until hour 8's is usable.
+    early = [d for d in trace.decisions if d.assessment.decision_ms <= fx.START + 8 * HOUR]
+    assert window_hours(d.assessment.decision_ms for d in early) == list(range(9))
+    assert all(d.result.admission.reason == "funding_unavailable" for d in early)
+    assert fills(trace)[0].fill.timestamp_ms == fx.START + 9 * HOUR
+    assert window_hours(p.timestamp_ms for p in payments(trace)) == [16, 24, 32, 40]
+
+
+def test_a_missing_settlement_without_a_futures_holding_does_not_stop_the_run():
+    # The combined arm holds the uptrend on spot; the hour-24 futures record is missing.
+    market = fx.market("BTCUSDT", fx.uptrend, 2, futures=True)
+    gapped = replace(
+        market, funding=tuple(r for r in market.funding if r.calc_time_ms != fx.START + DAY)
+    )
+    trace = replay_strategy(fx.run("combined", 2), (gapped,))
+    assert trace.failure is None and trace.boundaries[-1].role == "terminal"
+    assert fills(trace) and all(e.fill.venue == "spot" for e in fills(trace))
+    assert payments(trace) == []
+
+
+@pytest.mark.parametrize(
+    "keep",
+    [
+        lambda stamp: stamp != fx.START + DAY,  # one slot missing inside the window
+        lambda stamp: stamp < fx.START + DAY,  # records end before the window does
+    ],
+)
+def test_a_missing_settlement_on_a_held_futures_position_stops_the_run(keep):
+    market = fx.market("BTCUSDT", fx.downtrend, 2, futures=True)
+    gapped = replace(market, funding=tuple(r for r in market.funding if keep(r.calc_time_ms)))
+    trace = replay_strategy(fx.run("futures_trend", 2), (gapped,))
+    slot = fx.START + DAY
+    # Never assumed zero: the run stops at the slot, keeping everything before it.
+    assert trace.failure == f"funding_record_missing:BTCUSDT:{slot}"
+    assert window_hours(p.timestamp_ms for p in payments(trace)) == [8, 16]
+    assert (trace.boundaries[-1].timestamp_ms, trace.boundaries[-1].role) == (slot, "settled")
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert not report.complete and f"replay_failure:{trace.failure}" in report.issues
+    assert report.reconciliation_residual == 0
+
+
+@pytest.mark.parametrize(
+    ("offset_ms", "booked_hour", "off_hour"),
+    [
+        (30_000, 16, False),  # within a minute of its hour: settled on that hour
+        (15 * 60_000, 17, True),  # off the hour: booked at the next hourly boundary
+    ],
+)
+def test_an_off_hour_record_is_charged_at_the_next_boundary_with_both_times(
+    offset_ms, booked_hour, off_hour
+):
+    market = fx.market("BTCUSDT", fx.downtrend, 2, futures=True)
+    slot = fx.START + 16 * HOUR
+    moved = replace(
+        market,
+        funding=tuple(
+            replace(r, calc_time_ms=slot + offset_ms) if r.calc_time_ms == slot else r
+            for r in market.funding
+        ),
+    )
+    trace = replay_strategy(fx.run("futures_trend", 2), (moved,))
+    assert trace.failure is None
+    entry = fills(trace)[0].fill
+    charged = payments(trace)
+    assert window_hours(p.timestamp_ms for p in charged) == [8, booked_hour, 24, 32, 40]
+    late = charged[1]
+    # Charged on the holdings that survived to the booking boundary, at its mark.
+    assert late.amount == entry.quantity * D(".0001") * futures_open(moved, late.timestamp_ms)
+    assert late.scheduled_ms == (slot + offset_ms if off_hour else None)
+    assert all(p.scheduled_ms is None for p in charged if p is not late)
+
+
+def test_an_off_hour_record_due_at_the_terminal_boundary_stops_a_held_run():
+    # The terminal boundary books no funding, so a record settled in the last hour
+    # cannot be charged there; with the short still held, the run stops.
+    market = fx.market("BTCUSDT", fx.downtrend, 2, futures=True)
+    late = FundingRecord(fx.START + 2 * DAY - 45 * 60_000, 8, D(".0001"))
+    trace = replay_strategy(
+        fx.run("futures_trend", 2), (replace(market, funding=(*market.funding, late)),)
+    )
+    assert trace.failure == f"funding_record_unbooked:BTCUSDT:{late.calc_time_ms}"
+    assert trace.boundaries[-1].role != "terminal"
+
+
+def test_two_records_booked_at_one_boundary_are_refused_before_any_replay():
+    # An off-hour record at 23:15 books at hour 24, where the next record settles.
+    market = fx.market("BTCUSDT", fx.downtrend, 2, futures=True)
+    early = FundingRecord(fx.START + DAY - 45 * 60_000, 8, D(".0001"))
+    with pytest.raises(ValueError, match="one boundary"):
+        replay_strategy(
+            fx.run("futures_trend", 2), (replace(market, funding=(*market.funding, early)),)
+        )

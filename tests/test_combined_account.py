@@ -128,6 +128,25 @@ def test_funding_is_signed_actual_wallet_cash_and_duplicate_is_noop() -> None:
     assert account.apply(event) == result
 
 
+def test_funding_schedule_and_stale_mark_times_must_not_follow_the_booking() -> None:
+    account = CombinedAccount(D(100))
+    before = account.apply(fill("open", venue="futures", side=-1, qty="2"))
+    for bad in (
+        FundingEvent("late", 3, "BTCUSDT", D(1), scheduled_ms=3),
+        FundingEvent("late", 3, "BTCUSDT", D(1), scheduled_ms=-1),
+        FundingEvent("late", 3, "BTCUSDT", D(1), scheduled_ms=True),
+        FundingEvent("late", 3, "BTCUSDT", D(1), stale_mark_ms=4),
+        FundingEvent("late", 3, "BTCUSDT", D(1), stale_mark_ms=2.0),
+    ):
+        with pytest.raises(ValueError):
+            account.apply(bad)
+        assert account.snapshot() == before
+    result = account.apply(
+        FundingEvent("late", 3, "BTCUSDT", D(1), scheduled_ms=2, stale_mark_ms=3)
+    )
+    assert result.funding == 1
+
+
 def test_global_conflicting_event_id_and_invalid_events_do_not_mutate() -> None:
     account = CombinedAccount(D(100))
     event = fill("one")
