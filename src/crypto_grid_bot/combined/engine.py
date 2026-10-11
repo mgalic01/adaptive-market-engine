@@ -8,6 +8,7 @@ to satisfy a close obligation. Funding is booked before reductions, then increas
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from decimal import Context, Decimal, localcontext
+from fractions import Fraction
 from threading import RLock
 
 from crypto_grid_bot.combined.account import (
@@ -77,6 +78,9 @@ class PortfolioEngine:
         self._quotes: dict[str, Quote] = {}
         self._orders: dict[str, tuple[Intent, Decimal]] = {}
         self._known_orders: dict[str, tuple[Intent, Decimal]] = {}
+        self._admissions: dict[str, Admission] = {}
+        self._risk_multipliers: dict[str, Decimal] = {}
+        self._correlation_groups: tuple[tuple[str, str], ...] = ()
         self._finality: dict[str, tuple[str, ...]] = {}
         self._ticks: dict[str, Decimal] = {}
         self._stops: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
@@ -243,6 +247,51 @@ class PortfolioEngine:
             groups,
             max(Decimal(0), futures_margin(account.free_cash, account.positions).backing),
         )
+
+    def _post_fill_risk_breaches(self, state: EngineSnapshot) -> set[str]:
+        """Revalue held risk and unfilled potential once against current equity.
+
+        Groups are the last successfully admitted causal snapshot; missing symbols
+        remain unknown. Canceled remainders still count until finality or full fills.
+        Shared-cap breaches conservatively close all holdings, rather than choose
+        an unregistered priority among assets to restore the portfolio limit.
+        """
+        view = self._view(state.account, state.recovery.risk_fraction, self._correlation_groups)
+        gross: dict[str, Fraction] = {}
+        risk: dict[str, Fraction] = {}
+        for exposure in view.exposures:
+            gross[exposure.symbol] = Fraction(exposure.notional)
+            risk[exposure.symbol] = Fraction(exposure.stop_risk)
+        for key, (intent, remaining) in self._known_orders.items():
+            if not remaining or key in self._finality:
+                continue
+            admission = self._admissions[key]
+            scale = Fraction(remaining) / Fraction(admission.quantity)
+            gross[intent.symbol] = (
+                gross.get(intent.symbol, Fraction(0)) + Fraction(admission.notional) * scale
+            )
+            risk[intent.symbol] = (
+                risk.get(intent.symbol, Fraction(0)) + Fraction(admission.risk) * scale
+            )
+        capital = max(Fraction(0), Fraction(view.equity)) * Fraction(view.risk_fraction)
+        breaches = {
+            symbol
+            for symbol in gross
+            if gross[symbol] > capital / 5
+            or risk[symbol] > capital * Fraction(self._risk_multipliers[symbol]) / 200
+        }
+        mapping = dict(self._correlation_groups)
+        group_gross: dict[str, Fraction] = {}
+        for symbol, notional in gross.items():
+            group = mapping.get(symbol, "unknown")
+            group_gross[group] = group_gross.get(group, Fraction(0)) + notional
+        if (
+            sum(risk.values(), Fraction(0)) > capital * Fraction(3, 100)
+            or sum(gross.values(), Fraction(0)) > capital * Fraction(8, 5)
+            or any(value > capital * Fraction(4, 5) for value in group_gross.values())
+        ):
+            breaches.update(position.symbol for position in state.account.positions)
+        return breaches
 
     def _exit_reserve(self, account: AccountSnapshot) -> Decimal:
         reserve = Decimal(0)
@@ -462,6 +511,9 @@ class PortfolioEngine:
                 self._ticks[intent.symbol] = rule.tick
                 self._orders[intent.intent_id] = (intent, answer.quantity)
                 self._known_orders[intent.intent_id] = (intent, answer.quantity)
+                self._admissions[intent.intent_id] = answer
+                self._risk_multipliers[intent.symbol] = intent.risk_multiplier
+                self._correlation_groups = groups
             return answer
 
     def settle(
@@ -589,7 +641,9 @@ class PortfolioEngine:
                     or event.fee > event.quantity * event.price * intent.fee_rate
                 ):
                     self._require_close(event.symbol, "post_fill_risk_breach")
-                self.observe(timestamp_ms, quotes, rules)
+                state = self.observe(timestamp_ms, quotes, rules)
+                for symbol in self._post_fill_risk_breaches(state):
+                    self._require_close(symbol, "post_fill_risk_breach")
             result = self.observe(timestamp_ms, quotes, rules)
             self._batches[batch_id] = (identity, result)
             return result

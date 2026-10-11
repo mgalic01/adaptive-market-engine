@@ -842,3 +842,202 @@ def test_fully_settled_canceled_remainder_releases_global_block_after_protective
     engine.settle("close", 2, QUOTES, RULES, reductions=(close,))
     assert engine.finality_evidence == ()
     assert engine.submit(other, qualification, QUOTES, RULES).accepted
+
+
+def cap_scenario(cap, *, canceled=False):
+    symbols = (
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "XRPUSDT",
+        "ADAUSDT",
+        "DOGEUSDT",
+        "LINKUSDT",
+        "AVAXUSDT",
+        "DOTUSDT",
+    )
+    quantities, stop = {
+        "asset_risk": ([1, 10], "95"),
+        "old_asset_risk": ([10, 1], "95"),
+        "asset_gross": ([1, 20], "99"),
+        "risk": ([9] * 6 + [6], "95"),
+        "gross": ([18] * 8 + [16], "99.9"),
+        "correlation": ([16] * 5, "99.9"),
+    }[cap]
+    symbols = symbols[: len(quantities)]
+    quotes = {symbol: Quote(D(100), 0) for symbol in symbols}
+    rules = {symbol: RULE for symbol in symbols}
+    groups = tuple((symbol, symbol if cap == "gross" else "common") for symbol in symbols)
+    engine = PortfolioEngine(D(10000))
+    orders, fills = [], []
+    for symbol, quantity in zip(symbols, quantities, strict=True):
+        order = intent(
+            symbol,
+            symbol,
+            owner="futures_trend",
+            venue="futures",
+            stop=D(stop),
+            requested_quantity=D(quantity),
+            fee_rate=D(0),
+            slippage_rate=D(0),
+            funding_rate=D(0),
+            funding_age_ms=0,
+            funding_interval_ms=28_800_000,
+            correlation_group=dict(groups)[symbol],
+        )
+        answer = engine.submit(order, candidate(order), quotes, rules, groups)
+        assert answer.accepted and answer.quantity == quantity
+        orders.append(order)
+        fills.append(
+            FillEvent(symbol, 1, symbol, order.owner, order.venue, 1, D(quantity), D(100), D(0))
+        )
+    prefix = len(orders) - (2 if canceled else 1)
+    state = engine.settle(
+        "prefix",
+        1,
+        quotes,
+        rules,
+        increases=tuple(
+            (o.intent_id, f) for o, f in zip(orders[:prefix], fills[:prefix], strict=True)
+        ),
+    )
+    assert state.close_required == ()
+    if canceled:
+        engine.cancel(orders[-2].intent_id)
+    return engine, orders, fills, quotes, rules, groups
+
+
+@pytest.mark.parametrize("cap", ["asset_risk", "asset_gross", "risk", "gross", "correlation"])
+def test_expected_price_fill_rechecks_current_equity_caps(cap):
+    engine, orders, fills, quotes, rules, _ = cap_scenario(cap)
+    loss = FundingEvent("funding-loss", 2, orders[0].symbol, D(-500))
+    fill = replace(fills[-1], timestamp_ms=2)
+    state = engine.settle(
+        "after-decay", 2, quotes, rules, funding=(loss,), increases=((orders[-1].intent_id, fill),)
+    )
+    assert state.account.equity == 9500
+    assert orders[-1].symbol in state.close_required
+    assert "post_fill_risk_breach" in state.reasons
+    assert engine.reservations == ()
+    if cap in {"risk", "gross", "correlation"}:
+        assert set(state.close_required) == {p.symbol for p in state.account.positions}
+    closes = tuple(
+        replace(f, event_id=f"close-{f.event_id}", timestamp_ms=3, side=-1) for f in fills
+    )
+    assert engine.settle("protect", 3, quotes, rules, reductions=closes).account.positions == ()
+
+
+def test_post_fill_caps_include_canceled_unfinalized_potential_fills():
+    engine, orders, fills, quotes, rules, _ = cap_scenario("risk", canceled=True)
+    state = engine.settle(
+        "after-decay",
+        2,
+        quotes,
+        rules,
+        funding=(FundingEvent("loss", 2, orders[0].symbol, D(-500)),),
+        increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
+    )
+    assert "post_fill_risk_breach" in state.reasons
+    assert engine.finality_evidence == ()
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_exact_cap_fee_free_fill_does_not_double_count_remaining_reservation(partial):
+    engine = PortfolioEngine(D(10000))
+    order = intent(requested_quantity=D(20), fee_rate=D(0), slippage_rate=D(0))
+    answer = engine.submit(order, candidate(order), QUOTES, RULES)
+    assert answer.quantity == 20
+    fill = FillEvent(
+        "fill",
+        1,
+        order.symbol,
+        order.owner,
+        order.venue,
+        1,
+        D(1) if partial else D(20),
+        D(100),
+        D(0),
+    )
+    state = engine.settle("fill", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    assert "post_fill_risk_breach" not in state.reasons and state.close_required == ()
+    if partial:
+        assert engine.reservations[0].quantity == 19
+    else:
+        assert engine.reservations == ()
+
+
+def test_post_fill_recheck_marks_preexisting_overlimit_asset_for_close():
+    engine, orders, fills, quotes, rules, _ = cap_scenario("old_asset_risk")
+    state = engine.settle(
+        "after-decay",
+        2,
+        quotes,
+        rules,
+        funding=(FundingEvent("loss", 2, orders[0].symbol, D(-500)),),
+        increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
+    )
+    assert state.close_required == (orders[0].symbol,)
+    assert "post_fill_risk_breach" in state.reasons
+
+
+def test_duplicate_submit_cannot_replace_retained_authoritative_groups():
+    engine, orders, fills, quotes, rules, groups = cap_scenario("gross")
+    conflicting = tuple((symbol, "common") for symbol, _ in groups)
+    answer = engine.submit(
+        orders[0], replace(candidate(orders[0]), decision_ms=1), quotes, rules, conflicting
+    )
+    assert answer.reason == "intent_already_processed"
+    state = engine.settle(
+        "last",
+        2,
+        quotes,
+        rules,
+        increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
+    )
+    assert state.close_required == () and "post_fill_risk_breach" not in state.reasons
+
+
+def test_post_fill_recheck_uses_extended_entry_half_risk_multiplier():
+    engine = PortfolioEngine(D(10000))
+    order = intent(
+        owner="futures_trend",
+        venue="futures",
+        stop=D(95),
+        requested_quantity=D(5),
+        fee_rate=D(0),
+        slippage_rate=D(0),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+        risk_multiplier=D(".5"),
+    )
+    qualification = replace(candidate(order), risk_multiplier=D(".5"))
+    admission = engine.submit(order, qualification, QUOTES, RULES)
+    assert admission.quantity == 5
+    first = FillEvent("partial", 1, order.symbol, order.owner, order.venue, 1, D(1), D(100), D(0))
+    state = engine.settle("partial", 1, QUOTES, RULES, increases=((order.intent_id, first),))
+    assert state.close_required == ()
+    rest = replace(first, event_id="rest", timestamp_ms=2, quantity=D(4))
+    state = engine.settle(
+        "rest",
+        2,
+        QUOTES,
+        RULES,
+        funding=(FundingEvent("loss", 2, order.symbol, D(-500)),),
+        increases=((order.intent_id, rest),),
+    )
+    assert state.close_required == (order.symbol,)
+
+
+def test_finality_excludes_canceled_remainder_from_post_fill_risk_totals():
+    engine, orders, fills, quotes, rules, _ = cap_scenario("risk", canceled=True)
+    engine.acknowledge_finality(orders[-2].intent_id, source_refs=("synthetic:final",))
+    state = engine.settle(
+        "after-decay",
+        2,
+        quotes,
+        rules,
+        funding=(FundingEvent("loss", 2, orders[0].symbol, D(-500)),),
+        increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
+    )
+    assert state.close_required == () and "post_fill_risk_breach" not in state.reasons
