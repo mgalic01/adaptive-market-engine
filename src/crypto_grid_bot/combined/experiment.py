@@ -184,15 +184,21 @@ def _registration_errors(registration: Registration) -> list[str]:
         or {multiple for multiple, _ in reg.cost_profiles} != {1, 2}
     ):
         errors.append("registration: base and doubled cost profiles required")
+    windows = reg.windows if isinstance(reg.windows, (tuple, list)) else ()
+    capitals = reg.capitals if isinstance(reg.capitals, (tuple, list)) else ()
     if (
-        not reg.windows
-        or any(not isinstance(w.id, str) or not w.id.strip() for w in reg.windows)
-        or len({w.id for w in reg.windows}) != len(reg.windows)
+        not windows
+        or any(
+            not isinstance(w, Window) or not isinstance(w.id, str) or not w.id.strip()
+            for w in windows
+        )
+        or len({w.id for w in windows}) != len(windows)
     ):
         errors.append("registration: nonempty unique windows required")
-    for window in reg.windows:
+    for window in windows:
         if (
-            not isinstance(window.id, str)
+            not isinstance(window, Window)
+            or not isinstance(window.id, str)
             or not window.id.strip()
             or type(window.start_ms) is not int
             or type(window.end_ms) is not int
@@ -210,9 +216,15 @@ def _registration_errors(registration: Registration) -> list[str]:
             errors.append(
                 "registration: daily metrics require UTC day endpoints and at least two days"
             )
-    if len(reg.capitals) != 2 or {c.id for c in reg.capitals} != {"research", "owner_small"}:
+    if (
+        len(capitals) != 2
+        or any(not isinstance(c, Capital) or not isinstance(c.id, str) for c in capitals)
+        or {c.id for c in capitals} != {"research", "owner_small"}
+    ):
         errors.append("registration: research and EUR100 capital scenarios required")
-    for capital in reg.capitals:
+    for capital in capitals:
+        if not isinstance(capital, Capital):
+            continue
         if not _finite(capital.initial_equity, True) or not _finite(capital.amount, True):
             errors.append("registration: invalid capital amount")
             continue
@@ -328,8 +340,9 @@ def _report_valid(row: RunOutcome) -> bool:
         return False
     # Preserve the frozen explained trade/equity tolerance. This is the only
     # structural issue acceptance may forgive; all required metrics remain mandatory.
-    tolerated = row.accounting_explained and abs(Fraction(row.accounting_residual)) <= Fraction(
-        1, 10**18
+    tolerated = (
+        row.accounting_explained is True
+        and abs(Fraction(row.accounting_residual)) <= Fraction(1, 10**18)
     )
     return all(_finite(metric.value) for metric in report.metrics) and not (
         set(report.issues) - ({"contribution_equity_residual"} if tolerated else set())
@@ -350,7 +363,7 @@ def _safety_failures(observed: RunOutcome) -> list[str]:
         if _finite(observed.accounting_residual):
             residual = abs(Fraction(observed.accounting_residual))
             if residual > Fraction(1, 10**18) or (
-                residual and observed.accounting_explained is False
+                residual and observed.accounting_explained is not True
             ):
                 failures.append(f"{key}: observed invalid accounting")
     if (
@@ -418,10 +431,14 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
         )
     ):
         return []
-    windows = [w for w in reg.windows if w.id == identity.window]
-    capitals = [c for c in reg.capitals if c.id == identity.capital]
-    if not isinstance(reg.cost_profiles, (tuple, list)):
+    if any(
+        not isinstance(records, (tuple, list))
+        for records in (reg.windows, reg.capitals, reg.cost_profiles)
+    ):
         return []
+    # Unrelated malformed records cannot erase a uniquely attributable failure.
+    windows = [w for w in reg.windows if isinstance(w, Window) and w.id == identity.window]
+    capitals = [c for c in reg.capitals if isinstance(c, Capital) and c.id == identity.capital]
     # Keep malformed candidates with an identifiable matching multiple: they must
     # not disappear and turn an ambiguous declaration into a unique valid profile.
     profiles = [
@@ -443,6 +460,7 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
         != (window.start_ms, window.end_ms, window.data_pin)
         or not _cost_profile_valid(profile)
         or identity.cost_profile_pin != profile[1]
+        or not isinstance(capital.id, str)
         or capital.id not in {"research", "owner_small"}
         or not _finite(capital.initial_equity, True)
         or (capital.id == "owner_small" and not _pin(capital.fx_pin))
@@ -457,8 +475,8 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
 
     Historical baselines need comparable valid evidence, not V3.1's drawdown/profit
     limits. Liquidation/accounting defects in V3.1 components are engineering failures.
-    Only explained trade/equity residuals get the1e-18 tolerance; wallets/quantities
-    require an explicit exactness verification (None is unknown, False is a mismatch).
+    Only an exact True explanation grants the 1e-18 trade/equity residual tolerance.
+    Wallets/quantities require explicit exactness verification (None unknown, False mismatch).
     Terminal profit tests require complete matching reports; already observed safety
     failures remain failures without them. Zero-DD ratios remain indeterminate.
     """
@@ -547,7 +565,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             row.liquidations > 0
             or not row.wallet_quantity_exact
             or residual > Fraction(1, 10**18)
-            or (bool(residual) and not row.accounting_explained)
+            or (bool(residual) and row.accounting_explained is not True)
         )
         if invalid:
             message = f"{key}: liquidation or invalid accounting"

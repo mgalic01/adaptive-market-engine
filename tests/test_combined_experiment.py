@@ -965,3 +965,41 @@ def test_legacy_research_identity_needs_no_fx_conversion_pin():
     assert all(row.identity.fx_pin is None for row in rows if row.identity.capital == "research")
     assert all(row.identity.fx_pin == PIN for row in rows if row.identity.capital == "owner_small")
     assert evaluate(reg, rows).status == "pass"
+
+@pytest.mark.parametrize("field", ["windows", "capitals"])
+@pytest.mark.parametrize("bad", [None, {}, [], 1, "record"])
+def test_malformed_registration_record_is_retained_as_incomplete(field, bad):
+    reg = registration()
+    rows = outcomes(reg)
+    malformed = replace(reg, **{field: (bad,)})
+    result = evaluate(malformed, rows)
+    assert result.status == "incomplete" and not result.failures
+    assert result.outcomes == rows
+
+
+@pytest.mark.parametrize("field", ["windows", "capitals"])
+@pytest.mark.parametrize("bad", [None, 1, "records"])
+def test_malformed_registration_record_collection_is_incomplete(field, bad):
+    reg = registration()
+    result = evaluate(replace(reg, **{field: bad}), outcomes(reg))
+    assert result.status == "incomplete" and not result.failures
+
+
+@pytest.mark.parametrize("field", ["windows", "capitals"])
+def test_unrelated_malformed_registration_record_does_not_erase_known_failure(field):
+    reg = registration()
+    rows = change(outcomes(reg), max_drawdown=D(".5"))
+    malformed = replace(reg, **{field: (*getattr(reg, field), None)})
+    result = evaluate(malformed, rows)
+    assert result.status == "fail" and result.incomplete_reasons
+    assert any("maximum drawdown" in reason for reason in result.failures)
+
+
+@pytest.mark.parametrize("flag", [None, 1, "yes", [], {}])
+@pytest.mark.parametrize("pending", [False, True])
+def test_only_exact_true_explanation_can_tolerate_observed_residual(flag, pending):
+    reg = registration()
+    rows = change(outcomes(reg), accounting_residual=D("1e-19"), accounting_explained=flag)
+    result = evaluate(replace(reg, pending=("review",)) if pending else reg, rows)
+    assert result.status == "fail" and result.incomplete_reasons
+    assert len(result.failures) == 1 and "invalid accounting" in result.failures[0]
