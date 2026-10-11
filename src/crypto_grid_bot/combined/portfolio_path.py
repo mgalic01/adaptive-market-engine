@@ -2,8 +2,9 @@
 
 This coordinator supplies modeled protective executions and the fills of already
 admitted resting spot-grid limit buys, not new entries or historical execution
-authorization. All assets must have the same complete input interval. Phase
-timestamps denote bar availability, never observed tick times.
+authorization. All priced assets must have the same complete input interval; a
+holding without a bar is declared unpriced. Phase timestamps denote bar
+availability, never observed tick times.
 """
 
 from collections.abc import Mapping
@@ -94,6 +95,7 @@ def replay_held_portfolio(
     source_refs: tuple[str, ...],
     grid_spacing: tuple[tuple[str, Decimal], ...] = (),
     resting: tuple[RestingBuy, ...] = (),
+    unpriced: tuple[str, ...] = (),
 ) -> PortfolioInterval:
     """Settle stops and portfolio closes before proceeding to later phase marks.
 
@@ -110,12 +112,25 @@ def replay_held_portfolio(
     with no favorable gap credit, at the first vertex at or below it, before that
     vertex's stop; its lot can be stopped in the same bar but earns no target.
     Active pending children are not obligations; canceled unreconciled ones are.
+    Holdings named in ``unpriced`` have no bar this interval: they get no path and
+    no fill of any kind, keep their last mark, and their obligations are carried to
+    a later priced boundary instead of failing (missing bars preserve close
+    obligations, never fills). They supply no bar and need no filters here.
     """
     terms = {row[0].symbol: row for row in engine.held_execution_terms()}
     if not _resting_valid(resting, terms):
         raise ValueError("valid unique spot-grid resting buys required")
     resting_symbols = {row.symbol for row in resting}
-    symbols = set(terms) | resting_symbols
+    if (
+        not isinstance(unpriced, tuple)
+        or any(
+            not isinstance(symbol, str) or symbol not in terms or symbol in resting_symbols
+            for symbol in unpriced
+        )
+        or len(set(unpriced)) != len(unpriced)
+    ):
+        raise ValueError("unpriced symbols must be distinct holdings without resting buys")
+    symbols = (set(terms) | resting_symbols) - set(unpriced)
     if (
         not isinstance(bars, tuple)
         or not bars
@@ -179,7 +194,7 @@ def replay_held_portfolio(
                 source_refs=source_refs,
             ),
         )
-        for symbol in sorted(grid_symbols)
+        for symbol in sorted(grid_symbols & symbols)
         for lot in sorted(terms[symbol][0].lots, key=lambda item: (item.entry_price, item.lot_id))
     )
     now = paths[0][1].interval_end_ms
@@ -218,8 +233,8 @@ def replay_held_portfolio(
     ) -> bool:
         nonlocal sequence
         current = {row[0].symbol: row for row in engine.held_execution_terms()}
-        if symbol not in current:
-            return False
+        if symbol not in current or symbol not in market:
+            return False  # an unpriced holding cannot execute
         position, _, fee, slip = current[symbol]
         quantity = abs(position.quantity)
         if lot_id is not None:
@@ -371,7 +386,7 @@ def replay_held_portfolio(
         final = observations[-1].snapshot
         dust = engine.close_dust(rules)
         active = {a.intent_id for a in engine.reservations}
-        if set(final.close_required) - set(dust) or any(
+        if set(final.close_required) - set(dust) - set(unpriced) or any(
             key not in active for key in final.unresolved_execution
         ):
             failure = "unresolved_execution_obligations"

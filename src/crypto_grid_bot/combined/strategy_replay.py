@@ -11,6 +11,14 @@ runs (its trend components are unaffected) but the trace names the coin and the
 report is incomplete. A sparse gap inside a present input only makes that hour's flow
 unavailable.
 
+A venue's hourly input may miss window hours: these data gaps are listed in the trace
+and never stop the run. A coin without its bar gets no fill of any kind in that bar
+and no quote at that boundary: its entry decision is refused for want of a quote and
+is never routed to the other venue, and a holding keeps its last mark, which the
+engine treats as stale and requires closed. An obligation on a coin without a price
+is carried to the opening quote of its next bar. A holding without a bar in the
+window's last hour is valued at its last available close, as a stale terminal mark.
+
 Each hourly boundary T is processed in the owner-approved order:
 
 1. the previous bar's modeled intrabar path, stamped at its availability T: old
@@ -72,7 +80,7 @@ _OPENING_REFUSALS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class VenueMarket:
-    """Complete hourly bars of one venue, with its pinned filters and costs."""
+    """Hourly bars of one venue, with its pinned filters and costs."""
 
     hourly: tuple[Kline, ...]
     rules: VenueRules
@@ -156,6 +164,11 @@ class StrategyTrace:
     # Symbols, sorted, whose minute input has no bar at all in the flow gate's read range
     # although the arm enables the spot grid; the report is incomplete for each.
     missing_grid_inputs: tuple[str, ...]
+    # Per symbol and venue, the window hours (bar opens) that have no bar: data gaps.
+    data_gaps: tuple[tuple[str, str, tuple[int, ...]], ...]
+    # Holdings without a bar in the window's last hour: each was valued at its last
+    # available close, recorded here with the time that close became available.
+    stale_terminal_marks: tuple[tuple[str, int], ...]
     failure: str | None
 
 
@@ -180,7 +193,8 @@ def _bars(rows: tuple[Kline, ...], start: int, end: int, what: str) -> dict[int,
     """Index bars; only the window's own hours must be structurally sound.
 
     History before the window is checked causally by the assessment, and bars after
-    the window are never read, so defects there cannot change this run.
+    the window are never read, so defects there cannot change this run. A missing
+    window hour is a data gap, not a defect.
     """
     if not isinstance(rows, tuple) or any(not isinstance(row, Kline) for row in rows):
         raise ValueError(f"{what}: immutable klines required")
@@ -188,10 +202,23 @@ def _bars(rows: tuple[Kline, ...], start: int, end: int, what: str) -> dict[int,
     stamps = [row.open_ms for row in rows if start <= row.open_ms < end]
     if any(stamp % HOUR for stamp in stamps) or stamps != sorted(set(stamps)):
         raise ValueError(f"{what}: unique sorted hourly bars required")
-    indexed = {row.open_ms: row for row in rows if start <= row.open_ms < end}
-    if any(hour not in indexed for hour in range(start, end, HOUR)):
-        raise ValueError(f"{what}: every window hour is required")
-    return indexed
+    return {row.open_ms: row for row in rows if start <= row.open_ms < end}
+
+
+def _missing_hours(indexed: dict[int, Kline], start: int, end: int) -> tuple[int, ...]:
+    return tuple(hour for hour in range(start, end, HOUR) if hour not in indexed)
+
+
+def _fixing_mark(bars: dict[int, Kline], symbol: str, hour: int) -> Decimal:
+    """The futures opening price at a funding slot.
+
+    A slot without its futures bar has no verified mark, so the run fails rather
+    than assume one.
+    """
+    row = bars.get(hour)
+    if row is None:
+        raise ValueError(f"{symbol}: funding fixing at {hour} has no futures bar")
+    return row.open
 
 
 def _funding(
@@ -322,6 +349,12 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         for s, m in by_symbol.items()
         if m.futures is not None
     }
+    gaps = tuple(
+        (symbol, venue, hours)
+        for symbol in symbols
+        for venue, index in (("futures", futures.get(symbol)), ("spot", spot[symbol]))
+        if index is not None and (hours := _missing_hours(index, run.start_ms, run.end_ms))
+    )
     needed = {s: _funding(by_symbol[s].funding, run.start_ms, run.end_ms, s) for s in futures}
     funding_at = {s: {r.scheduled_ms: r for r in needed[s]} for s in futures}
     published = {s: sorted(needed[s], key=lambda r: r.usable_ms) for s in futures}
@@ -349,10 +382,12 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     groups_by_day: dict[int, tuple[tuple[str, str], ...]] = {}
     pending_ids: list[str] = []
     withheld: dict[str, list[int]] = {}
+    stale_marks: list[tuple[str, int]] = []
     dust: tuple[str, ...] = ()
 
-    def venue_bar(symbol: str, venue: str, hour: int) -> Kline:
-        return (spot if venue == "spot" else futures)[symbol][hour]
+    def venue_bar(symbol: str, venue: str, hour: int) -> Kline | None:
+        """The venue's bar opening at ``hour``; None is a data gap."""
+        return (spot if venue == "spot" else futures)[symbol].get(hour)
 
     def venue_rules(symbol: str, venue: str) -> VenueRules:
         market = by_symbol[symbol]
@@ -364,12 +399,20 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     def held_market(
         hour: int, price: str = "open", stamp: int | None = None
     ) -> tuple[dict[str, Quote], dict[str, VenueRules]]:
+        """Held venues' quotes and filters; a holding without its bar gets neither."""
         quotes, rules = {}, {}
         for position, *_ in engine.held_execution_terms():
             row = venue_bar(position.symbol, position.venue, hour)
+            if row is None:
+                continue
             quotes[position.symbol] = Quote(getattr(row, price), hour if stamp is None else stamp)
             rules[position.symbol] = venue_rules(position.symbol, position.venue)
         return quotes, rules
+
+    def unpriced(quotes: dict[str, Quote]) -> tuple[str, ...]:
+        """Holdings without a quote at this boundary: their obligations are carried."""
+        held = (p.symbol for p, *_ in engine.held_execution_terms())
+        return tuple(sorted(symbol for symbol in held if symbol not in quotes))
 
     def record(rows: tuple[SettlementObservation, ...], hour: int, kind: str) -> None:
         for row in rows:
@@ -433,26 +476,30 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         for symbol, basket in sorted(books.items()):
             if basket.pending and not gates[symbol].allowed:
                 withheld.setdefault(symbol, []).append(hour)
+        # A coin without its bar gets no fill of any kind in this bar: its resting buys
+        # sit out and a holding keeps its last mark (the engine then requires its close).
         resting = tuple(
             row
             for symbol, book in books.items()
-            if gates[symbol].allowed
+            if gates[symbol].allowed and venue_bar(symbol, "spot", hour) is not None
             for row in book.pending.values()
         )
         need = set(held) | {row.symbol for row in resting}
-        if not need:
-            return None
         venues = {s: held[s].venue if s in held else "spot" for s in need}
+        bars = {s: row for s in need if (row := venue_bar(s, venues[s], hour)) is not None}
+        if not bars:
+            return None
         result = replay_held_portfolio(
             engine,
-            tuple((s, venue_bar(s, venues[s], hour)) for s in sorted(need)),
-            {s: venue_rules(s, venues[s]) for s in need},
+            tuple((s, bars[s]) for s in sorted(bars)),
+            {s: venue_rules(s, venues[s]) for s in bars},
             run.scenario,
             source_refs=refs,
             grid_spacing=tuple(
                 (s, books[s].spacing) for s in sorted(held) if held[s].owner == "spot_grid"
             ),
             resting=resting,
+            unpriced=tuple(sorted(need - set(bars))),
         )
         stamp = hour + HOUR
         record_path(result.observations, stamp)
@@ -522,9 +569,12 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
                 or symbol not in protection
             ):
                 continue
+            completed = venue_bar(symbol, position.venue, hour - HOUR)
+            if completed is None:
+                continue  # no completed bar: nothing tightens the stop
             state, _ = manage_completed_bar(
                 protection[symbol],
-                venue_bar(symbol, position.venue, hour - HOUR),
+                completed,
                 atr=assessment.atr,
                 atr_fresh=assessment.four_hour_closed_ms == hour // FOUR_HOURS * FOUR_HOURS,
                 slippage=slippage,
@@ -554,6 +604,8 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         engine.set_correlation_groups(groups_by_day[day])
         quotes, rules = held_market(hour)
         for position, stop, _fee, _slip in engine.held_execution_terms():
+            if position.symbol not in quotes:
+                continue  # no opening quote to compare with its stop
             side = 1 if position.quantity > 0 else -1
             price = quotes[position.symbol].price
             if (price <= stop) if side == 1 else (price >= stop):
@@ -565,7 +617,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
                 s,
                 hour,
                 funding_at[s][hour].rate,
-                futures[s][hour].open,
+                _fixing_mark(futures[s], s, hour),
             )
             for s in due
         )
@@ -577,6 +629,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             due_funding=due,
             fixings=fixings,
             source_refs=refs,
+            unpriced=unpriced(quotes),
         )
         failure = settled(boundary, hour)
         if failure is not None:
@@ -600,7 +653,8 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         quotes, rules = held_market(hour)
         latest = observations[-1].snapshot
         sellable = set(latest.close_required) | {s for s, _ in latest.reduce_to}
-        if sellable - set(engine.close_dust(rules)):
+        waiting = unpriced(quotes)
+        if sellable - set(engine.close_dust(rules)) - set(waiting):
             return settled(
                 executor.settle(
                     f"frame:{hour}:post-entry",
@@ -610,6 +664,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
                     due_funding=(),
                     fixings=(),
                     source_refs=refs,
+                    unpriced=waiting,
                 ),
                 hour,
             )
@@ -636,20 +691,24 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         if qualify(assessment, routing).side == 0:
             return None  # No directional or range signal: nothing is detected.
         quotes, rules = held_market(hour)
+        # A venue without its bar has no quote: the coordinator refuses that venue's
+        # entry, and a missing spot quote never makes the futures fallback available.
+        spot_bar = venue_bar(symbol, "spot", hour)
         spot_inputs = VenueInputs(
-            market.spot.rules, market.spot.costs, quote=Quote(spot[symbol][hour].open, hour)
+            market.spot.rules,
+            market.spot.costs,
+            quote=None if spot_bar is None else Quote(spot_bar.open, hour),
         )
-        futures_inputs = (
-            None
-            if market.futures is None
-            else VenueInputs(
+        futures_inputs = None
+        if market.futures is not None:
+            futures_bar = venue_bar(symbol, "futures", hour)
+            futures_inputs = VenueInputs(
                 market.futures.rules,
                 market.futures.costs,
                 funding=estimate(symbol, hour),
                 funding_admission=settings.funding_admission,
-                quote=Quote(futures[symbol][hour].open, hour),
+                quote=None if futures_bar is None else Quote(futures_bar.open, hour),
             )
-        )
         opportunity = f"{symbol}:{hour}"
         with engine.capture_marks() as marks:
             result = coordinator.decide(
@@ -759,6 +818,15 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             failure = interval(run.end_ms - HOUR)
         if failure is None:
             quotes, rules = held_market(run.end_ms - HOUR, "close", run.end_ms)
+            for position, *_ in engine.held_execution_terms():
+                if position.symbol in quotes:
+                    continue
+                # Its last available close, stamped when it became available; with no
+                # filters supplied the engine marks the holding stale.
+                index = (spot if position.venue == "spot" else futures)[position.symbol]
+                last = index[max(index)]
+                quotes[position.symbol] = Quote(last.close, last.open_ms + HOUR)
+                stale_marks.append((position.symbol, last.open_ms + HOUR))
             batch = f"terminal:{run.end_ms}"
             engine.settle(batch, run.end_ms, quotes, rules)
             record(engine.settlement_observations(batch), run.end_ms, "terminal")
@@ -779,5 +847,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         dust,
         tuple((symbol, tuple(hours)) for symbol, hours in sorted(withheld.items())),
         missing_inputs,
+        gaps,
+        tuple(stale_marks),
         failure,
     )

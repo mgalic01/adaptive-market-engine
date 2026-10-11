@@ -54,6 +54,7 @@ def reverse_after(path, start_hour: int):
 def test_each_component_produces_a_complete_exactly_reconciled_report(arm, path, options):
     trace = replay_strategy(fx.run(arm, 3), (fx.market("BTCUSDT", path, 3, **options),))
     assert trace.failure is None
+    assert trace.data_gaps == () and trace.stale_terminal_marks == ()
     report = strategy_report(trace, adapter_pin=PIN)
     assert report.complete, report.issues
     assert report.reconciliation_residual == 0
@@ -284,7 +285,11 @@ def test_a_longer_window_never_changes_what_a_shorter_one_observed():
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda m, r: (replace(m, spot=replace(m.spot, hourly=m.spot.hourly[:-30])), r),
+        # A missing window hour is a data gap; a duplicated one is a defect.
+        lambda m, r: (
+            replace(m, spot=replace(m.spot, hourly=(*m.spot.hourly, m.spot.hourly[-1]))),
+            r,
+        ),
         # A settlement missing inside the window is never assumed to be zero.
         lambda m, r: (
             replace(m, funding=tuple(f for f in m.funding if f.calc_time_ms != fx.START + DAY)),
@@ -672,3 +677,140 @@ def test_a_single_minute_inside_the_read_range_is_a_present_input(minute_offset_
     trace = replay_strategy(fx.run("spot_grid", 3), (only,))
     assert trace.failure is None
     assert trace.missing_grid_inputs == (("BTCUSDT",) if missing else ())
+
+
+def masked(market, venue, hours):
+    """``market`` without the ``venue`` bars opening ``hours`` hours into the window."""
+    gone = {fx.START + hour * HOUR for hour in hours}
+    source = getattr(market, venue)
+    kept = tuple(bar for bar in source.hourly if bar.open_ms not in gone)
+    return replace(market, **{venue: replace(source, hourly=kept)})
+
+
+def bar_at(rows, stamp):
+    return next(bar for bar in rows if bar.open_ms == stamp)
+
+
+def test_a_held_coin_without_its_bar_closes_at_the_next_opening_quote():
+    # Probe: spot bar 30 is missing while the hour-0 spot trend is held.
+    market = masked(fx.market("BTCUSDT", fx.uptrend, 2), "spot", (30,))
+    trace = replay_strategy(fx.run("spot_trend", 2), (market,))
+    assert trace.failure is None and trace.boundaries[-1].role == "terminal"
+    gap = fx.START + 30 * HOUR
+    assert trace.data_gaps == (("BTCUSDT", "spot", (gap,)),)
+    # At the masked boundary the holding keeps its last mark and its close is carried.
+    carried = [o for o in trace.observations if o.timestamp_ms == gap][-1].snapshot
+    assert carried.close_required == ("BTCUSDT",)
+    assert carried.account.positions[0].mark == bar_at(market.spot.hourly, gap - HOUR).close
+    # Nothing fills at that boundary or inside the masked bar; the close executes at
+    # the next bar's opening quote, with the held slippage.
+    booked = fills(trace)
+    assert not [e for e in booked if e.fill.timestamp_ms == gap]
+    assert [e.fill.event_id.split(":")[0] for e in booked if e.fill.timestamp_ms == gap + HOUR] == [
+        "boundary"
+    ]
+    exit_fill = next(e for e in booked if not e.increase)
+    assert exit_fill.fill.timestamp_ms == gap + HOUR
+    assert "stale_position_or_missing_filters" in exit_fill.exit_reason
+    assert exit_fill.fill.price <= bar_at(market.spot.hourly, gap + HOUR).open
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert report.reconciliation_residual == 0
+
+
+def test_a_coin_without_its_bar_buys_nothing_from_its_resting_basket():
+    btc = fx.market("BTCUSDT", fx.ranging, 3, flow=True)
+    eth = fx.market("ETHUSDT", fx.ranging, 3, flow=True)
+    filled = fx.START + 26 * HOUR
+    control = replay_strategy(fx.run("spot_grid", 3), (btc, eth))
+    assert [(f.symbol, f.timestamp_ms) for f in grid_buys(control)][:2] == [
+        ("BTCUSDT", filled),
+        ("ETHUSDT", filled),
+    ]
+    # Probe: BTCUSDT's bar 25, in which both first buys filled, is missing.
+    trace = replay_strategy(fx.run("spot_grid", 3), (masked(btc, "spot", (25,)), eth))
+    assert trace.failure is None
+    assert trace.data_gaps == (("BTCUSDT", "spot", (fx.START + 25 * HOUR,)),)
+    admitted = [d for d in trace.decisions if d.assessment.decision_ms == fx.START]
+    assert len(admitted) == 2 and all(d.result.admission.accepted for d in admitted)
+    # The interval still runs for ETHUSDT; BTCUSDT's resting basket sits it out.
+    assert [f.symbol for f in grid_buys(trace) if f.timestamp_ms == filled] == ["ETHUSDT"]
+    # A data gap is not a flow-gate withholding.
+    assert fx.START + 25 * HOUR not in dict(trace.withheld_buys).get("BTCUSDT", ())
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert report.reconciliation_residual == 0
+
+
+def test_a_held_futures_position_waits_out_a_72_hour_gap(monkeypatch):
+    from crypto_grid_bot.combined import strategy_replay
+
+    def last_close_mark(bars, symbol, hour):
+        # The mark of a funding slot without its futures bar is a separate rule; any
+        # verified-looking mark isolates the carried close here.
+        row = bars.get(hour)
+        return row.open if row is not None else bars[max(h for h in bars if h < hour)].close
+
+    monkeypatch.setattr(strategy_replay, "_fixing_mark", last_close_mark)
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 6, futures=True), "futures", range(24, 96))
+    trace = replay_strategy(fx.run("futures_trend", 6), (market,))
+    assert trace.failure is None and trace.boundaries[-1].role == "terminal"
+    first, back = fx.START + 24 * HOUR, fx.START + 96 * HOUR
+    assert trace.data_gaps == (("BTCUSDT", "futures", tuple(range(first, back, HOUR))),)
+    booked = fills(trace)
+    assert booked[0].increase and booked[0].fill.timestamp_ms == fx.START + HOUR
+    # No fill while the bars are missing; the carried close executes at the first
+    # returning opening quote (a short buys back at or above it).
+    assert not [e for e in booked if first <= e.fill.timestamp_ms < back]
+    exit_fill = next(e for e in booked if not e.increase)
+    assert exit_fill.fill.timestamp_ms == back
+    assert exit_fill.fill.event_id.startswith("boundary:")
+    assert "stale_position_or_missing_filters" in exit_fill.exit_reason
+    assert exit_fill.fill.price >= bar_at(market.futures.hourly, back).open
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert report.reconciliation_residual == 0
+
+
+@pytest.mark.parametrize(("venue", "owner"), [("spot", "spot_trend"), ("futures", "futures_trend")])
+def test_a_decision_without_its_venue_quote_is_refused_and_never_rerouted(venue, owner):
+    # Spot is below the venue minimum, so with both quotes the hour-1 long falls back
+    # to futures (control). Without the spot quote it is refused, not routed to futures;
+    # without the futures quote the fallback itself is refused.
+    base = fx.market("BTCUSDT", fx.uptrend, 2, futures=True)
+    unexecutable = replace(
+        base, spot=replace(base.spot, rules=replace(fx.RULES, min_notional=D("1e9")))
+    )
+    hour = fx.START + HOUR
+    control = replay_strategy(fx.run("combined", 2), (unexecutable,))
+    assert [(e.fill.timestamp_ms, e.fill.venue) for e in fills(control)][:1] == [(hour, "futures")]
+    trace = replay_strategy(fx.run("combined", 2), (masked(unexecutable, venue, (1,)),))
+    assert trace.failure is None
+    assert trace.data_gaps == (("BTCUSDT", venue, (hour,)),)
+    refused = next(d.result for d in trace.decisions if d.assessment.decision_ms == hour)
+    assert refused.qualification.owner == owner and not refused.qualification.allowed
+    assert "venue_quote_unavailable" in refused.qualification.reasons
+    assert refused.intent is None and refused.admission is None
+    assert not [e for e in fills(trace) if e.fill.timestamp_ms == hour]
+
+
+def test_a_holding_without_the_last_bar_is_marked_at_its_last_close_as_stale():
+    market = masked(fx.market("BTCUSDT", fx.uptrend, 2), "spot", (47,))
+    trace = replay_strategy(fx.run("spot_trend", 2), (market,))
+    assert trace.failure is None and trace.boundaries[-1].role == "terminal"
+    end = fx.START + 2 * DAY
+    assert trace.data_gaps == (("BTCUSDT", "spot", (end - HOUR,)),)
+    # Valued at bar 46's close, available at end - 1h, and named as a stale mark.
+    assert trace.stale_terminal_marks == (("BTCUSDT", end - HOUR),)
+    last_close = bar_at(market.spot.hourly, end - 2 * HOUR).close
+    terminal = [o.snapshot for o in trace.observations if o.kind == "terminal"]
+    assert terminal and all(s.account.positions[0].mark == last_close for s in terminal)
+    assert all(s.stale == ("BTCUSDT",) for s in terminal)
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert report.reconciliation_residual == 0
+
+
+def test_a_funding_slot_without_its_futures_bar_is_a_retained_failure():
+    # No verified fixing mark exists, so none is assumed (hour 8 is a funding slot).
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 2, futures=True), "futures", (8,))
+    trace = replay_strategy(fx.run("futures_trend", 2), (market,))
+    assert trace.failure is not None
+    assert trace.failure.startswith("replay_failure:ValueError:")
+    assert "has no futures bar" in trace.failure

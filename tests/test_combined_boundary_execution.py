@@ -190,6 +190,52 @@ def test_held_market_must_be_current_before_mutation(quotes, rules):
     assert engine.clock == 0
 
 
+def test_a_holding_without_a_price_carries_its_close_without_failing():
+    engine = held(("BTCUSDT", "spot_trend", "spot", 1), ("ETHUSDT", "futures_trend", "futures", -1))
+    engine.request_close("BTCUSDT", "spot_trend", 1, reason="reversal")
+    engine.request_close("ETHUSDT", "futures_trend", -1, reason="reversal")
+    result = BoundaryExecutor(engine).settle(
+        "boundary:one",
+        1,
+        {"ETHUSDT": Quote(D(100), 1)},
+        {"ETHUSDT": RULE},
+        due_funding=(),
+        fixings=(),
+        source_refs=("fixture:funding",),
+        unpriced=("BTCUSDT",),
+    )
+    assert result.failure is None
+    # The priced close executes; the unpriced one waits, owned, at its last mark.
+    assert [fill.symbol for fill in result.fills] == ["ETHUSDT"]
+    assert [(p.symbol, p.mark) for p in result.final.account.positions] == [("BTCUSDT", D(100))]
+    assert result.final.close_required == ("BTCUSDT",)
+
+
+@pytest.mark.parametrize(
+    ("quotes", "unpriced"),
+    [
+        ({"BTCUSDT": Quote(D(100), 1)}, ("BTCUSDT",)),  # an unpriced holding has no quote
+        ({"BTCUSDT": Quote(D(100), 1)}, ("ETHUSDT",)),  # not a holding
+        ({}, ("BTCUSDT", "BTCUSDT")),
+        ({}, ["BTCUSDT"]),  # not an immutable tuple
+    ],
+)
+def test_unpriced_names_only_distinct_holdings_without_quotes(quotes, unpriced):
+    engine = held_short()
+    result = BoundaryExecutor(engine).settle(
+        "boundary:one",
+        1,
+        quotes,
+        RULES,
+        due_funding=(),
+        fixings=(),
+        source_refs=("fixture:funding",),
+        unpriced=unpriced,
+    )
+    assert result.failure == "invalid_boundary_inputs"
+    assert result.observations == () and engine.clock == 0
+
+
 def test_reused_funding_identity_fails_without_a_second_payment():
     engine = held_short()
     first = settle(engine, fixings=(fixing("BTCUSDT", event_id="funding:x"),))

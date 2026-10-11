@@ -56,6 +56,7 @@ class BoundaryExecutor:
         due_funding: tuple[str, ...],
         fixings: tuple[FundingFixing, ...],
         source_refs: tuple[str, ...],
+        unpriced: tuple[str, ...] = (),
     ) -> BoundaryExecution:
         """Book pre-boundary holdings' funding, then drain protective reductions.
 
@@ -66,6 +67,9 @@ class BoundaryExecutor:
         Every attempt is retained on the engine's account, so neither a corrected
         attempt nor a new executor instance can retry a failed boundary.
         Verified unsellable dust keeps its close obligation but is not a failure.
+        Holdings named in ``unpriced`` have no bar at this boundary and so no quote:
+        nothing executes for them and their obligations are carried, not a failure.
+        Any other held symbol without a current quote is an input defect.
         """
         if not isinstance(batch_id, str) or not batch_id.strip():
             raise ValueError("boundary identity required")
@@ -78,6 +82,7 @@ class BoundaryExecutor:
                 due_funding,
                 fixings,
                 source_refs,
+                unpriced,
             )
             prior = self._engine.retained_attempt(prefix, identity)
             if prior is not None:
@@ -86,7 +91,7 @@ class BoundaryExecutor:
                 return prior
             self._engine.begin_attempt(prefix, identity)
             result = self._settle(
-                prefix, timestamp_ms, quotes, rules, due_funding, fixings, source_refs
+                prefix, timestamp_ms, quotes, rules, due_funding, fixings, source_refs, unpriced
             )
             self._engine.finish_attempt(prefix, result)
             return result
@@ -100,6 +105,7 @@ class BoundaryExecutor:
         due_funding: tuple[str, ...],
         fixings: tuple[FundingFixing, ...],
         source_refs: tuple[str, ...],
+        unpriced: tuple[str, ...],
     ) -> BoundaryExecution:
         fills: list[FillEvent] = []
         observations: list[SettlementObservation] = []
@@ -121,6 +127,9 @@ class BoundaryExecutor:
                 and isinstance(source_refs, tuple)
                 and bool(source_refs)
                 and all(isinstance(s, str) and s.strip() for s in source_refs)
+                and isinstance(unpriced, tuple)
+                and all(isinstance(s, str) for s in unpriced)
+                and len(set(unpriced)) == len(unpriced)
             )
             if valid:
                 valid = (
@@ -140,11 +149,14 @@ class BoundaryExecutor:
                         and 0 < f.mark <= Decimal("1e36")
                         for f in fixings
                     )
+                    and set(unpriced) <= set(held)
+                    and not set(unpriced) & set(quotes)
                     and all(
                         isinstance(quotes.get(s), Quote)
                         and quotes[s].timestamp_ms == timestamp_ms
                         and isinstance(rules.get(s), VenueRules)
                         for s in held
+                        if s not in unpriced
                     )
                 )
             if not valid:
@@ -173,10 +185,12 @@ class BoundaryExecutor:
                     )
                 finally:
                     observations.extend(self._engine.settlement_observations(funding_batch))
-                final = self._drain(prefix, timestamp_ms, quotes, rules, final, fills, observations)
+                final = self._drain(
+                    prefix, timestamp_ms, quotes, rules, final, fills, observations, unpriced
+                )
                 active = {a.intent_id for a in self._engine.reservations}
                 dust = self._engine.close_dust(rules)
-                if set(final.close_required) - set(dust) or any(
+                if set(final.close_required) - set(dust) - set(unpriced) or any(
                     k not in active for k in final.unresolved_execution
                 ):
                     failure = "unresolved_boundary_obligations"
@@ -207,10 +221,12 @@ class BoundaryExecutor:
         final: EngineSnapshot,
         fills: list[FillEvent],
         observations: list[SettlementObservation],
+        unpriced: tuple[str, ...],
     ) -> EngineSnapshot:
         """Execute every legal held-venue reduction at the boundary quote, in symbol order.
 
         Full closes come first; cut-back obligations then reduce to their targets.
+        Unpriced holdings have no quote, so their obligations wait.
         """
         while final.close_required or final.reduce_to:
             progressed = False
@@ -220,7 +236,7 @@ class BoundaryExecutor:
                     p.symbol: (p, fee, slip)
                     for p, _, fee, slip in self._engine.held_execution_terms()
                 }
-                if symbol not in terms:
+                if symbol not in terms or symbol in unpriced:
                     continue
                 position, fee, slip = terms[symbol]
                 side = -1 if position.quantity > 0 else 1

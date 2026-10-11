@@ -71,6 +71,76 @@ def test_missing_held_asset_bar_rejected_before_mutation():
     assert len(engine.held_execution_terms()) == 2
 
 
+def test_a_holding_without_a_bar_sits_out_and_carries_its_close():
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    engine = portfolio()
+    engine.request_close("BTCUSDT", "futures_trend", 1, reason="reversal")
+    # Only ETHUSDT has a bar; its stop at 102 is crossed and executes as usual.
+    result = replay_held_portfolio(
+        engine,
+        (("ETHUSDT", bar(high=103, low=99, close=100)),),
+        {"ETHUSDT": RULES["ETHUSDT"]},
+        "open_low_high_close",
+        source_refs=("s",),
+        unpriced=("BTCUSDT",),
+    )
+    assert result.failure is None
+    assert [fill.symbol for fill in result.fills] == ["ETHUSDT"]
+    assert [symbol for symbol, _ in result.paths] == ["ETHUSDT"]
+    final = result.observations[-1].snapshot
+    # No price, no fill: BTCUSDT keeps its last mark and its close obligation.
+    assert [(p.symbol, p.mark) for p in final.account.positions] == [("BTCUSDT", D(100))]
+    assert final.close_required == ("BTCUSDT",) and final.stale == ("BTCUSDT",)
+
+
+@pytest.mark.parametrize(
+    ("symbols", "unpriced"),
+    [
+        (("BTCUSDT", "ETHUSDT"), ("SOLUSDT",)),  # not a holding
+        (("BTCUSDT", "ETHUSDT"), ("BTCUSDT",)),  # its bar is supplied
+        (("ETHUSDT",), ("BTCUSDT", "BTCUSDT")),
+        (("ETHUSDT",), ["BTCUSDT"]),  # not an immutable tuple
+    ],
+)
+def test_unpriced_names_only_distinct_holdings_without_bars(symbols, unpriced):
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    engine = portfolio()
+    with pytest.raises(ValueError):
+        replay_held_portfolio(
+            engine,
+            tuple((symbol, bar()) for symbol in symbols),
+            RULES,
+            "open_low_high_close",
+            source_refs=("s",),
+            unpriced=unpriced,
+        )
+    assert engine.clock == 0
+
+
+def test_resting_buys_of_an_unpriced_holding_are_refused():
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    engine = grid_portfolio()  # BTCUSDT grid lots; add an ETHUSDT trend holding
+    eth = intent(key="eth", symbol="ETHUSDT", fee_rate=D(0), slippage_rate=D(0))
+    assert engine.submit(eth, candidate(eth), QUOTES, RULES).accepted
+    fill = FillEvent("eth", 0, "ETHUSDT", "spot_trend", "spot", 1, D(1), D(100), D(0))
+    engine.settle("eth", 0, QUOTES, RULES, increases=((eth.intent_id, fill),))
+    with pytest.raises(ValueError):
+        replay_held_portfolio(
+            engine,
+            (("ETHUSDT", bar()),),
+            RULES,
+            "open_low_high_close",
+            source_refs=("s",),
+            grid_spacing=(("BTCUSDT", D(2)),),
+            resting=children(intent(owner="spot_grid", stop=D(95))),
+            unpriced=("BTCUSDT",),
+        )
+    assert engine.clock == 0
+
+
 def test_existing_portfolio_close_executes_at_open_before_old_stop():
     from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
 
