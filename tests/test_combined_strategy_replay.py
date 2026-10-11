@@ -172,6 +172,10 @@ def test_grid_without_minute_flow_is_unavailable_not_ungated():
     assert trace.failure is None and fills(trace) == []
     reasons = {r for d in trace.decisions for r in d.result.qualification.reasons}
     assert "flow_blocked" in reasons
+    # A grid run without the coin's minute input is named, and its report is incomplete.
+    assert trace.missing_grid_inputs == ("BTCUSDT",)
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert not report.complete and "missing_grid_input:BTCUSDT" in report.issues
 
 
 def flow_market(days: int, steps):
@@ -550,3 +554,121 @@ def test_duplicate_minute_bars_are_refused_before_any_replay():
     duplicated = replace(market, minutes=(*market.minutes, market.minutes[100]))
     with pytest.raises(ValueError, match="minute"):
         replay_strategy(fx.run("spot_grid", 2), (duplicated,))
+
+
+GRID_ARMS = [
+    "spot_grid",
+    "combined",
+    "combined_without_continuation",
+    "combined_without_full_short_qualification",
+    "combined_without_discretionary_trailing",
+    "combined_without_funding_admission",
+    "combined_without_recovery",
+]
+
+
+def without_minutes(market, keep=lambda bar: False):
+    """``market`` with only the minute bars ``keep`` accepts (none by default)."""
+    return replace(market, minutes=tuple(bar for bar in market.minutes if keep(bar)))
+
+
+def issue_names(report):
+    return [issue for issue in report.issues if issue.startswith("missing_grid_input:")]
+
+
+@pytest.mark.parametrize("arm", GRID_ARMS)
+def test_a_grid_arm_without_a_coins_minute_input_is_an_incomplete_run(arm):
+    # Probe: the grid runs on BTC; ETH has no minute input at all.
+    btc = fx.market("BTCUSDT", fx.ranging, 3, futures=True, flow=True)
+    eth = fx.market("ETHUSDT", fx.ranging, 3, futures=True)
+    for markets in ((btc, eth), (eth, btc)):
+        trace = replay_strategy(fx.run(arm, 3), markets)
+        assert trace.failure is None
+        assert trace.missing_grid_inputs == ("ETHUSDT",)
+        report = strategy_report(trace, adapter_pin=PIN)
+        assert not report.complete
+        assert issue_names(report) == ["missing_grid_input:ETHUSDT"]
+        assert "missing_grid_input:ETHUSDT" in report.producer_issues
+
+
+def test_every_coin_without_minutes_is_named_in_symbol_order():
+    markets = (
+        fx.market("ETHUSDT", fx.ranging, 2, futures=True),
+        fx.market("BTCUSDT", fx.ranging, 2, futures=True),
+        fx.market("SOLUSDT", fx.ranging, 2, futures=True, flow=True),
+    )
+    trace = replay_strategy(fx.run("combined", 2), markets)
+    assert trace.failure is None
+    assert trace.missing_grid_inputs == ("BTCUSDT", "ETHUSDT")
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert issue_names(report) == ["missing_grid_input:BTCUSDT", "missing_grid_input:ETHUSDT"]
+
+
+def test_a_spot_grid_run_missing_one_coins_minutes_is_incomplete():
+    markets = (
+        fx.market("BTCUSDT", fx.ranging, 3, flow=True),
+        fx.market("ETHUSDT", fx.ranging, 3),
+    )
+    trace = replay_strategy(fx.run("spot_grid", 3), markets)
+    assert trace.failure is None and trace.missing_grid_inputs == ("ETHUSDT",)
+    # The coin that has its input still trades its grid; only the run is incomplete.
+    assert {e.fill.symbol for e in fills(trace)} == {"BTCUSDT"}
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert not report.complete and "missing_grid_input:ETHUSDT" in report.issues
+
+
+@pytest.mark.parametrize(
+    ("arm", "path", "options"),
+    [
+        ("spot_trend", fx.uptrend, {}),
+        ("futures_trend", fx.downtrend, {"futures": True}),
+        ("futures_trend_long_only", fx.uptrend, {"futures": True}),
+    ],
+)
+def test_a_trend_only_arm_needs_no_minute_input(arm, path, options):
+    trace = replay_strategy(fx.run(arm, 3), (fx.market("BTCUSDT", path, 3, **options),))
+    assert trace.failure is None and fills(trace)
+    assert trace.missing_grid_inputs == ()
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert report.complete, report.issues
+    assert issue_names(report) == []
+
+
+def test_the_trend_components_of_a_coin_without_minutes_are_unaffected():
+    flowing = fx.market("BTCUSDT", fx.uptrend, 3, futures=True, flow=True)
+    bare = without_minutes(flowing)
+    with_flow = replay_strategy(fx.run("combined", 3), (flowing,))
+    without = replay_strategy(fx.run("combined", 3), (bare,))
+    assert with_flow.failure is None and without.failure is None
+    assert with_flow.missing_grid_inputs == () and without.missing_grid_inputs == ("BTCUSDT",)
+    assert fills(without) and comparable(without) == comparable(with_flow)
+
+
+def test_sparse_missing_minutes_are_not_a_missing_input():
+    market = fx.market("BTCUSDT", fx.ranging, 3, flow=True)
+    # The fifteen minutes before hour 40 are gone; every other minute is present.
+    hole = range(fx.START + 40 * HOUR - 15 * 60_000, fx.START + 40 * HOUR, 60_000)
+    gapped = without_minutes(market, lambda bar: bar.open_ms not in hole)
+    assert len(gapped.minutes) == len(market.minutes) - 15
+    trace = replay_strategy(fx.run("spot_grid", 3), (gapped,))
+    assert trace.failure is None and trace.missing_grid_inputs == ()
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert report.complete, report.issues
+    assert issue_names(report) == []
+
+
+@pytest.mark.parametrize(
+    ("minute_offset_ms", "missing"),
+    [
+        (-15 * 60_000, False),  # the first minute the gate reads
+        (-16 * 60_000, True),  # just before the read range
+        (3 * DAY - 60_000, False),  # the last minute before the window ends
+        (3 * DAY, True),  # the window's end is exclusive
+    ],
+)
+def test_a_single_minute_inside_the_read_range_is_a_present_input(minute_offset_ms, missing):
+    stamp = fx.START + minute_offset_ms
+    only = replace(fx.market("BTCUSDT", fx.ranging, 3), minutes=fx.minutes(stamp, stamp + 60_000))
+    trace = replay_strategy(fx.run("spot_grid", 3), (only,))
+    assert trace.failure is None
+    assert trace.missing_grid_inputs == (("BTCUSDT",) if missing else ())

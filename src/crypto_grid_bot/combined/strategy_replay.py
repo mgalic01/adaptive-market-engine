@@ -5,6 +5,12 @@ and one window, over in-memory, already registered inputs. Nothing is fetched, n
 order leaves this process, and the run never retries. Frozen V0-V3 baselines have
 their own adapters; this driver refuses them.
 
+A grid-enabled arm needs each coin's minute input for the flow gate. A coin with no
+minute bar at all in the gate's read range is a missing grid input: the replay still
+runs (its trend components are unaffected) but the trace names the coin and the
+report is incomplete. A sparse gap inside a present input only makes that hour's flow
+unavailable.
+
 Each hourly boundary T is processed in the owner-approved order:
 
 1. the previous bar's modeled intrabar path, stamped at its availability T: old
@@ -147,6 +153,9 @@ class StrategyTrace:
     retained_dust: tuple[str, ...]
     # Per symbol, the intervals (by opening hour) whose resting grid buys the flow gate withheld.
     withheld_buys: tuple[tuple[str, tuple[int, ...]], ...]
+    # Symbols, sorted, whose minute input has no bar at all in the flow gate's read range
+    # although the arm enables the spot grid; the report is incomplete for each.
+    missing_grid_inputs: tuple[str, ...]
     failure: str | None
 
 
@@ -278,6 +287,18 @@ def _validate(run: ReplayRun, markets: tuple[SymbolMarket, ...], futures_require
             raise ValueError(f"{market.symbol}: unique aligned minute bars required")
 
 
+def _missing_grid_inputs(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> tuple[str, ...]:
+    """Symbols with no minute bar in ``[start - 15 min, end)``, the flow gate's read range."""
+    first = run.start_ms - 15 * 60_000
+    return tuple(
+        sorted(
+            market.symbol
+            for market in markets
+            if not any(first <= bar.open_ms < run.end_ms for bar in market.minutes)
+        )
+    )
+
+
 def _regime(assessment: Assessment) -> str:
     return f"{assessment.daily}/{assessment.four_hour}/{assessment.structure}"
 
@@ -308,6 +329,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     series = {s: AssessmentSeries(s, by_symbol[s].spot.hourly, by_symbol[s].daily) for s in symbols}
     daily = {s: by_symbol[s].daily for s in symbols}
     gates = {s: FlowGate() for s in symbols}
+    missing_inputs = _missing_grid_inputs(run, markets) if settings.routing.spot_grid else ()
     minute_index = {s: {bar.open_ms: bar for bar in by_symbol[s].minutes} for s in symbols}
     engine = PortfolioEngine(
         run.initial_cash,
@@ -756,5 +778,6 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         engine.release_evidence,
         dust,
         tuple((symbol, tuple(hours)) for symbol, hours in sorted(withheld.items())),
+        missing_inputs,
         failure,
     )

@@ -282,6 +282,8 @@ def strategy_report(trace: StrategyTrace, *, adapter_pin: str) -> Report:
     policy = PolicyEvidence(POLICY_ID, adapter_pin, tuple(boundaries), trace.run.scenario)
     # A failed replay is incomplete evidence by declaration, not only by structure.
     issues = [f"replay_failure:{trace.failure}"] if trace.failure is not None else []
+    # A grid arm without a coin's minute input cannot judge that coin's grid: incomplete.
+    issues.extend(f"missing_grid_input:{symbol}" for symbol in trace.missing_grid_inputs)
     contributions = lifecycle_contributions(trace, issues)
     return analyze(
         trace.run.initial_cash,
