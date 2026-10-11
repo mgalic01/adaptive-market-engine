@@ -529,3 +529,15 @@ def test_grouped_opportunities_retain_source_observation_identity():
     group = result.opportunity_episodes[0]
     assert group.observation_ids == ("event-0", "event-1")
     assert group.source_refs == ("synthetic#event-0", "synthetic#event-1")
+
+
+@pytest.mark.parametrize("change", [{"id": "unrelated"}, {"source_refs": ("different-source",)}])
+def test_daily_samples_bind_to_exact_retained_equity_records(change):
+    points = tuple(
+        EquityPoint(i * DAY, D(v), f"mark-{i}", (f"synthetic#mark-{i}",))
+        for i, v in enumerate((100, 110, 100))
+    )
+    samples = (points[0], replace(points[1], **change), points[-1])
+    result = metrics_report(points, metrics_start_ms=0, daily_samples=samples)
+    assert metric(result, "sharpe").value is None
+    assert metric(result, "sharpe").unavailable_reason == "incomplete_or_unmatched_daily_samples"

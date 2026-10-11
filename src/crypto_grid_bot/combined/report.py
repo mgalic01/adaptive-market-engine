@@ -381,6 +381,7 @@ def _metrics(
         marks.setdefault(point.timestamp_ms, set()).add(point.equity)
     # Timestamp-only samples cannot choose among distinct same-time event marks.
     # Repeated identical values are unambiguous; no implicit last-mark rule applies.
+    retained_points = set(points)
     if not samples:
         add("sharpe", None, "daily_samples_unavailable")
     elif (
@@ -389,7 +390,10 @@ def _metrics(
         or samples[0] != points[0]
         or samples[-1] != points[-1]
         or any(
-            p.timestamp_ms % 86_400_000 or marks.get(p.timestamp_ms) != {p.equity} for p in samples
+            p not in retained_points
+            or p.timestamp_ms % 86_400_000
+            or marks.get(p.timestamp_ms) != {p.equity}
+            for p in samples
         )
         or any(
             b.timestamp_ms - a.timestamp_ms != 86_400_000
