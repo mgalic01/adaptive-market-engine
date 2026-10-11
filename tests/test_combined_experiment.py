@@ -1,18 +1,21 @@
 from dataclasses import replace
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 
 from crypto_grid_bot.combined.experiment import (
     Capital,
     Registration,
+    ReportEvidence,
     RunIdentity,
     RunOutcome,
     Window,
     evaluate,
 )
+from crypto_grid_bot.combined.report import Contribution, EquityPoint, UtilizationInterval, analyze
 
 D = Decimal
+DAY = 86_400_000
 PIN = "a" * 64
 CODE = "b" * 40
 BASELINES = (
@@ -40,7 +43,7 @@ def registration() -> Registration:
     return Registration(
         ARMS,
         BASELINES,
-        (Window("window", 0, 1000, PIN),),
+        (Window("window", 0, 2 * DAY, PIN),),
         (
             Capital("research", D(10000), "USDT", D(10000)),
             Capital("owner_small", D(110), "EUR", D(100), D("1.1"), PIN),
@@ -85,12 +88,63 @@ def outcomes(reg: Registration) -> tuple[RunOutcome, ...]:
                             True,
                         )
                     )
-    return tuple(rows)
+    return tuple(with_report(row) for row in rows)
+
+
+def with_report(row):
+    if not all(
+        value.is_finite()
+        for value in (
+            row.initial_equity,
+            row.final_equity,
+            row.max_drawdown,
+            row.accounting_residual,
+        )
+    ):
+        return row
+    start, end = row.identity.start_ms, row.identity.end_ms
+    points = (
+        EquityPoint(start, row.initial_equity),
+        EquityPoint(start + DAY, row.initial_equity * (1 - row.max_drawdown)),
+        EquityPoint(end, row.final_equity),
+    )
+    with localcontext() as ctx:
+        ctx.prec = 80
+        gross = row.final_equity - row.initial_equity - row.accounting_residual
+    contributions = (
+        Contribution(
+            "pnl",
+            "trend",
+            "BTC",
+            "long",
+            None,
+            gross,
+            D(0),
+            D(0),
+            D(1),
+            "exit",
+            start,
+            "closed",
+            end,
+        ),
+    )
+    report = analyze(
+        row.initial_equity,
+        points,
+        contributions,
+        (),
+        (),
+        ("synthetic-source",),
+        metrics_start_ms=start,
+        daily_samples=points,
+        utilization=(UtilizationInterval(start, end, D(0), D(0), row.initial_equity),),
+    )
+    return replace(row, report_evidence=ReportEvidence(row.identity, row.attempt_id, report))
 
 
 def change(rows, arm="combined", cost=1, capital="research", **updates):
     return tuple(
-        replace(row, **updates)
+        with_report(replace(row, **updates))
         if (row.identity.arm, row.identity.cost_multiple, row.identity.capital)
         == (arm, cost, capital)
         else row
@@ -382,3 +436,101 @@ def test_unrelated_duplicate_capital_does_not_erase_unique_research_failure():
     rows = change(outcomes(reg), max_drawdown=D(".5"))
     result = evaluate(replace(reg, capitals=reg.capitals + (reg.capitals[1],)), rows)
     assert result.status == "fail" and result.incomplete_reasons
+
+
+def test_scalar_completeness_cannot_replace_report_evidence():
+    reg = registration()
+    rows = tuple(replace(row, report_evidence=None) for row in outcomes(reg))
+    assert evaluate(reg, rows).status == "incomplete"
+
+
+def test_base_and_doubled_cost_profiles_must_have_distinct_pins():
+    reg = replace(registration(), cost_profiles=((1, PIN), (2, PIN)))
+    assert evaluate(reg, outcomes(reg)).status == "incomplete"
+
+
+@pytest.mark.parametrize(
+    "alter",
+    [
+        "complete_flag",
+        "daily_samples",
+        "utilization",
+        "identity",
+        "attempt",
+        "window",
+        "initial",
+        "final",
+        "drawdown",
+        "residual",
+        "forged_metrics",
+    ],
+)
+def test_report_must_supply_matching_recomputable_evidence(alter):
+    reg = registration()
+    rows = list(outcomes(reg))
+    row = rows[0]
+    evidence = row.report_evidence
+    report = evidence.report
+    if alter == "complete_flag":
+        report = replace(report, complete=False)
+    elif alter == "daily_samples":
+        report = replace(report, daily_samples=())
+    elif alter == "utilization":
+        report = replace(report, utilization=())
+    elif alter == "identity":
+        evidence = replace(evidence, identity=replace(evidence.identity, arm="combined"))
+    elif alter == "attempt":
+        evidence = replace(evidence, attempt_id="other-attempt")
+    elif alter == "window":
+        report = replace(report, metrics_start_ms=DAY)
+    elif alter == "initial":
+        report = replace(report, initial_equity=D(9999))
+    elif alter == "final":
+        report = replace(report, final_equity=D(11001))
+    elif alter == "drawdown":
+        report = replace(report, max_drawdown=D(".19"))
+    elif alter == "residual":
+        report = replace(report, reconciliation_residual=D("1e-19"))
+    else:
+        report = replace(
+            report, metrics=tuple(replace(metric, value=D(42)) for metric in report.metrics)
+        )
+    rows[0] = replace(row, report_evidence=replace(evidence, report=report))
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete" and not result.failures
+
+
+def test_missing_report_preserves_observed_safety_failure():
+    reg = registration()
+    rows = tuple(
+        replace(row, report_evidence=None) for row in change(outcomes(reg), max_drawdown=D(".5"))
+    )
+    result = evaluate(reg, rows)
+    assert result.status == "fail" and result.incomplete_reasons
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("final_equity", D(11001)), ("max_drawdown", D(".19")), ("accounting_residual", D("1e-19"))],
+)
+def test_complete_unrelated_report_cannot_validate_scalar_results(field, value):
+    reg = registration()
+    rows = list(outcomes(reg))
+    assert rows[0].report_evidence.report.complete
+    rows[0] = replace(rows[0], **{field: value})
+    assert evaluate(reg, tuple(rows)).status == "incomplete"
+
+
+def test_recomputed_report_from_other_observation_window_is_incomplete():
+    reg = registration()
+    rows = list(outcomes(reg))
+    row = rows[0]
+    foreign = with_report(
+        replace(row, identity=replace(row.identity, start_ms=DAY, end_ms=3 * DAY))
+    )
+    assert foreign.report_evidence.report.complete
+    # Even relabeling the supplied wrapper cannot disguise different observation times.
+    rows[0] = replace(
+        row, report_evidence=replace(row.report_evidence, report=foreign.report_evidence.report)
+    )
+    assert evaluate(reg, tuple(rows)).status == "incomplete"

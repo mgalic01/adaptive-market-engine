@@ -11,6 +11,8 @@ from decimal import Decimal
 from fractions import Fraction
 from itertools import product
 
+from .report import Report, analyze
+
 _BASELINES = frozenset(
     (
         "unchanged_v3_selector",
@@ -80,6 +82,20 @@ class RunIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportEvidence:
+    """Caller-attributed report for one attempt; pins are not authenticated here.
+
+    Acceptance recomputes retained observations and checks their window and values.
+    Registration/artifact validation must establish authenticity of the supplied
+    identity and source references; this pure evaluator never fetches sources.
+    """
+
+    identity: RunIdentity
+    attempt_id: str
+    report: Report
+
+
+@dataclass(frozen=True, slots=True)
 class RunOutcome:
     identity: RunIdentity
     initial_equity: Decimal
@@ -92,6 +108,7 @@ class RunOutcome:
     failed: bool = False
     attempt_id: str = ""
     wallet_quantity_exact: bool = False
+    report_evidence: ReportEvidence | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +153,7 @@ def _registration_errors(registration: Registration) -> list[str]:
         errors.append("registration: full code/config pins required")
     if (
         len(reg.cost_profiles) != 2
+        or len({pin for _, pin in reg.cost_profiles}) != 2
         or {multiple for multiple, _ in reg.cost_profiles} != {1, 2}
         or any(type(multiple) is not int or not _pin(pin) for multiple, pin in reg.cost_profiles)
     ):
@@ -202,6 +220,65 @@ def _metrics_valid(row: RunOutcome) -> bool:
             )
         )
     )
+
+
+def _report_valid(row: RunOutcome) -> bool:
+    evidence = row.report_evidence
+    if not isinstance(evidence, ReportEvidence) or not isinstance(evidence.report, Report):
+        return False
+    if (
+        evidence.identity != row.identity
+        or evidence.attempt_id != row.attempt_id
+        or any(
+            type(value) is not int
+            for value in (
+                evidence.identity.start_ms,
+                evidence.identity.end_ms,
+                evidence.identity.cost_multiple,
+            )
+        )
+    ):
+        return False
+    report = evidence.report
+    try:
+        rebuilt = analyze(
+            report.initial_equity,
+            report.equity_points,
+            report.contributions,
+            report.opportunities,
+            report.recovery,
+            report.source_refs,
+            opportunity_gap_ms=report.observation_gap_ms,
+            metrics_start_ms=report.metrics_start_ms,
+            daily_samples=report.daily_samples,
+            utilization=report.utilization,
+        )
+        if report != rebuilt or type(report.complete) is not bool:
+            return False
+        if (
+            not rebuilt.equity_points
+            or rebuilt.metrics_start_ms != row.identity.start_ms
+            or rebuilt.equity_points[0].timestamp_ms != row.identity.start_ms
+            or rebuilt.equity_points[-1].timestamp_ms != row.identity.end_ms
+            or (
+                rebuilt.initial_equity,
+                rebuilt.final_equity,
+                rebuilt.max_drawdown,
+                rebuilt.reconciliation_residual,
+            )
+            != (row.initial_equity, row.final_equity, row.max_drawdown, row.accounting_residual)
+        ):
+            return False
+        # Preserve the frozen explained trade/equity tolerance. This is the only
+        # structural issue acceptance may forgive; all required metrics remain mandatory.
+        tolerated = row.accounting_explained and abs(Fraction(row.accounting_residual)) <= Fraction(
+            1, 10**18
+        )
+        return all(_finite(metric.value) for metric in rebuilt.metrics) and not (
+            set(rebuilt.issues) - ({"contribution_equity_residual"} if tolerated else set())
+        )
+    except (ValueError, TypeError, AttributeError, ArithmeticError):
+        return False
 
 
 def _safety_failures(observed: RunOutcome) -> list[str]:
@@ -357,6 +434,9 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             continue
         if not row.complete or row.failed:
             incomplete.append(f"{key}: failed or incomplete attempt retained")
+            continue
+        if not _report_valid(row):
+            incomplete.append(f"{key}: missing, incomplete or mismatched report evidence")
             continue
         residual = abs(Fraction(row.accounting_residual))
         invalid = (
