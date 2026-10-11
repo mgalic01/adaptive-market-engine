@@ -15,7 +15,7 @@ are in the sections below.
 | To get… | Write or do this | What starts | What it can do | Cost and limits |
 | --- | --- | --- | --- | --- |
 | **Bob's quick review or answer** | a PR comment with the whole word `@bob` (owner or collaborator) | `bob-review.yml`, the **read-only** Bob on GitHub | reads the comment, PR description and diff, and the generated handoff index; answers once. No commands, no files, no token | Bob's credits, about one minute; the answer appears as `github-actions[bot]` |
-| **Bob doing real work** (runs, data, hashes, tests) | **merge a PR that adds** `docs/tasks/<date>-bob-<topic>.md` to `main` (it starts **automatically**), or comment `/bob-run docs/tasks/<file>.md`, or Actions → **IBM Bob task run** → Run workflow | `bob-task.yml`, the **task runner** on a GitHub Linux machine | runs commands with the project installed; writes only a report `docs/reviews/*-bob-*.md`, which arrives as a PR from `bob/task-*` | Bob's credits, up to 240 minutes. Owner-only triggers. A task PR is merged only after review, because the merge is the go |
+| **Bob doing real work** (runs, data, hashes, tests) | **merge a PR that adds** `docs/tasks/<date>-bob-<topic>.md` to `main` (it starts **automatically**), or comment `/bob-run docs/tasks/<file>.md <full SHA>`, or Actions → **IBM Bob task run** → Run workflow (task path and full SHA). The SHA is a merge commit or pushed head on `main`; without it nothing runs | `bob-task.yml`, the **task runner** on a GitHub Linux machine | runs commands with the project installed, at the run revision: the merge commit, or the SHA given, never `main` as it is when a queued run starts; writes only a report `docs/reviews/*-bob-*.md`, which arrives as a PR from `bob/task-*` | Bob's credits, up to 240 minutes. Owner-only triggers. A task PR is merged only after review, because the merge is the go |
 | **Codex review (cloud)** | a PR comment `@codex review` with the full head SHA and a handoff link | the ChatGPT Codex connector (Codex cloud) | reviews the PR and posts as `chatgpt-codex-connector[bot]` | the owner's ChatGPT plan; replies "usage limit" when the allowance is used up |
 | **Codex desktop** (merges, larger reviews) | the owner starts Codex; it reads `AGENTS.md` first | Codex in the owner's app | pushes and merges as the owner (`mgalic01`) | the owner's ChatGPT plan |
 | **Separate local Codex reviewer** (opt-in, under review) | signed GitHub PR events through the owner's configured tunnel; see [operations](LOCAL_WORKER.md) | a separate bounded CLI reviewer on the owner's awake PC, not this desktop chat | critical PR review and discussion feedback; no automatic merges; a reviewing agent explicitly decides after agreement/checks | local ChatGPT allowance; no hourly/daily start cap; temporary tunnel is not permanent availability |
@@ -770,7 +770,8 @@ Credits are limited, so every agent works on demand, not by polling:
       [when a reviewer is unavailable](#when-a-reviewer-is-unavailable). **A run
       that fails on Bob's side** (a "Connection Failed" or backend error in the
       worker log, after or during the task, with no task or data defect named) is
-      rerun with `/bob-run` under the owner's blanket approval of paid Bob runs
+      rerun with `/bob-run`, naming the failed run's revision (the failure alert gives
+      it), under the owner's blanket approval of paid Bob runs
       (2026-09-27); the rerunning agent posts the diagnosis from the run log on the
       failure issue first. **There is no limit on reruns and no stop after a second
       failure** (owner instruction, 2026-09-28, in Claude session `e0b16be3`, replacing
@@ -781,11 +782,30 @@ Credits are limited, so every agent works on demand, not by polling:
       repeated failure is also mentioned to the owner in the next message, as
       "Broken communication is reported at once" requires; that does not hold the
       rerun;
-    - a comment `/bob-run docs/tasks/<date>-bob-<topic>.md` from the repository
-      owner's account, for example to re-run a task. Claude and Codex also post as
-      the owner, so they post `/bob-run` only with a linked Codex approval or owner
-      go;
-    - "Run workflow" by the owner, with the task path.
+    - a comment `/bob-run docs/tasks/<date>-bob-<topic>.md <full commit SHA>` from
+      the repository owner's account, for example to re-run a task. The path and the
+      40-character SHA go on one line; without the SHA nothing runs. Claude and Codex
+      also post as the owner, so they post `/bob-run` only with a linked Codex
+      approval or owner go, naming the SHA that approval or go covered;
+    - "Run workflow" by the owner, with the task path and the full commit SHA.
+  - **Run revision** (Codex's review of PR #193): each trigger fixes one commit, the
+    pushed merge commit or the SHA named, and the worker checks out exactly that
+    commit, never `main` as it is when a queued job starts. Before Bob starts, the
+    worker stops unless the commit is on `main`'s first-parent line
+    (`git log --first-parent main`: merges and pushes to `main`, not a commit from
+    inside a merged branch) and the task file is in it. The intermediate commits of a
+    multi-commit push to `main` are on that line too, so whoever posts `/bob-run` names
+    the merge commit or the pushed head, never a commit in between. The worker then
+    freezes the repository at that commit: `main` and `origin/main` name it, no other
+    branch, tag or remote is left, and every object outside the commit's history is
+    purged, with no snapshot of the newer state left on the machine (Codex's reviews of
+    PR #194). A commit merged while a run waits in the `bob-task` queue therefore
+    cannot change what the run reads, and a task can use only the run revision and its
+    history: anything else it needs is merged to `main` first. This is a consistency
+    guard, not a security boundary: with `sudo` and an open network Bob could still
+    fetch by URL, which only his prompt forbids. The revision is in the report's commit
+    and PR, the reply and any failure alert. The publisher still works from a clean
+    checkout of `main`.
   - **Containment** (reworked after Codex's audit, 2026-09-25):
     - Bob runs on a **worker** machine with a read-only token and no write permission.
       He has command access there, including `sudo`, so everything on that machine is
