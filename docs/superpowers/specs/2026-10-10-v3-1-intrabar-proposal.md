@@ -1,7 +1,10 @@
-# V3.1 replay observation convention — owner decision pending
+# V3.1 replay observation convention — owner approved 2026-10-11
 
-Status: proposal only. This does not amend the reviewed specification or authorize
-a historical run. No market results were consulted to choose this convention.
+Status: owner approved in chat on 2026-10-11 ("yes i approve") in response to
+the question covering both price-path scenarios, conservative execution ordering,
+and funding/fill/equity observation timing. Implementation and external review are
+still required. This does not authorize historical execution or PR267 merge.
+No market results were consulted to choose this convention.
 
 ## Problem
 
@@ -69,7 +72,7 @@ The proposed convention must therefore also declare, before registration:
   and bound into report evidence. Baselines require the same declared economic
   boundaries; native output timestamps alone are insufficient proof.
 
-This addition is still a proposal requiring the owner's decision. It has not been
+This addition was included in the owner approval above. It has not yet been
 implemented or used to permit complete reports. Current registration rejects an
 endpoint at the reserved boundary because the current engine cannot emit that
 event; an interval-end adapter needs separate reviewed implementation after the

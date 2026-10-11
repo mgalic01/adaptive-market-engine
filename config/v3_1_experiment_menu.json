@@ -1,6 +1,8 @@
 {
   "schema": "v3.1-menu-1",
   "status": "NOT_AUTHORIZED_FOR_EXECUTION",
+  "observation_policy": "v3.1-owner-2026-10-11-settlement-v1",
+  "modeled_scenarios": ["open_low_high_close", "open_high_low_close"],
   "cost_multiples": [1, 2],
   "capital_scenarios": [
     {"id": "research", "usdt": "10000"},
@@ -35,6 +37,7 @@
     "grid_flow_coverage",
     "fx_assumption",
     "base_cost_profile_and_benchmark_adapters",
+    "reviewed_scenario_replay_and_common_boundary_adapter_pins",
     "separate_owner_historical_run_authorization"
   ],
   "mandatory_safeguards": ["accounting", "liquidation", "reserved_data_boundary"],

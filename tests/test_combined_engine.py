@@ -69,6 +69,29 @@ def candidate(order):
     return Qualification(order.symbol, 0, True, order.owner, order.side, D(1), ())
 
 
+def test_settlement_retains_intermediate_observations_and_duplicate_does_not_append():
+    engine = PortfolioEngine(D(10000))
+    state = engine.settle("boundary", 0, QUOTES, RULES)
+    trace = engine.settlement_observations("boundary")
+    assert tuple(row.phase for row in trace) == ("before", "settled")
+    assert trace[-1].snapshot == state
+    assert engine.settle("boundary", 0, QUOTES, RULES) == state
+    assert engine.settlement_observations("boundary") == trace
+    assert engine.settlement_observations("missing") == ()
+
+
+def test_failed_settlement_retains_prefix_and_cannot_be_retried():
+    engine = PortfolioEngine(D(10000))
+    fill = FillEvent("unknown", 0, "BTCUSDT", "spot_trend", "spot", 1, D(1), D(100), D(0))
+    with pytest.raises(ValueError, match="no recorded admission"):
+        engine.settle("failed", 0, QUOTES, RULES, increases=(("absent", fill),))
+    prefix = engine.settlement_observations("failed")
+    assert tuple(row.phase for row in prefix) == ("before",)
+    with pytest.raises(ValueError, match="cannot be retried"):
+        engine.settle("failed", 0, QUOTES, RULES)
+    assert engine.settlement_observations("failed") == prefix
+
+
 def test_worse_partial_fill_cancels_remainder_and_late_fill_stays_flagged():
     engine = PortfolioEngine(D(10000))
     order = intent()
@@ -183,6 +206,11 @@ def test_funding_precedes_simultaneous_close_and_cannot_be_avoided():
     close = replace(fill, event_id="exit", timestamp_ms=2, side=-1)
     funding = FundingEvent("funding", 2, "BTCUSDT", D(-2))
     state = engine.settle("exitbatch", 2, QUOTES, RULES, funding=(funding,), reductions=(close,))
+    trace = engine.settlement_observations("exitbatch")
+    assert tuple(row.phase for row in trace) == ("before", "funding", "reduction", "settled")
+    assert trace[1].snapshot.account.equity == trace[0].snapshot.account.equity - 2
+    assert trace[1].snapshot.account.positions
+    assert not trace[2].snapshot.account.positions
     assert state.account.equity == 9998
     assert state.account.funding == -2
     assert state.account.positions == ()

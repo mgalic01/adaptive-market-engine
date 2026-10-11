@@ -8,6 +8,30 @@ no exchange connection, historical launcher or new dependency.
 
 ## Scope
 
+### Owner approval and observation implementation, 2026-10-11
+
+The owner explicitly approved the expanded intrabar/settlement proposal in chat.
+This removes the policy decision gate, not the implementation, review or historical
+execution gates. PR267 merge remains separately unapproved.
+
+The first implementation binds registration and run identities to the approved
+policy and a per-arm adapter code pin. Reports retain explicit boundary evidence;
+daily returns select opening-before-costs, interior-after-settlement and terminal
+states. Utilization uses the final capital state; every intermediate equity mark
+still contributes to lifetime drawdown. Missing or malformed phase evidence leaves
+the report incomplete without erasing attributable risk failures. Source references
+and pins are structural attribution; reviewed adapters must establish authenticity.
+
+The engine now retains immutable ordered settlement observations, including a
+successfully observed prefix when a later event fails. A completed duplicate returns
+the same trace; a failed batch cannot be retried. The boundary adapter preserves
+all marks, requires a genuine hourly interval identity and rejects funding/new
+entries in terminal settlement. It does not infer source prices or re-label events.
+
+Full OHLC scenario replay, common-boundary cross-version comparisons, baseline
+conformance, endpoint-at-reserved-boundary support, visual QA and exact execution
+registration are still unfinished. No historical execution or profitability claim.
+
 - Exact shared-wallet spot and futures accounting, FIFO lots, partial reductions,
   funding, collateral and idempotent event identity. Already executed adverse
   fills are booked honestly, then flagged for reduction.
@@ -346,3 +370,4 @@ No historical execution, dependencies or additional security findings. Sizing ca
 slightly smaller and continuous exposure reductions more frequent; approved thresholds
 are unchanged. Owner observation-policy decision and final full-head external review
 remain outstanding, with adapters, visual QA and exact registration unfinished.
+`nVerification for approved observation package: 903 combined tests passed, one OS skip; Ruff, format, mypy, Bandit and report checks passed. Independent critic found sampling fallback, terminal phase, invalid-policy safety preservation and unresolved terminal-close issues; each was reproduced and fixed. Full historical replay and final external review remain pending.

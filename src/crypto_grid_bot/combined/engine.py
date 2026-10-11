@@ -63,6 +63,13 @@ class EngineSnapshot:
     available_cash: Decimal
 
 
+@dataclass(frozen=True, slots=True)
+class SettlementObservation:
+    phase: str
+    event_id: str
+    snapshot: EngineSnapshot
+
+
 class PortfolioEngine:
     """One account and one event lock, including acknowledged reservation transfers."""
 
@@ -90,6 +97,7 @@ class PortfolioEngine:
         self._liquidation = False
         self._integrity_failure = False
         self._batches: dict[str, tuple[object, EngineSnapshot]] = {}
+        self._batch_observations: dict[str, tuple[SettlementObservation, ...]] = {}
         # Duplicate executions must preserve their role and original admission.
         self._fills: dict[str, tuple[str, str | None, FillEvent]] = {}
         self._recovery.update(0, initial_cash, True, False, True)
@@ -97,6 +105,15 @@ class PortfolioEngine:
     @property
     def reservations(self) -> tuple[Admission, ...]:
         return self._risk.reservations
+
+    def settlement_observations(self, batch_id: str) -> tuple[SettlementObservation, ...]:
+        """Retained event marks, including a successfully observed prefix after failure.
+
+        This is evidence only. No replay, sampling choice or rollback is performed.
+        Duplicate completed batches return the original trace unchanged.
+        """
+        with self._lock:
+            return self._batch_observations.get(batch_id, ())
 
     def cancel(self, intent_id: str) -> None:
         """Cancel increases locally; this does not attest that all fills are reconciled."""
@@ -591,10 +608,22 @@ class PortfolioEngine:
             )
             if not batch_id or any(e.timestamp_ms != timestamp_ms for e in all_events):
                 raise ValueError("settlement identity/time mismatch")
-            self.observe(timestamp_ms, quotes, rules)
+            if batch_id in self._batch_observations:
+                raise ValueError("failed settlement cannot be retried")
+
+            def mark(phase: str, event_id: str) -> EngineSnapshot:
+                snapshot = self.observe(timestamp_ms, quotes, rules)
+                self._batch_observations[batch_id] = (
+                    *self._batch_observations[batch_id],
+                    SettlementObservation(phase, event_id, snapshot),
+                )
+                return snapshot
+
+            self._batch_observations[batch_id] = ()
+            mark("before", batch_id)
             for payment in funding:
                 self._account.apply(payment)
-                self.observe(timestamp_ms, quotes, rules)
+                mark("funding", payment.event_id)
             for event in reductions:
                 reduction_identity = ("reduction", None, event)
                 if event.event_id in self._fills:
@@ -609,7 +638,7 @@ class PortfolioEngine:
                     raise ValueError("reduction must reduce held inventory")
                 self._account.apply(event)
                 self._fills[event.event_id] = reduction_identity
-                self.observe(timestamp_ms, quotes, rules)
+                mark("reduction", event.event_id)
             for key, event in increases:
                 increase_identity = ("increase", key, event)
                 if event.event_id in self._fills:
@@ -658,9 +687,9 @@ class PortfolioEngine:
                     or event.fee > event.quantity * event.price * intent.fee_rate
                 ):
                     self._require_close(event.symbol, "post_fill_risk_breach")
-                state = self.observe(timestamp_ms, quotes, rules)
+                state = mark("increase", event.event_id)
                 for symbol in self._risk_breaches(state.account, state.recovery.risk_fraction):
                     self._require_close(symbol, "post_fill_risk_breach")
-            result = self.observe(timestamp_ms, quotes, rules)
+            result = mark("settled", batch_id)
             self._batches[batch_id] = (identity, result)
             return result

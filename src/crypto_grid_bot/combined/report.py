@@ -11,6 +11,7 @@ from decimal import Context, Decimal, DecimalException, localcontext
 from fractions import Fraction
 
 from crypto_grid_bot.combined.evidence import PHASES
+from crypto_grid_bot.combined.observation_policy import PolicyEvidence, validate_boundaries
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +220,7 @@ class Report:
     utilization: tuple[UtilizationInterval, ...]
     structural_complete: bool
     capital_observations: tuple[CapitalObservation, ...]
+    policy_evidence: PolicyEvidence | None = None
 
 
 def _number(value: Decimal, *, nonnegative: bool = False) -> Fraction:
@@ -382,7 +384,16 @@ def _metrics(
     capital_observations: tuple[CapitalObservation, ...],
     net_return: Decimal | None,
     drawdown: Decimal | None,
+    policy_evidence: PolicyEvidence | None = None,
 ) -> tuple[Metric, ...]:
+    try:
+        boundaries = (
+            validate_boundaries(policy_evidence, tuple((p.timestamp_ms, p.id) for p in points))
+            if policy_evidence is not None
+            else {}
+        )
+    except (ValueError, TypeError, AttributeError):
+        boundaries = {}
     definitions = {
         "cagr": "Compounded net growth over elapsed time; 365.25-day year; no external transfers.",
         "return_drawdown": "Net return divided by observed lifetime maximum drawdown; not CAGR/DD.",
@@ -451,8 +462,13 @@ def _metrics(
         or samples[-1] != points[-1]
         or any(
             p not in retained_points
+            or (policy_evidence is not None and p.timestamp_ms not in boundaries)
             or p.timestamp_ms % 86_400_000
-            or marks.get(p.timestamp_ms) != {p.equity}
+            or (
+                boundaries[p.timestamp_ms].selected_equity_id != p.id
+                if p.timestamp_ms in boundaries
+                else marks.get(p.timestamp_ms) != {p.equity}
+            )
             for p in samples
         )
         or any(
@@ -496,8 +512,18 @@ def _metrics(
             and point is not None
             and point.id is not None
             and point.source_refs
-            and equity_counts[interval.start_ms] == 1
-            and capital_counts[interval.start_ms] == 1
+            and (policy_evidence is None or interval.start_ms in boundaries)
+            and (
+                (
+                    boundaries[interval.start_ms].capital_id == observation.id
+                    and boundaries[interval.start_ms].observation_ids[-1] == point.id
+                    and observation.phase_id == boundaries[interval.start_ms].role
+                )
+                if interval.start_ms in boundaries
+                else (
+                    equity_counts[interval.start_ms] == 1 and capital_counts[interval.start_ms] == 1
+                )
+            )
             and not any(
                 interval.start_ms < row.timestamp_ms < interval.end_ms
                 for row in capital_observations
@@ -511,16 +537,32 @@ def _metrics(
             and observation.futures_collateral == interval.futures_collateral
         )
 
-    terminal_capital = [row for row in capital_observations if row.timestamp_ms == end]
+    terminal_capital = [
+        row
+        for row in capital_observations
+        if row.timestamp_ms == end
+        and (end not in boundaries or row.id == boundaries[end].capital_id)
+    ]
     terminal_verified = bool(
         points
         and end is not None
-        and equity_counts[end] == 1
+        and (
+            equity_counts[end] == 1
+            or (
+                end in boundaries
+                and boundaries[end].role == "terminal"
+                and boundaries[end].selected_equity_id == points[-1].id
+            )
+        )
         and len(terminal_capital) == 1
         and points[-1].id
         and points[-1].source_refs
         and terminal_capital[0].id
         and terminal_capital[0].phase_id
+        and (
+            policy_evidence is None
+            or (end in boundaries and terminal_capital[0].phase_id == "terminal")
+        )
         and terminal_capital[0].source_refs
         and terminal_capital[0].equity_observation_id == points[-1].id
         and terminal_capital[0].equity == points[-1].equity
@@ -534,7 +576,11 @@ def _metrics(
         or utilization[0].start_ms != start
         or utilization[-1].end_ms != end
         or any(a.end_ms != b.start_ms for a, b in zip(utilization, utilization[1:], strict=False))
-        or any(row.equity <= 0 or marks.get(row.start_ms) != {row.equity} for row in utilization)
+        or any(
+            row.equity <= 0
+            or (row.start_ms not in boundaries and marks.get(row.start_ms) != {row.equity})
+            for row in utilization
+        )
     ):
         add("utilization", None, "incomplete_or_unmatched_utilization")
     elif not terminal_verified:
@@ -568,6 +614,7 @@ def analyze(
     daily_samples: tuple[EquityPoint, ...] = (),
     utilization: tuple[UtilizationInterval, ...] = (),
     capital_observations: tuple[CapitalObservation, ...] = (),
+    policy_evidence: PolicyEvidence | None = None,
 ) -> Report:
     """Summarize observations without counterfactual claims or silent deduplication.
 
@@ -778,6 +825,11 @@ def analyze(
         unknown.add("entry_delay")
     if any(change.marked_change is None for change in changes):
         unknown.add("recovery_endpoint")
+    if policy_evidence is not None:
+        try:
+            validate_boundaries(policy_evidence, tuple((p.timestamp_ms, p.id) for p in points))
+        except (ValueError, TypeError, AttributeError):
+            issues.append("invalid_observation_policy_evidence")
     structural_complete = not issues
     metrics = _metrics(
         initial,
@@ -788,6 +840,7 @@ def analyze(
         capital_observations,
         ratio,
         drawdown,
+        policy_evidence,
     )
     issues.extend(
         f"metric_unavailable:{m.name}:{m.unavailable_reason}" for m in metrics if m.value is None
@@ -830,4 +883,5 @@ def analyze(
         tuple(utilization),
         structural_complete,
         capital_observations,
+        policy_evidence,
     )

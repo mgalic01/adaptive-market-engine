@@ -12,6 +12,7 @@ from crypto_grid_bot.combined.experiment import (
     Window,
     evaluate,
 )
+from crypto_grid_bot.combined.observation_policy import POLICY_ID, Boundary, PolicyEvidence
 from crypto_grid_bot.combined.report import (
     CapitalObservation,
     Contribution,
@@ -21,6 +22,7 @@ from crypto_grid_bot.combined.report import (
 )
 
 D = Decimal
+
 DAY = 86_400_000
 PIN = "a" * 64
 CODE = "b" * 40
@@ -57,6 +59,8 @@ def registration() -> Registration:
         ((1, PIN), (2, "c" * 64)),
         CODE,
         PIN,
+        observation_policy=POLICY_ID,
+        adapter_pins=tuple((arm, PIN) for arm in ARMS),
     )
 
 
@@ -78,6 +82,8 @@ def outcomes(reg: Registration) -> tuple[RunOutcome, ...]:
                         reg.code_pin,
                         reg.config_pin,
                         capital.fx_pin if capital.id == "owner_small" else None,
+                        reg.observation_policy,
+                        dict(reg.adapter_pins).get(arm),
                     )
                     multiplier = D("1.4") if arm == "combined" else D("1.1")
                     rows.append(
@@ -170,11 +176,26 @@ def with_report(row):
                 D(0),
                 D(0),
                 id=f"capital-{index}",
-                phase_id=f"synthetic-{index}",
+                phase_id=("opening", "settled", "terminal")[index],
                 equity_observation_id=point.id,
                 source_refs=("synthetic-capital",),
             )
             for index, point in enumerate(points)
+        ),
+        policy_evidence=PolicyEvidence(
+            POLICY_ID,
+            PIN,
+            tuple(
+                Boundary(
+                    point.timestamp_ms,
+                    ("opening", "settled", "terminal")[index],
+                    (point.id,),
+                    point.id,
+                    f"capital-{index}",
+                    ("synthetic-capital",),
+                )
+                for index, point in enumerate(points)
+            ),
         ),
     )
     return replace(row, report_evidence=ReportEvidence(row.identity, row.attempt_id, report))
@@ -196,6 +217,52 @@ def test_complete_matrix_passes_and_all_results_are_retained() -> None:
     result = evaluate(reg, rows)
     assert result.status == "pass"
     assert result.outcomes == rows and not result.failures and not result.incomplete_reasons
+
+
+def test_registration_requires_approved_observation_policy_and_adapter_pins():
+    reg = registration()
+    result = evaluate(replace(reg, observation_policy=None, adapter_pins=()), outcomes(reg))
+    assert result.status == "incomplete"
+    assert any("observation policy" in issue for issue in result.incomplete_reasons)
+
+
+def test_report_sampling_policy_cannot_differ_from_run_identity():
+    reg = registration()
+    rows = outcomes(reg)
+    row = rows[0]
+    evidence = row.report_evidence
+    assert evidence is not None and evidence.report.policy_evidence is not None
+    bad_policy = replace(evidence.report.policy_evidence, adapter_pin="e" * 64)
+    bad_report = replace(evidence.report, policy_evidence=bad_policy)
+    bad_row = replace(row, report_evidence=replace(evidence, report=bad_report))
+    assert evaluate(reg, (bad_row, *rows[1:])).status == "incomplete"
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_invalid_policy_retains_recomputed_risk_failure(malformed):
+    reg = registration()
+    rows = outcomes(reg)
+    row = next(r for r in rows if r.identity.arm == "combined")
+    adverse = with_report(replace(row, max_drawdown=D(".4")))
+    report = adverse.report_evidence.report
+    rebuilt = analyze(
+        report.initial_equity,
+        report.equity_points,
+        report.contributions,
+        report.opportunities,
+        report.recovery,
+        report.source_refs,
+        metrics_start_ms=report.metrics_start_ms,
+        daily_samples=report.daily_samples,
+        utilization=report.utilization,
+        capital_observations=report.capital_observations,
+        policy_evidence={} if malformed else replace(report.policy_evidence, policy_id="invalid"),
+    )
+    # The wrapper understates risk. Raw attributable observations must still fail.
+    adverse = replace(row, report_evidence=ReportEvidence(row.identity, row.attempt_id, rebuilt))
+    result = evaluate(reg, tuple(adverse if r is row else r for r in rows))
+    assert result.status == "fail"
+    assert any("drawdown" in failure for failure in result.failures)
 
 
 def test_full_must_beat_every_baseline_on_both_measures_not_best_ablation() -> None:

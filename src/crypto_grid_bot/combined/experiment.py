@@ -11,6 +11,7 @@ from decimal import Decimal
 from fractions import Fraction
 from itertools import product
 
+from .observation_policy import POLICY_ID, PolicyEvidence
 from .report import Report, analyze
 
 _BASELINES = frozenset(
@@ -72,6 +73,8 @@ class Registration:
     code_pin: str
     config_pin: str
     pending: tuple[str, ...] = ()
+    observation_policy: str | None = None
+    adapter_pins: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +96,8 @@ class RunIdentity:
     code_pin: str
     config_pin: str
     fx_pin: str | None = None
+    observation_policy: str | None = None
+    adapter_pin: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +187,20 @@ def _registration_errors(registration: Registration) -> list[str]:
         errors.append("registration: every earlier baseline and explicit spot expansion required")
     if reg.pending:
         errors.append("registration: unresolved pins or decisions")
+    if (
+        reg.observation_policy != POLICY_ID
+        or not isinstance(reg.adapter_pins, tuple)
+        or any(
+            not isinstance(pair, tuple)
+            or len(pair) != 2
+            or not isinstance(pair[0], str)
+            or not _pin(pair[1])
+            for pair in reg.adapter_pins
+        )
+        or len({pair[0] for pair in reg.adapter_pins}) != len(reg.adapter_pins)
+        or {pair[0] for pair in reg.adapter_pins} != arms
+    ):
+        errors.append("registration: approved observation policy and every adapter pin required")
     if not _pin(reg.code_pin, 40) or not _pin(reg.config_pin):
         errors.append("registration: full code/config pins required")
     if (
@@ -319,6 +338,7 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
             opportunity_gap_ms=report.observation_gap_ms,
             metrics_start_ms=report.metrics_start_ms,
             daily_samples=report.daily_samples,
+            policy_evidence=report.policy_evidence,
             utilization=report.utilization,
             capital_observations=report.capital_observations,
         )
@@ -340,6 +360,12 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
 
 def _report_valid(row: RunOutcome) -> bool:
     report = _matching_report(row, row.initial_equity)
+    if report is not None and (
+        not isinstance(report.policy_evidence, PolicyEvidence)
+        or report.policy_evidence.policy_id != row.identity.observation_policy
+        or report.policy_evidence.adapter_pin != row.identity.adapter_pin
+    ):
+        return False
     if report is None or (
         report.final_equity,
         report.max_drawdown,
@@ -518,6 +544,8 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             registration.code_pin,
             registration.config_pin,
             capital.fx_pin if capital.id == "owner_small" else None,
+            registration.observation_policy,
+            dict(registration.adapter_pins)[arm],
         )
         expected[_key(identity)] = (identity, capital.initial_equity)
     grouped: dict[tuple[str, str, str, int], list[RunOutcome]] = {}
