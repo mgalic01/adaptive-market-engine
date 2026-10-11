@@ -123,3 +123,31 @@ saved tests and completed the implementation. New external review and CI are nee
 
 The separate intrabar proposal in this branch is pending an owner decision. It
 does not amend the approved specification or silently change acceptance metrics.
+
+The all-inline review sweep found three further evidence blockers. Acceptance now
+requires an explicitly attributed ReportEvidence for the same attempt and identity,
+recomputes the report from retained inputs, and matches the registered observation
+window, capital, return, drawdown and residual. A caller-set complete flag or forged
+summary is insufficient. Every required metric must be available; only the already
+approved explained residual at or below 1e-18 may remain a report issue. Observed
+safety failures survive missing report evidence. Base and doubled execution-cost
+profile pins must differ; the registration layer must still verify their contents.
+
+Every equity, contribution, opportunity, recovery, daily-sample and utilization
+record now preserves its own stable identity and immutable source references.
+Missing provenance prevents structural completeness; duplicate identities/references
+are rejected. Daily samples must be exact retained equity records, including their
+identity and sources. Grouped opportunities retain all contributing identities.
+The offline dashboard exposes safe, escaped per-record source links. References
+and caller-attributed run identities are not independently authenticated here;
+exact registration and artifact verification remain mandatory later integration.
+Existing callers without provenance remain readable but incomplete.
+
+The integrated batch passes 568 focused tests with one OS skip, plus repository-wide
+Ruff, format, mypy, Bandit and report checks. A separate critic independently passed
+71 acceptance and 56 report/dashboard tests and identified the daily-identity gap
+before its fix. Browser visual QA remains unavailable because both UI tool entry
+points fail kernel initialization. No historical execution was performed.
+Execution-finality acknowledgement wiring and artifact retention of that evidence
+remain obligations of the unfinished full replay adapter; until then canceled
+remainders intentionally block replacement entries.

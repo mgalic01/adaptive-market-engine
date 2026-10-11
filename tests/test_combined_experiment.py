@@ -104,9 +104,14 @@ def with_report(row):
         return row
     start, end = row.identity.start_ms, row.identity.end_ms
     points = (
-        EquityPoint(start, row.initial_equity),
-        EquityPoint(start + DAY, row.initial_equity * (1 - row.max_drawdown)),
-        EquityPoint(end, row.final_equity),
+        EquityPoint(start, row.initial_equity, "opening", ("synthetic-opening",)),
+        EquityPoint(
+            start + DAY,
+            row.initial_equity * (1 - row.max_drawdown),
+            "trough",
+            ("synthetic-trough",),
+        ),
+        EquityPoint(end, row.final_equity, "closing", ("synthetic-closing",)),
     )
     with localcontext() as ctx:
         ctx.prec = 80
@@ -126,6 +131,7 @@ def with_report(row):
             start,
             "closed",
             end,
+            source_refs=("synthetic-pnl",),
         ),
     )
     report = analyze(
@@ -137,7 +143,11 @@ def with_report(row):
         ("synthetic-source",),
         metrics_start_ms=start,
         daily_samples=points,
-        utilization=(UtilizationInterval(start, end, D(0), D(0), row.initial_equity),),
+        utilization=(
+            UtilizationInterval(
+                start, end, D(0), D(0), row.initial_equity, "utilization", ("synthetic-capital",)
+            ),
+        ),
     )
     return replace(row, report_evidence=ReportEvidence(row.identity, row.attempt_id, report))
 
