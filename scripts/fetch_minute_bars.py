@@ -124,7 +124,7 @@ TASK = ROOT / "docs" / "tasks" / "2026-10-11-bob-v3-1-minute-bars-fetch.md"
 # workflow checks out main as it is when the job starts, so a later edit to the task would
 # otherwise run unnoticed. start refuses any other text. The pin block, which holds this
 # script's own SHA-256, is left out of the digest, so the two pins do not refer in a circle.
-TASK_SHA256 = "4c499dc722dee556c2293e1f4f2b522eec63318bea350fe6c6239ebead75141c"
+TASK_SHA256 = "8e11396f36cc628ab4e0608dba3eb88e53265fa5be15516b462ca2f884796612"
 INTERVAL = "1m"
 RECORD = "_run"  # the hidden subcommand of the child that start launches
 # The children start launched, kept so that this process never collects one while it runs.

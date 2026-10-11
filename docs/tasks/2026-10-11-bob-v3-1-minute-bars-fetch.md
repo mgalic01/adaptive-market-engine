@@ -132,7 +132,7 @@ request, that the code and inputs are the ones reviewed here:
   block below out of this file:
 
 ```text
-424dd2a092838bd8219540350959f18d9f7de693029ed979cd913d5f6cf3f795  scripts/fetch_minute_bars.py
+bf871a7141ba94fa03c16593a328fb1f136e0a8695f05717602aee3ac3475b62  scripts/fetch_minute_bars.py
 df652ca79f4ce7083cc7e17b71fcf42bcd720b8b28f3850b8b6bee87705405b3  tests/test_fetch_minute_bars.py
 c41005ef04d10efdc72bb03033947e65e54116d18318973b41171b77fcc81dbd  scripts/fetch_full_range.py
 24c021daa5eab53335a66828601423bfadf7c7effff8f80d6ef5dfd4984c61d3  config/datasets/v3-1-minute-bars/v3-1-minute-bars-2021-2024.toml
@@ -245,7 +245,9 @@ success is a stop (see "Stop conditions").
 
    The second command prints the bytes of every run log and of the digest. The run logs
    are `run.log`, and one `run-<n>.log` for each lost attempt. Then it prints
-   `RESERVED-WINDOW FILES 0`; any other count is a stop.
+   `RESERVED-WINDOW FILES 0`; any other count is a stop. After a run that ended in a
+   traceback, some files named in the first command do not exist: leave out the patterns
+   that match nothing, and say so in 6b.
 6. Write the report `docs/reviews/2026-10-11-bob-v3-1-minute-bars-fetch.md` in **five
    steps, 6a to 6e, in this order**. Complete each step before starting the next.
 
@@ -262,8 +264,9 @@ success is a stop (see "Stop conditions").
      verbatim run logs and digest, and rewriting them by hand would change them.
 
    **Keep the report under 200,000 bytes.** `validate_bob_artifact.py` refuses a larger
-   report, and then nothing is published. The run log and digest are expected to take about
-   70,000 bytes in all, and the three hand-written passages about 8,000: about 3,000 for
+   report, and then nothing is published. The run log and digest are expected to take well
+   under 100,000 bytes in all (a digest row is about 120 bytes, and there are 301), and the
+   three hand-written passages about 8,000: about 3,000 for
    6a (its four `OK` lines included), 2,000 for 6b and 3,000 for 6d. Keep the passages
    short this way:
    - quote only the part of a log line that shows the result (self-check 1 in
