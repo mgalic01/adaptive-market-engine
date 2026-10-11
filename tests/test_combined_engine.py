@@ -102,11 +102,13 @@ def test_stale_held_quote_cancels_remaining_increase():
 
 def test_margin_close_cancels_all_pending_increases_without_drawdown_halt():
     engine = PortfolioEngine(D(10000))
+    # Leave planned-cost headroom: this test targets cancellation/identity, not sizing.
     future = intent(
         owner="futures_trend",
         venue="futures",
         side=-1,
         stop=D(102),
+        requested_quantity=D(10),
         funding_rate=D(0),
         funding_age_ms=0,
         funding_interval_ms=28_800_000,
@@ -423,7 +425,8 @@ def test_explicit_close_keeps_dust_owned_without_blocking_an_unrelated_asset():
 
 def test_pending_only_close_cancels_only_its_asset_and_late_fill_is_honestly_booked():
     engine = PortfolioEngine(D(10000))
-    order, other = intent(), intent("other", "ETHUSDT")
+    # Leave planned-cost headroom: this test targets cancellation/identity, not sizing.
+    order, other = intent(requested_quantity=D(10)), intent("other", "ETHUSDT")
     engine.submit(order, candidate(order), QUOTES, RULES)
     engine.submit(other, candidate(other), QUOTES, RULES)
     engine.request_close(order.symbol, order.owner, 1, reason="signal_lost")
@@ -684,7 +687,8 @@ def test_fully_settled_late_remainder_needs_no_cancel_finality_for_recovery():
 @pytest.mark.parametrize("conflict", ["role", "admission"])
 def test_duplicate_fill_rejects_changed_role_or_admission_and_retains_prefix(same_batch, conflict):
     engine = PortfolioEngine(D(10000))
-    order = intent()
+    # Leave planned-cost headroom: this test targets cancellation/identity, not sizing.
+    order = intent(requested_quantity=D(10))
     other = intent("eth-pending", "ETHUSDT")
     assert engine.submit(order, candidate(order), QUOTES, RULES).accepted
     assert engine.submit(other, candidate(other), QUOTES, RULES).accepted
@@ -976,8 +980,10 @@ def test_post_fill_recheck_marks_preexisting_overlimit_asset_for_close():
         funding=(FundingEvent("loss", 2, orders[0].symbol, D(-500)),),
         increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
     )
-    assert state.close_required == (orders[0].symbol,)
-    assert "post_fill_risk_breach" in state.reasons
+    # Funding now cancels increases immediately: the later supplied fill is still
+    # booked, but it is a late canceled execution and must also be closed.
+    assert set(state.close_required) == {order.symbol for order in orders}
+    assert {"portfolio_cap_reduction", "post_fill_risk_breach"} <= set(state.reasons)
 
 
 def test_duplicate_submit_cannot_replace_retained_authoritative_groups():
@@ -1041,3 +1047,195 @@ def test_finality_excludes_canceled_remainder_from_post_fill_risk_totals():
         increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
     )
     assert state.close_required == () and "post_fill_risk_breach" not in state.reasons
+
+
+@pytest.mark.parametrize("event_kind", ["funding", "quote", "reduction_fee"])
+def test_nonincrease_events_enforce_current_portfolio_caps(event_kind):
+    cap = "old_asset_risk" if event_kind == "reduction_fee" else "asset_risk"
+    engine, orders, fills, quotes, rules, _ = cap_scenario(cap)
+    engine.settle(
+        "last",
+        2,
+        quotes,
+        rules,
+        increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
+    )
+    if event_kind == "funding":
+        state = engine.settle(
+            "funding-only",
+            3,
+            quotes,
+            rules,
+            funding=(FundingEvent("loss", 3, orders[0].symbol, D(-500)),),
+        )
+        affected = orders[-1].symbol
+    elif event_kind == "quote":
+        quotes = {**quotes, orders[-1].symbol: Quote(D(101), 3)}
+        state = engine.observe(3, quotes, rules)
+        affected = orders[-1].symbol
+    else:
+        close = replace(fills[-1], event_id="expensive-close", timestamp_ms=3, side=-1, fee=D(500))
+        state = engine.settle("reduction-only", 3, quotes, rules, reductions=(close,))
+        affected = orders[0].symbol
+    assert affected in state.close_required
+    assert "portfolio_cap_reduction" in state.reasons
+    assert "post_fill_risk_breach" not in state.reasons
+
+
+def test_transient_funding_cap_breach_is_not_erased_by_later_cashflow():
+    engine, orders, fills, quotes, rules, _ = cap_scenario("asset_risk")
+    engine.settle(
+        "last",
+        2,
+        quotes,
+        rules,
+        increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
+    )
+    state = engine.settle(
+        "funding-only",
+        3,
+        quotes,
+        rules,
+        funding=(
+            FundingEvent("loss", 3, orders[0].symbol, D(-500)),
+            FundingEvent("restore", 3, orders[0].symbol, D(500)),
+        ),
+    )
+    assert state.account.equity == 10000
+    assert orders[-1].symbol in state.close_required
+    assert "portfolio_cap_reduction" in state.reasons
+
+
+def test_pending_close_reason_survives_observation_and_repeated_disposition_before_late_fill():
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    engine.request_close(order.symbol, order.owner, order.side, reason="trend_reversal")
+    engine.observe(1, QUOTES, RULES)
+    engine.request_close(order.symbol, order.owner, order.side, reason="regime_exit")
+    late = FillEvent("late", 2, order.symbol, order.owner, order.venue, 1, D(1), D(100), D(0))
+    state = engine.settle("late", 2, QUOTES, RULES, increases=((order.intent_id, late),))
+    assert state.close_required == (order.symbol,)
+    assert {"trend_reversal", "regime_exit", "post_fill_risk_breach"} <= set(state.reasons)
+    partial = replace(late, event_id="partial-close", timestamp_ms=3, side=-1, quantity=D(".5"))
+    state = engine.settle("partial-close", 3, QUOTES, RULES, reductions=(partial,))
+    assert {"trend_reversal", "regime_exit"} <= set(state.reasons)
+
+
+def test_pending_close_reason_is_not_inherited_by_new_admission_after_finality():
+    engine = PortfolioEngine(D(10000))
+    old = intent()
+    engine.submit(old, candidate(old), QUOTES, RULES)
+    engine.request_close(old.symbol, old.owner, old.side, reason="old_reversal")
+    engine.acknowledge_finality(old.intent_id, source_refs=("synthetic:final",))
+    new = replace(old, intent_id="new")
+    engine.submit(new, candidate(new), QUOTES, RULES)
+    fill = FillEvent("new-fill", 1, new.symbol, new.owner, new.venue, 1, D(1), D(100), D(0))
+    state = engine.settle("new-fill", 1, QUOTES, RULES, increases=((new.intent_id, fill),))
+    assert "old_reversal" not in state.reasons
+
+
+@pytest.mark.parametrize("cause", ["quote", "funding"])
+def test_routine_cap_reduction_is_not_replay_engineering_failure(cause):
+    from crypto_grid_bot.combined.replay_events import SettledBatch, replay_events
+
+    engine, orders, fills, quotes, rules, _ = cap_scenario("asset_risk")
+    engine.settle(
+        "last",
+        2,
+        quotes,
+        rules,
+        increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
+    )
+    if cause == "quote":
+        quotes = {**quotes, orders[-1].symbol: Quote(D(101), 3)}
+        funding = ()
+    else:
+        funding = (FundingEvent("loss", 3, orders[0].symbol, D(-500)),)
+    close = replace(
+        fills[-1], event_id="close", timestamp_ms=4, side=-1, price=quotes[orders[-1].symbol].price
+    )
+    result = replay_events(
+        engine,
+        (
+            SettledBatch(
+                "valuation",
+                3,
+                tuple(quotes.items()),
+                tuple(rules.items()),
+                funding=funding,
+                source_refs=("synthetic:valuation",),
+            ),
+            SettledBatch(
+                "reduction",
+                4,
+                tuple(quotes.items()),
+                tuple(rules.items()),
+                reductions=(close,),
+                source_refs=("synthetic:reduction",),
+            ),
+        ),
+    )
+    assert result.failure is None
+    assert "portfolio_cap_reduction" in result.snapshots[0].snapshot.reasons
+    assert "post_fill_risk_breach" not in result.snapshots[0].snapshot.reasons
+    assert result.snapshots[-1].snapshot.close_required == ()
+
+
+def test_pending_reversal_survives_full_close_before_late_remainder_fill():
+    engine = PortfolioEngine(D(10000))
+    order, first, _ = open_partial(engine)
+    engine.request_close(order.symbol, order.owner, order.side, reason="trend_reversal")
+    close = replace(first, event_id="close", timestamp_ms=2, side=-1)
+    state = engine.settle("close", 2, QUOTES, RULES, reductions=(close,))
+    assert state.account.positions == () and state.close_required == ()
+    late = replace(first, event_id="late", timestamp_ms=3)
+    state = engine.settle("late", 3, QUOTES, RULES, increases=((order.intent_id, late),))
+    assert state.close_required == (order.symbol,)
+    assert "trend_reversal" in state.reasons
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_planned_fee_paying_cap_entry_remains_accepted_after_settlement(partial):
+    engine = PortfolioEngine(D(10000))
+    order = intent(stop=D(99), fee_rate=D(".001"), slippage_rate=D(0))
+    admission = engine.submit(order, candidate(order), QUOTES, RULES)
+    assert admission.accepted
+    quantities = (admission.quantity / 2,) * 2 if partial else (admission.quantity,)
+    for index, quantity in enumerate(quantities, 1):
+        fill = FillEvent(
+            str(index),
+            index,
+            order.symbol,
+            order.owner,
+            order.venue,
+            order.side,
+            quantity,
+            D(100),
+            quantity * D(".1"),
+        )
+        state = engine.settle(
+            str(index), index, QUOTES, RULES, increases=((order.intent_id, fill),)
+        )
+        assert state.close_required == ()
+        assert "post_fill_risk_breach" not in state.reasons
+        assert "portfolio_cap_reduction" not in state.reasons
+
+
+def test_fee_entry_preserves_existing_half_multiplier_asset_risk_cap():
+    engine = PortfolioEngine(D(10000))
+    held = intent(
+        stop=D(95),
+        requested_quantity=D(5),
+        fee_rate=D(0),
+        slippage_rate=D(0),
+        risk_multiplier=D(".5"),
+    )
+    answer = engine.submit(held, replace(candidate(held), risk_multiplier=D(".5")), QUOTES, RULES)
+    assert answer.quantity == 5
+    fill = FillEvent(
+        "held", 1, held.symbol, held.owner, held.venue, held.side, answer.quantity, D(100), D(0)
+    )
+    engine.settle("held", 1, QUOTES, RULES, increases=((held.intent_id, fill),))
+    new = intent("other", "ETHUSDT", stop=D(99), fee_rate=D(".001"), slippage_rate=D(0))
+    assert not engine.submit(new, replace(candidate(new), decision_ms=1), QUOTES, RULES).accepted

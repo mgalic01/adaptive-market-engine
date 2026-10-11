@@ -86,6 +86,7 @@ class PortfolioEngine:
         self._stops: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
         self._close: set[str] = set()
         self._close_reasons: dict[str, set[str]] = {}
+        self._order_close_reasons: dict[str, set[str]] = {}
         self._liquidation = False
         self._integrity_failure = False
         self._batches: dict[str, tuple[object, EngineSnapshot]] = {}
@@ -134,9 +135,11 @@ class PortfolioEngine:
             "stale_position_or_missing_filters",
             "margin_reduction",
             "post_fill_risk_breach",
+            "portfolio_cap_reduction",
         }
         for key, (intent, _) in tuple(self._orders.items()):
             if portfolio_protection or intent.symbol == symbol:
+                self._order_close_reasons.setdefault(key, set()).add(reason)
                 self.cancel(key)
         self._close.add(symbol)
         self._close_reasons.setdefault(symbol, set()).add(reason)
@@ -145,7 +148,11 @@ class PortfolioEngine:
         if type(side) is not int or side not in {-1, 1}:
             raise ValueError("held side must be exactly +1 or -1")
         position = next((p for p in self._account.snapshot().positions if p.symbol == symbol), None)
-        pending = [i for i, _ in self._orders.values() if i.symbol == symbol]
+        pending = [
+            i
+            for key, (i, remaining) in self._known_orders.items()
+            if i.symbol == symbol and remaining > 0 and key not in self._finality
+        ]
         if position is None and not pending:
             raise ValueError("asset has no held or pending owner")
         if (
@@ -162,15 +169,18 @@ class PortfolioEngine:
         Repeated requests are idempotent while owned. Missing prices and partial
         fills cannot clear the obligation; verified dust stays valued and owned.
         Only settled reductions change inventory. A pending-only request cancels
-        its order; any subsequent actual late fill is still booked and closed.
+        its order; its disposition remains attached to that admission so subsequent
+        actual late fills are booked and closed with the original reason.
         """
         with self._lock:
             if not isinstance(reason, str) or not reason.strip():
                 raise ValueError("nonempty protective close reason required")
             position = self._protective_owner(symbol, owner, side)
-            for key, (intent, _) in tuple(self._orders.items()):
-                if intent.symbol == symbol:
-                    self.cancel(key)
+            for key, (intent, remaining) in tuple(self._known_orders.items()):
+                if intent.symbol == symbol and remaining > 0 and key not in self._finality:
+                    self._order_close_reasons.setdefault(key, set()).add(reason)
+                    if key in self._orders:
+                        self.cancel(key)
             if position is not None:
                 self._require_close(symbol, reason)
 
@@ -237,6 +247,7 @@ class PortfolioEngine:
                     abs(position.quantity) * position.mark,
                     abs(position.quantity) * unit_risk,
                     mapping.get(position.symbol, "unknown"),
+                    self._risk_multipliers[position.symbol],
                 )
             )
         return PortfolioView(
@@ -248,7 +259,7 @@ class PortfolioEngine:
             max(Decimal(0), futures_margin(account.free_cash, account.positions).backing),
         )
 
-    def _post_fill_risk_breaches(self, state: EngineSnapshot) -> set[str]:
+    def _risk_breaches(self, account: AccountSnapshot, fraction: Decimal) -> set[str]:
         """Revalue held risk and unfilled potential once against current equity.
 
         Groups are the last successfully admitted causal snapshot; missing symbols
@@ -256,7 +267,7 @@ class PortfolioEngine:
         Shared-cap breaches conservatively close all holdings, rather than choose
         an unregistered priority among assets to restore the portfolio limit.
         """
-        view = self._view(state.account, state.recovery.risk_fraction, self._correlation_groups)
+        view = self._view(account, fraction, self._correlation_groups)
         gross: dict[str, Fraction] = {}
         risk: dict[str, Fraction] = {}
         for exposure in view.exposures:
@@ -290,7 +301,7 @@ class PortfolioEngine:
             or sum(gross.values(), Fraction(0)) > capital * Fraction(8, 5)
             or any(value > capital * Fraction(4, 5) for value in group_gross.values())
         ):
-            breaches.update(position.symbol for position in state.account.positions)
+            breaches.update(position.symbol for position in account.positions)
         return breaches
 
     def _exit_reserve(self, account: AccountSnapshot) -> Decimal:
@@ -367,6 +378,10 @@ class PortfolioEngine:
                 for position in account.positions:
                     self._require_close(position.symbol, recovery.reason)
                 reasons.append(recovery.reason)
+            # Routine cap management applies to every causal valuation/account event.
+            # Keep it distinct from failed execution so replay can settle reductions.
+            for symbol in self._risk_breaches(account, recovery.risk_fraction):
+                self._require_close(symbol, "portfolio_cap_reduction")
             held = {p.symbol for p in account.positions}
             self._close.intersection_update(held)
             self._close_reasons = {
@@ -632,6 +647,8 @@ class PortfolioEngine:
                 else:
                     self._orders.pop(key, None)
                 self._fills[event.event_id] = increase_identity
+                for reason in self._order_close_reasons.get(key, ()):
+                    self._require_close(event.symbol, reason)
                 adverse = planned_price(
                     intent.price, intent.side, intent.slippage_rate, intent.tick
                 )
@@ -642,7 +659,7 @@ class PortfolioEngine:
                 ):
                     self._require_close(event.symbol, "post_fill_risk_breach")
                 state = self.observe(timestamp_ms, quotes, rules)
-                for symbol in self._post_fill_risk_breaches(state):
+                for symbol in self._risk_breaches(state.account, state.recovery.risk_fraction):
                     self._require_close(symbol, "post_fill_risk_breach")
             result = self.observe(timestamp_ms, quotes, rules)
             self._batches[batch_id] = (identity, result)
