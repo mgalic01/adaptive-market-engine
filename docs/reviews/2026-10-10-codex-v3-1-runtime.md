@@ -394,3 +394,22 @@ but cannot establish common-hourly comparability. Full scenario replay, baseline
 adapters, endpoint support and historical authorization remain outstanding.
 
 Verification: 916 combined tests passed, one OS skip; static analysis, formatting and report checks passed. Synthetic evidence only.
+
+
+### Two-scenario acceptance identity
+
+Registration explicitly requires open/low/high/close and open/high/low/close.
+Every component/window/capital/cost cell requires both independently identified
+outcomes; native baseline outcomes are retained once and compared against each
+scenario on the common hourly schedule. Reports bind their scenario in policy
+evidence as well as their run/attempt identity. A missing scenario is incomplete;
+a breach or verified doubled-cost loss in either scenario fails. No return,
+peak, trough or statistical sample is pooled across the scenarios.
+
+The fresh critic found that foreign-scenario report drawdown could be attributed
+to the wrapper's other scenario. Its regression failed before the binding check
+and passed after; independent scalar safety remains attributable. Malformed
+scenario IDs are retained as incomplete rather than throwing during grouping.
+This adds acceptance identities, not the still-unfinished OHLC execution adapter.
+
+Verification after scenario fixes: 927 combined tests passed, one OS skip; full focused preflight static/report checks passed. Required remote CI remains separate.

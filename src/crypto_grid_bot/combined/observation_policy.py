@@ -27,6 +27,7 @@ class PolicyEvidence:
     policy_id: str
     adapter_pin: str
     boundaries: tuple[Boundary, ...]
+    scenario: str | None = None
 
 
 def _text(value: object) -> bool:

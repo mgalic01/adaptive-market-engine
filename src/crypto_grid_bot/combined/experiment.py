@@ -38,6 +38,7 @@ _COMPONENTS = frozenset(
 )
 _RESERVED = 1_735_689_600_000
 _DAY = 86_400_000
+SCENARIOS = ("open_low_high_close", "open_high_low_close")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +77,7 @@ class Registration:
     pending: tuple[str, ...] = ()
     observation_policy: str | None = None
     adapter_pins: tuple[tuple[str, str], ...] = ()
+    scenarios: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +86,8 @@ class RunIdentity:
 
     Adapters must populate fx_pin for owner_small. Research needs no conversion
     and retains None; older owner-small identities with no FX pin are incomplete.
+    Components require one of SCENARIOS; frozen baselines use "native". Each
+    modeled scenario is a separate account outcome, never a pooled observation.
     """
 
     arm: str
@@ -99,6 +103,7 @@ class RunIdentity:
     fx_pin: str | None = None
     observation_policy: str | None = None
     adapter_pin: str | None = None
+    scenario: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +166,8 @@ def _cost_profile_valid(profile: object) -> bool:
 def _registration_errors(registration: Registration) -> list[str]:
     reg = registration
     errors: list[str] = []
+    if reg.scenarios != SCENARIOS:
+        errors.append("registration: both ordered modeled scenarios required")
     arms_valid = isinstance(reg.arms, (tuple, list)) and all(
         isinstance(arm, str) and arm.strip() for arm in reg.arms
     )
@@ -278,8 +285,14 @@ def _registration_errors(registration: Registration) -> list[str]:
     return errors
 
 
-def _key(identity: RunIdentity) -> tuple[str, str, str, int]:
-    return identity.arm, identity.window, identity.capital, identity.cost_multiple
+def _key(identity: RunIdentity) -> tuple[str, str, str, int, str | None]:
+    return (
+        identity.arm,
+        identity.window,
+        identity.capital,
+        identity.cost_multiple,
+        identity.scenario,
+    )
 
 
 def _metrics_valid(row: RunOutcome) -> bool:
@@ -328,6 +341,11 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
     ):
         return None
     report = evidence.report
+    if (
+        isinstance(report.policy_evidence, PolicyEvidence)
+        and report.policy_evidence.scenario != row.identity.scenario
+    ):
+        return None
     try:
         rebuilt = analyze(
             report.initial_equity,
@@ -365,6 +383,7 @@ def _report_valid(row: RunOutcome) -> bool:
         not isinstance(report.policy_evidence, PolicyEvidence)
         or report.policy_evidence.policy_id != row.identity.observation_policy
         or report.policy_evidence.adapter_pin != row.identity.adapter_pin
+        or report.policy_evidence.scenario != row.identity.scenario
     ):
         return False
     if report is None or (
@@ -454,6 +473,7 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
     identity = row.identity
     if (
         identity.arm not in _COMPONENTS
+        or identity.scenario not in SCENARIOS
         or not isinstance(reg.arms, (tuple, list))
         or reg.arms.count(identity.arm) != 1
         or not _pin(reg.code_pin, 40)
@@ -514,6 +534,8 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
     Wallets/quantities require explicit exactness verification (None unknown, False mismatch).
     Terminal profit tests require complete matching reports; already observed safety
     failures remain failures without them. Zero-DD ratios remain indeterminate.
+    Every component requires both modeled scenarios; the same native baseline
+    control is compared to each separately, never counted as an extra trial.
     """
     retained = tuple(outcomes)
     incomplete = _registration_errors(registration)
@@ -528,10 +550,16 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             retained,
         )
     failures: list[str] = []
-    expected: dict[tuple[str, str, str, int], tuple[RunIdentity, Decimal]] = {}
-    for arm, window, capital, profile in product(
-        registration.arms, registration.windows, registration.capitals, registration.cost_profiles
+    expected: dict[tuple[str, str, str, int, str | None], tuple[RunIdentity, Decimal]] = {}
+    for arm, window, capital, profile, scenario in product(
+        registration.arms,
+        registration.windows,
+        registration.capitals,
+        registration.cost_profiles,
+        (*registration.scenarios, "native"),
     ):
+        if (arm in _COMPONENTS) == (scenario == "native"):
+            continue
         multiple, pin = profile
         identity = RunIdentity(
             arm,
@@ -547,17 +575,24 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             capital.fx_pin if capital.id == "owner_small" else None,
             registration.observation_policy,
             dict(registration.adapter_pins)[arm],
+            scenario,
         )
         expected[_key(identity)] = (identity, capital.initial_equity)
-    grouped: dict[tuple[str, str, str, int], list[RunOutcome]] = {}
+    grouped: dict[tuple[str, str, str, int, str | None], list[RunOutcome]] = {}
     attempts: dict[str, int] = {}
     for row in retained:
+        if not isinstance(row.identity.scenario, str) or row.identity.scenario not in (
+            *SCENARIOS,
+            "native",
+        ):
+            incomplete.append("invalid scenario identity retained")
+            continue
         grouped.setdefault(_key(row.identity), []).append(row)
         attempts[row.attempt_id] = attempts.get(row.attempt_id, 0) + 1
     for key in grouped.keys() - expected.keys():
         incomplete.append(f"{key}: unregistered outcome")
-    valid: dict[tuple[str, str, str, int], RunOutcome] = {}
-    common: dict[tuple[str, str, str, int], CommonSeries] = {}
+    valid: dict[tuple[str, str, str, int, str | None], RunOutcome] = {}
+    common: dict[tuple[str, str, str, int, str | None], CommonSeries] = {}
     for key, (identity, expected_capital) in expected.items():
         rows = grouped.get(key, [])
         # Comparability requires one complete attempt; observed safety failures do not.
@@ -631,27 +666,34 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             incomplete.append(f"{key}: common hourly comparison evidence unavailable")
             continue
         valid[key] = row
-    for window, capital, profile in product(
-        registration.windows, registration.capitals, registration.cost_profiles
+    for window, capital, profile, scenario in product(
+        registration.windows,
+        registration.capitals,
+        registration.cost_profiles,
+        registration.scenarios,
     ):
         multiple, _ = profile
-        full = valid.get(("combined", window.id, capital.id, multiple))
+        full = valid.get(("combined", window.id, capital.id, multiple, scenario))
         if full is None:
             continue
-        full_series = common[("combined", window.id, capital.id, multiple)]
+        full_series = common[("combined", window.id, capital.id, multiple, scenario)]
         full_return = full_series.net_return
         for baseline in registration.baseline_arms:
-            key = (baseline, window.id, capital.id, multiple)
+            key = (baseline, window.id, capital.id, multiple, "native")
             other = valid.get(key)
             if other is None:
                 continue  # The missing/invalid cell already has a visible reason.
             other_series = common[key]
             other_return = other_series.net_return
             if full_return <= other_return:
-                failures.append(f"{key}: full return does not strictly beat baseline")
+                failures.append(f"{key}/{scenario}: full return does not strictly beat baseline")
             if full_series.max_drawdown == 0 or other_series.max_drawdown == 0:
-                incomplete.append(f"{key}: return/drawdown is indeterminate at zero drawdown")
+                incomplete.append(
+                    f"{key}/{scenario}: return/drawdown is indeterminate at zero drawdown"
+                )
             elif full_return / full_series.max_drawdown <= other_return / other_series.max_drawdown:
-                failures.append(f"{key}: full return/drawdown does not strictly beat baseline")
+                failures.append(
+                    f"{key}/{scenario}: full return/drawdown does not strictly beat baseline"
+                )
     status = "fail" if failures else "incomplete" if incomplete else "pass"
     return AcceptanceResult(status, tuple(failures), tuple(incomplete), retained)

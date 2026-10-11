@@ -4,6 +4,7 @@ from decimal import Decimal, localcontext
 import pytest
 
 from crypto_grid_bot.combined.experiment import (
+    SCENARIOS,
     Capital,
     Registration,
     ReportEvidence,
@@ -61,6 +62,7 @@ def registration() -> Registration:
         PIN,
         observation_policy=POLICY_ID,
         adapter_pins=tuple((arm, PIN) for arm in ARMS),
+        scenarios=SCENARIOS,
     )
 
 
@@ -70,37 +72,39 @@ def outcomes(reg: Registration) -> tuple[RunOutcome, ...]:
         for window in reg.windows:
             for capital in reg.capitals:
                 for multiple, cost_pin in reg.cost_profiles:
-                    identity = RunIdentity(
-                        arm,
-                        window.id,
-                        capital.id,
-                        multiple,
-                        window.data_pin,
-                        cost_pin,
-                        window.start_ms,
-                        window.end_ms,
-                        reg.code_pin,
-                        reg.config_pin,
-                        capital.fx_pin if capital.id == "owner_small" else None,
-                        reg.observation_policy,
-                        dict(reg.adapter_pins).get(arm),
-                    )
-                    multiplier = D("1.4") if arm == "combined" else D("1.1")
-                    rows.append(
-                        RunOutcome(
-                            identity,
-                            capital.initial_equity,
-                            capital.initial_equity * multiplier,
-                            D(".2"),
-                            0,
-                            D(0),
-                            True,
-                            True,
-                            False,
-                            f"{arm}-{window.id}-{capital.id}-{multiple}",
-                            True,
+                    for scenario in ("native",) if arm in BASELINES else SCENARIOS:
+                        identity = RunIdentity(
+                            arm,
+                            window.id,
+                            capital.id,
+                            multiple,
+                            window.data_pin,
+                            cost_pin,
+                            window.start_ms,
+                            window.end_ms,
+                            reg.code_pin,
+                            reg.config_pin,
+                            capital.fx_pin if capital.id == "owner_small" else None,
+                            reg.observation_policy,
+                            dict(reg.adapter_pins).get(arm),
+                            scenario,
                         )
-                    )
+                        multiplier = D("1.4") if arm == "combined" else D("1.1")
+                        rows.append(
+                            RunOutcome(
+                                identity,
+                                capital.initial_equity,
+                                capital.initial_equity * multiplier,
+                                D(".2"),
+                                0,
+                                D(0),
+                                True,
+                                True,
+                                False,
+                                f"{arm}-{window.id}-{capital.id}-{multiple}-{scenario}",
+                                True,
+                            )
+                        )
     return tuple(with_report(row) for row in rows)
 
 
@@ -213,6 +217,7 @@ def with_report(row, *, hourly=True):
                 )
                 for index, point in enumerate(points)
             ),
+            scenario=row.identity.scenario,
         ),
     )
     return replace(row, report_evidence=ReportEvidence(row.identity, row.attempt_id, report))
@@ -223,6 +228,7 @@ def change(rows, arm="combined", cost=1, capital="research", **updates):
         with_report(replace(row, **updates))
         if (row.identity.arm, row.identity.cost_multiple, row.identity.capital)
         == (arm, cost, capital)
+        and row.identity.scenario in (SCENARIOS[0], "native")
         else row
         for row in rows
     )
@@ -1151,3 +1157,87 @@ def test_missing_common_hourly_series_does_not_hide_verified_doubled_cost_loss()
     result = evaluate(reg, rows)
     assert result.status == "fail"
     assert any("profit is not positive" in reason for reason in result.failures)
+
+
+def test_both_modeled_scenarios_are_mandatory_and_not_pooled():
+    reg = registration()
+    rows = outcomes(reg)
+    assert {r.identity.scenario for r in rows if r.identity.arm == "combined"} == {
+        "open_low_high_close",
+        "open_high_low_close",
+    }
+    missing = tuple(r for r in rows if r.identity.scenario != "open_high_low_close")
+    result = evaluate(reg, missing)
+    assert result.status == "incomplete"
+    assert any("open_high_low_close" in reason for reason in result.incomplete_reasons)
+
+
+def test_other_scenario_cannot_hide_drawdown_or_doubled_cost_loss():
+    reg = registration()
+    rows = list(outcomes(reg))
+    index = next(
+        i
+        for i, r in enumerate(rows)
+        if r.identity.arm == "combined"
+        and r.identity.scenario == SCENARIOS[1]
+        and r.identity.cost_multiple == 2
+    )
+    rows[index] = with_report(
+        replace(rows[index], max_drawdown=D(".4"), final_equity=rows[index].initial_equity)
+    )
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "fail"
+    assert any(
+        "maximum drawdown" in reason and SCENARIOS[1] in reason for reason in result.failures
+    )
+    assert any(
+        "profit is not positive" in reason and SCENARIOS[1] in reason for reason in result.failures
+    )
+
+
+def test_report_cannot_be_reused_under_other_scenario_identity():
+    reg = registration()
+    rows = list(outcomes(reg))
+    index = next(i for i, r in enumerate(rows) if r.identity.arm == "combined")
+    row = rows[index]
+    evidence = row.report_evidence
+    policy = replace(evidence.report.policy_evidence, scenario=SCENARIOS[1])
+    rows[index] = replace(
+        row,
+        report_evidence=replace(evidence, report=replace(evidence.report, policy_evidence=policy)),
+    )
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete"
+    assert any("report evidence" in reason for reason in result.incomplete_reasons)
+
+
+@pytest.mark.parametrize("scenarios", [(), (SCENARIOS[0],), SCENARIOS[::-1], [*SCENARIOS]])
+def test_registration_requires_explicit_fixed_scenario_menu(scenarios):
+    reg = registration()
+    result = evaluate(replace(reg, scenarios=scenarios), outcomes(reg))
+    assert result.status == "incomplete"
+    assert any("modeled scenarios" in reason for reason in result.incomplete_reasons)
+
+
+@pytest.mark.parametrize("scenario", [None, [], "unknown"])
+def test_malformed_scenario_identity_is_incomplete(scenario):
+    reg = registration()
+    rows = list(outcomes(reg))
+    rows[0] = replace(rows[0], identity=replace(rows[0].identity, scenario=scenario))
+    assert evaluate(reg, tuple(rows)).status == "incomplete"
+
+
+def test_foreign_scenario_report_cannot_assign_its_drawdown_to_other_account():
+    reg = registration()
+    rows = list(outcomes(reg))
+    index = next(i for i, row in enumerate(rows) if row.identity.arm == "combined")
+    original = rows[index]
+    adverse = with_report(replace(original, max_drawdown=D(".4"))).report_evidence
+    foreign = replace(adverse.report.policy_evidence, scenario=SCENARIOS[1])
+    rows[index] = replace(
+        original,
+        report_evidence=replace(adverse, report=replace(adverse.report, policy_evidence=foreign)),
+    )
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete"
+    assert not result.failures
