@@ -182,3 +182,21 @@ def test_required_metrics_and_sampling_definitions_are_visible_even_when_unknown
     ):
         assert label in text
     assert "Structurally complete</span>" not in html
+
+
+def test_per_record_provenance_is_visible_linked_and_preserved_in_download():
+    row = replace(
+        contributions()[0], source_refs=("https://example.com/trades#closed", "javascript:bad")
+    )
+    evidence = analyze(D(100), curve(), (row, contributions()[1]), (), (), ("global",))
+    html = render_report(evidence)
+    parsed = Elements(html)
+    assert "Record provenance" in " ".join(parsed.text)
+    assert any(
+        attrs.get("href") == "https://example.com/trades#closed" for _, attrs in parsed.elements
+    )
+    assert not any(attrs.get("href") == "javascript:bad" for _, attrs in parsed.elements)
+    download = next(attrs["href"] for _, attrs in parsed.elements if attrs.get("download"))
+    data = json.loads(unquote(download.split(",", 1)[1]))
+    assert data["report"]["contributions"][0]["source_refs"] == list(row.source_refs)
+    assert data["report"]["equity_points"][0]["id"] == "mark-0"

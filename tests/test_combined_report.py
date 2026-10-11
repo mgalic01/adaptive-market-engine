@@ -34,6 +34,7 @@ def contributions():
             2,
             D(15),
             D(4),
+            source_refs=("synthetic#closed",),
         ),
         Contribution(
             "open",
@@ -48,12 +49,16 @@ def contributions():
             None,
             1,
             "open_marked",
+            source_refs=("synthetic#open",),
         ),
     )
 
 
 def curve():
-    return (EquityPoint(0, D(100)), EquityPoint(1, D(110)), EquityPoint(2, D(105)))
+    return tuple(
+        EquityPoint(t, D(v), f"mark-{t}", (f"synthetic#mark-{t}",))
+        for t, v in ((0, 100), (1, 110), (2, 105))
+    )
 
 
 def test_accounting_and_dimensions_include_open_marks_with_signed_funding() -> None:
@@ -220,7 +225,12 @@ def test_recovery_unverified_or_contradictory_endpoints_have_no_attribution(epis
 
 def test_recovery_exact_observed_endpoints_preserve_actual_loss() -> None:
     report = analyze(
-        D(100), curve(), contributions(), (), (RecoveryEpisode(1, 2, D(110), D(105)),), ("source",)
+        D(100),
+        curve(),
+        contributions(),
+        (),
+        (RecoveryEpisode(1, 2, D(110), D(105), "recovery-1", ("synthetic#recovery",)),),
+        ("source",),
     )
     assert report.structural_complete
     assert report.recovery_changes[0].marked_change == -5
@@ -234,7 +244,12 @@ def test_recovery_does_not_choose_between_different_same_timestamp_marks() -> No
         EquityPoint(2, D(105)),
     )
     report = analyze(
-        D(100), points, contributions(), (), (RecoveryEpisode(1, 2, D(110), D(105)),), ("source",)
+        D(100),
+        points,
+        contributions(),
+        (),
+        (RecoveryEpisode(1, 2, D(110), D(105), "recovery-1", ("synthetic#recovery",)),),
+        ("source",),
     )
     assert not report.complete
     assert report.recovery_changes[0].marked_change is None
@@ -326,7 +341,7 @@ def test_utilization_is_duration_weighted_capital_not_futures_notional():
 
 
 def test_missing_required_metrics_prevents_complete_report_but_keeps_structural_status():
-    result = metrics_report((EquityPoint(0, D(100)),))
+    result = metrics_report((EquityPoint(0, D(100), "opening", ("synthetic#opening",)),))
     assert result.structural_complete and not result.complete
     assert any("metric_unavailable" in issue for issue in result.issues)
 
@@ -334,6 +349,14 @@ def test_missing_required_metrics_prevents_complete_report_but_keeps_structural_
 def test_supplied_metrics_can_make_reconciled_report_complete():
     points = (EquityPoint(0, D(100)), EquityPoint(DAY, D(110)), EquityPoint(2 * DAY, D(100)))
     utilization = (UtilizationInterval(0, 2 * DAY, D(0), D(0), D(100)),)
+    points = tuple(
+        replace(p, id=f"mark-{i}", source_refs=(f"synthetic#mark-{i}",))
+        for i, p in enumerate(points)
+    )
+    utilization = tuple(
+        replace(p, id=f"capital-{i}", source_refs=(f"synthetic#capital-{i}",))
+        for i, p in enumerate(utilization)
+    )
     result = metrics_report(
         points, metrics_start_ms=0, daily_samples=points, utilization=utilization
     )
@@ -429,7 +452,80 @@ def test_equal_value_duplicate_daily_marks_remain_unambiguous():
         UtilizationInterval(0, DAY, D(20), D(0), D(100)),
         UtilizationInterval(DAY, 2 * DAY, D(20), D(0), D(110)),
     )
+    originals = points
+    points = tuple(
+        replace(p, id=f"mark-{i}", source_refs=(f"synthetic#mark-{i}",))
+        for i, p in enumerate(points)
+    )
+    samples = tuple(
+        points[next(i for i, p in enumerate(originals) if p is sample)] for sample in samples
+    )
+    intervals = tuple(
+        replace(p, id=f"capital-{i}", source_refs=(f"synthetic#capital-{i}",))
+        for i, p in enumerate(intervals)
+    )
     result = metrics_report(
         points, metrics_start_ms=0, daily_samples=samples, utilization=intervals
     )
     assert result.complete
+
+
+def test_global_reference_cannot_substitute_for_record_provenance():
+    result = analyze(D(100), (EquityPoint(0, D(100)),), (), (), (), ("global",))
+    assert not result.structural_complete
+    assert "missing_equity_id:0" in result.issues
+    assert "missing_equity_source_refs:0" in result.issues
+
+
+@pytest.mark.parametrize(
+    "kind", ["equity", "contribution", "opportunity", "recovery", "utilization", "daily_sample"]
+)
+def test_each_record_requires_immutable_identity_and_unique_nonempty_refs(kind):
+    records = {
+        "equity": EquityPoint(0, D(100)),
+        "contribution": contributions()[0],
+        "opportunity": Opportunity(0, "BTCUSDT", "long", "breakout", "detected", None),
+        "recovery": RecoveryEpisode(0, 0, D(100), D(100)),
+        "utilization": UtilizationInterval(0, 1, D(0), D(0), D(100)),
+        "daily_sample": EquityPoint(0, D(100)),
+    }
+
+    def build(record, duplicate=False):
+        values = (record, record) if duplicate else (record,)
+        return analyze(
+            D(100),
+            values if kind == "equity" else curve(),
+            values if kind == "contribution" else (),
+            values if kind == "opportunity" else (),
+            values if kind == "recovery" else (),
+            ("global",),
+            daily_samples=values if kind == "daily_sample" else (),
+            utilization=values if kind == "utilization" else (),
+        )
+
+    refs = ["artifact#row-1"]
+    record = replace(records[kind], id="record-1", source_refs=refs)
+    refs.append("later mutation")
+    assert record.source_refs == ("artifact#row-1",)
+    assert f"missing_{kind}_source_refs:record-1" not in build(record).issues
+    assert f"missing_{kind}_source_refs:record-1" in build(replace(record, source_refs=())).issues
+    for malformed in (("",), ("source", "source")):
+        with pytest.raises(ValueError):
+            build(replace(record, source_refs=malformed))
+    with pytest.raises(ValueError):
+        build(replace(record, id=" "))
+    with pytest.raises(ValueError):
+        build(record, duplicate=True)
+
+
+def test_grouped_opportunities_retain_source_observation_identity():
+    events = tuple(
+        Opportunity(
+            i, "BTCUSDT", "long", "breakout", stage, None, f"event-{i}", (f"synthetic#event-{i}",)
+        )
+        for i, stage in enumerate(("detected", "filled"))
+    )
+    result = analyze(D(100), curve(), contributions(), events, (), ("global",))
+    group = result.opportunity_episodes[0]
+    assert group.observation_ids == ("event-0", "event-1")
+    assert group.source_refs == ("synthetic#event-0", "synthetic#event-1")

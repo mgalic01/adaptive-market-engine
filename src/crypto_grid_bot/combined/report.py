@@ -15,6 +15,13 @@ from fractions import Fraction
 class EquityPoint:
     timestamp_ms: int
     equity: Decimal
+    id: str | None = None
+    source_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.source_refs, str):
+            raise ValueError("source_refs must be a collection, not a string")
+        object.__setattr__(self, "source_refs", tuple(self.source_refs))
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +41,12 @@ class Contribution:
     exit_ms: int | None = None
     mfe: Decimal | None = None
     giveback: Decimal | None = None
+    source_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.source_refs, str):
+            raise ValueError("source_refs must be a collection, not a string")
+        object.__setattr__(self, "source_refs", tuple(self.source_refs))
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +57,13 @@ class Opportunity:
     structure: str
     stage: str
     reason: str | None
+    id: str | None = None
+    source_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.source_refs, str):
+            raise ValueError("source_refs must be a collection, not a string")
+        object.__setattr__(self, "source_refs", tuple(self.source_refs))
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +72,13 @@ class RecoveryEpisode:
     end_ms: int | None
     equity_start: Decimal
     equity_end: Decimal | None
+    id: str | None = None
+    source_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.source_refs, str):
+            raise ValueError("source_refs must be a collection, not a string")
+        object.__setattr__(self, "source_refs", tuple(self.source_refs))
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +110,8 @@ class OpportunityEpisode:
     stages: tuple[str, ...]
     reasons: tuple[str, ...]
     entry_delay_ms: int | None
+    observation_ids: tuple[str | None, ...]
+    source_refs: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +142,13 @@ class UtilizationInterval:
     spot_value: Decimal
     futures_collateral: Decimal
     equity: Decimal
+    id: str | None = None
+    source_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.source_refs, str):
+            raise ValueError("source_refs must be a collection, not a string")
+        object.__setattr__(self, "source_refs", tuple(self.source_refs))
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +205,31 @@ def _time(value: int) -> None:
 def _text(value: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("nonempty source text required")
+
+
+def _provenance(
+    records: tuple[
+        EquityPoint | Contribution | Opportunity | RecoveryEpisode | UtilizationInterval, ...
+    ],
+    kind: str,
+    issues: list[str],
+) -> None:
+    """IDs are caller-supplied stable source identities, never synthesized from order."""
+    seen: set[str] = set()
+    for index, row in enumerate(records):
+        if row.id is None:
+            issues.append(f"missing_{kind}_id:{index}")
+        else:
+            _text(row.id)
+            if row.id in seen:
+                raise ValueError(f"duplicate {kind} ID; evidence not deduplicated")
+            seen.add(row.id)
+        if not row.source_refs:
+            issues.append(f"missing_{kind}_source_refs:{row.id if row.id is not None else index}")
+        for reference in row.source_refs:
+            _text(reference)
+        if len(set(row.source_refs)) != len(row.source_refs):
+            raise ValueError(f"duplicate {kind} source reference")
 
 
 def _decimal(value: Fraction, *, ratio: bool = False) -> Decimal:
@@ -246,6 +307,8 @@ def _opportunity_episodes(
                 tuple(dict.fromkeys(event.stage for event in group)),
                 tuple(dict.fromkeys(event.reason for event in group if event.reason is not None)),
                 delay,
+                tuple(event.id for event in group),
+                tuple(dict.fromkeys(ref for event in group for ref in event.source_refs)),
             )
         )
     return tuple(results)
@@ -411,6 +474,15 @@ def analyze(
     for source in sources:
         _text(source)
     issues: list[str] = []
+    for kind, records in (
+        ("equity", points),
+        ("contribution", rows),
+        ("opportunity", events),
+        ("recovery", episodes),
+        ("daily_sample", tuple(daily_samples)),
+        ("utilization", tuple(utilization)),
+    ):
+        _provenance(records, kind, issues)
     marks: dict[int, set[Decimal]] = {}
     previous = -1
     for point in points:

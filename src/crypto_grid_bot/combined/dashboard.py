@@ -248,6 +248,38 @@ def _safe_reference(reference: str) -> bool:
         return False
 
 
+def _record_provenance(report: Report) -> str:
+    rows = []
+    for kind, records in (
+        ("Equity", report.equity_points),
+        ("Contribution", report.contributions),
+        ("Opportunity", report.opportunities),
+        ("Recovery", report.recovery),
+        ("Daily sample", report.daily_samples),
+        ("Utilization", report.utilization),
+    ):
+        for row in records:
+            references = []
+            for reference in row.source_refs:
+                label = _text(reference)
+                references.append(
+                    f'<a href="{label}" rel="noopener noreferrer">{label}</a>'
+                    if _safe_reference(reference)
+                    else f"<code>{label}</code> (text only)"
+                )
+            rows.append(
+                f"<tr><td>{_text(kind)}</td><td>{_text(row.id)}</td>"
+                f"<td>{'<br>'.join(references) or 'Not supplied'}</td></tr>"
+            )
+    if not rows:
+        return '<p class="empty">Not supplied</p>'
+    return (
+        '<div class="table-scroll"><table><thead><tr><th scope="col">Record type</th>'
+        '<th scope="col">Stable ID</th><th scope="col">Source references</th></tr></thead>'
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
+    )
+
+
 def _chart(
     series: list[tuple[str, list[tuple[int, Fraction]], str, str]],
     title: str,
@@ -429,9 +461,10 @@ def render_report(
         ),
     )
     recovery = _table(
-        ("Start UTC", "End UTC", "Marked change", "Return"),
+        ("ID", "Start UTC", "End UTC", "Marked change", "Return"),
         [
             (
+                change.episode.id,
                 _time(change.episode.start_ms),
                 _time(change.episode.end_ms),
                 _number(change.marked_change),
@@ -441,9 +474,18 @@ def render_report(
         ],
     )
     opportunities = _table(
-        ("Asset / direction", "Structure", "Start UTC", "Stages", "Reasons", "Entry delay"),
+        (
+            "Observation IDs",
+            "Asset / direction",
+            "Structure",
+            "Start UTC",
+            "Stages",
+            "Reasons",
+            "Entry delay",
+        ),
         [
             (
+                ", ".join(value or "Unknown" for value in group.observation_ids),
                 f"{group.asset} / {group.direction}",
                 group.structure,
                 _time(group.start_ms),
@@ -563,6 +605,8 @@ trials.</p>{bad}</section>
 <summary>Lifecycle exits, excursions and giveback</summary>{lifecycles}</details>
 </section>
 <section class="panel">
+<h2>Record provenance</h2>
+{_record_provenance(report)}
 <h2>Source references and completeness</h2>
 <p>{status}. References are not fetched or hash-verified by this renderer.</p>
 <ul>{issues}</ul>{source_html}</section>
