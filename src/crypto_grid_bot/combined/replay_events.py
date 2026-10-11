@@ -38,6 +38,8 @@ class ReplayFailure:
     reason: str
     terminal_snapshot: EngineSnapshot | None
     terminal_unavailable_reason: str | None
+    # Only batches that passed structural validation and reached settlement supply refs.
+    source_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +113,9 @@ def replay_events(engine: PortfolioEngine, batches: tuple[SettledBatch, ...]) ->
     Repeated IDs within this sequence are not additional observations. Engine
     settlement owns funding-before-reduction-before-increase ordering. Exceptions
     retain a terminal observation when possible, using existing engine quotes only.
-    Source references are recorded, not fetched or verified. No completeness claim.
+    Attempted failures retain their structurally validated batch source references,
+    including when no terminal snapshot is available. References are not fetched or
+    authenticated; validation failures do not promote unchecked refs. No completeness claim.
     """
     if not isinstance(batches, tuple):
         raise ValueError("finite immutable batch sequence required")
@@ -164,7 +168,14 @@ def replay_events(engine: PortfolioEngine, batches: tuple[SettledBatch, ...]) ->
                     unavailable = None
                 except (ValueError, ArithmeticError, TypeError, AttributeError) as terminal_error:
                     unavailable = str(terminal_error)
-            failure = ReplayFailure(identity, index, str(exc), terminal, unavailable)
+            failure = ReplayFailure(
+                identity,
+                index,
+                str(exc),
+                terminal,
+                unavailable,
+                source_refs=batch.source_refs if attempted else (),
+            )
             return ReplayResult(
                 tuple(snapshots),
                 tuple(duplicates),

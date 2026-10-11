@@ -1,11 +1,15 @@
-from dataclasses import replace
+import json
+from dataclasses import asdict, replace
 from decimal import Decimal as D
 
+import pytest
 from test_combined_engine import QUOTES, RULES, candidate
 from test_combined_risk import intent
 
 from crypto_grid_bot.combined.account import FillEvent, FundingEvent
+from crypto_grid_bot.combined.artifacts import read_bundle, write_bundle
 from crypto_grid_bot.combined.engine import PortfolioEngine
+from crypto_grid_bot.combined.evidence import Evidence
 from crypto_grid_bot.combined.replay_events import SettledBatch, replay_events
 
 
@@ -40,9 +44,10 @@ def test_conflicting_duplicate_and_backwards_event_stop():
     for bad in (batch("a", 2), batch("b", 0)):
         result = replay_events(PortfolioEngine(D(10000)), (batch(), bad))
         assert result.failure is not None and len(result.snapshots) == 1
+        assert result.failure.source_refs == ()
 
 
-def test_failed_settlement_preserves_booked_funding_and_integrity_failure():
+def test_failed_settlement_preserves_booked_funding_and_integrity_failure(tmp_path):
     engine = PortfolioEngine(D(10000))
     order = intent(
         owner="futures_trend",
@@ -59,12 +64,22 @@ def test_failed_settlement_preserves_booked_funding_and_integrity_failure():
         2,
         funding=(FundingEvent("funding", 2, "BTCUSDT", D(-2)),),
         increases=(("unknown", replace(fill, event_id="invalid", timestamp_ms=2)),),
+        source_refs=("synthetic:funding-ledger:2", "synthetic:execution:invalid"),
     )
     result = replay_events(engine, (first, bad, batch("remaining", 3)))
     assert result.failure is not None
     assert result.failure.terminal_snapshot.account.equity == 9998
     assert "execution_integrity_failure" in result.failure.terminal_snapshot.reasons
     assert result.unprocessed_ids == ("remaining",)
+    assert len(result.snapshots) == 1
+    assert result.failure.source_refs == bad.source_refs
+    metadata = json.loads(json.dumps(asdict(result), default=str))
+    receipt = write_bundle(tmp_path, "failed-replay", Evidence(), metadata)
+    saved = json.loads(read_bundle(receipt.directory).metadata_json)
+    assert saved["failure"]["source_refs"] == list(bad.source_refs)
+    assert saved["failure"]["batch_id"] == "bad"
+    assert saved["failure"]["terminal_snapshot"]["account"]["equity"] == "9998"
+    assert saved["snapshots"][0]["source_refs"] == ["fixture"]
 
 
 def test_missing_sources_and_duplicate_quote_names_stop_at_reached_batch():
@@ -170,3 +185,57 @@ def test_valid_funding_before_malformed_funding_preserves_wallet_and_failure():
     assert len(result.snapshots) == 1
     assert result.failure.terminal_snapshot.account.equity == 9998
     assert "execution_integrity_failure" in result.failure.terminal_snapshot.reasons
+
+
+@pytest.mark.parametrize("refs", [(), ("",), ["unvalidated"], "unvalidated", (None,)])
+def test_invalid_failure_sources_are_not_promoted(refs):
+    result = replay_events(PortfolioEngine(D(10000)), (batch("bad", source_refs=refs),))
+    assert result.failure is not None
+    assert result.failure.source_refs == ()
+    assert result.failure.terminal_snapshot is None
+
+
+def test_other_validation_failure_does_not_promote_unchecked_sources():
+    result = replay_events(
+        PortfolioEngine(D(10000)),
+        (batch("bad", quotes=tuple(QUOTES.items()) * 2, source_refs=("unchecked",)),),
+    )
+    assert result.failure.source_refs == ()
+
+
+def test_attempted_failure_retains_sources_when_terminal_observation_unavailable():
+    class BrokenTerminalEngine(PortfolioEngine):
+        unavailable = False
+
+        def settle(self, *args, **kwargs):
+            try:
+                return super().settle(*args, **kwargs)
+            finally:
+                self.unavailable = True
+
+        def observe(self, *args, **kwargs):
+            if self.unavailable:
+                raise ValueError("synthetic terminal observation unavailable")
+            return super().observe(*args, **kwargs)
+
+    engine = BrokenTerminalEngine(D(10000))
+    fill = FillEvent("unknown", 1, "BTCUSDT", "spot_trend", "spot", 1, D(1), D(100), D(0))
+    failed = batch(increases=(("unknown", fill),), source_refs=("synthetic:failed-event",))
+    result = replay_events(engine, (failed,))
+    assert result.failure.source_refs == failed.source_refs
+    assert result.failure.terminal_snapshot is None
+    assert (
+        result.failure.terminal_unavailable_reason == "synthetic terminal observation unavailable"
+    )
+
+
+def test_engineering_failure_snapshot_and_failure_keep_same_batch_sources():
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    fill = FillEvent("adverse", 1, "BTCUSDT", "spot_trend", "spot", 1, D(1), D(150), D(0))
+    failed = batch(increases=((order.intent_id, fill),), source_refs=("synthetic:adverse-fill",))
+    result = replay_events(engine, (failed,))
+    assert len(result.snapshots) == 1
+    assert result.failure.source_refs == result.snapshots[0].source_refs == failed.source_refs
+    assert result.failure.reason == "settled snapshot reports engineering failure"
