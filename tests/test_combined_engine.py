@@ -416,6 +416,7 @@ def test_explicit_close_keeps_dust_owned_without_blocking_an_unrelated_asset():
     assert state.account.positions[0].quantity == D(".001")
     assert state.close_required == (order.symbol,)
     assert "range_exit" in state.reasons
+    engine.acknowledge_finality(order.intent_id, source_refs=("synthetic:final",))
     other = intent("other", "ETHUSDT")
     assert engine.submit(other, replace(candidate(other), decision_ms=3), QUOTES, RULES).accepted
 
@@ -748,3 +749,96 @@ def test_same_fill_role_and_admission_remain_idempotent_within_and_across_batche
     assert across.account.positions[0].quantity == expected_quantity
     assert engine.reservations == reservations
     assert "execution_integrity_failure" not in across.reasons
+
+
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("owner", ["spot_trend", "spot_grid"])
+def test_canceled_unfinalized_remainder_blocks_all_new_asset_increases(partial, owner):
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    if partial:
+        fill = FillEvent(
+            "partial", 1, order.symbol, order.owner, order.venue, 1, D(1), D(100), D(0)
+        )
+        engine.settle("partial", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    engine.cancel(order.intent_id)
+    other = intent("other", "ETHUSDT", owner=owner)
+    qualification = replace(candidate(other), decision_ms=2)
+    assert (
+        engine.preview(other, qualification, QUOTES, RULES).reason
+        == "canceled_fill_finality_pending"
+    )
+    assert (
+        engine.submit(other, qualification, QUOTES, RULES).reason
+        == "canceled_fill_finality_pending"
+    )
+    assert engine.reservations == ()
+    if partial:
+        close = replace(fill, event_id="close", timestamp_ms=2, side=-1)
+        state = engine.settle("close", 2, QUOTES, RULES, reductions=(close,))
+        assert state.account.positions == ()
+    engine.acknowledge_finality(order.intent_id, source_refs=("synthetic:final",))
+    assert engine.submit(other, qualification, QUOTES, RULES).accepted
+
+
+@pytest.mark.parametrize(
+    "side,mark,minimum,slip,tick,expected",
+    [
+        (-1, "9.99", "10", "0", "1", "Closing"),
+        (1, "10.1", "10.05", "0", "1", "Cooldown"),
+        (1, "10", "10", ".01", ".01", "Cooldown"),
+    ],
+)
+def test_recovery_dust_uses_held_side_slippage_and_venue_tick(
+    side, mark, minimum, slip, tick, expected
+):
+    engine = PortfolioEngine(D(10000))
+    order = (
+        intent(slippage_rate=D(slip))
+        if side == 1
+        else intent(
+            owner="futures_trend",
+            venue="futures",
+            side=-1,
+            stop=D(102),
+            funding_rate=D(0),
+            funding_age_ms=0,
+            funding_interval_ms=28_800_000,
+            slippage_rate=D(slip),
+        )
+    )
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    fill = FillEvent(
+        "entry", 1, order.symbol, order.owner, order.venue, side, D(1), D(100), D(4000)
+    )
+    engine.settle("open", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    engine.acknowledge_finality(order.intent_id, source_refs=("synthetic:final",))
+    quotes = {**QUOTES, "BTCUSDT": Quote(D(mark), 2)}
+    rules = {**RULES, "BTCUSDT": replace(RULE, tick=D(tick), min_notional=D(minimum))}
+    state = engine.observe(2, quotes, rules)
+    assert state.recovery.state == expected
+    other = intent("other", "ETHUSDT", slippage_rate=D(0))
+    preview = engine.preview(other, replace(candidate(other), decision_ms=2), quotes, rules)
+    assert preview.accepted == (expected == "Cooldown")
+
+
+def test_fully_settled_canceled_remainder_releases_global_block_after_protective_close():
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    admission = engine.submit(order, candidate(order), QUOTES, RULES)
+    engine.cancel(order.intent_id)
+    fill = FillEvent(
+        "late", 1, order.symbol, order.owner, order.venue, 1, admission.quantity, D(100), D(0)
+    )
+    state = engine.settle("late", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    assert state.close_required == (order.symbol,)
+    other = intent("other", "ETHUSDT")
+    qualification = replace(candidate(other), decision_ms=2)
+    assert (
+        engine.preview(other, qualification, QUOTES, RULES).reason == "protective_reduction_pending"
+    )
+    close = replace(fill, event_id="close", timestamp_ms=2, side=-1)
+    engine.settle("close", 2, QUOTES, RULES, reductions=(close,))
+    assert engine.finality_evidence == ()
+    assert engine.submit(other, qualification, QUOTES, RULES).accepted

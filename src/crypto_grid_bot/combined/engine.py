@@ -17,7 +17,12 @@ from crypto_grid_bot.combined.account import (
     FundingEvent,
     PositionSnapshot,
 )
-from crypto_grid_bot.combined.execution import VenueRules, executable_reduction, futures_margin
+from crypto_grid_bot.combined.execution import (
+    Reduction,
+    VenueRules,
+    executable_reduction,
+    futures_margin,
+)
 from crypto_grid_bot.combined.recovery import Recovery, RecoveryDecision
 from crypto_grid_bot.combined.risk import (
     Admission,
@@ -258,6 +263,16 @@ class PortfolioEngine:
             for key, (known, remaining) in self._known_orders.items()
         )
 
+    def _reduction(self, position: PositionSnapshot, rules: VenueRules) -> Reduction:
+        """Use held execution costs, never a new candidate's slippage profile."""
+        return executable_reduction(
+            abs(position.quantity),
+            position.mark,
+            rules,
+            side=-1 if position.quantity > 0 else 1,
+            slippage=self._stops[position.symbol][2],
+        )
+
     def observe(
         self,
         timestamp_ms: int,
@@ -278,9 +293,7 @@ class PortfolioEngine:
                     flat = False
                     self._require_close(position.symbol, "stale_position_or_missing_filters")
                     reasons.append("stale_position_or_missing_filters")
-                elif executable_reduction(
-                    abs(position.quantity), position.mark, rules[position.symbol]
-                ).quantity:
+                elif self._reduction(position, rules[position.symbol]).quantity:
                     flat = False
             margin = futures_margin(account.free_cash, account.positions)
             if margin.maintenance > 0 and margin.backing <= margin.maintenance:
@@ -373,7 +386,7 @@ class PortfolioEngine:
                 p.symbol == intent.symbol for p in state.account.positions
             ):
                 return refuse("asset_owned")
-            if self._unresolved_canceled_fill(intent.symbol):
+            if self._unresolved_canceled_fill():
                 return refuse("canceled_fill_finality_pending")
 
             quote = (
@@ -403,8 +416,7 @@ class PortfolioEngine:
                     and (
                         not self._fresh(p.symbol, now)
                         or p.symbol not in rules
-                        or executable_reduction(abs(p.quantity), p.mark, rules[p.symbol]).quantity
-                        > 0
+                        or self._reduction(p, rules[p.symbol]).quantity > 0
                     )
                     for p in state.account.positions
                 )

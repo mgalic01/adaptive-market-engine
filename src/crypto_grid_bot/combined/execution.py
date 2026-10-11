@@ -77,22 +77,36 @@ class Reduction:
     reason: str
 
 
-def executable_reduction(quantity: Decimal, price: Decimal, rules: VenueRules) -> Reduction:
+def executable_reduction(
+    quantity: Decimal,
+    price: Decimal,
+    rules: VenueRules,
+    *,
+    side: int,
+    slippage: Decimal = Decimal(0),
+) -> Reduction:
     """One legal reduction of an absolute holding, at an externally verified fresh quote.
 
     Missing/invalid quotes raise, never establish dust. Even flat classification
     requires a valid quote here; the engine may already know a ledger position is zero.
+    Side is the reduction order side (buy to cover a short, sell to close a long).
+    Minimum notional uses adverse slippage and tick rounding, matching market fills.
     A max-quantity cap is a partial reduction, not a dust classification of its residue.
     """
     held, quote = _number(quantity), _number(price, positive=True)
+    _side(side)
+    slip = _number(slippage)
+    if slip >= 1:
+        raise ValueError("slippage must be below one")
     if not held:
         return Reduction(Decimal(0), False, "flat")
+    execution_price = adverse_price(_decimal(quote * (1 + side * slip)), side, rules)
     capped = min(held, Fraction(rules.max_qty))
     amount = floor_quantity(_decimal(capped), rules)
     if (
         not amount
         or amount < rules.min_qty
-        or Fraction(amount) * quote < Fraction(rules.min_notional)
+        or Fraction(amount) * Fraction(execution_price) < Fraction(rules.min_notional)
     ):
         return Reduction(Decimal(0), True, "below_venue_minimum")
     return Reduction(amount, False, "executable")

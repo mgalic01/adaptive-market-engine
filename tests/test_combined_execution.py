@@ -72,21 +72,21 @@ def test_rules_are_frozen_and_rounding_never_adds_quantity_or_improves_price():
 
 
 def test_reduction_caps_venue_maximum_without_marking_remaining_position_dust():
-    result = executable_reduction(D("20.09"), D(100), rules())
+    result = executable_reduction(D("20.09"), D(100), rules(), side=-1)
     assert result.quantity == D(10) and not result.dust
 
 
 @pytest.mark.parametrize("qty,price", [(".09", "100"), (".1", "40")])
 def test_only_valid_fresh_quote_can_establish_dust(qty, price):
-    result = executable_reduction(D(qty), D(price), rules())
+    result = executable_reduction(D(qty), D(price), rules(), side=-1)
     assert result.quantity == 0 and result.dust
     for missing in (None, D("NaN"), D(0)):
         with pytest.raises(ValueError):
-            executable_reduction(D(qty), missing, rules())
+            executable_reduction(D(qty), missing, rules(), side=-1)
 
 
 def test_flat_is_not_dust():
-    result = executable_reduction(D(0), D(100), rules())
+    result = executable_reduction(D(0), D(100), rules(), side=-1)
     assert result.quantity == 0 and not result.dust and result.reason == "flat"
 
 
@@ -209,3 +209,47 @@ def test_low_decimal_precision_does_not_round_funding_or_quantity():
         assert floor_quantity(D("1.234567891234567891"), rules(step=D(".000000000000000001"))) == D(
             "1.234567891234567891"
         )
+
+
+@pytest.mark.parametrize(
+    "side,quote,minimum,slip,tick,expected",
+    [
+        (1, "9.99", "10", "0", "1", D(1)),
+        (-1, "10.1", "10.05", "0", "1", D(0)),
+        (-1, "10", "10", ".01", ".01", D(0)),
+        (1, "9.9", "10", ".02", ".01", D(1)),
+    ],
+)
+def test_reduction_notional_uses_adverse_execution_price(
+    side, quote, minimum, slip, tick, expected
+):
+    result = executable_reduction(
+        D(1),
+        D(quote),
+        rules(tick=D(tick), min_notional=D(minimum)),
+        side=side,
+        slippage=D(slip),
+    )
+    assert result.quantity == expected
+    assert result.dust == (expected == 0)
+
+
+@pytest.mark.parametrize("quantity", [D(0), D(1)])
+@pytest.mark.parametrize(
+    "side,slip", [(True, D(0)), (0, D(0)), (-1, D(-1)), (1, D(1)), (1, D("NaN"))]
+)
+def test_reduction_validates_side_and_slippage_even_for_flat(quantity, side, slip):
+    with pytest.raises(ValueError):
+        executable_reduction(quantity, D(10), rules(), side=side, slippage=slip)
+
+
+def test_no_positive_adverse_tick_does_not_establish_dust():
+    with pytest.raises(ValueError, match="positive executable tick"):
+        executable_reduction(D(1), D(".9"), rules(tick=D(1)), side=-1)
+
+
+def test_reduction_price_math_ignores_restrictive_decimal_context():
+    with localcontext() as context:
+        context.prec = 2
+        result = executable_reduction(D(1), D("9.99"), rules(tick=D(1), min_notional=D(10)), side=1)
+    assert result.quantity == 1 and not result.dust
