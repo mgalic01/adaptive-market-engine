@@ -80,7 +80,8 @@ class PortfolioEngine:
         self._liquidation = False
         self._integrity_failure = False
         self._batches: dict[str, tuple[object, EngineSnapshot]] = {}
-        self._fills: dict[str, FillEvent] = {}
+        # Duplicate executions must preserve their role and original admission.
+        self._fills: dict[str, tuple[str, str | None, FillEvent]] = {}
         self._recovery.update(0, initial_cash, True, False, True)
 
     @property
@@ -516,8 +517,9 @@ class PortfolioEngine:
                 self._account.apply(payment)
                 self.observe(timestamp_ms, quotes, rules)
             for event in reductions:
+                reduction_identity = ("reduction", None, event)
                 if event.event_id in self._fills:
-                    if self._fills[event.event_id] != event:
+                    if self._fills[event.event_id] != reduction_identity:
                         raise ValueError("conflicting fill ID")
                     continue
                 before = next(
@@ -527,11 +529,12 @@ class PortfolioEngine:
                 if before is None or before.quantity * event.side >= 0:
                     raise ValueError("reduction must reduce held inventory")
                 self._account.apply(event)
-                self._fills[event.event_id] = event
+                self._fills[event.event_id] = reduction_identity
                 self.observe(timestamp_ms, quotes, rules)
             for key, event in increases:
+                increase_identity = ("increase", key, event)
                 if event.event_id in self._fills:
-                    if self._fills[event.event_id] != event:
+                    if self._fills[event.event_id] != increase_identity:
                         raise ValueError("conflicting fill ID")
                     continue
                 if key not in self._known_orders:
@@ -564,7 +567,7 @@ class PortfolioEngine:
                     self._orders[key] = (intent, remaining)
                 else:
                     self._orders.pop(key, None)
-                self._fills[event.event_id] = event
+                self._fills[event.event_id] = increase_identity
                 adverse = planned_price(
                     intent.price, intent.side, intent.slippage_rate, intent.tick
                 )

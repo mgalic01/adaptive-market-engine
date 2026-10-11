@@ -677,3 +677,74 @@ def test_fully_settled_late_remainder_needs_no_cancel_finality_for_recovery():
     state = engine.settle("close-late", 4, QUOTES, RULES, reductions=(close_late,))
     assert state.recovery.state == "Cooldown"
     assert engine.finality_evidence == ()
+
+
+@pytest.mark.parametrize("same_batch", [True, False])
+@pytest.mark.parametrize("conflict", ["role", "admission"])
+def test_duplicate_fill_rejects_changed_role_or_admission_and_retains_prefix(same_batch, conflict):
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    other = intent("eth-pending", "ETHUSDT")
+    assert engine.submit(order, candidate(order), QUOTES, RULES).accepted
+    assert engine.submit(other, candidate(other), QUOTES, RULES).accepted
+    fill = FillEvent("entry", 1, order.symbol, order.owner, order.venue, 1, D(1), D(100), D(0))
+    if conflict == "role":
+        engine.settle("entry", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+        event = replace(fill, event_id="close", timestamp_ms=2, side=-1, quantity=D(".5"))
+        prefix = {"reductions": (event,)}
+        duplicate = ((order.intent_id, event),)
+        expected_quantity, expected_cash = D(".5"), D(9950)
+    else:
+        event = fill
+        prefix = {"increases": ((order.intent_id, event),)}
+        duplicate = ((other.intent_id, event),)
+        expected_quantity, expected_cash = D(1), D(9900)
+    if same_batch:
+        payload = dict(prefix)
+        payload["increases"] = payload.get("increases", ()) + duplicate
+    else:
+        engine.settle("prefix", event.timestamp_ms, QUOTES, RULES, **prefix)
+        payload = {"increases": duplicate}
+    with pytest.raises(ValueError, match="conflicting fill ID"):
+        engine.settle("conflict", event.timestamp_ms, QUOTES, RULES, **payload)
+    state = engine.observe(event.timestamp_ms, QUOTES, RULES)
+    assert state.account.positions[0].quantity == expected_quantity
+    assert state.account.free_cash == expected_cash
+    assert "execution_integrity_failure" in state.reasons
+    assert state.recovery.state == "Terminal"
+    assert engine.reservations == ()
+
+
+def test_duplicate_increase_cannot_be_replayed_as_reduction():
+    engine = PortfolioEngine(D(10000))
+    order, fill, first = open_partial(engine)
+    with pytest.raises(ValueError, match="conflicting fill ID"):
+        engine.settle("wrong-role", 1, QUOTES, RULES, reductions=(fill,))
+    state = engine.observe(1, QUOTES, RULES)
+    assert state.account == first.account
+    assert "execution_integrity_failure" in state.reasons
+    assert engine.reservations == ()
+
+
+@pytest.mark.parametrize("role", ["increase", "reduction"])
+def test_same_fill_role_and_admission_remain_idempotent_within_and_across_batches(role):
+    engine = PortfolioEngine(D(10000))
+    order = intent()
+    assert engine.submit(order, candidate(order), QUOTES, RULES).accepted
+    fill = FillEvent("entry", 1, order.symbol, order.owner, order.venue, 1, D(1), D(100), D(0))
+    if role == "increase":
+        payload = {"increases": ((order.intent_id, fill), (order.intent_id, fill))}
+        expected_quantity = D(1)
+    else:
+        engine.settle("entry", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+        fill = replace(fill, event_id="close", timestamp_ms=2, side=-1, quantity=D(".5"))
+        payload = {"reductions": (fill, fill)}
+        expected_quantity = D(".5")
+    first = engine.settle("first", fill.timestamp_ms, QUOTES, RULES, **payload)
+    reservations = engine.reservations
+    same = engine.settle("first", fill.timestamp_ms, QUOTES, RULES, **payload)
+    across = engine.settle("retry", fill.timestamp_ms, QUOTES, RULES, **payload)
+    assert first == same == across
+    assert across.account.positions[0].quantity == expected_quantity
+    assert engine.reservations == reservations
+    assert "execution_integrity_failure" not in across.reasons
