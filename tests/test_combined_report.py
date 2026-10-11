@@ -4,6 +4,7 @@ from decimal import Decimal, localcontext
 import pytest
 
 from crypto_grid_bot.combined.report import (
+    CapitalObservation,
     Contribution,
     EquityPoint,
     Opportunity,
@@ -329,7 +330,22 @@ def test_utilization_is_duration_weighted_capital_not_futures_notional():
         UtilizationInterval(0, DAY, D(20), D(30), D(100)),
         UtilizationInterval(DAY, 3 * DAY, D(10), D(15), D(100)),
     )
-    result = metrics_report(points, metrics_start_ms=0, utilization=supplied)
+    points = tuple(
+        replace(p, id=f"mark-{i}", source_refs=(f"synthetic#mark-{i}",))
+        for i, p in enumerate(points)
+    )
+    observations = (
+        CapitalObservation(
+            0, D(100), D(20), D(30), "account-0", "phase-0", "mark-0", ("source-0",)
+        ),
+        CapitalObservation(
+            DAY, D(100), D(10), D(15), "account-1", "phase-1", "mark-1", ("source-1",)
+        ),
+    )
+    supplied = tuple(replace(row, observation_id=f"account-{i}") for i, row in enumerate(supplied))
+    result = metrics_report(
+        points, metrics_start_ms=0, utilization=supplied, capital_observations=observations
+    )
     assert abs(metric(result, "utilization").value - D(1) / D(3)) < D("1e-27")
     assert result.utilization == supplied
     assert (
@@ -357,8 +373,16 @@ def test_supplied_metrics_can_make_reconciled_report_complete():
         replace(p, id=f"capital-{i}", source_refs=(f"synthetic#capital-{i}",))
         for i, p in enumerate(utilization)
     )
+    observation = CapitalObservation(
+        0, D(100), D(0), D(0), "account-0", "phase-0", "mark-0", ("source",)
+    )
+    utilization = (replace(utilization[0], observation_id="account-0"),)
     result = metrics_report(
-        points, metrics_start_ms=0, daily_samples=points, utilization=utilization
+        points,
+        metrics_start_ms=0,
+        daily_samples=points,
+        utilization=utilization,
+        capital_observations=(observation,),
     )
     assert result.complete and all(item.value is not None for item in result.metrics)
 
@@ -467,7 +491,8 @@ def test_equal_value_duplicate_daily_marks_remain_unambiguous():
     result = metrics_report(
         points, metrics_start_ms=0, daily_samples=samples, utilization=intervals
     )
-    assert result.complete
+    assert metric(result, "sharpe").value is not None
+    assert not result.complete  # Capital phase ambiguity is not resolved by equal equity.
 
 
 def test_global_reference_cannot_substitute_for_record_provenance():
@@ -541,3 +566,189 @@ def test_daily_samples_bind_to_exact_retained_equity_records(change):
     result = metrics_report(points, metrics_start_ms=0, daily_samples=samples)
     assert metric(result, "sharpe").value is None
     assert metric(result, "sharpe").unavailable_reason == "incomplete_or_unmatched_daily_samples"
+
+
+@pytest.mark.parametrize("timestamp", [0, 3])
+def test_opportunity_outside_equity_window_is_retained_but_incomplete(timestamp):
+    points = curve()[1:]
+    event = Opportunity(
+        timestamp, "BTCUSDT", "long", "breakout", "detected", None, "event", ("synthetic#event",)
+    )
+    result = analyze(D(100), points, (), (event,), (), ("source",))
+    assert "opportunity_outside_equity_window" in result.issues
+    assert not result.structural_complete and result.opportunities == (event,)
+
+
+def test_utilization_cannot_be_calculated_from_equity_only():
+    points = (EquityPoint(0, D(100)), EquityPoint(DAY, D(100)))
+    interval = UtilizationInterval(0, DAY, D(50), D(0), D(100))
+    result = metrics_report(points, metrics_start_ms=0, utilization=(interval,))
+    assert metric(result, "utilization").value is None
+    assert metric(result, "utilization").unavailable_reason == "unmatched_capital_observation"
+
+
+def capital_fixture():
+    points = tuple(
+        EquityPoint(i * DAY, D(v), f"equity-{i}", (f"synthetic#equity-{i}",))
+        for i, v in enumerate((100, 110, 100))
+    )
+    observation = CapitalObservation(
+        0,
+        D(100),
+        D(20),
+        D(30),
+        id="capital-0",
+        phase_id="synthetic-source-event-0",
+        equity_observation_id="equity-0",
+        source_refs=("synthetic#capital-0",),
+    )
+    interval = UtilizationInterval(
+        0,
+        2 * DAY,
+        D(20),
+        D(30),
+        D(100),
+        "interval-0",
+        ("synthetic#interval-0",),
+        observation_id="capital-0",
+    )
+    return points, observation, interval
+
+
+def capital_report(points, observations, intervals):
+    return metrics_report(
+        points,
+        metrics_start_ms=0,
+        daily_samples=points,
+        utilization=intervals,
+        capital_observations=observations,
+    )
+
+
+def test_exact_capital_observation_allows_utilization_and_is_retained():
+    points, observation, interval = capital_fixture()
+    result = capital_report(points, (observation,), (interval,))
+    assert result.complete
+    assert metric(result, "utilization").value == D(".5")
+    assert result.capital_observations == (observation,)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"observation_id": None},
+        {"observation_id": "foreign"},
+        {"spot_value": D(21)},
+        {"futures_collateral": D(31)},
+        {"equity": D(101)},
+    ],
+)
+def test_utilization_rejects_unlinked_or_altered_capital_components(change):
+    points, observation, interval = capital_fixture()
+    result = capital_report(points, (observation,), (replace(interval, **change),))
+    assert not result.complete and metric(result, "utilization").value is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"equity_observation_id": "foreign"},
+        {"phase_id": None},
+        {"source_refs": ()},
+        {"timestamp_ms": 1},
+        {"equity": D(101)},
+    ],
+)
+def test_capital_observation_requires_exact_equity_identity_and_provenance(change):
+    points, observation, interval = capital_fixture()
+    result = capital_report(points, (replace(observation, **change),), (interval,))
+    assert not result.complete and metric(result, "utilization").value is None
+
+
+def test_equal_equity_capital_phase_ambiguity_remains_incomplete():
+    points, observation, interval = capital_fixture()
+    after = replace(points[0], id="after-buy", source_refs=("synthetic#after-buy",))
+    after_capital = replace(
+        observation,
+        id="capital-after",
+        phase_id="after-buy",
+        equity_observation_id=after.id,
+        spot_value=D(70),
+    )
+    retained = (points[0], after, *points[1:])
+    for observations in ((observation,), (observation, after_capital)):
+        result = capital_report(retained, observations, (interval,))
+        assert metric(result, "utilization").value is None
+        assert not result.complete
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"id": ""}, {"phase_id": " "}, {"spot_value": D(-1)}, {"source_refs": ("same", "same")}],
+)
+def test_invalid_capital_observation_is_rejected(change):
+    points, observation, interval = capital_fixture()
+    with pytest.raises(ValueError):
+        capital_report(points, (replace(observation, **change),), (interval,))
+
+
+def test_capital_observation_duplicate_ids_are_not_deduplicated():
+    points, observation, interval = capital_fixture()
+    with pytest.raises(ValueError):
+        capital_report(points, (observation, observation), (interval,))
+
+
+def test_utilization_interval_cannot_skip_an_intervening_capital_observation():
+    points, observation, interval = capital_fixture()
+    later = replace(
+        observation,
+        timestamp_ms=DAY,
+        equity=D(110),
+        spot_value=D(70),
+        id="capital-1",
+        phase_id="phase-1",
+        equity_observation_id="equity-1",
+    )
+    result = capital_report(points, (observation, later), (interval,))
+    assert metric(result, "utilization").value is None and not result.complete
+
+
+def test_complete_report_cannot_hide_out_of_window_opportunity():
+    points, observation, interval = capital_fixture()
+    assert capital_report(points, (observation,), (interval,)).complete
+    event = Opportunity(
+        2 * DAY + 1, "BTCUSDT", "long", "breakout", "detected", None, "event", ("source",)
+    )
+    result = analyze(
+        D(100),
+        points,
+        (),
+        (event,),
+        (),
+        ("global",),
+        metrics_start_ms=0,
+        daily_samples=points,
+        utilization=(interval,),
+        capital_observations=(observation,),
+    )
+    assert "opportunity_outside_equity_window" in result.issues
+    assert not result.complete and result.opportunities == (event,)
+
+
+def test_same_time_capital_phases_are_ambiguous_even_with_one_equity_record():
+    points, observation, interval = capital_fixture()
+    other = replace(observation, id="other", phase_id="other-phase", spot_value=D(70))
+    result = capital_report(points, (observation, other), (interval,))
+    assert not result.complete and metric(result, "utilization").value is None
+
+
+def test_capital_source_refs_are_immutable_and_opportunities_without_equity_are_incomplete():
+    points, observation, interval = capital_fixture()
+    refs = ["source"]
+    observation = replace(observation, source_refs=refs)
+    refs.append("mutated")
+    assert observation.source_refs == ("source",)
+    event = Opportunity(0, "BTCUSDT", "long", "breakout", "detected", None, "event", ("source",))
+    result = analyze(D(100), (), (), (event,), (), ("global",))
+    assert not result.complete and "missing_equity_observations" in result.issues
+    assert result.opportunities == (event,)

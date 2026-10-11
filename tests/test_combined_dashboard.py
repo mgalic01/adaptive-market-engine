@@ -200,3 +200,18 @@ def test_per_record_provenance_is_visible_linked_and_preserved_in_download():
     data = json.loads(unquote(download.split(",", 1)[1]))
     assert data["report"]["contributions"][0]["source_refs"] == list(row.source_refs)
     assert data["report"]["equity_points"][0]["id"] == "mark-0"
+
+
+def test_capital_observation_phase_and_interval_link_are_visible_and_exported():
+    from test_combined_report import capital_fixture, capital_report
+
+    points, observation, interval = capital_fixture()
+    evidence = capital_report(points, (observation,), (interval,))
+    parsed = Elements(render_report(evidence))
+    text = " ".join(parsed.text)
+    assert "Capital observations" in text and observation.phase_id in text
+    assert "equity-0" in text and "capital-0" in text
+    download = next(attrs["href"] for _, attrs in parsed.elements if attrs.get("download"))
+    data = json.loads(unquote(download.split(",", 1)[1]))["report"]
+    assert data["capital_observations"][0]["equity_observation_id"] == "equity-0"
+    assert data["utilization"][0]["observation_id"] == "capital-0"

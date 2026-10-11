@@ -257,6 +257,7 @@ def _record_provenance(report: Report) -> str:
         ("Recovery", report.recovery),
         ("Daily sample", report.daily_samples),
         ("Utilization", report.utilization),
+        ("Capital observation", report.capital_observations),
     ):
         for row in records:
             references = []
@@ -532,6 +533,28 @@ def render_report(
             ("Regime attribution", report.by_regime),
         )
     )
+    capital_table = _table(
+        ("ID", "Phase ID", "Equity record ID", "UTC", "Equity", "Spot value", "Futures collateral"),
+        [
+            (
+                row.id,
+                row.phase_id,
+                row.equity_observation_id,
+                _time(row.timestamp_ms),
+                _number(row.equity),
+                _number(row.spot_value),
+                _number(row.futures_collateral),
+            )
+            for row in report.capital_observations
+        ],
+    )
+    utilization_table = _table(
+        ("Interval ID", "Capital observation ID", "Start UTC", "End UTC"),
+        [
+            (row.id, row.observation_id, _time(row.start_ms), _time(row.end_ms))
+            for row in report.utilization
+        ],
+    )
     equity_chart = _chart(series, "Equity, lifetime peak and supplied comparisons")
     drawdown_chart = _chart(
         [("Drawdown from lifetime peak", drawdowns, "#ffb69b", "drawdown")],
@@ -605,6 +628,9 @@ trials.</p>{bad}</section>
 <summary>Lifecycle exits, excursions and giveback</summary>{lifecycles}</details>
 </section>
 <section class="panel">
+<h2>Capital observations</h2>{capital_table}{utilization_table}
+<p class="muted">Supplied source records and interval constancy claims are not authenticated.
+Phase IDs do not authorize a sampling policy or resolve same-time ambiguity.</p>
 <h2>Record provenance</h2>
 {_record_provenance(report)}
 <h2>Source references and completeness</h2>

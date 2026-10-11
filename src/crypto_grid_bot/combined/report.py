@@ -130,11 +130,36 @@ class Metric:
 
 
 @dataclass(frozen=True, slots=True)
+class CapitalObservation:
+    """Supplied account snapshot; identity links are structural, not authentication.
+
+    Phase IDs describe source events. They do not authorize a sampling policy or
+    permit selection between distinct same-time account observations.
+    """
+
+    timestamp_ms: int
+    equity: Decimal
+    spot_value: Decimal
+    futures_collateral: Decimal
+    id: str | None = None
+    phase_id: str | None = None
+    equity_observation_id: str | None = None
+    source_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.source_refs, str):
+            raise ValueError("source_refs must be a collection, not a string")
+        object.__setattr__(self, "source_refs", tuple(self.source_refs))
+
+
+@dataclass(frozen=True, slots=True)
 class UtilizationInterval:
     """Supplied left-constant marked capital observation over [start_ms, end_ms).
 
     Spot inventory value plus futures collateral, divided by equity. This is not
-    gross exposure/leverage or pending-order cash. No interpolation is inferred.
+    gross exposure/leverage or pending-order cash. The supplied constancy claim
+    is not authenticated; it cannot skip another retained capital observation.
+    No interpolation or sampling convention is inferred.
     """
 
     start_ms: int
@@ -144,6 +169,8 @@ class UtilizationInterval:
     equity: Decimal
     id: str | None = None
     source_refs: tuple[str, ...] = ()
+
+    observation_id: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.source_refs, str):
@@ -189,6 +216,7 @@ class Report:
     daily_samples: tuple[EquityPoint, ...]
     utilization: tuple[UtilizationInterval, ...]
     structural_complete: bool
+    capital_observations: tuple[CapitalObservation, ...]
 
 
 def _number(value: Decimal, *, nonnegative: bool = False) -> Fraction:
@@ -209,7 +237,13 @@ def _text(value: str) -> None:
 
 def _provenance(
     records: tuple[
-        EquityPoint | Contribution | Opportunity | RecoveryEpisode | UtilizationInterval, ...
+        EquityPoint
+        | Contribution
+        | Opportunity
+        | RecoveryEpisode
+        | UtilizationInterval
+        | CapitalObservation,
+        ...,
     ],
     kind: str,
     issues: list[str],
@@ -320,6 +354,7 @@ def _metrics(
     start: int | None,
     samples: tuple[EquityPoint, ...],
     utilization: tuple[UtilizationInterval, ...],
+    capital_observations: tuple[CapitalObservation, ...],
     net_return: Decimal | None,
     drawdown: Decimal | None,
 ) -> tuple[Metric, ...]:
@@ -420,6 +455,34 @@ def _metrics(
                     * Decimal(365).sqrt()
                 )
             add("sharpe", value)
+    capital_by_id = {row.id: row for row in capital_observations}
+    equity_by_id = {point.id: point for point in points}
+    equity_counts = Counter(point.timestamp_ms for point in points)
+    capital_counts = Counter(row.timestamp_ms for row in capital_observations)
+
+    def capital_matches(interval: UtilizationInterval) -> bool:
+        observation = capital_by_id.get(interval.observation_id)
+        if observation is None or observation.id is None:
+            return False
+        point = equity_by_id.get(observation.equity_observation_id)
+        return bool(
+            observation.phase_id
+            and observation.source_refs
+            and point is not None
+            and point.id is not None
+            and point.source_refs
+            and equity_counts[interval.start_ms] == 1
+            and capital_counts[interval.start_ms] == 1
+            and not any(
+                interval.start_ms < row.timestamp_ms < interval.end_ms
+                for row in capital_observations
+            )
+            and observation.timestamp_ms == point.timestamp_ms == interval.start_ms
+            and observation.equity == point.equity == interval.equity
+            and observation.spot_value == interval.spot_value
+            and observation.futures_collateral == interval.futures_collateral
+        )
+
     if not utilization:
         add("utilization", None, "utilization_unavailable")
     elif (
@@ -431,6 +494,8 @@ def _metrics(
         or any(row.equity <= 0 or marks.get(row.start_ms) != {row.equity} for row in utilization)
     ):
         add("utilization", None, "incomplete_or_unmatched_utilization")
+    elif any(not capital_matches(row) for row in utilization):
+        add("utilization", None, "unmatched_capital_observation")
     else:
         weighted = sum(
             (
@@ -457,6 +522,7 @@ def analyze(
     metrics_start_ms: int | None = None,
     daily_samples: tuple[EquityPoint, ...] = (),
     utilization: tuple[UtilizationInterval, ...] = (),
+    capital_observations: tuple[CapitalObservation, ...] = (),
 ) -> Report:
     """Summarize observations without counterfactual claims or silent deduplication.
 
@@ -475,6 +541,7 @@ def analyze(
         raise ValueError("positive initial equity and observation gap required")
     points, rows = tuple(equitypoints), tuple(contributions)
     events, episodes, sources = tuple(opportunities), tuple(recovery), tuple(source_refs)
+    capital_observations = tuple(capital_observations)
     for source in sources:
         _text(source)
     issues: list[str] = []
@@ -485,6 +552,7 @@ def analyze(
         ("recovery", episodes),
         ("daily_sample", tuple(daily_samples)),
         ("utilization", tuple(utilization)),
+        ("capital_observation", capital_observations),
     ):
         _provenance(records, kind, issues)
     marks: dict[int, set[Decimal]] = {}
@@ -496,6 +564,29 @@ def analyze(
             raise ValueError("equity observations must be chronological")
         previous = point.timestamp_ms
         marks.setdefault(point.timestamp_ms, set()).add(point.equity)
+    equity_by_id = {point.id: point for point in points}
+    for observation in capital_observations:
+        _time(observation.timestamp_ms)
+        _number(observation.equity)
+        _number(observation.spot_value, nonnegative=True)
+        _number(observation.futures_collateral, nonnegative=True)
+        for field in ("phase_id", "equity_observation_id"):
+            value = getattr(observation, field)
+            if value is None:
+                issues.append(f"missing_capital_observation_{field}:{observation.id}")
+            else:
+                _text(value)
+        matched_point = equity_by_id.get(observation.equity_observation_id)
+        if (
+            matched_point is None
+            or matched_point.id is None
+            or matched_point.timestamp_ms != observation.timestamp_ms
+            or matched_point.equity != observation.equity
+        ):
+            issues.append(f"unmatched_capital_equity_observation:{observation.id}")
+    for interval in utilization:
+        if interval.observation_id is not None:
+            _text(interval.observation_id)
     ids: set[str] = set()
     for row in rows:
         for text in (row.id, row.strategy, row.asset, row.direction):
@@ -529,6 +620,8 @@ def analyze(
                 _number(optional_amount, nonnegative=True)
     for event in events:
         _time(event.timestamp_ms)
+        if points and not points[0].timestamp_ms <= event.timestamp_ms <= points[-1].timestamp_ms:
+            issues.append("opportunity_outside_equity_window")
         for text in (event.asset, event.direction, event.structure, event.stage):
             _text(text)
         if event.direction not in {"long", "short"}:
@@ -620,7 +713,14 @@ def analyze(
         unknown.add("recovery_endpoint")
     structural_complete = not issues
     metrics = _metrics(
-        initial, points, metrics_start_ms, tuple(daily_samples), tuple(utilization), ratio, drawdown
+        initial,
+        points,
+        metrics_start_ms,
+        tuple(daily_samples),
+        tuple(utilization),
+        capital_observations,
+        ratio,
+        drawdown,
     )
     issues.extend(
         f"metric_unavailable:{m.name}:{m.unavailable_reason}" for m in metrics if m.value is None
@@ -662,4 +762,5 @@ def analyze(
         tuple(daily_samples),
         tuple(utilization),
         structural_complete,
+        capital_observations,
     )
