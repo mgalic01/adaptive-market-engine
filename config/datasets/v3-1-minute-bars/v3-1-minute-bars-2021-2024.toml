@@ -1,0 +1,30 @@
+# V3.1's flow-gate minute bars: spot one-minute klines for seven coins. The grid's F flow
+# gate reads the last 15 completed one-minute bars of each coin it trades (V3.1 design,
+# Package C); a coin without them cannot open grid buys. BTCUSDT, ETHUSDT and XRPUSDT
+# already have theirs, in full-range-2017-2024.manifest.json (2019-01 to 2024-12).
+#
+# The owner approved this fetch on 2026-10-11 (recorded in docs/V3_1_SOURCE_INVENTORY.md on
+# PR #269). Bob runs it from docs/tasks/2026-10-11-bob-v3-1-minute-bars-fetch.md, with
+# scripts/fetch_minute_bars.py.
+#
+# Scope: these seven symbols, interval 1m, every month from 2021-06 to 2024-12 inclusive,
+# 43 months each, 301 archives in all. Nothing at or after 2025-01 is in scope: the reserved
+# window stays untouched (spec v1 section 7). The loader refuses a month after 2024-12, as
+# the downloader and the manifest checks do, and the fetch refuses every path outside this
+# plan. No hourly, daily or funding archive, no exchange filters, no other host.
+#
+# Listings: the committed hourly inventory (config/datasets/v3-20261009/inventory.manifest.json)
+# holds a published spot archive for each of the seven from 2020-08 at the latest (SOLUSDT),
+# so no minute archive is expected to be missing. If one is, the fetch records it as missing
+# and reports it as a problem; nothing is invented to fill it.
+#
+# This is not a backtest dataset spec: it has no traded pairs, basket or pricing, and
+# lives in its own folder so that the backtest CLI and workflow never mistake it for one.
+name = "v3-1-minute-bars-2021-2024"
+purpose = "V3.1 grid flow gate"
+interval = "1m"
+symbols = [
+  "ADAUSDT", "BNBUSDT", "DOGEUSDT", "LINKUSDT", "LTCUSDT", "SOLUSDT", "TRXUSDT",
+]
+start = "2021-06"
+end = "2024-12"
