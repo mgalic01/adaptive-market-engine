@@ -6,7 +6,7 @@ repeated attempts never replace failures or become independent observations.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
 from itertools import product
@@ -35,6 +35,7 @@ _COMPONENTS = frozenset(
     )
 )
 _RESERVED = 1_735_689_600_000
+_DAY = 86_400_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +176,16 @@ def _registration_errors(registration: Registration) -> list[str]:
             or not _pin(window.data_pin)
         ):
             errors.append("registration: invalid window dates or data pin")
+        elif (
+            window.start_ms % _DAY
+            or window.end_ms % _DAY
+            or window.end_ms - window.start_ms < 2 * _DAY
+        ):
+            # Feasibility of the existing mandatory UTC-daily metric contract only;
+            # this does not select an intratimestamp observation/sampling policy.
+            errors.append(
+                "registration: daily metrics require UTC day endpoints and at least two days"
+            )
     if len(reg.capitals) != 2 or {c.id for c in reg.capitals} != {"research", "owner_small"}:
         errors.append("registration: research and EUR100 capital scenarios required")
     for capital in reg.capitals:
@@ -228,12 +239,19 @@ def _metrics_valid(row: RunOutcome) -> bool:
     )
 
 
-def _report_valid(row: RunOutcome) -> bool:
+def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
+    """Recompute attributable observations independently of wrapper result scalars.
+
+    Identity and source authenticity remain the caller/artifact validator's duty.
+    Missing metrics do not erase a provable safety breach, but a foreign window,
+    capital, attempt or a report that differs from recomputation cannot supply one.
+    """
     evidence = row.report_evidence
     if not isinstance(evidence, ReportEvidence) or not isinstance(evidence.report, Report):
-        return False
+        return None
     if (
         evidence.identity != row.identity
+        or not row.attempt_id
         or evidence.attempt_id != row.attempt_id
         or any(
             type(value) is not int
@@ -244,7 +262,7 @@ def _report_valid(row: RunOutcome) -> bool:
             )
         )
     ):
-        return False
+        return None
     report = evidence.report
     try:
         rebuilt = analyze(
@@ -261,31 +279,37 @@ def _report_valid(row: RunOutcome) -> bool:
             capital_observations=report.capital_observations,
         )
         if report != rebuilt or type(report.complete) is not bool:
-            return False
+            return None
         if (
             not rebuilt.equity_points
             or rebuilt.metrics_start_ms != row.identity.start_ms
             or rebuilt.equity_points[0].timestamp_ms != row.identity.start_ms
             or rebuilt.equity_points[-1].timestamp_ms != row.identity.end_ms
-            or (
-                rebuilt.initial_equity,
-                rebuilt.final_equity,
-                rebuilt.max_drawdown,
-                rebuilt.reconciliation_residual,
-            )
-            != (row.initial_equity, row.final_equity, row.max_drawdown, row.accounting_residual)
+            or rebuilt.initial_equity != initial_equity
+            or rebuilt.equity_points[0].equity != initial_equity
         ):
-            return False
-        # Preserve the frozen explained trade/equity tolerance. This is the only
-        # structural issue acceptance may forgive; all required metrics remain mandatory.
-        tolerated = row.accounting_explained and abs(Fraction(row.accounting_residual)) <= Fraction(
-            1, 10**18
-        )
-        return all(_finite(metric.value) for metric in rebuilt.metrics) and not (
-            set(rebuilt.issues) - ({"contribution_equity_residual"} if tolerated else set())
-        )
+            return None
+        return rebuilt
     except (ValueError, TypeError, AttributeError, ArithmeticError):
+        return None
+
+
+def _report_valid(row: RunOutcome) -> bool:
+    report = _matching_report(row, row.initial_equity)
+    if report is None or (
+        report.final_equity,
+        report.max_drawdown,
+        report.reconciliation_residual,
+    ) != (row.final_equity, row.max_drawdown, row.accounting_residual):
         return False
+    # Preserve the frozen explained trade/equity tolerance. This is the only
+    # structural issue acceptance may forgive; all required metrics remain mandatory.
+    tolerated = row.accounting_explained and abs(Fraction(row.accounting_residual)) <= Fraction(
+        1, 10**18
+    )
+    return all(_finite(metric.value) for metric in report.metrics) and not (
+        set(report.issues) - ({"contribution_equity_residual"} if tolerated else set())
+    )
 
 
 def _safety_failures(observed: RunOutcome) -> list[str]:
@@ -310,6 +334,40 @@ def _safety_failures(observed: RunOutcome) -> list[str]:
     ):
         failures.append(f"{key}: full maximum drawdown exceeds30%")
     return failures
+
+
+def _observed_safety_failures(row: RunOutcome, initial_equity: Decimal) -> list[str]:
+    """Attribute each evidence source against the registered capital independently.
+
+    A wrong-capital scalar wrapper cannot assign its failures to this trial, but
+    cannot erase a matching report's observations. Both original records survive.
+    """
+    failures = (
+        _safety_failures(row)
+        if _finite(row.initial_equity, True) and row.initial_equity == initial_equity
+        else []
+    )
+    report = _matching_report(row, initial_equity)
+    if (
+        report is not None
+        and row.identity.arm in _COMPONENTS
+        and report.max_drawdown is not None
+        and report.reconciliation_residual is not None
+    ):
+        failures.extend(
+            _safety_failures(
+                replace(
+                    row,
+                    max_drawdown=report.max_drawdown,
+                    accounting_residual=report.reconciliation_residual,
+                    liquidations=0,
+                    wallet_quantity_exact=None,
+                )
+            )
+        )
+        if any(point.equity <= 0 for point in report.equity_points):
+            failures.append(f"{_key(row.identity)}: observed capital exhaustion")
+    return list(dict.fromkeys(failures))
 
 
 def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
@@ -354,11 +412,9 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
         or identity.cost_profile_pin != profile[1]
         or capital.id not in {"research", "owner_small"}
         or not _finite(capital.initial_equity, True)
-        or not _finite(row.initial_equity, True)
-        or row.initial_equity != capital.initial_equity
     ):
         return []
-    return _safety_failures(row)
+    return _observed_safety_failures(row, capital.initial_equity)
 
 
 def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> AcceptanceResult:
@@ -424,7 +480,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
                 )
             ):
                 continue
-            failures.extend(_safety_failures(observed))
+            failures.extend(_observed_safety_failures(observed, expected_capital))
         if len(rows) != 1:
             incomplete.append(f"{key}: missing or repeated cell ({len(rows)} outcomes)")
             continue
@@ -459,7 +515,9 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         )
         if invalid:
             message = f"{key}: liquidation or invalid accounting"
-            (incomplete if identity.arm in registration.baseline_arms else failures).append(message)
+            if identity.arm in registration.baseline_arms:
+                incomplete.append(message)
+            # Component failures were recorded specifically during the safety scan.
             continue
         valid[key] = row
         if (

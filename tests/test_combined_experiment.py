@@ -660,3 +660,174 @@ def test_component_recovery_cannot_hide_capital_exhaustion(equity):
         row, max_drawdown=report.max_drawdown, report_evidence=replace(evidence, report=report)
     )
     assert evaluate(reg, tuple(rows)).status != "pass"
+
+
+@pytest.mark.parametrize("start,end", [(1, 2 * DAY + 1), (0, DAY), (0, 2 * DAY + 1)])
+def test_registration_rejects_windows_incompatible_with_required_daily_metrics(start, end):
+    reg = registration()
+    reg = replace(reg, windows=(replace(reg.windows[0], start_ms=start, end_ms=end),))
+    result = evaluate(reg, ())
+    assert (
+        "registration: daily metrics require UTC day endpoints and at least two days"
+        in result.incomplete_reasons
+    )
+
+
+@pytest.mark.parametrize("updates", [{"liquidations": 1}, {"wallet_quantity_exact": False}])
+def test_one_observed_integrity_failure_has_one_message_even_with_complete_report(updates):
+    reg = registration()
+    complete = evaluate(reg, change(outcomes(reg), **updates))
+    partial = evaluate(reg, change(outcomes(reg), complete=False, **updates))
+    assert len(complete.failures) == len(partial.failures) == 1
+    assert complete.failures == partial.failures
+
+
+def concealed_report_failure(reg, *, arm="combined", report_updates=None, wrapper_updates=None):
+    rows = list(outcomes(reg))
+    index = next(i for i, row in enumerate(rows) if row.identity.arm == arm)
+    observed = with_report(replace(rows[index], **(report_updates or {"max_drawdown": D(".5")})))
+    rows[index] = replace(
+        observed,
+        **({"max_drawdown": D(".2"), "accounting_residual": D(0)} | (wrapper_updates or {})),
+    )
+    return tuple(rows), index
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {},
+        {"final_equity": D("NaN")},
+        {"max_drawdown": D("NaN")},
+        {"accounting_residual": D("NaN")},
+        {"initial_equity": D("NaN")},
+        {"initial_equity": D(9999)},
+        {"complete": False},
+        {"wallet_quantity_exact": None},
+    ],
+)
+@pytest.mark.parametrize("pending", [False, True])
+def test_matching_recomputed_report_breach_survives_wrapper_disagreement(updates, pending):
+    reg = registration()
+    rows, _ = concealed_report_failure(reg, wrapper_updates=updates)
+    result = evaluate(replace(reg, pending=("review",)) if pending else reg, rows)
+    assert result.status == "fail" and result.incomplete_reasons
+    assert len(result.failures) == 1 and "maximum drawdown" in result.failures[0]
+
+
+@pytest.mark.parametrize("kind", ["accounting", "zero_equity", "negative_equity"])
+def test_component_report_safety_evidence_survives_clean_wrapper(kind):
+    reg = registration()
+    updates = (
+        {"accounting_residual": D(1)}
+        if kind == "accounting"
+        else {"max_drawdown": D(1) if kind == "zero_equity" else D("1.1")}
+    )
+    rows, _ = concealed_report_failure(reg, arm="spot_grid", report_updates=updates)
+    result = evaluate(reg, rows)
+    assert result.status == "fail" and result.incomplete_reasons
+    assert any(
+        ("accounting" if kind == "accounting" else "capital exhaustion") in reason
+        for reason in result.failures
+    )
+
+
+@pytest.mark.parametrize("alter", ["identity", "attempt", "window", "capital", "forged"])
+def test_unattributable_report_cannot_introduce_safety_failure(alter):
+    reg = registration()
+    rows, index = concealed_report_failure(reg)
+    rows = list(rows)
+    row = rows[index]
+    evidence = row.report_evidence
+    if alter == "identity":
+        evidence = replace(evidence, identity=replace(row.identity, code_pin="d" * 40))
+    elif alter == "attempt":
+        evidence = replace(evidence, attempt_id="foreign")
+    elif alter == "window":
+        foreign = with_report(
+            replace(
+                row,
+                identity=replace(row.identity, start_ms=DAY, end_ms=3 * DAY),
+                max_drawdown=D(".5"),
+            )
+        )
+        evidence = replace(evidence, report=foreign.report_evidence.report)
+    elif alter == "capital":
+        foreign = with_report(replace(row, initial_equity=D(9999), max_drawdown=D(".5")))
+        evidence = replace(evidence, report=foreign.report_evidence.report)
+    else:
+        evidence = replace(evidence, report=replace(evidence.report, max_drawdown=D(".6")))
+    rows[index] = replace(row, report_evidence=evidence)
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete" and not result.failures
+
+
+def test_same_report_and_scalar_drawdown_breach_is_one_safety_category():
+    reg = registration()
+    result = evaluate(reg, change(outcomes(reg), max_drawdown=D(".5")))
+    assert result.status == "fail" and len(result.failures) == 1
+
+
+def test_duplicate_outcome_does_not_erase_report_breach():
+    reg = registration()
+    rows, index = concealed_report_failure(reg)
+    result = evaluate(reg, (*rows, rows[index]))
+    assert result.status == "fail" and result.incomplete_reasons
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_unavailable_report_metrics_cannot_hide_observed_drawdown(pending):
+    reg = registration()
+    rows, index = concealed_report_failure(reg)
+    rows = list(rows)
+    evidence = rows[index].report_evidence
+    report = evidence.report
+    partial = analyze(
+        report.initial_equity,
+        report.equity_points,
+        report.contributions,
+        report.opportunities,
+        report.recovery,
+        report.source_refs,
+        metrics_start_ms=report.metrics_start_ms,
+        daily_samples=(),
+        utilization=report.utilization,
+        capital_observations=report.capital_observations,
+    )
+    assert not partial.complete
+    rows[index] = replace(rows[index], report_evidence=replace(evidence, report=partial))
+    result = evaluate(replace(reg, pending=("review",)) if pending else reg, tuple(rows))
+    assert result.status == "fail" and any("maximum drawdown" in item for item in result.failures)
+
+
+@pytest.mark.parametrize(
+    "residual,explained,status",
+    [(D("1e-18"), True, "incomplete"), (D("1e-18"), False, "fail"), (D("1.1e-18"), True, "fail")],
+)
+def test_report_accounting_observations_preserve_explained_tolerance(residual, explained, status):
+    reg = registration()
+    rows, _ = concealed_report_failure(
+        reg,
+        arm="spot_grid",
+        report_updates={"accounting_residual": residual, "accounting_explained": explained},
+    )
+    assert evaluate(reg, rows).status == status
+
+
+def test_baseline_report_drawdown_does_not_acquire_component_safety_threshold():
+    reg = registration()
+    rows, _ = concealed_report_failure(reg, arm="matched_v2")
+    result = evaluate(reg, rows)
+    assert result.status == "incomplete" and not result.failures
+
+
+@pytest.mark.parametrize("initial", [D(9999), D("NaN")])
+@pytest.mark.parametrize("updates", [{"liquidations": 1}, {"wallet_quantity_exact": False}])
+@pytest.mark.parametrize("pending", [False, True])
+def test_wrong_capital_scalar_safety_is_retained_but_not_attributed(initial, updates, pending):
+    reg = registration()
+    rows = change(outcomes(reg), initial_equity=initial, **updates)
+    rows = tuple(replace(row, report_evidence=None) for row in rows)
+    result = evaluate(replace(reg, pending=("review",)) if pending else reg, rows)
+    assert result.status == "incomplete" and not result.failures
+    assert result.outcomes == rows
