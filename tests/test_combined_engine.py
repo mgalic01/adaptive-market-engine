@@ -581,11 +581,14 @@ def test_rounded_entry_bound_and_authoritative_held_tick(side, stop, entry):
     )
     state = engine.settle("rounded-batch", 1, QUOTES, rules, increases=((order.intent_id, fill),))
     assert "post_fill_risk_breach" not in state.reasons
-    assert engine._view(state.account, D(1), ()).exposures[0].stop_risk == 10
+    # Risk limits use entry-to-stop risk (owner, 2026-10-11); margin stress uses
+    # mark-to-stop risk. Both use the held venue's tick for the stop exit.
+    exposure = engine._view(state.account, D(1), ()).exposures[0]
+    assert (exposure.mark_risk, exposure.stop_risk) == (10, 20)
     # Held rules update the held exit; candidate filters cannot override them.
     engine.observe(2, QUOTES, {"BTCUSDT": replace(RULE, tick=D(20))})
-    expected = D(20)
-    assert engine._view(state.account, D(1), ()).exposures[0].stop_risk == expected
+    exposure = engine._view(state.account, D(1), ()).exposures[0]
+    assert (exposure.mark_risk, exposure.stop_risk) == (20, 30)
 
 
 def test_tick_aware_engine_settlement_ignores_restrictive_decimal_context():
@@ -962,11 +965,12 @@ def test_expected_price_fill_rechecks_current_equity_caps(cap):
         "after-decay", 2, quotes, rules, funding=(loss,), increases=((orders[-1].intent_id, fill),)
     )
     assert state.account.equity == 9500
-    assert orders[-1].symbol in state.close_required
+    # The breach cancels the unfilled increase, which alone restores the limit; its
+    # late fill is closed and held positions are not cut (owner, 2026-10-11).
+    assert state.close_required == (orders[-1].symbol,)
+    assert state.reduce_to == ()
     assert "post_fill_risk_breach" in state.reasons
     assert engine.reservations == ()
-    if cap in {"risk", "gross", "correlation"}:
-        assert set(state.close_required) == {p.symbol for p in state.account.positions}
     closes = tuple(
         replace(f, event_id=f"close-{f.event_id}", timestamp_ms=3, side=-1) for f in fills
     )
@@ -1022,9 +1026,10 @@ def test_post_fill_recheck_marks_preexisting_overlimit_asset_for_close():
         funding=(FundingEvent("loss", 2, orders[0].symbol, D(-500)),),
         increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
     )
-    # Funding now cancels increases immediately: the later supplied fill is still
-    # booked, but it is a late canceled execution and must also be closed.
-    assert set(state.close_required) == {order.symbol for order in orders}
+    # The held asset over its risk limit is cut back to it, not closed. The other
+    # asset's increase is within every limit, so it stays authorized and fills.
+    assert state.close_required == ()
+    assert state.reduce_to == ((orders[0].symbol, D("9.5")),)
     assert {"portfolio_cap_reduction", "post_fill_risk_breach"} <= set(state.reasons)
 
 
@@ -1112,14 +1117,16 @@ def test_nonincrease_events_enforce_current_portfolio_caps(event_kind):
         )
         affected = orders[-1].symbol
     elif event_kind == "quote":
-        quotes = {**quotes, orders[-1].symbol: Quote(D(101), 3)}
+        # A loss lowers equity and so the limit; a gain would not (see below).
+        quotes = {**quotes, orders[-1].symbol: Quote(D(99), 3)}
         state = engine.observe(3, quotes, rules)
         affected = orders[-1].symbol
     else:
         close = replace(fills[-1], event_id="expensive-close", timestamp_ms=3, side=-1, fee=D(500))
         state = engine.settle("reduction-only", 3, quotes, rules, reductions=(close,))
         affected = orders[0].symbol
-    assert affected in state.close_required
+    assert affected in dict(state.reduce_to)
+    assert affected not in state.close_required
     assert "portfolio_cap_reduction" in state.reasons
     assert "post_fill_risk_breach" not in state.reasons
 
@@ -1144,7 +1151,7 @@ def test_transient_funding_cap_breach_is_not_erased_by_later_cashflow():
         ),
     )
     assert state.account.equity == 10000
-    assert orders[-1].symbol in state.close_required
+    assert orders[-1].symbol in dict(state.reduce_to)
     assert "portfolio_cap_reduction" in state.reasons
 
 
@@ -1190,7 +1197,7 @@ def test_routine_cap_reduction_is_not_replay_engineering_failure(cause):
         increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
     )
     if cause == "quote":
-        quotes = {**quotes, orders[-1].symbol: Quote(D(101), 3)}
+        quotes = {**quotes, orders[-1].symbol: Quote(D(99), 3)}
         funding = ()
     else:
         funding = (FundingEvent("loss", 3, orders[0].symbol, D(-500)),)
@@ -1316,3 +1323,44 @@ def test_close_dust_requires_fresh_marks_filters_and_no_pending_order():
     assert engine.close_dust({}) == ()  # no filters, no classification
     engine.observe(3_600_002, {}, RULES)  # the held mark is now stale
     assert engine.close_dust(unsellable) == ()
+
+
+def test_a_favorable_move_never_cuts_a_position_at_its_risk_limit():
+    # Owner decision 2026-10-11: risk limits measure entry-to-stop loss.
+    engine, orders, fills, quotes, rules, _ = cap_scenario("asset_risk")
+    engine.settle(
+        "last",
+        2,
+        quotes,
+        rules,
+        increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
+    )
+    state = engine.observe(3, {**quotes, orders[-1].symbol: Quote(D(150), 3)}, rules)
+    assert state.close_required == () and state.reduce_to == ()
+    assert "portfolio_cap_reduction" not in state.reasons
+    exposure = next(
+        e for e in engine._view(state.account, D(1), ()).exposures if e.symbol == orders[-1].symbol
+    )
+    assert exposure.stop_risk == 50 and exposure.mark_risk == 550
+
+
+def test_a_position_grown_past_its_size_limit_is_cut_back_to_it():
+    from fractions import Fraction
+
+    engine = PortfolioEngine(D(10000))
+    order = intent(stop=D("99.9"), requested_quantity=D(19), fee_rate=D(0), slippage_rate=D(0))
+    assert engine.submit(order, candidate(order), QUOTES, RULES).quantity == 19
+    fill = FillEvent("fill", 1, order.symbol, order.owner, order.venue, 1, D(19), D(100), D(0))
+    engine.settle("fill", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    state = engine.observe(2, {order.symbol: Quote(D(110), 2)}, RULES)
+    limit = Fraction(state.account.equity) / 5
+    keep = Fraction(19) * limit / (Fraction(19) * 110)
+    target = D(str(float(keep // Fraction(1, 1000) / 1000)))
+    assert state.close_required == ()
+    assert state.reduce_to == ((order.symbol, target),)
+    assert state.reduce_to[0][1] * 110 <= limit
+    cut = replace(
+        fill, event_id="cut", timestamp_ms=3, side=-1, quantity=D(19) - target, price=D(110)
+    )
+    state = engine.settle("cut", 3, {order.symbol: Quote(D(110), 3)}, RULES, reductions=(cut,))
+    assert state.reduce_to == () and state.account.positions[0].quantity == target

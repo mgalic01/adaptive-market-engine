@@ -77,6 +77,10 @@ class RecoveryEpisode:
     equity_end: Decimal | None
     id: str | None = None
     source_refs: tuple[str, ...] = ()
+    # Retained equity observation IDs of the endpoints. Several marks can share a
+    # timestamp, so an ID, not the time alone, identifies the endpoint state.
+    start_observation_id: str | None = None
+    end_observation_id: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.source_refs, str):
@@ -728,6 +732,14 @@ def analyze(
             _text(event.reason)
     changes = []
     mark_counts = Counter(point.timestamp_ms for point in points)
+    points_by_id = {point.id: point for point in points if point.id is not None}
+
+    def endpoint(observation_id: str | None, timestamp: int, equity: Decimal) -> bool:
+        if observation_id is not None:
+            point = points_by_id.get(observation_id)
+            return point is not None and (point.timestamp_ms, point.equity) == (timestamp, equity)
+        return mark_counts[timestamp] == 1 and marks.get(timestamp) == {equity}
+
     prior_episode: RecoveryEpisode | None = None
     for episode in episodes:
         _time(episode.start_ms)
@@ -750,19 +762,13 @@ def analyze(
             end = _number(episode.equity_end)
             # Timestamp alone cannot identify an endpoint when several distinct
             # event marks share it. Never choose a favorable mark or interpolate.
-            if (
-                mark_counts[episode.start_ms] == 1
-                and mark_counts[episode.end_ms] == 1
-                and marks.get(episode.start_ms) == {episode.equity_start}
-                and marks.get(episode.end_ms) == {episode.equity_end}
-            ):
+            if endpoint(
+                episode.start_observation_id, episode.start_ms, episode.equity_start
+            ) and endpoint(episode.end_observation_id, episode.end_ms, episode.equity_end):
                 delta = end - start
             else:
                 issues.append("unverified_recovery_endpoint")
-        elif (
-            marks.get(episode.start_ms) != {episode.equity_start}
-            or mark_counts[episode.start_ms] != 1
-        ):
+        elif not endpoint(episode.start_observation_id, episode.start_ms, episode.equity_start):
             # An ongoing final episode has no return yet. Its sourced opening
             # must still identify one retained in-window mark; no phase is chosen.
             issues.append("unverified_recovery_endpoint")

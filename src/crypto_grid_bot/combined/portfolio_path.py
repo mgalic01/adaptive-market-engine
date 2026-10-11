@@ -1,8 +1,9 @@
 """Synchronized held-inventory OHLC phases over one shared account.
 
-This coordinator supplies modeled protective executions, not strategy entries or
-historical execution authorization. All assets must have the same complete input
-interval. Phase timestamps denote bar availability, never observed tick times.
+This coordinator supplies modeled protective executions and the fills of already
+admitted resting spot-grid limit buys, not new entries or historical execution
+authorization. All assets must have the same complete input interval. Phase
+timestamps denote bar availability, never observed tick times.
 """
 
 from collections.abc import Mapping
@@ -14,7 +15,7 @@ from crypto_grid_bot.backtest.klines import Kline
 
 from .account import FillEvent
 from .engine import EngineSnapshot, PortfolioEngine, Quote
-from .execution import VenueRules, _decimal, adverse_price, executable_reduction
+from .execution import VenueRules, _decimal, adverse_price, executable_reduction, executable_trim
 from .ohlc_path import HeldPath, plan_held_path
 
 
@@ -27,6 +28,23 @@ class PortfolioObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class RestingBuy:
+    """One admitted spot-grid child limit buy resting through the interval.
+
+    ``stop`` is the basket's admitted common stop; ``intent_id`` is the basket
+    admission whose remaining quantity the fill consumes.
+    """
+
+    intent_id: str
+    child_id: str
+    symbol: str
+    limit: Decimal
+    quantity: Decimal
+    fee_rate: Decimal
+    stop: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class PortfolioInterval:
     paths: tuple[tuple[str, HeldPath], ...]
     observations: tuple[PortfolioObservation, ...]
@@ -35,6 +53,36 @@ class PortfolioInterval:
     grid_spacing: tuple[tuple[str, Decimal], ...] = ()
     # Close obligations left only on inventory no legal order can reduce at fresh marks.
     retained_dust: tuple[str, ...] = ()
+    # Resting children filled in this interval; their lots earn no same-bar target.
+    filled_children: tuple[str, ...] = ()
+
+
+def _positive(value: object) -> bool:
+    return isinstance(value, Decimal) and value.is_finite() and 0 < value <= Decimal("1e36")
+
+
+def _resting_valid(resting: object, terms: Mapping[str, tuple[object, ...]]) -> bool:
+    if not isinstance(resting, tuple) or any(not isinstance(row, RestingBuy) for row in resting):
+        return False
+    stops: dict[str, Decimal] = {}
+    for row in resting:
+        if (
+            not all(
+                isinstance(text, str) and text.strip() for text in (row.intent_id, row.child_id)
+            )
+            or not isinstance(row.symbol, str)
+            or not all(_positive(value) for value in (row.limit, row.quantity, row.stop))
+            or not isinstance(row.fee_rate, Decimal)
+            or not row.fee_rate.is_finite()
+            or not 0 <= row.fee_rate < 1
+            or row.stop >= row.limit
+            or stops.setdefault(row.symbol, row.stop) != row.stop
+        ):
+            return False
+        held = terms.get(row.symbol)
+        if held is not None and getattr(held[0], "owner", None) != "spot_grid":
+            return False
+    return len({row.child_id for row in resting}) == len(resting)
 
 
 def replay_held_portfolio(
@@ -45,6 +93,7 @@ def replay_held_portfolio(
     *,
     source_refs: tuple[str, ...],
     grid_spacing: tuple[tuple[str, Decimal], ...] = (),
+    resting: tuple[RestingBuy, ...] = (),
 ) -> PortfolioInterval:
     """Settle stops and portfolio closes before proceeding to later phase marks.
 
@@ -56,18 +105,25 @@ def replay_held_portfolio(
     A finite 10,000-fill safety budget fails incomplete rather than looping without
     bound on malformed or impractically tiny venue order limits.
     Grid spacing must come from retained admitted geometry; the full strategy
-    coordinator binds that provenance. Targets derive from actual lot entry prices.
-    Every lot here is held at open; intrabar purchases need separate eligibility.
+    coordinator binds that provenance. Targets derive from actual lot entry prices
+    and apply only to lots held at open. A resting limit buy fills at its limit,
+    with no favorable gap credit, at the first vertex at or below it, before that
+    vertex's stop; its lot can be stopped in the same bar but earns no target.
+    Active pending children are not obligations; canceled unreconciled ones are.
     """
     terms = {row[0].symbol: row for row in engine.held_execution_terms()}
+    if not _resting_valid(resting, terms):
+        raise ValueError("valid unique spot-grid resting buys required")
+    resting_symbols = {row.symbol for row in resting}
+    symbols = set(terms) | resting_symbols
     if (
         not isinstance(bars, tuple)
         or not bars
         or any(not isinstance(pair, tuple) or len(pair) != 2 for pair in bars)
         or any(not isinstance(symbol, str) or not isinstance(bar, Kline) for symbol, bar in bars)
         or len({symbol for symbol, _ in bars}) != len(bars)
-        or {symbol for symbol, _ in bars} != set(terms)
-        or any(not isinstance(rules.get(symbol), VenueRules) for symbol in terms)
+        or {symbol for symbol, _ in bars} != symbols
+        or any(not isinstance(rules.get(symbol), VenueRules) for symbol in symbols)
     ):
         raise ValueError("complete unique held-asset bars and venue filters required")
     market = dict(bars)
@@ -78,9 +134,7 @@ def replay_held_portfolio(
             not isinstance(pair, tuple)
             or len(pair) != 2
             or not isinstance(pair[0], str)
-            or not isinstance(pair[1], Decimal)
-            or not pair[1].is_finite()
-            or not 0 < pair[1] <= Decimal("1e36")
+            or not _positive(pair[1])
             for pair in grid_spacing
         )
         or len({symbol for symbol, _ in grid_spacing}) != len(grid_spacing)
@@ -91,18 +145,26 @@ def replay_held_portfolio(
     starts = {bar.open_ms for bar in market.values()}
     if len(starts) != 1 or next(iter(starts)) < engine.clock:
         raise ValueError("one nonoverlapping portfolio interval required")
+    basket_stop = {row.symbol: row.stop for row in resting}
+
+    def stop_of(symbol: str) -> Decimal:
+        return terms[symbol][1] if symbol in terms else basket_stop[symbol]
+
+    def side_of(symbol: str) -> int:
+        return 1 if symbol not in terms or terms[symbol][0].quantity > 0 else -1
+
     paths = tuple(
         (
             symbol,
             plan_held_path(
                 market[symbol],
                 scenario,
-                side=1 if terms[symbol][0].quantity > 0 else -1,
-                stop=terms[symbol][1],
+                side=side_of(symbol),
+                stop=stop_of(symbol),
                 source_refs=source_refs,
             ),
         )
-        for symbol in sorted(terms)
+        for symbol in sorted(symbols)
     )
     target_paths = tuple(
         (
@@ -122,9 +184,11 @@ def replay_held_portfolio(
     )
     now = paths[0][1].interval_end_ms
     prefix = f"portfolio:{paths[0][1].interval_start_ms}:{scenario}"
-    quotes = {symbol: Quote(market[symbol].open, now) for symbol in terms}
+    quotes = {symbol: Quote(market[symbol].open, now) for symbol in symbols}
     observations: list[PortfolioObservation] = []
     fills: list[FillEvent] = []
+    filled: list[str] = []
+    pending = sorted(resting, key=lambda row: (row.symbol, -row.limit, row.child_id))
     failure = None
     dust: tuple[str, ...] = ()
     sequence = 0
@@ -136,11 +200,21 @@ def replay_held_portfolio(
         observations.append(PortfolioObservation(now, phase, f"{prefix}:mark:{sequence}", snapshot))
         return snapshot
 
+    def settled(identity: str, phase: str) -> None:
+        booked = engine.booked_fill(identity)
+        if booked is not None:
+            fills.append(booked)
+        observations.extend(
+            PortfolioObservation(now, phase, f"{identity}:{index}:{row.phase}", row.snapshot)
+            for index, row in enumerate(engine.settlement_observations(identity))
+        )
+
     def reduce(
         symbol: str,
         phase: str,
         lot_id: str | None = None,
         execution_reference: Decimal | None = None,
+        keep: Decimal | None = None,
     ) -> bool:
         nonlocal sequence
         current = {row[0].symbol: row for row in engine.held_execution_terms()}
@@ -155,7 +229,14 @@ def replay_held_portfolio(
             quantity = abs(lot.quantity)
         side = -1 if position.quantity > 0 else 1
         quote = quotes[symbol].price if execution_reference is None else execution_reference
-        reduction = executable_reduction(quantity, quote, rules[symbol], side=side, slippage=slip)
+        if keep is not None:
+            reduction = executable_trim(
+                quantity, keep, quote, rules[symbol], side=side, slippage=slip
+            )
+        else:
+            reduction = executable_reduction(
+                quantity, quote, rules[symbol], side=side, slippage=slip
+            )
         if not reduction.quantity:
             return False
         if len(fills) >= 10_000:
@@ -182,20 +263,46 @@ def replay_held_portfolio(
         try:
             engine.settle(identity, now, quotes, rules, reductions=(fill,))
         finally:
-            booked = engine.booked_fill(identity)
-            if booked is not None:
-                fills.append(booked)
-            observations.extend(
-                PortfolioObservation(now, phase, f"{identity}:{index}:{row.phase}", row.snapshot)
-                for index, row in enumerate(engine.settlement_observations(identity))
-            )
+            settled(identity, phase)
         return True
 
+    def buy(row: RestingBuy, phase: str) -> None:
+        nonlocal sequence
+        if len(fills) >= 10_000:
+            raise ValueError("protective fill budget exhausted")
+        sequence += 1
+        identity = f"{prefix}:buy:{sequence}:{row.child_id}"
+        if engine.booked_fill(identity) is not None:
+            raise ValueError("modeled execution identity already booked")
+        quotes[row.symbol] = Quote(row.limit, now)
+        fill = FillEvent(
+            identity,
+            now,
+            row.symbol,
+            "spot_grid",
+            "spot",
+            1,
+            row.quantity,
+            row.limit,
+            _decimal(Fraction(row.quantity) * Fraction(row.limit) * Fraction(row.fee_rate)),
+            row.child_id,
+        )
+        try:
+            engine.settle(identity, now, quotes, rules, increases=((row.intent_id, fill),))
+        finally:
+            settled(identity, phase)
+        if engine.booked_fill(identity) is not None:
+            filled.append(row.child_id)
+
     def drain(phase: str, snapshot: EngineSnapshot) -> EngineSnapshot:
-        while snapshot.close_required:
+        # Full closes first, then cut-backs to their targets (owner decision 2026-10-11).
+        while snapshot.close_required or snapshot.reduce_to:
             progressed = False
+            targets = {s: k for s, k in snapshot.reduce_to if s not in snapshot.close_required}
             for symbol in sorted(snapshot.close_required):
                 progressed = reduce(symbol, phase) or progressed
+            for symbol, kept in sorted(targets.items()):
+                progressed = reduce(symbol, phase, keep=kept) or progressed
             if not progressed:
                 break
             snapshot = observations[-1].snapshot
@@ -210,6 +317,17 @@ def replay_held_portfolio(
         for phase in phases:
             if phase == "open":
                 drain(phase, observe(phase))
+            # A canceled basket (a close request cancels its pending order) stops resting.
+            active = {a.intent_id for a in engine.reservations}
+            for row in tuple(pending):
+                vertex = getattr(market[row.symbol], phase)
+                if row.intent_id not in active:
+                    pending.remove(row)
+                elif vertex <= row.limit:
+                    pending.remove(row)
+                    buy(row, f"{phase}:buy")
+                    drain(f"{phase}:buy", observations[-1].snapshot)
+                    active = {a.intent_id for a in engine.reservations}
             for symbol, path in paths:
                 stops = [
                     event for event in path.events if event.phase == phase and event.kind == "stop"
@@ -248,7 +366,10 @@ def replay_held_portfolio(
                 drain(phase, observe(phase))
         final = observations[-1].snapshot
         dust = engine.close_dust(rules)
-        if set(final.close_required) - set(dust) or final.unresolved_execution:
+        active = {a.intent_id for a in engine.reservations}
+        if set(final.close_required) - set(dust) or any(
+            key not in active for key in final.unresolved_execution
+        ):
             failure = "unresolved_execution_obligations"
         if any(
             row.snapshot.liquidation
@@ -261,5 +382,11 @@ def replay_held_portfolio(
         failure = f"execution_failure:{type(exc).__name__}"
         dust = ()
     return PortfolioInterval(
-        paths, tuple(observations), tuple(fills), failure, tuple(sorted(grid_spacing)), dust
+        paths,
+        tuple(observations),
+        tuple(fills),
+        failure,
+        tuple(sorted(grid_spacing)),
+        dust,
+        tuple(filled),
     )

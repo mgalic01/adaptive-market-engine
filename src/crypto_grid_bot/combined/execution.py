@@ -112,6 +112,44 @@ def executable_reduction(
     return Reduction(amount, False, "executable")
 
 
+def executable_trim(
+    quantity: Decimal,
+    keep: Decimal,
+    price: Decimal,
+    rules: VenueRules,
+    *,
+    side: int,
+    slippage: Decimal = Decimal(0),
+) -> Reduction:
+    """One legal reduction toward holding at most ``keep`` (owner decision 2026-10-11).
+
+    The excess rounds UP to the venue step and, when below the venue minimum, up to
+    the smallest legal order, so the result never stays above ``keep``. A cut-back
+    that would leave less than a legal order becomes a full ``executable_reduction``.
+    The venue maximum caps one order; the caller repeats until the target holds.
+    """
+    held, kept = _number(quantity), _number(keep)
+    if kept >= held:
+        return Reduction(Decimal(0), False, "within_limit")
+    full = executable_reduction(quantity, price, rules, side=side, slippage=slippage)
+    execution_price = adverse_price(
+        _decimal(_number(price, positive=True) * (1 + side * _number(slippage))), side, rules
+    )
+    step = Fraction(rules.step)
+    minimum = max(Fraction(rules.min_qty), Fraction(rules.min_notional) / Fraction(execution_price))
+    amount = -((-max(held - kept, minimum)) // step) * step
+    maximum = (Fraction(rules.max_qty) // step) * step
+    remainder = held - amount
+    if (
+        amount >= held
+        or not full.quantity
+        or remainder < Fraction(rules.min_qty)
+        or remainder * Fraction(execution_price) < Fraction(rules.min_notional)
+    ):
+        return full  # Never strand an unsellable remainder by cutting back.
+    return Reduction(_decimal(min(amount, maximum)), False, "cut_back")
+
+
 def _order_values(decision_ms: int, side: int, quantity: Decimal) -> None:
     if type(decision_ms) is not int or decision_ms < 0:
         raise ValueError("nonnegative integer decision time required")

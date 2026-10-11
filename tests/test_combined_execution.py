@@ -253,3 +253,33 @@ def test_reduction_price_math_ignores_restrictive_decimal_context():
         context.prec = 2
         result = executable_reduction(D(1), D("9.99"), rules(tick=D(1), min_notional=D(10)), side=1)
     assert result.quantity == 1 and not result.dust
+
+
+TRIM_RULES = VenueRules(D(".1"), D(".2"), D(5), D(30), D(".01"))
+
+
+@pytest.mark.parametrize(
+    ("held", "keep", "expected", "reason"),
+    [
+        (D(10), D(10), D(0), "within_limit"),
+        (D(10), D("9.95"), D(".3"), "cut_back"),  # raised to the 30 USDT minimum order
+        (D(10), D("6.21"), D("3.8"), "cut_back"),  # excess rounds UP to the step
+        (D(10), D(2), D(5), "cut_back"),  # one order is capped at the venue maximum
+        (D(1), D(".9"), D(".3"), "cut_back"),
+        (D(".5"), D(".4"), D(".5"), "executable"),  # a legal remainder is impossible: close
+    ],
+)
+def test_cut_back_never_leaves_more_than_the_target(held, keep, expected, reason):
+    from crypto_grid_bot.combined.execution import executable_trim
+
+    result = executable_trim(held, keep, D(100), TRIM_RULES, side=-1)
+    assert (result.quantity, result.reason) == (expected, reason)
+    if reason == "cut_back" and expected < TRIM_RULES.max_qty:
+        assert held - result.quantity <= keep
+
+
+def test_cut_back_of_unsellable_inventory_is_dust_not_an_order():
+    from crypto_grid_bot.combined.execution import executable_trim
+
+    result = executable_trim(D(".2"), D(".1"), D(100), TRIM_RULES, side=-1)
+    assert result.quantity == 0 and result.dust

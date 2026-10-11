@@ -30,12 +30,18 @@ def planned_price(price: Decimal, side: int, slip: Decimal, tick: Decimal) -> De
 
 @dataclass(frozen=True, slots=True)
 class Exposure:
+    """Held exposure. ``stop_risk`` is the loss from entry to the current stop (owner
+    decision 2026-10-11): it feeds the 0.5%/3% risk limits. ``mark_risk`` is the loss
+    from the current mark to the stop: margin stress, where unrealized profit counts.
+    """
+
     symbol: str
     owner: str
     notional: Decimal
     stop_risk: Decimal
     correlation_group: str
     risk_multiplier: Decimal = Decimal(1)
+    mark_risk: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,7 +318,7 @@ class PortfolioRisk:
         backing -= sum((a.cash for i, a in pending if i.venue == "spot"), ZERO)
         held = tuple(e for e in view.exposures if e.owner == "futures_trend")
         gross = sum((e.notional for e in held), ZERO)
-        stress = sum((e.stop_risk for e in held), ZERO)
+        stress = sum((e.stop_risk if e.mark_risk is None else e.mark_risk for e in held), ZERO)
         gross += sum((a.notional for i, a in pending if i.venue == "futures"), ZERO)
         pending_risk = sum((a.risk for i, a in pending if i.venue == "futures"), ZERO)
         stress += pending_risk

@@ -11,7 +11,14 @@ from fractions import Fraction
 
 from .account import FillEvent, FundingEvent
 from .engine import EngineSnapshot, PortfolioEngine, Quote, SettlementObservation
-from .execution import VenueRules, _decimal, adverse_price, executable_reduction, funding_cashflow
+from .execution import (
+    VenueRules,
+    _decimal,
+    adverse_price,
+    executable_reduction,
+    executable_trim,
+    funding_cashflow,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,10 +208,14 @@ class BoundaryExecutor:
         fills: list[FillEvent],
         observations: list[SettlementObservation],
     ) -> EngineSnapshot:
-        """Execute every legal held-venue reduction at the boundary quote, in symbol order."""
-        while final.close_required:
+        """Execute every legal held-venue reduction at the boundary quote, in symbol order.
+
+        Full closes come first; cut-back obligations then reduce to their targets.
+        """
+        while final.close_required or final.reduce_to:
             progressed = False
-            for symbol in sorted(final.close_required):
+            targets = {s: k for s, k in final.reduce_to if s not in final.close_required}
+            for symbol in (*sorted(final.close_required), *sorted(targets)):
                 terms = {
                     p.symbol: (p, fee, slip)
                     for p, _, fee, slip in self._engine.held_execution_terms()
@@ -214,9 +225,19 @@ class BoundaryExecutor:
                 position, fee, slip = terms[symbol]
                 side = -1 if position.quantity > 0 else 1
                 price = quotes[symbol].price
-                reduction = executable_reduction(
-                    abs(position.quantity), price, rules[symbol], side=side, slippage=slip
-                )
+                if symbol in targets:
+                    reduction = executable_trim(
+                        abs(position.quantity),
+                        targets[symbol],
+                        price,
+                        rules[symbol],
+                        side=side,
+                        slippage=slip,
+                    )
+                else:
+                    reduction = executable_reduction(
+                        abs(position.quantity), price, rules[symbol], side=side, slippage=slip
+                    )
                 if not reduction.quantity:
                     continue
                 if len(fills) >= 10000:

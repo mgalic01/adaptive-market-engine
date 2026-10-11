@@ -22,6 +22,7 @@ from crypto_grid_bot.combined.account import (
 from crypto_grid_bot.combined.execution import (
     Reduction,
     VenueRules,
+    _decimal,
     executable_reduction,
     futures_margin,
 )
@@ -68,6 +69,10 @@ class EngineSnapshot:
     # Held symbols whose mark is stale or filters missing at THIS observation. The
     # close reason persists while held; this field describes only the current mark.
     stale: tuple[str, ...] = ()
+    # Persisting close and cut-back reasons of each held symbol, for exit attribution.
+    close_reasons: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # Cut-back obligations: (symbol, absolute quantity to keep at most).
+    reduce_to: tuple[tuple[str, Decimal], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,10 +101,13 @@ class PortfolioEngine:
         self._risk_multipliers: dict[str, Decimal] = {}
         self._correlation_groups: tuple[tuple[str, str], ...] = ()
         self._finality: dict[str, tuple[str, ...]] = {}
+        self._releases: dict[str, tuple[tuple[Decimal, tuple[str, ...]], ...]] = {}
         self._ticks: dict[str, Decimal] = {}
         self._stops: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
         self._close: set[str] = set()
         self._close_reasons: dict[str, set[str]] = {}
+        self._trims: dict[str, Decimal] = {}
+        self._trim_reasons: dict[str, set[str]] = {}
         self._order_close_reasons: dict[str, set[str]] = {}
         self._liquidation = False
         self._integrity_failure = False
@@ -237,6 +245,59 @@ class PortfolioEngine:
                 raise ValueError("conflicting finality evidence")
             self._finality[intent_id] = source_refs
 
+    def release_unallocated(
+        self, intent_id: str, remaining: Decimal, *, source_refs: tuple[str, ...]
+    ) -> None:
+        """Acknowledge that only ``remaining`` of a pending order can still fill.
+
+        A grid basket's rounded children never use all of its admitted quantity;
+        the unplaced share is released instead of staying reserved. Remaining can
+        only shrink, zero releases the order, and the provenance is retained.
+        """
+        with self._lock:
+            if (
+                intent_id not in self._orders
+                or not isinstance(remaining, Decimal)
+                or not remaining.is_finite()
+                or remaining < 0
+                or not isinstance(source_refs, tuple)
+                or not source_refs
+                or any(not isinstance(ref, str) or not ref.strip() for ref in source_refs)
+            ):
+                raise ValueError("pending admission, remaining quantity and evidence required")
+            intent, current = self._orders[intent_id]
+            if remaining > current:
+                raise ValueError("remaining quantity cannot grow")
+            self._risk.acknowledge_remaining(intent_id, remaining, acknowledged=True)
+            self._known_orders[intent_id] = (intent, remaining)
+            if remaining:
+                self._orders[intent_id] = (intent, remaining)
+            else:
+                self._orders.pop(intent_id)
+            self._releases[intent_id] = (
+                *self._releases.get(intent_id, ()),
+                (remaining, source_refs),
+            )
+
+    @property
+    def release_evidence(
+        self,
+    ) -> tuple[tuple[str, tuple[tuple[Decimal, tuple[str, ...]], ...]], ...]:
+        with self._lock:
+            return tuple(sorted(self._releases.items()))
+
+    @property
+    def canceled_unreconciled(self) -> tuple[str, ...]:
+        """Canceled orders whose remaining quantity still lacks finality evidence."""
+        with self._lock:
+            return tuple(
+                sorted(
+                    key
+                    for key, (_, remaining) in self._known_orders.items()
+                    if remaining > 0 and key not in self._orders and key not in self._finality
+                )
+            )
+
     @property
     def finality_evidence(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
         with self._lock:
@@ -353,14 +414,24 @@ class PortfolioEngine:
             side = 1 if position.quantity > 0 else -1
             exit_price = planned_price(stop, -side, slip, self._ticks[position.symbol])
             unit_risk = max(Decimal(0), side * (position.mark - exit_price)) + exit_price * fee
+            # Owner decision 2026-10-11: the risk limits measure the loss from each
+            # lot's entry price to the current stop, so a favorable move never raises it.
+            entry_risk = sum(
+                (
+                    abs(lot.quantity) * max(Decimal(0), side * (lot.entry_price - exit_price))
+                    for lot in position.lots
+                ),
+                abs(position.quantity) * exit_price * fee,
+            )
             exposures.append(
                 Exposure(
                     position.symbol,
                     position.owner,
                     abs(position.quantity) * position.mark,
-                    abs(position.quantity) * unit_risk,
+                    entry_risk,
                     mapping.get(position.symbol, "unknown"),
                     self._risk_multipliers[position.symbol],
+                    abs(position.quantity) * unit_risk,
                 )
             )
         return PortfolioView(
@@ -372,50 +443,114 @@ class PortfolioEngine:
             max(Decimal(0), futures_margin(account.free_cash, account.positions).backing),
         )
 
-    def _risk_breaches(self, account: AccountSnapshot, fraction: Decimal) -> set[str]:
-        """Revalue held risk and unfilled potential once against current equity.
+    def _cap_reductions(
+        self, account: AccountSnapshot, fraction: Decimal
+    ) -> tuple[set[str], dict[str, Fraction]]:
+        """Check current limits; return assets to cancel and keep fractions to cut back to.
 
-        Groups are the last successfully admitted causal snapshot; missing symbols
-        remain unknown. Canceled remainders still count until finality or full fills.
-        Shared-cap breaches conservatively close all holdings, rather than choose
-        an unregistered priority among assets to restore the portfolio limit.
+        Owner decision 2026-10-11: the 0.5% asset and 3% aggregate risk limits measure
+        each holding's loss from entry to its current stop; a breached limit cuts the
+        holdings back to it instead of closing them. Breach detection counts unfilled
+        potential (canceled remainders until finality), whose increases are canceled;
+        keep fractions then use held exposure only. Aggregate and correlation-group
+        breaches cut every affected holding by one common fraction, so no unregistered
+        priority among assets decides. Groups are the last admitted causal snapshot.
         """
         view = self._view(account, fraction, self._correlation_groups)
-        gross: dict[str, Fraction] = {}
-        risk: dict[str, Fraction] = {}
-        for exposure in view.exposures:
-            gross[exposure.symbol] = Fraction(exposure.notional)
-            risk[exposure.symbol] = Fraction(exposure.stop_risk)
+        held_gross = {e.symbol: Fraction(e.notional) for e in view.exposures}
+        held_risk = {e.symbol: Fraction(e.stop_risk) for e in view.exposures}
+        gross, risk = dict(held_gross), dict(held_risk)
+        pending: set[str] = set()
         for key, (intent, remaining) in self._known_orders.items():
             if not remaining or key in self._finality:
                 continue
             admission = self._admissions[key]
             scale = Fraction(remaining) / Fraction(admission.quantity)
-            gross[intent.symbol] = (
-                gross.get(intent.symbol, Fraction(0)) + Fraction(admission.notional) * scale
-            )
-            risk[intent.symbol] = (
-                risk.get(intent.symbol, Fraction(0)) + Fraction(admission.risk) * scale
-            )
+            symbol = intent.symbol
+            gross[symbol] = gross.get(symbol, Fraction(0)) + Fraction(admission.notional) * scale
+            risk[symbol] = risk.get(symbol, Fraction(0)) + Fraction(admission.risk) * scale
+            pending.add(symbol)
         capital = max(Fraction(0), Fraction(view.equity)) * Fraction(view.risk_fraction)
-        breaches = {
-            symbol
-            for symbol in gross
-            if gross[symbol] > capital / 5
-            or risk[symbol] > capital * Fraction(self._risk_multipliers[symbol]) / 200
-        }
         mapping = dict(self._correlation_groups)
-        group_gross: dict[str, Fraction] = {}
-        for symbol, notional in gross.items():
-            group = mapping.get(symbol, "unknown")
-            group_gross[group] = group_gross.get(group, Fraction(0)) + notional
-        if (
+
+        def asset_cap(symbol: str) -> Fraction:
+            return capital * Fraction(self._risk_multipliers[symbol]) / 200
+
+        def groups_of(values: dict[str, Fraction]) -> dict[str, Fraction]:
+            totals: dict[str, Fraction] = {}
+            for symbol, value in values.items():
+                name = mapping.get(symbol, "unknown")
+                totals[name] = totals.get(name, Fraction(0)) + value
+            return totals
+
+        breached = {s for s in gross if gross[s] > capital / 5 or risk[s] > asset_cap(s)}
+        aggregate = (
             sum(risk.values(), Fraction(0)) > capital * Fraction(3, 100)
             or sum(gross.values(), Fraction(0)) > capital * Fraction(8, 5)
-            or any(value > capital * Fraction(4, 5) for value in group_gross.values())
-        ):
-            breaches.update(position.symbol for position in account.positions)
-        return breaches
+            or any(value > capital * Fraction(4, 5) for value in groups_of(gross).values())
+        )
+        if not breached and not aggregate:
+            return set(), {}
+        cancel = (set(gross) if aggregate else breached) & pending
+        # Holdings already required to close go to zero; they never size others' cuts.
+        held_gross = {s: v for s, v in held_gross.items() if s not in self._close}
+        held_risk = {s: v for s, v in held_risk.items() if s not in self._close}
+        total_risk = sum(held_risk.values(), Fraction(0))
+        total_gross = sum(held_gross.values(), Fraction(0))
+        group_gross = groups_of(held_gross)
+        keep: dict[str, Fraction] = {}
+        for symbol in held_gross:
+            factor = Fraction(1)
+            limits = (
+                (held_gross[symbol], capital / 5),
+                (held_risk[symbol], asset_cap(symbol)),
+                (total_risk, capital * Fraction(3, 100)),
+                (total_gross, capital * Fraction(8, 5)),
+                (group_gross[mapping.get(symbol, "unknown")], capital * Fraction(4, 5)),
+            )
+            for used, limit in limits:
+                if used > limit:
+                    factor = min(factor, limit / used)
+            if factor < 1:
+                keep[symbol] = factor
+        return cancel, keep
+
+    def _apply_caps(
+        self,
+        account: AccountSnapshot,
+        rules: Mapping[str, VenueRules],
+        cancel: set[str],
+        keep: dict[str, Fraction],
+        reason: str,
+    ) -> None:
+        """Caller holds the lock. Cancel increases, then record cut-back obligations.
+
+        A target rounds down to the venue step; zero becomes a full close. Targets only
+        tighten until a reduction satisfies them, so a transient breach is not erased.
+        """
+        for key, (intent, _) in tuple(self._orders.items()):
+            if intent.symbol in cancel:
+                self._order_close_reasons.setdefault(key, set()).add(reason)
+                self.cancel(key)
+        for position in account.positions:
+            factor = keep.get(position.symbol)
+            if factor is None:
+                continue
+            target = Fraction(abs(position.quantity)) * factor
+            rule = rules.get(position.symbol)
+            if isinstance(rule, VenueRules):
+                target = (target // Fraction(rule.step)) * Fraction(rule.step)
+            if target <= 0:
+                self._require_close(position.symbol, reason)
+                continue
+            amount = _decimal(target)
+            prior = self._trims.get(position.symbol)
+            self._trims[position.symbol] = amount if prior is None else min(prior, amount)
+            self._trim_reasons.setdefault(position.symbol, set()).add(reason)
+
+    def _exit_reasons(self, symbol: str) -> set[str]:
+        closing = self._close_reasons.get(symbol, set()) if symbol in self._close else set()
+        return closing | self._trim_reasons.get(symbol, set())
 
     def _exit_reserve(self, account: AccountSnapshot) -> Decimal:
         reserve = Decimal(0)
@@ -495,16 +630,23 @@ class PortfolioEngine:
                 reasons.append(recovery.reason)
             # Routine cap management applies to every causal valuation/account event.
             # Keep it distinct from failed execution so replay can settle reductions.
-            for symbol in self._risk_breaches(account, recovery.risk_fraction):
-                self._require_close(symbol, "portfolio_cap_reduction")
-            held = {p.symbol for p in account.positions}
+            cancel, keep = self._cap_reductions(account, recovery.risk_fraction)
+            self._apply_caps(account, rules, cancel, keep, "portfolio_cap_reduction")
+            held = {p.symbol: abs(p.quantity) for p in account.positions}
             self._close.intersection_update(held)
             self._close_reasons = {
                 symbol: why for symbol, why in self._close_reasons.items() if symbol in held
             }
-            reasons.extend(
-                sorted({why for values in self._close_reasons.values() for why in values})
-            )
+            self._trims = {
+                symbol: target
+                for symbol, target in self._trims.items()
+                if symbol in held and held[symbol] > target
+            }
+            self._trim_reasons = {
+                symbol: why for symbol, why in self._trim_reasons.items() if symbol in self._trims
+            }
+            persisting = (*self._close_reasons.values(), *self._trim_reasons.values())
+            reasons.extend(sorted({why for values in persisting for why in values}))
             if self._integrity_failure:
                 reasons.append("execution_integrity_failure")
             return EngineSnapshot(
@@ -528,6 +670,11 @@ class PortfolioEngine:
                     )
                 ),
                 tuple(sorted(stale)),
+                tuple(
+                    (symbol, tuple(sorted(self._exit_reasons(symbol))))
+                    for symbol in sorted(self._close | set(self._trims))
+                ),
+                tuple(sorted(self._trims.items())),
             )
 
     def preview(
@@ -795,8 +942,8 @@ class PortfolioEngine:
                 ):
                     self._require_close(event.symbol, "post_fill_risk_breach")
                 state = mark("increase", event.event_id)
-                for symbol in self._risk_breaches(state.account, state.recovery.risk_fraction):
-                    self._require_close(symbol, "post_fill_risk_breach")
+                cancel, keep = self._cap_reductions(state.account, state.recovery.risk_fraction)
+                self._apply_caps(state.account, rules, cancel, keep, "post_fill_risk_breach")
             result = mark("settled", batch_id)
             self._batches[batch_id] = (identity, result)
             return result

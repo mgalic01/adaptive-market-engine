@@ -211,7 +211,7 @@ def test_reused_funding_identity_fails_without_a_second_payment():
 
 def test_failed_post_funding_mark_retains_payment_and_observed_prefix(monkeypatch):
     engine = held_short()
-    original = PortfolioEngine._risk_breaches
+    original = PortfolioEngine._cap_reductions
     calls = []
 
     def broken(self, account, fraction):
@@ -220,14 +220,14 @@ def test_failed_post_funding_mark_retains_payment_and_observed_prefix(monkeypatc
             raise ArithmeticError("synthetic valuation failure")
         return original(self, account, fraction)
 
-    monkeypatch.setattr(PortfolioEngine, "_risk_breaches", broken)
+    monkeypatch.setattr(PortfolioEngine, "_cap_reductions", broken)
     result = settle(engine, fixings=(fixing("BTCUSDT"),))
     assert result.failure == "boundary_execution_failure:ArithmeticError"
     assert result.final is None
     # The payment really happened and stays booked; only its following mark failed.
     assert [e.amount for e in result.funding] == [D(1)]
     assert [row.phase for row in result.observations] == ["before"]
-    monkeypatch.setattr(PortfolioEngine, "_risk_breaches", original)
+    monkeypatch.setattr(PortfolioEngine, "_cap_reductions", original)
     state = engine.observe(1, {"BTCUSDT": Quote(D(100), 1)}, RULES)
     assert state.account.funding == D(1)
     assert "execution_integrity_failure" in state.reasons
@@ -322,3 +322,18 @@ def test_empty_boundary_only_marks_the_settled_state():
     assert result.fills == () and result.funding == ()
     assert [row.phase for row in result.observations] == ["before", "settled"]
     assert result.final.timestamp_ms == 1
+
+
+def test_boundary_cuts_a_position_back_to_its_size_limit():
+    engine = held_short()
+    engine.observe(0, QUOTES, RULES)
+    # The short's notional is 100; a 2x price spike makes it exceed 20% of equity
+    # only for a tiny account, so impose the cut-back obligation directly.
+    with engine.exclusive():
+        engine._trims["BTCUSDT"] = D(".4")
+        engine._trim_reasons["BTCUSDT"] = {"portfolio_cap_reduction"}
+    result = settle(engine)
+    assert result.failure is None
+    assert [fill.quantity for fill in result.fills] == [D(".6")]
+    assert result.final.account.positions[0].quantity == D("-.4")
+    assert result.final.reduce_to == ()

@@ -121,3 +121,31 @@ suppresses favorable targets. Gap-open target executions receive no gap credit,
 while remaining inventory is valued at the actual opening quote. The complete
 strategy driver must bind spacing to admitted geometry and distinguish intrabar
 purchases from lots already held at open.
+
+### Complete strategy replay (Claude, 2026-10-11)
+
+`strategy_replay.replay_strategy` runs one component arm, scenario, capital, cost
+profile and window over in-memory registered inputs, once. At each hourly boundary
+it processes, in order: the previous bar's modeled path stamped at its availability
+(held stops and grid targets, plus resting grid limit buys that fill at their limit
+with no gap credit, before that vertex's stop, and earn no same-bar target);
+completed-bar management (trend reversal and grid range exits become obligations;
+trailing stops tighten from completed information and never execute an old stop
+again); then the boundary frame (funding on holdings that survived the previous
+interval, every legal protective reduction at the opening quote, entry decisions in
+symbol order, trend opening fills at the same quote, grid basket placement). The
+terminal boundary marks the last bar's close and excludes next-window funding,
+management and entries. Inputs must be complete: every window hour on every venue
+and every scheduled funding settlement, or the run is refused before it starts.
+
+`replay_records.strategy_report` keeps every engine mark as an equity point, lists
+all marks at each hourly boundary under the approved policy, binds capital,
+utilization, daily samples and recovery endpoints to observation identities, and
+attributes every fill and funding payment to a lifecycle, so contributions reconcile
+exactly with the equity change. Synthetic tests only. The reserved-boundary endpoint
+(a window ending 2025-01-01) and frozen baseline adapters remain open.
+
+Grid rebuild ruling: the spec says "Rebuild only flat". A basket that has filled at
+least one child and is back to no inventory is withdrawn, so the next decision can
+rebuild it at the current price; an untouched basket keeps its levels.
+
