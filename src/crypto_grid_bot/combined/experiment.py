@@ -155,16 +155,24 @@ def _cost_profile_valid(profile: object) -> bool:
 def _registration_errors(registration: Registration) -> list[str]:
     reg = registration
     errors: list[str] = []
-    arms, baselines = set(reg.arms), set(reg.baseline_arms)
+    arms_valid = isinstance(reg.arms, (tuple, list)) and all(
+        isinstance(arm, str) and arm.strip() for arm in reg.arms
+    )
+    baselines_valid = isinstance(reg.baseline_arms, (tuple, list)) and all(
+        isinstance(arm, str) and arm.strip() for arm in reg.baseline_arms
+    )
+    arms = set(reg.arms) if arms_valid else set()
+    baselines = set(reg.baseline_arms) if baselines_valid else set()
     if (
-        len(arms) != len(reg.arms)
+        not arms_valid
+        or len(arms) != len(reg.arms)
         or not arms >= (_BASELINES | _COMPONENTS)
         or "matched_spot_baselines" in arms
-        or not all(isinstance(a, str) and a for a in arms)
     ):
         errors.append("registration: fixed menu missing, duplicated or unexpanded")
     if (
-        len(baselines) != len(reg.baseline_arms)
+        not baselines_valid
+        or len(baselines) != len(reg.baseline_arms)
         or not baselines >= _BASELINES
         or not baselines - _BASELINES
         or not baselines <= arms
@@ -419,6 +427,7 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
     identity = row.identity
     if (
         identity.arm not in _COMPONENTS
+        or not isinstance(reg.arms, (tuple, list))
         or reg.arms.count(identity.arm) != 1
         or not _pin(reg.code_pin, 40)
         or not _pin(reg.config_pin)

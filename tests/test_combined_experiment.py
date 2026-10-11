@@ -1004,3 +1004,48 @@ def test_only_exact_true_explanation_can_tolerate_observed_residual(flag, pendin
     result = evaluate(replace(reg, pending=("review",)) if pending else reg, rows)
     assert result.status == "fail" and result.incomplete_reasons
     assert len(result.failures) == 1 and "invalid accounting" in result.failures[0]
+
+
+@pytest.mark.parametrize("field", ["arms", "baseline_arms"])
+@pytest.mark.parametrize("bad", [None, 1, "combined", {"combined"}, {"combined": True}])
+def test_malformed_arm_menu_collection_is_incomplete(field, bad):
+    reg = registration()
+    rows = outcomes(reg)
+    result = evaluate(replace(reg, **{field: bad}), rows)
+    assert result.status == "incomplete" and not result.failures
+    assert result.outcomes == rows
+
+
+@pytest.mark.parametrize("field", ["arms", "baseline_arms"])
+@pytest.mark.parametrize("bad", [None, [], {}, 1, "", "   "])
+def test_malformed_arm_menu_entry_is_incomplete(field, bad):
+    reg = registration()
+    rows = outcomes(reg)
+    result = evaluate(replace(reg, **{field: (*getattr(reg, field), bad)}), rows)
+    assert result.status == "incomplete" and not result.failures
+    assert result.outcomes == rows
+
+
+@pytest.mark.parametrize("field", ["arms", "baseline_arms"])
+@pytest.mark.parametrize("bad", [[], {}, "   "])
+def test_malformed_arm_menu_entry_preserves_attributable_component_failure(field, bad):
+    reg = registration()
+    rows = change(outcomes(reg), max_drawdown=D(".5"))
+    result = evaluate(replace(reg, **{field: (*getattr(reg, field), bad)}), rows)
+    assert result.status == "fail" and result.incomplete_reasons
+    assert len(result.failures) == 1 and "maximum drawdown" in result.failures[0]
+
+
+def test_malformed_arm_menu_does_not_make_duplicate_component_unambiguous():
+    reg = registration()
+    rows = change(outcomes(reg), max_drawdown=D(".5"))
+    result = evaluate(replace(reg, arms=(*reg.arms, [], "combined")), rows)
+    assert result.status == "incomplete" and not result.failures
+
+
+@pytest.mark.parametrize("field", ["arms", "baseline_arms"])
+@pytest.mark.parametrize("container", [set, dict.fromkeys])
+def test_complete_arm_menu_in_unsupported_collection_is_incomplete(field, container):
+    reg = registration()
+    result = evaluate(replace(reg, **{field: container(getattr(reg, field))}), outcomes(reg))
+    assert result.status == "incomplete" and not result.failures
