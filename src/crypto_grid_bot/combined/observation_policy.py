@@ -86,7 +86,8 @@ def validate_boundaries(
             or boundary.role != role
             or type(boundary.interval_start_ms) is not int
             or type(boundary.interval_end_ms) is not int
-            or not 0 <= boundary.interval_start_ms < boundary.interval_end_ms < 1_735_689_600_000
+            # The last pre-reserved bar may end AT the reserved boundary.
+            or not 0 <= boundary.interval_start_ms < boundary.interval_end_ms <= 1_735_689_600_000
             or boundary.interval_start_ms % 3_600_000
             or boundary.interval_end_ms - boundary.interval_start_ms != 3_600_000
             or boundary.timestamp_ms

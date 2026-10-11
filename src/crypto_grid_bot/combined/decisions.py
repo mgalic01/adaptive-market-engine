@@ -406,7 +406,8 @@ class DecisionCoordinator:
             if intent.intent_id not in active_ids:
                 failure = "opening_admission_no_longer_active"
             elif (
-                before.close_required
+                # Verified unsellable dust keeps its obligation but blocks no new asset.
+                set(before.close_required) - set(self._engine.close_dust(rules))
                 or any(key not in active_ids for key in before.unresolved_execution)
                 or any(p.symbol == intent.symbol for p in before.account.positions)
             ):

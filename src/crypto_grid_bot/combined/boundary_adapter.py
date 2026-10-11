@@ -51,7 +51,7 @@ def emit_boundary(
         or role not in ("opening", "settled", "terminal")
         or type(interval_start_ms) is not int
         or type(interval_end_ms) is not int
-        or not 0 <= interval_start_ms < interval_end_ms < 1_735_689_600_000
+        or not 0 <= interval_start_ms < interval_end_ms <= 1_735_689_600_000
         or interval_start_ms % 3_600_000
         or interval_end_ms - interval_start_ms != 3_600_000
         or not isinstance(trace, tuple)

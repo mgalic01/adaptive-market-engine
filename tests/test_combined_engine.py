@@ -1026,10 +1026,11 @@ def test_post_fill_recheck_marks_preexisting_overlimit_asset_for_close():
         funding=(FundingEvent("loss", 2, orders[0].symbol, D(-500)),),
         increases=((orders[-1].intent_id, replace(fills[-1], timestamp_ms=2)),),
     )
-    # The held asset over its risk limit is cut back to it, not closed. The other
-    # asset's increase is within every limit, so it stays authorized and fills.
+    # The held asset over its risk limit is cut back to 90% of it (owner, 2026-10-11),
+    # not closed: 10 * 0.9 * 47.5 / 50. The other asset's increase is within every
+    # limit, so it stays authorized and fills.
     assert state.close_required == ()
-    assert state.reduce_to == ((orders[0].symbol, D("9.5")),)
+    assert state.reduce_to == ((orders[0].symbol, D("8.55")),)
     assert {"portfolio_cap_reduction", "post_fill_risk_breach"} <= set(state.reasons)
 
 
@@ -1354,13 +1355,55 @@ def test_a_position_grown_past_its_size_limit_is_cut_back_to_it():
     engine.settle("fill", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
     state = engine.observe(2, {order.symbol: Quote(D(110), 2)}, RULES)
     limit = Fraction(state.account.equity) / 5
-    keep = Fraction(19) * limit / (Fraction(19) * 110)
+    # Cut to 90% of the breached limit (owner decision 2026-10-11).
+    keep = Fraction(19) * Fraction(9, 10) * limit / (Fraction(19) * 110)
     target = D(str(float(keep // Fraction(1, 1000) / 1000)))
     assert state.close_required == ()
     assert state.reduce_to == ((order.symbol, target),)
-    assert state.reduce_to[0][1] * 110 <= limit
+    assert state.reduce_to[0][1] * 110 <= limit * Fraction(9, 10)
     cut = replace(
         fill, event_id="cut", timestamp_ms=3, side=-1, quantity=D(19) - target, price=D(110)
     )
     state = engine.settle("cut", 3, {order.symbol: Quote(D(110), 3)}, RULES, reductions=(cut,))
     assert state.reduce_to == () and state.account.positions[0].quantity == target
+
+
+def test_a_simulated_venue_cancel_is_final_at_once():
+    engine = PortfolioEngine(D(10000), simulated_venue=True)
+    order = intent()
+    assert engine.submit(order, candidate(order), QUOTES, RULES).accepted
+    engine.cancel(order.intent_id)
+    assert engine.canceled_unreconciled == ()
+    assert engine.finality_evidence == (
+        (order.intent_id, (f"simulated-venue:cancel:{order.intent_id}",)),
+    )
+    assert engine.observe(1, QUOTES, RULES).unresolved_execution == ()
+    # A real venue keeps the remainder unreconciled until evidence arrives.
+    live = PortfolioEngine(D(10000))
+    assert live.submit(order, candidate(order), QUOTES, RULES).accepted
+    live.cancel(order.intent_id)
+    assert live.canceled_unreconciled == (order.intent_id,)
+
+
+def test_capture_collects_only_marks_outside_settlement_batches():
+    engine = PortfolioEngine(D(10000))
+    with engine.capture_marks() as marks:
+        engine.observe(0, QUOTES, RULES)
+        engine.settle("batch", 0, QUOTES, RULES)
+        engine.observe(0, QUOTES, RULES)
+    assert len(marks) == 2
+    with pytest.raises(ValueError), engine.capture_marks(), engine.capture_marks():
+        pass
+
+
+def test_an_unsellable_cut_back_is_retained_dust():
+    engine = PortfolioEngine(D(10000))
+    order = intent(stop=D("99.9"), requested_quantity=D(19), fee_rate=D(0), slippage_rate=D(0))
+    engine.submit(order, candidate(order), QUOTES, RULES)
+    fill = FillEvent("fill", 1, order.symbol, order.owner, order.venue, 1, D(19), D(100), D(0))
+    engine.settle("fill", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    state = engine.observe(2, {order.symbol: Quote(D(110), 2)}, RULES)
+    assert state.reduce_to and state.close_required == ()
+    unsellable = {order.symbol: replace(RULE, min_notional=D(100000))}
+    assert engine.close_dust(unsellable) == (order.symbol,)
+    assert engine.close_dust(RULES) == ()

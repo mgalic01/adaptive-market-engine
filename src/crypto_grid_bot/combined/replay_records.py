@@ -61,8 +61,14 @@ def _capital(account: AccountSnapshot) -> tuple[Decimal, Decimal]:
     return _decimal(spot), _decimal(collateral)
 
 
-def lifecycle_contributions(trace: StrategyTrace) -> tuple[Contribution, ...]:
-    """Whole lifecycles from flat to flat per asset, in booking order."""
+def lifecycle_contributions(
+    trace: StrategyTrace, issues: list[str] | None = None
+) -> tuple[Contribution, ...]:
+    """Whole lifecycles from flat to flat per asset, in booking order.
+
+    An open lifecycle with no retained mark (only after a failed run) is valued at
+    its last fill price and named in ``issues``, never silently or by a crash.
+    """
     refs = trace.run.source_refs
     open_: dict[str, _Lifecycle] = {}
     rows: list[Contribution] = []
@@ -128,10 +134,17 @@ def lifecycle_contributions(trace: StrategyTrace) -> tuple[Contribution, ...]:
         if trace.observations
         else {}
     )
+    last_price = {
+        event.fill.symbol: Fraction(event.fill.price)
+        for event in trace.events
+        if isinstance(event, TraceFill)
+    }
     for symbol, life in sorted(open_.items()):
         if symbol not in marks:
-            raise ValueError("open lifecycle has no retained mark")
-        emit(life, life.cash + life.quantity * marks[symbol], None)
+            if issues is None:
+                raise ValueError("open lifecycle has no retained mark")
+            issues.append(f"unmarked_open_lifecycle:{life.id}")
+        emit(life, life.cash + life.quantity * marks.get(symbol, last_price[symbol]), None)
     return tuple(sorted(rows, key=lambda row: (row.entry_ms, row.id)))
 
 
@@ -267,10 +280,13 @@ def strategy_report(trace: StrategyTrace, *, adapter_pin: str) -> Report:
         for boundary, following, capital in zip(boundaries, boundaries[1:], capitals, strict=False)
     )
     policy = PolicyEvidence(POLICY_ID, adapter_pin, tuple(boundaries), trace.run.scenario)
+    # A failed replay is incomplete evidence by declaration, not only by structure.
+    issues = [f"replay_failure:{trace.failure}"] if trace.failure is not None else []
+    contributions = lifecycle_contributions(trace, issues)
     return analyze(
         trace.run.initial_cash,
         points,
-        lifecycle_contributions(trace),
+        contributions,
         opportunity_records(trace),
         recovery_episodes(trace),
         refs,
@@ -279,4 +295,5 @@ def strategy_report(trace: StrategyTrace, *, adapter_pin: str) -> Report:
         utilization=utilization,
         capital_observations=tuple(capitals),
         policy_evidence=policy,
+        producer_issues=tuple(issues),
     )

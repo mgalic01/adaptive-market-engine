@@ -697,17 +697,20 @@ def test_unknown_wallet_verification_preserves_other_observed_failures(updates):
     assert not any("wallet/quantity" in reason for reason in result.failures)
 
 
-def test_reserved_boundary_is_not_an_implemented_terminal_observation():
+@pytest.mark.parametrize(
+    ("end", "valid"), [(1_735_689_600_000, True), (1_735_689_600_000 + 86_400_000, False)]
+)
+def test_a_window_may_end_at_but_never_after_the_reserved_boundary(end, valid):
     reg = registration()
-    window = replace(reg.windows[0], end_ms=1_735_689_600_000)
+    window = replace(reg.windows[0], end_ms=end)
     changed = replace(reg, windows=(window,))
     rows = tuple(
         replace(row, identity=replace(row.identity, end_ms=window.end_ms))
         for row in change(outcomes(reg), max_drawdown=D(".5"))
     )
     result = evaluate(changed, rows)
-    assert result.status == "incomplete" and not result.failures
-    assert "registration: invalid window dates or data pin" in result.incomplete_reasons
+    invalid = "registration: invalid window dates or data pin" in result.incomplete_reasons
+    assert invalid is not valid
 
 
 @pytest.mark.parametrize("wallet", [None, False, True])

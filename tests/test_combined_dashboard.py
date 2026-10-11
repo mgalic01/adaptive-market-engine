@@ -215,3 +215,55 @@ def test_capital_observation_phase_and_interval_link_are_visible_and_exported():
     data = json.loads(unquote(download.split(",", 1)[1]))["report"]
     assert data["capital_observations"][0]["equity_observation_id"] == "equity-0"
     assert data["utilization"][0]["observation_id"] == "capital-0"
+
+
+def test_a_long_run_page_stays_bounded_and_keeps_extremes() -> None:
+    from crypto_grid_bot.combined.dashboard import exact_evidence
+
+    # 6,000 marks, oscillating with one deep trough: far beyond every display bound.
+    points = tuple(
+        EquityPoint(
+            index * 3_600_000,
+            D(50) if index == 4321 else D(100) + D(index % 7) - D(3),
+            f"mark-{index}",
+            ("synthetic",),
+        )
+        for index in range(6000)
+    )
+    points = (EquityPoint(0, D(100), "mark-0", ("synthetic",)), *points[1:])
+    evidence = analyze(D(100), points, (), (), (), ("synthetic",))
+    html = render_report(evidence)
+    parsed = Elements(html)
+    text = " ".join(parsed.text)
+    assert len(html) < 1_000_000
+    assert "Display shows" in text and "extremes are kept" in text
+    # The trough's drawdown (53 / 103) survives sampling as the chart's top label.
+    assert f"{evidence.max_drawdown * 100:.2f}%" == "51.46%"
+    drawdown_svg = html.split('aria-label="Lifetime drawdown')[1].split("</svg>")[0]
+    assert "51.46%" in drawdown_svg
+    assert "unfavorable intervals by net change" in text
+    assert "Summarized per record type" in text
+    assert "inline limit, so it is not embedded" in text
+    assert not any(attrs.get("download") for _, attrs in parsed.elements)
+    exact = json.loads(exact_evidence(evidence))
+    assert len(exact["report"]["equity_points"]) == 6000
+    assert min(Decimal(p["equity"]) for p in exact["report"]["equity_points"]) == 50
+
+
+def test_benchmark_is_compared_on_the_approved_hourly_schedule() -> None:
+    import combined_market_fixtures as fx
+
+    from crypto_grid_bot.combined.replay_records import strategy_report
+    from crypto_grid_bot.combined.strategy_replay import replay_strategy
+
+    trace = replay_strategy(fx.run("spot_trend", 2), (fx.market("BTCUSDT", fx.uptrend, 2),))
+    evidence = strategy_report(trace, adapter_pin="0" * 64)
+    schedule = [b.timestamp_ms for b in evidence.policy_evidence.boundaries]
+    assert len(evidence.equity_points) > len(schedule)  # several native marks per hour
+    flat = tuple(EquityPoint(t, D(10000), f"hold-{t}", ("synthetic",)) for t in schedule)
+    html = render_report(evidence, benchmarks={"Synthetic flat hold": flat})
+    parsed = Elements(html)
+    assert any(attrs.get("data-series") == "benchmark-0" for _, attrs in parsed.elements)
+    assert "Omitted comparison" not in " ".join(parsed.text)
+    mismatched = flat[:-1]
+    assert "Omitted comparison" in render_report(evidence, benchmarks={"short": mismatched})

@@ -274,7 +274,11 @@ def replay_held_portfolio(
         identity = f"{prefix}:buy:{sequence}:{row.child_id}"
         if engine.booked_fill(identity) is not None:
             raise ValueError("modeled execution identity already booked")
-        quotes[row.symbol] = Quote(row.limit, now)
+        # A gap below the limit never traded at the limit: the fill keeps its limit
+        # price, but the position is valued at the actual open (Codex 4242566607).
+        # Within a bar the modeled path passes through the limit, so it is the mark.
+        gapped = phase.startswith("open")
+        quotes[row.symbol] = Quote(market[row.symbol].open if gapped else row.limit, now)
         fill = FillEvent(
             identity,
             now,

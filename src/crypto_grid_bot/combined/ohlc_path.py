@@ -57,7 +57,8 @@ def plan_held_path(
         or type(bar.open_ms) is not int
         or bar.open_ms < 0
         or bar.open_ms % 3_600_000
-        or bar.open_ms + 3_600_000 >= 1_735_689_600_000
+        # The last development bar opens before, and ends AT, the reserved boundary.
+        or bar.open_ms + 3_600_000 > 1_735_689_600_000
         or scenario not in SCENARIOS
         or type(side) is not int
         or side not in (-1, 1)

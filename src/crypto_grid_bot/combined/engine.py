@@ -37,6 +37,8 @@ from crypto_grid_bot.combined.risk import (
 )
 from crypto_grid_bot.combined.routing import Qualification
 
+RESERVED_MS = 1_735_689_600_000  # 2025-01-01T00:00Z; data from here on stays sealed
+
 _STARTED = object()  # An attempt that began but never recorded its result.
 
 
@@ -85,9 +87,20 @@ class SettlementObservation:
 class PortfolioEngine:
     """One account and one event lock, including acknowledged reservation transfers."""
 
-    def __init__(self, initial_cash: Decimal, *, automatic_recovery: bool = True) -> None:
-        if type(automatic_recovery) is not bool:
-            raise ValueError("automatic_recovery must be Boolean")
+    def __init__(
+        self,
+        initial_cash: Decimal,
+        *,
+        automatic_recovery: bool = True,
+        simulated_venue: bool = False,
+    ) -> None:
+        if type(automatic_recovery) is not bool or type(simulated_venue) is not bool:
+            raise ValueError("automatic_recovery and simulated_venue must be Boolean")
+        # True only when this process generates every fill (a historical replay): a
+        # cancel is then final at once, because no late venue fill can exist.
+        self._simulated_venue = simulated_venue
+        self._capture: list[EngineSnapshot] | None = None
+        self._settling = 0
         self._automatic_recovery = automatic_recovery
         self._account = CombinedAccount(initial_cash)
         self._risk = PortfolioRisk()
@@ -125,6 +138,26 @@ class PortfolioEngine:
         """Serialize one whole replay frame against every other caller of this account."""
         with self._lock:
             yield
+
+    def set_correlation_groups(self, groups: tuple[tuple[str, str], ...]) -> None:
+        """Adopt the current causal correlation snapshot for continuous cap checks.
+
+        Admissions also adopt their own snapshot. Without this refresh, holdings that
+        became one connected group could stay above the 80% group limit indefinitely.
+        """
+        if (
+            not isinstance(groups, tuple)
+            or any(
+                not isinstance(pair, tuple)
+                or len(pair) != 2
+                or not all(isinstance(value, str) and value.strip() for value in pair)
+                for pair in groups
+            )
+            or len({symbol for symbol, _ in groups}) != len(groups)
+        ):
+            raise ValueError("unique symbol/group snapshot required")
+        with self._lock:
+            self._correlation_groups = groups
 
     def retained_attempt(self, attempt_id: str, identity: object) -> object | None:
         """Return an identical completed frame's retained result, never a retry.
@@ -172,7 +205,7 @@ class PortfolioEngine:
                 sorted(
                     p.symbol
                     for p in account.positions
-                    if p.symbol in self._close
+                    if (p.symbol in self._close or p.symbol in self._trims)
                     and self._fresh(p.symbol, self._clock)
                     and isinstance(rules.get(p.symbol), VenueRules)
                     and not self._reduction(p, rules[p.symbol]).quantity
@@ -220,10 +253,38 @@ class PortfolioEngine:
             return self._funding_events.get(event_id)
 
     def cancel(self, intent_id: str) -> None:
-        """Cancel increases locally; this does not attest that all fills are reconciled."""
+        """Cancel increases locally; this does not attest that all fills are reconciled.
+
+        Exception: with ``simulated_venue`` this process generates every fill, so the
+        cancel is final immediately and recorded as such.
+        """
         with self._lock:
             self._risk.release(intent_id, acknowledged=True)
             self._orders.pop(intent_id, None)
+            known = self._known_orders.get(intent_id)
+            if (
+                self._simulated_venue
+                and known is not None
+                and known[1] > 0
+                and intent_id not in self._finality
+            ):
+                self._finality[intent_id] = (f"simulated-venue:cancel:{intent_id}",)
+
+    @contextmanager
+    def capture_marks(self) -> Iterator[list[EngineSnapshot]]:
+        """Collect the observations taken outside settlement batches, in order.
+
+        Admission previews and submits observe the account too (a qualified submit
+        is where recovery can restart), so a replay retains those marks as well.
+        """
+        with self._lock:
+            if self._capture is not None:
+                raise ValueError("mark capture is already active")
+            self._capture = []
+            try:
+                yield self._capture
+            finally:
+                self._capture = None
 
     def acknowledge_finality(self, intent_id: str, *, source_refs: tuple[str, ...]) -> None:
         """Attest all fills reconciled and zero remaining executable quantity.
@@ -388,7 +449,9 @@ class PortfolioEngine:
                 self.request_close(symbol, owner, side, reason="tightened_stop_crossed")
 
     def _prices(self, now: int, quotes: Mapping[str, Quote]) -> dict[str, Decimal]:
-        if type(now) is not int or not 0 <= now < 1_735_689_600_000 or now < self._clock:
+        # The last development bar ends AT the reserved boundary, so its modeled marks
+        # and terminal close may carry that availability time; nothing later may.
+        if type(now) is not int or not 0 <= now <= RESERVED_MS or now < self._clock:
             raise ValueError("chronological development timestamp required")
         for symbol, quote in quotes.items():
             if not isinstance(quote, Quote) or quote.timestamp_ms > now:
@@ -448,9 +511,9 @@ class PortfolioEngine:
     ) -> tuple[set[str], dict[str, Fraction]]:
         """Check current limits; return assets to cancel and keep fractions to cut back to.
 
-        Owner decision 2026-10-11: the 0.5% asset and 3% aggregate risk limits measure
+        Owner decisions 2026-10-11: the 0.5% asset and 3% aggregate risk limits measure
         each holding's loss from entry to its current stop; a breached limit cuts the
-        holdings back to it instead of closing them. Breach detection counts unfilled
+        holdings back to 90% of it instead of closing them. Breach detection counts unfilled
         potential (canceled remainders until finality), whose increases are canceled;
         keep fractions then use held exposure only. Aggregate and correlation-group
         breaches cut every affected holding by one common fraction, so no unregistered
@@ -470,7 +533,19 @@ class PortfolioEngine:
             gross[symbol] = gross.get(symbol, Fraction(0)) + Fraction(admission.notional) * scale
             risk[symbol] = risk.get(symbol, Fraction(0)) + Fraction(admission.risk) * scale
             pending.add(symbol)
-        capital = max(Fraction(0), Fraction(view.equity)) * Fraction(view.risk_fraction)
+        entry_loss = Fraction(0)
+        for key, (intent, remaining) in self._known_orders.items():
+            if remaining and key not in self._finality:
+                entry = Fraction(
+                    planned_price(intent.price, intent.side, intent.slippage_rate, intent.tick)
+                )
+                entry_loss += Fraction(remaining) * (
+                    entry * Fraction(intent.fee_rate)
+                    + intent.side * (entry - Fraction(intent.price))
+                )
+        capital = max(Fraction(0), Fraction(view.equity) - entry_loss) * Fraction(
+            view.risk_fraction
+        )
         mapping = dict(self._correlation_groups)
 
         def asset_cap(symbol: str) -> Fraction:
@@ -510,7 +585,9 @@ class PortfolioEngine:
             )
             for used, limit in limits:
                 if used > limit:
-                    factor = min(factor, limit / used)
+                    # Owner decision 2026-10-11: cut to 90% of the breached limit, so
+                    # small later dips do not trigger a stream of minimum-size trims.
+                    factor = min(factor, Fraction(9, 10) * limit / used)
             if factor < 1:
                 keep[symbol] = factor
         return cancel, keep
@@ -541,7 +618,9 @@ class PortfolioEngine:
             if isinstance(rule, VenueRules):
                 target = (target // Fraction(rule.step)) * Fraction(rule.step)
             if target <= 0:
-                self._require_close(position.symbol, reason)
+                # Close only this asset; unrelated pending increases stay authorized.
+                self._close.add(position.symbol)
+                self._close_reasons.setdefault(position.symbol, set()).add(reason)
                 continue
             amount = _decimal(target)
             prior = self._trims.get(position.symbol)
@@ -649,7 +728,7 @@ class PortfolioEngine:
             reasons.extend(sorted({why for values in persisting for why in values}))
             if self._integrity_failure:
                 reasons.append("execution_integrity_failure")
-            return EngineSnapshot(
+            snapshot = EngineSnapshot(
                 timestamp_ms,
                 account,
                 recovery,
@@ -676,6 +755,9 @@ class PortfolioEngine:
                 ),
                 tuple(sorted(self._trims.items())),
             )
+            if self._capture is not None and not self._settling:
+                self._capture.append(snapshot)
+            return snapshot
 
     def preview(
         self,
@@ -698,6 +780,8 @@ class PortfolioEngine:
         """
         with self._lock, localcontext(Context(prec=60)):
             now = qualification.decision_ms
+            if type(now) is not int or now >= RESERVED_MS:
+                raise ValueError("no decision at or after the reserved boundary")
             if intent.intent_id in self._known_orders:
                 if self._known_orders[intent.intent_id][0] != intent:
                     raise ValueError("conflicting intent ID")
@@ -813,6 +897,7 @@ class PortfolioEngine:
         increases: tuple[tuple[str, FillEvent], ...] = (),
     ) -> EngineSnapshot:
         with self._lock:
+            self._settling += 1
             try:
                 return self._settle(
                     batch_id,
@@ -828,6 +913,8 @@ class PortfolioEngine:
                 for key in tuple(self._orders):
                     self.cancel(key)
                 raise
+            finally:
+                self._settling -= 1
 
     def _settle(
         self,
@@ -861,6 +948,8 @@ class PortfolioEngine:
             )
             if not batch_id or any(e.timestamp_ms != timestamp_ms for e in all_events):
                 raise ValueError("settlement identity/time mismatch")
+            if funding and timestamp_ms >= RESERVED_MS:
+                raise ValueError("funding at or after the reserved boundary is sealed data")
             if batch_id in self._batch_observations:
                 raise ValueError("failed settlement cannot be retried")
 

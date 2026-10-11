@@ -34,7 +34,7 @@ from .account import FillEvent, FundingEvent
 from .allocation import allocate_grid
 from .arms import arm_settings
 from .assessment import AssessmentSeries
-from .boundary_execution import BoundaryExecutor, FundingFixing
+from .boundary_execution import BoundaryExecution, BoundaryExecutor, FundingFixing
 from .correlation import correlation_groups
 from .decisions import Costs, DecisionCoordinator, DecisionResult, FundingEstimate, VenueInputs
 from .engine import EngineSnapshot, PortfolioEngine, Quote, SettlementObservation
@@ -151,43 +151,70 @@ class _Book:
     intent_id: str
     spacing: Decimal
     regime: str
+    opportunity: str
+    prefix: str
     pending: dict[str, RestingBuy] = field(default_factory=dict)
     cycled: bool = False  # some child filled: a later flat state is a completed cycle
 
 
+def _sealed(stamps: list[int], what: str) -> None:
+    """Data at or after the reserved boundary stays sealed: refuse it, never ignore it."""
+    if any(type(stamp) is not int or stamp >= _RESERVED for stamp in stamps):
+        raise ValueError(f"{what}: input at or after the reserved boundary is refused")
+
+
 def _bars(rows: tuple[Kline, ...], start: int, end: int, what: str) -> dict[int, Kline]:
+    """Index bars; only the window's own hours must be structurally sound.
+
+    History before the window is checked causally by the assessment, and bars after
+    the window are never read, so defects there cannot change this run.
+    """
     if not isinstance(rows, tuple) or any(not isinstance(row, Kline) for row in rows):
         raise ValueError(f"{what}: immutable klines required")
-    stamps = [row.open_ms for row in rows]
-    if any(type(stamp) is not int or stamp % HOUR for stamp in stamps) or stamps != sorted(
-        set(stamps)
-    ):
+    _sealed([row.open_ms for row in rows], what)
+    stamps = [row.open_ms for row in rows if start <= row.open_ms < end]
+    if any(stamp % HOUR for stamp in stamps) or stamps != sorted(set(stamps)):
         raise ValueError(f"{what}: unique sorted hourly bars required")
-    indexed = {row.open_ms: row for row in rows}
+    indexed = {row.open_ms: row for row in rows if start <= row.open_ms < end}
     if any(hour not in indexed for hour in range(start, end, HOUR)):
         raise ValueError(f"{what}: every window hour is required")
     return indexed
 
 
-def _funding(records: tuple[FundingRecord, ...], start: int, end: int, symbol: str) -> None:
-    """Every scheduled settlement in the window must be on record: none is zero."""
+def _funding(
+    records: tuple[FundingRecord, ...], start: int, end: int, symbol: str
+) -> tuple[FundingRecord, ...]:
+    """Every settlement the window needs must be on record: none is assumed zero.
+
+    Needed are the latest record at or before the start (the first estimate) through
+    the last slot before the end. Older history and later records are not read, so a
+    defect there cannot change this run (Codex 4242566622).
+    """
     if not isinstance(records, tuple) or not records:
         raise ValueError(f"{symbol}: funding records required with futures inputs")
-    if any(not isinstance(r, FundingRecord) or not r.valid for r in records):
-        raise ValueError(f"{symbol}: valid funding records required")
+    if any(not isinstance(r, FundingRecord) for r in records):
+        raise ValueError(f"{symbol}: funding records required with futures inputs")
+    _sealed([r.calc_time_ms for r in records], f"{symbol} funding")
     ordered = sorted(records, key=lambda r: r.calc_time_ms)
-    slots = [r.scheduled_ms for r in ordered]
+    starts = [r for r in ordered if r.scheduled_ms <= start]
+    if not starts:
+        raise ValueError(f"{symbol}: funding records must cover the whole window")
+    needed = [r for r in ordered if starts[-1].scheduled_ms <= r.scheduled_ms < end]
+    if any(not r.valid for r in needed):
+        raise ValueError(f"{symbol}: valid funding records required")
+    slots = [r.scheduled_ms for r in needed]
     if len(set(slots)) != len(slots):
         raise ValueError(f"{symbol}: duplicate funding slot")
-    for before, after in zip(ordered, ordered[1:], strict=False):
+    for before, after in zip(needed, needed[1:], strict=False):
         if after.scheduled_ms - before.scheduled_ms != (before.interval_hours or 0) * HOUR:
             raise ValueError(f"{symbol}: funding schedule has a gap or cadence change")
-    last = ordered[-1]
-    if slots[0] > start or last.scheduled_ms + (last.interval_hours or 0) * HOUR < end:
+    last = needed[-1]
+    if last.scheduled_ms + (last.interval_hours or 0) * HOUR < end:
         raise ValueError(f"{symbol}: funding records must cover the whole window")
+    return tuple(needed)
 
 
-def _validate(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> None:
+def _validate(run: ReplayRun, markets: tuple[SymbolMarket, ...], futures_required: bool) -> None:
     if (
         not isinstance(run, ReplayRun)
         or run.scenario not in SCENARIOS
@@ -196,14 +223,15 @@ def _validate(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> None:
         or not 0 < run.initial_cash <= Decimal("1e36")
         or type(run.start_ms) is not int
         or type(run.end_ms) is not int
-        or run.start_ms % HOUR
-        or run.end_ms % HOUR
-        or not 0 <= run.start_ms < run.end_ms < _RESERVED
+        or run.start_ms % DAY
+        or run.end_ms % DAY
+        # A window may end AT the reserved boundary: its last bar is development data.
+        or not 0 <= run.start_ms < run.end_ms <= _RESERVED
         or not isinstance(run.source_refs, tuple)
         or not run.source_refs
         or any(not isinstance(ref, str) or not ref.strip() for ref in run.source_refs)
     ):
-        raise ValueError("valid pre-reserved hourly run identity required")
+        raise ValueError("valid pre-reserved UTC-day run identity required")
     if (
         not isinstance(markets, tuple)
         or not markets
@@ -221,6 +249,9 @@ def _validate(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> None:
             ):
                 raise ValueError(f"{market.symbol}: venue rules and costs required")
         _bars(market.spot.hourly, run.start_ms, run.end_ms, f"{market.symbol} spot")
+        if market.futures is None and futures_required:
+            # A futures-enabled arm judges its whole registered universe (Codex 4242566627).
+            raise ValueError(f"{market.symbol}: futures inputs required by this arm")
         if market.futures is not None:
             _bars(market.futures.hourly, run.start_ms, run.end_ms, f"{market.symbol} futures")
             _funding(market.funding, run.start_ms, run.end_ms, market.symbol)
@@ -228,6 +259,10 @@ def _validate(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> None:
             raise ValueError(f"{market.symbol}: funding without futures inputs")
         if not isinstance(market.daily, tuple) or not isinstance(market.minutes, tuple):
             raise ValueError(f"{market.symbol}: immutable daily and minute inputs required")
+        if any(not isinstance(bar, Kline) for bar in (*market.daily, *market.minutes)):
+            raise ValueError(f"{market.symbol}: daily and minute klines required")
+        _sealed([bar.open_ms for bar in market.daily], f"{market.symbol} daily")
+        _sealed([bar.open_ms for bar in market.minutes], f"{market.symbol} minutes")
 
 
 def _regime(assessment: Assessment) -> str:
@@ -241,8 +276,10 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     integrity failure, a liquidation or an unresolvable obligation stops the run
     and is returned with everything observed until then.
     """
+    if not isinstance(run, ReplayRun):
+        raise ValueError("replay run identity required")
     settings = arm_settings(run.arm)
-    _validate(run, markets)
+    _validate(run, markets, settings.routing.futures_trend)
     by_symbol = {m.symbol: m for m in markets}
     symbols = sorted(by_symbol)
     spot = {s: _bars(by_symbol[s].spot.hourly, run.start_ms, run.end_ms, s) for s in symbols}
@@ -251,13 +288,19 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         for s, m in by_symbol.items()
         if m.futures is not None
     }
-    funding_at = {s: {r.scheduled_ms: r for r in by_symbol[s].funding} for s in futures}
-    published = {s: sorted(by_symbol[s].funding, key=lambda r: r.usable_ms) for s in futures}
+    needed = {s: _funding(by_symbol[s].funding, run.start_ms, run.end_ms, s) for s in futures}
+    funding_at = {s: {r.scheduled_ms: r for r in needed[s]} for s in futures}
+    published = {s: sorted(needed[s], key=lambda r: r.usable_ms) for s in futures}
     published_ms = {s: [r.usable_ms for r in published[s]] for s in futures}
     series = {s: AssessmentSeries(s, by_symbol[s].spot.hourly, by_symbol[s].daily) for s in symbols}
     daily = {s: by_symbol[s].daily for s in symbols}
     gates = {s: FlowGate() for s in symbols}
-    engine = PortfolioEngine(run.initial_cash, automatic_recovery=settings.automatic_recovery)
+    minute_index = {s: {bar.open_ms: bar for bar in by_symbol[s].minutes} for s in symbols}
+    engine = PortfolioEngine(
+        run.initial_cash,
+        automatic_recovery=settings.automatic_recovery,
+        simulated_venue=True,
+    )
     evidence = Evidence()
     coordinator = DecisionCoordinator(engine, evidence)
     executor = BoundaryExecutor(engine)
@@ -297,6 +340,14 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             identity = f"{kind}:{hour}:{len(observations)}:{row.phase}"
             observations.append(
                 NativeObservation(hour, identity, kind, row.phase, row.event_id, row.snapshot)
+            )
+            pending_ids.append(identity)
+
+    def record_marks(rows: list[EngineSnapshot], hour: int, source: str) -> None:
+        for snapshot in rows:
+            identity = f"frame:{hour}:{len(observations)}:decision"
+            observations.append(
+                NativeObservation(hour, identity, "frame", "decision", source, snapshot)
             )
             pending_ids.append(identity)
 
@@ -366,9 +417,31 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             if not increase:
                 before = by_id.get(f"{fill.event_id}:0:before")
                 why = dict(before.snapshot.close_reasons).get(fill.symbol, ()) if before else ()
-                reason = "+".join(why) if why else ("grid_target" if fill.lot_id else None)
-            regime = books[fill.symbol].regime if increase and fill.symbol in books else None
-            events.append(TraceFill(fill, increase, reason, regime))
+                if fill.lot_id and before is not None and before.phase.endswith(":target"):
+                    reason = "grid_target"
+                else:
+                    reason = "+".join(why) if why else None
+            book = books.get(fill.symbol) if increase else None
+            events.append(TraceFill(fill, increase, reason, book.regime if book else None))
+            if book is not None and fill.lot_id is not None:
+                evidence.record(
+                    DecisionEvent(
+                        f"{book.prefix}:filled:{fill.lot_id}",
+                        book.opportunity,
+                        stamp,
+                        fill.symbol,
+                        "filled",
+                        True,
+                        (),
+                        (
+                            ("fill_id", fill.event_id),
+                            ("child_id", fill.lot_id),
+                            ("quantity", str(fill.quantity)),
+                            ("price", str(fill.price)),
+                        ),
+                        refs,
+                    )
+                )
         for child in result.filled_children:
             for book in books.values():
                 if book.pending.pop(child, None) is not None:
@@ -429,7 +502,16 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         finalize(hour)
 
     def frame(hour: int) -> str | None:
+        day = hour // DAY
+        if day not in groups_by_day:
+            groups_by_day[day] = correlation_groups(daily, hour)
+        engine.set_correlation_groups(groups_by_day[day])
         quotes, rules = held_market(hour)
+        for position, stop, _fee, _slip in engine.held_execution_terms():
+            side = 1 if position.quantity > 0 else -1
+            price = quotes[position.symbol].price
+            if (price <= stop) if side == 1 else (price >= stop):
+                engine.request_close(position.symbol, position.owner, side, reason="stop")
         due = tuple(s for s in sorted(futures) if hour in funding_at[s])
         fixings = tuple(
             FundingFixing(
@@ -450,26 +532,49 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             fixings=fixings,
             source_refs=refs,
         )
-        record(boundary.observations, hour, "frame")
-        booked_funding = {e.event_id: e for e in boundary.funding}
-        for row in boundary.observations:
-            if row.phase == "funding" and row.event_id in booked_funding:
-                events.append(booked_funding[row.event_id])
-        for fill in boundary.fills:
-            events.append(TraceFill(fill, False, reasons_before(boundary.observations, fill), None))
-        if boundary.failure is not None:
-            return boundary.failure
+        failure = settled(boundary, hour)
+        if failure is not None:
+            return failure
         finalize(hour)
+        minute = hour // 60_000 * 60_000
         for symbol in symbols:
-            gates[symbol].update(completed_flow(by_symbol[symbol].minutes, hour))
-        day = hour // DAY
-        if day not in groups_by_day:
-            groups_by_day[day] = correlation_groups(daily, hour)
+            index = minute_index[symbol]
+            window = tuple(
+                index[stamp]
+                for stamp in range(minute - 15 * 60_000, minute, 60_000)
+                if stamp in index
+            )
+            gates[symbol].update(completed_flow(window, hour))
         for symbol in symbols:
             failure = decide(symbol, hour, groups_by_day[day])
             if failure is not None:
                 return failure
+        # Obligations created by this frame's entries (post-fill cut-backs) execute
+        # at the same opening quote, not an hour later (critic minor 2).
+        quotes, rules = held_market(hour)
+        latest = observations[-1].snapshot
+        sellable = set(latest.close_required) | {s for s, _ in latest.reduce_to}
+        if sellable - set(engine.close_dust(rules)):
+            return settled(
+                executor.settle(
+                    f"frame:{hour}:post-entry",
+                    hour,
+                    quotes,
+                    rules,
+                    due_funding=(),
+                    fixings=(),
+                    source_refs=refs,
+                ),
+                hour,
+            )
         return None
+
+    def settled(boundary: BoundaryExecution, hour: int) -> str | None:
+        record(boundary.observations, hour, "frame")
+        events.extend(boundary.funding)
+        for fill in boundary.fills:
+            events.append(TraceFill(fill, False, reasons_before(boundary.observations, fill), None))
+        return boundary.failure
 
     def owned() -> set[str]:
         held = {p.symbol for p, *_ in engine.held_execution_terms()}
@@ -500,23 +605,27 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             )
         )
         opportunity = f"{symbol}:{hour}"
-        result = coordinator.decide(
-            opportunity,
-            assessment,
-            routing,
-            quotes,
-            spot_inputs,
-            futures_inputs,
-            refs,
-            position_rules=rules,
-            groups=groups,
-        )
+        with engine.capture_marks() as marks:
+            result = coordinator.decide(
+                opportunity,
+                assessment,
+                routing,
+                quotes,
+                spot_inputs,
+                futures_inputs,
+                refs,
+                position_rules=rules,
+                groups=groups,
+            )
+        record_marks(marks, hour, f"decision:{opportunity}")
         decisions.append(TraceDecision(assessment, result))
         intent, admission = result.intent, result.admission
         if intent is None or admission is None or not admission.accepted:
             return None
         if intent.owner in _TREND:
-            opening = coordinator.execute_opening(opportunity, quotes, rules)
+            with engine.capture_marks() as marks:
+                opening = coordinator.execute_opening(opportunity, quotes, rules)
+            record_marks(marks, hour, f"opening:{opportunity}")
             record(opening.observations, hour, "frame")
             if opening.fill is not None:
                 events.append(TraceFill(opening.fill, True, None, _regime(assessment)))
@@ -530,13 +639,13 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
                 )
             if opening.failure is not None:
                 if opening.fill is None and opening.failure in _OPENING_REFUSALS:
-                    _withdraw(intent.intent_id, f"replay:opening-refused:{opening.failure}")
+                    _withdraw(intent.intent_id, symbol, hour, opportunity, opening.failure)
                     return None
                 return opening.failure
             return None
         allocation = allocate_grid(result)
         if not allocation.accepted:
-            _withdraw(intent.intent_id, f"replay:grid-refused:{allocation.reason}")
+            _withdraw(intent.intent_id, symbol, hour, opportunity, allocation.reason)
             return None
         engine.release_unallocated(
             intent.intent_id,
@@ -550,6 +659,8 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             intent.intent_id,
             plan.spacing,
             _regime(assessment),
+            opportunity,
+            f"{len(opportunity)}:{opportunity}",
             {
                 child.child_id: RestingBuy(
                     intent.intent_id,
@@ -565,9 +676,21 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         )
         return None
 
-    def _withdraw(intent_id: str, reference: str) -> None:
-        engine.cancel(intent_id)
-        engine.acknowledge_finality(intent_id, source_refs=(reference,))
+    def _withdraw(intent_id: str, symbol: str, hour: int, opportunity: str, why: str) -> None:
+        engine.cancel(intent_id)  # final at once: this replay is the only venue
+        evidence.record(
+            DecisionEvent(
+                f"{len(opportunity)}:{opportunity}:filled:refused",
+                opportunity,
+                hour,
+                symbol,
+                "filled",
+                False,
+                (why,),
+                (),
+                refs,
+            )
+        )
 
     def boundary(hour: int, role: str) -> None:
         start = hour - HOUR if role == "terminal" else hour
@@ -594,7 +717,9 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             engine.settle(batch, run.end_ms, quotes, rules)
             record(engine.settlement_observations(batch), run.end_ms, "terminal")
             boundary(run.end_ms, "terminal")
-    except (ValueError, ArithmeticError, TypeError, AttributeError, KeyError) as exc:
+    except (ValueError, ArithmeticError) as exc:
+        # Execution, accounting and data failures are retained run outcomes; anything
+        # else is a programming defect and propagates loudly instead.
         failure = f"replay_failure:{type(exc).__name__}:{exc}"
     return StrategyTrace(
         run,

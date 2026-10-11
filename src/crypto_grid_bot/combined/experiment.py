@@ -237,7 +237,9 @@ def _registration_errors(registration: Registration) -> list[str]:
             or not window.id.strip()
             or type(window.start_ms) is not int
             or type(window.end_ms) is not int
-            or not 0 <= window.start_ms < window.end_ms < _RESERVED
+            # A window may END at the reserved boundary: its last bar is development
+            # data, marked at its own close, with nothing read at or after the boundary.
+            or not 0 <= window.start_ms < window.end_ms <= _RESERVED
             or not _pin(window.data_pin)
         ):
             errors.append("registration: invalid window dates or data pin")
@@ -378,6 +380,7 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
             policy_evidence=report.policy_evidence,
             utilization=report.utilization,
             capital_observations=report.capital_observations,
+            producer_issues=report.producer_issues,
         )
         if report != rebuilt or type(report.complete) is not bool:
             return None
@@ -545,7 +548,7 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
         or not window.id.strip()
         or type(window.start_ms) is not int
         or type(window.end_ms) is not int
-        or not 0 <= window.start_ms < window.end_ms < _RESERVED
+        or not 0 <= window.start_ms < window.end_ms <= _RESERVED
         or not _pin(window.data_pin)
         or (identity.start_ms, identity.end_ms, identity.data_pin)
         != (window.start_ms, window.end_ms, window.data_pin)

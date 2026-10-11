@@ -5,6 +5,7 @@ identified. Funding is signed wallet cash flow. Completeness is structural only:
 source reference strings are retained, not fetched or cryptographically verified.
 """
 
+from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass
 from decimal import Context, Decimal, DecimalException, localcontext
@@ -225,6 +226,9 @@ class Report:
     structural_complete: bool
     capital_observations: tuple[CapitalObservation, ...]
     policy_evidence: PolicyEvidence | None = None
+    # Issues the evidence producer declared (for example a failed replay); retained so
+    # a recomputation from the report's own fields reproduces it exactly.
+    producer_issues: tuple[str, ...] = ()
 
 
 def _number(value: Decimal, *, nonnegative: bool = False) -> Fraction:
@@ -320,10 +324,21 @@ def _opportunity_episodes(
             (event for event in events if event.asset == asset),
             key=lambda event: event.timestamp_ms,
         ):
-            if current and (
-                event.direction != current[-1].direction
-                or event.structure != current[-1].structure
-                or event.timestamp_ms - current[-1].timestamp_ms > gap
+            delayed_fill = (
+                event.stage == "filled"
+                and bool(current)
+                and current[-1].stage in ("submitted", "filled")
+                and event.direction == current[-1].direction
+                and event.structure == current[-1].structure
+            )
+            if (
+                current
+                and not delayed_fill
+                and (
+                    event.direction != current[-1].direction
+                    or event.structure != current[-1].structure
+                    or event.timestamp_ms - current[-1].timestamp_ms > gap
+                )
             ):
                 groups.append(current)
                 current = []
@@ -502,6 +517,13 @@ def _metrics(
             add("sharpe", value)
     capital_by_id = {row.id: row for row in capital_observations}
     equity_by_id = {point.id: point for point in points}
+    point_times = sorted(point.timestamp_ms for point in points)
+    capital_times = sorted(row.timestamp_ms for row in capital_observations)
+
+    def strictly_inside(times: list[int], start: int, end: int) -> bool:
+        index = bisect_right(times, start)
+        return index < len(times) and times[index] < end
+
     equity_counts = Counter(point.timestamp_ms for point in points)
     capital_counts = Counter(row.timestamp_ms for row in capital_observations)
 
@@ -528,13 +550,8 @@ def _metrics(
                     equity_counts[interval.start_ms] == 1 and capital_counts[interval.start_ms] == 1
                 )
             )
-            and not any(
-                interval.start_ms < row.timestamp_ms < interval.end_ms
-                for row in capital_observations
-            )
-            and not any(
-                interval.start_ms < point.timestamp_ms < interval.end_ms for point in points
-            )
+            and not strictly_inside(capital_times, interval.start_ms, interval.end_ms)
+            and not strictly_inside(point_times, interval.start_ms, interval.end_ms)
             and observation.timestamp_ms == point.timestamp_ms == interval.start_ms
             and observation.equity == point.equity == interval.equity
             and observation.spot_value == interval.spot_value
@@ -619,6 +636,7 @@ def analyze(
     utilization: tuple[UtilizationInterval, ...] = (),
     capital_observations: tuple[CapitalObservation, ...] = (),
     policy_evidence: PolicyEvidence | None = None,
+    producer_issues: tuple[str, ...] = (),
 ) -> Report:
     """Summarize observations without counterfactual claims or silent deduplication.
 
@@ -642,7 +660,11 @@ def analyze(
     capital_observations = tuple(capital_observations)
     for source in sources:
         _text(source)
-    issues: list[str] = []
+    if isinstance(producer_issues, str) or any(
+        not isinstance(issue, str) or not issue.strip() for issue in producer_issues
+    ):
+        raise ValueError("producer issues must be nonempty strings")
+    issues: list[str] = list(producer_issues)
     for kind, records in (
         ("equity", points),
         ("contribution", rows),
@@ -890,4 +912,5 @@ def analyze(
         structural_complete,
         capital_observations,
         policy_evidence,
+        tuple(producer_issues),
     )

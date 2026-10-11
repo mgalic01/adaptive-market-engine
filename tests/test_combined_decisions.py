@@ -446,3 +446,33 @@ def test_signal_to_opening_fill_to_intrabar_stop(setup, scenario):
     assert not engine.held_execution_terms()
     assert not any(row.snapshot.liquidation for row in replay.observations)
     assert [event.phase for event in journal.events][-2:] == ["submitted", "filled"]
+
+
+def test_verified_dust_obligation_does_not_block_a_new_trend_opening(setup):
+    # Critic M4: unsellable dust keeps its close obligation, but blocks no new asset.
+    coordinator, engine, journal, args = setup
+    coordinator.decide(**args)
+    coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+    now = args["assessment"].decision_ms + 3_600_000
+    quotes = {"BTCUSDT": Quote(D(100), now)}
+    unsellable = {"BTCUSDT": replace(args["spot"].rules, min_notional=D(1000000))}
+    engine.request_close("BTCUSDT", "spot_trend", 1, reason="trend_reversal")
+    assessment = replace(
+        args["assessment"], symbol="ETHUSDT", decision_ms=now, quote_ms=now, hourly_closed_ms=now
+    )
+    spot = replace(args["spot"], quote=Quote(D(100), now))
+    second = coordinator.decide(
+        "two",
+        assessment,
+        RoutingContext(),
+        quotes,
+        spot,
+        None,
+        args["source_refs"],
+        position_rules=unsellable,
+    )
+    assert second.admission.accepted
+    assert engine.close_dust(unsellable) == ("BTCUSDT",)
+    result = coordinator.execute_opening("two", quotes, unsellable)
+    assert result.failure is None and result.fill is not None
+    assert result.fill.symbol == "ETHUSDT"

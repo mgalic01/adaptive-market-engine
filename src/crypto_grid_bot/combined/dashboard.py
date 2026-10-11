@@ -9,6 +9,7 @@ from fractions import Fraction
 from html import escape
 from urllib.parse import quote, unquote, urlsplit
 
+from crypto_grid_bot.combined.observation_policy import validate_boundaries
 from crypto_grid_bot.combined.report import DimensionTotal, EquityPoint, Report
 
 _CSS = """
@@ -173,6 +174,43 @@ header{padding-bottom:20px}
 """
 
 
+# A real multi-year run retains hundreds of thousands of marks. The page stays
+# usable by bounding what it draws and lists; the exact evidence stays complete
+# in ``exact_evidence`` and is embedded only below the inline limit.
+_INLINE_JSON_LIMIT = 1_000_000
+_TABLE_ROWS = 500
+_CHART_BUCKETS = 1_200
+
+
+def _bounded(rows: Sequence[Sequence[object]]) -> tuple[Sequence[Sequence[object]], str]:
+    if len(rows) <= _TABLE_ROWS:
+        return rows, ""
+    note = (
+        f'<p class="muted">Showing the first {_TABLE_ROWS} of {len(rows)} rows; every row '
+        "is in the exact JSON evidence.</p>"
+    )
+    return rows[:_TABLE_ROWS], note
+
+
+def _downsample(values: list[tuple[int, Fraction]]) -> list[tuple[int, Fraction]]:
+    """Keep the first, lowest, highest and last mark of each time bucket, in order."""
+    if len(values) <= 2 * _CHART_BUCKETS:
+        return values
+    start, end = values[0][0], values[-1][0]
+    width = max(1, end - start)
+    buckets: dict[int, list[tuple[int, Fraction]]] = {}
+    for timestamp, value in values:
+        key = min(_CHART_BUCKETS - 1, (timestamp - start) * _CHART_BUCKETS // width)
+        buckets.setdefault(key, []).append((timestamp, value))
+    kept: list[tuple[int, Fraction]] = []
+    for key in sorted(buckets):
+        rows = buckets[key]
+        lowest = min(range(len(rows)), key=lambda i: rows[i][1])
+        highest = max(range(len(rows)), key=lambda i: rows[i][1])
+        kept.extend(rows[i] for i in sorted({0, lowest, highest, len(rows) - 1}))
+    return kept
+
+
 def _text(value: object) -> str:
     return escape("Unknown" if value is None else str(value), quote=True)
 
@@ -209,6 +247,11 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
         f'<div class="table-scroll"><table><thead><tr>{head}</tr></thead>'
         f"<tbody>{body}</tbody></table></div>"
     )
+
+
+def _bounded_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
+    shown, note = _bounded(rows)
+    return note + _table(headers, shown)
 
 
 def _attribution(title: str, rows: tuple[DimensionTotal, ...]) -> str:
@@ -248,9 +291,17 @@ def _safe_reference(reference: str) -> bool:
         return False
 
 
+def _reference(reference: str) -> str:
+    label = _text(reference)
+    return (
+        f'<a href="{label}" rel="noopener noreferrer">{label}</a>'
+        if _safe_reference(reference)
+        else f"<code>{label}</code> (text only)"
+    )
+
+
 def _record_provenance(report: Report) -> str:
-    rows = []
-    for kind, records in (
+    kinds = (
         ("Equity", report.equity_points),
         ("Contribution", report.contributions),
         ("Opportunity", report.opportunities),
@@ -258,16 +309,29 @@ def _record_provenance(report: Report) -> str:
         ("Daily sample", report.daily_samples),
         ("Utilization", report.utilization),
         ("Capital observation", report.capital_observations),
-    ):
+    )
+    if sum(len(records) for _, records in kinds) > _TABLE_ROWS:
+        summary = []
+        for kind, records in kinds:
+            distinct = tuple(dict.fromkeys(ref for row in records for ref in row.source_refs))
+            shown = "<br>".join(_reference(ref) for ref in distinct[:20]) or "Not supplied"
+            more = f"<br>… {len(distinct) - 20} more" if len(distinct) > 20 else ""
+            summary.append(
+                f"<tr><td>{_text(kind)}</td><td>{len(records)}</td>"
+                f"<td>{sum(bool(row.source_refs) for row in records)}</td>"
+                f"<td>{shown}{more}</td></tr>"
+            )
+        return (
+            '<p class="muted">Summarized per record type; every record and reference is in the '
+            'exact JSON evidence.</p><div class="table-scroll"><table><thead><tr>'
+            '<th scope="col">Record type</th><th scope="col">Records</th>'
+            '<th scope="col">With references</th><th scope="col">Distinct references</th>'
+            f"</tr></thead><tbody>{''.join(summary)}</tbody></table></div>"
+        )
+    rows = []
+    for kind, records in kinds:
         for row in records:
-            references = []
-            for reference in row.source_refs:
-                label = _text(reference)
-                references.append(
-                    f'<a href="{label}" rel="noopener noreferrer">{label}</a>'
-                    if _safe_reference(reference)
-                    else f"<code>{label}</code> (text only)"
-                )
+            references = [_reference(reference) for reference in row.source_refs]
             rows.append(
                 f"<tr><td>{_text(kind)}</td><td>{_text(row.id)}</td>"
                 f"<td>{'<br>'.join(references) or 'Not supplied'}</td></tr>"
@@ -287,9 +351,18 @@ def _chart(
     *,
     percent: bool = False,
 ) -> str:
+    supplied = sum(len(values) for _, values, _, _ in series)
+    series = [(name, _downsample(values), color, key) for name, values, color, key in series]
     points = [point for _, values, _, _ in series for point in values]
     if not points:
         return '<p class="empty">Equity unavailable — no curve invented.</p>'
+    sampled = (
+        f'<p class="muted">Display shows {len(points)} of {supplied} marks: the first, lowest, '
+        f"highest and last mark of each of {_CHART_BUCKETS} time buckets, so extremes are "
+        "kept.</p>"
+        if len(points) < supplied
+        else ""
+    )
     x0, x1 = min(t for t, _ in points), max(t for t, _ in points)
     low, high = min(value for _, value in points), max(value for _, value in points)
     if low == high:
@@ -326,7 +399,28 @@ def _chart(
     return (
         f'<svg class="chart" viewBox="0 0 1000 285" role="img" aria-label="{_text(title)}">'
         f'<title>{_text(title)}</title>{"".join(lines)}</svg><div class="legend">{legend}</div>'
+        f"{sampled}"
     )
+
+
+def exact_evidence(
+    report: Report,
+    benchmarks: Mapping[str, tuple[EquityPoint, ...]] | None = None,
+    *,
+    synthetic: bool = True,
+) -> str:
+    """The exact JSON evidence: every record, with Decimal values as their exact text."""
+    if type(synthetic) is not bool:
+        raise ValueError("synthetic must be an explicit Boolean")
+    payload = {
+        "synthetic": synthetic,
+        "report": asdict(report),
+        "provided_benchmarks": {
+            str(name): [asdict(point) for point in values]
+            for name, values in dict(benchmarks or {}).items()
+        },
+    }
+    return json.dumps(payload, default=str, ensure_ascii=False, indent=2)
 
 
 def render_report(
@@ -338,7 +432,8 @@ def render_report(
 ) -> str:
     """Render exact evidence with rounded display only; make no run/edge claim.
 
-    Provided comparison curves require identical timestamps and an initial mark
+    Provided comparison curves require the report's timestamps (its approved hourly
+    boundaries when policy evidence is present) and an initial mark
     equal to the report's starting capital. This does not verify data, fees, code
     or other comparability. Explicit marks remain the caller's evidence.
     """
@@ -359,6 +454,17 @@ def render_report(
     warnings = []
     colors = ("#83b7ff", "#dbacff", "#ffc783", "#f294bc")
     timestamps = tuple(point.timestamp_ms for point in report.equity_points)
+    if report.policy_evidence is not None:
+        # A comparison runs on the approved common-hourly schedule, not on every
+        # native mark; frozen baselines supply one observation per boundary.
+        try:
+            selected = validate_boundaries(
+                report.policy_evidence,
+                tuple((point.timestamp_ms, point.id) for point in report.equity_points),
+            )
+            timestamps = tuple(selected)
+        except (ValueError, TypeError, AttributeError):
+            pass
     for index, (name, values) in enumerate(supplied.items()):
         valid = (
             bool(values)
@@ -386,15 +492,19 @@ def render_report(
                 f"Omitted comparison: {name} — timestamps or initial capital do not match, "
                 "or values are invalid."
             )
-    payload = {
-        "synthetic": synthetic,
-        "report": asdict(report),
-        "provided_benchmarks": {
-            str(name): [asdict(point) for point in values] for name, values in supplied.items()
-        },
-    }
-    raw = json.dumps(payload, default=str, ensure_ascii=False, indent=2)
-    download = "data:application/json;charset=utf-8," + quote(raw, safe="")
+    raw = exact_evidence(report, benchmarks, synthetic=synthetic)
+    if len(raw.encode("utf-8")) <= _INLINE_JSON_LIMIT:
+        download = "data:application/json;charset=utf-8," + quote(raw, safe="")
+        exact = (
+            '<a class="download" download="combined-evidence.json" '
+            f'href="{download}">Download exact JSON</a>\n<pre>\n<code>{_text(raw)}</code>\n</pre>'
+        )
+    else:
+        exact = (
+            f'<p class="warning-text">The exact JSON evidence is {len(raw.encode("utf-8"))} bytes, '
+            f"above the {_INLINE_JSON_LIMIT}-byte inline limit, so it is not embedded. Export it "
+            "beside this page with exact_evidence().</p>"
+        )
     badge = "Synthetic demonstration — not market performance" if synthetic else "Evidence review"
     status = (
         "Required report metrics complete"
@@ -474,16 +584,7 @@ def render_report(
             for change in report.recovery_changes
         ],
     )
-    opportunities = _table(
-        (
-            "Observation IDs",
-            "Asset / direction",
-            "Structure",
-            "Start UTC",
-            "Stages",
-            "Reasons",
-            "Entry delay",
-        ),
+    opportunity_rows, opportunity_note = _bounded(
         [
             (
                 ", ".join(value or "Unknown" for value in group.observation_ids),
@@ -497,9 +598,29 @@ def render_report(
                 else "Unknown",
             )
             for group in report.opportunity_episodes
-        ],
+        ]
     )
-    bad = _table(
+    opportunities = opportunity_note + _table(
+        (
+            "Observation IDs",
+            "Asset / direction",
+            "Structure",
+            "Start UTC",
+            "Stages",
+            "Reasons",
+            "Entry delay",
+        ),
+        opportunity_rows,
+    )
+    worst = report.bad_intervals
+    bad_note = ""
+    if len(worst) > _TABLE_ROWS:
+        bad_note = (
+            f'<p class="muted">The {_TABLE_ROWS} worst of {len(worst)} unfavorable intervals by '
+            "net change; every interval is in the exact JSON evidence.</p>"
+        )
+        worst = tuple(sorted(worst, key=lambda row: row.net_change)[:_TABLE_ROWS])
+    bad = bad_note + _table(
         ("From UTC", "To UTC", "Net change", "Return"),
         [
             (
@@ -508,10 +629,10 @@ def render_report(
                 _number(interval.net_change),
                 _number(interval.return_fraction, percent=True),
             )
-            for interval in report.bad_intervals
+            for interval in worst
         ],
     )
-    lifecycles = _table(
+    lifecycles = _bounded_table(
         ("ID / asset", "Status", "Exit reason", "Gross MFE", "Supplied giveback"),
         [
             (
@@ -533,7 +654,7 @@ def render_report(
             ("Regime attribution", report.by_regime),
         )
     )
-    capital_table = _table(
+    capital_table = _bounded_table(
         ("ID", "Phase ID", "Equity record ID", "UTC", "Equity", "Spot value", "Futures collateral"),
         [
             (
@@ -548,7 +669,7 @@ def render_report(
             for row in report.capital_observations
         ],
     )
-    utilization_table = _table(
+    utilization_table = _bounded_table(
         ("Interval ID", "Capital observation ID", "Start UTC", "End UTC"),
         [
             (row.id, row.observation_id, _time(row.start_ms), _time(row.end_ms))
@@ -643,10 +764,7 @@ Phase IDs do not authorize a sampling policy or resolve same-time ambiguity.</p>
 <summary>Exact evidence</summary>
 <p class="muted">Display numbers are rounded only. Decimal values below and in the JSON download
 retain their exact supplied text.</p>
-<a class="download" download="combined-evidence.json" href="{download}">Download exact JSON</a>
-<pre>
-<code>{_text(raw)}</code>
-</pre>
+{exact}
 </details>
 </section>
 <p class="footer">Offline report · no scripts, remote assets or telemetry · historical evidence
