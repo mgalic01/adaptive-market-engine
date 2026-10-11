@@ -106,5 +106,20 @@ entries request protection. At `70eab91`, 534 focused tests pass with one OS ski
 plus static/report checks; a separate critic passed138 risk/engine/allocation/
 decision tests. This does not replace current-head external review and CI.
 
+The next Cloud review found a canceled admission could surrender ownership before
+its remaining fills were reconciled. Canceled nonzero remainders now quarantine the
+asset against replacement entries, including the same strategy or opposite side.
+Explicit `acknowledge_finality` requires immutable source references and attests all
+fills reconciled with zero remaining executable quantity; a cancel request or ack
+alone is insufficient. Original admission/remainder provenance remains retained.
+A contradictory later novel fill fails integrity rather than being ignored; the
+terminal wallet is the booked prefix, not a valid reconciliation of that contradictory
+execution. Replay adapters must preserve the supplied failed batch as evidence.
+Duplicate booked fills remain idempotent. Post-fill breach reasons are no longer
+duplicated in settlement snapshots. Five new regression cases reproduced failure
+before the fix; 539 focused tests and static/report checks pass, with one OS skip.
+The delegated writer was interrupted by a usage limit; Codex Desktop recovered its
+saved tests and completed the implementation. New external review and CI are needed.
+
 The separate intrabar proposal in this branch is pending an owner decision. It
 does not amend the approved specification or silently change acceptance metrics.
