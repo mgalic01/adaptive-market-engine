@@ -12,7 +12,13 @@ from crypto_grid_bot.combined.experiment import (
     Window,
     evaluate,
 )
-from crypto_grid_bot.combined.report import Contribution, EquityPoint, UtilizationInterval, analyze
+from crypto_grid_bot.combined.report import (
+    CapitalObservation,
+    Contribution,
+    EquityPoint,
+    UtilizationInterval,
+    analyze,
+)
 
 D = Decimal
 DAY = 86_400_000
@@ -145,7 +151,26 @@ def with_report(row):
         daily_samples=points,
         utilization=(
             UtilizationInterval(
-                start, end, D(0), D(0), row.initial_equity, "utilization", ("synthetic-capital",)
+                start,
+                end,
+                D(0),
+                D(0),
+                row.initial_equity,
+                "utilization",
+                ("synthetic-capital",),
+                observation_id="capital-opening",
+            ),
+        ),
+        capital_observations=(
+            CapitalObservation(
+                start,
+                row.initial_equity,
+                D(0),
+                D(0),
+                id="capital-opening",
+                phase_id="synthetic-opening",
+                equity_observation_id="opening",
+                source_refs=("synthetic-capital",),
             ),
         ),
     )

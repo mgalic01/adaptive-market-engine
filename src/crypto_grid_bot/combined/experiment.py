@@ -258,6 +258,7 @@ def _report_valid(row: RunOutcome) -> bool:
             metrics_start_ms=report.metrics_start_ms,
             daily_samples=report.daily_samples,
             utilization=report.utilization,
+            capital_observations=report.capital_observations,
         )
         if report != rebuilt or type(report.complete) is not bool:
             return False

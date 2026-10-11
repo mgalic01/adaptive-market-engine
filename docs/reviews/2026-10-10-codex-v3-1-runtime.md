@@ -176,3 +176,22 @@ proposed interior/opening/terminal/utilization phases, preserving all event mark
 for drawdown. Owner approval, reviewed phase-policy registration binding and adapter
 implementation are required before ambiguous reports can be complete. PR269 must
 not be treated as clear of this blocker merely because other fixes pass tests.
+
+## Fill identity and capital-observation review corrections
+
+The integrated follow-up binds duplicate fills to their original execution role,
+admission key and full event. Contradictory repeats latch integrity failure while
+preserving the booked prefix. Opportunities outside the retained equity window
+remain visible but make the report incomplete. Utilization intervals now reference
+retained capital observations with exact equity-record identity and capital values;
+an interval cannot skip an intervening capital observation. Acceptance recomputation
+retains these observations, and the dashboard exposes their source links.
+
+Verification: 612 combined tests passed, one OS skip; repository static and report
+checks passed. Independent critics ran 54 engine and 81 report/dashboard tests.
+These are structural consistency checks, not source authentication. Same-time
+observation ambiguity remains unavailable pending the owner's phase-policy decision.
+No historical execution occurred; the OHLC adapter, baseline adapters, visual QA
+and exact registration remain unfinished. This adds mandatory report evidence for
+complete utilization and stricter duplicate-fill handling; callers must supply the
+new links. No additional security finding is known beyond the evidence defects fixed.
