@@ -151,3 +151,28 @@ points fail kernel initialization. No historical execution was performed.
 Execution-finality acknowledgement wiring and artifact retention of that evidence
 remain obligations of the unfinished full replay adapter; until then canceled
 remainders intentionally block replacement entries.
+
+Bob's next review (19ace5f) and Cloud recovery review found three implementation
+issues and one unresolved observation-policy gap. Wallet/quantity verification is
+now tri-state: None means not checked and incomplete, False means a demonstrated
+mismatch and failure, True means verified exact. Observed liquidation/drawdown
+failures still survive missing evidence. Terminal profitability requires a valid
+complete report; an unverified terminal amount cannot establish a profit verdict.
+Registration now refuses a terminal event at the reserved-data boundary, matching
+the current engine's supported timestamp range. This does not authorize a shortened
+replacement trial or reserved-data access.
+
+Recovery flatness now includes canceled, nonzero remainders awaiting finality.
+Closing cannot enter cooldown merely because the currently held quantity was sold;
+finality starts the full cooldown. Fully settled late remainders need no separate
+cancel acknowledgement, while verified dust retains ownership. Three RED recovery
+cases passed after the correction. Integrated preflight:580 passed,1 OS skip, all
+static/report checks passed; independent critic80 acceptance and47 engine tests pass.
+
+Bob's same-time observation concern remains OPEN, not dismissed or fixed by those
+checks. Several funding/fill balances at one timestamp cannot establish the intended
+daily or utilization boundary by ID alone. The pending intrabar proposal now states
+proposed interior/opening/terminal/utilization phases, preserving all event marks
+for drawdown. Owner approval, reviewed phase-policy registration binding and adapter
+implementation are required before ambiguous reports can be complete. PR269 must
+not be treated as clear of this blocker merely because other fixes pass tests.

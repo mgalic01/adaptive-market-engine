@@ -42,6 +42,42 @@ an old adverse stop before a favorable target when both are touched.
 
 ## Cost and limitation
 
+### Additional decision: same-time settlement observations
+
+Bob's review of PR269 found that funding and fills can produce several different
+equity marks at the same timestamp. Record IDs identify those marks but cannot
+decide which economic boundary a daily return or utilization interval represents.
+The current report deliberately treats such samples as incomplete. Dropping marks,
+moving their timestamps or choosing a favorable mark is not a permitted workaround.
+
+The proposed convention must therefore also declare, before registration:
+
+- Interior daily samples: the completed boundary state after ordered funding,
+  protective reductions and opening fills, before the next intrabar movement.
+- Opening sample: the initial account before the window's first execution costs;
+  those costs belong to the first return interval.
+- Terminal sample: the final completed in-window interval's close and its execution
+  obligations, excluding funding or new entries belonging to the next window.
+  It needs an explicit interval-end identity; it must not be fabricated by renaming
+  an earlier event or by reading reserved-window prices.
+- Utilization: the capital state after all settlements at each interval start,
+  carried only until the next actual observation. Every intervening event remains
+  in the lifetime drawdown evidence, including zero-duration same-time changes.
+  Same-time changes do not create positive-duration utilization intervals; the
+  current interval interface rejects zero-length intervals.
+- The approved phase policy and adapter conformance must be pinned in registration
+  and bound into report evidence. Baselines require the same declared economic
+  boundaries; native output timestamps alone are insufficient proof.
+
+This addition is still a proposal requiring the owner's decision. It has not been
+implemented or used to permit complete reports. Current registration rejects an
+endpoint at the reserved boundary because the current engine cannot emit that
+event; an interval-end adapter needs separate reviewed implementation after the
+observation contract is approved. The downside is additional adapter complexity
+and another source of incomparable or incomplete results if evidence is absent.
+
+### Modeling cost
+
 Two scenarios approximately double the combined-arm execution work. Adverse
 precedence can penalize returns relative to an actual favorable price path. The
 common-boundary comparison is fairer across adapters but can omit intrabar stress,
