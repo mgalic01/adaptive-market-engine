@@ -5,13 +5,27 @@ the engine's event lock. This component never sends orders or infers acknowledgm
 """
 
 from dataclasses import dataclass, replace
-from decimal import Decimal, localcontext
+from decimal import Context, Decimal, localcontext
 from fractions import Fraction
 from threading import Lock
 
 from crypto_grid_bot.market_data.parsing import symbol_name
 
 ZERO = Decimal(0)
+
+
+def planned_price(price: Decimal, side: int, slip: Decimal, tick: Decimal) -> Decimal:
+    """Planned adverse execution using an explicit tick, not a gap-price guarantee.
+
+    The engine always supplies a verified venue tick. Fraction arithmetic keeps
+    slippage and tick rounding independent of the caller's Decimal context.
+    """
+    value = Fraction(price) * (1 + side * Fraction(slip))
+    unit = Fraction(tick)
+    value = (-((-value) // unit) if side == 1 else value // unit) * unit
+    precision = len(str(abs(value.numerator))) + 4 * len(str(value.denominator)) + 10
+    with localcontext(Context(prec=precision)):
+        return Decimal(value.numerator) / Decimal(value.denominator)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,11 +64,13 @@ class Intent:
     max_quantity: Decimal
     min_notional: Decimal
     correlation_group: str
+    tick: Decimal
     funding_rate: Decimal | None = None
     funding_age_ms: int | None = None
     funding_interval_ms: int | None = None
     funding_admission: bool = True
     maintenance_rate: Decimal = Decimal("0.01")
+    risk_multiplier: Decimal = Decimal(1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +97,7 @@ def _number(value: Decimal, positive: bool = False) -> None:
 
 def _validate(intent: Intent, view: PortfolioView) -> None:
     symbol_name(intent.symbol)
+    _number(intent.tick, True)
     if view.futures_backing is not None:
         _number(view.futures_backing)
     for value in (intent.price, intent.stop, intent.step, intent.max_quantity):
@@ -95,6 +112,7 @@ def _validate(intent: Intent, view: PortfolioView) -> None:
         intent.min_quantity,
         intent.min_notional,
         intent.maintenance_rate,
+        intent.risk_multiplier,
     ):
         _number(value)
     if (
@@ -110,13 +128,14 @@ def _validate(intent: Intent, view: PortfolioView) -> None:
         or intent.step > intent.max_quantity
         or intent.fee_rate >= 1
         or intent.slippage_rate >= 1
+        or intent.risk_multiplier not in {Decimal("0.5"), Decimal(1)}
     ):
         raise ValueError("invalid admission contract")
     if (intent.venue == "spot" and (intent.side != 1 or intent.owner == "futures_trend")) or (
         intent.venue == "futures" and intent.owner != "futures_trend"
     ):
         raise ValueError("invalid strategy ownership")
-    if (intent.price - intent.stop) * intent.side <= 0:
+    if (Fraction(intent.price) - Fraction(intent.stop)) * intent.side <= 0:
         raise ValueError("stop must protect the proposed direction")
     if not isinstance(view.exposures, tuple):
         raise ValueError("immutable exposure snapshot required")
@@ -162,8 +181,7 @@ class PortfolioRisk:
         _number(remaining)
         if acknowledged is not True:
             raise ValueError("acknowledgement required")
-        with self._lock, localcontext() as context:
-            context.prec = 60
+        with self._lock, localcontext(Context(prec=60)):
             if intent_id not in self._pending:
                 raise ValueError("unknown pending intent")
             intent, previous = self._pending[intent_id]
@@ -184,10 +202,15 @@ class PortfolioRisk:
                     ),
                 )
 
+    def preview(self, intent: Intent, view: PortfolioView) -> Admission:
+        """Read-only eligibility check; no ID or capacity is reserved."""
+        _validate(intent, view)
+        with self._lock, localcontext(Context(prec=60)):
+            return self._admit(intent, view)
+
     def reserve(self, intent: Intent, view: PortfolioView) -> Admission:
         _validate(intent, view)
-        with self._lock, localcontext() as context:
-            context.prec = 60
+        with self._lock, localcontext(Context(prec=60)):
             if intent.intent_id in self._seen:
                 old_intent, old_answer = self._seen[intent.intent_id]
                 if intent != old_intent:
@@ -222,11 +245,13 @@ class PortfolioRisk:
         distance = abs(intent.price - intent.stop)
         # Bounds run from the quote to the adverse execution price. Entry and
         # stop-exit fees use their own prices, especially for short buybacks.
-        entry = intent.price * (1 + intent.side * intent.slippage_rate)
-        stop_exit = intent.stop * (1 - intent.side * intent.slippage_rate)
+        entry = planned_price(intent.price, intent.side, intent.slippage_rate, intent.tick)
+        stop_exit = planned_price(intent.stop, -intent.side, intent.slippage_rate, intent.tick)
+        if min(entry, stop_exit) <= 0:
+            return no("invalid_execution_price")
         fees = (entry + stop_exit) * intent.fee_rate
-        entry_slippage = intent.price * intent.slippage_rate
-        exit_slippage = intent.stop * intent.slippage_rate
+        entry_slippage = intent.side * (entry - intent.price)
+        exit_slippage = intent.side * (intent.stop - stop_exit)
         unit_risk = distance + entry_slippage + exit_slippage + fees
         unit_notional = max(intent.price, entry)
         minimum_price = min(intent.price, entry)
@@ -274,7 +299,7 @@ class PortfolioRisk:
         fraction = view.risk_fraction
         normal = min(
             intent.requested_quantity,
-            view.equity * Decimal("0.005") / unit_risk,
+            view.equity * Decimal("0.005") * intent.risk_multiplier / unit_risk,
             view.equity * Decimal("0.20") / unit_notional,
             view.free_cash / unit_cash,
             intent.max_quantity,

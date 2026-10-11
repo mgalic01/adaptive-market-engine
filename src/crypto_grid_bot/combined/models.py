@@ -34,3 +34,33 @@ class Assessment:
     invalid_hourly_open_ms: tuple[int, ...] = ()
     invalid_daily_open_ms: tuple[int, ...] = ()
     schema: str = "combined-v1"
+
+
+def assessment_source_reasons(assessment: Assessment) -> tuple[str, ...]:
+    """Check causal due-source timestamps independently of cached availability.
+
+    Closing boundaries, not bar opens, must equal the latest due UTC boundary.
+    Before a timeframe's first complete bar there is no valid nonnegative-open
+    source. The original assessment quote also remains subject to the one-hour
+    freshness bound; a separate fresh execution quote cannot repair stale context.
+    """
+    now = assessment.decision_ms
+    if type(now) is not int or now < 0:
+        return ("assessment_decision_time_invalid",)
+    reasons = []
+    for field, step in (
+        ("hourly_closed_ms", 3_600_000),
+        ("four_hour_closed_ms", 14_400_000),
+        ("daily_closed_ms", 86_400_000),
+    ):
+        closed = getattr(assessment, field)
+        due = now // step * step
+        if type(closed) is not int or due < step or closed != due:
+            reasons.append(f"{field}_not_due")
+    if (
+        type(assessment.quote_ms) is not int
+        or assessment.quote_ms < 0
+        or not 0 <= now - assessment.quote_ms <= 3_600_000
+    ):
+        reasons.append("assessment_quote_unavailable")
+    return tuple(reasons)
