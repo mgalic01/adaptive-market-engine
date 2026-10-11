@@ -82,3 +82,30 @@ only, no market data); the owner chose the recommended option each time:
   later; minute-based baselines have no mark exactly at the window end, so the
   final minute's close is their window-end value. Both are labelled native timing
   in the report; nothing is moved or invented.
+
+## Owner decisions after the conformance review, 2026-10-11
+
+Asked by Claude after the spec-conformance review of `0677969` (synthetic probes and
+committed dataset manifests only, no market prices); the owner chose the recommended
+option each time:
+
+- **Data gaps ("Skip them for everyone").** The committed inventory shows hours with no
+  bar inside the candidate window: about ten spot hours on every coin (2021-08, 2021-09,
+  2021-12, 2023-03) and 120 futures hours on LTC, SOL, TRX and XRP (2022-02, 2022-04).
+  The common comparison schedule is every window hour at which every registered price
+  source has its bar. An hour missing from any source is skipped for every arm and
+  baseline alike and listed in the report. The 30% drawdown gate still uses every
+  available mark. Nothing is interpolated.
+- **Baseline that stops early ("Count it as a finished result").** A baseline that ends
+  under its own native rules (liquidation, no tradable position, leverage not restored)
+  is a finished result, not an incomplete comparison. Its equity is frozen at the stop
+  for the rest of the schedule, labelled as frozen, and the full arm must still beat it.
+- **Futures fallback ("Only when the minimum is the cause").** A futures long replaces a
+  spot entry only when the spot size allowed by the risk and size limits, before any
+  cash or capacity already committed, is below the venue minimum. A spot order that is
+  too small only because cash or capacity is committed is refused, not moved to futures.
+- **Minute bars for the grid ("Fetch it via Bob").** Spot one-minute bars for ADA, BNB,
+  DOGE, LINK, LTC, SOL and TRX, 2021-06 to 2024-12, are fetched from Binance's public
+  archives through an owner-started Bob task, checksummed, with no 2025+ month. The grid
+  component then runs on all ten coins. Until they are registered, a grid run without a
+  coin's minute input is incomplete.
