@@ -76,6 +76,12 @@ class Registration:
 
 @dataclass(frozen=True, slots=True)
 class RunIdentity:
+    """Serialized run provenance, including mandatory owner-small FX source binding.
+
+    Adapters must populate fx_pin for owner_small. Research needs no conversion
+    and retains None; older owner-small identities with no FX pin are incomplete.
+    """
+
     arm: str
     window: str
     capital: str
@@ -86,6 +92,7 @@ class RunIdentity:
     end_ms: int
     code_pin: str
     config_pin: str
+    fx_pin: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +141,17 @@ def _finite(value: Decimal | None, positive: bool = False) -> bool:
     return isinstance(value, Decimal) and value.is_finite() and (not positive or value > 0)
 
 
+def _cost_profile_valid(profile: object) -> bool:
+    """Validate deserialized pair shape and scalar types before unpacking/hashing."""
+    return (
+        isinstance(profile, (tuple, list))
+        and len(profile) == 2
+        and type(profile[0]) is int
+        and profile[0] in {1, 2}
+        and _pin(profile[1])
+    )
+
+
 def _registration_errors(registration: Registration) -> list[str]:
     reg = registration
     errors: list[str] = []
@@ -159,10 +177,11 @@ def _registration_errors(registration: Registration) -> list[str]:
     if not _pin(reg.code_pin, 40) or not _pin(reg.config_pin):
         errors.append("registration: full code/config pins required")
     if (
-        len(reg.cost_profiles) != 2
+        not isinstance(reg.cost_profiles, (tuple, list))
+        or len(reg.cost_profiles) != 2
+        or not all(_cost_profile_valid(profile) for profile in reg.cost_profiles)
         or len({pin for _, pin in reg.cost_profiles}) != 2
         or {multiple for multiple, _ in reg.cost_profiles} != {1, 2}
-        or any(type(multiple) is not int or not _pin(pin) for multiple, pin in reg.cost_profiles)
     ):
         errors.append("registration: base and doubled cost profiles required")
     if (
@@ -401,7 +420,15 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
         return []
     windows = [w for w in reg.windows if w.id == identity.window]
     capitals = [c for c in reg.capitals if c.id == identity.capital]
-    profiles = [p for p in reg.cost_profiles if p[0] == identity.cost_multiple]
+    if not isinstance(reg.cost_profiles, (tuple, list)):
+        return []
+    # Keep malformed candidates with an identifiable matching multiple: they must
+    # not disappear and turn an ambiguous declaration into a unique valid profile.
+    profiles = [
+        p
+        for p in reg.cost_profiles
+        if isinstance(p, (tuple, list)) and p and p[0] == identity.cost_multiple
+    ]
     if len(windows) != 1 or len(capitals) != 1 or len(profiles) != 1:
         return []
     window, capital, profile = windows[0], capitals[0], profiles[0]
@@ -414,12 +441,12 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
         or not _pin(window.data_pin)
         or (identity.start_ms, identity.end_ms, identity.data_pin)
         != (window.start_ms, window.end_ms, window.data_pin)
-        or type(profile[0]) is not int
-        or profile[0] not in {1, 2}
-        or not _pin(profile[1])
+        or not _cost_profile_valid(profile)
         or identity.cost_profile_pin != profile[1]
         or capital.id not in {"research", "owner_small"}
         or not _finite(capital.initial_equity, True)
+        or (capital.id == "owner_small" and not _pin(capital.fx_pin))
+        or identity.fx_pin != (capital.fx_pin if capital.id == "owner_small" else None)
     ):
         return []
     return _observed_safety_failures(row, capital.initial_equity)
@@ -464,6 +491,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             window.end_ms,
             registration.code_pin,
             registration.config_pin,
+            capital.fx_pin if capital.id == "owner_small" else None,
         )
         expected[_key(identity)] = (identity, capital.initial_equity)
     grouped: dict[tuple[str, str, str, int], list[RunOutcome]] = {}

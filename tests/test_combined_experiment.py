@@ -77,6 +77,7 @@ def outcomes(reg: Registration) -> tuple[RunOutcome, ...]:
                         window.end_ms,
                         reg.code_pin,
                         reg.config_pin,
+                        capital.fx_pin if capital.id == "owner_small" else None,
                     )
                     multiplier = D("1.4") if arm == "combined" else D("1.1")
                     rows.append(
@@ -868,3 +869,99 @@ def test_foreign_scalar_exhaustion_not_imported_through_matching_report(wrong_ca
     rows[index] = replace(rows[index], initial_equity=wrong_capital, final_equity=D(0))
     result = evaluate(reg, tuple(rows))
     assert result.status == "incomplete" and not result.failures
+
+
+@pytest.mark.parametrize(
+    "bad", [(2, []), (2, {}), ([], PIN), None, (), (2,), (2, PIN, "extra"), "invalid"]
+)
+def test_malformed_cost_profile_returns_incomplete_without_crashing(bad):
+    reg = registration()
+    rows = outcomes(reg)
+    malformed = replace(reg, cost_profiles=(reg.cost_profiles[0], bad))
+    result = evaluate(malformed, rows)
+    assert result.status == "incomplete" and result.outcomes == rows
+    assert "registration: base and doubled cost profiles required" in result.incomplete_reasons
+
+
+@pytest.mark.parametrize("profiles", [None, 1, "invalid"])
+def test_malformed_cost_profile_collection_is_incomplete(profiles):
+    reg = registration()
+    result = evaluate(replace(reg, cost_profiles=profiles), outcomes(reg))
+    assert result.status == "incomplete" and not result.failures
+
+
+def test_owner_small_outcomes_cannot_cross_same_rate_different_fx_pins():
+    reg = registration()
+    foreign = replace(reg, capitals=(reg.capitals[0], replace(reg.capitals[1], fx_pin="d" * 64)))
+    rows = outcomes(reg)
+    result = evaluate(foreign, rows)
+    assert result.status == "incomplete" and not result.failures
+
+
+def test_foreign_fx_outcome_cannot_attribute_component_safety_failure():
+    reg = registration()
+    foreign = replace(
+        reg,
+        capitals=(reg.capitals[0], replace(reg.capitals[1], fx_pin="d" * 64)),
+        pending=("review",),
+    )
+    rows = change(outcomes(reg), capital="owner_small", max_drawdown=D(".5"))
+    result = evaluate(foreign, rows)
+    assert result.status == "incomplete" and not result.failures
+
+
+@pytest.mark.parametrize("bad", [(2, []), (2,), None, ()])
+def test_malformed_other_cost_profile_keeps_unique_base_failure(bad):
+    reg = registration()
+    rows = change(outcomes(reg), max_drawdown=D(".5"))
+    result = evaluate(replace(reg, cost_profiles=(reg.cost_profiles[0], bad)), rows)
+    assert result.status == "fail" and result.incomplete_reasons
+    assert len(result.failures) == 1
+
+
+@pytest.mark.parametrize("bad", [(1, []), (1,), (True, PIN)])
+def test_malformed_matching_cost_declaration_is_not_silently_dropped(bad):
+    reg = registration()
+    rows = change(outcomes(reg), max_drawdown=D(".5"))
+    result = evaluate(replace(reg, cost_profiles=(*reg.cost_profiles, bad)), rows)
+    assert result.status == "incomplete" and not result.failures
+
+
+@pytest.mark.parametrize("pending", [False, True])
+@pytest.mark.parametrize("fx_pin", [None, "d" * 64, [], 1])
+def test_missing_or_foreign_owner_fx_identity_cannot_attribute_results(fx_pin, pending):
+    reg = registration()
+    rows = change(outcomes(reg), capital="owner_small", max_drawdown=D(".5"))
+    rows = tuple(
+        replace(row, identity=replace(row.identity, fx_pin=fx_pin))
+        if row.identity.capital == "owner_small"
+        else row
+        for row in rows
+    )
+    result = evaluate(replace(reg, pending=("review",)) if pending else reg, rows)
+    assert result.status == "incomplete" and not result.failures
+
+
+def test_relabelled_owner_wrapper_cannot_import_foreign_fx_report_safety():
+    reg = registration()
+    original = replace(reg, capitals=(reg.capitals[0], replace(reg.capitals[1], fx_pin="d" * 64)))
+    rows = list(outcomes(reg))
+    foreign_rows = change(outcomes(original), capital="owner_small", max_drawdown=D(".5"))
+    index = next(
+        i
+        for i, row in enumerate(rows)
+        if row.identity.arm == "combined"
+        and row.identity.capital == "owner_small"
+        and row.identity.cost_multiple == 1
+    )
+    rows[index] = replace(rows[index], report_evidence=foreign_rows[index].report_evidence)
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete" and not result.failures
+
+
+def test_legacy_research_identity_needs_no_fx_conversion_pin():
+    reg = registration()
+    rows = outcomes(reg)
+    assert all(row.identity.fx_pin is None for row in rows if row.identity.capital == "research")
+    assert all(row.identity.fx_pin == PIN for row in rows if row.identity.capital == "owner_small")
+    assert evaluate(reg, rows).status == "pass"
