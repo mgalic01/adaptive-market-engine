@@ -195,3 +195,21 @@ No historical execution occurred; the OHLC adapter, baseline adapters, visual QA
 and exact registration remain unfinished. This adds mandatory report evidence for
 complete utilization and stricter duplicate-fill handling; callers must supply the
 new links. No additional security finding is known beyond the evidence defects fixed.
+
+## Retained-history integrity corrections
+
+The next report review found that recovered positive balances could hide a zero or
+negative intermediate equity observation. Every such observation now makes evidence
+structurally incomplete. Utilization must split at every retained equity or capital
+observation; an omitted capital record cannot justify a stale denominator.
+Unknown opportunity stages, impossible local stage order and exit reasons on open
+lifecycles remain in the archive but invalidate completeness. Sparse episode
+summaries permit repeated detections and partial fills; they do not prove a complete
+six-stage DecisionEvent journal, now explicitly stated in the dashboard.
+
+Verification: 629 combined tests passed, one OS skip, with repository static and
+report checks passing. The independent critic passed 96 report/dashboard tests.
+Two acceptance regressions reproduced hidden zero/negative capital exhaustion before
+the fix and pass afterward. Existing acceptance fixtures now provide each retained
+observation's capital evidence. No strategy or sampling policy changed, no historical
+execution occurred, and the owner observation-policy decision remains outstanding.

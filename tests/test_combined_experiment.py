@@ -149,29 +149,31 @@ def with_report(row):
         ("synthetic-source",),
         metrics_start_ms=start,
         daily_samples=points,
-        utilization=(
+        utilization=tuple(
             UtilizationInterval(
-                start,
-                end,
+                point.timestamp_ms,
+                following.timestamp_ms,
                 D(0),
                 D(0),
-                row.initial_equity,
-                "utilization",
+                point.equity,
+                f"utilization-{index}",
                 ("synthetic-capital",),
-                observation_id="capital-opening",
-            ),
+                observation_id=f"capital-{index}",
+            )
+            for index, (point, following) in enumerate(zip(points, points[1:], strict=False))
         ),
-        capital_observations=(
+        capital_observations=tuple(
             CapitalObservation(
-                start,
-                row.initial_equity,
+                point.timestamp_ms,
+                point.equity,
                 D(0),
                 D(0),
-                id="capital-opening",
-                phase_id="synthetic-opening",
-                equity_observation_id="opening",
+                id=f"capital-{index}",
+                phase_id=f"synthetic-{index}",
+                equity_observation_id=point.id,
                 source_refs=("synthetic-capital",),
-            ),
+            )
+            for index, point in enumerate(points)
         ),
     )
     return replace(row, report_evidence=ReportEvidence(row.identity, row.attempt_id, report))
@@ -626,3 +628,35 @@ def test_unverified_terminal_loss_requires_report_but_observed_wallet_mismatch_d
     result = evaluate(reg, rows)
     assert result.status == ("fail" if wallet is False else "incomplete")
     assert not any("profit is not positive" in reason for reason in result.failures)
+
+
+@pytest.mark.parametrize("equity", [D(0), D(-1)])
+def test_component_recovery_cannot_hide_capital_exhaustion(equity):
+    reg = registration()
+    rows = list(outcomes(reg))
+    index = next(i for i, row in enumerate(rows) if row.identity.arm != "combined")
+    row = rows[index]
+    evidence = row.report_evidence
+    original = evidence.report
+    points = (
+        original.equity_points[0],
+        EquityPoint(row.identity.start_ms + DAY // 2, equity, "exhaustion", ("synthetic",)),
+        *original.equity_points[1:],
+    )
+    report = analyze(
+        row.initial_equity,
+        points,
+        original.contributions,
+        (),
+        (),
+        original.source_refs,
+        metrics_start_ms=original.metrics_start_ms,
+        daily_samples=original.daily_samples,
+        utilization=original.utilization,
+        capital_observations=original.capital_observations,
+    )
+    assert "nonpositive_equity_observation" in report.issues
+    rows[index] = replace(
+        row, max_drawdown=report.max_drawdown, report_evidence=replace(evidence, report=report)
+    )
+    assert evaluate(reg, tuple(rows)).status != "pass"
