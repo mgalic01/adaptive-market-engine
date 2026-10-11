@@ -511,6 +511,21 @@ def _metrics(
             and observation.futures_collateral == interval.futures_collateral
         )
 
+    terminal_capital = [row for row in capital_observations if row.timestamp_ms == end]
+    terminal_verified = bool(
+        points
+        and end is not None
+        and equity_counts[end] == 1
+        and len(terminal_capital) == 1
+        and points[-1].id
+        and points[-1].source_refs
+        and terminal_capital[0].id
+        and terminal_capital[0].phase_id
+        and terminal_capital[0].source_refs
+        and terminal_capital[0].equity_observation_id == points[-1].id
+        and terminal_capital[0].equity == points[-1].equity
+    )
+
     if not utilization:
         add("utilization", None, "utilization_unavailable")
     elif (
@@ -522,6 +537,8 @@ def _metrics(
         or any(row.equity <= 0 or marks.get(row.start_ms) != {row.equity} for row in utilization)
     ):
         add("utilization", None, "incomplete_or_unmatched_utilization")
+    elif not terminal_verified:
+        add("utilization", None, "unverified_terminal_capital_observation")
     elif any(not capital_matches(row) for row in utilization):
         add("utilization", None, "unmatched_capital_observation")
     else:
@@ -661,8 +678,15 @@ def analyze(
         if event.reason is not None:
             _text(event.reason)
     changes = []
+    prior_episode: RecoveryEpisode | None = None
     for episode in episodes:
         _time(episode.start_ms)
+        if prior_episode is not None:
+            if episode.start_ms < prior_episode.start_ms:
+                issues.append("nonchronological_recovery_episodes")
+            if prior_episode.end_ms is None or episode.start_ms < prior_episode.end_ms:
+                issues.append("overlapping_recovery_episodes")
+        prior_episode = episode
         start = _number(episode.equity_start)
         if start <= 0:
             raise ValueError("positive recovery opening equity required")

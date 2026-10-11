@@ -342,6 +342,11 @@ def test_utilization_is_duration_weighted_capital_not_futures_notional():
             DAY, D(100), D(10), D(15), "account-1", "phase-1", "mark-1", ("source-1",)
         ),
     )
+    observations += (
+        CapitalObservation(
+            3 * DAY, D(100), D(10), D(15), "terminal", "terminal", "mark-2", ("source-terminal",)
+        ),
+    )
     supplied = tuple(replace(row, observation_id=f"account-{i}") for i, row in enumerate(supplied))
     result = metrics_report(
         points, metrics_start_ms=0, utilization=supplied, capital_observations=observations
@@ -390,12 +395,19 @@ def test_supplied_metrics_can_make_reconciled_report_complete():
             utilization[0], id="interval-1", start_ms=DAY, equity=D(110), observation_id="account-1"
         ),
     )
+    terminal = replace(
+        observation,
+        id="terminal",
+        timestamp_ms=2 * DAY,
+        phase_id="terminal",
+        equity_observation_id="mark-2",
+    )
     result = metrics_report(
         points,
         metrics_start_ms=0,
         daily_samples=points,
         utilization=utilization,
-        capital_observations=(observation, later),
+        capital_observations=(observation, later, terminal),
     )
     assert result.complete and all(item.value is not None for item in result.metrics)
 
@@ -597,7 +609,10 @@ def test_utilization_cannot_be_calculated_from_equity_only():
     interval = UtilizationInterval(0, DAY, D(50), D(0), D(100))
     result = metrics_report(points, metrics_start_ms=0, utilization=(interval,))
     assert metric(result, "utilization").value is None
-    assert metric(result, "utilization").unavailable_reason == "unmatched_capital_observation"
+    assert (
+        metric(result, "utilization").unavailable_reason
+        == "unverified_terminal_capital_observation"
+    )
 
 
 def capital_fixture():
@@ -647,7 +662,15 @@ def capital_fixture():
         observation_id="capital-1",
         source_refs=("synthetic#interval-1",),
     )
-    return points, observation, interval, later, second
+    terminal = replace(
+        observation,
+        timestamp_ms=2 * DAY,
+        id="capital-terminal",
+        phase_id="terminal",
+        equity_observation_id="equity-2",
+        source_refs=("synthetic#terminal",),
+    )
+    return points, observation, interval, later, second, terminal
 
 
 def capital_report(points, observations, intervals):
@@ -661,11 +684,11 @@ def capital_report(points, observations, intervals):
 
 
 def test_exact_capital_observation_allows_utilization_and_is_retained():
-    points, observation, interval, later, second = capital_fixture()
-    result = capital_report(points, (observation, later), (interval, second))
+    points, observation, interval, later, second, terminal = capital_fixture()
+    result = capital_report(points, (observation, later, terminal), (interval, second))
     assert result.complete
     assert metric(result, "utilization").value == D(".5")
-    assert result.capital_observations == (observation, later)
+    assert result.capital_observations == (observation, later, terminal)
 
 
 @pytest.mark.parametrize(
@@ -679,8 +702,10 @@ def test_exact_capital_observation_allows_utilization_and_is_retained():
     ],
 )
 def test_utilization_rejects_unlinked_or_altered_capital_components(change):
-    points, observation, interval, later, second = capital_fixture()
-    result = capital_report(points, (observation, later), (replace(interval, **change), second))
+    points, observation, interval, later, second, terminal = capital_fixture()
+    result = capital_report(
+        points, (observation, later, terminal), (replace(interval, **change), second)
+    )
     assert not result.complete and metric(result, "utilization").value is None
 
 
@@ -695,13 +720,15 @@ def test_utilization_rejects_unlinked_or_altered_capital_components(change):
     ],
 )
 def test_capital_observation_requires_exact_equity_identity_and_provenance(change):
-    points, observation, interval, later, second = capital_fixture()
-    result = capital_report(points, (replace(observation, **change), later), (interval, second))
+    points, observation, interval, later, second, terminal = capital_fixture()
+    result = capital_report(
+        points, (replace(observation, **change), later, terminal), (interval, second)
+    )
     assert not result.complete and metric(result, "utilization").value is None
 
 
 def test_equal_equity_capital_phase_ambiguity_remains_incomplete():
-    points, observation, interval, later, second = capital_fixture()
+    points, observation, interval, later, second, terminal = capital_fixture()
     after = replace(points[0], id="after-buy", source_refs=("synthetic#after-buy",))
     after_capital = replace(
         observation,
@@ -712,7 +739,7 @@ def test_equal_equity_capital_phase_ambiguity_remains_incomplete():
     )
     retained = (points[0], after, *points[1:])
     for observations in ((observation,), (observation, after_capital)):
-        result = capital_report(retained, (*observations, later), (interval, second))
+        result = capital_report(retained, (*observations, later, terminal), (interval, second))
         assert metric(result, "utilization").value is None
         assert not result.complete
 
@@ -722,19 +749,21 @@ def test_equal_equity_capital_phase_ambiguity_remains_incomplete():
     [{"id": ""}, {"phase_id": " "}, {"spot_value": D(-1)}, {"source_refs": ("same", "same")}],
 )
 def test_invalid_capital_observation_is_rejected(change):
-    points, observation, interval, later, second = capital_fixture()
+    points, observation, interval, later, second, terminal = capital_fixture()
     with pytest.raises(ValueError):
-        capital_report(points, (replace(observation, **change), later), (interval, second))
+        capital_report(
+            points, (replace(observation, **change), later, terminal), (interval, second)
+        )
 
 
 def test_capital_observation_duplicate_ids_are_not_deduplicated():
-    points, observation, interval, later, second = capital_fixture()
+    points, observation, interval, later, second, terminal = capital_fixture()
     with pytest.raises(ValueError):
         capital_report(points, (observation, observation), (interval,))
 
 
 def test_utilization_interval_cannot_skip_an_intervening_capital_observation():
-    points, observation, interval, later, second = capital_fixture()
+    points, observation, interval, later, second, terminal = capital_fixture()
     later = replace(
         observation,
         timestamp_ms=DAY,
@@ -744,13 +773,15 @@ def test_utilization_interval_cannot_skip_an_intervening_capital_observation():
         phase_id="phase-1",
         equity_observation_id="equity-1",
     )
-    result = capital_report(points, (observation, later), (replace(interval, end_ms=2 * DAY),))
+    result = capital_report(
+        points, (observation, later, terminal), (replace(interval, end_ms=2 * DAY),)
+    )
     assert metric(result, "utilization").value is None and not result.complete
 
 
 def test_complete_report_cannot_hide_out_of_window_opportunity():
-    points, observation, interval, later, second = capital_fixture()
-    assert capital_report(points, (observation, later), (interval, second)).complete
+    points, observation, interval, later, second, terminal = capital_fixture()
+    assert capital_report(points, (observation, later, terminal), (interval, second)).complete
     event = Opportunity(
         2 * DAY + 1, "BTCUSDT", "long", "breakout", "detected", None, "event", ("source",)
     )
@@ -764,21 +795,21 @@ def test_complete_report_cannot_hide_out_of_window_opportunity():
         metrics_start_ms=0,
         daily_samples=points,
         utilization=(interval, second),
-        capital_observations=(observation, later),
+        capital_observations=(observation, later, terminal),
     )
     assert "opportunity_outside_equity_window" in result.issues
     assert not result.complete and result.opportunities == (event,)
 
 
 def test_same_time_capital_phases_are_ambiguous_even_with_one_equity_record():
-    points, observation, interval, later, second = capital_fixture()
+    points, observation, interval, later, second, terminal = capital_fixture()
     other = replace(observation, id="other", phase_id="other-phase", spot_value=D(70))
-    result = capital_report(points, (observation, other, later), (interval, second))
+    result = capital_report(points, (observation, other, later, terminal), (interval, second))
     assert not result.complete and metric(result, "utilization").value is None
 
 
 def test_capital_source_refs_are_immutable_and_opportunities_without_equity_are_incomplete():
-    points, observation, interval, later, second = capital_fixture()
+    points, observation, interval, later, second, terminal = capital_fixture()
     refs = ["source"]
     observation = replace(observation, source_refs=refs)
     refs.append("mutated")
@@ -802,7 +833,7 @@ def test_recovered_equity_cannot_hide_nonpositive_retained_mark(equity):
 
 
 def test_utilization_interval_cannot_skip_equity_without_capital_observation():
-    points, observation, interval, later, second = capital_fixture()
+    points, observation, interval, later, second, terminal = capital_fixture()
     result = capital_report(points, (observation,), (replace(interval, end_ms=2 * DAY),))
     assert metric(result, "utilization").value is None
 
@@ -856,7 +887,7 @@ def test_open_marked_lifecycle_with_exit_reason_is_incomplete():
 
 @pytest.mark.parametrize("equity", [D(0), D(-1)])
 def test_nonpositive_interior_mark_is_not_hidden_by_positive_daily_samples(equity):
-    daily, observation, interval, later, second = capital_fixture()
+    daily, observation, interval, later, second, terminal = capital_fixture()
     failed = EquityPoint(DAY // 2, equity, "failed", ("source",))
     points = (daily[0], failed, *daily[1:])
     result = analyze(
@@ -869,7 +900,7 @@ def test_nonpositive_interior_mark_is_not_hidden_by_positive_daily_samples(equit
         metrics_start_ms=0,
         daily_samples=daily,
         utilization=(interval, second),
-        capital_observations=(observation, later),
+        capital_observations=(observation, later, terminal),
     )
     assert metric(result, "sharpe").value is not None
     assert result.final_equity == 100 and "nonpositive_equity_observation" in result.issues
@@ -911,3 +942,104 @@ def test_new_detection_can_follow_blocked_disposition_in_same_episode():
     )
     result = analyze(D(100), curve(), contributions(), events, (), ("source",))
     assert result.structural_complete and len(result.opportunity_episodes) == 1
+
+
+def test_terminal_capital_state_is_required_even_when_equity_is_unique():
+    points, observation, interval, later, second, terminal = capital_fixture()
+    result = capital_report(points, (observation, later), (interval, second))
+    assert not result.complete
+    assert (
+        metric(result, "utilization").unavailable_reason
+        == "unverified_terminal_capital_observation"
+    )
+
+
+def test_equal_equity_terminal_phases_cannot_select_a_complete_report():
+    points, observation, interval, later, second, terminal = capital_fixture()
+    after = replace(points[-1], id="terminal-after", source_refs=("source-after",))
+    terminal = replace(
+        observation,
+        timestamp_ms=2 * DAY,
+        id="terminal-capital",
+        phase_id="after",
+        equity_observation_id=after.id,
+    )
+    retained = (*points, after)
+    result = metrics_report(
+        retained,
+        metrics_start_ms=0,
+        daily_samples=(*points[:-1], after),
+        utilization=(interval, second),
+        capital_observations=(observation, later, terminal),
+    )
+    assert not result.complete
+    assert (
+        metric(result, "utilization").unavailable_reason
+        == "unverified_terminal_capital_observation"
+    )
+
+
+@pytest.mark.parametrize(
+    "bounds,expected",
+    [
+        (((0, 2), (1, 2)), "overlapping_recovery_episodes"),
+        (((1, 2), (0, 1)), "nonchronological_recovery_episodes"),
+        (((0, None), (1, 2)), "overlapping_recovery_episodes"),
+        (((0, 1), (0, 1)), "overlapping_recovery_episodes"),
+    ],
+)
+def test_recovery_sequence_preserves_but_rejects_impossible_episodes(bounds, expected):
+    points = curve()
+    episodes = tuple(
+        RecoveryEpisode(
+            start,
+            end,
+            points[start].equity,
+            points[end].equity if end is not None else None,
+            f"recovery-{i}",
+            ("source",),
+        )
+        for i, (start, end) in enumerate(bounds)
+    )
+    result = analyze(D(100), points, contributions(), (), episodes, ("source",))
+    assert expected in result.issues and not result.structural_complete
+    assert result.recovery == episodes
+
+
+def test_adjacent_recovery_episodes_are_not_overlap():
+    points = curve()
+    episodes = tuple(
+        RecoveryEpisode(
+            i, i + 1, points[i].equity, points[i + 1].equity, f"recovery-{i}", ("source",)
+        )
+        for i in range(2)
+    )
+    result = analyze(D(100), points, contributions(), (), episodes, ("source",))
+    assert result.structural_complete
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"phase_id": None}, {"source_refs": ()}, {"equity_observation_id": "equity-0"}, {"id": None}],
+)
+def test_terminal_capital_requires_phase_provenance_and_exact_equity_link(change):
+    points, observation, interval, later, second, terminal = capital_fixture()
+    result = capital_report(
+        points, (observation, later, replace(terminal, **change)), (interval, second)
+    )
+    assert not result.complete
+    assert (
+        metric(result, "utilization").unavailable_reason
+        == "unverified_terminal_capital_observation"
+    )
+
+
+def test_multiple_terminal_capital_phases_are_not_selected_by_equal_equity():
+    points, observation, interval, later, second, terminal = capital_fixture()
+    after = replace(terminal, id="terminal-after", phase_id="after", spot_value=D(80))
+    result = capital_report(points, (observation, later, terminal, after), (interval, second))
+    assert not result.complete
+    assert (
+        metric(result, "utilization").unavailable_reason
+        == "unverified_terminal_capital_observation"
+    )

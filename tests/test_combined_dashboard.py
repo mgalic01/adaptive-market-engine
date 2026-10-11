@@ -205,8 +205,8 @@ def test_per_record_provenance_is_visible_linked_and_preserved_in_download():
 def test_capital_observation_phase_and_interval_link_are_visible_and_exported():
     from test_combined_report import capital_fixture, capital_report
 
-    points, observation, interval, later, second = capital_fixture()
-    evidence = capital_report(points, (observation, later), (interval, second))
+    points, observation, interval, later, second, terminal = capital_fixture()
+    evidence = capital_report(points, (observation, later, terminal), (interval, second))
     parsed = Elements(render_report(evidence))
     text = " ".join(parsed.text)
     assert "Capital observations" in text and observation.phase_id in text
