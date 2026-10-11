@@ -370,4 +370,5 @@ No historical execution, dependencies or additional security findings. Sizing ca
 slightly smaller and continuous exposure reductions more frequent; approved thresholds
 are unchanged. Owner observation-policy decision and final full-head external review
 remain outstanding, with adapters, visual QA and exact registration unfinished.
-`nVerification for approved observation package: 903 combined tests passed, one OS skip; Ruff, format, mypy, Bandit and report checks passed. Independent critic found sampling fallback, terminal phase, invalid-policy safety preservation and unresolved terminal-close issues; each was reproduced and fixed. Full historical replay and final external review remain pending.
+
+Verification for approved observation package: 903 combined tests passed, one OS skip; Ruff, format, mypy, Bandit and report checks passed. Independent critic found sampling fallback, terminal phase, invalid-policy safety preservation and unresolved terminal-close issues; each was reproduced and fixed. Full historical replay and final external review remain pending.
