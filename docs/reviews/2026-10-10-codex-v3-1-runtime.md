@@ -213,3 +213,25 @@ Two acceptance regressions reproduced hidden zero/negative capital exhaustion be
 the fix and pass afterward. Existing acceptance fixtures now provide each retained
 observation's capital evidence. No strategy or sampling policy changed, no historical
 execution occurred, and the owner observation-policy decision remains outstanding.
+
+## Terminal identity, recovery sequence and attributable failures
+
+Terminal completeness now requires one sourced equity observation and one matching
+phase-qualified capital observation; equal equity values do not collapse distinct
+terminal phases. Recovery records must be chronological and non-overlapping; open
+episodes prevent a following episode. Invalid records remain visible.
+
+Registration rejects windows unable to support the existing mandatory UTC-daily
+metrics (day-aligned endpoints, at least two days). This does not select the pending
+same-time convention. Acceptance separately recomputes identity-, attempt-, window-
+and registered-capital-matched reports to retain observed drawdown, exhaustion and
+accounting breaches despite contradictory wrapper scalars. A wrong-capital scalar
+wrapper is incomplete, not attributed to another capital scenario; a correct-capital
+report still preserves its breach. Duplicate umbrella failure messages are removed.
+
+Verification:686 combined tests passed,one OS skip; repository static/report checks
+passed. Independent critic108report/dashboard tests,123experiment tests plus16 final
+wrapper cases passed; writer127experiment tests passed. No historical execution or
+sampling-policy choice. Source authentication remains outside these structural
+checks. The owner policy decision, final full-head external review, replay adapters,
+visual QA and exact registration remain required before the historical-run gate.
