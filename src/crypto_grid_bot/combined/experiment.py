@@ -165,11 +165,16 @@ def _registration_errors(registration: Registration) -> list[str]:
         or any(type(multiple) is not int or not _pin(pin) for multiple, pin in reg.cost_profiles)
     ):
         errors.append("registration: base and doubled cost profiles required")
-    if not reg.windows or len({w.id for w in reg.windows}) != len(reg.windows):
+    if (
+        not reg.windows
+        or any(not isinstance(w.id, str) or not w.id.strip() for w in reg.windows)
+        or len({w.id for w in reg.windows}) != len(reg.windows)
+    ):
         errors.append("registration: nonempty unique windows required")
     for window in reg.windows:
         if (
-            not window.id
+            not isinstance(window.id, str)
+            or not window.id.strip()
             or type(window.start_ms) is not int
             or type(window.end_ms) is not int
             or not 0 <= window.start_ms < window.end_ms < _RESERVED
@@ -399,7 +404,7 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
     window, capital, profile = windows[0], capitals[0], profiles[0]
     if (
         not isinstance(window.id, str)
-        or not window.id
+        or not window.id.strip()
         or type(window.start_ms) is not int
         or type(window.end_ms) is not int
         or not 0 <= window.start_ms < window.end_ms < _RESERVED

@@ -831,3 +831,12 @@ def test_wrong_capital_scalar_safety_is_retained_but_not_attributed(initial, upd
     result = evaluate(replace(reg, pending=("review",)) if pending else reg, rows)
     assert result.status == "incomplete" and not result.failures
     assert result.outcomes == rows
+
+
+@pytest.mark.parametrize("window_id", [1, True, "   ", "\t", "", [], {}])
+def test_window_identity_requires_nonblank_string(window_id):
+    reg = registration()
+    reg = replace(reg, windows=(replace(reg.windows[0], id=window_id),))
+    result = evaluate(reg, outcomes(reg))
+    assert result.status == "incomplete"
+    assert "registration: invalid window dates or data pin" in result.incomplete_reasons

@@ -235,3 +235,24 @@ wrapper cases passed; writer127experiment tests passed. No historical execution 
 sampling-policy choice. Source authentication remains outside these structural
 checks. The owner policy decision, final full-head external review, replay adapters,
 visual QA and exact registration remain required before the historical-run gate.
+
+## Open terminal recovery and failed-batch provenance
+
+A valid final recovery episode may remain open: its return stays unknown without
+making the report structurally invalid. Its sourced opening must match a unique
+retained in-window mark, and overlap validation remains enforced. Report-level
+source collections reject plain strings before conversion. Registration window IDs
+must be nonblank strings before uniqueness hashing (including unhashable input tests).
+
+ReplayFailure now retains structurally validated source references whenever batch
+settlement was attempted, including partial mutations and unavailable terminal
+snapshots. Invalid batch references are not promoted. References remain unauthenticated.
+This adds a defaulted source_refs field to the failure artifact; consumers should
+preserve it. No new dependencies or security findings beyond the addressed evidence
+defects. Malformed unhashable outcome IDs can still raise before grouping; callers
+must validate deserialized outcome identities before evaluation.
+
+Verification:708 combined tests passed,one OS skip; all static/report checks passed.
+Independent critic115report/dashboard,57replay/artifact(one skip),7window-ID cases.
+No historical execution. Owner observation-policy and PR267 merge decisions remain
+pending; final full-head external review, adapter work and registration remain open.
