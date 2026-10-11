@@ -1,6 +1,6 @@
 """Causal local decision funnel: qualification, geometry, one shared reservation.
 
-No exchange orders or fills are produced. Successful submissions return a replay
+No live exchange orders are produced. Successful submissions return a replay
 queue item. A grid item is ONE reserved basket plus three equal-risk geometry
 weights; replay must allocate/round children within that basket, enforce each
 child's venue minimums, and release unused capacity through acknowledged cancel.
@@ -9,12 +9,19 @@ child's venue minimums, and release unused capacity through acknowledged cancel.
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from decimal import Context, Decimal, localcontext
+from fractions import Fraction
 from threading import RLock
 
+from crypto_grid_bot.combined.account import FillEvent
 from crypto_grid_bot.combined.components import ComponentPlan, component_plan
-from crypto_grid_bot.combined.engine import PortfolioEngine, Quote
+from crypto_grid_bot.combined.engine import (
+    EngineSnapshot,
+    PortfolioEngine,
+    Quote,
+    SettlementObservation,
+)
 from crypto_grid_bot.combined.evidence import DecisionEvent, Evidence
-from crypto_grid_bot.combined.execution import VenueRules
+from crypto_grid_bot.combined.execution import VenueRules, _decimal
 from crypto_grid_bot.combined.models import Assessment, assessment_source_reasons
 from crypto_grid_bot.combined.risk import Admission, Intent, planned_price
 from crypto_grid_bot.combined.routing import Qualification, RoutingContext, qualify
@@ -78,6 +85,14 @@ class DecisionResult:
     admission: Admission | None
     events: tuple[DecisionEvent, ...]
     venue_inputs: VenueInputs | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningExecution:
+    fill: FillEvent | None
+    before: EngineSnapshot | None
+    observations: tuple[SettlementObservation, ...]
+    failure: str | None
 
 
 class DecisionCoordinator:
@@ -312,3 +327,139 @@ class DecisionCoordinator:
             )
             self._seen[opportunity_id] = identity, result
             return result
+
+    def execute_opening(
+        self,
+        opportunity_id: str,
+        quotes: Mapping[str, Quote],
+        rules: Mapping[str, VenueRules],
+    ) -> OpeningExecution:
+        """Fill this coordinator's admitted trend at its same-boundary venue quote.
+
+        The enclosing frame must settle due funding and protective exits BEFORE
+        calling. This bridge does not execute grid limit baskets, infer finality,
+        or authorize a historical run. Held-asset marks remain caller-authoritative;
+        only the newly owned symbol adopts its admitted venue. Repeated identical
+        calls return retained evidence, including failed prefixes, without retry.
+        The attempt is registered on the engine's account, not on this coordinator.
+        """
+        batch_id = f"opening:{len(opportunity_id)}:{opportunity_id}"
+        with self._lock, self._engine.exclusive():
+            identity = (tuple(sorted(quotes.items())), tuple(sorted(rules.items())))
+            if opportunity_id not in self._seen:
+                raise ValueError("opening requires this coordinator's recorded decision")
+            prior = self._engine.retained_attempt(batch_id, identity)
+            if prior is not None:
+                if not isinstance(prior, OpeningExecution):
+                    raise ValueError("attempt identity belongs to another frame kind")
+                return prior
+            # Refusals here precede every mutation, so they are not attempts.
+            decision = self._opening_terms(opportunity_id, batch_id)
+            self._engine.begin_attempt(batch_id, identity)
+            result = self._open(opportunity_id, decision, batch_id, quotes, rules)
+            self._engine.finish_attempt(batch_id, result)
+            return result
+
+    def _opening_terms(self, opportunity_id: str, batch_id: str) -> DecisionResult:
+        decision = self._seen[opportunity_id][1]
+        intent, admission, venue = decision.intent, decision.admission, decision.venue_inputs
+        if (
+            intent is None
+            or admission is None
+            or not admission.accepted
+            or intent.owner not in {"spot_trend", "futures_trend"}
+            or venue is None
+            or venue.quote is None
+        ):
+            raise ValueError("accepted trend admission required")
+        now = decision.events[0].timestamp_ms
+        if venue.quote.timestamp_ms != now or self._engine.clock != now:
+            raise ValueError("opening execution requires the original decision boundary")
+        if self._engine.booked_fill(batch_id) is not None:
+            raise ValueError("opening execution identity already booked")
+        return decision
+
+    def _open(
+        self,
+        opportunity_id: str,
+        decision: DecisionResult,
+        batch_id: str,
+        quotes: Mapping[str, Quote],
+        rules: Mapping[str, VenueRules],
+    ) -> OpeningExecution:
+        intent, admission, venue = decision.intent, decision.admission, decision.venue_inputs
+        if intent is None or admission is None or venue is None or venue.quote is None:
+            raise ValueError("accepted trend admission required")
+        now = decision.events[0].timestamp_ms
+        if any(
+            not isinstance(quotes.get(position.symbol), Quote)
+            or quotes[position.symbol].timestamp_ms != now
+            or not isinstance(rules.get(position.symbol), VenueRules)
+            for position, *_ in self._engine.held_execution_terms()
+        ):
+            return OpeningExecution(None, None, (), "opening_current_held_market_required")
+        before = None
+        failure = None
+        try:
+            before = self._engine.observe(now, quotes, rules)
+            active_ids = {a.intent_id for a in self._engine.reservations}
+            if intent.intent_id not in active_ids:
+                failure = "opening_admission_no_longer_active"
+            elif (
+                before.close_required
+                or any(key not in active_ids for key in before.unresolved_execution)
+                or any(p.symbol == intent.symbol for p in before.account.positions)
+            ):
+                failure = "opening_protection_unresolved"
+            else:
+                price = planned_price(intent.price, intent.side, intent.slippage_rate, intent.tick)
+                fill = FillEvent(
+                    batch_id,
+                    now,
+                    intent.symbol,
+                    intent.owner,
+                    intent.venue,
+                    intent.side,
+                    admission.quantity,
+                    price,
+                    _decimal(
+                        Fraction(admission.quantity) * Fraction(price) * Fraction(intent.fee_rate)
+                    ),
+                )
+                active_quotes, active_rules = dict(quotes), dict(rules)
+                active_quotes[intent.symbol] = venue.quote
+                active_rules[intent.symbol] = venue.rules
+                self._engine.settle(
+                    batch_id,
+                    now,
+                    active_quotes,
+                    active_rules,
+                    increases=((intent.intent_id, fill),),
+                )
+        except (ValueError, ArithmeticError, TypeError, AttributeError) as exc:
+            failure = f"opening_execution_failure:{type(exc).__name__}"
+        booked = self._engine.booked_fill(batch_id)
+        if booked is not None:
+            try:
+                self._evidence.record(
+                    DecisionEvent(
+                        f"{batch_id}:filled",
+                        opportunity_id,
+                        now,
+                        intent.symbol,
+                        "filled",
+                        True,
+                        (),
+                        (
+                            ("fill_id", booked.event_id),
+                            ("quantity", str(booked.quantity)),
+                            ("price", str(booked.price)),
+                        ),
+                        decision.events[-1].source_refs,
+                    )
+                )
+            except (ValueError, TypeError, AttributeError) as exc:
+                failure = f"opening_evidence_failure:{type(exc).__name__}"
+        return OpeningExecution(
+            booked, before, self._engine.settlement_observations(batch_id), failure
+        )

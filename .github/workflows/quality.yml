@@ -19,7 +19,9 @@ permissions:
 jobs:
   test-and-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The full suite takes 7.5-12 minutes on hosted runners (one multiprocessing pool
+    # test alone takes 2.5-4); 10 minutes, set when the suite was small, cancels it.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:

@@ -33,6 +33,8 @@ class PortfolioInterval:
     fills: tuple[FillEvent, ...]
     failure: str | None
     grid_spacing: tuple[tuple[str, Decimal], ...] = ()
+    # Close obligations left only on inventory no legal order can reduce at fresh marks.
+    retained_dust: tuple[str, ...] = ()
 
 
 def replay_held_portfolio(
@@ -49,7 +51,8 @@ def replay_held_portfolio(
     Within a phase old stops execute in symbol order against the previously available
     other-asset marks, then the full vector advances together to the vertex. Any
     resulting portfolio close is settled immediately at that available vector.
-    Venue maximums split reductions; minimum-size dust remains valued and owned.
+    Venue maximums split reductions; minimum-size dust remains valued and owned,
+    keeps its close obligation and is reported as retained dust, not a failure.
     A finite 10,000-fill safety budget fails incomplete rather than looping without
     bound on malformed or impractically tiny venue order limits.
     Grid spacing must come from retained admitted geometry; the full strategy
@@ -123,6 +126,7 @@ def replay_held_portfolio(
     observations: list[PortfolioObservation] = []
     fills: list[FillEvent] = []
     failure = None
+    dust: tuple[str, ...] = ()
     sequence = 0
 
     def observe(phase: str) -> EngineSnapshot:
@@ -243,15 +247,19 @@ def replay_held_portfolio(
                 quotes = {symbol: Quote(getattr(bar, phase), now) for symbol, bar in market.items()}
                 drain(phase, observe(phase))
         final = observations[-1].snapshot
-        if final.close_required or final.unresolved_execution:
+        dust = engine.close_dust(rules)
+        if set(final.close_required) - set(dust) or final.unresolved_execution:
             failure = "unresolved_execution_obligations"
         if any(
-            row.snapshot.liquidation or "execution_integrity_failure" in row.snapshot.reasons
+            row.snapshot.liquidation
+            or not row.snapshot.account.integrity_ok
+            or "execution_integrity_failure" in row.snapshot.reasons
             for row in observations
         ):
             failure = "portfolio_safety_failure"
     except (ValueError, ArithmeticError, TypeError, AttributeError) as exc:
         failure = f"execution_failure:{type(exc).__name__}"
+        dust = ()
     return PortfolioInterval(
-        paths, tuple(observations), tuple(fills), failure, tuple(sorted(grid_spacing))
+        paths, tuple(observations), tuple(fills), failure, tuple(sorted(grid_spacing)), dust
     )

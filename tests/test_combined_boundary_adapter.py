@@ -4,7 +4,7 @@ from decimal import Decimal as D
 import pytest
 
 from crypto_grid_bot.combined.boundary_adapter import emit_boundary
-from crypto_grid_bot.combined.engine import PortfolioEngine
+from crypto_grid_bot.combined.engine import PortfolioEngine, Quote
 
 
 def test_opening_samples_before_costs_and_capital_after_settlement():
@@ -128,3 +128,26 @@ def test_stale_interior_held_marks_cannot_become_common_equity():
             interval_end_ms=10_800_000,
             source_refs=("synthetic",),
         )
+
+
+def test_a_fresh_boundary_after_a_stale_hour_is_not_stale():
+    from test_combined_engine import RULES
+    from test_combined_ohlc_path import held_short
+
+    engine = held_short()
+    stale = engine.settle("stale", 7_200_000, {}, RULES)
+    assert stale.stale == ("BTCUSDT",)
+    fresh = engine.settle("fresh", 10_800_000, {"BTCUSDT": Quote(D(100), 10_800_000)}, RULES)
+    # The close obligation and its reason persist while held; the mark is current.
+    assert "stale_position_or_missing_filters" in fresh.reasons
+    assert fresh.close_required == ("BTCUSDT",)
+    assert fresh.stale == ()
+    records = emit_boundary(
+        "fresh",
+        engine.settlement_observations("fresh"),
+        role="settled",
+        interval_start_ms=10_800_000,
+        interval_end_ms=14_400_000,
+        source_refs=("synthetic",),
+    )
+    assert records.boundary.selected_equity_id == "fresh:observation:1"

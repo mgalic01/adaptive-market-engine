@@ -308,3 +308,141 @@ def test_tick_cost_cannot_be_hidden_by_zero_fee_and_slippage(setup):
     assert result.admission is None
     assert "round_trip_cost_understated" in result.qualification.reasons
     assert engine.reservations == ()
+
+
+def test_opening_execution_books_admitted_trend_and_filled_evidence(setup):
+    coordinator, engine, journal, args = setup
+    decision = coordinator.decide(**args)
+    result = coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+    assert result.failure is None
+    assert result.fill.quantity == decision.admission.quantity
+    assert result.fill.price == D("100.05")
+    assert engine.held_execution_terms()[0][1] == decision.intent.stop
+    assert journal.events[-1].phase == "filled"
+    assert (
+        coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+        == result
+    )
+    assert len([event for event in journal.events if event.phase == "filled"]) == 1
+
+
+def test_opening_execution_does_not_invent_canceled_late_fill(setup):
+    coordinator, engine, journal, args = setup
+    decision = coordinator.decide(**args)
+    engine.cancel(decision.intent.intent_id)
+    result = coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+    assert result.failure == "opening_admission_no_longer_active"
+    assert result.fill is None
+    assert not engine.held_execution_terms()
+
+
+def test_opening_execution_retains_booked_fill_when_following_mark_fails(setup, monkeypatch):
+    coordinator, engine, journal, args = setup
+    coordinator.decide(**args)
+    original = engine.observe
+    calls = 0
+
+    def failing(*a, **kw):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise ValueError("synthetic after booking")
+        return original(*a, **kw)
+
+    monkeypatch.setattr(engine, "observe", failing)
+    result = coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+    assert result.failure is not None
+    assert result.fill is not None
+    assert journal.events[-1].phase == "filled"
+    assert (
+        coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+        == result
+    )
+    assert calls == 3
+
+
+def test_opening_execution_uses_selected_futures_quote(setup):
+    coordinator, engine, journal, args = setup
+    args["routing"] = RoutingContext(spot_trend=False, spot_grid=False)
+    args["futures"] = replace(args["futures"], quote=Quote(D(120), args["assessment"].decision_ms))
+    decision = coordinator.decide(**args)
+    assert decision.intent.venue == "futures"
+    result = coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+    assert result.failure is None
+    assert result.fill.price == D("120.06")
+    assert engine.held_execution_terms()[0][1] == decision.intent.stop
+    assert result.observations[-1].snapshot.account.positions[0].mark == D(120)
+
+
+def test_opening_execution_refuses_grid_basket(setup):
+    coordinator, engine, journal, args = setup
+    args["assessment"] = replace(
+        args["assessment"], daily=TrendState.RANGE, four_hour=TrendState.RANGE
+    )
+    args["routing"] = RoutingContext(flow_allowed=True)
+    coordinator.decide(**args)
+    with pytest.raises(ValueError, match="accepted trend"):
+        coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+    assert not engine.held_execution_terms()
+
+
+def test_opening_execution_cannot_move_to_later_boundary(setup):
+    coordinator, engine, journal, args = setup
+    coordinator.decide(**args)
+    now = args["assessment"].decision_ms + 1
+    engine.observe(now, {"BTCUSDT": Quote(D(100), now)}, {"BTCUSDT": args["spot"].rules})
+    with pytest.raises(ValueError, match="original decision boundary"):
+        coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+    assert not engine.held_execution_terms()
+
+
+def test_opening_execution_requires_current_held_venue_marks(setup):
+    coordinator, engine, journal, args = setup
+    coordinator.decide(**args)
+    coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+    now = args["assessment"].decision_ms + 3_600_000
+    assessment = replace(
+        args["assessment"], symbol="ETHUSDT", decision_ms=now, quote_ms=now, hourly_closed_ms=now
+    )
+    spot = replace(args["spot"], quote=Quote(D(100), now))
+    second = coordinator.decide(
+        "two",
+        assessment,
+        RoutingContext(),
+        args["quotes"],
+        spot,
+        None,
+        args["source_refs"],
+        position_rules={"BTCUSDT": spot.rules},
+    )
+    assert second.admission.accepted
+    result = coordinator.execute_opening("two", args["quotes"], {"BTCUSDT": spot.rules})
+    assert result.failure == "opening_current_held_market_required"
+    assert result.fill is None
+
+
+@pytest.mark.parametrize("scenario", ["open_low_high_close", "open_high_low_close"])
+def test_signal_to_opening_fill_to_intrabar_stop(setup, scenario):
+    from test_combined_ohlc_path import bar
+
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    coordinator, engine, journal, args = setup
+    decision = coordinator.decide(**args)
+    opening = coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+    assert opening.failure is None
+    interval = replace(bar(), open_ms=args["assessment"].decision_ms)
+    replay = replay_held_portfolio(
+        engine,
+        (("BTCUSDT", interval),),
+        {"BTCUSDT": args["spot"].rules},
+        scenario,
+        source_refs=("synthetic:ohlc",),
+    )
+    assert replay.failure is None
+    assert len(replay.fills) == 1
+    assert replay.fills[0].side == -1
+    assert replay.fills[0].quantity == decision.admission.quantity
+    assert not engine.held_execution_terms()
+    assert not any(row.snapshot.liquidation for row in replay.observations)
+    assert [event.phase for event in journal.events][-2:] == ["submitted", "filled"]

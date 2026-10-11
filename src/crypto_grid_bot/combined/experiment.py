@@ -285,6 +285,21 @@ def _registration_errors(registration: Registration) -> list[str]:
     return errors
 
 
+def _outcome_shape_valid(row: object) -> bool:
+    """Malformed records stay retained but are never grouped, hashed or attributed."""
+    if not isinstance(row, RunOutcome) or not isinstance(row.identity, RunIdentity):
+        return False
+    identity = row.identity
+    return (
+        all(
+            isinstance(value, str) and bool(value.strip())
+            for value in (identity.arm, identity.window, identity.capital)
+        )
+        and type(identity.cost_multiple) is int
+        and (identity.scenario is None or isinstance(identity.scenario, str))
+    )
+
+
 def _key(identity: RunIdentity) -> tuple[str, str, str, int, str | None]:
     return (
         identity.arm,
@@ -559,10 +574,16 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
     control is compared to each separately, never counted as an extra trial.
     """
     retained = tuple(outcomes)
+    malformed = sum(not _outcome_shape_valid(row) for row in retained)
     incomplete = _registration_errors(registration)
     if incomplete:
+        if malformed:
+            incomplete.append(f"{malformed} malformed outcome record(s) retained")
         observed_failures = tuple(
-            failure for row in retained for failure in _matched_safety_failures(registration, row)
+            failure
+            for row in retained
+            if _outcome_shape_valid(row)
+            for failure in _matched_safety_failures(registration, row)
         )
         return AcceptanceResult(
             "fail" if observed_failures else "incomplete",
@@ -601,7 +622,11 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         expected[_key(identity)] = (identity, capital.initial_equity)
     grouped: dict[tuple[str, str, str, int, str | None], list[RunOutcome]] = {}
     attempts: dict[str, int] = {}
+    if malformed:
+        incomplete.append(f"{malformed} malformed outcome record(s) retained")
     for row in retained:
+        if not _outcome_shape_valid(row):
+            continue
         if not isinstance(row.identity.scenario, str) or row.identity.scenario not in (
             *SCENARIOS,
             "native",

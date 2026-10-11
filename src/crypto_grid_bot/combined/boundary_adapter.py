@@ -77,7 +77,9 @@ def emit_boundary(
         raise ValueError("settlement phases or interval boundary mismatch")
     opening = trace[0].snapshot.account
     final = trace[-1].snapshot
-    if any("stale_position_or_missing_filters" in row.snapshot.reasons for row in trace):
+    # Current marks only: a persisting close reason from an earlier stale hour does
+    # not make a later fresh boundary stale.
+    if any(row.snapshot.stale for row in trace):
         raise ValueError("stale held marks cannot form a sourced boundary")
     if role == "terminal" and (
         final.close_required

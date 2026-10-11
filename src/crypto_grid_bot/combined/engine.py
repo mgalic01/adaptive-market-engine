@@ -5,7 +5,8 @@ owns OHLC sequencing and source identities. This kernel never invents an executi
 to satisfy a close obligation. Funding is booked before reductions, then increases.
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from decimal import Context, Decimal, localcontext
 from fractions import Fraction
@@ -35,6 +36,8 @@ from crypto_grid_bot.combined.risk import (
 )
 from crypto_grid_bot.combined.routing import Qualification
 
+_STARTED = object()  # An attempt that began but never recorded its result.
+
 
 @dataclass(frozen=True, slots=True)
 class Quote:
@@ -62,6 +65,9 @@ class EngineSnapshot:
     liquidation: bool
     available_cash: Decimal
     unresolved_execution: tuple[str, ...] = ()
+    # Held symbols whose mark is stale or filters missing at THIS observation. The
+    # close reason persists while held; this field describes only the current mark.
+    stale: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +107,71 @@ class PortfolioEngine:
         self._batch_observations: dict[str, tuple[SettlementObservation, ...]] = {}
         # Duplicate executions must preserve their role and original admission.
         self._fills: dict[str, tuple[str, str | None, FillEvent]] = {}
+        self._funding_events: dict[str, FundingEvent] = {}
+        # Whole-frame attempts span several settlement batches; one registry per account.
+        self._attempts: dict[str, tuple[object, object]] = {}
         self._recovery.update(0, initial_cash, True, False, True)
+
+    @contextmanager
+    def exclusive(self) -> Iterator[None]:
+        """Serialize one whole replay frame against every other caller of this account."""
+        with self._lock:
+            yield
+
+    def retained_attempt(self, attempt_id: str, identity: object) -> object | None:
+        """Return an identical completed frame's retained result, never a retry.
+
+        None means no attempt with this ID exists. A conflicting identity, or an
+        attempt that started without recording its result (an interrupted frame),
+        raises. The registry lives on the account, so a new adapter cannot reset it.
+        """
+        with self._lock:
+            if not isinstance(attempt_id, str) or not attempt_id.strip():
+                raise ValueError("attempt identity required")
+            if attempt_id not in self._attempts:
+                return None
+            prior, result = self._attempts[attempt_id]
+            if prior != identity or result is _STARTED:
+                raise ValueError("conflicting or unfinished attempt")
+            return result
+
+    def begin_attempt(self, attempt_id: str, identity: object) -> None:
+        """Register a multi-batch frame once per account before its first mutation."""
+        with self._lock:
+            if self.retained_attempt(attempt_id, identity) is not None or (
+                attempt_id in self._attempts
+            ):
+                raise ValueError("attempt already registered")
+            self._attempts[attempt_id] = (identity, _STARTED)
+
+    def finish_attempt(self, attempt_id: str, result: object) -> None:
+        """Retain the result, including failures, of a started attempt exactly once."""
+        with self._lock:
+            entry = self._attempts.get(attempt_id)
+            if entry is None or entry[1] is not _STARTED or result is None:
+                raise ValueError("started attempt and a result required")
+            self._attempts[attempt_id] = (entry[0], result)
+
+    def close_dust(self, rules: Mapping[str, VenueRules]) -> tuple[str, ...]:
+        """Held close obligations that no legal reduction can execute at fresh marks.
+
+        Stale marks, missing filters and pending or unreconciled orders are never
+        dust. The inventory stays valued and owned, and its obligation is retained.
+        """
+        with self._lock, localcontext(Context(prec=60)):
+            account = self._account.snapshot({s: q.price for s, q in self._quotes.items()})
+            return tuple(
+                sorted(
+                    p.symbol
+                    for p in account.positions
+                    if p.symbol in self._close
+                    and self._fresh(p.symbol, self._clock)
+                    and isinstance(rules.get(p.symbol), VenueRules)
+                    and not self._reduction(p, rules[p.symbol]).quantity
+                    and not self._unresolved_canceled_fill(p.symbol)
+                    and all(intent.symbol != p.symbol for intent, _ in self._orders.values())
+                )
+            )
 
     @property
     def reservations(self) -> tuple[Admission, ...]:
@@ -135,6 +205,11 @@ class PortfolioEngine:
         with self._lock:
             recorded = self._fills.get(event_id)
             return recorded[2] if recorded is not None else None
+
+    def booked_funding(self, event_id: str) -> FundingEvent | None:
+        """Retain a booked payment even if its following valuation fails."""
+        with self._lock:
+            return self._funding_events.get(event_id)
 
     def cancel(self, intent_id: str) -> None:
         """Cancel increases locally; this does not attest that all fills are reconciled."""
@@ -383,6 +458,7 @@ class PortfolioEngine:
             prices = self._prices(timestamp_ms, quotes)
             account = self._account.snapshot(prices)
             reasons: list[str] = []
+            stale: list[str] = []
             flat = not self._orders and not self._unresolved_canceled_fill()
             for position in account.positions:
                 if position.symbol in rules:
@@ -391,6 +467,7 @@ class PortfolioEngine:
                     flat = False
                     self._require_close(position.symbol, "stale_position_or_missing_filters")
                     reasons.append("stale_position_or_missing_filters")
+                    stale.append(position.symbol)
                 elif self._reduction(position, rules[position.symbol]).quantity:
                     flat = False
             margin = futures_margin(account.free_cash, account.positions)
@@ -450,6 +527,7 @@ class PortfolioEngine:
                         if remaining > 0 and key not in self._finality
                     )
                 ),
+                tuple(sorted(stale)),
             )
 
     def preview(
@@ -651,6 +729,7 @@ class PortfolioEngine:
             mark("before", batch_id)
             for payment in funding:
                 self._account.apply(payment)
+                self._funding_events[payment.event_id] = payment
                 mark("funding", payment.event_id)
             for event in reductions:
                 reduction_identity = ("reduction", None, event)

@@ -1281,3 +1281,38 @@ def test_fee_entry_preserves_existing_half_multiplier_asset_risk_cap():
     engine.settle("held", 1, QUOTES, RULES, increases=((held.intent_id, fill),))
     new = intent("other", "ETHUSDT", stop=D(99), fee_rate=D(".001"), slippage_rate=D(0))
     assert not engine.submit(new, replace(candidate(new), decision_ms=1), QUOTES, RULES).accepted
+
+
+def test_frame_attempts_are_registered_once_per_account():
+    engine = PortfolioEngine(D(10000))
+    assert engine.retained_attempt("frame", ("a",)) is None
+    engine.begin_attempt("frame", ("a",))
+    with pytest.raises(ValueError, match="unfinished"):
+        engine.retained_attempt("frame", ("a",))
+    with pytest.raises(ValueError):
+        engine.begin_attempt("frame", ("a",))
+    engine.finish_attempt("frame", "result")
+    assert engine.retained_attempt("frame", ("a",)) == "result"
+    with pytest.raises(ValueError, match="conflicting"):
+        engine.retained_attempt("frame", ("b",))
+    with pytest.raises(ValueError):
+        engine.finish_attempt("frame", "again")
+    with pytest.raises(ValueError):
+        engine.finish_attempt("never-started", "result")
+    with pytest.raises(ValueError):
+        engine.begin_attempt(" ", ())
+
+
+def test_close_dust_requires_fresh_marks_filters_and_no_pending_order():
+    engine = PortfolioEngine(D(10000))
+    order, _, _ = open_partial(engine)
+    engine.request_close(order.symbol, order.owner, 1, reason="range_exit")
+    unsellable = {"BTCUSDT": replace(RULE, min_notional=D(1000))}
+    # The canceled remainder may still fill: unreconciled orders are never dust.
+    assert engine.close_dust(unsellable) == ()
+    engine.acknowledge_finality(order.intent_id, source_refs=("synthetic:final",))
+    assert engine.close_dust(unsellable) == ("BTCUSDT",)
+    assert engine.close_dust(RULES) == ()  # sellable at these filters
+    assert engine.close_dust({}) == ()  # no filters, no classification
+    engine.observe(3_600_002, {}, RULES)  # the held mark is now stale
+    assert engine.close_dust(unsellable) == ()

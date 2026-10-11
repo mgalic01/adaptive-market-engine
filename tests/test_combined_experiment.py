@@ -1285,3 +1285,34 @@ def test_pending_registration_rejects_foreign_scalar_policy_identity(field):
     result = evaluate(reg, (row,))
     assert result.status == "incomplete"
     assert not result.failures
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        None,
+        "identity=None",
+        {"arm": []},
+        {"window": []},
+        {"capital": " "},
+        {"cost_multiple": "1"},
+        {"scenario": ["open_low_high_close"]},
+    ],
+)
+@pytest.mark.parametrize("pending", [False, True])
+def test_malformed_outcome_records_are_incomplete_not_crashes(malformed, pending):
+    reg = registration()
+    rows = outcomes(reg)
+    assert evaluate(reg, rows).status == "pass"
+    if malformed is None:
+        bad = None
+    elif malformed == "identity=None":
+        bad = replace(rows[0], identity=None)
+    else:
+        bad = replace(rows[0], identity=replace(rows[0].identity, **malformed))
+    if pending:
+        reg = replace(reg, pending=("x",))
+    result = evaluate(reg, (*rows, bad))
+    assert result.status == "incomplete"
+    assert "1 malformed outcome record(s) retained" in result.incomplete_reasons
+    assert result.outcomes[-1] is bad

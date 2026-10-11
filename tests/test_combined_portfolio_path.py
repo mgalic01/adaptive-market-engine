@@ -146,7 +146,10 @@ def test_unsellable_remainders_stay_valued_and_owned():
         "open_low_high_close",
         source_refs=("s",),
     )
-    assert result.failure == "unresolved_execution_obligations"
+    # Verified unsellable inventory keeps its obligation and value; it is not a failure.
+    assert result.failure is None
+    assert result.retained_dust == ("BTCUSDT", "ETHUSDT")
+    assert result.observations[-1].snapshot.close_required == ("BTCUSDT", "ETHUSDT")
     assert not result.fills
     assert len(result.observations[-1].snapshot.account.positions) == 2
     assert all(p.mark == 105 for p in result.observations[-1].snapshot.account.positions)
