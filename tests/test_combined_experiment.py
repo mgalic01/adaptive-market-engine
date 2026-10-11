@@ -544,3 +544,60 @@ def test_recomputed_report_from_other_observation_window_is_incomplete():
         row, report_evidence=replace(row.report_evidence, report=foreign.report_evidence.report)
     )
     assert evaluate(reg, tuple(rows)).status == "incomplete"
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_omitted_wallet_verification_is_unknown_not_observed_mismatch(complete):
+    reg = registration()
+    rows = list(outcomes(reg))
+    index = next(i for i, row in enumerate(rows) if row.identity.arm == "combined")
+    old = rows[index]
+    rows[index] = RunOutcome(
+        old.identity,
+        old.initial_equity,
+        old.final_equity,
+        old.max_drawdown,
+        old.liquidations,
+        old.accounting_residual,
+        accounting_explained=True,
+        complete=complete,
+        attempt_id=old.attempt_id,
+        report_evidence=old.report_evidence,
+    )
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete" and not result.failures
+    assert rows[index].wallet_quantity_exact is None
+
+
+@pytest.mark.parametrize(
+    "updates", [{"liquidations": 1}, {"max_drawdown": D(".5")}, {"accounting_residual": D(1)}]
+)
+def test_unknown_wallet_verification_preserves_other_observed_failures(updates):
+    reg = registration()
+    rows = change(outcomes(reg), wallet_quantity_exact=None, complete=False, **updates)
+    result = evaluate(reg, rows)
+    assert result.status == "fail" and result.incomplete_reasons
+    assert not any("wallet/quantity" in reason for reason in result.failures)
+
+
+def test_reserved_boundary_is_not_an_implemented_terminal_observation():
+    reg = registration()
+    window = replace(reg.windows[0], end_ms=1_735_689_600_000)
+    changed = replace(reg, windows=(window,))
+    rows = tuple(
+        replace(row, identity=replace(row.identity, end_ms=window.end_ms))
+        for row in change(outcomes(reg), max_drawdown=D(".5"))
+    )
+    result = evaluate(changed, rows)
+    assert result.status == "incomplete" and not result.failures
+    assert "registration: invalid window dates or data pin" in result.incomplete_reasons
+
+
+@pytest.mark.parametrize("wallet", [None, False, True])
+def test_unverified_terminal_loss_requires_report_but_observed_wallet_mismatch_does_not(wallet):
+    reg = registration()
+    rows = change(outcomes(reg), cost=2, final_equity=D(9000), wallet_quantity_exact=wallet)
+    rows = tuple(replace(row, report_evidence=None) for row in rows)
+    result = evaluate(reg, rows)
+    assert result.status == ("fail" if wallet is False else "incomplete")
+    assert not any("profit is not positive" in reason for reason in result.failures)

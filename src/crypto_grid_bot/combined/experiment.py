@@ -39,6 +39,12 @@ _RESERVED = 1_735_689_600_000
 
 @dataclass(frozen=True, slots=True)
 class Window:
+    """Observed endpoints; the terminal mark must precede the reserved window.
+
+    A later adapter may support a prior-interval closing mark at the boundary only
+    under a reviewed endpoint policy; this evaluator does not infer that meaning.
+    """
+
     id: str
     start_ms: int
     end_ms: int
@@ -107,7 +113,7 @@ class RunOutcome:
     complete: bool = False
     failed: bool = False
     attempt_id: str = ""
-    wallet_quantity_exact: bool = False
+    wallet_quantity_exact: bool | None = None
     report_evidence: ReportEvidence | None = None
 
 
@@ -165,7 +171,7 @@ def _registration_errors(registration: Registration) -> list[str]:
             not window.id
             or type(window.start_ms) is not int
             or type(window.end_ms) is not int
-            or not 0 <= window.start_ms < window.end_ms <= _RESERVED
+            or not 0 <= window.start_ms < window.end_ms < _RESERVED
             or not _pin(window.data_pin)
         ):
             errors.append("registration: invalid window dates or data pin")
@@ -210,13 +216,13 @@ def _metrics_valid(row: RunOutcome) -> bool:
         and _finite(row.accounting_residual)
         and type(row.liquidations) is int
         and row.liquidations >= 0
+        and (row.wallet_quantity_exact is None or type(row.wallet_quantity_exact) is bool)
         and all(
             type(flag) is bool
             for flag in (
                 row.accounting_explained,
                 row.complete,
                 row.failed,
-                row.wallet_quantity_exact,
             )
         )
     )
@@ -289,7 +295,7 @@ def _safety_failures(observed: RunOutcome) -> list[str]:
         if type(observed.liquidations) is int and observed.liquidations > 0:
             failures.append(f"{key}: observed liquidation")
         if observed.wallet_quantity_exact is False:
-            failures.append(f"{key}: wallet/quantity exactness not verified")
+            failures.append(f"{key}: observed wallet/quantity mismatch")
         if _finite(observed.accounting_residual):
             residual = abs(Fraction(observed.accounting_residual))
             if residual > Fraction(1, 10**18) or (
@@ -337,7 +343,7 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
         or not window.id
         or type(window.start_ms) is not int
         or type(window.end_ms) is not int
-        or not 0 <= window.start_ms < window.end_ms <= _RESERVED
+        or not 0 <= window.start_ms < window.end_ms < _RESERVED
         or not _pin(window.data_pin)
         or (identity.start_ms, identity.end_ms, identity.data_pin)
         != (window.start_ms, window.end_ms, window.data_pin)
@@ -360,7 +366,9 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
     Historical baselines need comparable valid evidence, not V3.1's drawdown/profit
     limits. Liquidation/accounting defects in V3.1 components are engineering failures.
     Only explained trade/equity residuals get the1e-18 tolerance; wallets/quantities
-    require an explicit exactness verification. Zero-DD ratios remain indeterminate.
+    require an explicit exactness verification (None is unknown, False is a mismatch).
+    Terminal profit tests require complete matching reports; already observed safety
+    failures remain failures without them. Zero-DD ratios remain indeterminate.
     """
     retained = tuple(outcomes)
     incomplete = _registration_errors(registration)
@@ -431,6 +439,9 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             continue
         if not _metrics_valid(row) or row.initial_equity != expected_capital:
             incomplete.append(f"{key}: invalid metrics or initial capital")
+            continue
+        if row.wallet_quantity_exact is None:
+            incomplete.append(f"{key}: wallet/quantity verification unavailable")
             continue
         if not row.complete or row.failed:
             incomplete.append(f"{key}: failed or incomplete attempt retained")
