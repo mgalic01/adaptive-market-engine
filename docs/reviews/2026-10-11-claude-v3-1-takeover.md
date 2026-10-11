@@ -108,9 +108,43 @@ it was checked at.
   Long tables show up to 500 rows with counts, and provenance is summarized per record type.
   The exact JSON is embedded only below 1 MB (`exact_evidence()` returns it in full).
 
+## Batch 4: frozen baselines (owner decisions 2026-10-11)
+
+The owner chose the baseline set after a read-only study of the frozen callables. The
+choices are recorded in `docs/V3_1_SOURCE_INVENTORY.md`.
+
+- **Baseline set.** The full arm must beat all of these:
+  - the V3 selector;
+  - V3's six long-only rules;
+  - a literal equal-cash hold;
+  - the V0, V1 and V2 grids;
+  - comparator D.
+- **Capital and timing.** ~EUR100 runs use a reviewed capital adapter. Two native timing
+  differences are accepted, with disclosure: V3's funding, and the minute baselines'
+  final-minute close.
+- **Frozen code.** No frozen source changed. Each adapter wraps or observes it:
+  - `baseline_v3`: frozen `replay_window` over the registered window, including the frozen
+    selector picks in force there. `v3_capital` swaps `TrendRunner` for a subclass that only
+    sets the starting capital, identical at 10,000 USDT at both cost multiples. Futures
+    utilization uses gross notional ÷ size multiple.
+  - `baseline_hold`: the owner-specified equal-cash hold, bought at the first opening quote
+    with the run's costs, tick and step rounding, and exchange minimums. A share below the
+    minimum stays in cash, disclosed. The frozen V3 hold hardcodes 10,000 USDT inside its
+    purchase formula and base costs, so it cannot serve these cells.
+  - `baseline_minute`: the frozen grid `replay` under a read-only recorder (results
+    identical), with equal capital per pair. Comparator D is rebuilt from its own fill
+    journal, with exact parity checks.
+- **Comparison and diagnostics.** `baseline_records.comparison_report` uses only the marks
+  recorded exactly at UTC hours, and every native mark stays in labelled diagnostics. A
+  missing hourly mark makes the comparison incomplete.
+- **Outcomes.** `outcomes.strategy_outcome` and `baseline_outcome` build acceptance
+  outcomes that carry exactly their report's figures.
+- **Membership.** The exact V1 variant membership (spec v1's nine grid variants), path-mode
+  arms, pair universes and doubled-cost definitions per version are registration items.
+
 ## Not yet done
 
-- frozen V0–V3 baseline adapters: the study is done, and several comparability rulings go to the owner;
+- registration of the baseline membership, per-version doubled-cost definitions and data preparation;
 - the conformance review against the spec;
 - the exact registration;
 - a substantive external review of the latest full head, and green required checks.

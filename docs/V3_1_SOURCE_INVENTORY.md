@@ -55,3 +55,30 @@ Native intrabar diagnostics must also remain available and labeled by version.
 Exact baseline membership, capital adaptation, common observation evidence and
 literal portfolio hold allocation remain registration work, not permission to
 launch an experiment or alter frozen implementations.
+
+## Owner decisions on baselines, 2026-10-11
+
+Asked by Claude after a read-only study of the frozen callables (synthetic probes
+only, no market data); the owner chose the recommended option each time:
+
+- **Membership ("V3 family, hold, V0–V2 and D").** The full combined arm must beat,
+  on compounded net return and on return/maximum drawdown, every one of: the
+  unchanged V3 selector, V3's six fixed long-only rules (R1L–R6L), a literal hold,
+  the V0, V1 and V2 grids, and comparator D. Each native path mode of a minute-based
+  baseline is its own arm. V0–V2 use a read-only recorder around the frozen
+  simulator (no trading logic changes; parity with the frozen outputs is tested).
+  The frozen V0–V2 evidence ran 100 USDT per coin, so 10,000 USDT and ~EUR100 runs
+  of them are new evidence.
+- **~EUR100 capital ("Reviewed capital adapter").** The unchanged V3 code runs with a
+  small subclass that only sets the starting capital, tested to give identical
+  results at 10,000 USDT. Exchange minimums then apply naturally at ~EUR100. The
+  other baselines take capital as a setting. Outputs are never scaled.
+- **Hold ("Equal cash per coin at start").** The starting capital is split equally
+  across the registered coins at the window's first hour, bought once with entry
+  costs and held. A coin whose share is below the exchange minimum stays in cash,
+  and that is disclosed.
+- **Timing ("Accept, disclosed").** V3 books funding a few milliseconds after the
+  hour, after that hour's fills, so its hourly state shows that funding one hour
+  later; minute-based baselines have no mark exactly at the window end, so the
+  final minute's close is their window-end value. Both are labelled native timing
+  in the report; nothing is moved or invented.
