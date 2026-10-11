@@ -35,6 +35,7 @@ class Exposure:
     notional: Decimal
     stop_risk: Decimal
     correlation_group: str
+    risk_multiplier: Decimal = Decimal(1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +157,9 @@ def _validate(intent: Intent, view: PortfolioView) -> None:
         symbol_name(exposure.symbol)
         _number(exposure.notional)
         _number(exposure.stop_risk)
+        _number(exposure.risk_multiplier)
+        if exposure.risk_multiplier not in {Decimal("0.5"), Decimal(1)}:
+            raise ValueError("invalid exposure risk multiplier")
         if exposure.symbol in symbols or not exposure.correlation_group or not exposure.owner:
             raise ValueError("duplicate or invalid asset ownership")
         if exposure.correlation_group != groups.get(exposure.symbol, "unknown"):
@@ -299,8 +303,6 @@ class PortfolioRisk:
         fraction = view.risk_fraction
         normal = min(
             intent.requested_quantity,
-            view.equity * Decimal("0.005") * intent.risk_multiplier / unit_risk,
-            view.equity * Decimal("0.20") / unit_notional,
             view.free_cash / unit_cash,
             intent.max_quantity,
         )
@@ -332,16 +334,73 @@ class PortfolioRisk:
             entry_capacity = (backing - pending_risk - 4 * rate * gross) / unit_cash
             normal = min(normal, stop_capacity, entry_capacity)
 
-        quantity = min(
-            normal * fraction,
-            cash / unit_cash,
-            (view.equity * Decimal("0.03") * fraction - used_risk) / unit_risk,
-            (view.equity * Decimal("1.6") * fraction - used_gross) / unit_notional,
-            (view.equity * Decimal("0.8") * fraction - group) / unit_notional,
+        # Entry fees and adverse execution against the current mark reduce equity.
+        # Only remaining reservations are charged here: settled costs are already
+        # in view.equity. Exit costs stay in stop risk/cash, not this equity debit.
+        unit_loss = Fraction(entry) * Fraction(intent.fee_rate) + Fraction(entry_slippage)
+        equity = Fraction(view.equity)
+        notionals: dict[str, Fraction] = {}
+        risks: dict[str, Fraction] = {}
+        multipliers: dict[str, Fraction] = {}
+        group_totals: dict[str, Fraction] = {}
+        for exposure in view.exposures:
+            notionals[exposure.symbol] = Fraction(exposure.notional)
+            risks[exposure.symbol] = Fraction(exposure.stop_risk)
+            multipliers[exposure.symbol] = Fraction(exposure.risk_multiplier)
+        for held_intent, answer in pending:
+            held_entry = planned_price(
+                held_intent.price, held_intent.side, held_intent.slippage_rate, held_intent.tick
+            )
+            equity -= Fraction(answer.quantity) * (
+                Fraction(held_entry) * Fraction(held_intent.fee_rate)
+                + held_intent.side * (Fraction(held_entry) - Fraction(held_intent.price))
+            )
+            symbol = held_intent.symbol
+            notionals[symbol] = notionals.get(symbol, Fraction(0)) + Fraction(answer.notional)
+            risks[symbol] = risks.get(symbol, Fraction(0)) + Fraction(answer.risk)
+            multipliers[symbol] = min(
+                multipliers.get(symbol, Fraction(held_intent.risk_multiplier)),
+                Fraction(held_intent.risk_multiplier),
+            )
+        for symbol, notional in notionals.items():
+            name = groups.get(symbol, "unknown")
+            group_totals[name] = group_totals.get(name, Fraction(0)) + notional
+
+        def capacity(coefficient: Fraction, used: Fraction, unit: Fraction) -> Fraction:
+            # used + q*unit <= coefficient * (equity - q*unit_loss).
+            cap = coefficient * Fraction(fraction)
+            return (cap * equity - used) / (unit + cap * unit_loss)
+
+        quantity_bound = min(
+            Fraction(normal) * Fraction(fraction),
+            Fraction(cash) / Fraction(unit_cash),
+            capacity(
+                Fraction(1, 200) * Fraction(intent.risk_multiplier),
+                Fraction(0),
+                Fraction(unit_risk),
+            ),
+            capacity(Fraction(1, 5), Fraction(0), Fraction(unit_notional)),
+            capacity(Fraction(3, 100), Fraction(used_risk), Fraction(unit_risk)),
+            capacity(Fraction(8, 5), Fraction(used_gross), Fraction(unit_notional)),
+            capacity(Fraction(4, 5), Fraction(group), Fraction(unit_notional)),
         )
-        if quantity <= 0:
+        # The candidate's costs also shrink limits on every other held/reserved
+        # asset and correlation group. No priority rule can silently resize them.
+        if unit_loss:
+            for symbol in notionals:
+                quantity_bound = min(
+                    quantity_bound,
+                    capacity(Fraction(1, 5), notionals[symbol], Fraction(0)),
+                    capacity(Fraction(1, 200) * multipliers[symbol], risks[symbol], Fraction(0)),
+                )
+            for name, notional in group_totals.items():
+                if name != intent.correlation_group:
+                    quantity_bound = min(
+                        quantity_bound, capacity(Fraction(4, 5), notional, Fraction(0))
+                    )
+        if quantity_bound <= 0:
             return no("portfolio_capacity")
-        quantity = Decimal(Fraction(quantity) // Fraction(intent.step)) * intent.step
+        quantity = Decimal(quantity_bound // Fraction(intent.step)) * intent.step
         if (
             quantity == 0
             or quantity < intent.min_quantity
