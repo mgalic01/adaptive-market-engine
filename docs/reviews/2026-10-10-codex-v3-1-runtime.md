@@ -270,3 +270,25 @@ Independent critic8targeted cases and attribution/deduplication probes passed. T
 new defect regressions failed before the fix. No strategy, source, sampling policy
 or historical execution changed. The pending owner decisions and final review gate
 remain unchanged; older full-head approvals do not apply to this batch.
+
+## Shared cancellation capacity, executable dust and FX identity
+
+All new increases now wait while any canceled order retains a non-final remainder,
+including orders for other assets. Protective reductions remain available. This
+conservative quarantine prevents reuse of cash, risk and notional capacity before
+late-fill obligations resolve. Dust uses the actual reduction side, retained holding
+slippage and adverse venue tick rounding, consistently in recovery and protection.
+The executable_reduction API now requires its reduction side explicitly.
+
+Cost-profile records are validated before unpacking/hashing. RunIdentity adds fx_pin:
+research retains None, while owner_small requires the exact registered FX source.
+Older small-capital outcomes without this identity are incomplete; foreign FX sources
+cannot contribute accepted outcomes or attributed safety failures, even at equal rates.
+Adapters must preserve this new serialized identity field. No historical results scaled.
+
+Verification:766 combined tests passed,one OS skip; static/report checks passed.
+Independent critic117engine/execution and168experiment tests passed. Regressions
+reproduced failures before fixes. No historical execution or new dependencies. No
+additional security findings known; stricter capacity quarantine and API/provenance
+requirements are compatibility changes. Owner observation-policy approval and final
+full-head external review remain required, with replay/registration still unfinished.
