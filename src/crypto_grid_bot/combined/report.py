@@ -680,6 +680,7 @@ def analyze(
         if event.reason is not None:
             _text(event.reason)
     changes = []
+    mark_counts = Counter(point.timestamp_ms for point in points)
     prior_episode: RecoveryEpisode | None = None
     for episode in episodes:
         _time(episode.start_ms)
@@ -702,15 +703,18 @@ def analyze(
             end = _number(episode.equity_end)
             # Timestamp alone cannot identify an endpoint when several distinct
             # event marks share it. Never choose a favorable mark or interpolate.
-            if marks.get(episode.start_ms) == {episode.equity_start} and marks.get(
-                episode.end_ms
-            ) == {episode.equity_end}:
+            if (
+                mark_counts[episode.start_ms] == 1
+                and mark_counts[episode.end_ms] == 1
+                and marks.get(episode.start_ms) == {episode.equity_start}
+                and marks.get(episode.end_ms) == {episode.equity_end}
+            ):
                 delta = end - start
             else:
                 issues.append("unverified_recovery_endpoint")
         elif (
             marks.get(episode.start_ms) != {episode.equity_start}
-            or sum(point.timestamp_ms == episode.start_ms for point in points) != 1
+            or mark_counts[episode.start_ms] != 1
         ):
             # An ongoing final episode has no return yet. Its sourced opening
             # must still identify one retained in-window mark; no phase is chosen.

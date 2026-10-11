@@ -1107,3 +1107,30 @@ def test_open_recovery_before_first_retained_mark_is_not_verified():
     result = analyze(D(100), curve()[1:], (), (), (episode,), ("source",))
     assert not result.structural_complete
     assert "unverified_recovery_endpoint" in result.issues
+
+
+@pytest.mark.parametrize("ambiguous_times", [(1,), (2,), (1, 2)])
+def test_closed_recovery_rejects_equal_equity_distinct_endpoint_phases(ambiguous_times):
+    retained = tuple(
+        record
+        for point in curve()
+        for record in (
+            (
+                point,
+                replace(
+                    point,
+                    id=f"{point.id}-other-phase",
+                    source_refs=(f"source#{point.id}-other-phase",),
+                ),
+            )
+            if point.timestamp_ms in ambiguous_times
+            else (point,)
+        )
+    )
+    episode = RecoveryEpisode(1, 2, D(110), D(105), "closed-recovery", ("source",))
+    result = analyze(D(100), retained, contributions(), (), (episode,), ("source",))
+    assert not result.structural_complete
+    assert "unverified_recovery_endpoint" in result.issues
+    assert result.recovery_changes[0].marked_change is None
+    assert result.recovery_changes[0].return_fraction is None
+    assert result.equity_points == retained and result.recovery == (episode,)
