@@ -1436,7 +1436,12 @@ def test_an_unsellable_cut_back_is_retained_dust():
     assert engine.close_dust(RULES) == ()
 
 
-def test_an_aggregate_risk_breach_spares_a_holding_whose_stop_is_past_its_entry():
+@pytest.mark.parametrize(
+    "trailed",
+    [D(110), D(100)],  # above its 100 entry, and exactly at it: no entry risk either way
+    ids=["stop_past_entry", "stop_at_entry"],
+)
+def test_an_aggregate_risk_breach_spares_a_holding_whose_stop_is_not_worse_than_entry(trailed):
     # Ruling 2026-10-11 (owner informed): an aggregate-risk breach cuts only holdings
     # whose stop is worse than their entry, by one common fraction that brings total
     # risk to 90% of the limit while the spared holding keeps counting its exit costs.
@@ -1453,7 +1458,7 @@ def test_an_aggregate_risk_breach_spares_a_holding_whose_stop_is_past_its_entry(
     engine.settle("btc", 1, first, rules, increases=((btc.intent_id, fill),))
     quotes = {"BTCUSDT": Quote(D(120), 2), **{symbol: Quote(D(100), 2) for symbol in others}}
     engine.observe(2, quotes, rules)
-    engine.tighten_stop("BTCUSDT", btc.owner, 1, D(110))  # trailed above its entry
+    engine.tighten_stop("BTCUSDT", btc.owner, 1, trailed)
     entries = []
     for symbol in others:
         order = intent(
