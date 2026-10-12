@@ -4,6 +4,7 @@ import math
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from decimal import Decimal as D
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -190,6 +191,48 @@ def test_an_inexact_split_keeps_its_remainder_as_uninvested_cash(initial, share,
     assert report.net_profit == 3 * (pair.final_equity - D(share))
 
 
+def test_max_drawdown_is_measured_on_marks_that_include_the_remainder_cash():
+    # 10000 over three pairs leaves 0.00000001 uninvested. It sits in every mark, the peak
+    # included, so the drawdown differs from the one the pair totals alone would give.
+    fair = float(ENGINE.at(T0).fair_value)
+    swing = []
+    for index in range(24 * 60):
+        price = fair * (1 + 0.05 * math.sin(index / 200.0))
+        swing.append(
+            candle(T0 + index * 60_000, price, price * 1.003, price * 0.997, price * 1.001)
+        )
+    jobs = {symbol: MinuteJob(CONFIG, run_config(symbol), tuple(swing), ENGINE) for symbol in THREE}
+    initial, share, remainder = D(10000), D("3333.33333333"), D("0.00000001")
+    report = replay_grid_baseline(
+        "matched_v0_grid_high_first",
+        jobs,
+        start_ms=T0,
+        end_ms=T0 + DAY,
+        initial=initial,
+        source_refs=("synthetic:grid",),
+        adapter_pin=PIN,
+    ).report
+    job = jobs["AAAUSDT"]
+    with recorded_frames() as frames:
+        pair, _ = replay(
+            job.config, replace(job.run, initial_quote=share), job.minutes, job.features
+        )
+
+    def worst_drawdown(cash):
+        pair_totals = [frames.hours[hour][0] for hour in sorted(frames.hours)]
+        marks = [Fraction(3 * total) + cash for total in (*pair_totals, pair.final_equity)]
+        peak, worst = Fraction(initial), Fraction(0)
+        for mark in (Fraction(initial), *marks):
+            peak = max(peak, mark)
+            worst = max(worst, (peak - mark) / peak)
+        return worst
+
+    with_cash, without_cash = worst_drawdown(Fraction(remainder)), worst_drawdown(Fraction(0))
+    assert with_cash > Fraction(1, 100) and with_cash != without_cash
+    assert report.max_drawdown is not None
+    assert abs(Fraction(report.max_drawdown) - with_cash) < Fraction(1, 10**55)
+
+
 def test_comparator_d_keeps_an_inexact_split_remainder_as_cash():
     base = trend_jobs()["AAAUSDT"]
     evidence = replay_trend_baseline(
@@ -205,6 +248,19 @@ def test_comparator_d_keeps_an_inexact_split_remainder_as_cash():
     assert evidence.report.reconciliation_residual == 0
     assert "minute_baseline_capital_remainder_cash:0.00000001" in evidence.report.disclosures
     assert evidence.report.equity_points[0].equity == 10000
+
+
+@pytest.mark.parametrize("adapter", ["grid", "trend"])
+def test_a_missing_residual_is_not_explained(monkeypatch, adapter):
+    original = baseline_minute.comparison_report
+
+    def unreconciled(*args, **kwargs):
+        return replace(original(*args, **kwargs), reconciliation_residual=None)
+
+    monkeypatch.setattr(baseline_minute, "comparison_report", unreconciled)
+    evidence = run_grid(grid_jobs()) if adapter == "grid" else run_trend(trend_jobs())
+    assert evidence.report.reconciliation_residual is None
+    assert evidence.accounting_explained is False
 
 
 def test_an_exact_split_has_no_remainder_cash():

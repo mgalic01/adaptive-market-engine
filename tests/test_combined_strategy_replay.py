@@ -301,6 +301,41 @@ def test_flow_that_collapses_inside_an_hour_withholds_that_hours_resting_buys(
     assert all(stamp >= fx.START + 25 * HOUR for stamp in withheld)
 
 
+def first_blocked_minute(market):
+    """The first minute at which the market's flow gate is blocked after opening healthy."""
+    from crypto_grid_bot.combined.routing import MinuteFlowGate
+
+    gate = MinuteFlowGate({bar.open_ms: bar for bar in market.minutes}, fx.START)
+    for stamp in range(fx.START, fx.START + 3 * DAY, 60_000):
+        if gate.advance(stamp):
+            return stamp
+    return None
+
+
+@pytest.mark.parametrize(
+    ("falls_at", "first_block", "withheld_25"),
+    [
+        # Eleven .3 minutes of fifteen give .38 (ten give exactly .40, which stays open): a
+        # fall at 25:48 first blocks at 25:59, the last minute bar 25 is checked at; a fall
+        # at 25:49 first blocks at 26:00, which belongs to bar 26.
+        (48, 59, True),
+        (49, 60, False),
+    ],
+)
+def test_a_block_first_seen_in_a_bars_last_minute_withholds_it_but_the_next_minute_does_not(
+    falls_at, first_block, withheld_25
+):
+    market = flow_market(3, ((-1, ".6"), ((25, falls_at), ".3")))
+    assert first_blocked_minute(market) == fx.START + 25 * HOUR + first_block * 60_000
+    probe = replay_strategy(fx.run("spot_grid", 3), (market,))
+    assert probe.failure is None
+    bar_25 = fx.START + 26 * HOUR  # a fill in bar 25 is stamped at its availability
+    withheld = dict(probe.withheld_buys).get("BTCUSDT", ())
+    assert (fx.START + 25 * HOUR in withheld) is withheld_25
+    assert (bar_25 in [f.timestamp_ms for f in grid_buys(probe)]) is not withheld_25
+    assert fx.START + 26 * HOUR in withheld  # either way bar 26 opens blocked
+
+
 def test_replay_is_deterministic_and_independent_of_input_order():
     markets = (
         fx.market("BTCUSDT", fx.uptrend, 2, futures=True, flow=True),

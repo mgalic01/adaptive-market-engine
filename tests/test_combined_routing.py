@@ -216,6 +216,24 @@ def test_the_minute_flow_gate_reports_a_block_anywhere_in_what_it_fed():
     assert not gate.advance(80 * MINUTE)
 
 
+def test_the_minute_flow_gate_refuses_a_call_that_feeds_nothing_new():
+    from crypto_grid_bot.combined.routing import MinuteFlowGate
+
+    # Nothing fed is nothing checked: a repeat must not read as "not blocked".
+    gate = MinuteFlowGate(flow_minutes(0, (40, ".1")), 15 * MINUTE)
+    assert gate.advance(20 * MINUTE) and not gate.allowed
+    for through in (20 * MINUTE, 20 * MINUTE + 30_000, 19 * MINUTE, 0):
+        with pytest.raises(ValueError, match="feeds no new minute"):
+            gate.advance(through)
+    assert gate.advance(21 * MINUTE)  # the refusals left the gate where it was
+    empty = MinuteFlowGate({}, 15 * MINUTE)
+    with pytest.raises(ValueError, match="feeds no new minute"):
+        empty.advance(14 * MINUTE)
+    assert empty.advance(30 * MINUTE)
+    with pytest.raises(ValueError, match="feeds no new minute"):
+        empty.advance(30 * MINUTE)
+
+
 def test_a_missing_minute_blocks_every_minute_whose_window_it_falls_in():
     from crypto_grid_bot.combined.routing import MinuteFlowGate
 
@@ -259,6 +277,8 @@ def test_the_rolling_flow_equals_completed_flow_minute_by_minute():
     rows[200 * MINUTE] = bar(200 * MINUTE, D("123456789012345678901234.5678901"), D(3))
     rows[260 * MINUTE] = bar(260 * MINUTE, D("1e35"), D("1e34"))
     rows[261 * MINUTE] = bar(261 * MINUTE, D("1e-30"), D("1e-31"))
+    # One many-decimal minute, then ordinary ones: the sums keep its exponent once it leaves.
+    rows[330 * MINUTE] = bar(330 * MINUTE, D("10.1234567890123456789012345678901"), D(3))
     first = 15 * MINUTE
     flow = RollingFlow(rows, first)
     shares = []
@@ -269,3 +289,36 @@ def test_the_rolling_flow_equals_completed_flow_minute_by_minute():
         assert observed == expected and (observed is None) == (expected is None), stamp
         shares.append(observed)
     assert None in shares and sum(share is not None for share in shares) > 200
+
+
+def test_the_rolling_flow_returns_to_its_fast_path_after_a_many_decimal_minute(monkeypatch):
+    # A minute with more digits than the context holds sends the fifteen windows around it to
+    # completed_flow. Once it has left, the sums are recomputed and the fast path serves again.
+    from crypto_grid_bot.backtest.klines import Kline
+    from crypto_grid_bot.combined import routing
+
+    exact = routing.completed_flow
+    fallbacks = []
+
+    def counted(bars, decision_ms):
+        fallbacks.append(decision_ms)
+        return exact(bars, decision_ms)
+
+    monkeypatch.setattr(routing, "completed_flow", counted)
+    rows = {}
+    for index in range(100):
+        stamp = index * MINUTE
+        volume = D(10 + index % 7)
+        taker = volume * D(index % 10) / D(10)
+        rows[stamp] = Kline(stamp, D(1), D(1), D(1), D(1), volume, D(1), taker)
+    wide = 30 * MINUTE
+    rows[wide] = Kline(
+        wide, D(1), D(1), D(1), D(1), D("10.0000000000000000000000000000001"), D(1), D(5)
+    )
+    first = 15 * MINUTE
+    flow = routing.RollingFlow(rows, first)
+    for stamp in range(first, 100 * MINUTE, MINUTE):
+        window = [rows[t] for t in range(stamp - 15 * MINUTE, stamp, MINUTE)]
+        assert flow.next() == exact(window, stamp), stamp
+    # Only the windows holding the wide minute (stamps 31:00 to 45:00) read completed_flow.
+    assert fallbacks == list(range(31 * MINUTE, 46 * MINUTE, MINUTE))

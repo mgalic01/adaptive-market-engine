@@ -123,8 +123,10 @@ class RollingFlow:
     exact taker sum over the exact volume sum, divided in the current context, whenever
     both sums' coefficients fit that context's precision: a sum's exponent is at most the
     lowest of its terms' and its zero start's, so ``completed_flow``'s own running sums
-    of nonnegative terms are then exact, and the value is the same. Otherwise, or after
-    an inexact rolling step, ``completed_flow`` itself reads the window.
+    of nonnegative terms are then exact, and the value is the same. A sum keeps the
+    lowest exponent ever added, so when the coefficients do not fit it is first
+    recomputed from the window. If they still do not fit, or after an inexact rolling
+    step, ``completed_flow`` itself reads the window.
     """
 
     def __init__(self, bars: Mapping[int, Kline], first_ms: int) -> None:
@@ -174,6 +176,14 @@ class RollingFlow:
             return
         self._volume, self._taker, self._exact = volume, taker, True
 
+    def _fits(self) -> bool:
+        """Both sums' coefficients fit the current context's precision."""
+        precision = getcontext().prec
+        volume, taker = self._volume, self._taker
+        return volume.adjusted() - int(volume.as_tuple().exponent) < precision and (
+            not taker or taker.adjusted() - int(taker.as_tuple().exponent) < precision
+        )
+
     def _share(self, stamp: int) -> Decimal | None:
         if self._missing:
             return None
@@ -181,15 +191,15 @@ class RollingFlow:
             self._resum()
         if not self._exact:
             return completed_flow(tuple(bar for bar in self._window if bar is not None), stamp)
-        volume, taker = self._volume, self._taker
-        if not volume:
+        if not self._volume:
             return None
-        precision = getcontext().prec
-        if volume.adjusted() - int(volume.as_tuple().exponent) < precision and (
-            not taker or taker.adjusted() - int(taker.as_tuple().exponent) < precision
-        ):
-            return taker / volume
-        return completed_flow(tuple(bar for bar in self._window if bar is not None), stamp)
+        if not self._fits():
+            # A sum keeps the lowest exponent ever added, even after that minute has left:
+            # recompute from the window before giving up on the fast path.
+            self._resum()
+            if not self._fits():
+                return completed_flow(tuple(bar for bar in self._window if bar is not None), stamp)
+        return self._taker / self._volume
 
     def next(self) -> Decimal | None:
         """The share at the current minute; then the window moves one minute on."""
@@ -222,9 +232,10 @@ class MinuteFlowGate:
 
     def advance(self, through_ms: int) -> bool:
         """Feed every minute up to and including ``through_ms``; True when the gate was
-        blocked after any of them."""
+        blocked after any of them. A call that feeds no new minute checked nothing, so
+        it raises rather than read as "not blocked"."""
         if self._next > through_ms:
-            return False
+            raise ValueError("gate advance feeds no new minute")
         if self._flow is None:  # no bars: every minute is unavailable
             self._gate.update(None)
             self._next = through_ms // _MINUTE * _MINUTE + _MINUTE

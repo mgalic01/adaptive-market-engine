@@ -47,6 +47,20 @@ def test_equal_cash_hold_reconciles_exactly_and_is_complete():
     assert first_open["BTCUSDT"].open_ms <= fx.START
 
 
+def test_a_missing_residual_is_not_explained(monkeypatch):
+    from crypto_grid_bot.combined import baseline_hold
+
+    original = baseline_hold.comparison_report
+
+    def unreconciled(*args, **kwargs):
+        return replace(original(*args, **kwargs), reconciliation_residual=None)
+
+    monkeypatch.setattr(baseline_hold, "comparison_report", unreconciled)
+    evidence = hold()
+    assert evidence.report.reconciliation_residual is None
+    assert evidence.accounting_explained is False
+
+
 def test_a_share_below_the_exchange_minimum_stays_in_cash_and_is_disclosed():
     evidence = hold(cash="108.5", rules=replace(fx.RULES, min_notional=D(60)))
     assert {c.asset for c in evidence.report.contributions} == set()

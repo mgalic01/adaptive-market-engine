@@ -144,6 +144,7 @@ def replay_hold_baseline(
         disclosures=tuple(disclosures),
         capital_label=capital_label,
     )
+    residual = report.reconciliation_residual
     return BaselineEvidence(
         HOLD,
         "hold-native",
@@ -151,8 +152,8 @@ def replay_hold_baseline(
         report,
         None if not issues else issues[0],
         0,
-        report.reconciliation_residual or Decimal(0),
-        abs(Fraction(report.reconciliation_residual or 0)) <= RESIDUAL_TOLERANCE,
+        residual or Decimal(0),
+        residual is not None and abs(Fraction(residual)) <= RESIDUAL_TOLERANCE,
         True,
         report.disclosures,
     )

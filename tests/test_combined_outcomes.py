@@ -104,7 +104,14 @@ def with_residual(report, residual):
 
 @pytest.mark.parametrize(
     ("residual", "accepted"),
-    [("0", True), ("1e-20", True), ("1e-18", True), ("2e-18", False)],
+    [
+        ("0", True),
+        ("1e-20", True),
+        ("1e-18", True),
+        ("2e-18", False),
+        ("-1e-18", True),  # either sign: the tolerance is on the absolute residual
+        ("-2e-18", False),
+    ],
 )
 def test_strategy_and_baseline_outcomes_accept_a_residual_up_to_1e_18_alike(residual, accepted):
     # Design: "Trade-to-equity residual <=1e-18 USDT only, all residuals retained and

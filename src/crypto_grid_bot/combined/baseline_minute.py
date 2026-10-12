@@ -271,7 +271,7 @@ def _evidence(
         ),
         capital_label=capital_label,
     )
-    residual = report.reconciliation_residual or Decimal(0)
+    residual = report.reconciliation_residual
     return BaselineEvidence(
         arm,
         label,
@@ -279,8 +279,8 @@ def _evidence(
         report,
         status,
         0,
-        residual,
-        abs(Fraction(residual)) <= RESIDUAL_TOLERANCE,
+        residual or Decimal(0),
+        residual is not None and abs(Fraction(residual)) <= RESIDUAL_TOLERANCE,
         exact,
         report.disclosures,
     )
