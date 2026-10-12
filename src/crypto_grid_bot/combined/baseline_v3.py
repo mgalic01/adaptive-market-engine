@@ -314,7 +314,7 @@ def replay_v3_baseline(
     )
     runner = result.runner
     audits = runner.audits if runner is not None else []
-    residual = report.reconciliation_residual or Decimal(0)
+    residual = report.reconciliation_residual
     return BaselineEvidence(
         arm,
         "v3-native",
@@ -322,8 +322,11 @@ def replay_v3_baseline(
         report,
         status,
         1 if status == "liquidation" else 0,
-        residual,
-        abs(residual) <= V3_TOLERANCE and bool(audits) and all(a.accepted for a in audits),
+        residual or Decimal(0),
+        residual is not None
+        and abs(residual) <= V3_TOLERANCE
+        and bool(audits)
+        and all(a.accepted for a in audits),
         bool(audits)
         and all(
             a.wallet_residual == 0 and all(value == 0 for value in a.quantity_residuals.values())

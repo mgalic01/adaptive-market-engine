@@ -120,6 +120,18 @@ def test_each_long_rule_gives_a_complete_comparison_report(arm):
     assert report.equity_points[0].equity == D(10000)
 
 
+def test_a_missing_residual_is_not_explained(monkeypatch):
+    original = baseline_v3.comparison_report
+
+    def unreconciled(*args, **kwargs):
+        return replace(original(*args, **kwargs), reconciliation_residual=None)
+
+    monkeypatch.setattr(baseline_v3, "comparison_report", unreconciled)
+    evidence = run()
+    assert evidence.status is None and evidence.report.reconciliation_residual is None
+    assert evidence.accounting_explained is False
+
+
 def test_native_marks_keep_every_off_hour_mark_labelled():
     evidence = run()
     kinds = {mark.kind for mark in evidence.native}
