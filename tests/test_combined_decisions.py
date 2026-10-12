@@ -226,21 +226,33 @@ def test_unavailable_assessment_without_a_signal_is_a_refused_detection(setup):
         daily=TrendState.UNAVAILABLE,
         daily_closed_ms=None,
     )
+    now = gap.decision_ms
+    # Only what the record carries: costs and the published funding values.
     record = coordinator.record_unavailable(
-        "gap", gap, args["spot"], args["futures"], args["source_refs"]
+        "gap",
+        gap,
+        args["source_refs"],
+        spot_costs=args["spot"].costs,
+        futures_costs=None,
+        funding_rate=D("0.0001"),
+        funding_published_ms=now - 1000,
+        funding_interval_ms=28_800_000,
     )
     event = journal.events[-1]
     assert (event.phase, event.accepted, event.reasons) == ("detected", False, gap.reasons)
     assert dict(event.details) == {"signal": "none"}
-    assert record.first_ms == record.last_ms == gap.decision_ms
+    assert record.first_ms == record.last_ms == now
     assert (record.accepted, record.phase, record.reasons) == (False, "detected", gap.reasons)
     assert (record.owner, record.side, record.size_unavailable) == (None, 0, "no_signal")
-    assert record.spot_fee_rate == D(".001") and record.funding_rate == D(0)
+    assert record.spot_fee_rate == D(".001") and record.futures_fee_rate is None
+    assert (record.funding_rate, record.funding_published_ms, record.funding_interval_ms) == (
+        D("0.0001"),
+        now - 1000,
+        28_800_000,
+    )
     assert engine.reservations == ()
     with pytest.raises(ValueError, match="unavailable"):
-        coordinator.record_unavailable(
-            "ok", args["assessment"], args["spot"], args["futures"], args["source_refs"]
-        )
+        coordinator.record_unavailable("ok", args["assessment"], args["source_refs"])
 
 
 def test_grid_reserves_one_basket_and_returns_three_equal_risk_geometry_levels(setup):

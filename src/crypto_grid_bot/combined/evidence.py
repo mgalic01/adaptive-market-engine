@@ -84,7 +84,9 @@ class DecisionRecord:
     before the decision. ``phase`` is the last funnel phase recorded: the refusing one
     unless accepted. An unavailable assessment with no signal is one record per
     contiguous episode of a symbol, ``first_ms`` to ``last_ms``, in its first hour's
-    context. Evidence only: nothing reads it back into a decision.
+    context; a bundle keeps identical refusals in consecutive hours the same way, while
+    the funnel journal keeps every hour. Evidence only: nothing reads it back into a
+    decision.
     """
 
     record_id: str

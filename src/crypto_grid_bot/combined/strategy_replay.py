@@ -618,12 +618,16 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
                 unbooked_after_exit.append((symbol, record.calc_time_ms, hour))
         return None
 
-    def estimate(symbol: str, hour: int) -> FundingEstimate | None:
+    def latest_funding(symbol: str, hour: int) -> FundingRecord | None:
+        """The latest record published at ``hour``, if any."""
         index = bisect_right(published_ms[symbol], hour)
-        if not index:
+        return published[symbol][index - 1] if index else None
+
+    def estimate(symbol: str, hour: int) -> FundingEstimate | None:
+        latest = latest_funding(symbol, hour)
+        if latest is None:
             return None
-        latest = published[symbol][index - 1]
-        return FundingEstimate(latest.rate, latest.usable_ms, (latest.interval_hours or 0) * HOUR)
+        return FundingEstimate(latest.rate, latest.usable_ms, _interval_ms(latest))
 
     def interval(hour: int) -> str | None:
         """Bar [hour, hour+1h), stamped at its availability hour+1h."""
@@ -877,9 +881,19 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             unsignaled[symbol] = replace(episode, record=replace(episode.record, last_ms=hour))
             return
         end_unsignaled(symbol)
-        spot_inputs, futures_inputs = venue_inputs(symbol, hour)
+        # Only what the record carries: registered costs and the published funding values.
+        market = by_symbol[symbol]
+        funding = None if market.futures is None else latest_funding(symbol, hour)
         record = coordinator.record_unavailable(
-            f"{symbol}:{hour}", assessment, spot_inputs, futures_inputs, refs, groups=groups
+            f"{symbol}:{hour}",
+            assessment,
+            refs,
+            spot_costs=market.spot.costs,
+            futures_costs=None if market.futures is None else market.futures.costs,
+            funding_rate=None if funding is None else funding.rate,
+            funding_published_ms=None if funding is None else funding.usable_ms,
+            funding_interval_ms=None if funding is None else _interval_ms(funding),
+            groups=groups,
         )
         unsignaled[symbol] = TraceUnavailable(assessment, record)
 

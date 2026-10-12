@@ -8,7 +8,7 @@ import pytest
 
 from crypto_grid_bot.backtest.funding import FundingRecord
 from crypto_grid_bot.combined.account import FundingEvent
-from crypto_grid_bot.combined.replay_records import strategy_report
+from crypto_grid_bot.combined.replay_records import evidence_records, strategy_report
 from crypto_grid_bot.combined.report import utc_text
 from crypto_grid_bot.combined.strategy_replay import TraceFill, replay_strategy
 
@@ -1290,12 +1290,32 @@ def test_opportunity_records_keep_every_refusal_reason():
     (episode,) = trace.unavailable
     assert (episode.record.first_ms, episode.record.last_ms) == (hole + 4 * HOUR, hole + 7 * HOUR)
     assert "missing_four_hour_bar" in episode.record.reasons
+    # The bundle keeps one record per run of identical refusals; any change of the
+    # disposition, or an hour with another record, closes a run.
+    spans = [
+        ((r.first_ms - fx.START) // HOUR, (r.last_ms - fx.START) // HOUR, r.reasons[0])
+        for r in evidence_records(trace).decisions
+    ]
+    assert spans == [
+        (0, 8, "short_component_disabled"),
+        (9, 9, "missing_hourly_bar"),
+        (10, 11, "short_component_disabled"),
+        (12, 15, "missing_four_hour_bar"),
+        (16, 47, "short_component_disabled"),
+    ]
+
+
+def journal_of(trace):
+    from crypto_grid_bot.combined.evidence import Evidence
+
+    journal = Evidence()
+    for event in trace.evidence:
+        journal.record(event)
+    return journal
 
 
 def test_replay_evidence_records_round_trip_through_the_bundle(tmp_path):
     from crypto_grid_bot.combined.artifacts import read_bundle, write_bundle
-    from crypto_grid_bot.combined.evidence import Evidence
-    from crypto_grid_bot.combined.replay_records import evidence_records
 
     trace = replay_strategy(fx.run("spot_trend", 2), (fx.market("BTCUSDT", fx.uptrend, 2),))
     records = evidence_records(trace)
@@ -1303,10 +1323,81 @@ def test_replay_evidence_records_round_trip_through_the_bundle(tmp_path):
     decided = trace.decisions[0]
     assert records.intents[0].intent == decided.result.intent
     assert records.intents[0].assessment_id == decided.assessment.assessment_id
-    assert records.decisions[0] == decided.result.record
-    journal = Evidence()
-    for event in trace.evidence:
-        journal.record(event)
-    receipt = write_bundle(tmp_path, "replay", journal, {"synthetic": True}, records=records)
+    assert records.decisions[0] == replace(decided.result.record, source_refs=(records.run.ref,))
+    assert records.run.source_refs == trace.run.source_refs and records.run.issues == ()
+    receipt = write_bundle(
+        tmp_path, "replay", journal_of(trace), {"synthetic": True}, records=records
+    )
     bundle = read_bundle(receipt.directory, expected_receipt_sha256=receipt.receipt_sha256)
     assert bundle.records == records and bundle.events == trace.evidence
+
+
+def test_identical_hourly_refusals_are_one_compact_record(tmp_path):
+    from crypto_grid_bot.combined.artifacts import write_bundle
+
+    # Long registered source refs would dominate if every record repeated them.
+    refs = tuple(f"sha256:{i:064x}" for i in range(20))
+    run = replace(fx.run("spot_trend", 6), source_refs=refs)
+    trace = replay_strategy(run, (fx.market("BTCUSDT", fx.downtrend, 6),))
+    assert trace.failure is None and len(trace.decisions) == 6 * 24
+    assert {(d.result.record.phase, d.result.record.reasons) for d in trace.decisions} == {
+        ("qualified", ("short_component_disabled",))
+    }
+    records = evidence_records(trace)
+    (record,) = records.decisions
+    (assessment,) = records.assessments
+    assert (record.first_ms, record.last_ms) == (fx.START, fx.START + 6 * DAY - HOUR)
+    assert record == replace(
+        trace.decisions[0].result.record, last_ms=record.last_ms, source_refs=(records.run.ref,)
+    )
+    assert assessment.assessment_id == record.assessment_id and records.intents == ()
+    assert assessment.source_refs[0] == records.run.ref and refs[0] not in assessment.source_refs
+    # The funnel journal still keeps every hour.
+    assert len(trace.evidence) == 2 * 6 * 24
+    receipt = write_bundle(tmp_path, "compact", journal_of(trace), {}, records=records)
+    names = (
+        "assessments",
+        "decision_records",
+        "intents",
+        "lifecycles",
+        "recoveries",
+        "symbol_gaps",
+    )
+    lines = [
+        line
+        for name in names
+        for line in (receipt.directory / f"{name}.jsonl").read_bytes().splitlines()
+    ]
+    assert len(lines) == 3  # one assessment, one decision record, one gap table
+    assert max(len(line) for line in lines) < 1500
+    assert len((receipt.directory / "run.jsonl").read_bytes().splitlines()) == 1
+
+
+def test_a_no_signal_record_and_its_gap_table_round_trip(tmp_path):
+    from crypto_grid_bot.combined.artifacts import read_bundle, write_bundle
+
+    base = fx.market("BTCUSDT", fx.downtrend, 4)
+    missing = fx.START + DAY
+    market = replace(base, daily=tuple(bar for bar in base.daily if bar.open_ms != missing))
+    trace = replay_strategy(fx.run("spot_trend", 4), (market,))
+    records = evidence_records(trace)
+    (gap,) = [r for r in records.decisions if r.size_unavailable == "no_signal"]
+    assert (gap.side, gap.owner, gap.executable_quantity) == (0, None, None)
+    assert (gap.first_ms, gap.last_ms) == (missing + DAY, missing + 2 * DAY - HOUR)
+    first = next(a for a in records.assessments if a.assessment_id == gap.assessment_id)
+    assert not first.available and "missing_daily_bar" in first.reasons
+    # The assessment's own gaps were moved to the symbol's table, saved once.
+    (table,) = records.symbol_gaps
+    assert trace.unavailable[0].assessment.daily_gaps == ((missing, missing + DAY),)
+    assert first.daily_gaps == () and table.daily_gaps == ((missing, missing + DAY),)
+    receipt = write_bundle(tmp_path, "gap", journal_of(trace), {}, records=records)
+    assert read_bundle(receipt.directory).records == records
+
+
+def test_an_unmarked_open_lifecycle_stays_marked_in_the_saved_records():
+    trace = replay_strategy(fx.run("spot_trend", 2), (fx.market("BTCUSDT", fx.uptrend, 2),))
+    # Without retained marks the open lifecycle is valued at its last fill price.
+    records = evidence_records(replace(trace, observations=()))
+    (life,) = records.lifecycles
+    assert life.status == "open_marked"
+    assert records.run.issues == (f"unmarked_open_lifecycle:{life.id}",)

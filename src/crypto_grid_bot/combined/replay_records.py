@@ -14,13 +14,13 @@ gapped run stays complete.
 """
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 
 from .account import AccountSnapshot, FundingEvent
-from .artifacts import BundleRecords
-from .evidence import DecisionEvent, IntentRecord
+from .artifacts import BundleRecords, RunRecord, SymbolGaps
+from .evidence import DecisionEvent, DecisionRecord, IntentRecord
 from .execution import _decimal
 from .models import Assessment
 from .observation_policy import POLICY_ID, Boundary, PolicyEvidence
@@ -236,39 +236,136 @@ def recovery_episodes(trace: StrategyTrace) -> tuple[RecoveryEpisode, ...]:
     return tuple(episodes)
 
 
+def _contributions_and_issues(
+    trace: StrategyTrace,
+) -> tuple[tuple[Contribution, ...], tuple[str, ...]]:
+    """The lifecycles and the producer issues a report of this trace lists."""
+    # A failed replay is incomplete evidence by declaration, not only by structure.
+    issues = [f"replay_failure:{trace.failure}"] if trace.failure is not None else []
+    # A grid arm without a coin's minute input cannot judge that coin's grid: incomplete.
+    issues.extend(f"missing_grid_input:{symbol}" for symbol in trace.missing_grid_inputs)
+    contributions = lifecycle_contributions(trace, issues)
+    return contributions, tuple(issues)
+
+
+def _episodes(records: Iterable[DecisionRecord]) -> list[DecisionRecord]:
+    """One record per contiguous run of a symbol's identical refusals, in time order.
+
+    Refusals in consecutive hours with the same phase, reasons, owner, side and
+    missing-size cause are one record from the first hour to the last, in its first
+    hour's context. An approval, a different refusal, an hour without a record (owned,
+    no signal, skipped) or the run's end closes it; an approval is its own record.
+    """
+
+    def disposition(record: DecisionRecord) -> tuple[object, ...]:
+        return (record.phase, record.reasons, record.owner, record.side, record.size_unavailable)
+
+    kept: list[DecisionRecord] = []
+    open_: dict[str, DecisionRecord] = {}
+    for record in sorted(records, key=lambda r: (r.first_ms, r.symbol)):
+        prior = open_.pop(record.symbol, None)
+        if (
+            prior is not None
+            and not record.accepted
+            and record.first_ms == prior.last_ms + HOUR
+            and disposition(record) == disposition(prior)
+        ):
+            open_[record.symbol] = replace(prior, last_ms=record.last_ms)
+            continue
+        if prior is not None:
+            kept.append(prior)
+        if record.accepted:
+            kept.append(record)
+        else:
+            open_[record.symbol] = record
+    kept.extend(open_.values())
+    return sorted(kept, key=lambda r: (r.first_ms, r.symbol))
+
+
 def evidence_records(trace: StrategyTrace) -> BundleRecords:
     """The replay's versioned evidence records for its bundle; never a strategy input.
 
-    One assessment per decision or unavailable episode, each decision's intent with its
-    protective stop, every decision record (episodes included) in time order, and the
-    lifecycles and recovery episodes as the report values them.
+    The funnel journal keeps every hour; these records keep one decision record per
+    approval and per episode of identical refusals (``_episodes``), with the assessment
+    and intent of its first hour. Every record cites the run's sources once, by the run
+    record's digest, plus its own references; each symbol's gaps and invalid opens are
+    one table as of its last assessment. The run record carries the report's producer
+    issues, so an open lifecycle valued at its last fill price stays marked.
     """
-    assessments: dict[str, Assessment] = {}
-    intents: list[IntentRecord] = []
+    contributions, issues = _contributions_and_issues(trace)
+    run = RunRecord(trace.run.source_refs, issues)
+    count = len(trace.run.source_refs)
+
+    def own(refs: tuple[str, ...]) -> tuple[str, ...]:
+        """The run's sources as its digest, then the record's own references."""
+        if refs[:count] != trace.run.source_refs:
+            raise ValueError("record is not tied to the run's sources")
+        return (run.ref, *refs[count:])
+
+    origin: dict[str, tuple[Assessment, IntentRecord | None]] = {}
+    hourly: list[DecisionRecord] = []
     for decision in trace.decisions:
         assessment, result = decision.assessment, decision.result
-        assessments.setdefault(assessment.assessment_id, assessment)
+        if result.record is None:
+            continue
+        intent = None
         if result.intent is not None:
             first = result.events[0]
-            intents.append(
-                IntentRecord(
-                    first.opportunity_id,
-                    assessment.assessment_id,
-                    first.timestamp_ms,
-                    result.intent,
-                    first.source_refs,
-                )
+            intent = IntentRecord(
+                first.opportunity_id,
+                assessment.assessment_id,
+                first.timestamp_ms,
+                result.intent,
+                own(first.source_refs),
             )
+        origin[result.record.record_id] = assessment, intent
+        hourly.append(result.record)
     for episode in trace.unavailable:
-        assessments.setdefault(episode.assessment.assessment_id, episode.assessment)
-    decisions = [d.result.record for d in trace.decisions if d.result.record is not None]
-    decisions.extend(episode.record for episode in trace.unavailable)
+        origin[episode.record.record_id] = episode.assessment, None
+        hourly.append(episode.record)
+    latest: dict[str, Assessment] = {}
+    for assessment, _ in origin.values():
+        prior = latest.get(assessment.symbol)
+        if prior is None or assessment.decision_ms > prior.decision_ms:
+            latest[assessment.symbol] = assessment
+    decisions = _episodes(hourly)
+    assessments: dict[str, Assessment] = {}
+    intents: list[IntentRecord] = []
+    for record in decisions:
+        assessment, intent = origin[record.record_id]
+        assessments.setdefault(
+            assessment.assessment_id,
+            replace(
+                assessment,
+                source_refs=own(assessment.source_refs),
+                hourly_gaps=(),
+                four_hour_gaps=(),
+                daily_gaps=(),
+                invalid_hourly_open_ms=(),
+                invalid_daily_open_ms=(),
+            ),
+        )
+        if intent is not None:
+            intents.append(intent)
     return BundleRecords(
-        tuple(sorted(assessments.values(), key=lambda a: (a.decision_ms, a.symbol))),
+        run,
+        tuple(
+            SymbolGaps(
+                symbol,
+                last.decision_ms,
+                last.hourly_gaps,
+                last.four_hour_gaps,
+                last.daily_gaps,
+                last.invalid_hourly_open_ms,
+                last.invalid_daily_open_ms,
+            )
+            for symbol, last in sorted(latest.items())
+        ),
+        tuple(assessments.values()),
         tuple(intents),
-        tuple(sorted(decisions, key=lambda r: (r.first_ms, r.symbol))),
-        lifecycle_contributions(trace, []),
-        recovery_episodes(trace),
+        tuple(replace(record, source_refs=own(record.source_refs)) for record in decisions),
+        tuple(replace(row, source_refs=own(row.source_refs)) for row in contributions),
+        tuple(replace(row, source_refs=own(row.source_refs)) for row in recovery_episodes(trace)),
     )
 
 
@@ -429,11 +526,7 @@ def strategy_report(
         for boundary, following, capital in zip(boundaries, boundaries[1:], capitals, strict=False)
     )
     policy = PolicyEvidence(POLICY_ID, adapter_pin, tuple(boundaries), trace.run.scenario)
-    # A failed replay is incomplete evidence by declaration, not only by structure.
-    issues = [f"replay_failure:{trace.failure}"] if trace.failure is not None else []
-    # A grid arm without a coin's minute input cannot judge that coin's grid: incomplete.
-    issues.extend(f"missing_grid_input:{symbol}" for symbol in trace.missing_grid_inputs)
-    contributions = lifecycle_contributions(trace, issues)
+    contributions, issues = _contributions_and_issues(trace)
     return analyze(
         trace.run.initial_cash,
         points,
@@ -446,7 +539,7 @@ def strategy_report(
         utilization=utilization,
         capital_observations=tuple(capitals),
         policy_evidence=policy,
-        producer_issues=tuple(issues),
+        producer_issues=issues,
         skipped_hours=skipped_hours,
         disclosures=strategy_disclosures(trace, skipped_hours),
         capital_label=capital_label,

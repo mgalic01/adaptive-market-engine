@@ -8,7 +8,8 @@ protection against a hostile process concurrently replacing filesystem ancestors
 
 A bundle may also carry the versioned evidence records (assessment, intent/protection,
 decision admission/refusal, lifecycle, recovery), one JSON line per record, each line
-``{"record": ..., "schema": "combined-v1"}``: either all five files or none.
+``{"record": ..., "schema": "combined-v1"}``, with the run record and the symbols' gap
+tables they rely on: either all seven files or none.
 """
 
 import hashlib
@@ -31,15 +32,7 @@ _SCHEMA = "combined-artifacts-v1"
 _RECORD_SCHEMA = "combined-v1"
 _ZERO = "0" * 64
 _REQUIRED = {"decisions.jsonl", "metadata.json"}
-# BundleRecords field -> file and record type, in field order.
-_RECORD_FILES: dict[str, tuple[str, type]] = {
-    "assessments": ("assessments.jsonl", Assessment),
-    "intents": ("intents.jsonl", IntentRecord),
-    "decisions": ("decision_records.jsonl", DecisionRecord),
-    "lifecycles": ("lifecycles.jsonl", Contribution),
-    "recoveries": ("recoveries.jsonl", RecoveryEpisode),
-}
-_ALLOWED = _REQUIRED | {"report.html"} | {name for name, _ in _RECORD_FILES.values()}
+_RUN_FILE = "run.jsonl"
 _EVENT_KEYS = {
     "event_id",
     "opportunity_id",
@@ -64,14 +57,91 @@ class BundleReceipt:
 
 
 @dataclass(frozen=True, slots=True)
-class BundleRecords:
-    """Versioned evidence records beside the funnel journal; never a strategy input."""
+class RunRecord:
+    """A run's source-ref inventory and producer issues, written once per bundle.
 
+    Every other record cites the inventory by ``ref``, a digest of it, instead of
+    repeating it. ``issues`` are the ones the run's report lists too (a failed replay,
+    a missing grid input, an open lifecycle valued at its last fill price).
+    """
+
+    source_refs: tuple[str, ...]
+    issues: tuple[str, ...] = ()
+    schema: str = "combined-v1"
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.source_refs, tuple)
+            or not self.source_refs
+            or any(not isinstance(ref, str) or not ref.strip() for ref in self.source_refs)
+            or not isinstance(self.issues, tuple)
+            or any(not isinstance(issue, str) or not issue for issue in self.issues)
+            or self.schema != "combined-v1"
+        ):
+            raise ValueError("a run record needs its nonempty source refs and textual issues")
+
+    @property
+    def ref(self) -> str:
+        return f"run:sha256:{_digest(_canonical(list(self.source_refs)))}"
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolGaps:
+    """A symbol's input gaps and invalid bar opens as its last assessment saw them.
+
+    Saved once per symbol instead of in every assessment. An assessment at time t saw
+    each gap starting before its due boundary, clipped to that boundary, and the
+    invalid opens up to its due bars; those are exactly this table's prefix.
+    """
+
+    symbol: str
+    as_of_ms: int
+    hourly_gaps: tuple[tuple[int, int], ...]
+    four_hour_gaps: tuple[tuple[int, int], ...]
+    daily_gaps: tuple[tuple[int, int], ...]
+    invalid_hourly_open_ms: tuple[int, ...]
+    invalid_daily_open_ms: tuple[int, ...]
+    schema: str = "combined-v1"
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.symbol, str)
+            or not self.symbol
+            or type(self.as_of_ms) is not int
+            or self.as_of_ms < 0
+            or self.schema != "combined-v1"
+        ):
+            raise ValueError("invalid symbol gap table")
+
+
+@dataclass(frozen=True, slots=True)
+class BundleRecords:
+    """Versioned evidence records beside the funnel journal; never a strategy input.
+
+    Assessments carry no gap fields here (their symbol's ``SymbolGaps`` does), and
+    every record cites the run's sources by ``run.ref`` plus its own references.
+    """
+
+    run: RunRecord
+    symbol_gaps: tuple[SymbolGaps, ...] = ()
     assessments: tuple[Assessment, ...] = ()
     intents: tuple[IntentRecord, ...] = ()
     decisions: tuple[DecisionRecord, ...] = ()
     lifecycles: tuple[Contribution, ...] = ()
     recoveries: tuple[RecoveryEpisode, ...] = ()
+
+
+# BundleRecords tuple field -> file and record type, in field order; the run is one line.
+_RECORD_FILES: dict[str, tuple[str, type]] = {
+    "symbol_gaps": ("symbol_gaps.jsonl", SymbolGaps),
+    "assessments": ("assessments.jsonl", Assessment),
+    "intents": ("intents.jsonl", IntentRecord),
+    "decisions": ("decision_records.jsonl", DecisionRecord),
+    "lifecycles": ("lifecycles.jsonl", Contribution),
+    "recoveries": ("recoveries.jsonl", RecoveryEpisode),
+}
+_RECORD_NAMES = {_RUN_FILE} | {name for name, _ in _RECORD_FILES.values()}
+_ALLOWED = _REQUIRED | {"report.html"} | _RECORD_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,11 +370,16 @@ def _record_id(record: object) -> object:
         return record.assessment_id
     if isinstance(record, IntentRecord | DecisionRecord):
         return record.record_id
+    if isinstance(record, SymbolGaps):
+        return record.symbol
     return getattr(record, "id", None)
 
 
 def _check_records(records: BundleRecords, events: tuple[DecisionEvent, ...]) -> None:
-    """Exact types, unique stable IDs, and references to saved assessments and funnels."""
+    """Exact types, unique stable IDs, the run's sources cited once by digest, gaps in
+    their symbol's table, and references to saved assessments and funnels."""
+    if type(records.run) is not RunRecord:
+        raise ValueError("run record required")
     for field, (_, kind) in _RECORD_FILES.items():
         rows = getattr(records, field)
         if not isinstance(rows, tuple) or any(type(row) is not kind for row in rows):
@@ -312,6 +387,30 @@ def _check_records(records: BundleRecords, events: tuple[DecisionEvent, ...]) ->
         ids = [_record_id(row) for row in rows]
         if any(not isinstance(key, str) or not key for key in ids) or len(set(ids)) != len(ids):
             raise ValueError(f"unique stable {field} record IDs required")
+    run_ref, run_sources = records.run.ref, set(records.run.source_refs)
+    cited: tuple[Assessment | IntentRecord | DecisionRecord | Contribution | RecoveryEpisode, ...]
+    cited = (
+        *records.assessments,
+        *records.intents,
+        *records.decisions,
+        *records.lifecycles,
+        *records.recoveries,
+    )
+    for row in cited:
+        if run_ref not in row.source_refs or run_sources & set(row.source_refs):
+            raise ValueError("records cite the run's sources once, by its digest")
+    tables = {row.symbol for row in records.symbol_gaps}
+    for row in records.assessments:
+        if row.symbol not in tables or any(
+            (
+                row.hourly_gaps,
+                row.four_hour_gaps,
+                row.daily_gaps,
+                row.invalid_hourly_open_ms,
+                row.invalid_daily_open_ms,
+            )
+        ):
+            raise ValueError("an assessment's gaps belong in its symbol's gap table")
     assessments = {row.assessment_id for row in records.assessments}
     opportunities = {event.opportunity_id for event in events if event.phase == "detected"}
     linked: tuple[IntentRecord | DecisionRecord, ...] = (*records.intents, *records.decisions)
@@ -364,7 +463,7 @@ def write_bundle(
     Inputs are validated before directory creation. File errors propagate with no cleanup,
     preserving partial evidence. The parent directory must already exist. Report HTML is
     retained byte-for-byte, never rendered, sanitized or treated as trusted executable code.
-    ``records``, when given, are written as all five record files, empty ones included.
+    ``records``, when given, are written as all seven record files, empty ones included.
     """
     _name(invocation_id)
     if type(metadata) is not dict:
@@ -381,6 +480,7 @@ def write_bundle(
         if not isinstance(records, BundleRecords):
             raise ValueError("bundle records required")
         _check_records(records, events)
+        files[_RUN_FILE] = _record_lines((records.run,))
         for field, (name, _) in _RECORD_FILES.items():
             files[name] = _record_lines(getattr(records, field))
     parent = _safe_path(parent_dir)
@@ -435,8 +535,8 @@ def read_bundle(directory: Path, *, expected_receipt_sha256: str | None = None) 
     hashes = manifest["files"]
     if not isinstance(hashes, dict) or not _REQUIRED <= hashes.keys() <= _ALLOWED:
         raise ValueError("invalid artifact file paths")
-    saved = {name for name, _ in _RECORD_FILES.values()} & hashes.keys()
-    if saved and len(saved) != len(_RECORD_FILES):
+    saved = _RECORD_NAMES & hashes.keys()
+    if saved and saved != _RECORD_NAMES:
         raise ValueError("partial evidence record set")
     if set(entries) != set(hashes) | {"receipt.json"}:
         raise ValueError("missing or unexpected bundle file")
@@ -463,15 +563,19 @@ def read_bundle(directory: Path, *, expected_receipt_sha256: str | None = None) 
         raise ValueError("invalid report UTF-8") from exc
     records = None
     if saved:
+        runs = _read_records(files[_RUN_FILE], RunRecord)
+        if len(runs) != 1:
+            raise ValueError("exactly one run record required")
         # Each record's exact type is checked below, not assumed from the file name.
         records = BundleRecords(
+            cast(RunRecord, runs[0]),
             **cast(
                 dict[str, Any],
                 {
                     field: _read_records(files[name], kind)
                     for field, (name, kind) in _RECORD_FILES.items()
                 },
-            )
+            ),
         )
         _check_records(records, events)
     receipt = BundleReceipt(

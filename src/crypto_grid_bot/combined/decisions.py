@@ -131,9 +131,13 @@ def _decision_record(
     last: DecisionEvent,
     qualification: Qualification | None,
     admission: Admission | None,
-    spot: VenueInputs | None,
-    futures: VenueInputs | None,
     exposure: _Exposure,
+    *,
+    spot_costs: Costs | None,
+    futures_costs: Costs | None,
+    funding_rate: Decimal | None,
+    funding_published_ms: int | None,
+    funding_interval_ms: int | None,
 ) -> DecisionRecord:
     """The record of a funnel whose last recorded event is ``last``; no signal without
     a qualification."""
@@ -145,37 +149,38 @@ def _decision_record(
         unavailable = "no_signal"
     else:
         unavailable = "unqualified" if admission is None else "risk_refused"
-    funding = None if futures is None else futures.funding
     return DecisionRecord(
-        record_id,
-        opportunity_id,
-        assessment.assessment_id,
-        assessment.symbol,
-        assessment.decision_ms,
-        assessment.decision_ms,
-        accepted,
-        last.phase,
-        last.reasons,
-        None if qualification is None else qualification.owner,
-        0 if qualification is None else qualification.side,
-        None if spot is None else spot.costs.fee_rate,
-        None if spot is None else spot.costs.slippage_rate,
-        None if spot is None else spot.costs.round_trip_cost_rate,
-        None if futures is None else futures.costs.fee_rate,
-        None if futures is None else futures.costs.slippage_rate,
-        None if futures is None else futures.costs.round_trip_cost_rate,
-        None if funding is None else funding.rate,
-        None if funding is None else funding.published_ms,
-        None if funding is None else funding.interval_ms,
-        quantity,
-        unavailable,
-        exposure.held_quantity,
-        exposure.held_notional,
-        exposure.reserved_quantity,
-        exposure.reserved_notional,
-        exposure.group,
-        exposure.group_gross,
-        last.source_refs,
+        record_id=record_id,
+        opportunity_id=opportunity_id,
+        assessment_id=assessment.assessment_id,
+        symbol=assessment.symbol,
+        first_ms=assessment.decision_ms,
+        last_ms=assessment.decision_ms,
+        accepted=accepted,
+        phase=last.phase,
+        reasons=last.reasons,
+        owner=None if qualification is None else qualification.owner,
+        side=0 if qualification is None else qualification.side,
+        spot_fee_rate=None if spot_costs is None else spot_costs.fee_rate,
+        spot_slippage_rate=None if spot_costs is None else spot_costs.slippage_rate,
+        spot_round_trip_cost_rate=None if spot_costs is None else spot_costs.round_trip_cost_rate,
+        futures_fee_rate=None if futures_costs is None else futures_costs.fee_rate,
+        futures_slippage_rate=None if futures_costs is None else futures_costs.slippage_rate,
+        futures_round_trip_cost_rate=(
+            None if futures_costs is None else futures_costs.round_trip_cost_rate
+        ),
+        funding_rate=funding_rate,
+        funding_published_ms=funding_published_ms,
+        funding_interval_ms=funding_interval_ms,
+        executable_quantity=quantity,
+        size_unavailable=unavailable,
+        held_quantity=exposure.held_quantity,
+        held_notional=exposure.held_notional,
+        reserved_quantity=exposure.reserved_quantity,
+        reserved_notional=exposure.reserved_notional,
+        correlation_group=exposure.group,
+        group_gross_exposure=exposure.group_gross,
+        source_refs=last.source_refs,
     )
 
 
@@ -415,6 +420,7 @@ class DecisionCoordinator:
                             ),
                         ),
                     )
+            funding = None if futures is None else futures.funding
             result = DecisionResult(
                 qualification,
                 plan,
@@ -429,9 +435,12 @@ class DecisionCoordinator:
                     events[-1],
                     qualification,
                     admission,
-                    spot,
-                    futures,
                     exposure,
+                    spot_costs=None if spot is None else spot.costs,
+                    futures_costs=None if futures is None else futures.costs,
+                    funding_rate=None if funding is None else funding.rate,
+                    funding_published_ms=None if funding is None else funding.published_ms,
+                    funding_interval_ms=None if funding is None else funding.interval_ms,
                 ),
             )
             self._seen[opportunity_id] = identity, result
@@ -441,16 +450,21 @@ class DecisionCoordinator:
         self,
         opportunity_id: str,
         assessment: Assessment,
-        spot: VenueInputs | None,
-        futures: VenueInputs | None,
         source_refs: tuple[str, ...],
         *,
+        spot_costs: Costs | None = None,
+        futures_costs: Costs | None = None,
+        funding_rate: Decimal | None = None,
+        funding_published_ms: int | None = None,
+        funding_interval_ms: int | None = None,
         groups: tuple[tuple[str, str], ...] = (),
     ) -> DecisionRecord:
         """Record an unavailable assessment with no signal as a refused detection.
 
         Its reasons are the assessment's. Nothing is qualified, sized or reserved; the
         caller establishes that there is no signal and which hours one episode spans.
+        Only what the record carries is passed (costs and the published funding values),
+        so recording builds no quote or estimate that could refuse the run's inputs.
         """
         if not isinstance(assessment, Assessment) or assessment.available or not assessment.reasons:
             raise ValueError("an unavailable assessment with reasons required")
@@ -476,9 +490,12 @@ class DecisionCoordinator:
                 event,
                 None,
                 None,
-                spot,
-                futures,
                 exposure,
+                spot_costs=spot_costs,
+                futures_costs=futures_costs,
+                funding_rate=funding_rate,
+                funding_published_ms=funding_published_ms,
+                funding_interval_ms=funding_interval_ms,
             )
 
     def execute_opening(

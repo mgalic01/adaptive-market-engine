@@ -9,7 +9,13 @@ from pathlib import Path
 import pytest
 from test_combined_evidence import event
 
-from crypto_grid_bot.combined.artifacts import BundleRecords, read_bundle, write_bundle
+from crypto_grid_bot.combined.artifacts import (
+    BundleRecords,
+    RunRecord,
+    SymbolGaps,
+    read_bundle,
+    write_bundle,
+)
 from crypto_grid_bot.combined.evidence import Evidence
 
 
@@ -262,6 +268,8 @@ def test_dotdot_directory_paths_are_rejected_without_normalizing_away_links(tmp_
 
 
 RECORD_FILES = (
+    "run.jsonl",
+    "symbol_gaps.jsonl",
     "assessments.jsonl",
     "intents.jsonl",
     "decision_records.jsonl",
@@ -289,14 +297,20 @@ def evidence_records():
         Costs(Decimal(".001"), Decimal(".0005"), Decimal(".004")),
         quote=Quote(Decimal(100), now),
     )
-    refs = ("sha256:fixture",)
+    run = RunRecord(("sha256:fixture",))
     journal = Evidence()
     coordinator = DecisionCoordinator(PortfolioEngine(Decimal(10000)), journal)
-    result = coordinator.decide("one", assessment, RoutingContext(), {}, spot, None, refs)
+    result = coordinator.decide(
+        "one", assessment, RoutingContext(), {}, spot, None, run.source_refs
+    )
+    # Records cite the run's sources once, by its digest, then their own references.
+    refs = (run.ref,)
     records = BundleRecords(
-        (assessment,),
+        run,
+        (SymbolGaps("BTCUSDT", now, (), (), (), (), ()),),
+        (replace(assessment, source_refs=(*refs, *assessment.source_refs)),),
         (IntentRecord("one", assessment.assessment_id, now, result.intent, refs),),
-        (result.record,),
+        (replace(result.record, source_refs=refs),),
         (
             Contribution(
                 "lifecycle:BTCUSDT:fill",
@@ -314,7 +328,7 @@ def evidence_records():
                 now + 3_600_000,
                 None,
                 None,
-                refs,
+                (*refs, "fill:entry"),
             ),
         ),
         (RecoveryEpisode(now, None, Decimal(10000), None, "recovery:obs", refs, "obs", None),),
@@ -353,6 +367,10 @@ def rewrite_record(directory, name, change):
         ("assessments.jsonl", lambda row: row.update(schema="combined-v2")),
         ("assessments.jsonl", lambda row: row["record"].update(close=114.4)),
         ("assessments.jsonl", lambda row: row["record"].update(daily="sideways")),
+        ("assessments.jsonl", lambda row: row["record"].update(hourly_gaps=[[0, 3_600_000]])),
+        ("run.jsonl", lambda row: row["record"].update(source_refs=["sha256:other"])),
+        ("run.jsonl", lambda row: row["record"].update(issues=[""])),
+        ("symbol_gaps.jsonl", lambda row: row["record"].update(symbol="ETHUSDT")),
         ("intents.jsonl", lambda row: row["record"].update(extra="field")),
         ("intents.jsonl", lambda row: row["record"].update(assessment_id="assessment:other")),
         ("decision_records.jsonl", lambda row: row["record"].update(accepted=1)),
@@ -367,6 +385,16 @@ def test_valid_hashes_do_not_bypass_record_validation(tmp_path, name, change):
     receipt = write_bundle(tmp_path, "records", journal, {}, records=records)
     rewrite_record(receipt.directory, name, change)
     with pytest.raises(ValueError):
+        read_bundle(receipt.directory)
+
+
+def test_exactly_one_run_record_is_required(tmp_path):
+    journal, records = evidence_records()
+    receipt = write_bundle(tmp_path, "runs", journal, {}, records=records)
+    path = receipt.directory / "run.jsonl"
+    path.write_bytes(path.read_bytes() * 2)
+    rehash(receipt.directory, "run.jsonl")
+    with pytest.raises(ValueError, match="run record"):
         read_bundle(receipt.directory)
 
 
@@ -391,4 +419,17 @@ def test_records_must_reference_their_assessment_and_funnel_before_writing(tmp_p
     duplicated = replace(records, lifecycles=records.lifecycles * 2)
     with pytest.raises(ValueError):
         write_bundle(tmp_path, "duplicate", journal, {}, records=duplicated)
+    # The run's sources are cited by digest, never repeated in a record.
+    repeated = replace(
+        records,
+        recoveries=(replace(records.recoveries[0], source_refs=records.run.source_refs),),
+    )
+    with pytest.raises(ValueError, match="digest"):
+        write_bundle(tmp_path, "repeated", journal, {}, records=repeated)
+    # An assessment's gaps live in its symbol's gap table.
+    gapped = replace(records.assessments[0], daily_gaps=((0, 86_400_000),))
+    with pytest.raises(ValueError, match="gap table"):
+        write_bundle(
+            tmp_path, "gapped", journal, {}, records=replace(records, assessments=(gapped,))
+        )
     assert list(tmp_path.iterdir()) == []
