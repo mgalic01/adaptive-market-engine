@@ -127,3 +127,28 @@ decided the two open questions on that basis:
   `leverage_not_restored` arise from masked or untradable coins, and frozen V3 calls them
   terminal invalid-run outcomes. They make that comparison incomplete, so V3.1 can never
   pass by beating a baseline that a data artefact stopped.
+
+## Owner decisions on the test plan, 2026-10-12
+
+Asked by Claude after the second conformance pass, from
+`docs/superpowers/specs/2026-10-11-v3-1-registration-proposal.md`; the owner chose:
+
+- **Period.** The owner asked whether the test could start in 2017. Claude explained
+  three limits:
+  - Binance futures began in September 2019, and on most of the ten coins in 2020.
+  - SOL, DOGE and LINK were not listed on Binance in 2017.
+  - The V3 selector baseline has picks only from 2021-Q3.
+
+  The owner then chose **pass/fail W1 = 2021-07-01 to 2025-01-01 on ten coins**, plus a
+  **reported-only extra window W0**. It starts 2020-03-01, on the eight coins with futures
+  then (BTC, ETH, BNB, XRP, ADA, LINK, LTC, TRX), and runs only the `combined` arm, with no
+  acceptance. It covers the March 2020 crash.
+- **FX pin ("Official end-2024 rate").** The ECB euro reference rate for 2024-12-31 is
+  copied from the ECB's publication at registration, with USDT taken at par.
+- **V1 hurdles ("All 9 variants").** V3.1 must beat every spec-v1 grid variant, pinned as
+  `a b c e f g cg h ch`, each in both path modes.
+- **Costs ("Binance standard + double-cost check").** Spot fee 0.10% and futures fee
+  0.05%, with 0.05% slippage each, and every run repeated at double costs.
+- **Data for W0.** Spot one-minute bars for ADA, BNB, LINK, LTC and TRX, 2020-02 to
+  2021-05, are fetched through a second owner-approved Bob task (80 archives). BTC, ETH
+  and XRP already have minute bars from 2019-01.
