@@ -280,6 +280,10 @@ class Report:
     capital_label: str | None = None
     # The window's three deepest falls from the lifetime peak, deepest first.
     drawdown_episodes: tuple[DrawdownEpisode, ...] = ()
+    # Maximum observed gross leverage: the highest gross notional over equity at any
+    # engine mark, exact. None when the producer has no engine marks, or a mark held
+    # exposure without positive equity (unbounded). Information only, like disclosures.
+    max_gross_leverage: Fraction | None = None
 
 
 # Every report whose run applies today's saved exchange filters to historical data says so
@@ -794,6 +798,7 @@ def analyze(
     skipped_hours: tuple[int, ...] = (),
     disclosures: tuple[str, ...] = (),
     capital_label: str | None = None,
+    max_gross_leverage: Fraction | None = None,
 ) -> Report:
     """Summarize observations without counterfactual claims or silent deduplication.
 
@@ -809,8 +814,9 @@ def analyze(
     reporting conventions only, never strategy inputs or acceptance-rule changes.
     ``skipped_hours`` are the registered window's skipped hours; a daily return may
     span only a skipped midnight. Acceptance checks them against the registration.
-    ``disclosures`` and ``capital_label`` are carried unchanged and judge nothing; the
-    label must agree with the initial equity, or the report is malformed.
+    ``disclosures``, ``capital_label`` and ``max_gross_leverage`` are carried unchanged
+    and judge nothing; the label must agree with the initial equity, or the report is
+    malformed.
     """
     opening = _number(initial)
     if opening <= 0 or type(opportunity_gap_ms) is not int or opportunity_gap_ms <= 0:
@@ -836,6 +842,10 @@ def analyze(
         not isinstance(capital_label, str) or not _capital_label_matches(capital_label, opening)
     ):
         raise ValueError("capital label must name a capital scenario matching the initial equity")
+    if max_gross_leverage is not None and (
+        type(max_gross_leverage) is not Fraction or max_gross_leverage < 0
+    ):
+        raise ValueError("maximum gross leverage must be a nonnegative exact Fraction")
     issues: list[str] = list(producer_issues)
     for kind, records in (
         ("equity", points),
@@ -1090,4 +1100,5 @@ def analyze(
         disclosures,
         capital_label,
         _drawdown_episodes(initial, points),
+        max_gross_leverage,
     )

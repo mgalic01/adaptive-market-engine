@@ -10,7 +10,9 @@ from its own retained marks only. Source references are retained, not authentica
 
 Every report discloses the V3.1 rulings it ran under (those specific to some arms only
 on those arms) and what the trace recorded about its inputs (data gaps, stale marks,
-off-hour or irregular funding, withheld grid buys, worse fills). Disclosures are
+off-hour or irregular funding, withheld grid buys, worse fills). It also carries the
+maximum observed gross leverage over every engine mark and discloses any mark above the
+design's absolute 2x cap (the 1.6x trim still governs trading). Disclosures are
 information, never a decision input. A gap hour is skipped for every arm alike only
 when the registration lists it (owner, 2026-10-11); a gap hour it does not list is a
 producer issue, so that run is incomplete.
@@ -18,7 +20,7 @@ producer issue, so that run is incomplete.
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
-from decimal import Decimal
+from decimal import Context, Decimal, localcontext
 from fractions import Fraction
 
 from .account import AccountSnapshot, FillEvent, FundingEvent
@@ -47,6 +49,8 @@ from .strategy_replay import NativeObservation, StrategyTrace, TraceFill
 
 HOUR = 3_600_000
 DAY = 86_400_000
+# Design package D: "portfolio gross<=1.6x, absolute cap2x".
+_ABSOLUTE_GROSS_CAP = Fraction(2)
 # Rulings every V3.1 replay runs under (controller, 2026-10-11), disclosed on every report.
 V3_1_RULINGS = (
     SAVED_FILTERS_DISCLOSURE,
@@ -557,6 +561,35 @@ def evidence_records(trace: StrategyTrace, *, skipped_hours: tuple[int, ...] = (
     )
 
 
+def gross_leverage(trace: StrategyTrace) -> tuple[Fraction | None, int | None]:
+    """The maximum observed gross leverage, and the first mark above the absolute cap.
+
+    Gross leverage at a mark is every position's absolute quantity times its mark over
+    the account's equity, exact, at every engine mark (frame, path and terminal). A mark
+    with exposure and no positive equity has unbounded leverage: the maximum is then
+    None, and that mark is above the cap.
+    """
+    highest: Fraction | None = Fraction(0)
+    first: int | None = None
+    for observation in trace.observations:
+        account = observation.snapshot.account
+        gross = sum(
+            (abs(Fraction(p.quantity)) * Fraction(p.mark) for p in account.positions),
+            Fraction(0),
+        )
+        if account.equity <= 0:
+            if gross:
+                highest = None
+                first = observation.timestamp_ms if first is None else first
+            continue
+        leverage = gross / Fraction(account.equity)
+        if highest is not None:
+            highest = max(highest, leverage)
+        if first is None and leverage > _ABSOLUTE_GROSS_CAP:
+            first = observation.timestamp_ms
+    return highest, first
+
+
 def _by_symbol(rows: Iterable[tuple[str, int]]) -> list[tuple[str, list[int]]]:
     """Times grouped per symbol, symbols in order."""
     grouped: dict[str, list[int]] = {}
@@ -575,6 +608,10 @@ def strategy_disclosures(
     fixing mark also gives the oldest mark and the largest staleness.
     """
     notes = [*arm_rulings(trace.run.arm), *skipped_hours_disclosures(skipped_hours)]
+    highest, above = gross_leverage(trace)
+    if above is not None:
+        shown = "unbounded" if highest is None else str(_ratio(highest))
+        notes.append(f"gross_above_absolute_cap:{shown}:{above}")
     notes.extend(
         f"data_gap:{symbol}:{venue}: {span_text('hours', hours)}"
         for symbol, venue, hours in trace.data_gaps
@@ -633,6 +670,12 @@ def strategy_disclosures(
             f"negative_extra_cost={_decimal(sum(cheaper, Fraction(0)))}"
         )
     return tuple(notes)
+
+
+def _ratio(value: Fraction) -> Decimal:
+    """A ratio as reports render one: 60 significant digits."""
+    with localcontext(Context(prec=60)):
+        return Decimal(value.numerator) / Decimal(value.denominator)
 
 
 def _duration(ms: int) -> str:
@@ -732,4 +775,5 @@ def strategy_report(
         skipped_hours=skipped_hours,
         disclosures=strategy_disclosures(trace, skipped_hours),
         capital_label=capital_label,
+        max_gross_leverage=gross_leverage(trace)[0] if trace.observations else None,
     )

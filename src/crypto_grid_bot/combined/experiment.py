@@ -591,6 +591,7 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
             producer_issues=report.producer_issues,
             disclosures=report.disclosures,
             capital_label=report.capital_label,
+            max_gross_leverage=report.max_gross_leverage,
         )
         if report != rebuilt or type(report.complete) is not bool:
             return None

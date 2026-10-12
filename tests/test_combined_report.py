@@ -1,5 +1,6 @@
 from dataclasses import replace
 from decimal import Decimal, localcontext
+from fractions import Fraction
 
 import pytest
 
@@ -1237,6 +1238,27 @@ def test_disclosures_and_the_capital_label_are_carried_and_never_change_the_judg
 def test_malformed_disclosures_or_capital_label_are_refused(change):
     with pytest.raises(ValueError):
         analyze(D(100), curve(), contributions(), (), (), ("artifact-pin",), **change)
+
+
+def test_the_maximum_gross_leverage_is_carried_exactly_and_never_changes_the_judgement():
+    plain = analyze(D(110), curve(), contributions(), (), (), ("artifact-pin",))
+    levered = analyze(
+        D(110),
+        curve(),
+        contributions(),
+        (),
+        (),
+        ("artifact-pin",),
+        max_gross_leverage=Fraction(48, 17),
+    )
+    assert levered.max_gross_leverage == Fraction(48, 17) and plain.max_gross_leverage is None
+    assert replace(levered, max_gross_leverage=None) == plain
+
+
+@pytest.mark.parametrize("value", [D("2.5"), 2, Fraction(-1, 2), "2"])
+def test_a_malformed_maximum_gross_leverage_is_refused(value):
+    with pytest.raises(ValueError, match="gross leverage"):
+        analyze(D(100), curve(), contributions(), (), (), ("pin",), max_gross_leverage=value)
 
 
 def test_disclosure_times_are_utc_text_with_milliseconds_only_when_present():

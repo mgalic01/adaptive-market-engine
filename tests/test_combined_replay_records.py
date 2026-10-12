@@ -4,15 +4,23 @@ The traces carry recovery states produced by the real controller from scripted e
 so the records are judged against the transitions the engine can actually make.
 """
 
+from dataclasses import replace
+from decimal import Context, localcontext
 from decimal import Decimal as D
 from fractions import Fraction
 
+import combined_market_fixtures as fx
+from test_combined_engine import RULE, candidate
+from test_combined_risk import intent
+
 from crypto_grid_bot.combined.account import AccountSnapshot, FillEvent, PositionSnapshot
-from crypto_grid_bot.combined.engine import EngineSnapshot
+from crypto_grid_bot.combined.engine import EngineSnapshot, PortfolioEngine, Quote
 from crypto_grid_bot.combined.recovery import Recovery, RecoveryState
 from crypto_grid_bot.combined.replay_records import (
+    gross_leverage,
     lifecycle_contributions,
     recovery_episodes,
+    strategy_disclosures,
     strategy_report,
 )
 from crypto_grid_bot.combined.report import EquityPoint, analyze
@@ -309,3 +317,86 @@ def test_a_replayed_stop_trade_reports_its_excursion_from_its_own_marks():
     peak = max(D(0), entry.quantity * (max(marks[first:last]) - entry.price))
     assert row.mfe == peak > 0
     assert Fraction(row.giveback) == Fraction(row.mfe) - max(Fraction(row.gross_pnl), 0) > 0
+
+
+# Maximum observed gross leverage: gross notional over equity at every engine mark.
+
+SHORTS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT", "DOTUSDT")
+
+
+def gapped_shorts():
+    """Reviewer probe: eight futures shorts of 20 at 100 (1.6x gross), then a 20% gap up.
+
+    The two engine marks: right after the entries, and the gap's opening valuation, the
+    mark a path records before it drains anything.
+    """
+    engine = PortfolioEngine(D(10000))
+    groups = tuple((symbol, symbol) for symbol in SHORTS)
+    rules = {symbol: RULE for symbol in SHORTS}
+    quotes = {symbol: Quote(D(100), 0) for symbol in SHORTS}
+    entries = []
+    for symbol in SHORTS:
+        order = intent(
+            symbol,
+            symbol,
+            owner="futures_trend",
+            venue="futures",
+            side=-1,
+            stop=D(101),
+            requested_quantity=D(20),
+            fee_rate=D(0),
+            slippage_rate=D(0),
+            funding_rate=D(0),
+            funding_age_ms=0,
+            funding_interval_ms=28_800_000,
+            correlation_group=symbol,
+        )
+        assert engine.submit(order, candidate(order), quotes, rules, groups).quantity == 20
+        sold = FillEvent(symbol, 0, symbol, order.owner, order.venue, -1, D(20), D(100), D(0))
+        entries.append((order.intent_id, sold))
+    entered = engine.settle("entries", 0, quotes, rules, increases=tuple(entries))
+    gap = engine.observe(HOUR, {symbol: Quote(D(120), HOUR) for symbol in SHORTS}, rules)
+    return traded(
+        [
+            NativeObservation(0, "obs-0", "frame", "settled", "entries", entered),
+            NativeObservation(HOUR, "obs-1", "path", "open", "gap", gap),
+        ],
+        (),
+    )
+
+
+def test_the_maximum_gross_leverage_counts_a_gap_mark_before_any_drain():
+    # 8 * 20 * 120 = 19200 of gross against 10000 - 8 * 20 * 20 = 6800 of equity: 48/17.
+    assert gross_leverage(gapped_shorts()) == (Fraction(48, 17), HOUR)
+
+
+def test_gross_above_the_absolute_cap_is_disclosed_with_its_first_mark():
+    notes = [n for n in strategy_disclosures(gapped_shorts()) if n.startswith("gross_above")]
+    with localcontext(Context(prec=60)):
+        shown = D(48) / D(17)  # a ratio as reports render one: 60 significant digits
+    assert notes == [f"gross_above_absolute_cap:{shown}:{HOUR}"]
+
+
+def test_a_mark_with_exposure_and_no_positive_equity_has_unbounded_leverage():
+    healthy, later = held(0, {"BTCUSDT": (1, 100)}), held(1, {"BTCUSDT": (1, 100)})
+    account = replace(later.snapshot.account, free_cash=D(-100), equity=D(0))
+    broke = replace(later, snapshot=replace(later.snapshot, account=account))
+    trace = traded([healthy, broke], ())
+    assert gross_leverage(trace) == (None, HOUR)
+    assert f"gross_above_absolute_cap:unbounded:{HOUR}" in strategy_disclosures(trace)
+
+
+def test_a_replay_report_carries_its_maximum_gross_leverage_over_every_mark():
+    trace = replay_strategy(fx.run("spot_trend", 2), (fx.market("BTCUSDT", fx.uptrend, 2),))
+    report = strategy_report(trace, adapter_pin="0" * 64)
+    expected = max(
+        sum(
+            (abs(Fraction(p.quantity)) * Fraction(p.mark) for p in o.snapshot.account.positions),
+            Fraction(0),
+        )
+        / Fraction(o.snapshot.account.equity)
+        for o in trace.observations
+    )
+    assert report.max_gross_leverage == expected and 0 < expected <= Fraction(8, 5)
+    assert not [n for n in report.disclosures if n.startswith("gross_above_absolute_cap")]
+    assert report.complete, report.issues
