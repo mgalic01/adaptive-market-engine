@@ -5,7 +5,8 @@ lists every mark at its timestamp in booking order and selects the approved
 settlement state: the opening's first mark (before execution costs), otherwise the
 last. Lifecycles attribute every booked fill and funding payment, so their sum
 reconciles exactly with the equity change; open lifecycles are marked at the last
-observation's marks. Source references are retained, not authenticated.
+observation's marks. Each lifecycle's favorable excursion and profit surrendered come
+from its own retained marks only. Source references are retained, not authenticated.
 
 Every report discloses the V3.1 rulings it ran under and what the trace recorded
 about its inputs (data gaps, stale marks, off-hour or irregular funding, withheld
@@ -18,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 
-from .account import AccountSnapshot, FundingEvent
+from .account import AccountSnapshot, FillEvent, FundingEvent
 from .artifacts import BundleRecords, RunRecord, SymbolGaps
 from .evidence import DecisionEvent, DecisionRecord, IntentRecord
 from .execution import _decimal
@@ -79,6 +80,97 @@ def _capital(account: AccountSnapshot) -> tuple[Decimal, Decimal]:
     return _decimal(spot), _decimal(collateral)
 
 
+def _lifecycle_id(symbol: str, entry_fill_id: str) -> str:
+    return f"lifecycle:{symbol}:{entry_fill_id}"
+
+
+@dataclass
+class _Walk:
+    """One symbol's lifecycle state as the retained marks show it."""
+
+    seen: Decimal = Decimal(0)  # position quantity at the last observation
+    consumed: int = 0  # fills the marks have shown so far
+    quantity: Fraction = Fraction(0)
+    cash: Fraction = Fraction(0)
+    lifecycle: str | None = None
+    peak: Fraction | None = None
+    best: Decimal | None = None  # most favorable mark since the lifecycle's last fill
+    last: Decimal | None = None  # the latest mark
+    broken: bool = False
+
+    def close_segment(self) -> None:
+        if self.best is not None:
+            value = self.cash + self.quantity * Fraction(self.best)
+            self.peak = value if self.peak is None else max(self.peak, value)
+
+
+def _excursions(trace: StrategyTrace) -> dict[str, tuple[Fraction, Fraction]]:
+    """Each lifecycle's peak and last marked gross P&L over its own retained marks.
+
+    A lifecycle's marks run from the observation holding its entry fill to the one
+    holding its exit fill (the last observation while open): boundary opening quotes,
+    the scenario's intrabar OHLC vertices (valuation marks, not observed ticks) and the
+    terminal close. Its marked gross P&L is its fill cash plus quantity times the
+    position's mark, before fees and funding. Every fill is followed by its own
+    settlement mark, so a symbol's position changes by exactly one fill between two
+    observations. A lifecycle with a fill no retained mark shows (only after a failed
+    run), or a position that disagrees with its fills, gets no entry: unknown.
+    """
+    fills: dict[str, list[FillEvent]] = {}
+    for event in trace.events:
+        if isinstance(event, TraceFill):
+            fills.setdefault(event.fill.symbol, []).append(event.fill)
+    walks = {symbol: _Walk() for symbol in fills}
+    found: dict[str, tuple[Fraction, Fraction]] = {}
+    for observation in trace.observations:
+        positions = {p.symbol: p for p in observation.snapshot.account.positions}
+        for symbol, walk in walks.items():
+            if walk.broken:
+                continue
+            position = positions.get(symbol)
+            quantity = position.quantity if position is not None else Decimal(0)
+            if quantity == walk.seen:
+                # No fill here: an open lifecycle's mark only moves its best mark.
+                if walk.lifecycle is not None and position is not None:
+                    mark, best = position.mark, walk.best
+                    better = best is None or (mark > best if walk.quantity > 0 else mark < best)
+                    walk.best = mark if better else best
+                    walk.last = mark
+                continue
+            if walk.consumed == len(fills[symbol]):
+                walk.broken = True  # a position change without a booked fill
+                continue
+            walk.close_segment()
+            fill = fills[symbol][walk.consumed]
+            walk.consumed += 1
+            walk.seen = quantity
+            if walk.quantity == 0:
+                walk.lifecycle, walk.peak, walk.cash = (
+                    _lifecycle_id(symbol, fill.event_id),
+                    None,
+                    Fraction(0),
+                )
+            size, price = Fraction(fill.quantity), Fraction(fill.price)
+            walk.quantity += fill.side * size
+            walk.cash -= fill.side * size * price
+            if walk.quantity != Fraction(quantity) or walk.lifecycle is None:
+                walk.broken = True
+                continue
+            if walk.quantity == 0:
+                peak = walk.cash if walk.peak is None else max(walk.peak, walk.cash)
+                found[walk.lifecycle] = (peak, walk.cash)
+                walk.lifecycle, walk.best, walk.last = None, None, None
+            elif position is not None:
+                walk.best = walk.last = position.mark
+    for symbol, walk in walks.items():
+        if walk.broken or walk.lifecycle is None or walk.consumed != len(fills[symbol]):
+            continue
+        walk.close_segment()
+        if walk.peak is not None and walk.last is not None:
+            found[walk.lifecycle] = (walk.peak, walk.cash + walk.quantity * Fraction(walk.last))
+    return found
+
+
 def lifecycle_contributions(
     trace: StrategyTrace, issues: list[str] | None = None
 ) -> tuple[Contribution, ...]:
@@ -86,12 +178,23 @@ def lifecycle_contributions(
 
     An open lifecycle with no retained mark (only after a failed run) is valued at
     its last fill price and named in ``issues``, never silently or by a crash.
+    ``mfe`` is the lifecycle's peak marked gross P&L over its own marks, never below
+    zero; ``giveback`` (profit surrendered) is how much of that peak its gross P&L at
+    exit, or at the last mark while open, gave back: at most the peak. Both are unknown
+    when the marks cannot show every fill of the lifecycle (``_excursions``).
     """
     refs = trace.run.source_refs
     open_: dict[str, _Lifecycle] = {}
     rows: list[Contribution] = []
+    excursions = _excursions(trace)
 
     def emit(life: _Lifecycle, gross: Fraction, exit_ms: int | None) -> None:
+        mfe: Decimal | None = None
+        giveback: Decimal | None = None
+        walked = excursions.get(life.id)
+        if walked is not None and walked[1] == gross:
+            peak = max(walked[0], Fraction(0))
+            mfe, giveback = _decimal(peak), _decimal(peak - max(gross, Fraction(0)))
         rows.append(
             Contribution(
                 life.id,
@@ -107,8 +210,8 @@ def lifecycle_contributions(
                 life.entry_ms,
                 "closed" if exit_ms is not None else "open_marked",
                 exit_ms,
-                None,
-                None,
+                mfe,
+                giveback,
                 (*life.refs, *(f"fill:{fill}" for fill in life.fills)),
             )
         )
@@ -127,7 +230,7 @@ def lifecycle_contributions(
             if not event.increase:
                 raise ValueError("reduction booked without an open lifecycle")
             life = _Lifecycle(
-                f"lifecycle:{fill.symbol}:{fill.event_id}",
+                _lifecycle_id(fill.symbol, fill.event_id),
                 fill.owner,
                 fill.symbol,
                 "long" if fill.side == 1 else "short",

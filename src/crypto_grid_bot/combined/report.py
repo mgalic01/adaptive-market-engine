@@ -133,6 +133,22 @@ class BadInterval:
 
 
 @dataclass(frozen=True, slots=True)
+class DrawdownEpisode:
+    """A fall from the lifetime peak to its lowest mark before equity regains the peak.
+
+    ``recovery_ms`` is the first mark back at or above the peak; None when the window
+    ended first. ``depth`` is (peak - trough) / peak.
+    """
+
+    peak_ms: int
+    peak_equity: Decimal
+    trough_ms: int
+    trough_equity: Decimal
+    recovery_ms: int | None
+    depth: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class OpportunityEpisode:
     asset: str
     direction: str
@@ -262,6 +278,8 @@ class Report:
     disclosures: tuple[str, ...] = ()
     # The registered capital scenario (``experiment.capital_label``); None when unstated.
     capital_label: str | None = None
+    # The window's three deepest falls from the lifetime peak, deepest first.
+    drawdown_episodes: tuple[DrawdownEpisode, ...] = ()
 
 
 # Every report whose run applies today's saved exchange filters to historical data says so
@@ -388,6 +406,50 @@ def _dimensions(rows: tuple[Contribution, ...], field: str) -> tuple[DimensionTo
             )
         )
     return tuple(totals)
+
+
+def _drawdown_episodes(
+    initial: Decimal, points: tuple[EquityPoint, ...]
+) -> tuple[DrawdownEpisode, ...]:
+    """The three deepest falls from the lifetime peak, deepest first (earlier on a tie).
+
+    The opening capital is the first peak, at the first mark's time; a mark equal to the
+    peak regains it and becomes the peak a later fall starts from.
+    """
+    if not points:
+        return ()
+    peak, peak_equity, peak_ms = Fraction(initial), initial, points[0].timestamp_ms
+    trough: tuple[Fraction, Decimal, int] | None = None
+    found: list[tuple[Fraction, DrawdownEpisode]] = []
+
+    def close(recovery_ms: int | None) -> None:
+        if trough is not None:
+            depth = (peak - trough[0]) / peak
+            found.append(
+                (
+                    depth,
+                    DrawdownEpisode(
+                        peak_ms,
+                        peak_equity,
+                        trough[2],
+                        trough[1],
+                        recovery_ms,
+                        _decimal(depth, ratio=True),
+                    ),
+                )
+            )
+
+    for point in points:
+        value = Fraction(point.equity)
+        if value >= peak:
+            close(point.timestamp_ms)
+            trough = None
+            peak, peak_equity, peak_ms = value, point.equity, point.timestamp_ms
+        elif trough is None or value < trough[0]:
+            trough = (value, point.equity, point.timestamp_ms)
+    close(None)
+    ranked = sorted(found, key=lambda pair: -pair[0])
+    return tuple(episode for _, episode in ranked[:3])
 
 
 def _opportunity_episodes(
@@ -736,7 +798,8 @@ def analyze(
     """Summarize observations without counterfactual claims or silent deduplication.
 
     MFE/giveback are supplied quote-currency observations, never derived from net
-    PnL. Bad intervals are adjacent observed marks, NOT calendar returns. Recovery
+    PnL. Bad intervals are adjacent observed marks, NOT calendar returns; drawdown
+    episodes are the three deepest falls from the lifetime peak. Recovery
     change is end minus start equity under the no-external-transfer account model,
     NOT an incremental causal benefit. Ratios use Decimal precision60; money sums
     and the reconciliation residual remain exact. Optional unknown fields do not
@@ -1026,4 +1089,5 @@ def analyze(
         skipped_hours,
         disclosures,
         capital_label,
+        _drawdown_episodes(initial, points),
     )

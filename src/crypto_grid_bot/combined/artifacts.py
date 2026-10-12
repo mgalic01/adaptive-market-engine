@@ -9,7 +9,9 @@ protection against a hostile process concurrently replacing filesystem ancestors
 A bundle may also carry the versioned evidence records (assessment, intent/protection,
 decision admission/refusal, lifecycle, recovery), one JSON line per record, each line
 ``{"record": ..., "schema": "combined-v1"}``, with the run record and the symbols' gap
-tables they rely on: either all seven files or none.
+tables they rely on: either all seven files or none. A report whose exact JSON evidence
+is too large to embed in its page carries that JSON as ``report.json``, hashed like
+every other file.
 """
 
 import hashlib
@@ -33,6 +35,8 @@ _RECORD_SCHEMA = "combined-v1"
 _ZERO = "0" * 64
 _REQUIRED = {"decisions.jsonl", "metadata.json"}
 _RUN_FILE = "run.jsonl"
+# The exact JSON evidence of a report too large to embed in its page.
+REPORT_JSON = "report.json"
 _EVENT_KEYS = {
     "event_id",
     "opportunity_id",
@@ -141,7 +145,7 @@ _RECORD_FILES: dict[str, tuple[str, type]] = {
     "recoveries": ("recoveries.jsonl", RecoveryEpisode),
 }
 _RECORD_NAMES = {_RUN_FILE} | {name for name, _ in _RECORD_FILES.values()}
-_ALLOWED = _REQUIRED | {"report.html"} | _RECORD_NAMES
+_ALLOWED = _REQUIRED | {"report.html", REPORT_JSON} | _RECORD_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +156,7 @@ class VerifiedBundle:
     source_refs: tuple[str, ...]
     report_html: str | None
     records: BundleRecords | None = None
+    report_json: str | None = None
 
 
 def _json_value(value: object, depth: int = 0) -> None:
@@ -457,6 +462,7 @@ def write_bundle(
     report_html: str | None = None,
     *,
     records: BundleRecords | None = None,
+    report_json: str | None = None,
 ) -> BundleReceipt:
     """Persist a new invocation once. Financial Decimal metadata must be string encoded.
 
@@ -464,6 +470,8 @@ def write_bundle(
     preserving partial evidence. The parent directory must already exist. Report HTML is
     retained byte-for-byte, never rendered, sanitized or treated as trusted executable code.
     ``records``, when given, are written as all seven record files, empty ones included.
+    ``report_json``, when given, is the report's exact JSON evidence, saved as
+    ``report.json``; it must be an exact JSON object (no floats, no duplicate keys).
     """
     _name(invocation_id)
     if type(metadata) is not dict:
@@ -471,11 +479,18 @@ def write_bundle(
     metadata_raw = _canonical(metadata)
     if report_html is not None and type(report_html) is not str:
         raise ValueError("report HTML must be a string")
+    if report_json is not None and type(report_json) is not str:
+        raise ValueError("report JSON must be a string")
+    report_json_raw = None if report_json is None else report_json.encode("utf-8")
+    if report_json_raw is not None:
+        _parse(report_json_raw)
     journal = evidence.json_lines().encode("utf-8")
     events, final_hash = _events(journal)
     files = {"decisions.jsonl": journal, "metadata.json": metadata_raw}
     if report_html is not None:
         files["report.html"] = report_html.encode("utf-8")
+    if report_json_raw is not None:
+        files[REPORT_JSON] = report_json_raw
     if records is not None:
         if not isinstance(records, BundleRecords):
             raise ValueError("bundle records required")
@@ -561,6 +576,10 @@ def read_bundle(directory: Path, *, expected_receipt_sha256: str | None = None) 
         report = files["report.html"].decode("utf-8") if "report.html" in files else None
     except UnicodeError as exc:
         raise ValueError("invalid report UTF-8") from exc
+    report_json = None
+    if REPORT_JSON in files:
+        _parse(files[REPORT_JSON])
+        report_json = files[REPORT_JSON].decode("utf-8")
     records = None
     if saved:
         runs = _read_records(files[_RUN_FILE], RunRecord)
@@ -585,4 +604,6 @@ def read_bundle(directory: Path, *, expected_receipt_sha256: str | None = None) 
         len(events),
         final_hash,
     )
-    return VerifiedBundle(receipt, events, _canonical(metadata).decode(), sources, report, records)
+    return VerifiedBundle(
+        receipt, events, _canonical(metadata).decode(), sources, report, records, report_json
+    )

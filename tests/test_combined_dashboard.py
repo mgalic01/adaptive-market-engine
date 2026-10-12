@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
 from decimal import Decimal
+from fractions import Fraction
 from html.parser import HTMLParser
 from urllib.parse import unquote
 
@@ -337,3 +338,177 @@ def test_disclosures_and_the_capital_label_are_rendered_escaped() -> None:
 def test_a_report_without_disclosures_says_so() -> None:
     section = " ".join(Elements(disclosure_section(render_report(report()))).text)
     assert "None recorded" in section and "not stated" in section
+
+
+def section(html: str, heading: str) -> str:
+    return html.split(f"<h2>{heading}</h2>", 1)[1].split("</section>", 1)[0]
+
+
+def table_rows(html: str, columns: int) -> list[tuple[str, ...]]:
+    """The body rows of the first table in ``html``, as cell texts."""
+    table = html.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+    cells = [text for text in Elements(table).text if text.strip()]
+    return [tuple(cells[i : i + columns]) for i in range(0, len(cells), columns)]
+
+
+def compared():
+    """Acceptance over the synthetic matrix, V2 beating the full arm on return."""
+    from test_combined_experiment import V2, change, outcomes, registration
+
+    from crypto_grid_bot.combined.experiment import SCENARIOS, evaluate
+
+    reg = registration()
+    rows = change(outcomes(reg), arm=V2, final_equity=D(15000))
+    result = evaluate(reg, rows)
+    cell = ("window", "research", 1, SCENARIOS[0])
+    full = next(
+        r.report_evidence.report
+        for r in rows
+        if (r.identity.arm, r.identity.window, r.identity.capital, r.identity.cost_multiple)
+        == ("combined", *cell[:3])
+        and r.identity.scenario == cell[3]
+    )
+    comparisons = tuple(
+        c for c in result.comparisons if (c.window, c.capital, c.cost_multiple, c.scenario) == cell
+    )
+    return reg, full, comparisons, result
+
+
+def test_the_comparison_lists_every_baseline_with_both_measures_and_each_verdict() -> None:
+    from test_combined_experiment import V2
+
+    reg, full, comparisons, _ = compared()
+    html = render_report(full, comparisons=comparisons)
+    rows = table_rows(section(html, "Cross-version comparison"), 7)
+    assert [row[0] for row in rows] == list(reg.baseline_arms)
+    by_name = {row[0]: row[1:] for row in rows}
+    # Baseline return and drawdown, full return and drawdown, then each verdict.
+    assert by_name["unchanged_v3_selector"] == (
+        "10.00%",
+        "20.00%",
+        "40.00%",
+        "20.00%",
+        "Pass",
+        "Pass",
+    )
+    assert by_name[V2] == ("50.00%", "20.00%", "40.00%", "20.00%", "Fail", "Fail")
+    text = " ".join(Elements(section(html, "Cross-version comparison")).text)
+    assert "common hourly" in text and "research" in text and "open_low_high_close" in text
+
+
+def test_a_baseline_without_comparison_evidence_is_listed_unavailable() -> None:
+    _, full, comparisons, _ = compared()
+    missing = replace(comparisons[0], baseline_return=None, baseline_max_drawdown=None)
+    missing = replace(missing, beats_return=None, beats_return_drawdown=None)
+    html = render_report(full, comparisons=(missing, *comparisons[1:]))
+    (row,) = [
+        r
+        for r in table_rows(section(html, "Cross-version comparison"), 7)
+        if r[0] == missing.baseline
+    ]
+    assert row[1:3] == ("Unavailable", "Unavailable") and row[5:] == ("Unavailable", "Unavailable")
+
+
+def test_comparison_rows_of_another_cell_are_omitted_with_a_warning() -> None:
+    _, full, comparisons, _ = compared()
+    foreign = replace(comparisons[0], scenario="open_high_low_close")
+    for rows in ((foreign, *comparisons[1:]), (foreign,)):  # two cells; another scenario
+        part = section(render_report(full, comparisons=rows), "Cross-version comparison")
+        compared_part = part.split("<h3>Native baseline diagnostics</h3>", 1)[0]
+        assert "Omitted comparison" in " ".join(Elements(compared_part).text)
+        assert "<table>" not in compared_part
+
+
+def test_native_baseline_diagnostics_are_shown_under_their_version_label() -> None:
+    from crypto_grid_bot.combined.baseline_records import NativeDiagnostics
+
+    _, full, comparisons, _ = compared()
+    native = (
+        NativeDiagnostics(
+            "unchanged_v3_selector",
+            "v3-native",
+            5,
+            0,
+            7_200_000,
+            Fraction(9, 200),
+            Fraction(1, 5),
+            None,
+        ),
+        NativeDiagnostics(
+            "matched_v2_grid_high_first", "<b>minute</b>", 0, None, None, None, None, "no_input"
+        ),
+    )
+    html = render_report(full, comparisons=comparisons, native=native)
+    part = section(html, "Cross-version comparison").split(
+        "<h3>Native baseline diagnostics</h3>", 1
+    )[1]
+    rows = table_rows(part, 8)
+    assert rows[0] == (
+        "unchanged_v3_selector",
+        "v3-native",
+        "5",
+        "1970-01-01T00:00:00.000+00:00",
+        "1970-01-01T02:00:00.000+00:00",
+        "4.50%",
+        "20.00%",
+        "Completed",
+    )
+    assert rows[1][1] == "<b>minute</b>" and rows[1][5:] == (
+        "Unavailable",
+        "Unavailable",
+        "no_input",
+    )
+    assert "&lt;b&gt;minute" in html
+    text = " ".join(Elements(part).text)
+    assert "never compared" in text
+
+
+def test_bad_periods_list_the_three_deepest_drawdown_episodes() -> None:
+    from test_combined_report import episode_report
+
+    html = render_report(episode_report())
+    part = section(html, "Bad periods")
+    episodes = part.split("<h3>Largest drawdown episodes</h3>", 1)[1]
+    rows = table_rows(episodes, 6)
+    assert [(row[1], row[3], row[4]) for row in rows] == [
+        ("120.00", "90.00", "25.00%"),
+        ("130.00", "104.00", "20.00%"),
+        ("125.00", "115.00", "8.00%"),
+    ]
+    assert rows[1][5].startswith("Not recovered by the window end")
+    assert "<h3>Unfavorable intervals</h3>" in part
+
+
+def test_excursion_and_profit_surrendered_name_the_marks_they_use() -> None:
+    text = " ".join(" ".join(Elements(render_report(report())).text).split())
+    assert "Profit surrendered" in text
+    assert "intrabar" in text and "valuation marks, not observed ticks" in text
+
+
+def test_a_large_report_is_saved_as_the_bundle_s_report_json(tmp_path) -> None:
+    import hashlib
+
+    from test_combined_artifacts import journal
+
+    from crypto_grid_bot.combined.artifacts import read_bundle, write_bundle
+    from crypto_grid_bot.combined.dashboard import exact_evidence, render_bundle_report
+
+    points = tuple(
+        EquityPoint(index * 3_600_000, D(100) + D(index % 7), f"mark-{index}", ("synthetic",))
+        for index in range(6000)
+    )
+    evidence = analyze(D(100), points, (), (), (), ("synthetic",))
+    html, raw = render_bundle_report(evidence)
+    assert raw == exact_evidence(evidence) and len(raw.encode()) > 1_000_000
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    parsed = Elements(html)
+    assert any(attrs.get("href") == "report.json" for _, attrs in parsed.elements)
+    assert digest in " ".join(parsed.text)
+    receipt = write_bundle(tmp_path, "large", journal(), {}, html, report_json=raw)
+    bundle = read_bundle(receipt.directory, expected_receipt_sha256=receipt.receipt_sha256)
+    assert bundle.report_json == raw and bundle.report_html == html
+    assert ("report.json", digest) in receipt.file_hashes
+    assert len(json.loads(bundle.report_json)["report"]["equity_points"]) == 6000
+    # A report small enough to embed needs no separate file.
+    small_html, small_raw = render_bundle_report(report())
+    assert small_raw is None and small_html == render_report(report())

@@ -1,16 +1,19 @@
 """Comparison reports of frozen baselines that stop natively; synthetic marks only."""
 
 from decimal import Decimal as D
+from fractions import Fraction
 
 import pytest
 
 from crypto_grid_bot.combined.baseline_records import (
     NATIVE_STOPS,
+    BaselineEvidence,
     NativeMark,
     comparison_report,
+    native_diagnostics,
 )
 from crypto_grid_bot.combined.common_series import FROZEN_REF, common_hourly_series
-from crypto_grid_bot.combined.report import Contribution, utc_text
+from crypto_grid_bot.combined.report import Contribution, analyze, utc_text
 
 HOUR = 3_600_000
 DAY = 24 * HOUR
@@ -114,3 +117,47 @@ def test_the_adapter_notes_skipped_hours_and_frozen_stop_reach_the_report(stop):
 def test_a_run_without_a_stop_or_skipped_hour_discloses_only_its_adapter_notes():
     assert report(None).disclosures == ()
     assert report(None, disclosures=("adapter_note",)).disclosures == ("adapter_note",)
+
+
+def native_evidence(marks, status=None):
+    return BaselineEvidence(
+        "unchanged_v3_selector",
+        "v3-native",
+        marks,
+        analyze(D(10000), (), (), (), (), ("s",)),
+        status,
+        0,
+        D(0),
+        True,
+        True,
+        (),
+    )
+
+
+def test_native_diagnostics_measure_every_native_mark_under_its_version_label():
+    marks = (
+        NativeMark(0, "open", D(10000), D(0), D(0)),
+        NativeMark(HOUR // 2, "adverse", D(9000), D(0), D(0)),  # intrabar, off the hour
+        NativeMark(HOUR, "open", D(11000), D(0), D(0)),
+        NativeMark(3 * HOUR // 2, "adverse", D(8800), D(0), D(0)),  # 20% below 11000
+        NativeMark(2 * HOUR, "close", D(10450), D(0), D(0)),
+    )
+    result = native_diagnostics(native_evidence(marks, "liquidation"))
+    assert (result.arm, result.native_label, result.status) == (
+        "unchanged_v3_selector",
+        "v3-native",
+        "liquidation",
+    )
+    assert (result.mark_count, result.first_ms, result.last_ms) == (5, 0, 2 * HOUR)
+    assert result.net_return == Fraction(9, 200) and result.max_drawdown == Fraction(1, 5)
+
+
+def test_a_baseline_without_native_marks_has_unavailable_diagnostics():
+    result = native_diagnostics(native_evidence((), "no_selector_pick"))
+    assert result.mark_count == 0 and result.status == "no_selector_pick"
+    assert (result.first_ms, result.last_ms, result.net_return, result.max_drawdown) == (
+        None,
+        None,
+        None,
+        None,
+    )

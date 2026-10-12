@@ -1,5 +1,6 @@
 """Offline, script-free HTML/SVG renderer over immutable report evidence."""
 
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
@@ -9,6 +10,9 @@ from fractions import Fraction
 from html import escape
 from urllib.parse import quote, unquote, urlsplit
 
+from crypto_grid_bot.combined.artifacts import REPORT_JSON
+from crypto_grid_bot.combined.baseline_records import NativeDiagnostics
+from crypto_grid_bot.combined.experiment import BaselineComparison
 from crypto_grid_bot.combined.observation_policy import validate_boundaries
 from crypto_grid_bot.combined.report import DimensionTotal, EquityPoint, Report
 
@@ -176,7 +180,8 @@ header{padding-bottom:20px}
 
 # A real multi-year run retains hundreds of thousands of marks. The page stays
 # usable by bounding what it draws and lists; the exact evidence stays complete
-# in ``exact_evidence`` and is embedded only below the inline limit.
+# in ``exact_evidence``, embedded below the inline limit and otherwise saved as the
+# bundle's ``report.json`` (``render_bundle_report``).
 _INLINE_JSON_LIMIT = 1_000_000
 _TABLE_ROWS = 500
 _CHART_BUCKETS = 1_200
@@ -252,6 +257,160 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
 def _bounded_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
     shown, note = _bounded(rows)
     return note + _table(headers, shown)
+
+
+def _ratio(value: Fraction | None) -> str:
+    return "Unavailable" if value is None else _number(_decimal(value), percent=True)
+
+
+def _verdict(beats: bool | None, measured: bool) -> str:
+    if beats is None:
+        return "Indeterminate: zero drawdown" if measured else "Unavailable"
+    return "Pass" if beats else "Fail"
+
+
+def _comparison(
+    report: Report,
+    comparisons: Sequence[BaselineComparison] | None,
+    native: Sequence[NativeDiagnostics],
+) -> str:
+    """Acceptance's cross-version results for this report's cell, displayed as given."""
+    if comparisons is None:
+        table = '<p class="empty">Not supplied</p>'
+    else:
+        rows = tuple(comparisons)
+        if any(type(row) is not BaselineComparison for row in rows):
+            raise ValueError("comparisons must be acceptance BaselineComparison rows")
+        cells = {(row.window, row.capital, row.cost_multiple, row.scenario) for row in rows}
+        own = report.policy_evidence.scenario if report.policy_evidence is not None else None
+        if len(cells) > 1 or (own is not None and any(row.scenario != own for row in rows)):
+            table = (
+                '<p class="warning-text">Omitted comparison: the rows describe more than one '
+                "cell, or another scenario than this report's.</p>"
+            )
+        elif not rows:
+            table = '<p class="empty">Not supplied</p>'
+        else:
+            ((window, capital, multiple, scenario),) = cells
+            frozen = [row for row in rows if row.baseline_native_stop is not None]
+            held = (
+                "<p>Held frozen at a native stop's equity on the schedule: "
+                + ", ".join(_text(f"{row.baseline} ({row.baseline_native_stop})") for row in frozen)
+                + ".</p>"
+                if frozen
+                else ""
+            )
+            table = (
+                f"<p>Window <code>{_text(window)}</code>, capital <code>{_text(capital)}</code>, "
+                f"cost ×{_text(multiple)}, scenario <code>{_text(scenario)}</code>.</p>"
+                + _table(
+                    (
+                        "Baseline",
+                        "Baseline return",
+                        "Baseline max drawdown",
+                        "Combined return",
+                        "Combined max drawdown",
+                        "Return",
+                        "Return / drawdown",
+                    ),
+                    [
+                        (
+                            row.baseline,
+                            _ratio(row.baseline_return),
+                            _ratio(row.baseline_max_drawdown),
+                            _ratio(row.full_return),
+                            _ratio(row.full_max_drawdown),
+                            _verdict(row.beats_return, False),
+                            _verdict(
+                                row.beats_return_drawdown,
+                                None
+                                not in (
+                                    row.full_return,
+                                    row.full_max_drawdown,
+                                    row.baseline_return,
+                                    row.baseline_max_drawdown,
+                                ),
+                            ),
+                        )
+                        for row in rows
+                    ],
+                )
+                + held
+            )
+    diagnostics = tuple(native)
+    if any(type(row) is not NativeDiagnostics for row in diagnostics):
+        raise ValueError("native diagnostics must be NativeDiagnostics rows")
+    native_table = _table(
+        (
+            "Baseline",
+            "Native version",
+            "Native marks",
+            "First UTC",
+            "Last UTC",
+            "Native return",
+            "Native max drawdown",
+            "Ended by",
+        ),
+        [
+            (
+                row.arm,
+                row.native_label,
+                row.mark_count,
+                "Unavailable" if row.first_ms is None else _time(row.first_ms),
+                "Unavailable" if row.last_ms is None else _time(row.last_ms),
+                _ratio(row.net_return),
+                _ratio(row.max_drawdown),
+                row.status or "Completed",
+            )
+            for row in diagnostics
+        ],
+    )
+    return f"""<section class="panel">
+<h2>Cross-version comparison</h2>
+<p class="muted">As acceptance compared them, on the common hourly schedule: compounded return
+and lifetime maximum drawdown of each baseline and of the full combined arm, from each arm's
+marks at the approved UTC hour boundaries. Registered skipped hours ({len(report.skipped_hours)}
+in this report) are skipped for every arm alike. Pass means the full arm strictly beat that
+baseline on the measure; Unavailable means a cell had no valid comparison evidence, never a
+pass. This page judges nothing.</p>
+{table}
+<h3>Native baseline diagnostics</h3>
+<p class="muted">Each baseline's own marks in its own timing, intrabar marks included, labelled
+with its native version. Diagnostics only: never compared, never an acceptance input.</p>
+{native_table}
+</section>"""
+
+
+def _drawdown_episodes(report: Report) -> str:
+    if not report.equity_points:
+        return '<p class="empty">Not supplied</p>'
+    if not report.drawdown_episodes:
+        return '<p class="empty">None: equity never fell below its lifetime peak.</p>'
+    end = _time(report.equity_points[-1].timestamp_ms)
+    return _table(
+        ("Peak UTC", "Peak equity", "Trough UTC", "Trough equity", "Depth", "Recovered UTC"),
+        [
+            (
+                _time(row.peak_ms),
+                _number(row.peak_equity),
+                _time(row.trough_ms),
+                _number(row.trough_equity),
+                _number(row.depth, percent=True),
+                _time(row.recovery_ms)
+                if row.recovery_ms is not None
+                else f"Not recovered by the window end ({end})",
+            )
+            for row in report.drawdown_episodes
+        ],
+    )
+
+
+_EXCURSION_NOTE = """Gross MFE is a lifecycle's peak marked gross P&L (before fees and
+funding), never below zero; profit surrendered is how much of that peak its exit gave back:
+the peak minus the gross P&L at exit (at the last mark while open), at most the peak. Combined
+replays measure both on the lifecycle's own retained marks from its entry fill to its exit
+fill: boundary opening quotes, the modeled scenario's intrabar OHLC vertices (scenario-local
+valuation marks, not observed ticks) and the terminal close. Missing values are not inferred."""
 
 
 def _attribution(title: str, rows: tuple[DimensionTotal, ...]) -> str:
@@ -408,8 +567,11 @@ def exact_evidence(
     benchmarks: Mapping[str, tuple[EquityPoint, ...]] | None = None,
     *,
     synthetic: bool = True,
+    comparisons: Sequence[BaselineComparison] | None = None,
+    native: Sequence[NativeDiagnostics] = (),
 ) -> str:
-    """The exact JSON evidence: every record, with Decimal values as their exact text."""
+    """The exact JSON evidence: every record, with Decimal and Fraction values as their
+    exact text, and the comparison rows and native diagnostics as supplied."""
     if type(synthetic) is not bool:
         raise ValueError("synthetic must be an explicit Boolean")
     payload = {
@@ -419,6 +581,8 @@ def exact_evidence(
             str(name): [asdict(point) for point in values]
             for name, values in dict(benchmarks or {}).items()
         },
+        "cross_version_comparisons": [asdict(row) for row in comparisons or ()],
+        "native_baseline_diagnostics": [asdict(row) for row in native],
     }
     return json.dumps(payload, default=str, ensure_ascii=False, indent=2)
 
@@ -429,16 +593,42 @@ def render_report(
     benchmarks: Mapping[str, tuple[EquityPoint, ...]] | None = None,
     *,
     synthetic: bool = True,
+    comparisons: Sequence[BaselineComparison] | None = None,
+    native: Sequence[NativeDiagnostics] = (),
 ) -> str:
+    """The page alone; see ``render_bundle_report``."""
+    page, _ = render_bundle_report(
+        report, title, benchmarks, synthetic=synthetic, comparisons=comparisons, native=native
+    )
+    return page
+
+
+def render_bundle_report(
+    report: Report,
+    title: str = "Combined strategy evidence",
+    benchmarks: Mapping[str, tuple[EquityPoint, ...]] | None = None,
+    *,
+    synthetic: bool = True,
+    comparisons: Sequence[BaselineComparison] | None = None,
+    native: Sequence[NativeDiagnostics] = (),
+) -> tuple[str, str | None]:
     """Render exact evidence with rounded display only; make no run/edge claim.
+
+    Returns the page and, when the exact JSON is above the inline limit, that JSON for
+    the evidence bundle's ``report.json`` (``write_bundle(report_json=...)``); the page
+    then names the file and its SHA-256 instead of embedding it.
 
     Provided comparison curves require the report's timestamps (its approved hourly
     boundaries when policy evidence is present) and an initial mark
     equal to the report's starting capital. This does not verify data, fees, code
     or other comparability. Explicit marks remain the caller's evidence.
+    ``comparisons`` are acceptance's ``BaselineComparison`` rows of this report's cell
+    (``AcceptanceResult.comparisons``) and ``native`` each baseline's
+    ``NativeDiagnostics``: displayed as given, never recomputed or judged here.
     """
     if type(synthetic) is not bool:
         raise ValueError("synthetic must be an explicit Boolean")
+    comparison = _comparison(report, comparisons, native)
     supplied = dict(benchmarks or {})
     equity = [(point.timestamp_ms, Fraction(point.equity)) for point in report.equity_points]
     peak = Fraction(report.initial_equity)
@@ -492,18 +682,25 @@ def render_report(
                 f"Omitted comparison: {name} — timestamps or initial capital do not match, "
                 "or values are invalid."
             )
-    raw = exact_evidence(report, benchmarks, synthetic=synthetic)
-    if len(raw.encode("utf-8")) <= _INLINE_JSON_LIMIT:
+    raw = exact_evidence(
+        report, benchmarks, synthetic=synthetic, comparisons=comparisons, native=native
+    )
+    encoded = raw.encode("utf-8")
+    separate: str | None = None
+    if len(encoded) <= _INLINE_JSON_LIMIT:
         download = "data:application/json;charset=utf-8," + quote(raw, safe="")
         exact = (
             '<a class="download" download="combined-evidence.json" '
             f'href="{download}">Download exact JSON</a>\n<pre>\n<code>{_text(raw)}</code>\n</pre>'
         )
     else:
+        separate = raw
         exact = (
-            f'<p class="warning-text">The exact JSON evidence is {len(raw.encode("utf-8"))} bytes, '
-            f"above the {_INLINE_JSON_LIMIT}-byte inline limit, so it is not embedded. Export it "
-            "beside this page with exact_evidence().</p>"
+            f'<p class="warning-text">The exact JSON evidence is {len(encoded)} bytes, above the '
+            f"{_INLINE_JSON_LIMIT}-byte inline limit, so it is not embedded.</p>\n"
+            "<p>It is saved with this page as the evidence bundle's file "
+            f'<a href="{REPORT_JSON}" rel="noopener noreferrer">{REPORT_JSON}</a>, SHA-256 '
+            f"<code>{hashlib.sha256(encoded).hexdigest()}</code>; read_bundle verifies it.</p>"
         )
     badge = "Synthetic demonstration — not market performance" if synthetic else "Evidence review"
     status = (
@@ -645,7 +842,7 @@ def render_report(
         ],
     )
     lifecycles = _bounded_table(
-        ("ID / asset", "Status", "Exit reason", "Gross MFE", "Supplied giveback"),
+        ("ID / asset", "Status", "Exit reason", "Gross MFE", "Profit surrendered"),
         [
             (
                 f"{row.id} / {row.asset}",
@@ -694,7 +891,7 @@ def render_report(
         "Lifetime drawdown, with no recovery reset",
         percent=True,
     )
-    return f'''<!doctype html>
+    page = f'''<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -734,6 +931,7 @@ establish full comparability. No benchmark is invented.</p>
 <p class="muted">Measured from the original, non-resetting high-water mark. Recovery does not
 erase an earlier loss.</p>
 </section>
+{comparison}
 <div class="grid">{attributions}<section class="panel">
 <h2>Costs and participation</h2>{costs}
 <p class="muted">Open marked lifecycles include unrealized PnL; they are not closed trades.</p>
@@ -745,7 +943,7 @@ erase an earlier loss.</p>
 Losing assets remain in the attribution tables.</p>
 <h3>Metadata availability</h3>
 <p>Unknown: {_text(unknown)}</p>
-<p class="muted">MFE supplied for {report.mfe_available} lifecycles; giveback supplied for
+<p class="muted">MFE known for {report.mfe_available} lifecycles; profit surrendered for
 {report.giveback_available}. Missing values are not inferred.</p>
 </section>
 </div>
@@ -764,12 +962,18 @@ opportunities. Stages are sparse episode summaries; they do not prove a complete
 DecisionEvent journal. Entry delay measures episode detection to first observed fill.</p>
 {opportunities}</section>
 <section class="panel">
-<h2>Unfavorable intervals</h2>
+<h2>Bad periods</h2>
+<h3>Largest drawdown episodes</h3>
+<p class="muted">The window's three deepest falls from the lifetime peak: each from its peak to
+its lowest mark before equity regained the peak, or to the window end.</p>
+{_drawdown_episodes(report)}
+<h3>Unfavorable intervals</h3>
 <p class="muted">Adjacent observed equity marks, not calendar-period returns or independent
 trials.</p>{bad}</section>
 <section class="panel">
 <details>
-<summary>Lifecycle exits, excursions and giveback</summary>{lifecycles}</details>
+<summary>Lifecycle exits, excursions and profit surrendered</summary>
+<p class="muted">{_EXCURSION_NOTE}</p>{lifecycles}</details>
 </section>
 <section class="panel">
 <h2>Capital observations</h2>{capital_table}{utilization_table}
@@ -793,3 +997,4 @@ is not live profit or execution authorization.</p>
 </main>
 </body>
 </html>'''
+    return page, separate

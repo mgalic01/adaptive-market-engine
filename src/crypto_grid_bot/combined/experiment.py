@@ -175,12 +175,39 @@ class RunOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class BaselineComparison:
+    """The full combined arm against one baseline, exactly as acceptance compared them.
+
+    Compounded return and lifetime maximum drawdown of each cell's common hourly series
+    (``common_series``), and whether the full arm strictly beat the baseline on return
+    and on return/drawdown. A cell without valid comparison evidence leaves its values
+    and both verdicts None; a zero drawdown leaves the return/drawdown verdict None.
+    """
+
+    window: str
+    capital: str
+    cost_multiple: int
+    scenario: str  # the full arm's modeled scenario; the baseline cell is native
+    baseline: str
+    full_return: Fraction | None
+    full_max_drawdown: Fraction | None
+    baseline_return: Fraction | None
+    baseline_max_drawdown: Fraction | None
+    beats_return: bool | None
+    beats_return_drawdown: bool | None
+    baseline_native_stop: str | None = None  # held frozen at its stop equity
+
+
+@dataclass(frozen=True, slots=True)
 class AcceptanceResult:
     status: str
     failures: tuple[str, ...]
     incomplete_reasons: tuple[str, ...]
     outcomes: tuple[RunOutcome, ...]
     skipped_hours: tuple[tuple[str, tuple[int, ...]], ...] = ()  # per window id
+    # Every registered baseline against every full combined cell, once the registration
+    # is complete; information for reports, already reflected in status and failures.
+    comparisons: tuple[BaselineComparison, ...] = ()
 
 
 def _pin(value: str | None, length: int = 64) -> bool:
@@ -830,6 +857,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             continue
         common[key] = series
         valid[key] = row
+    comparisons: list[BaselineComparison] = []
     for window, capital, profile, scenario in product(
         registration.windows,
         registration.capitals,
@@ -837,28 +865,53 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         registration.scenarios,
     ):
         multiple, _ = profile
-        full = valid.get(("combined", window.id, capital.id, multiple, scenario))
-        if full is None:
-            continue
-        full_series = common[("combined", window.id, capital.id, multiple, scenario)]
-        full_return = full_series.net_return
+        # A series exists only for a valid cell; a missing or invalid cell already has a
+        # visible reason and its comparisons stay unavailable.
+        full_series = common.get(("combined", window.id, capital.id, multiple, scenario))
         for baseline in registration.baseline_arms:
             key = (baseline, window.id, capital.id, multiple, "native")
-            other = valid.get(key)
-            if other is None:
-                continue  # The missing/invalid cell already has a visible reason.
-            other_series = common[key]
-            other_return = other_series.net_return
-            if full_return <= other_return:
-                failures.append(f"{key}/{scenario}: full return does not strictly beat baseline")
-            if full_series.max_drawdown == 0 or other_series.max_drawdown == 0:
-                incomplete.append(
-                    f"{key}/{scenario}: return/drawdown is indeterminate at zero drawdown"
+            other_series = common.get(key)
+            beats_return: bool | None = None
+            beats_ratio: bool | None = None
+            if full_series is not None and other_series is not None:
+                full_return, other_return = full_series.net_return, other_series.net_return
+                beats_return = full_return > other_return
+                if not beats_return:
+                    failures.append(
+                        f"{key}/{scenario}: full return does not strictly beat baseline"
+                    )
+                if full_series.max_drawdown == 0 or other_series.max_drawdown == 0:
+                    incomplete.append(
+                        f"{key}/{scenario}: return/drawdown is indeterminate at zero drawdown"
+                    )
+                else:
+                    beats_ratio = (
+                        full_return / full_series.max_drawdown
+                        > other_return / other_series.max_drawdown
+                    )
+                    if not beats_ratio:
+                        failures.append(
+                            f"{key}/{scenario}: full return/drawdown does not strictly beat "
+                            "baseline"
+                        )
+            comparisons.append(
+                BaselineComparison(
+                    window.id,
+                    capital.id,
+                    multiple,
+                    scenario,
+                    baseline,
+                    None if full_series is None else full_series.net_return,
+                    None if full_series is None else full_series.max_drawdown,
+                    None if other_series is None else other_series.net_return,
+                    None if other_series is None else other_series.max_drawdown,
+                    beats_return,
+                    beats_ratio,
+                    None if other_series is None else other_series.native_stop,
                 )
-            elif full_return / full_series.max_drawdown <= other_return / other_series.max_drawdown:
-                failures.append(
-                    f"{key}/{scenario}: full return/drawdown does not strictly beat baseline"
-                )
+            )
     status = "fail" if failures else "incomplete" if incomplete else "pass"
     skipped = tuple((window.id, window.skipped_hours) for window in registration.windows)
-    return AcceptanceResult(status, tuple(failures), tuple(incomplete), retained, skipped)
+    return AcceptanceResult(
+        status, tuple(failures), tuple(incomplete), retained, skipped, tuple(comparisons)
+    )

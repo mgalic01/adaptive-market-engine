@@ -1,6 +1,7 @@
 import math
 from dataclasses import replace
 from decimal import Decimal, localcontext
+from fractions import Fraction
 
 import combined_market_fixtures as fx
 import pytest
@@ -1799,3 +1800,55 @@ def test_the_research_label_and_a_missing_fx_pin():
         capital_label(owner_small("1.1", fx_pin=None))
     with pytest.raises(ValueError):
         capital_label(Capital("research", D(100), "USDT", D(100)))
+
+
+def test_acceptance_returns_every_baseline_comparison_on_the_common_schedule():
+    reg = registration()
+    rows = change(outcomes(reg), arm=V2, final_equity=D(15000))
+    hold_cell = ("matched_spot_hold", "research", 1)
+    rows = tuple(
+        r
+        for r in rows
+        if (r.identity.arm, r.identity.capital, r.identity.cost_multiple) != hold_cell
+    )
+    result = evaluate(reg, rows)
+    assert len(result.comparisons) == 2 * 2 * len(SCENARIOS) * len(BASELINES)
+    cell = [
+        c
+        for c in result.comparisons
+        if (c.window, c.capital, c.cost_multiple, c.scenario)
+        == ("window", "research", 1, SCENARIOS[0])
+    ]
+    assert [c.baseline for c in cell] == list(BASELINES)
+    by_name = {c.baseline: c for c in cell}
+    # Full: 10000 -> 8000 -> 14000; baselines: 10000 -> 8000 -> 11000, hour by hour.
+    v3 = by_name["unchanged_v3_selector"]
+    assert (v3.full_return, v3.full_max_drawdown) == (Fraction(2, 5), Fraction(1, 5))
+    assert (v3.baseline_return, v3.baseline_max_drawdown) == (Fraction(1, 10), Fraction(1, 5))
+    assert v3.beats_return is True and v3.beats_return_drawdown is True
+    assert v3.baseline_native_stop is None
+    v2 = by_name[V2]
+    assert v2.baseline_return == Fraction(1, 2)
+    assert v2.beats_return is False and v2.beats_return_drawdown is False
+    assert any(V2 in f and "full return does not strictly beat" in f for f in result.failures)
+    # A missing baseline cell is listed, unavailable, never a pass.
+    hold = by_name["matched_spot_hold"]
+    assert hold.full_return == Fraction(2, 5) and hold.baseline_return is None
+    assert (hold.beats_return, hold.beats_return_drawdown) == (None, None)
+
+
+def test_a_zero_common_drawdown_comparison_is_indeterminate_not_a_pass():
+    reg = skipping(registration())
+    rows = list(outcomes(reg))
+    v2 = cell(rows, V2)
+    # V2 dips only at the skipped hour: native drawdown 10%, none on the common schedule.
+    rows[v2] = remarked(replace(rows[v2], max_drawdown=D(0)), marks={SKIP: D(9000)})
+    result = evaluate(reg, tuple(rows))
+    (row,) = [
+        c
+        for c in result.comparisons
+        if (c.baseline, c.capital, c.cost_multiple, c.scenario) == (V2, "research", 1, SCENARIOS[0])
+    ]
+    assert row.baseline_max_drawdown == 0 and row.beats_return is True
+    assert row.beats_return_drawdown is None
+    assert any(V2 in reason and "indeterminate" in reason for reason in result.incomplete_reasons)

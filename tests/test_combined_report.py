@@ -1276,3 +1276,48 @@ def test_a_capital_label_matching_the_initial_equity_is_accepted(initial, label)
 def test_a_capital_label_that_does_not_match_the_initial_equity_is_refused(initial, label):
     with pytest.raises(ValueError, match="capital label"):
         analyze(D(initial), curve(), (), (), (), ("pin",), capital_label=label)
+
+
+# A rise to 120, a fall to 90 regained at 125; two shallow dips from 125; a peak of 130
+# and a fall to 104 never regained by the window end.
+EPISODE_MARKS = (100, 120, 90, 110, 125, 115, 125, 120, 130, 104, 110)
+
+
+def episode_report(marks=EPISODE_MARKS, opening=100):
+    points = tuple(
+        EquityPoint(t * HOUR, D(v), f"mark-{t}", ("synthetic",)) for t, v in enumerate(marks)
+    )
+    return analyze(D(opening), points, (), (), (), ("synthetic",))
+
+
+def test_the_three_deepest_drawdown_episodes_with_peak_trough_and_recovery() -> None:
+    report = episode_report()
+    shape = [
+        (
+            e.peak_ms // HOUR,
+            e.peak_equity,
+            e.trough_ms // HOUR,
+            e.trough_equity,
+            None if e.recovery_ms is None else e.recovery_ms // HOUR,
+            e.depth,
+        )
+        for e in report.drawdown_episodes
+    ]
+    assert shape == [
+        (1, D(120), 2, D(90), 4, D(".25")),
+        (8, D(130), 9, D(104), None, D(".2")),  # still under water at the window end
+        (4, D(125), 5, D(115), 6, D(".08")),
+    ]  # the 4% dip from 125 (hours 6 to 8) is the fourth deepest, left out
+    assert report.drawdown_episodes[0].depth == report.max_drawdown
+
+
+def test_a_drawdown_from_the_opening_capital_starts_at_the_first_mark() -> None:
+    (episode,) = episode_report((99, 101)).drawdown_episodes
+    assert (episode.peak_ms, episode.peak_equity) == (0, D(100))
+    assert (episode.trough_ms, episode.trough_equity, episode.recovery_ms) == (0, D(99), HOUR)
+    assert episode.depth == D(".01")
+
+
+def test_a_run_that_never_falls_has_no_drawdown_episode() -> None:
+    assert episode_report((100, 100, 105, 105)).drawdown_episodes == ()
+    assert analyze(D(100), (), (), (), (), ("synthetic",)).drawdown_episodes == ()

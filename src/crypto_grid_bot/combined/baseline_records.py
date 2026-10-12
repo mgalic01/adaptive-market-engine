@@ -14,6 +14,7 @@ the window end, each such mark labelled frozen. Outputs are never scaled.
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from fractions import Fraction
 
 from .common_series import FROZEN_REF
 from .observation_policy import POLICY_ID, Boundary, PolicyEvidence
@@ -68,6 +69,50 @@ class BaselineEvidence:
     accounting_explained: bool
     wallet_quantity_exact: bool | None
     disclosures: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeDiagnostics:
+    """A frozen baseline's own marks under its native version label; never compared.
+
+    Return and lifetime maximum drawdown over every native mark in the baseline's own
+    timing (intrabar and off-hour marks included), from the registered opening capital.
+    Diagnostics only: acceptance compares the common hourly series. None when the
+    baseline recorded no native mark.
+    """
+
+    arm: str
+    native_label: str
+    mark_count: int
+    first_ms: int | None
+    last_ms: int | None
+    net_return: Fraction | None
+    max_drawdown: Fraction | None
+    status: str | None  # None: the frozen run completed; otherwise why it ended
+
+
+def native_diagnostics(evidence: BaselineEvidence) -> NativeDiagnostics:
+    """The diagnostics of a baseline's native marks, labelled with its native version."""
+    marks, opening = evidence.native, Fraction(evidence.report.initial_equity)
+    if not marks:
+        return NativeDiagnostics(
+            evidence.arm, evidence.native_label, 0, None, None, None, None, evidence.status
+        )
+    peak, worst = opening, Fraction(0)
+    for mark in marks:
+        equity = Fraction(mark.equity)
+        peak = max(peak, equity)
+        worst = max(worst, (peak - equity) / peak)
+    return NativeDiagnostics(
+        evidence.arm,
+        evidence.native_label,
+        len(marks),
+        marks[0].timestamp_ms,
+        marks[-1].timestamp_ms,
+        Fraction(marks[-1].equity) / opening - 1,
+        worst,
+        evidence.status,
+    )
 
 
 def comparison_report(

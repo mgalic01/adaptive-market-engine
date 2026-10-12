@@ -5,13 +5,24 @@ so the records are judged against the transitions the engine can actually make.
 """
 
 from decimal import Decimal as D
+from fractions import Fraction
 
-from crypto_grid_bot.combined.account import AccountSnapshot
+from crypto_grid_bot.combined.account import AccountSnapshot, FillEvent, PositionSnapshot
 from crypto_grid_bot.combined.engine import EngineSnapshot
 from crypto_grid_bot.combined.recovery import Recovery, RecoveryState
-from crypto_grid_bot.combined.replay_records import recovery_episodes
+from crypto_grid_bot.combined.replay_records import (
+    lifecycle_contributions,
+    recovery_episodes,
+    strategy_report,
+)
 from crypto_grid_bot.combined.report import EquityPoint, analyze
-from crypto_grid_bot.combined.strategy_replay import NativeObservation, ReplayRun, StrategyTrace
+from crypto_grid_bot.combined.strategy_replay import (
+    NativeObservation,
+    ReplayRun,
+    StrategyTrace,
+    TraceFill,
+    replay_strategy,
+)
 
 HOUR = 3_600_000
 REFS = ("sha256:run",)
@@ -170,3 +181,131 @@ def test_a_terminal_failure_ends_what_it_interrupts_and_stays_recorded():
 
 def test_a_run_that_never_left_normal_has_no_recovery_records():
     assert recovery_episodes(trace_of(step(0, 100), step(1, 99), step(2, 100))) == ()
+
+
+# Excursions: each lifecycle's peak marked gross P&L over its own retained marks.
+
+
+def held(index, holdings):
+    """Observation ``obs-<index>`` holding ``{symbol: (signed quantity, mark)}``."""
+    positions = tuple(
+        PositionSnapshot(
+            symbol, "spot_trend", "spot", D(q), D(0), D(0), D(m), "caller", None, D(0), ()
+        )
+        for symbol, (q, m) in sorted(holdings.items())
+    )
+    account = AccountSnapshot(D(0), positions, D(100), D(0), D(0), D(0), D(0), True, ())
+    decision = Recovery().update(index * HOUR, D(100), not positions, True, True)
+    snapshot = EngineSnapshot(index * HOUR, account, decision, (), (), False, D(100))
+    return NativeObservation(index * HOUR, f"obs-{index}", "path", "low", f"e-{index}", snapshot)
+
+
+def fill(name, index, symbol, side, quantity, price, *, increase):
+    event = FillEvent(
+        name, index * HOUR, symbol, "spot_trend", "spot", side, D(quantity), D(price), D(0)
+    )
+    return TraceFill(event, increase, None if increase else "stop", None)
+
+
+def traded(observations, events):
+    run = ReplayRun("spot_trend", "synthetic", D(100), 0, len(observations) * HOUR, REFS)
+    return StrategyTrace(
+        run,
+        tuple(observations),
+        (),
+        tuple(events),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        None,
+    )
+
+
+# BTC: long 2 at 100, marks 110 / 125 / 105, sold at 108; later long 1 at 200, marked 190.
+# ETH: short 1 at 50, marks 45 / 48 / 55, bought back at 55: it surrenders its whole gain.
+TRADES = (
+    (held(0, {}), None),
+    (held(1, {"BTCUSDT": (2, 100)}), fill("b1", 1, "BTCUSDT", 1, 2, 100, increase=True)),
+    (
+        held(2, {"BTCUSDT": (2, 110), "ETHUSDT": (-1, 50)}),
+        fill("e1", 2, "ETHUSDT", -1, 1, 50, increase=True),
+    ),
+    (held(3, {"BTCUSDT": (2, 125), "ETHUSDT": (-1, 45)}), None),
+    (held(4, {"BTCUSDT": (2, 105), "ETHUSDT": (-1, 48)}), None),
+    (held(5, {"ETHUSDT": (-1, 55)}), fill("b2", 5, "BTCUSDT", -1, 2, 108, increase=False)),
+    (held(6, {}), fill("e2", 6, "ETHUSDT", 1, 1, 55, increase=False)),
+    (held(7, {"BTCUSDT": (1, 200)}), fill("b3", 7, "BTCUSDT", 1, 1, 200, increase=True)),
+    (held(8, {"BTCUSDT": (1, 190)}), None),
+)
+
+
+def trades(count=None):
+    """Every booked fill, with the first ``count`` observations (all by default)."""
+    rows = TRADES[:count]
+    return traded([o for o, _ in rows], [e for _, e in TRADES if e is not None])
+
+
+def excursions(trace, issues=None):
+    return {
+        row.id: (row.gross_pnl, row.mfe, row.giveback)
+        for row in lifecycle_contributions(trace, issues)
+    }
+
+
+def test_excursion_is_the_peak_marked_gross_and_surrender_what_the_exit_gave_back():
+    assert excursions(trades()) == {
+        # Peak 2 x (125 - 100) = 50; sold for a gross 16, so 34 of the peak is surrendered.
+        "lifecycle:BTCUSDT:b1": (D(16), D(50), D(34)),
+        # Peak 50 - 45 = 5; bought back at a loss: the whole gain is surrendered, not 10.
+        "lifecycle:ETHUSDT:e1": (D(-5), D(5), D(5)),
+        # Never above its entry: no excursion and nothing surrendered; still open.
+        "lifecycle:BTCUSDT:b3": (D(-10), D(0), D(0)),
+    }
+
+
+def test_marks_outside_a_lifecycle_never_reach_its_excursion():
+    # The later BTC lifecycle's marks (200, 190) are above the first one's peak mark.
+    _, mfe, _ = excursions(trades())["lifecycle:BTCUSDT:b1"]
+    assert mfe == D(50) < 2 * (D(200) - 100)
+
+
+def test_a_fill_no_retained_mark_shows_leaves_its_excursion_unknown():
+    issues: list[str] = []
+    rows = excursions(trades(count=7), issues)  # b3 booked, but no mark holds it
+    assert rows["lifecycle:BTCUSDT:b3"][1:] == (None, None)
+    assert issues == ["unmarked_open_lifecycle:lifecycle:BTCUSDT:b3"]
+    assert rows["lifecycle:BTCUSDT:b1"][1:] == (D(50), D(34))
+
+
+def test_a_replayed_stop_trade_reports_its_excursion_from_its_own_marks():
+    import combined_market_fixtures as fx
+    from test_combined_strategy_replay import crash_after
+
+    trace = replay_strategy(
+        fx.run("spot_trend", 2), (fx.market("BTCUSDT", crash_after(fx.uptrend, 12, 0.15), 2),)
+    )
+    report = strategy_report(trace, adapter_pin="0" * 64)
+    row = report.contributions[0]
+    assert row.status == "closed" and row.exit_reason == "stop"
+    assert "mfe" not in report.unknown_fields and "giveback" not in report.unknown_fields
+    # Independently: the best mark of the first contiguous holding, entry to exit.
+    entry = next(e.fill for e in trace.events if isinstance(e, TraceFill) and e.increase)
+    marks = [
+        next((p.mark for p in o.snapshot.account.positions if p.symbol == "BTCUSDT"), None)
+        for o in trace.observations
+    ]
+    first = next(i for i, mark in enumerate(marks) if mark is not None)
+    last = next(i for i in range(first, len(marks)) if marks[i] is None)
+    peak = max(D(0), entry.quantity * (max(marks[first:last]) - entry.price))
+    assert row.mfe == peak > 0
+    assert Fraction(row.giveback) == Fraction(row.mfe) - max(Fraction(row.gross_pnl), 0) > 0

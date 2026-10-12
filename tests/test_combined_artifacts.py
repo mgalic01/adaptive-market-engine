@@ -459,3 +459,38 @@ def test_records_must_reference_their_assessment_and_funnel_before_writing(tmp_p
             tmp_path, "gapped", journal, {}, records=replace(records, assessments=(gapped,))
         )
     assert list(tmp_path.iterdir()) == []
+
+
+REPORT_JSON = json.dumps({"synthetic": True, "report": {"final_equity": "105.5"}}, indent=2)
+
+
+def test_report_json_is_a_declared_hashed_bundle_file(tmp_path):
+    receipt = write_bundle(tmp_path, "large", journal(), {}, "<p>page</p>", report_json=REPORT_JSON)
+    bundle = read_bundle(receipt.directory, expected_receipt_sha256=receipt.receipt_sha256)
+    assert bundle.report_json == REPORT_JSON and bundle.report_html == "<p>page</p>"
+    digest = hashlib.sha256(REPORT_JSON.encode()).hexdigest()
+    assert ("report.json", digest) in receipt.file_hashes
+    assert read_bundle(write_bundle(tmp_path, "small", journal(), {}).directory).report_json is None
+
+
+def test_modified_report_json_is_rejected(tmp_path):
+    receipt = write_bundle(tmp_path, "tamper", journal(), {}, report_json=REPORT_JSON)
+    with (receipt.directory / "report.json").open("ab") as stream:
+        stream.write(b" ")
+    with pytest.raises(ValueError, match="hash"):
+        read_bundle(receipt.directory)
+
+
+@pytest.mark.parametrize("bad", ["[1, 2]", "{not json", '{"x": 1.5}', '{"a": 1, "a": 2}', b"{}"])
+def test_report_json_must_be_an_exact_json_object_before_writing(tmp_path, bad):
+    with pytest.raises(ValueError):
+        write_bundle(tmp_path, "bad", journal(), {}, report_json=bad)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_rehashed_invalid_report_json_is_rejected_on_read(tmp_path):
+    receipt = write_bundle(tmp_path, "rehash", journal(), {}, report_json=REPORT_JSON)
+    (receipt.directory / "report.json").write_text('{"x": 1.5}')
+    rehash(receipt.directory, "report.json")
+    with pytest.raises(ValueError):
+        read_bundle(receipt.directory)
