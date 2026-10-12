@@ -1372,13 +1372,14 @@ def test_a_missing_due_daily_bar_is_one_refused_detection_per_episode():
     trace = replay_strategy(fx.run("spot_trend", 4), (market,))
     assert trace.failure is None
     first = missing + DAY  # every decision of the next day reads the missing bar as due
-    # The hours gone from the second day leave its own hourly and 4h refusals too.
-    refused = [
-        e
-        for e in trace.evidence
-        if e.phase == "detected" and not e.accepted and "missing_daily_bar" in e.reasons
-    ]
+    detected = [e for e in trace.evidence if e.phase == "detected" and not e.accepted]
+    refused = [e for e in detected if "missing_daily_bar" in e.reasons]
     assert [e.timestamp_ms for e in refused] == [first]
+    # The hours gone from the second day give episodes of their own, each detected once:
+    # missing hourly and 4h bars at 28-29, then missing 4h bars alone at 30-35.
+    assert window_hours(e.timestamp_ms for e in detected) == [28, 30, 48]
+    others = [e.record for e in trace.unavailable if "missing_daily_bar" not in e.record.reasons]
+    assert [window_hours((r.first_ms, r.last_ms)) for r in others] == [[28, 29], [30, 35]]
     (episode,) = [e for e in trace.unavailable if "missing_daily_bar" in e.record.reasons]
     record = episode.record
     assert (record.first_ms, record.last_ms) == (first, first + DAY - HOUR)
@@ -1498,11 +1499,14 @@ def test_a_no_signal_record_and_its_gap_table_round_trip(tmp_path):
     market = masked(fx.market("BTCUSDT", fx.downtrend, 4), "spot", range(24, 29))
     trace = replay_strategy(fx.run("spot_trend", 4), (market,))
     records = evidence_records(trace)
-    (gap,) = [
-        r
-        for r in records.decisions
-        if r.size_unavailable == "no_signal" and "missing_daily_bar" in r.reasons
+    no_signal = [r for r in records.decisions if r.size_unavailable == "no_signal"]
+    # The hours gone from the second day give two episodes of their own, one record each.
+    assert [window_hours((r.first_ms, r.last_ms)) for r in no_signal] == [
+        [28, 29],
+        [30, 35],
+        [48, 71],
     ]
+    (gap,) = [r for r in no_signal if "missing_daily_bar" in r.reasons]
     assert (gap.side, gap.owner, gap.executable_quantity) == (0, None, None)
     assert (gap.first_ms, gap.last_ms) == (missing + DAY, missing + 2 * DAY - HOUR)
     first = next(a for a in records.assessments if a.assessment_id == gap.assessment_id)

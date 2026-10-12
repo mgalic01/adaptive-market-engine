@@ -79,12 +79,16 @@ def _validate(
 
 
 def daily_bars(hourly: Sequence[Kline]) -> tuple[Kline, ...]:
-    """UTC daily bars under the frozen V3 rule (``trend.data.hourly_month``).
+    """UTC daily bars under the frozen V3 day rule (``trend.data.hourly_month``).
 
     A day's bar aggregates its hours (first open, highest high, lowest low, last close,
-    summed volumes) when at least 20 of its 24 are present; with fewer it has none. The
+    summed volumes) when at least 20 of its 24 are usable; with fewer it has none. The
     hours are the ones the assessment reads: an invalid or unaligned bar counts as
     missing, as a reader's masked hour does. A sum that is not exact is refused.
+
+    Only the day rule is applied. The hourly input must already exclude the reader's
+    repaired and masked hours, and V3's exclusion of a month missing more than 17% of
+    its hours is not applied here: such a month must be refused before this is called.
     """
     days: dict[int, list[Kline]] = {}
     for bar in _validate(hourly, HOUR)[0]:

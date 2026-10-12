@@ -20,12 +20,15 @@ is carried to the opening quote of its next bar. A holding without a bar in the
 window's last hour is valued at its last available close, as a stale terminal mark.
 
 Each coin's daily bars are rebuilt from its registered spot hourly bars under the frozen
-V3 rule (``trend.data.hourly_month``): a UTC day's bar aggregates its hours when at least
-20 of the 24 are present, and a day with fewer has no bar. That day is a gap in the
+V3 day rule (``trend.data.hourly_month``): a UTC day's bar aggregates its hours when at
+least 20 of the 24 are usable, and a day with fewer has no bar. That day is a gap in the
 assessment's daily gaps, and a decision due to read it is unavailable. The assessment and
 the correlation groups read only these bars. The supplied daily bars of every day the run
 reads (each closed by its last decision hour) must equal them: a mismatch is refused
-before the replay starts.
+before the replay starts. Only the day rule is applied. The registered spot hourly input
+must already exclude reader-repaired and masked hours, and a window whose spot data
+includes a month V3 excludes (more than 17% of its hours missing) must be refused at
+registration: the replay does not apply month exclusion.
 
 Funding is charged from the published records alone, whatever their cadence, and
 only on futures holdings. A record within a minute of an hour, on either side,

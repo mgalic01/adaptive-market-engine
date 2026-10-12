@@ -297,6 +297,24 @@ def test_an_hour_the_assessment_cannot_read_counts_as_missing(defect):
     assert daily_bars([bad, *hours[1:]]) == ()
 
 
+def test_a_month_v3_excludes_still_gets_its_day_rule_bars():
+    # V3 gives no daily bar in a month missing more than 17% of its hours. The day rule
+    # alone keeps every day of at least 20 hours: registration must refuse such a month.
+    rows = month_hours("2021-03")
+    partial = {*(10 * 24 + hour for hour in range(4)), *range(12 * 24, 12 * 24 + 5)}
+    kept = [bar for i, bar in enumerate(rows) if i >= 5 * 24 and i not in partial]
+    assert (len(rows) - len(kept)) * 100 > len(rows) * 17
+    frozen = hourly_month(kept, "2021-03")
+    assert frozen.excluded and frozen.daily_bars == ()
+    # The same days' bars when the month keeps its first five days and is not excluded.
+    whole = hourly_month([bar for i, bar in enumerate(rows) if i not in partial], "2021-03")
+    assert not whole.excluded
+    expected = tuple(bar for bar in whole.daily_bars if bar.open_ms >= rows[5 * 24].open_ms)
+    assert daily_bars(kept) == expected
+    days = {(bar.open_ms - rows[0].open_ms) // DAY for bar in expected}
+    assert days == set(range(5, 31)) - {12}  # day 10 keeps 20 hours, day 12 only 19
+
+
 def test_an_inexact_daily_sum_is_refused():
     hours = month_hours("2021-03")[:24]
     hours[0] = replace(hours[0], volume=D("1e30"))
