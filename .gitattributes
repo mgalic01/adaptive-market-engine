@@ -4,6 +4,10 @@
 # core.autocrlf says, so a file on disk hashes as its blob does.
 config/datasets/*.manifest.json text eol=lf
 config/datasets/*.digest.txt text eol=lf
+# The V3.1 minute-bars fetch (docs/tasks/2026-10-11-bob-v3-1-minute-bars-fetch.md) commits its
+# manifest and digest in a folder of their own; the same rule holds there.
+config/datasets/v3-1-minute-bars/*.manifest.json text eol=lf
+config/datasets/v3-1-minute-bars/*.digest.txt text eol=lf
 
 # Preserve exact append-only register bytes on every platform.
 docs/trials/register.jsonl text eol=lf
