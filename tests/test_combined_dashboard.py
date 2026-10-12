@@ -269,6 +269,39 @@ def test_benchmark_is_compared_on_the_approved_hourly_schedule() -> None:
     assert "Omitted comparison" in render_report(evidence, benchmarks={"short": mismatched})
 
 
+def test_recovery_records_show_their_kind_and_what_ended_them() -> None:
+    from test_combined_replay_records import REFS, SEQUENCE, trace_of
+
+    from crypto_grid_bot.combined.replay_records import recovery_episodes
+
+    trace = trace_of(*SEQUENCE)
+    points = tuple(
+        EquityPoint(o.timestamp_ms, o.snapshot.account.equity, o.id, REFS)
+        for o in trace.observations
+    )
+    evidence = analyze(D(100), points, (), (), recovery_episodes(trace), REFS)
+    html = render_report(evidence)
+    section = html.split("<h2>Recovery episodes</h2>", 1)[1].split("</section>", 1)[0]
+    cells = [text for text in Elements(section).text if text.strip()]
+    assert cells[:7] == [
+        "ID",
+        "Kind",
+        "Start UTC",
+        "End UTC",
+        "Ended by",
+        "Marked change",
+        "Return",
+    ]
+    rows = [tuple(cells[i : i + 7]) for i in range(7, 7 + 5 * 7, 7)]
+    assert [(row[1], row[4], row[5]) for row in rows] == [
+        ("liquidation", "liquidated", "-2.00"),
+        ("cooldown", "restarted", "0.00"),
+        ("episode", "episode_stop", "9.60"),
+        ("cooldown", "restarted", "0.00"),
+        ("episode", "normal_restored", "13.40"),
+    ]
+
+
 def disclosure_section(html: str) -> str:
     return html.split("<h2>Disclosures</h2>", 1)[1].split("</section>", 1)[0]
 

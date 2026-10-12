@@ -1062,6 +1062,14 @@ def test_recovery_sequence_preserves_but_rejects_impossible_episodes(bounds, exp
     assert result.recovery == episodes
 
 
+def test_a_recovery_record_names_one_known_kind():
+    assert RecoveryEpisode(0, 1, D(100), D(90)).kind == "episode"
+    for kind in ("liquidation", "cooldown", "episode", "terminal"):
+        assert RecoveryEpisode(0, 1, D(100), D(90), kind=kind).kind == kind
+    with pytest.raises(ValueError, match="recovery kind"):
+        RecoveryEpisode(0, 1, D(100), D(90), kind="pause")
+
+
 def test_adjacent_recovery_episodes_are_not_overlap():
     points = curve()
     episodes = tuple(

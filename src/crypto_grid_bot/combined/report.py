@@ -80,8 +80,19 @@ class Opportunity:
         object.__setattr__(self, "reasons", reasons)
 
 
+# The stretches of the recovery controller a record can describe.
+RECOVERY_KINDS = ("liquidation", "cooldown", "episode", "terminal")
+
+
 @dataclass(frozen=True, slots=True)
 class RecoveryEpisode:
+    """One stretch of recovery, priced from its start mark to its end mark.
+
+    ``kind`` says which: the forced ``liquidation`` after a stop, a ``cooldown``, an
+    ``episode`` (one restart at the 25% allowance, to its 3% stop, normal restoration or
+    the window end) or the ``terminal`` state. ``end_reason`` says what ended it.
+    """
+
     start_ms: int
     end_ms: int | None
     equity_start: Decimal
@@ -92,11 +103,15 @@ class RecoveryEpisode:
     # timestamp, so an ID, not the time alone, identifies the endpoint state.
     start_observation_id: str | None = None
     end_observation_id: str | None = None
+    kind: str = "episode"
+    end_reason: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.source_refs, str):
             raise ValueError("source_refs must be a collection, not a string")
         object.__setattr__(self, "source_refs", tuple(self.source_refs))
+        if self.kind not in RECOVERY_KINDS:
+            raise ValueError(f"recovery kind must be one of {', '.join(RECOVERY_KINDS)}")
 
 
 @dataclass(frozen=True, slots=True)

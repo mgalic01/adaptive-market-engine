@@ -39,7 +39,7 @@ from .report import (
     span_text,
     utc_text,
 )
-from .strategy_replay import StrategyTrace, TraceFill
+from .strategy_replay import NativeObservation, StrategyTrace, TraceFill
 
 HOUR = 3_600_000
 DAY = 86_400_000
@@ -197,42 +197,77 @@ def opportunity_records(trace: StrategyTrace) -> tuple[Opportunity, ...]:
     return tuple(rows)
 
 
+# The kind of record each non-normal recovery state belongs to; the half allowance is
+# part of the episode that earned it.
+_STRETCH_KIND = {
+    RecoveryState.CLOSING: "liquidation",
+    RecoveryState.COOLDOWN: "cooldown",
+    RecoveryState.RECOVERY25: "episode",
+    RecoveryState.RECOVERY50: "episode",
+    RecoveryState.TERMINAL: "terminal",
+}
+# What ended a stretch, by its kind and the kind of the stretch after it (None: normal).
+_ENDED_BY: dict[tuple[str, str | None], str] = {
+    ("liquidation", "cooldown"): "liquidated",
+    ("cooldown", "episode"): "restarted",
+    ("cooldown", "liquidation"): "liquidation_incomplete",
+    ("episode", "liquidation"): "episode_stop",
+    ("episode", "cooldown"): "episode_stop",
+    ("episode", None): "normal_restored",
+}
+
+
+def _recovery_record(
+    kind: str,
+    start: NativeObservation,
+    end: NativeObservation,
+    ended_by: str,
+    refs: tuple[str, ...],
+) -> RecoveryEpisode:
+    return RecoveryEpisode(
+        start.timestamp_ms,
+        end.timestamp_ms,
+        start.snapshot.account.equity,
+        end.snapshot.account.equity,
+        f"recovery:{kind}:{start.id}",
+        refs,
+        start.id,
+        end.id,
+        kind,
+        ended_by,
+    )
+
+
 def recovery_episodes(trace: StrategyTrace) -> tuple[RecoveryEpisode, ...]:
-    """Contiguous non-normal recovery stretches, bound to observation identities."""
+    """One record per recovery stretch, bound to observation identities.
+
+    The forced liquidation, each cooldown and each episode are their own records. An
+    episode begins at a restart (entry into the 25% allowance) and ends at its 3% stop,
+    at normal restoration or at the window's last observation. Every stretch begins at
+    the observation that entered it and ends at the one that began the next stretch (the
+    first normal one), so its incremental P&L is the equity change between the two. A
+    trigger while flat has nothing to liquidate and gets no liquidation record.
+    """
     refs = trace.run.source_refs
     episodes: list[RecoveryEpisode] = []
-    start = None
+    current: tuple[str, NativeObservation] | None = None
     for observation in trace.observations:
-        normal = observation.snapshot.recovery.state == RecoveryState.NORMAL
-        if start is None and not normal:
-            start = observation
-        elif start is not None and normal:
-            episodes.append(
-                RecoveryEpisode(
-                    start.timestamp_ms,
-                    observation.timestamp_ms,
-                    start.snapshot.account.equity,
-                    observation.snapshot.account.equity,
-                    f"recovery:{start.id}",
-                    refs,
-                    start.id,
-                    observation.id,
-                )
+        state = observation.snapshot.recovery.state
+        following = None if state == RecoveryState.NORMAL else _STRETCH_KIND[state]
+        if current is not None and following == current[0]:
+            continue
+        if current is not None:
+            kind, start = current
+            ended_by = (
+                "terminal"
+                if following == "terminal"
+                else _ENDED_BY.get((kind, following), observation.snapshot.recovery.reason)
             )
-            start = None
-    if start is not None:
-        episodes.append(
-            RecoveryEpisode(
-                start.timestamp_ms,
-                None,
-                start.snapshot.account.equity,
-                None,
-                f"recovery:{start.id}",
-                refs,
-                start.id,
-                None,
-            )
-        )
+            episodes.append(_recovery_record(kind, start, observation, ended_by, refs))
+        current = None if following is None else (following, observation)
+    if current is not None:
+        kind, start = current
+        episodes.append(_recovery_record(kind, start, trace.observations[-1], "window_end", refs))
     return tuple(episodes)
 
 

@@ -353,6 +353,29 @@ def test_every_evidence_record_kind_round_trips_as_a_versioned_file(tmp_path):
     assert read_bundle(plain.directory).records is None
 
 
+def test_each_recovery_record_kind_round_trips_with_what_ended_it(tmp_path):
+    from test_combined_replay_records import SEQUENCE, trace_of
+
+    from crypto_grid_bot.combined.replay_records import recovery_episodes
+
+    journal, records = evidence_records()
+    refs = records.recoveries[0].source_refs
+    rows = tuple(replace(row, source_refs=refs) for row in recovery_episodes(trace_of(*SEQUENCE)))
+    saved = replace(records, recoveries=rows)
+    receipt = write_bundle(tmp_path, "recoveries", journal, {}, records=saved)
+    bundle = read_bundle(receipt.directory, expected_receipt_sha256=receipt.receipt_sha256)
+    assert bundle.records == saved
+    lines = (receipt.directory / "recoveries.jsonl").read_text().splitlines()
+    kept = [json.loads(line)["record"] for line in lines]
+    assert [(row["kind"], row["end_reason"]) for row in kept] == [
+        ("liquidation", "liquidated"),
+        ("cooldown", "restarted"),
+        ("episode", "episode_stop"),
+        ("cooldown", "restarted"),
+        ("episode", "normal_restored"),
+    ]
+
+
 def rewrite_record(directory, name, change):
     path = directory / name
     rows = [json.loads(row) for row in path.read_text().splitlines()]
@@ -378,6 +401,9 @@ def rewrite_record(directory, name, change):
         ("decision_records.jsonl", lambda row: row["record"].update(opportunity_id="unknown")),
         ("lifecycles.jsonl", lambda row: row["record"].update(gross_pnl="1e2")),
         ("recoveries.jsonl", lambda row: row["record"].pop("end_ms")),
+        ("recoveries.jsonl", lambda row: row["record"].pop("kind")),
+        ("recoveries.jsonl", lambda row: row["record"].update(kind="pause")),
+        ("recoveries.jsonl", lambda row: row["record"].update(end_reason=3)),
     ],
 )
 def test_valid_hashes_do_not_bypass_record_validation(tmp_path, name, change):

@@ -582,12 +582,14 @@ def render_report(
         ),
     )
     recovery = _table(
-        ("ID", "Start UTC", "End UTC", "Marked change", "Return"),
+        ("ID", "Kind", "Start UTC", "End UTC", "Ended by", "Marked change", "Return"),
         [
             (
                 change.episode.id,
+                change.episode.kind,
                 _time(change.episode.start_ms),
                 _time(change.episode.end_ms),
+                change.episode.end_reason,
                 _number(change.marked_change),
                 _number(change.return_fraction, percent=True),
             )
@@ -749,7 +751,9 @@ Losing assets remain in the attribution tables.</p>
 </div>
 <section class="panel">
 <h2>Recovery episodes</h2>{recovery}<p class="muted">Observed end-minus-start marked equity,
-assuming no external cash transfers. This is not a causal benefit estimate.</p>
+assuming no external cash transfers. This is not a causal benefit estimate. An episode is one
+restart at the 25% allowance, to its 3% stop, normal restoration or the end of the window;
+liquidations and cooldowns are listed as their own records.</p>
 </section>
 <section class="panel">
 <h2>Opportunities and entry delays</h2>
