@@ -51,7 +51,9 @@ the run only when that coin is held on futures there (``funding_records_collide`
 A settlement without its futures bar is valued at the last close before it, which the
 payment records as a stale mark. Admission reads only the latest record published at
 decision time, which at the window's start may predate the window (it is read, never
-charged), so a cadence change or a gap refuses futures increases by itself.
+charged), so a cadence change or a gap refuses futures increases by itself. An invalid
+latest record leaves the estimate unavailable, refusing futures increases, until a
+valid record is usable.
 
 Each hourly boundary T is processed in the owner-approved order:
 
@@ -320,15 +322,17 @@ def _interval_ms(record: FundingRecord) -> int:
 def _funding(
     records: tuple[FundingRecord, ...], start: int, end: int, symbol: str
 ) -> tuple[tuple[FundingRecord, ...], tuple[FundingRecord, ...]]:
-    """The records the window settles, and every record it reads, each valid and distinct.
+    """The records the window settles, each valid, and every record it reads, distinct.
 
     Settled are the latest record settled at or before the start through the last one
     settled before the end; an off-hour record of the last hour is settled, though it
     books at the end. The schedule itself is the replay's to judge. Admission also reads
     the latest record published at or before the start, the first estimate, which may
-    predate the window; the read records are returned in publication order. Two records
-    at one time would make the estimate depend on input order. Older history and later
-    records are not read, so a defect there cannot change this run (Codex 4242566622).
+    predate the window; the read records are returned in publication order. That first
+    estimate may be invalid: it then makes the estimate unavailable, never the run. Two
+    records at one time would make the estimate depend on input order. Older history
+    and later records are not read, so a defect there cannot change this run (Codex
+    4242566622).
     """
     if not isinstance(records, tuple) or not records:
         raise ValueError(f"{symbol}: funding records required with futures inputs")
@@ -345,7 +349,7 @@ def _funding(
     if published:
         read_times.add(published[-1].calc_time_ms)
     read = [r for r in ordered if r.calc_time_ms in read_times]
-    if any(not r.valid for r in read):
+    if any(not r.valid for r in needed):
         raise ValueError(f"{symbol}: valid funding records required")
     times = [r.calc_time_ms for r in read]
     if len(set(times)) != len(times):
@@ -676,9 +680,10 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         return None
 
     def latest_funding(symbol: str, hour: int) -> FundingRecord | None:
-        """The latest record published at ``hour``, if any."""
+        """The latest record published at ``hour``; None if there is none or it is invalid."""
         index = bisect_right(published_ms[symbol], hour)
-        return published[symbol][index - 1] if index else None
+        latest = published[symbol][index - 1] if index else None
+        return latest if latest is not None and latest.valid else None
 
     def estimate(symbol: str, hour: int) -> FundingEstimate | None:
         latest = latest_funding(symbol, hour)

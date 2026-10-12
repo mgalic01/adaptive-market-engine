@@ -589,23 +589,37 @@ def test_a_futures_decision_at_the_window_start_reads_the_record_published_befor
     assert all(p.timestamp_ms > fx.START for p in payments(trace))
 
 
-def test_an_invalid_record_published_before_the_window_is_refused_when_read():
+@pytest.mark.parametrize(
+    "broken",
+    [
+        lambda r: replace(r, interval_hours=None),
+        lambda r: replace(r, rate=D("NaN")),
+    ],
+    ids=["no_interval", "nan_rate"],
+)
+def test_an_invalid_record_published_before_the_window_leaves_the_estimate_unavailable(broken):
+    # The latest record published at the start (8h earlier) is invalid: the run still
+    # completes, the start's futures decision is refused for want of a funding estimate,
+    # and the next one, once the start's own valid record is usable, is admitted.
     market = fx.market("BTCUSDT", fx.downtrend, 2, futures=True)
-    broken = tuple(
-        replace(r, interval_hours=None) if r.calc_time_ms == fx.START - 8 * HOUR else r
-        for r in market.funding
+    funding = tuple(
+        broken(r) if r.calc_time_ms == fx.START - 8 * HOUR else r for r in market.funding
     )
-    with pytest.raises(ValueError, match="valid funding records required"):
-        replay_strategy(fx.run("futures_trend", 2), (replace(market, funding=broken),))
-    # Older history the first estimate never reads may stay defective.
+    trace = replay_strategy(fx.run("futures_trend", 2), (replace(market, funding=funding),))
+    assert trace.failure is None and trace.boundaries[-1].role == "terminal"
+    first, second = trace.decisions[:2]
+    assert first.assessment.decision_ms == fx.START
+    assert first.result.admission.reasons == ("funding_unavailable",)
+    assert second.assessment.decision_ms == fx.START + HOUR and second.result.admission.accepted
+    assert fills(trace)[0].fill.timestamp_ms == fx.START + HOUR
+    # Charging is unchanged: only window slots the holding survived are charged.
+    assert all(p.timestamp_ms > fx.START + HOUR for p in payments(trace))
+    # Older history the first estimate never reads may stay defective too.
     older = tuple(
-        replace(r, interval_hours=None) if r.calc_time_ms == fx.START - 16 * HOUR else r
-        for r in market.funding
+        broken(r) if r.calc_time_ms == fx.START - 16 * HOUR else r for r in market.funding
     )
-    assert (
-        replay_strategy(fx.run("futures_trend", 2), (replace(market, funding=older),)).failure
-        is None
-    )
+    trace = replay_strategy(fx.run("futures_trend", 2), (replace(market, funding=older),))
+    assert trace.failure is None and trace.decisions[0].result.admission.accepted
 
 
 def test_a_failed_trace_is_an_explicitly_incomplete_report(monkeypatch):
