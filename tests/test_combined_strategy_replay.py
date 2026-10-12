@@ -191,15 +191,20 @@ def test_grid_without_minute_flow_is_unavailable_not_ungated():
 
 
 def flow_market(days: int, steps):
-    """A ranging market whose minute taker-buy share steps at window hours.
+    """A ranging market whose minute taker-buy share steps at window times.
 
-    ``steps`` is ``((from_hour, share), ...)``; the first starts at hour -1, the
-    fixture's first minute. The gate reads the fifteen minutes before each hour, so at
-    the frame of hour h it sees the step in force just before h: a step at hour K
-    leaves every frame up to K on the old share and every frame after K on the new.
+    ``steps`` is ``((from, share), ...)``; ``from`` is a window hour or an ``(hour,
+    minute)`` pair, and the first starts at hour -1, the fixture's first minute. The gate
+    reads the fifteen minutes before each minute, so a step at K reaches it from the
+    minute after K, inside bar K: the frame of hour K still sees the old share.
     """
+
+    def at(when) -> int:
+        hour, minute = when if isinstance(when, tuple) else (when, 0)
+        return fx.START + hour * HOUR + minute * 60_000
+
     base = fx.market("BTCUSDT", fx.ranging, days)
-    edges = [fx.START + hour * HOUR for hour, _ in steps] + [fx.START + days * DAY]
+    edges = [at(when) for when, _ in steps] + [fx.START + days * DAY]
     minutes = tuple(
         bar
         for (_, share), start, stop in zip(steps, edges, edges[1:], strict=False)
@@ -213,8 +218,9 @@ def grid_buys(trace):
 
 
 def test_a_blocked_flow_gate_withholds_the_resting_grid_buys():
-    # Probe: flow is healthy at hour 0, so a basket is admitted, and blocked from the
-    # frame of hour 3 on. The control (flow always healthy) fills a buy at hour 26.
+    # Probe: flow is healthy at hour 0, so a basket is admitted, and blocked from 02:11
+    # on (eleven .3 minutes of fifteen pull the share below .40), inside bar 2. The
+    # control (flow always healthy) fills a buy at hour 26.
     control = replay_strategy(
         fx.run("spot_grid", 3), (fx.market("BTCUSDT", fx.ranging, 3, flow=True),)
     )
@@ -223,10 +229,10 @@ def test_a_blocked_flow_gate_withholds_the_resting_grid_buys():
     assert grid_buys(control)[0].timestamp_ms == fx.START + 26 * HOUR
     first = blocked.decisions[0]
     assert first.assessment.decision_ms == fx.START and first.result.admission.accepted
-    # No interval that opens with the gate blocked contains a fill of the resting buys.
+    # No interval the gate blocks at its opening or inside it fills a resting buy.
     assert grid_buys(blocked) == []
     withheld = dict(blocked.withheld_buys)["BTCUSDT"]
-    assert withheld == tuple(fx.START + hour * HOUR for hour in range(3, 72))
+    assert withheld == tuple(fx.START + hour * HOUR for hour in range(2, 72))
     # Withheld, not canceled: the basket and its reservation are still standing.
     assert blocked.finality == () and len(blocked.decisions) == 1
     last = blocked.observations[-1].snapshot
@@ -237,7 +243,8 @@ def test_withheld_grid_buys_fill_again_at_their_levels_once_flow_recovers():
     control = replay_strategy(
         fx.run("spot_grid", 4), (fx.market("BTCUSDT", fx.ranging, 4, flow=True),)
     )
-    # Blocked for the frames of hours 3-30, healthy again from the frame of hour 31.
+    # Blocked from 02:11 inside bar 2, open again at 30:08 (eight .6 minutes of
+    # fifteen): bar 30 opened blocked, so bars 2-30 are withheld and bar 31 on rest.
     recovered = replay_strategy(
         fx.run("spot_grid", 4), (flow_market(4, ((-1, ".6"), (2, ".3"), (30, ".6"))),)
     )
@@ -250,15 +257,15 @@ def test_withheld_grid_buys_fill_again_at_their_levels_once_flow_recovers():
     placed = [d for d in recovered.decisions if d.assessment.decision_ms < first.timestamp_ms]
     assert len(placed) == 1
     assert dict(recovered.withheld_buys)["BTCUSDT"] == tuple(
-        fx.START + hour * HOUR for hour in range(3, 31)
+        fx.START + hour * HOUR for hour in range(2, 31)
     )
     report = strategy_report(recovered, adapter_pin=PIN)
     assert report.reconciliation_residual == 0
 
 
 def test_a_held_grid_lot_still_sells_at_its_target_while_flow_is_blocked():
-    # Healthy through the frame of hour 25 (the buy fills in bar 25), blocked after.
-    trace = replay_strategy(fx.run("spot_grid", 3), (flow_market(3, ((-1, ".6"), (25, ".3"))),))
+    # Healthy through bar 25 (the buy fills in it), blocked from 26:11 inside bar 26.
+    trace = replay_strategy(fx.run("spot_grid", 3), (flow_market(3, ((-1, ".6"), (26, ".3"))),))
     assert trace.failure is None
     assert [f.timestamp_ms for f in grid_buys(trace)] == [fx.START + 26 * HOUR]
     sells = [e for e in fills(trace) if not e.increase]
@@ -269,6 +276,29 @@ def test_a_held_grid_lot_still_sells_at_its_target_while_flow_is_blocked():
     assert fx.START + 26 * HOUR in dict(trace.withheld_buys)["BTCUSDT"]
     report = strategy_report(trace, adapter_pin=PIN)
     assert report.reconciliation_residual == 0
+
+
+@pytest.mark.parametrize(("share", "fills_in_bar_25"), [(".1", False), (".42", True)])
+def test_flow_that_collapses_inside_an_hour_withholds_that_hours_resting_buys(
+    share, fills_in_bar_25
+):
+    # Reviewer probe: healthy flow until 25:05, then the taker-buy share falls. At .1 the
+    # gate blocks at 25:12, inside bar 25, and nothing tells when in the bar the limit
+    # was touched: bar 25's resting buys are withheld. At .42 the share never drops
+    # below .40, so the open gate stays open (hysteresis) and the buy fills as before.
+    control = replay_strategy(
+        fx.run("spot_grid", 3), (fx.market("BTCUSDT", fx.ranging, 3, flow=True),)
+    )
+    probe = replay_strategy(
+        fx.run("spot_grid", 3), (flow_market(3, ((-1, ".6"), ((25, 5), share))),)
+    )
+    assert control.failure is None and probe.failure is None
+    bar_25 = fx.START + 26 * HOUR  # a fill in bar 25 is stamped at its availability
+    assert grid_buys(control)[0].timestamp_ms == bar_25
+    assert (bar_25 in [f.timestamp_ms for f in grid_buys(probe)]) is fills_in_bar_25
+    withheld = dict(probe.withheld_buys).get("BTCUSDT", ())
+    assert (fx.START + 25 * HOUR in withheld) is not fills_in_bar_25
+    assert all(stamp >= fx.START + 25 * HOUR for stamp in withheld)
 
 
 def test_replay_is_deterministic_and_independent_of_input_order():
@@ -1191,7 +1221,7 @@ def test_withheld_grid_buys_are_disclosed_per_symbol_as_a_span():
     trace = replay_strategy(fx.run("spot_grid", 3), (flow_market(3, ((-1, ".6"), (2, ".3"))),))
     report = strategy_report(trace, adapter_pin=PIN)
     assert disclosed(report, "flow_gate_withheld_grid_buys:") == [
-        f"flow_gate_withheld_grid_buys:BTCUSDT: intervals=69 first={utc_text(hour_ms(3))} "
+        f"flow_gate_withheld_grid_buys:BTCUSDT: intervals=70 first={utc_text(hour_ms(2))} "
         f"last={utc_text(hour_ms(71))}"
     ]
     rendered(report)

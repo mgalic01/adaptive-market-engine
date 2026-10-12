@@ -165,3 +165,63 @@ def test_flow_is_volume_weighted_and_rejects_bad_completed_data():
     assert completed_flow(history + [history[-1]], 15 * 60_000) is None
     history[-1] = replace(history[-1], taker_buy_base=D(3))
     assert completed_flow(history, 15 * 60_000) is None
+
+
+MINUTE = 60_000
+
+
+def flow_minutes(first_ms, *spans):
+    """One-minute flow bars from ``first_ms``: ``(count, share)`` spans, volume 10 each;
+    a ``None`` share leaves its minutes missing."""
+    from crypto_grid_bot.backtest.klines import Kline
+
+    rows, stamp = {}, first_ms
+    for count, share in spans:
+        for _ in range(count):
+            if share is not None:
+                buy = D(10) * D(share)
+                rows[stamp] = Kline(stamp, D(1), D(1), D(1), D(1), D(10), D(10), buy)
+            stamp += MINUTE
+    return rows
+
+
+def test_the_minute_flow_gate_keeps_its_hysteresis_minute_by_minute():
+    from crypto_grid_bot.combined.routing import MinuteFlowGate
+
+    # A minute's value is the taker-buy share of the fifteen completed minutes before it.
+    start = 15 * MINUTE
+    gate = MinuteFlowGate(flow_minutes(0, (15, ".42"), (20, ".6"), (20, ".42"), (5, ".1")), start)
+    # Starts blocked, and .42 never unblocks it; nor do one or two .6 minutes (.432, .444).
+    assert [gate.advance(start + k * MINUTE) for k in range(3)] == [True] * 3
+    assert not gate.allowed
+    # Three .6 minutes lift the share to (12 * .42 + 3 * .6) / 15 = .456 >= .45.
+    assert not gate.advance(start + 3 * MINUTE) and gate.allowed
+    # Back to .42 for twenty minutes: never below .40, so it stays open.
+    assert not gate.advance(start + 40 * MINUTE) and gate.allowed
+    # One .1 minute in the window gives (.1 + 14 * .42) / 15 < .40: blocked at once.
+    assert gate.advance(start + 41 * MINUTE) and not gate.allowed
+
+
+def test_the_minute_flow_gate_reports_a_block_anywhere_in_what_it_fed():
+    from crypto_grid_bot.combined.routing import MinuteFlowGate
+
+    gate = MinuteFlowGate(flow_minutes(0, (40, ".6"), (11, ".1"), (40, ".6")), 15 * MINUTE)
+    assert not gate.advance(40 * MINUTE) and gate.allowed
+    # Seven .1 minutes of fifteen block it at 47:00; at 62:00 only four remain and it is
+    # open again. Fed through 70:00 it reports the block although it ends open.
+    assert not gate.advance(46 * MINUTE) and gate.allowed
+    assert gate.advance(47 * MINUTE) and not gate.allowed
+    assert gate.advance(61 * MINUTE) and not gate.allowed
+    assert not gate.advance(62 * MINUTE) and gate.allowed
+    assert not gate.advance(80 * MINUTE)
+
+
+def test_a_missing_minute_blocks_every_minute_whose_window_it_falls_in():
+    from crypto_grid_bot.combined.routing import MinuteFlowGate
+
+    gate = MinuteFlowGate(flow_minutes(0, (30, ".6"), (1, None), (30, ".6")), 15 * MINUTE)
+    assert not gate.advance(30 * MINUTE) and gate.allowed
+    assert gate.advance(45 * MINUTE) and not gate.allowed  # 31:00-45:00 read the gap
+    assert not gate.advance(46 * MINUTE) and gate.allowed
+    empty = MinuteFlowGate({}, 15 * MINUTE)
+    assert empty.advance(60 * MINUTE) and not empty.allowed

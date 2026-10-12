@@ -4,7 +4,7 @@ No result here is permission to submit an order; the shared portfolio reservatio
 must succeed using the same event snapshot. Protective reductions bypass routing.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from decimal import Decimal
 
@@ -92,6 +92,49 @@ def completed_flow(bars: Sequence[Kline], decision_ms: int) -> Decimal | None:
     if total == 0:
         return None
     return sum((bar.taker_buy_base for bar in selected), Decimal(0)) / total
+
+
+class MinuteFlowGate:
+    """The flow gate fed every minute from ``first_ms`` on, in order, one at a time.
+
+    Each minute's value is ``completed_flow`` of the fifteen completed minutes before
+    it, read from ``bars`` (keyed by opening time), and passes ``FlowGate``'s
+    hysteresis, which starts blocked. A minute without its fifteen bars is unavailable,
+    so it blocks.
+    """
+
+    def __init__(self, bars: Mapping[int, Kline], first_ms: int) -> None:
+        self._bars = bars
+        self._gate = FlowGate()
+        self._next = first_ms
+
+    @property
+    def allowed(self) -> bool:
+        """The gate after the last minute fed."""
+        return self._gate.allowed
+
+    def advance(self, through_ms: int) -> bool:
+        """Feed every minute up to and including ``through_ms``; True when the gate was
+        blocked after any of them."""
+        minute = 60_000
+        if self._next > through_ms:
+            return False
+        if not self._bars:  # every minute is unavailable
+            self._gate.update(None)
+            self._next = through_ms // minute * minute + minute
+            return True
+        blocked = False
+        while self._next <= through_ms:
+            stamp = self._next
+            window = tuple(
+                bar
+                for opened in range(stamp - 15 * minute, stamp, minute)
+                if (bar := self._bars.get(opened)) is not None
+            )
+            ratio = completed_flow(window, stamp) if len(window) == 15 else None
+            blocked = not self._gate.update(ratio) or blocked
+            self._next = stamp + minute
+        return blocked
 
 
 def qualify(assessment: Assessment, context: RoutingContext) -> Qualification:
