@@ -1,0 +1,1449 @@
+{
+ "created_at": "2026-10-12T15:08:22+00:00",
+ "dataset": "v3-1-minute-bars-2020-2021",
+ "files": [
+  {
+   "bytes": 1585072,
+   "expected_rows": 41760,
+   "first_open_ms": 1580515200000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1583020740000,
+   "missing_rows": 414,
+   "month": "2020-02",
+   "rows": 41346,
+   "sha256": "da94c28998ff408a3dd74c0e86a465528e10b160a260d35f0656a9057138b108",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-02.zip"
+  },
+  {
+   "bytes": 1626571,
+   "expected_rows": 44640,
+   "first_open_ms": 1583020800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1585699140000,
+   "missing_rows": 128,
+   "month": "2020-03",
+   "rows": 44512,
+   "sha256": "c6d5a2472df603cb7d8ac60fc2fba9318588996376dbe38eb78333f346306373",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-03.zip"
+  },
+  {
+   "bytes": 1499623,
+   "expected_rows": 43200,
+   "first_open_ms": 1585699200000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1588291140000,
+   "missing_rows": 150,
+   "month": "2020-04",
+   "rows": 43050,
+   "sha256": "40b290f8862adb6b0b922e0ab86a699e435bf56c58236750bada2ed0f8786ba0",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-04.zip"
+  },
+  {
+   "bytes": 1681503,
+   "expected_rows": 44640,
+   "first_open_ms": 1588291200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1590969540000,
+   "missing_rows": 0,
+   "month": "2020-05",
+   "rows": 44640,
+   "sha256": "b45f3fe0699a1fe631563593d4b3bbdb2c075239ea485e51397eec089fae7d2b",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-05.zip"
+  },
+  {
+   "bytes": 1682422,
+   "expected_rows": 43200,
+   "first_open_ms": 1590969600000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1593561540000,
+   "missing_rows": 210,
+   "month": "2020-06",
+   "rows": 42990,
+   "sha256": "dfbfa33fa68c03793f03bd856b77980f512ef94a40dc49725cbc02090ae8a3c0",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-06.zip"
+  },
+  {
+   "bytes": 1838632,
+   "expected_rows": 44640,
+   "first_open_ms": 1593561600000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1596239940000,
+   "missing_rows": 0,
+   "month": "2020-07",
+   "rows": 44640,
+   "sha256": "7a3f280cace6ba49d6e41e863824f078d8cf0f47ee0334cbb642ff8ef05c2978",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-07.zip"
+  },
+  {
+   "bytes": 1814256,
+   "expected_rows": 44640,
+   "first_open_ms": 1596240000000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1598918340000,
+   "missing_rows": 0,
+   "month": "2020-08",
+   "rows": 44640,
+   "sha256": "ca1f8735ee9af8391799a755eb5e33b3cacf297bade4e2efe04aa5122df3b175",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-08.zip"
+  },
+  {
+   "bytes": 1737449,
+   "expected_rows": 43200,
+   "first_open_ms": 1598918400000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1601510340000,
+   "missing_rows": 0,
+   "month": "2020-09",
+   "rows": 43200,
+   "sha256": "7c95989ad131343607153298015fff438b6ac31ffd15441eb01410e196ea0f53",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-09.zip"
+  },
+  {
+   "bytes": 1737567,
+   "expected_rows": 44640,
+   "first_open_ms": 1601510400000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1604188740000,
+   "missing_rows": 0,
+   "month": "2020-10",
+   "rows": 44640,
+   "sha256": "e01e326374a2b5c74345a818e964179145add5b3b139b6b2fa2ae827c9b41217",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-10.zip"
+  },
+  {
+   "bytes": 1790613,
+   "expected_rows": 43200,
+   "first_open_ms": 1604188800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1606780740000,
+   "missing_rows": 60,
+   "month": "2020-11",
+   "rows": 43140,
+   "sha256": "65b4c5fcab00bab55213ccf4d065767bf334e59e4df1d8016724a122265ca9ef",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-11.zip"
+  },
+  {
+   "bytes": 1881307,
+   "expected_rows": 44640,
+   "first_open_ms": 1606780800000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1609459140000,
+   "missing_rows": 291,
+   "month": "2020-12",
+   "rows": 44349,
+   "sha256": "00e02361849759f9671269982f08cfd031b48779ca97809ea121d5a725304624",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2020-12.zip"
+  },
+  {
+   "bytes": 2013325,
+   "expected_rows": 44640,
+   "first_open_ms": 1609459200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1612137540000,
+   "missing_rows": 0,
+   "month": "2021-01",
+   "rows": 44640,
+   "sha256": "88631d7bccf800f92e93f7658fe705869bca89df210c2f3191f16183071c9317",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2021-01.zip"
+  },
+  {
+   "bytes": 1889164,
+   "expected_rows": 40320,
+   "first_open_ms": 1612137600000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1614556740000,
+   "missing_rows": 79,
+   "month": "2021-02",
+   "rows": 40241,
+   "sha256": "a5499d69dbc1eedae6c558f09ce8d7ce77abb14eeca08b869d8b9b45740af0da",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2021-02.zip"
+  },
+  {
+   "bytes": 2053240,
+   "expected_rows": 44640,
+   "first_open_ms": 1614556800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1617235140000,
+   "missing_rows": 90,
+   "month": "2021-03",
+   "rows": 44550,
+   "sha256": "1f060083b4b47bbdebd57b21e95ec6eb0f573caa93061da074c79033b344e317",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2021-03.zip"
+  },
+  {
+   "bytes": 1964027,
+   "expected_rows": 43200,
+   "first_open_ms": 1617235200000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1619827140000,
+   "missing_rows": 434,
+   "month": "2021-04",
+   "rows": 42766,
+   "sha256": "c3288bf97b90ecdc8615f38160d0910f01966cf90e9e9e6ec981482d5e45fb17",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2021-04.zip"
+  },
+  {
+   "bytes": 2089601,
+   "expected_rows": 44640,
+   "first_open_ms": 1619827200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1622505540000,
+   "missing_rows": 0,
+   "month": "2021-05",
+   "rows": 44640,
+   "sha256": "578df2c0bba90c3d9e85ef31674e65cb534367cd55d06cd52a5554874c1a2203",
+   "status": "ok",
+   "symbol": "ADAUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/ADAUSDT/1m/ADAUSDT-1m-2021-05.zip"
+  },
+  {
+   "bytes": 1761073,
+   "expected_rows": 41760,
+   "first_open_ms": 1580515200000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1583020740000,
+   "missing_rows": 414,
+   "month": "2020-02",
+   "rows": 41346,
+   "sha256": "a1e525fa329ac711bb7ff96df9215eafd58895b1bc407633261599a5340e25d8",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-02.zip"
+  },
+  {
+   "bytes": 1912125,
+   "expected_rows": 44640,
+   "first_open_ms": 1583020800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1585699140000,
+   "missing_rows": 128,
+   "month": "2020-03",
+   "rows": 44512,
+   "sha256": "f7e16726913964b66692be4e286ed343f03a44d3f9b9f550ab7ad47bcf73f474",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-03.zip"
+  },
+  {
+   "bytes": 1823488,
+   "expected_rows": 43200,
+   "first_open_ms": 1585699200000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1588291140000,
+   "missing_rows": 150,
+   "month": "2020-04",
+   "rows": 43050,
+   "sha256": "e19deaf885cf3bc177acddc7cb77e88ce3e14d2a5fc62435570f9e1390193fae",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-04.zip"
+  },
+  {
+   "bytes": 1854111,
+   "expected_rows": 44640,
+   "first_open_ms": 1588291200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1590969540000,
+   "missing_rows": 0,
+   "month": "2020-05",
+   "rows": 44640,
+   "sha256": "93908ff1f70719f3c3a088571883642dc92a368f327a5ac999bd5d73a9ea731a",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-05.zip"
+  },
+  {
+   "bytes": 1732243,
+   "expected_rows": 43200,
+   "first_open_ms": 1590969600000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1593561540000,
+   "missing_rows": 210,
+   "month": "2020-06",
+   "rows": 42990,
+   "sha256": "99d988eb20ac6114e72ab9b433f0f472a5ae65a5cf1538722871052508f40f4c",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-06.zip"
+  },
+  {
+   "bytes": 1859156,
+   "expected_rows": 44640,
+   "first_open_ms": 1593561600000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1596239940000,
+   "missing_rows": 0,
+   "month": "2020-07",
+   "rows": 44640,
+   "sha256": "0db237788d9b00fa5a226098014724a7ef0f9ca76c47b4fc4257582654a904b8",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-07.zip"
+  },
+  {
+   "bytes": 1911496,
+   "expected_rows": 44640,
+   "first_open_ms": 1596240000000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1598918340000,
+   "missing_rows": 0,
+   "month": "2020-08",
+   "rows": 44640,
+   "sha256": "ddf2e9d37e7cb1a83183eb42f8358d36c6dcfee7a9c98c638b5a6425027bcacb",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-08.zip"
+  },
+  {
+   "bytes": 1958140,
+   "expected_rows": 43200,
+   "first_open_ms": 1598918400000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1601510340000,
+   "missing_rows": 0,
+   "month": "2020-09",
+   "rows": 43200,
+   "sha256": "a901333ea7786020ee3dc203ab315300daa2c3330f0e400346eb027114eb20a7",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-09.zip"
+  },
+  {
+   "bytes": 2005385,
+   "expected_rows": 44640,
+   "first_open_ms": 1601510400000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1604188740000,
+   "missing_rows": 0,
+   "month": "2020-10",
+   "rows": 44640,
+   "sha256": "b60692cf79a5cace96dfd68df6ce2a035f141ce9d518af95d7f93e07210d7bb3",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-10.zip"
+  },
+  {
+   "bytes": 1947344,
+   "expected_rows": 43200,
+   "first_open_ms": 1604188800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1606780740000,
+   "missing_rows": 60,
+   "month": "2020-11",
+   "rows": 43140,
+   "sha256": "6c39d28ee8b4fcfe639e19048a7047ec71822b7a1de3be051d014b871168a01b",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-11.zip"
+  },
+  {
+   "bytes": 2012341,
+   "expected_rows": 44640,
+   "first_open_ms": 1606780800000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1609459140000,
+   "missing_rows": 291,
+   "month": "2020-12",
+   "rows": 44349,
+   "sha256": "cc28b00709df9af32abf4c43c9b3cfd996b6ec3ef77d0a9c2a368b43ea755129",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-12.zip"
+  },
+  {
+   "bytes": 2093612,
+   "expected_rows": 44640,
+   "first_open_ms": 1609459200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1612137540000,
+   "missing_rows": 0,
+   "month": "2021-01",
+   "rows": 44640,
+   "sha256": "2eb2342c9fa2146018df1b8905332c616e7d03df54a70c65a4493c2cb2e3d123",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2021-01.zip"
+  },
+  {
+   "bytes": 2017403,
+   "expected_rows": 40320,
+   "first_open_ms": 1612137600000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1614556740000,
+   "missing_rows": 79,
+   "month": "2021-02",
+   "rows": 40241,
+   "sha256": "1aeb40c89fcd301821670f49bfbb167bf50ccc40b1eb158da55aa81275491ee6",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2021-02.zip"
+  },
+  {
+   "bytes": 2222146,
+   "expected_rows": 44640,
+   "first_open_ms": 1614556800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1617235140000,
+   "missing_rows": 90,
+   "month": "2021-03",
+   "rows": 44550,
+   "sha256": "3cd089639d07623a98764cdcf9b51d08fc108d2cdcceb88f0a336cbdeb0d1ddb",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2021-03.zip"
+  },
+  {
+   "bytes": 2167519,
+   "expected_rows": 43200,
+   "first_open_ms": 1617235200000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1619827140000,
+   "missing_rows": 434,
+   "month": "2021-04",
+   "rows": 42766,
+   "sha256": "4fcdce313761d695b268ff5cd0898766d2922834aa290cb7030c38187fb4e44b",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2021-04.zip"
+  },
+  {
+   "bytes": 2150529,
+   "expected_rows": 44640,
+   "first_open_ms": 1619827200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1622505540000,
+   "missing_rows": 0,
+   "month": "2021-05",
+   "rows": 44640,
+   "sha256": "b7ad3069082f31f4d1e7e3485e7a2f3ce897221ddc53e99db688be9d13955725",
+   "status": "ok",
+   "symbol": "BNBUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2021-05.zip"
+  },
+  {
+   "bytes": 1671557,
+   "expected_rows": 41760,
+   "first_open_ms": 1580515200000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1583020740000,
+   "missing_rows": 414,
+   "month": "2020-02",
+   "rows": 41346,
+   "sha256": "1f03ec1bca772713202b80455e7448cc07d7e3a7615c4daff31acfad8de1ce85",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-02.zip"
+  },
+  {
+   "bytes": 1857978,
+   "expected_rows": 44640,
+   "first_open_ms": 1583020800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1585699140000,
+   "missing_rows": 128,
+   "month": "2020-03",
+   "rows": 44512,
+   "sha256": "e86942b75d512845e2205fee33668d5b54965fe9e2213f22843cc916c02bce43",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-03.zip"
+  },
+  {
+   "bytes": 1768872,
+   "expected_rows": 43200,
+   "first_open_ms": 1585699200000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1588291140000,
+   "missing_rows": 150,
+   "month": "2020-04",
+   "rows": 43050,
+   "sha256": "cac929b52c3d6471877ce2e570c02a3804027434f3c895b9b506e1a8701eab74",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-04.zip"
+  },
+  {
+   "bytes": 1745665,
+   "expected_rows": 44640,
+   "first_open_ms": 1588291200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1590969540000,
+   "missing_rows": 0,
+   "month": "2020-05",
+   "rows": 44640,
+   "sha256": "7dc7e7b3aa6894f237a26e7931a4dc36ae7c37d7113eaa28d8f4fb4fd68efd1e",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-05.zip"
+  },
+  {
+   "bytes": 1584144,
+   "expected_rows": 43200,
+   "first_open_ms": 1590969600000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1593561540000,
+   "missing_rows": 210,
+   "month": "2020-06",
+   "rows": 42990,
+   "sha256": "3c5553222811e642c2ad1f36de9f92f3c8cbdfbc6b86987bcd14313362429fe1",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-06.zip"
+  },
+  {
+   "bytes": 1865264,
+   "expected_rows": 44640,
+   "first_open_ms": 1593561600000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1596239940000,
+   "missing_rows": 0,
+   "month": "2020-07",
+   "rows": 44640,
+   "sha256": "c25575fc2e09a13dc21b2f28b7fa51fb9059ef8e7149521fc7409f8b9d0f308f",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-07.zip"
+  },
+  {
+   "bytes": 1990434,
+   "expected_rows": 44640,
+   "first_open_ms": 1596240000000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1598918340000,
+   "missing_rows": 0,
+   "month": "2020-08",
+   "rows": 44640,
+   "sha256": "bb9161c94d1718d6883b47b63b15ef85357624cb2773cf287080637d46ae28c9",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-08.zip"
+  },
+  {
+   "bytes": 1897380,
+   "expected_rows": 43200,
+   "first_open_ms": 1598918400000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1601510340000,
+   "missing_rows": 0,
+   "month": "2020-09",
+   "rows": 43200,
+   "sha256": "e4d6f7f7ab843e57600037cea02aff8296f3138ceb02f49564d360e5a1a091fd",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-09.zip"
+  },
+  {
+   "bytes": 1896888,
+   "expected_rows": 44640,
+   "first_open_ms": 1601510400000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1604188740000,
+   "missing_rows": 0,
+   "month": "2020-10",
+   "rows": 44640,
+   "sha256": "96f54fe72a8af36f27bc2e059b14bd73f8c0e78abfc8e68571714d2c9a225502",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-10.zip"
+  },
+  {
+   "bytes": 1896255,
+   "expected_rows": 43200,
+   "first_open_ms": 1604188800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1606780740000,
+   "missing_rows": 60,
+   "month": "2020-11",
+   "rows": 43140,
+   "sha256": "def1468b9f228f9eb22fa4eacb774d5ede6778792993b691ae798b866e4de9f9",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-11.zip"
+  },
+  {
+   "bytes": 1909622,
+   "expected_rows": 44640,
+   "first_open_ms": 1606780800000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1609459140000,
+   "missing_rows": 291,
+   "month": "2020-12",
+   "rows": 44349,
+   "sha256": "aa3981cb23321828e4b7d965593a5f001587e52cc883a494167e800fea4ee053",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2020-12.zip"
+  },
+  {
+   "bytes": 2036545,
+   "expected_rows": 44640,
+   "first_open_ms": 1609459200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1612137540000,
+   "missing_rows": 0,
+   "month": "2021-01",
+   "rows": 44640,
+   "sha256": "fa6596426389cbdb9a3e05419b7fbb542a7659e64a002e13bc88f390f2170ff4",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2021-01.zip"
+  },
+  {
+   "bytes": 1826795,
+   "expected_rows": 40320,
+   "first_open_ms": 1612137600000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1614556740000,
+   "missing_rows": 79,
+   "month": "2021-02",
+   "rows": 40241,
+   "sha256": "da56ff4981ecce15bab46e12fc01cba7204ef1cf65d03dc6f765214b142306e6",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2021-02.zip"
+  },
+  {
+   "bytes": 1968050,
+   "expected_rows": 44640,
+   "first_open_ms": 1614556800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1617235140000,
+   "missing_rows": 90,
+   "month": "2021-03",
+   "rows": 44550,
+   "sha256": "df65da9ce233300fbc1b1989852491f9d129c67ea662b429e0103331fe065580",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2021-03.zip"
+  },
+  {
+   "bytes": 1941315,
+   "expected_rows": 43200,
+   "first_open_ms": 1617235200000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1619827140000,
+   "missing_rows": 434,
+   "month": "2021-04",
+   "rows": 42766,
+   "sha256": "b67fa0b663340ceeddfd2757fc42d20c3aed84c749fc85da526c96320e67ef9a",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2021-04.zip"
+  },
+  {
+   "bytes": 2047272,
+   "expected_rows": 44640,
+   "first_open_ms": 1619827200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1622505540000,
+   "missing_rows": 0,
+   "month": "2021-05",
+   "rows": 44640,
+   "sha256": "3869bf7b6b5b1779b0c569e4e947db7d093803c791062014384d047b3f79f338",
+   "status": "ok",
+   "symbol": "LINKUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LINKUSDT/1m/LINKUSDT-1m-2021-05.zip"
+  },
+  {
+   "bytes": 1794043,
+   "expected_rows": 41760,
+   "first_open_ms": 1580515200000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1583020740000,
+   "missing_rows": 414,
+   "month": "2020-02",
+   "rows": 41346,
+   "sha256": "c9aa4a709c7c8a7da854db93e85fd1c87d11db563afef60ad100b3eef01603cc",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-02.zip"
+  },
+  {
+   "bytes": 1905504,
+   "expected_rows": 44640,
+   "first_open_ms": 1583020800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1585699140000,
+   "missing_rows": 128,
+   "month": "2020-03",
+   "rows": 44512,
+   "sha256": "102120e3680edeb18cbc567d3d3a60acecc3bd9ded5fe6529446b7234a6dfbfe",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-03.zip"
+  },
+  {
+   "bytes": 1772381,
+   "expected_rows": 43200,
+   "first_open_ms": 1585699200000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1588291140000,
+   "missing_rows": 150,
+   "month": "2020-04",
+   "rows": 43050,
+   "sha256": "f51545f76523c9b9f872a45f5d6be76360ccd866e73e25507e2d6c36dfbfd8b9",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-04.zip"
+  },
+  {
+   "bytes": 1815634,
+   "expected_rows": 44640,
+   "first_open_ms": 1588291200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1590969540000,
+   "missing_rows": 0,
+   "month": "2020-05",
+   "rows": 44640,
+   "sha256": "752b9b82557883144295004dbeaffbe20130b845d441537beefb33724bae989c",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-05.zip"
+  },
+  {
+   "bytes": 1664371,
+   "expected_rows": 43200,
+   "first_open_ms": 1590969600000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1593561540000,
+   "missing_rows": 210,
+   "month": "2020-06",
+   "rows": 42990,
+   "sha256": "fca62ecaaae77a129c3b96d6711a22f8b1448ca068e41803f52500817a444658",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-06.zip"
+  },
+  {
+   "bytes": 1752888,
+   "expected_rows": 44640,
+   "first_open_ms": 1593561600000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1596239940000,
+   "missing_rows": 0,
+   "month": "2020-07",
+   "rows": 44640,
+   "sha256": "275a915a30aa65d5b88c42673479075747606cd0fcfa47ec344347ee888b6bfe",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-07.zip"
+  },
+  {
+   "bytes": 1907493,
+   "expected_rows": 44640,
+   "first_open_ms": 1596240000000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1598918340000,
+   "missing_rows": 0,
+   "month": "2020-08",
+   "rows": 44640,
+   "sha256": "c4ab30e3629a53d8a4c23e4c833e48c353d3174e855835b4ed957ed7c36c0e89",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-08.zip"
+  },
+  {
+   "bytes": 1731138,
+   "expected_rows": 43200,
+   "first_open_ms": 1598918400000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1601510340000,
+   "missing_rows": 0,
+   "month": "2020-09",
+   "rows": 43200,
+   "sha256": "c1a41608a68056c504d40f8c4bac1d6e36ee0b449e0154394696a60bf8f0a66a",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-09.zip"
+  },
+  {
+   "bytes": 1777500,
+   "expected_rows": 44640,
+   "first_open_ms": 1601510400000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1604188740000,
+   "missing_rows": 0,
+   "month": "2020-10",
+   "rows": 44640,
+   "sha256": "d4541624ca1859f88be2c1800bd623a3500257238056c86028ab1ea7cc658a76",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-10.zip"
+  },
+  {
+   "bytes": 1911658,
+   "expected_rows": 43200,
+   "first_open_ms": 1604188800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1606780740000,
+   "missing_rows": 60,
+   "month": "2020-11",
+   "rows": 43140,
+   "sha256": "811d734d21df8038bdd2ecbf8d8922fe0437fe067f345b55a19dcdbffd5d8e7e",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-11.zip"
+  },
+  {
+   "bytes": 2035666,
+   "expected_rows": 44640,
+   "first_open_ms": 1606780800000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1609459140000,
+   "missing_rows": 291,
+   "month": "2020-12",
+   "rows": 44349,
+   "sha256": "dd52a815275bb21385c08aa16afb6dd16bd49fd58d02b5befcaa7ae7cf713ea2",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2020-12.zip"
+  },
+  {
+   "bytes": 2102915,
+   "expected_rows": 44640,
+   "first_open_ms": 1609459200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1612137540000,
+   "missing_rows": 0,
+   "month": "2021-01",
+   "rows": 44640,
+   "sha256": "cc589977222709bcca8d1453c5b196831b11097e15ec86d3a9f767e7d7b18ad1",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2021-01.zip"
+  },
+  {
+   "bytes": 1907554,
+   "expected_rows": 40320,
+   "first_open_ms": 1612137600000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1614556740000,
+   "missing_rows": 79,
+   "month": "2021-02",
+   "rows": 40241,
+   "sha256": "95585e6581fb6850fc30da79fe7aff8cef64e363a284c12a5c1eace1ee831f4c",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2021-02.zip"
+  },
+  {
+   "bytes": 2065942,
+   "expected_rows": 44640,
+   "first_open_ms": 1614556800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1617235140000,
+   "missing_rows": 90,
+   "month": "2021-03",
+   "rows": 44550,
+   "sha256": "fba344f3c698b64513b45fc09dda056da81e888b34774cde43ab39bca3e4945e",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2021-03.zip"
+  },
+  {
+   "bytes": 2038904,
+   "expected_rows": 43200,
+   "first_open_ms": 1617235200000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1619827140000,
+   "missing_rows": 433,
+   "month": "2021-04",
+   "rows": 42767,
+   "sha256": "c8fae2e85ee9b356336a900de20750085f3ac24ef64a2ba1ce321c090e8bd6ec",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2021-04.zip"
+  },
+  {
+   "bytes": 2161073,
+   "expected_rows": 44640,
+   "first_open_ms": 1619827200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1622505540000,
+   "missing_rows": 0,
+   "month": "2021-05",
+   "rows": 44640,
+   "sha256": "7578a39283786d8b8b8fb68d7d86f275d68d3cd5cef11971acc9a6306c4c84f3",
+   "status": "ok",
+   "symbol": "LTCUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/LTCUSDT/1m/LTCUSDT-1m-2021-05.zip"
+  },
+  {
+   "bytes": 1597644,
+   "expected_rows": 41760,
+   "first_open_ms": 1580515200000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1583020740000,
+   "missing_rows": 414,
+   "month": "2020-02",
+   "rows": 41346,
+   "sha256": "88192ac042a3ba4df5755c222fa6ea91a740f5232f5fcb6bd163ae9fd68c0418",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-02.zip"
+  },
+  {
+   "bytes": 1603473,
+   "expected_rows": 44640,
+   "first_open_ms": 1583020800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1585699140000,
+   "missing_rows": 128,
+   "month": "2020-03",
+   "rows": 44512,
+   "sha256": "0d2bfe1316fc27adc5ca6d98ac19aeb5ce4a04c88355b1f51201a85acc3ad7c0",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-03.zip"
+  },
+  {
+   "bytes": 1456224,
+   "expected_rows": 43200,
+   "first_open_ms": 1585699200000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1588291140000,
+   "missing_rows": 150,
+   "month": "2020-04",
+   "rows": 43050,
+   "sha256": "08c4d7c4d19c4827267efd36d04b42fe9f500ab2d67ee8e3cfe3564bd11a7bab",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-04.zip"
+  },
+  {
+   "bytes": 1562174,
+   "expected_rows": 44640,
+   "first_open_ms": 1588291200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1590969540000,
+   "missing_rows": 0,
+   "month": "2020-05",
+   "rows": 44640,
+   "sha256": "96f735f2bda68b99298b825361114a879449b27b969b9d30c073859fc656e7f0",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-05.zip"
+  },
+  {
+   "bytes": 1420400,
+   "expected_rows": 43200,
+   "first_open_ms": 1590969600000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1593561540000,
+   "missing_rows": 210,
+   "month": "2020-06",
+   "rows": 42990,
+   "sha256": "759e5bd85f714cd19de5ad1d216a648c57cee4c4ca331b677b0f98a4815fb7b0",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-06.zip"
+  },
+  {
+   "bytes": 1572985,
+   "expected_rows": 44640,
+   "first_open_ms": 1593561600000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1596239940000,
+   "missing_rows": 0,
+   "month": "2020-07",
+   "rows": 44640,
+   "sha256": "0b972a9793b7e0e1d978a81c605ffb6481f6b0ee44cfd1554ce7340cced3aa90",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-07.zip"
+  },
+  {
+   "bytes": 1749088,
+   "expected_rows": 44640,
+   "first_open_ms": 1596240000000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1598918340000,
+   "missing_rows": 0,
+   "month": "2020-08",
+   "rows": 44640,
+   "sha256": "0318a33c5eda565474297f7cd80fd49eac2f89fde3a72061bc243930048c6327",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-08.zip"
+  },
+  {
+   "bytes": 1767473,
+   "expected_rows": 43200,
+   "first_open_ms": 1598918400000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1601510340000,
+   "missing_rows": 0,
+   "month": "2020-09",
+   "rows": 43200,
+   "sha256": "cbf64d214aad2d36a788fe8d49e231c5de818f440d79490996a6f792baa00d31",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-09.zip"
+  },
+  {
+   "bytes": 1652470,
+   "expected_rows": 44640,
+   "first_open_ms": 1601510400000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1604188740000,
+   "missing_rows": 0,
+   "month": "2020-10",
+   "rows": 44640,
+   "sha256": "d2d51fd2563d15c9170d10c18cbc1aaa2cbfaa611e6cf270f7734ebe32754d44",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-10.zip"
+  },
+  {
+   "bytes": 1667150,
+   "expected_rows": 43200,
+   "first_open_ms": 1604188800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1606780740000,
+   "missing_rows": 60,
+   "month": "2020-11",
+   "rows": 43140,
+   "sha256": "ac59555d5adc9b3c1434ca988b550cf55b09429bb8dac88be7332b1da7d9cbc9",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-11.zip"
+  },
+  {
+   "bytes": 1730439,
+   "expected_rows": 44640,
+   "first_open_ms": 1606780800000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1609459140000,
+   "missing_rows": 291,
+   "month": "2020-12",
+   "rows": 44349,
+   "sha256": "8b38d3f8017357915a19af0f74787af20e56f981a171645b4759b02d6e9bb7ea",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2020-12.zip"
+  },
+  {
+   "bytes": 1835174,
+   "expected_rows": 44640,
+   "first_open_ms": 1609459200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1612137540000,
+   "missing_rows": 0,
+   "month": "2021-01",
+   "rows": 44640,
+   "sha256": "c39e656ce911ef2248187e40eb1e9e721a99296824476fb83f20d725de5c30d8",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2021-01.zip"
+  },
+  {
+   "bytes": 1725821,
+   "expected_rows": 40320,
+   "first_open_ms": 1612137600000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1614556740000,
+   "missing_rows": 79,
+   "month": "2021-02",
+   "rows": 40241,
+   "sha256": "e63352efe030e4aabb3ed86065f6d575ca0eaea7979a7e80e72de5c18dd8eca8",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2021-02.zip"
+  },
+  {
+   "bytes": 1881604,
+   "expected_rows": 44640,
+   "first_open_ms": 1614556800000,
+   "gaps": 1,
+   "interval": "1m",
+   "last_open_ms": 1617235140000,
+   "missing_rows": 90,
+   "month": "2021-03",
+   "rows": 44550,
+   "sha256": "3d257925d730dcb949dba12fcac7b48f61d127ad92f07886598842b46bc05267",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2021-03.zip"
+  },
+  {
+   "bytes": 1957918,
+   "expected_rows": 43200,
+   "first_open_ms": 1617235200000,
+   "gaps": 2,
+   "interval": "1m",
+   "last_open_ms": 1619827140000,
+   "missing_rows": 434,
+   "month": "2021-04",
+   "rows": 42766,
+   "sha256": "858ef1d15d187ed678788e4406a0a91c6d1cdef57c1dcfa6bac20ad9bf2605b7",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2021-04.zip"
+  },
+  {
+   "bytes": 1997468,
+   "expected_rows": 44640,
+   "first_open_ms": 1619827200000,
+   "gaps": 0,
+   "interval": "1m",
+   "last_open_ms": 1622505540000,
+   "missing_rows": 0,
+   "month": "2021-05",
+   "rows": 44640,
+   "sha256": "14029fae01fdd96e8eda3f8276b97f2a264f3cf37e2bbb29b6afbc069e7a75bc",
+   "status": "ok",
+   "symbol": "TRXUSDT",
+   "timestamp_units": [
+    "ms"
+   ],
+   "url": "https://data.binance.vision/data/spot/monthly/klines/TRXUSDT/1m/TRXUSDT-1m-2021-05.zip"
+  }
+ ],
+ "instruments": {},
+ "schema": 1,
+ "source": "https://data.binance.vision"
+}
