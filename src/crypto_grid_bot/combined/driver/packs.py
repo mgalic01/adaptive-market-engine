@@ -4,9 +4,11 @@ A pack holds what every run job of a window replays, per coin: the spot hourly h
 and the futures hourly bars, the daily bars (V3's day rule), the funding records, the
 venue rules and the flow schedule. It is built from decoded months (``driver.decode``),
 minute bars streamed once into the flow schedule (``driver.flow_schedule``) and venue
-rules (``driver.venues``), and written as gzip JSON whose bytes depend only on the pack,
-so its SHA-256 can be pinned. The skipped hours are derived from the same inputs, and
-``check_window`` refuses a window that breaks the registration checklist.
+rules (``driver.venues``), and written as gzip JSON. The pin is the SHA-256 of the
+canonical JSON inside (Ruling P11): the same pack has the same hash on any machine, while
+the gzip bytes around it may differ between zlib builds. The skipped hours are derived from
+the same inputs, and ``check_window`` refuses a window that breaks the registration
+checklist.
 
 Pure: nothing here touches the network, and nothing at or after the reserved boundary
 enters a pack.
@@ -17,6 +19,7 @@ import hashlib
 import io
 import json
 import re
+import zlib
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
@@ -40,6 +43,8 @@ _MINUTE = 60_000
 _LOOK_BACK = 15 * _MINUTE  # the flow gate's first read minute, before the window start
 _HISTORY = 365 * DAY  # the longest spot history a pack holds (Ruling P7)
 _RESERVED = 1_735_689_600_000
+MAX_CONTENT_BYTES = 2 * 1024**3  # read_pack refuses a pack that decompresses to more
+_CHUNK = 1 << 20
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _FORMAT = "v3.1-input-pack/1"
 _MONTH = re.compile(r"[0-9]{4}-(?:0[1-9]|1[0-2])")
@@ -258,44 +263,69 @@ def check_window(pack: WindowPack) -> None:
 
 
 def write_pack(pack: WindowPack, path: str | Path) -> str:
-    """Write ``pack`` to a new file at ``path`` and return the file's SHA-256 (hex).
+    """Write ``pack`` to a new file at ``path`` and return its pin: the SHA-256 (hex) of
+    the canonical JSON the file compresses.
 
-    The file is gzip JSON whose bytes depend only on the pack: sorted keys, fixed
-    separators, ASCII, Decimals as their ``str()``, flow bitsets as hex, and a gzip header
-    with mtime 0 and no file name. An existing file is refused, never replaced.
+    That JSON depends only on the pack (sorted keys, fixed separators, ASCII, Decimals as
+    their ``str()``, flow bitsets as hex), so the pin is the same on any machine. The gzip
+    around it has mtime 0 and no file name; its bytes repeat on one zlib build but may
+    differ between builds, so the file's own hash is not the pin. An existing file is
+    refused, never replaced.
     """
     if not isinstance(pack, WindowPack):
         raise ValueError("window pack required")
     with localcontext(Context()):  # str() reads the context's exponent letter case
         document = _pack_document(pack)
     text = json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    content = text.encode("ascii")
     buffer = io.BytesIO()
     with gzip.GzipFile(filename="", mode="wb", fileobj=buffer, mtime=0) as archive:
-        archive.write(text.encode("ascii"))
-    content = buffer.getvalue()
+        archive.write(content)
     with open(path, "xb") as handle:
-        handle.write(content)
+        handle.write(buffer.getvalue())
     return hashlib.sha256(content).hexdigest()
 
 
 def read_pack(path: str | Path, expected_sha256: str) -> WindowPack:
-    """The pack at ``path``, rebuilt equal to the one written; the file's SHA-256 must
-    equal ``expected_sha256``, checked before any byte is parsed. A duplicate JSON key,
-    a non-integer number or a field out of place is refused."""
+    """The pack at ``path``, rebuilt equal to the one written.
+
+    The file is decompressed, refused past ``MAX_CONTENT_BYTES``, and the SHA-256 of its
+    JSON must equal ``expected_sha256``, checked before the JSON is parsed; any gzip bytes
+    of that JSON are accepted. A duplicate JSON key, a non-integer number or a field out
+    of place is refused."""
     if not isinstance(expected_sha256, str) or _SHA256.fullmatch(expected_sha256) is None:
         raise ValueError("the expected pack sha256 must be 64 lowercase hex digits")
-    content = Path(path).read_bytes()
+    content = _decompressed(path)
     actual = hashlib.sha256(content).hexdigest()
     if actual != expected_sha256:
         raise ValueError(f"{path}: pack sha256 {actual} differs from the pinned {expected_sha256}")
     document = json.loads(
-        gzip.decompress(content),
+        content,
         object_pairs_hook=_unique_keys,
         parse_float=_not_an_integer,
         parse_constant=_not_an_integer,
     )
     with localcontext(Context()):
         return _pack_from(document)
+
+
+def _decompressed(path: str | Path) -> bytes:
+    """The bytes the gzip file at ``path`` holds; at most ``MAX_CONTENT_BYTES`` + 1 are
+    ever decompressed, so an oversized stream is refused without exhausting memory."""
+    cap = MAX_CONTENT_BYTES
+    compressed = io.BytesIO(Path(path).read_bytes())
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        with gzip.GzipFile(fileobj=compressed, mode="rb") as archive:
+            while chunk := archive.read(min(_CHUNK, cap + 1 - total)):
+                total += len(chunk)
+                if total > cap:
+                    raise ValueError(f"{path}: the pack decompresses to more than {cap} bytes")
+                chunks.append(chunk)
+    except (OSError, EOFError, zlib.error) as exc:
+        raise ValueError(f"{path}: not a readable gzip pack ({exc})") from exc
+    return b"".join(chunks)
 
 
 def _window(start_ms: int, end_ms: int) -> None:

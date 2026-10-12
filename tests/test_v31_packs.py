@@ -6,6 +6,8 @@ archive is read and nothing touches the network.
 
 import gzip
 import hashlib
+import io
+import re
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal as D
@@ -16,6 +18,7 @@ import pytest
 from crypto_grid_bot.backtest.funding import FundingRecord
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.combined.assessment import daily_bars
+from crypto_grid_bot.combined.driver import packs
 from crypto_grid_bot.combined.driver.decode import DecodedV31Month
 from crypto_grid_bot.combined.driver.flow_schedule import build_flow_schedule
 from crypto_grid_bot.combined.driver.packs import (
@@ -166,8 +169,9 @@ def test_pack_round_trips_and_is_byte_identical_on_rebuild(tmp_path):
     digest = write_pack(first, tmp_path / "first.json.gz")
     again = write_pack(second, tmp_path / "second.json.gz")
     content = (tmp_path / "first.json.gz").read_bytes()
-    assert content == (tmp_path / "second.json.gz").read_bytes()
-    assert digest == again == hashlib.sha256(content).hexdigest()
+    assert content == (tmp_path / "second.json.gz").read_bytes()  # one zlib build
+    # The pin is the canonical JSON's hash, whatever compressed it (Ruling P11).
+    assert digest == again == hashlib.sha256(gzip.decompress(content)).hexdigest()
     # gzip header: deflate, no flags (so no file name), mtime 0.
     assert content[:8] == b"\x1f\x8b\x08\x00\x00\x00\x00\x00"
 
@@ -235,17 +239,62 @@ def test_an_excluded_spot_month_refuses_the_window():
         coin("BTCUSDT", spot_months=spot)
 
 
+def gzipped(content: bytes, level: int) -> bytes:
+    buffer = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=buffer, mtime=0, compresslevel=level) as f:
+        f.write(content)
+    return buffer.getvalue()
+
+
 def test_read_pack_refuses_a_wrong_hash(tmp_path):
     path = tmp_path / "w.json.gz"
     digest = write_pack(pack(), path)
     wrong = ("1" if digest[0] == "0" else "0") + digest[1:]
-    with pytest.raises(ValueError, match="sha256"):
+    with pytest.raises(ValueError, match=f"sha256 {digest} differs from the pinned {wrong}"):
         read_pack(path, wrong)
-    # The hash is checked before any byte is parsed: these bytes are not even gzip.
     junk = tmp_path / "junk.json.gz"
     junk.write_bytes(b"not a pack")
-    with pytest.raises(ValueError, match="sha256"):
+    with pytest.raises(ValueError, match="gzip"):
         read_pack(junk, digest)
+
+
+def test_tampered_content_is_refused_before_it_is_parsed(tmp_path):
+    path = tmp_path / "w.json.gz"
+    digest = write_pack(pack(), path)
+    content = gzip.decompress(path.read_bytes())
+    # Valid JSON with one value changed, and bytes that are not JSON at all: both are
+    # refused by the hash, so neither reaches the parser.
+    for index, tampered in enumerate((content.replace(b'"w-test"', b'"w-tesT"'), b"{not json")):
+        assert tampered != content
+        other = tmp_path / f"tampered-{index}.json.gz"
+        other.write_bytes(gzipped(tampered, 9))
+        refusal = f"{re.escape(str(other))}: pack sha256 .* the pinned {digest}"
+        with pytest.raises(ValueError, match=refusal):
+            read_pack(other, digest)
+
+
+def test_other_gzip_bytes_of_the_same_content_read_as_the_same_pack(tmp_path):
+    built = pack()
+    path = tmp_path / "w.json.gz"
+    digest = write_pack(built, path)
+    recompressed = gzipped(gzip.decompress(path.read_bytes()), 1)
+    assert recompressed != path.read_bytes()  # as another zlib build's bytes would be
+    other = tmp_path / "level-1.json.gz"
+    other.write_bytes(recompressed)
+    assert read_pack(other, digest) == built
+
+
+def test_read_pack_refuses_content_over_the_size_cap(tmp_path, monkeypatch):
+    built = pack()
+    path = tmp_path / "w.json.gz"
+    digest = write_pack(built, path)
+    size = len(gzip.decompress(path.read_bytes()))
+    assert packs.MAX_CONTENT_BYTES == 2 * 1024**3
+    monkeypatch.setattr(packs, "MAX_CONTENT_BYTES", size)
+    assert read_pack(path, digest) == built
+    monkeypatch.setattr(packs, "MAX_CONTENT_BYTES", size - 1)
+    with pytest.raises(ValueError, match=f"more than {size - 1} bytes"):
+        read_pack(path, digest)
 
 
 def test_history_starts_365_days_back_or_after_the_latest_excluded_spot_month():
