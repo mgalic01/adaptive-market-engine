@@ -1534,6 +1534,24 @@ def test_a_group_breach_cancels_only_that_groups_pending_increases():
     assert state.reduce_to == () and state.close_required == ()
 
 
+def test_a_group_breach_cuts_every_held_member_by_one_common_fraction():
+    # Reviewer probe: five holdings of 16 at 100 in one group fill its 80% limit
+    # exactly (8000 of 10000). A 500 loss leaves 9500, so the group may hold 7600: each
+    # member keeps 0.9 * 7600 / 8000 of its size, 16 -> 13.68, whatever its symbol.
+    engine, orders, fills, quotes, rules, _ = cap_scenario("correlation")
+    last = replace(fills[-1], timestamp_ms=2)
+    state = engine.settle("last", 2, quotes, rules, increases=((orders[-1].intent_id, last),))
+    assert state.reduce_to == () and len(state.account.positions) == 5
+    loss = FundingEvent("loss", 3, orders[0].symbol, D(-500))
+    state = engine.settle("loss", 3, quotes, rules, funding=(loss,))
+    assert state.account.equity == 9500
+    assert state.close_required == ()
+    assert state.reduce_to == tuple(
+        (symbol, D("13.68")) for symbol in sorted(o.symbol for o in orders)
+    )
+    assert dict(state.close_reasons) == {o.symbol: ("portfolio_cap_reduction",) for o in orders}
+
+
 @pytest.mark.parametrize(
     "quantity,price,kept", [(D(5), D("100.01"), D("4.975")), (D(".001"), D(150), None)]
 )

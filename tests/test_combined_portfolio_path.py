@@ -369,6 +369,29 @@ def test_a_forced_close_created_at_the_phase_vertex_fills_at_the_vertex(scenario
     assert {row.phase for row in result.observations if ":fill:" in row.id} == {"low"}
 
 
+def test_a_forced_close_takes_the_phase_start_quote_when_it_is_the_worse_end():
+    from crypto_grid_bot.combined.portfolio_path import replay_held_portfolio
+
+    # Reviewer probe (open, low, high, close): both bars open at 101, so the long's gain
+    # offsets the short's loss and the open stays above the 30% lifetime stop. The
+    # long's stop at 98 in the low phase crosses it, forcing the short closed inside
+    # that phase. Its own stop (103) is untouched, so it buys back at the worse of the
+    # phase-start quote, 101, and the phase-end low, 95: at 101, never at 95.
+    engine = near_lifetime_stop(("BTCUSDT", 1, 98), ("ETHUSDT", -1, 103))
+    rows = (
+        ("BTCUSDT", bar(open=101, high=102, low=90, close=95)),
+        ("ETHUSDT", bar(open=101, high=102, low=95, close=96)),
+    )
+    result = replay_held_portfolio(engine, rows, RULES, "open_low_high_close", source_refs=("s",))
+    assert result.failure is None
+    assert [(f.symbol, f.side, f.price) for f in result.fills] == [
+        ("BTCUSDT", -1, D(98)),
+        ("ETHUSDT", 1, D(101)),
+    ]
+    crossing = next(row for row in result.observations if row.phase == "low:stop")
+    assert "lifetime_stop" in crossing.snapshot.reasons
+
+
 def grid_portfolio():
     engine = PortfolioEngine(D(10000))
     order = intent(
