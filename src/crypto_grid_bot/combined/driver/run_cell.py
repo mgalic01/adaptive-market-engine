@@ -28,7 +28,7 @@ the network.
 import contextlib
 import hashlib
 import re
-import subprocess
+import subprocess  # nosec B404
 from collections.abc import Iterator, Mapping
 from decimal import Context, localcontext
 from pathlib import Path, PurePosixPath
@@ -454,7 +454,12 @@ def _allowed(path: str, allowed: frozenset[str] | set[str]) -> bool:
 
 
 def _git(root: Path, *args: str) -> bytes:
-    process = subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False)
+    # Reviewed: a fixed argument list and no shell (``shell=False``). The callers pass
+    # literal git subcommands, a commit checked as 40 lowercase hex and the checkout root,
+    # which follows ``-C``. git is resolved from PATH, as on the CI runner.
+    process = subprocess.run(  # nosec B603 B607
+        ["git", "-C", str(root), *args], capture_output=True, check=False
+    )
     if process.returncode:
         message = process.stderr.decode("utf-8", "replace").strip()
         raise ValueError(f"git {args[0]} failed in {root}: {message}")

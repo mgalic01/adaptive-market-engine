@@ -121,7 +121,7 @@ FILTERS = OrderFilters(
 def w1_pack() -> WindowPack:
     """W1 for both coins, BTC without its spot bar at ``GAP``: one derived skipped hour."""
     btc = coin("BTCUSDT", fx.uptrend, W1_START, W1_END)
-    spot = tuple(bar for bar in btc.spot_hourly if bar.open_ms != GAP)
+    spot = tuple(hour for hour in btc.spot_hourly if hour.open_ms != GAP)
     btc = replace(btc, spot_hourly=spot, daily=daily_bars(spot))
     eth = coin("ETHUSDT", fx.downtrend, W1_START, W1_END)
     return build_window_pack("w1", W1_START, W1_END, [btc, eth], SOURCES)
@@ -176,9 +176,9 @@ def world(tmp_path_factory) -> World:
     write_json(config / "v3_1_prepare.json", prepare)
     fx_sha = write_json(root / FX_PATH, fx_document())
     prepared = load_prepare_config(config / "v3_1_prepare.json")
-    manifest_path = config / "v3_1_run_manifest.json"
+    manifest_file = config / "v3_1_run_manifest.json"
     manifest = run_manifest(prepared, window_packs=shas, v3_pack=v3_sha)
-    manifest_sha = write_run_manifest(manifest, manifest_path)
+    manifest_sha = write_run_manifest(manifest, manifest_file)
     document = registration_document(prepared.sha256, manifest_sha, fx_sha)
     document["windows"] = [window_document(packs["w1"])]
     document["reported_windows"] = [window_document(packs["w0"])]
@@ -189,7 +189,7 @@ def world(tmp_path_factory) -> World:
             document["adapter_pins"][arm] = V3_PIN
     registration_path = config / "v3_1_registration.json"
     config_sha = write_json(registration_path, document)
-    reg = load_registration(registration_path, manifest_path, repo_root=root)
+    reg = load_registration(registration_path, manifest_file, repo_root=root)
     v3 = read_v3_pack(root / "v3.json.gz", reg.run_manifest.v3_pack)
     return World(reg, packs["w1"], shas["w1"], v3, v3_sha, config_sha, manifest_sha)
 
@@ -401,6 +401,7 @@ def test_v3_picks_are_computed_once_and_reused(world, picked, tmp_path, monkeypa
     assert sorted(p.name for p in directory.iterdir()) == [
         "attempt.json",
         "attempts.jsonl",
+        "outcome.json",
         "v3_picks.json",
     ]
     attempt = json.loads((directory / "attempt.json").read_bytes())
@@ -437,15 +438,35 @@ def test_v3_picks_are_computed_once_and_reused(world, picked, tmp_path, monkeypa
     assert finished["result"]["reason"] is None
     assert D(finished["result"]["final_equity"]) > 0
 
+    # The picks name the job that wrote them: its registration pins, its attempt and the
+    # hashes of its claim and its attempt log.
+    claim_sha256 = hashlib.sha256((directory / "attempt.json").read_bytes()).hexdigest()
     document = json.loads(path.read_bytes())
     assert path.read_bytes() == canonical(document)
     assert document == {
-        "schema": "v3.1-v3-picks-1",
+        "schema": "v3.1-v3-picks-2",
         "v3_pack_sha256": world.v3_sha,
         "run_manifest_sha256": world.manifest_sha,
+        "config_pin": world.config_sha,
+        "code_pin": CODE_PIN,
+        "attempt_id": ATTEMPT,
+        "repo_head": HEAD,
+        "attempt_json_sha256": claim_sha256,
         "attempts_sha256": hashlib.sha256(journal).hexdigest(),
         "picks": {str(stamp): rule for stamp, rule in PICKS.items()},
     }
+    # The completion marker, written last, pins all three files.
+    marker = (directory / "outcome.json").read_bytes()
+    assert marker == canonical(
+        {
+            "schema": "v3.1-v3-picks-outcome-1",
+            "job": "v3_picks",
+            "attempt_id": ATTEMPT,
+            "attempt_json_sha256": claim_sha256,
+            "attempts_sha256": hashlib.sha256(journal).hexdigest(),
+            "picks_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    )
 
     # Computed once: a second computation is refused before any training.
     before = snapshot(directory)
@@ -547,7 +568,17 @@ def test_v3_cell_uses_the_shared_picks(world, picked, tmp_path, monkeypatch):
     assert rule_outcome.identity.capital == "research" and rule_outcome.identity.fx_pin is None
 
 
-@pytest.mark.parametrize("damage", ["pack", "manifest", "rule", "stamp", "spaces", "schema"])
+CAUSES = {
+    "pack": "another V3 pack",
+    "manifest": "another run-manifest",
+    "rule": "not a frozen V3 rule",
+    "stamp": "reserved boundary",
+    "spaces": "not the canonical encoding",
+    "schema": "schema",
+}
+
+
+@pytest.mark.parametrize("damage", list(CAUSES))
 def test_v3_cell_refuses_picks_it_cannot_trust(world, picked, tmp_path, damage):
     path, _ = picked
     document = json.loads(path.read_bytes())
@@ -564,14 +595,154 @@ def test_v3_cell_refuses_picks_it_cannot_trust(world, picked, tmp_path, damage):
     raw = canonical(document)
     if damage == "spaces":
         raw = json.dumps(document, sort_keys=True).encode()
-    bad = tmp_path / "picks" / "v3_picks.json"
-    bad.parent.mkdir()
+    bad = copied(path, tmp_path)  # the whole job, so that only the picks file is damaged
     bad.write_bytes(raw)
+    assert CAUSES[damage] in refusal(world, bad, tmp_path)
+
+
+def copied(picks: Path, tmp_path: Path) -> Path:
+    """A copy of the picks job that wrote ``picks``, to damage; its picks file."""
+    job = tmp_path / "picks" / "v3_picks"
+    shutil.copytree(picks.parent, job)
+    return job / "v3_picks.json"
+
+
+def refusal(world: World, picks: Path, tmp_path: Path, reg: DriverRegistration | None = None):
+    """The message of the refusal of the selector cell on ``picks``, which leaves no cell
+    directory behind: the picks are checked before the cell is claimed."""
     out = tmp_path / "cells"
     out.mkdir()
-    with pytest.raises(ValueError):
-        v3(world, SELECTOR_CELL, bad, out)
+    cell = cell_of(world, SELECTOR_CELL)
+    options = {"attempt_id": ATTEMPT, "repo_head": HEAD}
+    with pytest.raises(ValueError) as caught:
+        run_v3_cell(cell, world.v3, picks, reg or world.reg, out, **options)
     assert list(out.iterdir()) == []
+    return str(caught.value)
+
+
+def reseal(job: Path) -> None:
+    """Rewrite the picks job's hashes so that its files agree again, as a forger who knows
+    the format would: the picks, then the completion marker over the new files."""
+    document = json.loads((job / "v3_picks.json").read_bytes())
+    document["attempt_json_sha256"] = sha_of(job / "attempt.json")
+    document["attempts_sha256"] = sha_of(job / "attempts.jsonl")
+    (job / "v3_picks.json").write_bytes(canonical(document))
+    (job / "outcome.json").write_bytes(
+        canonical(
+            {
+                "schema": "v3.1-v3-picks-outcome-1",
+                "job": "v3_picks",
+                "attempt_id": document["attempt_id"],
+                "attempt_json_sha256": document["attempt_json_sha256"],
+                "attempts_sha256": document["attempts_sha256"],
+                "picks_sha256": sha_of(job / "v3_picks.json"),
+            }
+        )
+    )
+
+
+def test_v3_cell_replays_an_untouched_picks_job_wherever_it_is(world, picked, tmp_path):
+    path, _ = picked
+    copy = copied(path, tmp_path)
+    before = snapshot(copy.parent)
+    reseal(copy.parent)  # the forger's recipe reproduces the job's own bytes
+    assert {name: data for name, (data, _) in snapshot(copy.parent).items()} == {
+        name: data for name, (data, _) in before.items()
+    }
+    out = tmp_path / "cells"
+    out.mkdir()
+    outcome = decode_outcome((v3(world, SELECTOR_CELL, copy, out) / "outcome.json").read_text())
+    assert outcome.complete and outcome.identity.arm == SELECTOR
+
+
+def test_v3_cell_refuses_a_tampered_picks_file(world, picked, tmp_path):
+    path, _ = picked
+    copy = copied(path, tmp_path)
+    document = json.loads(copy.read_bytes())
+    assert document["picks"][str(W1_START - DAY)] == "R2L"
+    document["picks"][str(W1_START - DAY)] = "R3L"  # another frozen rule: still canonical
+    copy.write_bytes(canonical(document))
+    message = refusal(world, copy, tmp_path)
+    assert "outcome.json: picks_sha256 is" in message
+    assert sha_of(path) in message  # the hash the job pinned
+
+
+def test_v3_cell_refuses_a_picks_file_without_its_job(world, picked, tmp_path):
+    """A file of the registered pins and a rule schedule of its own, alone in its directory."""
+    path, _ = picked
+    document = json.loads(path.read_bytes())
+    document["picks"][str(W1_START - DAY)] = "R3L"
+    lone = tmp_path / "lone" / "v3_picks.json"
+    lone.parent.mkdir()
+    lone.write_bytes(canonical(document))
+    message = refusal(world, lone, tmp_path)
+    for name in ("outcome.json", "attempts.jsonl", "attempt.json"):
+        assert f"{name}, " in message and "is missing" in message
+
+
+@pytest.mark.parametrize("damage", ["changed", "truncated", "extended", "missing"])
+def test_v3_cell_refuses_a_tampered_or_missing_attempt_log(world, picked, tmp_path, damage):
+    path, _ = picked
+    copy = copied(path, tmp_path)
+    log = copy.parent / "attempts.jsonl"
+    original = log.read_bytes()
+    if damage == "changed":
+        log.write_bytes(original.replace(b'"state":"started"', b'"state":"finished"', 1))
+        assert log.read_bytes() != original
+    elif damage == "truncated":
+        log.write_bytes(original[: original.index(b"\n") + 1])  # the first record only
+    elif damage == "extended":
+        log.write_bytes(original + original.splitlines(keepends=True)[0])
+    else:
+        log.unlink()
+    message = refusal(world, copy, tmp_path)
+    if damage == "missing":
+        assert "attempts.jsonl, V3's retained attempt log, is missing" in message
+    else:
+        assert "attempts.jsonl hashes to" in message and "attempts_sha256" in message
+
+
+def test_v3_cell_refuses_a_picks_job_without_its_completion_marker(world, picked, tmp_path):
+    path, _ = picked
+    copy = copied(path, tmp_path)
+    (copy.parent / "outcome.json").unlink()
+    assert "outcome.json, the completion marker, is missing" in refusal(world, copy, tmp_path)
+
+
+@pytest.mark.parametrize("pin", ["config_pin", "code_pin"])
+def test_v3_cell_refuses_picks_computed_under_another_registration(world, picked, tmp_path, pin):
+    """A whole, untouched picks job, run under a registration whose ``pin`` differs."""
+    other = replace(
+        world.reg,
+        registration=replace(
+            world.reg.registration, **{pin: {"config_pin": "a" * 64, "code_pin": "b" * 40}[pin]}
+        ),
+    )
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    foreign = picks_once(replace(world, reg=other), other_dir, [])
+    message = refusal(world, foreign, tmp_path)
+    assert f"the picks' {pin}" in message and f"attempt.json: {pin} is" in message
+    # And the registered job is refused under the other registration the same way.
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    message = refusal(world, picked[0], moved, other)
+    assert f"the picks' {pin}" in message and f"attempt.json: {pin} is" in message
+
+
+@pytest.mark.parametrize(
+    "field", ["attempt_id", "repo_head", "code_pin", "config_pin", "pack_sha256", "data_pin"]
+)
+def test_v3_cell_refuses_a_claim_that_is_not_the_registered_one(world, picked, tmp_path, field):
+    """The picks job's hashes all agree, as after a forger's reseal; its claim does not."""
+    path, _ = picked
+    copy = copied(path, tmp_path)
+    claim = json.loads((copy.parent / "attempt.json").read_bytes())
+    claim[field] = "e" * 40 if field in ("repo_head", "code_pin") else "e" * 64
+    (copy.parent / "attempt.json").write_bytes(canonical(claim))
+    reseal(copy.parent)
+    message = refusal(world, copy, tmp_path)
+    assert f"attempt.json: {field} is" in message and "hashes to" not in message
 
 
 # --- the protocol ----------------------------------------------------------------------
@@ -587,6 +758,8 @@ def test_baseline_cells_follow_the_claim_failure_outcome_protocol(
         def logged(target, raw, write=module._write):
             if target.name == "v3_picks.json":
                 assert (target.parent / "attempts.jsonl").is_file()  # streamed beforehand
+            if target.name == "outcome.json" and target.parent.name == "v3_picks":
+                assert (target.parent / "v3_picks.json").is_file()  # the marker follows it
             order.append(target.name)
             write(target, raw)
 
@@ -603,7 +776,7 @@ def test_baseline_cells_follow_the_claim_failure_outcome_protocol(
     picks_dir = tmp_path / "picks"
     picks_dir.mkdir()
     picks_once(world, picks_dir, [])
-    assert order == ["attempt.json", "v3_picks.json"]
+    assert order == ["attempt.json", "v3_picks.json", "outcome.json"]
     monkeypatch.undo()
 
     # An attempt that raises after its claim keeps attempt.json and failure.json, then
@@ -955,7 +1128,7 @@ def window_minutes(world: MinuteWorld, pair: str) -> tuple:
     """The pair's minutes the frozen loader reads, inside W1."""
     manifest = load_manifest(manifest_path(world.spec_path))
     minutes = load_minutes(world.data_dir, manifest, pair)
-    return tuple(bar for bar in minutes if M1_START <= bar.open_ms < M1_END)
+    return tuple(minute for minute in minutes if M1_START <= minute.open_ms < M1_END)
 
 
 def sha_of(path: Path) -> str:

@@ -23,7 +23,7 @@ Reading those files and ``adapter_pins``' ``git ls-tree`` are the only I/O; no n
 import hashlib
 import json
 import re
-import subprocess
+import subprocess  # nosec B404
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -725,7 +725,10 @@ def _run_manifest_from(data: bytes) -> RunManifest:
 
 def _blobs(root: Path, commit: str) -> dict[str, str]:
     """Every blob at ``commit`` by repository path, from ``git ls-tree``."""
-    process = subprocess.run(
+    # Reviewed: a fixed argument list and no shell (``shell=False``). The only variable
+    # parts are the checkout root, which follows ``-C``, and a commit ``adapter_pins`` has
+    # already checked as 40 lowercase hex. git is resolved from PATH, as on the CI runner.
+    process = subprocess.run(  # nosec B603 B607
         ["git", "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", f"{commit}^{{commit}}"],
         capture_output=True,
         check=False,

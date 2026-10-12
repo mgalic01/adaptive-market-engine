@@ -25,7 +25,9 @@ each an exclusive create, the completion marker last; an exception after the cla
 
     <out_dir>/v3_picks/attempt.json             the claim, with ``job`` for ``cell_id``
     <out_dir>/v3_picks/attempts.jsonl           V3's own attempt records, streamed
-    <out_dir>/v3_picks/v3_picks.json            the picks, last: the completion marker
+    <out_dir>/v3_picks/v3_picks.json            the picks, bound to the claim and the log
+    <out_dir>/v3_picks/outcome.json             the SHA-256 of the three files above, last:
+                                                the completion marker
 
 A baseline adapter returns ``BaselineEvidence``, which holds no funnel journal
 (``Evidence``), so a baseline cell has no ``write_bundle`` bundle. ``native_evidence.json``
@@ -109,10 +111,13 @@ from crypto_grid_bot.trend.walk_forward import RULES
 
 V3_PICKS = "v3_picks"  # the picks job's directory under out_dir
 PICKS_FILE = "v3_picks.json"
+ATTEMPT_FILE = "attempt.json"  # the claim, as ``run_cell._claimed`` writes it
 ATTEMPTS_FILE = "attempts.jsonl"
+OUTCOME_FILE = "outcome.json"
 NATIVE_EVIDENCE_FILE = "native_evidence.json"
 BASELINE_SCHEMA = "v3.1-baseline-1"
-PICKS_SCHEMA = "v3.1-v3-picks-1"
+PICKS_SCHEMA = "v3.1-v3-picks-2"
+PICKS_OUTCOME_SCHEMA = "v3.1-v3-picks-outcome-1"
 MAX_PICKS_BYTES = 1024 * 1024
 
 # The frozen minute baselines' dataset spec and bot config as the frozen V1 and V2 runs
@@ -143,7 +148,18 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _STAMP = re.compile(r"0|[1-9][0-9]*")
 _RUN_ID = re.compile(r"([0-9a-f]{32})-(.+)", re.DOTALL)
 _PICKS_KEYS = frozenset(
-    {"schema", "v3_pack_sha256", "run_manifest_sha256", "attempts_sha256", "picks"}
+    {
+        "schema",
+        "v3_pack_sha256",
+        "run_manifest_sha256",
+        "config_pin",
+        "code_pin",
+        "attempt_id",
+        "repo_head",
+        "attempt_json_sha256",
+        "attempts_sha256",
+        "picks",
+    }
 )
 
 
@@ -212,10 +228,14 @@ def compute_v3_picks(
     ``selector_picks`` runs V3's frozen walk-forward at research capital (10,000 USDT)
     and base cost, holding the capital adapter's lock. Each attempt V3 records is written
     at once as one canonical line of ``attempts.jsonl`` (``_AttemptLog``), so a failed
-    walk-forward keeps every attempt it made. ``v3_picks.json`` is canonical JSON: the
-    schema, the V3 input pack's and the run-manifest's SHA-256, the SHA-256 of
-    ``attempts.jsonl`` and ``picks``, each pick time in ms as a decimal string mapped to
-    its rule, or null for a flat quarter.
+    walk-forward keeps every attempt it made. ``v3_picks.json`` is canonical JSON that
+    binds the picks to this job: the schema, the V3 input pack's and the run-manifest's
+    SHA-256, the registration's config and code pins, this job's attempt id and repo head,
+    the SHA-256 of its ``attempt.json`` (the claim) and of ``attempts.jsonl``, and
+    ``picks``, each pick time in ms as a decimal string mapped to its rule, or null for a
+    flat quarter. ``outcome.json`` follows it, last: the schema, the job, the attempt id and
+    the SHA-256 of the claim, the log and ``v3_picks.json``. A job that did not finish has
+    no marker, and a picks file cannot be swapped for another afterwards.
 
     ``v3_inputs`` must be ``read_v3_pack(path, reg.run_manifest.v3_pack)``: the V3 input
     pack read against the run-manifest's ``v3_pack_sha256``. Refuses, before anything is
@@ -240,16 +260,24 @@ def compute_v3_picks(
     }
     directory = Path(out_dir) / V3_PICKS
     with _claimed(directory, attempt):
+        claim_sha256 = hashlib.sha256((directory / ATTEMPT_FILE).read_bytes()).hexdigest()
         with _AttemptLog(directory / ATTEMPTS_FILE) as log:
             picks, _ = selector_picks(v3_inputs, record=log)
         document = {
             "schema": PICKS_SCHEMA,
             "v3_pack_sha256": pin,
             "run_manifest_sha256": reg.run_manifest_pin,
+            "config_pin": reg.registration.config_pin,
+            "code_pin": reg.registration.code_pin,
+            "attempt_id": attempt_id,
+            "repo_head": repo_head,
+            "attempt_json_sha256": claim_sha256,
             "attempts_sha256": log.sha256(),
             "picks": _picks_document(picks),
         }
-        _write(directory / PICKS_FILE, _canonical(document))  # last: the completion marker
+        picks_raw = _canonical(document)
+        _write(directory / PICKS_FILE, picks_raw)
+        _write(directory / OUTCOME_FILE, _canonical(_picks_outcome(document, picks_raw)))  # last
     return directory / PICKS_FILE
 
 
@@ -270,14 +298,18 @@ def run_v3_cell(
     data is the V3 input pack, read against the run-manifest's ``v3_pack_sha256``, never a
     window pack's pin. The execution gate checks the cell's window pack (W1), whose skipped
     hours are the registered window's that this cell's report uses. ``picks_path`` is
-    ``compute_v3_picks``'s file; it must name the same V3 pack and run-manifest. The
-    selector replays ``window_picks`` of those picks over the window; a fixed long-only
-    rule takes no picks, as its adapter replays the rule itself. The capital's starting
-    equity, the cell's cost multiple (V3's own native cost multiple), the window and the
-    adapter pin come from the registration. Refuses, before anything is written, a cell
-    that is not a registered native V3 cell, other inputs, an unreadable or untrusted
-    picks file, an empty attempt id, a repo head that is not 40 lowercase hex and an
-    existing cell directory.
+    ``compute_v3_picks``'s file. It must name the same V3 pack and run-manifest, and its
+    picks job (the directory beside it) must be the registered one, finished and
+    unchanged (``_read_picks``): a completion marker that pins the picks file, the retained
+    ``attempts.jsonl`` and ``attempt.json`` hashing to the values the picks record, and the
+    picks' and the claim's config pin, code pin, V3 pack and run-manifest equal to the
+    registration's. The selector replays ``window_picks`` of those picks over the window;
+    a fixed long-only rule takes no picks, as its adapter replays the rule itself. The
+    capital's starting equity, the cell's cost multiple (V3's own native cost multiple),
+    the window and the adapter pin come from the registration. Refuses, before anything is
+    written, a cell that is not a registered native V3 cell, other inputs, an unreadable or
+    untrusted picks file or job, an empty attempt id, a repo head that is not 40 lowercase
+    hex and an existing cell directory.
     """
     window = _baseline_window(cell, reg, "v3", "a frozen V3 baseline cell required")
     if not isinstance(v3_inputs, V3Inputs):
@@ -878,11 +910,26 @@ def _picks_document(picks: Mapping[int, str | None]) -> dict[str, str | None]:
     return {str(stamp): rule for stamp, rule in sorted(picks.items())}
 
 
+def _picks_outcome(document: Mapping[str, object], picks_raw: bytes) -> dict[str, object]:
+    """The picks job's completion marker for the picks ``document`` written as
+    ``picks_raw``: what the job's three files hash to."""
+    return {
+        "schema": PICKS_OUTCOME_SCHEMA,
+        "job": V3_PICKS,
+        "attempt_id": document["attempt_id"],
+        "attempt_json_sha256": document["attempt_json_sha256"],
+        "attempts_sha256": document["attempts_sha256"],
+        "picks_sha256": hashlib.sha256(picks_raw).hexdigest(),
+    }
+
+
 def _read_picks(path: Path, reg: DriverRegistration) -> tuple[dict[int, str | None], str]:
     """The picks in ``compute_v3_picks``'s file at ``path``, and the file's SHA-256.
 
     The file must be the canonical JSON ``compute_v3_picks`` writes, for the registered
     V3 input pack and run-manifest; any other text, schema, pin, time or rule is refused.
+    So is a picks job that is not the registered one, finished and unchanged
+    (``_picks_job_errors``): one ``ValueError`` names every mismatch.
     """
     raw = Path(path).read_bytes()
     if len(raw) > MAX_PICKS_BYTES:
@@ -898,9 +945,11 @@ def _read_picks(path: Path, reg: DriverRegistration) -> tuple[dict[int, str | No
         raise ValueError("V3 picks: computed from another V3 pack than the run-manifest's")
     if document["run_manifest_sha256"] != reg.run_manifest_pin:
         raise ValueError("V3 picks: computed under another run-manifest")
-    attempts = document["attempts_sha256"]
-    if not isinstance(attempts, str) or _SHA256.fullmatch(attempts) is None:
-        raise ValueError("V3 picks: the attempts' SHA-256 must be 64 lowercase hex")
+    for key in ("attempt_json_sha256", "attempts_sha256"):
+        digest = document[key]
+        if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+            raise ValueError(f"V3 picks: {key} must be 64 lowercase hex")
+    _check_attempt(document["attempt_id"], document["repo_head"])
     given = document["picks"]
     if not isinstance(given, dict):
         raise ValueError("V3 picks: an object of picks required")
@@ -913,4 +962,107 @@ def _read_picks(path: Path, reg: DriverRegistration) -> tuple[dict[int, str | No
         picks[int(stamp)] = rule
     if not picks:
         raise ValueError("V3 picks: one or more picks required")
+    if errors := _picks_job_errors(Path(path).parent, raw, document, reg):
+        header = f"V3 picks {path}: not a finished picks job of this registration:"
+        raise ValueError("\n- ".join([header, *errors]))
     return dict(sorted(picks.items())), hashlib.sha256(raw).hexdigest()
+
+
+def _picks_job_errors(
+    directory: Path, raw: bytes, document: Mapping[str, Any], reg: DriverRegistration
+) -> list[str]:
+    """How the picks job in ``directory`` differs from the registered, finished one that
+    wrote the picks ``document`` (its bytes ``raw``); empty when it does not.
+
+    The picks' config and code pins must be the registration's. ``outcome.json``, the
+    completion marker, must exist and hold the hashes of the claim, the log and the picks
+    file. ``attempts.jsonl`` and ``attempt.json`` must hash to the values the picks record,
+    and the claim must be the one ``compute_v3_picks`` writes: this job, the picks'
+    attempt id and repo head, the registration's code and config pins, and the V3 pack and
+    run-manifest it names.
+    """
+    registration = reg.registration
+    errors = [
+        f"the picks' {key} {_shown(document[key])} differs from the registration's {pin}"
+        for key, pin in (
+            ("config_pin", registration.config_pin),
+            ("code_pin", registration.code_pin),
+        )
+        if document[key] != pin
+    ]
+    marker = _small_file(directory / OUTCOME_FILE)
+    if marker is None:
+        errors.append(f"{OUTCOME_FILE}, the completion marker, is missing: an unfinished job")
+    else:
+        errors += _document_errors(marker, OUTCOME_FILE, _picks_outcome(document, raw))
+    log = directory / ATTEMPTS_FILE
+    if not log.is_file():
+        errors.append(f"{ATTEMPTS_FILE}, V3's retained attempt log, is missing")
+    elif (digest := _file_sha256(log)) != document["attempts_sha256"]:
+        errors.append(
+            f"{ATTEMPTS_FILE} hashes to {digest}, not the picks' attempts_sha256 "
+            f"{document['attempts_sha256']}"
+        )
+    claim = _small_file(directory / ATTEMPT_FILE)
+    if claim is None:
+        errors.append(f"{ATTEMPT_FILE}, the picks job's claim, is missing")
+        return errors
+    if (digest := hashlib.sha256(claim).hexdigest()) != document["attempt_json_sha256"]:
+        errors.append(
+            f"{ATTEMPT_FILE} hashes to {digest}, not the picks' attempt_json_sha256 "
+            f"{document['attempt_json_sha256']}"
+        )
+    expected = {
+        "job": V3_PICKS,
+        "attempt_id": document["attempt_id"],
+        "repo_head": document["repo_head"],
+        "code_pin": registration.code_pin,
+        "config_pin": registration.config_pin,
+        "pack_sha256": reg.run_manifest.v3_pack,
+        "data_pin": reg.run_manifest_pin,
+    }
+    return errors + _document_errors(claim, ATTEMPT_FILE, expected)
+
+
+def _document_errors(raw: bytes, name: str, expected: Mapping[str, object]) -> list[str]:
+    """How the canonical JSON file ``raw`` differs from the ``expected`` object: each field
+    that is missing, extra or unequal, or a file that is not that canonical JSON."""
+    try:
+        found = _strict_json(raw, name)
+    except (ValueError, RecursionError) as exc:
+        return [f"{name} is not readable JSON: {_shown(str(exc))}"]
+    if not isinstance(found, dict):
+        return [f"{name}: a JSON object required"]
+    errors = [
+        f"{name}: {key} is {_shown(found.get(key))}, expected {_shown(expected.get(key))}"
+        for key in sorted(found.keys() | expected.keys())
+        if key not in found or key not in expected or found[key] != expected[key]
+    ]
+    if not errors and _canonical(found) != raw:
+        errors.append(f"{name}: not the canonical encoding (sorted keys, no spaces, ASCII)")
+    return errors
+
+
+def _small_file(path: Path) -> bytes | None:
+    """The bytes of the small job file ``path``, or None when it is not a file."""
+    if not path.is_file():
+        return None
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_PICKS_BYTES + 1)
+    if len(raw) > MAX_PICKS_BYTES:
+        raise ValueError(f"{path}: a picks job file of at most {MAX_PICKS_BYTES} bytes required")
+    return raw
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _shown(value: object) -> str:
+    """``value`` as a short ``repr``, so that a hostile file cannot flood a message."""
+    text = repr(value)
+    return text if len(text) <= 100 else text[:97] + "..."

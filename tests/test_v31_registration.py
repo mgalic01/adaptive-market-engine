@@ -703,7 +703,7 @@ def test_adapter_pins_read_blob_ids_at_the_commit(tmp_path: Path) -> None:
     pins = adapter_pins(tmp_path, first)
 
     assert set(pins) == set(ARMS) and len(pins) == 42
-    expected = {kind: listing_pin(names) for kind, names in MODULE_SETS.items()}
+    expected = {label: listing_pin(names) for label, names in MODULE_SETS.items()}
     assert pins == {arm: expected[kind(arm)] for arm in ARMS}
     assert len(set(expected.values())) == 4
 
