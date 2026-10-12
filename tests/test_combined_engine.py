@@ -65,6 +65,31 @@ def test_candidate_filters_cannot_classify_an_existing_holding_as_dust():
     assert engine.observe(3, {}, RULES).recovery.close
 
 
+def test_preview_returns_engine_gates_and_risk_limits_together():
+    engine = PortfolioEngine(D(10000))
+    open_partial(engine)
+    short = intent(
+        "short",
+        owner="futures_trend",
+        venue="futures",
+        side=-1,
+        stop=D(102),
+        funding_rate=D("-0.01"),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    answer = engine.preview(
+        short,
+        replace(candidate(short), decision_ms=1),
+        QUOTES,
+        RULES,
+        candidate_quote=Quote(D(100), 1),
+        candidate_rules=RULE,
+    )
+    assert answer.reasons == ("asset_owned", "adverse_funding")
+    assert answer.reason == "asset_owned"
+
+
 def candidate(order):
     return Qualification(order.symbol, 0, True, order.owner, order.side, D(1), ())
 

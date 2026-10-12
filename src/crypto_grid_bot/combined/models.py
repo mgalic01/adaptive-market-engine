@@ -8,6 +8,8 @@ from crypto_grid_bot.strategy.perception import TrendState
 
 @dataclass(frozen=True, slots=True)
 class Assessment:
+    """One causal assessment; ``source_refs`` name its inputs and the completed bars read."""
+
     symbol: str
     decision_ms: int
     quote_ms: int
@@ -34,7 +36,13 @@ class Assessment:
     daily_gaps: tuple[tuple[int, int], ...] = ()
     invalid_hourly_open_ms: tuple[int, ...] = ()
     invalid_daily_open_ms: tuple[int, ...] = ()
+    source_refs: tuple[str, ...] = ()
     schema: str = "combined-v1"
+
+    @property
+    def assessment_id(self) -> str:
+        """Stable: one assessment per symbol, decision time and quote time."""
+        return f"assessment:{self.symbol}:{self.decision_ms}:{self.quote_ms}"
 
 
 def assessment_source_reasons(assessment: Assessment) -> tuple[str, ...]:

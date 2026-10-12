@@ -19,8 +19,10 @@ from decimal import Decimal
 from fractions import Fraction
 
 from .account import AccountSnapshot, FundingEvent
-from .evidence import DecisionEvent
+from .artifacts import BundleRecords
+from .evidence import DecisionEvent, IntentRecord
 from .execution import _decimal
+from .models import Assessment
 from .observation_policy import POLICY_ID, Boundary, PolicyEvidence
 from .recovery import RecoveryState
 from .report import (
@@ -165,7 +167,8 @@ def lifecycle_contributions(
 
 
 def opportunity_records(trace: StrategyTrace) -> tuple[Opportunity, ...]:
-    """Funnel stages of every detected signal; a refusal is a ``blocked`` stage."""
+    """Funnel stages of every detected signal; a refusal is a ``blocked`` stage with
+    every reason it was refused for."""
     filled: dict[str, list[DecisionEvent]] = {}
     for event in trace.evidence:
         if event.phase == "filled":
@@ -185,9 +188,10 @@ def opportunity_records(trace: StrategyTrace) -> tuple[Opportunity, ...]:
                     direction,
                     assessment.structure,
                     event.phase if event.accepted else "blocked",
-                    None if event.accepted else (event.reasons[0] if event.reasons else "refused"),
+                    None if event.accepted else event.reasons[0],
                     event.event_id,
                     event.source_refs,
+                    () if event.accepted else event.reasons,
                 )
             )
     return tuple(rows)
@@ -230,6 +234,42 @@ def recovery_episodes(trace: StrategyTrace) -> tuple[RecoveryEpisode, ...]:
             )
         )
     return tuple(episodes)
+
+
+def evidence_records(trace: StrategyTrace) -> BundleRecords:
+    """The replay's versioned evidence records for its bundle; never a strategy input.
+
+    One assessment per decision or unavailable episode, each decision's intent with its
+    protective stop, every decision record (episodes included) in time order, and the
+    lifecycles and recovery episodes as the report values them.
+    """
+    assessments: dict[str, Assessment] = {}
+    intents: list[IntentRecord] = []
+    for decision in trace.decisions:
+        assessment, result = decision.assessment, decision.result
+        assessments.setdefault(assessment.assessment_id, assessment)
+        if result.intent is not None:
+            first = result.events[0]
+            intents.append(
+                IntentRecord(
+                    first.opportunity_id,
+                    assessment.assessment_id,
+                    first.timestamp_ms,
+                    result.intent,
+                    first.source_refs,
+                )
+            )
+    for episode in trace.unavailable:
+        assessments.setdefault(episode.assessment.assessment_id, episode.assessment)
+    decisions = [d.result.record for d in trace.decisions if d.result.record is not None]
+    decisions.extend(episode.record for episode in trace.unavailable)
+    return BundleRecords(
+        tuple(sorted(assessments.values(), key=lambda a: (a.decision_ms, a.symbol))),
+        tuple(intents),
+        tuple(sorted(decisions, key=lambda r: (r.first_ms, r.symbol))),
+        lifecycle_contributions(trace, []),
+        recovery_episodes(trace),
+    )
 
 
 def _by_symbol(rows: Iterable[tuple[str, int]]) -> list[tuple[str, list[int]]]:

@@ -82,6 +82,8 @@ class Intent:
 
 @dataclass(frozen=True, slots=True)
 class Admission:
+    """An approval, or a refusal with every independent reason; ``reason`` is the first."""
+
     intent_id: str
     accepted: bool
     reason: str
@@ -89,6 +91,18 @@ class Admission:
     cash: Decimal = ZERO
     risk: Decimal = ZERO
     notional: Decimal = ZERO
+    reasons: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.accepted and not self.reasons:
+            object.__setattr__(self, "reasons", (self.reason,))
+        if (
+            not isinstance(self.reasons, tuple)
+            or any(not isinstance(reason, str) or not reason for reason in self.reasons)
+            or (self.accepted and self.reasons)
+            or (not self.accepted and self.reasons[0] != self.reason)
+        ):
+            raise ValueError("an approval has no reasons; a refusal's first reason leads them")
 
 
 def _number(value: Decimal, positive: bool = False) -> None:
@@ -184,6 +198,12 @@ class PortfolioRisk:
         with self._lock:
             return tuple(answer for _, answer in self._pending.values())
 
+    @property
+    def pending(self) -> tuple[tuple[Intent, Admission], ...]:
+        """Remaining reservations with the intents they belong to."""
+        with self._lock:
+            return tuple(self._pending.values())
+
     def acknowledge_remaining(
         self, intent_id: str, remaining: Decimal, *, acknowledged: bool
     ) -> None:
@@ -242,23 +262,34 @@ class PortfolioRisk:
             self._pending.pop(intent_id, None)
 
     def _admit(self, intent: Intent, view: PortfolioView) -> Admission:
-        def no(reason: str) -> Admission:
-            return Admission(intent.intent_id, False, reason)
+        """Every independent refusal reason, in check order; ``reason`` is the first.
 
+        A halt or an invalid margin rate leaves no meaningful size, and an invalid
+        execution price leaves nothing to price, so the size limits are then skipped
+        instead of reported as consequences.
+        """
+        reasons: list[str] = []
+
+        def no() -> Admission:
+            return Admission(intent.intent_id, False, reasons[0], reasons=tuple(reasons))
+
+        sizing = True
         if not view.equity or not view.risk_fraction:
-            return no("risk_halted")
+            reasons.append("risk_halted")
+            sizing = False
         pending = tuple(self._pending.values())
         if any(e.symbol == intent.symbol for e in view.exposures) or any(
             i.symbol == intent.symbol for i, _ in pending
         ):
-            return no("asset_owned")
+            reasons.append("asset_owned")
         distance = abs(intent.price - intent.stop)
         # Bounds run from the quote to the adverse execution price. Entry and
         # stop-exit fees use their own prices, especially for short buybacks.
         entry = planned_price(intent.price, intent.side, intent.slippage_rate, intent.tick)
         stop_exit = planned_price(intent.stop, -intent.side, intent.slippage_rate, intent.tick)
         if min(entry, stop_exit) <= 0:
-            return no("invalid_execution_price")
+            reasons.append("invalid_execution_price")
+            return no()
         fees = (entry + stop_exit) * intent.fee_rate
         entry_slippage = intent.side * (entry - intent.price)
         exit_slippage = intent.side * (intent.stop - stop_exit)
@@ -272,22 +303,28 @@ class PortfolioRisk:
             # must also retain cash for the entry execution loss against the mark.
             unit_cash += entry_slippage
         if intent.venue == "futures":
+            funding = intent.funding_rate
             if (
-                not isinstance(intent.funding_rate, Decimal)
-                or not intent.funding_rate.is_finite()
+                not isinstance(funding, Decimal)
+                or not funding.is_finite()
                 or type(intent.funding_age_ms) is not int
                 or not 0 <= intent.funding_age_ms <= 28_800_000
                 or intent.funding_interval_ms != 28_800_000
             ):
-                return no("funding_unavailable")
+                reasons.append("funding_unavailable")
+                funding = None
             if intent.maintenance_rate <= 0 or Decimal("0.5") < 4 * intent.maintenance_rate:
-                return no("margin_buffer")
+                reasons.append("margin_buffer")
+                sizing = False
             if (
-                intent.funding_admission
-                and max(ZERO, intent.funding_rate * intent.side) * 3 * intent.price
+                funding is not None
+                and intent.funding_admission
+                and max(ZERO, funding * intent.side) * 3 * intent.price
                 > Decimal("0.25") * unit_risk
             ):
-                return no("adverse_funding")
+                reasons.append("adverse_funding")
+        if not sizing:
+            return no()
         cash = view.free_cash - sum((a.cash for _, a in pending), ZERO)
         used_risk = sum((e.stop_risk for e in view.exposures), ZERO)
         used_risk += sum((a.risk for _, a in pending), ZERO)
@@ -424,8 +461,8 @@ class PortfolioRisk:
                     quantity_bound = min(
                         quantity_bound, capacity(Fraction(4, 5), notional, Fraction(0))
                     )
-        quantity = executable(quantity_bound)
-        if quantity is None:
+
+        def size_refusal() -> str:
             if intent.venue == "spot":
                 # Owner decision 2026-10-11: ``below_minimum``, the only spot refusal that
                 # permits a futures fallback, means the size allowed by the size limits,
@@ -439,10 +476,16 @@ class PortfolioRisk:
                     own_limits(Fraction(view.equity)),
                 )
                 if executable(uncommitted) is None:
-                    return no("below_minimum")
+                    return "below_minimum"
                 if quantity_bound > 0:
-                    return no("spot_capacity_committed")
-            return no("portfolio_capacity" if quantity_bound <= 0 else "below_minimum")
+                    return "spot_capacity_committed"
+            return "portfolio_capacity" if quantity_bound <= 0 else "below_minimum"
+
+        quantity = executable(quantity_bound)
+        if quantity is None:
+            reasons.append(size_refusal())
+        if reasons or quantity is None:
+            return no()
         return Admission(
             intent.intent_id,
             True,

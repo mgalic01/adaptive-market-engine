@@ -20,7 +20,7 @@ from crypto_grid_bot.combined.engine import (
     Quote,
     SettlementObservation,
 )
-from crypto_grid_bot.combined.evidence import DecisionEvent, Evidence
+from crypto_grid_bot.combined.evidence import DecisionEvent, DecisionRecord, Evidence
 from crypto_grid_bot.combined.execution import VenueRules, _decimal
 from crypto_grid_bot.combined.models import Assessment, assessment_source_reasons
 from crypto_grid_bot.combined.risk import Admission, Intent, planned_price
@@ -85,6 +85,98 @@ class DecisionResult:
     admission: Admission | None
     events: tuple[DecisionEvent, ...]
     venue_inputs: VenueInputs | None = None
+    record: DecisionRecord | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Exposure:
+    """The symbol's held and reserved quantity and notional, and its group's gross."""
+
+    held_quantity: Decimal
+    held_notional: Decimal
+    reserved_quantity: Decimal
+    reserved_notional: Decimal
+    group: str
+    group_gross: Decimal
+
+
+def _exposure(
+    engine: PortfolioEngine, symbol: str, groups: tuple[tuple[str, str], ...]
+) -> _Exposure:
+    """Read the engine's current inventory and reservations without observing anything."""
+    mapping = dict(groups)
+    group = mapping.get(symbol, "unknown")
+    held_quantity = held_notional = reserved_quantity = reserved_notional = gross = Decimal(0)
+    for position, *_ in engine.held_execution_terms():
+        notional = abs(position.quantity) * position.mark
+        if position.symbol == symbol:
+            held_quantity, held_notional = position.quantity, notional
+        if mapping.get(position.symbol, "unknown") == group:
+            gross += notional
+    for intent, admission in engine.reserved_intents:
+        if intent.symbol == symbol:
+            reserved_quantity += admission.quantity
+            reserved_notional += admission.notional
+        if mapping.get(intent.symbol, "unknown") == group:
+            gross += admission.notional
+    return _Exposure(
+        held_quantity, held_notional, reserved_quantity, reserved_notional, group, gross
+    )
+
+
+def _decision_record(
+    record_id: str,
+    opportunity_id: str,
+    assessment: Assessment,
+    last: DecisionEvent,
+    qualification: Qualification | None,
+    admission: Admission | None,
+    spot: VenueInputs | None,
+    futures: VenueInputs | None,
+    exposure: _Exposure,
+) -> DecisionRecord:
+    """The record of a funnel whose last recorded event is ``last``; no signal without
+    a qualification."""
+    accepted = last.accepted and last.phase == "submitted"
+    quantity: Decimal | None = None
+    if accepted and admission is not None:
+        quantity, unavailable = admission.quantity, None
+    elif qualification is None:
+        unavailable = "no_signal"
+    else:
+        unavailable = "unqualified" if admission is None else "risk_refused"
+    funding = None if futures is None else futures.funding
+    return DecisionRecord(
+        record_id,
+        opportunity_id,
+        assessment.assessment_id,
+        assessment.symbol,
+        assessment.decision_ms,
+        assessment.decision_ms,
+        accepted,
+        last.phase,
+        last.reasons,
+        None if qualification is None else qualification.owner,
+        0 if qualification is None else qualification.side,
+        None if spot is None else spot.costs.fee_rate,
+        None if spot is None else spot.costs.slippage_rate,
+        None if spot is None else spot.costs.round_trip_cost_rate,
+        None if futures is None else futures.costs.fee_rate,
+        None if futures is None else futures.costs.slippage_rate,
+        None if futures is None else futures.costs.round_trip_cost_rate,
+        None if funding is None else funding.rate,
+        None if funding is None else funding.published_ms,
+        None if funding is None else funding.interval_ms,
+        quantity,
+        unavailable,
+        exposure.held_quantity,
+        exposure.held_notional,
+        exposure.reserved_quantity,
+        exposure.reserved_notional,
+        exposure.group,
+        exposure.group_gross,
+        last.source_refs,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +199,8 @@ class DecisionCoordinator:
     Each VenueInputs must provide its own fresh quote. The separate quotes and
     position_rules mappings are authoritative HELD position marks and filters;
     candidate venue inputs never replace them, including during spot fallback.
+    Every decision returns its DecisionRecord, read from the engine before any
+    preview or reservation; the record never feeds a decision.
     """
 
     def __init__(self, engine: PortfolioEngine, evidence: Evidence) -> None:
@@ -156,6 +250,7 @@ class DecisionCoordinator:
                 if prior != identity:
                     raise ValueError("conflicting decision opportunity")
                 return result
+            exposure = _exposure(self._engine, assessment.symbol, groups)
             self._evidence.record(detected)
             events = [detected]
 
@@ -291,11 +386,7 @@ class DecisionCoordinator:
                     candidate_quote=venue_inputs.quote,
                     candidate_rules=venue_inputs.rules,
                 )
-                record(
-                    "risk_approved",
-                    admission.accepted,
-                    () if admission.accepted else (admission.reason,),
-                )
+                record("risk_approved", admission.accepted, admission.reasons)
                 if admission.accepted:
                     record(
                         "executable_size",
@@ -325,10 +416,70 @@ class DecisionCoordinator:
                         ),
                     )
             result = DecisionResult(
-                qualification, plan, intent, admission, tuple(events), venue_inputs
+                qualification,
+                plan,
+                intent,
+                admission,
+                tuple(events),
+                venue_inputs,
+                _decision_record(
+                    f"{prefix}:decision",
+                    opportunity_id,
+                    assessment,
+                    events[-1],
+                    qualification,
+                    admission,
+                    spot,
+                    futures,
+                    exposure,
+                ),
             )
             self._seen[opportunity_id] = identity, result
             return result
+
+    def record_unavailable(
+        self,
+        opportunity_id: str,
+        assessment: Assessment,
+        spot: VenueInputs | None,
+        futures: VenueInputs | None,
+        source_refs: tuple[str, ...],
+        *,
+        groups: tuple[tuple[str, str], ...] = (),
+    ) -> DecisionRecord:
+        """Record an unavailable assessment with no signal as a refused detection.
+
+        Its reasons are the assessment's. Nothing is qualified, sized or reserved; the
+        caller establishes that there is no signal and which hours one episode spans.
+        """
+        if not isinstance(assessment, Assessment) or assessment.available or not assessment.reasons:
+            raise ValueError("an unavailable assessment with reasons required")
+        with self._lock, localcontext(Context(prec=60)):
+            prefix = f"{len(opportunity_id)}:{opportunity_id}"
+            event = DecisionEvent(
+                f"{prefix}:detected",
+                opportunity_id,
+                assessment.decision_ms,
+                assessment.symbol,
+                "detected",
+                False,
+                assessment.reasons,
+                (("signal", "none"),),
+                source_refs,
+            )
+            exposure = _exposure(self._engine, assessment.symbol, groups)
+            self._evidence.record(event)
+            return _decision_record(
+                f"{prefix}:decision",
+                opportunity_id,
+                assessment,
+                event,
+                None,
+                None,
+                spot,
+                futures,
+                exposure,
+            )
 
     def execute_opening(
         self,

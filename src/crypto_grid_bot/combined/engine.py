@@ -236,6 +236,11 @@ class PortfolioEngine:
         return self._risk.reservations
 
     @property
+    def reserved_intents(self) -> tuple[tuple[Intent, Admission], ...]:
+        """Remaining reservations with their intents: read-only evidence."""
+        return self._risk.pending
+
+    @property
     def clock(self) -> int:
         """Last accepted observation time; adapters may reject overlapping intervals."""
         with self._lock:
@@ -878,58 +883,67 @@ class PortfolioEngine:
             ):
                 raise ValueError("qualification and intent differ")
             state = self.observe(now, quotes, rules)
-
-            def refuse(reason: str) -> Admission:
-                return Admission(intent.intent_id, False, reason)
-
             if not qualification.allowed or qualification.reasons:
-                return refuse("unqualified")
+                return Admission(intent.intent_id, False, "unqualified")
+            # Every independent refusal is kept, in check order. The risk limits are
+            # measured only on a fresh, intact account with the candidate's filters.
+            reasons: list[str] = []
             if candidate_quote is not None and any(
                 p.symbol == intent.symbol for p in state.account.positions
             ):
-                return refuse("asset_owned")
+                reasons.append("asset_owned")
             if self._unresolved_canceled_fill():
-                return refuse("canceled_fill_finality_pending")
+                reasons.append("canceled_fill_finality_pending")
 
             quote = (
                 candidate_quote if candidate_quote is not None else self._quotes.get(intent.symbol)
             )
-            if (
-                not isinstance(quote, Quote) or not 0 <= now - quote.timestamp_ms <= 3_600_000
-            ) or any(not self._fresh(p.symbol, now) for p in state.account.positions):
-                return refuse("stale_or_missing_quote")
+            fresh = (
+                isinstance(quote, Quote) and 0 <= now - quote.timestamp_ms <= 3_600_000
+            ) and all(self._fresh(p.symbol, now) for p in state.account.positions)
+            if not fresh:
+                reasons.append("stale_or_missing_quote")
             rule = candidate_rules if candidate_rules is not None else rules.get(intent.symbol)
             if rule is None:
-                return refuse("filters_unavailable")
-            if not isinstance(rule, VenueRules):
+                reasons.append("filters_unavailable")
+            elif not isinstance(rule, VenueRules):
                 raise ValueError("invalid candidate venue rules")
-            if (
-                intent.price != quote.price
-                or intent.tick != rule.tick
-                or intent.step != rule.step
-                or intent.min_quantity != rule.min_qty
-                or intent.max_quantity != rule.max_qty
-                or intent.min_notional != rule.min_notional
-            ):
-                raise ValueError("intent differs from quote or venue rules")
-            if (
-                any(
-                    p.symbol in self._close
-                    and (
-                        not self._fresh(p.symbol, now)
-                        or p.symbol not in rules
-                        or self._reduction(p, rules[p.symbol]).quantity > 0
-                    )
-                    for p in state.account.positions
-                )
-                or not state.account.integrity_ok
-                or self._liquidation
-                or self._integrity_failure
-            ):
-                return refuse("protective_reduction_pending")
-            return self._risk.preview(
-                replace(intent, tick=rule.tick), self._view(state.account, Decimal(1), groups)
+            matching = (
+                isinstance(quote, Quote)
+                and fresh
+                and rule is not None
+                and intent.price == quote.price
+                and intent.tick == rule.tick
+                and intent.step == rule.step
+                and intent.min_quantity == rule.min_qty
+                and intent.max_quantity == rule.max_qty
+                and intent.min_notional == rule.min_notional
             )
+            # A mismatch is a caller error once the gates before it pass; after an
+            # earlier refusal it only leaves the risk limits unmeasured.
+            if not matching and not reasons:
+                raise ValueError("intent differs from quote or venue rules")
+            intact = state.account.integrity_ok and not (
+                self._liquidation or self._integrity_failure
+            )
+            if not intact or any(
+                p.symbol in self._close
+                and (
+                    not self._fresh(p.symbol, now)
+                    or p.symbol not in rules
+                    or self._reduction(p, rules[p.symbol]).quantity > 0
+                )
+                for p in state.account.positions
+            ):
+                reasons.append("protective_reduction_pending")
+            if matching and rule is not None and intact:
+                answer = self._risk.preview(
+                    replace(intent, tick=rule.tick), self._view(state.account, Decimal(1), groups)
+                )
+                if not reasons:
+                    return answer
+                reasons.extend(r for r in answer.reasons if r not in reasons)
+            return Admission(intent.intent_id, False, reasons[0], reasons=tuple(reasons))
 
     def submit(
         self,

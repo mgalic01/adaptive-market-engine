@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from test_combined_evidence import event
 
-from crypto_grid_bot.combined.artifacts import read_bundle, write_bundle
+from crypto_grid_bot.combined.artifacts import BundleRecords, read_bundle, write_bundle
 from crypto_grid_bot.combined.evidence import Evidence
 
 
@@ -259,3 +259,136 @@ def test_dotdot_directory_paths_are_rejected_without_normalizing_away_links(tmp_
     receipt = write_bundle(tmp_path, "safe_path", journal(), {})
     with pytest.raises(ValueError, match="traversal"):
         read_bundle(child / ".." / receipt.directory.name)
+
+
+RECORD_FILES = (
+    "assessments.jsonl",
+    "intents.jsonl",
+    "decision_records.jsonl",
+    "lifecycles.jsonl",
+    "recoveries.jsonl",
+)
+
+
+def evidence_records():
+    """One record of every kind, all from synthetic inputs, with their funnel journal."""
+    from test_combined_routing import market
+
+    from crypto_grid_bot.combined.decisions import Costs, DecisionCoordinator, VenueInputs
+    from crypto_grid_bot.combined.engine import PortfolioEngine, Quote
+    from crypto_grid_bot.combined.evidence import IntentRecord
+    from crypto_grid_bot.combined.execution import VenueRules
+    from crypto_grid_bot.combined.report import Contribution, RecoveryEpisode
+    from crypto_grid_bot.combined.routing import RoutingContext
+
+    assessment = replace(market(), atr=Decimal(2), extension=Decimal(1))
+    now = assessment.decision_ms
+    rules = VenueRules(Decimal(".001"), Decimal(0), Decimal(1000), Decimal(5), Decimal(".01"))
+    spot = VenueInputs(
+        rules,
+        Costs(Decimal(".001"), Decimal(".0005"), Decimal(".004")),
+        quote=Quote(Decimal(100), now),
+    )
+    refs = ("sha256:fixture",)
+    journal = Evidence()
+    coordinator = DecisionCoordinator(PortfolioEngine(Decimal(10000)), journal)
+    result = coordinator.decide("one", assessment, RoutingContext(), {}, spot, None, refs)
+    records = BundleRecords(
+        (assessment,),
+        (IntentRecord("one", assessment.assessment_id, now, result.intent, refs),),
+        (result.record,),
+        (
+            Contribution(
+                "lifecycle:BTCUSDT:fill",
+                "spot_trend",
+                "BTCUSDT",
+                "long",
+                "up/up/pullback",
+                Decimal("1.5"),
+                Decimal("0.1"),
+                Decimal(0),
+                Decimal(200),
+                "stop",
+                now,
+                "closed",
+                now + 3_600_000,
+                None,
+                None,
+                refs,
+            ),
+        ),
+        (RecoveryEpisode(now, None, Decimal(10000), None, "recovery:obs", refs, "obs", None),),
+    )
+    return journal, records
+
+
+def test_every_evidence_record_kind_round_trips_as_a_versioned_file(tmp_path):
+    journal, records = evidence_records()
+    receipt = write_bundle(tmp_path, "records", journal, {}, records=records)
+    bundle = read_bundle(receipt.directory, expected_receipt_sha256=receipt.receipt_sha256)
+    assert bundle.records == records and bundle.events == journal.events
+    assert {name for name, _ in receipt.file_hashes} >= set(RECORD_FILES)
+    for name in RECORD_FILES:
+        rows = [json.loads(row) for row in (receipt.directory / name).read_text().splitlines()]
+        assert len(rows) == 1 and set(rows[0]) == {"schema", "record"}
+        assert rows[0]["schema"] == "combined-v1"
+    saved = json.loads((receipt.directory / "decision_records.jsonl").read_text())["record"]
+    assert saved["spot_fee_rate"] == "0.001" and saved["executable_quantity"] is not None
+    # A bundle without records reads back as such, not as an empty record set.
+    plain = write_bundle(tmp_path, "plain", journal, {})
+    assert read_bundle(plain.directory).records is None
+
+
+def rewrite_record(directory, name, change):
+    path = directory / name
+    rows = [json.loads(row) for row in path.read_text().splitlines()]
+    change(rows[0])
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    rehash(directory, name)
+
+
+@pytest.mark.parametrize(
+    "name,change",
+    [
+        ("assessments.jsonl", lambda row: row.update(schema="combined-v2")),
+        ("assessments.jsonl", lambda row: row["record"].update(close=114.4)),
+        ("assessments.jsonl", lambda row: row["record"].update(daily="sideways")),
+        ("intents.jsonl", lambda row: row["record"].update(extra="field")),
+        ("intents.jsonl", lambda row: row["record"].update(assessment_id="assessment:other")),
+        ("decision_records.jsonl", lambda row: row["record"].update(accepted=1)),
+        ("decision_records.jsonl", lambda row: row["record"].update(spot_fee_rate="NaN")),
+        ("decision_records.jsonl", lambda row: row["record"].update(opportunity_id="unknown")),
+        ("lifecycles.jsonl", lambda row: row["record"].update(gross_pnl="1e2")),
+        ("recoveries.jsonl", lambda row: row["record"].pop("end_ms")),
+    ],
+)
+def test_valid_hashes_do_not_bypass_record_validation(tmp_path, name, change):
+    journal, records = evidence_records()
+    receipt = write_bundle(tmp_path, "records", journal, {}, records=records)
+    rewrite_record(receipt.directory, name, change)
+    with pytest.raises(ValueError):
+        read_bundle(receipt.directory)
+
+
+def test_a_partial_record_set_is_rejected(tmp_path):
+    journal, records = evidence_records()
+    receipt = write_bundle(tmp_path, "partial", journal, {}, records=records)
+    (receipt.directory / "recoveries.jsonl").unlink()
+    path = receipt.directory / "receipt.json"
+    data = json.loads(path.read_text())
+    del data["files"]["recoveries.jsonl"]
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="record"):
+        read_bundle(receipt.directory)
+
+
+def test_records_must_reference_their_assessment_and_funnel_before_writing(tmp_path):
+    journal, records = evidence_records()
+    with pytest.raises(ValueError):
+        write_bundle(tmp_path, "dangling", journal, {}, records=replace(records, assessments=()))
+    with pytest.raises(ValueError):
+        write_bundle(tmp_path, "unjournaled", Evidence(), {}, records=records)
+    duplicated = replace(records, lifecycles=records.lifecycles * 2)
+    with pytest.raises(ValueError):
+        write_bundle(tmp_path, "duplicate", journal, {}, records=duplicated)
+    assert list(tmp_path.iterdir()) == []

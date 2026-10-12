@@ -57,6 +57,11 @@ Each hourly boundary T is processed in the owner-approved order:
 
 The terminal boundary marks the last bar's close and excludes next-window funding,
 management and entries. Engine timestamps denote availability, not intrabar times.
+
+An unowned coin whose assessment is unavailable (a missing or invalid due bar, a
+warm-up) and gives no signal is a refused detection in the funnel, with the
+assessment's reasons. One contiguous run of such hours with the same reasons is one
+episode: it is detected once, at its first hour, and its record spans to its last.
 """
 
 from bisect import bisect_right
@@ -76,7 +81,7 @@ from .boundary_execution import BoundaryExecution, BoundaryExecutor, FundingFixi
 from .correlation import correlation_groups
 from .decisions import Costs, DecisionCoordinator, DecisionResult, FundingEstimate, VenueInputs
 from .engine import EngineSnapshot, PortfolioEngine, Quote, SettlementObservation, WorseFill
-from .evidence import DecisionEvent, Evidence
+from .evidence import DecisionEvent, DecisionRecord, Evidence
 from .execution import VenueRules
 from .experiment import SCENARIOS
 from .lifecycle import manage
@@ -173,6 +178,14 @@ class TraceDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class TraceUnavailable:
+    """One episode of an unavailable assessment with no signal, and its first hour's."""
+
+    assessment: Assessment
+    record: DecisionRecord
+
+
+@dataclass(frozen=True, slots=True)
 class StrategyTrace:
     run: ReplayRun
     observations: tuple[NativeObservation, ...]
@@ -201,6 +214,8 @@ class StrategyTrace:
     funding_records_unbooked_after_exit: tuple[tuple[str, int, int], ...]
     # Fills booked worse than planned, kept within or cut to their approved risk.
     worse_fills: tuple[WorseFill, ...]
+    # Refused detections of unavailable assessments with no signal, one per episode.
+    unavailable: tuple[TraceUnavailable, ...]
     failure: str | None
 
 
@@ -459,7 +474,12 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     irregular = tuple((s, *pair) for s in sorted(futures) for pair in schedules[s][1])
     published = {s: sorted(needed[s], key=lambda r: r.usable_ms) for s in futures}
     published_ms = {s: [r.usable_ms for r in published[s]] for s in futures}
-    series = {s: AssessmentSeries(s, by_symbol[s].spot.hourly, by_symbol[s].daily) for s in symbols}
+    series = {
+        s: AssessmentSeries(
+            s, by_symbol[s].spot.hourly, by_symbol[s].daily, source_refs=run.source_refs
+        )
+        for s in symbols
+    }
     daily = {s: by_symbol[s].daily for s in symbols}
     gates = {s: FlowGate() for s in symbols}
     missing_inputs = _missing_grid_inputs(run, markets) if settings.routing.spot_grid else ()
@@ -486,6 +506,8 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     unbooked_after_exit: list[tuple[str, int, int]] = []
     entering: set[str] = set()  # futures holdings entering the latest interval
     dust: tuple[str, ...] = ()
+    unsignaled: dict[str, TraceUnavailable] = {}  # each symbol's open episode
+    unavailable: list[TraceUnavailable] = []
 
     def venue_bar(symbol: str, venue: str, hour: int) -> Kline | None:
         """The venue's bar opening at ``hour``; None is a data gap."""
@@ -815,16 +837,9 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         held = {p.symbol for p, *_ in engine.held_execution_terms()}
         return held | set(books)
 
-    def decide(symbol: str, hour: int, groups: tuple[tuple[str, str], ...]) -> str | None:
-        # One strategy owns an asset: held inventory or a resting grid basket.
-        if symbol in owned():
-            return None
+    def venue_inputs(symbol: str, hour: int) -> tuple[VenueInputs, VenueInputs | None]:
+        """Each venue's filters, costs and quote; futures also its funding estimate."""
         market = by_symbol[symbol]
-        assessment = series[symbol].at(hour, hour)
-        routing = replace(settings.routing, flow_allowed=gates[symbol].allowed)
-        if qualify(assessment, routing).side == 0:
-            return None  # No directional or range signal: nothing is detected.
-        quotes, rules = held_market(hour)
         # A venue without its bar has no quote: the coordinator refuses that venue's
         # entry, and a missing spot quote never makes the futures fallback available.
         spot_bar = venue_bar(symbol, "spot", hour)
@@ -833,16 +848,57 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             market.spot.costs,
             quote=None if spot_bar is None else Quote(spot_bar.open, hour),
         )
-        futures_inputs = None
-        if market.futures is not None:
-            futures_bar = venue_bar(symbol, "futures", hour)
-            futures_inputs = VenueInputs(
-                market.futures.rules,
-                market.futures.costs,
-                funding=estimate(symbol, hour),
-                funding_admission=settings.funding_admission,
-                quote=None if futures_bar is None else Quote(futures_bar.open, hour),
-            )
+        if market.futures is None:
+            return spot_inputs, None
+        futures_bar = venue_bar(symbol, "futures", hour)
+        return spot_inputs, VenueInputs(
+            market.futures.rules,
+            market.futures.costs,
+            funding=estimate(symbol, hour),
+            funding_admission=settings.funding_admission,
+            quote=None if futures_bar is None else Quote(futures_bar.open, hour),
+        )
+
+    def end_unsignaled(symbol: str) -> None:
+        episode = unsignaled.pop(symbol, None)
+        if episode is not None:
+            unavailable.append(episode)
+
+    def unsignaled_hour(
+        symbol: str, hour: int, assessment: Assessment, groups: tuple[tuple[str, str], ...]
+    ) -> None:
+        """An unavailable assessment with no signal: extend its episode or detect one."""
+        episode = unsignaled.get(symbol)
+        if (
+            episode is not None
+            and episode.record.last_ms == hour - HOUR
+            and episode.record.reasons == assessment.reasons
+        ):
+            unsignaled[symbol] = replace(episode, record=replace(episode.record, last_ms=hour))
+            return
+        end_unsignaled(symbol)
+        spot_inputs, futures_inputs = venue_inputs(symbol, hour)
+        record = coordinator.record_unavailable(
+            f"{symbol}:{hour}", assessment, spot_inputs, futures_inputs, refs, groups=groups
+        )
+        unsignaled[symbol] = TraceUnavailable(assessment, record)
+
+    def decide(symbol: str, hour: int, groups: tuple[tuple[str, str], ...]) -> str | None:
+        # One strategy owns an asset: held inventory or a resting grid basket.
+        if symbol in owned():
+            end_unsignaled(symbol)
+            return None
+        assessment = series[symbol].at(hour, hour)
+        routing = replace(settings.routing, flow_allowed=gates[symbol].allowed)
+        if qualify(assessment, routing).side == 0:
+            if assessment.available:
+                end_unsignaled(symbol)  # No directional or range signal: nothing is detected.
+            else:
+                unsignaled_hour(symbol, hour, assessment, groups)
+            return None
+        end_unsignaled(symbol)
+        quotes, rules = held_market(hour)
+        spot_inputs, futures_inputs = venue_inputs(symbol, hour)
         opportunity = f"{symbol}:{hour}"
         with engine.capture_marks() as marks:
             result = coordinator.decide(
@@ -982,6 +1038,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         # Execution, accounting and data failures are retained run outcomes; anything
         # else is a programming defect and propagates loudly instead.
         failure = f"replay_failure:{type(exc).__name__}:{exc}"
+    unavailable.extend(unsignaled.values())  # episodes still open at the end
     return StrategyTrace(
         run,
         tuple(observations),
@@ -999,5 +1056,6 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         irregular,
         tuple(unbooked_after_exit),
         engine.worse_fill_evidence,
+        tuple(sorted(unavailable, key=lambda e: (e.record.first_ms, e.record.symbol))),
         failure,
     )

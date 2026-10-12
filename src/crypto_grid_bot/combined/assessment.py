@@ -97,10 +97,26 @@ class _Gaps:
 
 
 class AssessmentSeries:
-    """Build indicator arrays once; repeated decisions do not rerun all indicators."""
+    """Build indicator arrays once; repeated decisions do not rerun all indicators.
 
-    def __init__(self, symbol: str, hourly: Sequence[Kline], daily: Sequence[Kline]) -> None:
+    ``source_refs`` name the registered inputs. Each assessment carries them followed by
+    the completed due bars it read (``<symbol>:1h|4h|1d:<open ms>``) and its quote time.
+    """
+
+    def __init__(
+        self,
+        symbol: str,
+        hourly: Sequence[Kline],
+        daily: Sequence[Kline],
+        *,
+        source_refs: tuple[str, ...] = (),
+    ) -> None:
         symbol_name(symbol)
+        if not isinstance(source_refs, tuple) or any(
+            not isinstance(ref, str) or not ref.strip() for ref in source_refs
+        ):
+            raise ValueError("immutable nonblank source references required")
+        self._source_refs = source_refs
         hourly, self._invalid_hours, hourly_error = _validate(hourly, HOUR)
         daily, self._invalid_days, daily_error = _validate(daily, DAY)
         self._timestamp_error = min(
@@ -189,6 +205,15 @@ class AssessmentSeries:
                     structure = "conflict"
         else:
             reasons.append("volatility_warmup")
+        read = tuple(
+            f"{self.symbol}:{name}:{open_ms}"
+            for name, open_ms, ok in (
+                ("1h", due_hour, hourly_ok),
+                ("4h", due_four, four_ok),
+                ("1d", due_day, daily_ok),
+            )
+            if ok
+        )
         return Assessment(
             symbol=self.symbol,
             decision_ms=decision_ms,
@@ -221,6 +246,7 @@ class AssessmentSeries:
             invalid_daily_open_ms=self._invalid_days[
                 : bisect_left(self._invalid_days, due_day + 1)
             ],
+            source_refs=(*self._source_refs, *read, f"{self.symbol}:quote:{quote_ms}"),
         )
 
 

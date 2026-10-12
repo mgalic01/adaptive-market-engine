@@ -64,6 +64,29 @@ def test_daily_rsi_is_recorded_from_completed_daily_closes_beside_four_hour_rsi(
     assert assess("BTCUSDT", now, hourly, daily[-14:], now).daily_rsi is None
 
 
+def test_assessment_has_a_stable_id_and_names_the_completed_bars_it_read(inputs):
+    hourly, daily, now = inputs
+    series = AssessmentSeries("BTCUSDT", hourly, daily, source_refs=("sha256:inputs",))
+    result = series.at(now, now - 60_000)
+    assert result.assessment_id == f"assessment:BTCUSDT:{now}:{now - 60_000}"
+    assert series.at(now, now - 60_000).assessment_id == result.assessment_id
+    assert result.source_refs == (
+        "sha256:inputs",
+        f"BTCUSDT:1h:{now - HOUR}",
+        f"BTCUSDT:4h:{now - 4 * HOUR}",
+        f"BTCUSDT:1d:{now - DAY}",
+        f"BTCUSDT:quote:{now - 60_000}",
+    )
+    # A missing due bar is unavailable and is never named as a source.
+    gapped = AssessmentSeries("BTCUSDT", hourly, daily[:-1]).at(now, now)
+    assert not gapped.available
+    assert gapped.source_refs == (
+        f"BTCUSDT:1h:{now - HOUR}",
+        f"BTCUSDT:4h:{now - 4 * HOUR}",
+        f"BTCUSDT:quote:{now}",
+    )
+
+
 def test_future_suffix_never_changes_past_assessment(inputs):
     hourly, daily, now = inputs
     expected = assess("BTCUSDT", now, hourly, daily, now)

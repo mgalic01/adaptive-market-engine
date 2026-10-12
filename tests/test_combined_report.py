@@ -961,6 +961,26 @@ def test_same_time_reversed_or_unexplained_blocked_observations_are_incomplete(s
     assert any(issue.startswith("invalid_opportunity_stage_order") for issue in result.issues)
 
 
+def test_a_blocked_stage_keeps_every_reason_and_its_episode_lists_them_all():
+    reasons = ("missing_hourly_bar", "short_component_disabled")
+    events = (
+        Opportunity(0, "BTCUSDT", "short", "breakout", "detected", None, "e0", ("source",)),
+        Opportunity(
+            0, "BTCUSDT", "short", "breakout", "blocked", reasons[0], "e1", ("source",), reasons
+        ),
+    )
+    result = analyze(D(100), curve(), contributions(), events, (), ("source",))
+    assert result.structural_complete
+    assert result.opportunities[1].reasons == reasons
+    assert result.opportunity_episodes[0].reasons == reasons
+    # A single reason is its own full list; a first reason must head the list.
+    assert replace(events[1], reasons=()).reasons == (reasons[0],)
+    with pytest.raises(ValueError):
+        replace(events[1], reason="other")
+    with pytest.raises(ValueError):
+        replace(events[0], reasons=reasons)
+
+
 def test_new_detection_can_follow_blocked_disposition_in_same_episode():
     stages = ("detected", "blocked", "detected", "filled")
     events = tuple(

@@ -58,6 +58,8 @@ class Contribution:
 
 @dataclass(frozen=True, slots=True)
 class Opportunity:
+    """One funnel stage; a refusal keeps every reason, ``reason`` being the first."""
+
     timestamp_ms: int
     asset: str
     direction: str
@@ -66,11 +68,16 @@ class Opportunity:
     reason: str | None
     id: str | None = None
     source_refs: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if isinstance(self.source_refs, str):
-            raise ValueError("source_refs must be a collection, not a string")
+        if isinstance(self.source_refs, str) or isinstance(self.reasons, str):
+            raise ValueError("source_refs and reasons must be collections, not strings")
         object.__setattr__(self, "source_refs", tuple(self.source_refs))
+        reasons = tuple(self.reasons) or ((self.reason,) if self.reason is not None else ())
+        if reasons and reasons[0] != self.reason:
+            raise ValueError("the first of an opportunity's reasons is its reason")
+        object.__setattr__(self, "reasons", reasons)
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,7 +447,7 @@ def _opportunity_episodes(
                 last.timestamp_ms,
                 len(group),
                 tuple(dict.fromkeys(event.stage for event in group)),
-                tuple(dict.fromkeys(event.reason for event in group if event.reason is not None)),
+                tuple(dict.fromkeys(reason for event in group for reason in event.reasons)),
                 delay,
                 tuple(event.id for event in group),
                 tuple(dict.fromkeys(ref for event in group for ref in event.source_refs)),
@@ -837,8 +844,8 @@ def analyze(
             _text(text)
         if event.direction not in {"long", "short"}:
             raise ValueError("opportunity direction required")
-        if event.reason is not None:
-            _text(event.reason)
+        for reason in event.reasons:
+            _text(reason)
     changes = []
     mark_counts = Counter(point.timestamp_ms for point in points)
     points_by_id = {point.id: point for point in points if point.id is not None}

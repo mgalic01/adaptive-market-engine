@@ -1247,3 +1247,66 @@ def test_a_stale_fixing_mark_discloses_its_oldest_mark_and_largest_staleness():
         f"last={utc_text(hour_ms(16))} oldest_mark={utc_text(hour_ms(6))} max_staleness=10h"
     ]
     rendered(report)
+
+
+def test_a_missing_due_daily_bar_is_one_refused_detection_per_episode():
+    base = fx.market("BTCUSDT", fx.downtrend, 4)
+    missing = fx.START + DAY
+    market = replace(base, daily=tuple(bar for bar in base.daily if bar.open_ms != missing))
+    trace = replay_strategy(fx.run("spot_trend", 4), (market,))
+    assert trace.failure is None
+    first = missing + DAY  # every decision of the next day reads the missing bar as due
+    refused = [e for e in trace.evidence if e.phase == "detected" and not e.accepted]
+    assert [e.timestamp_ms for e in refused] == [first]
+    assert "missing_daily_bar" in refused[0].reasons
+    (episode,) = trace.unavailable
+    record = episode.record
+    assert (record.first_ms, record.last_ms) == (first, first + DAY - HOUR)
+    assert record.reasons == refused[0].reasons == episode.assessment.reasons
+    assert record.opportunity_id == refused[0].opportunity_id
+    assert record.assessment_id == episode.assessment.assessment_id
+    assert record.size_unavailable == "no_signal" and record.spot_fee_rate == fx.COSTS.fee_rate
+    # The short signals on either side stay ordinary refused decisions.
+    days = {d.assessment.decision_ms // DAY * DAY for d in trace.decisions}
+    assert first not in days and {fx.START, first + DAY} <= days
+    # A flat run has no drawdown or return variance to measure; its structure is whole.
+    assert strategy_report(trace, adapter_pin=PIN).structural_complete
+
+
+def test_opportunity_records_keep_every_refusal_reason():
+    base = fx.market("BTCUSDT", fx.downtrend, 2)
+    hole = fx.START + 8 * HOUR
+    spot = tuple(bar for bar in base.spot.hourly if bar.open_ms != hole)
+    trace = replay_strategy(
+        fx.run("spot_trend", 2), (replace(base, spot=replace(base.spot, hourly=spot)),)
+    )
+    report = strategy_report(trace, adapter_pin=PIN)
+    (row,) = [o for o in report.opportunities if o.timestamp_ms == hole + HOUR and o.reason]
+    event = next(e for e in trace.evidence if e.event_id == row.id)
+    assert "missing_hourly_bar" in event.reasons and len(event.reasons) > 1
+    assert row.reasons == event.reasons and row.reason == event.reasons[0]
+    assert set(row.reasons) <= {r for g in report.opportunity_episodes for r in g.reasons}
+    # The 4h bucket with the hole is dropped: the four hours reading it have no signal.
+    (episode,) = trace.unavailable
+    assert (episode.record.first_ms, episode.record.last_ms) == (hole + 4 * HOUR, hole + 7 * HOUR)
+    assert "missing_four_hour_bar" in episode.record.reasons
+
+
+def test_replay_evidence_records_round_trip_through_the_bundle(tmp_path):
+    from crypto_grid_bot.combined.artifacts import read_bundle, write_bundle
+    from crypto_grid_bot.combined.evidence import Evidence
+    from crypto_grid_bot.combined.replay_records import evidence_records
+
+    trace = replay_strategy(fx.run("spot_trend", 2), (fx.market("BTCUSDT", fx.uptrend, 2),))
+    records = evidence_records(trace)
+    assert records.assessments and records.intents and records.decisions and records.lifecycles
+    decided = trace.decisions[0]
+    assert records.intents[0].intent == decided.result.intent
+    assert records.intents[0].assessment_id == decided.assessment.assessment_id
+    assert records.decisions[0] == decided.result.record
+    journal = Evidence()
+    for event in trace.evidence:
+        journal.record(event)
+    receipt = write_bundle(tmp_path, "replay", journal, {"synthetic": True}, records=records)
+    bundle = read_bundle(receipt.directory, expected_receipt_sha256=receipt.receipt_sha256)
+    assert bundle.records == records and bundle.events == trace.evidence

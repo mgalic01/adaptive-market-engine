@@ -130,6 +130,119 @@ def test_owned_asset_risk_refusal_never_falls_back(setup):
     assert len(engine.reservations) == 1
 
 
+def test_refused_short_records_costs_reservations_and_correlated_exposure(setup):
+    coordinator, engine, journal, args = setup
+    now = args["assessment"].decision_ms
+    groups = (("BTCUSDT", "majors"), ("ETHUSDT", "majors"))
+    # Small longs leave every asset limit slack: only the blockers named below refuse.
+    small = replace(args["spot"], rules=replace(args["spot"].rules, max_qty=D(10)))
+    eth = coordinator.decide(
+        **{
+            **args,
+            "opportunity_id": "eth",
+            "assessment": replace(args["assessment"], symbol="ETHUSDT"),
+            "quotes": {},
+            "spot": small,
+            "groups": groups,
+        }
+    )
+    btc = coordinator.decide(**{**args, "spot": small, "groups": groups})
+    assert eth.admission.accepted and btc.admission.accepted
+    # The accepted long: its size, and the group's exposure before its own reservation.
+    assert btc.record.accepted and btc.record.phase == "submitted" and btc.record.reasons == ()
+    assert btc.record.executable_quantity == btc.admission.quantity
+    assert btc.record.size_unavailable is None
+    assert btc.record.reserved_quantity == 0 and btc.record.held_quantity == 0
+    assert btc.record.group_gross_exposure == eth.admission.notional
+    futures_costs = Costs(D(".0004"), D(".0002"), D(".003"))
+    short = replace(args["assessment"], daily=TrendState.DOWN, four_hour=TrendState.DOWN)
+    result = coordinator.decide(
+        **{
+            **args,
+            "opportunity_id": "short",
+            "assessment": short,
+            "routing": RoutingContext(spot_trend=False),
+            "futures": replace(
+                args["futures"],
+                costs=futures_costs,
+                funding=FundingEstimate(D("-0.01"), now - 1000, 28_800_000),
+            ),
+            "groups": groups,
+        }
+    )
+    assert result.intent.side == -1 and not result.admission.accepted
+    # Every independent blocker is kept, in the funnel and in the decision record.
+    assert result.admission.reasons == ("asset_owned", "adverse_funding")
+    assert journal.events[-1].phase == "risk_approved"
+    assert journal.events[-1].reasons == ("asset_owned", "adverse_funding")
+    record = result.record
+    assert record.record_id == "5:short:decision" and record.opportunity_id == "short"
+    assert record.assessment_id == short.assessment_id
+    assert (record.first_ms, record.last_ms) == (now, now)
+    assert (record.accepted, record.phase) == (False, "risk_approved")
+    assert record.reasons == ("asset_owned", "adverse_funding")
+    assert (record.owner, record.side) == ("futures_trend", -1)
+    assert (record.spot_fee_rate, record.spot_slippage_rate, record.spot_round_trip_cost_rate) == (
+        D(".001"),
+        D(".0005"),
+        D(".004"),
+    )
+    assert (
+        record.futures_fee_rate,
+        record.futures_slippage_rate,
+        record.futures_round_trip_cost_rate,
+    ) == (D(".0004"), D(".0002"), D(".003"))
+    assert (record.funding_rate, record.funding_published_ms, record.funding_interval_ms) == (
+        D("-0.01"),
+        now - 1000,
+        28_800_000,
+    )
+    assert record.executable_quantity is None and record.size_unavailable == "risk_refused"
+    assert record.held_quantity == record.held_notional == 0
+    assert record.reserved_quantity == btc.admission.quantity
+    assert record.reserved_notional == btc.admission.notional
+    assert record.correlation_group == "majors"
+    assert record.group_gross_exposure == eth.admission.notional + btc.admission.notional
+    assert record.source_refs == args["source_refs"]
+
+
+def test_unqualified_decision_records_why_it_has_no_size(setup):
+    coordinator, engine, journal, args = setup
+    args.update(spot=None, futures=None, routing=RoutingContext(spot_executable=False))
+    record = coordinator.decide(**args).record
+    assert (record.accepted, record.phase) == (False, "qualified")
+    assert "spot_executability_unknown" in record.reasons
+    assert record.size_unavailable == "unqualified" and record.executable_quantity is None
+    assert record.spot_fee_rate is None and record.futures_fee_rate is None
+    assert record.funding_rate is None and record.correlation_group == "unknown"
+
+
+def test_unavailable_assessment_without_a_signal_is_a_refused_detection(setup):
+    coordinator, engine, journal, args = setup
+    gap = replace(
+        args["assessment"],
+        available=False,
+        reasons=("missing_daily_bar", "trend_unavailable"),
+        daily=TrendState.UNAVAILABLE,
+        daily_closed_ms=None,
+    )
+    record = coordinator.record_unavailable(
+        "gap", gap, args["spot"], args["futures"], args["source_refs"]
+    )
+    event = journal.events[-1]
+    assert (event.phase, event.accepted, event.reasons) == ("detected", False, gap.reasons)
+    assert dict(event.details) == {"signal": "none"}
+    assert record.first_ms == record.last_ms == gap.decision_ms
+    assert (record.accepted, record.phase, record.reasons) == (False, "detected", gap.reasons)
+    assert (record.owner, record.side, record.size_unavailable) == (None, 0, "no_signal")
+    assert record.spot_fee_rate == D(".001") and record.funding_rate == D(0)
+    assert engine.reservations == ()
+    with pytest.raises(ValueError, match="unavailable"):
+        coordinator.record_unavailable(
+            "ok", args["assessment"], args["spot"], args["futures"], args["source_refs"]
+        )
+
+
 def test_grid_reserves_one_basket_and_returns_three_equal_risk_geometry_levels(setup):
     coordinator, engine, journal, args = setup
     args["assessment"] = replace(

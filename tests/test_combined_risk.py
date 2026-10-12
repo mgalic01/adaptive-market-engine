@@ -5,7 +5,7 @@ from decimal import Decimal as D
 
 import pytest
 
-from crypto_grid_bot.combined.risk import Exposure, Intent, PortfolioRisk, PortfolioView
+from crypto_grid_bot.combined.risk import Admission, Exposure, Intent, PortfolioRisk, PortfolioView
 
 
 def intent(key="one", symbol="BTCUSDT", **changes):
@@ -192,6 +192,38 @@ def test_futures_short_funding_and_margin_admission():
     accepted = PortfolioRisk().reserve(replace(candidate, funding_rate=D("0.0001")), view())
     assert accepted.accepted
     assert accepted.cash == D("1005.93832794")
+
+
+def test_two_failing_limits_are_both_returned_and_the_first_stays_the_reason():
+    short = intent(
+        venue="futures",
+        owner="futures_trend",
+        side=-1,
+        stop=D(102),
+        funding_rate=D("-0.01"),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    refused = PortfolioRisk().reserve(short, view(free_cash=D(0), futures_backing=D(0)))
+    assert not refused.accepted
+    assert refused.reasons == ("adverse_funding", "portfolio_capacity")
+    assert refused.reason == "adverse_funding"
+    held = Exposure("BTCUSDT", "spot_grid", D("0.01"), D("0.001"), "unknown")
+    owned = PortfolioRisk().reserve(replace(short, funding_rate=None), view(exposures=(held,)))
+    assert owned.reasons == ("asset_owned", "funding_unavailable")
+
+
+def test_a_halt_is_not_also_reported_as_a_size_limit():
+    assert PortfolioRisk().reserve(intent(), view(risk_fraction=D(0))).reasons == ("risk_halted",)
+
+
+def test_an_approval_has_no_refusal_reasons_and_a_refusal_always_has_its_reason():
+    assert PortfolioRisk().reserve(intent(), view()).reasons == ()
+    assert Admission("x", False, "below_minimum").reasons == ("below_minimum",)
+    with pytest.raises(ValueError):
+        Admission("x", False, "asset_owned", reasons=("below_minimum",))
+    with pytest.raises(ValueError):
+        Admission("x", True, "approved", reasons=("below_minimum",))
 
 
 @pytest.mark.parametrize(
