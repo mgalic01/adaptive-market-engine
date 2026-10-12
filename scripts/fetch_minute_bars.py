@@ -1,15 +1,23 @@
-"""Bob's fetch of V3.1's flow-gate minute bars: spot 1m klines of seven coins, 2021-06 to 2024-12.
+"""Bob's fetch of V3.1's flow-gate minute bars: spot 1m klines, in two reviewed windows.
 
     python scripts/fetch_minute_bars.py <data-dir> [--spec PATH]
-    python scripts/fetch_minute_bars.py start <data-dir> [--spec PATH]
+    python scripts/fetch_minute_bars.py start <data-dir> [--spec PATH] [--task PATH]
     python scripts/fetch_minute_bars.py wait <data-dir>
     python scripts/fetch_minute_bars.py <report tool> ...   (see "The report tools")
 
-Task: docs/tasks/2026-10-11-bob-v3-1-minute-bars-fetch.md. IBM Bob runs it on a GitHub
-Actions machine, where Bob is the only actor allowed to reach data.binance.vision. Every
-file it writes lands under ``<data-dir>``, which the task puts in the git-ignored ``data/``.
-The default spec is config/datasets/v3-1-minute-bars/v3-1-minute-bars-2021-2024.toml;
-``--spec`` exists for the tests, which run it on a small synthetic spec against a fake host.
+IBM Bob runs it on a GitHub Actions machine, where Bob is the only actor allowed to reach
+data.binance.vision. Every file it writes lands under ``<data-dir>``, which the task puts in
+the git-ignored ``data/``. Two reviewed tasks use it (``REVIEWED_TASKS``), each with its
+spec, in config/datasets/v3-1-minute-bars/:
+
+* docs/tasks/2026-10-11-bob-v3-1-minute-bars-fetch.md: seven coins, 2021-06 to 2024-12
+  (301 archives), spec v3-1-minute-bars-2021-2024.toml. This is the default of ``--task``
+  and of ``--spec``, so its commands name neither.
+* docs/tasks/2026-10-12-bob-v3-1-minute-bars-2020-fetch.md: five of those coins, 2020-02 to
+  2021-05 (80 archives), spec v3-1-minute-bars-2020-2021.toml. Its ``start`` names both
+  ``--task`` and ``--spec``; any other pair is refused.
+
+``--spec`` also lets the tests run the script on a small synthetic spec against a fake host.
 
 No existing fetch script can fetch this set. ``fetch_full_range.py`` fetches two backtest
 windows: every spec it takes also lists hourly archives and BTCUSDT's funding archives, and
@@ -69,8 +77,9 @@ Every other field of the manifest follows from the spec.
 **Running in the background, with Python only.** As in ``fetch_full_range.py``: ``start``
 launches the same run as a detached child (output in ``<data-dir>/run.log``, pid in
 ``run.pid``, exit status in ``run.exit``, written even after a traceback), and returns at
-once; it starts nothing unless the task file's text, the pin block left out, is the one
-this script holds (``TASK_SHA256``). ``wait``, in ``fetch_full_range.py``, answers within
+once. It starts nothing unless the task file (``--task``, default ``TASK``) is listed in
+``REVIEWED_TASKS``, its text with the pin block left out is the SHA-256 held there, and
+``--spec`` is the spec held with it. ``wait``, in ``fetch_full_range.py``, answers within
 about 9 minutes with ``DONE``, ``RUNNING`` or ``GONE``.
 
 **The report tools** are ``fetch_full_range.py``'s, unchanged: ``now``, ``tail``,
@@ -125,6 +134,19 @@ TASK = ROOT / "docs" / "tasks" / "2026-10-11-bob-v3-1-minute-bars-fetch.md"
 # otherwise run unnoticed. start refuses any other text. The pin block, which holds this
 # script's own SHA-256, is left out of the digest, so the two pins do not refer in a circle.
 TASK_SHA256 = "8e11396f36cc628ab4e0608dba3eb88e53265fa5be15516b462ca2f884796612"
+# The second fetch: five of the seven coins, the months before the first fetch's.
+SPEC_2020 = ROOT / "config" / "datasets" / "v3-1-minute-bars" / "v3-1-minute-bars-2020-2021.toml"
+TASK_2020 = ROOT / "docs" / "tasks" / "2026-10-12-bob-v3-1-minute-bars-2020-fetch.md"
+TASK_2020_SHA256 = "b49b1c1fb1a6b28aeb5744776760dfb3187d8a814d96afb6867bc8664df904cc"
+# Every task this script starts, by the task file's name: the SHA-256 of its reviewed text
+# (as above) and the one spec it fetches. ``start`` takes the task from ``--task`` (default:
+# TASK) and the spec from ``--spec`` (default: SPEC), and starts nothing unless the task's
+# text is the one held here and the spec is the one held with it. A new task adds a row here
+# in its own reviewed PR.
+REVIEWED_TASKS: dict[str, tuple[str, Path]] = {
+    TASK.name: (TASK_SHA256, SPEC),
+    TASK_2020.name: (TASK_2020_SHA256, SPEC_2020),
+}
 INTERVAL = "1m"
 RECORD = "_run"  # the hidden subcommand of the child that start launches
 # The children start launched, kept so that this process never collects one while it runs.
@@ -362,7 +384,7 @@ def coverage(
     plan: Plan, manifest: dict[str, Any], log: fetch_full_range.Log, problems: list[str]
 ) -> None:
     """One line per symbol, then each archive that is missing or unreadable, which are
-    problems: none of the seven coins is expected to lack a month. Months with gaps are
+    problems: none of the coins is expected to lack a month. Months with gaps are
     reported in the line's counts, not as problems."""
     for symbol in plan.spec.symbols:
         entries = [e for e in manifest["files"] if e["symbol"] == symbol]
@@ -412,8 +434,11 @@ def checks(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("data_dir", type=Path, help="where every file goes (data/v3-1-minute-bars)")
+    parser.add_argument("data_dir", type=Path, help="where every file goes (under data/)")
     parser.add_argument("--spec", type=Path, default=SPEC, help="the minute-bars spec")
+    parser.add_argument(
+        "--task", type=Path, help="the task file start checks (default: the first fetch's)"
+    )
     # For the tests of start and wait only: sleep that long, then end, fetching nothing.
     parser.add_argument("--fake-run", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--fake-raise", action="store_true", help=argparse.SUPPRESS)
@@ -422,14 +447,30 @@ def _parser() -> argparse.ArgumentParser:
 
 def start(arguments: list[str]) -> int:
     """Launch the run (the same options as a foreground run) as a detached child, once, and
-    only from the reviewed task text (``TASK_SHA256``). ``fetch_full_range.start`` with this
-    script's task and child: it would launch that script's run."""
+    only from a reviewed task text with the spec that task fetches (``REVIEWED_TASKS``).
+    ``fetch_full_range.start`` with this script's tasks and child: it would launch that
+    script's run."""
     args = _parser().parse_args(arguments)  # a mistyped option fails here, not in the child
-    digest = fetch_full_range.task_digest(TASK)
-    if digest != TASK_SHA256:
+    task: Path = TASK if args.task is None else args.task
+    try:
+        digest = fetch_full_range.task_digest(task)
+    except (OSError, ValueError) as exc:
         print(
-            f"NOT STARTED: the task file {TASK.name} is not the reviewed text (its SHA-256 "
+            f"NOT STARTED: the task file {task.name} cannot be read as a task ({exc}); "
+            "report it, and start nothing"
+        )
+        return 1
+    reviewed = REVIEWED_TASKS.get(task.name)
+    if reviewed is None or digest != reviewed[0]:
+        print(
+            f"NOT STARTED: the task file {task.name} is not the reviewed text (its SHA-256 "
             f"without the pin block is {digest}); report it, and start nothing"
+        )
+        return 1
+    if args.spec.resolve() != reviewed[1].resolve():
+        print(
+            f"NOT STARTED: the task file {task.name} fetches the spec {reviewed[1].name}, "
+            f"not {args.spec.as_posix()}; report it, and start nothing"
         )
         return 1
     data_dir: Path = args.data_dir
