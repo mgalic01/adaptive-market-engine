@@ -1,9 +1,11 @@
 """Frozen V3 baselines on the common-hourly schedule; synthetic inputs, never market data."""
 
 import math
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal as D
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,10 +16,12 @@ from crypto_grid_bot.combined.baseline_v3 import (
     SELECTOR,
     V3Inputs,
     replay_v3_baseline,
+    selector_picks,
     v3_capital,
     window_picks,
 )
 from crypto_grid_bot.combined.common_series import FROZEN_REF
+from crypto_grid_bot.market_data.parsing import DataError
 from crypto_grid_bot.trend import replay as v3_replay
 from crypto_grid_bot.trend import runner as v3_runner
 from crypto_grid_bot.trend.decisions import DailyDecisions
@@ -36,6 +40,7 @@ def ms(year, month, day):
 
 
 START, END = ms(2020, 5, 1), ms(2020, 5, 4)
+RESERVED = 1_735_689_600_000  # 2025-01-01T00:00Z
 
 
 def _daily(symbol):
@@ -240,3 +245,112 @@ def test_a_trading_rule_gives_a_fully_complete_comparison_report():
     assert complete
     report = run(complete[0]).report
     assert not [i for i in report.issues if i != "contribution_equity_residual"], report.issues
+
+
+@pytest.fixture
+def frozen_calls(monkeypatch):
+    """Every call into frozen V3 replay or training; a refusal must come before the first."""
+    calls = []
+
+    def spy(name):
+        real = getattr(baseline_v3, name)
+
+        def call(*args, **kwargs):
+            calls.append(name)
+            return real(*args, **kwargs)
+
+        return call
+
+    for name in ("replay_window", "run_walk_forward"):
+        monkeypatch.setattr(baseline_v3, name, spy(name))
+    return calls
+
+
+def sealed_inputs(kind):
+    """The synthetic inputs plus one record at the reserved boundary."""
+    data = inputs()
+    bar = Kline(RESERVED, D(1), D(1), D(1), D(1), D(1), D(1), D(0))
+    if kind == "hourly":
+        return replace(data, hourly={**data.hourly, "BTCUSDT": [*data.hourly["BTCUSDT"], bar]})
+    return replace(data, funding={**data.funding, RESERVED + 3: {"BTCUSDT": D(".0001")}})
+
+
+@pytest.mark.parametrize("kind", ["hourly", "funding"])
+def test_a_sealed_record_is_refused_before_any_frozen_v3_code_runs(frozen_calls, kind):
+    bad = sealed_inputs(kind)
+    options = dict(
+        start_ms=START,
+        end_ms=END,
+        initial=D(10000),
+        cost_multiple=1,
+        source_refs=("synthetic:v3",),
+        adapter_pin=PIN,
+    )
+    for arm in ("unchanged_v3_r2_long_only", SELECTOR):  # the selector has no pick: still refused
+        with pytest.raises(ValueError, match="reserved boundary"):
+            replay_v3_baseline(arm, bad, **options)
+    with pytest.raises(ValueError, match="reserved boundary"):
+        selector_picks(bad, record=lambda attempt: None)  # the training data too
+    assert frozen_calls == []
+
+
+def test_the_frozen_daily_decisions_cannot_be_built_with_a_sealed_daily_bar():
+    daily = {s: _daily(s) for s in SYMBOLS}
+    daily["BTCUSDT"].append(Kline(RESERVED, D(1), D(1), D(1), D(1), D(1), D(1), D(0)))
+    with pytest.raises(DataError, match="reserved window"):
+        DailyDecisions(daily, {s: "2020-01" for s in SYMBOLS})
+
+
+def fake_walk_forward(seen):
+    """Stands in for the frozen training; notes the starting capital its runners get."""
+
+    def walk(decisions, filters, hourly, funding, *, record):
+        seen.append(vars(v3_replay)["TrendRunner"](filters).account.initial)
+        return SimpleNamespace(picks={START: "R2L"}, out_of_sample="oos")
+
+    return walk
+
+
+def test_selector_training_waits_for_a_small_capital_run_and_trains_at_10000(monkeypatch):
+    seen = []
+    monkeypatch.setattr(baseline_v3, "run_walk_forward", fake_walk_forward(seen))
+    data, outcome = inputs(), {}
+    held, release = threading.Event(), threading.Event()
+
+    def small_capital_run():
+        with v3_capital(D(100)):
+            held.set()
+            release.wait(10)
+
+    def train():
+        outcome["result"] = selector_picks(data, record=lambda attempt: None)
+
+    holder = threading.Thread(target=small_capital_run, daemon=True)
+    trainer = threading.Thread(target=train, daemon=True)
+    holder.start()
+    assert held.wait(10)
+    try:
+        trainer.start()
+        trainer.join(0.3)
+        assert trainer.is_alive() and seen == []  # waiting behind the small-capital run
+    finally:
+        release.set()
+    holder.join(10)
+    trainer.join(10)
+    assert not trainer.is_alive() and not holder.is_alive()
+    assert seen == [D(10000)]
+    assert outcome["result"] == ({START: "R2L"}, "oos")
+
+
+def test_training_inside_a_capital_run_is_refused_not_left_to_deadlock(monkeypatch):
+    seen = []
+    monkeypatch.setattr(baseline_v3, "run_walk_forward", fake_walk_forward(seen))
+    original = vars(v3_replay)["TrendRunner"]
+    with v3_capital(D(100)):
+        with pytest.raises(RuntimeError, match="inside another"):
+            selector_picks(inputs(), record=lambda attempt: None)
+        with pytest.raises(RuntimeError, match="inside another"), v3_capital(D(50)):
+            pass
+    assert seen == [] and vars(v3_replay)["TrendRunner"] is original
+    selector_picks(inputs(), record=lambda attempt: None)  # the lock was released
+    assert seen == [D(10000)]

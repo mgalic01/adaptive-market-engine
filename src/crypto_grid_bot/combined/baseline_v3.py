@@ -4,14 +4,17 @@ Owner decisions of 2026-10-11 (docs/V3_1_SOURCE_INVENTORY.md): both are matched
 baselines; ~EUR100 runs use a capital adapter that only sets the starting capital;
 V3's funding, booked a few milliseconds after the hour and after that hour's fills,
 is native timing and is disclosed. The frozen V3 modules run unchanged: no trading
-rule, cost, size multiple, output or timestamp is altered here.
+rule, cost, size multiple, output or timestamp is altered here. Every input record
+is checked before any frozen code runs: an hourly bar or a funding stamp at or after
+the reserved boundary is refused, never ignored, in a replay and in training. (The
+frozen daily decisions refuse such a daily bar when they are built.)
 """
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
-from threading import Lock
+from threading import Lock, local
 
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.trend import replay as v3_replay
@@ -22,7 +25,13 @@ from crypto_grid_bot.trend.orchestration import Attempt, run_walk_forward
 from crypto_grid_bot.trend.replay import ReplayExecutionError, ReplayResult, replay_window
 from crypto_grid_bot.trend.runner import TrendRunner
 
-from .baseline_records import NATIVE_STOPS, BaselineEvidence, NativeMark, comparison_report
+from .baseline_records import (
+    NATIVE_STOPS,
+    BaselineEvidence,
+    NativeMark,
+    comparison_report,
+    refuse_sealed,
+)
 from .report import Contribution
 
 LONG_RULES = {f"unchanged_v3_r{index}_long_only": f"R{index}L" for index in range(1, 7)}
@@ -30,6 +39,7 @@ SELECTOR = "unchanged_v3_selector"
 V3_MULTIPLE = 2  # the frozen main test's size multiple
 V3_TOLERANCE = Decimal("1e-18")  # the frozen strict audit's equity bound
 _CAPITAL_LOCK = Lock()
+_HOLDER = local()  # per thread: whether this thread holds _CAPITAL_LOCK
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +52,30 @@ class V3Inputs:
     funding: Mapping[int, Mapping[str, Decimal]]
 
 
+def _refuse_sealed(inputs: V3Inputs) -> None:
+    """Refuse any record the replays or the training read at or after the boundary."""
+    for symbol, rows in inputs.hourly.items():
+        refuse_sealed((row.open_ms for row in rows), f"{symbol} hourly")
+    refuse_sealed(inputs.funding, "funding")
+
+
+@contextmanager
+def _exclusive(what: str) -> Iterator[None]:
+    """Hold the process-wide lock that keeps capital runs and selector training apart.
+
+    Both depend on which ``TrendRunner`` the frozen replay module holds, so only one
+    runs at a time. A thread already holding the lock would wait for itself: refused.
+    """
+    if getattr(_HOLDER, "held", False):
+        raise RuntimeError(f"{what} cannot start inside another capital run or training")
+    with _CAPITAL_LOCK:
+        _HOLDER.held = True
+        try:
+            yield
+        finally:
+            _HOLDER.held = False
+
+
 @contextmanager
 def v3_capital(initial: Decimal) -> Iterator[None]:
     """Run unchanged V3 code with another starting capital (owner, 2026-10-11).
@@ -49,7 +83,8 @@ def v3_capital(initial: Decimal) -> Iterator[None]:
     Substitutes ``trend.replay.TrendRunner`` by a subclass whose only change is the
     account's starting capital and the matching starting peak; it gives identical
     results at 10,000 USDT. The substitution is process-wide while active, so one
-    replay at a time holds it, and it must never be active during selector training.
+    replay at a time holds it, and selector training waits for it (``selector_picks``
+    takes the same lock), so training never sees another capital.
     """
     if not isinstance(initial, Decimal) or not initial.is_finite() or initial <= 0:
         raise ValueError("finite positive starting capital required")
@@ -60,7 +95,7 @@ def v3_capital(initial: Decimal) -> Iterator[None]:
             self.account = FuturesAccount(initial=initial, cost_multiple=self.account.cost_multiple)
             self.peak = self.account.initial
 
-    with _CAPITAL_LOCK:
+    with _exclusive("a capital run"):
         namespace = vars(v3_replay)  # the frozen module's own globals, not its source
         original = namespace["TrendRunner"]
         namespace["TrendRunner"] = CapitalTrendRunner
@@ -75,12 +110,15 @@ def selector_picks(
 ) -> tuple[dict[int, str | None], ReplayResult]:
     """The frozen walk-forward picks at research capital and base cost.
 
-    Training never runs under the capital adapter, so the selection is V3's own.
-    The continuous out-of-sample account is returned as native evidence.
+    Training holds the capital adapter's lock, so it never runs while any thread has
+    another starting capital in force: the selection is V3's own, at 10,000. The
+    continuous out-of-sample account is returned as native evidence.
     """
-    result = run_walk_forward(
-        inputs.decisions, inputs.filters, inputs.hourly, inputs.funding, record=record
-    )
+    _refuse_sealed(inputs)
+    with _exclusive("selector training"):
+        result = run_walk_forward(
+            inputs.decisions, inputs.filters, inputs.hourly, inputs.funding, record=record
+        )
     return dict(result.picks), result.out_of_sample
 
 
@@ -199,6 +237,7 @@ def replay_v3_baseline(
     window end (owner, 2026-10-11). An engine failure or unavailable exclusion close
     keeps its partial evidence and makes the comparison incomplete, never a pass.
     """
+    _refuse_sealed(inputs)
     disclosures = ["v3_funding_after_fills_is_native_timing"]
     if arm in LONG_RULES:
         schedule: dict[int, str | None] | None = {start_ms: LONG_RULES[arm]}

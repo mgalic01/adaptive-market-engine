@@ -11,7 +11,7 @@ that ended under its own rules is a finished result: its stop equity is held to
 the window end, each such mark labelled frozen. Outputs are never scaled.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -28,12 +28,19 @@ from .report import (
 
 HOUR = 3_600_000
 DAY = 24 * HOUR
+_RESERVED = 1_735_689_600_000  # 2025-01-01T00:00Z; data from here on stays sealed
 # Stops that end a frozen baseline under its own rules, a finished result (owner,
 # 2026-10-11). Only frozen V3 stops this way: the minute replays (V0-V2 grids, D)
 # and the hold run to the window end (a grid halt restarts by itself; D never
 # halts). An engine or parity failure, a missing input, V3's unavailable exclusion
 # close or a selector without a pick is not a native stop and stays incomplete.
 NATIVE_STOPS = frozenset({"liquidation", "no_tradable_position", "leverage_not_restored"})
+
+
+def refuse_sealed(stamps: Iterable[object], what: str) -> None:
+    """Data at or after the reserved boundary stays sealed: refuse it, never ignore it."""
+    if any(type(stamp) is not int or stamp >= _RESERVED for stamp in stamps):
+        raise ValueError(f"{what}: input at or after the reserved boundary is refused")
 
 
 @dataclass(frozen=True, slots=True)

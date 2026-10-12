@@ -17,7 +17,7 @@ from fractions import Fraction
 
 from crypto_grid_bot.backtest.klines import Kline
 
-from .baseline_records import BaselineEvidence, NativeMark, comparison_report
+from .baseline_records import BaselineEvidence, NativeMark, comparison_report, refuse_sealed
 from .decisions import Costs
 from .execution import VenueRules, _decimal, adverse_price
 from .report import Contribution
@@ -48,7 +48,8 @@ def replay_hold_baseline(
 
     ``cost_multiple`` scales the registered fee and slippage rates (1 or 2). Every
     window hour needs a bar for every coin; a missing bar leaves that boundary absent
-    and the comparison incomplete, never a pass, unless the registration skips it.
+    and the comparison incomplete, never a pass, unless the registration skips it. An
+    hourly bar at or after the reserved boundary is refused, never ignored.
     """
     if (
         not markets
@@ -59,6 +60,8 @@ def replay_hold_baseline(
         or initial <= 0
     ):
         raise ValueError("coins, a cost multiple of 1 or 2 and positive capital required")
+    for symbol in sorted(markets):
+        refuse_sealed((row.open_ms for row in markets[symbol].hourly), f"{symbol} hourly")
     bars = {s: {row.open_ms: row for row in m.hourly} for s, m in markets.items()}
     symbols = sorted(markets)
     budget = Fraction(initial) / len(symbols)

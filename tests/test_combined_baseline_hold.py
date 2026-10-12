@@ -93,3 +93,46 @@ def test_a_missing_midnight_bar_is_complete_only_when_registered_as_skipped():
 def test_invalid_cost_multiple_is_refused():
     with pytest.raises(ValueError):
         hold(cost=3)
+
+
+RESERVED = 1_735_689_600_000  # 2025-01-01T00:00Z
+
+
+def test_a_sealed_hourly_bar_is_refused_not_ignored():
+    sealed = markets()
+    rows = sealed["ETHUSDT"].hourly
+    sealed["ETHUSDT"] = replace(
+        sealed["ETHUSDT"], hourly=(*rows, replace(rows[-1], open_ms=RESERVED))
+    )
+    with pytest.raises(ValueError, match="ETHUSDT hourly: input at or after the reserved boundary"):
+        replay_hold_baseline(
+            sealed,
+            start_ms=fx.START,
+            end_ms=fx.START + 3 * fx.DAY,
+            initial=D(10000),
+            cost_multiple=1,
+            source_refs=("synthetic:hold",),
+            adapter_pin=PIN,
+        )
+
+
+def test_a_window_ending_at_the_reserved_boundary_is_replayed():
+    start = RESERVED - 3 * fx.DAY
+    delta = start - fx.START
+    moved = {
+        symbol: replace(
+            market, hourly=tuple(replace(b, open_ms=b.open_ms + delta) for b in market.hourly)
+        )
+        for symbol, market in markets().items()
+    }
+    assert max(b.open_ms for m in moved.values() for b in m.hourly) == RESERVED - fx.HOUR
+    evidence = replay_hold_baseline(
+        moved,
+        start_ms=start,
+        end_ms=RESERVED,
+        initial=D(10000),
+        cost_multiple=1,
+        source_refs=("synthetic:hold",),
+        adapter_pin=PIN,
+    )
+    assert evidence.report.complete, evidence.report.issues

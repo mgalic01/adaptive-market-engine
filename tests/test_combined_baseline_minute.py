@@ -1,7 +1,7 @@
 """Frozen minute-replay baselines (V0-V2 grids, comparator D); synthetic inputs only."""
 
 import math
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from decimal import Decimal as D
 from pathlib import Path
@@ -10,8 +10,10 @@ import pytest
 
 from crypto_grid_bot.backtest import replay as minute_replay
 from crypto_grid_bot.backtest.features import HOUR_MS, FeatureEngine, SeriesFeatures
+from crypto_grid_bot.backtest.funding import FundingRecord
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.backtest.replay import RunConfig, replay
+from crypto_grid_bot.combined import baseline_minute
 from crypto_grid_bot.combined.baseline_minute import (
     MinuteJob,
     TrendJob,
@@ -27,6 +29,7 @@ from crypto_grid_bot.strategy.daily_sma import DailyCloses
 PIN = "d" * 64
 DAY = 24 * HOUR_MS
 WARMUP_DAYS = 34
+RESERVED = 1_735_689_600_000  # 2025-01-01T00:00Z
 ORIGIN = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
 T0 = ORIGIN + WARMUP_DAYS * DAY  # a UTC midnight after the feature warm-up
 CONFIG = load_config(Path(__file__).resolve().parents[1] / "config" / "default.toml")
@@ -60,14 +63,16 @@ ENGINE = FeatureEngine(
 )
 
 
-def minutes(days=1, skip=()):
+def minutes(days=1, skip=(), first=T0):
     fair = float(ENGINE.at(T0).fair_value)
     rows = []
     for index in range(days * 24 * 60):
         if index in skip:
             continue
         price = fair * (1 + 0.01 * math.sin(index / 7.0))
-        rows.append(candle(T0 + index * 60_000, price, price * 1.003, price * 0.997, price * 1.001))
+        rows.append(
+            candle(first + index * 60_000, price, price * 1.003, price * 0.997, price * 1.001)
+        )
     return tuple(rows)
 
 
@@ -185,3 +190,157 @@ def test_comparator_d_is_rebuilt_exactly_from_its_journal():
     boundaries = evidence.report.policy_evidence.boundaries
     assert len(boundaries) == 25
     assert evidence.report.reconciliation_residual == 0
+
+
+@pytest.fixture
+def frozen_calls(monkeypatch):
+    """Every call into a frozen replay; a refusal must come before the first one."""
+    calls = []
+
+    def spy(real):
+        def call(*args, **kwargs):
+            calls.append(real.__name__)
+            return real(*args, **kwargs)
+
+        return call
+
+    for name in ("replay", "replay_trend"):
+        monkeypatch.setattr(baseline_minute, name, spy(getattr(baseline_minute, name)))
+    return calls
+
+
+def trend_jobs(**changes):
+    fair = float(ENGINE.at(T0).fair_value)
+    days = [T0 - 60 * DAY + d * DAY for d in range(61)]
+    closes = DailyCloses((day, D(str(fair * (1 + 0.002 * i)))) for i, day in enumerate(days))
+    jobs = {
+        symbol: TrendJob(
+            run_config(symbol), minutes(), closes, lambda ms: ENGINE.at(ms) is not None
+        )
+        for symbol in ("AAAUSDT", "BBBUSDT")
+    }
+    return {symbol: replace(job, **changes) for symbol, job in jobs.items()}
+
+
+def run_grid(jobs, start_ms=T0, end_ms=T0 + DAY):
+    return replay_grid_baseline(
+        "matched_v0_grid_high_first",
+        jobs,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        initial=D(2000),
+        source_refs=("synthetic:grid",),
+        adapter_pin=PIN,
+    )
+
+
+def run_trend(jobs, start_ms=T0, end_ms=T0 + DAY):
+    return replay_trend_baseline(
+        "matched_d_trend_high_first",
+        jobs,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        initial=D(2000),
+        source_refs=("synthetic:d",),
+        adapter_pin=PIN,
+    )
+
+
+# The frozen replay plays every minute it is given and has no pre-window minutes of its own:
+# its warm-up is the hourly and daily history behind the feature engine, and its taker-flow
+# window starts empty at the first played minute. So no minute outside the window is allowed.
+STRAYS = [
+    pytest.param(-DAY, 2, id="a_day_early"),
+    pytest.param(-60_000, 1, id="one_minute_early"),
+    pytest.param(0, 2, id="up_to_a_day_late"),
+]
+
+
+@pytest.mark.parametrize(("offset", "days"), STRAYS)
+def test_a_grid_minute_outside_the_window_is_refused_before_the_frozen_replay(
+    frozen_calls, offset, days
+):
+    stray = minutes(days=days, first=T0 + offset)
+    jobs = {symbol: replace(job, minutes=stray) for symbol, job in grid_jobs().items()}
+    with pytest.raises(ValueError, match="outside the registered window"):
+        run_grid(jobs)
+    assert frozen_calls == []
+
+
+@pytest.mark.parametrize(("offset", "days"), STRAYS)
+def test_a_trend_minute_outside_the_window_is_refused_before_the_frozen_replay(
+    frozen_calls, offset, days
+):
+    with pytest.raises(ValueError, match="outside the registered window"):
+        run_trend(trend_jobs(minutes=minutes(days=days, first=T0 + offset)))
+    assert frozen_calls == []
+
+
+def test_one_pair_with_a_stray_minute_refuses_the_whole_portfolio(frozen_calls):
+    jobs = grid_jobs()
+    jobs["BBBUSDT"] = replace(jobs["BBBUSDT"], minutes=minutes(days=2, first=T0 - DAY))
+    with pytest.raises(ValueError, match="BBBUSDT"):
+        run_grid(jobs)
+    assert frozen_calls == []  # AAAUSDT, first in order, was not replayed either
+
+
+def test_the_window_own_first_and_last_minutes_are_replayed_not_refused(frozen_calls):
+    evidence = run_grid(grid_jobs())
+    assert evidence.status is None
+    assert frozen_calls == ["replay", "replay"]
+
+
+def sealed_candle(open_ms=RESERVED):
+    return candle(open_ms, 1, 1.01, 0.99, 1)
+
+
+def sealed_engine(**changes):
+    """A feature engine whose own history reaches the reserved boundary."""
+    pair = SeriesFeatures("TESTUSDT", [*HOURS, sealed_candle()]) if "pair" in changes else SERIES
+    return FeatureEngine(
+        pair,
+        SERIES,
+        [SeriesFeatures(f"B{i}USDT", HOURS, full=False) for i in range(5)],
+        range_atr_multiple=2.0,
+        levels=8,
+        minimum_cost_multiple=3.0,
+        round_trip_cost=0.0035,
+        daily_bars=[sealed_candle()] if "daily" in changes else None,
+    )
+
+
+def test_a_sealed_minute_is_refused_even_inside_the_window(frozen_calls):
+    window = (RESERVED - 60_000, RESERVED + 60_000)
+    stamps = minutes(days=1, first=RESERVED - 60_000)[:2]  # 23:59 and the sealed 00:00
+    assert [bar.open_ms for bar in stamps] == [RESERVED - 60_000, RESERVED]
+    jobs = {symbol: replace(job, minutes=stamps) for symbol, job in grid_jobs().items()}
+    with pytest.raises(ValueError, match="reserved boundary"):
+        run_grid(jobs, *window)
+    with pytest.raises(ValueError, match="reserved boundary"):
+        run_trend(trend_jobs(minutes=stamps), *window)
+    assert frozen_calls == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param({"daily": [sealed_candle()]}, id="daily_bar"),
+        pytest.param({"hourly": [sealed_candle()]}, id="hourly_bar"),
+        pytest.param({"funding": [FundingRecord(RESERVED, 8, D("0.0001"))]}, id="funding"),
+        pytest.param({"features": sealed_engine(pair=True)}, id="feature_hourly_candle"),
+        pytest.param({"features": sealed_engine(daily=True)}, id="feature_daily_bar"),
+    ],
+)
+def test_a_sealed_record_in_a_grid_input_is_refused_before_the_frozen_replay(frozen_calls, change):
+    jobs = {symbol: replace(job, **change) for symbol, job in grid_jobs().items()}
+    with pytest.raises(ValueError, match="reserved boundary"):
+        run_grid(jobs)
+    assert frozen_calls == []
+
+
+def test_a_sealed_daily_close_in_comparator_d_is_refused_before_the_frozen_replay(frozen_calls):
+    fair = float(ENGINE.at(T0).fair_value)
+    closes = DailyCloses([(T0 - DAY, D(str(fair))), (RESERVED, D(str(fair)))])
+    with pytest.raises(ValueError, match="reserved boundary"):
+        run_trend(trend_jobs(closes=closes))
+    assert frozen_calls == []

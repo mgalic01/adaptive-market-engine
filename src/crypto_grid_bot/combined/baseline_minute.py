@@ -18,7 +18,9 @@ comparison is incomplete, never a pass, unless the registration skips that hour.
 A grid halt restarts by itself and D never halts: these replays have no native early
 stop, so a stopped minute baseline is a failure (``baseline_records.NATIVE_STOPS``).
 The registered job preparation owns the data, the path mode, the version's policy
-and its declared doubled-cost rules.
+and its declared doubled-cost rules. Every input is checked before any frozen code runs:
+a minute outside the registered window, or any record at or after the reserved boundary,
+is refused (never ignored).
 """
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -44,7 +46,7 @@ from crypto_grid_bot.config import BotConfig
 from crypto_grid_bot.simulation.runner import SimulationPolicy
 from crypto_grid_bot.strategy.daily_sma import DailyCloses
 
-from .baseline_records import BaselineEvidence, NativeMark, comparison_report
+from .baseline_records import BaselineEvidence, NativeMark, comparison_report, refuse_sealed
 from .report import Contribution
 
 HOUR = 3_600_000
@@ -122,6 +124,41 @@ def recorded_frames() -> Iterator[_Frames]:
             yield frames
         finally:
             namespace["PaperSimulator"] = parent
+
+
+def _refuse_minutes(symbol: str, minutes: Sequence[Kline], start_ms: int, end_ms: int) -> None:
+    """Refuse a minute outside ``[start_ms, end_ms)`` or at or after the reserved boundary.
+
+    The frozen replay plays, and trades on, every minute it is given. It needs none
+    before the window: its warm-up is the hourly and daily history behind the feature
+    engine (the frozen ``replayed_minutes`` drops earlier minutes as "warm-up and not
+    played"), and its taker-flow window starts empty at the first played minute. So no
+    minute before ``start_ms`` is allowed, and none from ``end_ms`` on.
+    """
+    refuse_sealed((bar.open_ms for bar in minutes), f"{symbol} minutes")
+    if any(not start_ms <= bar.open_ms < end_ms for bar in minutes):
+        raise ValueError(f"{symbol} minutes: a minute outside the registered window is refused")
+
+
+def _refuse_grid_inputs(jobs: Mapping[str, MinuteJob], start_ms: int, end_ms: int) -> None:
+    for symbol in sorted(jobs):
+        job = jobs[symbol]
+        _refuse_minutes(symbol, job.minutes, start_ms, end_ms)
+        refuse_sealed((bar.open_ms for bar in job.daily or ()), f"{symbol} daily")
+        refuse_sealed((bar.open_ms for bar in job.hourly or ()), f"{symbol} hourly")
+        refuse_sealed((row.calc_time_ms for row in job.funding or ()), f"{symbol} funding")
+        # The frozen engine has no accessor for the history it was built from.
+        engine = job.features
+        for series in (engine.pair, engine.market, *engine.basket):
+            refuse_sealed(series.opens, f"{symbol} feature series {series.symbol}")
+        refuse_sealed(engine._daily_opens, f"{symbol} feature daily bars")
+
+
+def _refuse_trend_inputs(jobs: Mapping[str, TrendJob], start_ms: int, end_ms: int) -> None:
+    for symbol in sorted(jobs):
+        job = jobs[symbol]
+        _refuse_minutes(symbol, job.minutes, start_ms, end_ms)
+        refuse_sealed(job.closes._closes, f"{symbol} daily closes")  # no accessor either
 
 
 def _shares(initial: Decimal, symbols: Sequence[str]) -> Decimal:
@@ -230,6 +267,7 @@ def replay_grid_baseline(
     """Replay one frozen grid version and path mode per pair, as one portfolio."""
     if not jobs:
         raise ValueError("at least one pair job required")
+    _refuse_grid_inputs(jobs, start_ms, end_ms)
     share = _shares(initial, sorted(jobs))
     per_pair: dict[str, _PairMarks] = {}
     contributions: list[Contribution] = []
@@ -313,6 +351,7 @@ def replay_trend_baseline(
     """Replay frozen comparator D per pair and rebuild its marks from its journal."""
     if not jobs:
         raise ValueError("at least one pair job required")
+    _refuse_trend_inputs(jobs, start_ms, end_ms)
     share = _shares(initial, sorted(jobs))
     per_pair: dict[str, _PairMarks] = {}
     contributions: list[Contribution] = []
