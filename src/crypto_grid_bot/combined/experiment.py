@@ -210,6 +210,97 @@ class AcceptanceResult:
     comparisons: tuple[BaselineComparison, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class CellComparison:
+    """One full combined cell as acceptance judged it, for that cell's report page.
+
+    ``status`` is the whole evaluation's: one failing cell fails acceptance, so a cell's
+    passing measures never pass it alone. ``cell_status`` and the reasons cover this cell:
+    those naming the full cell, one of its baseline cells or their comparison, plus those
+    naming no cell (the registration, malformed records); reasons of other cells are only
+    counted. ``baselines`` are every registered baseline, so one without a row still shows.
+    """
+
+    window: str
+    capital: str
+    cost_multiple: int
+    scenario: str
+    status: str
+    cell_status: str
+    baselines: tuple[str, ...]
+    rows: tuple[BaselineComparison, ...]
+    failures: tuple[str, ...]
+    incomplete_reasons: tuple[str, ...]
+    other_failures: int
+    other_incomplete: int
+
+
+def cell_comparison(
+    registration: Registration,
+    result: AcceptanceResult,
+    *,
+    window: str,
+    capital: str,
+    cost_multiple: int,
+    scenario: str,
+) -> CellComparison:
+    """The registered full combined cell's part of ``result``; judges nothing new.
+
+    Reasons are attributed by the cell keys ``evaluate`` writes them with.
+    """
+    windows = registration.windows if isinstance(registration.windows, (tuple, list)) else ()
+    capitals = registration.capitals if isinstance(registration.capitals, (tuple, list)) else ()
+    profiles = (
+        registration.cost_profiles if isinstance(registration.cost_profiles, (tuple, list)) else ()
+    )
+    if (
+        window not in {w.id for w in windows if isinstance(w, Window)}
+        or capital not in {c.id for c in capitals if isinstance(c, Capital)}
+        or cost_multiple not in {p[0] for p in profiles if _cost_profile_valid(p)}
+        or scenario not in SCENARIOS
+    ):
+        raise ValueError("a registered full combined cell required")
+    arms = registration.baseline_arms
+    baselines = (
+        tuple(arms)
+        if isinstance(arms, (tuple, list)) and all(isinstance(a, str) for a in arms)
+        else ()
+    )
+    prefixes = (
+        f"{('combined', window, capital, cost_multiple, scenario)}:",
+        *(
+            f"{(baseline, window, capital, cost_multiple, 'native')}{end}"
+            for baseline in baselines
+            for end in (":", f"/{scenario}:")
+        ),
+    )
+
+    def own(reason: str) -> bool:
+        return not reason.startswith("(") or reason.startswith(prefixes)
+
+    failures = tuple(reason for reason in result.failures if own(reason))
+    incomplete = tuple(reason for reason in result.incomplete_reasons if own(reason))
+    return CellComparison(
+        window,
+        capital,
+        cost_multiple,
+        scenario,
+        result.status,
+        "fail" if failures else "incomplete" if incomplete else "pass",
+        baselines,
+        tuple(
+            row
+            for row in result.comparisons
+            if (row.window, row.capital, row.cost_multiple, row.scenario)
+            == (window, capital, cost_multiple, scenario)
+        ),
+        failures,
+        incomplete,
+        len(result.failures) - len(failures),
+        len(result.incomplete_reasons) - len(incomplete),
+    )
+
+
 def _pin(value: str | None, length: int = 64) -> bool:
     return isinstance(value, str) and re.fullmatch(f"[0-9a-f]{{{length}}}", value) is not None
 

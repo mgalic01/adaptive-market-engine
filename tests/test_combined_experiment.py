@@ -24,6 +24,7 @@ from crypto_grid_bot.combined.experiment import (
     RunOutcome,
     Window,
     capital_label,
+    cell_comparison,
     evaluate,
 )
 from crypto_grid_bot.combined.observation_policy import POLICY_ID, Boundary, PolicyEvidence
@@ -1852,3 +1853,40 @@ def test_a_zero_common_drawdown_comparison_is_indeterminate_not_a_pass():
     assert row.baseline_max_drawdown == 0 and row.beats_return is True
     assert row.beats_return_drawdown is None
     assert any(V2 in reason and "indeterminate" in reason for reason in result.incomplete_reasons)
+
+
+def test_a_cell_comparison_keeps_its_reasons_and_every_registered_baseline():
+    reg = registration()
+    rows = change(outcomes(reg), arm=V2, final_equity=D(15000))
+    # Another cell fails on its own: the owner_small doubled-cost full arm loses money.
+    rows = change(rows, cost=2, capital="owner_small", final_equity=D(100))
+    hold_cell = ("matched_spot_hold", "research", 1)
+    rows = tuple(
+        r
+        for r in rows
+        if (r.identity.arm, r.identity.capital, r.identity.cost_multiple) != hold_cell
+    )
+    result = evaluate(reg, rows)
+    cell = cell_comparison(
+        reg, result, window="window", capital="research", cost_multiple=1, scenario=SCENARIOS[0]
+    )
+    assert (cell.status, cell.cell_status) == ("fail", "fail")
+    assert cell.baselines == BASELINES
+    assert [r.baseline for r in cell.rows] == list(BASELINES)
+    assert any(V2 in f and "full return does not strictly beat" in f for f in cell.failures)
+    assert any(
+        "matched_spot_hold" in r and "missing or repeated cell" in r
+        for r in cell.incomplete_reasons
+    )
+    assert not any("owner_small" in r for r in (*cell.failures, *cell.incomplete_reasons))
+    assert cell.other_failures > 0
+    # A cell with nothing against it still shows the failing acceptance.
+    clean = cell_comparison(
+        reg, result, window="window", capital="owner_small", cost_multiple=1, scenario=SCENARIOS[1]
+    )
+    assert (clean.status, clean.cell_status) == ("fail", "pass")
+    assert clean.failures == clean.incomplete_reasons == ()
+    with pytest.raises(ValueError):
+        cell_comparison(
+            reg, result, window="other", capital="research", cost_multiple=1, scenario=SCENARIOS[0]
+        )

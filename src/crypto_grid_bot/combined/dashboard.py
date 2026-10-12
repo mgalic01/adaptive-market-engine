@@ -10,9 +10,9 @@ from fractions import Fraction
 from html import escape
 from urllib.parse import quote, unquote, urlsplit
 
-from crypto_grid_bot.combined.artifacts import REPORT_JSON
+from crypto_grid_bot.combined.artifacts import REPORT_JSON, REPORT_JSON_SHA256
 from crypto_grid_bot.combined.baseline_records import NativeDiagnostics
-from crypto_grid_bot.combined.experiment import BaselineComparison
+from crypto_grid_bot.combined.experiment import BaselineComparison, CellComparison
 from crypto_grid_bot.combined.observation_policy import validate_boundaries
 from crypto_grid_bot.combined.report import DimensionTotal, EquityPoint, Report
 
@@ -263,36 +263,63 @@ def _ratio(value: Fraction | None) -> str:
     return "Unavailable" if value is None else _number(_decimal(value), percent=True)
 
 
-def _verdict(beats: bool | None, measured: bool) -> str:
-    if beats is None:
-        return "Indeterminate: zero drawdown" if measured else "Unavailable"
-    return "Pass" if beats else "Fail"
+def _verdicts(row: BaselineComparison | None) -> tuple[str, str]:
+    """Each measure's verdict, never Pass beside an unavailable value.
+
+    A verdict needs all four measured values; a return/drawdown verdict also needs both
+    drawdowns nonzero, and a zero drawdown is indeterminate only when one actually is.
+    """
+    if row is None or None in (
+        row.full_return,
+        row.full_max_drawdown,
+        row.baseline_return,
+        row.baseline_max_drawdown,
+    ):
+        return "Unavailable", "Unavailable"
+    zero = row.full_max_drawdown == 0 or row.baseline_max_drawdown == 0
+    on_return = (
+        "Unavailable" if row.beats_return is None else "Pass" if row.beats_return else "Fail"
+    )
+    if row.beats_return_drawdown is None:
+        on_ratio = "Indeterminate: zero drawdown" if zero else "Unavailable"
+    else:
+        on_ratio = "Unavailable" if zero else "Pass" if row.beats_return_drawdown else "Fail"
+    return on_return, on_ratio
 
 
 def _comparison(
-    report: Report,
-    comparisons: Sequence[BaselineComparison] | None,
-    native: Sequence[NativeDiagnostics],
+    report: Report, comparison: CellComparison | None, native: Sequence[NativeDiagnostics]
 ) -> str:
-    """Acceptance's cross-version results for this report's cell, displayed as given."""
-    if comparisons is None:
+    """Acceptance's judgment of this report's cell, displayed as given, never recomputed."""
+    if comparison is None:
         table = '<p class="empty">Not supplied</p>'
     else:
-        rows = tuple(comparisons)
-        if any(type(row) is not BaselineComparison for row in rows):
-            raise ValueError("comparisons must be acceptance BaselineComparison rows")
-        cells = {(row.window, row.capital, row.cost_multiple, row.scenario) for row in rows}
+        if type(comparison) is not CellComparison or any(
+            type(row) is not BaselineComparison for row in comparison.rows
+        ):
+            raise ValueError("comparison must be acceptance's CellComparison")
+        cell = (
+            comparison.window,
+            comparison.capital,
+            comparison.cost_multiple,
+            comparison.scenario,
+        )
+        named = [row.baseline for row in comparison.rows]
         own = report.policy_evidence.scenario if report.policy_evidence is not None else None
-        if len(cells) > 1 or (own is not None and any(row.scenario != own for row in rows)):
+        if (
+            any((r.window, r.capital, r.cost_multiple, r.scenario) != cell for r in comparison.rows)
+            or len(set(named)) != len(named)
+            or not set(named) <= set(comparison.baselines)
+            or (own is not None and comparison.scenario != own)
+        ):
             table = (
-                '<p class="warning-text">Omitted comparison: the rows describe more than one '
-                "cell, or another scenario than this report's.</p>"
+                '<p class="warning-text">Omitted comparison: its rows are not one registered '
+                "baseline each of one cell, or the cell is of another scenario than this "
+                "report's.</p>"
             )
-        elif not rows:
-            table = '<p class="empty">Not supplied</p>'
         else:
-            ((window, capital, multiple, scenario),) = cells
-            frozen = [row for row in rows if row.baseline_native_stop is not None]
+            by_baseline = {row.baseline: row for row in comparison.rows}
+            frozen = [row for row in comparison.rows if row.baseline_native_stop is not None]
             held = (
                 "<p>Held frozen at a native stop's equity on the schedule: "
                 + ", ".join(_text(f"{row.baseline} ({row.baseline_native_stop})") for row in frozen)
@@ -300,9 +327,30 @@ def _comparison(
                 if frozen
                 else ""
             )
+            reasons = "".join(
+                f"<li>{_text(reason)}</li>"
+                for reason in (*comparison.failures, *comparison.incomplete_reasons)
+            )
+            others = comparison.other_failures + comparison.other_incomplete
             table = (
-                f"<p>Window <code>{_text(window)}</code>, capital <code>{_text(capital)}</code>, "
-                f"cost ×{_text(multiple)}, scenario <code>{_text(scenario)}</code>.</p>"
+                f'<p><span class="{"badge" if comparison.status == "pass" else "badge warning"}">'
+                f"Acceptance: {_text(comparison.status)}</span> "
+                f'<span class="{"badge" if comparison.cell_status == "pass" else "badge warning"}">'
+                f"This cell: {_text(comparison.cell_status)}</span></p>"
+                '<p class="muted">Acceptance passes only when every registered cell does; a Pass '
+                "below is one measure against one baseline.</p>"
+                + (f"<ul>{reasons}</ul>" if reasons else "")
+                + (
+                    f"<p>{comparison.other_failures} failure(s) and "
+                    f"{comparison.other_incomplete} incomplete reason(s) concern other "
+                    "cells.</p>"
+                    if others
+                    else ""
+                )
+                + f"<p>Window <code>{_text(comparison.window)}</code>, capital "
+                f"<code>{_text(comparison.capital)}</code>, cost "
+                f"×{_text(comparison.cost_multiple)}, scenario "
+                f"<code>{_text(comparison.scenario)}</code>.</p>"
                 + _table(
                     (
                         "Baseline",
@@ -315,24 +363,20 @@ def _comparison(
                     ),
                     [
                         (
-                            row.baseline,
-                            _ratio(row.baseline_return),
-                            _ratio(row.baseline_max_drawdown),
-                            _ratio(row.full_return),
-                            _ratio(row.full_max_drawdown),
-                            _verdict(row.beats_return, False),
-                            _verdict(
-                                row.beats_return_drawdown,
-                                None
-                                not in (
-                                    row.full_return,
-                                    row.full_max_drawdown,
-                                    row.baseline_return,
-                                    row.baseline_max_drawdown,
-                                ),
+                            baseline,
+                            *(
+                                (
+                                    _ratio(row.baseline_return),
+                                    _ratio(row.baseline_max_drawdown),
+                                    _ratio(row.full_return),
+                                    _ratio(row.full_max_drawdown),
+                                )
+                                if (row := by_baseline.get(baseline)) is not None
+                                else ("Unavailable",) * 4
                             ),
+                            *_verdicts(by_baseline.get(baseline)),
                         )
-                        for row in rows
+                        for baseline in comparison.baselines
                     ],
                 )
                 + held
@@ -372,7 +416,7 @@ and lifetime maximum drawdown of each baseline and of the full combined arm, fro
 marks at the approved UTC hour boundaries. Registered skipped hours ({len(report.skipped_hours)}
 in this report) are skipped for every arm alike. Pass means the full arm strictly beat that
 baseline on the measure; Unavailable means a cell had no valid comparison evidence, never a
-pass. This page judges nothing.</p>
+pass. A registered baseline without a row is listed Unavailable. This page judges nothing.</p>
 {table}
 <h3>Native baseline diagnostics</h3>
 <p class="muted">Each baseline's own marks in its own timing, intrabar marks included, labelled
@@ -567,11 +611,11 @@ def exact_evidence(
     benchmarks: Mapping[str, tuple[EquityPoint, ...]] | None = None,
     *,
     synthetic: bool = True,
-    comparisons: Sequence[BaselineComparison] | None = None,
+    comparison: CellComparison | None = None,
     native: Sequence[NativeDiagnostics] = (),
 ) -> str:
     """The exact JSON evidence: every record, with Decimal and Fraction values as their
-    exact text, and the comparison rows and native diagnostics as supplied."""
+    exact text, and the cell comparison and native diagnostics as supplied."""
     if type(synthetic) is not bool:
         raise ValueError("synthetic must be an explicit Boolean")
     payload = {
@@ -581,7 +625,7 @@ def exact_evidence(
             str(name): [asdict(point) for point in values]
             for name, values in dict(benchmarks or {}).items()
         },
-        "cross_version_comparisons": [asdict(row) for row in comparisons or ()],
+        "cross_version_comparison": None if comparison is None else asdict(comparison),
         "native_baseline_diagnostics": [asdict(row) for row in native],
     }
     return json.dumps(payload, default=str, ensure_ascii=False, indent=2)
@@ -593,13 +637,22 @@ def render_report(
     benchmarks: Mapping[str, tuple[EquityPoint, ...]] | None = None,
     *,
     synthetic: bool = True,
-    comparisons: Sequence[BaselineComparison] | None = None,
+    comparison: CellComparison | None = None,
     native: Sequence[NativeDiagnostics] = (),
 ) -> str:
-    """The page alone; see ``render_bundle_report``."""
-    page, _ = render_bundle_report(
-        report, title, benchmarks, synthetic=synthetic, comparisons=comparisons, native=native
+    """The page of a report whose exact JSON fits inline; see ``render_bundle_report``.
+
+    Above the inline limit the page names a report.json this call cannot return, so it
+    is refused: ``render_bundle_report`` returns the page with that file's JSON.
+    """
+    page, separate = render_bundle_report(
+        report, title, benchmarks, synthetic=synthetic, comparison=comparison, native=native
     )
+    if separate is not None:
+        raise ValueError(
+            "the exact JSON evidence is above the inline limit: use render_bundle_report, "
+            "which returns the page with its report.json for write_bundle"
+        )
     return page
 
 
@@ -609,26 +662,27 @@ def render_bundle_report(
     benchmarks: Mapping[str, tuple[EquityPoint, ...]] | None = None,
     *,
     synthetic: bool = True,
-    comparisons: Sequence[BaselineComparison] | None = None,
+    comparison: CellComparison | None = None,
     native: Sequence[NativeDiagnostics] = (),
 ) -> tuple[str, str | None]:
     """Render exact evidence with rounded display only; make no run/edge claim.
 
     Returns the page and, when the exact JSON is above the inline limit, that JSON for
     the evidence bundle's ``report.json`` (``write_bundle(report_json=...)``); the page
-    then names the file and its SHA-256 instead of embedding it.
+    then names the file and its SHA-256 instead of embedding it, and ``write_bundle``
+    and ``read_bundle`` refuse that page without that exact file.
 
     Provided comparison curves require the report's timestamps (its approved hourly
     boundaries when policy evidence is present) and an initial mark
     equal to the report's starting capital. This does not verify data, fees, code
     or other comparability. Explicit marks remain the caller's evidence.
-    ``comparisons`` are acceptance's ``BaselineComparison`` rows of this report's cell
-    (``AcceptanceResult.comparisons``) and ``native`` each baseline's
-    ``NativeDiagnostics``: displayed as given, never recomputed or judged here.
+    ``comparison`` is acceptance's judgment of this report's cell
+    (``experiment.cell_comparison``) and ``native`` each baseline's ``NativeDiagnostics``:
+    displayed as given, never recomputed or judged here.
     """
     if type(synthetic) is not bool:
         raise ValueError("synthetic must be an explicit Boolean")
-    comparison = _comparison(report, comparisons, native)
+    comparison_html = _comparison(report, comparison, native)
     supplied = dict(benchmarks or {})
     equity = [(point.timestamp_ms, Fraction(point.equity)) for point in report.equity_points]
     peak = Fraction(report.initial_equity)
@@ -683,7 +737,7 @@ def render_bundle_report(
                 "or values are invalid."
             )
     raw = exact_evidence(
-        report, benchmarks, synthetic=synthetic, comparisons=comparisons, native=native
+        report, benchmarks, synthetic=synthetic, comparison=comparison, native=native
     )
     encoded = raw.encode("utf-8")
     separate: str | None = None
@@ -695,12 +749,14 @@ def render_bundle_report(
         )
     else:
         separate = raw
+        digest = hashlib.sha256(encoded).hexdigest()
         exact = (
             f'<p class="warning-text">The exact JSON evidence is {len(encoded)} bytes, above the '
             f"{_INLINE_JSON_LIMIT}-byte inline limit, so it is not embedded.</p>\n"
             "<p>It is saved with this page as the evidence bundle's file "
-            f'<a href="{REPORT_JSON}" rel="noopener noreferrer">{REPORT_JSON}</a>, SHA-256 '
-            f"<code>{hashlib.sha256(encoded).hexdigest()}</code>; read_bundle verifies it.</p>"
+            f'<a href="{REPORT_JSON}" {REPORT_JSON_SHA256}="{digest}" '
+            f'rel="noopener noreferrer">{REPORT_JSON}</a>, SHA-256 <code>{digest}</code>; '
+            "write_bundle and read_bundle refuse this page without that exact file.</p>"
         )
     badge = "Synthetic demonstration — not market performance" if synthetic else "Evidence review"
     status = (
@@ -931,7 +987,7 @@ establish full comparability. No benchmark is invented.</p>
 <p class="muted">Measured from the original, non-resetting high-water mark. Recovery does not
 erase an earlier loss.</p>
 </section>
-{comparison}
+{comparison_html}
 <div class="grid">{attributions}<section class="panel">
 <h2>Costs and participation</h2>{costs}
 <p class="muted">Open marked lifecycles include unrealized PnL; they are not closed trades.</p>

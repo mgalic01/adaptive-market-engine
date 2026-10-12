@@ -1,3 +1,4 @@
+import functools
 import json
 from dataclasses import replace
 from decimal import Decimal
@@ -219,7 +220,7 @@ def test_capital_observation_phase_and_interval_link_are_visible_and_exported():
 
 
 def test_a_long_run_page_stays_bounded_and_keeps_extremes() -> None:
-    from crypto_grid_bot.combined.dashboard import exact_evidence
+    from crypto_grid_bot.combined.dashboard import exact_evidence, render_bundle_report
 
     # 6,000 marks, oscillating with one deep trough: far beyond every display bound.
     points = tuple(
@@ -233,7 +234,11 @@ def test_a_long_run_page_stays_bounded_and_keeps_extremes() -> None:
     )
     points = (EquityPoint(0, D(100), "mark-0", ("synthetic",)), *points[1:])
     evidence = analyze(D(100), points, (), (), (), ("synthetic",))
-    html = render_report(evidence)
+    # Its exact JSON is above the inline limit: only the bundle path renders it.
+    with pytest.raises(ValueError, match="render_bundle_report"):
+        render_report(evidence)
+    html, separate = render_bundle_report(evidence)
+    assert separate == exact_evidence(evidence)
     parsed = Elements(html)
     text = " ".join(parsed.text)
     assert len(html) < 1_000_000
@@ -351,69 +356,138 @@ def table_rows(html: str, columns: int) -> list[tuple[str, ...]]:
     return [tuple(cells[i : i + columns]) for i in range(0, len(cells), columns)]
 
 
+@functools.cache
 def compared():
     """Acceptance over the synthetic matrix, V2 beating the full arm on return."""
     from test_combined_experiment import V2, change, outcomes, registration
 
-    from crypto_grid_bot.combined.experiment import SCENARIOS, evaluate
+    from crypto_grid_bot.combined.experiment import SCENARIOS, cell_comparison, evaluate
 
     reg = registration()
     rows = change(outcomes(reg), arm=V2, final_equity=D(15000))
     result = evaluate(reg, rows)
-    cell = ("window", "research", 1, SCENARIOS[0])
     full = next(
         r.report_evidence.report
         for r in rows
         if (r.identity.arm, r.identity.window, r.identity.capital, r.identity.cost_multiple)
-        == ("combined", *cell[:3])
-        and r.identity.scenario == cell[3]
+        == ("combined", "window", "research", 1)
+        and r.identity.scenario == SCENARIOS[0]
     )
-    comparisons = tuple(
-        c for c in result.comparisons if (c.window, c.capital, c.cost_multiple, c.scenario) == cell
+    cell = cell_comparison(
+        reg, result, window="window", capital="research", cost_multiple=1, scenario=SCENARIOS[0]
     )
-    return reg, full, comparisons, result
+    return reg, full, cell
+
+
+def comparison_rows(html: str) -> dict[str, tuple[str, ...]]:
+    """The comparison table's rows by baseline: both measures of both arms, then verdicts."""
+    rows = table_rows(section(html, "Cross-version comparison"), 7)
+    return {row[0]: row[1:] for row in rows}
+
+
+def with_row(cell, baseline, **changes):
+    return replace(
+        cell,
+        rows=tuple(replace(r, **changes) if r.baseline == baseline else r for r in cell.rows),
+    )
+
+
+V3 = "unchanged_v3_selector"
+UNAVAILABLE = ("Unavailable",) * 6
 
 
 def test_the_comparison_lists_every_baseline_with_both_measures_and_each_verdict() -> None:
     from test_combined_experiment import V2
 
-    reg, full, comparisons, _ = compared()
-    html = render_report(full, comparisons=comparisons)
-    rows = table_rows(section(html, "Cross-version comparison"), 7)
-    assert [row[0] for row in rows] == list(reg.baseline_arms)
-    by_name = {row[0]: row[1:] for row in rows}
-    # Baseline return and drawdown, full return and drawdown, then each verdict.
-    assert by_name["unchanged_v3_selector"] == (
-        "10.00%",
-        "20.00%",
-        "40.00%",
-        "20.00%",
-        "Pass",
-        "Pass",
-    )
-    assert by_name[V2] == ("50.00%", "20.00%", "40.00%", "20.00%", "Fail", "Fail")
+    reg, full, cell = compared()
+    html = render_report(full, comparison=cell)
+    rows = comparison_rows(html)
+    assert list(rows) == list(reg.baseline_arms)
+    assert rows[V3] == ("10.00%", "20.00%", "40.00%", "20.00%", "Pass", "Pass")
+    assert rows[V2] == ("50.00%", "20.00%", "40.00%", "20.00%", "Fail", "Fail")
     text = " ".join(Elements(section(html, "Cross-version comparison")).text)
     assert "common hourly" in text and "research" in text and "open_low_high_close" in text
 
 
-def test_a_baseline_without_comparison_evidence_is_listed_unavailable() -> None:
-    _, full, comparisons, _ = compared()
-    missing = replace(comparisons[0], baseline_return=None, baseline_max_drawdown=None)
-    missing = replace(missing, beats_return=None, beats_return_drawdown=None)
-    html = render_report(full, comparisons=(missing, *comparisons[1:]))
-    (row,) = [
-        r
-        for r in table_rows(section(html, "Cross-version comparison"), 7)
-        if r[0] == missing.baseline
-    ]
-    assert row[1:3] == ("Unavailable", "Unavailable") and row[5:] == ("Unavailable", "Unavailable")
+def test_the_acceptance_status_and_this_cell_s_reasons_are_shown() -> None:
+    from test_combined_experiment import V2
+
+    _, full, cell = compared()
+    part = section(render_report(full, comparison=cell), "Cross-version comparison")
+    text = " ".join(Elements(part).text)
+    assert "Acceptance: fail" in text and "This cell: fail" in text
+    (reason,) = [f for f in cell.failures if V2 in f and "full return does not" in f]
+    assert reason in text
+    passing = replace(cell, cell_status="pass", failures=(), incomplete_reasons=())
+    text = " ".join(Elements(render_report(full, comparison=passing)).text)
+    # A passing cell never reads as a passing acceptance.
+    assert "Acceptance: fail" in text and "This cell: pass" in text
+
+
+def test_a_registered_baseline_without_a_row_is_listed_unavailable() -> None:
+    _, full, cell = compared()
+    rows = comparison_rows(render_report(full, comparison=replace(cell, rows=cell.rows[1:])))
+    assert rows[V3] == UNAVAILABLE and len(rows) == len(cell.baselines)
+
+
+def test_a_verdict_without_all_four_measured_values_is_unavailable() -> None:
+    _, full, cell = compared()
+    # Acceptance's own verdicts stay on the row (both Pass): they must not show.
+    stale = with_row(cell, V3, baseline_return=None, baseline_max_drawdown=None)
+    assert comparison_rows(render_report(full, comparison=stale))[V3] == (
+        "Unavailable",
+        "Unavailable",
+        "40.00%",
+        "20.00%",
+        "Unavailable",
+        "Unavailable",
+    )
+
+
+def test_indeterminate_is_shown_only_at_an_actual_zero_drawdown() -> None:
+    _, full, cell = compared()
+    zero = with_row(cell, V3, baseline_max_drawdown=Fraction(0), beats_return_drawdown=None)
+    assert comparison_rows(render_report(full, comparison=zero))[V3][4:] == (
+        "Pass",
+        "Indeterminate: zero drawdown",
+    )
+    missing = with_row(cell, V3, beats_return_drawdown=None)
+    assert comparison_rows(render_report(full, comparison=missing))[V3][5] == "Unavailable"
+    contradicted = with_row(cell, V3, baseline_max_drawdown=Fraction(0))
+    assert comparison_rows(render_report(full, comparison=contradicted))[V3][5] == "Unavailable"
+
+
+def test_a_baseline_held_frozen_at_a_native_stop_is_named() -> None:
+    _, full, cell = compared()
+    frozen = with_row(cell, V3, baseline_native_stop="liquidation")
+    text = " ".join(Elements(render_report(full, comparison=frozen)).text)
+    assert (
+        "Held frozen at a native stop's equity on the schedule: " + V3 + " (liquidation)." in text
+    )
+
+
+def test_no_comparison_supplied_says_so() -> None:
+    _, full, _ = compared()
+    part = section(render_report(full), "Cross-version comparison")
+    compared_part = part.split("<h3>Native baseline diagnostics</h3>", 1)[0]
+    assert "Not supplied" in " ".join(Elements(compared_part).text)
+    assert "<table>" not in compared_part
 
 
 def test_comparison_rows_of_another_cell_are_omitted_with_a_warning() -> None:
-    _, full, comparisons, _ = compared()
-    foreign = replace(comparisons[0], scenario="open_high_low_close")
-    for rows in ((foreign, *comparisons[1:]), (foreign,)):  # two cells; another scenario
-        part = section(render_report(full, comparisons=rows), "Cross-version comparison")
+    _, full, cell = compared()
+    foreign_row = replace(cell.rows[0], scenario="open_high_low_close")
+    foreign_cell = replace(
+        cell,
+        scenario="open_high_low_close",
+        rows=tuple(replace(r, scenario="open_high_low_close") for r in cell.rows),
+    )
+    for comparison in (
+        replace(cell, rows=(foreign_row, *cell.rows[1:])),  # a row of another cell
+        foreign_cell,  # another scenario than this report's
+        replace(cell, rows=(*cell.rows, cell.rows[0])),  # a baseline twice
+    ):
+        part = section(render_report(full, comparison=comparison), "Cross-version comparison")
         compared_part = part.split("<h3>Native baseline diagnostics</h3>", 1)[0]
         assert "Omitted comparison" in " ".join(Elements(compared_part).text)
         assert "<table>" not in compared_part
@@ -422,7 +496,7 @@ def test_comparison_rows_of_another_cell_are_omitted_with_a_warning() -> None:
 def test_native_baseline_diagnostics_are_shown_under_their_version_label() -> None:
     from crypto_grid_bot.combined.baseline_records import NativeDiagnostics
 
-    _, full, comparisons, _ = compared()
+    _, full, cell = compared()
     native = (
         NativeDiagnostics(
             "unchanged_v3_selector",
@@ -438,7 +512,7 @@ def test_native_baseline_diagnostics_are_shown_under_their_version_label() -> No
             "matched_v2_grid_high_first", "<b>minute</b>", 0, None, None, None, None, "no_input"
         ),
     )
-    html = render_report(full, comparisons=comparisons, native=native)
+    html = render_report(full, comparison=cell, native=native)
     part = section(html, "Cross-version comparison").split(
         "<h3>Native baseline diagnostics</h3>", 1
     )[1]
@@ -504,7 +578,13 @@ def test_a_large_report_is_saved_as_the_bundle_s_report_json(tmp_path) -> None:
     parsed = Elements(html)
     assert any(attrs.get("href") == "report.json" for _, attrs in parsed.elements)
     assert digest in " ".join(parsed.text)
+    # The page names report.json: it is never saved without that exact file.
+    with pytest.raises(ValueError, match="report.json"):
+        write_bundle(tmp_path, "unbound", journal(), {}, html)
+    with pytest.raises(ValueError, match="report.json"):
+        write_bundle(tmp_path, "other", journal(), {}, html, report_json=exact_evidence(report()))
     receipt = write_bundle(tmp_path, "large", journal(), {}, html, report_json=raw)
+    assert [path.name for path in tmp_path.iterdir()] == ["large"]
     bundle = read_bundle(receipt.directory, expected_receipt_sha256=receipt.receipt_sha256)
     assert bundle.report_json == raw and bundle.report_html == html
     assert ("report.json", digest) in receipt.file_hashes

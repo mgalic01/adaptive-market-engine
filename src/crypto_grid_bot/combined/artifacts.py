@@ -11,7 +11,8 @@ decision admission/refusal, lifecycle, recovery), one JSON line per record, each
 ``{"record": ..., "schema": "combined-v1"}``, with the run record and the symbols' gap
 tables they rely on: either all seven files or none. A report whose exact JSON evidence
 is too large to embed in its page carries that JSON as ``report.json``, hashed like
-every other file.
+every other file. A page that names ``report.json`` (links to it, or states its SHA-256
+in a ``data-report-json-sha256`` attribute) is saved and read only with that exact file.
 """
 
 import hashlib
@@ -37,6 +38,10 @@ _REQUIRED = {"decisions.jsonl", "metadata.json"}
 _RUN_FILE = "run.jsonl"
 # The exact JSON evidence of a report too large to embed in its page.
 REPORT_JSON = "report.json"
+# The attribute in which a report page states its report.json's SHA-256.
+REPORT_JSON_SHA256 = "data-report-json-sha256"
+_REPORT_JSON_LINK = f'href="{REPORT_JSON}"'
+_REPORT_JSON_DIGESTS = re.compile(f'{REPORT_JSON_SHA256}="([^"]*)"')
 _EVENT_KEYS = {
     "event_id",
     "opportunity_id",
@@ -442,6 +447,23 @@ def _read_records(raw: bytes, kind: type) -> tuple[object, ...]:
     return tuple(rows)
 
 
+def _check_report_binding(report_html: str | None, report_json: bytes | None) -> None:
+    """A page that names report.json, by a link or a stated SHA-256, needs that exact file.
+
+    Page text is escaped, so only the renderer's own markup can carry the link's or the
+    attribute's raw quotes.
+    """
+    if report_html is None:
+        return
+    stated = set(_REPORT_JSON_DIGESTS.findall(report_html))
+    if not stated and _REPORT_JSON_LINK not in report_html:
+        return
+    if report_json is None:
+        raise ValueError("the report page names report.json, which the bundle lacks")
+    if stated and stated != {_digest(report_json)}:
+        raise ValueError("report.json differs from the SHA-256 its report page states")
+
+
 def _sources(events: tuple[DecisionEvent, ...]) -> tuple[str, ...]:
     return tuple(sorted({ref for event in events for ref in event.source_refs}))
 
@@ -471,7 +493,8 @@ def write_bundle(
     retained byte-for-byte, never rendered, sanitized or treated as trusted executable code.
     ``records``, when given, are written as all seven record files, empty ones included.
     ``report_json``, when given, is the report's exact JSON evidence, saved as
-    ``report.json``; it must be an exact JSON object (no floats, no duplicate keys).
+    ``report.json``; it must be an exact JSON object (no floats, no duplicate keys). A
+    page naming ``report.json`` is refused without it or with one of another SHA-256.
     """
     _name(invocation_id)
     if type(metadata) is not dict:
@@ -484,6 +507,7 @@ def write_bundle(
     report_json_raw = None if report_json is None else report_json.encode("utf-8")
     if report_json_raw is not None:
         _parse(report_json_raw)
+    _check_report_binding(report_html, report_json_raw)
     journal = evidence.json_lines().encode("utf-8")
     events, final_hash = _events(journal)
     files = {"decisions.jsonl": journal, "metadata.json": metadata_raw}
@@ -580,6 +604,7 @@ def read_bundle(directory: Path, *, expected_receipt_sha256: str | None = None) 
     if REPORT_JSON in files:
         _parse(files[REPORT_JSON])
         report_json = files[REPORT_JSON].decode("utf-8")
+    _check_report_binding(report, files.get(REPORT_JSON))
     records = None
     if saved:
         runs = _read_records(files[_RUN_FILE], RunRecord)

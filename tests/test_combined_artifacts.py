@@ -10,6 +10,7 @@ import pytest
 from test_combined_evidence import event
 
 from crypto_grid_bot.combined.artifacts import (
+    REPORT_JSON_SHA256,
     BundleRecords,
     RunRecord,
     SymbolGaps,
@@ -494,3 +495,41 @@ def test_rehashed_invalid_report_json_is_rejected_on_read(tmp_path):
     rehash(receipt.directory, "report.json")
     with pytest.raises(ValueError):
         read_bundle(receipt.directory)
+
+
+def page_naming(digest):
+    """A report page that names its bundle's report.json and that file's SHA-256."""
+    return f'<p><a href="report.json" {REPORT_JSON_SHA256}="{digest}">report.json</a></p>'
+
+
+REPORT_JSON_DIGEST = hashlib.sha256(REPORT_JSON.encode()).hexdigest()
+
+
+def test_a_page_naming_report_json_is_written_only_with_that_exact_file(tmp_path):
+    named = page_naming(REPORT_JSON_DIGEST)
+    with pytest.raises(ValueError, match="report.json"):
+        write_bundle(tmp_path, "absent", journal(), {}, named)
+    with pytest.raises(ValueError, match="report.json"):
+        write_bundle(tmp_path, "differs", journal(), {}, named, report_json='{"other": true}')
+    with pytest.raises(ValueError, match="report.json"):
+        write_bundle(tmp_path, "linked", journal(), {}, '<a href="report.json">evidence</a>')
+    assert list(tmp_path.iterdir()) == []
+    receipt = write_bundle(tmp_path, "bound", journal(), {}, named, report_json=REPORT_JSON)
+    assert read_bundle(receipt.directory).report_json == REPORT_JSON
+
+
+def test_a_page_whose_report_json_is_gone_or_replaced_is_refused_on_read(tmp_path):
+    named = page_naming(REPORT_JSON_DIGEST)
+    gone = write_bundle(tmp_path, "gone", journal(), {}, named, report_json=REPORT_JSON)
+    (gone.directory / "report.json").unlink()
+    path = gone.directory / "receipt.json"
+    manifest = json.loads(path.read_text())
+    del manifest["files"]["report.json"]
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="report.json"):
+        read_bundle(gone.directory)
+    replaced = write_bundle(tmp_path, "replaced", journal(), {}, named, report_json=REPORT_JSON)
+    (replaced.directory / "report.json").write_text('{"other": true}')
+    rehash(replaced.directory, "report.json")
+    with pytest.raises(ValueError, match="report.json"):
+        read_bundle(replaced.directory)
