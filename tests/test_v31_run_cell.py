@@ -68,6 +68,7 @@ SOURCES = (("synthetic.manifest.json", "a" * 64),)
 ATTEMPT = "attempt-1"
 CELL = "w1.combined.olhc.c1.owner_small"
 CODE_PIN = "4" * 40
+HEAD = "9" * 40  # the checkout head a run records
 
 
 def coin(symbol: str, path, start: int, end: int) -> CoinInputs:
@@ -154,7 +155,7 @@ def cell_of(world: World, cell_id: str):
 def gate(world: World, cell_id: str = CELL, **changes):
     window = cell_id.split(".")[0]
     arguments = {
-        "repo_head": "9" * 40,
+        "repo_head": HEAD,
         "pack_sha256": world.pack_shas.get(window, "0" * 64),
         "config_sha256": world.config_sha,
         "manifest_sha256": world.manifest_sha,
@@ -168,7 +169,8 @@ def gate(world: World, cell_id: str = CELL, **changes):
 
 def run(world: World, cell_id: str, out_dir: Path, attempt_id: str = ATTEMPT) -> Path:
     cell = cell_of(world, cell_id)
-    return run_v31_cell(cell, world.packs[cell.window], world.reg, out_dir, attempt_id=attempt_id)
+    pack = world.packs[cell.window]
+    return run_v31_cell(cell, pack, world.reg, out_dir, attempt_id=attempt_id, repo_head=HEAD)
 
 
 def snapshot(directory: Path) -> dict[str, tuple[bytes, int]]:
@@ -312,10 +314,22 @@ def test_v31_cell_on_a_synthetic_pack_writes_a_complete_outcome(world, ran):
     invocation = CELL.replace(".", "-")
     assert ran.name == CELL
     assert sorted(path.name for path in ran.iterdir()) == [
+        "attempt.json",
         "outcome.json",
         "report.json",
         invocation,
     ]
+    attempt = {
+        "cell_id": CELL,
+        "attempt_id": ATTEMPT,
+        "repo_head": HEAD,
+        "code_pin": CODE_PIN,
+        "config_pin": world.config_sha,
+        "pack_sha256": world.pack_shas["w1"],
+        "data_pin": world.manifest_sha,
+    }
+    canonical = json.dumps(attempt, sort_keys=True, separators=(",", ":")).encode("ascii")
+    assert (ran / "attempt.json").read_bytes() == canonical
 
     outcome_text = (ran / "outcome.json").read_text(encoding="ascii")
     report_text = (ran / "report.json").read_text(encoding="ascii")
@@ -362,6 +376,7 @@ def test_v31_cell_on_a_synthetic_pack_writes_a_complete_outcome(world, ran):
     assert metadata["pack_sha256"] == world.pack_shas["w1"]
     assert metadata["code_pin"] == CODE_PIN and metadata["config_pin"] == world.config_sha
     assert metadata["initial_equity"] == str(capital.initial_equity)
+    assert metadata["repo_head"] == HEAD
 
 
 def test_doubled_cost_cell_runs_with_doubled_costs(world, ran, tmp_path, monkeypatch):
@@ -424,16 +439,103 @@ def test_run_refuses_other_cells_and_packs_before_writing(world, tmp_path):
     reg, cell = world.reg, cell_of(world, CELL)
     with pytest.raises(ValueError, match="v31"):
         hold = cell_of(world, "w1.matched_spot_hold.native.c1.research")
-        run_v31_cell(hold, world.packs["w1"], reg, tmp_path, attempt_id=ATTEMPT)
+        run_v31_cell(hold, world.packs["w1"], reg, tmp_path, attempt_id=ATTEMPT, repo_head=HEAD)
     with pytest.raises(ValueError, match="not registered"):
-        run_v31_cell(
-            replace(cell, cost_multiple=2), world.packs["w1"], reg, tmp_path, attempt_id=ATTEMPT
-        )
+        other = replace(cell, cost_multiple=2)
+        run_v31_cell(other, world.packs["w1"], reg, tmp_path, attempt_id=ATTEMPT, repo_head=HEAD)
     with pytest.raises(ValueError, match="pack window"):
-        run_v31_cell(cell, world.packs["w0"], reg, tmp_path, attempt_id=ATTEMPT)
+        run_v31_cell(cell, world.packs["w0"], reg, tmp_path, attempt_id=ATTEMPT, repo_head=HEAD)
     with pytest.raises(ValueError, match="attempt"):
-        run_v31_cell(cell, world.packs["w1"], reg, tmp_path, attempt_id=" ")
+        run_v31_cell(cell, world.packs["w1"], reg, tmp_path, attempt_id=" ", repo_head=HEAD)
+    with pytest.raises(ValueError, match="repo head"):
+        run_v31_cell(cell, world.packs["w1"], reg, tmp_path, attempt_id=ATTEMPT, repo_head="HEAD")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_cell_writes_its_claim_first_and_its_outcome_last(world, tmp_path, monkeypatch):
+    order = []
+    write, bundle = run_cell._write, run_cell.write_bundle
+
+    def logged_write(path, raw):
+        order.append(path.name)
+        write(path, raw)
+
+    def logged_bundle(directory, *args, **kwargs):
+        order.append("bundle")
+        assert (directory / "attempt.json").is_file()
+        assert not (directory / "report.json").exists()
+        assert not (directory / "outcome.json").exists()  # not complete while bundling
+        return bundle(directory, *args, **kwargs)
+
+    monkeypatch.setattr(run_cell, "_write", logged_write)
+    monkeypatch.setattr(run_cell, "write_bundle", logged_bundle)
+    run(world, "w1.spot_trend.olhc.c2.owner_small", tmp_path)
+    assert order == ["attempt.json", "bundle", "report.json", "outcome.json"]
+
+
+def test_an_attempt_that_raises_is_recorded_and_never_rerun(world, tmp_path, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("forced report failure")
+
+    monkeypatch.setattr(run_cell, "strategy_report", broken)
+    cell_id = "w1.spot_trend.ohlc.c1.research"
+    with pytest.raises(RuntimeError, match="forced report failure"):
+        run(world, cell_id, tmp_path)
+    directory = tmp_path / cell_id
+    assert sorted(path.name for path in directory.iterdir()) == ["attempt.json", "failure.json"]
+    failure = (directory / "failure.json").read_bytes()
+    assert failure == b'{"message":"forced report failure","type":"RuntimeError"}'
+    attempt = json.loads((directory / "attempt.json").read_bytes())
+    assert (attempt["cell_id"], attempt["attempt_id"], attempt["repo_head"]) == (
+        cell_id,
+        ATTEMPT,
+        HEAD,
+    )
+
+    # The failed attempt holds the cell: working code cannot run it again there.
+    before = snapshot(directory)
+    monkeypatch.undo()
+    with pytest.raises(FileExistsError):
+        run(world, cell_id, tmp_path, "attempt-2")
+    assert snapshot(directory) == before
+
+
+def test_a_failed_bundle_write_leaves_no_outcome(world, tmp_path, monkeypatch):
+    bundle = run_cell.write_bundle
+
+    def failing(*args, **kwargs):
+        bundle(*args, **kwargs)
+        raise OSError("disk full after the bundle")
+
+    monkeypatch.setattr(run_cell, "write_bundle", failing)
+    cell_id = "w1.spot_trend.ohlc.c2.research"
+    with pytest.raises(OSError, match="disk full after the bundle"):
+        run(world, cell_id, tmp_path)
+    directory = tmp_path / cell_id
+    assert sorted(path.name for path in directory.iterdir()) == [
+        "attempt.json",
+        "failure.json",
+        cell_id.replace(".", "-"),
+    ]
+    assert json.loads((directory / "failure.json").read_bytes())["type"] == "OSError"
+
+
+def test_an_unwritable_failure_record_leaves_the_original_exception(world, tmp_path, monkeypatch):
+    write = run_cell._write
+
+    def no_failure_file(path, raw):
+        if path.name == "failure.json":
+            raise OSError("cannot write failure.json")
+        write(path, raw)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("forced replay failure")
+
+    monkeypatch.setattr(run_cell, "_write", no_failure_file)
+    monkeypatch.setattr(run_cell, "replay_strategy", broken)
+    with pytest.raises(RuntimeError, match="forced replay failure"):
+        run(world, CELL, tmp_path)
+    assert [path.name for path in (tmp_path / CELL).iterdir()] == ["attempt.json"]
 
 
 def test_a_report_json_above_the_inline_limit_goes_into_the_bundle(world, tmp_path, monkeypatch):

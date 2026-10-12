@@ -4,21 +4,28 @@
 the registered ones (Rulings P10c and P12). ``run_v31_cell`` replays a component cell
 from its window pack, with costs from the cell's cost multiple alone and the capital,
 window and pins from the registration, and writes the cell's artifacts once
-(Ruling P13)::
+(Ruling P13), in this order::
 
-    <out_dir>/<cell_id>/outcome.json            encode_outcome, report evidence included
-    <out_dir>/<cell_id>/report.json             encode_report
+    <out_dir>/<cell_id>/attempt.json            the claim, before the replay: cell id,
+                                                attempt id, repo head and the pins
     <out_dir>/<cell_id>/<invocation>/           write_bundle: the funnel journal, the
                                                 evidence records, report.json when the
                                                 report's exact JSON is above the page's
                                                 inline limit, metadata and the receipt
+    <out_dir>/<cell_id>/report.json             encode_report
+    <out_dir>/<cell_id>/outcome.json            encode_outcome, report evidence included
 
-where ``<invocation>`` is the cell id with each ``.`` replaced by ``-``. Every file is an
-exclusive create, so a second run of a cell into the same directory is refused and
-leaves the first one's files as they were. ``changed_since`` and ``head_commit`` read the
-checkout with git; nothing here touches the network.
+where ``<invocation>`` is the cell id with each ``.`` replaced by ``-``. ``outcome.json``
+is written last and is the completion marker: a cell directory without it is an
+incomplete attempt. An attempt that raises after its claim also gets ``failure.json``
+(the exception's type and message), then the exception propagates. Every file is an
+exclusive create and the cell directory is created once, so a cell is never run twice
+into the same directory, and a second run leaves the first one's files as they were.
+``changed_since`` and ``head_commit`` read the checkout with git; nothing here touches
+the network.
 """
 
+import contextlib
 import hashlib
 import re
 import subprocess
@@ -26,7 +33,7 @@ from collections.abc import Mapping
 from decimal import Context, localcontext
 from pathlib import Path, PurePosixPath
 
-from crypto_grid_bot.combined.artifacts import _name, _write, write_bundle
+from crypto_grid_bot.combined.artifacts import _canonical, _name, _write, write_bundle
 from crypto_grid_bot.combined.dashboard import render_bundle_report
 from crypto_grid_bot.combined.driver.packs import WindowPack
 from crypto_grid_bot.combined.driver.registration import (
@@ -166,17 +173,24 @@ def head_commit(repo_root: str | Path) -> str:
 
 
 def run_v31_cell(
-    cell: Cell, pack: WindowPack, reg: DriverRegistration, out_dir: Path, *, attempt_id: str
+    cell: Cell,
+    pack: WindowPack,
+    reg: DriverRegistration,
+    out_dir: Path,
+    *,
+    attempt_id: str,
+    repo_head: str,
 ) -> Path:
     """Replay the registered component cell ``cell`` on ``pack`` once and return its
-    artifact directory, ``out_dir/<cell_id>`` (layout in the module docstring).
+    artifact directory, ``out_dir/<cell_id>`` (layout and order in the module docstring).
 
     Each coin's spot and, when it has futures, futures market take the costs of
     ``cell.cost_multiple`` alone (``cost_profile``); the flow schedule replaces its minute
     bars. The capital, window and pins come from the registration: W1 cells and the
     reported W0 cells alike. Refuses, before anything is written, a cell that is not a
-    registered ``v31`` cell, a pack of another window, an empty attempt id and an
-    existing cell directory.
+    registered ``v31`` cell, a pack of another window, an empty attempt id, a repo head
+    that is not 40 lowercase hex and an existing cell directory. After that the cell is
+    claimed: any exception leaves ``attempt.json`` and ``failure.json`` and propagates.
     """
     if not isinstance(cell, Cell) or cell.kind != "v31":
         raise ValueError("a v31 component cell required")
@@ -187,92 +201,108 @@ def run_v31_cell(
         raise ValueError(f"cell {cell.cell_id}: " + "; ".join(errors))
     if type(attempt_id) is not str or not attempt_id.strip():
         raise ValueError("a nonempty attempt id required")
+    if type(repo_head) is not str or _COMMIT.fullmatch(repo_head) is None:
+        raise ValueError(f"the repo head {repo_head!r} is not a 40 lowercase hex commit")
     invocation = cell.cell_id.replace(".", "-")
     _name(invocation)
-    directory = Path(out_dir) / cell.cell_id
-    if directory.exists():
-        raise FileExistsError(f"{directory}: the cell has already been written")
     registration = reg.registration
     capital = _capital(reg, cell.capital_id)
     adapter_pin = dict(registration.adapter_pins)[cell.arm]
     pack_pin = dict(reg.run_manifest.window_packs)[cell.window]
     multiple = cell.cost_multiple
+    attempt: dict[str, object] = {
+        "cell_id": cell.cell_id,
+        "attempt_id": attempt_id,
+        "repo_head": repo_head,
+        "code_pin": registration.code_pin,
+        "config_pin": registration.config_pin,
+        "pack_sha256": pack_pin,
+        "data_pin": window.data_pin,
+    }
 
-    # A fresh default decimal context: the caller's context cannot change the cell's
-    # bytes, the bundle's records (encoded by write_bundle) included.
-    with localcontext(Context()):
-        run = ReplayRun(
-            arm=cell.arm,
-            scenario=cell.scenario,
-            initial_cash=capital.initial_equity,
-            start_ms=window.start_ms,
-            end_ms=window.end_ms,
-            source_refs=(f"v31-pack:{pack_pin}", f"v31-run-manifest:{reg.run_manifest_pin}"),
-        )
-        trace = replay_strategy(run, _markets(pack, multiple))
-        identity = RunIdentity(
-            arm=cell.arm,
-            window=cell.window,
-            capital=capital.id,
-            cost_multiple=multiple,
-            data_pin=window.data_pin,
-            cost_profile_pin=COST_PROFILE_PINS[multiple],
-            start_ms=window.start_ms,
-            end_ms=window.end_ms,
-            code_pin=registration.code_pin,
-            config_pin=registration.config_pin,
-            fx_pin=capital.fx_pin,
-            observation_policy=POLICY_ID,
-            adapter_pin=adapter_pin,
-            scenario=cell.scenario,
-        )
-        report = strategy_report(
-            trace,
-            adapter_pin=adapter_pin,
-            skipped_hours=pack.skipped_hours,
-            capital_label=capital_label(capital),
-        )
-        outcome = strategy_outcome(trace, report, identity, attempt_id=attempt_id)
-        outcome_raw = encode_outcome(outcome).encode("ascii")
-        report_raw = encode_report(report).encode("ascii")
-        records = evidence_records(trace, skipped_hours=pack.skipped_hours)
-        _, report_json = render_bundle_report(report, synthetic=False)
-        metadata: dict[str, object] = {
-            "schema": METADATA_SCHEMA,
-            "cell_id": cell.cell_id,
-            "attempt_id": attempt_id,
-            "arm": cell.arm,
-            "window": cell.window,
-            "scenario": cell.scenario,
-            "cost_multiple": multiple,
-            "capital": capital.id,
-            "initial_equity": str(capital.initial_equity),
-            "code_pin": registration.code_pin,
-            "config_pin": registration.config_pin,
-            "data_pin": window.data_pin,
-            "run_manifest_sha256": reg.run_manifest_pin,
-            "pack_sha256": pack_pin,
-            "cost_profile_pin": COST_PROFILE_PINS[multiple],
-            "adapter_pin": adapter_pin,
-            "fx_pin": capital.fx_pin,
-            "observation_policy": POLICY_ID,
-            "outcome_sha256": hashlib.sha256(outcome_raw).hexdigest(),
-            "report_sha256": hashlib.sha256(report_raw).hexdigest(),
-        }
-
-        directory.mkdir(exist_ok=False)
-        _write(directory / "outcome.json", outcome_raw)
-        _write(directory / "report.json", report_raw)
-        write_bundle(
-            directory,
-            invocation,
-            _journal(trace),
-            metadata,
-            report_html=None,
-            records=records,
-            report_json=report_json,
-        )
+    directory = Path(out_dir) / cell.cell_id
+    directory.mkdir(exist_ok=False)  # the claim: one attempt per cell directory
+    try:
+        # A fresh default decimal context: the caller's context cannot change the cell's
+        # bytes, the bundle's records (encoded by write_bundle) included.
+        with localcontext(Context()):
+            _write(directory / "attempt.json", _canonical(attempt))
+            run = ReplayRun(
+                arm=cell.arm,
+                scenario=cell.scenario,
+                initial_cash=capital.initial_equity,
+                start_ms=window.start_ms,
+                end_ms=window.end_ms,
+                source_refs=(f"v31-pack:{pack_pin}", f"v31-run-manifest:{reg.run_manifest_pin}"),
+            )
+            trace = replay_strategy(run, _markets(pack, multiple))
+            identity = RunIdentity(
+                arm=cell.arm,
+                window=cell.window,
+                capital=capital.id,
+                cost_multiple=multiple,
+                data_pin=window.data_pin,
+                cost_profile_pin=COST_PROFILE_PINS[multiple],
+                start_ms=window.start_ms,
+                end_ms=window.end_ms,
+                code_pin=registration.code_pin,
+                config_pin=registration.config_pin,
+                fx_pin=capital.fx_pin,
+                observation_policy=POLICY_ID,
+                adapter_pin=adapter_pin,
+                scenario=cell.scenario,
+            )
+            report = strategy_report(
+                trace,
+                adapter_pin=adapter_pin,
+                skipped_hours=pack.skipped_hours,
+                capital_label=capital_label(capital),
+            )
+            outcome = strategy_outcome(trace, report, identity, attempt_id=attempt_id)
+            outcome_raw = encode_outcome(outcome).encode("ascii")
+            report_raw = encode_report(report).encode("ascii")
+            records = evidence_records(trace, skipped_hours=pack.skipped_hours)
+            journal = _journal(trace)
+            _, report_json = render_bundle_report(report, synthetic=False)
+            metadata: dict[str, object] = {
+                "schema": METADATA_SCHEMA,
+                **attempt,
+                "arm": cell.arm,
+                "window": cell.window,
+                "scenario": cell.scenario,
+                "cost_multiple": multiple,
+                "capital": capital.id,
+                "initial_equity": str(capital.initial_equity),
+                "run_manifest_sha256": reg.run_manifest_pin,
+                "cost_profile_pin": COST_PROFILE_PINS[multiple],
+                "adapter_pin": adapter_pin,
+                "fx_pin": capital.fx_pin,
+                "observation_policy": POLICY_ID,
+                "outcome_sha256": hashlib.sha256(outcome_raw).hexdigest(),
+                "report_sha256": hashlib.sha256(report_raw).hexdigest(),
+            }
+            write_bundle(
+                directory,
+                invocation,
+                journal,
+                metadata,
+                report_html=None,
+                records=records,
+                report_json=report_json,
+            )
+            _write(directory / "report.json", report_raw)
+            _write(directory / "outcome.json", outcome_raw)  # last: the completion marker
+    except BaseException as exc:
+        _record_failure(directory, exc)
+        raise
     return directory
+
+
+def _record_failure(directory: Path, exc: BaseException) -> None:
+    """Write ``failure.json`` once; if that fails too, the original exception wins."""
+    with contextlib.suppress(Exception):
+        failure = {"type": type(exc).__name__, "message": str(exc)}
+        _write(directory / "failure.json", _canonical(failure))
 
 
 def _markets(pack: WindowPack, multiple: int) -> tuple[SymbolMarket, ...]:
