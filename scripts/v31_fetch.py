@@ -29,6 +29,8 @@ from crypto_grid_bot.combined.baseline_records import refuse_sealed
 from crypto_grid_bot.market_data.client import FeedError
 
 ARCHIVE_PREFIX = "https://data.binance.vision"
+# The kind ``entries_for`` gives a legacy funding file, which has no interval.
+LEGACY_FUNDING_KIND = "fundingRate"
 # A transport failure is tried this many times in all, as fetch_full_range.Requests does.
 ATTEMPTS = 4
 _MONTH = re.compile(r"[0-9]{4}-(?:0[1-9]|1[0-2])")
@@ -72,9 +74,11 @@ def entries_for(
     ``start_month``..``end_month`` (inclusive), sorted by (symbol, kind or interval, month).
 
     An inventory manifest (``entries``) is matched on each entry's ``kind``; a legacy one
-    (``files``) on its ``interval``, so a legacy file with no interval is never selected. Every
-    match comes back, ``missing`` ones included: filtering them is the caller's choice. An
-    ``end_month`` (or ``start_month``) at or after 2025-01 is refused.
+    (``files``) on its ``interval``. A legacy file with no interval is selected only as kind
+    ``"fundingRate"``, and only when its ``url`` holds ``/fundingRate/`` (a monthly funding
+    archive); any other legacy file with no interval is never selected. Every match comes
+    back, ``missing`` ones included: filtering them is the caller's choice. An ``end_month``
+    (or ``start_month``) at or after 2025-01 is refused.
     """
     if isinstance(symbols, str) or isinstance(kinds, str):
         raise ValueError("symbols and kinds must be collections of names, not one string")
@@ -84,6 +88,8 @@ def entries_for(
     chosen: list[tuple[tuple[str, str, str], dict[str, object]]] = []
     for entry in listed:
         symbol, kind, month = entry.get("symbol"), entry.get(field), entry.get("month")
+        if field == "interval" and "interval" not in entry and _legacy_funding(entry):
+            kind = LEGACY_FUNDING_KIND
         if (
             isinstance(symbol, str)
             and isinstance(kind, str)
@@ -166,6 +172,12 @@ def _manifest_entries(manifest: Mapping[str, object]) -> tuple[list[Mapping[str,
     if not isinstance(listed, list) or not all(isinstance(entry, Mapping) for entry in listed):
         raise ValueError("the manifest's entries must be a list of objects")
     return listed, field
+
+
+def _legacy_funding(entry: Mapping[str, object]) -> bool:
+    """Whether a legacy file is a monthly funding archive: its url holds ``/fundingRate/``."""
+    url = entry.get("url")
+    return isinstance(url, str) and "/fundingRate/" in url
 
 
 def _label(entry: Mapping[str, object]) -> str:

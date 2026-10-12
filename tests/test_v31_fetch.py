@@ -741,18 +741,95 @@ def test_entries_for_selects_legacy_files_by_interval():
     assert all(e["url"].startswith(PREFIX) for e in selected)
 
 
-def test_entries_for_never_selects_a_legacy_file_that_has_no_interval():
+def test_entries_for_never_selects_a_legacy_file_that_has_no_interval_unless_it_is_funding():
     manifest = legacy_manifest()
+    # No interval and no fundingRate url: neither a kline nor a funding file.
+    stray = legacy_entry(b"g", symbol="BTCUSDT")
+    del stray["interval"]
+    manifest["files"].append(stray)
 
-    for kinds in (("fundingRate",), ("1m", "1h", "1d")):
-        selected = entries_for(
-            manifest,
-            symbols=("BTCUSDT",),
-            kinds=kinds,
-            start_month="2019-01",
-            end_month="2024-12",
-        )
-        assert all("interval" in e for e in selected)
+    klines = entries_for(
+        manifest,
+        symbols=("BTCUSDT",),
+        kinds=("1m", "1h", "1d"),
+        start_month="2019-01",
+        end_month="2024-12",
+    )
+    funding = entries_for(
+        manifest,
+        symbols=("BTCUSDT",),
+        kinds=("fundingRate",),
+        start_month="2019-01",
+        end_month="2024-12",
+    )
+
+    assert all("interval" in e for e in klines)
+    assert stray not in klines and stray not in funding
+    assert [e["url"] for e in funding] == [manifest["files"][6]["url"]]
+
+
+def test_entries_for_selects_legacy_funding_files(tmp_path):
+    # A legacy funding file has no interval; its url names a fundingRate archive.
+    manifest = legacy_manifest()
+    manifest["files"].append(
+        {
+            **manifest["files"][6],
+            "month": "2019-12",
+            "url": manifest["files"][6]["url"].replace("2020-01", "2019-12"),
+        }
+    )
+
+    selected = entries_for(
+        manifest,
+        symbols=("BTCUSDT",),
+        kinds=("fundingRate",),
+        start_month="2020-01",
+        end_month="2024-12",
+    )
+    both = entries_for(
+        manifest,
+        symbols=("BTCUSDT", "ADAUSDT"),
+        kinds=("1m", "fundingRate"),
+        start_month="2019-02",
+        end_month="2020-01",
+    )
+
+    assert keys(selected) == [("BTCUSDT", "fundingRate", "2020-01")]
+    assert selected[0] == manifest["files"][6] and selected[0] is not manifest["files"][6]
+    # Each file comes back under its own kind, in (symbol, kind, month) order.
+    assert keys(both) == [
+        ("ADAUSDT", "1m", "2019-03"),
+        ("ADAUSDT", "1m", "2019-04"),
+        ("BTCUSDT", "1m", "2019-02"),
+        ("BTCUSDT", "fundingRate", "2019-12"),
+        ("BTCUSDT", "fundingRate", "2020-01"),
+    ]
+
+    # The committed full-range manifest: BTCUSDT's 60 funding archives, fetched by their
+    # url paths from the fake host (the network stays blocked).
+    committed_funding = entries_for(
+        committed("config/datasets/full-range-2017-2024.manifest.json"),
+        symbols=("BTCUSDT", "ETHUSDT"),
+        kinds=("fundingRate",),
+        start_month="2018-06",
+        end_month="2024-12",
+    )
+    assert len(committed_funding) == 60
+    assert [e["month"] for e in committed_funding][::59] == ["2020-01", "2024-12"]
+    expected = [e["url"].removeprefix(PREFIX) for e in committed_funding]
+    assert all(
+        path.startswith("/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-")
+        for path in expected
+    )
+    served = {path: path.encode() for path in expected}
+    pinned = [
+        {**e, "sha256": sha(served[p])} for e, p in zip(committed_funding, expected, strict=True)
+    ]
+    host = FakeHost(served)
+
+    fetch(pinned, tmp_path, host)
+
+    assert host.requests == expected
 
 
 @pytest.mark.parametrize("end_month", ["2025-01", "2025-02", "2026-10"])
