@@ -1053,10 +1053,10 @@ def test_a_missing_settlement_on_a_held_futures_position_stops_the_run(records):
     [((0, 24), 32), ((0,), 24)],  # a later record bounds the gap, or the window end does
     ids=["between_records", "after_the_last_record"],
 )
-def test_missing_slots_after_an_off_hour_record_count_from_its_own_hour(hours, end_hour):
+def test_missing_slots_after_an_off_hour_record_count_from_its_nearest_hour(hours, end_hour):
     # Reviewer probe: records at 00:00, 08:15 (off the hour, booked at 09:00) and 24:00,
-    # every 8 hours. The slots the 08:15 record implies run from its own hour, 08:00, so
-    # 16:00 is missing, not 17:00; with no later record the window end bounds it.
+    # every 8 hours. The slots the 08:15 record implies run from its nearest hour, 08:00,
+    # so 16:00 is missing, not 17:00; with no later record the window end bounds it.
     from crypto_grid_bot.combined.strategy_replay import _schedule_gaps
 
     late = FundingRecord(hour_ms(8) + 15 * 60_000, 8, D(".0001"))
@@ -1068,6 +1068,23 @@ def test_missing_slots_after_an_off_hour_record_count_from_its_own_hour(hours, e
     )
     missing, _ = _schedule_gaps(records, fx.START, hour_ms(end_hour))
     assert missing == frozenset({hour_ms(16)})
+
+
+@pytest.mark.parametrize(
+    ("offset_ms", "missing_hours"),
+    [
+        (-2 * 60_000, ()),  # 15:58 counts from 16:00: the 24:00 record is on time
+        (-30 * 60_000, ()),  # exactly 15:30 rounds up to 16:00
+        (-31 * 60_000, (23,)),  # 15:29 counts from 15:00: 23:00 is owed before 24:00
+    ],
+)
+def test_implied_slots_count_from_the_nearest_hour_half_rounding_up(offset_ms, missing_hours):
+    from crypto_grid_bot.combined.strategy_replay import _schedule_gaps
+
+    times = (hour_ms(0), hour_ms(8), hour_ms(16) + offset_ms, hour_ms(24))
+    records = tuple(FundingRecord(t, 8, D(".0001")) for t in times)
+    missing, _ = _schedule_gaps(records, fx.START, hour_ms(32))
+    assert missing == frozenset(hour_ms(h) for h in missing_hours)
 
 
 def test_a_held_short_stops_at_the_slot_an_off_hour_record_leaves_missing():
@@ -1090,6 +1107,9 @@ def test_a_held_short_stops_at_the_slot_an_off_hour_record_leaves_missing():
         (30_000, 16, False),  # within a minute after its hour: settled on that hour
         (-2, 16, False),  # 15:59:59.998, within a minute before 16:00: settled at 16:00
         (15 * 60_000, 17, True),  # off the hour: booked at the next hourly boundary
+        # 15:58, off the hour: booked at 16:00, and its slots count from 16:00, its
+        # nearest hour, so the 24:00 record leaves nothing missing: the short is kept.
+        (-2 * 60_000, 16, True),
     ],
 )
 def test_an_off_hour_record_is_charged_at_the_next_boundary_with_both_times(
@@ -1107,19 +1127,6 @@ def test_an_off_hour_record_is_charged_at_the_next_boundary_with_both_times(
     assert late.amount == entry.quantity * D(".0001") * futures_open(market, late.timestamp_ms)
     assert late.scheduled_ms == (hour_ms(16) + offset_ms if off_hour else None)
     assert all(p.scheduled_ms is None for p in charged if p is not late)
-
-
-def test_an_early_off_hour_record_counts_its_next_slot_from_its_own_hour():
-    # 15:58 is off the hour: it books at 16:00 with both times, but its own hour is
-    # 15:00, so the next settlement its 8-hour interval implies is 23:00. The 24:00
-    # record is 9 hours later, more than both intervals: 23:00 is missing, never
-    # assumed zero, and the held short stops the run there.
-    market = move_record(fx.market("BTCUSDT", fx.downtrend, 2, futures=True), 16, -2 * 60_000)
-    trace = replay_strategy(fx.run("futures_trend", 2), (market,))
-    assert trace.failure == f"funding_record_missing:BTCUSDT:{hour_ms(23)}"
-    charged = payments(trace)
-    assert window_hours(p.timestamp_ms for p in charged) == [8, 16]
-    assert charged[1].scheduled_ms == hour_ms(16) - 2 * 60_000
 
 
 def test_an_off_hour_record_without_its_booking_bar_keeps_both_times_and_a_stale_mark():
@@ -1199,16 +1206,17 @@ def test_two_records_booked_at_one_boundary_stop_only_a_held_run(arm, path, fail
 
 @pytest.mark.parametrize("collide", [False, True])
 def test_a_four_hour_cadence_books_an_off_hour_record_without_a_collision(collide):
-    # The held short's schedule turns 4-hourly at 20h; the 28h record settles at 28:30
-    # and books at 29h, an hour clear of the 32h record. Only a record that truly books
-    # at 32h beside it (one at 31:30) collides, and the held run stops there.
+    # The held short's schedule turns 4-hourly at 20h; the 28h record settles at 28:20
+    # and books at 29h, an hour clear of the 32h record (its slots count from 28:00, its
+    # nearest hour). Only a record that truly books at 32h beside it (one at 31:30)
+    # collides, and the held run stops there.
     market = fx.market("BTCUSDT", fx.downtrend, 3, futures=True)
     records = funding_records((-8, 17, 8), (20, 80, 4), rate=".0001")
     if collide:
         records = (*records, FundingRecord(hour_ms(32) - 30 * 60_000, 4, D(".0001")))
     trace = replay_strategy(
         fx.run("futures_trend", 3),
-        (move_record(replace(market, funding=records), 28, 30 * 60_000),),
+        (move_record(replace(market, funding=records), 28, 20 * 60_000),),
     )
     charged = payments(trace)
     if collide:
@@ -1221,7 +1229,17 @@ def test_a_four_hour_cadence_books_an_off_hour_record_without_a_collision(collid
             *range(32, 72, 4),
         ]
     late = next(p for p in charged if p.timestamp_ms == hour_ms(29))
-    assert late.scheduled_ms == hour_ms(28) + 30 * 60_000
+    assert late.scheduled_ms == hour_ms(28) + 20 * 60_000
+
+
+def test_a_record_at_exactly_half_past_counts_from_the_next_hour():
+    # 28:30 rounds up to 29:00: in a 4-hour schedule from 24:00 that leaves 28:00 owed.
+    from crypto_grid_bot.combined.strategy_replay import _schedule_gaps
+
+    times = (hour_ms(20), hour_ms(24), hour_ms(28) + 30 * 60_000, hour_ms(32))
+    records = tuple(FundingRecord(t, 4, D(".0001")) for t in times)
+    missing, _ = _schedule_gaps(records, fx.START, hour_ms(36))
+    assert missing == frozenset({hour_ms(28)})
 
 
 # Behaviour-changing rulings every V3.1 report discloses, whatever its arm.

@@ -41,8 +41,9 @@ stops the run (``funding_record_unbooked``).
 
 Which end of an interval a record's ``interval_hours`` names at a cadence change is
 not pinned yet, so the schedule is judged either way. Two consecutive records miss
-settlements only when the spacing of their settlement hours exceeds both intervals;
-every hour the earlier one's interval implies before the later one is then missing,
+settlements only when the spacing of their nearest hours (half an hour rounds up)
+exceeds both intervals; every hour the earlier one's interval implies from its nearest
+hour before the later one is then missing,
 never assumed zero, and a futures position held there stops the run
 (``funding_record_missing``). Any other pair not exactly one shared interval apart is
 irregular: accepted and recorded in the trace. Two records booked at one boundary stop
@@ -360,18 +361,19 @@ def _schedule_gaps(
     Which end of an interval ``interval_hours`` names at a cadence change is not pinned
     yet, so a pair misses settlements only when the spacing of their settlement hours
     exceeds both intervals: then every hour the earlier record's interval implies before
-    the later one is missing. Implied slots count from a record's own settlement hour
-    (an off-hour record's own hour, not the next boundary that books it), and an
-    off-hour later record may settle the hour before its booking, so that hour bounds
-    it. Any other pair not exactly one shared interval apart in booking hours is
-    irregular, as (earlier time, its hours, later time, its hours): accepted, never a
-    failure. After the last record, its own interval applies up to the end. Slots
-    before the start never matter: nothing is held there.
+    the later one is missing. Slots are counted from each record's nearest hour (half
+    an hour rounds up), whatever hour books it: 08:15 counts from 08:00 and 15:58 from
+    16:00, while booking an off-hour record at the next boundary is unchanged. Any other
+    pair not exactly one shared interval apart in booking hours is irregular, as
+    (earlier time, its hours, later time, its hours): accepted, never a failure. After
+    the last record, its own interval applies up to the end. Slots before the start
+    never matter: nothing is held there.
     """
     missing: set[int] = set()
     irregular: list[tuple[int, int, int, int]] = []
     for before, after in zip(records, records[1:], strict=False):
-        first, step, until = _slot_ms(before), _interval_ms(before), _slot_ms(after)
+        first, until = _nearest_hour(before.calc_time_ms), _nearest_hour(after.calc_time_ms)
+        step = _interval_ms(before)
         if until - first > max(step, _interval_ms(after)):
             missing.update(range(first + step, until, step))
         elif _booked_ms(after) - _booked_ms(before) != step or step != _interval_ms(after):
@@ -384,7 +386,8 @@ def _schedule_gaps(
                 )
             )
     last = records[-1]
-    missing.update(range(_slot_ms(last) + _interval_ms(last), end, _interval_ms(last)))
+    step = _interval_ms(last)
+    missing.update(range(_nearest_hour(last.calc_time_ms) + step, end, step))
     return frozenset(slot for slot in missing if slot >= start), tuple(irregular)
 
 
