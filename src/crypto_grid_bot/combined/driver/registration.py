@@ -229,7 +229,9 @@ class RunManifest:
 class DriverRegistration:
     """A loaded registration. ``registration`` is what acceptance judges: its windows are
     W1 alone. ``reported_windows`` is W0. Every window's data pin is ``run_manifest_pin``;
-    ``menu_arms`` are the committed menu's, unexpanded."""
+    ``menu_arms`` are the committed menu's, unexpanded. ``fx_record_paths`` are the
+    repository paths of the FX records the capitals name, sorted (the execution gate
+    accepts a change to them)."""
 
     registration: Registration
     reported_windows: tuple[Window, ...]
@@ -238,6 +240,7 @@ class DriverRegistration:
     run_manifest: RunManifest
     prepare_pin: str
     menu_arms: tuple[str, ...]
+    fx_record_paths: tuple[str, ...] = ()
 
 
 def required_cells(reg: DriverRegistration) -> tuple[Cell, ...]:
@@ -343,11 +346,12 @@ def load_registration(
     manifest = _run_manifest_from(manifest_data)
     root = Path(repo_root)
     arms = _strings(doc["arms"], "registration arms")
+    capitals = _list(doc["capitals"], "capitals")
     registration = Registration(
         arms=arms,
         baseline_arms=tuple(arm for arm in arms if arm not in COMPONENT_ARMS),
         windows=_windows(doc["windows"], manifest_pin, "windows"),
-        capitals=tuple(_capital(item, root) for item in _list(doc["capitals"], "capitals")),
+        capitals=tuple(_capital(item, root) for item in capitals),
         cost_profiles=tuple(_cost_profile(item) for item in _list(doc["cost_profiles"], "costs")),
         code_pin=_str(doc["code_pin"], "registration code_pin"),
         config_pin=_sha256(data),
@@ -367,6 +371,7 @@ def load_registration(
         run_manifest=manifest,
         prepare_pin=_str(doc["prepare_sha256"], "registration prepare_sha256"),
         menu_arms=_menu_arms((root / MENU_PATH).read_bytes()),
+        fx_record_paths=_fx_record_paths(capitals),
     )
     check_registration(reg)
     return reg
@@ -601,6 +606,19 @@ def _capital(value: object, root: Path) -> Capital:
             f"{what}: FX record rate {recorded} differs from the capital's fx_rate {rate}"
         )
     return Capital(capital_id, initial, currency, amount, fx_rate=rate, fx_pin=actual)
+
+
+def _fx_record_paths(capitals: list[object]) -> tuple[str, ...]:
+    """The FX record paths of capitals ``_capital`` has already read, sorted, each once."""
+    return tuple(
+        sorted(
+            {
+                _file_pin(item["fx_record"], "fx_record").path
+                for item in capitals
+                if isinstance(item, dict) and "fx_record" in item
+            }
+        )
+    )
 
 
 def _fx_rate(data: bytes, path: str) -> Decimal:
