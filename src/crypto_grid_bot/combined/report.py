@@ -5,6 +5,7 @@ identified. Funding is signed wallet cash flow. Completeness is structural only:
 source reference strings are retained, not fetched or cryptographically verified.
 """
 
+import re
 from bisect import bisect_right
 from collections import Counter
 from collections.abc import Iterable
@@ -239,6 +240,26 @@ class Report:
     disclosures: tuple[str, ...] = ()
     # The registered capital scenario (``experiment.capital_label``); None when unstated.
     capital_label: str | None = None
+
+
+# Every report whose run applies today's saved exchange filters to historical data says so
+# in these words (design: "Historical use of present-day saved filters is disclosed").
+SAVED_FILTERS_DISCLOSURE = "present_day_saved_exchange_filters_on_historical_data"
+# ``experiment.capital_label``'s owner_small form: amount and USDT per EUR rate as registered.
+_OWNER_SMALL_LABEL = re.compile(
+    r"owner_small:EUR:([0-9]+(?:\.[0-9]+)?):usdt_per_eur=([0-9]+(?:\.[0-9]+)?)"
+    r":fx_pin=[0-9a-f]{64}"
+)
+
+
+def _capital_label_matches(label: str, opening: Fraction) -> bool:
+    """``research_10000_usdt`` opens with exactly 10000; owner_small with amount times rate."""
+    if label == "research_10000_usdt":
+        return opening == 10000
+    match = _OWNER_SMALL_LABEL.fullmatch(label)
+    return match is not None and opening == Fraction(Decimal(match[1])) * Fraction(
+        Decimal(match[2])
+    )
 
 
 def utc_text(timestamp_ms: int) -> str:
@@ -703,7 +724,8 @@ def analyze(
     reporting conventions only, never strategy inputs or acceptance-rule changes.
     ``skipped_hours`` are the registered window's skipped hours; a daily return may
     span only a skipped midnight. Acceptance checks them against the registration.
-    ``disclosures`` and ``capital_label`` are carried unchanged and judge nothing.
+    ``disclosures`` and ``capital_label`` are carried unchanged and judge nothing; the
+    label must agree with the initial equity, or the report is malformed.
     """
     opening = _number(initial)
     if opening <= 0 or type(opportunity_gap_ms) is not int or opportunity_gap_ms <= 0:
@@ -726,9 +748,9 @@ def analyze(
     ):
         raise ValueError("disclosures must be a tuple of nonempty strings")
     if capital_label is not None and (
-        not isinstance(capital_label, str) or not capital_label.strip()
+        not isinstance(capital_label, str) or not _capital_label_matches(capital_label, opening)
     ):
-        raise ValueError("capital label must be nonempty text")
+        raise ValueError("capital label must name a capital scenario matching the initial equity")
     issues: list[str] = list(producer_issues)
     for kind, records in (
         ("equity", points),

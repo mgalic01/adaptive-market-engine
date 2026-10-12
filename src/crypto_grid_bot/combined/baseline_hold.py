@@ -20,7 +20,7 @@ from crypto_grid_bot.backtest.klines import Kline
 from .baseline_records import BaselineEvidence, NativeMark, comparison_report, refuse_sealed
 from .decisions import Costs
 from .execution import VenueRules, _decimal, adverse_price
-from .report import Contribution
+from .report import SAVED_FILTERS_DISCLOSURE, Contribution
 
 HOUR = 3_600_000
 HOLD = "matched_spot_hold"
@@ -68,7 +68,7 @@ def replay_hold_baseline(
     budget = Fraction(initial) / len(symbols)
     cash = Fraction(initial)
     held: dict[str, tuple[Fraction, Fraction, Fraction]] = {}  # quantity, price, fee
-    disclosures = ["hold_marks_at_hourly_opening_quotes"]
+    disclosures = ["hold_marks_at_hourly_opening_quotes", SAVED_FILTERS_DISCLOSURE]
     issues: list[str] = []
     for symbol in symbols:
         first = bars[symbol].get(start_ms)

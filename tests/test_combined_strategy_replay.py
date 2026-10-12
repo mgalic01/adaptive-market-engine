@@ -1107,7 +1107,7 @@ def test_a_four_hour_cadence_books_an_off_hour_record_without_a_collision(collid
 
 
 RULINGS = (
-    "v3_1_present_day_saved_exchange_filters_on_historical_data",
+    "present_day_saved_exchange_filters_on_historical_data",
     "v3_1_held_coin_without_bar_closed_at_next_bar_pending_orders_canceled",
 )
 
@@ -1180,8 +1180,10 @@ def test_an_off_hour_record_and_a_stale_fixing_mark_are_disclosed():
     assert disclosed(report, "funding_off_hour_record_booked_next_hour:") == [
         f"funding_off_hour_record_booked_next_hour:BTCUSDT: records=1 first={record} last={record}"
     ]
+    # Bar 16's close, available at 17h, values the 17h booking: stale by zero hours.
     assert disclosed(report, "funding_settled_at_stale_mark:") == [
-        f"funding_settled_at_stale_mark:BTCUSDT: settlements=1 first={booked} last={booked}"
+        f"funding_settled_at_stale_mark:BTCUSDT: settlements=1 first={booked} last={booked} "
+        f"oldest_mark={booked} max_staleness=0h"
     ]
     assert disclosed(report, "data_gap:") == [
         f"data_gap:BTCUSDT:futures: hours=1 first={booked} last={booked}"
@@ -1226,7 +1228,22 @@ def test_the_engines_worse_fills_reach_the_trace_and_the_report(monkeypatch):
     trace = replay_strategy(fx.run("spot_trend", 2), (fx.market("BTCUSDT", fx.uptrend, 2),))
     assert trace.worse_fills == worse
     report = strategy_report(trace, adapter_pin=PIN)
+    # Mixed signs are kept apart, never netted.
     assert disclosed(report, "worse_fill:") == [
-        "worse_fill:BTCUSDT: fills=2 excess_risk=0.5 extra_cost=0.5"
+        "worse_fill:BTCUSDT: fills=2 excess_risk=0.5 positive_extra_cost_fills=1 "
+        "positive_extra_cost=0.75 negative_extra_cost_fills=1 negative_extra_cost=-0.25"
+    ]
+    rendered(report)
+
+
+def test_a_stale_fixing_mark_discloses_its_oldest_mark_and_largest_staleness():
+    # Futures bars 6-17 are missing under the held short: the 8h and 16h settlements are
+    # valued at bar 5's close, available at 6h, so the 16h one is ten hours stale.
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 2, futures=True), "futures", range(6, 18))
+    trace = replay_strategy(fx.run("futures_trend", 2), (market,))
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert disclosed(report, "funding_settled_at_stale_mark:") == [
+        f"funding_settled_at_stale_mark:BTCUSDT: settlements=2 first={utc_text(hour_ms(8))} "
+        f"last={utc_text(hour_ms(16))} oldest_mark={utc_text(hour_ms(6))} max_staleness=10h"
     ]
     rendered(report)

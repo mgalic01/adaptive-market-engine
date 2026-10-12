@@ -277,7 +277,7 @@ def test_disclosures_and_the_capital_label_are_rendered_escaped() -> None:
     attack = "<img src=x onerror=alert(1)>"
     label = "owner_small:EUR:100:usdt_per_eur=1.08:fx_pin=" + "a" * 64
     evidence = analyze(
-        D(100),
+        D(108),
         curve(),
         contributions(),
         (),

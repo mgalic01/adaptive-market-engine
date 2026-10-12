@@ -47,7 +47,7 @@ from crypto_grid_bot.simulation.runner import SimulationPolicy
 from crypto_grid_bot.strategy.daily_sma import DailyCloses
 
 from .baseline_records import BaselineEvidence, NativeMark, comparison_report, refuse_sealed
-from .report import Contribution
+from .report import SAVED_FILTERS_DISCLOSURE, Contribution
 
 HOUR = 3_600_000
 _RECORDER_LOCK = Lock()
@@ -241,6 +241,7 @@ def _evidence(
         disclosures=(
             "minute_baseline_final_minute_close_is_window_end",
             "equal_capital_share_per_pair",
+            SAVED_FILTERS_DISCLOSURE,
         ),
         capital_label=capital_label,
     )

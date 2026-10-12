@@ -21,6 +21,7 @@ from crypto_grid_bot.combined.baseline_v3 import (
     window_picks,
 )
 from crypto_grid_bot.combined.common_series import FROZEN_REF
+from crypto_grid_bot.combined.report import utc_text
 from crypto_grid_bot.market_data.parsing import DataError
 from crypto_grid_bot.trend import replay as v3_replay
 from crypto_grid_bot.trend import runner as v3_runner
@@ -127,6 +128,7 @@ def test_native_marks_keep_every_off_hour_mark_labelled():
     off_hour = [m for m in evidence.native if m.timestamp_ms % HOUR]
     assert off_hour and all(m.kind in {"funding", "favourable", "adverse"} for m in off_hour)
     assert "v3_funding_after_fills_is_native_timing" in evidence.disclosures
+    assert "present_day_saved_exchange_filters_on_historical_data" in evidence.report.disclosures
     in_report = {p.id for p in evidence.report.equity_points}
     assert not any(":favourable" in identity or ":adverse" in identity for identity in in_report)
 
@@ -216,9 +218,12 @@ def test_a_native_v3_stop_is_a_finished_result_frozen_to_the_window_end(monkeypa
     evidence = run()
     assert evidence.status == stop and evidence.liquidations == 0
     assert evidence.accounting_explained and evidence.wallet_quantity_exact
-    assert f"baseline_native_stop_equity_frozen:{stop}" in evidence.disclosures
     assert evidence.report.disclosures == evidence.disclosures
-    assert any(d.startswith(f"frozen_after_native_stop:{stop}: ") for d in evidence.disclosures)
+    # The stop is stated once, with the span its frozen marks cover.
+    assert [d for d in evidence.disclosures if stop in d] == [
+        f"frozen_after_native_stop:{stop}: hours={(END - stop_hour) // HOUR} "
+        f"first={utc_text(stop_hour + HOUR)} last={utc_text(END)}"
+    ]
     report = evidence.report
     assert not [i for i in report.issues if i != "contribution_equity_residual"], report.issues
     last = evidence.native[-1]

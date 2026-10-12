@@ -32,7 +32,7 @@ from .baseline_records import (
     comparison_report,
     refuse_sealed,
 )
-from .report import Contribution
+from .report import SAVED_FILTERS_DISCLOSURE, Contribution
 
 LONG_RULES = {f"unchanged_v3_r{index}_long_only": f"R{index}L" for index in range(1, 7)}
 SELECTOR = "unchanged_v3_selector"
@@ -239,7 +239,7 @@ def replay_v3_baseline(
     keeps its partial evidence and makes the comparison incomplete, never a pass.
     """
     _refuse_sealed(inputs)
-    disclosures = ["v3_funding_after_fills_is_native_timing"]
+    disclosures = ["v3_funding_after_fills_is_native_timing", SAVED_FILTERS_DISCLOSURE]
     if arm in LONG_RULES:
         schedule: dict[int, str | None] | None = {start_ms: LONG_RULES[arm]}
     elif arm == SELECTOR:
@@ -294,9 +294,8 @@ def replay_v3_baseline(
     marks = _native_marks(result, inputs, end_ms)
     contributions = _contributions(arm, result, source_refs)
     status = result.reason
+    # A native stop is disclosed once, by ``comparison_report``, with its frozen span.
     native_stop = status if status in NATIVE_STOPS else None
-    if native_stop is not None:
-        disclosures.append(f"baseline_native_stop_equity_frozen:{native_stop}")
     report = comparison_report(
         arm,
         marks,

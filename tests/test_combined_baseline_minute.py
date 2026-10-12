@@ -115,8 +115,7 @@ def test_the_recorder_changes_nothing_the_frozen_replay_computes():
 
 
 def test_grid_portfolio_has_every_hourly_boundary_and_reconciles():
-    evidence = grid(capital_label="research_10000_usdt")
-    assert evidence.report.capital_label == "research_10000_usdt"
+    evidence = grid()
     report = evidence.report
     boundaries = report.policy_evidence.boundaries
     assert [b.timestamp_ms for b in boundaries] == list(range(T0, T0 + DAY + HOUR_MS, HOUR_MS))
@@ -125,6 +124,7 @@ def test_grid_portfolio_has_every_hourly_boundary_and_reconciles():
     assert evidence.wallet_quantity_exact is True
     assert "minute_baseline_final_minute_close_is_window_end" in evidence.disclosures
     assert evidence.report.disclosures == evidence.disclosures
+    assert "present_day_saved_exchange_filters_on_historical_data" in evidence.report.disclosures
     series = common_hourly_series(
         report.equity_points, report.policy_evidence, start_ms=T0, end_ms=T0 + DAY
     )
@@ -187,10 +187,9 @@ def test_comparator_d_is_rebuilt_exactly_from_its_journal():
         initial=D(2000),
         source_refs=("synthetic:d",),
         adapter_pin=PIN,
-        capital_label="research_10000_usdt",
     )
-    assert evidence.report.capital_label == "research_10000_usdt"
     assert evidence.report.disclosures == evidence.disclosures
+    assert "present_day_saved_exchange_filters_on_historical_data" in evidence.report.disclosures
     issues = [i for i in evidence.report.issues if "journal_parity" in i]
     assert not issues
     boundaries = evidence.report.policy_evidence.boundaries
@@ -350,3 +349,18 @@ def test_a_sealed_daily_close_in_comparator_d_is_refused_before_the_frozen_repla
     with pytest.raises(ValueError, match="reserved boundary"):
         run_trend(trend_jobs(closes=closes))
     assert frozen_calls == []
+
+
+def test_both_minute_adapters_carry_a_research_capital_label():
+    trend = replay_trend_baseline(
+        "matched_d_trend_high_first",
+        trend_jobs(),
+        start_ms=T0,
+        end_ms=T0 + DAY,
+        initial=D(10000),
+        source_refs=("synthetic:d",),
+        adapter_pin=PIN,
+        capital_label="research_10000_usdt",
+    )
+    gridded = grid(initial="10000", capital_label="research_10000_usdt")
+    assert trend.report.capital_label == gridded.report.capital_label == "research_10000_usdt"

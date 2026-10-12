@@ -144,4 +144,5 @@ def test_the_hold_report_carries_its_disclosures_and_capital_label():
     evidence = hold(capital_label="research_10000_usdt")
     assert evidence.report.disclosures == evidence.disclosures
     assert "hold_marks_at_hourly_opening_quotes" in evidence.report.disclosures
+    assert "present_day_saved_exchange_filters_on_historical_data" in evidence.report.disclosures
     assert evidence.report.capital_label == "research_10000_usdt"

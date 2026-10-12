@@ -24,6 +24,7 @@ from .execution import _decimal
 from .observation_policy import POLICY_ID, Boundary, PolicyEvidence
 from .recovery import RecoveryState
 from .report import (
+    SAVED_FILTERS_DISCLOSURE,
     CapitalObservation,
     Contribution,
     EquityPoint,
@@ -38,10 +39,11 @@ from .report import (
 )
 from .strategy_replay import StrategyTrace, TraceFill
 
+HOUR = 3_600_000
 DAY = 86_400_000
 # Rulings every V3.1 replay runs under (controller, 2026-10-11), disclosed on every report.
 V3_1_RULINGS = (
-    "v3_1_present_day_saved_exchange_filters_on_historical_data",
+    SAVED_FILTERS_DISCLOSURE,
     "v3_1_held_coin_without_bar_closed_at_next_bar_pending_orders_canceled",
 )
 
@@ -231,6 +233,7 @@ def recovery_episodes(trace: StrategyTrace) -> tuple[RecoveryEpisode, ...]:
 
 
 def _by_symbol(rows: Iterable[tuple[str, int]]) -> list[tuple[str, list[int]]]:
+    """Times grouped per symbol, symbols in order."""
     grouped: dict[str, list[int]] = {}
     for symbol, stamp in rows:
         grouped.setdefault(symbol, []).append(stamp)
@@ -243,7 +246,8 @@ def strategy_disclosures(
     """What one replay discloses, compact for a multi-year run.
 
     Long series are kept per symbol to a count and their first and last times; the
-    short ones (skipped hours, irregular funding pairs) are listed in full.
+    short ones (skipped hours, irregular funding pairs) are listed in full. A stale
+    fixing mark also gives the oldest mark and the largest staleness.
     """
     notes = [*V3_1_RULINGS, *skipped_hours_disclosures(skipped_hours)]
     notes.extend(
@@ -265,12 +269,20 @@ def strategy_disclosures(
             (p.symbol, p.scheduled_ms) for p in payments if p.scheduled_ms is not None
         )
     )
-    notes.extend(
-        f"funding_settled_at_stale_mark:{symbol}: {span_text('settlements', times)}"
-        for symbol, times in _by_symbol(
-            (p.symbol, p.timestamp_ms) for p in payments if p.stale_mark_ms is not None
+    stale: dict[str, list[tuple[int, int]]] = {}
+    for payment in payments:
+        if payment.stale_mark_ms is not None:
+            stale.setdefault(payment.symbol, []).append(
+                (payment.timestamp_ms, payment.stale_mark_ms)
+            )
+    for symbol, rows in sorted(stale.items()):
+        oldest = min(mark for _, mark in rows)
+        worst = max(booked - mark for booked, mark in rows)
+        notes.append(
+            f"funding_settled_at_stale_mark:{symbol}: "
+            f"{span_text('settlements', (booked for booked, _ in rows))} "
+            f"oldest_mark={utc_text(oldest)} max_staleness={_duration(worst)}"
         )
-    )
     notes.extend(
         f"funding_schedule_irregular:{symbol}: earlier={utc_text(earlier)}/{every}h "
         f"later={utc_text(later)}/{then}h"
@@ -283,14 +295,24 @@ def strategy_disclosures(
         )
     )
     for symbol in sorted({fill.symbol for fill in trace.worse_fills}):
-        rows = [fill for fill in trace.worse_fills if fill.symbol == symbol]
-        excess = sum((Fraction(row.excess_risk) for row in rows), Fraction(0))
-        extra = sum((Fraction(row.extra_cost) for row in rows), Fraction(0))
+        fills = [fill for fill in trace.worse_fills if fill.symbol == symbol]
+        excess = sum((Fraction(fill.excess_risk) for fill in fills), Fraction(0))
+        # Signed extra costs are never netted: a cheaper fill must not hide a costlier one.
+        dearer = [Fraction(fill.extra_cost) for fill in fills if fill.extra_cost > 0]
+        cheaper = [Fraction(fill.extra_cost) for fill in fills if fill.extra_cost < 0]
         notes.append(
-            f"worse_fill:{symbol}: fills={len(rows)} excess_risk={_decimal(excess)} "
-            f"extra_cost={_decimal(extra)}"
+            f"worse_fill:{symbol}: fills={len(fills)} excess_risk={_decimal(excess)} "
+            f"positive_extra_cost_fills={len(dearer)} "
+            f"positive_extra_cost={_decimal(sum(dearer, Fraction(0)))} "
+            f"negative_extra_cost_fills={len(cheaper)} "
+            f"negative_extra_cost={_decimal(sum(cheaper, Fraction(0)))}"
         )
     return tuple(notes)
+
+
+def _duration(ms: int) -> str:
+    """Whole hours as ``<n>h``, anything else in milliseconds."""
+    return f"{ms // HOUR}h" if ms % HOUR == 0 else f"{ms}ms"
 
 
 def strategy_report(

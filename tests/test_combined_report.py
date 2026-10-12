@@ -1172,21 +1172,24 @@ def test_closed_recovery_rejects_equal_equity_distinct_endpoint_phases(ambiguous
     assert result.equity_points == retained and result.recovery == (episode,)
 
 
+OWNER_SMALL = "owner_small:EUR:100:usdt_per_eur=1.1:fx_pin=" + "a" * 64
+
+
 def test_disclosures_and_the_capital_label_are_carried_and_never_change_the_judgement():
-    plain = analyze(D(100), curve(), contributions(), (), (), ("artifact-pin",))
+    plain = analyze(D(110), curve(), contributions(), (), (), ("artifact-pin",))
     notes = ("data_gap:BTCUSDT:spot: hours=1", "<b>escaped later</b>")
     disclosed = analyze(
-        D(100),
+        D(110),
         curve(),
         contributions(),
         (),
         (),
         ("artifact-pin",),
         disclosures=notes,
-        capital_label="research_10000_usdt",
+        capital_label=OWNER_SMALL,
     )
     assert disclosed.disclosures == notes
-    assert disclosed.capital_label == "research_10000_usdt"
+    assert disclosed.capital_label == OWNER_SMALL
     # Information only: completeness, issues and every figure are unchanged.
     assert replace(disclosed, disclosures=(), capital_label=None) == plain
     assert plain.disclosures == () and plain.capital_label is None
@@ -1212,3 +1215,36 @@ def test_disclosure_times_are_utc_text_with_milliseconds_only_when_present():
     assert utc_text(0) == "1970-01-01T00:00:00Z"
     assert utc_text(1_609_462_800_000) == "2021-01-01T01:00:00Z"
     assert utc_text(1_609_462_800_007) == "2021-01-01T01:00:00.007Z"
+
+
+@pytest.mark.parametrize(
+    ("initial", "label"),
+    [
+        ("10000", "research_10000_usdt"),
+        ("10000.00", "research_10000_usdt"),
+        ("110", OWNER_SMALL),
+        ("108.5", "owner_small:EUR:100:usdt_per_eur=1.085:fx_pin=" + "b" * 64),
+    ],
+)
+def test_a_capital_label_matching_the_initial_equity_is_accepted(initial, label):
+    report = analyze(D(initial), curve(), (), (), (), ("pin",), capital_label=label)
+    assert report.capital_label == label
+
+
+@pytest.mark.parametrize(
+    ("initial", "label"),
+    [
+        ("100", "research_10000_usdt"),  # 100 USDT is not the research capital
+        ("100", OWNER_SMALL),  # nor EUR100 at 1.1
+        ("110.01", OWNER_SMALL),
+        ("100", "EUR100"),
+        ("110", "owner_small:EUR:100:usdt_per_eur=1.1"),  # no FX pin
+        ("110", "owner_small:EUR:100:usdt_per_eur=1.1:fx_pin=" + "A" * 64),
+        ("110", "owner_small:USD:100:usdt_per_eur=1.1:fx_pin=" + "a" * 64),
+        ("110", "owner_small:EUR:100:usdt_per_eur=11E-1:fx_pin=" + "a" * 64),
+        ("10000", "research_10000_usdt "),
+    ],
+)
+def test_a_capital_label_that_does_not_match_the_initial_equity_is_refused(initial, label):
+    with pytest.raises(ValueError, match="capital label"):
+        analyze(D(initial), curve(), (), (), (), ("pin",), capital_label=label)

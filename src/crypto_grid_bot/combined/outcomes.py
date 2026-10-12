@@ -1,8 +1,8 @@
 """Acceptance outcomes from replay and baseline evidence; no new judgement here.
 
 Each outcome carries exactly its report's final equity, drawdown and residual, so
-``experiment.evaluate`` can recompute the report and match it, and its report's
-disclosures and capital label, which are information only. The registered run
+``experiment.evaluate`` can recompute the report and match it. It also carries the
+report's disclosures and capital label, which are information only. The registered run
 harness supplies the identity (window, capital, cost profile, pins, scenario) and
 a unique attempt ID; a failed or incomplete attempt is retained, never retried.
 """
