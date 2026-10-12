@@ -109,3 +109,21 @@ option each time:
   archives through an owner-started Bob task, checksummed, with no 2025+ month. The grid
   component then runs on all ten coins. Until they are registered, a grid run without a
   coin's minute input is incomplete.
+
+## Owner decisions, 2026-10-12
+
+In chat, after the final review, the owner set the priority: "we do not care about the
+fairness... we need a strategy that will make money in the real world... Do what you
+think would help us in a real world trading situation, save us money from loss." Claude
+decided the two open questions on that basis:
+
+- **Data gaps: keep the protective rule.** A held coin without a price bar is closed at
+  its next available bar, and no new entry opens while a holding has no price. This is
+  what a live bot does when it loses sight of the market, so the test checks the bot that
+  would actually run.
+- **Baselines stopped by missing data (narrows the 2026-10-11 decision above).** Only a
+  real market event, `liquidation`, is a finished baseline result: frozen at its stop,
+  labelled, and it must still be beaten. V3's `no_tradable_position` and
+  `leverage_not_restored` arise from masked or untradable coins, and frozen V3 calls them
+  terminal invalid-run outcomes. They make that comparison incomplete, so V3.1 can never
+  pass by beating a baseline that a data artefact stopped.

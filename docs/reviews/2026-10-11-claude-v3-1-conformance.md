@@ -154,3 +154,38 @@ Each item gets a failing test first, then the fix:
 
 Then a second conformance pass, the exact registration and a separate owner go. There is
 no merge before full conformance, no historical run and no 2025+ data.
+
+## Outcome, 2026-10-12
+
+All 15 tasks of the plan are done. Each was tested first, reviewed independently and
+fixed until clean; the ledger records every ruling. A whole-branch review of
+`411f75a..fa6bbcd` found no trading-path defect and two integration gaps. Both are fixed
+in `a7d0552..660f488` and re-reviewed clean:
+- V3.1's own data gaps must be registered skipped hours, or the report is incomplete;
+- the capital label must match the registered capital.
+
+The same commits apply the owner's 2026-10-12 decision that only a liquidation is a
+finished baseline stop. The combined suite gives 1460 passed and 1 skipped.
+
+## Registration checklist (gates the owner's go)
+
+Carried from the plan's reviews; the replay does not enforce these, so registration must:
+- supply spot hourly bars with reader-repaired and masked hours already removed, and
+  refuse a window whose spot data includes a month V3 excludes (more than 17% missing);
+- build V3's daily decisions from the same registered hourly bars (`hourly_month`), so
+  V3.1 and its V3 baseline read the same daily context;
+- derive the skipped hours mechanically from the pinned data: the union of every
+  registered source's missing bars inside the window, including hours whose opening minute
+  is missing in a minute source. Pin the list, and refuse a window whose first or last
+  hour would need skipping;
+- pin the `interval_hours` convention from the SOL 2022-11 funding records, register those
+  records, and scan the pinned funding for missing settlements inside each window
+  (especially 2022-02, 2022-04 and SOL 2022-11);
+- have the replay driver pass `window.skipped_hours` and the registered `capital_label`
+  to `strategy_report` and `evidence_records` and to every baseline adapter, write
+  `write_bundle(records=evidence_records(trace))`, use `render_bundle_report`, filter
+  comparisons to the report's cell, and bind each `*_low_first` / `*_high_first` outcome
+  to a replay in that path mode;
+- update the registration proposal: the daily rule is V3's day rule (at least 20 of 24
+  usable hours), not "complete days only"; the minute bars for the seven other coins are
+  manifest `589b9a8c...` (PR #274).
