@@ -8,11 +8,12 @@ reconciles exactly with the equity change; open lifecycles are marked at the las
 observation's marks. Each lifecycle's favorable excursion and profit surrendered come
 from its own retained marks only. Source references are retained, not authenticated.
 
-Every report discloses the V3.1 rulings it ran under and what the trace recorded
-about its inputs (data gaps, stale marks, off-hour or irregular funding, withheld
-grid buys, worse fills). Disclosures are information, never a decision input. A gap
-hour is skipped for every arm alike only when the registration lists it (owner,
-2026-10-11); a gap hour it does not list is a producer issue, so that run is incomplete.
+Every report discloses the V3.1 rulings it ran under (those specific to some arms only
+on those arms) and what the trace recorded about its inputs (data gaps, stale marks,
+off-hour or irregular funding, withheld grid buys, worse fills). Disclosures are
+information, never a decision input. A gap hour is skipped for every arm alike only
+when the registration lists it (owner, 2026-10-11); a gap hour it does not list is a
+producer issue, so that run is incomplete.
 """
 
 from collections.abc import Iterable
@@ -21,6 +22,7 @@ from decimal import Decimal
 from fractions import Fraction
 
 from .account import AccountSnapshot, FillEvent, FundingEvent
+from .arms import arm_settings
 from .artifacts import BundleRecords, RunRecord, SymbolGaps
 from .evidence import DecisionEvent, DecisionRecord, IntentRecord
 from .execution import _decimal
@@ -49,7 +51,44 @@ DAY = 86_400_000
 V3_1_RULINGS = (
     SAVED_FILTERS_DISCLOSURE,
     "v3_1_held_coin_without_bar_closed_at_next_bar_pending_orders_canceled",
+    "v3_1_aggregate_risk_cut_back_spares_holdings_whose_stop_is_not_worse_than_entry",
+    "v3_1_day_after_a_missing_daily_bar_coin_correlations_unknown_grouped_with_every_coin_"
+    "under_the_80pct_group_cap",
+    "v3_1_must_close_holdings_without_a_price_excluded_from_other_holdings_cut_back_sizing_"
+    "until_priced",
 )
+# Rulings that change behaviour only where their component or switch is on.
+RECOVERY_TRIM_RULING = (
+    "v3_1_recovery_half_to_quarter_allowance_also_trims_holdings_admitted_at_half"
+)
+NO_FALLBACK_RULING = "v3_1_no_futures_fallback_while_recovering_spot_preview_at_full_allowance"
+MINUTE_FLOW_GATE_RULING = (
+    "v3_1_grid_flow_gate_checked_every_minute_a_block_inside_an_interval_withholds_its_resting_buys"
+)
+SHORT_ABLATION_RULING = (
+    "v3_1_short_qualification_ablation_also_exits_held_longs_on_daily_unclear_with_4h_down"
+)
+
+
+def arm_rulings(arm: str) -> tuple[str, ...]:
+    """The rulings a run of ``arm`` is under: every V3.1 ruling, then its own ones.
+
+    Automatic recovery restarts at quarter and half allowance; the spot-to-futures
+    fallback needs both trend components; the flow gate gates the spot grid; the short
+    ablation alone accepts daily UNCLEAR with 4h DOWN.
+    """
+    settings = arm_settings(arm)
+    routing = settings.routing
+    specific = (
+        (RECOVERY_TRIM_RULING, settings.automatic_recovery),
+        (
+            NO_FALLBACK_RULING,
+            settings.automatic_recovery and routing.spot_trend and routing.futures_trend,
+        ),
+        (MINUTE_FLOW_GATE_RULING, routing.spot_grid),
+        (SHORT_ABLATION_RULING, not routing.short_qualification),
+    )
+    return (*V3_1_RULINGS, *(ruling for ruling, applies in specific if applies))
 
 
 @dataclass
@@ -535,7 +574,7 @@ def strategy_disclosures(
     short ones (skipped hours, irregular funding pairs) are listed in full. A stale
     fixing mark also gives the oldest mark and the largest staleness.
     """
-    notes = [*V3_1_RULINGS, *skipped_hours_disclosures(skipped_hours)]
+    notes = [*arm_rulings(trace.run.arm), *skipped_hours_disclosures(skipped_hours)]
     notes.extend(
         f"data_gap:{symbol}:{venue}: {span_text('hours', hours)}"
         for symbol, venue, hours in trace.data_gaps

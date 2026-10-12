@@ -1142,10 +1142,26 @@ def test_a_four_hour_cadence_books_an_off_hour_record_without_a_collision(collid
     assert late.scheduled_ms == hour_ms(28) + 30 * 60_000
 
 
-RULINGS = (
+# Behaviour-changing rulings every V3.1 report discloses, whatever its arm.
+GENERAL_RULINGS = (
     "present_day_saved_exchange_filters_on_historical_data",
     "v3_1_held_coin_without_bar_closed_at_next_bar_pending_orders_canceled",
+    "v3_1_aggregate_risk_cut_back_spares_holdings_whose_stop_is_not_worse_than_entry",
+    "v3_1_day_after_a_missing_daily_bar_coin_correlations_unknown_grouped_with_every_coin_"
+    "under_the_80pct_group_cap",
+    "v3_1_must_close_holdings_without_a_price_excluded_from_other_holdings_cut_back_sizing_"
+    "until_priced",
 )
+# Rulings disclosed only on the arms they apply to.
+RECOVERY_TRIM = "v3_1_recovery_half_to_quarter_allowance_also_trims_holdings_admitted_at_half"
+NO_FALLBACK = "v3_1_no_futures_fallback_while_recovering_spot_preview_at_full_allowance"
+MINUTE_GATE = (
+    "v3_1_grid_flow_gate_checked_every_minute_a_block_inside_an_interval_withholds_its_resting_buys"
+)
+SHORT_ABLATION = (
+    "v3_1_short_qualification_ablation_also_exits_held_longs_on_daily_unclear_with_4h_down"
+)
+RULINGS = (*GENERAL_RULINGS, RECOVERY_TRIM)  # a spot-trend report's
 
 
 def disclosed(report, prefix):
@@ -1171,6 +1187,28 @@ def test_every_v3_1_report_discloses_the_saved_filters_and_the_stale_close_rule(
     assert report.disclosures == RULINGS
     assert report.capital_label == "research_10000_usdt"
     rendered(report)
+
+
+@pytest.mark.parametrize(
+    ("arm", "specific"),
+    [
+        ("combined", (RECOVERY_TRIM, NO_FALLBACK, MINUTE_GATE)),
+        (
+            "combined_without_full_short_qualification",
+            (RECOVERY_TRIM, NO_FALLBACK, MINUTE_GATE, SHORT_ABLATION),
+        ),
+        ("combined_without_recovery", (MINUTE_GATE,)),
+        ("combined_without_continuation", (RECOVERY_TRIM, NO_FALLBACK, MINUTE_GATE)),
+        ("spot_trend", (RECOVERY_TRIM,)),
+        ("futures_trend", (RECOVERY_TRIM,)),
+        ("futures_trend_long_only", (RECOVERY_TRIM,)),
+        ("spot_grid", (RECOVERY_TRIM, MINUTE_GATE)),
+    ],
+)
+def test_each_arm_discloses_the_general_rulings_and_only_its_own_specific_ones(arm, specific):
+    trace = replay_strategy(fx.run("spot_trend", 2), (fx.market("BTCUSDT", fx.uptrend, 2),))
+    trace = replace(trace, run=replace(trace.run, arm=arm))
+    assert strategy_report(trace, adapter_pin=PIN).disclosures == (*GENERAL_RULINGS, *specific)
 
 
 def test_a_gapped_run_stays_complete_and_discloses_the_gap_and_the_skipped_hour():
