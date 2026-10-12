@@ -6,18 +6,21 @@ mixed or duplicated inputs before writing anything, judges the pass/fail window 
 bundle (Ruling P13): each V3.1 run job wrote its cell's bundle, and aggregation records
 its receipt's SHA-256.
 
-The accepted ``cells_dir`` layout, as the workflow downloads the artifacts into it, loose
-(``merge-multiple``) or each in its artifact folder (named with the run attempt)::
+The only accepted ``cells_dir`` layout: each artifact in its own folder, named with the
+workflow's run attempt, as the workflow downloads them (each job uploads the directory
+that holds its ``<cell_id>/`` or ``v3_picks/``, so the download nests)::
 
-    cells_dir/<cell_id>/                              a cell, as its run job wrote it
-    cells_dir/cell-<cell_id>-attempt-<n>/<cell_id>/   the same, in its artifact folder
-    cells_dir/v3_picks/                               the V3 picks job
-    cells_dir/v3-picks-attempt-<n>/v3_picks/          the same, in its artifact folder
+    cells_dir/cell-<cell_id>-attempt-<n>/<cell_id>/   a cell, as its run job wrote it
+    cells_dir/v3-picks-attempt-<n>/v3_picks/          the V3 picks job
 
-An artifact folder holds exactly that one directory, and ``<n>`` is a positive integer.
-Anything else is refused: a name that is no registered cell, a file, a link or junction,
-another nesting, a folder holding another cell or more than its one directory, and two
-directories for one cell or two picks jobs (duplicates).
+``<n>`` is a positive integer without leading zeros, and an artifact folder holds exactly
+that one directory. Anything else is refused, naming the entry: a loose cell or picks
+directory (downloading every artifact into one directory would let one attempt's files
+overwrite another's), a file, a link or junction, another name or nesting, a folder of an
+unregistered cell or holding more than its one directory, and two folders for one cell or
+two picks folders (duplicates, such as attempts 1 and 2). A claim's ``attempt_id`` is
+free text; when it ends in ``attempt-<m>`` (after its start or a character that is no
+letter or digit), ``<m>`` must be the folder's ``<n>``, digit for digit.
 
 A cell's state follows its run job's protocol: ``outcome.json`` (the completion marker)
 makes it ``completed``; ``failure.json`` a recorded ``failed`` attempt, its type and
@@ -26,29 +29,37 @@ empty directory, ``killed``; no directory ``missing``. A completed cell whose ar
 do not hold together is ``invalid``: an unreadable outcome or claim, a claim of another
 attempt, a ``report.json`` that is not the outcome's report evidence, or, for a V3.1
 cell, an evidence bundle that is missing, does not verify (``read_bundle``) or does not
-bind this outcome and report. No state is ever a refusal, retried or overwritten; every
-state but ``completed`` leaves a W1 cell's comparisons incomplete.
+bind this outcome and report. No state is ever a refusal, retried or overwritten. Only a
+``completed`` cell's outcome goes to acceptance: an ``invalid`` one is withheld like a
+missing one, so acceptance itself finds the cell incomplete and no verdict rests on an
+outcome found inconsistent. Every state but ``completed`` leaves a W1 cell incomplete.
 
 Refused, naming the cells, before anything is written: a claim (``attempt.json``) of
-another cell or under other pins than the registration's (code, config, data, and the
-pack its kind runs from); an outcome of another cell (arm, window, capital, cost
-multiple, scenario), under another code, config or data pin, or whose report is labelled
-with another capital.
+another cell, of another attempt than its folder's, or under other pins than the
+registration's (code, config, data, and the pack its kind runs from); an outcome of
+another cell (arm, window, capital, cost multiple, scenario), under another code, config
+or data pin, or whose report is labelled with another capital.
+
+On Windows ``cells_dir`` is read through its extended-length path: the nesting puts the
+longest arms' bundle files past the 260-character limit of a system without long paths.
 
 Only W1 outcomes go to ``evaluate``: a W0 cell is reported only, never judged or
 compared, and ``evaluate`` would count it as an unregistered outcome. The summary::
 
-    out_dir/summary/pages/<cell_id>.html         each V3.1 W1 cell's page; the 8 full
+    out_dir/summary/pages/<cell_id>/report.html  each V3.1 W1 cell's page; the 8 full
                                                  combined cells' with acceptance's
                                                  judgment of their cell (cell_comparison)
-    out_dir/summary/pages/<cell_id>.report.json  a page's exact JSON when too large to
-                                                 embed (render_bundle_report)
-    out_dir/summary/w0/<cell_id>.html            each W0 cell's page, reported only
-    out_dir/summary/w0/<cell_id>.report.json
+    out_dir/summary/pages/<cell_id>/report.json  a page's exact JSON when too large to
+                                                 embed (render_bundle_report): the file
+                                                 the page links and states the SHA-256 of
+    out_dir/summary/w0/<cell_id>/report.html     each W0 cell's page, reported only
+    out_dir/summary/w0/<cell_id>/report.json
     out_dir/summary/verdict.json                 canonical JSON: the verdict, every
                                                  cell's state and the SHA-256 of its
                                                  files and page, the pins
     out_dir/summary/summary.md                   the owner's tables, written last
+
+An ``invalid`` cell's page says so in its title.
 
 Every directory is created once and every file is an exclusive create, all under a fresh
 default decimal context, so the same cells give byte-identical files. ``summary.md`` is
@@ -57,6 +68,7 @@ the summary's completion marker. Reading the cells is the only input; no network
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -64,7 +76,13 @@ from decimal import Context, Decimal, localcontext
 from fractions import Fraction
 from pathlib import Path
 
-from crypto_grid_bot.combined.artifacts import _canonical, _safe_path, _write, read_bundle
+from crypto_grid_bot.combined.artifacts import (
+    REPORT_JSON,
+    _canonical,
+    _safe_path,
+    _write,
+    read_bundle,
+)
 from crypto_grid_bot.combined.dashboard import render_bundle_report
 from crypto_grid_bot.combined.driver.registration import (
     ACCEPTANCE_WINDOW,
@@ -100,11 +118,13 @@ VERDICT_FILE = "verdict.json"
 SUMMARY_FILE = "summary.md"
 VERDICT_SCHEMA = "v3.1-verdict-1"
 REPORT_FILE = "report.json"
+PAGE_FILE = "report.html"  # beside its REPORT_JSON, the file the page's own link names
 FAILURE_FILE = "failure.json"
 STATES = ("completed", "failed", "killed", "missing", "invalid")
 
-_CELL_ARTIFACT = re.compile(r"cell-([a-z0-9._-]+)-attempt-[1-9][0-9]*")
-_PICKS_ARTIFACT = re.compile(r"v3-picks-attempt-[1-9][0-9]*")
+_CELL_ARTIFACT = re.compile(r"cell-([a-z0-9._-]+)-attempt-([1-9][0-9]*)")
+_PICKS_ARTIFACT = re.compile(r"v3-picks-attempt-([1-9][0-9]*)")
+_CLAIMED_ATTEMPT = re.compile(r"(?:^|[^A-Za-z0-9])attempt-([0-9]+)\Z")
 _CLAIM_KEYS = frozenset(
     {"attempt_id", "repo_head", "code_pin", "config_pin", "pack_sha256", "data_pin"}
 )
@@ -149,7 +169,7 @@ def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path) -> Path:
     if summary.exists():
         raise FileExistsError(f"{summary} exists; a summary is written once")
     with localcontext(Context()):
-        directories, picks_dir = _locate(Path(cells_dir), reg)
+        directories, picks_dir = _locate(_extended(Path(cells_dir)), reg)
         refusals: list[str] = []
         reads = {
             cell.cell_id: _read_cell(cell, directories.get(cell.cell_id), reg, refusals)
@@ -158,10 +178,12 @@ def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path) -> Path:
         picks = _read_picks_job(picks_dir, reg, refusals)
         if refusals:
             raise ValueError("aggregate refused:\n- " + "\n- ".join(refusals))
-        judged = tuple(
-            outcome
+        judged = tuple(  # completed W1 cells only: an invalid one is withheld as missing
+            read.outcome
             for cell in reg.cells
-            if not cell.reported_only and (outcome := reads[cell.cell_id].outcome) is not None
+            if not cell.reported_only
+            and (read := reads[cell.cell_id]).state == "completed"
+            and read.outcome is not None
         )
         result = evaluate(reg.registration, judged)
         cell_reasons = _cell_reasons(reg.cells, reads, picks)
@@ -196,32 +218,34 @@ def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path) -> Path:
 # --- reading the cells -----------------------------------------------------------------
 
 
-def _locate(cells_dir: Path, reg: DriverRegistration) -> tuple[dict[str, Path], Path | None]:
-    """Each present cell's directory by cell id, and the picks job's directory; refuses
-    any layout but the module docstring's, and duplicates."""
+def _locate(
+    cells_dir: Path, reg: DriverRegistration
+) -> tuple[dict[str, tuple[Path, str]], tuple[Path, str] | None]:
+    """Each present cell's directory with its artifact folder's attempt number, by cell
+    id, and the picks job's; refuses any other entry, naming it, and duplicates."""
     if _linked(cells_dir) or not cells_dir.is_dir():
         raise ValueError(f"cells directory {cells_dir}: a directory, not a link, required")
     registered = {cell.cell_id for cell in reg.cells}
-    found: dict[str, list[Path]] = {}
+    found: dict[str, list[tuple[Path, str]]] = {}
     errors: list[str] = []
     for entry in sorted(cells_dir.iterdir(), key=lambda path: path.name):
         name = entry.name
+        cell, picks = _CELL_ARTIFACT.fullmatch(name), _PICKS_ARTIFACT.fullmatch(name)
         if _linked(entry) or not entry.is_dir():
-            errors.append(f"{name}: not a cell directory (a file, link or junction)")
+            errors.append(f"{name}: a file, link or junction, not an artifact folder")
             continue
-        if name == V3_PICKS or name in registered:
-            found.setdefault(name, []).append(entry)
+        if picks is not None:
+            inner, attempt = V3_PICKS, picks[1]
+        elif cell is not None and cell[1] in registered:
+            inner, attempt = cell[1], cell[2]
+        elif cell is not None:
+            errors.append(f"{name}: an artifact folder of {cell[1]}, not a registered cell")
             continue
-        artifact = _CELL_ARTIFACT.fullmatch(name)
-        if _PICKS_ARTIFACT.fullmatch(name):
-            inner = V3_PICKS
-        elif artifact is not None:
-            inner = artifact[1]
         else:
-            errors.append(f"{name}: neither a registered cell, the picks job nor an artifact")
-            continue
-        if inner != V3_PICKS and inner not in registered:
-            errors.append(f"{name}: an artifact of {inner}, which is not a registered cell")
+            errors.append(
+                f"{name}: not an artifact folder (cell-<cell_id>-attempt-<n>/ or "
+                "v3-picks-attempt-<n>/)"
+            )
             continue
         children = list(entry.iterdir())
         if (
@@ -231,26 +255,29 @@ def _locate(cells_dir: Path, reg: DriverRegistration) -> tuple[dict[str, Path], 
         ):
             errors.append(f"{name}: an artifact folder must hold exactly its {inner}/ directory")
             continue
-        found.setdefault(inner, []).append(children[0])
-    for name, paths in sorted(found.items()):
-        if len(paths) > 1:
-            shown = ", ".join(path.relative_to(cells_dir).as_posix() for path in paths)
+        found.setdefault(inner, []).append((children[0], attempt))
+    for name, entries in sorted(found.items()):
+        if len(entries) > 1:
+            shown = ", ".join(path.parent.name for path, _ in entries)
             errors.append(f"{name}: duplicate artifact sets ({shown})")
     if errors:
         raise ValueError("aggregate refused the cells directory:\n- " + "\n- ".join(errors))
-    picks = found.pop(V3_PICKS)[0] if V3_PICKS in found else None
-    return {name: paths[0] for name, paths in found.items()}, picks
+    picks_dir = found.pop(V3_PICKS)[0] if V3_PICKS in found else None
+    return {name: entries[0] for name, entries in found.items()}, picks_dir
 
 
 def _read_cell(
-    cell: Cell, directory: Path | None, reg: DriverRegistration, refusals: list[str]
+    cell: Cell, located: tuple[Path, str] | None, reg: DriverRegistration, refusals: list[str]
 ) -> _Read:
-    """The cell in ``directory`` (None: never run); its refusals go to ``refusals``."""
-    if directory is None:
+    """The cell ``located`` (its directory and its folder's attempt number; None: never
+    run); its refusals go to ``refusals``."""
+    if located is None:
         return _Read("missing")
+    directory, folder_attempt = located
     claim, claim_error = _claim(directory, cell.cell_id, "cell_id")
     if claim is not None:
-        refusals.extend(_claim_refusals(cell.cell_id, "cell_id", claim, _pins(cell, reg)))
+        expected = _pins(cell, reg)
+        refusals.extend(_claim_refusals(cell.cell_id, "cell_id", claim, expected, folder_attempt))
     attempt_id = None if claim is None else str(claim["attempt_id"])
     failure_raw = _bytes(directory / FAILURE_FILE, cell.cell_id)
     if failure_raw is not None:
@@ -294,16 +321,19 @@ def _read_cell(
     )
 
 
-def _read_picks_job(directory: Path | None, reg: DriverRegistration, refusals: list[str]) -> _Read:
+def _read_picks_job(
+    located: tuple[Path, str] | None, reg: DriverRegistration, refusals: list[str]
+) -> _Read:
     """The V3 picks job, exempt from cell decoding: its state and its completion marker's
     SHA-256, the receipt. A finished job must pass ``run_baselines._read_picks``, as every
     V3 cell's job did."""
-    if directory is None:
+    if located is None:
         return _Read("missing")
+    directory, folder_attempt = located
     claim, claim_error = _claim(directory, V3_PICKS, "job")
     expected = {**_registration_pins(reg), "pack_sha256": reg.run_manifest.v3_pack}
     if claim is not None:
-        refusals.extend(_claim_refusals(V3_PICKS, "job", claim, expected))
+        refusals.extend(_claim_refusals(V3_PICKS, "job", claim, expected, folder_attempt))
     attempt_id = None if claim is None else str(claim["attempt_id"])
     failure_raw = _bytes(directory / FAILURE_FILE, V3_PICKS)
     if failure_raw is not None:
@@ -342,11 +372,21 @@ def _claim(directory: Path, owner: str, key: str) -> tuple[dict[str, object] | N
 
 
 def _claim_refusals(
-    owner: str, key: str, claim: Mapping[str, object], expected: Mapping[str, str | None]
+    owner: str,
+    key: str,
+    claim: Mapping[str, object],
+    expected: Mapping[str, str | None],
+    folder_attempt: str,
 ) -> list[str]:
     errors = []
     if claim[key] != owner:
         errors.append(f"{owner}: its attempt.json claims {key} {claim[key]!r}")
+    named = _CLAIMED_ATTEMPT.search(str(claim["attempt_id"]))
+    if named is not None and named[1] != folder_attempt:
+        errors.append(
+            f"{owner}: attempt.json attempt_id {claim['attempt_id']!r} names attempt "
+            f"{named[1]}, but its artifact folder is attempt {folder_attempt}"
+        )
     for pin in _PINS:
         if claim[pin] != expected[pin]:
             errors.append(
@@ -485,6 +525,16 @@ def _bytes(path: Path, owner: str) -> bytes | None:
     return path.read_bytes() if path.is_file() else None
 
 
+def _extended(path: Path) -> Path:
+    """``path`` made absolute and, on Windows, in its extended-length form (``\\\\?\\``):
+    a nested V3.1 cell's bundle files (``cell-<id>-attempt-<n>/<id>/<invocation>/...``)
+    pass the 260-character path limit of a Windows system without long paths enabled."""
+    absolute = os.path.abspath(path)
+    if os.name != "nt" or absolute.startswith("\\\\"):  # already extended, or UNC
+        return Path(absolute)
+    return Path("\\\\?\\" + absolute)
+
+
 def _linked(path: Path) -> bool:
     return path.is_symlink() or path.is_junction()
 
@@ -524,14 +574,16 @@ def _write_pages(
     reads: Mapping[str, _Read],
     comparisons: Mapping[str, CellComparison],
 ) -> dict[str, _Page]:
-    """Render each V3.1 cell's report once: a W1 cell's into ``pages/``, the full combined
-    cells' with their comparison, and a W0 cell's into ``w0/``, labelled reported only."""
+    """Render each V3.1 cell's report once, into its own folder: a W1 cell's under
+    ``pages/``, the full combined cells' with their comparison, and a W0 cell's under
+    ``w0/``, labelled reported only. A large report's exact JSON is ``report.json`` beside
+    its page, the file the page's own link names."""
     for folder in (PAGES_DIR, W0_DIR):
         (summary / folder).mkdir(exist_ok=False)
     pages = {}
     for cell in cells:
-        report = reads[cell.cell_id].report
-        if cell.kind != "v31" or report is None:
+        read = reads[cell.cell_id]
+        if cell.kind != "v31" or read.report is None:
             continue
         folder = W0_DIR if cell.reported_only else PAGES_DIR
         title = (
@@ -539,17 +591,22 @@ def _write_pages(
             if cell.reported_only
             else f"V3.1 cell {cell.cell_id}"
         )
+        if read.state == "invalid":
+            title += " · INVALID cell artifacts, not judged"
         page, report_json = render_bundle_report(
-            report, title, synthetic=False, comparison=comparisons.get(cell.cell_id)
+            read.report, title, synthetic=False, comparison=comparisons.get(cell.cell_id)
         )
+        directory = summary / folder / cell.cell_id
+        directory.mkdir(exist_ok=False)
         page_raw = page.encode("utf-8")
-        _write(summary / folder / f"{cell.cell_id}.html", page_raw)
+        _write(directory / PAGE_FILE, page_raw)
         exact = None
         if report_json is not None:
             json_raw = report_json.encode("utf-8")
-            _write(summary / folder / f"{cell.cell_id}.report.json", json_raw)
-            exact = (f"{folder}/{cell.cell_id}.report.json", _sha256(json_raw))
-        pages[cell.cell_id] = _Page(f"{folder}/{cell.cell_id}.html", _sha256(page_raw), exact)
+            _write(directory / REPORT_JSON, json_raw)
+            exact = (f"{folder}/{cell.cell_id}/{REPORT_JSON}", _sha256(json_raw))
+        path = f"{folder}/{cell.cell_id}/{PAGE_FILE}"
+        pages[cell.cell_id] = _Page(path, _sha256(page_raw), exact)
     return pages
 
 

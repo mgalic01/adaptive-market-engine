@@ -7,12 +7,15 @@ the 72 other component cells and the 96 minute cells is too slow for a test, so 
 realistic artifacts written with the real encoders: each other component cell is the
 combined replay of its scenario, cost and capital under its own identity and attempt, its
 bundle rewritten by ``write_bundle``; each minute cell is a hold replay under the minute
-arm's adapter pin, written by ``run_baselines``' own cell writer. Nothing touches the
-network.
+arm's adapter pin, written by ``run_baselines``' own cell writer. Each cell, and the
+picks job, sits in its artifact folder (``cell-<cell_id>-attempt-1/`` and
+``v3-picks-attempt-1/``), the only layout aggregation accepts. Nothing touches the network.
 """
 
 import hashlib
 import json
+import os
+import re
 import shutil
 from dataclasses import dataclass, replace
 from decimal import Context, localcontext
@@ -40,6 +43,7 @@ from crypto_grid_bot.combined.artifacts import (
 )
 from crypto_grid_bot.combined.baseline_hold import HoldMarket, replay_hold_baseline
 from crypto_grid_bot.combined.baseline_v3 import V3Inputs
+from crypto_grid_bot.combined.driver import aggregate as aggregation
 from crypto_grid_bot.combined.driver import run_baselines, run_cell
 from crypto_grid_bot.combined.driver.aggregate import aggregate
 from crypto_grid_bot.combined.driver.packs import WindowPack, read_pack, write_pack
@@ -97,6 +101,7 @@ NO_RECEIPT = "w1.combined.ohlc.c2.owner_small"
 W0_MISSING = "w0.combined.olhc.c1.research"
 W0_CELL = "w0.combined.ohlc.c2.owner_small"
 COMPONENT = "w1.spot_trend.ohlc.c2.research"
+PICKS = "v3_picks"
 
 
 @dataclass(frozen=True)
@@ -146,7 +151,19 @@ def world(tmp_path_factory) -> World:
 
 
 def attempt_of(cell_id: str) -> str:
-    return f"run-1-{cell_id}"
+    """A unique attempt id per cell (acceptance requires it), ending in its attempt."""
+    return f"run-1-{cell_id}-attempt-1"
+
+
+def folder_of(cell_id: str, attempt: int = 1) -> str:
+    """The artifact folder a cell, or the picks job, is downloaded into."""
+    if cell_id == PICKS:
+        return f"v3-picks-attempt-{attempt}"
+    return f"cell-{cell_id}-attempt-{attempt}"
+
+
+def cell_dir(cells: Path, cell_id: str, attempt: int = 1) -> Path:
+    return cells / folder_of(cell_id, attempt) / cell_id
 
 
 def cell_of(world: World, cell_id: str) -> Cell:
@@ -262,7 +279,7 @@ def matrix(world: World, tmp_path_factory) -> Path:
     reg = world.reg
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(baseline_v3, "run_walk_forward", stand_in([]))
-        picks = compute_v3_picks(world.v3, reg, out, attempt_id="run-1-v3_picks", repo_head=HEAD)
+        picks = compute_v3_picks(world.v3, reg, out, attempt_id=attempt_of(PICKS), repo_head=HEAD)
     for cell in reg.cells:
         options = {"attempt_id": attempt_of(cell.cell_id), "repo_head": HEAD}
         if cell.arm == "combined":
@@ -282,16 +299,34 @@ def matrix(world: World, tmp_path_factory) -> Path:
             component_stand_in(cell, sources[key], out)
         elif cell.kind == "minute":
             minute_stand_in(world, cell, out)
-    return out
+    for entry in sorted(out.iterdir()):  # each into its artifact folder, as downloaded
+        (out / folder_of(entry.name)).mkdir()
+        entry.rename(cell_dir(out, entry.name))
+    return long_paths(out)
+
+
+def long_paths(path: Path) -> Path:
+    """``path`` as aggregation addresses a cells directory: on Windows its extended-length
+    form, as the longest arms' nested bundle files pass the 260-character limit."""
+    return aggregation._extended(path)
+
+
+def outcome_text(cells: Path, cell_id: str) -> str:
+    return (cell_dir(cells, cell_id) / "outcome.json").read_text(encoding="ascii")
 
 
 @pytest.fixture(scope="module")
-def outcomes(world: World, matrix: Path) -> dict[str, RunOutcome]:
+def decoded(world: World, matrix: Path) -> dict[str, RunOutcome]:
+    """Every outcome of the matrix, decoded once, by its text."""
+    texts = [outcome_text(matrix, cell.cell_id) for cell in world.reg.cells]
+    return {text: decode_outcome(text) for text in texts}
+
+
+@pytest.fixture(scope="module")
+def outcomes(world: World, matrix: Path, decoded: dict[str, RunOutcome]) -> dict[str, RunOutcome]:
     """Every W1 outcome of the matrix by cell id, in registration order."""
     return {
-        cell.cell_id: decode_outcome(
-            (matrix / cell.cell_id / "outcome.json").read_text(encoding="ascii")
-        )
+        cell.cell_id: decoded[outcome_text(matrix, cell.cell_id)]
         for cell in world.reg.cells
         if not cell.reported_only
     }
@@ -305,9 +340,10 @@ def expected(world: World, outcomes: dict[str, RunOutcome]) -> AcceptanceResult:
 
 @pytest.fixture(scope="module")
 def expected_defective(world: World, outcomes: dict[str, RunOutcome]) -> AcceptanceResult:
-    """Acceptance of the W1 outcomes the defective matrix still holds: the cell without its
-    bundle receipt keeps its outcome."""
-    kept = (row for cell_id, row in outcomes.items() if cell_id not in (MISSING, FAILED, KILLED))
+    """Acceptance of the W1 outcomes of the defective matrix's completed cells: the cell
+    without its bundle receipt is invalid, so its outcome is withheld as missing."""
+    unfinished = (MISSING, FAILED, KILLED, NO_RECEIPT)
+    kept = (row for cell_id, row in outcomes.items() if cell_id not in unfinished)
     return evaluate(world.reg.registration, tuple(kept))
 
 
@@ -342,25 +378,39 @@ def summary(world: World, matrix: Path, tmp_path_factory) -> Path:
 def defective(world: World, matrix: Path, tmp_path_factory) -> tuple[Path, Path]:
     """The matrix with one W1 cell missing, one failed, one killed, one V3.1 cell without
     its bundle receipt and one W0 cell missing, aggregated once; (cells, summary)."""
-    cells = tmp_path_factory.mktemp("defective") / "cells"
+    cells = long_paths(tmp_path_factory.mktemp("defective")) / "cells"
     shutil.copytree(matrix, cells)
-    shutil.rmtree(cells / MISSING)
-    shutil.rmtree(cells / W0_MISSING)
-    for cell_id in (FAILED, KILLED):
-        for path in (cells / cell_id).iterdir():
-            if path.name != "attempt.json":
-                shutil.rmtree(path) if path.is_dir() else path.unlink()
-    failure = {"type": "ValueError", "message": "synthetic replay failure"}
-    (cells / FAILED / "failure.json").write_bytes(_canonical(failure))
-    (cells / NO_RECEIPT / invocation(NO_RECEIPT) / "receipt.json").unlink()
+    break_cells(cells, (MISSING, W0_MISSING, FAILED, KILLED, NO_RECEIPT))
     return cells, aggregate(world.reg, cells, tmp_path_factory.mktemp("out"))
 
 
+def break_cells(cells: Path, cell_ids: tuple[str, ...]) -> None:
+    """Each named cell (or the picks job) left as a defect: MISSING and W0_MISSING never
+    run, FAILED with its claim and failure.json alone, KILLED and the picks job with their
+    claim alone, NO_RECEIPT's bundle without its receipt. Files are only removed or added,
+    never rewritten, so a hard-linked copy of the matrix stays intact."""
+    for cell_id in cell_ids:
+        directory = cell_dir(cells, cell_id)
+        if cell_id in (MISSING, W0_MISSING):
+            shutil.rmtree(cells / folder_of(cell_id))
+        elif cell_id in (FAILED, KILLED, PICKS):
+            for path in directory.iterdir():
+                if path.name != "attempt.json":
+                    shutil.rmtree(path) if path.is_dir() else path.unlink()
+            if cell_id == FAILED:
+                failure = {"type": "ValueError", "message": "synthetic replay failure"}
+                (directory / "failure.json").write_bytes(_canonical(failure))
+        else:
+            assert cell_id == NO_RECEIPT
+            (directory / invocation(NO_RECEIPT) / "receipt.json").unlink()
+
+
 def copy_cells(matrix: Path, target: Path, cell_ids: tuple[str, ...]) -> Path:
-    """A cells directory holding only ``cell_ids``' artifacts from the matrix."""
+    """A cells directory holding only ``cell_ids``' artifact folders from the matrix."""
+    target = long_paths(target)
     target.mkdir()
     for cell_id in cell_ids:
-        shutil.copytree(matrix / cell_id, target / cell_id)
+        shutil.copytree(matrix / folder_of(cell_id), target / folder_of(cell_id))
     return target
 
 
@@ -421,7 +471,7 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
     cells = verdict["cells"]
     assert list(cells) == sorted(c.cell_id for c in reg.cells)
     for cell in reg.cells:
-        entry, directory = cells[cell.cell_id], matrix / cell.cell_id
+        entry, directory = cells[cell.cell_id], cell_dir(matrix, cell.cell_id)
         assert entry["state"] == "completed" and entry["reasons"] == []
         assert entry["attempt_id"] == attempt_of(cell.cell_id) and entry["failure"] is None
         assert entry["outcome_sha256"] == sha256(directory / "outcome.json")
@@ -430,9 +480,10 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
             receipt = read_bundle(directory / invocation(cell.cell_id)).receipt
             assert entry["bundle_receipt_sha256"] == receipt.receipt_sha256
             folder = "w0" if cell.reported_only else "pages"
-            page = summary / folder / f"{cell.cell_id}.html"
+            page = summary / folder / cell.cell_id / "report.html"
+            assert sorted(os.listdir(page.parent)) == ["report.html"]  # no large report
             assert entry["page"] == {
-                "path": f"{folder}/{cell.cell_id}.html",
+                "path": f"{folder}/{cell.cell_id}/report.html",
                 "sha256": sha256(page),
                 "report_json": None,
             }
@@ -440,16 +491,14 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
             assert entry["bundle_receipt_sha256"] is None and entry["page"] is None
     assert verdict["v3_picks"] == {
         "state": "completed",
-        "receipt_sha256": sha256(matrix / "v3_picks" / "outcome.json"),
+        "receipt_sha256": sha256(cell_dir(matrix, PICKS) / "outcome.json"),
         "reasons": [],
     }
 
     # The pages: the full combined cells carry acceptance's judgment of their cell, the
     # other W1 components none; baselines get no page.
     pages = sorted(path.name for path in (summary / "pages").iterdir())
-    assert pages == sorted(
-        f"{c.cell_id}.html" for c in reg.cells if c.kind == "v31" and not c.reported_only
-    )
+    assert pages == sorted(c.cell_id for c in reg.cells if c.kind == "v31" and not c.reported_only)
     for cell_id in COMBINED:
         cell = cell_of(world, cell_id)
         comparison = cell_comparison(
@@ -460,11 +509,11 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
             cost_multiple=cell.cost_multiple,
             scenario=cell.scenario,
         )
-        html = (summary / "pages" / f"{cell_id}.html").read_text(encoding="utf-8")
+        html = (summary / "pages" / cell_id / "report.html").read_text(encoding="utf-8")
         assert f"Acceptance: {comparison.status}" in html
         assert f"This cell: {comparison.cell_status}" in html
         assert "Synthetic demonstration" not in html  # rendered as evidence, not a demo
-    other = (summary / "pages" / f"{COMPONENT}.html").read_text(encoding="utf-8")
+    other = (summary / "pages" / COMPONENT / "report.html").read_text(encoding="utf-8")
     assert "Acceptance:" not in other and '<p class="empty">Not supplied</p>' in other
 
     # The owner's table: one row per full combined cell, the verdict and the W0 section.
@@ -485,9 +534,9 @@ def test_w0_reports_carry_no_verdict(world, summary, defective, expected_defecti
     w0_cells = [c for c in world.reg.cells if c.reported_only]
     assert len(w0_cells) == 8 and {c.window for c in w0_cells} == {"w0"}
     assert sorted(path.name for path in (summary / "w0").iterdir()) == sorted(
-        f"{c.cell_id}.html" for c in w0_cells
+        c.cell_id for c in w0_cells
     )
-    html = (summary / "w0" / f"{W0_CELL}.html").read_text(encoding="utf-8")
+    html = (summary / "w0" / W0_CELL / "report.html").read_text(encoding="utf-8")
     assert "Reported only (W0): no acceptance" in html
     assert "Acceptance:" not in html and '<p class="empty">Not supplied</p>' in html
     verdict = read_verdict(summary)
@@ -512,14 +561,15 @@ def test_w0_reports_carry_no_verdict(world, summary, defective, expected_defecti
 def test_v3_picks_directory_is_exempt_and_its_receipt_recorded(world, matrix, summary):
     verdict = read_verdict(summary)
     assert "v3_picks" not in verdict["cells"]
-    assert verdict["v3_picks"]["receipt_sha256"] == sha256(matrix / "v3_picks" / "outcome.json")
+    receipt = sha256(cell_dir(matrix, PICKS) / "outcome.json")
+    assert verdict["v3_picks"]["receipt_sha256"] == receipt
 
 
 def test_the_same_cells_give_byte_identical_summaries(world, defective, tmp_path):
     # Cells in every state: completed, missing, failed, killed and invalid, W1 and W0.
     # (The full matrix is aggregated twice above; a second full run would add no path.)
     cells, _ = defective
-    chosen = (*COMBINED, FAILED, KILLED, HOLD_CELL, W0_CELL, "v3_picks")
+    chosen = (*COMBINED, FAILED, KILLED, HOLD_CELL, W0_CELL, PICKS)
     subset = copy_cells(cells, tmp_path / "cells", chosen)
     first = aggregate(world.reg, subset, mkdir(tmp_path / "first"))
     # Another decimal context in the caller changes nothing.
@@ -576,7 +626,7 @@ def test_a_killed_cell_and_a_bundle_without_its_receipt_are_incomplete(world, de
     killed = verdict["cells"][KILLED]
     assert killed["state"] == "killed" and killed["page"] is None
     assert f"{KILLED}: killed, claimed without an outcome" in verdict["cell_incomplete_reasons"]
-    assert not (summary / "pages" / f"{KILLED}.html").exists()
+    assert not (summary / "pages" / KILLED).exists()
 
     unreceipted = verdict["cells"][NO_RECEIPT]
     assert unreceipted["state"] == "invalid" and unreceipted["bundle_receipt_sha256"] is None
@@ -585,7 +635,14 @@ def test_a_killed_cell_and_a_bundle_without_its_receipt_are_incomplete(world, de
         reason.startswith(f"{NO_RECEIPT}: ") and "bundle" in reason
         for reason in verdict["cell_incomplete_reasons"]
     )
+    # Its outcome is withheld from acceptance, which finds the cell missing itself.
+    cell = cell_of(world, NO_RECEIPT)
+    key = ("combined", "w1", cell.capital_id, cell.cost_multiple, cell.scenario)
+    assert f"{key}: missing or repeated cell (0 outcomes)" in verdict["incomplete_reasons"]
     assert verdict["status"] != "pass"
+    html = (summary / "pages" / NO_RECEIPT / "report.html").read_text(encoding="utf-8")
+    title = re.search("<title>([^<]*)</title>", html)
+    assert title is not None and "INVALID cell artifacts, not judged" in title[1]
 
 
 def test_a_large_report_json_is_written_beside_its_page(world, matrix, tmp_path, monkeypatch):
@@ -594,19 +651,26 @@ def test_a_large_report_json_is_written_beside_its_page(world, matrix, tmp_path,
     summary = aggregate(world.reg, cells, tmp_path)
     verdict = read_verdict(summary)
     for cell_id, folder in ((COMBINED[0], "pages"), (W0_CELL, "w0")):
-        page = summary / folder / f"{cell_id}.html"
-        report_json = summary / folder / f"{cell_id}.report.json"
+        directory = summary / folder / cell_id
+        page = directory / "report.html"
+        # The page's own link resolves beside it, to the file whose SHA-256 it states.
+        links = re.findall(
+            r'href="([^"]+)" data-report-json-sha256="([0-9a-f]{64})"',
+            page.read_text(encoding="utf-8"),
+        )
+        assert len(links) == 1
+        ((href, stated),) = links
+        target = directory / href
+        assert href == "report.json" and target.is_file() and sha256(target) == stated
+        assert sorted(os.listdir(directory)) == ["report.html", "report.json"]
         assert verdict["cells"][cell_id]["page"] == {
-            "path": f"{folder}/{cell_id}.html",
+            "path": f"{folder}/{cell_id}/report.html",
             "sha256": sha256(page),
-            "report_json": {
-                "path": f"{folder}/{cell_id}.report.json",
-                "sha256": sha256(report_json),
-            },
+            "report_json": {"path": f"{folder}/{cell_id}/report.json", "sha256": stated},
         }
-        assert sha256(report_json) in page.read_text(encoding="utf-8")
-    report = decode_report((cells / W0_CELL / "report.json").read_text(encoding="ascii"))
-    exact = json.loads((summary / "w0" / f"{W0_CELL}.report.json").read_bytes())
+    w0_report = cell_dir(cells, W0_CELL) / "report.json"
+    report = decode_report(w0_report.read_text(encoding="ascii"))
+    exact = json.loads((summary / "w0" / W0_CELL / "report.json").read_bytes())
     assert exact["cross_version_comparison"] is None and exact["synthetic"] is False
     assert exact["report"]["final_equity"] == str(report.final_equity)
 
@@ -620,7 +684,7 @@ def test_a_large_report_json_is_written_beside_its_page(world, matrix, tmp_path,
 def test_a_cell_from_another_commit_is_refused(world, matrix, tmp_path, pin):
     cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL, COMBINED[0]))
     other = "8" * (40 if pin == "code_pin" else 64)
-    rewrite_outcome(cells / HOLD_CELL / "outcome.json", **{pin: other})
+    rewrite_outcome(cell_dir(cells, HOLD_CELL) / "outcome.json", **{pin: other})
     out = tmp_path / "out"
     out.mkdir()
     with pytest.raises(ValueError, match=HOLD_CELL) as refused:
@@ -632,7 +696,7 @@ def test_a_cell_from_another_commit_is_refused(world, matrix, tmp_path, pin):
 @pytest.mark.parametrize("pin", ["code_pin", "config_pin", "data_pin", "pack_sha256"])
 def test_a_claim_under_other_pins_is_refused(world, matrix, tmp_path, pin):
     cells = copy_cells(matrix, tmp_path / "cells", (COMBINED[1],))
-    path = cells / COMBINED[1] / "attempt.json"
+    path = cell_dir(cells, COMBINED[1]) / "attempt.json"
     claim = json.loads(path.read_bytes())
     claim[pin] = "8" * len(claim[pin])
     path.write_bytes(_canonical(claim))
@@ -656,7 +720,7 @@ def test_a_claim_under_other_pins_is_refused(world, matrix, tmp_path, pin):
 )
 def test_an_outcome_of_another_cell_is_refused(world, matrix, tmp_path, change):
     cells = copy_cells(matrix, tmp_path / "cells", (COMBINED[0],))
-    rewrite_outcome(cells / COMBINED[0] / "outcome.json", **change)
+    rewrite_outcome(cell_dir(cells, COMBINED[0]) / "outcome.json", **change)
     out = tmp_path / "out"
     out.mkdir()
     with pytest.raises(ValueError, match=COMBINED[0]):
@@ -665,61 +729,146 @@ def test_an_outcome_of_another_cell_is_refused(world, matrix, tmp_path, change):
 
 
 def test_duplicate_cell_is_refused(world, matrix, tmp_path):
-    cells = tmp_path / "cells"
+    cells = copy_cells(matrix, tmp_path / "cells", (COMBINED[0],))
     for attempt in (1, 2):
-        shutil.copytree(
-            matrix / HOLD_CELL, cells / f"cell-{HOLD_CELL}-attempt-{attempt}" / HOLD_CELL
-        )
-    shutil.copytree(matrix / COMBINED[0], cells / COMBINED[0])
-    out = tmp_path / "out"
-    out.mkdir()
+        shutil.copytree(cell_dir(matrix, HOLD_CELL), cell_dir(cells, HOLD_CELL, attempt))
+    out = mkdir(tmp_path / "out")
     with pytest.raises(ValueError, match="duplicate") as refused:
         aggregate(world.reg, cells, out)
     assert HOLD_CELL in str(refused.value) and COMBINED[0] not in str(refused.value)
     assert list(out.iterdir()) == []
 
-    # A cell both downloaded under its artifact name and loose is a duplicate too.
-    shutil.rmtree(cells / f"cell-{HOLD_CELL}-attempt-2")
-    shutil.copytree(matrix / HOLD_CELL, cells / HOLD_CELL)
-    with pytest.raises(ValueError, match=HOLD_CELL):
+    # Two picks folders are duplicates too.
+    shutil.rmtree(cells / folder_of(HOLD_CELL, 2))
+    for attempt in (1, 2):
+        shutil.copytree(cell_dir(matrix, PICKS), cell_dir(cells, PICKS, attempt))
+    with pytest.raises(ValueError, match="v3_picks: duplicate artifact sets"):
         aggregate(world.reg, cells, out)
     assert list(out.iterdir()) == []
 
 
-def test_artifact_directories_are_accepted_and_other_nesting_refused(world, matrix, tmp_path):
-    cells = tmp_path / "cells"
-    shutil.copytree(matrix / HOLD_CELL, cells / f"cell-{HOLD_CELL}-attempt-3" / HOLD_CELL)
-    shutil.copytree(matrix / "v3_picks", cells / "v3-picks-attempt-1" / "v3_picks")
-    shutil.copytree(matrix / COMBINED[0], cells / COMBINED[0])
-    summary = aggregate(world.reg, cells, tmp_path)
-    verdict = read_verdict(summary)
+def test_artifact_folders_are_accepted_and_anything_else_refused(world, matrix, tmp_path):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL, PICKS, COMBINED[0]))
+    verdict = read_verdict(aggregate(world.reg, cells, tmp_path))
     assert verdict["cells"][HOLD_CELL]["state"] == "completed"
     assert verdict["cells"][COMBINED[0]]["state"] == "completed"
     assert verdict["v3_picks"]["state"] == "completed"
 
-    bad = {
-        "an unregistered cell": lambda root: (root / "w1.no_such_arm.native.c1.research").mkdir(),
-        "a stray file": lambda root: (root / "notes.txt").write_text("x"),
-        "an artifact of another cell": lambda root: shutil.copytree(
-            matrix / HOLD_CELL, root / f"cell-{COMBINED[1]}-attempt-1" / HOLD_CELL
+    unregistered = "w1.no_such_arm.native.c1.research"
+    bad = {  # what: (the entry the refusal names, how to make it)
+        "a loose cell": (MISSING, lambda root: copy(MISSING, root / MISSING)),
+        "a loose picks job": (PICKS, lambda root: copy(PICKS, root / PICKS)),
+        "an unregistered cell's folder": (
+            folder_of(unregistered),
+            lambda root: (root / folder_of(unregistered) / unregistered).mkdir(parents=True),
         ),
-        "an artifact holding two entries": lambda root: (
-            shutil.copytree(matrix / MISSING, root / f"cell-{MISSING}-attempt-1" / MISSING),
-            (root / f"cell-{MISSING}-attempt-1" / "extra").mkdir(),
+        "a stray file": ("notes.txt", lambda root: (root / "notes.txt").write_text("x")),
+        "a folder holding another cell": (
+            folder_of(COMBINED[1]),
+            lambda root: copy(HOLD_CELL, root / folder_of(COMBINED[1]) / HOLD_CELL),
         ),
-        "a deeper nesting": lambda root: shutil.copytree(
-            matrix / MISSING, root / "downloads" / f"cell-{MISSING}-attempt-1" / MISSING
+        "a folder holding two entries": (
+            folder_of(MISSING),
+            lambda root: (
+                copy(MISSING, cell_dir(root, MISSING)),
+                (root / folder_of(MISSING) / "extra").mkdir(),
+            ),
+        ),
+        "a deeper nesting": (
+            "downloads",
+            lambda root: copy(MISSING, root / "downloads" / folder_of(MISSING) / MISSING),
+        ),
+        "a leading zero": (
+            f"cell-{MISSING}-attempt-01",
+            lambda root: copy(MISSING, root / f"cell-{MISSING}-attempt-01" / MISSING),
+        ),
+        "attempt zero": (
+            f"cell-{MISSING}-attempt-0",
+            lambda root: copy(MISSING, root / f"cell-{MISSING}-attempt-0" / MISSING),
         ),
     }
-    for index, (what, make) in enumerate(bad.items()):
-        root = tmp_path / f"bad-{index}"
-        shutil.copytree(matrix / COMBINED[0], root / COMBINED[0])
+
+    def copy(cell_id: str, target: Path) -> None:
+        shutil.copytree(cell_dir(matrix, cell_id), target)
+
+    for index, (what, (named, make)) in enumerate(bad.items()):
+        root = copy_cells(matrix, tmp_path / f"bad-{index}", (COMBINED[0],))
         make(root)
-        out = tmp_path / f"out-{index}"
-        out.mkdir()
-        with pytest.raises(ValueError):
+        out = mkdir(tmp_path / f"out-{index}")
+        with pytest.raises(ValueError) as refused:
             aggregate(world.reg, root, out)
+        assert f"- {named}: " in str(refused.value), what
+        assert COMBINED[0] not in str(refused.value), what
         assert list(out.iterdir()) == [], what
+
+
+def test_a_claim_of_another_attempt_than_its_folder_is_refused(world, matrix, tmp_path):
+    for owner in (HOLD_CELL, PICKS):
+        cells = long_paths(tmp_path / f"cells-{owner}")
+        shutil.copytree(cell_dir(matrix, owner), cell_dir(cells, owner, 2))
+        out = mkdir(tmp_path / f"out-{owner}")
+        with pytest.raises(ValueError, match=re.escape(owner)) as refused:
+            aggregate(world.reg, cells, out)
+        assert "names attempt 1, but its artifact folder is attempt 2" in str(refused.value)
+        assert list(out.iterdir()) == []
+
+    # An attempt id that ends in no attempt number binds no folder: accepted.
+    cells = long_paths(tmp_path / "unnumbered")
+    directory = cell_dir(cells, HOLD_CELL, 2)
+    shutil.copytree(cell_dir(matrix, HOLD_CELL), directory)
+    claim = json.loads((directory / "attempt.json").read_bytes())
+    (directory / "attempt.json").write_bytes(_canonical({**claim, "attempt_id": "gha-77"}))
+    outcome = decode_outcome((directory / "outcome.json").read_text(encoding="ascii"))
+    assert outcome.report_evidence is not None
+    evidence = replace(outcome.report_evidence, attempt_id="gha-77")
+    retagged = replace(outcome, attempt_id="gha-77", report_evidence=evidence)
+    (directory / "outcome.json").write_bytes(encode_outcome(retagged).encode("ascii"))
+    verdict = read_verdict(aggregate(world.reg, cells, mkdir(tmp_path / "out")))
+    entry = verdict["cells"][HOLD_CELL]
+    assert (entry["state"], entry["attempt_id"]) == ("completed", "gha-77")
+
+
+# --- never a pass with missing comparisons ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [(), (MISSING,), (FAILED,), (KILLED,), (NO_RECEIPT,), (PICKS,)],
+    ids=["none", "missing", "failed", "killed", "invalid", "picks"],
+)
+def test_an_acceptance_pass_with_any_unfinished_cell_is_incomplete(
+    world, matrix, decoded, tmp_path, monkeypatch, broken
+):
+    """Acceptance stubbed to pass: one unfinished W1 cell, or an unfinished picks job,
+    alone makes the summary incomplete. The matrix's outcomes come from their one decode
+    (the same objects for the same text) and pages render as a stub, to keep six full
+    aggregations fast; neither affects the status."""
+    cells = long_paths(tmp_path / "cells")
+    shutil.copytree(matrix, cells, copy_function=os.link)
+    break_cells(cells, broken)
+    judged: list[RunOutcome] = []
+
+    def passing(registration, outcomes):
+        judged.extend(outcomes)
+        return AcceptanceResult("pass", (), (), tuple(outcomes))
+
+    monkeypatch.setattr(aggregation, "evaluate", passing)
+    monkeypatch.setattr(aggregation, "decode_outcome", lambda text: decoded[text])
+    monkeypatch.setattr(
+        aggregation, "render_bundle_report", lambda report, title, **_: (title, None)
+    )
+    verdict = read_verdict(aggregate(world.reg, cells, mkdir(tmp_path / "out")))
+    assert verdict["acceptance_status"] == "pass"
+    reasons = verdict["cell_incomplete_reasons"]
+    if not broken:
+        assert verdict["status"] == "pass" and reasons == [] and len(judged) == 208
+        return
+    (owner,) = broken
+    assert verdict["status"] == "incomplete"
+    assert len(reasons) == 1 and reasons[0].startswith(f"{owner}: ")
+    withheld = 0 if owner == PICKS else 1  # an invalid cell's outcome too (Ruling R3)
+    assert len(judged) == 208 - withheld
+    assert attempt_of(owner) not in {row.attempt_id for row in judged} or owner == PICKS
 
 
 def test_an_existing_summary_is_never_replaced(world, matrix, tmp_path):
