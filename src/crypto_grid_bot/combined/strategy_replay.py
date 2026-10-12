@@ -49,7 +49,8 @@ irregular: accepted and recorded in the trace. Two records booked at one boundar
 the run only when that coin is held on futures there (``funding_records_collide``).
 A settlement without its futures bar is valued at the last close before it, which the
 payment records as a stale mark. Admission reads only the latest record published at
-decision time, so a cadence change or a gap refuses futures increases by itself.
+decision time, which at the window's start may predate the window (it is read, never
+charged), so a cadence change or a gap refuses futures increases by itself.
 
 Each hourly boundary T is processed in the owner-approved order:
 
@@ -317,15 +318,16 @@ def _interval_ms(record: FundingRecord) -> int:
 
 def _funding(
     records: tuple[FundingRecord, ...], start: int, end: int, symbol: str
-) -> tuple[FundingRecord, ...]:
-    """The records the window reads, each valid and distinct.
+) -> tuple[tuple[FundingRecord, ...], tuple[FundingRecord, ...]]:
+    """The records the window settles, and every record it reads, each valid and distinct.
 
-    Needed are the latest record settled at or before the start (the first estimate)
-    through the last one settled before the end; an off-hour record of the last hour is
-    needed, though it books at the end. The schedule itself is the replay's to judge.
-    Two records at one time would make the estimate depend on input order. Older
-    history and later records are not read, so a defect there cannot change this run
-    (Codex 4242566622).
+    Settled are the latest record settled at or before the start through the last one
+    settled before the end; an off-hour record of the last hour is settled, though it
+    books at the end. The schedule itself is the replay's to judge. Admission also reads
+    the latest record published at or before the start, the first estimate, which may
+    predate the window; the read records are returned in publication order. Two records
+    at one time would make the estimate depend on input order. Older history and later
+    records are not read, so a defect there cannot change this run (Codex 4242566622).
     """
     if not isinstance(records, tuple) or not records:
         raise ValueError(f"{symbol}: funding records required with futures inputs")
@@ -337,12 +339,17 @@ def _funding(
     if not starts:
         raise ValueError(f"{symbol}: a funding record at or before the window start required")
     needed = [r for r in ordered if _slot_ms(starts[-1]) <= _slot_ms(r) < end]
-    if any(not r.valid for r in needed):
+    published = [r for r in ordered if r.usable_ms <= start]
+    read_times = {r.calc_time_ms for r in needed}
+    if published:
+        read_times.add(published[-1].calc_time_ms)
+    read = [r for r in ordered if r.calc_time_ms in read_times]
+    if any(not r.valid for r in read):
         raise ValueError(f"{symbol}: valid funding records required")
-    times = [r.calc_time_ms for r in needed]
+    times = [r.calc_time_ms for r in read]
     if len(set(times)) != len(times):
         raise ValueError(f"{symbol}: duplicate funding record")
-    return tuple(needed)
+    return tuple(needed), tuple(sorted(read, key=lambda r: r.usable_ms))
 
 
 def _schedule_gaps(
@@ -507,7 +514,8 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         for venue, index in (("futures", futures.get(symbol)), ("spot", spot[symbol]))
         if index is not None and (hours := _missing_hours(index, run.start_ms, run.end_ms))
     )
-    needed = {s: _funding(by_symbol[s].funding, run.start_ms, run.end_ms, s) for s in futures}
+    inputs = {s: _funding(by_symbol[s].funding, run.start_ms, run.end_ms, s) for s in futures}
+    needed = {s: inputs[s][0] for s in futures}
     bookings = {s: [_booked_ms(r) for r in needed[s]] for s in futures}
     # Two records booked at one boundary cannot both be charged there: neither is.
     collided = {s: {b for b, n in Counter(bookings[s]).items() if n > 1} for s in futures}
@@ -518,7 +526,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     schedules = {s: _schedule_gaps(needed[s], run.start_ms, run.end_ms) for s in futures}
     missing_funding = {s: schedules[s][0] for s in futures}
     irregular = tuple((s, *pair) for s in sorted(futures) for pair in schedules[s][1])
-    published = {s: sorted(needed[s], key=lambda r: r.usable_ms) for s in futures}
+    published = {s: inputs[s][1] for s in futures}
     published_ms = {s: [r.usable_ms for r in published[s]] for s in futures}
     series = {
         s: AssessmentSeries(s, by_symbol[s].spot.hourly, daily[s], source_refs=run.source_refs)

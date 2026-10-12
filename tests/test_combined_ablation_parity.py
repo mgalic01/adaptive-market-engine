@@ -259,17 +259,15 @@ def test_without_funding_admission_a_short_paying_adverse_funding_is_admitted():
     filtered = replay_strategy(fx.run("combined", 3), (market,))
     admitted = replay_strategy(fx.run("combined_without_funding_admission", 3), (market,))
     assert filtered.failure is None and admitted.failure is None
-    # At hour 0 no published record is recent enough: both arms refuse, filter or not.
-    for trace in (filtered, admitted):
-        assert trace.decisions[0].result.admission.reasons == ("funding_unavailable",)
-    # From hour 1 the filter alone refuses every short; without it the first is admitted.
-    assert {d.result.admission.reasons for d in filtered.decisions[1:]} == {("adverse_funding",)}
+    # From hour 0 (the record published 8 hours before the window is the latest) the
+    # filter alone refuses every short; without it the first is admitted.
+    assert {d.result.admission.reasons for d in filtered.decisions} == {("adverse_funding",)}
     assert fills(filtered) == []
-    short = admitted.decisions[1]
-    assert hour_of(short.assessment.decision_ms) == 1 and short.result.admission.accepted
+    short = admitted.decisions[0]
+    assert hour_of(short.assessment.decision_ms) == 0 and short.result.admission.accepted
     assert short.result.intent.funding_rate == D("-.01")
     assert [(e.fill.venue, e.fill.side, hour_of(e.fill.timestamp_ms)) for e in fills(admitted)] == [
-        ("futures", -1, 1)
+        ("futures", -1, 0)
     ]
     # Held, it pays that funding at every settlement.
     assert payments(admitted) and all(p.amount < 0 for p in payments(admitted))
