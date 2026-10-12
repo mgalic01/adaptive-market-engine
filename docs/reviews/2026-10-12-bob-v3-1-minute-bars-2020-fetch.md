@@ -1,0 +1,260 @@
+# Bob: v3-1-minute-bars-2020 fetch, five coins, 2020-02 to 2021-05
+
+Index: Bob task run: 80 of 80 minute archives fetched and checksum-verified (ADA, BNB, LINK, LTC, TRX, 2020-02..2021-05), 161 requests (160 + 1 RETRY), verify_dataset valid, RESULT 0 problem(s); no manifest committed.
+
+- Task: docs/tasks/2026-10-12-bob-v3-1-minute-bars-2020-fetch.md
+- Commit: 89564d890909240f611e4e8ca7eab3c23edf935e
+- Python: 3.12.15
+- Clock at the start: Mon Oct 12 15:04:33 UTC 2026
+
+## Steps 1 to 3
+
+Step 1:
+
+```text
+$ python -c "import time; print(time.strftime('%a %b %d %H:%M:%S UTC %Y', time.gmtime()))"
+Mon Oct 12 15:04:33 UTC 2026
+$ git rev-parse HEAD
+89564d890909240f611e4e8ca7eab3c23edf935e
+$ python --version
+Python 3.12.15
+$ python -c "import pathlib; pathlib.Path('data').mkdir(exist_ok=True); print('data ready')"
+data ready
+```
+
+Step 2 (tree hash, empty status, pin count, pin check):
+
+```text
+$ git rev-parse HEAD:src
+d7b4fa9f4b09c43b9f6a8eadcf12f7a823ad307f
+$ git status --porcelain --untracked-files=no -- src
+(no output)
+$ python -c "...pins..."
+5 pins
+$ sha256sum -c data/minute-bars-2020-pins.txt
+scripts/fetch_minute_bars.py: OK
+tests/test_fetch_minute_bars.py: OK
+tests/test_fetch_minute_bars_2020.py: OK
+scripts/fetch_full_range.py: OK
+config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020-2021.toml: OK
+```
+
+Step 3 (pytest on both test files, exit status 0), last line from the script's tail subcommand:
+
+```text
+38 passed in 27.86s
+```
+
+
+## Steps 4 and 5
+
+Step 4 start command:
+
+```text
+$ python scripts/fetch_minute_bars.py start data/v3-1-minute-bars-2020 --spec config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020-2021.toml --task docs/tasks/2026-10-12-bob-v3-1-minute-bars-2020-fetch.md
+STARTED pid 2727; log data/v3-1-minute-bars-2020/run.log; exit file data/v3-1-minute-bars-2020/run.exit
+```
+
+`start` ran once (no GONE, no restart). `wait` ran once and printed `DONE exit=0` at its first call (1 wait in all):
+
+```text
+$ python scripts/fetch_minute_bars.py wait data/v3-1-minute-bars-2020
+DONE exit=0
+```
+
+Step 5, hashes (all patterns matched files; no pattern was left out; there is no run-1.log):
+
+```text
+$ sha256sum data/minute-bars-2020-tests.log data/v3-1-minute-bars-2020/run*.log data/v3-1-minute-bars-2020/run.exit data/v3-1-minute-bars-2020/*.toml data/v3-1-minute-bars-2020/*.json data/v3-1-minute-bars-2020/*.txt data/v3-1-minute-bars-2020/rebuilt/*.json
+2bce94e7b93c87e90deee67b0178848fd52a8b5a9ed0f21e2a1248b0649bdd17  data/minute-bars-2020-tests.log
+94d2b4c52d742558bf0e041a1ddad28a10112d65cb1f3077b7c9bd7d437df749  data/v3-1-minute-bars-2020/run.log
+9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  data/v3-1-minute-bars-2020/run.exit
+c7eb3f6f011d664be8c9e729ff710aa173c1464e2550449c2c44b4e20c592078  data/v3-1-minute-bars-2020/v3-1-minute-bars-2020-2021.toml
+c2582815d56b3eec2fd3468002c0e3fe6c09914fb967ac7faba31392b109966a  data/v3-1-minute-bars-2020/v3-1-minute-bars-2020-2021.manifest.json
+cd15a244b7daab55bddd509cf5ecb1b4a0abe5725d716a39c8191402cb14a431  data/v3-1-minute-bars-2020/requests.txt
+c1973d2a18d33a3b5e3e9fc553f7bc5a46fd9492c966f193f51212ec5736f5b8  data/v3-1-minute-bars-2020/v3-1-minute-bars-2020-2021.digest.txt
+c2582815d56b3eec2fd3468002c0e3fe6c09914fb967ac7faba31392b109966a  data/v3-1-minute-bars-2020/rebuilt/v3-1-minute-bars-2020-2021.manifest.json
+$ python scripts/fetch_minute_bars.py measure data/v3-1-minute-bars-2020 data
+SIZE 2498 data/v3-1-minute-bars-2020/run.log
+SIZE 9154 data/v3-1-minute-bars-2020/v3-1-minute-bars-2020-2021.digest.txt
+RESERVED-WINDOW FILES 0
+```
+
+Note: `measure` printed 2498 bytes for the finished run log; the REPORT line inside the log gives 2354 bytes "before this line". The difference of 144 bytes was not investigated.
+
+## Run log
+
+```text
+PLAN v3-1-minute-bars-2020-2021: 80 1m kline files, 5 symbols (ADAUSDT, BNBUSDT, LINKUSDT, LTCUSDT, TRXUSDT) x 16 months 2020-02..2021-05; spec config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020-2021.toml sha256 c7eb3f6f011d664be8c9e729ff710aa173c1464e2550449c2c44b4e20c592078
+PLAN latest month 2021-05; 160 planned paths: 80 archives and 80 .CHECKSUM, so 160 requests if nothing is retried or stored already; data dir data/v3-1-minute-bars-2020
+FETCHED ADAUSDT: 16 files; ok 16; requests so far 32
+RETRY attempt 1 of 4 for /data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-11.zip: archive returned HTTP 503 for /data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-11.zip
+FETCHED BNBUSDT: 16 files; ok 16; requests so far 65
+FETCHED LINKUSDT: 16 files; ok 16; requests so far 97
+FETCHED LTCUSDT: 16 files; ok 16; requests so far 129
+FETCHED TRXUSDT: 16 files; ok 16; requests so far 161
+KLINES v3-1-minute-bars-2020-2021: 80 files; ok 80; complete months 35
+MANIFEST v3-1-minute-bars-2020-2021 data/v3-1-minute-bars-2020/v3-1-minute-bars-2020-2021.manifest.json files 80 created_at 2026-10-12T15:08:22+00:00 sha256 c2582815d56b3eec2fd3468002c0e3fe6c09914fb967ac7faba31392b109966a
+DIGEST data/v3-1-minute-bars-2020/v3-1-minute-bars-2020-2021.digest.txt lines 82 bytes 9154 sha256 c1973d2a18d33a3b5e3e9fc553f7bc5a46fd9492c966f193f51212ec5736f5b8; rebuilds the manifest byte for byte: True
+VERIFY v3-1-minute-bars-2020-2021 valid: 80 files match the spec, and 80 local archives match their SHA-256
+COVERAGE ADAUSDT: 16 files 2020-02..2021-05; ok 16, missing 0, unreadable 0; complete months 7; rows 697984 of 699840 expected
+COVERAGE BNBUSDT: 16 files 2020-02..2021-05; ok 16, missing 0, unreadable 0; complete months 7; rows 697984 of 699840 expected
+COVERAGE LINKUSDT: 16 files 2020-02..2021-05; ok 16, missing 0, unreadable 0; complete months 7; rows 697984 of 699840 expected
+COVERAGE LTCUSDT: 16 files 2020-02..2021-05; ok 16, missing 0, unreadable 0; complete months 7; rows 697985 of 699840 expected
+COVERAGE TRXUSDT: 16 files 2020-02..2021-05; ok 16, missing 0, unreadable 0; complete months 7; rows 697984 of 699840 expected
+REQUESTS 161 to data.binance.vision, 80 of them .CHECKSUM; latest month 2021-05; after 2024-12: 0; list data/v3-1-minute-bars-2020/requests.txt sha256 cd15a244b7daab55bddd509cf5ecb1b4a0abe5725d716a39c8191402cb14a431
+REPORT run log 2354 bytes before this line and digest 9154 bytes: 11508 bytes; the report takes them as text (limit 190000)
+RESULT 0 problem(s)
+```
+
+## Digest
+
+```text
+digest of v3-1-minute-bars-2020-2021, format v1 (scripts/fetch_minute_bars.py)
+manifest v3-1-minute-bars-2020-2021 created_at 2026-10-12T15:08:22+00:00 files 80 sha256 c2582815d56b3eec2fd3468002c0e3fe6c09914fb967ac7faba31392b109966a
+ADAUSDT-1m-2020-02.zip da94c28998ff408a3dd74c0e86a465528e10b160a260d35f0656a9057138b108 ok 1585072 rows=41346 gaps=2
+ADAUSDT-1m-2020-03.zip c6d5a2472df603cb7d8ac60fc2fba9318588996376dbe38eb78333f346306373 ok 1626571 rows=44512 gaps=1
+ADAUSDT-1m-2020-04.zip 40b290f8862adb6b0b922e0ab86a699e435bf56c58236750bada2ed0f8786ba0 ok 1499623 rows=43050 gaps=1
+ADAUSDT-1m-2020-05.zip b45f3fe0699a1fe631563593d4b3bbdb2c075239ea485e51397eec089fae7d2b ok 1681503 full
+ADAUSDT-1m-2020-06.zip dfbfa33fa68c03793f03bd856b77980f512ef94a40dc49725cbc02090ae8a3c0 ok 1682422 rows=42990 gaps=1
+ADAUSDT-1m-2020-07.zip 7a3f280cace6ba49d6e41e863824f078d8cf0f47ee0334cbb642ff8ef05c2978 ok 1838632 full
+ADAUSDT-1m-2020-08.zip ca1f8735ee9af8391799a755eb5e33b3cacf297bade4e2efe04aa5122df3b175 ok 1814256 full
+ADAUSDT-1m-2020-09.zip 7c95989ad131343607153298015fff438b6ac31ffd15441eb01410e196ea0f53 ok 1737449 full
+ADAUSDT-1m-2020-10.zip e01e326374a2b5c74345a818e964179145add5b3b139b6b2fa2ae827c9b41217 ok 1737567 full
+ADAUSDT-1m-2020-11.zip 65b4c5fcab00bab55213ccf4d065767bf334e59e4df1d8016724a122265ca9ef ok 1790613 rows=43140 gaps=1
+ADAUSDT-1m-2020-12.zip 00e02361849759f9671269982f08cfd031b48779ca97809ea121d5a725304624 ok 1881307 rows=44349 gaps=2
+ADAUSDT-1m-2021-01.zip 88631d7bccf800f92e93f7658fe705869bca89df210c2f3191f16183071c9317 ok 2013325 full
+ADAUSDT-1m-2021-02.zip a5499d69dbc1eedae6c558f09ce8d7ce77abb14eeca08b869d8b9b45740af0da ok 1889164 rows=40241 gaps=1
+ADAUSDT-1m-2021-03.zip 1f060083b4b47bbdebd57b21e95ec6eb0f573caa93061da074c79033b344e317 ok 2053240 rows=44550 gaps=1
+ADAUSDT-1m-2021-04.zip c3288bf97b90ecdc8615f38160d0910f01966cf90e9e9e6ec981482d5e45fb17 ok 1964027 rows=42766 gaps=2
+ADAUSDT-1m-2021-05.zip 578df2c0bba90c3d9e85ef31674e65cb534367cd55d06cd52a5554874c1a2203 ok 2089601 full
+BNBUSDT-1m-2020-02.zip a1e525fa329ac711bb7ff96df9215eafd58895b1bc407633261599a5340e25d8 ok 1761073 rows=41346 gaps=2
+BNBUSDT-1m-2020-03.zip f7e16726913964b66692be4e286ed343f03a44d3f9b9f550ab7ad47bcf73f474 ok 1912125 rows=44512 gaps=1
+BNBUSDT-1m-2020-04.zip e19deaf885cf3bc177acddc7cb77e88ce3e14d2a5fc62435570f9e1390193fae ok 1823488 rows=43050 gaps=1
+BNBUSDT-1m-2020-05.zip 93908ff1f70719f3c3a088571883642dc92a368f327a5ac999bd5d73a9ea731a ok 1854111 full
+BNBUSDT-1m-2020-06.zip 99d988eb20ac6114e72ab9b433f0f472a5ae65a5cf1538722871052508f40f4c ok 1732243 rows=42990 gaps=1
+BNBUSDT-1m-2020-07.zip 0db237788d9b00fa5a226098014724a7ef0f9ca76c47b4fc4257582654a904b8 ok 1859156 full
+BNBUSDT-1m-2020-08.zip ddf2e9d37e7cb1a83183eb42f8358d36c6dcfee7a9c98c638b5a6425027bcacb ok 1911496 full
+BNBUSDT-1m-2020-09.zip a901333ea7786020ee3dc203ab315300daa2c3330f0e400346eb027114eb20a7 ok 1958140 full
+BNBUSDT-1m-2020-10.zip b60692cf79a5cace96dfd68df6ce2a035f141ce9d518af95d7f93e07210d7bb3 ok 2005385 full
+BNBUSDT-1m-2020-11.zip 6c39d28ee8b4fcfe639e19048a7047ec71822b7a1de3be051d014b871168a01b ok 1947344 rows=43140 gaps=1
+BNBUSDT-1m-2020-12.zip cc28b00709df9af32abf4c43c9b3cfd996b6ec3ef77d0a9c2a368b43ea755129 ok 2012341 rows=44349 gaps=2
+BNBUSDT-1m-2021-01.zip 2eb2342c9fa2146018df1b8905332c616e7d03df54a70c65a4493c2cb2e3d123 ok 2093612 full
+BNBUSDT-1m-2021-02.zip 1aeb40c89fcd301821670f49bfbb167bf50ccc40b1eb158da55aa81275491ee6 ok 2017403 rows=40241 gaps=1
+BNBUSDT-1m-2021-03.zip 3cd089639d07623a98764cdcf9b51d08fc108d2cdcceb88f0a336cbdeb0d1ddb ok 2222146 rows=44550 gaps=1
+BNBUSDT-1m-2021-04.zip 4fcdce313761d695b268ff5cd0898766d2922834aa290cb7030c38187fb4e44b ok 2167519 rows=42766 gaps=2
+BNBUSDT-1m-2021-05.zip b7ad3069082f31f4d1e7e3485e7a2f3ce897221ddc53e99db688be9d13955725 ok 2150529 full
+LINKUSDT-1m-2020-02.zip 1f03ec1bca772713202b80455e7448cc07d7e3a7615c4daff31acfad8de1ce85 ok 1671557 rows=41346 gaps=2
+LINKUSDT-1m-2020-03.zip e86942b75d512845e2205fee33668d5b54965fe9e2213f22843cc916c02bce43 ok 1857978 rows=44512 gaps=1
+LINKUSDT-1m-2020-04.zip cac929b52c3d6471877ce2e570c02a3804027434f3c895b9b506e1a8701eab74 ok 1768872 rows=43050 gaps=1
+LINKUSDT-1m-2020-05.zip 7dc7e7b3aa6894f237a26e7931a4dc36ae7c37d7113eaa28d8f4fb4fd68efd1e ok 1745665 full
+LINKUSDT-1m-2020-06.zip 3c5553222811e642c2ad1f36de9f92f3c8cbdfbc6b86987bcd14313362429fe1 ok 1584144 rows=42990 gaps=1
+LINKUSDT-1m-2020-07.zip c25575fc2e09a13dc21b2f28b7fa51fb9059ef8e7149521fc7409f8b9d0f308f ok 1865264 full
+LINKUSDT-1m-2020-08.zip bb9161c94d1718d6883b47b63b15ef85357624cb2773cf287080637d46ae28c9 ok 1990434 full
+LINKUSDT-1m-2020-09.zip e4d6f7f7ab843e57600037cea02aff8296f3138ceb02f49564d360e5a1a091fd ok 1897380 full
+LINKUSDT-1m-2020-10.zip 96f54fe72a8af36f27bc2e059b14bd73f8c0e78abfc8e68571714d2c9a225502 ok 1896888 full
+LINKUSDT-1m-2020-11.zip def1468b9f228f9eb22fa4eacb774d5ede6778792993b691ae798b866e4de9f9 ok 1896255 rows=43140 gaps=1
+LINKUSDT-1m-2020-12.zip aa3981cb23321828e4b7d965593a5f001587e52cc883a494167e800fea4ee053 ok 1909622 rows=44349 gaps=2
+LINKUSDT-1m-2021-01.zip fa6596426389cbdb9a3e05419b7fbb542a7659e64a002e13bc88f390f2170ff4 ok 2036545 full
+LINKUSDT-1m-2021-02.zip da56ff4981ecce15bab46e12fc01cba7204ef1cf65d03dc6f765214b142306e6 ok 1826795 rows=40241 gaps=1
+LINKUSDT-1m-2021-03.zip df65da9ce233300fbc1b1989852491f9d129c67ea662b429e0103331fe065580 ok 1968050 rows=44550 gaps=1
+LINKUSDT-1m-2021-04.zip b67fa0b663340ceeddfd2757fc42d20c3aed84c749fc85da526c96320e67ef9a ok 1941315 rows=42766 gaps=2
+LINKUSDT-1m-2021-05.zip 3869bf7b6b5b1779b0c569e4e947db7d093803c791062014384d047b3f79f338 ok 2047272 full
+LTCUSDT-1m-2020-02.zip c9aa4a709c7c8a7da854db93e85fd1c87d11db563afef60ad100b3eef01603cc ok 1794043 rows=41346 gaps=2
+LTCUSDT-1m-2020-03.zip 102120e3680edeb18cbc567d3d3a60acecc3bd9ded5fe6529446b7234a6dfbfe ok 1905504 rows=44512 gaps=1
+LTCUSDT-1m-2020-04.zip f51545f76523c9b9f872a45f5d6be76360ccd866e73e25507e2d6c36dfbfd8b9 ok 1772381 rows=43050 gaps=1
+LTCUSDT-1m-2020-05.zip 752b9b82557883144295004dbeaffbe20130b845d441537beefb33724bae989c ok 1815634 full
+LTCUSDT-1m-2020-06.zip fca62ecaaae77a129c3b96d6711a22f8b1448ca068e41803f52500817a444658 ok 1664371 rows=42990 gaps=1
+LTCUSDT-1m-2020-07.zip 275a915a30aa65d5b88c42673479075747606cd0fcfa47ec344347ee888b6bfe ok 1752888 full
+LTCUSDT-1m-2020-08.zip c4ab30e3629a53d8a4c23e4c833e48c353d3174e855835b4ed957ed7c36c0e89 ok 1907493 full
+LTCUSDT-1m-2020-09.zip c1a41608a68056c504d40f8c4bac1d6e36ee0b449e0154394696a60bf8f0a66a ok 1731138 full
+LTCUSDT-1m-2020-10.zip d4541624ca1859f88be2c1800bd623a3500257238056c86028ab1ea7cc658a76 ok 1777500 full
+LTCUSDT-1m-2020-11.zip 811d734d21df8038bdd2ecbf8d8922fe0437fe067f345b55a19dcdbffd5d8e7e ok 1911658 rows=43140 gaps=1
+LTCUSDT-1m-2020-12.zip dd52a815275bb21385c08aa16afb6dd16bd49fd58d02b5befcaa7ae7cf713ea2 ok 2035666 rows=44349 gaps=2
+LTCUSDT-1m-2021-01.zip cc589977222709bcca8d1453c5b196831b11097e15ec86d3a9f767e7d7b18ad1 ok 2102915 full
+LTCUSDT-1m-2021-02.zip 95585e6581fb6850fc30da79fe7aff8cef64e363a284c12a5c1eace1ee831f4c ok 1907554 rows=40241 gaps=1
+LTCUSDT-1m-2021-03.zip fba344f3c698b64513b45fc09dda056da81e888b34774cde43ab39bca3e4945e ok 2065942 rows=44550 gaps=1
+LTCUSDT-1m-2021-04.zip c8fae2e85ee9b356336a900de20750085f3ac24ef64a2ba1ce321c090e8bd6ec ok 2038904 rows=42767 gaps=2
+LTCUSDT-1m-2021-05.zip 7578a39283786d8b8b8fb68d7d86f275d68d3cd5cef11971acc9a6306c4c84f3 ok 2161073 full
+TRXUSDT-1m-2020-02.zip 88192ac042a3ba4df5755c222fa6ea91a740f5232f5fcb6bd163ae9fd68c0418 ok 1597644 rows=41346 gaps=2
+TRXUSDT-1m-2020-03.zip 0d2bfe1316fc27adc5ca6d98ac19aeb5ce4a04c88355b1f51201a85acc3ad7c0 ok 1603473 rows=44512 gaps=1
+TRXUSDT-1m-2020-04.zip 08c4d7c4d19c4827267efd36d04b42fe9f500ab2d67ee8e3cfe3564bd11a7bab ok 1456224 rows=43050 gaps=1
+TRXUSDT-1m-2020-05.zip 96f735f2bda68b99298b825361114a879449b27b969b9d30c073859fc656e7f0 ok 1562174 full
+TRXUSDT-1m-2020-06.zip 759e5bd85f714cd19de5ad1d216a648c57cee4c4ca331b677b0f98a4815fb7b0 ok 1420400 rows=42990 gaps=1
+TRXUSDT-1m-2020-07.zip 0b972a9793b7e0e1d978a81c605ffb6481f6b0ee44cfd1554ce7340cced3aa90 ok 1572985 full
+TRXUSDT-1m-2020-08.zip 0318a33c5eda565474297f7cd80fd49eac2f89fde3a72061bc243930048c6327 ok 1749088 full
+TRXUSDT-1m-2020-09.zip cbf64d214aad2d36a788fe8d49e231c5de818f440d79490996a6f792baa00d31 ok 1767473 full
+TRXUSDT-1m-2020-10.zip d2d51fd2563d15c9170d10c18cbc1aaa2cbfaa611e6cf270f7734ebe32754d44 ok 1652470 full
+TRXUSDT-1m-2020-11.zip ac59555d5adc9b3c1434ca988b550cf55b09429bb8dac88be7332b1da7d9cbc9 ok 1667150 rows=43140 gaps=1
+TRXUSDT-1m-2020-12.zip 8b38d3f8017357915a19af0f74787af20e56f981a171645b4759b02d6e9bb7ea ok 1730439 rows=44349 gaps=2
+TRXUSDT-1m-2021-01.zip c39e656ce911ef2248187e40eb1e9e721a99296824476fb83f20d725de5c30d8 ok 1835174 full
+TRXUSDT-1m-2021-02.zip e63352efe030e4aabb3ed86065f6d575ca0eaea7979a7e80e72de5c18dd8eca8 ok 1725821 rows=40241 gaps=1
+TRXUSDT-1m-2021-03.zip 3d257925d730dcb949dba12fcac7b48f61d127ad92f07886598842b46bc05267 ok 1881604 rows=44550 gaps=1
+TRXUSDT-1m-2021-04.zip 858ef1d15d187ed678788e4406a0a91c6d1cdef57c1dcfa6bac20ad9bf2605b7 ok 1957918 rows=42766 gaps=2
+TRXUSDT-1m-2021-05.zip 14029fae01fdd96e8eda3f8276b97f2a264f3cf37e2bbb29b6afbc069e7a75bc ok 1997468 full
+```
+
+
+## Results
+
+All figures below are lines of the run log appended above (6c), or output of commands shown in this report.
+
+- `RESULT 0 problem(s)` is the log's last line, and `wait` printed `DONE exit=0`.
+- Validity check 1 (Step 2): holds. Tree hash `d7b4fa9f4b09c43b9f6a8eadcf12f7a823ad307f`, empty status, `5 pins`, five `OK`.
+- Validity check 2 (Step 3): holds. `38 passed in 27.86s`.
+- Validity check 3: holds.
+  - `PLAN ...: 80 1m kline files, 5 symbols` and `160 planned paths: 80 archives and 80 .CHECKSUM`.
+  - Five `FETCHED` lines, each `16 files; ok 16` (requests so far 32, 65, 97, 129, 161).
+  - `KLINES ...: 80 files; ok 80; complete months 35`. The `missing` count is 0 against 0 expected, and no `unreadable` appears.
+  - `VERIFY ... valid: 80 files match the spec, and 80 local archives match their SHA-256`.
+  - `DIGEST ... lines 82 bytes 9154 sha256 c1973d2a...f5b8; rebuilds the manifest byte for byte: True`.
+  - No `PROBLEM` line and no `ABSENT` line in the log.
+- Validity check 4: holds. `REQUESTS 161 to data.binance.vision, 80 of them .CHECKSUM; latest month 2021-05; after 2024-12: 0`. The run log has 1 `RETRY` line (counted with a small python one-liner over the log), so 160 + 1 = 161. No `OutOfScope` and no traceback.
+- Validity check 5: holds. `RESERVED-WINDOW FILES 0`.
+- Validity check 6: holds for the two 6c blocks (below); the `data/mb20-checks.log` lines are in the Checks section.
+- The one retry: `RETRY attempt 1 of 4 for /data/spot/monthly/klines/BNBUSDT/1m/BNBUSDT-1m-2020-11.zip: archive returned HTTP 503`. The next attempt succeeded and `FETCHED BNBUSDT: 16 files; ok 16` follows.
+- `COVERAGE` (five lines, all `ok 16, missing 0, unreadable 0; complete months 7`):
+  - ADAUSDT, BNBUSDT, LINKUSDT, TRXUSDT: `rows 697984 of 699840 expected`.
+  - LTCUSDT: `rows 697985 of 699840 expected`.
+  - Months with holes are in the digest as `rows=... gaps=...`; counted from the digest with a python one-liner, each coin has 7 months marked `full` and 9 with holes, matching `complete months 7`.
+- `REPORT run log 2354 bytes before this line and digest 9154 bytes: 11508 bytes; the report takes them as text (limit 190000)`.
+- 6c blocks: the run log went in as text (2523 bytes) and the digest as text (9178 bytes); both `reads back: True`. There was no lost attempt, so no `Run log, attempt 1 (lost)` block.
+- SHA-256 of the digest: `c1973d2a18d33a3b5e3e9fc553f7bc5a46fd9492c966f193f51212ec5736f5b8`. SHA-256 of the manifest (`MANIFEST` line): `c2582815d56b3eec2fd3468002c0e3fe6c09914fb967ac7faba31392b109966a`. The rebuilt manifest's SHA-256 in Step 5 is the same, `c2582815d56b3eec2fd3468002c0e3fe6c09914fb967ac7faba31392b109966a`.
+- This run commits no manifest. Claude rebuilds it from the digest in a reviewed PR, with no request to Binance.
+
+## Ideas and proposals
+
+1. **Run log size difference, now explained.** `measure` printed 2498 bytes for the finished log and the `REPORT` line says 2354 bytes before itself. A python check of the log file found `REPORT run log` at byte offset 2354 and a total of 2498 bytes, so the 144 bytes are the REPORT and RESULT lines. The 6b note calling the difference not investigated is superseded by this; nothing to change in the script.
+2. **A 503 on one archive was absorbed by the retry rule.** The check against the log: one `RETRY attempt 1 of 4` line and `REQUESTS 161`. Nothing to change; noted so the retry path is known to work against the live host as well as the fake one.
+3. **Hole counts for Claude's design.** The digest shows 9 of 16 months per coin with holes (for ADAUSDT `gaps=1` or `gaps=2`, including 2020-02 and 2020-03). The task's flow gate treats a missing minute as unavailable flow, so the first months of the extra window will have blocked minutes. How to test: count the holes per month from the digest rows when the extra-window replay is designed.
+
+Clock at the end of the run (from `python scripts/fetch_minute_bars.py now`): Mon Oct 12 15:09:13 UTC 2026.
+
+## Checks
+
+```text
+?? docs/reviews/2026-10-12-bob-v3-1-minute-bars-2020-fetch.md
+check_reports: verified 2026-09-26-bob-hourly-defect-calendar.md:data/calendar.py
+check_reports: corrected 2026-09-26-bob-hourly-defect-calendar.md:data/events.py (states 53097095f39c.., appendix is 55f19293acc5..)
+check_reports: verified 2026-09-26-bob-outage-calendar.md:data/outages.py
+check_reports: verified 2026-09-26-bob-parser-anomaly-classes.md:data/anomalies.py
+check_reports: verified 2026-09-26-bob-refined-parser-rule.md:data/refined_rule.py
+check_reports: verified 2026-09-26-claude-open-mismatch-explained.md:data/open_mismatch.py
+check_reports: verified 2026-09-26-claude-volume-field-provenance.md:data/volume_fields.py
+check_reports: verified 2026-09-27-bob-combined-defect-census.md:data/defect_census.py
+check_reports: verified 2026-09-27-bob-p8-funding-archives.md:data/p8_archives.py
+check_reports: verified 2026-09-27-bob-rescued-month-masking.md:data/rescued_masking.py
+check_reports: verified 2026-09-27-bob-rescued-month-masking.md:data/rescued_bands.py
+check_reports: verified 2026-09-27-claude-defect-calendar-corrections.md:data/calendar_denominator.py
+check_reports: verified 2026-09-27-claude-defect-calendar-corrections.md:data/eventwide_per_hour.py
+check_reports: verified 2026-09-27-claude-eligibility-thresholds.md:data/masked_fraction.py
+check_reports: verified 2026-09-27-claude-eligibility-thresholds.md:data/masked_bands.py
+check_reports: verified 2026-09-27-claude-eligibility-thresholds.md:data/masked_corrections.py
+check_reports: verified 2026-09-27-claude-fold-grid-and-eligibility.md:data/fold_eligibility.py
+check_reports: verified 2026-09-27-claude-soft-drawdown-lockout.md:data/flat_stretches.py
+check_reports: verified 2026-09-28-claude-v2-downtrend-research.md:data/v2_downtrend_research.py
+check_reports: 33 stated hash(es): 18 verified, 1 corrected in place, 14 unverifiable
+check_reports: 198 script mention(s) without a hash (information; a mention is not a pin)
+check_reports: 0 problem(s)
+Mon Oct 12 15:09:40 UTC 2026
+```
