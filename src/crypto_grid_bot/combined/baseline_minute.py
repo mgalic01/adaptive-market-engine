@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import ROUND_FLOOR, Decimal, localcontext
+from fractions import Fraction
 from threading import Lock
 from typing import Any
 
@@ -49,7 +50,7 @@ from crypto_grid_bot.simulation.runner import SimulationPolicy
 from crypto_grid_bot.strategy.daily_sma import DailyCloses
 
 from .baseline_records import BaselineEvidence, NativeMark, comparison_report, refuse_sealed
-from .report import SAVED_FILTERS_DISCLOSURE, Contribution
+from .report import RESIDUAL_TOLERANCE, SAVED_FILTERS_DISCLOSURE, Contribution
 
 HOUR = 3_600_000
 _RECORDER_LOCK = Lock()
@@ -279,7 +280,7 @@ def _evidence(
         status,
         0,
         residual,
-        residual == 0,
+        abs(Fraction(residual)) <= RESIDUAL_TOLERANCE,
         exact,
         report.disclosures,
     )

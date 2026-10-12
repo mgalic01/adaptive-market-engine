@@ -35,7 +35,7 @@ def test_equal_cash_hold_reconciles_exactly_and_is_complete():
     evidence = hold()
     report = evidence.report
     assert report.complete, report.issues
-    assert report.reconciliation_residual == 0
+    assert report.reconciliation_residual == 0 and evidence.accounting_explained
     assert report.equity_points[0].equity == D(10000)  # before the purchase costs
     assert {c.asset for c in report.contributions} == {"BTCUSDT", "ETHUSDT"}
     assert all(c.status == "open_marked" for c in report.contributions)

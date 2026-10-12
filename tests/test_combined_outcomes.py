@@ -17,7 +17,7 @@ from crypto_grid_bot.combined.experiment import RunIdentity, _report_valid, _saf
 from crypto_grid_bot.combined.observation_policy import POLICY_ID
 from crypto_grid_bot.combined.outcomes import baseline_outcome, strategy_outcome
 from crypto_grid_bot.combined.replay_records import strategy_report
-from crypto_grid_bot.combined.report import Contribution
+from crypto_grid_bot.combined.report import Contribution, analyze
 from crypto_grid_bot.combined.strategy_replay import replay_strategy
 
 HOUR = 3_600_000
@@ -76,23 +76,68 @@ def test_a_failed_strategy_run_is_retained_as_failed_and_incomplete(monkeypatch)
     assert not _report_valid(row)
 
 
-@pytest.mark.parametrize(
-    ("residual", "explained"),
-    [("0", True), ("1e-20", True), ("1e-18", True), ("-1e-18", True), ("2e-18", False)],
-)
-def test_a_residual_up_to_1e_18_is_explained_and_still_reported(residual, explained):
-    # Design: "Trade-to-equity residual <=1e-18 USDT only, all residuals retained and reported."
-    trace = replay_strategy(fx.run("spot_trend", 3), (fx.market("BTCUSDT", fx.uptrend, 3),))
-    report = replace(
-        strategy_report(trace, adapter_pin="0" * 64), reconciliation_residual=D(residual)
+def with_residual(report, residual):
+    """``report`` recomputed with its first contribution's gross P&L lowered by ``residual``,
+    which leaves exactly that trade-to-equity residual."""
+    rows = report.contributions
+    rows = (replace(rows[0], gross_pnl=rows[0].gross_pnl - D(residual)), *rows[1:])
+    return analyze(
+        report.initial_equity,
+        report.equity_points,
+        rows,
+        report.opportunities,
+        report.recovery,
+        report.source_refs,
+        opportunity_gap_ms=report.observation_gap_ms,
+        metrics_start_ms=report.metrics_start_ms,
+        daily_samples=report.daily_samples,
+        utilization=report.utilization,
+        capital_observations=report.capital_observations,
+        policy_evidence=report.policy_evidence,
+        producer_issues=report.producer_issues,
+        skipped_hours=report.skipped_hours,
+        disclosures=report.disclosures,
+        capital_label=report.capital_label,
+        max_gross_leverage=report.max_gross_leverage,
     )
+
+
+@pytest.mark.parametrize(
+    ("residual", "accepted"),
+    [("0", True), ("1e-20", True), ("1e-18", True), ("2e-18", False)],
+)
+def test_strategy_and_baseline_outcomes_accept_a_residual_up_to_1e_18_alike(residual, accepted):
+    # Design: "Trade-to-equity residual <=1e-18 USDT only, all residuals retained and
+    # reported." Within it the report is complete and the residual explained; above it the
+    # residual is an issue and the cell incomplete, for a strategy run and a baseline alike.
+    trace = replay_strategy(fx.run("spot_trend", 3), (fx.market("BTCUSDT", fx.uptrend, 3),))
+    report = with_residual(strategy_report(trace, adapter_pin="0" * 64), residual)
     row = strategy_outcome(
         trace, report, identity("spot_trend", "open_low_high_close", "0" * 64), attempt_id="a-3"
     )
-    assert row.accounting_explained is explained
     assert row.accounting_residual == D(residual)
+    assert row.complete is accepted and row.accounting_explained is accepted
+    assert _report_valid(row) is accepted
     invalid = [failure for failure in _safety_failures(row) if "invalid accounting" in failure]
-    assert bool(invalid) is not explained
+    assert bool(invalid) is not accepted
+    evidence = hold()
+    report = with_residual(evidence.report, residual)
+    # Even a baseline claiming its accounting explained is incomplete above the tolerance.
+    cell = replace(
+        evidence,
+        report=report,
+        accounting_residual=report.reconciliation_residual,
+        accounting_explained=True,
+        disclosures=report.disclosures,
+    )
+    base = baseline_outcome(
+        cell, identity("matched_spot_hold", "native", "c" * 64), attempt_id="h-3"
+    )
+    assert base.accounting_residual == D(residual)
+    assert base.complete is accepted and _report_valid(base) is accepted
+    for outcome in (row, base):
+        noted = [n for n in outcome.disclosures if n.startswith("accounting_residual_within")]
+        assert bool(noted) is (accepted and D(residual) != 0)
 
 
 def test_a_complete_baseline_cell_is_a_valid_acceptance_outcome():

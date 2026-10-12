@@ -12,11 +12,8 @@ from fractions import Fraction
 
 from .baseline_records import NATIVE_STOPS, BaselineEvidence
 from .experiment import ReportEvidence, RunIdentity, RunOutcome
-from .report import Report
+from .report import RESIDUAL_TOLERANCE, Report
 from .strategy_replay import StrategyTrace
-
-# Design: "Trade-to-equity residual <=1e-18 USDT only, all residuals retained and reported."
-_RESIDUAL_TOLERANCE = Fraction(1, 10**18)
 
 
 def _outcome(
@@ -59,8 +56,8 @@ def strategy_outcome(
 ) -> RunOutcome:
     """A V3.1 component run: liquidation and accounting come from the engine's marks.
 
-    A trade-to-equity residual up to 1e-18 USDT either way is explained; the residual
-    itself is carried unchanged.
+    A trade-to-equity residual up to 1e-18 USDT either way is explained and leaves the
+    report complete (``report.analyze``); the residual itself is carried unchanged.
     """
     marks = [o.snapshot for o in trace.observations]
     last = marks[-1].account if marks else None
@@ -72,7 +69,7 @@ def strategy_outcome(
         complete=trace.failure is None and report.complete,
         failed=trace.failure is not None,
         liquidations=int(any(snapshot.liquidation for snapshot in marks)),
-        explained=residual is not None and abs(Fraction(residual)) <= _RESIDUAL_TOLERANCE,
+        explained=residual is not None and abs(Fraction(residual)) <= RESIDUAL_TOLERANCE,
         wallet_exact=None if last is None else last.integrity_ok,
     )
 
@@ -87,17 +84,17 @@ def baseline_outcome(
     labelled frozen, to the window end. Any other status (V3's no_tradable_position or
     leverage_not_restored, which the V3 adapter keeps as a ``baseline_stop:`` producer
     issue, an engine or parity failure, a missing input) leaves the cell failed and
-    incomplete.
+    incomplete. As for a strategy run, a residual up to 1e-18 USDT leaves the report
+    complete and a larger one does not, whatever the adapter claims.
     """
     report = evidence.report
     stop = evidence.status if evidence.status in NATIVE_STOPS else None
     finished = evidence.status is None or stop is not None
-    tolerated = {"contribution_equity_residual"} if evidence.accounting_explained else set()
     return _outcome(
         identity,
         report,
         attempt_id=attempt_id,
-        complete=finished and not (set(report.issues) - tolerated),
+        complete=finished and not report.issues,
         failed=not finished,
         liquidations=evidence.liquidations,
         explained=evidence.accounting_explained,

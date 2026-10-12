@@ -286,6 +286,9 @@ class Report:
     max_gross_leverage: Fraction | None = None
 
 
+# Design package D: "Trade-to-equity residual <=1e-18 USDT only, all residuals retained and
+# reported." A residual within it is disclosed, never an issue; a larger one is an issue.
+RESIDUAL_TOLERANCE = Fraction(1, 10**18)
 # Every report whose run applies today's saved exchange filters to historical data says so
 # in these words (design: "Historical use of present-day saved filters is disclosed").
 SAVED_FILTERS_DISCLOSURE = "present_day_saved_exchange_filters_on_historical_data"
@@ -816,7 +819,9 @@ def analyze(
     span only a skipped midnight. Acceptance checks them against the registration.
     ``disclosures``, ``capital_label`` and ``max_gross_leverage`` are carried unchanged
     and judge nothing; the label must agree with the initial equity, or the report is
-    malformed.
+    malformed. A nonzero reconciliation residual up to ``RESIDUAL_TOLERANCE`` is retained
+    and disclosed once, as ``accounting_residual_within_tolerance:<value>``; only a larger
+    one is the ``contribution_equity_residual`` issue.
     """
     opening = _number(initial)
     if opening <= 0 or type(opportunity_gap_ms) is not int or opportunity_gap_ms <= 0:
@@ -1004,8 +1009,12 @@ def analyze(
         drawdown = _decimal(worst, ratio=True)
         difference = Fraction(final) - opening - gross + fees - funding
         residual = _decimal(difference)
-        if difference:
+        if abs(difference) > RESIDUAL_TOLERANCE:
             issues.append("contribution_equity_residual")
+        elif difference:
+            note = f"accounting_residual_within_tolerance:{residual:f}"
+            if note not in disclosures:  # a recomputation from the report's own fields
+                disclosures = (*disclosures, note)
         for before, after in zip(points, points[1:], strict=False):
             delta = Fraction(after.equity) - Fraction(before.equity)
             if delta < 0:

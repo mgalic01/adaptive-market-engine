@@ -1240,6 +1240,31 @@ def test_malformed_disclosures_or_capital_label_are_refused(change):
         analyze(D(100), curve(), contributions(), (), (), ("artifact-pin",), **change)
 
 
+@pytest.mark.parametrize(
+    ("residual", "tolerated"),
+    [("0", True), ("1e-20", True), ("1e-18", True), ("-1e-18", True), ("2e-18", False)],
+)
+def test_a_residual_up_to_1e_18_is_retained_disclosed_and_no_issue(residual, tolerated):
+    # Design package D: "Trade-to-equity residual <=1e-18 USDT only, all residuals retained
+    # and reported." A gross P&L lowered by r leaves a residual of r.
+    rows = contributions()
+    rows = (replace(rows[0], gross_pnl=rows[0].gross_pnl - D(residual)), *rows[1:])
+    report = analyze(D(100), curve(), rows, (), (), ("artifact-pin",))
+    assert report.reconciliation_residual == D(residual)
+    assert ("contribution_equity_residual" in report.issues) is not tolerated
+    assert report.structural_complete is tolerated
+    notes = [n for n in report.disclosures if n.startswith("accounting_residual_within")]
+    if tolerated and D(residual):
+        assert notes == [f"accounting_residual_within_tolerance:{D(residual):f}"]
+    else:
+        assert notes == []
+    # Recomputing the report from its own fields gives it back unchanged (disclosed once).
+    again = analyze(
+        D(100), curve(), rows, (), (), ("artifact-pin",), disclosures=report.disclosures
+    )
+    assert again == report
+
+
 def test_the_maximum_gross_leverage_is_carried_exactly_and_never_changes_the_judgement():
     plain = analyze(D(110), curve(), contributions(), (), (), ("artifact-pin",))
     levered = analyze(

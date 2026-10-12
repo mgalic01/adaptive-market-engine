@@ -20,7 +20,7 @@ from crypto_grid_bot.backtest.klines import Kline
 from .baseline_records import BaselineEvidence, NativeMark, comparison_report, refuse_sealed
 from .decisions import Costs
 from .execution import VenueRules, _decimal, adverse_price
-from .report import SAVED_FILTERS_DISCLOSURE, Contribution
+from .report import RESIDUAL_TOLERANCE, SAVED_FILTERS_DISCLOSURE, Contribution
 
 HOUR = 3_600_000
 HOLD = "matched_spot_hold"
@@ -152,7 +152,7 @@ def replay_hold_baseline(
         None if not issues else issues[0],
         0,
         report.reconciliation_residual or Decimal(0),
-        False,
+        abs(Fraction(report.reconciliation_residual or 0)) <= RESIDUAL_TOLERANCE,
         True,
         report.disclosures,
     )
