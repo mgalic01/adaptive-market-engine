@@ -141,3 +141,61 @@ def test_half_allowance_falls_back_at_fifteen_percent_without_waiting_for_qualif
     assert result.state == RecoveryState.RECOVERY25
     assert result.risk_fraction == D(".25")
     assert not result.close
+
+
+NORMAL, CLOSING, COOLDOWN = RecoveryState.NORMAL, RecoveryState.CLOSING, RecoveryState.COOLDOWN
+R25, R50, TERMINAL = RecoveryState.RECOVERY25, RecoveryState.RECOVERY50, RecoveryState.TERMINAL
+# One script through every transition, (time, equity, flat, qualified, integrity), with the
+# state, allowance and close flag each mark yields. The sequence was recorded before the
+# reasons were corrected (2026-10-12): wording a reason right changed none of them.
+SCRIPT = (
+    ((0, "100", True, True, True), (NORMAL, "1", False)),
+    ((1, "70", False, False, True), (CLOSING, "0", True)),  # lifetime stop, holdings open
+    ((2, "69", False, False, True), (CLOSING, "0", True)),
+    ((3, "69", True, False, True), (COOLDOWN, "0", False)),  # liquidated
+    ((DAY + 3, "69", True, False, True), (COOLDOWN, "0", False)),  # a day on, unqualified
+    ((DAY + 4, "69", False, False, True), (CLOSING, "0", True)),  # holdings reappear
+    ((DAY + 5, "69", True, True, True), (COOLDOWN, "0", False)),
+    ((2 * DAY + 4, "69", True, True, True), (COOLDOWN, "0", False)),
+    ((2 * DAY + 5, "69", True, True, True), (R25, ".25", False)),  # restart
+    ((2 * DAY + 6, "86", False, True, True), (R50, ".5", False)),
+    ((2 * DAY + 7, "84", False, False, True), (R25, ".25", False)),  # half revoked
+    ((2 * DAY + 8, "91", False, True, True), (NORMAL, "1", False)),
+    ((2 * DAY + 9, "70", True, True, True), (COOLDOWN, "0", False)),  # stop while flat
+    ((3 * DAY + 9, "70", True, True, True), (R25, ".25", False)),
+    ((3 * DAY + 10, "67.9", False, True, True), (CLOSING, "0", True)),  # episode stop
+    ((3 * DAY + 11, "67.9", True, True, True), (COOLDOWN, "0", False)),
+    ((4 * DAY + 11, "67.9", True, True, True), (R25, ".25", False)),
+    ((4 * DAY + 12, "65.8", True, True, True), (COOLDOWN, "0", False)),  # episode stop, flat
+    ((5 * DAY + 12, "65.8", True, True, True), (R25, ".25", False)),
+    ((5 * DAY + 13, "65.8", False, False, False), (TERMINAL, "0", True)),
+    ((6 * DAY, "200", True, True, True), (TERMINAL, "0", False)),
+)
+# Every reason a state may report: what it says while nothing changes, and the
+# transitions into it. A completed liquidation reports the cooldown it begins.
+STATE_REASONS = {
+    NORMAL: {"normal", "normal_restored"},
+    CLOSING: {"awaiting_liquidation", "lifetime_stop", "episode_stop", "liquidation_incomplete"},
+    COOLDOWN: {"cooldown", "restart_unqualified", "lifetime_stop", "episode_stop"},
+    R25: {"recovery", "qualified_restart", "half_allowance_revoked"},
+    R50: {"recovery", "half_restored"},
+    TERMINAL: {"integrity_failure", "capital_exhausted"},
+}
+
+
+def test_every_reason_describes_its_state_and_a_repeat_changes_nothing() -> None:
+    recovery = Recovery()
+    for (stamp, equity, *flags), (state, fraction, close) in SCRIPT:
+        first = recovery.update(stamp, D(equity), *flags)
+        assert (first.state, first.risk_fraction, first.close) == (state, D(fraction), close)
+        assert first.reason in STATE_REASONS[state], (stamp, first.reason)
+        assert recovery.update(stamp, D(equity), *flags) == first
+
+
+def test_a_completed_liquidation_reports_the_cooldown_it_begins() -> None:
+    recovery = Recovery()
+    recovery.update(0, D(100), True, True, True)
+    recovery.update(1, D(70), False, False, True)
+    done = recovery.update(2, D(70), True, False, True)
+    assert (done.state, done.reason) == (COOLDOWN, "cooldown")
+    assert recovery.update(2, D(70), True, False, True) == done

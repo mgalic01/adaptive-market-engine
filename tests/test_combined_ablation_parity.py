@@ -103,6 +103,8 @@ def test_the_parity_window_trades_every_component_and_binds_no_switch(parity):
         ("spot_grid", 1, True),
         ("spot_grid", -1, False),
     }
+    # The held futures short settles funding, so the parity comparisons include it.
+    assert payments(combined)
     # Continuation: every trend decision reads a daily RSI(14) inside the restored veto's
     # band, although a veto on the 4h RSI would refuse both the long and the short.
     trend = [d.assessment for d in combined.decisions if d.result.qualification.owner in TREND]
@@ -320,24 +322,19 @@ def test_without_recovery_the_cooldown_never_restarts():
     exits = [e for e in fills(halted) if not e.increase]
     assert {e.fill.symbol for e in exits} == {"BTCUSDT", "ETHUSDT"}
     assert all(e.fill.timestamp_ms == spike and "lifetime_stop" in e.exit_reason for e in exits)
-
-    def until_restart(trace):
-        """Each mark before the restart, without the wording of its recovery reason."""
-        return [
-            replace(
-                o, snapshot=replace(o.snapshot, recovery=replace(o.snapshot.recovery, reason=""))
-            )
-            for o in trace.observations
-            if o.timestamp_ms < restart
-        ]
-
-    # The spike hour's decision marks word the same cooldown differently: with automatic
-    # recovery a qualified submit is a new input, so the controller re-reads the cooldown
-    # ("cooldown"); without it the submit repeats the last input and gets the cached
-    # reason ("awaiting_liquidation"). Every state, allowance, drawdown and account match.
-    assert until_restart(restarted) == until_restart(halted)
-    at_spike = {o.snapshot.recovery.state for o in halted.observations if o.timestamp_ms == spike}
-    assert RecoveryState.COOLDOWN in at_spike
+    # Every mark before the restart is the same, its recovery reason included: a submit
+    # that repeats the last input (no automatic recovery) reports the cooldown it is in,
+    # exactly as a qualified submit that re-reads it does.
+    assert [o for o in restarted.observations if o.timestamp_ms < restart] == [
+        o for o in halted.observations if o.timestamp_ms < restart
+    ]
+    at_spike = {
+        (o.snapshot.recovery.state, o.snapshot.recovery.reason)
+        for o in halted.observations
+        if o.timestamp_ms == spike
+    }
+    assert (RecoveryState.COOLDOWN, "cooldown") in at_spike
+    assert (RecoveryState.COOLDOWN, "awaiting_liquidation") not in at_spike
     # A day into the cooldown combined restarts at a quarter allowance and buys again.
     at_restart = {
         (o.snapshot.recovery.state, o.snapshot.recovery.reason)
