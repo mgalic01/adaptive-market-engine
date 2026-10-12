@@ -21,7 +21,6 @@ from crypto_grid_bot.combined.baseline_v3 import (
     window_picks,
 )
 from crypto_grid_bot.combined.common_series import FROZEN_REF
-from crypto_grid_bot.combined.report import utc_text
 from crypto_grid_bot.market_data.parsing import DataError
 from crypto_grid_bot.trend import replay as v3_replay
 from crypto_grid_bot.trend import runner as v3_runner
@@ -204,8 +203,9 @@ def test_unknown_or_baseline_less_arms_are_refused():
 
 
 @pytest.mark.parametrize("stop", ["no_tradable_position", "leverage_not_restored"])
-def test_a_native_v3_stop_is_a_finished_result_frozen_to_the_window_end(monkeypatch, stop):
-    # Simulate the frozen engine reporting its own stop at 06:00 on day two; the runner's
+def test_an_untradable_v3_stop_is_an_incomplete_result_never_frozen(monkeypatch, stop):
+    # Owner, 2026-10-12: these stops come from masked or untradable coins, not a market
+    # event. Simulate the frozen engine reporting one at 06:00 on day two; the runner's
     # own bookkeeping (lifecycle censoring, audit, stopped reason) runs unchanged.
     original = v3_runner.execute_hour
     stop_hour = START + 30 * HOUR
@@ -217,21 +217,13 @@ def test_a_native_v3_stop_is_a_finished_result_frozen_to_the_window_end(monkeypa
     monkeypatch.setattr(v3_runner, "execute_hour", stopping)
     evidence = run()
     assert evidence.status == stop and evidence.liquidations == 0
-    assert evidence.accounting_explained and evidence.wallet_quantity_exact
-    assert evidence.report.disclosures == evidence.disclosures
-    # The stop is stated once, with the span its frozen marks cover.
-    assert [d for d in evidence.disclosures if stop in d] == [
-        f"frozen_after_native_stop:{stop}: hours={(END - stop_hour) // HOUR} "
-        f"first={utc_text(stop_hour + HOUR)} last={utc_text(END)}"
-    ]
     report = evidence.report
-    assert not [i for i in report.issues if i != "contribution_equity_residual"], report.issues
-    last = evidence.native[-1]
-    assert stop_hour <= last.timestamp_ms < stop_hour + HOUR
-    frozen = [p for p in report.equity_points if p.timestamp_ms > last.timestamp_ms]
-    assert [p.timestamp_ms for p in frozen] == list(range(stop_hour + HOUR, END + HOUR, HOUR))
-    assert all(p.equity == last.equity and FROZEN_REF + stop in p.source_refs for p in frozen)
-    assert report.final_equity == last.equity
+    # The stop reason is kept as the report's producer issue; nothing is held frozen.
+    assert not report.complete and f"baseline_stop:{stop}" in report.issues
+    assert report.equity_points[-1].timestamp_ms < stop_hour + HOUR
+    refs = [ref for point in report.equity_points for ref in point.source_refs]
+    assert not any(ref.startswith(FROZEN_REF) for ref in refs)
+    assert not [d for d in evidence.disclosures if d.startswith(FROZEN_REF)]
 
 
 def test_an_engine_failure_is_not_a_native_stop(monkeypatch):

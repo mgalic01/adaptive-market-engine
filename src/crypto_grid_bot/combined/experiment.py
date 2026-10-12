@@ -168,9 +168,10 @@ class RunOutcome:
     attempt_id: str = ""
     wallet_quantity_exact: bool | None = None
     report_evidence: ReportEvidence | None = None
-    native_stop: str | None = None  # a frozen baseline that ended under its own rules
+    native_stop: str | None = None  # a frozen baseline liquidated under its own rules
     # Carried from the report: information only, never an input to acceptance.
     disclosures: tuple[str, ...] = ()
+    # Carried from the report; acceptance requires the registered capital's label.
     capital_label: str | None = None
 
 
@@ -607,6 +608,20 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
         return None
 
 
+def _stop_reasons(row: RunOutcome) -> str:
+    """A stopped baseline's reasons as its report names them (``baseline_stop:<status>``),
+    for an incomplete reason's text; empty when it names none."""
+    evidence = row.report_evidence
+    report = evidence.report if isinstance(evidence, ReportEvidence) else None
+    issues = report.producer_issues if isinstance(report, Report) else ()
+    stops = [
+        issue
+        for issue in (issues if isinstance(issues, tuple) else ())
+        if isinstance(issue, str) and issue.startswith("baseline_stop:")
+    ]
+    return f" ({', '.join(stops)})" if stops else ""
+
+
 def _report_valid(row: RunOutcome, skipped_hours: tuple[int, ...] = ()) -> bool:
     """A report built against skipped hours the registration does not pin is foreign."""
     report = _matching_report(row, row.initial_equity)
@@ -788,8 +803,10 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
     Every component requires both modeled scenarios; the same native baseline
     control is compared to each separately, never counted as an extra trial.
     Comparisons skip each window's registered skipped hours for every arm alike;
-    the 30% drawdown gate still uses every native mark. A baseline that ended at a
-    native stop is a finished result held frozen at its stop equity, still to beat.
+    the 30% drawdown gate still uses every native mark. A baseline liquidated under its
+    own rules, its only native stop, is a finished result held frozen at its stop
+    equity, still to beat; any other stop leaves its cell incomplete with that reason.
+    Every outcome must carry its registered capital's ``capital_label``.
     """
     retained = tuple(outcomes)
     malformed = sum(not _outcome_shape_valid(row) for row in retained)
@@ -811,7 +828,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         )
     failures: list[str] = []
     expected: dict[
-        tuple[str, str, str, int, str | None], tuple[RunIdentity, Decimal, tuple[int, ...]]
+        tuple[str, str, str, int, str | None], tuple[RunIdentity, Capital, tuple[int, ...]]
     ] = {}
     for arm, window, capital, profile, scenario in product(
         registration.arms,
@@ -839,7 +856,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             dict(registration.adapter_pins)[arm],
             scenario,
         )
-        expected[_key(identity)] = (identity, capital.initial_equity, window.skipped_hours)
+        expected[_key(identity)] = (identity, capital, window.skipped_hours)
     grouped: dict[tuple[str, str, str, int, str | None], list[RunOutcome]] = {}
     attempts: dict[str, int] = {}
     if malformed:
@@ -860,7 +877,8 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         incomplete.append(f"{key}: unregistered outcome")
     valid: dict[tuple[str, str, str, int, str | None], RunOutcome] = {}
     common: dict[tuple[str, str, str, int, str | None], CommonSeries] = {}
-    for key, (identity, expected_capital, skipped_hours) in expected.items():
+    for key, (identity, registered, skipped_hours) in expected.items():
+        expected_capital = registered.initial_equity
         rows = grouped.get(key, [])
         # Comparability requires one complete attempt; observed safety failures do not.
         # Inspect every attributable attempt before rejecting duplicates or partial runs.
@@ -895,6 +913,10 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         if not _metrics_valid(row) or row.initial_equity != expected_capital:
             incomplete.append(f"{key}: invalid metrics or initial capital")
             continue
+        # The equity alone cannot tell 110 USDT under one FX pin from another.
+        if row.capital_label != capital_label(registered):
+            incomplete.append(f"{key}: capital label differs from the registration")
+            continue
         if row.native_stop is not None and not (
             identity.arm in registration.baseline_arms and identity.arm in _V3_BASELINES
         ):
@@ -904,7 +926,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             incomplete.append(f"{key}: wallet/quantity verification unavailable")
             continue
         if not row.complete or row.failed:
-            incomplete.append(f"{key}: failed or incomplete attempt retained")
+            incomplete.append(f"{key}: failed or incomplete attempt retained{_stop_reasons(row)}")
             continue
         if not _report_valid(row, skipped_hours):
             incomplete.append(f"{key}: missing, incomplete or mismatched report evidence")

@@ -8,6 +8,7 @@ import pytest
 from test_combined_baseline_hold import hold
 
 from crypto_grid_bot.combined.baseline_records import (
+    NATIVE_STOPS,
     BaselineEvidence,
     NativeMark,
     comparison_report,
@@ -86,8 +87,13 @@ def test_a_complete_baseline_cell_is_a_valid_acceptance_outcome():
     assert _report_valid(row)
 
 
-def stopped(status, *, native_stop):
-    """A V3 cell whose last native mark is its stop, 30 hours into a three-day window."""
+def stopped(status):
+    """A V3 cell whose last native mark is its stop, 30 hours into a three-day window.
+
+    As the V3 adapter builds it: a native stop is held frozen, any other stop is a
+    producer issue.
+    """
+    native_stop = status if status in NATIVE_STOPS else None
     end = fx.START + 3 * fx.DAY
     marks = (
         NativeMark(fx.START, "open", D(10000), D(0), D(4000)),
@@ -119,30 +125,49 @@ def stopped(status, *, native_stop):
         source_refs=("synthetic",),
         adapter_pin="c" * 64,
         producer_issues=() if native_stop else (f"baseline_stop:{status}",),
-        native_stop=status if native_stop else None,
+        native_stop=native_stop,
     )
+    liquidations = int(status == "liquidation")
     return BaselineEvidence(
-        "unchanged_v3_r2_long_only", "v3-native", marks, report, status, 0, D(0), True, True, ()
+        "unchanged_v3_r2_long_only",
+        "v3-native",
+        marks,
+        report,
+        status,
+        liquidations,
+        D(0),
+        True,
+        True,
+        (),
     )
 
 
-@pytest.mark.parametrize("status", ["no_tradable_position", "leverage_not_restored"])
-def test_a_native_baseline_stop_is_a_finished_result(status):
+def test_a_liquidated_baseline_is_a_finished_result():
     row = baseline_outcome(
-        stopped(status, native_stop=True),
+        stopped("liquidation"),
         identity("unchanged_v3_r2_long_only", "native", "c" * 64),
         attempt_id="v3-1",
     )
     assert row.complete and not row.failed
-    assert row.native_stop == status
+    assert row.native_stop == "liquidation" and row.liquidations == 1
     assert row.final_equity == D(9800)
     assert _report_valid(row)
 
 
-@pytest.mark.parametrize("status", ["engine_failure", "unavailable_exclusion_close"])
+# Owner, 2026-10-12: V3's no_tradable_position and leverage_not_restored come from masked
+# or untradable coins, not a market event: incomplete, never a finished result.
+@pytest.mark.parametrize(
+    "status",
+    [
+        "no_tradable_position",
+        "leverage_not_restored",
+        "engine_failure",
+        "unavailable_exclusion_close",
+    ],
+)
 def test_other_baseline_stops_stay_failed_and_incomplete(status):
     row = baseline_outcome(
-        stopped(status, native_stop=False),
+        stopped(status),
         identity("unchanged_v3_r2_long_only", "native", "c" * 64),
         attempt_id="v3-2",
     )

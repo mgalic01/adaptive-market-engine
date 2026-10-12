@@ -10,8 +10,9 @@ from its own retained marks only. Source references are retained, not authentica
 
 Every report discloses the V3.1 rulings it ran under and what the trace recorded
 about its inputs (data gaps, stale marks, off-hour or irregular funding, withheld
-grid buys, worse fills). Disclosures are information, never a decision input: a
-gapped run stays complete.
+grid buys, worse fills). Disclosures are information, never a decision input. A gap
+hour is skipped for every arm alike only when the registration lists it (owner,
+2026-10-11); a gap hour it does not list is a producer issue, so that run is incomplete.
 """
 
 from collections.abc import Iterable
@@ -375,13 +376,22 @@ def recovery_episodes(trace: StrategyTrace) -> tuple[RecoveryEpisode, ...]:
 
 
 def _contributions_and_issues(
-    trace: StrategyTrace,
+    trace: StrategyTrace, skipped_hours: tuple[int, ...]
 ) -> tuple[tuple[Contribution, ...], tuple[str, ...]]:
-    """The lifecycles and the producer issues a report of this trace lists."""
+    """The lifecycles and the producer issues a report of this trace lists.
+
+    An hour missing from any registered source is skipped for every arm alike (owner,
+    2026-10-11): a gap hour of this trace the registered ``skipped_hours`` do not list
+    makes the report incomplete, one issue per symbol and venue with its count.
+    """
     # A failed replay is incomplete evidence by declaration, not only by structure.
     issues = [f"replay_failure:{trace.failure}"] if trace.failure is not None else []
     # A grid arm without a coin's minute input cannot judge that coin's grid: incomplete.
     issues.extend(f"missing_grid_input:{symbol}" for symbol in trace.missing_grid_inputs)
+    skipped = frozenset(skipped_hours)
+    for symbol, venue, hours in trace.data_gaps:  # window hours only
+        if unregistered := [hour for hour in hours if hour not in skipped]:
+            issues.append(f"unregistered_data_gap:{symbol}:{venue}:{len(unregistered)}")
     contributions = lifecycle_contributions(trace, issues)
     return contributions, tuple(issues)
 
@@ -420,7 +430,7 @@ def _episodes(records: Iterable[DecisionRecord]) -> list[DecisionRecord]:
     return sorted(kept, key=lambda r: (r.first_ms, r.symbol))
 
 
-def evidence_records(trace: StrategyTrace) -> BundleRecords:
+def evidence_records(trace: StrategyTrace, *, skipped_hours: tuple[int, ...] = ()) -> BundleRecords:
     """The replay's versioned evidence records for its bundle; never a strategy input.
 
     The funnel journal keeps every hour; these records keep one decision record per
@@ -428,9 +438,10 @@ def evidence_records(trace: StrategyTrace) -> BundleRecords:
     and intent of its first hour. Every record cites the run's sources once, by the run
     record's digest, plus its own references; each symbol's gaps and invalid opens are
     one table as of its last assessment. The run record carries the report's producer
-    issues, so an open lifecycle valued at its last fill price stays marked.
+    issues, so an open lifecycle valued at its last fill price, or a gap hour the
+    registered ``skipped_hours`` do not list, stays marked.
     """
-    contributions, issues = _contributions_and_issues(trace)
+    contributions, issues = _contributions_and_issues(trace, skipped_hours)
     run = RunRecord(trace.run.source_refs, issues)
     count = len(trace.run.source_refs)
 
@@ -599,7 +610,8 @@ def strategy_report(
 ) -> Report:
     """Analyze one replay under the approved settlement policy and its adapter pin.
 
-    ``skipped_hours`` are the registered window's: a daily return may span them.
+    ``skipped_hours`` are the registered window's: a daily return may span them, and a
+    data gap at an hour they do not list makes the report incomplete.
     ``capital_label`` names the registered capital scenario on the report.
     """
     if not isinstance(adapter_pin, str) or not adapter_pin.strip():
@@ -664,7 +676,7 @@ def strategy_report(
         for boundary, following, capital in zip(boundaries, boundaries[1:], capitals, strict=False)
     )
     policy = PolicyEvidence(POLICY_ID, adapter_pin, tuple(boundaries), trace.run.scenario)
-    contributions, issues = _contributions_and_issues(trace)
+    contributions, issues = _contributions_and_issues(trace, skipped_hours)
     return analyze(
         trace.run.initial_cash,
         points,

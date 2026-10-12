@@ -56,8 +56,22 @@ def report(native_stop, producer_issues=(), **options):
     )
 
 
-def test_native_stops_are_the_frozen_v3_stops():
-    assert {"liquidation", "no_tradable_position", "leverage_not_restored"} == NATIVE_STOPS
+def test_only_a_liquidation_is_a_native_stop():
+    # Owner, 2026-10-12: only a real market event finishes a baseline. V3's
+    # no_tradable_position and leverage_not_restored come from masked or untradable
+    # coins (terminal invalid-run outcomes) and are never frozen.
+    assert {"liquidation"} == NATIVE_STOPS
+
+
+@pytest.mark.parametrize("stop", ["no_tradable_position", "leverage_not_restored"])
+def test_an_untradable_v3_stop_is_never_frozen(stop):
+    with pytest.raises(ValueError, match="unknown native stop"):
+        report(stop)
+    result = report(None, producer_issues=(f"baseline_stop:{stop}",))
+    assert not result.complete and f"baseline_stop:{stop}" in result.issues
+    assert not any(
+        ref.startswith(FROZEN_REF) for p in result.equity_points for ref in p.source_refs
+    )
 
 
 @pytest.mark.parametrize("stop", sorted(NATIVE_STOPS))

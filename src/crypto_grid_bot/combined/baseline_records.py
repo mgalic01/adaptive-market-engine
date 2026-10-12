@@ -7,8 +7,9 @@ mark stays in its labelled diagnostics, and the comparison report uses only the
 marks a baseline records exactly at UTC hour boundaries (proposal point 5). A
 missing hourly mark leaves that boundary absent, so the comparison is incomplete,
 never a pass, unless the registration skips that hour for every arm. A baseline
-that ended under its own rules is a finished result: its stop equity is held to
-the window end, each such mark labelled frozen. Outputs are never scaled.
+liquidated under its own rules is a finished result: its stop equity is held to the
+window end, each such mark labelled frozen. Only that real market event counts (owner,
+2026-10-12): any other stop leaves the comparison incomplete. Outputs are never scaled.
 """
 
 from collections.abc import Iterable, Sequence
@@ -32,12 +33,15 @@ from .report import (
 HOUR = 3_600_000
 DAY = 24 * HOUR
 _RESERVED = 1_735_689_600_000  # 2025-01-01T00:00Z; data from here on stays sealed
-# Stops that end a frozen baseline under its own rules, a finished result (owner,
-# 2026-10-11). Only frozen V3 stops this way: the minute replays (V0-V2 grids, D)
-# and the hold run to the window end (a grid halt restarts by itself; D never
-# halts). An engine or parity failure, a missing input, V3's unavailable exclusion
-# close or a selector without a pick is not a native stop and stays incomplete.
-NATIVE_STOPS = frozenset({"liquidation", "no_tradable_position", "leverage_not_restored"})
+# Stops that end a frozen baseline under its own rules, a finished result: only a real
+# market event, a liquidation (owner, 2026-10-11, narrowed 2026-10-12). Only frozen V3
+# stops this way: the minute replays (V0-V2 grids, D) and the hold run to the window end
+# (a grid halt restarts by itself; D never halts). V3's no_tradable_position and
+# leverage_not_restored come from masked or untradable coins (terminal invalid-run
+# outcomes in the frozen ``trend.execution``); they, an engine or parity failure, a
+# missing input, V3's unavailable exclusion close and a selector without a pick are not
+# native stops: the cell stays incomplete and keeps its stop reason.
+NATIVE_STOPS = frozenset({"liquidation"})
 
 
 def refuse_sealed(stamps: Iterable[object], what: str) -> None:
@@ -63,7 +67,7 @@ class BaselineEvidence:
     native_label: str
     native: tuple[NativeMark, ...]
     report: Report
-    status: str | None  # None: the frozen run completed; otherwise its native stop
+    status: str | None  # None: the frozen run completed; otherwise why it stopped
     liquidations: int
     accounting_residual: Decimal
     accounting_explained: bool

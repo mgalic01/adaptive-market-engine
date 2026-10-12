@@ -73,10 +73,12 @@ def baseline_outcome(
 ) -> RunOutcome:
     """A frozen baseline cell; a native stop is a finished result, other stops are not.
 
-    Owner decision 2026-10-11: a baseline that ended under its own rules is complete
-    and keeps its stop reason; its report holds the stop equity, labelled frozen, to
-    the window end. Any other status (an engine or parity failure, a missing input)
-    leaves the cell failed and incomplete.
+    Owner decisions 2026-10-11 and 2026-10-12: a baseline liquidated under its own
+    rules is complete and keeps its stop reason; its report holds the stop equity,
+    labelled frozen, to the window end. Any other status (V3's no_tradable_position or
+    leverage_not_restored, which the V3 adapter keeps as a ``baseline_stop:`` producer
+    issue, an engine or parity failure, a missing input) leaves the cell failed and
+    incomplete.
     """
     report = evidence.report
     stop = evidence.status if evidence.status in NATIVE_STOPS else None

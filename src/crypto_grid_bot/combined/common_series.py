@@ -5,7 +5,8 @@ is for cross-version comparisons; it never replaces the native intrabar risk
 series. Adapter/source authenticity remains a reviewed registration obligation.
 Owner decisions of 2026-10-11 (docs/V3_1_SOURCE_INVENTORY.md): an hour some
 registered source has no bar for is skipped for every arm alike, and a baseline
-that stopped under its own rules holds its stop equity, labelled frozen.
+that stopped under its own rules holds its stop equity, labelled frozen (since
+2026-10-12 only a liquidation is such a stop: ``baseline_records.NATIVE_STOPS``).
 """
 
 from dataclasses import dataclass

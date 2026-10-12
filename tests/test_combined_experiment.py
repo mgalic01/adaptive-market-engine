@@ -10,6 +10,7 @@ from test_combined_baseline_minute import CONFIG, ENGINE, T0, candle, run_config
 from crypto_grid_bot.combined.baseline_hold import HoldMarket, replay_hold_baseline
 from crypto_grid_bot.combined.baseline_minute import MinuteJob, replay_grid_baseline
 from crypto_grid_bot.combined.baseline_records import (
+    NATIVE_STOPS,
     BaselineEvidence,
     NativeMark,
     comparison_report,
@@ -137,9 +138,18 @@ def outcomes(reg: Registration) -> tuple[RunOutcome, ...]:
                                 False,
                                 f"{arm}-{window.id}-{capital.id}-{multiple}-{scenario}",
                                 True,
+                                capital_label=label_of(capital),
                             )
                         )
     return tuple(with_report(row) for row in rows)
+
+
+def label_of(capital):
+    """The registered capital's label; None for a capital no label can name."""
+    try:
+        return capital_label(capital)
+    except ValueError:
+        return None
 
 
 def with_report(row, *, hourly=True, missing=(), marks=None, skipped=()):
@@ -1550,7 +1560,12 @@ STOP_MS = 11 * HOUR - 1  # an intrabar mark late in the 10:00 hour
 def frozen_baseline(
     reg, *, stop_equity, status="liquidation", liquidations=1, arm="unchanged_v3_r1_long_only"
 ):
-    """Replace the research, base-cost cell of ``arm`` by a run stopped at ``STOP_MS``."""
+    """Replace the research, base-cost cell of ``arm`` by a run stopped at ``STOP_MS``.
+
+    As the V3 adapter builds it: a native stop is held frozen, any other stop is a
+    producer issue.
+    """
+    native_stop = status if status in NATIVE_STOPS else None
     rows = list(outcomes(reg))
     index = cell(rows, arm)
     identity = rows[index].identity
@@ -1583,7 +1598,9 @@ def frozen_baseline(
         end_ms=identity.end_ms,
         source_refs=("synthetic",),
         adapter_pin=PIN,
-        native_stop=status,
+        producer_issues=() if native_stop else (f"baseline_stop:{status}",),
+        native_stop=native_stop,
+        capital_label="research_10000_usdt",
     )
     evidence = BaselineEvidence(
         arm, "v3-native", marks, report, status, liquidations, D(0), True, True, ()
@@ -1617,18 +1634,27 @@ def test_a_baseline_liquidated_mid_window_is_complete_frozen_and_must_be_beaten(
 
 
 @pytest.mark.parametrize("status", ["no_tradable_position", "leverage_not_restored"])
-def test_every_native_v3_stop_is_a_finished_result(status):
+def test_an_untradable_v3_stop_leaves_its_baseline_cell_incomplete(status):
+    # Owner, 2026-10-12: only a real market event (a liquidation) finishes a baseline.
+    # These stops come from masked or untradable coins: incomplete, never a pass.
     reg = registration()
     rows, index = frozen_baseline(reg, stop_equity=D(9500), status=status, liquidations=0)
-    assert rows[index].native_stop == status and rows[index].complete
-    assert evaluate(reg, tuple(rows)).status == "pass"
+    row = rows[index]
+    assert row.native_stop is None and row.failed and not row.complete
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete" and not result.failures
+    key = ("unchanged_v3_r1_long_only", "window", "research", 1, "native")
+    assert (
+        f"{key}: failed or incomplete attempt retained (baseline_stop:{status})"
+        in result.incomplete_reasons
+    )
 
 
 @pytest.mark.parametrize(
     "alter,reason",
     [
         ("no_stop", "frozen marks and native stop disagree"),
-        ("other_stop", "frozen marks and native stop disagree"),
+        ("untradable_stop", "invalid metrics or initial capital"),
         ("liquidation_count", "liquidation or invalid accounting"),
         ("unknown_stop", "invalid metrics or initial capital"),
         ("component", "only a frozen V3 baseline can end at a native stop"),
@@ -1637,20 +1663,17 @@ def test_every_native_v3_stop_is_a_finished_result(status):
 def test_frozen_marks_need_the_matching_native_stop_of_a_baseline(alter, reason):
     reg = registration()
     rows, index = frozen_baseline(
-        reg,
-        stop_equity=D(4000),
-        status="no_tradable_position",
-        liquidations=int(alter == "liquidation_count"),
+        reg, stop_equity=D(4000), liquidations=int(alter != "liquidation_count")
     )
     if alter == "no_stop":
-        rows[index] = replace(rows[index], native_stop=None)
-    elif alter == "other_stop":
-        rows[index] = replace(rows[index], native_stop="leverage_not_restored")
+        rows[index] = replace(rows[index], native_stop=None, liquidations=0)
+    elif alter == "untradable_stop":
+        rows[index] = replace(rows[index], native_stop="no_tradable_position")
     elif alter == "unknown_stop":
         rows[index] = replace(rows[index], native_stop="engine_failure")
     elif alter == "component":
         index = cell(rows, "spot_trend")
-        rows[index] = replace(rows[index], native_stop="no_tradable_position")
+        rows[index] = replace(rows[index], native_stop="liquidation")
     result = evaluate(reg, tuple(rows))
     assert result.status == "incomplete" and not result.failures
     assert any(reason in issue for issue in result.incomplete_reasons), result.incomplete_reasons
@@ -1659,9 +1682,7 @@ def test_frozen_marks_need_the_matching_native_stop_of_a_baseline(alter, reason)
 @pytest.mark.parametrize("arm", ["matched_spot_hold", V2, "matched_d_trend_low_first"])
 def test_only_frozen_v3_baselines_can_end_at_a_native_stop(arm):
     reg = registration()
-    rows, _ = frozen_baseline(
-        reg, stop_equity=D(9500), status="no_tradable_position", liquidations=0, arm=arm
-    )
+    rows, _ = frozen_baseline(reg, stop_equity=D(9500), arm=arm)
     result = evaluate(reg, tuple(rows))
     assert result.status == "incomplete" and not result.failures
     assert any(
@@ -1727,6 +1748,7 @@ def adapter_cells(reg):
         source_refs=("synthetic:hold",),
         adapter_pin=PIN,
         skipped_hours=skipped,
+        capital_label="research_10000_usdt",
     )
     rows[hold] = baseline_outcome(held, rows[hold].identity, attempt_id=rows[hold].attempt_id)
     grid = cell(rows, "matched_v0_grid_high_first")
@@ -1743,6 +1765,7 @@ def adapter_cells(reg):
         source_refs=("synthetic:grid",),
         adapter_pin=PIN,
         skipped_hours=skipped,
+        capital_label="research_10000_usdt",
     )
     rows[grid] = baseline_outcome(gridded, rows[grid].identity, attempt_id=rows[grid].attempt_id)
     return rows, (hold, grid)
@@ -1766,6 +1789,45 @@ def test_a_skipped_midnight_keeps_the_hold_and_minute_baselines_complete():
     assert unregistered.status == "incomplete" and not unregistered.failures
     for arm in ("matched_spot_hold", "matched_v0_grid_high_first"):
         assert any(arm in issue for issue in unregistered.incomplete_reasons)
+
+
+def test_a_v3_1_gap_hour_the_registration_does_not_skip_leaves_its_cell_incomplete():
+    from test_combined_strategy_replay import masked
+
+    from crypto_grid_bot.combined.outcomes import strategy_outcome
+    from crypto_grid_bot.combined.replay_records import strategy_report
+    from crypto_grid_bot.combined.strategy_replay import replay_strategy
+
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 2, futures=True), "futures", (17,))
+    trace = replay_strategy(fx.run("futures_trend", 2), (market,))
+    key = str(("futures_trend", "window", "research", 1, SCENARIOS[0]))
+
+    def judged(skipped, *, claimed_complete=False):
+        window = Window("window", fx.START, fx.START + 2 * DAY, PIN, skipped_hours=skipped)
+        reg = replace(registration(), windows=(window,))
+        rows = list(outcomes(reg))
+        index = cell(rows, "futures_trend")
+        report = strategy_report(
+            trace, adapter_pin=PIN, skipped_hours=skipped, capital_label="research_10000_usdt"
+        )
+        row = strategy_outcome(
+            trace, report, rows[index].identity, attempt_id=rows[index].attempt_id
+        )
+        rows[index] = replace(row, complete=True) if claimed_complete else row
+        return row, evaluate(reg, tuple(rows))
+
+    row, registered = judged((fx.START + 17 * HOUR,))
+    assert row.complete
+    assert registered.status == "pass", (registered.failures, registered.incomplete_reasons)
+    row, unregistered = judged(())
+    assert not row.complete
+    assert unregistered.status == "incomplete" and not unregistered.failures
+    assert f"{key}: failed or incomplete attempt retained" in unregistered.incomplete_reasons
+    # A wrapper claiming completeness cannot hide the report's unregistered gap.
+    _, claimed = judged((), claimed_complete=True)
+    assert f"{key}: missing, incomplete or mismatched report evidence" in (
+        claimed.incomplete_reasons
+    )
 
 
 def owner_small(rate, *, fx_pin=PIN):
@@ -1801,6 +1863,33 @@ def test_the_research_label_and_a_missing_fx_pin():
         capital_label(owner_small("1.1", fx_pin=None))
     with pytest.raises(ValueError):
         capital_label(Capital("research", D(100), "USDT", D(100)))
+
+
+OTHER_PIN_LABEL = f"owner_small:EUR:100:usdt_per_eur=1.1:fx_pin={'d' * 64}"
+
+
+@pytest.mark.parametrize(
+    ("arm", "capital", "label"),
+    [
+        ("combined", "research", None),
+        ("matched_spot_hold", "research", None),
+        ("combined", "owner_small", None),
+        # Well formed, and amount times rate equals the registered 110, but another pin.
+        ("combined", "owner_small", OTHER_PIN_LABEL),
+        ("unchanged_v3_selector", "owner_small", OTHER_PIN_LABEL),
+        ("combined", "owner_small", "research_10000_usdt"),
+    ],
+)
+def test_an_outcome_must_carry_the_registered_capital_label(arm, capital, label):
+    reg = registration()
+    rows = list(outcomes(reg))
+    index = cell(rows, arm, capital=capital)
+    rows[index] = replace(rows[index], capital_label=label)
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete" and not result.failures
+    key = rows[index].identity
+    expected = f"{(arm, 'window', capital, 1, key.scenario)}: capital label differs from the "
+    assert expected + "registration" in result.incomplete_reasons
 
 
 def test_acceptance_returns_every_baseline_comparison_on_the_common_schedule():

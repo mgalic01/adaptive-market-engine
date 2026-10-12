@@ -233,10 +233,11 @@ def replay_v3_baseline(
 
     A selector cell replays the frozen picks in force over the registered window;
     a window starting before the first out-of-sample pick has no selector cell and
-    stays incomplete. A native stop (liquidation, no tradable position, leverage not
-    restored) is a finished result whose stop equity is held, labelled frozen, to the
-    window end (owner, 2026-10-11). An engine failure or unavailable exclusion close
-    keeps its partial evidence and makes the comparison incomplete, never a pass.
+    stays incomplete. A liquidation, the only native stop, is a finished result whose
+    stop equity is held, labelled frozen, to the window end (owner, 2026-10-11 and
+    2026-10-12). No tradable position, leverage not restored (masked or untradable
+    coins), an engine failure or an unavailable exclusion close keeps its partial
+    evidence and its stop reason and makes the comparison incomplete, never a pass.
     """
     _refuse_sealed(inputs)
     disclosures = ["v3_funding_after_fills_is_native_timing", SAVED_FILTERS_DISCLOSURE]

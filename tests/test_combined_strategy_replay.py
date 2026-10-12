@@ -1157,6 +1157,25 @@ def test_a_gapped_run_stays_complete_and_discloses_the_gap_and_the_skipped_hour(
     rendered(report)
 
 
+def test_a_gap_hour_the_registration_does_not_skip_leaves_the_report_incomplete():
+    # Owner, 2026-10-11: an hour missing from any registered source is skipped for every
+    # arm alike. Probe: a 72-hour futures gap under a held short.
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 6, futures=True), "futures", range(24, 96))
+    trace = replay_strategy(fx.run("futures_trend", 6), (market,))
+    assert trace.failure is None
+    gap = tuple(hour_ms(hour) for hour in range(24, 96))
+    unlisted = strategy_report(trace, adapter_pin=PIN)
+    assert not unlisted.complete
+    assert unlisted.issues == ("unregistered_data_gap:BTCUSDT:futures:72",)
+    partly = strategy_report(trace, adapter_pin=PIN, skipped_hours=gap[:24])
+    assert partly.issues == ("unregistered_data_gap:BTCUSDT:futures:48",)
+    listed = strategy_report(trace, adapter_pin=PIN, skipped_hours=gap)
+    assert listed.complete, listed.issues
+    # The bundle's run record carries the same producer issues.
+    assert evidence_records(trace).run.issues == unlisted.issues
+    assert evidence_records(trace, skipped_hours=gap).run.issues == ()
+
+
 def test_a_stale_terminal_mark_is_disclosed():
     market = masked(fx.market("BTCUSDT", fx.uptrend, 2), "spot", (47,))
     trace = replay_strategy(fx.run("spot_trend", 2), (market,))
@@ -1390,8 +1409,10 @@ def test_a_missing_due_daily_bar_is_one_refused_detection_per_episode():
     # The short signals on either side stay ordinary refused decisions.
     days = {d.assessment.decision_ms // DAY * DAY for d in trace.decisions}
     assert first not in days and {fx.START, first + DAY} <= days
-    # A flat run has no drawdown or return variance to measure; its structure is whole.
-    assert strategy_report(trace, adapter_pin=PIN).structural_complete
+    # A flat run has no drawdown or return variance to measure; its structure is whole
+    # once the registration skips the gap hours.
+    gap = tuple(hour_ms(hour) for hour in range(24, 29))
+    assert strategy_report(trace, adapter_pin=PIN, skipped_hours=gap).structural_complete
 
 
 def test_opportunity_records_keep_every_refusal_reason():
