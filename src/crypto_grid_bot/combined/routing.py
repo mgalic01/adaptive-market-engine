@@ -4,9 +4,10 @@ No result here is permission to submit an order; the shared portfolio reservatio
 must succeed using the same event snapshot. Protective reductions bypass routing.
 """
 
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
-from decimal import Decimal
+from decimal import Context, Decimal, Inexact, InvalidOperation, Overflow, getcontext
 
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.combined.models import Assessment
@@ -45,6 +46,10 @@ class Qualification:
     schema: str = "combined-v1"
 
 
+_FLOW_BLOCK = Decimal("0.40")  # below it, or unavailable, the gate blocks
+_FLOW_OPEN = Decimal("0.45")  # at or above it the gate opens
+
+
 class FlowGate:
     """Hysteresis on externally verified 15 completed one-minute flow bars."""
 
@@ -52,13 +57,9 @@ class FlowGate:
         self.allowed = False
 
     def update(self, ratio: Decimal | None) -> bool:
-        if (
-            not isinstance(ratio, Decimal)
-            or not ratio.is_finite()
-            or not Decimal("0.40") <= ratio <= 1
-        ):
+        if not isinstance(ratio, Decimal) or not ratio.is_finite() or not _FLOW_BLOCK <= ratio <= 1:
             self.allowed = False
-        elif ratio >= Decimal("0.45"):
+        elif ratio >= _FLOW_OPEN:
             self.allowed = True
         return self.allowed
 
@@ -94,6 +95,112 @@ def completed_flow(bars: Sequence[Kline], decision_ms: int) -> Decimal | None:
     return sum((bar.taker_buy_base for bar in selected), Decimal(0)) / total
 
 
+_MINUTE = 60_000
+_FLOW_BOUND = Decimal("1e36")  # completed_flow's bound on a minute's volumes
+# Rolling sums stay exact or raise: an inexact step falls back to completed_flow.
+_EXACT = Context(prec=60, traps=[Inexact, InvalidOperation, Overflow])
+
+
+def _flow_bar_valid(bar: Kline) -> bool:
+    """A minute ``completed_flow`` accepts: finite volumes, 0 <= taker <= volume <= 1e36."""
+    volume, taker = bar.volume, bar.taker_buy_base
+    return (
+        isinstance(volume, Decimal)
+        and isinstance(taker, Decimal)
+        and volume.is_finite()
+        and taker.is_finite()
+        and 0 <= taker <= volume <= _FLOW_BOUND
+    )
+
+
+class RollingFlow:
+    """``completed_flow`` at each successive minute from ``first_ms``, in O(1) per minute.
+
+    The window is the fifteen completed minutes before the current one, read from
+    ``bars`` (keyed by opening time). Exact sums of its volumes and taker-buy volumes are
+    kept by adding the minute that enters and removing the one that leaves; a missing or
+    invalid minute keeps the window unavailable until it has left. The share is the
+    exact taker sum over the exact volume sum, divided in the current context, whenever
+    both sums' coefficients fit that context's precision: a sum's exponent is at most the
+    lowest of its terms' and its zero start's, so ``completed_flow``'s own running sums
+    of nonnegative terms are then exact, and the value is the same. Otherwise, or after
+    an inexact rolling step, ``completed_flow`` itself reads the window.
+    """
+
+    def __init__(self, bars: Mapping[int, Kline], first_ms: int) -> None:
+        self._bars = bars
+        self._next = first_ms
+        self._window: deque[Kline | None] = deque()
+        self._missing = 0  # missing or invalid minutes in the window
+        self._volume = Decimal(0)
+        self._taker = Decimal(0)
+        self._exact = True
+        for opened in range(first_ms - 15 * _MINUTE, first_ms, _MINUTE):
+            self._enter(bars.get(opened))
+
+    def _enter(self, bar: Kline | None) -> None:
+        if bar is None or not _flow_bar_valid(bar):
+            self._window.append(None)
+            self._missing += 1
+            return
+        self._window.append(bar)
+        if self._exact:
+            try:
+                self._volume = _EXACT.add(self._volume, bar.volume)
+                self._taker = _EXACT.add(self._taker, bar.taker_buy_base)
+            except (Inexact, InvalidOperation, Overflow):
+                self._exact = False
+
+    def _leave(self) -> None:
+        bar = self._window.popleft()
+        if bar is None:
+            self._missing -= 1
+        elif self._exact:
+            try:
+                self._volume = _EXACT.subtract(self._volume, bar.volume)
+                self._taker = _EXACT.subtract(self._taker, bar.taker_buy_base)
+            except (Inexact, InvalidOperation, Overflow):
+                self._exact = False
+
+    def _resum(self) -> None:
+        """Recompute the sums from the window; they are exact again if no step rounds."""
+        volume = taker = Decimal(0)
+        try:
+            for bar in self._window:
+                if bar is not None:
+                    volume = _EXACT.add(volume, bar.volume)
+                    taker = _EXACT.add(taker, bar.taker_buy_base)
+        except (Inexact, InvalidOperation, Overflow):
+            return
+        self._volume, self._taker, self._exact = volume, taker, True
+
+    def _share(self, stamp: int) -> Decimal | None:
+        if self._missing:
+            return None
+        if not self._exact:
+            self._resum()
+        if not self._exact:
+            return completed_flow(tuple(bar for bar in self._window if bar is not None), stamp)
+        volume, taker = self._volume, self._taker
+        if not volume:
+            return None
+        precision = getcontext().prec
+        if volume.adjusted() - int(volume.as_tuple().exponent) < precision and (
+            not taker or taker.adjusted() - int(taker.as_tuple().exponent) < precision
+        ):
+            return taker / volume
+        return completed_flow(tuple(bar for bar in self._window if bar is not None), stamp)
+
+    def next(self) -> Decimal | None:
+        """The share at the current minute; then the window moves one minute on."""
+        stamp = self._next
+        share = self._share(stamp)
+        self._leave()
+        self._enter(self._bars.get(stamp))
+        self._next = stamp + _MINUTE
+        return share
+
+
 class MinuteFlowGate:
     """The flow gate fed every minute from ``first_ms`` on, in order, one at a time.
 
@@ -104,7 +211,7 @@ class MinuteFlowGate:
     """
 
     def __init__(self, bars: Mapping[int, Kline], first_ms: int) -> None:
-        self._bars = bars
+        self._flow = RollingFlow(bars, first_ms) if bars else None
         self._gate = FlowGate()
         self._next = first_ms
 
@@ -116,24 +223,16 @@ class MinuteFlowGate:
     def advance(self, through_ms: int) -> bool:
         """Feed every minute up to and including ``through_ms``; True when the gate was
         blocked after any of them."""
-        minute = 60_000
         if self._next > through_ms:
             return False
-        if not self._bars:  # every minute is unavailable
+        if self._flow is None:  # no bars: every minute is unavailable
             self._gate.update(None)
-            self._next = through_ms // minute * minute + minute
+            self._next = through_ms // _MINUTE * _MINUTE + _MINUTE
             return True
         blocked = False
         while self._next <= through_ms:
-            stamp = self._next
-            window = tuple(
-                bar
-                for opened in range(stamp - 15 * minute, stamp, minute)
-                if (bar := self._bars.get(opened)) is not None
-            )
-            ratio = completed_flow(window, stamp) if len(window) == 15 else None
-            blocked = not self._gate.update(ratio) or blocked
-            self._next = stamp + minute
+            blocked = not self._gate.update(self._flow.next()) or blocked
+            self._next += _MINUTE
         return blocked
 
 

@@ -225,3 +225,47 @@ def test_a_missing_minute_blocks_every_minute_whose_window_it_falls_in():
     assert not gate.advance(46 * MINUTE) and gate.allowed
     empty = MinuteFlowGate({}, 15 * MINUTE)
     assert empty.advance(60 * MINUTE) and not empty.allowed
+
+
+def test_the_rolling_flow_equals_completed_flow_minute_by_minute():
+    # A synthetic stretch with every kind of minute: ordinary shares at varying decimals,
+    # missing minutes, invalid ones (taker above volume, NaN, negative, above 1e36), a
+    # zero-volume stretch, and sums too long for the context or for exact rolling sums.
+    from crypto_grid_bot.backtest.klines import Kline
+    from crypto_grid_bot.combined.routing import RollingFlow, completed_flow
+
+    def bar(stamp, volume, taker):
+        return Kline(stamp, D(1), D(1), D(1), D(1), volume, D(1), taker)
+
+    rows = {}
+    for index in range(400):
+        stamp = index * MINUTE
+        volume = D(10 + index % 7) + D(index % 13) / D(10**8)
+        taker = volume * D(index % 10) / D(10)
+        rows[stamp] = bar(stamp, volume, taker)
+    for index in (40, 41, 120):  # missing minutes
+        del rows[index * MINUTE]
+    invalid = {
+        60: (D(5), D(6)),  # taker above volume
+        61: (D("NaN"), D(1)),
+        90: (D(-1), D(0)),
+        91: (D("1e37"), D(1)),
+    }
+    for index, (volume, taker) in invalid.items():
+        rows[index * MINUTE] = bar(index * MINUTE, volume, taker)
+    for index in range(150, 170):  # no volume at all: unavailable
+        rows[index * MINUTE] = bar(index * MINUTE, D(0), D(0))
+    # Sums longer than 28 digits (completed_flow rounds them) and than exact 60-digit sums.
+    rows[200 * MINUTE] = bar(200 * MINUTE, D("123456789012345678901234.5678901"), D(3))
+    rows[260 * MINUTE] = bar(260 * MINUTE, D("1e35"), D("1e34"))
+    rows[261 * MINUTE] = bar(261 * MINUTE, D("1e-30"), D("1e-31"))
+    first = 15 * MINUTE
+    flow = RollingFlow(rows, first)
+    shares = []
+    for stamp in range(first, 400 * MINUTE, MINUTE):
+        window = [rows[t] for t in range(stamp - 15 * MINUTE, stamp, MINUTE) if t in rows]
+        expected = completed_flow(window, stamp)
+        observed = flow.next()
+        assert observed == expected and (observed is None) == (expected is None), stamp
+        shares.append(observed)
+    assert None in shares and sum(share is not None for share in shares) > 200
