@@ -112,7 +112,8 @@ def test_worse_partial_fill_cancels_remainder_and_late_fill_stays_flagged():
     engine.submit(order, candidate(order), QUOTES, RULES)
     fill = FillEvent("worse-partial", 1, "BTCUSDT", "spot_trend", "spot", 1, D(1), D(150), D(0))
     state = engine.settle("worse", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
-    assert "BTCUSDT" in state.close_required
+    # Cut to the approved risk: 1 * 2.298 / (150 - 97.95 + 97.95 * 0.001), stepped down.
+    assert state.close_required == () and state.reduce_to == (("BTCUSDT", D(".044")),)
     assert engine.reservations == ()
     late = replace(fill, event_id="late-partial", timestamp_ms=2, price=D(100))
     state = engine.settle("late", 2, QUOTES, RULES, increases=((order.intent_id, late),))
@@ -240,8 +241,9 @@ def test_unexpected_worse_fill_is_booked_and_requires_reduction():
     quotes = {"BTCUSDT": Quote(D(150), 1), "ETHUSDT": Quote(D(100), 1)}
     state = engine.settle("badbatch", 1, quotes, RULES, increases=((order.intent_id, fill),))
     assert state.account.positions[0].entry_cost == answer.quantity * 150
-    assert "BTCUSDT" in state.close_required
-    assert "post_fill_risk_breach" in state.reasons
+    # The excess is cut back at once, never erased; the holding is not closed.
+    assert "BTCUSDT" in dict(state.reduce_to) and state.close_required == ()
+    assert "worse_fill_excess_risk" in state.reasons
 
 
 def test_stale_quote_cannot_admit_or_classify_dust_as_flat():
@@ -1407,3 +1409,125 @@ def test_an_unsellable_cut_back_is_retained_dust():
     unsellable = {order.symbol: replace(RULE, min_notional=D(100000))}
     assert engine.close_dust(unsellable) == (order.symbol,)
     assert engine.close_dust(RULES) == ()
+
+
+def test_an_aggregate_risk_breach_spares_a_holding_whose_stop_is_past_its_entry():
+    # Ruling 2026-10-11 (owner informed): an aggregate-risk breach cuts only holdings
+    # whose stop is worse than their entry, by one common fraction that brings total
+    # risk to 90% of the limit while the spared holding keeps counting its exit costs.
+    from fractions import Fraction
+
+    others = ("ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "LINKUSDT")
+    groups = tuple((symbol, symbol) for symbol in ("BTCUSDT", *others))
+    rules = {symbol: RULE for symbol, _ in groups}
+    engine = PortfolioEngine(D(10000))
+    btc = intent(requested_quantity=D(10), slippage_rate=D(0), correlation_group="BTCUSDT")
+    first = {"BTCUSDT": Quote(D(100), 0)}
+    assert engine.submit(btc, candidate(btc), first, rules, groups).quantity == 10
+    fill = FillEvent("btc", 1, "BTCUSDT", btc.owner, btc.venue, 1, D(10), D(100), D(1))
+    engine.settle("btc", 1, first, rules, increases=((btc.intent_id, fill),))
+    quotes = {"BTCUSDT": Quote(D(120), 2), **{symbol: Quote(D(100), 2) for symbol in others}}
+    engine.observe(2, quotes, rules)
+    engine.tighten_stop("BTCUSDT", btc.owner, 1, D(110))  # trailed above its entry
+    entries = []
+    for symbol in others:
+        order = intent(
+            symbol,
+            symbol,
+            owner="futures_trend",
+            venue="futures",
+            stop=D(95),
+            requested_quantity=D(10),
+            fee_rate=D(0),
+            slippage_rate=D(0),
+            funding_rate=D(0),
+            funding_age_ms=0,
+            funding_interval_ms=28_800_000,
+            correlation_group=symbol,
+        )
+        answer = engine.submit(
+            order, replace(candidate(order), decision_ms=2), quotes, rules, groups
+        )
+        assert answer.quantity == 10 and answer.risk == 50
+        fill = FillEvent(symbol, 2, symbol, order.owner, order.venue, 1, D(10), D(100), D(0))
+        entries.append((order.intent_id, fill))
+    state = engine.settle("entries", 2, quotes, rules, increases=tuple(entries))
+    assert state.reduce_to == () and state.close_required == ()
+    loss = FundingEvent("loss", 3, "ETHUSDT", D(-500))
+    state = engine.settle("loss", 3, quotes, rules, funding=(loss,))
+    assert state.recovery.risk_fraction == 1
+    risks = {
+        e.symbol: Fraction(e.stop_risk) for e in engine._view(state.account, D(1), groups).exposures
+    }
+    limit = Fraction(state.account.equity) * Fraction(3, 100)
+    spared = risks["BTCUSDT"]
+    assert spared > 0 and spared + sum(risks[s] for s in others) > limit
+    keep = (Fraction(9, 10) * limit - spared) / sum(risks[s] for s in others)
+    target = Fraction(10 * keep // Fraction(1, 1000), 1000)
+    assert state.close_required == ()
+    assert state.reduce_to == tuple(
+        (s, D(target.numerator) / D(target.denominator)) for s in sorted(others)
+    )
+    after = spared + sum(5 * Fraction(kept) for _, kept in state.reduce_to)
+    assert Fraction(9, 10) * limit - 6 * Fraction(5, 1000) < after <= Fraction(9, 10) * limit
+
+
+def test_a_group_breach_cancels_only_that_groups_pending_increases():
+    engine, orders, _, quotes, rules, groups = cap_scenario("correlation")
+    # Four holdings and one pending increase fill the common group's 80% limit.
+    other = intent(
+        "AVAXUSDT",
+        "AVAXUSDT",
+        owner="futures_trend",
+        venue="futures",
+        stop=D("99.9"),
+        requested_quantity=D(10),
+        fee_rate=D(0),
+        slippage_rate=D(0),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+        correlation_group="other",
+    )
+    quotes = {**quotes, other.symbol: Quote(D(100), 1)}
+    rules = {**rules, other.symbol: RULE}
+    groups = (*groups, (other.symbol, "other"))
+    assert engine.submit(
+        other, replace(candidate(other), decision_ms=1), quotes, rules, groups
+    ).accepted
+    loss = FundingEvent("loss", 2, orders[0].symbol, D(-500))
+    state = engine.settle("loss", 2, quotes, rules, funding=(loss,))
+    # Only the common group is over 80%: its pending increase is canceled, which
+    # alone restores the limit; the unrelated group's order stays authorized.
+    assert [a.intent_id for a in engine.reservations] == [other.intent_id]
+    assert engine.canceled_unreconciled == (orders[-1].intent_id,)
+    assert state.reduce_to == () and state.close_required == ()
+
+
+@pytest.mark.parametrize(
+    "quantity,price,kept", [(D(5), D("100.01"), D("4.975")), (D(".001"), D(150), None)]
+)
+def test_a_worse_than_planned_fill_cuts_only_its_own_excess(quantity, price, kept):
+    from crypto_grid_bot.combined.engine import WorseFill
+
+    engine = PortfolioEngine(D(10000))
+    order = intent(requested_quantity=D(10), fee_rate=D(0), slippage_rate=D(0))
+    other = intent("other", "ETHUSDT", requested_quantity=D(10), fee_rate=D(0), slippage_rate=D(0))
+    assert engine.submit(order, candidate(order), QUOTES, RULES).quantity == 10
+    assert engine.submit(other, candidate(other), QUOTES, RULES).accepted
+    fill = FillEvent("worse", 1, order.symbol, order.owner, order.venue, 1, quantity, price, D(0))
+    state = engine.settle("worse", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    # Booked at its real price; only this asset's remaining increase is canceled.
+    assert state.account.positions[0].entry_cost == quantity * price
+    assert [a.intent_id for a in engine.reservations] == [other.intent_id]
+    assert "post_fill_risk_breach" not in state.reasons
+    assert dict(state.close_reasons)[order.symbol] == ("worse_fill_excess_risk",)
+    # Approved risk is 2 per unit (stop 98, no costs); booked risk is price - 98. The
+    # kept quantity is what the approved risk allows at the booked price, stepped down.
+    if kept is None:
+        assert state.close_required == (order.symbol,) and state.reduce_to == ()
+    else:
+        assert state.close_required == () and state.reduce_to == ((order.symbol, kept),)
+    assert engine.worse_fill_evidence == (
+        WorseFill("worse", order.symbol, quantity * (price - 100), quantity * (price - 100)),
+    )

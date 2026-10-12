@@ -84,6 +84,20 @@ class SettlementObservation:
     snapshot: EngineSnapshot
 
 
+@dataclass(frozen=True, slots=True)
+class WorseFill:
+    """A fill booked worse than its planned adverse price; kept, never erased.
+
+    ``excess_risk`` is its risk at the booked price above the admission's approved
+    risk for that quantity; ``extra_cost`` is its entry cost above the planned one.
+    """
+
+    event_id: str
+    symbol: str
+    excess_risk: Decimal
+    extra_cost: Decimal
+
+
 class PortfolioEngine:
     """One account and one event lock, including acknowledged reservation transfers."""
 
@@ -128,6 +142,7 @@ class PortfolioEngine:
         self._batch_observations: dict[str, tuple[SettlementObservation, ...]] = {}
         # Duplicate executions must preserve their role and original admission.
         self._fills: dict[str, tuple[str, str | None, FillEvent]] = {}
+        self._worse_fills: dict[str, WorseFill] = {}
         self._funding_events: dict[str, FundingEvent] = {}
         # Whole-frame attempts span several settlement batches; one registry per account.
         self._attempts: dict[str, tuple[object, object]] = {}
@@ -364,6 +379,12 @@ class PortfolioEngine:
         with self._lock:
             return tuple(sorted(self._finality.items()))
 
+    @property
+    def worse_fill_evidence(self) -> tuple[WorseFill, ...]:
+        """Every fill booked worse than planned, in booking order."""
+        with self._lock:
+            return tuple(self._worse_fills.values())
+
     def _require_close(self, symbol: str, reason: str) -> None:
         """Caller holds the event lock; cancel increases but retain late-fill identity."""
         portfolio_protection = reason in {
@@ -514,10 +535,14 @@ class PortfolioEngine:
         Owner decisions 2026-10-11: the 0.5% asset and 3% aggregate risk limits measure
         each holding's loss from entry to its current stop; a breached limit cuts the
         holdings back to 90% of it instead of closing them. Breach detection counts unfilled
-        potential (canceled remainders until finality), whose increases are canceled;
-        keep fractions then use held exposure only. Aggregate and correlation-group
-        breaches cut every affected holding by one common fraction, so no unregistered
-        priority among assets decides. Groups are the last admitted causal snapshot.
+        potential (canceled remainders until finality), whose increases are canceled: an
+        asset breach cancels that asset's, a group breach its group's, and an aggregate
+        risk or gross breach every one. Keep fractions then use held exposure only.
+        Aggregate and correlation-group breaches cut every affected holding by one common
+        fraction, so no unregistered priority among assets decides. Every holding adds
+        notional, but an aggregate-risk breach affects only holdings whose stop is worse
+        than an entry (ruling 2026-10-11, owner informed). Groups are the last admitted
+        causal snapshot.
         """
         view = self._view(account, fraction, self._correlation_groups)
         held_gross = {e.symbol: Fraction(e.notional) for e in view.exposures}
@@ -559,27 +584,42 @@ class PortfolioEngine:
             return totals
 
         breached = {s for s in gross if gross[s] > capital / 5 or risk[s] > asset_cap(s)}
-        aggregate = (
-            sum(risk.values(), Fraction(0)) > capital * Fraction(3, 100)
-            or sum(gross.values(), Fraction(0)) > capital * Fraction(8, 5)
-            or any(value > capital * Fraction(4, 5) for value in groups_of(gross).values())
-        )
-        if not breached and not aggregate:
+        crowded = {name for name, v in groups_of(gross).items() if v > capital * Fraction(4, 5)}
+        breached |= {s for s in gross if mapping.get(s, "unknown") in crowded}
+        over_risk = sum(risk.values(), Fraction(0)) > capital * Fraction(3, 100)
+        over_gross = sum(gross.values(), Fraction(0)) > capital * Fraction(8, 5)
+        if not breached and not over_risk and not over_gross:
             return set(), {}
-        cancel = (set(gross) if aggregate else breached) & pending
+        cancel = (set(gross) if over_risk or over_gross else breached) & pending
         # Holdings already required to close go to zero; they never size others' cuts.
         held_gross = {s: v for s, v in held_gross.items() if s not in self._close}
         held_risk = {s: v for s, v in held_risk.items() if s not in self._close}
         total_risk = sum(held_risk.values(), Fraction(0))
         total_gross = sum(held_gross.values(), Fraction(0))
         group_gross = groups_of(held_gross)
+        exposed = {
+            p.symbol
+            for p in account.positions
+            if p.symbol in held_risk
+            and any(
+                (1 if p.quantity > 0 else -1) * (lot.entry_price - self._stops[p.symbol][0]) > 0
+                for lot in p.lots
+            )
+        }
+        exposed_risk = sum((held_risk[s] for s in exposed), Fraction(0))
+        risk_limit = capital * Fraction(3, 100)
+        common = Fraction(1)
+        if total_risk > risk_limit and exposed_risk:
+            # The spared holdings keep their size and still count their exit costs; the
+            # exposed ones share the cut to 90% of the limit, or go to zero if they can't.
+            spared = total_risk - exposed_risk
+            common = max(Fraction(0), (Fraction(9, 10) * risk_limit - spared) / exposed_risk)
         keep: dict[str, Fraction] = {}
         for symbol in held_gross:
-            factor = Fraction(1)
+            factor = common if symbol in exposed else Fraction(1)
             limits = (
                 (held_gross[symbol], capital / 5),
                 (held_risk[symbol], asset_cap(symbol)),
-                (total_risk, capital * Fraction(3, 100)),
                 (total_gross, capital * Fraction(8, 5)),
                 (group_gross[mapping.get(symbol, "unknown")], capital * Fraction(4, 5)),
             )
@@ -626,6 +666,48 @@ class PortfolioEngine:
             prior = self._trims.get(position.symbol)
             self._trims[position.symbol] = amount if prior is None else min(prior, amount)
             self._trim_reasons.setdefault(position.symbol, set()).add(reason)
+
+    def _cut_worse_fill(
+        self, key: str, event: FillEvent, adverse: Decimal, rules: Mapping[str, VenueRules]
+    ) -> None:
+        """Caller holds the lock. Cut a fill booked worse than planned to its approved risk.
+
+        Spec: the fill stays booked at its price, and its risk there (entry to the held
+        stop, its own entry fee and the planned exit costs) above the admission's approved
+        risk is reduced at once: the asset keeps what the approved risk allows, stepped
+        down, and zero closes it. Only this asset's pending increases are canceled, since
+        the venue did not honor its price bound. The breach and extra cost are recorded.
+        """
+        intent, admission = self._known_orders[key][0], self._admissions[key]
+        stop, fee, slip = self._stops[event.symbol]
+        exit_price = Fraction(planned_price(stop, -intent.side, slip, self._ticks[event.symbol]))
+        quantity, price = Fraction(event.quantity), Fraction(event.price)
+        planned = Fraction(adverse)
+        booked = Fraction(event.fee) + quantity * (
+            max(Fraction(0), intent.side * (price - exit_price)) + exit_price * Fraction(fee)
+        )
+        approved = Fraction(admission.risk) * quantity / Fraction(admission.quantity)
+        extra = (
+            intent.side * quantity * (price - planned)
+            + Fraction(event.fee)
+            - quantity * planned * Fraction(intent.fee_rate)
+        )
+        self._worse_fills[event.event_id] = WorseFill(
+            event.event_id,
+            event.symbol,
+            _decimal(max(Fraction(0), booked - approved)),
+            _decimal(extra),
+        )
+        account = self._account.snapshot()
+        keep: dict[str, Fraction] = {}
+        if booked > approved:
+            held = sum(
+                (Fraction(abs(p.quantity)) for p in account.positions if p.symbol == event.symbol),
+                Fraction(0),
+            )
+            # This fill keeps the quantity its approved risk buys at the booked risk.
+            keep[event.symbol] = (held - quantity + quantity * approved / booked) / held
+        self._apply_caps(account, rules, {event.symbol}, keep, "worse_fill_excess_risk")
 
     def _exit_reasons(self, symbol: str) -> set[str]:
         closing = self._close_reasons.get(symbol, set()) if symbol in self._close else set()
@@ -1024,12 +1106,10 @@ class PortfolioEngine:
                 adverse = planned_price(
                     intent.price, intent.side, intent.slippage_rate, intent.tick
                 )
-                if (
-                    not was_pending
-                    or intent.side * (event.price - adverse) > 0
-                    or event.fee > event.quantity * event.price * intent.fee_rate
-                ):
+                if not was_pending or event.fee > event.quantity * event.price * intent.fee_rate:
                     self._require_close(event.symbol, "post_fill_risk_breach")
+                elif intent.side * (event.price - adverse) > 0:
+                    self._cut_worse_fill(key, event, adverse, rules)
                 state = mark("increase", event.event_id)
                 cancel, keep = self._cap_reductions(state.account, state.recovery.risk_fraction)
                 self._apply_caps(state.account, rules, cancel, keep, "post_fill_risk_breach")
