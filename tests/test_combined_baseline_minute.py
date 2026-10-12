@@ -47,7 +47,7 @@ def hourly(count):
     return rows
 
 
-HOURS = hourly(WARMUP_DAYS * 24 + 48)
+HOURS = hourly(WARMUP_DAYS * 24 + 96)  # features for four days after T0
 SERIES = SeriesFeatures("TESTUSDT", HOURS)
 ENGINE = FeatureEngine(
     SERIES,

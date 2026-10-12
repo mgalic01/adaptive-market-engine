@@ -73,6 +73,7 @@ def comparison_report(
     adapter_pin: str,
     producer_issues: tuple[str, ...] = (),
     native_stop: str | None = None,
+    skipped_hours: tuple[int, ...] = (),
 ) -> Report:
     """Analyze the hour-stamped marks under the approved settlement policy.
 
@@ -82,6 +83,7 @@ def comparison_report(
     window end. Contributions must come from the baseline's own accounting.
     With a native stop the last mark is the account at the stop: every later hour
     to the window end holds its equity, labelled frozen, with nothing deployed.
+    ``skipped_hours`` are the registered window's: a daily return may span them.
     """
     if (
         not isinstance(arm, str)
@@ -186,4 +188,5 @@ def comparison_report(
         capital_observations=tuple(capitals),
         policy_evidence=policy,
         producer_issues=producer_issues,
+        skipped_hours=skipped_hours,
     )

@@ -216,8 +216,13 @@ def recovery_episodes(trace: StrategyTrace) -> tuple[RecoveryEpisode, ...]:
     return tuple(episodes)
 
 
-def strategy_report(trace: StrategyTrace, *, adapter_pin: str) -> Report:
-    """Analyze one replay under the approved settlement policy and its adapter pin."""
+def strategy_report(
+    trace: StrategyTrace, *, adapter_pin: str, skipped_hours: tuple[int, ...] = ()
+) -> Report:
+    """Analyze one replay under the approved settlement policy and its adapter pin.
+
+    ``skipped_hours`` are the registered window's: a daily return may span them.
+    """
     if not isinstance(adapter_pin, str) or not adapter_pin.strip():
         raise ValueError("adapter pin required")
     refs = trace.run.source_refs
@@ -298,4 +303,5 @@ def strategy_report(trace: StrategyTrace, *, adapter_pin: str) -> Report:
         capital_observations=tuple(capitals),
         policy_evidence=policy,
         producer_issues=tuple(issues),
+        skipped_hours=skipped_hours,
     )

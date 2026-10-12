@@ -21,17 +21,15 @@ from itertools import product
 from crypto_grid_bot.backtest.replay import PATH_MODES
 
 from .baseline_records import NATIVE_STOPS
-from .common_series import CommonSeries, common_hourly_series
+from .common_series import CommonSeries, common_hourly_series, skipped_hours_valid
 from .observation_policy import POLICY_ID, PolicyEvidence
 from .report import Report, analyze
 
-_BASELINES = frozenset(
-    (
-        "unchanged_v3_selector",
-        *(f"unchanged_v3_r{i}_long_only" for i in range(1, 7)),
-        "matched_spot_hold",
-    )
+# The frozen V3 baselines, the only frozen code that stops natively.
+_V3_BASELINES = frozenset(
+    ("unchanged_v3_selector", *(f"unchanged_v3_r{i}_long_only" for i in range(1, 7)))
 )
+_BASELINES = _V3_BASELINES | {"matched_spot_hold"}
 _V1_VARIANT = re.compile("[a-z0-9]+")
 _COMPONENTS = frozenset(
     (
@@ -48,7 +46,6 @@ _COMPONENTS = frozenset(
     )
 )
 _RESERVED = 1_735_689_600_000
-_HOUR = 3_600_000
 _DAY = 86_400_000
 SCENARIOS = ("open_low_high_close", "open_high_low_close")
 
@@ -76,7 +73,10 @@ class Window:
     ``skipped_hours`` are the hours some registered price source has no bar for,
     pinned with the data and skipped for every arm alike (owner, 2026-10-11): sorted
     hour stamps strictly inside the window, never its first hour or its last, whose
-    close is the terminal mark.
+    close is the terminal mark. The list is a registration fact this evaluator cannot
+    verify from outcomes: it must be derived mechanically from the pinned data (the
+    union of every registered source's missing bars inside the window) and frozen
+    before any run.
     """
 
     id: str
@@ -197,16 +197,6 @@ def _cost_profile_valid(profile: object) -> bool:
     )
 
 
-def _skipped_hours_valid(window: Window) -> bool:
-    hours = window.skipped_hours
-    return (
-        isinstance(hours, tuple)
-        and all(type(hour) is int and not hour % _HOUR for hour in hours)
-        and list(hours) == sorted(set(hours))
-        and all(window.start_ms < hour < window.end_ms - _HOUR for hour in hours)
-    )
-
-
 def _registration_errors(registration: Registration) -> list[str]:
     reg = registration
     errors: list[str] = []
@@ -313,7 +303,7 @@ def _registration_errors(registration: Registration) -> list[str]:
             errors.append(
                 "registration: daily metrics require UTC day endpoints and at least two days"
             )
-        elif not _skipped_hours_valid(window):
+        elif not skipped_hours_valid(window.skipped_hours, window.start_ms, window.end_ms):
             errors.append(
                 "registration: skipped hours must be sorted hours strictly inside the window, "
                 "never its first or last hour"
@@ -447,6 +437,7 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
             metrics_start_ms=report.metrics_start_ms,
             daily_samples=report.daily_samples,
             policy_evidence=report.policy_evidence,
+            skipped_hours=report.skipped_hours,
             utilization=report.utilization,
             capital_observations=report.capital_observations,
             producer_issues=report.producer_issues,
@@ -467,8 +458,11 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
         return None
 
 
-def _report_valid(row: RunOutcome) -> bool:
+def _report_valid(row: RunOutcome, skipped_hours: tuple[int, ...] = ()) -> bool:
+    """A report built against skipped hours the registration does not pin is foreign."""
     report = _matching_report(row, row.initial_equity)
+    if report is not None and not set(report.skipped_hours) <= set(skipped_hours):
+        return False
     if report is not None and (
         not isinstance(report.policy_evidence, PolicyEvidence)
         or report.policy_evidence.policy_id != row.identity.observation_policy
@@ -752,8 +746,10 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         if not _metrics_valid(row) or row.initial_equity != expected_capital:
             incomplete.append(f"{key}: invalid metrics or initial capital")
             continue
-        if row.native_stop is not None and identity.arm not in registration.baseline_arms:
-            incomplete.append(f"{key}: only a frozen baseline can end at a native stop")
+        if row.native_stop is not None and not (
+            identity.arm in registration.baseline_arms and identity.arm in _V3_BASELINES
+        ):
+            incomplete.append(f"{key}: only a frozen V3 baseline can end at a native stop")
             continue
         if row.wallet_quantity_exact is None:
             incomplete.append(f"{key}: wallet/quantity verification unavailable")
@@ -761,7 +757,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         if not row.complete or row.failed:
             incomplete.append(f"{key}: failed or incomplete attempt retained")
             continue
-        if not _report_valid(row):
+        if not _report_valid(row, skipped_hours):
             incomplete.append(f"{key}: missing, incomplete or mismatched report evidence")
             continue
         residual = abs(Fraction(row.accounting_residual))

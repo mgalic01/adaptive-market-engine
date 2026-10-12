@@ -8,6 +8,7 @@ source reference strings are retained, not fetched or cryptographically verified
 from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Context, Decimal, DecimalException, localcontext
 from fractions import Fraction
 
@@ -229,6 +230,9 @@ class Report:
     # Issues the evidence producer declared (for example a failed replay); retained so
     # a recomputation from the report's own fields reproduces it exactly.
     producer_issues: tuple[str, ...] = ()
+    # The registered window's skipped hours the report was built against; retained for
+    # the same reason. A daily return may span only these midnights.
+    skipped_hours: tuple[int, ...] = ()
 
 
 def _number(value: Decimal, *, nonnegative: bool = False) -> Fraction:
@@ -404,6 +408,7 @@ def _metrics(
     net_return: Decimal | None,
     drawdown: Decimal | None,
     policy_evidence: PolicyEvidence | None = None,
+    skipped_hours: tuple[int, ...] = (),
 ) -> tuple[Metric, ...]:
     try:
         boundaries = (
@@ -466,6 +471,23 @@ def _metrics(
         add("return_drawdown", None, "zero_drawdown")
     else:
         add("return_drawdown", _decimal(Fraction(net_return) / Fraction(drawdown), ratio=True))
+    # A daily return may span a registered skipped midnight (owner, 2026-10-11): the
+    # two days merge into one sample, and the definition names the merged dates. Any
+    # other missing daily sample leaves Sharpe unavailable.
+    skipped = frozenset(skipped_hours)
+    merged: list[int] = []
+    steps_valid = True
+    for a, b in zip(samples, samples[1:], strict=False):
+        spanned = range(a.timestamp_ms + 86_400_000, b.timestamp_ms, 86_400_000)
+        if b.timestamp_ms <= a.timestamp_ms or not all(day in skipped for day in spanned):
+            steps_valid = False
+            break
+        merged.extend(spanned)
+    if merged and steps_valid:
+        dates = ", ".join(
+            datetime.fromtimestamp(day // 1000, UTC).date().isoformat() for day in merged
+        )
+        definitions["sharpe"] += f" A return spans each skipped UTC midnight: {dates}."
     marks: dict[int, set[Decimal]] = {}
     for point in points:
         marks.setdefault(point.timestamp_ms, set()).add(point.equity)
@@ -490,10 +512,7 @@ def _metrics(
             )
             for p in samples
         )
-        or any(
-            b.timestamp_ms - a.timestamp_ms != 86_400_000
-            for a, b in zip(samples, samples[1:], strict=False)
-        )
+        or not steps_valid
     ):
         add("sharpe", None, "incomplete_or_unmatched_daily_samples")
     elif any(p.equity <= 0 for p in samples):
@@ -637,6 +656,7 @@ def analyze(
     capital_observations: tuple[CapitalObservation, ...] = (),
     policy_evidence: PolicyEvidence | None = None,
     producer_issues: tuple[str, ...] = (),
+    skipped_hours: tuple[int, ...] = (),
 ) -> Report:
     """Summarize observations without counterfactual claims or silent deduplication.
 
@@ -649,6 +669,8 @@ def analyze(
     must be available for complete=True; structural_complete separately describes the
     original evidence checks. Explicit daily samples and utilization intervals are
     reporting conventions only, never strategy inputs or acceptance-rule changes.
+    ``skipped_hours`` are the registered window's skipped hours; a daily return may
+    span only a skipped midnight. Acceptance checks them against the registration.
     """
     opening = _number(initial)
     if opening <= 0 or type(opportunity_gap_ms) is not int or opportunity_gap_ms <= 0:
@@ -664,6 +686,8 @@ def analyze(
         not isinstance(issue, str) or not issue.strip() for issue in producer_issues
     ):
         raise ValueError("producer issues must be nonempty strings")
+    if not isinstance(skipped_hours, tuple) or any(type(h) is not int for h in skipped_hours):
+        raise ValueError("skipped hours must be a tuple of integer hour stamps")
     issues: list[str] = list(producer_issues)
     for kind, records in (
         ("equity", points),
@@ -869,6 +893,7 @@ def analyze(
         ratio,
         drawdown,
         policy_evidence,
+        skipped_hours,
     )
     issues.extend(
         f"metric_unavailable:{m.name}:{m.unavailable_reason}" for m in metrics if m.value is None
@@ -913,4 +938,5 @@ def analyze(
         capital_observations,
         policy_evidence,
         tuple(producer_issues),
+        skipped_hours,
     )

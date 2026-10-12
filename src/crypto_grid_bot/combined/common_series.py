@@ -33,6 +33,19 @@ class CommonSeries:
     native_stop: str | None = None
 
 
+def skipped_hours_valid(skipped_hours: object, start_ms: int, end_ms: int) -> bool:
+    """Sorted unique hour stamps strictly inside the window, never its first hour or
+    its last (whose close is the terminal mark); the one rule for every caller."""
+    return (
+        isinstance(skipped_hours, tuple)
+        and all(
+            type(hour) is int and not hour % _HOUR and start_ms < hour < end_ms - _HOUR
+            for hour in skipped_hours
+        )
+        and list(skipped_hours) == sorted(set(skipped_hours))
+    )
+
+
 def _frozen_stop(point: EquityPoint) -> str | None:
     """The native stop named by a point's frozen label, if it has one."""
     stops = {
@@ -83,14 +96,7 @@ def common_hourly_series(
         or points[0].equity <= 0
     ):
         raise ValueError("finite identified observations at exact hourly window endpoints required")
-    if (
-        not isinstance(skipped_hours, tuple)
-        or any(
-            type(hour) is not int or hour % _HOUR or not start_ms < hour < end_ms - _HOUR
-            for hour in skipped_hours
-        )
-        or list(skipped_hours) != sorted(set(skipped_hours))
-    ):
+    if not skipped_hours_valid(skipped_hours, start_ms, end_ms):
         raise ValueError("skipped hours must be sorted hours inside, never first or last")
     boundaries = validate_boundaries(policy, tuple((p.timestamp_ms, p.id) for p in points))
     skipped = frozenset(skipped_hours)

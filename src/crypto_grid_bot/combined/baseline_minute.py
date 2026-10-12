@@ -187,6 +187,7 @@ def _evidence(
     adapter_pin: str,
     exact: bool,
     status: str | None,
+    skipped_hours: tuple[int, ...],
 ) -> BaselineEvidence:
     report = comparison_report(
         arm,
@@ -198,6 +199,7 @@ def _evidence(
         source_refs=source_refs,
         adapter_pin=adapter_pin,
         producer_issues=tuple(issues),
+        skipped_hours=skipped_hours,
     )
     residual = report.reconciliation_residual or Decimal(0)
     return BaselineEvidence(
@@ -223,6 +225,7 @@ def replay_grid_baseline(
     initial: Decimal,
     source_refs: tuple[str, ...],
     adapter_pin: str,
+    skipped_hours: tuple[int, ...] = (),
 ) -> BaselineEvidence:
     """Replay one frozen grid version and path mode per pair, as one portfolio."""
     if not jobs:
@@ -292,6 +295,7 @@ def replay_grid_baseline(
         adapter_pin=adapter_pin,
         exact=exact,
         status=status,
+        skipped_hours=skipped_hours,
     )
 
 
@@ -304,6 +308,7 @@ def replay_trend_baseline(
     initial: Decimal,
     source_refs: tuple[str, ...],
     adapter_pin: str,
+    skipped_hours: tuple[int, ...] = (),
 ) -> BaselineEvidence:
     """Replay frozen comparator D per pair and rebuild its marks from its journal."""
     if not jobs:
@@ -366,6 +371,7 @@ def replay_trend_baseline(
         adapter_pin=adapter_pin,
         exact=exact,
         status=None,
+        skipped_hours=skipped_hours,
     )
 
 

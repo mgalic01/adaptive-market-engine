@@ -1,8 +1,13 @@
+import math
 from dataclasses import replace
 from decimal import Decimal, localcontext
 
+import combined_market_fixtures as fx
 import pytest
+from test_combined_baseline_minute import CONFIG, ENGINE, T0, candle, run_config
 
+from crypto_grid_bot.combined.baseline_hold import HoldMarket, replay_hold_baseline
+from crypto_grid_bot.combined.baseline_minute import MinuteJob, replay_grid_baseline
 from crypto_grid_bot.combined.baseline_records import (
     BaselineEvidence,
     NativeMark,
@@ -134,8 +139,11 @@ def outcomes(reg: Registration) -> tuple[RunOutcome, ...]:
     return tuple(with_report(row) for row in rows)
 
 
-def with_report(row, *, hourly=True, missing=(), marks=None):
-    """``missing`` hours carry no mark; ``marks`` replaces the equity at given hours."""
+def with_report(row, *, hourly=True, missing=(), marks=None, skipped=()):
+    """``missing`` hours carry no mark; ``marks`` replaces the equity at given hours.
+
+    ``skipped`` are the skipped hours the report is built against.
+    """
     if not all(
         value.is_finite()
         for value in (
@@ -250,6 +258,7 @@ def with_report(row, *, hourly=True, missing=(), marks=None):
             ),
             scenario=row.identity.scenario,
         ),
+        skipped_hours=skipped,
     )
     return replace(row, report_evidence=ReportEvidence(row.identity, row.attempt_id, report))
 
@@ -1619,7 +1628,7 @@ def test_every_native_v3_stop_is_a_finished_result(status):
         ("other_stop", "frozen marks and native stop disagree"),
         ("liquidation_count", "liquidation or invalid accounting"),
         ("unknown_stop", "invalid metrics or initial capital"),
-        ("component", "only a frozen baseline can end at a native stop"),
+        ("component", "only a frozen V3 baseline can end at a native stop"),
     ],
 )
 def test_frozen_marks_need_the_matching_native_stop_of_a_baseline(alter, reason):
@@ -1642,3 +1651,115 @@ def test_frozen_marks_need_the_matching_native_stop_of_a_baseline(alter, reason)
     result = evaluate(reg, tuple(rows))
     assert result.status == "incomplete" and not result.failures
     assert any(reason in issue for issue in result.incomplete_reasons), result.incomplete_reasons
+
+
+@pytest.mark.parametrize("arm", ["matched_spot_hold", V2, "matched_d_trend_low_first"])
+def test_only_frozen_v3_baselines_can_end_at_a_native_stop(arm):
+    reg = registration()
+    rows, _ = frozen_baseline(
+        reg, stop_equity=D(9500), status="no_tradable_position", liquidations=0, arm=arm
+    )
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete" and not result.failures
+    assert any(
+        arm in issue and "only a frozen V3 baseline can end at a native stop" in issue
+        for issue in result.incomplete_reasons
+    )
+
+
+def test_a_report_cannot_claim_a_skipped_hour_the_registration_does_not_pin():
+    reg = registration()
+    rows = list(outcomes(reg))
+    hold = cell(rows, "matched_spot_hold")
+    rows[hold] = with_report(rows[hold], skipped=(DAY,))
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete" and not result.failures
+    assert any(
+        "matched_spot_hold" in issue and "report evidence" in issue
+        for issue in result.incomplete_reasons
+    )
+    assert evaluate(skipping(reg, (DAY,)), tuple(rows)).status == "pass"
+
+
+MIDNIGHT = T0 + DAY  # 2024-02-05 00:00 UTC
+
+
+def falling_minutes():
+    """Three days of slowly swinging, 3% falling minutes without the 00:00 minute of day two."""
+    fair = float(ENGINE.at(T0).fair_value)
+    rows = []
+    for index in range(3 * 1440):
+        if index == 1440:
+            continue
+        price = fair * (1 + 0.02 * math.sin(index / 97.0)) * (1 - 0.03 * index / (3 * 1440))
+        rows.append(candle(T0 + index * 60_000, price, price * 1.003, price * 0.997, price * 1.001))
+    return tuple(rows)
+
+
+def gap_registration(skipped=(MIDNIGHT,)):
+    reg = registration()
+    window = Window("window", T0, T0 + 3 * DAY, PIN, skipped_hours=skipped)
+    return replace(reg, windows=(window,))
+
+
+def adapter_cells(reg):
+    """The research, base-cost hold and V0 grid cells, replayed by their adapters."""
+    skipped = reg.windows[0].skipped_hours
+    rows = list(outcomes(reg))
+    hold = cell(rows, "matched_spot_hold")
+    markets = {
+        symbol: HoldMarket(
+            tuple(b for b in fx.hourly(fx.downtrend, 72, start=T0) if b.open_ms != MIDNIGHT),
+            fx.RULES,
+            fx.COSTS,
+        )
+        for symbol in ("BTCUSDT", "ETHUSDT")
+    }
+    held = replay_hold_baseline(
+        markets,
+        start_ms=T0,
+        end_ms=T0 + 3 * DAY,
+        initial=D(10000),
+        cost_multiple=1,
+        source_refs=("synthetic:hold",),
+        adapter_pin=PIN,
+        skipped_hours=skipped,
+    )
+    rows[hold] = baseline_outcome(held, rows[hold].identity, attempt_id=rows[hold].attempt_id)
+    grid = cell(rows, "matched_v0_grid_high_first")
+    jobs = {
+        symbol: MinuteJob(CONFIG, run_config(symbol), falling_minutes(), ENGINE)
+        for symbol in ("AAAUSDT", "BBBUSDT")
+    }
+    gridded = replay_grid_baseline(
+        "matched_v0_grid_high_first",
+        jobs,
+        start_ms=T0,
+        end_ms=T0 + 3 * DAY,
+        initial=D(10000),
+        source_refs=("synthetic:grid",),
+        adapter_pin=PIN,
+        skipped_hours=skipped,
+    )
+    rows[grid] = baseline_outcome(gridded, rows[grid].identity, attempt_id=rows[grid].attempt_id)
+    return rows, (hold, grid)
+
+
+def test_a_skipped_midnight_keeps_the_hold_and_minute_baselines_complete():
+    reg = gap_registration()
+    rows, cells = adapter_cells(reg)
+    for index in cells:
+        row = rows[index]
+        report = row.report_evidence.report
+        assert row.complete and report.complete, report.issues
+        assert MIDNIGHT not in {p.timestamp_ms for p in report.equity_points}
+        sharpe = next(m for m in report.metrics if m.name == "sharpe")
+        assert sharpe.value is not None and "2024-02-05" in sharpe.definition
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "pass", (result.failures, result.incomplete_reasons)
+    assert result.skipped_hours == (("window", (MIDNIGHT,)),)
+    # Unregistered, the same gap leaves both cells incomplete.
+    unregistered = evaluate(gap_registration(()), tuple(rows))
+    assert unregistered.status == "incomplete" and not unregistered.failures
+    for arm in ("matched_spot_hold", "matched_v0_grid_high_first"):
+        assert any(arm in issue for issue in unregistered.incomplete_reasons)

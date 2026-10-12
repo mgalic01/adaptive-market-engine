@@ -461,6 +461,41 @@ def test_millisecond_cagr_overflow_is_unavailable_without_crashing_report():
     assert result.final_equity == 200 and result.net_return == 1
 
 
+def test_a_daily_return_spans_only_a_registered_skipped_midnight():
+    points = (EquityPoint(0, D(100)), EquityPoint(2 * DAY, D(110)), EquityPoint(3 * DAY, D(132)))
+    merged = metrics_report(points, metrics_start_ms=0, daily_samples=points, skipped_hours=(DAY,))
+    with localcontext() as ctx:
+        ctx.prec = 60
+        expected = D(".15") / D(".005").sqrt() * D(365).sqrt()
+    sharpe = metric(merged, "sharpe")
+    assert sharpe.value == expected  # .10 over the two merged days, then .20
+    assert "1970-01-02" in sharpe.definition  # the merge is disclosed
+    assert merged.skipped_hours == (DAY,)
+    # A missing midnight that is not a registered skipped hour stays incomplete.
+    for skipped in ((), (DAY + HOUR,), (2 * DAY,)):
+        result = metrics_report(
+            points, metrics_start_ms=0, daily_samples=points, skipped_hours=skipped
+        )
+        assert metric(result, "sharpe").value is None
+        assert (
+            metric(result, "sharpe").unavailable_reason == "incomplete_or_unmatched_daily_samples"
+        )
+    # With every midnight sampled, a skipped hour changes nothing.
+    regular = (EquityPoint(0, D(100)), EquityPoint(DAY, D(110)), EquityPoint(2 * DAY, D(132)))
+    plain = metrics_report(regular, metrics_start_ms=0, daily_samples=regular)
+    skipped = metrics_report(
+        regular, metrics_start_ms=0, daily_samples=regular, skipped_hours=(DAY,)
+    )
+    assert metric(skipped, "sharpe") == metric(plain, "sharpe")
+
+
+@pytest.mark.parametrize("skipped", [[DAY], (True,), (str(DAY),)])
+def test_malformed_skipped_hours_are_refused(skipped):
+    points = (EquityPoint(0, D(100)), EquityPoint(2 * DAY, D(110)), EquityPoint(3 * DAY, D(132)))
+    with pytest.raises(ValueError, match="skipped hours"):
+        metrics_report(points, metrics_start_ms=0, daily_samples=points, skipped_hours=skipped)
+
+
 def test_missing_daily_endpoint_is_unavailable_without_using_partial_period():
     points = (EquityPoint(0, D(100)), EquityPoint(DAY, D(110)), EquityPoint(2 * DAY, D(99)))
     result = metrics_report(points, metrics_start_ms=0, daily_samples=points[:-1])

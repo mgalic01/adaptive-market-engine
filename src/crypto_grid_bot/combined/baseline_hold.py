@@ -42,6 +42,7 @@ def replay_hold_baseline(
     cost_multiple: int,
     source_refs: tuple[str, ...],
     adapter_pin: str,
+    skipped_hours: tuple[int, ...] = (),
 ) -> BaselineEvidence:
     """Buy equal cash of every coin at the first opening quote and hold to the end.
 
@@ -135,6 +136,7 @@ def replay_hold_baseline(
         source_refs=source_refs,
         adapter_pin=adapter_pin,
         producer_issues=tuple(issues),
+        skipped_hours=skipped_hours,
     )
     return BaselineEvidence(
         HOLD,

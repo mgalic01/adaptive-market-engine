@@ -59,6 +59,37 @@ def test_doubled_cost_doubles_fee_and_slippage():
     assert doubled.report.final_equity < base.report.final_equity
 
 
+def test_a_missing_midnight_bar_is_complete_only_when_registered_as_skipped():
+    midnight = fx.START + fx.DAY
+    gapped = {
+        symbol: replace(market, hourly=tuple(b for b in market.hourly if b.open_ms != midnight))
+        for symbol, market in markets().items()
+    }
+
+    def run(skipped):
+        return replay_hold_baseline(
+            gapped,
+            start_ms=fx.START,
+            end_ms=fx.START + 3 * fx.DAY,
+            initial=D(10000),
+            cost_multiple=1,
+            source_refs=("synthetic:hold",),
+            adapter_pin=PIN,
+            skipped_hours=skipped,
+        )
+
+    skipped = run((midnight,))
+    assert skipped.report.complete, skipped.report.issues
+    assert midnight not in {p.timestamp_ms for p in skipped.report.equity_points}
+    sharpe = next(m for m in skipped.report.metrics if m.name == "sharpe")
+    assert sharpe.value is not None and "2020-12-23" in sharpe.definition
+    unskipped = run(())
+    assert not unskipped.report.complete
+    assert "metric_unavailable:sharpe:incomplete_or_unmatched_daily_samples" in (
+        unskipped.report.issues
+    )
+
+
 def test_invalid_cost_multiple_is_refused():
     with pytest.raises(ValueError):
         hold(cost=3)
