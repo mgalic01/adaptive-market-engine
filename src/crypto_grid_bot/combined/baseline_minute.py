@@ -3,7 +3,9 @@
 Owner decisions of 2026-10-11 (docs/V3_1_SOURCE_INVENTORY.md): these are matched
 baselines; each native path mode is its own arm; the frozen code takes capital as a
 setting, so each pair receives an equal share; the final minute's close is the
-window-end value (disclosed native timing). Trading logic is never changed:
+window-end value (disclosed native timing). A share is floored to 8 decimals when the
+capital does not split exactly; the remainder stays uninvested cash in every equity
+mark, never traded, and is disclosed. Trading logic is never changed:
 
 - grids run the frozen ``backtest.replay.replay`` with a read-only recorder that
   substitutes the simulator by a subclass whose ``step`` returns its parent's
@@ -27,7 +29,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
-from decimal import Decimal, localcontext
+from decimal import ROUND_FLOOR, Decimal, localcontext
 from threading import Lock
 from typing import Any
 
@@ -161,13 +163,26 @@ def _refuse_trend_inputs(jobs: Mapping[str, TrendJob], start_ms: int, end_ms: in
         refuse_sealed(job.closes._closes, f"{symbol} daily closes")  # no accessor either
 
 
-def _shares(initial: Decimal, symbols: Sequence[str]) -> Decimal:
+def _shares(initial: Decimal, symbols: Sequence[str]) -> tuple[Decimal, Decimal]:
+    """Each pair's equal share, and the remainder the pairs leave as uninvested cash.
+
+    An exact split at 8 decimals or fewer is used as it is; otherwise the share is
+    floored to 8 decimals and the rest of the capital stays cash, never traded.
+    """
+    count = len(symbols)
     with localcontext() as context:
         context.prec = 60
-        share = initial / len(symbols)
-    if share * len(symbols) != initial or share.as_tuple().exponent < -8:  # type: ignore[operator]
-        raise ValueError("capital must split exactly into equal pair shares")
-    return share
+        share = initial / count
+        if share * count != initial or share.as_tuple().exponent < -8:  # type: ignore[operator]
+            share = share.quantize(Decimal("1e-8"), rounding=ROUND_FLOOR)
+        remainder = initial - share * count
+    if share <= 0:
+        raise ValueError("capital must give each pair a positive share")
+    return share, remainder
+
+
+def _remainder_disclosures(remainder: Decimal) -> tuple[str, ...]:
+    return (f"minute_baseline_capital_remainder_cash:{remainder:f}",) if remainder else ()
 
 
 def _portfolio(
@@ -177,9 +192,17 @@ def _portfolio(
     ],
     *,
     initial: Decimal,
+    remainder: Decimal,
     start_ms: int,
     end_ms: int,
 ) -> tuple[list[NativeMark], list[str]]:
+    """The portfolio's marks: the pairs' totals plus the uninvested remainder cash."""
+
+    def total(values: list[Decimal], cash: Decimal) -> Decimal:
+        with localcontext() as context:
+            context.prec = 60
+            return sum(values, Decimal(0)) + cash
+
     marks = [NativeMark(start_ms, "before_frames", initial, Decimal(0), Decimal(0))]
     issues: list[str] = []
     for hour in range(start_ms, end_ms, HOUR):
@@ -189,8 +212,8 @@ def _portfolio(
                 NativeMark(
                     hour,
                     "opening_quote",
-                    sum((v[0] for v in values if v is not None), Decimal(0)),
-                    sum((v[1] for v in values if v is not None), Decimal(0)),
+                    total([v[0] for v in values if v is not None], remainder),
+                    total([v[1] for v in values if v is not None], Decimal(0)),
                     Decimal(0),
                 )
             )
@@ -200,8 +223,8 @@ def _portfolio(
             NativeMark(
                 end_ms,
                 "final_minute_close",
-                sum((last[1] for last in lasts if last is not None), Decimal(0)),
-                sum((last[2] for last in lasts if last is not None), Decimal(0)),
+                total([last[1] for last in lasts if last is not None], remainder),
+                total([last[2] for last in lasts if last is not None], Decimal(0)),
                 Decimal(0),
             )
         )
@@ -226,6 +249,7 @@ def _evidence(
     status: str | None,
     skipped_hours: tuple[int, ...],
     capital_label: str | None,
+    remainder: Decimal,
 ) -> BaselineEvidence:
     report = comparison_report(
         arm,
@@ -241,6 +265,7 @@ def _evidence(
         disclosures=(
             "minute_baseline_final_minute_close_is_window_end",
             "equal_capital_share_per_pair",
+            *_remainder_disclosures(remainder),
             SAVED_FILTERS_DISCLOSURE,
         ),
         capital_label=capital_label,
@@ -276,7 +301,7 @@ def replay_grid_baseline(
     if not jobs:
         raise ValueError("at least one pair job required")
     _refuse_grid_inputs(jobs, start_ms, end_ms)
-    share = _shares(initial, sorted(jobs))
+    share, remainder = _shares(initial, sorted(jobs))
     per_pair: dict[str, _PairMarks] = {}
     contributions: list[Contribution] = []
     issues: list[str] = []
@@ -326,7 +351,7 @@ def replay_grid_baseline(
             )
         )
     marks, portfolio_issues = _portfolio(
-        arm, per_pair, initial=initial, start_ms=start_ms, end_ms=end_ms
+        arm, per_pair, initial=initial, remainder=remainder, start_ms=start_ms, end_ms=end_ms
     )
     return _evidence(
         arm,
@@ -343,6 +368,7 @@ def replay_grid_baseline(
         status=status,
         skipped_hours=skipped_hours,
         capital_label=capital_label,
+        remainder=remainder,
     )
 
 
@@ -362,7 +388,7 @@ def replay_trend_baseline(
     if not jobs:
         raise ValueError("at least one pair job required")
     _refuse_trend_inputs(jobs, start_ms, end_ms)
-    share = _shares(initial, sorted(jobs))
+    share, remainder = _shares(initial, sorted(jobs))
     per_pair: dict[str, _PairMarks] = {}
     contributions: list[Contribution] = []
     issues: list[str] = []
@@ -405,7 +431,7 @@ def replay_trend_baseline(
             )
         )
     marks, portfolio_issues = _portfolio(
-        arm, per_pair, initial=initial, start_ms=start_ms, end_ms=end_ms
+        arm, per_pair, initial=initial, remainder=remainder, start_ms=start_ms, end_ms=end_ms
     )
     return _evidence(
         arm,
@@ -422,6 +448,7 @@ def replay_trend_baseline(
         status=None,
         skipped_hours=skipped_hours,
         capital_label=capital_label,
+        remainder=remainder,
     )
 
 

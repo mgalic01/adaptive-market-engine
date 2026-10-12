@@ -144,17 +144,77 @@ def test_a_missing_opening_minute_leaves_that_boundary_absent():
         )
 
 
-def test_capital_must_split_exactly_across_pairs():
-    with pytest.raises(ValueError):
-        replay_grid_baseline(
-            "matched_v0_grid_high_first",
-            {**grid_jobs(), "CCCUSDT": grid_jobs()["AAAUSDT"]},
-            start_ms=T0,
-            end_ms=T0 + DAY,
-            initial=D(10000),
-            source_refs=("s",),
-            adapter_pin=PIN,
+THREE = ("AAAUSDT", "BBBUSDT", "CCCUSDT")
+OWNER_SMALL = f"owner_small:EUR:100:usdt_per_eur=1.04:fx_pin={'e' * 64}"
+
+
+@pytest.mark.parametrize(
+    ("initial", "share", "remainder", "label"),
+    [
+        ("10000", "3333.33333333", "0.00000001", "research_10000_usdt"),
+        # Owner-small at 1.04 USDT per EUR: 104 / 3 has no exact 8-decimal share either.
+        ("104", "34.66666666", "0.00000002", OWNER_SMALL),
+    ],
+)
+def test_an_inexact_split_keeps_its_remainder_as_uninvested_cash(initial, share, remainder, label):
+    # Each pair gets the equal share floored to 8 decimals; the remainder stays cash in
+    # every equity mark, never traded, and the report discloses it.
+    jobs = {symbol: MinuteJob(CONFIG, run_config(symbol), minutes(), ENGINE) for symbol in THREE}
+    evidence = replay_grid_baseline(
+        "matched_v0_grid_high_first",
+        jobs,
+        start_ms=T0,
+        end_ms=T0 + DAY,
+        initial=D(initial),
+        source_refs=("synthetic:grid",),
+        adapter_pin=PIN,
+        capital_label=label,
+    )
+    report = evidence.report
+    # A one-day window has too few daily samples for Sharpe; the evidence itself is sound.
+    assert evidence.status is None and report.structural_complete, report.issues
+    assert report.reconciliation_residual == 0 and evidence.accounting_explained
+    assert f"minute_baseline_capital_remainder_cash:{remainder}" in report.disclosures
+    job = jobs["AAAUSDT"]
+    with recorded_frames() as frames:
+        pair, _ = replay(
+            job.config, replace(job.run, initial_quote=D(share)), job.minutes, job.features
         )
+    # The three pairs replay identical inputs: each mark is three pair totals plus the cash.
+    hour = T0 + HOUR_MS
+    marked = {o.timestamp_ms: o for o in report.capital_observations}[hour]
+    assert marked.equity == 3 * frames.hours[hour][0] + D(remainder)
+    assert marked.spot_value == 3 * frames.hours[hour][1]
+    assert report.equity_points[0].equity == D(initial)
+    assert report.final_equity == 3 * pair.final_equity + D(remainder)
+    assert report.net_profit == 3 * (pair.final_equity - D(share))
+
+
+def test_comparator_d_keeps_an_inexact_split_remainder_as_cash():
+    base = trend_jobs()["AAAUSDT"]
+    evidence = replay_trend_baseline(
+        "matched_d_trend_high_first",
+        {symbol: replace(base, run=run_config(symbol)) for symbol in THREE},
+        start_ms=T0,
+        end_ms=T0 + DAY,
+        initial=D(10000),
+        source_refs=("synthetic:d",),
+        adapter_pin=PIN,
+    )
+    assert not [issue for issue in evidence.report.issues if "journal_parity" in issue]
+    assert evidence.report.reconciliation_residual == 0
+    assert "minute_baseline_capital_remainder_cash:0.00000001" in evidence.report.disclosures
+    assert evidence.report.equity_points[0].equity == 10000
+
+
+def test_an_exact_split_has_no_remainder_cash():
+    evidence = grid()  # 2000 over two pairs
+    assert evidence.report.reconciliation_residual == 0
+    assert not [
+        note
+        for note in evidence.report.disclosures
+        if note.startswith("minute_baseline_capital_remainder_cash")
+    ]
 
 
 def test_an_engine_failure_is_retained_and_incomplete(monkeypatch):
