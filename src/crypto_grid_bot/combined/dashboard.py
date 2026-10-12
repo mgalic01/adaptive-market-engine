@@ -290,7 +290,10 @@ def _verdicts(row: BaselineComparison | None) -> tuple[str, str]:
 def _comparison(
     report: Report, comparison: CellComparison | None, native: Sequence[NativeDiagnostics]
 ) -> str:
-    """Acceptance's judgment of this report's cell, displayed as given, never recomputed."""
+    """Acceptance's judgment of this report's cell, displayed as given, never recomputed.
+
+    A cell of another capital than the report's label names is refused.
+    """
     if comparison is None:
         table = '<p class="empty">Not supplied</p>'
     else:
@@ -298,6 +301,12 @@ def _comparison(
             type(row) is not BaselineComparison for row in comparison.rows
         ):
             raise ValueError("comparison must be acceptance's CellComparison")
+        label = report.capital_label
+        # ``research_10000_usdt`` or ``owner_small:EUR:...``: the kind names the capital id.
+        if label is not None and comparison.capital != (
+            "research" if label == "research_10000_usdt" else label.partition(":")[0]
+        ):
+            raise ValueError("comparison cell is of another capital than this report's label")
         cell = (
             comparison.window,
             comparison.capital,
