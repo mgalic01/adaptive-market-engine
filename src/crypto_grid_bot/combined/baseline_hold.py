@@ -47,7 +47,7 @@ def replay_hold_baseline(
 
     ``cost_multiple`` scales the registered fee and slippage rates (1 or 2). Every
     window hour needs a bar for every coin; a missing bar leaves that boundary absent
-    and the comparison incomplete, never a pass.
+    and the comparison incomplete, never a pass, unless the registration skips it.
     """
     if (
         not markets

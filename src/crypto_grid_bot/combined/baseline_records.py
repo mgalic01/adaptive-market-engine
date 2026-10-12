@@ -6,13 +6,16 @@ baseline's trading logic, outputs and timestamps are never changed: every native
 mark stays in its labelled diagnostics, and the comparison report uses only the
 marks a baseline records exactly at UTC hour boundaries (proposal point 5). A
 missing hourly mark leaves that boundary absent, so the comparison is incomplete,
-never a pass. Outputs are never scaled.
+never a pass, unless the registration skips that hour for every arm. A baseline
+that ended under its own rules is a finished result: its stop equity is held to
+the window end, each such mark labelled frozen. Outputs are never scaled.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
+from .common_series import FROZEN_REF
 from .observation_policy import POLICY_ID, Boundary, PolicyEvidence
 from .report import (
     CapitalObservation,
@@ -25,6 +28,12 @@ from .report import (
 
 HOUR = 3_600_000
 DAY = 24 * HOUR
+# Stops that end a frozen baseline under its own rules, a finished result (owner,
+# 2026-10-11). Only frozen V3 stops this way: the minute replays (V0-V2 grids, D)
+# and the hold run to the window end (a grid halt restarts by itself; D never
+# halts). An engine or parity failure, a missing input, V3's unavailable exclusion
+# close or a selector without a pick is not a native stop and stays incomplete.
+NATIVE_STOPS = frozenset({"liquidation", "no_tradable_position", "leverage_not_restored"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +72,7 @@ def comparison_report(
     source_refs: tuple[str, ...],
     adapter_pin: str,
     producer_issues: tuple[str, ...] = (),
+    native_stop: str | None = None,
 ) -> Report:
     """Analyze the hour-stamped marks under the approved settlement policy.
 
@@ -70,6 +80,8 @@ def comparison_report(
     opening selects the first (before costs), later boundaries the last. Marks
     between hours remain native diagnostics only. The terminal boundary is the
     window end. Contributions must come from the baseline's own accounting.
+    With a native stop the last mark is the account at the stop: every later hour
+    to the window end holds its equity, labelled frozen, with nothing deployed.
     """
     if (
         not isinstance(arm, str)
@@ -81,6 +93,8 @@ def comparison_report(
         or not 0 <= start_ms < end_ms
     ):
         raise ValueError("identified UTC-day comparison window required")
+    if native_stop is not None and native_stop not in NATIVE_STOPS:
+        raise ValueError("unknown native stop")
     points: list[EquityPoint] = []
     groups: dict[int, list[str]] = {}
     capital: dict[str, NativeMark] = {}
@@ -95,6 +109,14 @@ def comparison_report(
         )
         groups.setdefault(mark.timestamp_ms, []).append(identity)
         capital[identity] = mark
+    if native_stop is not None and marks:
+        stop, label = marks[-1], f"{FROZEN_REF}{native_stop}"
+        after_stop = max(start_ms, stop.timestamp_ms // HOUR * HOUR + HOUR)
+        for hour in range(after_stop, end_ms + HOUR, HOUR):
+            identity = f"{arm}:frozen:{hour}"
+            points.append(EquityPoint(hour, stop.equity, identity, (*source_refs, label)))
+            groups.setdefault(hour, []).append(identity)
+            capital[identity] = NativeMark(hour, "frozen", stop.equity, Decimal(0), Decimal(0))
     boundaries: list[Boundary] = []
     capitals: list[CapitalObservation] = []
     for hour in range(start_ms, end_ms + HOUR, HOUR):

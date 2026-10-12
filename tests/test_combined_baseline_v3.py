@@ -1,6 +1,7 @@
 """Frozen V3 baselines on the common-hourly schedule; synthetic inputs, never market data."""
 
 import math
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal as D
 
@@ -16,7 +17,9 @@ from crypto_grid_bot.combined.baseline_v3 import (
     v3_capital,
     window_picks,
 )
+from crypto_grid_bot.combined.common_series import FROZEN_REF
 from crypto_grid_bot.trend import replay as v3_replay
+from crypto_grid_bot.trend import runner as v3_runner
 from crypto_grid_bot.trend.decisions import DailyDecisions
 from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.replay import replay_window
@@ -188,6 +191,48 @@ def test_unknown_or_baseline_less_arms_are_refused():
         run("combined")
     assert set(LONG_RULES) == {f"unchanged_v3_r{i}_long_only" for i in range(1, 7)}
     assert baseline_v3.V3_MULTIPLE == 2
+
+
+@pytest.mark.parametrize("stop", ["no_tradable_position", "leverage_not_restored"])
+def test_a_native_v3_stop_is_a_finished_result_frozen_to_the_window_end(monkeypatch, stop):
+    # Simulate the frozen engine reporting its own stop at 06:00 on day two; the runner's
+    # own bookkeeping (lifecycle censoring, audit, stopped reason) runs unchanged.
+    original = v3_runner.execute_hour
+    stop_hour = START + 30 * HOUR
+
+    def stopping(account, hour_ms, *args, **kwargs):
+        result = original(account, hour_ms, *args, **kwargs)
+        return replace(result, reason=stop) if hour_ms == stop_hour else result
+
+    monkeypatch.setattr(v3_runner, "execute_hour", stopping)
+    evidence = run()
+    assert evidence.status == stop and evidence.liquidations == 0
+    assert evidence.accounting_explained and evidence.wallet_quantity_exact
+    assert f"baseline_native_stop_equity_frozen:{stop}" in evidence.disclosures
+    report = evidence.report
+    assert not [i for i in report.issues if i != "contribution_equity_residual"], report.issues
+    last = evidence.native[-1]
+    assert stop_hour <= last.timestamp_ms < stop_hour + HOUR
+    frozen = [p for p in report.equity_points if p.timestamp_ms > last.timestamp_ms]
+    assert [p.timestamp_ms for p in frozen] == list(range(stop_hour + HOUR, END + HOUR, HOUR))
+    assert all(p.equity == last.equity and FROZEN_REF + stop in p.source_refs for p in frozen)
+    assert report.final_equity == last.equity
+
+
+def test_an_engine_failure_is_not_a_native_stop(monkeypatch):
+    original = v3_runner.execute_hour
+
+    def failing(account, hour_ms, *args, **kwargs):
+        if hour_ms == START + 30 * HOUR:
+            raise ValueError("synthetic engine failure")
+        return original(account, hour_ms, *args, **kwargs)
+
+    monkeypatch.setattr(v3_runner, "execute_hour", failing)
+    evidence = run()
+    assert evidence.status == "engine_failure"
+    assert not evidence.report.complete
+    refs = [ref for point in evidence.report.equity_points for ref in point.source_refs]
+    assert not any(ref.startswith(FROZEN_REF) for ref in refs)
 
 
 def test_a_trading_rule_gives_a_fully_complete_comparison_report():

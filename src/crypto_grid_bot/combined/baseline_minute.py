@@ -14,8 +14,11 @@ window-end value (disclosed native timing). Trading logic is never changed:
 
 An hour boundary is the account after that hour's opening quote (the quote stamped
 exactly at the hour). A missing opening minute leaves that boundary absent, so the
-comparison is incomplete, never a pass. The registered job preparation owns the
-data, the path mode, the version's policy and its declared doubled-cost rules.
+comparison is incomplete, never a pass, unless the registration skips that hour.
+A grid halt restarts by itself and D never halts: these replays have no native early
+stop, so a stopped minute baseline is a failure (``baseline_records.NATIVE_STOPS``).
+The registered job preparation owns the data, the path mode, the version's policy
+and its declared doubled-cost rules.
 """
 
 from collections.abc import Callable, Iterator, Mapping, Sequence

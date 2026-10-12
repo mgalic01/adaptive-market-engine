@@ -3,6 +3,13 @@
 The caller supplies an already frozen registration and observed outcomes. These
 records do not authorize execution. Every window/capital is judged separately;
 repeated attempts never replace failures or become independent observations.
+
+Baselines (owner decision 2026-10-11, "V3 family, hold, V0-V2 and D") are named
+``unchanged_v3_selector``, ``unchanged_v3_r<1..6>_long_only``, ``matched_spot_hold``
+and, in each native path mode ``<mode>`` of ``backtest.replay.PATH_MODES``,
+``matched_v0_grid_<mode>``, ``matched_v1_<variant>_grid_<mode>`` for every V1
+variant the registration pins, ``matched_v2_grid_<mode>`` and
+``matched_d_trend_<mode>``. A registration names exactly these baselines.
 """
 
 import re
@@ -11,6 +18,9 @@ from decimal import Decimal
 from fractions import Fraction
 from itertools import product
 
+from crypto_grid_bot.backtest.replay import PATH_MODES
+
+from .baseline_records import NATIVE_STOPS
 from .common_series import CommonSeries, common_hourly_series
 from .observation_policy import POLICY_ID, PolicyEvidence
 from .report import Report, analyze
@@ -22,6 +32,7 @@ _BASELINES = frozenset(
         "matched_spot_hold",
     )
 )
+_V1_VARIANT = re.compile("[a-z0-9]+")
 _COMPONENTS = frozenset(
     (
         "spot_trend",
@@ -37,8 +48,23 @@ _COMPONENTS = frozenset(
     )
 )
 _RESERVED = 1_735_689_600_000
+_HOUR = 3_600_000
 _DAY = 86_400_000
 SCENARIOS = ("open_low_high_close", "open_high_low_close")
+
+
+def required_baselines(v1_variants: tuple[str, ...]) -> frozenset[str]:
+    """Every baseline arm the owner requires, by the documented names."""
+    return _BASELINES | {
+        name
+        for mode in PATH_MODES
+        for name in (
+            f"matched_v0_grid_{mode}",
+            *(f"matched_v1_{variant}_grid_{mode}" for variant in v1_variants),
+            f"matched_v2_grid_{mode}",
+            f"matched_d_trend_{mode}",
+        )
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,12 +73,17 @@ class Window:
 
     A later adapter may support a prior-interval closing mark at the boundary only
     under a reviewed endpoint policy; this evaluator does not infer that meaning.
+    ``skipped_hours`` are the hours some registered price source has no bar for,
+    pinned with the data and skipped for every arm alike (owner, 2026-10-11): sorted
+    hour stamps strictly inside the window, never its first hour or its last, whose
+    close is the terminal mark.
     """
 
     id: str
     start_ms: int
     end_ms: int
     data_pin: str
+    skipped_hours: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +109,7 @@ class Registration:
     observation_policy: str | None = None
     adapter_pins: tuple[tuple[str, str], ...] = ()
     scenarios: tuple[str, ...] = ()
+    v1_variants: tuple[str, ...] = ()  # pinned V1 grid variants: lowercase letters, digits
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +166,7 @@ class RunOutcome:
     attempt_id: str = ""
     wallet_quantity_exact: bool | None = None
     report_evidence: ReportEvidence | None = None
+    native_stop: str | None = None  # a frozen baseline that ended under its own rules
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +175,7 @@ class AcceptanceResult:
     failures: tuple[str, ...]
     incomplete_reasons: tuple[str, ...]
     outcomes: tuple[RunOutcome, ...]
+    skipped_hours: tuple[tuple[str, tuple[int, ...]], ...] = ()  # per window id
 
 
 def _pin(value: str | None, length: int = 64) -> bool:
@@ -163,6 +197,16 @@ def _cost_profile_valid(profile: object) -> bool:
     )
 
 
+def _skipped_hours_valid(window: Window) -> bool:
+    hours = window.skipped_hours
+    return (
+        isinstance(hours, tuple)
+        and all(type(hour) is int and not hour % _HOUR for hour in hours)
+        and list(hours) == sorted(set(hours))
+        and all(window.start_ms < hour < window.end_ms - _HOUR for hour in hours)
+    )
+
+
 def _registration_errors(registration: Registration) -> list[str]:
     reg = registration
     errors: list[str] = []
@@ -176,23 +220,39 @@ def _registration_errors(registration: Registration) -> list[str]:
     )
     arms = set(reg.arms) if arms_valid else set()
     baselines = set(reg.baseline_arms) if baselines_valid else set()
+    variants = reg.v1_variants
+    variants_valid = (
+        isinstance(variants, tuple)
+        and bool(variants)
+        and all(isinstance(v, str) and _V1_VARIANT.fullmatch(v) for v in variants)
+        and len(set(variants)) == len(variants)
+    )
+    if not variants_valid:
+        errors.append("registration: a nonempty list of unique V1 variant names required")
+    required = required_baselines(variants if variants_valid else ())
     if (
         not arms_valid
         or len(arms) != len(reg.arms)
-        or not arms >= (_BASELINES | _COMPONENTS)
+        or not arms >= (required | _COMPONENTS)
         or "matched_spot_baselines" in arms
     ):
         errors.append("registration: fixed menu missing, duplicated or unexpanded")
     if (
         not baselines_valid
         or len(baselines) != len(reg.baseline_arms)
-        or not baselines >= _BASELINES
-        or not baselines - _BASELINES
+        or baselines != required
         or not baselines <= arms
         or bool(baselines & _COMPONENTS)
         or not arms <= baselines | _COMPONENTS
     ):
         errors.append("registration: every earlier baseline and explicit spot expansion required")
+    if baselines_valid:
+        if missing := sorted(required - baselines):
+            errors.append(f"registration: baselines missing: {', '.join(missing)}")
+        if unknown := sorted(baselines - required - _COMPONENTS):
+            errors.append(
+                f"registration: baselines outside the documented names: {', '.join(unknown)}"
+            )
     if reg.pending:
         errors.append("registration: unresolved pins or decisions")
     if (
@@ -252,6 +312,11 @@ def _registration_errors(registration: Registration) -> list[str]:
             # this does not select an intratimestamp observation/sampling policy.
             errors.append(
                 "registration: daily metrics require UTC day endpoints and at least two days"
+            )
+        elif not _skipped_hours_valid(window):
+            errors.append(
+                "registration: skipped hours must be sorted hours strictly inside the window, "
+                "never its first or last hour"
             )
     if (
         len(capitals) != 2
@@ -322,6 +387,10 @@ def _metrics_valid(row: RunOutcome) -> bool:
         and type(row.liquidations) is int
         and row.liquidations >= 0
         and (row.wallet_quantity_exact is None or type(row.wallet_quantity_exact) is bool)
+        and (
+            row.native_stop is None
+            or (type(row.native_stop) is str and row.native_stop in NATIVE_STOPS)
+        )
         and all(
             type(flag) is bool
             for flag in (
@@ -575,6 +644,9 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
     failures remain failures without them. Zero-DD ratios remain indeterminate.
     Every component requires both modeled scenarios; the same native baseline
     control is compared to each separately, never counted as an extra trial.
+    Comparisons skip each window's registered skipped hours for every arm alike;
+    the 30% drawdown gate still uses every native mark. A baseline that ended at a
+    native stop is a finished result held frozen at its stop equity, still to beat.
     """
     retained = tuple(outcomes)
     malformed = sum(not _outcome_shape_valid(row) for row in retained)
@@ -595,7 +667,9 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             retained,
         )
     failures: list[str] = []
-    expected: dict[tuple[str, str, str, int, str | None], tuple[RunIdentity, Decimal]] = {}
+    expected: dict[
+        tuple[str, str, str, int, str | None], tuple[RunIdentity, Decimal, tuple[int, ...]]
+    ] = {}
     for arm, window, capital, profile, scenario in product(
         registration.arms,
         registration.windows,
@@ -622,7 +696,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             dict(registration.adapter_pins)[arm],
             scenario,
         )
-        expected[_key(identity)] = (identity, capital.initial_equity)
+        expected[_key(identity)] = (identity, capital.initial_equity, window.skipped_hours)
     grouped: dict[tuple[str, str, str, int, str | None], list[RunOutcome]] = {}
     attempts: dict[str, int] = {}
     if malformed:
@@ -643,7 +717,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         incomplete.append(f"{key}: unregistered outcome")
     valid: dict[tuple[str, str, str, int, str | None], RunOutcome] = {}
     common: dict[tuple[str, str, str, int, str | None], CommonSeries] = {}
-    for key, (identity, expected_capital) in expected.items():
+    for key, (identity, expected_capital, skipped_hours) in expected.items():
         rows = grouped.get(key, [])
         # Comparability requires one complete attempt; observed safety failures do not.
         # Inspect every attributable attempt before rejecting duplicates or partial runs.
@@ -678,6 +752,9 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         if not _metrics_valid(row) or row.initial_equity != expected_capital:
             incomplete.append(f"{key}: invalid metrics or initial capital")
             continue
+        if row.native_stop is not None and identity.arm not in registration.baseline_arms:
+            incomplete.append(f"{key}: only a frozen baseline can end at a native stop")
+            continue
         if row.wallet_quantity_exact is None:
             incomplete.append(f"{key}: wallet/quantity verification unavailable")
             continue
@@ -689,7 +766,8 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             continue
         residual = abs(Fraction(row.accounting_residual))
         invalid = (
-            row.liquidations > 0
+            # A baseline's own liquidation ends it as a finished result (owner, 2026-10-11).
+            row.liquidations != int(row.native_stop == "liquidation")
             or not row.wallet_quantity_exact
             or residual > Fraction(1, 10**18)
             or (bool(residual) and row.accounting_explained is not True)
@@ -710,15 +788,20 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         try:
             if report is None or report.policy_evidence is None:
                 raise ValueError("missing policy")
-            common[key] = common_hourly_series(
+            series = common_hourly_series(
                 report.equity_points,
                 report.policy_evidence,
                 start_ms=identity.start_ms,
                 end_ms=identity.end_ms,
+                skipped_hours=skipped_hours,
             )
         except (ValueError, TypeError, AttributeError, ArithmeticError):
             incomplete.append(f"{key}: common hourly comparison evidence unavailable")
             continue
+        if series.native_stop != row.native_stop:
+            incomplete.append(f"{key}: frozen marks and native stop disagree")
+            continue
+        common[key] = series
         valid[key] = row
     for window, capital, profile, scenario in product(
         registration.windows,
@@ -750,4 +833,5 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
                     f"{key}/{scenario}: full return/drawdown does not strictly beat baseline"
                 )
     status = "fail" if failures else "incomplete" if incomplete else "pass"
-    return AcceptanceResult(status, tuple(failures), tuple(incomplete), retained)
+    skipped = tuple((window.id, window.skipped_hours) for window in registration.windows)
+    return AcceptanceResult(status, tuple(failures), tuple(incomplete), retained, skipped)

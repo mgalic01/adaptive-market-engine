@@ -8,7 +8,7 @@ a unique attempt ID; a failed or incomplete attempt is retained, never retried.
 
 from decimal import Decimal
 
-from .baseline_records import BaselineEvidence
+from .baseline_records import NATIVE_STOPS, BaselineEvidence
 from .experiment import ReportEvidence, RunIdentity, RunOutcome
 from .report import Report
 from .strategy_replay import StrategyTrace
@@ -24,6 +24,7 @@ def _outcome(
     liquidations: int,
     explained: bool,
     wallet_exact: bool | None,
+    native_stop: str | None = None,
 ) -> RunOutcome:
     if not isinstance(attempt_id, str) or not attempt_id.strip():
         raise ValueError("unique attempt identity required")
@@ -42,6 +43,7 @@ def _outcome(
         attempt_id,
         wallet_exact,
         ReportEvidence(identity, attempt_id, report),
+        native_stop,
     )
 
 
@@ -66,16 +68,25 @@ def strategy_outcome(
 def baseline_outcome(
     evidence: BaselineEvidence, identity: RunIdentity, *, attempt_id: str
 ) -> RunOutcome:
-    """A frozen baseline cell: its native stop, if any, keeps it incomplete."""
+    """A frozen baseline cell; a native stop is a finished result, other stops are not.
+
+    Owner decision 2026-10-11: a baseline that ended under its own rules is complete
+    and keeps its stop reason; its report holds the stop equity, labelled frozen, to
+    the window end. Any other status (an engine or parity failure, a missing input)
+    leaves the cell failed and incomplete.
+    """
     report = evidence.report
+    stop = evidence.status if evidence.status in NATIVE_STOPS else None
+    finished = evidence.status is None or stop is not None
     tolerated = {"contribution_equity_residual"} if evidence.accounting_explained else set()
     return _outcome(
         identity,
         report,
         attempt_id=attempt_id,
-        complete=evidence.status is None and not (set(report.issues) - tolerated),
-        failed=evidence.status is not None,
+        complete=finished and not (set(report.issues) - tolerated),
+        failed=not finished,
         liquidations=evidence.liquidations,
         explained=evidence.accounting_explained,
         wallet_exact=evidence.wallet_quantity_exact,
+        native_stop=stop,
     )

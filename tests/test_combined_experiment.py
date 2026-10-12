@@ -3,6 +3,12 @@ from decimal import Decimal, localcontext
 
 import pytest
 
+from crypto_grid_bot.combined.baseline_records import (
+    BaselineEvidence,
+    NativeMark,
+    comparison_report,
+)
+from crypto_grid_bot.combined.common_series import FROZEN_REF
 from crypto_grid_bot.combined.experiment import (
     SCENARIOS,
     Capital,
@@ -14,6 +20,7 @@ from crypto_grid_bot.combined.experiment import (
     evaluate,
 )
 from crypto_grid_bot.combined.observation_policy import POLICY_ID, Boundary, PolicyEvidence
+from crypto_grid_bot.combined.outcomes import baseline_outcome
 from crypto_grid_bot.combined.report import (
     CapitalObservation,
     Contribution,
@@ -24,14 +31,32 @@ from crypto_grid_bot.combined.report import (
 
 D = Decimal
 
+HOUR = 3_600_000
 DAY = 86_400_000
 PIN = "a" * 64
 CODE = "b" * 40
+V1_VARIANTS = ("a",)
+
+
+def minute_baselines(variants=V1_VARIANTS):
+    return tuple(
+        name
+        for mode in ("high_first", "low_first")
+        for name in (
+            f"matched_v0_grid_{mode}",
+            *(f"matched_v1_{variant}_grid_{mode}" for variant in variants),
+            f"matched_v2_grid_{mode}",
+            f"matched_d_trend_{mode}",
+        )
+    )
+
+
+V2 = "matched_v2_grid_high_first"
 BASELINES = (
     "unchanged_v3_selector",
     *(f"unchanged_v3_r{i}_long_only" for i in range(1, 7)),
     "matched_spot_hold",
-    "matched_v2",
+    *minute_baselines(),
 )
 ARMS = (
     *BASELINES,
@@ -63,6 +88,7 @@ def registration() -> Registration:
         observation_policy=POLICY_ID,
         adapter_pins=tuple((arm, PIN) for arm in ARMS),
         scenarios=SCENARIOS,
+        v1_variants=V1_VARIANTS,
     )
 
 
@@ -72,7 +98,7 @@ def outcomes(reg: Registration) -> tuple[RunOutcome, ...]:
         for window in reg.windows:
             for capital in reg.capitals:
                 for multiple, cost_pin in reg.cost_profiles:
-                    for scenario in ("native",) if arm in BASELINES else SCENARIOS:
+                    for scenario in ("native",) if arm in reg.baseline_arms else SCENARIOS:
                         identity = RunIdentity(
                             arm,
                             window.id,
@@ -108,7 +134,8 @@ def outcomes(reg: Registration) -> tuple[RunOutcome, ...]:
     return tuple(with_report(row) for row in rows)
 
 
-def with_report(row, *, hourly=True):
+def with_report(row, *, hourly=True, missing=(), marks=None):
+    """``missing`` hours carry no mark; ``marks`` replaces the equity at given hours."""
     if not all(
         value.is_finite()
         for value in (
@@ -123,15 +150,19 @@ def with_report(row, *, hourly=True):
     points = tuple(
         EquityPoint(
             timestamp,
-            row.initial_equity
-            if timestamp == start
-            else row.final_equity
-            if timestamp == end
-            else row.initial_equity * (1 - row.max_drawdown),
+            (marks or {}).get(
+                timestamp,
+                row.initial_equity
+                if timestamp == start
+                else row.final_equity
+                if timestamp == end
+                else row.initial_equity * (1 - row.max_drawdown),
+            ),
             f"point-{timestamp}",
             ("synthetic-hourly",),
         )
         for timestamp in range(start, end + 1, 3_600_000 if hourly else DAY)
+        if timestamp not in missing
     )
     with localcontext() as ctx:
         ctx.prec = 80
@@ -291,9 +322,9 @@ def test_missing_policy_retains_risk_but_explicit_foreign_policy_is_unattributab
 
 def test_full_must_beat_every_baseline_on_both_measures_not_best_ablation() -> None:
     reg = registration()
-    rows = change(outcomes(reg), arm="matched_v2", final_equity=D(15000))
+    rows = change(outcomes(reg), arm=V2, final_equity=D(15000))
     assert evaluate(reg, rows).status == "fail"
-    rows = change(outcomes(reg), arm="matched_v2", max_drawdown=D(".01"))
+    rows = change(outcomes(reg), arm=V2, max_drawdown=D(".01"))
     assert evaluate(reg, rows).status == "fail"
     rows = change(outcomes(reg), final_equity=D(11000))
     assert evaluate(reg, rows).status == "fail"
@@ -343,13 +374,13 @@ def test_explained_residual_tolerance_is_only_for_trade_equity() -> None:
 
 def test_historic_baseline_loss_and_drawdown_are_not_new_full_gates() -> None:
     reg = registration()
-    rows = change(outcomes(reg), arm="matched_v2", max_drawdown=D(".8"), final_equity=D(9000))
+    rows = change(outcomes(reg), arm=V2, max_drawdown=D(".8"), final_equity=D(9000))
     assert evaluate(reg, rows).status == "pass"
-    rows = change(rows, arm="matched_v2", liquidations=1)
+    rows = change(rows, arm=V2, liquidations=1)
     assert evaluate(reg, rows).status == "incomplete"
 
 
-@pytest.mark.parametrize("target", ["combined", "matched_v2"])
+@pytest.mark.parametrize("target", ["combined", V2])
 def test_zero_drawdown_is_indeterminate_not_infinite_score(target: str) -> None:
     reg = registration()
     assert (
@@ -464,7 +495,7 @@ def test_repeated_attempt_preserves_known_failure() -> None:
 
 def test_doubled_cost_must_beat_matched_baselines() -> None:
     reg = registration()
-    result = evaluate(reg, change(outcomes(reg), arm="matched_v2", cost=2, final_equity=D(20000)))
+    result = evaluate(reg, change(outcomes(reg), arm=V2, cost=2, final_equity=D(20000)))
     assert result.status == "fail"
 
 
@@ -909,7 +940,7 @@ def test_report_accounting_observations_preserve_explained_tolerance(residual, e
 
 def test_baseline_report_drawdown_does_not_acquire_component_safety_threshold():
     reg = registration()
-    rows, _ = concealed_report_failure(reg, arm="matched_v2")
+    rows, _ = concealed_report_failure(reg, arm=V2)
     result = evaluate(reg, rows)
     assert result.status == "incomplete" and not result.failures
 
@@ -1319,3 +1350,295 @@ def test_malformed_outcome_records_are_incomplete_not_crashes(malformed, pending
     assert result.status == "incomplete"
     assert "1 malformed outcome record(s) retained" in result.incomplete_reasons
     assert result.outcomes[-1] is bad
+
+
+def drop_arms(reg, names):
+    def kept(arms):
+        return tuple(arm for arm in arms if arm not in names)
+
+    return replace(
+        reg,
+        arms=kept(reg.arms),
+        baseline_arms=kept(reg.baseline_arms),
+        adapter_pins=tuple(pair for pair in reg.adapter_pins if pair[0] not in names),
+    )
+
+
+def add_arms(reg, names):
+    return replace(
+        reg,
+        arms=(*reg.arms, *names),
+        baseline_arms=(*reg.baseline_arms, *names),
+        adapter_pins=(*reg.adapter_pins, *((name, PIN) for name in names)),
+    )
+
+
+V1_ARMS = ("matched_v1_a_grid_high_first", "matched_v1_a_grid_low_first")
+VARIANTS_REASON = "registration: a nonempty list of unique V1 variant names required"
+
+
+@pytest.mark.parametrize(
+    "alter,reason",
+    [
+        ("no_v1", VARIANTS_REASON),
+        ("v1_arms", "registration: baselines missing: " + ", ".join(V1_ARMS)),
+        (
+            "no_d",
+            "registration: baselines missing: matched_d_trend_high_first, "
+            "matched_d_trend_low_first",
+        ),
+        ("v0_one_mode", "registration: baselines missing: matched_v0_grid_low_first"),
+        ("v1_one_mode", "registration: baselines missing: matched_v1_a_grid_low_first"),
+        ("old_name", "registration: baselines outside the documented names: matched_v2"),
+        (
+            "unregistered_variant",
+            "registration: baselines outside the documented names: "
+            "matched_v1_b_grid_high_first, matched_v1_b_grid_low_first",
+        ),
+        ("upper_variant", VARIANTS_REASON),
+        ("plus_variant", VARIANTS_REASON),
+        ("repeated_variant", VARIANTS_REASON),
+        ("list_variants", VARIANTS_REASON),
+    ],
+)
+def test_registration_requires_every_baseline_family_in_both_path_modes(alter, reason):
+    reg = registration()
+    rows = outcomes(reg)
+    if alter == "no_v1":
+        reg = replace(drop_arms(reg, V1_ARMS), v1_variants=())
+    elif alter == "v1_arms":
+        reg = drop_arms(reg, V1_ARMS)
+    elif alter == "no_d":
+        reg = drop_arms(reg, {"matched_d_trend_high_first", "matched_d_trend_low_first"})
+    elif alter == "v0_one_mode":
+        reg = drop_arms(reg, {"matched_v0_grid_low_first"})
+    elif alter == "v1_one_mode":
+        reg = drop_arms(reg, {"matched_v1_a_grid_low_first"})
+    elif alter == "old_name":
+        reg = add_arms(reg, ("matched_v2",))
+    elif alter == "unregistered_variant":
+        reg = add_arms(reg, ("matched_v1_b_grid_high_first", "matched_v1_b_grid_low_first"))
+    elif alter == "upper_variant":
+        reg = replace(reg, v1_variants=("A",))
+    elif alter == "plus_variant":
+        reg = replace(reg, v1_variants=("c+g",))
+    elif alter == "repeated_variant":
+        reg = replace(reg, v1_variants=("a", "a"))
+    else:
+        reg = replace(reg, v1_variants=["a"])
+    result = evaluate(reg, rows)
+    assert result.status == "incomplete" and not result.failures
+    assert reason in result.incomplete_reasons
+
+
+def test_complete_matrix_with_every_family_and_two_v1_variants_passes():
+    reg = registration()
+    names = minute_baselines(("a", "cg"))
+    reg = replace(
+        add_arms(reg, tuple(name for name in names if name not in reg.baseline_arms)),
+        v1_variants=("a", "cg"),
+    )
+    rows = outcomes(reg)
+    result = evaluate(reg, rows)
+    assert result.status == "pass", result.incomplete_reasons
+    assert {row.identity.arm for row in rows} >= set(names)
+
+
+SKIP = 5 * HOUR
+SKIP_REASON = (
+    "registration: skipped hours must be sorted hours strictly inside the window, "
+    "never its first or last hour"
+)
+
+
+def skipping(reg, hours=(SKIP,)):
+    return replace(reg, windows=tuple(replace(w, skipped_hours=hours) for w in reg.windows))
+
+
+def remarked(row, **options):
+    """Rebuild the report with ``options``, carrying its observed drawdown."""
+    observed = with_report(row, **options)
+    return replace(observed, max_drawdown=observed.report_evidence.report.max_drawdown)
+
+
+def cell(rows, arm, capital="research", cost=1, scenario=SCENARIOS[0]):
+    return next(
+        index
+        for index, row in enumerate(rows)
+        if (row.identity.arm, row.identity.capital, row.identity.cost_multiple)
+        == (arm, capital, cost)
+        and row.identity.scenario in (scenario, "native")
+    )
+
+
+def test_skipped_hours_compare_every_arm_on_the_remaining_hours():
+    reg = registration()
+    rows = list(change(outcomes(reg), arm=V2, final_equity=D(13000)))
+    full = cell(rows, "combined")
+    # Compared at 05:00, the full arm's 28% dip leaves 0.40/0.28 below V2's 0.30/0.20.
+    rows[full] = remarked(rows[full], marks={SKIP: D(7200)})
+    assert rows[full].max_drawdown == D(".28")
+    compared = evaluate(reg, tuple(rows))
+    assert compared.status == "fail"
+    assert any(V2 in reason and "return/drawdown" in reason for reason in compared.failures)
+    skipped = evaluate(skipping(reg), tuple(rows))
+    assert skipped.status == "pass", (skipped.failures, skipped.incomplete_reasons)
+    assert skipped.skipped_hours == (("window", (SKIP,)),)
+
+
+def test_an_unscheduled_missing_mark_does_not_make_the_comparison_incomplete():
+    reg = registration()
+    gapped = {"combined", "matched_spot_hold", "matched_d_trend_low_first"}
+    rows = tuple(
+        with_report(row, missing=(SKIP,)) if row.identity.arm in gapped else row
+        for row in outcomes(reg)
+    )
+    result = evaluate(skipping(reg), rows)
+    assert result.status == "pass", result.incomplete_reasons
+    scheduled = evaluate(reg, rows)
+    assert scheduled.status == "incomplete" and not scheduled.failures
+    assert any("common hourly" in reason for reason in scheduled.incomplete_reasons)
+
+
+def test_a_skipped_hour_keeps_its_native_mark_for_the_drawdown_gate():
+    reg = skipping(registration())
+    rows = list(outcomes(reg))
+    full = cell(rows, "combined")
+    rows[full] = remarked(rows[full], marks={SKIP: D(6500)})
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "fail"
+    assert any("maximum drawdown exceeds" in reason for reason in result.failures)
+
+
+@pytest.mark.parametrize(
+    "skipped",
+    [
+        (0,),  # the opening hour
+        (2 * DAY - HOUR,),  # the last hour, whose close is the terminal mark
+        (2 * DAY,),  # the terminal
+        (6 * HOUR, SKIP),
+        (SKIP, SKIP),
+        (SKIP + 1,),
+        (-HOUR,),
+        (True,),
+        [SKIP],
+        None,
+    ],
+)
+def test_registration_rejects_skipped_opening_last_or_unsorted_hours(skipped):
+    reg = skipping(registration(), skipped)
+    result = evaluate(reg, outcomes(reg))
+    assert result.status == "incomplete" and not result.failures
+    assert SKIP_REASON in result.incomplete_reasons
+
+
+STOP_MS = 11 * HOUR - 1  # an intrabar mark late in the 10:00 hour
+
+
+def frozen_baseline(
+    reg, *, stop_equity, status="liquidation", liquidations=1, arm="unchanged_v3_r1_long_only"
+):
+    """Replace the research, base-cost cell of ``arm`` by a run stopped at ``STOP_MS``."""
+    rows = list(outcomes(reg))
+    index = cell(rows, arm)
+    identity = rows[index].identity
+    marks = (
+        NativeMark(0, "open", D(10000), D(0), D(5000)),
+        *(NativeMark(hour * HOUR, "open", D(9000), D(0), D(4500)) for hour in range(1, 11)),
+        NativeMark(STOP_MS, "adverse", stop_equity, D(0), D(100)),
+    )
+    lifecycle = Contribution(
+        "life",
+        "unchanged_v3",
+        "BTC",
+        "long",
+        None,
+        stop_equity - D(10000),
+        D(0),
+        D(0),
+        D(1),
+        None,
+        0,
+        "open_marked",
+        source_refs=("synthetic",),
+    )
+    report = comparison_report(
+        arm,
+        marks,
+        (lifecycle,),
+        initial=D(10000),
+        start_ms=identity.start_ms,
+        end_ms=identity.end_ms,
+        source_refs=("synthetic",),
+        adapter_pin=PIN,
+        native_stop=status,
+    )
+    evidence = BaselineEvidence(
+        arm, "v3-native", marks, report, status, liquidations, D(0), True, True, ()
+    )
+    rows[index] = baseline_outcome(evidence, identity, attempt_id=rows[index].attempt_id)
+    return rows, index
+
+
+def test_a_baseline_liquidated_mid_window_is_complete_frozen_and_must_be_beaten():
+    reg = registration()
+    rows, index = frozen_baseline(reg, stop_equity=D(4000))
+    row = rows[index]
+    assert row.complete and not row.failed
+    assert row.native_stop == "liquidation" and row.liquidations == 1
+    after = [p for p in row.report_evidence.report.equity_points if p.timestamp_ms > STOP_MS]
+    assert [p.timestamp_ms for p in after] == list(range(11 * HOUR, 2 * DAY + 1, HOUR))
+    assert all(p.equity == D(4000) for p in after)
+    assert all(FROZEN_REF + "liquidation" in p.source_refs for p in after)
+    assert evaluate(reg, tuple(rows)).status == "pass"
+    rows, _ = frozen_baseline(reg, stop_equity=D(16000))
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "fail"
+    assert any(
+        "unchanged_v3_r1_long_only" in reason and "full return does not strictly beat" in reason
+        for reason in result.failures
+    )
+    assert any(
+        "unchanged_v3_r1_long_only" in reason and "return/drawdown does not strictly" in reason
+        for reason in result.failures
+    )
+
+
+@pytest.mark.parametrize("status", ["no_tradable_position", "leverage_not_restored"])
+def test_every_native_v3_stop_is_a_finished_result(status):
+    reg = registration()
+    rows, index = frozen_baseline(reg, stop_equity=D(9500), status=status, liquidations=0)
+    assert rows[index].native_stop == status and rows[index].complete
+    assert evaluate(reg, tuple(rows)).status == "pass"
+
+
+@pytest.mark.parametrize(
+    "alter,reason",
+    [
+        ("no_stop", "frozen marks and native stop disagree"),
+        ("other_stop", "frozen marks and native stop disagree"),
+        ("liquidation_count", "liquidation or invalid accounting"),
+        ("unknown_stop", "invalid metrics or initial capital"),
+        ("component", "only a frozen baseline can end at a native stop"),
+    ],
+)
+def test_frozen_marks_need_the_matching_native_stop_of_a_baseline(alter, reason):
+    reg = registration()
+    rows, index = frozen_baseline(
+        reg,
+        stop_equity=D(4000),
+        status="no_tradable_position",
+        liquidations=int(alter == "liquidation_count"),
+    )
+    if alter == "no_stop":
+        rows[index] = replace(rows[index], native_stop=None)
+    elif alter == "other_stop":
+        rows[index] = replace(rows[index], native_stop="leverage_not_restored")
+    elif alter == "unknown_stop":
+        rows[index] = replace(rows[index], native_stop="engine_failure")
+    elif alter == "component":
+        index = cell(rows, "spot_trend")
+        rows[index] = replace(rows[index], native_stop="no_tradable_position")
+    result = evaluate(reg, tuple(rows))
+    assert result.status == "incomplete" and not result.failures
+    assert any(reason in issue for issue in result.incomplete_reasons), result.incomplete_reasons

@@ -22,7 +22,7 @@ from crypto_grid_bot.trend.orchestration import Attempt, run_walk_forward
 from crypto_grid_bot.trend.replay import ReplayExecutionError, ReplayResult, replay_window
 from crypto_grid_bot.trend.runner import TrendRunner
 
-from .baseline_records import BaselineEvidence, NativeMark, comparison_report
+from .baseline_records import NATIVE_STOPS, BaselineEvidence, NativeMark, comparison_report
 from .report import Contribution
 
 LONG_RULES = {f"unchanged_v3_r{index}_long_only": f"R{index}L" for index in range(1, 7)}
@@ -193,8 +193,10 @@ def replay_v3_baseline(
 
     A selector cell replays the frozen picks in force over the registered window;
     a window starting before the first out-of-sample pick has no selector cell and
-    stays incomplete. A strategy-invalid stop or engine failure keeps its partial
-    evidence and makes the comparison incomplete, never a pass.
+    stays incomplete. A native stop (liquidation, no tradable position, leverage not
+    restored) is a finished result whose stop equity is held, labelled frozen, to the
+    window end (owner, 2026-10-11). An engine failure or unavailable exclusion close
+    keeps its partial evidence and makes the comparison incomplete, never a pass.
     """
     disclosures = ["v3_funding_after_fills_is_native_timing"]
     if arm in LONG_RULES:
@@ -248,6 +250,9 @@ def replay_v3_baseline(
     marks = _native_marks(result, inputs, end_ms)
     contributions = _contributions(arm, result, source_refs)
     status = result.reason
+    native_stop = status if status in NATIVE_STOPS else None
+    if native_stop is not None:
+        disclosures.append(f"baseline_native_stop_equity_frozen:{native_stop}")
     report = comparison_report(
         arm,
         marks,
@@ -257,7 +262,8 @@ def replay_v3_baseline(
         end_ms=end_ms,
         source_refs=source_refs,
         adapter_pin=adapter_pin,
-        producer_issues=() if status is None else (f"baseline_stop:{status}",),
+        producer_issues=() if status is None or native_stop else (f"baseline_stop:{status}",),
+        native_stop=native_stop,
     )
     runner = result.runner
     audits = runner.audits if runner is not None else []
