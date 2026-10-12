@@ -9,6 +9,7 @@ import pytest
 from crypto_grid_bot.backtest.funding import FundingRecord
 from crypto_grid_bot.combined.account import FundingEvent
 from crypto_grid_bot.combined.replay_records import strategy_report
+from crypto_grid_bot.combined.report import utc_text
 from crypto_grid_bot.combined.strategy_replay import TraceFill, replay_strategy
 
 PIN = "0" * 64
@@ -1103,3 +1104,129 @@ def test_a_four_hour_cadence_books_an_off_hour_record_without_a_collision(collid
         ]
     late = next(p for p in charged if p.timestamp_ms == hour_ms(29))
     assert late.scheduled_ms == hour_ms(28) + 30 * 60_000
+
+
+RULINGS = (
+    "v3_1_present_day_saved_exchange_filters_on_historical_data",
+    "v3_1_held_coin_without_bar_closed_at_next_bar_pending_orders_canceled",
+)
+
+
+def disclosed(report, prefix):
+    return [note for note in report.disclosures if note.startswith(prefix)]
+
+
+def rendered(report):
+    """Every disclosure and the capital label appear in the page's Disclosures section."""
+    from test_combined_dashboard import Elements, disclosure_section
+
+    from crypto_grid_bot.combined.dashboard import render_report
+
+    text = " ".join(Elements(disclosure_section(render_report(report))).text)
+    assert all(note in text for note in report.disclosures)
+    assert report.capital_label is None or report.capital_label in text
+    return text
+
+
+def test_every_v3_1_report_discloses_the_saved_filters_and_the_stale_close_rule():
+    trace = replay_strategy(fx.run("spot_trend", 2), (fx.market("BTCUSDT", fx.uptrend, 2),))
+    report = strategy_report(trace, adapter_pin=PIN, capital_label="research_10000_usdt")
+    assert report.complete, report.issues
+    assert report.disclosures == RULINGS
+    assert report.capital_label == "research_10000_usdt"
+    rendered(report)
+
+
+def test_a_gapped_run_stays_complete_and_discloses_the_gap_and_the_skipped_hour():
+    market = masked(fx.market("BTCUSDT", fx.uptrend, 2), "spot", (30,))
+    trace = replay_strategy(fx.run("spot_trend", 2), (market,))
+    report = strategy_report(trace, adapter_pin=PIN, skipped_hours=(hour_ms(30),))
+    assert report.complete, report.issues
+    gap = utc_text(hour_ms(30))
+    assert report.disclosures == (
+        *RULINGS,
+        f"registered_skipped_hours: count=1 at={gap}",
+        f"data_gap:BTCUSDT:spot: hours=1 first={gap} last={gap}",
+    )
+    rendered(report)
+
+
+def test_a_stale_terminal_mark_is_disclosed():
+    market = masked(fx.market("BTCUSDT", fx.uptrend, 2), "spot", (47,))
+    trace = replay_strategy(fx.run("spot_trend", 2), (market,))
+    report = strategy_report(trace, adapter_pin=PIN)
+    last = utc_text(hour_ms(47))
+    assert disclosed(report, "stale_terminal_mark:") == [
+        f"stale_terminal_mark:BTCUSDT: last_close_available={last}"
+    ]
+    rendered(report)
+
+
+def test_withheld_grid_buys_are_disclosed_per_symbol_as_a_span():
+    trace = replay_strategy(fx.run("spot_grid", 3), (flow_market(3, ((-1, ".6"), (2, ".3"))),))
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert disclosed(report, "flow_gate_withheld_grid_buys:") == [
+        f"flow_gate_withheld_grid_buys:BTCUSDT: intervals=69 first={utc_text(hour_ms(3))} "
+        f"last={utc_text(hour_ms(71))}"
+    ]
+    rendered(report)
+
+
+def test_an_off_hour_record_and_a_stale_fixing_mark_are_disclosed():
+    base = masked(fx.market("BTCUSDT", fx.downtrend, 2, futures=True), "futures", (17,))
+    trace = replay_strategy(fx.run("futures_trend", 2), (move_record(base, 16, 15 * 60_000),))
+    report = strategy_report(trace, adapter_pin=PIN)
+    record, booked = utc_text(hour_ms(16) + 15 * 60_000), utc_text(hour_ms(17))
+    assert disclosed(report, "funding_off_hour_record_booked_next_hour:") == [
+        f"funding_off_hour_record_booked_next_hour:BTCUSDT: records=1 first={record} last={record}"
+    ]
+    assert disclosed(report, "funding_settled_at_stale_mark:") == [
+        f"funding_settled_at_stale_mark:BTCUSDT: settlements=1 first={booked} last={booked}"
+    ]
+    assert disclosed(report, "data_gap:") == [
+        f"data_gap:BTCUSDT:futures: hours=1 first={booked} last={booked}"
+    ]
+    rendered(report)
+
+
+def test_irregular_funding_pairs_are_each_disclosed():
+    market = fx.market("BTCUSDT", fx.downtrend, 3, futures=True)
+    changed = replace(market, funding=funding_records((-8, 9, 8), (12, 25, 4), (32, 80, 8)))
+    report = strategy_report(
+        replay_strategy(fx.run("futures_trend", 3), (changed,)), adapter_pin=PIN
+    )
+    assert disclosed(report, "funding_schedule_irregular:") == [
+        f"funding_schedule_irregular:BTCUSDT: earlier={utc_text(hour_ms(8))}/8h "
+        f"later={utc_text(hour_ms(12))}/4h",
+        f"funding_schedule_irregular:BTCUSDT: earlier={utc_text(hour_ms(24))}/4h "
+        f"later={utc_text(hour_ms(32))}/8h",
+    ]
+    rendered(report)
+
+
+def test_an_off_hour_record_unbooked_after_its_holding_exited_is_disclosed():
+    base = fx.market("BTCUSDT", crash_after(fx.downtrend, 40, -0.15), 3, futures=True)
+    trace = replay_strategy(fx.run("futures_trend", 3), (move_record(base, 40, 15 * 60_000),))
+    report = strategy_report(trace, adapter_pin=PIN)
+    record = utc_text(hour_ms(40) + 15 * 60_000)
+    assert disclosed(report, "funding_record_unbooked_after_exit:") == [
+        f"funding_record_unbooked_after_exit:BTCUSDT: records=1 first={record} last={record}"
+    ]
+    rendered(report)
+
+
+def test_the_engines_worse_fills_reach_the_trace_and_the_report(monkeypatch):
+    from crypto_grid_bot.combined.engine import PortfolioEngine, WorseFill
+
+    worse = (
+        WorseFill("synthetic-1", "BTCUSDT", D("0.5"), D("-0.25")),
+        WorseFill("synthetic-2", "BTCUSDT", D(0), D("0.75")),
+    )
+    monkeypatch.setattr(PortfolioEngine, "worse_fill_evidence", property(lambda self: worse))
+    trace = replay_strategy(fx.run("spot_trend", 2), (fx.market("BTCUSDT", fx.uptrend, 2),))
+    assert trace.worse_fills == worse
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert disclosed(report, "worse_fill:") == [
+        "worse_fill:BTCUSDT: fills=2 excess_risk=0.5 extra_cost=0.5"
+    ]
+    rendered(report)

@@ -6,8 +6,14 @@ settlement state: the opening's first mark (before execution costs), otherwise t
 last. Lifecycles attribute every booked fill and funding payment, so their sum
 reconciles exactly with the equity change; open lifecycles are marked at the last
 observation's marks. Source references are retained, not authenticated.
+
+Every report discloses the V3.1 rulings it ran under and what the trace recorded
+about its inputs (data gaps, stale marks, off-hour or irregular funding, withheld
+grid buys, worse fills). Disclosures are information, never a decision input: a
+gapped run stays complete.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from fractions import Fraction
@@ -26,10 +32,18 @@ from .report import (
     Report,
     UtilizationInterval,
     analyze,
+    skipped_hours_disclosures,
+    span_text,
+    utc_text,
 )
 from .strategy_replay import StrategyTrace, TraceFill
 
 DAY = 86_400_000
+# Rulings every V3.1 replay runs under (controller, 2026-10-11), disclosed on every report.
+V3_1_RULINGS = (
+    "v3_1_present_day_saved_exchange_filters_on_historical_data",
+    "v3_1_held_coin_without_bar_closed_at_next_bar_pending_orders_canceled",
+)
 
 
 @dataclass
@@ -216,12 +230,80 @@ def recovery_episodes(trace: StrategyTrace) -> tuple[RecoveryEpisode, ...]:
     return tuple(episodes)
 
 
+def _by_symbol(rows: Iterable[tuple[str, int]]) -> list[tuple[str, list[int]]]:
+    grouped: dict[str, list[int]] = {}
+    for symbol, stamp in rows:
+        grouped.setdefault(symbol, []).append(stamp)
+    return sorted(grouped.items())
+
+
+def strategy_disclosures(
+    trace: StrategyTrace, skipped_hours: tuple[int, ...] = ()
+) -> tuple[str, ...]:
+    """What one replay discloses, compact for a multi-year run.
+
+    Long series are kept per symbol to a count and their first and last times; the
+    short ones (skipped hours, irregular funding pairs) are listed in full.
+    """
+    notes = [*V3_1_RULINGS, *skipped_hours_disclosures(skipped_hours)]
+    notes.extend(
+        f"data_gap:{symbol}:{venue}: {span_text('hours', hours)}"
+        for symbol, venue, hours in trace.data_gaps
+    )
+    notes.extend(
+        f"stale_terminal_mark:{symbol}: last_close_available={utc_text(available)}"
+        for symbol, available in trace.stale_terminal_marks
+    )
+    notes.extend(
+        f"flow_gate_withheld_grid_buys:{symbol}: {span_text('intervals', hours)}"
+        for symbol, hours in trace.withheld_buys
+    )
+    payments = [event for event in trace.events if isinstance(event, FundingEvent)]
+    notes.extend(
+        f"funding_off_hour_record_booked_next_hour:{symbol}: {span_text('records', times)}"
+        for symbol, times in _by_symbol(
+            (p.symbol, p.scheduled_ms) for p in payments if p.scheduled_ms is not None
+        )
+    )
+    notes.extend(
+        f"funding_settled_at_stale_mark:{symbol}: {span_text('settlements', times)}"
+        for symbol, times in _by_symbol(
+            (p.symbol, p.timestamp_ms) for p in payments if p.stale_mark_ms is not None
+        )
+    )
+    notes.extend(
+        f"funding_schedule_irregular:{symbol}: earlier={utc_text(earlier)}/{every}h "
+        f"later={utc_text(later)}/{then}h"
+        for symbol, earlier, every, later, then in trace.funding_schedule_irregular
+    )
+    notes.extend(
+        f"funding_record_unbooked_after_exit:{symbol}: {span_text('records', times)}"
+        for symbol, times in _by_symbol(
+            (symbol, record) for symbol, record, _ in trace.funding_records_unbooked_after_exit
+        )
+    )
+    for symbol in sorted({fill.symbol for fill in trace.worse_fills}):
+        rows = [fill for fill in trace.worse_fills if fill.symbol == symbol]
+        excess = sum((Fraction(row.excess_risk) for row in rows), Fraction(0))
+        extra = sum((Fraction(row.extra_cost) for row in rows), Fraction(0))
+        notes.append(
+            f"worse_fill:{symbol}: fills={len(rows)} excess_risk={_decimal(excess)} "
+            f"extra_cost={_decimal(extra)}"
+        )
+    return tuple(notes)
+
+
 def strategy_report(
-    trace: StrategyTrace, *, adapter_pin: str, skipped_hours: tuple[int, ...] = ()
+    trace: StrategyTrace,
+    *,
+    adapter_pin: str,
+    skipped_hours: tuple[int, ...] = (),
+    capital_label: str | None = None,
 ) -> Report:
     """Analyze one replay under the approved settlement policy and its adapter pin.
 
     ``skipped_hours`` are the registered window's: a daily return may span them.
+    ``capital_label`` names the registered capital scenario on the report.
     """
     if not isinstance(adapter_pin, str) or not adapter_pin.strip():
         raise ValueError("adapter pin required")
@@ -304,4 +386,6 @@ def strategy_report(
         policy_evidence=policy,
         producer_issues=tuple(issues),
         skipped_hours=skipped_hours,
+        disclosures=strategy_disclosures(trace, skipped_hours),
+        capital_label=capital_label,
     )

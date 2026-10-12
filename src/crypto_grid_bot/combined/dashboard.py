@@ -542,6 +542,16 @@ def render_report(
         ],
     )
     warning_html = "".join(f'<p class="warning-text">{_text(warning)}</p>' for warning in warnings)
+    capital = (
+        f"Capital scenario: {report.capital_label}"
+        if report.capital_label is not None
+        else "Capital scenario not stated"
+    )
+    disclosures = (
+        "<ul>" + "".join(f"<li>{_text(note)}</li>" for note in report.disclosures) + "</ul>"
+        if report.disclosures
+        else '<p class="empty">None recorded</p>'
+    )
     issues = "".join(f"<li>{_text(issue)}</li>" for issue in report.issues)
     unknown = ", ".join(report.unknown_fields) or "None reported"
     sources = []
@@ -698,12 +708,19 @@ script-src 'none'; base-uri 'none'; form-action 'none'">
 <div class="eyebrow">Combined system / research evidence</div>
 <h1>{_text(title)}</h1>
 <span class="badge warning">{_text(badge)}</span> <span class="{status_class}">{status}</span>
+<span class="badge">{_text(capital)}</span>
 <p class="muted">One account, visible costs, preserved losses.
 Source validation is not implied.</p>
 </header>
 {cards}<section class="panel"><h2>Required performance metrics</h2>{metric_table}
 <p class="muted">Definitions are descriptive reporting conventions, not changes to acceptance.
 Evidence structure alone does not establish complete metrics or source validation.</p></section>
+<section class="panel">
+<h2>Disclosures</h2>
+<p><code>{_text(capital)}</code></p>{disclosures}
+<p class="muted">Data gaps, native timing and the rulings this run applied. Information only:
+never an input to completeness, metrics or acceptance.</p>
+</section>
 <section class="panel">
 <h2>Equity and original lifetime peak</h2>
 {equity_chart}{warning_html}

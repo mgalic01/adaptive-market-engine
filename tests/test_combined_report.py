@@ -11,6 +11,7 @@ from crypto_grid_bot.combined.report import (
     RecoveryEpisode,
     UtilizationInterval,
     analyze,
+    utc_text,
 )
 
 D = Decimal
@@ -1169,3 +1170,45 @@ def test_closed_recovery_rejects_equal_equity_distinct_endpoint_phases(ambiguous
     assert result.recovery_changes[0].marked_change is None
     assert result.recovery_changes[0].return_fraction is None
     assert result.equity_points == retained and result.recovery == (episode,)
+
+
+def test_disclosures_and_the_capital_label_are_carried_and_never_change_the_judgement():
+    plain = analyze(D(100), curve(), contributions(), (), (), ("artifact-pin",))
+    notes = ("data_gap:BTCUSDT:spot: hours=1", "<b>escaped later</b>")
+    disclosed = analyze(
+        D(100),
+        curve(),
+        contributions(),
+        (),
+        (),
+        ("artifact-pin",),
+        disclosures=notes,
+        capital_label="research_10000_usdt",
+    )
+    assert disclosed.disclosures == notes
+    assert disclosed.capital_label == "research_10000_usdt"
+    # Information only: completeness, issues and every figure are unchanged.
+    assert replace(disclosed, disclosures=(), capital_label=None) == plain
+    assert plain.disclosures == () and plain.capital_label is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"disclosures": "a plain string"},
+        {"disclosures": ("",)},
+        {"disclosures": (" ",)},
+        {"disclosures": (1,)},
+        {"capital_label": ""},
+        {"capital_label": 10000},
+    ],
+)
+def test_malformed_disclosures_or_capital_label_are_refused(change):
+    with pytest.raises(ValueError):
+        analyze(D(100), curve(), contributions(), (), (), ("artifact-pin",), **change)
+
+
+def test_disclosure_times_are_utc_text_with_milliseconds_only_when_present():
+    assert utc_text(0) == "1970-01-01T00:00:00Z"
+    assert utc_text(1_609_462_800_000) == "2021-01-01T01:00:00Z"
+    assert utc_text(1_609_462_800_007) == "2021-01-01T01:00:00.007Z"

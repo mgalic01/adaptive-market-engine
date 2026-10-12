@@ -47,6 +47,8 @@ _COMPONENTS = frozenset(
 )
 _RESERVED = 1_735_689_600_000
 _DAY = 86_400_000
+# Plausible USDT per EUR rates for the owner_small conversion, both ends included.
+_FX_BAND = (Decimal("0.5"), Decimal("2.0"))
 SCENARIOS = ("open_low_high_close", "open_high_low_close")
 
 
@@ -167,6 +169,9 @@ class RunOutcome:
     wallet_quantity_exact: bool | None = None
     report_evidence: ReportEvidence | None = None
     native_stop: str | None = None  # a frozen baseline that ended under its own rules
+    # Carried from the report: information only, never an input to acceptance.
+    disclosures: tuple[str, ...] = ()
+    capital_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,31 +320,55 @@ def _registration_errors(registration: Registration) -> list[str]:
     ):
         errors.append("registration: research and EUR100 capital scenarios required")
     for capital in capitals:
-        if not isinstance(capital, Capital):
-            continue
-        if not _finite(capital.initial_equity, True) or not _finite(capital.amount, True):
-            errors.append("registration: invalid capital amount")
-            continue
-        if capital.id == "research":
-            if (
-                capital.currency != "USDT"
-                or capital.amount != 10000
-                or capital.initial_equity != 10000
-            ):
-                errors.append("registration: research capital must be 10000 USDT")
-        elif capital.id == "owner_small":
-            if (
-                capital.currency != "EUR"
-                or capital.amount != 100
-                or not _finite(capital.fx_rate, True)
-                or not _pin(capital.fx_pin)
-            ):
-                errors.append("registration: EUR100 requires pinned positive FX conversion")
-            elif capital.fx_rate is not None and Fraction(capital.initial_equity) != Fraction(
-                capital.amount
-            ) * Fraction(capital.fx_rate):
-                errors.append("registration: initial equity does not equal EUR100 conversion")
+        if isinstance(capital, Capital):
+            errors.extend(_capital_errors(capital))
     return errors
+
+
+def _capital_errors(capital: Capital) -> list[str]:
+    """Research is 10000 USDT; owner_small is EUR100 at a pinned, plausible FX rate.
+
+    The rate is USDT per EUR. A rate of exactly 1 would label 100 USDT as EUR100, and a
+    rate outside 0.5 to 2.0 is no EUR rate at all: both are refused.
+    """
+    if not _finite(capital.initial_equity, True) or not _finite(capital.amount, True):
+        return ["registration: invalid capital amount"]
+    if capital.id == "research" and (
+        capital.currency != "USDT" or capital.amount != 10000 or capital.initial_equity != 10000
+    ):
+        return ["registration: research capital must be 10000 USDT"]
+    if capital.id != "owner_small":
+        return []
+    if (
+        capital.currency != "EUR"
+        or capital.amount != 100
+        or capital.fx_rate is None
+        or not _finite(capital.fx_rate, True)
+        or not _pin(capital.fx_pin)
+    ):
+        return ["registration: EUR100 requires pinned positive FX conversion"]
+    if capital.fx_rate == 1 or not _FX_BAND[0] <= capital.fx_rate <= _FX_BAND[1]:
+        return ["registration: EUR100 needs a plausible USDT per EUR rate (0.5 to 2.0, never 1)"]
+    if Fraction(capital.initial_equity) != Fraction(capital.amount) * Fraction(capital.fx_rate):
+        return ["registration: initial equity does not equal EUR100 conversion"]
+    return []
+
+
+def capital_label(capital: Capital) -> str:
+    """The capital scenario as reports label it, so 100 USDT never passes for EUR100.
+
+    ``research_10000_usdt``, or ``owner_small`` with its currency, amount, USDT per EUR
+    rate (as registered) and FX pin. Only a registrable capital has a label.
+    """
+    if (
+        not isinstance(capital, Capital)
+        or capital.id not in {"research", "owner_small"}
+        or _capital_errors(capital)
+    ):
+        raise ValueError("a registrable research or owner_small capital required")
+    if capital.id == "research":
+        return "research_10000_usdt"
+    return f"owner_small:EUR:100:usdt_per_eur={capital.fx_rate}:fx_pin={capital.fx_pin}"
 
 
 def _outcome_shape_valid(row: object) -> bool:
@@ -441,6 +470,8 @@ def _matching_report(row: RunOutcome, initial_equity: Decimal) -> Report | None:
             utilization=report.utilization,
             capital_observations=report.capital_observations,
             producer_issues=report.producer_issues,
+            disclosures=report.disclosures,
+            capital_label=report.capital_label,
         )
         if report != rebuilt or type(report.complete) is not bool:
             return None

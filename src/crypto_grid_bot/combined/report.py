@@ -7,6 +7,7 @@ source reference strings are retained, not fetched or cryptographically verified
 
 from bisect import bisect_right
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Context, Decimal, DecimalException, localcontext
@@ -233,6 +234,35 @@ class Report:
     # The registered window's skipped hours the report was built against; retained for
     # the same reason. A daily return may span only these midnights.
     skipped_hours: tuple[int, ...] = ()
+    # What the producer discloses (data gaps, native timing, rulings applied). Information
+    # only: never an input to completeness, metrics or acceptance.
+    disclosures: tuple[str, ...] = ()
+    # The registered capital scenario (``experiment.capital_label``); None when unstated.
+    capital_label: str | None = None
+
+
+def utc_text(timestamp_ms: int) -> str:
+    """A UTC instant as ISO 8601 text for a disclosure; milliseconds only when present."""
+    moment = datetime.fromtimestamp(timestamp_ms // 1000, UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    return f"{moment}.{timestamp_ms % 1000:03d}Z" if timestamp_ms % 1000 else f"{moment}Z"
+
+
+def span_text(name: str, stamps: Iterable[int]) -> str:
+    """``<name>=<count> first=<time> last=<time>``: a long series kept to one line."""
+    ordered = sorted(stamps)
+    if not ordered:
+        raise ValueError("a disclosed span needs at least one time")
+    return f"{name}={len(ordered)} first={utc_text(ordered[0])} last={utc_text(ordered[-1])}"
+
+
+def skipped_hours_disclosures(skipped_hours: tuple[int, ...]) -> tuple[str, ...]:
+    """The registered skipped hours, listed in full: every arm skips them alike."""
+    if not isinstance(skipped_hours, tuple) or any(type(h) is not int for h in skipped_hours):
+        raise ValueError("skipped hours must be a tuple of integer hour stamps")
+    if not skipped_hours:
+        return ()
+    hours = ",".join(utc_text(hour) for hour in skipped_hours)
+    return (f"registered_skipped_hours: count={len(skipped_hours)} at={hours}",)
 
 
 def _number(value: Decimal, *, nonnegative: bool = False) -> Fraction:
@@ -657,6 +687,8 @@ def analyze(
     policy_evidence: PolicyEvidence | None = None,
     producer_issues: tuple[str, ...] = (),
     skipped_hours: tuple[int, ...] = (),
+    disclosures: tuple[str, ...] = (),
+    capital_label: str | None = None,
 ) -> Report:
     """Summarize observations without counterfactual claims or silent deduplication.
 
@@ -671,6 +703,7 @@ def analyze(
     reporting conventions only, never strategy inputs or acceptance-rule changes.
     ``skipped_hours`` are the registered window's skipped hours; a daily return may
     span only a skipped midnight. Acceptance checks them against the registration.
+    ``disclosures`` and ``capital_label`` are carried unchanged and judge nothing.
     """
     opening = _number(initial)
     if opening <= 0 or type(opportunity_gap_ms) is not int or opportunity_gap_ms <= 0:
@@ -688,6 +721,14 @@ def analyze(
         raise ValueError("producer issues must be nonempty strings")
     if not isinstance(skipped_hours, tuple) or any(type(h) is not int for h in skipped_hours):
         raise ValueError("skipped hours must be a tuple of integer hour stamps")
+    if not isinstance(disclosures, tuple) or any(
+        not isinstance(note, str) or not note.strip() for note in disclosures
+    ):
+        raise ValueError("disclosures must be a tuple of nonempty strings")
+    if capital_label is not None and (
+        not isinstance(capital_label, str) or not capital_label.strip()
+    ):
+        raise ValueError("capital label must be nonempty text")
     issues: list[str] = list(producer_issues)
     for kind, records in (
         ("equity", points),
@@ -939,4 +980,6 @@ def analyze(
         policy_evidence,
         tuple(producer_issues),
         skipped_hours,
+        disclosures,
+        capital_label,
     )

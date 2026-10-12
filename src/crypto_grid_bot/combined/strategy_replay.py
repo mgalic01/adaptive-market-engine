@@ -75,7 +75,7 @@ from .assessment import AssessmentSeries
 from .boundary_execution import BoundaryExecution, BoundaryExecutor, FundingFixing
 from .correlation import correlation_groups
 from .decisions import Costs, DecisionCoordinator, DecisionResult, FundingEstimate, VenueInputs
-from .engine import EngineSnapshot, PortfolioEngine, Quote, SettlementObservation
+from .engine import EngineSnapshot, PortfolioEngine, Quote, SettlementObservation, WorseFill
 from .evidence import DecisionEvent, Evidence
 from .execution import VenueRules
 from .experiment import SCENARIOS
@@ -199,6 +199,8 @@ class StrategyTrace:
     # Off-hour records never charged because the futures holding left during the hour
     # before their booking: (symbol, record time, booking boundary).
     funding_records_unbooked_after_exit: tuple[tuple[str, int, int], ...]
+    # Fills booked worse than planned, kept within or cut to their approved risk.
+    worse_fills: tuple[WorseFill, ...]
     failure: str | None
 
 
@@ -996,5 +998,6 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         tuple(stale_marks),
         irregular,
         tuple(unbooked_after_exit),
+        engine.worse_fill_evidence,
         failure,
     )

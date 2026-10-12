@@ -163,9 +163,12 @@ def test_capital_adapter_is_exactly_the_frozen_run_at_10000(cost):
 
 def test_capital_adapter_runs_small_capital_and_always_restores_the_runner():
     original = vars(v3_replay)["TrendRunner"]
-    small = run(initial=D("108.5"))
+    label = f"owner_small:EUR:100:usdt_per_eur=1.085:fx_pin={PIN}"
+    small = run(initial=D("108.5"), capital_label=label)
     assert small.report.equity_points[0].equity == D("108.5")
     assert "v3_capital_adapter_sets_only_starting_capital" in small.disclosures
+    assert small.report.disclosures == small.disclosures
+    assert small.report.capital_label == label
     assert vars(v3_replay)["TrendRunner"] is original
     with pytest.raises(RuntimeError), v3_capital(D(5)):
         raise RuntimeError("synthetic")
@@ -214,6 +217,8 @@ def test_a_native_v3_stop_is_a_finished_result_frozen_to_the_window_end(monkeypa
     assert evidence.status == stop and evidence.liquidations == 0
     assert evidence.accounting_explained and evidence.wallet_quantity_exact
     assert f"baseline_native_stop_equity_frozen:{stop}" in evidence.disclosures
+    assert evidence.report.disclosures == evidence.disclosures
+    assert any(d.startswith(f"frozen_after_native_stop:{stop}: ") for d in evidence.disclosures)
     report = evidence.report
     assert not [i for i in report.issues if i != "contribution_equity_residual"], report.issues
     last = evidence.native[-1]

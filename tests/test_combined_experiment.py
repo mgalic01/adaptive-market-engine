@@ -22,6 +22,7 @@ from crypto_grid_bot.combined.experiment import (
     RunIdentity,
     RunOutcome,
     Window,
+    capital_label,
     evaluate,
 )
 from crypto_grid_bot.combined.observation_policy import POLICY_ID, Boundary, PolicyEvidence
@@ -1763,3 +1764,38 @@ def test_a_skipped_midnight_keeps_the_hold_and_minute_baselines_complete():
     assert unregistered.status == "incomplete" and not unregistered.failures
     for arm in ("matched_spot_hold", "matched_v0_grid_high_first"):
         assert any(arm in issue for issue in unregistered.incomplete_reasons)
+
+
+def owner_small(rate, *, fx_pin=PIN):
+    return Capital("owner_small", D(100) * D(rate), "EUR", D(100), D(rate), fx_pin)
+
+
+@pytest.mark.parametrize("rate", ["1", "1.0", "0.49", "2.01", "100"])
+def test_an_implausible_or_unit_fx_rate_never_labels_usdt_as_eur100(rate):
+    # A rate of 1 would label 100 USDT as EUR100; outside 0.5-2.0 USD per EUR is no rate.
+    reg = registration()
+    reg = replace(reg, capitals=(reg.capitals[0], owner_small(rate)))
+    result = evaluate(reg, outcomes(reg))
+    assert result.status == "incomplete"
+    assert any("plausible" in reason for reason in result.incomplete_reasons)
+    with pytest.raises(ValueError):
+        capital_label(owner_small(rate))
+
+
+@pytest.mark.parametrize("rate", ["0.5", "1.08", "2.0"])
+def test_a_plausible_fx_rate_registers_and_labels_currency_amount_rate_and_pin(rate):
+    reg = registration()
+    reg = replace(reg, capitals=(reg.capitals[0], owner_small(rate)))
+    result = evaluate(reg, ())
+    assert not any("plausible" in reason for reason in result.incomplete_reasons)
+    assert (
+        capital_label(owner_small(rate)) == f"owner_small:EUR:100:usdt_per_eur={rate}:fx_pin={PIN}"
+    )
+
+
+def test_the_research_label_and_a_missing_fx_pin():
+    assert capital_label(registration().capitals[0]) == "research_10000_usdt"
+    with pytest.raises(ValueError):
+        capital_label(owner_small("1.1", fx_pin=None))
+    with pytest.raises(ValueError):
+        capital_label(Capital("research", D(100), "USDT", D(100)))

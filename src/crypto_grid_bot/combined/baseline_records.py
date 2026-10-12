@@ -24,6 +24,8 @@ from .report import (
     Report,
     UtilizationInterval,
     analyze,
+    skipped_hours_disclosures,
+    span_text,
 )
 
 HOUR = 3_600_000
@@ -81,6 +83,8 @@ def comparison_report(
     producer_issues: tuple[str, ...] = (),
     native_stop: str | None = None,
     skipped_hours: tuple[int, ...] = (),
+    disclosures: tuple[str, ...] = (),
+    capital_label: str | None = None,
 ) -> Report:
     """Analyze the hour-stamped marks under the approved settlement policy.
 
@@ -91,6 +95,8 @@ def comparison_report(
     With a native stop the last mark is the account at the stop: every later hour
     to the window end holds its equity, labelled frozen, with nothing deployed.
     ``skipped_hours`` are the registered window's: a daily return may span them.
+    The report discloses the adapter's ``disclosures``, the skipped hours and the
+    frozen span; ``capital_label`` names the registered capital scenario.
     """
     if (
         not isinstance(arm, str)
@@ -104,6 +110,9 @@ def comparison_report(
         raise ValueError("identified UTC-day comparison window required")
     if native_stop is not None and native_stop not in NATIVE_STOPS:
         raise ValueError("unknown native stop")
+    if not isinstance(disclosures, tuple):
+        raise ValueError("disclosures must be a tuple of nonempty strings")
+    notes = [*disclosures, *skipped_hours_disclosures(skipped_hours)]
     points: list[EquityPoint] = []
     groups: dict[int, list[str]] = {}
     capital: dict[str, NativeMark] = {}
@@ -121,11 +130,14 @@ def comparison_report(
     if native_stop is not None and marks:
         stop, label = marks[-1], f"{FROZEN_REF}{native_stop}"
         after_stop = max(start_ms, stop.timestamp_ms // HOUR * HOUR + HOUR)
-        for hour in range(after_stop, end_ms + HOUR, HOUR):
+        frozen = range(after_stop, end_ms + HOUR, HOUR)
+        for hour in frozen:
             identity = f"{arm}:frozen:{hour}"
             points.append(EquityPoint(hour, stop.equity, identity, (*source_refs, label)))
             groups.setdefault(hour, []).append(identity)
             capital[identity] = NativeMark(hour, "frozen", stop.equity, Decimal(0), Decimal(0))
+        if frozen:
+            notes.append(f"{label}: {span_text('hours', frozen)}")
     boundaries: list[Boundary] = []
     capitals: list[CapitalObservation] = []
     for hour in range(start_ms, end_ms + HOUR, HOUR):
@@ -196,4 +208,6 @@ def comparison_report(
         policy_evidence=policy,
         producer_issues=producer_issues,
         skipped_hours=skipped_hours,
+        disclosures=tuple(notes),
+        capital_label=capital_label,
     )

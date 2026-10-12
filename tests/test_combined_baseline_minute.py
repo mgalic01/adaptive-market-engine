@@ -90,7 +90,7 @@ def grid_jobs(skip=()):
     }
 
 
-def grid(skip=(), initial="2000"):
+def grid(skip=(), initial="2000", **options):
     return replay_grid_baseline(
         "matched_v0_grid_high_first",
         grid_jobs(skip),
@@ -99,6 +99,7 @@ def grid(skip=(), initial="2000"):
         initial=D(initial),
         source_refs=("synthetic:grid",),
         adapter_pin=PIN,
+        **options,
     )
 
 
@@ -114,7 +115,8 @@ def test_the_recorder_changes_nothing_the_frozen_replay_computes():
 
 
 def test_grid_portfolio_has_every_hourly_boundary_and_reconciles():
-    evidence = grid()
+    evidence = grid(capital_label="research_10000_usdt")
+    assert evidence.report.capital_label == "research_10000_usdt"
     report = evidence.report
     boundaries = report.policy_evidence.boundaries
     assert [b.timestamp_ms for b in boundaries] == list(range(T0, T0 + DAY + HOUR_MS, HOUR_MS))
@@ -122,6 +124,7 @@ def test_grid_portfolio_has_every_hourly_boundary_and_reconciles():
     assert report.reconciliation_residual == 0
     assert evidence.wallet_quantity_exact is True
     assert "minute_baseline_final_minute_close_is_window_end" in evidence.disclosures
+    assert evidence.report.disclosures == evidence.disclosures
     series = common_hourly_series(
         report.equity_points, report.policy_evidence, start_ms=T0, end_ms=T0 + DAY
     )
@@ -184,7 +187,10 @@ def test_comparator_d_is_rebuilt_exactly_from_its_journal():
         initial=D(2000),
         source_refs=("synthetic:d",),
         adapter_pin=PIN,
+        capital_label="research_10000_usdt",
     )
+    assert evidence.report.capital_label == "research_10000_usdt"
+    assert evidence.report.disclosures == evidence.disclosures
     issues = [i for i in evidence.report.issues if "journal_parity" in i]
     assert not issues
     boundaries = evidence.report.policy_evidence.boundaries

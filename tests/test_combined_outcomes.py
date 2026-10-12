@@ -149,3 +149,22 @@ def test_other_baseline_stops_stay_failed_and_incomplete(status):
     assert row.failed and not row.complete
     assert row.native_stop is None
     assert not _report_valid(row)
+
+
+def test_outcomes_carry_their_reports_disclosures_and_capital_label():
+    trace = replay_strategy(fx.run("spot_trend", 3), (fx.market("BTCUSDT", fx.uptrend, 3),))
+    report = strategy_report(trace, adapter_pin="0" * 64, capital_label="research_10000_usdt")
+    row = strategy_outcome(
+        trace, report, identity("spot_trend", "open_low_high_close", "0" * 64), attempt_id="a-3"
+    )
+    assert row.disclosures == report.disclosures and row.disclosures
+    assert row.capital_label == "research_10000_usdt"
+    assert _report_valid(row)  # the recomputed report keeps both
+    evidence = hold(capital_label="research_10000_usdt")
+    base = baseline_outcome(
+        evidence, identity("matched_spot_hold", "native", "c" * 64), attempt_id="h-2"
+    )
+    assert base.disclosures == evidence.disclosures
+    assert "hold_marks_at_hourly_opening_quotes" in base.disclosures
+    assert base.capital_label == "research_10000_usdt"
+    assert _report_valid(base)

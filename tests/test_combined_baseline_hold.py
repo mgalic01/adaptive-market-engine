@@ -18,7 +18,7 @@ def markets(rules=fx.RULES):
     }
 
 
-def hold(cash="10000", cost=1, rules=fx.RULES):
+def hold(cash="10000", cost=1, rules=fx.RULES, **options):
     return replay_hold_baseline(
         markets(rules),
         start_ms=fx.START,
@@ -27,6 +27,7 @@ def hold(cash="10000", cost=1, rules=fx.RULES):
         cost_multiple=cost,
         source_refs=("synthetic:hold",),
         adapter_pin=PIN,
+        **options,
     )
 
 
@@ -50,6 +51,7 @@ def test_a_share_below_the_exchange_minimum_stays_in_cash_and_is_disclosed():
     evidence = hold(cash="108.5", rules=replace(fx.RULES, min_notional=D(60)))
     assert {c.asset for c in evidence.report.contributions} == set()
     assert any("kept_in_cash" in note for note in evidence.disclosures)
+    assert evidence.report.disclosures == evidence.disclosures
     assert evidence.report.final_equity == D("108.5")
 
 
@@ -136,3 +138,10 @@ def test_a_window_ending_at_the_reserved_boundary_is_replayed():
         adapter_pin=PIN,
     )
     assert evidence.report.complete, evidence.report.issues
+
+
+def test_the_hold_report_carries_its_disclosures_and_capital_label():
+    evidence = hold(capital_label="research_10000_usdt")
+    assert evidence.report.disclosures == evidence.disclosures
+    assert "hold_marks_at_hourly_opening_quotes" in evidence.report.disclosures
+    assert evidence.report.capital_label == "research_10000_usdt"

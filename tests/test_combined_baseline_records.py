@@ -10,14 +10,14 @@ from crypto_grid_bot.combined.baseline_records import (
     comparison_report,
 )
 from crypto_grid_bot.combined.common_series import FROZEN_REF, common_hourly_series
-from crypto_grid_bot.combined.report import Contribution
+from crypto_grid_bot.combined.report import Contribution, utc_text
 
 HOUR = 3_600_000
 DAY = 24 * HOUR
 STOP = 30 * HOUR + 1_800_000  # an intrabar stop mark in the 06:00 hour of day two
 
 
-def report(native_stop, producer_issues=()):
+def report(native_stop, producer_issues=(), **options):
     marks = (
         NativeMark(0, "open", D(10000), D(0), D(3000)),
         *(NativeMark(hour * HOUR, "open", D(9500), D(0), D(3000)) for hour in range(1, 31)),
@@ -49,6 +49,7 @@ def report(native_stop, producer_issues=()):
         adapter_pin="a" * 64,
         producer_issues=producer_issues,
         native_stop=native_stop,
+        **options,
     )
 
 
@@ -90,3 +91,26 @@ def test_a_run_ending_early_without_a_native_stop_stays_incomplete():
 def test_only_a_native_stop_freezes_equity(stop):
     with pytest.raises(ValueError, match="native stop"):
         report(stop)
+
+
+@pytest.mark.parametrize("stop", sorted(NATIVE_STOPS))
+def test_the_adapter_notes_skipped_hours_and_frozen_stop_reach_the_report(stop):
+    result = report(
+        stop,
+        disclosures=("adapter_note",),
+        skipped_hours=(10 * HOUR,),
+        capital_label="research_10000_usdt",
+    )
+    assert result.complete, result.issues
+    assert result.disclosures == (
+        "adapter_note",
+        f"registered_skipped_hours: count=1 at={utc_text(10 * HOUR)}",
+        f"frozen_after_native_stop:{stop}: hours=18 first={utc_text(31 * HOUR)} "
+        f"last={utc_text(2 * DAY)}",
+    )
+    assert result.capital_label == "research_10000_usdt"
+
+
+def test_a_run_without_a_stop_or_skipped_hour_discloses_only_its_adapter_notes():
+    assert report(None).disclosures == ()
+    assert report(None, disclosures=("adapter_note",)).disclosures == ("adapter_note",)

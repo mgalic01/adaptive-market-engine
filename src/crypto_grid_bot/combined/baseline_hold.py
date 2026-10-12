@@ -43,6 +43,7 @@ def replay_hold_baseline(
     source_refs: tuple[str, ...],
     adapter_pin: str,
     skipped_hours: tuple[int, ...] = (),
+    capital_label: str | None = None,
 ) -> BaselineEvidence:
     """Buy equal cash of every coin at the first opening quote and hold to the end.
 
@@ -140,6 +141,8 @@ def replay_hold_baseline(
         adapter_pin=adapter_pin,
         producer_issues=tuple(issues),
         skipped_hours=skipped_hours,
+        disclosures=tuple(disclosures),
+        capital_label=capital_label,
     )
     return BaselineEvidence(
         HOLD,
@@ -151,5 +154,5 @@ def replay_hold_baseline(
         report.reconciliation_residual or Decimal(0),
         False,
         True,
-        tuple(disclosures),
+        report.disclosures,
     )

@@ -227,6 +227,7 @@ def replay_v3_baseline(
     adapter_pin: str,
     picks: Mapping[int, str | None] | None = None,
     skipped_hours: tuple[int, ...] = (),
+    capital_label: str | None = None,
 ) -> BaselineEvidence:
     """Replay one frozen V3 baseline cell once and build its comparison evidence.
 
@@ -260,6 +261,8 @@ def replay_v3_baseline(
             adapter_pin=adapter_pin,
             producer_issues=("v3_selector_has_no_pick_before_window",),
             skipped_hours=skipped_hours,
+            disclosures=tuple(disclosures),
+            capital_label=capital_label,
         )
         return BaselineEvidence(
             arm,
@@ -271,7 +274,7 @@ def replay_v3_baseline(
             Decimal(0),
             False,
             None,
-            tuple(disclosures),
+            report.disclosures,
         )
     try:
         with v3_capital(initial):
@@ -306,6 +309,8 @@ def replay_v3_baseline(
         producer_issues=() if status is None or native_stop else (f"baseline_stop:{status}",),
         native_stop=native_stop,
         skipped_hours=skipped_hours,
+        disclosures=tuple(disclosures),
+        capital_label=capital_label,
     )
     runner = result.runner
     audits = runner.audits if runner is not None else []
@@ -324,5 +329,5 @@ def replay_v3_baseline(
             a.wallet_residual == 0 and all(value == 0 for value in a.quantity_residuals.values())
             for a in audits
         ),
-        tuple(disclosures),
+        report.disclosures,
     )

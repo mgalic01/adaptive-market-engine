@@ -267,3 +267,40 @@ def test_benchmark_is_compared_on_the_approved_hourly_schedule() -> None:
     assert "Omitted comparison" not in " ".join(parsed.text)
     mismatched = flat[:-1]
     assert "Omitted comparison" in render_report(evidence, benchmarks={"short": mismatched})
+
+
+def disclosure_section(html: str) -> str:
+    return html.split("<h2>Disclosures</h2>", 1)[1].split("</section>", 1)[0]
+
+
+def test_disclosures_and_the_capital_label_are_rendered_escaped() -> None:
+    attack = "<img src=x onerror=alert(1)>"
+    label = "owner_small:EUR:100:usdt_per_eur=1.08:fx_pin=" + "a" * 64
+    evidence = analyze(
+        D(100),
+        curve(),
+        contributions(),
+        (),
+        (),
+        ("pin",),
+        disclosures=("data_gap:BTCUSDT:spot: hours=1", attack),
+        capital_label=label,
+    )
+    html = render_report(evidence)
+    parsed = Elements(html)
+    section = " ".join(Elements(disclosure_section(html)).text)
+    assert "data_gap:BTCUSDT:spot: hours=1" in section and attack in section
+    assert label in section
+    header = " ".join(Elements(html.split("</header>", 1)[0]).text)
+    assert label in header
+    assert not any(tag == "img" for tag, _ in parsed.elements)
+    assert "&lt;img" in html
+    download = next(attrs["href"] for _, attrs in parsed.elements if attrs.get("download"))
+    data = json.loads(unquote(download.split(",", 1)[1]))["report"]
+    assert data["disclosures"] == [*evidence.disclosures]
+    assert data["capital_label"] == label
+
+
+def test_a_report_without_disclosures_says_so() -> None:
+    section = " ".join(Elements(disclosure_section(render_report(report()))).text)
+    assert "None recorded" in section and "not stated" in section
