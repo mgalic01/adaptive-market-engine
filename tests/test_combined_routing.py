@@ -39,6 +39,34 @@ def test_continuation_ablation_restores_rsi_veto():
     assert "legacy_rsi_veto" in result.reasons
 
 
+@pytest.mark.parametrize(
+    "trend,daily_rsi,four_hour_rsi,vetoed",
+    [
+        (TrendState.UP, D(76), D(60), True),
+        (TrendState.UP, D(60), D(80), False),
+        (TrendState.DOWN, D(24), D(40), True),
+        (TrendState.DOWN, D(40), D(24), False),
+    ],
+)
+def test_continuation_ablation_veto_reads_daily_rsi_not_four_hour(
+    trend, daily_rsi, four_hour_rsi, vetoed
+):
+    # Ruling on spec lines 84-85: the restored frozen veto read the daily RSI(14).
+    assessment = replace(
+        market(), daily=trend, four_hour=trend, daily_rsi=daily_rsi, rsi=four_hour_rsi
+    )
+    result = qualify(assessment, RoutingContext(spot_executable=True, continuation=False))
+    assert ("legacy_rsi_veto" in result.reasons) is vetoed
+    assert result.allowed is not vetoed
+
+
+def test_continuation_ablation_refuses_without_daily_rsi_even_with_four_hour_rsi():
+    warming = replace(market(), daily_rsi=None, rsi=D(50))
+    ablation = qualify(warming, RoutingContext(spot_executable=True, continuation=False))
+    assert not ablation.allowed and "rsi_unavailable" in ablation.reasons
+    assert qualify(warming, RoutingContext(spot_executable=True)).allowed
+
+
 def test_short_needs_both_bearish_timeframes_and_structure():
     bearish = replace(market(), daily=TrendState.DOWN, four_hour=TrendState.DOWN)
     result = qualify(bearish, RoutingContext())

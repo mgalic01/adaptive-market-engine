@@ -201,6 +201,8 @@ class AssessmentSeries:
             close=close,
             atr=atr,
             rsi=rsi,
+            # Wilder RSI(14) of the valid daily closes through the due completed day.
+            daily_rsi=snap.d1_rsi,
             extension=extension,
             volatility_ratio=ratio,
             prior_high=high,

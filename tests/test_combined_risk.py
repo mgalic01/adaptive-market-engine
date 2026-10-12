@@ -150,6 +150,33 @@ def test_minimum_notional_never_rounded_up_to_spend_more_risk():
     assert answer.reason == "below_minimum"
 
 
+def test_spot_cut_below_minimum_by_pending_cash_is_committed_capacity_not_minimum():
+    # Owner decision 2026-10-11: the minimum is the cause only when the size allowed
+    # before committed cash or capacity misses it. Own groups keep the group cap slack.
+    others = ("ETHUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT", "DOGEUSDT")
+    account = view(correlation_groups=tuple((s, s) for s in ("BTCUSDT", *others)))
+    candidate = intent(min_notional=D(1500), correlation_group="BTCUSDT")
+    book = PortfolioRisk()
+    assert book.preview(candidate, account).quantity == D("19.984")
+    for symbol in others:
+        pending = intent(
+            symbol, symbol, stop=D(99), requested_quantity=D(18), correlation_group=symbol
+        )
+        assert book.reserve(pending, account).accepted
+    # About 973 of 10000 free cash is left: under 10 units, below the 1500 minimum.
+    answer = book.reserve(candidate, account)
+    assert not answer.accepted
+    assert answer.reason == "spot_capacity_committed"
+
+
+def test_minimum_stays_the_cause_when_commitments_also_exhaust_spot_capacity():
+    # Tiny capital misses the minimum before any commitment; ample capital does not.
+    tiny = PortfolioRisk().reserve(intent(min_notional=D(25)), view(equity=D(100), free_cash=D(0)))
+    assert tiny.reason == "below_minimum"
+    ample = PortfolioRisk().reserve(intent(min_notional=D(25)), view(free_cash=D(0)))
+    assert ample.reason == "portfolio_capacity"
+
+
 def test_futures_short_funding_and_margin_admission():
     candidate = intent(
         venue="futures",

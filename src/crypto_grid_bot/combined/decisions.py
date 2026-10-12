@@ -101,7 +101,9 @@ class DecisionCoordinator:
     Source references must cover the supplied assessment, quotes, costs, filters,
     funding and correlation snapshot. Source verification remains the adapter's
     responsibility. No caller-provided spot-executable Boolean authorizes fallback:
-    only an actual normal-size spot preview below the venue minimum can do so.
+    only an actual normal-size spot preview refused as ``below_minimum`` can do so,
+    meaning the size before committed cash or capacity misses the venue minimum
+    (owner decision 2026-10-11). A spot size cut short by commitments is refused.
     Each VenueInputs must provide its own fresh quote. The separate quotes and
     position_rules mappings are authoritative HELD position marks and filters;
     candidate venue inputs never replace them, including during spot fallback.

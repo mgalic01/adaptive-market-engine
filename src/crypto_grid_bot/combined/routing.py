@@ -124,7 +124,8 @@ def qualify(assessment: Assessment, context: RoutingContext) -> Qualification:
         elif extension > 2:
             multiplier = Decimal("0.5")
         if not context.continuation:
-            rsi = assessment.rsi
+            # The restored frozen veto read the daily RSI(14) (mode_selector UPTREND_RSI_MAX).
+            rsi = assessment.daily_rsi
             if not isinstance(rsi, Decimal) or not rsi.is_finite() or not 0 <= rsi <= 100:
                 reasons.append("rsi_unavailable")
             elif (up and rsi >= 75) or (down and rsi <= 25):

@@ -18,7 +18,8 @@ class Assessment:
     structure: str
     close: Decimal | None
     atr: Decimal | None
-    rsi: Decimal | None
+    rsi: Decimal | None  # 4h RSI(14), recorded only
+    daily_rsi: Decimal | None  # daily RSI(14): the continuation ablation's restored veto
     extension: Decimal | None
     volatility_ratio: Decimal | None
     prior_high: Decimal | None

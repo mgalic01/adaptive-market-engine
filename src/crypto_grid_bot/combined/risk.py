@@ -372,20 +372,40 @@ class PortfolioRisk:
             name = groups.get(symbol, "unknown")
             group_totals[name] = group_totals.get(name, Fraction(0)) + notional
 
-        def capacity(coefficient: Fraction, used: Fraction, unit: Fraction) -> Fraction:
-            # used + q*unit <= coefficient * (equity - q*unit_loss).
+        def capacity(
+            coefficient: Fraction, used: Fraction, unit: Fraction, capital: Fraction = equity
+        ) -> Fraction:
+            # used + q*unit <= coefficient * (capital - q*unit_loss).
             cap = coefficient * Fraction(fraction)
-            return (cap * equity - used) / (unit + cap * unit_loss)
+            return (cap * capital - used) / (unit + cap * unit_loss)
+
+        def own_limits(capital: Fraction) -> Fraction:
+            """The candidate's own asset risk and asset notional limits."""
+            return min(
+                capacity(
+                    Fraction(1, 200) * Fraction(intent.risk_multiplier),
+                    Fraction(0),
+                    Fraction(unit_risk),
+                    capital,
+                ),
+                capacity(Fraction(1, 5), Fraction(0), Fraction(unit_notional), capital),
+            )
+
+        def executable(bound: Fraction) -> Decimal | None:
+            """The step-floored size, or None when it misses a venue minimum."""
+            quantity = Decimal(bound // Fraction(intent.step)) * intent.step
+            if (
+                quantity <= 0
+                or quantity < intent.min_quantity
+                or quantity * minimum_price < intent.min_notional
+            ):
+                return None
+            return quantity
 
         quantity_bound = min(
             Fraction(normal) * Fraction(fraction),
             Fraction(cash) / Fraction(unit_cash),
-            capacity(
-                Fraction(1, 200) * Fraction(intent.risk_multiplier),
-                Fraction(0),
-                Fraction(unit_risk),
-            ),
-            capacity(Fraction(1, 5), Fraction(0), Fraction(unit_notional)),
+            own_limits(equity),
             capacity(Fraction(3, 100), Fraction(used_risk), Fraction(unit_risk)),
             capacity(Fraction(8, 5), Fraction(used_gross), Fraction(unit_notional)),
             capacity(Fraction(4, 5), Fraction(group), Fraction(unit_notional)),
@@ -404,15 +424,25 @@ class PortfolioRisk:
                     quantity_bound = min(
                         quantity_bound, capacity(Fraction(4, 5), notional, Fraction(0))
                     )
-        if quantity_bound <= 0:
-            return no("portfolio_capacity")
-        quantity = Decimal(quantity_bound // Fraction(intent.step)) * intent.step
-        if (
-            quantity == 0
-            or quantity < intent.min_quantity
-            or quantity * minimum_price < intent.min_notional
-        ):
-            return no("below_minimum")
+        quantity = executable(quantity_bound)
+        if quantity is None:
+            if intent.venue == "spot":
+                # Owner decision 2026-10-11: ``below_minimum``, the only spot refusal that
+                # permits a futures fallback, means the size allowed by the size limits,
+                # own asset limits and recovery allowance misses the venue minimum before
+                # any committed cash or capacity (free cash, futures backing, reservations,
+                # aggregate risk, gross, group, other assets' headroom). A size those
+                # commitments cut short is refused for that cause instead.
+                uncommitted = min(
+                    Fraction(min(intent.requested_quantity, intent.max_quantity))
+                    * Fraction(fraction),
+                    own_limits(Fraction(view.equity)),
+                )
+                if executable(uncommitted) is None:
+                    return no("below_minimum")
+                if quantity_bound > 0:
+                    return no("spot_capacity_committed")
+            return no("portfolio_capacity" if quantity_bound <= 0 else "below_minimum")
         return Admission(
             intent.intent_id,
             True,

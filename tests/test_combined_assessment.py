@@ -7,6 +7,7 @@ import pytest
 
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.combined.assessment import AssessmentSeries, assess
+from crypto_grid_bot.strategy.indicators import wilder_rsi
 from crypto_grid_bot.strategy.perception import TrendState
 
 HOUR = 3_600_000
@@ -45,6 +46,22 @@ def test_completed_uptrend_records_high_rsi_without_universal_veto(inputs):
     assert result.reasons == ()
     with pytest.raises(FrozenInstanceError):
         result.available = False
+
+
+def test_daily_rsi_is_recorded_from_completed_daily_closes_beside_four_hour_rsi(inputs):
+    hourly, daily, now = inputs
+    # The last completed day closes 0.5 below the prior close, inside its own range.
+    daily[-1] = replace(daily[-1], close=daily[-1].open - D("0.5"))
+    expected = wilder_rsi([bar.close for bar in daily])[-1]
+    result = assess("BTCUSDT", now, hourly, daily, now)
+    assert expected is not None and expected < 100
+    assert result.daily_rsi == expected
+    assert result.rsi == 100
+    # The day still forming at the decision is never read.
+    forming = replace(daily[-1], open_ms=now, close=daily[-1].low)
+    assert assess("BTCUSDT", now, hourly, daily + [forming], now).daily_rsi == expected
+    # Fourteen completed closes leave the daily RSI(14) warming up, not invented.
+    assert assess("BTCUSDT", now, hourly, daily[-14:], now).daily_rsi is None
 
 
 def test_future_suffix_never_changes_past_assessment(inputs):

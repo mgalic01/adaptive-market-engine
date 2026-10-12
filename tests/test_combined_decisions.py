@@ -68,6 +68,49 @@ def test_only_proven_spot_minimum_failure_enables_futures_fallback(setup):
     assert dict(journal.events[1].details)["spot_refusal"] == "spot_normal_size_below_venue_minimum"
 
 
+def test_tiny_capital_below_spot_minimum_before_commitments_still_falls_back(setup):
+    _, _, _, args = setup
+    engine, journal = PortfolioEngine(D(100)), Evidence()
+    # Even uncommitted, 0.5% risk of 100 buys about 11.6 of spot notional, under 20.
+    args["spot"] = replace(args["spot"], rules=replace(args["spot"].rules, min_notional=D(20)))
+    result = DecisionCoordinator(engine, journal).decide(**args)
+    assert result.admission.accepted and result.plan.owner == "futures_trend"
+    assert len(engine.reservations) == 1
+    assert dict(journal.events[1].details)["spot_refusal"] == "spot_normal_size_below_venue_minimum"
+
+
+def test_spot_cut_below_minimum_by_committed_cash_is_refused_not_moved_to_futures(setup):
+    # Owner decision 2026-10-11: committed cash, not the venue minimum, is the cause here.
+    coordinator, engine, journal, args = setup
+    others = ("ETHUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT", "DOGEUSDT")
+    groups = tuple((symbol, symbol) for symbol in ("BTCUSDT", *others))
+    spot = replace(args["spot"], rules=replace(args["spot"].rules, min_notional=D(1100)))
+    uncommitted = DecisionCoordinator(PortfolioEngine(D(10000)), Evidence()).decide(
+        **{**args, "spot": spot, "groups": groups}
+    )
+    assert uncommitted.admission.accepted and uncommitted.intent.venue == "spot"
+    small = replace(args["spot"], rules=replace(args["spot"].rules, max_qty=D(18)))
+    for symbol in others:
+        pending = coordinator.decide(
+            symbol,
+            replace(args["assessment"], symbol=symbol, atr=D("0.5")),
+            RoutingContext(),
+            {},
+            small,
+            None,
+            args["source_refs"],
+            groups=groups,
+        )
+        assert pending.admission.accepted
+    result = coordinator.decide(**{**args, "spot": spot, "groups": groups})
+    assert result.plan.owner == "spot_trend" and result.intent.venue == "spot"
+    assert not result.admission.accepted
+    assert result.admission.reason == "spot_capacity_committed"
+    assert result.events[1].phase == "qualified" and result.events[1].details == ()
+    assert len(engine.reservations) == len(others)
+    assert all(a.intent_id.endswith(":intent:spot") for a in engine.reservations)
+
+
 def test_unknown_spot_cannot_fallback_even_if_caller_claims_false(setup):
     coordinator, engine, journal, args = setup
     args.update(spot=None, routing=RoutingContext(spot_executable=False))
