@@ -9,6 +9,7 @@ import pytest
 from crypto_grid_bot.backtest.funding import FundingRecord
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.combined.account import FundingEvent
+from crypto_grid_bot.combined.driver.flow_schedule import build_flow_schedule
 from crypto_grid_bot.combined.replay_records import evidence_records, strategy_report
 from crypto_grid_bot.combined.report import utc_text
 from crypto_grid_bot.combined.strategy_replay import TraceFill, replay_strategy
@@ -678,6 +679,31 @@ def test_duplicate_minute_bars_are_refused_before_any_replay():
     duplicated = replace(market, minutes=(*market.minutes, market.minutes[100]))
     with pytest.raises(ValueError, match="minute"):
         replay_strategy(fx.run("spot_grid", 2), (duplicated,))
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        lambda schedule, minutes: (schedule, minutes),  # a schedule beside its minutes
+        lambda schedule, _: (replace(schedule, symbol="ETHUSDT"), ()),
+        lambda schedule, _: (replace(schedule, start_ms=schedule.start_ms + DAY), ()),
+        lambda schedule, _: (replace(schedule, end_ms=schedule.end_ms + DAY), ()),
+        lambda schedule, _: (replace(schedule, open_allowed=schedule.open_allowed[:-1]), ()),
+        lambda schedule, _: (replace(schedule, withheld=schedule.withheld + b"\0"), ()),
+        lambda schedule, _: (replace(schedule, withheld=bytearray(schedule.withheld)), ()),
+        lambda schedule, _: (replace(schedule, present=1), ()),
+        lambda schedule, _: ("not a schedule", ()),
+    ],
+)
+def test_a_flow_schedule_replaces_the_minutes_of_its_own_coin_and_window_only(defect):
+    market = fx.market("BTCUSDT", fx.ranging, 2, flow=True)
+    run = fx.run("spot_grid", 2)
+    schedule = build_flow_schedule("BTCUSDT", market.minutes, run.start_ms, run.end_ms)
+    sound = replay_strategy(run, (replace(market, minutes=(), flow=schedule),))
+    assert sound.failure is None and sound == replay_strategy(run, (market,))
+    flow, minutes = defect(schedule, market.minutes)
+    with pytest.raises(ValueError, match="flow"):
+        replay_strategy(run, (replace(market, minutes=minutes, flow=flow),))
 
 
 GRID_ARMS = [

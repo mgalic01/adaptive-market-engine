@@ -5,11 +5,13 @@ and one window, over in-memory, already registered inputs. Nothing is fetched, n
 order leaves this process, and the run never retries. Frozen V0-V3 baselines have
 their own adapters; this driver refuses them.
 
-A grid-enabled arm needs each coin's minute input for the flow gate. A coin with no
-minute bar at all in the gate's read range is a missing grid input: the replay still
-runs (its trend components are unaffected) but the trace names the coin and the
-report is incomplete. A sparse gap inside a present input only makes unavailable (so
-blocked) the minutes whose fifteen-minute flow window it falls in.
+A grid-enabled arm needs each coin's minute input for the flow gate: its minute bars,
+or the flow schedule precomputed from them (``driver.flow_schedule``), which the replay
+reads in their place. A coin with no minute bar at all in the gate's read range is a
+missing grid input: the replay still runs (its trend components are unaffected) but the
+trace names the coin and the report is incomplete. A sparse gap inside a present input
+only makes unavailable (so blocked) the minutes whose fifteen-minute flow window it
+falls in.
 
 A venue's hourly input may miss window hours: these data gaps are listed in the trace
 and never stop the run. A coin without its bar gets no fill of any kind in that bar
@@ -98,6 +100,7 @@ from .assessment import AssessmentSeries, daily_bars
 from .boundary_execution import BoundaryExecution, BoundaryExecutor, FundingFixing
 from .correlation import correlation_groups
 from .decisions import Costs, DecisionCoordinator, DecisionResult, FundingEstimate, VenueInputs
+from .driver.flow_schedule import FlowSchedule, build_flow_schedule
 from .engine import EngineSnapshot, PortfolioEngine, Quote, SettlementObservation, WorseFill
 from .evidence import DecisionEvent, DecisionRecord, Evidence
 from .execution import VenueRules
@@ -106,7 +109,7 @@ from .lifecycle import manage
 from .models import Assessment
 from .portfolio_path import PortfolioObservation, RestingBuy, replay_held_portfolio
 from .protection import ProtectionState, manage_completed_bar
-from .routing import MinuteFlowGate, qualify
+from .routing import qualify
 
 HOUR = 3_600_000
 FOUR_HOURS = 4 * HOUR
@@ -139,7 +142,8 @@ class SymbolMarket:
     """Registered inputs of one asset. Spot drives the causal assessment.
 
     ``daily`` must equal the daily bars rebuilt from the spot hourly bars on every day
-    the run reads; the replay reads only the rebuilt ones.
+    the run reads; the replay reads only the rebuilt ones. A ``flow`` schedule of the
+    run's own window replaces ``minutes``, which must then be empty.
     """
 
     symbol: str
@@ -148,6 +152,7 @@ class SymbolMarket:
     futures: VenueMarket | None = None
     funding: tuple[FundingRecord, ...] = ()
     minutes: tuple[Kline, ...] = ()
+    flow: FlowSchedule | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,6 +458,27 @@ def _validate(run: ReplayRun, markets: tuple[SymbolMarket, ...], futures_require
         ]
         if any(stamp % 60_000 for stamp in relevant) or len(set(relevant)) != len(relevant):
             raise ValueError(f"{market.symbol}: unique aligned minute bars required")
+        if market.flow is not None:
+            _check_flow(market, run)
+
+
+def _check_flow(market: SymbolMarket, run: ReplayRun) -> None:
+    """A flow schedule replaces the minutes of its own coin over exactly the run's
+    window, with one bit per window hour in each bitset."""
+    flow = market.flow
+    if not isinstance(flow, FlowSchedule) or market.minutes:
+        raise ValueError(f"{market.symbol}: a flow schedule replaces the minute bars")
+    if (flow.symbol, flow.start_ms, flow.end_ms) != (market.symbol, run.start_ms, run.end_ms):
+        raise ValueError(f"{market.symbol}: a flow schedule of another coin or window")
+    size = ((run.end_ms - run.start_ms) // HOUR + 7) // 8
+    if (
+        type(flow.open_allowed) is not bytes
+        or type(flow.withheld) is not bytes
+        or len(flow.open_allowed) != size
+        or len(flow.withheld) != size
+        or type(flow.present) is not bool
+    ):
+        raise ValueError(f"{market.symbol}: one flow bit per window hour required")
 
 
 def _daily(market: SymbolMarket, run: ReplayRun) -> tuple[Kline, ...]:
@@ -481,16 +507,25 @@ def _daily(market: SymbolMarket, run: ReplayRun) -> tuple[Kline, ...]:
     return rebuilt
 
 
-def _missing_grid_inputs(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> tuple[str, ...]:
-    """Symbols with no minute bar in ``[start - 15 min, end)``, the flow gate's read range."""
+def _flow(market: SymbolMarket, run: ReplayRun) -> FlowSchedule:
+    """The coin's flow schedule: the registered one, or built from its minute bars.
+
+    Only the minutes the gate reads are passed, in order; ``_validate`` has refused
+    duplicate or misaligned ones among them.
+    """
+    if market.flow is not None:
+        return market.flow
     first = run.start_ms - 15 * 60_000
-    return tuple(
-        sorted(
-            market.symbol
-            for market in markets
-            if not any(first <= bar.open_ms < run.end_ms for bar in market.minutes)
-        )
+    read = sorted(
+        (bar for bar in market.minutes if first <= bar.open_ms < run.end_ms),
+        key=lambda bar: bar.open_ms,
     )
+    return build_flow_schedule(market.symbol, read, run.start_ms, run.end_ms)
+
+
+def _missing_grid_inputs(flows: dict[str, FlowSchedule]) -> tuple[str, ...]:
+    """Symbols with no minute bar in ``[start - 15 min, end)``, the flow gate's read range."""
+    return tuple(sorted(symbol for symbol, flow in flows.items() if not flow.present))
 
 
 def _regime(assessment: Assessment) -> str:
@@ -541,10 +576,9 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         s: AssessmentSeries(s, by_symbol[s].spot.hourly, daily[s], source_refs=run.source_refs)
         for s in symbols
     }
-    missing_inputs = _missing_grid_inputs(run, markets) if settings.routing.spot_grid else ()
-    minute_index = {s: {bar.open_ms: bar for bar in by_symbol[s].minutes} for s in symbols}
-    # Fed minute by minute from the window's first minute; each frame reads it at its hour.
-    gates = {s: MinuteFlowGate(minute_index[s], run.start_ms) for s in symbols}
+    # The flow gate fed every minute from the window's first, as two bits per hour.
+    flows = {s: _flow(by_symbol[s], run) for s in symbols}
+    missing_inputs = _missing_grid_inputs(flows) if settings.routing.spot_grid else ()
     engine = PortfolioEngine(
         run.initial_cash,
         automatic_recovery=settings.automatic_recovery,
@@ -697,15 +731,11 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
         held = {p.symbol: p for p, *_ in engine.held_execution_terms()}
         entering.clear()
         entering.update(s for s, p in held.items() if p.venue == "futures")
-        # The gate as the opening frame left it, then every minute inside the bar: a
-        # block at any of them withholds the bar's resting buys, since the path cannot
-        # tell when a limit was touched (not canceled: levels and reservation stay).
-        # Sales bypass the gate.
-        blocked: set[str] = set()
-        for symbol in symbols:
-            opened = gates[symbol].allowed
-            if gates[symbol].advance(hour + HOUR - 60_000) or not opened:
-                blocked.add(symbol)
+        # The gate at the bar's opening, then at every minute inside it: a block at any
+        # of them withholds the bar's resting buys, since the path cannot tell when a
+        # limit was touched (not canceled: levels and reservation stay). Sales bypass
+        # the gate.
+        blocked = {symbol for symbol in symbols if flows[symbol].withheld_at(hour)}
         for symbol, basket in sorted(books.items()):
             if basket.pending and symbol in blocked:
                 withheld.setdefault(symbol, []).append(hour)
@@ -865,8 +895,6 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             return failure
         finalize(hour)
         for symbol in symbols:
-            gates[symbol].advance(hour)  # the gate at this frame's own minute
-        for symbol in symbols:
             failure = decide(symbol, hour, groups_by_day[day])
             if failure is not None:
                 return failure
@@ -965,7 +993,8 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             end_unsignaled(symbol)
             return None
         assessment = series[symbol].at(hour, hour)
-        routing = replace(settings.routing, flow_allowed=gates[symbol].allowed)
+        # The gate at this frame's own minute.
+        routing = replace(settings.routing, flow_allowed=flows[symbol].allowed_at(hour))
         if qualify(assessment, routing).side == 0:
             if assessment.available:
                 end_unsignaled(symbol)  # No directional or range signal: nothing is detected.
