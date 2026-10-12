@@ -34,9 +34,11 @@ A baseline adapter returns ``BaselineEvidence``, which holds no funnel journal
 holds what the adapter records besides its report: the native marks in its own timing
 (``[timestamp_ms, kind, equity, spot_value, futures_collateral]``), its stop status,
 liquidations, accounting residual and checks, and its disclosures. A minute cell adds the
-inputs it ran on (``_minute_inputs``): the SHA-256 of the dataset spec, the bot config and
-the legacy manifest, its frozen version, and per pair the path mode, gate, costs, minute
-count and masked hours inside the window. Nothing here touches the network.
+inputs it ran on (``_minute_inputs``): the git blob ids of the repository's pinned dataset
+spec and bot config at the repo head, the legacy manifest's SHA-256, its frozen version,
+and per pair the path mode, gate, costs, minute count and masked hours inside the window.
+Reading those blob ids with git is the only I/O besides the files; nothing here touches
+the network.
 """
 
 import contextlib
@@ -94,6 +96,7 @@ from crypto_grid_bot.combined.driver.run_cell import (
     _capital,
     _check_attempt,
     _claimed,
+    _git,
     _identity,
     _metadata,
     _pack_errors,
@@ -122,11 +125,13 @@ MAX_PICKS_BYTES = 1024 * 1024
 
 # The frozen minute baselines' dataset spec and bot config as the frozen V1 and V2 runs
 # used them (spec v1 section 4; the backtest workflow's ``--spec`` and its default
-# ``--config``), by repository path. The run-manifest pins the dataset's manifest under
-# MINUTE_MANIFEST_PATH.
+# ``--config``), by repository path. A minute cell reads only these, under its repository
+# root, each bound to its git blob at the repo head; the run-manifest pins the dataset's
+# manifest under MINUTE_MANIFEST_PATH.
 MINUTE_SPEC_PATH = "config/datasets/full-range-2017-2024.toml"
 MINUTE_MANIFEST_PATH = "config/datasets/full-range-2017-2024.manifest.json"
 MINUTE_CONFIG_PATH = "config/default.toml"
+_MINUTE_FILES = (MINUTE_SPEC_PATH, MINUTE_CONFIG_PATH)  # bound to their blobs at the head
 MINUTE_PAIRS = ("BTCUSDT", "ETHUSDT", "XRPUSDT")  # the frozen traded pairs (proposal §2)
 FUNDING_SYMBOL = "BTCUSDT"  # spec v1 §3 G: BTCUSDT's funding gates every pair, as run_job
 # The pinned V1 variants (registration.V1_VARIANTS) by their frozen names (runner.VARIANTS).
@@ -145,6 +150,7 @@ _SLIPPAGE_LINE = re.compile(r'^slippage_rate = "[^"\n]*"$', re.MULTILINE)
 
 _RESERVED = 1_735_689_600_000
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_BLOB = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")  # a git object id (SHA-1 or SHA-256 repo)
 _STAMP = re.compile(r"0|[1-9][0-9]*")
 _RUN_ID = re.compile(r"([0-9a-f]{32})-(.+)", re.DOTALL)
 _PICKS_KEYS = frozenset(
@@ -399,8 +405,7 @@ def run_minute_cell(
     *,
     attempt_id: str,
     repo_head: str,
-    spec_path: Path,
-    config_path: Path,
+    repo_root: Path,
 ) -> Path:
     """Replay the registered frozen minute baseline cell ``cell`` once and return its
     artifact directory, ``out_dir/<cell_id>`` (layout in the module docstring).
@@ -408,10 +413,11 @@ def run_minute_cell(
     - ``data_dir``: the verified legacy dataset, laid out as ``backtest.dataset.local_path``
       reads it (``data_dir/binance/data/...``). The caller has verified every archive the
       manifest lists against its SHA-256 (``backtest.dataset.verify_dataset``).
-    - ``spec_path``: the frozen dataset spec, ``MINUTE_SPEC_PATH`` in the checkout, with
-      its manifest beside it (``backtest.jobs.manifest_path``); the manifest's SHA-256 must
-      be the run-manifest's pin of ``MINUTE_MANIFEST_PATH``.
-    - ``config_path``: the frozen bot config, ``MINUTE_CONFIG_PATH`` in the checkout.
+    - ``repo_root``: the checkout at ``repo_head``. The cell reads only the repository's own
+      frozen dataset spec ``MINUTE_SPEC_PATH`` (its manifest, ``MINUTE_MANIFEST_PATH``,
+      beside it) and bot config ``MINUTE_CONFIG_PATH`` under it. Each working-tree file
+      must be its git blob at ``repo_head`` (``_pinned_blob``), and the blob ids go into
+      ``minute_inputs``; the manifest's SHA-256 must be the run-manifest's pin.
 
     Each of the spec's pairs (``MINUTE_PAIRS``) is one job, built exactly as the frozen
     ``backtest.jobs.run_job`` (grids) and ``trend_benchmark.trend_job`` (D) build theirs:
@@ -426,13 +432,16 @@ def run_minute_cell(
     from the registration; the adapter splits the capital equally across the pairs.
 
     Refuses, before anything is written, a cell that is not a registered native minute
-    cell, an empty attempt id, a repo head that is not 40 lowercase hex, a dataset that is
-    not the pinned one (``_minute_dataset``) and an existing cell directory.
+    cell, an empty attempt id, a repo head that is not 40 lowercase hex, a spec or config
+    absent at ``repo_head`` or edited since (uncommitted), a dataset that is not the pinned
+    one (``_minute_dataset``) and an existing cell directory.
     """
     window = _baseline_window(cell, reg, "minute", "a minute baseline cell required")
     version = minute_version(cell.arm)
     _check_attempt(attempt_id, repo_head)
-    spec_file, config_file, data = Path(spec_path), Path(config_path), Path(data_dir)
+    root, data = Path(repo_root), Path(data_dir)
+    blobs = {path: _pinned_blob(root, repo_head, path) for path in _MINUTE_FILES}
+    spec_file, config_file = root / MINUTE_SPEC_PATH, root / MINUTE_CONFIG_PATH
     spec, legacy_sha = _minute_dataset(spec_file, reg, window)
     capital = _capital(reg, cell.capital_id)
     adapter_pin = dict(reg.registration.adapter_pins)[cell.arm]
@@ -490,7 +499,7 @@ def run_minute_cell(
                 skipped_hours=window.skipped_hours,
                 capital_label=label,
             )
-        inputs = _minute_inputs(version, spec_file, config_file, legacy_sha, jobs, bounds)
+        inputs = _minute_inputs(version, blobs, legacy_sha, jobs, bounds)
         _write_cell(
             directory,
             attempt,
@@ -504,6 +513,32 @@ def run_minute_cell(
             extra={"minute_inputs": inputs},
         )
     return directory
+
+
+def _pinned_blob(repo_root: Path, repo_head: str, path: str) -> str:
+    """The git blob id of the repository file ``path`` at commit ``repo_head``, once the
+    working tree's file is that blob; otherwise a ``ValueError``.
+
+    The commit's blob comes from ``git ls-tree``; the working tree's from ``git
+    hash-object``, which applies the checkout's line-ending conversion, so a CRLF checkout
+    and an LF one give the same id. A file absent at the commit, or edited since and not
+    committed, is refused.
+    """
+    listed = _git(repo_root, "ls-tree", "-z", f"{repo_head}^{{commit}}", "--", path)
+    records = [record for record in listed.split(b"\0") if record]
+    meta, _, name = records[0].partition(b"\t") if len(records) == 1 else (b"", b"", b"")
+    parts = meta.split(b" ")
+    committed = parts[2].decode("ascii", "replace") if len(parts) == 3 else ""
+    if name != path.encode("utf-8") or parts[1:2] != [b"blob"] or not _BLOB.fullmatch(committed):
+        raise ValueError(f"{path} is not a file of commit {repo_head} in {repo_root}")
+    working = _git(repo_root, "hash-object", "--", path).decode("ascii", "replace").strip()
+    if working != committed:
+        raise ValueError(
+            f"{path} in {repo_root} is blob {working}, not its blob {committed} at commit "
+            f"{repo_head}: the cell reads only its repo head's files, so uncommitted edits "
+            "are refused"
+        )
+    return committed
 
 
 def _minute_dataset(
@@ -700,15 +735,15 @@ def _trend_job(
 
 def _minute_inputs(
     version: MinuteVersion,
-    spec_path: Path,
-    config_path: Path,
+    blobs: Mapping[str, str],
     legacy_sha: str,
     jobs: Mapping[str, MinuteJob | TrendJob],
     bounds: tuple[int, int],
 ) -> dict[str, object]:
-    """What a minute cell ran on, for ``native_evidence.json``: the SHA-256 of the dataset
-    spec, the bot config and the legacy manifest, the frozen version, and per pair the
-    path mode, gate, effective costs, minutes played and masked hours inside the window."""
+    """What a minute cell ran on, for ``native_evidence.json``: the git blob ids at the repo
+    head of the dataset spec and the bot config (``blobs``, by repository path), the legacy
+    manifest's SHA-256, the frozen version, and per pair the path mode, gate, effective
+    costs, minutes played and masked hours inside the window."""
     start, end = bounds
     pairs: dict[str, object] = {}
     for pair, job in sorted(jobs.items()):
@@ -727,8 +762,8 @@ def _minute_inputs(
             "masked_hours_in_window": sorted(h for h in job.masked if start <= h < end),
         }
     return {
-        "dataset_spec_sha256": hashlib.sha256(spec_path.read_bytes()).hexdigest(),
-        "bot_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        "dataset_spec_blob": blobs[MINUTE_SPEC_PATH],
+        "bot_config_blob": blobs[MINUTE_CONFIG_PATH],
         "legacy_manifest_sha256": legacy_sha,
         "version": {"trend": version.trend, "variant": version.variant},
         "pairs": pairs,

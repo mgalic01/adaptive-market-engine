@@ -6,13 +6,17 @@ the V3 input pack from the same synthetic paths, and the registration with Task 
 helpers. V3's frozen walk-forward trains 18 months per quarter, which takes minutes even on
 two synthetic coins, so a stand-in records real V3 attempts around one short frozen replay.
 The minute cells read a tiny synthetic legacy dataset that the frozen fetch code stores
-from a fake archive, laid out as ``backtest`` reads it. Nothing touches the network.
+from a fake archive, laid out as ``backtest`` reads it, with its spec, manifest and the bot
+config committed at the pinned paths of a temporary git repository. Nothing touches the
+network.
 """
 
 import hashlib
+import inspect
 import json
 import math
 import shutil
+import subprocess  # nosec B404
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -77,8 +81,10 @@ from crypto_grid_bot.combined.driver.registration import (
     write_run_manifest,
 )
 from crypto_grid_bot.combined.driver.run_baselines import (
+    MINUTE_CONFIG_PATH,
     MINUTE_MANIFEST_PATH,
     MINUTE_PAIRS,
+    MINUTE_SPEC_PATH,
     compute_v3_picks,
     minute_version,
     run_hold_cell,
@@ -947,9 +953,10 @@ def sine(hours_on: float) -> float:
     return 1.0 + 0.08 * math.sin(2 * math.pi * (hours_on + 8) / 24)
 
 
-def legacy_dataset(work: Path) -> Path:
-    """A synthetic legacy dataset under ``work``: its spec, the manifest the frozen fetch
-    writes, and the hash-checked archives under ``work/data``; returns the spec's path.
+def legacy_dataset(repo: Path, data_dir: Path) -> Path:
+    """A synthetic legacy dataset: its spec at ``repo/MINUTE_SPEC_PATH``, the manifest the
+    frozen fetch writes beside it (``MINUTE_MANIFEST_PATH``), and the hash-checked archives
+    under ``data_dir``; returns the spec's path.
 
     Hourly bars from 2020-11-01 to 2020-12-05 for the five basket members, rising daily
     bars from 2020-05-01, BTCUSDT's funding for 2020-11 and 2020-12, and minutes from
@@ -981,40 +988,76 @@ def legacy_dataset(work: Path) -> Path:
     funding = [add_funding(archive, NOV_2020, 90), add_funding(archive, DEC_2020, 93)]
     filters = {"base": "BTC", "quote": "USDT", "tick_size": "0.0001"}
     filters |= {"quantity_step": "0.1", "min_notional": "5"}
-    spec_path = work / "minute-cells.toml"
+    spec_path = repo / MINUTE_SPEC_PATH
+    spec_path.parent.mkdir(parents=True)
     spec_path.write_text(LEGACY_SPEC)
     manifest = fetch_dataset(
         load_spec(spec_path),
-        work / "data",
+        data_dir,
         fetcher=archive,
         instruments=lambda symbol: filters,
         previous={"files": funding},
     )
     assert all(entry["status"] == "ok" for entry in manifest["files"])
     write_manifest(manifest_path(spec_path), manifest)
+    assert manifest_path(spec_path) == repo / MINUTE_MANIFEST_PATH
     return spec_path
+
+
+def git(repo: Path, *args: str) -> str:
+    done = subprocess.run(  # nosec B603 B607
+        ["git", "-C", str(repo), *args], capture_output=True, check=True, text=True
+    )
+    return done.stdout.strip()
+
+
+def commit_pinned(repo: Path, message: str) -> str:
+    """Commit the pinned spec, manifest and bot config under ``repo``; return the head."""
+    git(repo, "add", "--", MINUTE_SPEC_PATH, MINUTE_MANIFEST_PATH, MINUTE_CONFIG_PATH)
+    git(repo, "commit", "-q", "-m", message)
+    return git(repo, "rev-parse", "HEAD")
 
 
 @dataclass(frozen=True)
 class MinuteWorld:
     reg: DriverRegistration
-    spec_path: Path
+    repo: Path
+    head: str
     data_dir: Path
     legacy_sha: str
     config_sha: str
     manifest_sha: str
 
+    @property
+    def spec_path(self) -> Path:
+        return self.repo / MINUTE_SPEC_PATH
+
+    @property
+    def bot_config(self) -> Path:
+        return self.repo / MINUTE_CONFIG_PATH
+
 
 @pytest.fixture(scope="module")
 def minute_world(tmp_path_factory) -> MinuteWorld:
-    """The synthetic legacy dataset, and a loaded registration of all 216 cells whose W1 is
-    2020-12-03 to 2020-12-05 and whose run-manifest pins the dataset's manifest under the
-    full-range path, with a distinct minute adapter pin."""
-    spec_path = legacy_dataset(tmp_path_factory.mktemp("legacy"))
-    legacy_sha = hashlib.sha256(manifest_path(spec_path).read_bytes()).hexdigest()
+    """A temporary git repository whose head commits the synthetic dataset's spec and
+    manifest and a copy of the frozen bot config at their pinned paths, the dataset's
+    archives beside it, and a loaded registration of all 216 cells whose W1 is 2020-12-03
+    to 2020-12-05 and whose run-manifest pins the dataset's manifest under the full-range
+    path, with a distinct minute adapter pin."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
     root = tmp_path_factory.mktemp("minute-repo")
+    data_dir = tmp_path_factory.mktemp("legacy") / "data"
+    spec_path = legacy_dataset(root, data_dir)
+    shutil.copyfile(BOT_CONFIG, root / MINUTE_CONFIG_PATH)
+    git(root, "init", "-q")
+    git(root, "config", "user.name", "Synthetic Test")
+    git(root, "config", "user.email", "test@example.invalid")
+    git(root, "config", "commit.gpgsign", "false")
+    git(root, "config", "core.autocrlf", "false")
+    head = commit_pinned(root, "pinned spec, manifest and bot config")
+    legacy_sha = hashlib.sha256(manifest_path(spec_path).read_bytes()).hexdigest()
     config = root / "config"
-    config.mkdir()
     shutil.copyfile(MENU, config / "v3_1_experiment_menu.json")
     windows = {"w1": (M1_START, M1_END), "w0": (M0_START, M0_START + 2 * DAY)}
     prepare = prepare_document()
@@ -1042,8 +1085,7 @@ def minute_world(tmp_path_factory) -> MinuteWorld:
     registration_path = config / "v3_1_registration.json"
     config_sha = write_json(registration_path, document)
     reg = load_registration(registration_path, manifest_file, repo_root=root)
-    data_dir = spec_path.parent / "data"
-    return MinuteWorld(reg, spec_path, data_dir, legacy_sha, config_sha, manifest_sha)
+    return MinuteWorld(reg, root, head, data_dir, legacy_sha, config_sha, manifest_sha)
 
 
 def unmasked(spec_path, data_dir, symbol):
@@ -1071,9 +1113,8 @@ def minute(world: MinuteWorld, cell_id: str, out_dir: Path, attempt_id: str = AT
         reg,
         out_dir,
         attempt_id=attempt_id,
-        repo_head=HEAD,
-        spec_path=world.spec_path,
-        config_path=BOT_CONFIG,
+        repo_head=world.head,
+        repo_root=world.repo,
     )
 
 
@@ -1135,6 +1176,14 @@ def sha_of(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def committed_blob(world: MinuteWorld, path: str) -> str:
+    """The blob id ``git ls-tree`` lists for ``path`` at the world's head."""
+    mode, kind, rest = git(world.repo, "ls-tree", world.head, "--", path).split(" ", 2)
+    blob, name = rest.split("\t")
+    assert (mode, kind, name) == ("100644", "blob", path)
+    return blob
+
+
 def test_minute_cell_for_each_version_and_both_path_modes(minute_world, minute_runs):
     # Every registered minute arm names its frozen version and its path mode.
     arms = minute_arms(V1_VARIANTS)
@@ -1175,7 +1224,7 @@ def test_minute_cell_for_each_version_and_both_path_modes(minute_world, minute_r
                 # At base cost a job is the frozen job setup's own, in the cell's path mode.
                 frozen = prepare_run(
                     world.spec_path,
-                    BOT_CONFIG,
+                    world.bot_config,
                     world.data_dir,
                     pair,
                     mode,
@@ -1240,7 +1289,7 @@ def test_minute_cell_for_each_version_and_both_path_modes(minute_world, minute_r
                 {
                     "cell_id": cell_id,
                     "attempt_id": ATTEMPT,
-                    "repo_head": HEAD,
+                    "repo_head": world.head,
                     "code_pin": CODE_PIN,
                     "config_pin": world.config_sha,
                     "pack_sha256": world.legacy_sha,
@@ -1253,8 +1302,9 @@ def test_minute_cell_for_each_version_and_both_path_modes(minute_world, minute_r
             )
             inputs = native["minute_inputs"]
             assert inputs["legacy_manifest_sha256"] == world.legacy_sha
-            assert inputs["dataset_spec_sha256"] == sha_of(world.spec_path)
-            assert inputs["bot_config_sha256"] == sha_of(BOT_CONFIG)
+            # The spec and config by their git blobs at the repo head, as git lists them.
+            assert inputs["dataset_spec_blob"] == committed_blob(world, MINUTE_SPEC_PATH)
+            assert inputs["bot_config_blob"] == committed_blob(world, MINUTE_CONFIG_PATH)
             assert inputs["version"] == {"trend": trend, "variant": variant}
             assert sorted(inputs["pairs"]) == list(MINUTE_PAIRS)
             for described in inputs["pairs"].values():
@@ -1453,6 +1503,58 @@ def test_minute_cell_follows_the_claim_failure_outcome_protocol(
     assert sorted(p.name for p in (failed / e_cell).iterdir()) == ["attempt.json", "failure.json"]
 
 
+def test_minute_cell_reads_only_the_pinned_spec_and_config_at_the_repo_head(minute_world, tmp_path):
+    # (a) The production signature names the repository, never a spec or config path.
+    assert list(inspect.signature(run_minute_cell).parameters) == [
+        "cell",
+        "data_dir",
+        "reg",
+        "out_dir",
+        "attempt_id",
+        "repo_head",
+        "repo_root",
+    ]
+    world = minute_world
+    (cell,) = [c for c in world.reg.cells if c.cell_id == SPIED_CELLS[0]]
+    out_dir = tmp_path / "cells"
+    out_dir.mkdir()
+    options = {"attempt_id": ATTEMPT}
+    with pytest.raises(TypeError):
+        run_minute_cell(
+            cell,
+            world.data_dir,
+            world.reg,
+            out_dir,
+            repo_head=world.head,
+            repo_root=world.repo,
+            spec_path=world.spec_path,
+            **options,
+        )
+
+    # (b) An uncommitted edit to the spec or the bot config, or either absent at the repo
+    # head, is refused before the claim: nothing is written.
+    def refused(repo: Path, head: str, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            run_minute_cell(
+                cell, world.data_dir, world.reg, out_dir, repo_head=head, repo_root=repo, **options
+            )
+
+    for index, path in enumerate((MINUTE_SPEC_PATH, MINUTE_CONFIG_PATH)):
+        repo = shutil.copytree(world.repo, tmp_path / f"edited-{index}")
+        with (repo / path).open("a", encoding="utf-8") as stream:
+            stream.write("# an edit not committed\n")
+        assert git(repo, "hash-object", "--", path) != committed_blob(world, path)
+        refused(repo, world.head, "uncommitted edits are refused")
+        # Committed afterwards, the edit is still not the file of the head the cell names.
+        commit_pinned(repo, "an edit")
+        refused(repo, world.head, "uncommitted edits are refused")
+    absent = shutil.copytree(world.repo, tmp_path / "absent")
+    git(absent, "rm", "-q", "--", MINUTE_CONFIG_PATH)
+    git(absent, "commit", "-q", "-m", "no bot config")
+    refused(absent, git(absent, "rev-parse", "HEAD"), "not a file of commit")
+    assert list(out_dir.iterdir()) == []
+
+
 def test_minute_cell_refuses_other_cells_and_inputs_before_writing(minute_world, tmp_path):
     world = minute_world
     reg = world.reg
@@ -1462,11 +1564,17 @@ def test_minute_cell_refuses_other_cells_and_inputs_before_writing(minute_world,
     out_dir = tmp_path / "cells"
     out_dir.mkdir()
 
-    def run(c=cell, r=reg, spec_path=world.spec_path, **changes):
-        arguments = {"attempt_id": ATTEMPT, "repo_head": HEAD, **changes}
-        return run_minute_cell(
-            c, world.data_dir, r, out_dir, spec_path=spec_path, config_path=BOT_CONFIG, **arguments
-        )
+    def run(c=cell, r=reg, root=world.repo, head=world.head, **changes):
+        arguments = {"attempt_id": ATTEMPT, "repo_head": head, **changes}
+        return run_minute_cell(c, world.data_dir, r, out_dir, repo_root=root, **arguments)
+
+    def committed_copy(name: str, path: str, edit) -> tuple[Path, str]:
+        """A copy of the world's repository with ``path`` edited by ``edit`` and committed;
+        the copy and its new head."""
+        repo = shutil.copytree(world.repo, tmp_path / name)
+        target = repo / path
+        target.write_text(edit(target.read_text(encoding="utf-8")), encoding="utf-8")
+        return repo, commit_pinned(repo, f"edit {path}")
 
     with pytest.raises(ValueError, match="minute"):
         run(hold_cell)
@@ -1476,15 +1584,15 @@ def test_minute_cell_refuses_other_cells_and_inputs_before_writing(minute_world,
         with pytest.raises(ValueError, match="attempt|repo head"):
             run(**bad)
 
-    # A dataset whose manifest is not the one the run-manifest pins.
-    other = tmp_path / "other"
-    other.mkdir()
-    shutil.copyfile(world.spec_path, other / world.spec_path.name)
-    manifest = json.loads(manifest_path(world.spec_path).read_bytes())
-    manifest["created_at"] = "another fetch"
-    (other / manifest_path(world.spec_path).name).write_text(json.dumps(manifest))
+    # A dataset whose manifest is not the one the run-manifest pins, even when committed.
+    def refetched(text: str) -> str:
+        manifest = json.loads(text)
+        manifest["created_at"] = "another fetch"
+        return json.dumps(manifest)
+
+    repo, head = committed_copy("other-manifest", MINUTE_MANIFEST_PATH, refetched)
     with pytest.raises(ValueError, match="run-manifest"):
-        run(spec_path=other / world.spec_path.name)
+        run(root=repo, head=head)
     unpinned = replace(
         reg,
         run_manifest=replace(
@@ -1497,25 +1605,29 @@ def test_minute_cell_refuses_other_cells_and_inputs_before_writing(minute_world,
     with pytest.raises(ValueError, match="run-manifest"):
         run(r=unpinned)
 
-    # A spec of another shape than the frozen one: other pairs, other base costs, no daily
-    # history, or an evaluation that does not cover W1.
-    original = world.spec_path.read_text()
-    for old, new, message in (
-        ('"ETHUSDT", "XRPUSDT"]\nmarket', '"ETHUSDT"]\nmarket', "pairs"),
-        ('fee_rate = "0.001"', 'fee_rate = "0.0009"', "base cost"),
-        ('slippage_rate = "0.0005"', 'slippage_rate = "0.001"', "base cost"),
-        ('daily_warmup_start = "2020-05"\n', "", "daily"),
-        ('start = "2020-12"\nend = "2020-12"', 'start = "2021-01"\nend = "2021-01"', "evaluation"),
+    # A committed spec of another shape than the frozen one: other pairs, other base costs,
+    # no daily history, or an evaluation that does not cover W1.
+    for index, (old, new, message) in enumerate(
+        (
+            ('"ETHUSDT", "XRPUSDT"]\nmarket', '"ETHUSDT"]\nmarket', "pairs"),
+            ('fee_rate = "0.001"', 'fee_rate = "0.0009"', "base cost"),
+            ('slippage_rate = "0.0005"', 'slippage_rate = "0.001"', "base cost"),
+            ('daily_warmup_start = "2020-05"\n', "", "daily"),
+            (
+                'start = "2020-12"\nend = "2020-12"',
+                'start = "2021-01"\nend = "2021-01"',
+                "evaluation",
+            ),
+        )
     ):
-        changed = tmp_path / "changed" / message.replace(" ", "-") / str(len(new))
-        changed.mkdir(parents=True)
-        text = original.replace(old, new)
-        assert text != original
-        spec_path = changed / world.spec_path.name
-        spec_path.write_text(text)
-        shutil.copyfile(manifest_path(world.spec_path), manifest_path(spec_path))
+
+        def edit(text: str, old: str = old, new: str = new) -> str:
+            assert old in text
+            return text.replace(old, new)
+
+        repo, head = committed_copy(f"spec-{index}", MINUTE_SPEC_PATH, edit)
         with pytest.raises(ValueError, match=message):
-            run(spec_path=spec_path)
+            run(root=repo, head=head)
     assert list(out_dir.iterdir()) == []
 
 
