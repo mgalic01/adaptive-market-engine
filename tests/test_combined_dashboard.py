@@ -186,6 +186,29 @@ def test_required_metrics_and_sampling_definitions_are_visible_even_when_unknown
     assert "Structurally complete</span>" not in html
 
 
+def leverage_section(html):
+    """The text of the page's gross-leverage panel."""
+    start = html.index("<h2>Gross leverage</h2>")
+    return " ".join(" ".join(Elements(html[start : html.index("</section>", start)]).text).split())
+
+
+@pytest.mark.parametrize(
+    ("value", "shown", "above"),
+    [
+        (Fraction(48, 17), "2.8235x", True),  # a gap open before the drain
+        (Fraction(3, 2), "1.5000x", False),
+        (Fraction(2), "2.0000x", False),  # at the cap is not above it
+        (None, "Unavailable", False),
+    ],
+)
+def test_the_maximum_observed_gross_leverage_is_shown_with_a_note_above_2x(value, shown, above):
+    html = render_report(replace(report(), max_gross_leverage=value))
+    text = leverage_section(html)
+    assert f"Maximum observed gross leverage {shown}" in text
+    assert ("Above the absolute 2x gross cap" in text) is above
+    assert "1.6x" in text  # the trim that governs trading is named beside it
+
+
 def test_per_record_provenance_is_visible_linked_and_preserved_in_download():
     row = replace(
         contributions()[0], source_refs=("https://example.com/trades#closed", "javascript:bad")

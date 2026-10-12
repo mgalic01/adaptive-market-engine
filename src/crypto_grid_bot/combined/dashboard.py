@@ -803,6 +803,18 @@ def render_bundle_report(
             for row in report.metrics
         ],
     )
+    leverage = report.max_gross_leverage
+    leverage_html = (
+        "<p>Maximum observed gross leverage <strong>"
+        + _text("Unavailable" if leverage is None else f"{_decimal(leverage):.4f}x")
+        + "</strong></p>"
+        + (
+            '<p class="warning-text">Above the absolute 2x gross cap at some mark: see the '
+            "disclosures for the first one.</p>"
+            if leverage is not None and leverage > 2
+            else ""
+        )
+    )
     warning_html = "".join(f'<p class="warning-text">{_text(warning)}</p>' for warning in warnings)
     capital = (
         f"Capital scenario: {report.capital_label}"
@@ -979,6 +991,10 @@ Source validation is not implied.</p>
 {cards}<section class="panel"><h2>Required performance metrics</h2>{metric_table}
 <p class="muted">Definitions are descriptive reporting conventions, not changes to acceptance.
 Evidence structure alone does not establish complete metrics or source validation.</p></section>
+<section class="panel"><h2>Gross leverage</h2>{leverage_html}
+<p class="muted">Gross notional over equity at every engine mark, exact. The design caps it at
+2x absolutely; trading trims above 1.6x. Unavailable without engine marks, or when a mark held
+exposure without positive equity. Information only.</p></section>
 <section class="panel">
 <h2>Disclosures</h2>
 <p><code>{_text(capital)}</code></p>{disclosures}
