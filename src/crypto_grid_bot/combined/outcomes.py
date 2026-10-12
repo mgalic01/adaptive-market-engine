@@ -8,11 +8,15 @@ a unique attempt ID; a failed or incomplete attempt is retained, never retried.
 """
 
 from decimal import Decimal
+from fractions import Fraction
 
 from .baseline_records import NATIVE_STOPS, BaselineEvidence
 from .experiment import ReportEvidence, RunIdentity, RunOutcome
 from .report import Report
 from .strategy_replay import StrategyTrace
+
+# Design: "Trade-to-equity residual <=1e-18 USDT only, all residuals retained and reported."
+_RESIDUAL_TOLERANCE = Fraction(1, 10**18)
 
 
 def _outcome(
@@ -53,9 +57,14 @@ def _outcome(
 def strategy_outcome(
     trace: StrategyTrace, report: Report, identity: RunIdentity, *, attempt_id: str
 ) -> RunOutcome:
-    """A V3.1 component run: liquidation and accounting come from the engine's marks."""
+    """A V3.1 component run: liquidation and accounting come from the engine's marks.
+
+    A trade-to-equity residual up to 1e-18 USDT either way is explained; the residual
+    itself is carried unchanged.
+    """
     marks = [o.snapshot for o in trace.observations]
     last = marks[-1].account if marks else None
+    residual = report.reconciliation_residual
     return _outcome(
         identity,
         report,
@@ -63,7 +72,7 @@ def strategy_outcome(
         complete=trace.failure is None and report.complete,
         failed=trace.failure is not None,
         liquidations=int(any(snapshot.liquidation for snapshot in marks)),
-        explained=report.reconciliation_residual == 0,
+        explained=residual is not None and abs(Fraction(residual)) <= _RESIDUAL_TOLERANCE,
         wallet_exact=None if last is None else last.integrity_ok,
     )
 

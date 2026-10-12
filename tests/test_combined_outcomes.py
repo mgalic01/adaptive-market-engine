@@ -13,7 +13,7 @@ from crypto_grid_bot.combined.baseline_records import (
     NativeMark,
     comparison_report,
 )
-from crypto_grid_bot.combined.experiment import RunIdentity, _report_valid
+from crypto_grid_bot.combined.experiment import RunIdentity, _report_valid, _safety_failures
 from crypto_grid_bot.combined.observation_policy import POLICY_ID
 from crypto_grid_bot.combined.outcomes import baseline_outcome, strategy_outcome
 from crypto_grid_bot.combined.replay_records import strategy_report
@@ -74,6 +74,25 @@ def test_a_failed_strategy_run_is_retained_as_failed_and_incomplete(monkeypatch)
     )
     assert row.failed and not row.complete
     assert not _report_valid(row)
+
+
+@pytest.mark.parametrize(
+    ("residual", "explained"),
+    [("0", True), ("1e-20", True), ("1e-18", True), ("-1e-18", True), ("2e-18", False)],
+)
+def test_a_residual_up_to_1e_18_is_explained_and_still_reported(residual, explained):
+    # Design: "Trade-to-equity residual <=1e-18 USDT only, all residuals retained and reported."
+    trace = replay_strategy(fx.run("spot_trend", 3), (fx.market("BTCUSDT", fx.uptrend, 3),))
+    report = replace(
+        strategy_report(trace, adapter_pin="0" * 64), reconciliation_residual=D(residual)
+    )
+    row = strategy_outcome(
+        trace, report, identity("spot_trend", "open_low_high_close", "0" * 64), attempt_id="a-3"
+    )
+    assert row.accounting_explained is explained
+    assert row.accounting_residual == D(residual)
+    invalid = [failure for failure in _safety_failures(row) if "invalid accounting" in failure]
+    assert bool(invalid) is not explained
 
 
 def test_a_complete_baseline_cell_is_a_valid_acceptance_outcome():
