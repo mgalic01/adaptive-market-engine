@@ -276,6 +276,25 @@ def write_pack(pack: WindowPack, path: str | Path) -> str:
         raise ValueError("window pack required")
     with localcontext(Context()):  # str() reads the context's exponent letter case
         document = _pack_document(pack)
+    return _write_gzip_json(document, path)
+
+
+def read_pack(path: str | Path, expected_sha256: str) -> WindowPack:
+    """The pack at ``path``, rebuilt equal to the one written.
+
+    The file is decompressed, refused past ``MAX_CONTENT_BYTES``, and the SHA-256 of its
+    JSON must equal ``expected_sha256``, checked before the JSON is parsed; any gzip bytes
+    of that JSON are accepted. A duplicate JSON key, a non-integer number or a field out
+    of place is refused."""
+    document = _read_gzip_json(path, expected_sha256)
+    with localcontext(Context()):
+        return _pack_from(document)
+
+
+def _write_gzip_json(document: object, path: str | Path) -> str:
+    """Write ``document``'s canonical JSON, gzipped (mtime 0, no file name), to a new file
+    at ``path`` and return the SHA-256 (hex) of that JSON; an existing file is refused.
+    The V3 input pack (``driver.v3_pack``) is written the same way."""
     text = json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)
     content = text.encode("ascii")
     buffer = io.BytesIO()
@@ -286,27 +305,23 @@ def write_pack(pack: WindowPack, path: str | Path) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def read_pack(path: str | Path, expected_sha256: str) -> WindowPack:
-    """The pack at ``path``, rebuilt equal to the one written.
-
-    The file is decompressed, refused past ``MAX_CONTENT_BYTES``, and the SHA-256 of its
-    JSON must equal ``expected_sha256``, checked before the JSON is parsed; any gzip bytes
-    of that JSON are accepted. A duplicate JSON key, a non-integer number or a field out
-    of place is refused."""
+def _read_gzip_json(path: str | Path, expected_sha256: str) -> object:
+    """The JSON the gzip file at ``path`` holds, once the SHA-256 of that JSON equals
+    ``expected_sha256``: decompressed with the size cap and hashed before it is parsed. A
+    duplicate key, a float or a NaN/Infinity constant is refused."""
     if not isinstance(expected_sha256, str) or _SHA256.fullmatch(expected_sha256) is None:
         raise ValueError("the expected pack sha256 must be 64 lowercase hex digits")
     content = _decompressed(path)
     actual = hashlib.sha256(content).hexdigest()
     if actual != expected_sha256:
         raise ValueError(f"{path}: pack sha256 {actual} differs from the pinned {expected_sha256}")
-    document = json.loads(
+    document: object = json.loads(
         content,
         object_pairs_hook=_unique_keys,
         parse_float=_not_an_integer,
         parse_constant=_not_an_integer,
     )
-    with localcontext(Context()):
-        return _pack_from(document)
+    return document
 
 
 def _decompressed(path: str | Path) -> bytes:

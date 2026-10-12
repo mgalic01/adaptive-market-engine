@@ -29,7 +29,7 @@ import contextlib
 import hashlib
 import re
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from decimal import Context, localcontext
 from pathlib import Path, PurePosixPath
 
@@ -38,6 +38,7 @@ from crypto_grid_bot.combined.dashboard import render_bundle_report
 from crypto_grid_bot.combined.driver.packs import WindowPack
 from crypto_grid_bot.combined.driver.registration import (
     Cell,
+    CellKind,
     DriverRegistration,
     check_registration,
 )
@@ -192,110 +193,173 @@ def run_v31_cell(
     that is not 40 lowercase hex and an existing cell directory. After that the cell is
     claimed: any exception leaves ``attempt.json`` and ``failure.json`` and propagates.
     """
-    if not isinstance(cell, Cell) or cell.kind != "v31":
-        raise ValueError("a v31 component cell required")
-    if not isinstance(reg, DriverRegistration) or cell not in reg.cells:
-        raise ValueError(f"cell {cell.cell_id} is not registered")
-    window = _windows(reg)[cell.window]
+    window = _registered(cell, reg, "v31", "a v31 component cell required")
     if errors := _pack_errors(pack, window):
         raise ValueError(f"cell {cell.cell_id}: " + "; ".join(errors))
-    if type(attempt_id) is not str or not attempt_id.strip():
-        raise ValueError("a nonempty attempt id required")
-    if type(repo_head) is not str or _COMMIT.fullmatch(repo_head) is None:
-        raise ValueError(f"the repo head {repo_head!r} is not a 40 lowercase hex commit")
+    _check_attempt(attempt_id, repo_head)
     invocation = cell.cell_id.replace(".", "-")
     _name(invocation)
-    registration = reg.registration
     capital = _capital(reg, cell.capital_id)
-    adapter_pin = dict(registration.adapter_pins)[cell.arm]
+    adapter_pin = dict(reg.registration.adapter_pins)[cell.arm]
     pack_pin = dict(reg.run_manifest.window_packs)[cell.window]
     multiple = cell.cost_multiple
     attempt: dict[str, object] = {
         "cell_id": cell.cell_id,
+        **_attempt(
+            reg,
+            attempt_id=attempt_id,
+            repo_head=repo_head,
+            pack_sha256=pack_pin,
+            data_pin=window.data_pin,
+        ),
+    }
+
+    directory = Path(out_dir) / cell.cell_id
+    with _claimed(directory, attempt):
+        run = ReplayRun(
+            arm=cell.arm,
+            scenario=cell.scenario,
+            initial_cash=capital.initial_equity,
+            start_ms=window.start_ms,
+            end_ms=window.end_ms,
+            source_refs=(f"v31-pack:{pack_pin}", f"v31-run-manifest:{reg.run_manifest_pin}"),
+        )
+        trace = replay_strategy(run, _markets(pack, multiple))
+        identity = _identity(cell, reg, window, capital, adapter_pin)
+        report = strategy_report(
+            trace,
+            adapter_pin=adapter_pin,
+            skipped_hours=pack.skipped_hours,
+            capital_label=capital_label(capital),
+        )
+        outcome = strategy_outcome(trace, report, identity, attempt_id=attempt_id)
+        outcome_raw = encode_outcome(outcome).encode("ascii")
+        report_raw = encode_report(report).encode("ascii")
+        records = evidence_records(trace, skipped_hours=pack.skipped_hours)
+        journal = _journal(trace)
+        _, report_json = render_bundle_report(report, synthetic=False)
+        metadata = _metadata(
+            METADATA_SCHEMA, attempt, cell, capital, reg, adapter_pin, outcome_raw, report_raw
+        )
+        write_bundle(
+            directory,
+            invocation,
+            journal,
+            metadata,
+            report_html=None,
+            records=records,
+            report_json=report_json,
+        )
+        _write(directory / "report.json", report_raw)
+        _write(directory / "outcome.json", outcome_raw)  # last: the completion marker
+    return directory
+
+
+def _registered(cell: Cell, reg: DriverRegistration, kind: CellKind, required: str) -> Window:
+    """The registered window of ``cell``, a registered cell of ``kind``; ``required``
+    words the refusal of a cell of another kind."""
+    if not isinstance(cell, Cell) or cell.kind != kind:
+        raise ValueError(required)
+    if not isinstance(reg, DriverRegistration) or cell not in reg.cells:
+        raise ValueError(f"cell {cell.cell_id} is not registered")
+    return _windows(reg)[cell.window]
+
+
+def _check_attempt(attempt_id: str, repo_head: str) -> None:
+    """Refuse an empty attempt id and a repo head that is not 40 lowercase hex."""
+    if type(attempt_id) is not str or not attempt_id.strip():
+        raise ValueError("a nonempty attempt id required")
+    if type(repo_head) is not str or _COMMIT.fullmatch(repo_head) is None:
+        raise ValueError(f"the repo head {repo_head!r} is not a 40 lowercase hex commit")
+
+
+def _attempt(
+    reg: DriverRegistration, *, attempt_id: str, repo_head: str, pack_sha256: str, data_pin: str
+) -> dict[str, object]:
+    """An attempt's claim record besides the job's id: the attempt id, the repo head and
+    the pins it runs under."""
+    registration = reg.registration
+    return {
         "attempt_id": attempt_id,
         "repo_head": repo_head,
         "code_pin": registration.code_pin,
         "config_pin": registration.config_pin,
-        "pack_sha256": pack_pin,
-        "data_pin": window.data_pin,
+        "pack_sha256": pack_sha256,
+        "data_pin": data_pin,
     }
 
-    directory = Path(out_dir) / cell.cell_id
-    directory.mkdir(exist_ok=False)  # the claim: one attempt per cell directory
+
+@contextlib.contextmanager
+def _claimed(directory: Path, attempt: Mapping[str, object]) -> Iterator[None]:
+    """Claim ``directory`` for one attempt, then run the block under a fresh default
+    decimal context, so the caller's context cannot change the job's bytes.
+
+    The directory is created once (``mkdir(exist_ok=False)``: an existing one is refused
+    before anything is written) and ``attempt.json`` (``attempt``, canonical) is its first
+    file. If the block raises, ``failure.json`` is written and the exception propagates.
+    """
+    directory.mkdir(exist_ok=False)  # the claim: one attempt per directory
     try:
-        # A fresh default decimal context: the caller's context cannot change the cell's
-        # bytes, the bundle's records (encoded by write_bundle) included.
         with localcontext(Context()):
-            _write(directory / "attempt.json", _canonical(attempt))
-            run = ReplayRun(
-                arm=cell.arm,
-                scenario=cell.scenario,
-                initial_cash=capital.initial_equity,
-                start_ms=window.start_ms,
-                end_ms=window.end_ms,
-                source_refs=(f"v31-pack:{pack_pin}", f"v31-run-manifest:{reg.run_manifest_pin}"),
-            )
-            trace = replay_strategy(run, _markets(pack, multiple))
-            identity = RunIdentity(
-                arm=cell.arm,
-                window=cell.window,
-                capital=capital.id,
-                cost_multiple=multiple,
-                data_pin=window.data_pin,
-                cost_profile_pin=COST_PROFILE_PINS[multiple],
-                start_ms=window.start_ms,
-                end_ms=window.end_ms,
-                code_pin=registration.code_pin,
-                config_pin=registration.config_pin,
-                fx_pin=capital.fx_pin,
-                observation_policy=POLICY_ID,
-                adapter_pin=adapter_pin,
-                scenario=cell.scenario,
-            )
-            report = strategy_report(
-                trace,
-                adapter_pin=adapter_pin,
-                skipped_hours=pack.skipped_hours,
-                capital_label=capital_label(capital),
-            )
-            outcome = strategy_outcome(trace, report, identity, attempt_id=attempt_id)
-            outcome_raw = encode_outcome(outcome).encode("ascii")
-            report_raw = encode_report(report).encode("ascii")
-            records = evidence_records(trace, skipped_hours=pack.skipped_hours)
-            journal = _journal(trace)
-            _, report_json = render_bundle_report(report, synthetic=False)
-            metadata: dict[str, object] = {
-                "schema": METADATA_SCHEMA,
-                **attempt,
-                "arm": cell.arm,
-                "window": cell.window,
-                "scenario": cell.scenario,
-                "cost_multiple": multiple,
-                "capital": capital.id,
-                "initial_equity": str(capital.initial_equity),
-                "run_manifest_sha256": reg.run_manifest_pin,
-                "cost_profile_pin": COST_PROFILE_PINS[multiple],
-                "adapter_pin": adapter_pin,
-                "fx_pin": capital.fx_pin,
-                "observation_policy": POLICY_ID,
-                "outcome_sha256": hashlib.sha256(outcome_raw).hexdigest(),
-                "report_sha256": hashlib.sha256(report_raw).hexdigest(),
-            }
-            write_bundle(
-                directory,
-                invocation,
-                journal,
-                metadata,
-                report_html=None,
-                records=records,
-                report_json=report_json,
-            )
-            _write(directory / "report.json", report_raw)
-            _write(directory / "outcome.json", outcome_raw)  # last: the completion marker
+            _write(directory / "attempt.json", _canonical(dict(attempt)))
+            yield
     except BaseException as exc:
         _record_failure(directory, exc)
         raise
-    return directory
+
+
+def _identity(
+    cell: Cell, reg: DriverRegistration, window: Window, capital: Capital, adapter_pin: str
+) -> RunIdentity:
+    """The registered identity of ``cell``: its window, capital, cost profile and pins."""
+    registration = reg.registration
+    return RunIdentity(
+        arm=cell.arm,
+        window=cell.window,
+        capital=capital.id,
+        cost_multiple=cell.cost_multiple,
+        data_pin=window.data_pin,
+        cost_profile_pin=COST_PROFILE_PINS[cell.cost_multiple],
+        start_ms=window.start_ms,
+        end_ms=window.end_ms,
+        code_pin=registration.code_pin,
+        config_pin=registration.config_pin,
+        fx_pin=capital.fx_pin,
+        observation_policy=POLICY_ID,
+        adapter_pin=adapter_pin,
+        scenario=cell.scenario,
+    )
+
+
+def _metadata(
+    schema: str,
+    attempt: Mapping[str, object],
+    cell: Cell,
+    capital: Capital,
+    reg: DriverRegistration,
+    adapter_pin: str,
+    outcome_raw: bytes,
+    report_raw: bytes,
+) -> dict[str, object]:
+    """A cell's metadata: its claim, registered identity and the SHA-256 of the outcome
+    and report files it writes."""
+    return {
+        "schema": schema,
+        **attempt,
+        "arm": cell.arm,
+        "window": cell.window,
+        "scenario": cell.scenario,
+        "cost_multiple": cell.cost_multiple,
+        "capital": capital.id,
+        "initial_equity": str(capital.initial_equity),
+        "run_manifest_sha256": reg.run_manifest_pin,
+        "cost_profile_pin": COST_PROFILE_PINS[cell.cost_multiple],
+        "adapter_pin": adapter_pin,
+        "fx_pin": capital.fx_pin,
+        "observation_policy": POLICY_ID,
+        "outcome_sha256": hashlib.sha256(outcome_raw).hexdigest(),
+        "report_sha256": hashlib.sha256(report_raw).hexdigest(),
+    }
 
 
 def _record_failure(directory: Path, exc: BaseException) -> None:
