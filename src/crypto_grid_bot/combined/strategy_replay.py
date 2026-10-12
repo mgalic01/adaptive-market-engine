@@ -358,21 +358,23 @@ def _schedule_gaps(
     """Missing settlement slots, and irregular pairs of consecutive records.
 
     Which end of an interval ``interval_hours`` names at a cadence change is not pinned
-    yet, so a pair misses settlements only when the spacing of their booking hours
+    yet, so a pair misses settlements only when the spacing of their settlement hours
     exceeds both intervals: then every hour the earlier record's interval implies before
-    the later one is missing. An off-hour later record may settle the hour before its
-    booking, so that hour bounds it. Any other pair not exactly one shared interval
-    apart is irregular, as (earlier time, its hours, later time, its hours): accepted,
-    never a failure. After the last record, its own interval applies up to the end.
-    Slots before the start never matter: nothing is held there.
+    the later one is missing. Implied slots count from a record's own settlement hour
+    (an off-hour record's own hour, not the next boundary that books it), and an
+    off-hour later record may settle the hour before its booking, so that hour bounds
+    it. Any other pair not exactly one shared interval apart in booking hours is
+    irregular, as (earlier time, its hours, later time, its hours): accepted, never a
+    failure. After the last record, its own interval applies up to the end. Slots
+    before the start never matter: nothing is held there.
     """
     missing: set[int] = set()
     irregular: list[tuple[int, int, int, int]] = []
     for before, after in zip(records, records[1:], strict=False):
-        first, step, until = _booked_ms(before), _interval_ms(before), _slot_ms(after)
+        first, step, until = _slot_ms(before), _interval_ms(before), _slot_ms(after)
         if until - first > max(step, _interval_ms(after)):
             missing.update(range(first + step, until, step))
-        elif _booked_ms(after) - first != step or step != _interval_ms(after):
+        elif _booked_ms(after) - _booked_ms(before) != step or step != _interval_ms(after):
             irregular.append(
                 (
                     before.calc_time_ms,
@@ -382,7 +384,7 @@ def _schedule_gaps(
                 )
             )
     last = records[-1]
-    missing.update(range(_booked_ms(last) + _interval_ms(last), end, _interval_ms(last)))
+    missing.update(range(_slot_ms(last) + _interval_ms(last), end, _interval_ms(last)))
     return frozenset(slot for slot in missing if slot >= start), tuple(irregular)
 
 
