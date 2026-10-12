@@ -44,6 +44,8 @@ def hourly(path, hours: int, *, start: int = START - HISTORY_DAYS * DAY, wick: f
 
 
 def daily(bars):
+    """Daily bars under the frozen V3 rule: a UTC day with at least 20 of its 24 hours
+    aggregates them; a day with fewer has no bar."""
     days = {}
     for bar in bars:
         days.setdefault(bar.open_ms // DAY * DAY, []).append(bar)
@@ -59,7 +61,7 @@ def daily(bars):
             sum((r.taker_buy_base for r in rows), D(0)),
         )
         for day, rows in sorted(days.items())
-        if len(rows) == 24
+        if len(rows) >= 20
     )
 
 

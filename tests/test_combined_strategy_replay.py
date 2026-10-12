@@ -7,6 +7,7 @@ import combined_market_fixtures as fx
 import pytest
 
 from crypto_grid_bot.backtest.funding import FundingRecord
+from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.combined.account import FundingEvent
 from crypto_grid_bot.combined.replay_records import evidence_records, strategy_report
 from crypto_grid_bot.combined.report import utc_text
@@ -685,11 +686,16 @@ def test_a_single_minute_inside_the_read_range_is_a_present_input(minute_offset_
 
 
 def masked(market, venue, hours):
-    """``market`` without the ``venue`` bars opening ``hours`` hours into the window."""
+    """``market`` without the ``venue`` bars opening ``hours`` hours into the window.
+
+    Spot daily bars follow their remaining hours under the frozen rule, as registered
+    daily bars do.
+    """
     gone = {fx.START + hour * HOUR for hour in hours}
     source = getattr(market, venue)
     kept = tuple(bar for bar in source.hourly if bar.open_ms not in gone)
-    return replace(market, **{venue: replace(source, hourly=kept)})
+    changed = replace(market, **{venue: replace(source, hourly=kept)})
+    return replace(changed, daily=fx.daily(kept)) if venue == "spot" else changed
 
 
 def bar_at(rows, stamp):
@@ -1249,17 +1255,131 @@ def test_a_stale_fixing_mark_discloses_its_oldest_mark_and_largest_staleness():
     rendered(report)
 
 
+EVE = fx.START - DAY  # the last history day before the window
+SHORT_EVE = range(-24, -19)  # without these hours the eve keeps 19 of its 24
+
+
+def read_daily(monkeypatch):
+    """Record the daily bars the replay hands the assessment and each correlation snapshot."""
+    from crypto_grid_bot.combined import strategy_replay
+
+    seen = {"assessment": {}, "correlation": []}
+    series, groups = strategy_replay.AssessmentSeries, strategy_replay.correlation_groups
+
+    def assessed(symbol, hourly, daily, **kwargs):
+        seen["assessment"][symbol] = tuple(daily)
+        return series(symbol, hourly, daily, **kwargs)
+
+    def grouped(daily, decision_ms):
+        seen["correlation"].append({symbol: tuple(rows) for symbol, rows in daily.items()})
+        return groups(daily, decision_ms)
+
+    monkeypatch.setattr(strategy_replay, "AssessmentSeries", assessed)
+    monkeypatch.setattr(strategy_replay, "correlation_groups", grouped)
+    return seen
+
+
+def with_volume(rows, day, extra):
+    return tuple(replace(b, volume=b.volume + extra) if b.open_ms == day else b for b in rows)
+
+
+@pytest.mark.parametrize(
+    ("removed", "supplied"),
+    [
+        # The last day a two-day window reads (its first) does not sum its hours' volume.
+        ((), lambda market, full: with_volume(market.daily, fx.START, 1)),
+        # A history day of 24 hours without its bar.
+        ((), lambda market, full: tuple(b for b in market.daily if b.open_ms != EVE)),
+        # A close that cannot even be compared.
+        (
+            (),
+            lambda market, full: tuple(
+                replace(b, close=D("sNaN")) if b.open_ms == EVE else b for b in market.daily
+            ),
+        ),
+        # A bar for an eve of 19 hours, which the rule gives none.
+        (SHORT_EVE, lambda market, full: full.daily),
+        # The 24-hour bar of an eve that keeps 23 hours.
+        ((-19,), lambda market, full: full.daily),
+    ],
+)
+def test_a_supplied_daily_bar_that_differs_from_its_hours_is_refused(removed, supplied):
+    full = fx.market("BTCUSDT", fx.uptrend, 2)
+    market = masked(full, "spot", removed)
+    with pytest.raises(ValueError, match="BTCUSDT daily"):
+        replay_strategy(fx.run("spot_trend", 2), (replace(market, daily=supplied(market, full)),))
+
+
+def test_a_supplied_daily_bar_the_run_never_reads_is_not_checked():
+    # A two-day window's last decision, at 47h, reads the days closed by then; its second
+    # day closes at the window's end and is never read.
+    market = fx.market("BTCUSDT", fx.uptrend, 2)
+    changed = replace(market, daily=with_volume(market.daily, fx.START + DAY, 1))
+    assert changed.daily != market.daily
+    trace = replay_strategy(fx.run("spot_trend", 2), (changed,))
+    assert trace.failure is None
+    assert comparable(trace) == comparable(replay_strategy(fx.run("spot_trend", 2), (market,)))
+
+
+def test_a_day_of_23_hours_is_read_as_their_aggregate(monkeypatch):
+    seen = read_daily(monkeypatch)
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 2), "spot", (-19,))
+    hours = [bar for bar in market.spot.hourly if EVE <= bar.open_ms < fx.START]
+    assert len(hours) == 23
+    aggregate = Kline(
+        EVE,
+        hours[0].open,
+        max(bar.high for bar in hours),
+        min(bar.low for bar in hours),
+        hours[-1].close,
+        sum((bar.volume for bar in hours), D(0)),
+        sum((bar.quote_volume for bar in hours), D(0)),
+        sum((bar.taker_buy_base for bar in hours), D(0)),
+    )
+    trace = replay_strategy(fx.run("spot_trend", 2), (market,))
+    assert trace.failure is None
+    read = seen["assessment"]["BTCUSDT"]
+    assert {bar.open_ms: bar for bar in read}[EVE] == aggregate
+    # The correlation groups read the very same bars.
+    assert seen["correlation"] and all(c == {"BTCUSDT": read} for c in seen["correlation"])
+    first = trace.decisions[0].assessment
+    assert (first.decision_ms, first.daily_closed_ms) == (fx.START, fx.START)
+    assert f"BTCUSDT:1d:{EVE}" in first.source_refs
+
+
+def test_a_day_of_19_hours_has_no_bar_and_the_next_days_decisions_miss_it(monkeypatch):
+    seen = read_daily(monkeypatch)
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 2), "spot", SHORT_EVE)
+    assert EVE not in {bar.open_ms for bar in market.daily}
+    trace = replay_strategy(fx.run("spot_trend", 2), (market,))
+    assert trace.failure is None
+    assert EVE not in {bar.open_ms for bar in seen["assessment"]["BTCUSDT"]}
+    # Every decision of the window's first day is due to read the eve's bar.
+    (episode,) = trace.unavailable
+    assert (episode.record.first_ms, episode.record.last_ms) == (fx.START, fx.START + DAY - HOUR)
+    assert "missing_daily_bar" in episode.record.reasons
+    assert episode.assessment.daily_gaps == ((EVE, fx.START),)
+    # The next day reads its own due bar again.
+    assert trace.decisions and all(
+        d.assessment.daily_closed_ms == fx.START + DAY for d in trace.decisions
+    )
+
+
 def test_a_missing_due_daily_bar_is_one_refused_detection_per_episode():
-    base = fx.market("BTCUSDT", fx.downtrend, 4)
+    # The window's second day keeps 19 of its 24 hours, so it has no daily bar.
     missing = fx.START + DAY
-    market = replace(base, daily=tuple(bar for bar in base.daily if bar.open_ms != missing))
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 4), "spot", range(24, 29))
     trace = replay_strategy(fx.run("spot_trend", 4), (market,))
     assert trace.failure is None
     first = missing + DAY  # every decision of the next day reads the missing bar as due
-    refused = [e for e in trace.evidence if e.phase == "detected" and not e.accepted]
+    # The hours gone from the second day leave its own hourly and 4h refusals too.
+    refused = [
+        e
+        for e in trace.evidence
+        if e.phase == "detected" and not e.accepted and "missing_daily_bar" in e.reasons
+    ]
     assert [e.timestamp_ms for e in refused] == [first]
-    assert "missing_daily_bar" in refused[0].reasons
-    (episode,) = trace.unavailable
+    (episode,) = [e for e in trace.unavailable if "missing_daily_bar" in e.record.reasons]
     record = episode.record
     assert (record.first_ms, record.last_ms) == (first, first + DAY - HOUR)
     assert record.reasons == refused[0].reasons == episode.assessment.reasons
@@ -1274,12 +1394,9 @@ def test_a_missing_due_daily_bar_is_one_refused_detection_per_episode():
 
 
 def test_opportunity_records_keep_every_refusal_reason():
-    base = fx.market("BTCUSDT", fx.downtrend, 2)
     hole = fx.START + 8 * HOUR
-    spot = tuple(bar for bar in base.spot.hourly if bar.open_ms != hole)
-    trace = replay_strategy(
-        fx.run("spot_trend", 2), (replace(base, spot=replace(base.spot, hourly=spot)),)
-    )
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 2), "spot", (8,))
+    trace = replay_strategy(fx.run("spot_trend", 2), (market,))
     report = strategy_report(trace, adapter_pin=PIN)
     (row,) = [o for o in report.opportunities if o.timestamp_ms == hole + HOUR and o.reason]
     event = next(e for e in trace.evidence if e.event_id == row.id)
@@ -1376,19 +1493,24 @@ def test_identical_hourly_refusals_are_one_compact_record(tmp_path):
 def test_a_no_signal_record_and_its_gap_table_round_trip(tmp_path):
     from crypto_grid_bot.combined.artifacts import read_bundle, write_bundle
 
-    base = fx.market("BTCUSDT", fx.downtrend, 4)
+    # The window's second day keeps 19 of its 24 hours, so it has no daily bar.
     missing = fx.START + DAY
-    market = replace(base, daily=tuple(bar for bar in base.daily if bar.open_ms != missing))
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 4), "spot", range(24, 29))
     trace = replay_strategy(fx.run("spot_trend", 4), (market,))
     records = evidence_records(trace)
-    (gap,) = [r for r in records.decisions if r.size_unavailable == "no_signal"]
+    (gap,) = [
+        r
+        for r in records.decisions
+        if r.size_unavailable == "no_signal" and "missing_daily_bar" in r.reasons
+    ]
     assert (gap.side, gap.owner, gap.executable_quantity) == (0, None, None)
     assert (gap.first_ms, gap.last_ms) == (missing + DAY, missing + 2 * DAY - HOUR)
     first = next(a for a in records.assessments if a.assessment_id == gap.assessment_id)
     assert not first.available and "missing_daily_bar" in first.reasons
     # The assessment's own gaps were moved to the symbol's table, saved once.
     (table,) = records.symbol_gaps
-    assert trace.unavailable[0].assessment.daily_gaps == ((missing, missing + DAY),)
+    (episode,) = [e for e in trace.unavailable if "missing_daily_bar" in e.record.reasons]
+    assert episode.assessment.daily_gaps == ((missing, missing + DAY),)
     assert first.daily_gaps == () and table.daily_gaps == ((missing, missing + DAY),)
     receipt = write_bundle(tmp_path, "gap", journal_of(trace), {}, records=records)
     assert read_bundle(receipt.directory).records == records

@@ -19,6 +19,14 @@ engine treats as stale and requires closed. An obligation on a coin without a pr
 is carried to the opening quote of its next bar. A holding without a bar in the
 window's last hour is valued at its last available close, as a stale terminal mark.
 
+Each coin's daily bars are rebuilt from its registered spot hourly bars under the frozen
+V3 rule (``trend.data.hourly_month``): a UTC day's bar aggregates its hours when at least
+20 of the 24 are present, and a day with fewer has no bar. That day is a gap in the
+assessment's daily gaps, and a decision due to read it is unavailable. The assessment and
+the correlation groups read only these bars. The supplied daily bars of every day the run
+reads (each closed by its last decision hour) must equal them: a mismatch is refused
+before the replay starts.
+
 Funding is charged from the published records alone, whatever their cadence, and
 only on futures holdings. A record within a minute of an hour, on either side,
 settles on that hour. Any other record is off the hour: it is booked at the next
@@ -68,6 +76,7 @@ from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from itertools import zip_longest
 
 from crypto_grid_bot.backtest.funding import FundingRecord
 from crypto_grid_bot.backtest.klines import Kline
@@ -76,7 +85,7 @@ from crypto_grid_bot.market_data.parsing import symbol_name
 from .account import FillEvent, FundingEvent
 from .allocation import allocate_grid
 from .arms import arm_settings
-from .assessment import AssessmentSeries
+from .assessment import AssessmentSeries, daily_bars
 from .boundary_execution import BoundaryExecution, BoundaryExecutor, FundingFixing
 from .correlation import correlation_groups
 from .decisions import Costs, DecisionCoordinator, DecisionResult, FundingEstimate, VenueInputs
@@ -118,7 +127,11 @@ class VenueMarket:
 
 @dataclass(frozen=True, slots=True)
 class SymbolMarket:
-    """Registered inputs of one asset. Spot drives the causal assessment."""
+    """Registered inputs of one asset. Spot drives the causal assessment.
+
+    ``daily`` must equal the daily bars rebuilt from the spot hourly bars on every day
+    the run reads; the replay reads only the rebuilt ones.
+    """
 
     symbol: str
     spot: VenueMarket
@@ -420,6 +433,32 @@ def _validate(run: ReplayRun, markets: tuple[SymbolMarket, ...], futures_require
             raise ValueError(f"{market.symbol}: unique aligned minute bars required")
 
 
+def _daily(market: SymbolMarket, run: ReplayRun) -> tuple[Kline, ...]:
+    """The daily bars the run reads, rebuilt from the registered spot hourly bars.
+
+    A decision reads only days closed by then, so the run reads the days closed by its
+    last decision hour. Each is rebuilt from its own hours, and the supplied bars of
+    those days must equal the rebuilt ones. Later supplied bars are never read, so a
+    defect there cannot change this run.
+    """
+    last = run.end_ms - HOUR
+    rebuilt = daily_bars(
+        [bar for bar in market.spot.hourly if bar.open_ms // DAY * DAY + DAY <= last]
+    )
+    supplied = [bar for bar in market.daily if bar.open_ms + DAY <= last]
+    for given, expected in zip_longest(supplied, rebuilt):
+        try:
+            same = given == expected
+        except ArithmeticError:  # a signaling NaN cannot be compared, so never matches
+            same = False
+        if not same:
+            day = min(bar.open_ms for bar in (given, expected) if bar is not None)
+            raise ValueError(
+                f"{market.symbol} daily: the bar of {day} differs from its registered hourly bars"
+            )
+    return rebuilt
+
+
 def _missing_grid_inputs(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> tuple[str, ...]:
     """Symbols with no minute bar in ``[start - 15 min, end)``, the flow gate's read range."""
     first = run.start_ms - 15 * 60_000
@@ -449,6 +488,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     _validate(run, markets, settings.routing.futures_trend)
     by_symbol = {m.symbol: m for m in markets}
     symbols = sorted(by_symbol)
+    daily = {s: _daily(by_symbol[s], run) for s in symbols}
     spot = {s: _bars(by_symbol[s].spot.hourly, run.start_ms, run.end_ms, s) for s in symbols}
     futures = {
         s: _bars(m.futures.hourly, run.start_ms, run.end_ms, s)
@@ -475,12 +515,9 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
     published = {s: sorted(needed[s], key=lambda r: r.usable_ms) for s in futures}
     published_ms = {s: [r.usable_ms for r in published[s]] for s in futures}
     series = {
-        s: AssessmentSeries(
-            s, by_symbol[s].spot.hourly, by_symbol[s].daily, source_refs=run.source_refs
-        )
+        s: AssessmentSeries(s, by_symbol[s].spot.hourly, daily[s], source_refs=run.source_refs)
         for s in symbols
     }
-    daily = {s: by_symbol[s].daily for s in symbols}
     gates = {s: FlowGate() for s in symbols}
     missing_inputs = _missing_grid_inputs(run, markets) if settings.routing.spot_grid else ()
     minute_index = {s: {bar.open_ms: bar for bar in by_symbol[s].minutes} for s in symbols}

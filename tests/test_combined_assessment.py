@@ -5,10 +5,11 @@ from decimal import Decimal as D
 
 import pytest
 
-from crypto_grid_bot.backtest.klines import Kline
-from crypto_grid_bot.combined.assessment import AssessmentSeries, assess
+from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
+from crypto_grid_bot.combined.assessment import AssessmentSeries, assess, daily_bars
 from crypto_grid_bot.strategy.indicators import wilder_rsi
 from crypto_grid_bot.strategy.perception import TrendState
+from crypto_grid_bot.trend.data import hourly_month
 
 HOUR = 3_600_000
 DAY = 24 * HOUR
@@ -247,3 +248,58 @@ def test_visible_inversion_is_detected_across_a_still_future_bar(inputs):
     series.at(now + HOUR, now + HOUR)
     with pytest.raises(ValueError, match="timestamp"):
         series.at(now + 2 * HOUR, now + 2 * HOUR)
+
+
+def month_hours(month: str) -> list[Kline]:
+    """Every hour of ``month``: rising, each bar inside its own range, fractional volumes."""
+    start, end = month_bounds_ms(month)
+    return [
+        Kline(
+            t,
+            D(100) + i,
+            D(102) + i,
+            D(99) + i,
+            D(101) + i,
+            D(i + 1) / 4,
+            D(i) + D("0.5"),
+            D(i) / 8,
+        )
+        for i, t in enumerate(range(start, end, HOUR))
+    ]
+
+
+def test_daily_bars_are_the_frozen_v3_daily_bars():
+    # Day 3 keeps 23 hours, day 5 exactly 20, day 7 only 19 and day 9 none.
+    rows = month_hours("2021-03")
+    gone = {
+        3 * 24 + 5,
+        *(5 * 24 + hour for hour in (0, 7, 15, 23)),
+        *range(7 * 24, 7 * 24 + 5),
+        *range(9 * 24, 10 * 24),
+    }
+    kept = [bar for i, bar in enumerate(rows) if i not in gone]
+    frozen = hourly_month(kept, "2021-03")
+    assert not frozen.excluded
+    assert daily_bars(kept) == frozen.daily_bars
+    days = {(bar.open_ms - rows[0].open_ms) // DAY for bar in frozen.daily_bars}
+    assert {3, 5} <= days and not {7, 9} & days and len(days) == 29
+
+
+@pytest.mark.parametrize("defect", ["invalid", "unaligned"])
+def test_an_hour_the_assessment_cannot_read_counts_as_missing(defect):
+    hours = month_hours("2021-03")[4:24]  # twenty hours: the day still has its bar
+    assert len(daily_bars(hours)) == 1
+    first = hours[0]
+    if defect == "invalid":
+        bad = replace(first, close=D("NaN"))
+    else:
+        bad = replace(first, open_ms=first.open_ms + 1)
+    assert daily_bars([bad, *hours[1:]]) == ()
+
+
+def test_an_inexact_daily_sum_is_refused():
+    hours = month_hours("2021-03")[:24]
+    hours[0] = replace(hours[0], volume=D("1e30"))
+    hours[1] = replace(hours[1], volume=D("1e-40"), taker_buy_base=D(0))
+    with pytest.raises(ValueError, match="exact"):
+        daily_bars(hours)

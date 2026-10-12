@@ -6,7 +6,7 @@ bar and its trailing prefix. Returned records contain no future series reference
 
 from bisect import bisect_left
 from collections.abc import Sequence
-from decimal import Decimal, localcontext
+from decimal import Decimal, Inexact, localcontext
 from statistics import median
 
 from crypto_grid_bot.backtest.klines import Kline
@@ -76,6 +76,42 @@ def _validate(
         tuple(sorted(invalid)),
         min(errors, default=None),
     )
+
+
+def daily_bars(hourly: Sequence[Kline]) -> tuple[Kline, ...]:
+    """UTC daily bars under the frozen V3 rule (``trend.data.hourly_month``).
+
+    A day's bar aggregates its hours (first open, highest high, lowest low, last close,
+    summed volumes) when at least 20 of its 24 are present; with fewer it has none. The
+    hours are the ones the assessment reads: an invalid or unaligned bar counts as
+    missing, as a reader's masked hour does. A sum that is not exact is refused.
+    """
+    days: dict[int, list[Kline]] = {}
+    for bar in _validate(hourly, HOUR)[0]:
+        days.setdefault(bar.open_ms // DAY * DAY, []).append(bar)
+    result: list[Kline] = []
+    with localcontext() as context:
+        context.prec = 60
+        context.traps[Inexact] = True
+        try:
+            for day, rows in days.items():
+                if len(rows) < 20:
+                    continue
+                result.append(
+                    Kline(
+                        day,
+                        rows[0].open,
+                        max(row.high for row in rows),
+                        min(row.low for row in rows),
+                        rows[-1].close,
+                        sum((row.volume for row in rows), Decimal(0)),
+                        sum((row.quote_volume for row in rows), Decimal(0)),
+                        sum((row.taker_buy_base for row in rows), Decimal(0)),
+                    )
+                )
+        except Inexact as exc:
+            raise ValueError("daily volume sums must be exact") from exc
+    return tuple(result)
 
 
 class _Gaps:
