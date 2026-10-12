@@ -89,7 +89,9 @@ class WorseFill:
     """A fill booked worse than its planned adverse price; kept, never erased.
 
     ``excess_risk`` is its risk at the booked price above the admission's approved
-    risk for that quantity; ``extra_cost`` is its entry cost above the planned one.
+    risk for that quantity, zero when within it. ``extra_cost`` is signed: its booked
+    entry cost minus the planned one, negative when the fill cost less than planned
+    (a fee below the planned rate can outweigh the worse price).
     """
 
     event_id: str
@@ -672,11 +674,11 @@ class PortfolioEngine:
     ) -> None:
         """Caller holds the lock. Cut a fill booked worse than planned to its approved risk.
 
-        Spec: the fill stays booked at its price, and its risk there (entry to the held
-        stop, its own entry fee and the planned exit costs) above the admission's approved
-        risk is reduced at once: the asset keeps what the approved risk allows, stepped
-        down, and zero closes it. Only this asset's pending increases are canceled, since
-        the venue did not honor its price bound. The breach and extra cost are recorded.
+        Spec: the fill stays booked at its price and is recorded with its breach and extra
+        cost. If its risk there (entry to the held stop, its own entry fee and the planned
+        exit costs) exceeds the admission's approved risk, the excess is reduced at once:
+        the asset keeps what the approved risk allows, stepped down, zero closes it, and
+        only this asset's pending increases are canceled. Within it, nothing is cut.
         """
         intent, admission = self._known_orders[key][0], self._admissions[key]
         stop, fee, slip = self._stops[event.symbol]
@@ -698,15 +700,15 @@ class PortfolioEngine:
             _decimal(max(Fraction(0), booked - approved)),
             _decimal(extra),
         )
+        if booked <= approved:
+            return
         account = self._account.snapshot()
-        keep: dict[str, Fraction] = {}
-        if booked > approved:
-            held = sum(
-                (Fraction(abs(p.quantity)) for p in account.positions if p.symbol == event.symbol),
-                Fraction(0),
-            )
-            # This fill keeps the quantity its approved risk buys at the booked risk.
-            keep[event.symbol] = (held - quantity + quantity * approved / booked) / held
+        held = sum(
+            (Fraction(abs(p.quantity)) for p in account.positions if p.symbol == event.symbol),
+            Fraction(0),
+        )
+        # This fill keeps the quantity its approved risk buys at the booked risk.
+        keep = {event.symbol: (held - quantity + quantity * approved / booked) / held}
         self._apply_caps(account, rules, {event.symbol}, keep, "worse_fill_excess_risk")
 
     def _exit_reasons(self, symbol: str) -> set[str]:

@@ -1531,3 +1531,24 @@ def test_a_worse_than_planned_fill_cuts_only_its_own_excess(quantity, price, kep
     assert engine.worse_fill_evidence == (
         WorseFill("worse", order.symbol, quantity * (price - 100), quantity * (price - 100)),
     )
+
+
+def test_a_worse_fill_within_its_approved_risk_is_only_recorded():
+    from crypto_grid_bot.combined.engine import WorseFill
+
+    engine = PortfolioEngine(D(10000))
+    # Planned: entry 100 with a 0.1% fee, so the approved risk is 2.198 per unit.
+    order = intent(requested_quantity=D(10), slippage_rate=D(0))
+    other = intent("other", "ETHUSDT", requested_quantity=D(10), slippage_rate=D(0))
+    assert engine.submit(order, candidate(order), QUOTES, RULES).quantity == 10
+    assert engine.submit(other, candidate(other), QUOTES, RULES).accepted
+    # One tick worse but charged no fee: booked risk 2.01 + 0.098 per unit stays within.
+    fill = FillEvent(
+        "cheaper", 1, order.symbol, order.owner, order.venue, 1, D(5), D("100.01"), D(0)
+    )
+    state = engine.settle("cheaper", 1, QUOTES, RULES, increases=((order.intent_id, fill),))
+    assert sorted(a.intent_id for a in engine.reservations) == [order.intent_id, other.intent_id]
+    assert state.reduce_to == () and state.close_required == ()
+    assert "worse_fill_excess_risk" not in state.reasons
+    # Signed extra cost: 5 * 0.01 slippage beyond plan minus the 0.5 planned fee not charged.
+    assert engine.worse_fill_evidence == (WorseFill("cheaper", order.symbol, D(0), D("-0.45")),)
