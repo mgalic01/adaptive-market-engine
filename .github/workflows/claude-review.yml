@@ -61,8 +61,10 @@ jobs:
             Scope and verdict. Your scope is either the whole diff BASE_SHA...HEAD_SHA, or, incrementally, the diff from an
             earlier head to HEAD_SHA. Incremental is allowed only when the NEWEST review in /tmp/previous-reviews.md (the last
             one in the file) gave that head the verdict APPROVE with the scope "complete" or "incremental", and
-            `git merge-base --is-ancestor <that head> HEAD_SHA` succeeds. If any later review answered CHANGES NEEDED or
-            INCOMPLETE, or the newest review has no Scope line, your scope is the whole diff.
+            `git merge-base --is-ancestor <that head> HEAD_SHA` succeeds, and `git log --merges <that head>..HEAD_SHA` lists
+            no commit (a merge of the base can hide a conflict resolution from the net diff). If any later review answered
+            CHANGES NEEDED or INCOMPLETE, the newest review has no Scope line, or a merge commit follows that head, your scope
+            is the whole diff.
             - APPROVE only when you read every changed line in your scope and found no required fix.
             - INCOMPLETE when you could not read all of your scope (time, size or any other reason). INCOMPLETE is not an
               approval; never answer APPROVE for a partial reading.
@@ -70,6 +72,8 @@ jobs:
             Tests: CI's quality job runs the full suite, which takes longer than one command may run, so do not run the whole of `pytest`.
             Run `pip install -e .[dev]`, then `ruff check .`, `mypy src scripts` and `pytest -q <the test files for the changed code>`.
 
+            Never modify, create or delete a file in the checkout: review the PR as pushed. The Write tool is only for
+            /tmp/claude-review.md, and `ruff` runs without --fix. A later step voids the verdict if the checkout changed.
             Always finish by posting exactly ONE PR comment, whatever the verdict:
             write the body with the Write tool to /tmp/claude-review.md, then run exactly
             `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md`.
@@ -80,6 +84,23 @@ jobs:
             Then, written as instructions for the OpenAI Codex agent, a numbered list of concrete required fixes with file:line,
             then optional nits. If changes are needed, end the comment with: "@codex please address the required fixes above."
           claude_args: '--allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Bash(gh pr diff:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git merge-base:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
+      # Tests the reviewer ran against files it changed say nothing about the PR as pushed:
+      # any change to the code, tests or their configuration voids the verdict, visibly.
+      # git status honours .gitignore, so install and cache output does not count.
+      - name: Void a verdict from a modified checkout
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -o pipefail
+          changed=$(git status --porcelain --untracked-files=all -- src scripts tests conftest.py pyproject.toml setup.cfg pytest.ini tox.ini requirements-dev.lock requirements.txt)
+          if [ -n "$changed" ]; then
+            echo "::error::the reviewer changed the checkout; its verdict for $HEAD_SHA is void"
+            printf '%s\n' "$changed"
+            gh pr comment "$PR" --body "Automated review VOID at $HEAD_SHA: the reviewer changed files in its checkout before its verdict, so that verdict does not count. Changed: $(printf '%s' "$changed" | tr '\n' ' ')"
+            exit 1
+          fi
       # A review that ends without its verdict is a failure, never a silent success: the
       # gate needs a verdict at this head, and a green check without one hid three silent
       # runs on PR #269 (2026-10-13). The check accepts only a claude[bot] comment created
@@ -93,13 +114,16 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SINCE: ${{ steps.start.outputs.time }}
         run: |
+          # The default run shell is bash -e without pipefail; a failed gh in the pipe below
+          # must stop the step, not pass wc's success on.
+          set -o pipefail
           # A malformed start time would widen the search to older comments.
           case "$SINCE" in
             20[0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z) ;;
             *) echo "::error::no valid start time recorded"; exit 1 ;;
           esac
-          # A failed API call stops the step here (the default shell runs with -e and
-          # pipefail); an empty or non-numeric count counts as no verdict.
+          # A failed API call stops the step here (-e with pipefail); an empty or
+          # non-numeric count counts as no verdict.
           posted=$(gh api --paginate "repos/$REPO/issues/$PR/comments?since=$SINCE&per_page=100" \
             --jq '.[] | select(.user.login == "claude[bot]" and .created_at >= env.SINCE and (.body | test("^Verdict: (APPROVE|CHANGES NEEDED|INCOMPLETE) at " + env.HEAD_SHA))) | .id' \
             | wc -l)

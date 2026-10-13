@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/claude-review.yml"
@@ -39,6 +43,31 @@ def step(name: str) -> dict[str, Any]:
     return next(s for s in steps() if (s.get("name") or s.get("uses", "")).startswith(name))
 
 
+def bash() -> str:
+    shell = (
+        str(Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "Git/bin/bash.exe")
+        if os.name == "nt"
+        else shutil.which("bash")
+    )
+    assert shell and Path(shell).is_file(), "Git Bash (Windows) or bash is required"
+    return shell
+
+
+def run_step(
+    name: str, cwd: Path, stub: str, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run a step's script as GitHub's default run shell does (bash -e, no pipefail),
+    with only the GitHub CLI faked as a shell function."""
+    return subprocess.run(
+        [bash(), "--noprofile", "--norc", "-e", "-c", stub + "\n" + step(name)["run"]],
+        cwd=cwd,
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def test_the_allowed_tools_are_exactly_the_reviewed_list() -> None:
     found = re.fullmatch(r'--allowedTools "([^"]*)"', step("anthropics/")["with"]["claude_args"])
     assert found is not None
@@ -64,18 +93,36 @@ def test_a_partial_reading_never_approves() -> None:
     assert "APPROVE only when you read every changed line in your scope" in prompt
     # Only the newest verdict can seed an incremental scope; a later finding supersedes it.
     assert "Incremental is allowed only when the NEWEST review" in prompt
-    assert "If any later review answered CHANGES NEEDED or\nINCOMPLETE" in prompt
+    assert "If any later review answered\nCHANGES NEEDED or INCOMPLETE" in prompt
+    # A merge of the base can hide a conflict resolution from the net diff.
+    assert "`git log --merges <that head>..HEAD_SHA` lists\nno commit" in prompt
+    assert "or a merge commit follows that head, your scope\nis the whole diff" in prompt
+    assert "Never modify, create or delete a file in the checkout" in prompt
     assert "Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full>" in prompt
     assert "git diff BASE_SHA...HEAD_SHA" in prompt and "origin/main" not in prompt
+
+
+def test_no_step_may_fail_without_failing_the_job() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    assert "continue-on-error" not in workflow["jobs"]["review"]
+    assert all("continue-on-error" not in s for s in steps())
 
 
 def test_a_review_without_a_verdict_for_this_head_fails_the_job() -> None:
     names = [s.get("name") or s.get("uses") for s in steps()]
     review = next(i for i, n in enumerate(names) if str(n).startswith("anthropics/"))
+    void = names.index("Void a verdict from a modified checkout")
     check = names.index("Require the posted verdict for this head")
-    assert names.index("Record the start time") < review < check
+    assert names.index("Record the start time") < review < void < check
     gate = steps()[check]
     assert "if" not in gate  # runs only after a successful review step, never skipped silently
+    assert gate["run"].startswith("# The default run shell is bash -e without pipefail")
+    assert "\nset -o pipefail\n" in gate["run"]
+    assert (
+        'if [ "$posted" -lt 1 ]; then\n'
+        '  echo "::error::the review finished without posting a verdict for $HEAD_SHA"\n'
+        "  exit 1\nfi"
+    ) in gate["run"]
     assert gate["env"]["SINCE"] == "${{ steps.start.outputs.time }}"
     assert gate["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
     assert gate["env"]["GH_TOKEN"] == "${{ github.token }}"
@@ -89,3 +136,82 @@ def test_a_review_without_a_verdict_for_this_head_fails_the_job() -> None:
     # A malformed start time or an empty count fails closed.
     assert '*) echo "::error::no valid start time recorded"; exit 1 ;;' in run
     assert "''|*[!0-9]*) posted=0" in run and "exit 1" in run
+
+
+GATE = "Require the posted verdict for this head"
+HEAD = "a" * 40
+
+
+@pytest.mark.parametrize(
+    ("answer", "since", "passes"),
+    [
+        ("1001\n", "2026-10-13T20:00:00Z", True),  # one matching verdict
+        ("1001\n1002\n", "2026-10-13T20:00:00Z", True),
+        ("", "2026-10-13T20:00:00Z", False),  # no verdict for this head
+        ("FAIL", "2026-10-13T20:00:00Z", False),  # the API call fails
+        ("1001\n", "", False),  # no start time recorded
+        ("1001\n", "yesterday", False),  # a malformed start time
+    ],
+)
+def test_the_gate_script_fails_closed(
+    tmp_path: Path, answer: str, since: str, passes: bool
+) -> None:
+    # The fake gh prints the ids the real filter would have kept, or fails like an
+    # API error; the jq filter itself is pinned above and runs inside the real gh.
+    stub = (
+        'gh() { if [ "$ANSWER" = FAIL ]; then echo "HTTP 502" >&2; return 1; fi; '
+        'printf "%s" "$ANSWER"; }'
+    )
+    env = {"ANSWER": answer, "SINCE": since, "HEAD_SHA": HEAD, "PR": "7", "REPO": "o/r"}
+    result = run_step(GATE, tmp_path, stub, env)
+    assert (result.returncode == 0) is passes, result.stdout + result.stderr
+    if not passes and answer == "FAIL":
+        # pipefail: the failed API call stops the step before any count is taken.
+        assert "HTTP 502" in result.stderr
+        assert "without posting a verdict" not in result.stdout
+
+
+VOID = "Void a verdict from a modified checkout"
+
+
+def checkout(tmp_path: Path) -> Path:
+    repo = tmp_path / "checkout"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "module.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("*.egg-info/\n__pycache__/\n", encoding="utf-8")
+    for args in (
+        ["init", "-q"],
+        ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "add", "."],
+        ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "c"],
+    ):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    return repo
+
+
+POSTER = 'gh() { printf "%s\n" "$*" >> "$GH_LOG"; }'
+
+
+def test_an_untouched_checkout_keeps_the_verdict(tmp_path: Path) -> None:
+    repo = checkout(tmp_path)
+    (repo / "src" / "pkg.egg-info").mkdir()  # pip install -e output, ignored
+    (repo / "src" / "pkg.egg-info" / "PKG-INFO").write_text("x\n", encoding="utf-8")
+    log = tmp_path / "gh.log"
+    env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
+    result = run_step(VOID, repo, POSTER, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not log.exists()
+
+
+@pytest.mark.parametrize("change", ["edit", "new_conftest"])
+def test_a_changed_checkout_voids_the_verdict_visibly(tmp_path: Path, change: str) -> None:
+    repo = checkout(tmp_path)
+    if change == "edit":
+        (repo / "src" / "module.py").write_text("x = 2\n", encoding="utf-8")
+    else:
+        (repo / "conftest.py").write_text("collect_ignore = ['tests']\n", encoding="utf-8")
+    log = tmp_path / "gh.log"
+    env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
+    result = run_step(VOID, repo, POSTER, env)
+    assert result.returncode == 1
+    posted = log.read_text(encoding="utf-8")
+    assert posted.startswith("pr comment 7 --body Automated review VOID at " + HEAD)
