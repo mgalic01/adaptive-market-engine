@@ -6,9 +6,11 @@ limit in ``risk.py`` fails this module. The behavioural cases use zero fees and 
 unless they say otherwise, which keeps every bound an exact number a reader can check.
 """
 
+import re
 from dataclasses import replace
 from decimal import Decimal as D
 from fractions import Fraction
+from pathlib import Path
 
 import pytest
 from test_combined_risk import intent, view
@@ -136,3 +138,51 @@ def test_holdings_on_a_limit_refuse_new_costs_and_holdings_just_inside_it_admit(
     on_limit = PortfolioRisk().reserve(intent(), HELD_LIMITS[kind](False))
     assert (on_limit.accepted, on_limit.reason) == (False, "portfolio_capacity")
     assert PortfolioRisk().reserve(intent(), HELD_LIMITS[kind](True)).accepted
+
+
+# Each limit as (numerator, denominator, decimal text): the spellings a copy would take.
+LIMIT_FORMS = {
+    "ASSET_RISK_LIMIT": (1, 200, "0.005"),
+    "AGGREGATE_RISK_LIMIT": (3, 100, "0.03"),
+    "ASSET_NOTIONAL_LIMIT": (1, 5, "0.2"),
+    "GROSS_LIMIT": (8, 5, "1.6"),
+    "GROUP_GROSS_LIMIT": (4, 5, "0.8"),
+}
+DEFINITIONS = re.compile(rf"^(?:{'|'.join(LIMIT_FORMS)}) = .*$", re.MULTILINE)
+
+
+def bare_limit_literals(text):
+    """Every spelling of an owner limit as a bare number: ``Fraction(1, 200)``,
+    ``Decimal("0.005")`` or a division such as ``/ 200``."""
+    found = []
+    for name, (numerator, denominator, decimal) in LIMIT_FORMS.items():
+        number = rf"0?{re.escape(decimal.removeprefix('0'))}" if decimal[0] == "0" else decimal
+        patterns = [
+            rf"Fraction\(\s*{numerator}\s*,\s*{denominator}\s*\)",
+            rf"(?:Fraction|Decimal|D)\(\s*[\"']{number}[\"']\s*\)",
+        ]
+        if numerator == 1:
+            patterns.append(rf"/\s*{denominator}(?![.\w])")
+        found += [(name, m.group()) for pattern in patterns for m in re.finditer(pattern, text)]
+    return found
+
+
+@pytest.mark.parametrize("module", ["engine", "risk"])
+def test_no_module_repeats_an_owner_limit_as_a_bare_number(module):
+    # The engine's cut-backs once carried their own copies of these numbers. They import
+    # the constants now; a copy that comes back would drift from the admission limits.
+    source = (Path(risk.__file__).parent / f"{module}.py").read_text(encoding="utf-8")
+    assert bare_limit_literals(DEFINITIONS.sub("", source)) == []
+
+
+def test_the_scan_recognises_each_spelling_of_a_limit():
+    assert bare_limit_literals("x = Fraction( 1,200 )") == [
+        ("ASSET_RISK_LIMIT", "Fraction( 1,200 )")
+    ]
+    assert bare_limit_literals('Decimal(".03")') == [("AGGREGATE_RISK_LIMIT", 'Decimal(".03")')]
+    assert bare_limit_literals("capital / 5") == [("ASSET_NOTIONAL_LIMIT", "/ 5")]
+    assert bare_limit_literals("v * Fraction(8, 5)") == [("GROSS_LIMIT", "Fraction(8, 5)")]
+    assert bare_limit_literals("capital * Fraction(4, 5)") == [
+        ("GROUP_GROSS_LIMIT", "Fraction(4, 5)")
+    ]
+    assert bare_limit_literals('D("0.25") / 50 + Fraction(9, 10) + Fraction(3, 10)') == []

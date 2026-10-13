@@ -28,6 +28,11 @@ from crypto_grid_bot.combined.execution import (
 )
 from crypto_grid_bot.combined.recovery import Recovery, RecoveryDecision
 from crypto_grid_bot.combined.risk import (
+    AGGREGATE_RISK_LIMIT,
+    ASSET_NOTIONAL_LIMIT,
+    ASSET_RISK_LIMIT,
+    GROSS_LIMIT,
+    GROUP_GROSS_LIMIT,
     Admission,
     Exposure,
     Intent,
@@ -581,7 +586,7 @@ class PortfolioEngine:
         mapping = dict(self._correlation_groups)
 
         def asset_cap(symbol: str) -> Fraction:
-            return capital * Fraction(self._risk_multipliers[symbol]) / 200
+            return capital * Fraction(self._risk_multipliers[symbol]) * ASSET_RISK_LIMIT
 
         def groups_of(values: dict[str, Fraction]) -> dict[str, Fraction]:
             totals: dict[str, Fraction] = {}
@@ -590,11 +595,13 @@ class PortfolioEngine:
                 totals[name] = totals.get(name, Fraction(0)) + value
             return totals
 
-        breached = {s for s in gross if gross[s] > capital / 5 or risk[s] > asset_cap(s)}
-        crowded = {name for name, v in groups_of(gross).items() if v > capital * Fraction(4, 5)}
+        breached = {
+            s for s in gross if gross[s] > capital * ASSET_NOTIONAL_LIMIT or risk[s] > asset_cap(s)
+        }
+        crowded = {name for name, v in groups_of(gross).items() if v > capital * GROUP_GROSS_LIMIT}
         breached |= {s for s in gross if mapping.get(s, "unknown") in crowded}
-        over_risk = sum(risk.values(), Fraction(0)) > capital * Fraction(3, 100)
-        over_gross = sum(gross.values(), Fraction(0)) > capital * Fraction(8, 5)
+        over_risk = sum(risk.values(), Fraction(0)) > capital * AGGREGATE_RISK_LIMIT
+        over_gross = sum(gross.values(), Fraction(0)) > capital * GROSS_LIMIT
         if not breached and not over_risk and not over_gross:
             return set(), {}
         cancel = (set(gross) if over_risk or over_gross else breached) & pending
@@ -614,7 +621,7 @@ class PortfolioEngine:
             )
         }
         exposed_risk = sum((held_risk[s] for s in exposed), Fraction(0))
-        risk_limit = capital * Fraction(3, 100)
+        risk_limit = capital * AGGREGATE_RISK_LIMIT
         common = Fraction(1)
         if total_risk > risk_limit and exposed_risk:
             # The spared holdings keep their size and still count their exit costs; the
@@ -625,10 +632,10 @@ class PortfolioEngine:
         for symbol in held_gross:
             factor = common if symbol in exposed else Fraction(1)
             limits = (
-                (held_gross[symbol], capital / 5),
+                (held_gross[symbol], capital * ASSET_NOTIONAL_LIMIT),
                 (held_risk[symbol], asset_cap(symbol)),
-                (total_gross, capital * Fraction(8, 5)),
-                (group_gross[mapping.get(symbol, "unknown")], capital * Fraction(4, 5)),
+                (total_gross, capital * GROSS_LIMIT),
+                (group_gross[mapping.get(symbol, "unknown")], capital * GROUP_GROSS_LIMIT),
             )
             for used, limit in limits:
                 if used > limit:
