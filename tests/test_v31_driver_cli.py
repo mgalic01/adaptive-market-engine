@@ -1,9 +1,17 @@
 """The V3.1 driver CLI: gated subcommands and the offline smoke mode.
 
-Synthetic only, and the network is blocked for every test (the autouse fixture, as in
-tests/test_v31_fetch.py). Prepare's archives come from in-memory fake hosts
-(``v31_smoke.Archives``), one per transport. Two kinds of world, each a tiny git
-repository:
+Synthetic only, and the network is blocked for the whole module, at two levels:
+
+- a module-scoped block that is live from the module's first fixture to its last.
+  Every module-scoped fixture depends on it, so it already holds while those fixtures
+  build their worlds and run prepare (they are set up before any function-scoped
+  fixture);
+- the function-scoped block every test also gets, as in tests/test_v31_fetch.py.
+
+``test_the_network_block_covers_module_scoped_fixtures`` shows the first one is in force
+inside a module-scoped fixture. Prepare's archives come from in-memory fake hosts
+(``v31_smoke.Archives``), one per transport, always passed explicitly. Two kinds of world,
+each a tiny git repository:
 
 - the smoke world (``v31_smoke.build_world``), with stub modules committed so that the
   adapter pins read real blob ids at its head: picks, run-cell and aggregate run on it;
@@ -41,6 +49,7 @@ from crypto_grid_bot.backtest.dataset import (
 )
 from crypto_grid_bot.backtest.jobs import manifest_path
 from crypto_grid_bot.backtest.klines import Kline, aggregate, month_bounds_ms
+from crypto_grid_bot.backtest.masking import tick_limit_quotes
 from crypto_grid_bot.combined import baseline_v3
 from crypto_grid_bot.combined.driver import run_baselines
 from crypto_grid_bot.combined.driver.aggregate import _CLAIMED_ATTEMPT
@@ -80,17 +89,62 @@ class NetworkBlocked(OSError):
     """What every attempt to open a connection raises while a test runs."""
 
 
-@pytest.fixture(autouse=True)
-def network_blocked(monkeypatch):
-    """No test in this file may resolve a name or open a socket."""
+def block_network(patch: pytest.MonkeyPatch) -> None:
+    """Make every name lookup and every connection raise ``NetworkBlocked``."""
 
     def refuse(*args, **kwargs):
         raise NetworkBlocked("the network is blocked in tests")
 
-    monkeypatch.setattr(socket, "getaddrinfo", refuse)
-    monkeypatch.setattr(socket, "create_connection", refuse)
-    monkeypatch.setattr(socket.socket, "connect", refuse)
-    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+    patch.setattr(socket, "getaddrinfo", refuse)
+    patch.setattr(socket, "create_connection", refuse)
+    patch.setattr(socket.socket, "connect", refuse)
+    patch.setattr(socket.socket, "connect_ex", refuse)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def module_network_blocked():
+    """The network is blocked for the whole module: the module-scoped fixtures depend on
+    this, so it already holds while they build their worlds and run prepare."""
+    with pytest.MonkeyPatch.context() as patch:
+        block_network(patch)
+        yield
+
+
+@pytest.fixture(autouse=True)
+def network_blocked(monkeypatch):
+    """No test in this file may resolve a name or open a socket."""
+    block_network(monkeypatch)
+
+
+@pytest.fixture(scope="module")
+def module_probe(module_network_blocked) -> dict:
+    """What a module-scoped fixture meets when it opens the network: each attempt's
+    exception (a ``.invalid`` name, so nothing could be reached even unblocked)."""
+
+    def connect():
+        with socket.socket() as stream:
+            stream.settimeout(1)
+            stream.connect(("192.0.2.1", 443))  # TEST-NET-1: never routed
+
+    seen = {}
+    attempts = {
+        "getaddrinfo": lambda: socket.getaddrinfo("v31-driver.invalid", 443),
+        "create_connection": lambda: socket.create_connection(("v31-driver.invalid", 443), 1),
+        "connect": connect,
+    }
+    for name, attempt in attempts.items():
+        try:
+            attempt()
+        except Exception as exc:
+            seen[name] = exc
+        else:
+            seen[name] = None
+    return seen
+
+
+def test_the_network_block_covers_module_scoped_fixtures(module_probe):
+    assert set(module_probe) == {"getaddrinfo", "create_connection", "connect"}
+    assert all(isinstance(exc, NetworkBlocked) for exc in module_probe.values()), module_probe
 
 
 def sha(content: bytes) -> str:
@@ -177,7 +231,7 @@ class Registered:
 
 
 @pytest.fixture(scope="module")
-def registered(tmp_path_factory) -> Registered:
+def registered(module_network_blocked, tmp_path_factory) -> Registered:
     """The smoke world with stub modules committed, its packs, and a registration whose
     code pin is the head and whose adapter pins are the head's."""
     if shutil.which("git") is None:
@@ -365,11 +419,69 @@ def test_each_job_records_a_unique_attempt_id_ending_in_its_attempt(registered, 
         v31_driver.job_attempt_id("run.1_a-attempt-10", "v3_picks") == "run.1_a-v3_picks-attempt-10"
     )
     assert _CLAIMED_ATTEMPT.search(recorded).group(1) == "2"  # aggregation reads it back
+    # The help says what the workflow passes and what each job records.
+    for command, recorded_form in (
+        ("run-cell", "<run_id>-<cell_id>-attempt-<run_attempt>"),
+        ("picks", "<run_id>-v3_picks-attempt-<run_attempt>"),
+    ):
+        with pytest.raises(SystemExit):
+            v31_driver.main([command, "--help"])
+        text = "".join(capsys.readouterr().out.split())  # argparse wraps at hyphens
+        assert "<run_id>-attempt-<run_attempt>" in text and recorded_form in text
     # run-cell refuses a malformed attempt id before it writes anything.
     extra = ("--cell", CELL, "--packs", str(registered.packs), "--attempt-id", "1-attempt-01")
     argv = registered_args(registered, "run-cell", *extra, "--out", str(tmp_path / "out"))
     code, _, err = run(argv, capsys)
     assert code == 1 and "attempt id" in err and not (tmp_path / "out").exists()
+
+
+# --- rule 8: the boundary (opening) quote --------------------------------------------
+
+XRP_SPREAD = D("0.05") / 100  # the frozen spec's assumed spread, as quote_limits gives it
+XRP_TICK = D("0.0001")  # the manifest's tick
+XRP_LIMIT = D("0.15")  # config/default.toml's maximum_spread_pct, in percent
+HOUR_A = 1_606_780_800_000 + 10 * HOUR  # 2020-12-01 10:00 UTC
+
+
+def xrp_hour(case: str) -> list[Kline]:
+    """The 60 replayed minutes of ``HOUR_A`` and the next hour's opening minute, around
+    1.0 (every quote inside the limit), with one breaching place per ``case``."""
+    minutes = [flat_bar(HOUR_A + m * MINUTE, D(1)) for m in range(61)]
+    cheap = D("0.05")  # a one-tick spread is 0.2% here, over the 0.15% limit
+    if case == "a mid-hour minute":
+        minutes[30] = flat_bar(HOUR_A + 30 * MINUTE, cheap)
+    elif case == "the opening minute":
+        minutes[0] = flat_bar(HOUR_A, cheap)
+    elif case == "the whole hour":
+        minutes[:60] = [flat_bar(HOUR_A + m * MINUTE, cheap) for m in range(60)]
+    elif case == "the opening minute's low only":
+        minutes[0] = Kline(HOUR_A, D(1), D(1), cheap, D(1), D(10), D(10), D(6))
+    return minutes
+
+
+@pytest.mark.parametrize(
+    ("case", "skipped"),
+    [
+        ("a mid-hour minute", ()),  # (a): the boundary quote is inside the limit
+        ("the opening minute", (HOUR_A,)),  # (b): the boundary quote is rejected
+        ("the whole hour", (HOUR_A,)),  # (c): as before
+        ("the opening minute's low only", ()),  # the open point (index 0) is inside it
+    ],
+)
+def test_rule_8_skips_an_hour_only_when_its_opening_quote_breaks_the_limit(case, skipped):
+    minutes = xrp_hour(case)
+    # The frozen rule-8 count sees a breach somewhere in the hour in every case...
+    assert tick_limit_quotes(minutes, "XRPUSDT", XRP_SPREAD, XRP_TICK, XRP_LIMIT) > 0
+    # ...but only a rejected opening quote leaves the hour without a boundary.
+    hours = v31_driver.quote_test_hours(
+        minutes, "XRPUSDT", XRP_SPREAD, XRP_TICK, XRP_LIMIT, HOUR_A - DAY, HOUR_A + DAY
+    )
+    assert hours == skipped
+    # Outside [start, end) nothing counts, a breaching opening minute included.
+    late = v31_driver.quote_test_hours(
+        minutes, "XRPUSDT", XRP_SPREAD, XRP_TICK, XRP_LIMIT, HOUR_A + HOUR, HOUR_A + DAY
+    )
+    assert late == ()
 
 
 # --- 2025 and later, snapshots ----------------------------------------------------------
@@ -572,7 +684,7 @@ class PrepareWorld:
 
 
 @pytest.fixture(scope="module")
-def prepare_world(tmp_path_factory) -> PrepareWorld:
+def prepare_world(module_network_blocked, tmp_path_factory) -> PrepareWorld:
     if shutil.which("git") is None:
         pytest.skip("git is not installed")
     root = tmp_path_factory.mktemp("prepare-world")
@@ -751,7 +863,7 @@ class Prepared:
 
 
 @pytest.fixture(scope="module")
-def prepared(prepare_world, tmp_path_factory) -> Prepared:
+def prepared(module_network_blocked, prepare_world, tmp_path_factory) -> Prepared:
     """One prepare-only run, with the legacy host failing once; its cache is reused."""
     root = tmp_path_factory.mktemp("prepared")
     work, out = root / "work", root / "out"
@@ -855,6 +967,26 @@ def test_prepare_only_gate_refuses_another_commit_config_or_a_dirty_tree(
     )
     assert code == 1 and "uncommitted changes: config/default.toml" in err
     assert all(host.requested == [] for host in hosts.values()) and not (tmp_path / "out").exists()
+
+
+def test_prepare_uses_the_given_transports_even_when_they_test_false(
+    prepare_world, tmp_path, capsys, monkeypatch
+):
+    class Empty(v31_smoke.Archives):
+        def __len__(self) -> int:  # an empty host evaluates as false
+            return 0
+
+    def real_transport(*args, **kwargs):
+        raise AssertionError("a real guarded transport was built")
+
+    monkeypatch.setattr(v31_driver, "V3Transport", real_transport)
+    monkeypatch.setattr(v31_driver, "LegacyTransport", real_transport)
+    hosts = {"inventory_transport": Empty(), "legacy_transport": Empty()}
+    assert not any(hosts.values())
+    argv = prepare_args(prepare_world, tmp_path / "work", tmp_path / "out")
+    argv[argv.index("--code-commit") + 1] = "0" * 40  # the gate refuses before any fetch
+    code, _, err = run(argv, capsys, **hosts)
+    assert code == 1 and "prepare gate refused" in err
 
 
 def test_prepare_refuses_any_2025_month_before_any_fetch(prepare_world, tmp_path, capsys):

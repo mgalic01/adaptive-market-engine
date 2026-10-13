@@ -23,7 +23,8 @@ read.
     (refusing any month at or after 2025-01), fetches and verifies them under ``W``
     (``inventory/``, ``legacy/``, ``minutes/``), verifies the legacy dataset
     (``verify_dataset``), builds each window pack (W1's skipped hours joined by the
-    minute baselines' masked hours and XRP's rule-8 quote-test hours, Rulings P16/P17)
+    minute baselines' masked hours and the hours whose opening quote XRP's rule 8
+    rejects, Rulings P16/P17)
     and the V3 input pack (V3's own loader and assembly, bound to V3's registered
     inventory manifest and calendar), writes them under ``O/staging/``, and, in
     ``registered``, refuses unless every pack pin and every window's skipped hours equal
@@ -48,9 +49,12 @@ read.
     one of each kind first) and the aggregate, through the same functions as the
     subcommands, to a verdict.
 
-``--attempt-id`` takes the workflow's ``<run>-attempt-<n>``; each job records
-``<run>-<job>-attempt-<n>`` (``job_attempt_id``), where ``<job>`` is the cell id or
-``v3_picks``, because acceptance refuses one attempt id on two outcomes.
+Attempt ids: the workflow passes ``--attempt-id <run_id>-attempt-<run_attempt>``, the same
+for every job of a run. Each job derives and records its own id from it
+(``job_attempt_id``): ``<run_id>-<cell_id>-attempt-<run_attempt>`` for a cell and
+``<run_id>-v3_picks-attempt-<run_attempt>`` for the picks job. Acceptance
+(``experiment.evaluate``) refuses one attempt id on two outcomes, and the id still ends in
+the artifact folder's ``-attempt-<n>``, which aggregation checks.
 """
 
 import argparse
@@ -73,7 +77,7 @@ from v31_v3_pack import build_v3_pack
 from crypto_grid_bot.backtest.dataset import load_manifest, load_spec, verify_dataset
 from crypto_grid_bot.backtest.jobs import manifest_path, quote_limits, quoted, replayed_minutes
 from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
-from crypto_grid_bot.backtest.masking import QUOTE_TESTED_SYMBOL, tick_limit_quotes
+from crypto_grid_bot.backtest.masking import QUOTE_TESTED_SYMBOL, quote_spreads_pct
 from crypto_grid_bot.combined.driver.aggregate import VERDICT_FILE, _extended, aggregate
 from crypto_grid_bot.combined.driver.decode import (
     DecodedV31Month,
@@ -638,16 +642,27 @@ def quote_test_hours(
     start_ms: int,
     end_ms: int,
 ) -> tuple[int, ...]:
-    """The hours of ``[start, end)`` holding a replayed minute with a synthesized quote
-    over the engine's spread limit at the pair's tick (``tick_limit_quotes``, spec v1 rule
-    8): the frozen engine rejects such a quote, so the hour may have no boundary (P17)."""
-    hours = set()
+    """The hours of ``[start, end)`` whose boundary quote the frozen engine rejects under
+    spec v1 rule 8 (Ruling P17): those hours have no minute-baseline boundary.
+
+    An hour's boundary is the grid account after the quote stamped exactly at the hour
+    (``baseline_minute.recorded_frames``: ``stamp % HOUR == 0`` and an event id ending in
+    ``/0``). That quote is the open point, index 0 at offset 0 s, of the replayed minute
+    that opens the hour (``backtest.replay.bar_quotes``; both path modes put the open
+    first). The engine rejects a quote whose spread in percent is above
+    ``maximum_spread_pct`` (``PaperSimulator._validate_frame``), and a rejected frame is
+    never marked, so no boundary is recorded. So an hour is kept here exactly when the open
+    quote of its opening minute is over ``limit``. It is computed with the frozen rule-8
+    arithmetic (``masking.quote_spreads_pct``, the first quote it yields). A breach at
+    another minute of the hour, or at that minute's extremes or close, leaves the boundary
+    in place."""
+    hours = []
     for minute in minutes:
-        if start_ms <= minute.open_ms < end_ms and tick_limit_quotes(
-            (minute,), symbol, spread, tick, limit
-        ):
-            hours.add(minute.open_ms - minute.open_ms % HOUR)
-    return tuple(sorted(hours))
+        if start_ms <= minute.open_ms < end_ms and minute.open_ms % HOUR == 0:
+            opening = next(iter(quote_spreads_pct((minute,), symbol, spread, tick)))
+            if opening > limit:  # the engine's own rejection condition: above, not at
+                hours.append(minute.open_ms)
+    return tuple(sorted(set(hours)))
 
 
 def window_extras(
@@ -655,8 +670,9 @@ def window_extras(
 ) -> dict[str, tuple[int, ...]]:
     """W1's extra missing-hour sources (Rulings P16, P17), by label: each frozen pair's
     masked hours inside the window (``minute_masks`` on the verified legacy dataset, as the
-    minute cells compute them), ``minute_mask:<pair>``, and XRP's rule-8 quote-test hours
-    over the minutes the replay plays, ``quote_test:XRPUSDT``."""
+    minute cells compute them), ``minute_mask:<pair>``, and the hours whose opening quote
+    XRP's rule 8 rejects, over the minutes the replay plays (``quote_test_hours``),
+    ``quote_test:XRPUSDT``."""
     spec_path = repo / MINUTE_SPEC_PATH
     spec = load_spec(spec_path)
     if spec.traded != MINUTE_PAIRS:
@@ -1218,14 +1234,25 @@ def build_parser() -> argparse.ArgumentParser:
     pick = commands.add_parser("picks", help="V3's selector picks, once")
     registered(pick)
     pick.add_argument("--packs", required=True)
-    pick.add_argument("--attempt-id", required=True)
+    pick.add_argument(
+        "--attempt-id",
+        required=True,
+        help="the workflow's <run_id>-attempt-<run_attempt>, the same for every job of a run; "
+        "the picks job records <run_id>-v3_picks-attempt-<run_attempt>",
+    )
     pick.add_argument("--out", required=True)
 
     cell = commands.add_parser("run-cell", help="one registered cell")
     registered(cell)
     cell.add_argument("--cell", required=True)
     cell.add_argument("--packs", required=True)
-    cell.add_argument("--attempt-id", required=True)
+    cell.add_argument(
+        "--attempt-id",
+        required=True,
+        help="the workflow's <run_id>-attempt-<run_attempt>, the same for every job of a run; "
+        "the cell records <run_id>-<cell_id>-attempt-<run_attempt>, unique per cell as "
+        "acceptance requires",
+    )
     cell.add_argument("--out", required=True)
     cell.add_argument("--picks", help="a V3 cell: the v3_picks/ directory of the same run")
     cell.add_argument("--legacy-data", help="a minute cell: the verified legacy dataset")
@@ -1258,8 +1285,12 @@ def main(
         if args.command == "prepare":
             document = prepare(
                 args,
-                inventory_transport=inventory_transport or V3Transport(),
-                legacy_transport=legacy_transport or LegacyTransport(),
+                inventory_transport=(
+                    V3Transport() if inventory_transport is None else inventory_transport
+                ),
+                legacy_transport=(
+                    LegacyTransport() if legacy_transport is None else legacy_transport
+                ),
                 sleep=sleep,
                 log=log,
                 v3_pack_builder=v3_pack_builder,
