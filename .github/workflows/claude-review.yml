@@ -26,6 +26,10 @@ jobs:
       - name: Record the start time
         id: start
         run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      # Everything git can see, ignored files included, before the reviewer starts; the
+      # void step compares against it, so a write hidden by an ignore rule still counts.
+      - name: Snapshot the checkout
+        run: git status --porcelain --ignored=traditional --untracked-files=all > /tmp/checkout-before.txt
       # The reviewer sees this bot's own earlier reviews and nothing else from the
       # thread: on a public repository anyone can comment, and a comment is not an
       # instruction. Only claude[bot] bodies reach the file, plus this workflow's own
@@ -83,22 +87,33 @@ jobs:
             then optional nits. If changes are needed, end the comment with: "@codex please address the required fixes above."
           claude_args: '--allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Bash(gh pr diff:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
       # Tests the reviewer ran against files it changed say nothing about the PR as pushed:
-      # any change anywhere in the checkout voids the verdict, visibly. git status honours
-      # .gitignore, so install and cache output does not count. The excluded paths are the
+      # any change anywhere in the checkout since the snapshot voids the verdict, visibly,
+      # ignored files included. Only install and cache output is allowed (Python bytecode,
+      # the pytest, mypy and ruff caches, *.egg-info and build/). The excluded paths are the
       # ones the action itself restores from the base before the reviewer starts (its
-      # SENSITIVE_PATHS, src/github/operations/restore-config.ts); its own .claude-pr/
-      # snapshot is git-excluded by the action.
+      # SENSITIVE_PATHS, src/github/operations/restore-config.ts) and its own .claude-pr/
+      # snapshot. It runs after a failed review step too: a verdict posted before the
+      # action failed must still be voided.
       - name: Void a verdict from a modified checkout
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -o pipefail
-          changed=$(git status --porcelain --untracked-files=all -- . \
+          if [ ! -f /tmp/checkout-before.txt ]; then
+            echo "::error::no snapshot of the checkout was taken; the verdict cannot be trusted"
+            exit 1
+          fi
+          after=$(git status --porcelain --ignored=traditional --untracked-files=all -- . \
             ':(exclude).claude' ':(exclude).mcp.json' ':(exclude).claude.json' ':(exclude).gitmodules' \
             ':(exclude).ripgreprc' ':(exclude)CLAUDE.md' ':(exclude)CLAUDE.local.md' ':(exclude).husky' \
             ':(exclude).claude-pr')
+          # grep finds nothing when nothing changed; that is the clean case, not an error.
+          changed=$(printf '%s\n' "$after" | grep -vxF -f /tmp/checkout-before.txt \
+            | grep -vE '[ /](__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache)/|\.py[cod]$|\.egg-info/|^!! build/' \
+            | grep -v '^$' || true)
           if [ -n "$changed" ]; then
             echo "::error::the reviewer changed the checkout; its verdict for $HEAD_SHA is void"
             printf '%s\n' "$changed"

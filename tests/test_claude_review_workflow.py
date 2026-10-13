@@ -52,13 +52,20 @@ def bash() -> str:
     return shell
 
 
+SNAPSHOT_FILE = "/tmp/checkout-before.txt"
+
+
 def run_step(
-    name: str, cwd: Path, stub: str, env: dict[str, str]
+    name: str, cwd: Path, stub: str, env: dict[str, str], snapshot: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Run a step's script as GitHub's default run shell does (bash -e, no pipefail),
-    with only the GitHub CLI faked as a shell function."""
+    with only the GitHub CLI faked as a shell function. ``snapshot`` stands in for the
+    workflow's fixed snapshot path, so tests never share a file."""
+    script = step(name)["run"]
+    if snapshot is not None:
+        script = script.replace(SNAPSHOT_FILE, snapshot.as_posix())
     return subprocess.run(
-        [bash(), "--noprofile", "--norc", "-e", "-c", stub + "\n" + step(name)["run"]],
+        [bash(), "--noprofile", "--norc", "-e", "-c", stub + "\n" + script],
         cwd=cwd,
         env={**os.environ, **env},
         capture_output=True,
@@ -112,8 +119,21 @@ def test_no_step_may_fail_without_failing_the_job() -> None:
 
 def test_no_run_script_interpolates_an_event_value() -> None:
     scripts = [s["run"] for s in steps() if "run" in s]
-    assert len(scripts) == 4
+    assert len(scripts) == 5
     assert all("${{" not in run for run in scripts)
+
+
+def test_the_checkout_is_snapshotted_before_and_checked_after_any_review_outcome() -> None:
+    names = [s.get("name") or s.get("uses") for s in steps()]
+    review = next(i for i, n in enumerate(names) if str(n).startswith("anthropics/"))
+    snapshot = names.index("Snapshot the checkout")
+    void = names.index("Void a verdict from a modified checkout")
+    assert snapshot < review < void
+    assert step("Snapshot the checkout")["run"] == (
+        "git status --porcelain --ignored=traditional --untracked-files=all > " + SNAPSHOT_FILE
+    )
+    # A verdict posted before the action failed is still voided; only cancellation skips.
+    assert steps()[void]["if"] == "${{ !cancelled() }}"
 
 
 def test_a_review_without_a_verdict_for_this_head_fails_the_job() -> None:
@@ -182,18 +202,25 @@ def test_the_gate_script_fails_closed(
 VOID = "Void a verdict from a modified checkout"
 
 
-def checkout(tmp_path: Path) -> Path:
+IGNORED = "*.egg-info/\n__pycache__/\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\nbuild/\ndata/\n"
+
+
+def checkout(tmp_path: Path) -> tuple[Path, Path]:
+    """A committed checkout and the snapshot the workflow takes before the review."""
     repo = tmp_path / "checkout"
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "module.py").write_text("x = 1\n", encoding="utf-8")
-    (repo / ".gitignore").write_text("*.egg-info/\n__pycache__/\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(IGNORED, encoding="utf-8")
     for args in (
         ["init", "-q"],
         ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "add", "."],
         ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "c"],
     ):
         subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
-    return repo
+    snapshot = tmp_path / "checkout-before.txt"
+    taken = run_step("Snapshot the checkout", repo, "", {}, snapshot)
+    assert taken.returncode == 0 and snapshot.is_file(), taken.stderr
+    return repo, snapshot
 
 
 POSTER = 'gh() { printf "%s\n" "$*" >> "$GH_LOG"; }'
@@ -209,45 +236,71 @@ def write(repo: Path, name: str, text: str = "changed\n") -> None:
     "touched",
     [
         [],
-        ["src/pkg.egg-info/PKG-INFO"],  # pip install -e output, ignored
+        # Install and cache output: pip install -e, Python, pytest, mypy, ruff, build.
+        [
+            "src/pkg.egg-info/PKG-INFO",
+            "__pycache__/conftest.cpython-312.pyc",
+            "src/__pycache__/module.cpython-312.pyc",
+            ".pytest_cache/v/cache/nodeids",
+            ".mypy_cache/3.12/module.data.json",
+            ".ruff_cache/0.6.0/123",
+            "build/lib/module.py",
+        ],
         # What the action itself restores from the base, or snapshots, before the review.
         ["CLAUDE.md", ".claude/settings.json", ".mcp.json", ".claude-pr/CLAUDE.md"],
     ],
 )
 def test_an_untouched_checkout_keeps_the_verdict(tmp_path: Path, touched: list[str]) -> None:
-    repo = checkout(tmp_path)
+    repo, snapshot = checkout(tmp_path)
     for name in touched:
         write(repo, name)
     log = tmp_path / "gh.log"
     env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
-    result = run_step(VOID, repo, POSTER, env)
+    result = run_step(VOID, repo, POSTER, env, snapshot)
     assert result.returncode == 0, result.stdout + result.stderr
     assert not log.exists()
 
 
 @pytest.mark.parametrize(
     "name",
-    ["src/module.py", "conftest.py", "config/default.toml", "docs/rules.md", ".github/x.yml"],
+    [
+        "src/module.py",
+        "conftest.py",
+        "config/default.toml",
+        "docs/rules.md",
+        ".github/x.yml",
+        "data/planted.csv",  # ignored by .gitignore, still a write the tests could read
+    ],
 )
 def test_a_changed_checkout_voids_the_verdict_visibly(tmp_path: Path, name: str) -> None:
-    repo = checkout(tmp_path)
+    repo, snapshot = checkout(tmp_path)
     write(repo, name)
     log = tmp_path / "gh.log"
     env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
-    result = run_step(VOID, repo, POSTER, env)
+    result = run_step(VOID, repo, POSTER, env, snapshot)
     assert result.returncode == 1
     posted = log.read_text(encoding="utf-8")
     assert posted.startswith("pr comment 7 --body Automated review VOID at " + HEAD)
     assert name in posted
 
 
+def test_without_a_snapshot_the_verdict_is_not_trusted(tmp_path: Path) -> None:
+    repo, snapshot = checkout(tmp_path)
+    snapshot.unlink()
+    log = tmp_path / "gh.log"
+    env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
+    result = run_step(VOID, repo, POSTER, env, snapshot)
+    assert result.returncode == 1
+    assert "no snapshot of the checkout was taken" in result.stdout
+
+
 def test_a_void_notice_pings_nobody_and_a_failed_post_still_fails(tmp_path: Path) -> None:
-    repo = checkout(tmp_path)
+    repo, snapshot = checkout(tmp_path)
     write(repo, "notes/@someone.md")
     log = tmp_path / "gh.log"
     env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
-    result = run_step(VOID, repo, POSTER, env)
+    result = run_step(VOID, repo, POSTER, env, snapshot)
     assert result.returncode == 1
     assert "@" not in log.read_text(encoding="utf-8")
     failing = "gh() { return 1; }"
-    assert run_step(VOID, repo, failing, env).returncode != 0
+    assert run_step(VOID, repo, failing, env, snapshot).returncode != 0
