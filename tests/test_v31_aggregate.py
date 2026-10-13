@@ -158,10 +158,14 @@ def aggregate(
     *,
     attempt_id: str = RUN,
     mode: str = "registered",
+    other_dispatches: tuple[str, ...] = (),
 ) -> Path:
     """``aggregate`` as the workflow calls it, by default a registered run's attempt 1 of
-    run ``run-1``, the run every cell of the matrix claims."""
-    return aggregate_cells(reg, cells, out, attempt_id=attempt_id, mode=mode)
+    run ``run-1``, the run every cell of the matrix claims, whose dispatch check found no
+    other dispatch of the registration."""
+    return aggregate_cells(
+        reg, cells, out, attempt_id=attempt_id, mode=mode, other_dispatches=other_dispatches
+    )
 
 
 def attempt_of(cell_id: str) -> str:
@@ -521,6 +525,7 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
         "rerun_detected": False,
         "reruns": [],
         "reported_only_reruns": [],
+        "other_dispatches": [],
     }
 
     # The pages: the full combined cells carry acceptance's judgment of their cell, the
@@ -1046,6 +1051,71 @@ def test_a_rerun_makes_an_acceptance_pass_incomplete(
         assert (entry["artifact_attempt"], entry["run_id"]) == (2, "run-1")
     if case == "foreign run id":
         assert verdict["cells"][HOLD_CELL]["run_id"] == "run-9"
+
+
+DISPATCHES = {
+    "an earlier dispatch": ("another dispatch of this registration: run 400",),
+    "two of them": (
+        "another dispatch of this registration: run 300",
+        "another dispatch of this registration: run 400",
+    ),
+    "a check that failed": (
+        "another dispatch of this registration could not be ruled out: GitHub API "
+        "/repos/o/r/actions/runs/500: HTTP 502",
+    ),
+}
+
+
+@pytest.mark.parametrize("acceptance", ["pass", "fail"])
+@pytest.mark.parametrize("case", list(DISPATCHES))
+def test_another_dispatch_of_the_registration_leaves_the_verdict_incomplete(
+    world, matrix, decoded, tmp_path, monkeypatch, case, acceptance
+):
+    """Ruling R4-2: a registration is dispatched once. Another registered dispatch of it,
+    or a dispatch check that could not rule one out, makes the verdict incomplete (neither
+    a pass nor a fail), names it, and is disclosed in the summary, the cells unchanged."""
+    cells = long_paths(tmp_path / "cells")
+    shutil.copytree(matrix, cells, copy_function=os.link)
+    stub_acceptance(monkeypatch, decoded, status=acceptance)
+    found = DISPATCHES[case]
+    summary = aggregate(world.reg, cells, mkdir(tmp_path / "out"), other_dispatches=found)
+    verdict = read_verdict(summary)
+    assert (verdict["acceptance_status"], verdict["status"]) == (acceptance, "incomplete")
+    assert verdict["run"]["other_dispatches"] == list(found)
+    assert verdict["run"]["reruns"] == [] and verdict["run"]["rerun_detected"] is False
+    text = (summary / "summary.md").read_text(encoding="utf-8")
+    assert "Verdict: **INCOMPLETE** (another dispatch of this registration" in text
+    section = text.split("## Another dispatch of this registration", 1)[1].split("\n## ", 1)[0]
+    for item in found:
+        assert f"- {item}" in section
+    # Without it, the same cells and stub give acceptance's own verdict.
+    clean = read_verdict(aggregate(world.reg, cells, mkdir(tmp_path / "clean")))
+    assert (clean["status"], clean["run"]["other_dispatches"]) == (acceptance, [])
+    clean_text = (tmp_path / "clean" / "summary" / "summary.md").read_text(encoding="utf-8")
+    assert "None: no other run of this workflow dispatched this registration" in clean_text
+
+
+@pytest.mark.parametrize("mode", ["rehearsal", "smoke"])
+def test_a_synthetic_runs_summary_says_its_dispatches_were_not_checked(
+    world, matrix, tmp_path, mode
+):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))
+    summary = aggregate(world.reg, cells, mkdir(tmp_path / "out"), mode=mode)
+    assert read_verdict(summary)["run"]["other_dispatches"] == []
+    text = (summary / "summary.md").read_text(encoding="utf-8")
+    section = text.split("## Another dispatch of this registration", 1)[1].split("\n## ", 1)[0]
+    assert f"Not checked: a {mode} run dispatches no registration" in section
+
+
+@pytest.mark.parametrize("bad", [("",), (" ",), (None,), ("run 400", 400), "run 400"])
+def test_malformed_other_dispatches_are_refused_before_anything_is_written(
+    world, matrix, tmp_path, bad
+):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))
+    out = mkdir(tmp_path / "out")
+    with pytest.raises(ValueError, match="other dispatches"):
+        aggregate(world.reg, cells, out, other_dispatches=bad)
+    assert list(out.iterdir()) == []
 
 
 def test_a_rerun_voids_an_acceptance_fail_too(world, matrix, decoded, tmp_path, monkeypatch):

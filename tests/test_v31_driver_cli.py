@@ -40,9 +40,12 @@ import contextlib
 import hashlib
 import io
 import json
+import re
 import shutil
 import socket
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, replace
 from decimal import Decimal as D
 from pathlib import Path
@@ -97,6 +100,9 @@ KIND_CELLS = {
 }
 
 
+GITHUB_VARIABLES = ("GITHUB_TOKEN", "GITHUB_REPOSITORY", "GITHUB_RUN_ID")
+
+
 class NetworkBlocked(OSError):
     """What every attempt to open a connection raises while a test runs."""
 
@@ -124,8 +130,12 @@ def module_network_blocked():
 
 @pytest.fixture(autouse=True)
 def network_blocked(monkeypatch):
-    """No test in this file may resolve a name or open a socket."""
+    """No test in this file may resolve a name or open a socket. Nor does it hold the
+    runner's variables for GitHub's API: without them the dispatch check (a registered
+    aggregate's) refuses before any request; a test of the check sets its own."""
     block_network(monkeypatch)
+    for name in GITHUB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(scope="module")
@@ -1010,6 +1020,9 @@ def test_the_rehearsal_runs_the_registered_job_graph_offline(
     completed = {c for c, read in verdict["cells"].items() if read["state"] == "completed"}
     assert completed == set(planned["main_cells"] + planned["v3_cells"])
     assert verdict["v3_picks"]["state"] == "completed" and verdict["run"]["reruns"] == []
+    # A rehearsal dispatches no registration: its aggregate reads no workflow runs (without
+    # the runner's variables a registered one could not rule another dispatch out).
+    assert verdict["run"]["other_dispatches"] == []
     assert judged["status"] == "incomplete"  # 6 of 216 cells: never a verdict
     assert verdict["mode"] == "rehearsal"
     summary_md = (tmp_path / "a" / "summary" / "summary.md").read_text(encoding="utf-8")
@@ -1095,6 +1108,326 @@ def test_a_rehearsal_holds_the_trial_gate_on_its_world(rehearsal, tmp_path, caps
     code, _, err = run(argv, capsys)
     assert code == 1 and "job gate refused" in err
     assert f"{NOT_READY} " in err and "one committed completion required" in err
+
+
+# --- one dispatch per registration (Codex P1, PR #269 round 4; Ruling R4-2) --------------
+
+SHA = "e" * 64
+TITLE = f"v31-run registered {SHA}"  # the workflow's run-name for a registered dispatch
+NOW, EARLIER, LATER = "2026-10-13T12:00:00Z", "2026-10-13T11:59:59Z", "2026-10-13T12:00:01Z"
+API = "https://api.github.com/repos/owner/repo/actions/"
+
+
+def workflow_run(run_id, created=EARLIER, title=TITLE, status="completed", conclusion="success"):
+    """A run as GitHub's REST API lists it: the fields the check reads, and two it ignores."""
+    return {
+        "id": run_id,
+        "display_title": title,
+        "created_at": created,
+        "status": status,
+        "conclusion": conclusion,
+    }
+
+
+CURRENT = workflow_run(500, created=NOW, status="in_progress", conclusion=None)
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion"),
+    [
+        ("queued", None),
+        ("waiting", None),
+        ("in_progress", None),
+        ("completed", "failure"),
+        ("completed", "cancelled"),
+        ("completed", "timed_out"),
+        ("completed", "success"),
+    ],
+)
+def test_an_earlier_dispatch_of_the_registration_counts_whatever_its_status(status, conclusion):
+    earlier = workflow_run(400, status=status, conclusion=conclusion)
+    assert v31_driver.other_dispatches([CURRENT, earlier], CURRENT, SHA) == (400,)
+
+
+def test_only_another_earlier_or_simultaneous_registered_dispatch_of_the_registration_counts():
+    runs = [
+        workflow_run(600, created=LATER),  # created after this run: it never counts
+        CURRENT,
+        workflow_run(499, created=NOW),  # the same second: a tie counts
+        workflow_run(401, title=f"v31-run registered {'f' * 64}"),  # another registration
+        workflow_run(402, title=f"v31-run rehearsal {SHA}"),  # another mode
+        workflow_run(403, title=f"v31-run smoke {SHA}"),
+        workflow_run(404, title=f"{TITLE} "),  # not exactly the title
+        workflow_run(300, created="2026-10-01T00:00:00Z"),
+    ]
+    assert v31_driver.other_dispatches(runs, CURRENT, SHA) == (300, 499)
+    # The current run alone is no other dispatch, whatever it shares with itself.
+    assert v31_driver.other_dispatches([CURRENT], CURRENT, SHA) == ()
+    assert v31_driver.registered_title(SHA) == TITLE
+
+
+def without(document: dict, key: str) -> dict:
+    return {name: value for name, value in document.items() if name != key}
+
+
+@pytest.mark.parametrize(
+    ("runs", "current", "message"),
+    [
+        ([CURRENT, "a run"], CURRENT, "workflow run 2 of 2: a JSON object required"),
+        ([CURRENT, without(workflow_run(400), "id")], CURRENT, "id None"),
+        ([CURRENT, workflow_run(True)], CURRENT, "id True"),
+        ([CURRENT, workflow_run("400")], CURRENT, "id '400'"),
+        ([CURRENT, workflow_run(0)], CURRENT, "id 0"),
+        ([CURRENT, without(workflow_run(400), "display_title")], CURRENT, "display_title None"),
+        ([CURRENT, workflow_run(400, title=7)], CURRENT, "display_title 7"),
+        ([CURRENT, without(workflow_run(400), "created_at")], CURRENT, "created_at None"),
+        ([CURRENT, workflow_run(400, created="2026-10-13T11:59:59")], CURRENT, "created_at"),
+        ([CURRENT, workflow_run(400, created="2026-10-13T11:59:59.5Z")], CURRENT, "created_at"),
+        ([CURRENT, workflow_run(400, created="2026-02-30T00:00:00Z")], CURRENT, "not a date"),
+        ([CURRENT, workflow_run(400), workflow_run(400)], CURRENT, "run 400 is listed twice"),
+        ([workflow_run(400)], CURRENT, "the current run 500 is not among"),
+        ([CURRENT], {**CURRENT, "created_at": None}, "the current run"),
+        ([CURRENT], "a run", "the current run: a JSON object required"),
+        (
+            [CURRENT],
+            {**CURRENT, "display_title": f"v31-run registered {'f' * 64}"},
+            "the current run 500 is titled",
+        ),
+    ],
+)
+def test_a_malformed_run_or_run_list_is_refused(runs, current, message):
+    with pytest.raises(ValueError, match=re.escape(message)):
+        v31_driver.other_dispatches(runs, current, SHA)
+
+
+class Response:
+    """What the opener returns: a urllib response, as the dispatch check reads it."""
+
+    def __init__(self, raw: bytes, status: int = 200) -> None:
+        self.raw, self.status = raw, status
+
+    def read(self, limit: int = -1) -> bytes:
+        return self.raw if limit < 0 else self.raw[:limit]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def answer(document: object) -> Response:
+    return Response(json.dumps(document).encode("utf-8"))
+
+
+class FakeGitHub:
+    """GitHub's REST API for the dispatch check, in memory (no network): the current run
+    (``runs/500``) and this workflow's ``runs`` in pages of 100. ``totals`` replaces a
+    page's total_count, ``answers`` a path's response (an exception is raised). Records
+    every request: its URL, method, Authorization header and timeout."""
+
+    def __init__(self, runs, current=CURRENT, *, totals=None, answers=None):
+        self.runs, self.current = list(runs), current
+        self.totals, self.answers = totals or {}, answers or {}
+        self.requests = []
+
+    def __call__(self, request, timeout):
+        url = request.full_url
+        self.requests.append(
+            (url, request.get_method(), request.get_header("Authorization"), timeout)
+        )
+        assert url.startswith(API), url
+        path = url[len(API) :]
+        if path in self.answers:
+            given = self.answers[path]
+            if isinstance(given, BaseException):
+                raise given
+            return given
+        if path == "runs/500":
+            return answer(self.current)
+        page = re.fullmatch(r"workflows/v31-run\.yml/runs\?per_page=100&page=([1-9][0-9]*)", path)
+        assert page is not None, url
+        number = int(page[1])
+        listed = self.runs[(number - 1) * 100 : number * 100]
+        total = self.totals.get(number, len(self.runs))
+        return answer({"total_count": total, "workflow_runs": listed})
+
+
+def page(number: int) -> str:
+    return f"workflows/v31-run.yml/runs?per_page=100&page={number}"
+
+
+@pytest.fixture
+def github_env(monkeypatch):
+    """The runner's variables for GitHub's API, a stand-in token among them."""
+    monkeypatch.setenv("GITHUB_TOKEN", "stand-in-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("GITHUB_RUN_ID", "500")
+
+
+def test_the_dispatch_check_reads_the_current_run_and_every_page_of_runs(github_env):
+    others = [workflow_run(1000 + i, title="v31-run smoke ") for i in range(248)]
+    api = FakeGitHub([CURRENT, *others, workflow_run(400)])  # 250 runs: three pages
+    assert v31_driver.dispatch_check(SHA, api) == (400,)
+    assert [url for url, *_ in api.requests] == [API + "runs/500"] + [
+        API + page(n) for n in (1, 2, 3)
+    ]
+    for _, method, authorization, timeout in api.requests:
+        assert (method, authorization) == ("GET", "Bearer stand-in-token")
+        assert timeout == v31_driver.GITHUB_TIMEOUT
+    # Exactly one full page: its total ends the listing, no empty page is asked for.
+    full = FakeGitHub([CURRENT, *others[:99]])
+    assert v31_driver.dispatch_check(SHA, full) == ()
+    assert [url for url, *_ in full.requests] == [API + "runs/500", API + page(1)]
+
+
+def http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(API, code, "synthetic", {}, None)
+
+
+MANY = [CURRENT, *(workflow_run(1000 + i, title="v31-run smoke ") for i in range(149))]
+FAILS_CLOSED = {
+    "no token": ({"GITHUB_TOKEN": None}, FakeGitHub([CURRENT]), "GITHUB_TOKEN is not set"),
+    "no repository": ({"GITHUB_REPOSITORY": None}, FakeGitHub([CURRENT]), "GITHUB_REPOSITORY"),
+    "a repository path": ({"GITHUB_REPOSITORY": "owner/.."}, FakeGitHub([CURRENT]), "owner/.."),
+    "a malformed run id": ({"GITHUB_RUN_ID": "05"}, FakeGitHub([CURRENT]), "GITHUB_RUN_ID"),
+    "an HTTP error": ({}, FakeGitHub([CURRENT], answers={"runs/500": http_error(502)}), "HTTP 502"),
+    "a redirect": ({}, FakeGitHub([CURRENT], answers={page(1): http_error(301)}), "HTTP 301"),
+    "a transport failure": (
+        {},
+        FakeGitHub([CURRENT], answers={page(1): urllib.error.URLError("down")}),
+        "URLError",
+    ),
+    "a timeout": ({}, FakeGitHub([CURRENT], answers={page(1): TimeoutError()}), "TimeoutError"),
+    "another status": (
+        {},
+        FakeGitHub([CURRENT], answers={"runs/500": Response(b"{}", 204)}),
+        "HTTP 204",
+    ),
+    "not JSON": ({}, FakeGitHub([CURRENT], answers={page(1): Response(b"<html>")}), "not JSON"),
+    "no total_count": (
+        {},
+        FakeGitHub([CURRENT], answers={page(1): answer({"workflow_runs": [CURRENT]})}),
+        "total_count and workflow_runs required",
+    ),
+    "no workflow_runs": (
+        {},
+        FakeGitHub([CURRENT], answers={page(1): answer({"total_count": 1})}),
+        "total_count and workflow_runs required",
+    ),
+    "a total that changes between pages": (
+        {},
+        FakeGitHub(MANY, totals={2: 151}),
+        "total_count changed from 150 to 151",
+    ),
+    "pages that end before the total": (
+        {},
+        FakeGitHub([CURRENT], totals={1: 2}),
+        "1 run(s) listed, total_count 2",
+    ),
+    "more runs than the total": ({}, FakeGitHub(MANY, totals={1: 99, 2: 99}), "more than"),
+    "a page larger than asked": (
+        {},
+        FakeGitHub(
+            [CURRENT],
+            answers={page(1): answer({"total_count": 101, "workflow_runs": MANY[:1] * 101})},
+        ),
+        "more than 100 runs",
+    ),
+    "a current run of another id": (
+        {},
+        FakeGitHub([{**CURRENT, "id": 501}], {**CURRENT, "id": 501}),
+        "not GITHUB_RUN_ID 500",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(FAILS_CLOSED))
+def test_the_dispatch_check_fails_closed(github_env, monkeypatch, case):
+    variables, api, message = FAILS_CLOSED[case]
+    for name, value in variables.items():
+        if value is None:
+            monkeypatch.delenv(name)
+        else:
+            monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=re.escape(message)) as refused:
+        v31_driver.dispatch_check(SHA, api)
+    assert "stand-in-token" not in str(refused.value)  # no message ever carries the token
+    if variables:  # a missing or malformed variable: refused before any request
+        assert api.requests == []
+
+
+def test_the_dispatch_check_refuses_a_body_beyond_its_limit(github_env, monkeypatch):
+    monkeypatch.setattr(v31_driver, "MAX_GITHUB_BYTES", 16)
+    with pytest.raises(ValueError, match="larger than 16 bytes"):
+        v31_driver.dispatch_check(SHA, FakeGitHub([CURRENT]))
+
+
+def test_the_default_opener_follows_no_redirect():
+    """A redirect would carry the token's request elsewhere; the default opener's
+    handler builds no new request for one, so urllib raises it as an HTTP error."""
+    handler = v31_driver._NoRedirect()
+    request = urllib.request.Request(API + "runs/500")
+    assert (
+        handler.redirect_request(request, None, 302, "Found", {}, "https://example.invalid/")
+        is None
+    )
+
+
+def test_the_dispatch_check_subcommand_refuses_a_second_dispatch(github_env, capsys):
+    argv = ["dispatch-check", "--registration-sha256", SHA]
+    later = FakeGitHub([workflow_run(600, created=LATER), CURRENT])
+    code, document, err = run(argv, capsys, github_opener=later)
+    assert code == 0, err
+    assert document == {
+        "schema": "v3.1-dispatch-check-1",
+        "registration_sha256": SHA,
+        "other_dispatches": [],
+    }
+    earlier = FakeGitHub([CURRENT, workflow_run(400), workflow_run(300, status="queued")])
+    code, _, err = run(argv, capsys, github_opener=earlier)
+    assert code == 1 and "another dispatch of this registration: run 300, run 400" in err
+    failing = FakeGitHub([CURRENT], answers={"runs/500": http_error(502)})
+    code, _, err = run(argv, capsys, github_opener=failing)
+    assert code == 1 and "HTTP 502" in err
+    code, _, err = run(["dispatch-check", "--registration-sha256", "E" * 64], capsys)
+    assert code == 1 and "64 lowercase hex" in err
+
+
+def test_a_registered_aggregate_leaves_the_verdict_incomplete_on_another_dispatch(
+    registered, smoke_plan, tmp_path, capsys, monkeypatch
+):
+    """The aggregate reads the workflow's runs in a registered run (Ruling R4-2), and
+    names another dispatch of its registration in the verdict, or why none could be ruled
+    out; a rehearsal's aggregate never reads them (test_the_rehearsal_runs_...)."""
+    title = f"v31-run registered {registered.config_sha}"
+    current = workflow_run(38267478452, created=NOW, title=title, status="in_progress")
+    cells = tmp_path / "cells"
+    cells.mkdir()
+
+    def aggregate_with(name, api):
+        argv = registered_args(registered, "aggregate", "--cells", str(cells))
+        argv += ["--attempt-id", RUN, "--out", str(tmp_path / name)]
+        code, document, err = run(argv, capsys, github_opener=api)
+        assert code == 0, err
+        verdict = json.loads((tmp_path / name / "summary" / "verdict.json").read_bytes())
+        assert document["status"] == verdict["status"] == "incomplete"
+        return verdict["run"]["other_dispatches"]
+
+    # Without the runner's variables: no other dispatch can be ruled out.
+    (reason,) = aggregate_with("no-variables", None)
+    assert reason.startswith("another dispatch of this registration could not be ruled out: ")
+    assert "GITHUB_TOKEN is not set" in reason
+    monkeypatch.setenv("GITHUB_TOKEN", "stand-in-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("GITHUB_RUN_ID", "38267478452")
+    seen = FakeGitHub([current, workflow_run(400, title=title)], current)
+    seen.answers["runs/38267478452"] = answer(current)
+    assert aggregate_with("another", seen) == ["another dispatch of this registration: run 400"]
+    alone = FakeGitHub([current, workflow_run(600, created=LATER, title=title)], current)
+    alone.answers["runs/38267478452"] = answer(current)
+    assert aggregate_with("alone", alone) == []
+    assert alone.requests  # the check ran
 
 
 # --- the owner's plan: every real mode refuses any other (Codex P1 and P2, PR #269) -------

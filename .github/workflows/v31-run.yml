@@ -1,7 +1,12 @@
 name: v31-run
+# Each run's title names its mode and registration: a registered dispatch is
+# "v31-run registered <registration_sha256>", which the dispatch check below looks for.
+run-name: v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 
 # The V3.1 run driver (scripts/v31_driver.py) on GitHub's machines. It never trades, holds no
-# credentials, can only read the repository and commits nothing: its results are artifacts.
+# stored credentials, can only read the repository and commits nothing: its results are
+# artifacts. Two steps of a registered run (the dispatch check and the aggregate) get the
+# job's own token, with read access to this repository's workflow runs and nothing more.
 #
 # OPERATING RULE: never dispatch v31-run while another v31-run is queued or running. The
 # concurrency group below asks GitHub to queue dispatches (queue: max) rather than keep one
@@ -40,8 +45,8 @@ name: v31-run
 #   mode, and its summary and status are uploaded under rehearsal names, so a synthetic
 #   PASS never passes for the registered run's.
 # - registered: the registered experiment, once. plan checks that
-#   config/v3_1_registration.json hashes to the dispatched registration_sha256, runs the
-#   job gate and lists the cells; prepare builds the packs; picks computes V3's selector
+#   config/v3_1_registration.json hashes to the dispatched registration_sha256, refuses a
+#   second dispatch of it, runs the job gate and lists the cells; prepare builds the packs; picks computes V3's selector
 #   picks once; run-main and run-v3 run one matrix job per cell (only the four selector
 #   cells wait for the picks); aggregate judges what exists, whether or not every cell
 #   finished, and uploads the summary; status records every job's result, aggregate run or
@@ -80,6 +85,14 @@ name: v31-run
 # every job also fails closed at the v31-packs upload, whose name is fixed. Re-running
 # aggregate alone is harmless: its summary is named for its attempt, and the cell folders
 # are unchanged.
+#
+# A second dispatch of a registration is refused too, since it gets a new run id and
+# attempt 1, which no folder can tell from the first. The run-name above titles every run
+# with its mode and registration, and the plan job (first) and the aggregate (again) list
+# this workflow's runs through GitHub's API: another registered run of the same
+# registration created before this one or at the same time, whatever its status, fails the
+# plan and leaves the verdict incomplete, as does any failure of the check. A later
+# dispatch never voids an earlier one.
 #
 # No archive for 2025-01 or later may exist anywhere on a runner. The driver refuses such a
 # month before it fetches; the "Refuse any file named for 2025 or later" step is a second,
@@ -207,6 +220,10 @@ jobs:
     if: ${{ (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # actions: read lets the dispatch check list this workflow's runs; nothing is written.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       v3_cells: ${{ steps.cells.outputs.v3_cells }}
       main_cells: ${{ steps.cells.outputs.main_cells }}
@@ -240,6 +257,16 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
+
+      # A registration is dispatched once: this workflow's runs, listed through GitHub's
+      # API, must hold no other registered dispatch of it created before or with this run,
+      # whatever its status. The first driver step; only it and the Aggregate step hold the
+      # token.
+      - name: Refuse a second dispatch of the registration
+        if: ${{ inputs.mode == 'registered' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/v31_driver.py dispatch-check --registration-sha256 "$REGISTRATION_SHA256"
 
       # A rehearsal's world: its code pin (the smoke world, this checkout's package and the
       # rehearsal marker) and its registration on top, built here once and handed to every
@@ -808,6 +835,11 @@ jobs:
     if: ${{ !cancelled() && (inputs.mode == 'registered' || inputs.mode == 'rehearsal') && needs.picks.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # actions: read lets a registered aggregate check for another dispatch of the
+    # registration again; nothing is written.
+    permissions:
+      contents: read
+      actions: read
     # The registration this run is gated on: the plan job checked it first (the dispatched
     # one in a registered run, the world's in a rehearsal).
     env:
@@ -879,9 +911,13 @@ jobs:
           fi
 
       # The run's own attempt id: a cell or the picks job from another attempt or run makes
-      # the verdict incomplete (re-run detected).
+      # the verdict incomplete (re-run detected). A registered aggregate also lists this
+      # workflow's runs (the token): another dispatch of the registration makes it
+      # incomplete too.
       - name: Aggregate
         timeout-minutes: 335
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python scripts/v31_driver.py aggregate \
             --mode "$MODE" \

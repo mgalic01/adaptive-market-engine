@@ -1,19 +1,20 @@
-"""The V3.1 run driver's command line (Task 10a): ``plan``, ``prepare``, ``picks``,
-``run-cell``, ``aggregate``, ``smoke``, ``rehearsal-world``, ``timing`` and
-``timing-close``.
+"""The V3.1 run driver's command line (Task 10a): ``plan``, ``dispatch-check``,
+``prepare``, ``picks``, ``run-cell``, ``aggregate``, ``smoke``, ``rehearsal-world``,
+``timing`` and ``timing-close``.
 
 Every subcommand but ``smoke`` and ``rehearsal-world`` passes its gate before it reads any
 input beyond the registration, then calls the driver library
 (``crypto_grid_bot.combined.driver``) and prints one canonical JSON document on stdout
 (sorted keys, no spaces, ASCII, one newline). Logs go to stderr; a refusal is one stderr
 line and exit status 1. Only ``prepare`` (prepare-only and registered) and ``timing``
-touch the network, and only data.binance.vision through the guarded transports
+fetch data, and only from data.binance.vision through the guarded transports
 (``fetch_v3_data.V3Transport`` for the inventory, ``v31_fetch.LegacyTransport`` for the
 legacy archives), each archive verified against its committed SHA-256 before it is kept.
-Every write is an exclusive create through the library or here: nothing deletes or
-replaces an earlier attempt's output, and no attempt is retried (a transport failure is,
-inside ``fetch_entries``, Ruling P6). Nothing at or after 2025-01 is fetched, opened or
-read.
+``dispatch-check`` and a registered ``aggregate`` read this workflow's runs from GitHub's
+REST API (``dispatch_check``), and nothing else. Every write is an exclusive create
+through the library or here: nothing deletes or replaces an earlier attempt's output, and
+no attempt is retried (a transport failure is, inside ``fetch_entries``, Ruling P6).
+Nothing at or after 2025-01 is fetched, opened or read.
 
 The dispatch ref (Ruling F6): a registered run and a timing run are dispatched from a ref
 whose tree is the code pin plus the registration artifacts only (``config/v3_1_*.json``,
@@ -31,6 +32,14 @@ code pin, ``config/v3_1_registration.json`` at its SHA-256 and
 requires the registration event to precede the implementation commit, so the code pin is
 a commit whose first parent already holds the V3.1 registration event. A rehearsal's world
 carries a synthetic trial laid out the same way, so a rehearsal runs this gate too.
+
+One dispatch per registration (Ruling R4-2): the workflow names each run ``v31-run <mode>
+<registration_sha256>``. In a registered run, ``dispatch-check`` (the plan job's first
+driver step) and ``aggregate`` list this workflow's runs through GitHub's REST API with
+the job's token: another run of the same registered title, created before this one or at
+the same time, whatever its status, fails the plan and leaves the verdict incomplete, and
+so does any failure of the check itself (``dispatch_check``). A run created later never
+counts, so a later dispatch cannot void the first.
 
 Modes (Ruling F3): ``--mode registered`` runs on the repository's own registration;
 ``--mode rehearsal`` runs the same subcommands on a synthetic rehearsal world built
@@ -53,6 +62,11 @@ owner's windows, dates, coin sets and FX reference date (``plan_gate``,
     picks), each at most 256. A rehearsal may plan only the first ``N`` cells (at least
     6: one W1 cell of each kind, the selector and a long-only V3 rule both, and one W0
     cell first); a registered run plans them all.
+``dispatch-check --registration-sha256 S`` (a registered run's plan job, Ruling R4-2)
+    Refuses, naming them, the other runs of this workflow titled ``v31-run registered S``
+    and created before the current run (``GITHUB_RUN_ID``) or at the same time, whatever
+    their status, as GitHub's REST API lists them with ``GITHUB_TOKEN``
+    (``dispatch_check``); a missing variable or any failure of the API refuses too.
 ``prepare --mode prepare-only|registered|rehearsal --work W --out O`` (Ruling P1)
     The gate: in ``prepare-only``, the checkout is ``--code-commit`` with no uncommitted
     change and ``config/v3_1_prepare.json`` hashes to ``--prepare-sha256``; no
@@ -91,7 +105,9 @@ owner's windows, dates, coin sets and FX reference date (``plan_gate``,
 ``aggregate --mode M --cells D --attempt-id ID --out O``
     ``job_gate``, then the verdict and summary: ``O/summary/``. ``ID`` is the workflow's
     ``<run_id>-attempt-<run_attempt>``; a W1 cell or the picks job from another artifact
-    attempt than 1 or another run makes the verdict incomplete (re-run detected).
+    attempt than 1 or another run makes the verdict incomplete (re-run detected). In a
+    registered run, so does another dispatch of the registration, or a dispatch check
+    that cannot rule one out (``dispatch_reasons``).
 ``smoke --out O [--cells N]``
     No gate and no network: a synthetic world (``v31_smoke``) with all 42 arms and 216
     cells on three-day windows, its packs, the picks job, every cell (or the first ``N``,
@@ -139,11 +155,14 @@ import re
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from http.client import HTTPException, HTTPMessage
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import IO, Any, BinaryIO
 
 import v31_smoke
 from fetch_v3_data import V3Transport
@@ -235,6 +254,15 @@ PLAN_SCHEMA = "v3.1-plan-1"
 REHEARSAL_WORLD_SCHEMA = "v3.1-rehearsal-world-1"
 TIMING_SCHEMA = "v3.1-timing-1"
 TIMING_CLOSE_SCHEMA = "v3.1-timing-close-1"
+DISPATCH_CHECK_SCHEMA = "v3.1-dispatch-check-1"
+# The dispatch check (Ruling R4-2): GitHub's REST API, this workflow's file name, a timeout
+# per request, the page size it asks for and the most pages and bytes it reads.
+GITHUB_API = "https://api.github.com"
+WORKFLOW_FILE = "v31-run.yml"
+GITHUB_TIMEOUT = 30  # seconds
+RUNS_PER_PAGE = 100
+MAX_RUN_PAGES = 100  # 10,000 runs: more is no listing this check can trust
+MAX_GITHUB_BYTES = 32 * 1024 * 1024
 RUN_MODES = ("registered", "rehearsal")  # the registered job graph, on the repo or a world
 REAL_MODES = ("registered", "prepare-only", "timing")  # held to the owner's plan (plan_gate)
 MAX_MATRIX = 256  # GitHub's limit on the jobs of one matrix
@@ -297,9 +325,13 @@ _COMMIT = re.compile(r"[0-9a-f]{40}")
 _ATTEMPT = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]*)-attempt-([1-9][0-9]*)")
 _YEAR = re.compile(r"-(?=([0-9]{4})-)")  # every "-YYYY-" in a name, overlapping ones too
 _REPO_PATH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*")
+_GITHUB_REPOSITORY = re.compile(r"[A-Za-z0-9-]+/(?!\.\.?$)[A-Za-z0-9_.-]+")  # <owner>/<repo>
+_RUN_ID = re.compile(r"[1-9][0-9]*")
+_CREATED_AT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
 Log = Callable[[str], None]
 V3PackBuilder = Callable[[Path, str, Mapping[str, str], Path], str]
+GitHubOpener = Callable[..., Any]  # urllib.request.OpenerDirector.open: (request, timeout=)
 
 
 def log(line: str) -> None:
@@ -1185,6 +1217,206 @@ def registered_errors(reg: DriverRegistration, document: Mapping[str, Any]) -> l
     return errors
 
 
+# --- one dispatch per registration (Ruling R4-2) ----------------------------------------
+
+
+def registered_title(registration_sha256: str) -> str:
+    """The title GitHub gives a registered dispatch of the registration: the workflow's
+    ``run-name``, ``v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}``."""
+    return f"v31-run registered {registration_sha256}"
+
+
+def _run_fields(run: object, what: str) -> tuple[int, str, datetime]:
+    """A workflow run's id, display title and creation time, as GitHub's REST API gives
+    them, or one ``ValueError`` naming the field that is missing or malformed."""
+    if not isinstance(run, dict):
+        raise ValueError(f"{what}: a JSON object required")
+    run_id, title, created = run.get("id"), run.get("display_title"), run.get("created_at")
+    if type(run_id) is not int or run_id <= 0:
+        raise ValueError(f"{what}: id {run_id!r}, a positive integer required")
+    if type(title) is not str:
+        raise ValueError(f"{what} (run {run_id}): display_title {title!r}, a string required")
+    if type(created) is not str or _CREATED_AT.fullmatch(created) is None:
+        raise ValueError(
+            f"{what} (run {run_id}): created_at {created!r}, YYYY-MM-DDTHH:MM:SSZ required"
+        )
+    try:
+        stamp = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise ValueError(f"{what} (run {run_id}): created_at {created!r} is not a date") from exc
+    return run_id, title, stamp
+
+
+def other_dispatches(
+    runs: Sequence[object], current: object, registration_sha256: str
+) -> tuple[int, ...]:
+    """The ids, ascending, of this workflow's other runs that dispatched the registration
+    no later than the current run (Ruling R4-2): a pure decision on what the API listed.
+
+    A run counts when its id is not the current run's, its display title is exactly
+    ``registered_title(registration_sha256)`` and it was created before the current run
+    or in the same second (a tie counts). Its status and conclusion do not matter: queued,
+    in progress, failed, cancelled or successful, it dispatched the registration. A run
+    created later never counts, so a later dispatch cannot void the current one. Refuses
+    (one ``ValueError``) any run, the current one included, without a positive integer
+    id, a string display title and a ``created_at`` of GitHub's form; a run id listed
+    twice; a current run missing from the list; and a current run titled otherwise, as a
+    later dispatch could then not find it."""
+    title = registered_title(registration_sha256)
+    current_id, current_title, current_created = _run_fields(current, "the current run")
+    if current_title != title:
+        raise ValueError(
+            f"the current run {current_id} is titled {current_title!r}, not {title!r} (the "
+            "workflow's run-name): a later dispatch could not find this one"
+        )
+    seen: set[int] = set()
+    found = []
+    for index, run in enumerate(runs, start=1):
+        run_id, run_title, created = _run_fields(run, f"workflow run {index} of {len(runs)}")
+        if run_id in seen:
+            raise ValueError(f"workflow run {run_id} is listed twice: the pages disagree")
+        seen.add(run_id)
+        if run_id != current_id and run_title == title and created <= current_created:
+            found.append(run_id)
+    if current_id not in seen:
+        raise ValueError(f"the current run {current_id} is not among this workflow's runs")
+    return tuple(sorted(found))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Builds no request for a redirect, so urllib raises it as an HTTP error: the token's
+    request never follows one to another address."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        return None
+
+
+def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
+    """The JSON document at ``GITHUB_API + path``, read with ``token``. Any failure is one
+    ``ValueError`` naming the path, never the token: an HTTP error (a redirect included), a
+    transport failure or a timeout, a status other than 200, a body larger than
+    ``MAX_GITHUB_BYTES`` and a body that is not JSON."""
+    # The URL is the fixed https://api.github.com origin and a path the callers build from
+    # the validated GITHUB_REPOSITORY and GITHUB_RUN_ID: no other scheme or host is opened.
+    request = urllib.request.Request(
+        GITHUB_API + path,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "v31-driver",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method="GET",
+    )
+    try:
+        with opener(request, timeout=GITHUB_TIMEOUT) as response:
+            status = getattr(response, "status", None)
+            raw = response.read(MAX_GITHUB_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        raise ValueError(f"GitHub API {path}: HTTP {exc.code}") from exc
+    except (OSError, HTTPException) as exc:  # URLError and timeouts are OSErrors
+        raise ValueError(f"GitHub API {path}: {type(exc).__name__}: {exc}") from exc
+    if status != 200:
+        raise ValueError(f"GitHub API {path}: HTTP {status}, not 200")
+    if len(raw) > MAX_GITHUB_BYTES:
+        raise ValueError(f"GitHub API {path}: the response is larger than {MAX_GITHUB_BYTES} bytes")
+    try:
+        return strict_json(raw, f"GitHub API {path}")
+    except ValueError as exc:
+        raise ValueError(f"GitHub API {path}: not JSON ({exc})") from exc
+
+
+def workflow_runs(repository: str, token: str, opener: GitHubOpener) -> list[object]:
+    """Every run of this workflow (``WORKFLOW_FILE``), all pages of ``RUNS_PER_PAGE``.
+    Refuses a malformed page and any pagination inconsistency: a total_count that changes
+    between pages, a page larger than asked for, pages that end before the total or list
+    more runs than it, and more than ``MAX_RUN_PAGES`` pages."""
+    runs: list[object] = []
+    total: int | None = None
+    for number in range(1, MAX_RUN_PAGES + 1):
+        path = (
+            f"/repos/{repository}/actions/workflows/{WORKFLOW_FILE}/runs"
+            f"?per_page={RUNS_PER_PAGE}&page={number}"
+        )
+        document = github_json(path, token, opener)
+        count = document.get("total_count") if isinstance(document, dict) else None
+        listed = document.get("workflow_runs") if isinstance(document, dict) else None
+        if type(count) is not int or count < 0 or not isinstance(listed, list):
+            raise ValueError(f"GitHub API {path}: total_count and workflow_runs required")
+        if total is not None and count != total:
+            raise ValueError(f"GitHub API {path}: total_count changed from {total} to {count}")
+        total = count
+        if len(listed) > RUNS_PER_PAGE:
+            raise ValueError(f"GitHub API {path}: a page of more than {RUNS_PER_PAGE} runs")
+        runs.extend(listed)
+        if len(runs) > total:
+            raise ValueError(
+                f"GitHub API {path}: {len(runs)} runs listed, more than total_count {total}"
+            )
+        if len(runs) == total or len(listed) < RUNS_PER_PAGE:
+            if len(runs) != total:
+                raise ValueError(
+                    f"GitHub API {path}: the pages end after {len(runs)} run(s) listed, "
+                    f"total_count {total}"
+                )
+            return runs
+    raise ValueError(f"this workflow lists more than {MAX_RUN_PAGES} pages of runs")
+
+
+def dispatch_check(
+    registration_sha256: object, opener: GitHubOpener | None = None
+) -> tuple[int, ...]:
+    """The registration's other dispatches (``other_dispatches``), from GitHub's REST API:
+    the current run and this workflow's runs (``workflow_runs``), read with the job's
+    ``GITHUB_TOKEN`` (only the checking step's env passes ``github.token``) for the
+    runner's own ``GITHUB_REPOSITORY`` and ``GITHUB_RUN_ID``. ``opener`` replaces urllib's
+    (tests); by default urllib's, following no redirect, with ``GITHUB_TIMEOUT`` per
+    request. A missing or malformed variable and any failure of the API are one
+    ``ValueError``, raised before any request for a variable: the caller fails closed."""
+    sha = _sha(registration_sha256, "--registration-sha256")
+    token = os.environ.get("GITHUB_TOKEN", "")
+    repository = os.environ.get("GITHUB_REPOSITORY", "")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    errors = []
+    if not token:
+        errors.append("GITHUB_TOKEN is not set (the checking step's env passes github.token)")
+    if _GITHUB_REPOSITORY.fullmatch(repository) is None:
+        errors.append(f"GITHUB_REPOSITORY {repository!r}: <owner>/<repository> required")
+    if _RUN_ID.fullmatch(run_id) is None:
+        errors.append(f"GITHUB_RUN_ID {run_id!r}: a positive integer required")
+    if errors:
+        raise ValueError("the dispatch check cannot run: " + "; ".join(errors))
+    if opener is None:
+        opener = urllib.request.build_opener(_NoRedirect).open
+    path = f"/repos/{repository}/actions/runs/{run_id}"
+    current = github_json(path, token, opener)
+    found = other_dispatches(workflow_runs(repository, token, opener), current, sha)
+    if current["id"] != int(run_id):  # other_dispatches has checked its shape
+        raise ValueError(
+            f"GitHub API {path}: the current run is {current['id']}, not GITHUB_RUN_ID {run_id}"
+        )
+    return found
+
+
+def dispatch_reasons(registration_sha256: str, opener: GitHubOpener | None) -> tuple[str, ...]:
+    """What a registered aggregate hands ``aggregate`` (Ruling R4-2): each other dispatch
+    of the registration, or why none could be ruled out. Either leaves the verdict
+    incomplete (fail closed)."""
+    try:
+        found = dispatch_check(registration_sha256, opener)
+    except ValueError as exc:
+        return (f"another dispatch of this registration could not be ruled out: {exc}",)
+    return tuple(f"another dispatch of this registration: run {run}" for run in found)
+
+
 # --- the subcommands --------------------------------------------------------------------
 
 
@@ -1495,11 +1727,44 @@ def run_cell(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
-def aggregate_cells(args: argparse.Namespace) -> dict[str, object]:
+def dispatch_check_command(
+    args: argparse.Namespace, opener: GitHubOpener | None = None
+) -> dict[str, object]:
+    """``dispatch-check`` (the module docstring): refuses a second dispatch of the
+    registration, naming the runs, and fails closed (``dispatch_check``)."""
+    found = dispatch_check(args.registration_sha256, opener)
+    if found:
+        raise ValueError(
+            "another dispatch of this registration: "
+            + ", ".join(f"run {run}" for run in found)
+            + "; a registration is dispatched once (Ruling R4-2), so this run stops here"
+        )
+    return {
+        "schema": DISPATCH_CHECK_SCHEMA,
+        "registration_sha256": args.registration_sha256,
+        "other_dispatches": [],
+    }
+
+
+def aggregate_cells(
+    args: argparse.Namespace, opener: GitHubOpener | None = None
+) -> dict[str, object]:
     _, reg, _, _ = registered_job(args)
+    # A registered run checks for another dispatch of its registration (Ruling R4-2); a
+    # rehearsal dispatches none.
+    dispatches = (
+        dispatch_reasons(reg.registration.config_pin, opener) if args.mode == "registered" else ()
+    )
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    summary = aggregate(reg, Path(args.cells), out, attempt_id=args.attempt_id, mode=args.mode)
+    summary = aggregate(
+        reg,
+        Path(args.cells),
+        out,
+        attempt_id=args.attempt_id,
+        mode=args.mode,
+        other_dispatches=dispatches,
+    )
     return _verdict_document(summary)
 
 
@@ -1625,7 +1890,14 @@ def smoke(args: argparse.Namespace) -> dict[str, object]:
             folder.mkdir()
             directory.rename(folder / cell.cell_id)
         (root / "a").mkdir()
-        summary = aggregate(reg, cells_dir, _extended(root / "a"), attempt_id=attempt, mode="smoke")
+        summary = aggregate(
+            reg,
+            cells_dir,
+            _extended(root / "a"),
+            attempt_id=attempt,
+            mode="smoke",
+            other_dispatches=(),
+        )
     seconds = time.monotonic() - began
     log(f"smoke: {len(selected)} of {len(reg.cells)} cells, picks and aggregate in {seconds:.1f} s")
     return {
@@ -2073,6 +2345,13 @@ def build_parser() -> argparse.ArgumentParser:
         "empty: every registered cell",
     )
 
+    check = commands.add_parser(
+        "dispatch-check", help="refuse a second dispatch of the registration (registered)"
+    )
+    check.add_argument(
+        "--registration-sha256", required=True, help="the dispatch's pin of the registration file"
+    )
+
     prep = commands.add_parser("prepare", help="fetch, verify and pack every input")
     prep.add_argument("--mode", choices=("prepare-only", *RUN_MODES), required=True)
     registered(prep, required=False)
@@ -2165,11 +2444,13 @@ def main(
     legacy_transport: ArchiveTransport | None = None,
     sleep: Callable[[float], None] = time.sleep,
     v3_pack_builder: V3PackBuilder = build_v3_pack,
+    github_opener: GitHubOpener | None = None,
 ) -> int:
     """Run one subcommand; 0 with its document on stdout, 1 on a refusal (on stderr).
 
-    The keyword arguments replace prepare's transports, its retry sleep and the V3 pack
-    builder (tests); by default the real guarded transports and ``time.sleep``."""
+    The keyword arguments replace prepare's transports, its retry sleep, the V3 pack
+    builder and the dispatch check's opener (tests); by default the real guarded
+    transports, ``time.sleep`` and urllib's opener (``dispatch_check``)."""
     args = build_parser().parse_args(argv)
     try:
         if args.command in ("prepare", "timing"):
@@ -2194,12 +2475,14 @@ def main(
             document = run(args, **network, sleep=sleep, log=log, v3_pack_builder=v3_pack_builder)
         elif args.command == "plan":
             document = plan(args)
+        elif args.command == "dispatch-check":
+            document = dispatch_check_command(args, github_opener)
         elif args.command == "picks":
             document = picks(args)
         elif args.command == "run-cell":
             document = run_cell(args)
         elif args.command == "aggregate":
-            document = aggregate_cells(args)
+            document = aggregate_cells(args, github_opener)
         elif args.command == "rehearsal-world":
             document = rehearsal_world(args)
         elif args.command == "timing-close":

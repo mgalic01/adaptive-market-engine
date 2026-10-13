@@ -290,14 +290,21 @@ def _bash() -> str:
     return shell
 
 
+# A runner's variables for GitHub's API, emptied in every step run here unless the test
+# sets them: the dispatch check then refuses before any request, so no step ever reaches
+# api.github.com from a test, whatever the machine's own environment holds.
+NO_GITHUB_API = {"GITHUB_TOKEN": "", "GITHUB_REPOSITORY": "", "GITHUB_RUN_ID": ""}
+
+
 def _run_step(
     script: str, cwd: Path, env: dict[str, str], prelude: str = ""
 ) -> subprocess.CompletedProcess[str]:
-    """``script`` as GitHub runs a bash step (``-e -o pipefail``), with ``env`` added."""
+    """``script`` as GitHub runs a bash step (``-e -o pipefail``), with ``env`` added
+    (and the GitHub API's variables emptied unless ``env`` sets them)."""
     return subprocess.run(
         [_bash(), "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", prelude + script],
         cwd=cwd,
-        env={**os.environ, **env},
+        env={**os.environ, **NO_GITHUB_API, **env},
         capture_output=True,
         text=True,
         check=False,
@@ -336,11 +343,20 @@ def test_the_only_trigger_is_workflow_dispatch_with_the_four_inputs() -> None:
         assert inputs[name]["default"] == "", name
 
 
+# The jobs that run the dispatch check (Ruling R4-2) read this workflow's runs, and nothing
+# more: actions: read beside contents: read. No other job sets its own permissions.
+CHECKING_JOBS = ("plan", "aggregate")
+CHECKING_PERMISSIONS = {"contents": "read", "actions": "read"}
+
+
 def test_workflow_has_the_2025_guard_and_no_write_permissions() -> None:
     workflow = _workflow()
     assert workflow["permissions"] == {"contents": "read"}
     for name, job in workflow["jobs"].items():
-        assert "permissions" not in job, f"{name} sets its own permissions"
+        if name in CHECKING_JOBS:
+            assert job["permissions"] == CHECKING_PERMISSIONS, name
+        else:
+            assert "permissions" not in job, f"{name} sets its own permissions"
     assert not re.search(r"\bwrite\b", json.dumps(workflow))
     for name in DATA_JOBS:
         assert _guard_steps(name), f"{name} has no 2025 guard step"
@@ -349,7 +365,11 @@ def test_workflow_has_the_2025_guard_and_no_write_permissions() -> None:
 def test_permissions_are_exactly_contents_read_and_no_job_widens_them() -> None:
     workflow = _workflow()
     assert workflow["permissions"] == {"contents": "read"}
-    assert all("permissions" not in job for job in workflow["jobs"].values())
+    widened = {
+        name: job["permissions"] for name, job in workflow["jobs"].items() if "permissions" in job
+    }
+    # Only the two checking jobs add one read scope, to list this workflow's runs.
+    assert widened == dict.fromkeys(CHECKING_JOBS, CHECKING_PERMISSIONS)
     assert "id-token" not in json.dumps(workflow)
 
 
@@ -420,9 +440,35 @@ def test_the_header_records_every_attempt_and_does_not_invite_a_rerun() -> None:
     assert "v31-summary-attempt-<n>" in header and "v31-smoke-summary-attempt-<n>" in header
 
 
+TOKEN_ENV = {"GITHUB_TOKEN": "${{ github.token }}"}  # the job's own token, nothing stored
+
+
+def _token_steps() -> list[tuple[str, str | None]]:
+    """Each (job, step name) whose env holds the job's token."""
+    return [
+        (job, step.get("name"))
+        for job in JOBS
+        for step in _steps(job)
+        if "GITHUB_TOKEN" in step.get("env", {})
+    ]
+
+
 def test_no_secret_is_referenced() -> None:
     # The public archives need none; the checkout is read-only with no stored credentials.
-    parsed = json.dumps(_workflow())
+    # The one token is the job's own (github.token, never a stored secret), in the env of
+    # the two steps that check for another dispatch of the registration (Ruling R4-2).
+    assert _token_steps() == [
+        ("plan", "Refuse a second dispatch of the registration"),
+        ("aggregate", "Aggregate"),
+    ]
+    workflow = _workflow()
+    for job in workflow["jobs"].values():
+        for step in job["steps"]:
+            env = step.get("env", {})
+            if "GITHUB_TOKEN" in env:
+                assert {"GITHUB_TOKEN": env.pop("GITHUB_TOKEN")} == TOKEN_ENV
+    # Without those two entries (removed from this parsed copy), nothing names a secret.
+    parsed = json.dumps(workflow)
     assert not re.search(r"secrets|_token|token\b|api[_-]?key|password", parsed, re.IGNORECASE)
 
 
@@ -727,6 +773,7 @@ def test_every_driver_call_parses_with_the_drivers_own_parser() -> None:
             assert args.command == subcommand
     assert seen == {
         "plan",
+        "dispatch-check",
         "prepare",
         "picks",
         "run-cell",
@@ -1203,6 +1250,8 @@ def test_each_driver_step_passes_the_dispatch_values_to_the_cli(tmp_path: Path) 
         elif args.command == "aggregate":
             assert (args.cells, args.out) == ("v31/cells", "v31/summary-out")
             assert (args.attempt_id, args.registration_sha256) == ("4242-attempt-2", "a" * 64)
+        elif args.command == "dispatch-check":
+            assert args.registration_sha256 == "a" * 64  # the dispatched pin
         elif args.command == "rehearsal-world":
             assert args.out == "v31/work"
             assert (
@@ -1221,6 +1270,7 @@ def test_each_driver_step_passes_the_dispatch_values_to_the_cli(tmp_path: Path) 
     assert sorted(seen, key=str) == sorted(
         [
             ("smoke", "smoke", None),
+            ("plan", "dispatch-check", None),
             ("plan", "rehearsal-world", None),
             ("plan", "plan", "registered"),
             ("prepare", "prepare", "registered"),
@@ -1309,8 +1359,12 @@ def test_the_header_and_the_plan_job_hold_the_dispatch_ref_rule() -> None:
     gate = next(
         i for i, s in enumerate(steps) if re.search(r"v31_driver\.py plan\b", s.get("run", ""))
     )
+    # Before it: only the dispatch check (a registered run's, Ruling R4-2) and a
+    # rehearsal's world.
     assert all(
-        "v31_driver.py" not in s.get("run", "") or "rehearsal-world" in s["run"]
+        "v31_driver.py" not in s.get("run", "")
+        or "rehearsal-world" in s["run"]
+        or "dispatch-check" in s["run"]
         for s in steps[:gate]
     )
     # The CLI documents it too.
@@ -1318,6 +1372,72 @@ def test_the_header_and_the_plan_job_hold_the_dispatch_ref_rule() -> None:
         "a ref" in v31_driver.__doc__
         and "code pin plus the registration artifacts" in v31_driver.__doc__
     )
+
+
+# --- one dispatch per registration (Codex P1, PR #269 round 4; Ruling R4-2) --------------
+
+
+def test_each_run_is_titled_with_its_mode_and_registration() -> None:
+    """A second dispatch of a registration gets a new run id and attempt 1, so only the
+    run's title, set by run-name, can tell it from the first: the driver looks for exactly
+    the title a registered dispatch gets."""
+    run_name = _workflow()["run-name"]
+    assert run_name == "v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}"
+    sha = "e" * 64
+    evaluated = run_name.replace("${{ inputs.mode }}", "registered")
+    assert evaluated.replace("${{ inputs.registration_sha256 }}", sha) == (
+        v31_driver.registered_title(sha)
+    )
+    assert WORKFLOW.name == v31_driver.WORKFLOW_FILE  # the runs the check lists are these
+
+
+def test_the_plan_job_refuses_a_second_dispatch_first_in_a_registered_run() -> None:
+    steps = _steps("plan")
+    names = [step.get("name") for step in steps]
+    check = names.index("Refuse a second dispatch of the registration")
+    step = steps[check]
+    assert step["if"] == "${{ inputs.mode == 'registered' }}"
+    assert step["env"] == TOKEN_ENV
+    assert step["run"].split() == [
+        "python",
+        "scripts/v31_driver.py",
+        "dispatch-check",
+        "--registration-sha256",
+        '"$REGISTRATION_SHA256"',
+    ]
+    # Its first driver step: after the registration's hash check and the install (it needs
+    # Python), before the world, the job gate, the scan and any upload.
+    installs = [i for i, s in enumerate(steps) if s.get("run", "").startswith("python -m pip")]
+    assert names.index("Verify the registration against the dispatched SHA-256") < check
+    assert max(installs) < check < names.index("Plan the run")
+    assert check < _guard_steps("plan")[0]
+    driver = [i for i, s in enumerate(steps) if "scripts/v31_driver.py" in s.get("run", "")]
+    assert driver[0] == check
+    # A refusal fails the plan job, so nothing after it runs: no world, no plan, no upload,
+    # and none of the jobs that need the plan (the status job records it).
+    outcomes = steps_that_run("plan", failing=[check])
+    assert outcomes[check] == "failure"
+    assert set(outcomes[check + 1 :]) == {"skipped"}
+    assert _ran("registered", failing=["plan"]) == {"plan", "status"}
+    # A rehearsal, which dispatches no registration, skips it.
+    assert steps_that_run("plan", mode="rehearsal")[check] == "skipped"
+
+
+def test_the_aggregate_step_holds_the_token_to_check_again() -> None:
+    (step,) = [s for s in _steps("aggregate") if s.get("name") == "Aggregate"]
+    assert step["env"] == TOKEN_ENV
+    # The driver decides by mode: a registered aggregate checks, a rehearsal's never does
+    # (tests/test_v31_driver_cli.py); the step itself runs in both.
+    assert "if" not in step
+
+
+def test_the_header_says_a_second_dispatch_is_refused_and_why() -> None:
+    header = _header()
+    assert "A second dispatch of a registration is refused too" in header
+    assert "new run id and attempt 1" in header
+    assert "fails the plan and leaves the verdict incomplete" in header
+    assert "A later dispatch never voids an earlier one" in header
+    assert "holds no stored credentials" in header
 
 
 # --- the status job (Ruling F11) ---------------------------------------------------------
@@ -1788,6 +1908,16 @@ def test_aggregate_with_no_artifact_downloaded_is_incomplete_and_names_every_cel
     assert sorted(reasons) == sorted(f"{name}: {missing}" for name in (*w1, "v3_picks"))
     for cell_id in sorted(cell_ids):
         assert f"`{cell_id}` | missing" in text, cell_id
+    # A registered aggregate checks for another dispatch of its registration (Ruling R4-2):
+    # here, without the runner's variables, it cannot rule one out, and says so; a rehearsal
+    # dispatches no registration and checks nothing.
+    dispatches = verdict["run"]["other_dispatches"]
+    if mode == "registered":
+        (reason,) = dispatches
+        assert reason.startswith("another dispatch of this registration could not be ruled out")
+        assert "GITHUB_TOKEN is not set" in reason
+    else:
+        assert dispatches == []
 
 
 def _name_for(template: str, mode: str) -> str:
