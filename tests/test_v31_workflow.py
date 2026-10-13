@@ -1440,14 +1440,16 @@ class RegisteredWorld:
 def registered_world(tmp_path_factory: pytest.TempPathFactory) -> RegisteredWorld:
     """What Task 11 commits, in miniature: a repository holding config/v3_1_registration.json
     and its run-manifest, with all 42 arms and 216 cells, its adapter pins read from module
-    stubs at its head. Its prepare config holds the owner's plan (``OWNER_PLAN``: W1 on ten
-    coins, W0 on eight), which a registered run requires (``v31_driver.plan_gate``), on the
-    smoke world's files, with its end-2024 FX record. Its pack pins name no pack: the plan
-    step and an aggregate with nothing downloaded read none."""
+    stubs at its code pin, committed with the V3.1 trial's completion on top of that code
+    pin, which sits on the trial's registration event (the trial gate, Ruling R4-1). Its
+    prepare config holds the owner's plan (``OWNER_PLAN``: W1 on ten coins, W0 on eight),
+    which a registered run requires (``v31_driver.plan_gate``), on the smoke world's files,
+    with its end-2024 FX record. Its pack pins name no pack: the plan step and an aggregate
+    with nothing downloaded read none."""
     root = tmp_path_factory.mktemp("v31-workflow") / "world"
     root.mkdir()
     with v31_smoke.stand_ins():
-        world = v31_smoke.build_world(root, extra_files=MODULES)
+        world = v31_smoke.build_world(root, extra_files=MODULES, trial=True)
     path = world.repo / v31_driver.PREPARE_CONFIG
     document = json.loads(path.read_bytes())
     document["windows"] = [
@@ -1463,7 +1465,11 @@ def registered_world(tmp_path_factory: pytest.TempPathFactory) -> RegisteredWorl
         "skipped_hours": {wid: {"hours": []} for wid in ids},
     }
     pins = adapter_pins(world.repo, world.head)
-    _, sha = v31_smoke.register(world, no_pack, code_pin=world.head, adapter_pins=pins)
+    reg, sha = v31_smoke.register(world, no_pack, code_pin=world.head, adapter_pins=pins)
+    v31_smoke.complete_trial(
+        world.repo, code_pin=world.head, config_sha256=sha, manifest_sha256=reg.run_manifest_pin
+    )
+    v31_smoke.commit_all(world.repo, "the registration (synthetic)")
     return RegisteredWorld(world.repo, sha)
 
 

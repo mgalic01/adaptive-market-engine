@@ -22,6 +22,16 @@ Every gated job checks it (``job_gate``: nothing but those changed since the cod
 timing and prepare-only: the checkout is the dispatched ``--code-commit``, clean), and the
 plan job checks it first, so a wrong ref fails in the first job.
 
+The V3.1 trial (Ruling R4-1): ``job_gate`` (registered prepare, plan, picks, aggregate) and
+run-cell, before it reads any pack, require the trial register as the head commits it to
+hold exactly one ``spec-v3.1`` registration, whose trial passes
+``trial_register.check_ready`` at the head and whose completion pins the registration's
+code pin, ``config/v3_1_registration.json`` at its SHA-256 and
+``config/v3_1_run_manifest.json`` at the registered pin (``trial_errors``). check_ready
+requires the registration event to precede the implementation commit, so the code pin is
+a commit whose first parent already holds the V3.1 registration event. A rehearsal's world
+carries a synthetic trial laid out the same way, so a rehearsal runs this gate too.
+
 Modes (Ruling F3): ``--mode registered`` runs on the repository's own registration;
 ``--mode rehearsal`` runs the same subcommands on a synthetic rehearsal world built
 in-job (``rehearsal-world``), a git repository whose code pin commits
@@ -48,8 +58,9 @@ owner's windows, dates, coin sets and FX reference date (``plan_gate``,
     change and ``config/v3_1_prepare.json`` hashes to ``--prepare-sha256``; no
     registration exists yet. In ``registered``, the registration and run-manifest load,
     the registration hashes to ``--registration-sha256``, nothing but the registration
-    artifacts changed since its code pin, and the prepare config, data manifests,
-    snapshots and windows are the ones the run-manifest pins. Then it plans every archive
+    artifacts changed since its code pin, the V3.1 trial authorizes it (``job_gate``), and
+    the prepare config, data manifests, snapshots and windows are the ones the
+    run-manifest pins. Then it plans every archive
     (refusing any month at or after 2025-01), fetches and verifies them under ``W``
     (``inventory/``, ``legacy/``, ``minutes/``), verifies the legacy dataset
     (``verify_dataset``), builds each window pack (W1's skipped hours joined by the
@@ -90,8 +101,9 @@ owner's windows, dates, coin sets and FX reference date (``plan_gate``,
     No network: the rehearsal's synthetic world under ``W`` (``W/repo``, a git repository,
     and ``W/legacy``, its legacy dataset). Its code pin commits the smoke world, every
     module of this checkout's package (so the adapter pins read real blobs) and the
-    rehearsal marker; a second commit adds the registration of its packs (all 216 cells),
-    as Task 11 registers the real run. Prints the registration's SHA-256.
+    rehearsal marker, on top of a synthetic V3.1 trial's spec and registration event; a
+    commit on top of it adds the registration of its packs (all 216 cells) and the trial's
+    completion, as Task 11 registers the real run. Prints the registration's SHA-256.
 ``timing --part prepare|picks|cell --code-commit C --prepare-sha256 S --scratch X --out O``
     Measures the registered run's heavy steps before registration (Ruling F4), gated like
     prepare-only (``prepare_only_gate``; no registration), fetching only what each part
@@ -135,6 +147,7 @@ from typing import Any, BinaryIO
 
 import v31_smoke
 from fetch_v3_data import V3Transport
+from trial_register import _parse, check_ready
 from v31_fetch import ARCHIVE_PREFIX, ArchiveTransport, LegacyTransport, entries_for, fetch_entries
 from v31_v3_pack import build_v3_pack
 
@@ -208,6 +221,7 @@ REGISTRATION = "config/v3_1_registration.json"
 RUN_MANIFEST = "config/v3_1_run_manifest.json"
 TRIAL_REGISTER = "docs/trials/register.jsonl"
 V3_FAMILY = "spec-v3"  # V3's registered trial, whose completion pins its inventory and calendar
+V31_FAMILY = "spec-v3.1"  # the V3.1 trial, whose completion authorizes the registration
 PACKS_DIR = "packs"
 STAGING_DIR = "staging"
 PREPARE_FILE = "prepare.json"
@@ -930,6 +944,67 @@ def _committed(repo: Path, commit: str, path: str) -> bytes | None:
     return _git(repo, "show", f"{commit}:{path}")
 
 
+def trial_errors(
+    repo: Path, head: str, *, code_pin: str, config_sha256: str, manifest_sha256: str
+) -> list[str]:
+    """How the V3.1 trial's committed completion fails to authorize a registration
+    (Ruling R4-1); empty when it authorizes it.
+
+    The trial register as ``head`` commits it must hold exactly one ``registration`` event
+    of family ``V31_FAMILY``. That trial must pass ``trial_register.check_ready`` at
+    ``head``, whose checks are its own: one committed completion and no correction, the
+    registration event already in the code commit's first parent, the code commit and the
+    spec commit ancestors of the head, the spec, config and manifest blobs at the head
+    matching their pins, and the code at the code commit and at the head matching the
+    completion's inventory and digest. The completion must then bind this registration:
+    its code commit is ``code_pin``, its config ``REGISTRATION`` at ``config_sha256`` and
+    its manifest ``RUN_MANIFEST`` at ``manifest_sha256``.
+
+    So the registration's code pin is a commit whose first parent already holds the V3.1
+    registration event (check_ready's "registration precedes the implementation commit"):
+    Task 11 commits that event first, the code pin on top of it, and the registration
+    artifacts with the completion after both."""
+    raw = _committed(repo, head, TRIAL_REGISTER)
+    if raw is None:
+        return [f"the head {head} commits no {TRIAL_REGISTER}"]
+    try:
+        events = _parse(raw)
+    except ValueError as exc:
+        return [f"{TRIAL_REGISTER} at the head {head} is not a valid trial register: {exc}"]
+    trials = [
+        event["trial_id"]
+        for event in events
+        if event["event_type"] == "registration" and event["family"] == V31_FAMILY
+    ]
+    if len(trials) != 1:
+        return [
+            f"{TRIAL_REGISTER} at the head {head} must hold one {V31_FAMILY} registration, "
+            f"found {len(trials)}"
+        ]
+    (trial,) = trials
+    try:
+        payload = check_ready(repo, trial, head)["payload"]
+    except ValueError as exc:
+        return [f"the {V31_FAMILY} trial {trial} is not ready at the head {head}: {exc}"]
+    errors = []
+    if payload["code_commit"] != code_pin:
+        errors.append(
+            f"the {V31_FAMILY} completion pins code commit {payload['code_commit']}, not the "
+            f"registration's code pin {code_pin}"
+        )
+    for key, path, sha in (
+        ("config", REGISTRATION, config_sha256),
+        ("manifest", RUN_MANIFEST, manifest_sha256),
+    ):
+        pinned = payload[key]
+        if pinned != {"path": path, "sha256": sha}:
+            errors.append(
+                f"the {V31_FAMILY} completion pins its {key} {pinned['path']} at "
+                f"{pinned['sha256']}, not {path} at {sha}"
+            )
+    return errors
+
+
 def world_gate(repo: Path, mode: str, code_pin: str) -> None:
     """The checkout is of ``mode``'s kind (Ruling F3), or one ``ValueError`` says why.
 
@@ -1015,9 +1090,11 @@ def job_gate(
     single cell (picks, aggregate, registered prepare); returns the repo head.
 
     The registration must pass ``check_registration`` and hash to ``registration_sha256``
-    (the dispatch's pin), the run-manifest file to the registered pin, and every change
-    since the code pin must be a registration artifact (Ruling P10c). One ``ValueError``
-    names every mismatch."""
+    (the dispatch's pin), the run-manifest file to the registered pin, every change since
+    the code pin must be a registration artifact (Ruling P10c), and the V3.1 trial's
+    committed completion must authorize this registration at the head (``trial_errors``,
+    Ruling R4-1). One ``ValueError`` names every mismatch."""
+    head = head_commit(repo)
     errors = []
     try:
         check_registration(reg)
@@ -1034,9 +1111,18 @@ def job_gate(
             f"{reg.run_manifest_pin}"
         )
     errors.extend(_path_errors(changed_since(repo, reg.registration.code_pin), reg.fx_record_paths))
+    errors.extend(
+        trial_errors(
+            repo,
+            head,
+            code_pin=reg.registration.code_pin,
+            config_sha256=reg.registration.config_pin,
+            manifest_sha256=reg.run_manifest_pin,
+        )
+    )
     if errors:
         raise ValueError("job gate refused:\n- " + "\n- ".join(errors))
-    return head_commit(repo)
+    return head
 
 
 def prepare_pins_gate(reg: DriverRegistration, prepare: PrepareConfig) -> None:
@@ -1360,6 +1446,15 @@ def run_cell(args: argparse.Namespace) -> dict[str, object]:
     pins_now = adapter_pins(repo, head)
     world_gate(repo, args.mode, reg.registration.code_pin)
     plan_gate(args.mode, repo / PREPARE_CONFIG, reg)  # before the pack is read or replayed
+    trial = trial_errors(  # likewise: the V3.1 trial's completion authorizes this registration
+        repo,
+        head,
+        code_pin=reg.registration.code_pin,
+        config_sha256=reg.registration.config_pin,
+        manifest_sha256=reg.run_manifest_pin,
+    )
+    if trial:
+        raise ValueError(f"trial gate refused cell {cell.cell_id!r}:\n- " + "\n- ".join(trial))
     pack_sha = dict(reg.run_manifest.window_packs)[cell.window]
     window_pack = read_pack(Path(args.packs) / window_pack_file(cell.window), pack_sha)
     execution_gate(
@@ -1552,11 +1647,14 @@ def rehearsal_world(args: argparse.Namespace) -> dict[str, object]:
     The code pin commits the smoke world (``v31_smoke.build_world``: the synthetic legacy
     dataset's spec and manifest, the bot config, the menu, an FX record, snapshot
     stand-ins and the prepare config), every module of this checkout's package
-    (``v31_smoke.source_modules``) and the rehearsal marker. The packs are built once,
-    as prepare-only would, into a temporary directory that is then deleted (the
-    rehearsal's prepare job builds them again and must reproduce them), and the
-    registration of all 216 cells, its adapter pins read at the code pin, is committed on
-    top: the head differs from the code pin by the registration artifacts alone."""
+    (``v31_smoke.source_modules``) and the rehearsal marker, on top of the synthetic V3.1
+    trial's spec and registration event (``v31_smoke.register_trial``), as the trial gate
+    requires of a registered run's code pin. The packs are built once, as prepare-only
+    would, into a temporary directory that is then deleted (the rehearsal's prepare job
+    builds them again and must reproduce them), and the registration of all 216 cells, its
+    adapter pins read at the code pin, is committed on top with the trial's completion
+    (``v31_smoke.complete_trial``): the head differs from the code pin by the registration
+    artifacts alone, and every job's trial gate runs on it as on a registered run."""
     root = Path(args.out)
     root.mkdir(parents=True, exist_ok=False)
     extra = {
@@ -1564,7 +1662,7 @@ def rehearsal_world(args: argparse.Namespace) -> dict[str, object]:
         v31_smoke.REHEARSAL_MARKER: v31_smoke.rehearsal_marker(),
     }
     with v31_smoke.stand_ins():
-        world = v31_smoke.build_world(root, extra_files=extra)
+        world = v31_smoke.build_world(root, extra_files=extra, trial=True)
         with tempfile.TemporaryDirectory(prefix="packs-", dir=root) as scratch:
             document = build_smoke_packs(
                 world.repo,
@@ -1576,6 +1674,12 @@ def rehearsal_world(args: argparse.Namespace) -> dict[str, object]:
             )
     pins = adapter_pins(world.repo, world.head)
     reg, config_sha = v31_smoke.register(world, document, code_pin=world.head, adapter_pins=pins)
+    v31_smoke.complete_trial(
+        world.repo,
+        code_pin=world.head,
+        config_sha256=config_sha,
+        manifest_sha256=reg.run_manifest_pin,
+    )
     head = v31_smoke.commit_all(world.repo, "the rehearsal registration (synthetic)")
     return {
         "schema": REHEARSAL_WORLD_SCHEMA,

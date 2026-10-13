@@ -14,12 +14,15 @@ inside a module-scoped fixture. Prepare's archives come from in-memory fake host
 each a tiny git repository:
 
 - the smoke world (``v31_smoke.build_world``), with stub modules committed so that the
-  adapter pins read real blob ids at its head: picks, run-cell and aggregate run on it;
+  adapter pins read real blob ids at its code pin, and its registration committed on top
+  with the synthetic V3.1 trial's completion (the trial gate): picks, run-cell and
+  aggregate run on it;
 - a prepare world: a synthetic V3 inventory (spot, futures and funding archives, one
   excluded and one missing month), a legacy dataset whose minutes and hours agree, so the
   frozen mask job runs for real (one BTC hour lacks a minute, so its mask holds it), an
   XRP hour priced so that its quotes break rule 8, a V3.1 minute manifest, filter
-  snapshots, and V3's registration in the trial register.
+  snapshots, and V3's trial and the synthetic V3.1 trial's registration in the trial
+  register.
 
 V3's walk-forward, and in the smoke world the frozen mask job, run as the smoke's
 stand-ins (``v31_smoke.stand_ins``); the V3 input pack builder, whose V3 loader needs the
@@ -78,6 +81,7 @@ import v31_driver  # noqa: E402
 import v31_smoke  # noqa: E402
 from fetch_v3_data import ArchiveObject, inspect_archive  # noqa: E402
 from fetch_v3_data import archive_path as inventory_path_of  # noqa: E402
+from trial_register import append_event  # noqa: E402
 
 HOUR = 3_600_000
 DAY = 24 * HOUR
@@ -258,6 +262,7 @@ def test_smoke_runs_end_to_end_offline(tmp_path, capsys):
 class Registered:
     repo: Path
     head: str
+    code_pin: str
     packs: Path
     legacy: Path
     config_sha: str
@@ -265,21 +270,39 @@ class Registered:
     window_packs: dict
 
 
+# What a registration commit changes since its code pin: the registration, its run-manifest
+# and the trial register with the V3.1 trial's completion.
+REGISTRATION_CHANGES = (
+    "config/v3_1_registration.json",
+    "config/v3_1_run_manifest.json",
+    "docs/trials/register.jsonl",
+)
+
+
 @pytest.fixture(scope="module")
 def registered(module_network_blocked, tmp_path_factory) -> Registered:
-    """The smoke world with stub modules committed, its packs, and a registration whose
-    code pin is the head and whose adapter pins are the head's."""
+    """The smoke world with stub modules committed on top of the synthetic V3.1 trial's
+    registration, its packs, and a registration whose code pin is that commit and whose
+    adapter pins are its, committed with the trial's completion as Task 11 commits the
+    real one (the trial gate reads them as the head commits them)."""
     if shutil.which("git") is None:
         pytest.skip("git is not installed")
     root = tmp_path_factory.mktemp("cli")
     with v31_smoke.stand_ins():
-        world = v31_smoke.build_world(root, extra_files=MODULES)
+        world = v31_smoke.build_world(root, extra_files=MODULES, trial=True)
         document = v31_driver.smoke_packs(world, root / "packs")
     pins = adapter_pins(world.repo, world.head)
     reg, config_sha = v31_smoke.register(world, document, code_pin=world.head, adapter_pins=pins)
+    v31_smoke.complete_trial(
+        world.repo,
+        code_pin=world.head,
+        config_sha256=config_sha,
+        manifest_sha256=reg.run_manifest_pin,
+    )
+    head = v31_smoke.commit_all(world.repo, "the registration (synthetic)")
     window_packs = dict(reg.run_manifest.window_packs)
     return Registered(
-        world.repo, world.head, root / "packs", world.legacy, config_sha, pins, window_packs
+        world.repo, head, world.head, root / "packs", world.legacy, config_sha, pins, window_packs
     )
 
 
@@ -303,7 +326,7 @@ def changed_copy(world: Registered, tmp_path: Path) -> Path:
     return copy
 
 
-def test_run_cell_refuses_without_the_gate(registered, smoke_plan, tmp_path, capsys):
+def test_run_cell_refuses_without_the_gate(registered, smoke_plan, tmp_path, capsys, monkeypatch):
     out = tmp_path / "out"
 
     def attempt(cell=CELL, packs=registered.packs, **options):
@@ -323,8 +346,16 @@ def test_run_cell_refuses_without_the_gate(registered, smoke_plan, tmp_path, cap
     shutil.copyfile(registered.packs / "window-w0.pack.json.gz", wrong / "window-w1.pack.json.gz")
     code, _, err = attempt(packs=wrong)
     assert code == 1 and f"differs from the pinned {registered.window_packs['w1']}" in err
-    # Code changed after the code pin: the changed path and the moved adapter pin, both named.
-    code, _, err = attempt(repo=changed_copy(registered, tmp_path))
+    # Code changed after the code pin: the V3.1 trial's completion no longer covers the
+    # head's code, so the trial gate refuses first, before the pack is read.
+    copy = changed_copy(registered, tmp_path)
+    code, _, err = attempt(repo=copy)
+    assert code == 1 and f"trial gate refused cell {CELL!r}" in err
+    assert "committed code does not match pin" in err
+    # The execution gate refuses it too, on its own: the changed path and the moved
+    # adapter pin, both named (the trial gate stood down to show it).
+    monkeypatch.setattr(v31_driver, "trial_errors", lambda *args, **kwargs: [])
+    code, _, err = attempt(repo=copy)
     assert code == 1 and f"execution gate refused cell {CELL!r}" in err
     assert "outside the registration artifacts: src/crypto_grid_bot/combined/engine.py" in err
     assert "the adapter pin of combined at the checkout" in err
@@ -410,12 +441,16 @@ def test_each_cell_kind_runs_through_the_execution_gate(
         ("minute", True),
     ]
     # The gate ran before each cell, on the W1 pack read against the pin it checked, with
-    # the head, no change since the code pin, the head's adapter pins and the dispatch's pin.
+    # the head, only the registration commit's changes since the code pin, the head's
+    # adapter pins and the dispatch's pin.
     assert [cell_id for cell_id, _ in calls] == list(KIND_CELLS.values())
     for _, arguments in calls:
         assert arguments["pack_sha256"] == registered.window_packs["w1"]
         assert arguments["pack"].window_id == "w1"
-        assert (arguments["repo_head"], arguments["changed_paths"]) == (registered.head, ())
+        assert (arguments["repo_head"], arguments["changed_paths"]) == (
+            registered.head,
+            REGISTRATION_CHANGES,
+        )
         assert arguments["adapter_pins_now"] == registered.pins
         assert arguments["config_sha256"] == registered.config_sha
     # Aggregate the four cells with the picks job downloaded beside them: a verdict.
@@ -565,7 +600,7 @@ def test_plan_gates_first_and_sends_only_the_selector_to_the_picks_matrix(
     assert set(v3_cells).isdisjoint(main_cells)
     assert (document["cells_registered"], document["cells_planned"]) == (216, 216)
     assert document["registration_sha256"] == registered.config_sha
-    assert (document["code_pin"], document["repo_head"]) == (registered.head, registered.head)
+    assert (document["code_pin"], document["repo_head"]) == (registered.code_pin, registered.head)
     # A registered run plans every cell: --cells belongs to a rehearsal.
     code, _, err = run(registered_args(registered, "plan", "--cells", "5"), capsys)
     assert code == 1 and "a registered run runs every registered cell" in err
@@ -586,6 +621,223 @@ def test_plan_refuses_a_malformed_cell_count(registered, capsys, value):
     with pytest.raises(SystemExit):
         v31_driver.main(registered_args(registered, "plan", "--cells", value))
     assert "empty or a positive integer required" in capsys.readouterr().err
+
+
+# --- the V3.1 trial authorizes the registration (Codex P1, PR #269 round 4; Ruling R4-1) --
+
+
+@dataclass(frozen=True)
+class TrialWorld:
+    repo: Path
+    code_pin: str
+    head: str
+    pins: dict  # trial_errors' registration pins: the code pin and the two files' SHA-256
+
+
+TRIAL_FILES = {  # stand-ins: the trial gate reads the registration and run-manifest's hashes
+    "registration": b'{"synthetic": "registration"}\n',
+    "manifest": b'{"synthetic": "run-manifest"}\n',
+}
+NOT_READY = "the spec-v3.1 trial v3-1-synthetic is not ready at the head"
+
+
+def trial_world(root: Path, *, late: bool = False, **paths: str) -> TrialWorld:
+    """A tiny repository laid out as a registration commit: the synthetic V3.1 trial's spec
+    and registration event, a code pin committing one module on top, then the registration
+    and run-manifest at their paths with the trial's completion (``paths``: other paths for
+    the completion to pin, the same bytes committed there too). ``late``: the module comes
+    with the spec, so the code pin is the registration event's own commit, whose first
+    parent holds no register."""
+    repo = root / "repo"
+    v31_smoke.init_repo(repo)
+    module = repo / "src/crypto_grid_bot/combined/engine.py"
+    if late:
+        module.parent.mkdir(parents=True)
+        module.write_bytes(b"ENGINE = 1\n")
+        code_pin = v31_smoke.register_trial(repo)
+    else:
+        v31_smoke.register_trial(repo)
+        module.parent.mkdir(parents=True)
+        module.write_bytes(b"ENGINE = 1\n")
+        code_pin = v31_smoke.commit_all(repo, "the code pin")
+    pinned = {"registration": v31_driver.REGISTRATION, "manifest": v31_driver.RUN_MANIFEST}
+    for key, default in tuple(pinned.items()):
+        pinned[key] = paths.get(key, default)
+        for path in {default, pinned[key]}:
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_bytes(TRIAL_FILES[key])
+    pins = {
+        "code_pin": code_pin,
+        "config_sha256": sha(TRIAL_FILES["registration"]),
+        "manifest_sha256": sha(TRIAL_FILES["manifest"]),
+    }
+    v31_smoke.complete_trial(
+        repo,
+        code_pin=code_pin,
+        config_sha256=pins["config_sha256"],
+        manifest_sha256=pins["manifest_sha256"],
+        **pinned,
+    )
+    head = v31_smoke.commit_all(repo, "the registration (synthetic)")
+    return TrialWorld(repo, code_pin, head, pins)
+
+
+def register_lines(repo: Path, commit: str) -> list[dict]:
+    raw = v31_driver._committed(repo, commit, v31_smoke.TRIAL_REGISTER)
+    return [json.loads(line) for line in raw.splitlines()]
+
+
+def test_the_trial_gate_passes_a_completed_v31_trial_that_binds_the_registration(tmp_path):
+    world = trial_world(tmp_path)
+    assert v31_driver.V31_FAMILY == v31_smoke.TRIAL_FAMILY == "spec-v3.1"
+    assert v31_driver.trial_errors(world.repo, world.head, **world.pins) == []
+    # The layout check_ready requires: the registration event in the code pin's first
+    # parent, the completion committed after the code pin, with the registration commit.
+    before = register_lines(world.repo, f"{world.code_pin}^1")
+    assert [(e["family"], e["event_type"]) for e in before] == [("spec-v3.1", "registration")]
+    events = register_lines(world.repo, world.head)
+    assert [e["event_type"] for e in events] == ["registration", "completion"]
+    assert events[1]["payload"]["code_commit"] == world.code_pin
+
+
+@pytest.mark.parametrize("case", ["no register", "no V3.1 registration", "two V3.1 registrations"])
+def test_the_trial_gate_needs_exactly_one_v31_registration_at_the_head(tmp_path, case):
+    if case == "no register":
+        repo = tmp_path / "repo"
+        v31_smoke.init_repo(repo)
+        (repo / "README.md").write_bytes(b"no register\n")
+        head = v31_smoke.commit_all(repo, "no register")
+        pins = {"code_pin": head, "config_sha256": "1" * 64, "manifest_sha256": "2" * 64}
+        expected = f"the head {head} commits no docs/trials/register.jsonl"
+    elif case == "no V3.1 registration":  # V3's own trial alone
+        repo = tmp_path / "repo"
+        v31_smoke.init_repo(repo)
+        register = repo / v31_smoke.TRIAL_REGISTER
+        register.parent.mkdir(parents=True)
+        for event in v3_trial("3" * 64, "4" * 64):
+            append_event(register, event)
+        head = v31_smoke.commit_all(repo, "V3's trial alone")
+        pins = {"code_pin": head, "config_sha256": "1" * 64, "manifest_sha256": "2" * 64}
+        expected = "must hold one spec-v3.1 registration, found 0"
+    else:
+        world = trial_world(tmp_path)
+        repo, pins = world.repo, world.pins
+        second = {**register_lines(repo, world.head)[0], "trial_id": "v3-1-second"}
+        append_event(repo / v31_smoke.TRIAL_REGISTER, {**second, "event_id": "v3-1-second-reg"})
+        head = v31_smoke.commit_all(repo, "a second V3.1 registration")
+        expected = "must hold one spec-v3.1 registration, found 2"
+    assert v31_driver.trial_errors(repo, head, **pins) == [
+        expected
+        if case == "no register"
+        else f"docs/trials/register.jsonl at the head {head} {expected}"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("another code commit", "pins code commit {code_pin}, not the registration's code pin"),
+        ("another config SHA-256", "pins its config config/v3_1_registration.json at {config}, "),
+        ("another manifest SHA-256", "pins its manifest config/v3_1_run_manifest.json at {man}, "),
+        ("another config path", "pins its config config/other-registration.json at {config}, "),
+        ("another manifest path", "pins its manifest config/other-manifest.json at {man}, "),
+    ],
+)
+def test_the_trial_gate_refuses_a_completion_that_binds_another_registration(
+    tmp_path, case, expected
+):
+    """check_ready passes each of these (its pins hold at the head); the completion pins
+    another code commit, config or manifest than this registration's, so it does not
+    authorize this one."""
+    paths = {
+        "another config path": {"registration": "config/other-registration.json"},
+        "another manifest path": {"manifest": "config/other-manifest.json"},
+    }.get(case, {})
+    world = trial_world(tmp_path, **paths)
+    pins = dict(world.pins)
+    changed = {
+        "another code commit": "code_pin",
+        "another config SHA-256": "config_sha256",
+        "another manifest SHA-256": "manifest_sha256",
+    }.get(case)
+    if changed is not None:
+        pins[changed] = "0" * len(pins[changed])
+    errors = v31_driver.trial_errors(world.repo, world.head, **pins)
+    shown = expected.format(
+        code_pin=world.code_pin,
+        config=world.pins["config_sha256"],
+        man=world.pins["manifest_sha256"],
+    )
+    assert len(errors) == 1 and shown in errors[0], errors
+    assert errors[0].startswith("the spec-v3.1 completion pins")
+
+
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("a correction", "corrected trial requires a new registration before dispatch"),
+        ("code changed after the completion", "committed code does not match pin"),
+        (
+            "a code pin before the registration",
+            "registration must precede the implementation commit",
+        ),
+        ("no completion", "one committed completion required"),
+    ],
+)
+def test_the_trial_gate_refuses_whatever_check_ready_refuses(tmp_path, case, reason):
+    world = trial_world(tmp_path, late=case == "a code pin before the registration")
+    repo, head = world.repo, world.head
+    register = repo / v31_smoke.TRIAL_REGISTER
+    if case == "a correction":
+        correction = v31_smoke.trial_event(
+            "correction",
+            {"target_id": "v3-1-synthetic-completion", "reason": "synthetic", "details": "x"},
+        )
+        append_event(register, correction)
+        head = v31_smoke.commit_all(repo, "a correction")
+    elif case == "code changed after the completion":
+        (repo / "src/crypto_grid_bot/combined/engine.py").write_bytes(b"ENGINE = 2\n")
+        head = v31_smoke.commit_all(repo, "a code change")
+    elif case == "no completion":
+        register.write_bytes(v31_driver._committed(repo, world.code_pin, v31_smoke.TRIAL_REGISTER))
+        head = v31_smoke.commit_all(repo, "the completion dropped")
+    assert v31_driver.trial_errors(repo, head, **world.pins) == [f"{NOT_READY} {head}: {reason}"]
+
+
+def without_completion(repo: Path, code_pin: str, root: Path) -> Path:
+    """A copy of ``repo`` whose head commits the trial register as the code pin does: the
+    V3.1 registration event without its completion."""
+    copy = root / "repo"
+    shutil.copytree(repo, copy)
+    raw = v31_driver._committed(copy, code_pin, v31_smoke.TRIAL_REGISTER)
+    (copy / v31_smoke.TRIAL_REGISTER).write_bytes(raw)
+    v31_smoke.commit_all(copy, "the V3.1 trial's completion dropped")
+    return copy
+
+
+def test_every_registered_job_and_cell_refuses_a_registration_the_trial_does_not_authorize(
+    registered, smoke_plan, tmp_path, capsys
+):
+    """job_gate (registered prepare, plan, picks, aggregate) and run-cell, before it reads
+    any pack, refuse a registration that no committed V3.1 completion authorizes."""
+    copy = without_completion(registered.repo, registered.code_pin, tmp_path)
+    out = tmp_path / "out"
+    missing = tmp_path / "no-packs"  # run-cell refuses before it would read a pack here
+    jobs = ("--packs", str(missing), "--attempt-id", RUN, "--out", str(out))
+    calls = {
+        "plan": (),
+        "prepare": ("--mode", "registered", "--work", str(tmp_path / "w"), "--out", str(out)),
+        "picks": jobs,
+        "run-cell": ("--cell", CELL, *jobs),
+        "aggregate": ("--cells", str(missing), "--attempt-id", RUN, "--out", str(out)),
+    }
+    for command, extra in calls.items():
+        code, _, err = run(registered_args(registered, command, *extra, repo=copy), capsys)
+        refusal = f"trial gate refused cell {CELL!r}" if command == "run-cell" else "job gate"
+        assert code == 1 and refusal in err, (command, err)
+        assert f"{NOT_READY} " in err and "one committed completion required" in err, command
+        assert str(missing) not in err, command  # no pack or cell was looked for
+    assert not out.exists() and not (tmp_path / "w").exists()
 
 
 # --- the rehearsal: the registered job graph on a synthetic world (Ruling F3) -------------
@@ -635,8 +887,16 @@ def test_the_rehearsal_world_is_a_registration_on_top_of_its_code_pin(rehearsal)
     # Like a real registration commit: only the registration artifacts changed since the
     # code pin, and the real execution gate's path rule accepts them.
     changed = v31_driver.changed_since(repo, code_pin)
-    assert changed == ("config/v3_1_registration.json", "config/v3_1_run_manifest.json")
+    assert changed == REGISTRATION_CHANGES
     assert v31_driver._path_errors(changed, ()) == []
+    # The synthetic V3.1 trial is laid out as the trial gate requires: its registration
+    # event in the code pin's first parent, its completion at the head binding the code pin,
+    # the registration and the run-manifest (Ruling R4-1).
+    earlier = v31_driver._committed(repo, f"{code_pin}^1", v31_smoke.TRIAL_REGISTER)
+    assert [json.loads(line)["event_type"] for line in earlier.splitlines()] == ["registration"]
+    manifest_sha = sha((repo / "config/v3_1_run_manifest.json").read_bytes())
+    pins = {"config_sha256": document["registration_sha256"], "manifest_sha256": manifest_sha}
+    assert v31_driver.trial_errors(repo, head, code_pin=code_pin, **pins) == []
     # The code pin commits the marker and every module of this checkout's package, so the
     # adapter pins are read from real blobs.
     marker = v31_driver._committed(repo, code_pin, v31_smoke.REHEARSAL_MARKER)
@@ -826,6 +1086,17 @@ def test_a_rehearsal_refuses_any_world_without_the_marker(registered, rehearsal,
     assert code == 1
 
 
+def test_a_rehearsal_holds_the_trial_gate_on_its_world(rehearsal, tmp_path, capsys):
+    """The rehearsal's world carries a synthetic V3.1 trial, so a rehearsal runs the trial
+    gate as a registered run does: a world whose completion was dropped is refused."""
+    copy = without_completion(rehearsal.repo, rehearsal.document["code_pin"], tmp_path)
+    argv = rehearsal_args(rehearsal, "plan")
+    argv[argv.index("--repo") + 1] = str(copy)
+    code, _, err = run(argv, capsys)
+    assert code == 1 and "job gate refused" in err
+    assert f"{NOT_READY} " in err and "one committed completion required" in err
+
+
 # --- the owner's plan: every real mode refuses any other (Codex P1 and P2, PR #269) -------
 
 
@@ -921,8 +1192,8 @@ def plan_world(registered: Registered, root: Path, windows: list, fx_date: str) 
     """A copy of the smoke world whose prepare config holds ``windows`` and whose FX record
     is the ECB rate of ``fx_date`` (its rate unchanged), registered over them as Task 11
     registers the real run, with pack pins naming no pack (each plan refusal comes before
-    any pack is read), and committed: the head is clean, and only registration artifacts
-    changed since the code pin."""
+    any pack is read), the V3.1 trial completed with them, and committed: the head is
+    clean, and only registration artifacts changed since the code pin."""
     repo = root / "repo"
     shutil.copytree(registered.repo, repo)
     path = repo / "config/v3_1_prepare.json"
@@ -930,7 +1201,7 @@ def plan_world(registered: Registered, root: Path, windows: list, fx_date: str) 
     fx = {**v31_smoke.fx_record(), "reference_date": fx_date}
     (repo / v31_smoke.FX_RECORD).write_bytes(dumped(fx))
     prepare = load_prepare_config(path)
-    world = v31_smoke.World(root, repo, registered.head, registered.legacy, prepare)
+    world = v31_smoke.World(root, repo, registered.code_pin, registered.legacy, prepare)
     ids = [window["id"] for window in windows]
     document = {
         "window_packs": {wid: sha(f"no pack {wid}".encode()) for wid in ids},
@@ -940,8 +1211,14 @@ def plan_world(registered: Registered, root: Path, windows: list, fx_date: str) 
     files = {"registration": v31_driver.REGISTRATION, "manifest": v31_driver.RUN_MANIFEST}
     for name in files.values():  # the smoke world's own registration, replaced
         (repo / name).unlink()
-    _, config_sha = v31_smoke.register(
-        world, document, code_pin=registered.head, adapter_pins=registered.pins, **files
+    reg, config_sha = v31_smoke.register(
+        world, document, code_pin=registered.code_pin, adapter_pins=registered.pins, **files
+    )
+    v31_smoke.complete_trial(
+        repo,
+        code_pin=registered.code_pin,
+        config_sha256=config_sha,
+        manifest_sha256=reg.run_manifest_pin,
     )
     head = v31_smoke.commit_all(repo, "a plan variant, registered")
     return PlanWorld(
@@ -1210,23 +1487,76 @@ def dumped(document: object) -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("ascii")
 
 
-def pin_inventory(repo: Path, raw: bytes, pins: dict) -> str:
-    """Write the inventory manifest, V3's completion pinning it, and the prepare config
-    pinning every manifest; return the prepare config's SHA-256."""
-    (repo / INVENTORY).write_bytes(raw)
-    config_raw = (repo / V3_CONFIG).read_bytes()
-    completion = {
-        "event_type": "completion",
-        "family": "spec-v3",
+def v3_trial(inventory_sha: str, config_sha: str) -> list[dict]:
+    """V3's registered trial (family ``spec-v3``) in the trial register's schema: its
+    registration and the completion pinning the inventory manifest and V3's run
+    configuration (the rest of its pins stand-ins, as no V3 gate reads them here)."""
+    common = {
+        "schema_version": 1,
         "trial_id": "v3-synthetic",
+        "recorded_at": "2024-12-31T00:00:00Z",
+        "agent": "V3.1 driver tests (synthetic)",
+        "family": "spec-v3",
+        "parent_trial_id": None,
+        "sources": ["docs/EXPERIMENT_SPEC_V3.md"],
+    }
+    spec = {"path": "docs/EXPERIMENT_SPEC_V3.md", "commit": "a" * 40, "sha256": "b" * 64}
+    registration = {
+        **common,
+        "event_id": "v3-synthetic-record",
+        "event_type": "registration",
         "payload": {
-            "manifest": {"path": INVENTORY, "sha256": sha(raw)},
-            "config": {"path": V3_CONFIG, "sha256": sha(config_raw)},
+            "preregistered": True,
+            "hypothesis": "synthetic",
+            "spec": spec,
+            "candidates": ["R1"],
+            "sizes": [1],
+            "fees": "synthetic",
+            "folds": "synthetic",
+            "mask": "synthetic",
+            "seeds": [],
+            "budget": "synthetic",
+            "stopping": "synthetic",
+            "selection": "synthetic",
+            "data": None,
+            "code": None,
         },
     }
+    completion = {
+        **common,
+        "event_id": "v3-synthetic-complete",
+        "event_type": "completion",
+        "payload": {
+            "registration_id": "v3-synthetic-record",
+            "code_commit": "c" * 40,
+            "code_sha256": "d" * 64,
+            "code_paths": ["src/crypto_grid_bot/combined/baseline_v3.py"],
+            "manifest": {"path": INVENTORY, "sha256": inventory_sha},
+            "config": {"path": V3_CONFIG, "sha256": config_sha},
+            "review": "synthetic",
+        },
+    }
+    return [registration, completion]
+
+
+def pin_inventory(repo: Path, raw: bytes, pins: dict) -> str:
+    """Write the inventory manifest, V3's trial pinning it after the register's other
+    events (the synthetic V3.1 trial's), and the prepare config pinning every manifest;
+    return the prepare config's SHA-256."""
+    (repo / INVENTORY).write_bytes(raw)
+    config_raw = (repo / V3_CONFIG).read_bytes()
     register = repo / "docs/trials/register.jsonl"
     register.parent.mkdir(parents=True, exist_ok=True)
-    register.write_bytes((json.dumps(completion, sort_keys=True) + "\n").encode("ascii"))
+    kept = [
+        line
+        for line in (register.read_bytes().splitlines(keepends=True) if register.exists() else [])
+        if json.loads(line)["family"] != "spec-v3"
+    ]
+    events = [
+        (json.dumps(e, sort_keys=True) + "\n").encode("ascii")
+        for e in v3_trial(sha(raw), sha(config_raw))
+    ]
+    register.write_bytes(b"".join(kept + events))
     document = {
         "schema": "v3.1-prepare-1",
         "windows": [
@@ -1270,6 +1600,7 @@ def prepare_world(module_network_blocked, tmp_path_factory) -> PrepareWorld:
     root = tmp_path_factory.mktemp("prepare-world")
     repo = root / "repo"
     v31_smoke.init_repo(repo)
+    v31_smoke.register_trial(repo)  # the code pin (the head) sits on the V3.1 registration
     inventory, legacy = v31_smoke.Archives(), v31_smoke.Archives()
     # The inventory: spot from 2020-10 (only its first 20 days, so excluded: the history
     # starts 2020-11-01) to 2020-12, futures and funding 2020-11 and 2020-12, and a missing
@@ -1597,12 +1928,24 @@ def test_prepare_refuses_any_2025_month_before_any_fetch(
     assert not (tmp_path / "work").exists() and not (tmp_path / "out").exists()
 
 
-def registered_world(prepare_world: PrepareWorld, tmp_path: Path) -> v31_smoke.World:
-    """A copy of the prepare world's repository, to register in without touching it."""
-    repo = tmp_path / "repo"
+def registered_world(prepare_world: PrepareWorld, root: Path, document: dict) -> tuple[Path, str]:
+    """A copy of the prepare world's repository registered over the prepare ``document``
+    (its pack pins and skipped hours) as Task 11 registers the real run: the registration,
+    its run-manifest and the V3.1 trial's completion, committed on the prepare world's
+    head, the code pin. Returns the copy and the registration's SHA-256."""
+    repo = root / "repo"
     shutil.copytree(prepare_world.repo, repo)
     prepare = load_prepare_config(repo / "config/v3_1_prepare.json")
-    return v31_smoke.World(tmp_path, repo, prepare_world.head, tmp_path / "unused", prepare)
+    world = v31_smoke.World(root, repo, prepare_world.head, root / "unused", prepare)
+    reg, config_sha = v31_smoke.register(world, document, code_pin=prepare_world.head)
+    v31_smoke.complete_trial(
+        repo,
+        code_pin=prepare_world.head,
+        config_sha256=config_sha,
+        manifest_sha256=reg.run_manifest_pin,
+    )
+    v31_smoke.commit_all(repo, "the registration (synthetic)")
+    return repo, config_sha
 
 
 def test_registered_prepare_refuses_a_different_pack_hash(
@@ -1610,38 +1953,31 @@ def test_registered_prepare_refuses_a_different_pack_hash(
 ):
     assert prepared.code == 0, prepared.stderr
     document = json.loads(prepared.stdout)
-    world = registered_world(prepare_world, tmp_path)
     hosts = {
         "inventory_transport": prepare_world.inventory,
         "legacy_transport": prepare_world.legacy,
     }
 
     def registered_prepare(doc, name, out):
-        files = {
-            "registration": f"config/{name}-registration.json",
-            "manifest": f"config/{name}-manifest.json",
-        }
-        _, config_sha = v31_smoke.register(world, doc, code_pin=prepare_world.head, **files)
+        repo, config_sha = registered_world(prepare_world, tmp_path / name, doc)
         argv = prepare_args(
             prepare_world,
             prepared.work,
             out,
-            "--registration",
-            files["registration"],
-            "--run-manifest",
-            files["manifest"],
             "--registration-sha256",
             config_sha,
-            repo=world.repo,
+            repo=repo,
             mode="registered",
         )
-        return config_sha, run(
-            argv, capsys, sleep=lambda seconds: None, v3_pack_builder=V3Builder(), **hosts
+        return (
+            repo,
+            config_sha,
+            run(argv, capsys, sleep=lambda seconds: None, v3_pack_builder=V3Builder(), **hosts),
         )
 
     # A registration pinning another W1 pack: refused, and nothing final written.
     wrong = {**document, "window_packs": {**document["window_packs"], "w1": "0" * 64}}
-    _, (code, _, err) = registered_prepare(wrong, "wrong-pack", tmp_path / "refused")
+    _, _, (code, _, err) = registered_prepare(wrong, "wrong-pack", tmp_path / "refused")
     assert code == 1 and "registered prepare did not reproduce the registration" in err
     derived = document["window_packs"]["w1"]
     assert f"window w1: pack SHA-256 {derived} differs from the pinned {'0' * 64}" in err
@@ -1649,16 +1985,26 @@ def test_registered_prepare_refuses_a_different_pack_hash(
     assert not (tmp_path / "refused" / "prepare.json").exists()
     # A registration whose W1 skipped hours lack the quote-test hour: refused too.
     skipped = {**document["skipped_hours"], "w1": {"hours": [MASKED], "sources": {}}}
-    _, (code, _, err) = registered_prepare(
+    _, _, (code, _, err) = registered_prepare(
         {**document, "skipped_hours": skipped}, "wrong-hours", tmp_path / "hours"
     )
     assert code == 1 and "window w1: the derived skipped hours differ" in err
     assert f"derived only: [{QUOTED}]" in err
     assert not (tmp_path / "hours" / "packs").exists()
-    # The registration of the prepare-only document: every pin and hour reproduced.
-    config_sha, (code, again, err) = registered_prepare(document, "true", tmp_path / "reproduced")
+    # The registration of the prepare-only document: every pin and hour reproduced. The
+    # document records the registration commit, the head, as its code commit.
+    repo, config_sha, (code, again, err) = registered_prepare(
+        document, "true", tmp_path / "reproduced"
+    )
     assert code == 0, err
-    assert again == {**document, "mode": "registered", "registration_sha256": config_sha}
+    head = v31_driver.head_commit(repo)
+    assert head != prepare_world.head
+    assert again == {
+        **document,
+        "mode": "registered",
+        "registration_sha256": config_sha,
+        "code_commit": head,
+    }
     assert (tmp_path / "reproduced" / "packs" / "window-w1.pack.json.gz").is_file()
 
 

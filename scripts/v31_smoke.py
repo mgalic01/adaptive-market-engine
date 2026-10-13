@@ -25,6 +25,13 @@ the same world with every module of the checkout's package (``source_modules``) 
 rehearsal marker (``REHEARSAL_MARKER``, ``rehearsal_marker``) committed at its code pin.
 The marker is what lets the driver run the stand-ins on a world (``--mode rehearsal``) and
 what every registered run refuses; the repository itself never holds it.
+
+A world that runs the registered gates also carries a synthetic V3.1 trial in its trial
+register (family ``spec-v3.1``, which the driver's trial gate reads), laid out as
+``trial_register.check_ready`` requires of a real one: ``register_trial`` commits its spec
+and then its registration event before the world's code pin, and ``complete_trial`` adds
+the completion binding the code pin, the registration and the run-manifest, for the
+registration commit.
 """
 
 import hashlib
@@ -41,6 +48,8 @@ from decimal import Context, Decimal, localcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+from trial_register import append_event, code_digest
 
 from crypto_grid_bot.backtest.dataset import (
     archive_path,
@@ -127,6 +136,20 @@ SNAPSHOTS = {"spot": "config/smoke/spot.json", "futures": "config/smoke/futures.
 REHEARSAL_MARKER = "config/v3_1_rehearsal.json"
 REHEARSAL_SCHEMA = "v3.1-rehearsal-1"
 SOURCE_PACKAGE = "src/crypto_grid_bot"  # copied into a rehearsal world for its adapter pins
+# The synthetic V3.1 trial (``register_trial``, ``complete_trial``): its family is the one
+# the driver's trial gate reads (``v31_driver.V31_FAMILY``).
+TRIAL_REGISTER = "docs/trials/register.jsonl"
+TRIAL_FAMILY = "spec-v3.1"
+TRIAL_ID = "v3-1-synthetic"
+TRIAL_SPEC = "docs/v3_1_synthetic_spec.md"
+TRIAL_SPEC_TEXT = (
+    b"A synthetic V3.1 trial (labelled synthetic, never market data): the smoke world's 42 "
+    b"arms and 216 cells, registered for a rehearsal or a test.\n"
+)
+# trial_register.check_ready's code inventory, which a completion's code_paths must list.
+_CODE_PREFIXES = ("src/", "scripts/")
+_CODE_FILES = frozenset({"pyproject.toml", "requirements-dev.lock", "requirements.txt"})
+_RECORDED_AT = "2024-12-31T00:00:00Z"  # the synthetic trial events' recorded_at
 _FIXED_NOW = datetime(2024, 12, 31, tzinfo=UTC)  # the synthetic manifest's created_at
 _ABBREVIATIONS = {"open_low_high_close": "olhc", "open_high_low_close": "ohlc", "native": "native"}
 _ADAPTER_PINS = {"v31": "5" * 64, "hold": "6" * 64, "v3": "7" * 64, "minute": "8" * 64}
@@ -450,14 +473,21 @@ class World:
     prepare: PrepareConfig
 
 
-def build_world(root: Path, *, extra_files: Mapping[str, bytes] | None = None) -> World:
+def build_world(
+    root: Path, *, extra_files: Mapping[str, bytes] | None = None, trial: bool = False
+) -> World:
     """Lay out a smoke world under ``root`` (layout in the module docstring) and commit it.
 
     ``extra_files`` (repository path: bytes) are committed too, such as the modules the
     adapter pins read. The prepare config names both windows with their two coins, the
-    legacy manifest by its SHA-256 and the two snapshot stand-ins."""
+    legacy manifest by its SHA-256 and the two snapshot stand-ins. With ``trial``, the
+    synthetic V3.1 trial's spec and registration event are committed first
+    (``register_trial``), so the world's own commit, its code pin, sits on the registration
+    as ``trial_register.check_ready`` requires."""
     repo, legacy = root / "repo", root / "legacy"
     init_repo(repo)
+    if trial:
+        register_trial(repo)
     for name, content in (extra_files or {}).items():
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_bytes(content)
@@ -484,6 +514,92 @@ def build_world(root: Path, *, extra_files: Mapping[str, bytes] | None = None) -
     )
     head = commit_all(repo, "synthetic V3.1 smoke world")
     return World(root, repo, head, legacy, load_prepare_config(repo / "config/v3_1_prepare.json"))
+
+
+def trial_event(event_type: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """One event of the synthetic V3.1 trial, in the trial register's schema."""
+    return {
+        "schema_version": 1,
+        "event_id": f"{TRIAL_ID}-{event_type}",
+        "trial_id": TRIAL_ID,
+        "event_type": event_type,
+        "recorded_at": _RECORDED_AT,
+        "agent": "V3.1 smoke (synthetic)",
+        "family": TRIAL_FAMILY,
+        "parent_trial_id": None,
+        "sources": [TRIAL_SPEC],
+        "payload": dict(payload),
+    }
+
+
+def register_trial(repo: Path) -> str:
+    """Commit the synthetic V3.1 trial's spec into the new repository ``repo``, then its
+    registration event naming that commit's spec; return the second commit. The world's
+    code pin goes on top of it: ``check_ready`` requires the code commit's first parent to
+    hold the registration."""
+    (repo / TRIAL_SPEC).parent.mkdir(parents=True, exist_ok=True)
+    (repo / TRIAL_SPEC).write_bytes(TRIAL_SPEC_TEXT)
+    spec_commit = commit_all(repo, "the synthetic V3.1 trial's spec")
+    spec = {
+        "path": TRIAL_SPEC,
+        "commit": spec_commit,
+        "sha256": hashlib.sha256(TRIAL_SPEC_TEXT).hexdigest(),
+    }
+    payload = {
+        "preregistered": True,
+        "hypothesis": "synthetic: the driver's gates and job graph run end to end",
+        "spec": spec,
+        "candidates": ["synthetic: the registration's 42 arms"],
+        "sizes": [1],
+        "fees": "synthetic: the registered cost profiles",
+        "folds": "synthetic: the world's two windows",
+        "mask": "synthetic: the world's skipped hours",
+        "seeds": [],
+        "budget": "synthetic: the registration's 216 cells, each once",
+        "stopping": "synthetic: every cell, once",
+        "selection": "synthetic: none",
+        "data": None,
+        "code": None,
+    }
+    register = repo / TRIAL_REGISTER
+    register.parent.mkdir(parents=True, exist_ok=True)
+    append_event(register, trial_event("registration", payload))
+    return commit_all(repo, "the synthetic V3.1 trial's registration")
+
+
+def complete_trial(
+    repo: Path,
+    *,
+    code_pin: str,
+    config_sha256: str,
+    manifest_sha256: str,
+    registration: str = "config/v3_1_registration.json",
+    manifest: str = "config/v3_1_run_manifest.json",
+) -> None:
+    """Write the trial register into ``repo``'s working tree, unstaged, as ``code_pin``
+    commits it plus the synthetic trial's completion, for the registration commit to
+    commit. The completion binds ``code_pin`` (its code inventory and digest as
+    ``check_ready`` computes them there), the registration file ``registration`` at
+    ``config_sha256`` and the run-manifest ``manifest`` at ``manifest_sha256``."""
+    register = repo / TRIAL_REGISTER
+    register.write_bytes(_git(repo, "show", f"{code_pin}:{TRIAL_REGISTER}"))
+    listed = _git(repo, "ls-tree", "-r", "--name-only", "-z", code_pin).decode("utf-8")
+    paths = sorted(
+        path
+        for path in listed.split("\0")
+        if path.startswith(_CODE_PREFIXES) or path in _CODE_FILES
+    )
+    blobs = {path: _git(repo, "show", f"{code_pin}:{path}") for path in paths}
+    payload = {
+        "registration_id": f"{TRIAL_ID}-registration",
+        "code_commit": code_pin,
+        "code_sha256": code_digest(blobs),
+        "code_paths": paths,
+        "manifest": {"path": manifest, "sha256": manifest_sha256},
+        "config": {"path": registration, "sha256": config_sha256},
+        "review": "synthetic: a rehearsal or test world, never reviewed",
+    }
+    append_event(register, trial_event("completion", payload))
 
 
 def rehearsal_marker() -> bytes:
@@ -579,7 +695,8 @@ def register(
 
     The windows are the prepare config's: ``w1`` judged, ``w0`` reported. ``adapter_pins``
     defaults to ``synthetic_adapter_pins``; ``code_pin`` is the commit the registration
-    names."""
+    names. A world with a trial (``build_world(trial=True)``) then completes it with these
+    pins (``complete_trial``) before the registration commit."""
     repo = world.repo
     menu = json.loads((repo / MENU_PATH).read_bytes())["arms"]
     arms = registered_arms(menu, V1_VARIANTS)
