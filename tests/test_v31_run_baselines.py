@@ -98,9 +98,10 @@ from crypto_grid_bot.combined.experiment import RunIdentity, capital_label
 from crypto_grid_bot.combined.observation_policy import POLICY_ID
 from crypto_grid_bot.simulation.runner import MODE_SWITCH
 from crypto_grid_bot.strategy.daily_sma import close_above_sma
+from crypto_grid_bot.trend import orchestration
 from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.orchestration import Attempt
-from crypto_grid_bot.trend.replay import replay_window
+from crypto_grid_bot.trend.replay import ReplayExecutionError, ReplayResult, replay_window
 
 HOUR = fx.HOUR
 DAY = fx.DAY
@@ -749,6 +750,114 @@ def test_v3_cell_refuses_a_claim_that_is_not_the_registered_one(world, picked, t
     reseal(copy.parent)
     message = refusal(world, copy, tmp_path)
     assert f"attempt.json: {field} is" in message and "hashes to" not in message
+
+
+def test_the_attempt_log_writes_v3s_real_record_shapes(world, tmp_path):
+    """``_AttemptLog`` on the shapes V3's walk-forward records, made by V3's own code (the
+    real walk-forward takes hours, so it is not run): a reconciled result carrying
+    ``reconcile_replay``'s residual, through ``orchestration._recorded_replay``; an engine
+    failure there, whose finished record holds the error and the partial result (one with
+    an account, one without); and an out-of-sample record, no rule and a schedule with a
+    flat quarter."""
+    inputs = world.v3
+    prefix = uuid.uuid4().hex
+    start, end = W1_START - 2 * DAY, W1_START
+    sources = (inputs.decisions, inputs.filters, inputs.hourly, inputs.funding)
+    started = Attempt(
+        f"{prefix}-train-2020-12-R2L",
+        "training",
+        "R2L",
+        start,
+        end,
+        None,
+        None,
+        state="started",
+        pick_schedule=((start, "R2L"),),
+    )
+    unreconciled = replay_window(*sources, start, end, {start: "R1"}, multiple=2, cost_multiple=1)
+    assert unreconciled.trade_reconciliation_residual is None
+    partials = {"R1": unreconciled, "R3L": ReplayResult(None, None, ())}
+    path = tmp_path / "attempts.jsonl"
+    with run_baselines._AttemptLog(path) as log:
+        result = orchestration._recorded_replay(*sources, started, log)
+        for rule, partial in partials.items():
+
+            def failing(*args, partial=partial, **kwargs):
+                raise ReplayExecutionError(RuntimeError("engine stopped"), partial)
+
+            failed = replace(
+                started,
+                run_id=f"{prefix}-train-2020-12-{rule}",
+                rule=rule,
+                pick_schedule=((start, rule),),
+            )
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(orchestration, "replay_window", failing)
+                with pytest.raises(ReplayExecutionError):
+                    orchestration._recorded_replay(*sources, failed, log)
+        schedule = ((start, "R2L"), (start + DAY, None))
+        log(
+            Attempt(
+                f"{prefix}-out-of-sample-m2",
+                "out_of_sample",
+                None,
+                start,
+                end,
+                result,
+                None,
+                pick_schedule=schedule,
+            )
+        )
+    raw = path.read_bytes()
+    assert log.sha256() == hashlib.sha256(raw).hexdigest()
+    rows = [json.loads(line) for line in raw.splitlines()]
+    assert raw == b"".join(canonical(row) + b"\n" for row in rows)
+    assert [(row["run"], row["state"]) for row in rows] == [
+        ("train-2020-12-R2L", "started"),
+        ("train-2020-12-R2L", "finished"),
+        ("train-2020-12-R1", "started"),
+        ("train-2020-12-R1", "finished"),
+        ("train-2020-12-R3L", "started"),
+        ("train-2020-12-R3L", "finished"),
+        ("out-of-sample-m2", "finished"),
+    ]
+    # The reconciled result: reconcile_replay's residual and the account's final equity.
+    assert result.trade_reconciliation_residual is not None and result.runner is not None
+    reconciled = {
+        "reason": result.reason,
+        "trade_reconciliation_residual": str(result.trade_reconciliation_residual),
+        "final_equity": str(result.runner.equity_path[-1].equity),
+    }
+    assert rows[1]["result"] == reconciled and rows[1]["error"] is None
+    # The engine failures: the error text and the partial result as V3 recorded them.
+    assert unreconciled.runner is not None
+    assert rows[3]["error"] == "ReplayExecutionError: RuntimeError: engine stopped"
+    assert rows[3]["result"] == {
+        "reason": unreconciled.reason,
+        "trade_reconciliation_residual": None,
+        "final_equity": str(unreconciled.runner.equity_path[-1].equity),
+    }
+    assert rows[5]["error"] == "ReplayExecutionError: RuntimeError: engine stopped"
+    assert rows[5]["result"] == {
+        "reason": None,
+        "trade_reconciliation_residual": None,
+        "final_equity": None,
+    }
+    # The out-of-sample record: no rule, the flat quarter as null, the reconciled result.
+    oos = rows[6]
+    assert (oos["phase"], oos["rule"], oos["multiple"], oos["cost_multiple"]) == (
+        "out_of_sample",
+        None,
+        2,
+        1,
+    )
+    assert oos["pick_schedule"] == [[start, "R2L"], [start + DAY, None]]
+    assert oos["result"] == reconciled
+    # A record of another walk-forward (another run-id prefix) is refused.
+    with run_baselines._AttemptLog(tmp_path / "other.jsonl") as other:
+        other(started)
+        with pytest.raises(ValueError, match="more than one walk-forward"):
+            other(replace(started, run_id=f"{uuid.uuid4().hex}-train-2020-12-R2L"))
 
 
 # --- the protocol ----------------------------------------------------------------------
