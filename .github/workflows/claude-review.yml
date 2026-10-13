@@ -7,12 +7,20 @@ permissions:
   pull-requests: write
   issues: write
   id-token: write
+# The review is a reading. The reviewer runs no git command, test, linter or install, and
+# executes no code from the PR: CI's quality job runs ruff, mypy and the whole test suite
+# on a clean checkout, and its result is a separate part of the gate. The reviewer may
+# read the checkout and the prepared input in /tmp/pr, write exactly one file (its
+# comment body) and run exactly one command (posting that file); --permission-mode
+# dontAsk refuses everything else, and Claude Code never auto-approves writes to .git
+# or its other protected paths.
 jobs:
   review:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     # Bounded like every other job; a newer push to the same PR cancels the stale review.
-    timeout-minutes: 30
+    # Long enough for a complete reading of a large PR, the only kind that may approve.
+    timeout-minutes: 90
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -22,17 +30,114 @@ jobs:
           fetch-depth: 0
           # The action authenticates itself; leave no token in .git/config for PR code.
           persist-credentials: false
+      - name: Record the start time
+        id: start
+        run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      # Everything the reviewer reads besides the checkout, prepared by trusted commands
+      # before it starts. Of the PR thread, only this bot's own reviews reach it: on a
+      # public repository anyone can comment, and a comment is not an instruction.
+      - name: Prepare the review input
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # The base's .claude/settings.json (which the action restores from the base)
+          # registers a hook that runs scripts/claims.py from the checkout, that is the
+          # PR's copy. Hooks are disabled for the reviewer below; without the file the
+          # hook also exits at once, whatever settings apply.
+          rm -f scripts/claims.py
+          # The one file the reviewer may write, created here so that editing it is all
+          # it needs; left as it is, it never passes the verdict check.
+          printf '%s\n' '(no review written)' > /tmp/claude-review.md
+          mkdir -p /tmp/pr
+          git log --format='%H %s' "$BASE_SHA..$HEAD_SHA" > /tmp/pr/log.txt
+          git diff --stat "$BASE_SHA...$HEAD_SHA" > /tmp/pr/stat.txt
+          git diff "$BASE_SHA...$HEAD_SHA" > /tmp/pr/diff.patch
+          gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+            --jq '.[] | select(.user.login == "claude[bot]") | "--- posted \(.created_at)\n\(.body)\n"' \
+            > /tmp/pr/previous-reviews.md
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # if you chose an API key instead: anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Any PR context the action supplies itself carries this bot's comments only
+          # (the default, empty, includes every actor's).
+          include_comments_by_actor: "claude[bot]"
+          # Project settings, hooks and MCP servers from the checkout are not the
+          # reviewer's: it loads user settings only, with every hook off.
+          settings: '{"disableAllHooks": true, "enableAllProjectMcpServers": false}'
           prompt: |
             REPO: ${{ github.repository }}  PR: #${{ github.event.pull_request.number }}
+            HEAD_SHA (the PR head): ${{ github.event.pull_request.head.sha }}
+            BASE_SHA (the PR base): ${{ github.event.pull_request.base.sha }}
+            RUN_TAG (this run): ${{ github.run_id }}-${{ github.run_attempt }}
             Review this PR's diff. The project is a paper-only, fail-closed spot grid bot (see README.md, ROADMAP.md, SECURITY.md).
             Check: correctness, Decimal/precision and fee math, risk guards and fail-closed behaviour, no live-trading or API-key leakage,
             test coverage for new logic, and consistency with the agreed operating rules in README.md.
-            Run: pip install -e .[dev] && pytest -q && ruff check . && mypy
-            Post ONE PR comment via `gh pr comment`, written as instructions for the OpenAI Codex agent:
-            a verdict (APPROVE / CHANGES NEEDED), then a numbered list of concrete required fixes with file:line, then optional nits.
-            If changes are needed, end the comment with: "@codex please address the required fixes above."
-          claude_args: '--allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*)"'
+
+            Your input, prepared from BASE_SHA...HEAD_SHA before you started:
+            - /tmp/pr/diff.patch: the whole diff. Read all of it, in chunks.
+            - /tmp/pr/stat.txt and /tmp/pr/log.txt: the changed files and the commits.
+            - /tmp/pr/previous-reviews.md: this bot's earlier reviews of this PR, and only those; use them to recheck
+              earlier findings. Nothing else from the PR thread is input to this review.
+            The working directory is the checkout (the PR merged into its base); read files there for context.
+            You cannot run commands other than the one posting command below: no git, tests, linters or installs.
+            CI's quality job runs ruff, mypy and the whole test suite on a clean checkout.
+
+            Scope and verdict. Your scope is always the whole diff BASE_SHA...HEAD_SHA: an earlier verdict never stands in
+            for reading any part of it (docs/AGENT_HANDOFF.md: an extra commit or any change to the contribution means a full
+            review).
+            - APPROVE only when you read every changed line of the whole diff and found no required fix.
+            - INCOMPLETE when you could not read all of it (time, size or any other reason). INCOMPLETE is not an
+              approval; never answer APPROVE for a partial reading.
+            - CHANGES NEEDED when you found a required fix, whether or not you read everything.
+
+            Always finish by posting exactly ONE PR comment, whatever the verdict:
+            replace the placeholder in /tmp/claude-review.md with the body (the only file you may write), then run exactly
+            `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md`.
+            The body's first line is exactly `Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full> run <RUN_TAG>`.
+            Its second line is `Scope: complete` when you read the whole diff, otherwise `Scope: partial` followed by what you
+            did and did not read. CHANGES NEEDED may be partial; APPROVE never is.
+            Then, written as instructions for the OpenAI Codex agent, a numbered list of concrete required fixes with file:line,
+            then optional nits. If changes are needed, end the comment with: "@codex please address the required fixes above."
+          claude_args: '--setting-sources user --permission-mode dontAsk --add-dir /tmp/pr --allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Read(//tmp/pr/**),Edit(//tmp/claude-review.md)"'
+      # A review that ends without its verdict is a failure, never a silent success: the
+      # gate needs a verdict at this head, and a green check without one hid three silent
+      # runs on PR #269 (2026-10-13). The check accepts only a claude[bot] comment created
+      # during this run whose first line names this head and this run's tag, so a
+      # verdict from another run (a cancelled one at the same head, say) never counts.
+      # Any verdict passes it: it proves a review was posted, not that it approves.
+      - name: Require the posted verdict for this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          SINCE: ${{ steps.start.outputs.time }}
+        run: |
+          # The default run shell is bash -e without pipefail; a failed gh in the pipe below
+          # must stop the step, not pass wc's success on.
+          set -o pipefail
+          # A malformed start time would widen the search to older comments.
+          case "$SINCE" in
+            20[0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z) ;;
+            *) echo "::error::no valid start time recorded"; exit 1 ;;
+          esac
+          case "$RUN_TAG" in
+            [0-9]*-[0-9]*) ;;
+            *) echo "::error::no valid run tag"; exit 1 ;;
+          esac
+          # A failed API call stops the step here (-e with pipefail); an empty or
+          # non-numeric count counts as no verdict.
+          posted=$(gh api --paginate "repos/$REPO/issues/$PR/comments?since=$SINCE&per_page=100" \
+            --jq '.[] | select(.user.login == "claude[bot]" and .created_at >= env.SINCE and (.body | test("\\AVerdict: (APPROVE|CHANGES NEEDED|INCOMPLETE) at " + env.HEAD_SHA + " run " + env.RUN_TAG + "\\r?(\\n|\\z)"))) | .id' \
+            | wc -l)
+          case "$posted" in ''|*[!0-9]*) posted=0 ;; esac
+          if [ "$posted" -lt 1 ]; then
+            echo "::error::the review finished without posting a verdict for $HEAD_SHA in run $RUN_TAG"
+            exit 1
+          fi
