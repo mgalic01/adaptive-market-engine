@@ -22,17 +22,43 @@ jobs:
           fetch-depth: 0
           # The action authenticates itself; leave no token in .git/config for PR code.
           persist-credentials: false
+      - name: Record the start time
+        id: start
+        run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # if you chose an API key instead: anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            REPO: ${{ github.repository }}  PR: #${{ github.event.pull_request.number }}
+            REPO: ${{ github.repository }}  PR: #${{ github.event.pull_request.number }}  HEAD: ${{ github.event.pull_request.head.sha }}
             Review this PR's diff. The project is a paper-only, fail-closed spot grid bot (see README.md, ROADMAP.md, SECURITY.md).
             Check: correctness, Decimal/precision and fee math, risk guards and fail-closed behaviour, no live-trading or API-key leakage,
             test coverage for new logic, and consistency with the agreed operating rules in README.md.
-            Run: pip install -e .[dev] && pytest -q && ruff check . && mypy
-            Post ONE PR comment via `gh pr comment`, written as instructions for the OpenAI Codex agent:
-            a verdict (APPROVE / CHANGES NEEDED), then a numbered list of concrete required fixes with file:line, then optional nits.
+            Reading the diff: `gh pr diff` fails on a PR over GitHub's 20,000-line diff limit. Then use `git log origin/main..HEAD`,
+            `git diff origin/main...HEAD --stat` and `git diff origin/main...HEAD -- <paths>`. On a large PR, review the commits
+            since the last `claude[bot]` review comment first (`gh pr view --comments`), and say what you covered.
+            Tests: CI's quality job runs the full suite, which takes longer than one command may run, so do not run the whole of `pytest`.
+            Run `pip install -e .[dev]`, then `ruff check .`, `mypy src scripts` and `pytest -q <the test files for the changed code>`.
+            Always finish by posting exactly ONE PR comment, even when the review is partial (then say what it did not cover):
+            write the body with the Write tool to /tmp/claude-review.md, then run
+            `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md`.
+            Do not use command substitution (`$(...)`), pipes or chained commands in Bash; they are refused.
+            Write the comment as instructions for the OpenAI Codex agent: a verdict (APPROVE / CHANGES NEEDED) naming HEAD,
+            then a numbered list of concrete required fixes with file:line, then optional nits.
             If changes are needed, end the comment with: "@codex please address the required fixes above."
-          claude_args: '--allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*)"'
+          claude_args: '--allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
+      # A review that ends without its comment is a failure, never a silent success:
+      # the gate needs a posted verdict at the head, and a green check without one
+      # hid three silent runs on PR #269 (2026-10-13).
+      - name: Require the posted review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SINCE: ${{ steps.start.outputs.time }}
+        run: |
+          posted=$(gh api "repos/$REPO/issues/$PR/comments?since=$SINCE&per_page=100" --jq '[.[] | select(.user.login == "claude[bot]")] | length')
+          if [ "$posted" -lt 1 ]; then
+            echo "::error::the review finished without posting its PR comment"
+            exit 1
+          fi
