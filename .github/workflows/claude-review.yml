@@ -12,7 +12,8 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     # Bounded like every other job; a newer push to the same PR cancels the stale review.
-    timeout-minutes: 30
+    # Long enough for a complete reading of a large PR, the only kind that may approve.
+    timeout-minutes: 90
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -25,43 +26,80 @@ jobs:
       - name: Record the start time
         id: start
         run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      # The reviewer sees this bot's own earlier reviews and nothing else from the
+      # thread: on a public repository anyone can comment, and a comment is not an
+      # instruction. Only claude[bot] bodies reach the file.
+      - name: Collect this bot's earlier reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+            --jq '.[] | select(.user.login == "claude[bot]") | "--- review posted \(.created_at)\n\(.body)\n"' \
+            > /tmp/previous-reviews.md
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # if you chose an API key instead: anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            REPO: ${{ github.repository }}  PR: #${{ github.event.pull_request.number }}  HEAD: ${{ github.event.pull_request.head.sha }}
+            REPO: ${{ github.repository }}  PR: #${{ github.event.pull_request.number }}
+            HEAD_SHA (the PR head): ${{ github.event.pull_request.head.sha }}
+            BASE_SHA (the PR base): ${{ github.event.pull_request.base.sha }}
             Review this PR's diff. The project is a paper-only, fail-closed spot grid bot (see README.md, ROADMAP.md, SECURITY.md).
             Check: correctness, Decimal/precision and fee math, risk guards and fail-closed behaviour, no live-trading or API-key leakage,
             test coverage for new logic, and consistency with the agreed operating rules in README.md.
-            Reading the diff: `gh pr diff` fails on a PR over GitHub's 20,000-line diff limit. Then use `git log origin/main..HEAD`,
-            `git diff origin/main...HEAD --stat` and `git diff origin/main...HEAD -- <paths>`. On a large PR, review the commits
-            since the last `claude[bot]` review comment first (`gh pr view --comments`), and say what you covered.
+
+            Reading the diff: use the SHAs above, never a branch name or HEAD (the checkout is a merge commit):
+            `git log BASE_SHA..HEAD_SHA`, `git diff BASE_SHA...HEAD_SHA --stat`, `git diff BASE_SHA...HEAD_SHA -- <paths>`.
+            `gh pr diff` fails on a PR over GitHub's 20,000-line diff limit. This bot's earlier reviews of this PR, and only
+            those, are in /tmp/previous-reviews.md; nothing else from the PR thread is input to this review.
+
+            Scope and verdict. Your scope is either the whole diff BASE_SHA...HEAD_SHA, or, incrementally, the diff from an
+            earlier head to HEAD_SHA, when an earlier review in /tmp/previous-reviews.md gave that head the verdict APPROVE with
+            the scope "complete" or "incremental", and `git merge-base --is-ancestor <that head> HEAD_SHA` succeeds.
+            - APPROVE only when you read every changed line in your scope and found no required fix.
+            - INCOMPLETE when you could not read all of your scope (time, size or any other reason). INCOMPLETE is not an
+              approval; never answer APPROVE for a partial reading.
+            - CHANGES NEEDED when you found a required fix, whether or not you read everything.
             Tests: CI's quality job runs the full suite, which takes longer than one command may run, so do not run the whole of `pytest`.
             Run `pip install -e .[dev]`, then `ruff check .`, `mypy src scripts` and `pytest -q <the test files for the changed code>`.
-            Always finish by posting exactly ONE PR comment, even when the review is partial (then say what it did not cover):
-            write the body with the Write tool to /tmp/claude-review.md, then run
+
+            Always finish by posting exactly ONE PR comment, whatever the verdict:
+            write the body with the Write tool to /tmp/claude-review.md, then run exactly
             `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md`.
             Do not use command substitution (`$(...)`), pipes or chained commands in Bash; they are refused.
-            Write the comment as instructions for the OpenAI Codex agent: a verdict (APPROVE / CHANGES NEEDED) naming HEAD,
-            then a numbered list of concrete required fixes with file:line, then optional nits.
-            If changes are needed, end the comment with: "@codex please address the required fixes above."
-          claude_args: '--allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
-      # A review that ends without its comment is a failure, never a silent success:
-      # the gate needs a posted verdict at the head, and a green check without one
-      # hid three silent runs on PR #269 (2026-10-13).
-      - name: Require the posted review comment
+            The body's first line is exactly `Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full>`.
+            Its second line is `Scope: complete`, `Scope: incremental since <earlier head SHA in full>`, or, for INCOMPLETE,
+            `Scope: partial` followed by what you did and did not read.
+            Then, written as instructions for the OpenAI Codex agent, a numbered list of concrete required fixes with file:line,
+            then optional nits. If changes are needed, end the comment with: "@codex please address the required fixes above."
+          claude_args: '--allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Bash(gh pr diff:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git merge-base:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
+      # A review that ends without its verdict is a failure, never a silent success: the
+      # gate needs a verdict at this head, and a green check without one hid three silent
+      # runs on PR #269 (2026-10-13). The check accepts only a claude[bot] comment created
+      # during this run whose verdict line names this head; any verdict passes it (it
+      # proves a review was posted, not that it approves).
+      - name: Require the posted verdict for this head
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SINCE: ${{ steps.start.outputs.time }}
         run: |
-          # A failed API call stops the step here (the default shell runs with -e); an
-          # empty or non-numeric answer counts as no comment.
-          posted=$(gh api "repos/$REPO/issues/$PR/comments?since=$SINCE&per_page=100" --jq '[.[] | select(.user.login == "claude[bot]")] | length')
+          # A malformed start time would widen the search to older comments.
+          case "$SINCE" in
+            20[0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z) ;;
+            *) echo "::error::no valid start time recorded"; exit 1 ;;
+          esac
+          # A failed API call stops the step here (the default shell runs with -e and
+          # pipefail); an empty or non-numeric count counts as no verdict.
+          posted=$(gh api --paginate "repos/$REPO/issues/$PR/comments?since=$SINCE&per_page=100" \
+            --jq '.[] | select(.user.login == "claude[bot]" and .created_at >= env.SINCE and (.body | test("^Verdict: (APPROVE|CHANGES NEEDED|INCOMPLETE) at " + env.HEAD_SHA))) | .id' \
+            | wc -l)
           case "$posted" in ''|*[!0-9]*) posted=0 ;; esac
           if [ "$posted" -lt 1 ]; then
-            echo "::error::the review finished without posting its PR comment"
+            echo "::error::the review finished without posting a verdict for $HEAD_SHA"
             exit 1
           fi
