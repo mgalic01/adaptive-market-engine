@@ -15,7 +15,7 @@ from crypto_grid_bot.combined.baseline_records import (
 )
 from crypto_grid_bot.combined.experiment import RunIdentity, _report_valid, _safety_failures
 from crypto_grid_bot.combined.observation_policy import POLICY_ID
-from crypto_grid_bot.combined.outcomes import baseline_outcome, strategy_outcome
+from crypto_grid_bot.combined.outcomes import _wallet_exact, baseline_outcome, strategy_outcome
 from crypto_grid_bot.combined.replay_records import strategy_report
 from crypto_grid_bot.combined.report import Contribution, analyze
 from crypto_grid_bot.combined.strategy_replay import replay_strategy
@@ -173,6 +173,39 @@ def test_capital_exhaustion_with_a_wallet_mismatch_reports_both(mismatch):
         # Free cash went negative one mark before the exhaustion, while equity was positive.
         assert trace.observations[exhausted - 1].snapshot.account.equity > 0
         broken = with_accounts(trace, exhausted - 1, issues=("negative_free_cash",))
+    row, messages = safety_messages(broken, 2, "futures_trend")
+    assert row.wallet_quantity_exact is False
+    assert messages == [
+        "observed capital exhaustion",
+        "observed liquidation",
+        "observed wallet/quantity mismatch",
+    ]
+
+
+def test_negative_cash_first_seen_at_positive_equity_stays_a_mismatch_after_exhaustion():
+    """The first-appearance rule (``outcomes._wallet_exact``): free cash went negative at a
+    mark whose equity was still positive, cleared, and went negative again only once the
+    account was exhausted. The exhaustion explains the second appearance, never the first,
+    so the wallet mismatch is still reported; a rule that looked only at the last run of
+    negative cash would excuse it."""
+    from test_combined_replay_records import exhausted_trace
+
+    trace = exhausted_trace()
+    exhausted = next(i for i, o in enumerate(trace.observations) if o.snapshot.account.equity <= 0)
+    early = exhausted // 2
+    assert trace.observations[early].snapshot.account.equity > 0
+    rows = with_accounts(trace, early, issues=("negative_free_cash",)).observations
+    broken = replace(trace, observations=(*rows[: early + 1], *trace.observations[early + 1 :]))
+    flagged = [
+        i
+        for i, o in enumerate(broken.observations)
+        if "negative_free_cash" in o.snapshot.account.issues
+    ]
+    # At the early mark alone, then again only after the exhaustion (its loss realized).
+    assert flagged[0] == early and early + 1 not in flagged and flagged[1] > exhausted
+    assert broken.observations[-1].snapshot.account.equity <= 0
+    assert _wallet_exact(broken.observations) is False
+    assert _wallet_exact(trace.observations) is True  # the same run without the early mark
     row, messages = safety_messages(broken, 2, "futures_trend")
     assert row.wallet_quantity_exact is False
     assert messages == [

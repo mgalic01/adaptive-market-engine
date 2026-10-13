@@ -36,6 +36,7 @@ real-mode test on one of these worlds stands the world's own plan in for it
 and so do the smoke and the rehearsal, which keep their synthetic plans by mode.
 """
 
+import argparse
 import contextlib
 import hashlib
 import io
@@ -47,6 +48,7 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
+from datetime import date
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -1459,6 +1461,48 @@ def test_the_plan_gate_holds_every_real_mode_and_exempts_the_rehearsal(tmp_path)
     # The smoke calls no gate; no other mode passes one.
     with pytest.raises(ValueError, match="unknown mode 'smoke'"):
         v31_driver.plan_gate("smoke", owner)
+
+
+def test_the_plan_gate_leaves_the_owners_plan_unchanged(registered):
+    """plan_gate reads owner_plan.OWNER_PLAN and never changes it, whether it passes or
+    refuses, with a registration or without: after every call the plan is the owner's,
+    value for value (claude[bot]'s review of PR #269 at c1e5cc0)."""
+    w1 = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT"}
+    w1 |= {"LTCUSDT", "LINKUSDT", "TRXUSDT"}
+    w0 = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "LINKUSDT", "LTCUSDT", "TRXUSDT"}
+    end = 1_735_689_600_000  # 2025-01-01 00:00 UTC
+    expected = owner_plan.OwnerPlan(
+        (
+            owner_plan.PlanWindow("w1", 1_625_097_600_000, end, frozenset(w1)),
+            owner_plan.PlanWindow("w0", 1_583_020_800_000, end, frozenset(w0)),
+        ),
+        date(2024, 12, 31),
+    )
+    plan = owner_plan.OWNER_PLAN
+    assert plan == expected
+    owner = PrepareConfig(
+        tuple(
+            PrepareWindow(w.id, w.start_ms, w.end_ms, tuple(sorted(w.symbols)))
+            for w in expected.windows
+        ),
+        (FilePin("manifest.json", "0" * 64),),
+        FilePin("spot.json", "1" * 64),
+        FilePin("futures.json", "2" * 64),
+        "3" * 64,
+    )
+    files = argparse.Namespace(
+        registration=v31_driver.REGISTRATION, run_manifest=v31_driver.RUN_MANIFEST
+    )
+    reg, _ = v31_driver.load_registered(registered.repo, files)
+    smoke_config = registered.repo / v31_driver.PREPARE_CONFIG
+    for mode in v31_driver.REAL_MODES:
+        assert v31_driver.plan_gate(mode, owner) is None
+        with pytest.raises(ValueError, match="not the owner's plan"):
+            v31_driver.plan_gate(mode, smoke_config, reg)  # the smoke world's plan
+    assert v31_driver.plan_gate("rehearsal", smoke_config, reg) is None
+    assert owner_plan.OWNER_PLAN is plan and plan == expected  # the same object, unchanged
+    symbols = (owner_plan.W1_SYMBOLS, owner_plan.W0_SYMBOLS)
+    assert symbols == (frozenset(w1), frozenset(w0))
 
 
 def owner_windows(**changes: dict) -> list[dict]:
