@@ -17,6 +17,13 @@ jobs:
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
+    # Tool caches live outside the checkout, so the reviewer's lint and test runs leave
+    # nothing in it and a file planted in a cache directory there is never read.
+    env:
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+      MYPY_CACHE_DIR: /tmp/mypy-cache
+      RUFF_CACHE_DIR: /tmp/ruff-cache
+      PYTEST_ADDOPTS: -p no:cacheprovider
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,6 +33,16 @@ jobs:
       - name: Record the start time
         id: start
         run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      # Installed as CI's quality job installs it, before the snapshot, so whatever the
+      # install writes into the checkout is part of the snapshot, never an exemption.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install -e . --no-deps
       # Everything git can see, ignored files included, before the reviewer starts; the
       # void step compares against it, so a write hidden by an ignore rule still counts.
       - name: Snapshot the checkout
@@ -51,6 +68,9 @@ jobs:
           # Any PR context the action supplies itself carries this bot's comments only
           # (the default, empty, includes every actor's).
           include_comments_by_actor: "claude[bot]"
+          # The same cache locations as the job's env, set in Claude Code's own settings
+          # too, so every command it runs keeps its caches out of the checkout.
+          settings: '{"env": {"PYTHONPYCACHEPREFIX": "/tmp/pycache", "MYPY_CACHE_DIR": "/tmp/mypy-cache", "RUFF_CACHE_DIR": "/tmp/ruff-cache", "PYTEST_ADDOPTS": "-p no:cacheprovider"}}'
           prompt: |
             REPO: ${{ github.repository }}  PR: #${{ github.event.pull_request.number }}
             HEAD_SHA (the PR head): ${{ github.event.pull_request.head.sha }}
@@ -73,7 +93,8 @@ jobs:
               approval; never answer APPROVE for a partial reading.
             - CHANGES NEEDED when you found a required fix, whether or not you read everything.
             Tests: CI's quality job runs the full suite, which takes longer than one command may run, so do not run the whole of `pytest`.
-            Run `pip install -e .[dev]`, then `ruff check .`, `mypy src scripts` and `pytest -q <the test files for the changed code>`.
+            The project is installed already, as CI installs it; do not install anything.
+            Run `ruff check .`, `mypy src scripts` and `pytest -q <the test files for the changed code>`.
 
             Never modify, create or delete a file in the checkout: review the PR as pushed. The Write tool is only for
             /tmp/claude-review.md, and `ruff` runs without --fix. A later step voids the verdict if the checkout changed.
@@ -86,20 +107,21 @@ jobs:
             did and did not read. CHANGES NEEDED may be partial; APPROVE never is.
             Then, written as instructions for the OpenAI Codex agent, a numbered list of concrete required fixes with file:line,
             then optional nits. If changes are needed, end the comment with: "@codex please address the required fixes above."
-          claude_args: '--allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Bash(gh pr diff:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
+          claude_args: '--allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Bash(gh pr diff:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
       # Tests the reviewer ran against files it changed say nothing about the PR as pushed:
       # any change anywhere in the checkout since the snapshot voids the verdict, visibly,
-      # ignored files included. Only install and cache output is allowed (Python bytecode,
-      # the pytest, mypy and ruff caches, *.egg-info and build/).
+      # ignored files included, with no exemption (the install ran before the snapshot and
+      # the caches live in /tmp).
       # The action itself restores some paths from origin/<base> before the reviewer
       # starts (its SENSITIVE_PATHS and restoreConfigFromBase in
-      # src/github/operations/restore-config.ts), so those are checked against that
-      # base instead of the snapshot: any difference from it, or any extra file under
-      # them, is a reviewer write. The action's own .claude-pr/ snapshot is left out.
-      # It runs after a failed review step too: a verdict posted before the action failed
-      # must still be voided.
+      # src/github/operations/restore-config.ts), so those are compared, file by file on
+      # disk, with that base instead of the snapshot: a missing, extra or different file
+      # is a reviewer write. The action's own .claude-pr/ snapshot is left out.
+      # It runs whatever happened before it, cancellation included: a re-run of the same
+      # head can cancel this run after its verdict was posted, and that verdict must still
+      # be voided.
       - name: Void a verdict from a modified checkout
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
@@ -111,17 +133,42 @@ jobs:
             echo "::error::no snapshot of the checkout was taken; the verdict cannot be trusted"
             exit 1
           fi
+          base="origin/$BASE_REF"
+          if ! git rev-parse --verify --quiet "$base^{commit}" > /dev/null; then
+            echo "::error::$base is unknown; the restored paths cannot be checked"
+            exit 1
+          fi
           restored=(.claude .mcp.json .claude.json .gitmodules .ripgreprc CLAUDE.md CLAUDE.local.md .husky)
           after=$(git status --porcelain --ignored=traditional --untracked-files=all -- . \
             "${restored[@]/#/:(exclude)}" ':(exclude).claude-pr')
           # grep finds nothing when nothing changed; that is the clean case, not an error.
-          changed=$(printf '%s\n' "$after" | grep -vxF -f /tmp/checkout-before.txt \
-            | grep -vE '[ /](__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache)/|\.py[cod]$|\.egg-info/|^!! build/' \
-            | grep -v '^$' || true)
-          # Each git call stands alone, so a failure (an unknown base, say) stops the step.
-          diverged=$(git diff --name-only "origin/$BASE_REF" -- "${restored[@]}")
-          extra=$(git ls-files --others -- "${restored[@]}")
-          changed=$(printf '%s\n%s\n%s\n' "$changed" "$diverged" "$extra" | grep -v '^$' || true)
+          changed=$(printf '%s\n' "$after" | grep -vxF -f /tmp/checkout-before.txt | grep -v '^$' || true)
+          # The restored paths on disk must be exactly the base's: same files, same blobs.
+          base_files=$(git ls-tree -r --name-only "$base" -- "${restored[@]}")
+          on_disk=""
+          for path in "${restored[@]}"; do
+            if [ -e "$path" ] || [ -L "$path" ]; then
+              on_disk+="$(find "$path" \( -type f -o -type l \) -print)"$'\n'
+            fi
+          done
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            if [ ! -e "$file" ] && [ ! -L "$file" ]; then changed+=$'\n'"missing $file"; fi
+          done <<< "$base_files"
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            if ! expected=$(git rev-parse --verify --quiet "$base:$file"); then
+              changed+=$'\n'"added $file"
+              continue
+            fi
+            if [ -L "$file" ]; then
+              actual=$(printf '%s' "$(readlink "$file")" | git hash-object --stdin)
+            else
+              actual=$(git hash-object "$file")
+            fi
+            [ "$expected" = "$actual" ] || changed+=$'\n'"changed $file"
+          done <<< "$on_disk"
+          changed=$(printf '%s\n' "$changed" | grep -v '^$' || true)
           if [ -n "$changed" ]; then
             echo "::error::the reviewer changed the checkout; its verdict for $HEAD_SHA is void"
             printf '%s\n' "$changed"

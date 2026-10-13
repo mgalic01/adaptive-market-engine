@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -22,7 +23,6 @@ ALLOWED = [
     "Bash(git log:*)",
     "Bash(git diff:*)",
     "Bash(git show:*)",
-    "Bash(pip install:*)",
     "Bash(pytest:*)",
     "Bash(ruff:*)",
     "Bash(mypy:*)",
@@ -67,7 +67,9 @@ def run_step(
     return subprocess.run(
         [bash(), "--noprofile", "--norc", "-e", "-c", stub + "\n" + script],
         cwd=cwd,
-        env={**os.environ, **env},
+        # Git Bash on Windows rewrites arguments such as "origin/main:.claude/x" as
+        # paths; the runner's Linux bash does not, so neither do the tests.
+        env={**os.environ, "MSYS_NO_PATHCONV": "1", "MSYS2_ARG_CONV_EXCL": "*", **env},
         capture_output=True,
         text=True,
         check=False,
@@ -113,6 +115,11 @@ def test_a_partial_reading_never_approves() -> None:
     assert "Never modify, create or delete a file in the checkout" in prompt
     assert "Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full>" in prompt
     assert "git diff BASE_SHA...HEAD_SHA" in prompt and "origin/main" not in prompt
+    # The workflow installs before the snapshot; the reviewer installs nothing.
+    assert "The project is installed already, as CI installs it; do not install anything." in (
+        prompt
+    )
+    assert "pip install" not in prompt
 
 
 def test_no_step_may_fail_without_failing_the_job() -> None:
@@ -123,21 +130,44 @@ def test_no_step_may_fail_without_failing_the_job() -> None:
 
 def test_no_run_script_interpolates_an_event_value() -> None:
     scripts = [s["run"] for s in steps() if "run" in s]
-    assert len(scripts) == 5
+    assert len(scripts) == 6
     assert all("${{" not in run for run in scripts)
 
 
-def test_the_checkout_is_snapshotted_before_and_checked_after_any_review_outcome() -> None:
+CACHES = {
+    "PYTHONPYCACHEPREFIX": "/tmp/pycache",
+    "MYPY_CACHE_DIR": "/tmp/mypy-cache",
+    "RUFF_CACHE_DIR": "/tmp/ruff-cache",
+    "PYTEST_ADDOPTS": "-p no:cacheprovider",
+}
+
+
+def test_tool_caches_live_outside_the_checkout() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    assert workflow["jobs"]["review"]["env"] == CACHES
+    settings = json.loads(step("anthropics/")["with"]["settings"])
+    assert settings == {"env": CACHES}
+
+
+def test_the_checkout_is_snapshotted_after_install_and_checked_after_any_outcome() -> None:
     names = [s.get("name") or s.get("uses") for s in steps()]
     review = next(i for i, n in enumerate(names) if str(n).startswith("anthropics/"))
+    install = names.index("Install the project")
     snapshot = names.index("Snapshot the checkout")
     void = names.index("Void a verdict from a modified checkout")
-    assert snapshot < review < void
+    assert names.index("actions/setup-python@v5") < install < snapshot < review < void
+    # Installed exactly as CI's quality job installs it.
+    assert step("Install the project")["run"].splitlines() == [
+        "python -m pip install --upgrade pip",
+        "python -m pip install -r requirements-dev.lock",
+        "python -m pip install -e . --no-deps",
+    ]
     assert step("Snapshot the checkout")["run"] == (
         "git status --porcelain --ignored=traditional --untracked-files=all > " + SNAPSHOT_FILE
     )
-    # A verdict posted before the action failed is still voided; only cancellation skips.
-    assert steps()[void]["if"] == "${{ !cancelled() }}"
+    # A verdict posted before the action failed, or before a same-head re-run cancelled
+    # this run, is still voided.
+    assert steps()[void]["if"] == "${{ always() }}"
 
 
 def test_a_review_without_a_verdict_for_this_head_fails_the_job() -> None:
@@ -222,11 +252,23 @@ def write(repo: Path, name: str, text: str = "changed\n") -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def checkout(tmp_path: Path, *, pr_touches_config: bool = False) -> tuple[Path, Path]:
-    """The PR's checkout, origin/main as the base, and the snapshot the workflow takes
-    before the review. With ``pr_touches_config`` the PR edits CLAUDE.md and adds
-    CLAUDE.local.md, and the action's restore from origin/main is replayed after the
-    snapshot, as it happens inside the action step."""
+def restore_from_base(repo: Path, *paths: str) -> None:
+    """Replay restoreConfigFromBase: delete, check out from origin/<base>, unstage."""
+    for path in paths:
+        if (repo / path).is_file():
+            (repo / path).unlink()
+    present = [p for p in paths if p in ("CLAUDE.md", ".claude/settings.json")]
+    git(repo, "checkout", "origin/main", "--", *present)
+    git(repo, "reset", "-q", "--", *paths)
+
+
+def checkout(tmp_path: Path, *, pr: str = "", installed: tuple[str, ...] = ()) -> tuple[Path, Path]:
+    """The PR's checkout, origin/main as the base, the install output written before
+    the snapshot, and the snapshot the workflow takes before the review.
+
+    ``pr`` = "edits" makes the PR edit CLAUDE.md and add CLAUDE.local.md; "deletes"
+    makes it delete CLAUDE.md. Either way the action's restore from origin/main is
+    replayed after the snapshot, as it happens inside the action step."""
     repo = tmp_path / "checkout"
     write(repo, "src/module.py", "x = 1\n")
     write(repo, ".gitignore", IGNORED)
@@ -236,19 +278,21 @@ def checkout(tmp_path: Path, *, pr_touches_config: bool = False) -> tuple[Path, 
     git(repo, *GIT_USER, "add", ".")
     git(repo, *GIT_USER, "commit", "-q", "-m", "base")
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
-    if pr_touches_config:
+    if pr == "edits":
         write(repo, "CLAUDE.md", "from the PR\n")
         write(repo, "CLAUDE.local.md", "from the PR\n")
-        git(repo, *GIT_USER, "add", ".")
+    elif pr == "deletes":
+        (repo / "CLAUDE.md").unlink()
+    if pr:
+        git(repo, *GIT_USER, "add", "-A")
         git(repo, *GIT_USER, "commit", "-q", "-m", "pr")
+    for name in installed:
+        write(repo, name)
     snapshot = tmp_path / "checkout-before.txt"
     taken = run_step("Snapshot the checkout", repo, "", {}, snapshot)
     assert taken.returncode == 0 and snapshot.is_file(), taken.stderr
-    if pr_touches_config:
-        # restoreConfigFromBase: delete, check out from origin/<base>, unstage.
-        (repo / "CLAUDE.local.md").unlink()
-        git(repo, "checkout", "origin/main", "--", "CLAUDE.md")
-        git(repo, "reset", "-q", "--", "CLAUDE.md", "CLAUDE.local.md")
+    if pr:
+        restore_from_base(repo, "CLAUDE.md", "CLAUDE.local.md")
         write(repo, ".claude-pr/CLAUDE.md", "from the PR\n")
     return repo, snapshot
 
@@ -260,26 +304,23 @@ def void_env(log: Path) -> dict[str, str]:
     return {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD, "BASE_REF": "main"}
 
 
+INSTALL_OUTPUT = ("src/pkg.egg-info/PKG-INFO", "build/lib/module.py")
+
+
 @pytest.mark.parametrize(
-    "touched",
+    ("installed", "touched"),
     [
-        [],
-        # Install and cache output: pip install -e, Python, pytest, mypy, ruff, build.
-        [
-            "src/pkg.egg-info/PKG-INFO",
-            "__pycache__/conftest.cpython-312.pyc",
-            "src/__pycache__/module.cpython-312.pyc",
-            ".pytest_cache/v/cache/nodeids",
-            ".mypy_cache/3.12/module.data.json",
-            ".ruff_cache/0.6.0/123",
-            "build/lib/module.py",
-        ],
+        ((), []),
+        # The install runs before the snapshot, so its output is part of it.
+        (INSTALL_OUTPUT, []),
         # The action's own snapshot of the PR's config.
-        [".claude-pr/CLAUDE.md"],
+        ((), [".claude-pr/CLAUDE.md"]),
     ],
 )
-def test_an_untouched_checkout_keeps_the_verdict(tmp_path: Path, touched: list[str]) -> None:
-    repo, snapshot = checkout(tmp_path)
+def test_an_untouched_checkout_keeps_the_verdict(
+    tmp_path: Path, installed: tuple[str, ...], touched: list[str]
+) -> None:
+    repo, snapshot = checkout(tmp_path, installed=installed)
     for name in touched:
         write(repo, name)
     log = tmp_path / "gh.log"
@@ -288,8 +329,11 @@ def test_an_untouched_checkout_keeps_the_verdict(tmp_path: Path, touched: list[s
     assert not log.exists()
 
 
-def test_the_actions_own_restore_from_the_base_keeps_the_verdict(tmp_path: Path) -> None:
-    repo, snapshot = checkout(tmp_path, pr_touches_config=True)
+@pytest.mark.parametrize("pr", ["edits", "deletes"])
+def test_the_actions_own_restore_from_the_base_keeps_the_verdict(tmp_path: Path, pr: str) -> None:
+    # "deletes": the PR removes CLAUDE.md, the action restores the base copy and unstages
+    # it, so the index still records the deletion; only the files on disk count.
+    repo, snapshot = checkout(tmp_path, pr=pr)
     log = tmp_path / "gh.log"
     result = run_step(VOID, repo, POSTER, void_env(log), snapshot)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -305,6 +349,13 @@ def test_the_actions_own_restore_from_the_base_keeps_the_verdict(tmp_path: Path)
         "docs/rules.md",
         ".github/x.yml",
         "data/planted.csv",  # ignored by .gitignore, still a write the tests could read
+        # Nothing is exempt: a cache or build file written after the snapshot counts too.
+        "build/generated.json",
+        "src/pkg.egg-info/PKG-INFO",
+        "src/__pycache__/module.cpython-312.pyc",
+        ".pytest_cache/v/cache/nodeids",
+        ".mypy_cache/3.12/module.data.json",
+        ".ruff_cache/0.6.0/123",
         # Paths the action restores: a reviewer write there differs from origin/main.
         "CLAUDE.md",
         ".claude/settings.local.json",
@@ -320,6 +371,23 @@ def test_a_changed_checkout_voids_the_verdict_visibly(tmp_path: Path, name: str)
     posted = log.read_text(encoding="utf-8")
     assert posted.startswith("pr comment 7 --body Automated review VOID at " + HEAD)
     assert name in posted
+
+
+def test_deleting_a_restored_file_voids_the_verdict(tmp_path: Path) -> None:
+    repo, snapshot = checkout(tmp_path)
+    (repo / ".claude" / "settings.json").unlink()
+    log = tmp_path / "gh.log"
+    result = run_step(VOID, repo, POSTER, void_env(log), snapshot)
+    assert result.returncode == 1
+    assert "missing .claude/settings.json" in log.read_text(encoding="utf-8")
+
+
+def test_an_unknown_base_fails_the_check(tmp_path: Path) -> None:
+    repo, snapshot = checkout(tmp_path)
+    env = {**void_env(tmp_path / "gh.log"), "BASE_REF": "no-such-branch"}
+    result = run_step(VOID, repo, POSTER, env, snapshot)
+    assert result.returncode == 1
+    assert "origin/no-such-branch is unknown" in result.stdout
 
 
 def test_without_a_snapshot_the_verdict_is_not_trusted(tmp_path: Path) -> None:
