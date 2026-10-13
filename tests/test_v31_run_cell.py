@@ -25,6 +25,7 @@ from test_v31_registration import (
     write_json,
 )
 
+from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.combined import dashboard
 from crypto_grid_bot.combined.artifacts import read_bundle
 from crypto_grid_bot.combined.assessment import daily_bars
@@ -423,6 +424,71 @@ def test_a_w0_cell_runs_from_the_reported_window(world, tmp_path):
     assert outcome.complete and outcome.capital_label == "research_10000_usdt"
     report = decode_report((directory / "report.json").read_text(encoding="ascii"))
     assert report.source_refs[0] == f"v31-pack:{world.pack_shas['w0']}"
+
+
+def exhausting_pack() -> WindowPack:
+    """W1 with ETHUSDT's spot and futures bars opening thirteen times higher from 30 hours
+    in: a true gap through the futures short its downtrend opens at the window's start."""
+    cut = W1_START + 30 * HOUR
+
+    def gapped(rows):
+        return tuple(
+            bar
+            if bar.open_ms < cut
+            else Kline(
+                bar.open_ms,
+                bar.open * 13,
+                bar.high * 13,
+                bar.low * 13,
+                bar.close * 13,
+                bar.volume,
+                bar.quote_volume,
+                bar.taker_buy_base,
+            )
+            for bar in rows
+        )
+
+    eth = coin("ETHUSDT", fx.downtrend, W1_START, W1_END)
+    spot = gapped(eth.spot_hourly)
+    eth = replace(
+        eth, spot_hourly=spot, futures_hourly=gapped(eth.futures_hourly), daily=daily_bars(spot)
+    )
+    coins = [coin("BTCUSDT", fx.uptrend, W1_START, W1_END), eth]
+    return build_window_pack("w1", W1_START, W1_END, coins, SOURCES)
+
+
+def test_a_cell_that_exhausts_its_capital_writes_its_outcome_not_a_failure(world, tmp_path):
+    cell_id = "w1.futures_trend.olhc.c1.research"
+    directory = run_v31_cell(
+        cell_of(world, cell_id),
+        exhausting_pack(),
+        world.reg,
+        tmp_path,
+        attempt_id=ATTEMPT,
+        repo_head=HEAD,
+    )
+    invocation = cell_id.replace(".", "-")
+    # The completion marker is written and there is no failure.json.
+    assert sorted(path.name for path in directory.iterdir()) == [
+        "attempt.json",
+        "outcome.json",
+        "report.json",
+        invocation,
+    ]
+    outcome = decode_outcome((directory / "outcome.json").read_text(encoding="ascii"))
+    report = decode_report((directory / "report.json").read_text(encoding="ascii"))
+    assert outcome.report_evidence.report == report
+    # The replay stopped at the exhausting boundary: a retained failed attempt whose
+    # observed exhaustion and liquidation acceptance fails on.
+    assert outcome.failed and not outcome.complete and outcome.liquidations == 1
+    assert outcome.final_equity == report.final_equity < 0
+    assert "replay_failure:boundary_safety_failure" in report.producer_issues
+    (terminal,) = [row for row in report.recovery if row.kind == "terminal"]
+    assert terminal.equity_start <= 0
+    saved = read_bundle(directory / invocation).records.recoveries
+    assert [(row.kind, row.equity_start) for row in saved] == [
+        (row.kind, row.equity_start) for row in report.recovery
+    ]
 
 
 def test_the_same_cell_gives_byte_identical_artifacts(world, ran, tmp_path):

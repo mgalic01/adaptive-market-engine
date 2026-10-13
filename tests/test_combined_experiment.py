@@ -29,7 +29,8 @@ from crypto_grid_bot.combined.experiment import (
     evaluate,
 )
 from crypto_grid_bot.combined.observation_policy import POLICY_ID, Boundary, PolicyEvidence
-from crypto_grid_bot.combined.outcomes import baseline_outcome
+from crypto_grid_bot.combined.outcomes import baseline_outcome, strategy_outcome
+from crypto_grid_bot.combined.replay_records import strategy_report
 from crypto_grid_bot.combined.report import (
     CapitalObservation,
     Contribution,
@@ -806,6 +807,39 @@ def test_component_recovery_cannot_hide_capital_exhaustion(equity):
         row, max_drawdown=report.max_drawdown, report_evidence=replace(evidence, report=report)
     )
     assert evaluate(reg, tuple(rows)).status != "pass"
+
+
+def test_a_replayed_capital_exhaustion_fails_acceptance_beside_complete_cells():
+    from test_combined_replay_records import exhausted_trace
+
+    # The replay's own two-day window; every other cell is complete and passing.
+    window = Window("window", fx.START, fx.START + 2 * DAY, PIN)
+    reg = replace(registration(), windows=(window,))
+    rows = list(outcomes(reg))
+    assert evaluate(reg, tuple(rows)).status == "pass"
+    cell = ("futures_trend", "window", "research", 1, "open_low_high_close")
+    index = next(
+        i
+        for i, row in enumerate(rows)
+        if (
+            row.identity.arm,
+            row.identity.window,
+            row.identity.capital,
+            row.identity.cost_multiple,
+            row.identity.scenario,
+        )
+        == cell
+    )
+    research = next(capital for capital in reg.capitals if capital.id == "research")
+    trace = exhausted_trace()
+    report = strategy_report(trace, adapter_pin=PIN, capital_label=capital_label(research))
+    row = rows[index]
+    rows[index] = strategy_outcome(trace, report, row.identity, attempt_id=row.attempt_id)
+    result = evaluate(reg, tuple(rows))
+    # Exhaustion fails acceptance outright; it is never a merely incomplete cell.
+    assert result.status == "fail"
+    assert f"{cell}: observed capital exhaustion" in result.failures
+    assert f"{cell}: observed liquidation" in result.failures
 
 
 @pytest.mark.parametrize("start,end", [(1, 2 * DAY + 1), (0, DAY), (0, 2 * DAY + 1)])

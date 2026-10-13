@@ -187,6 +187,64 @@ def test_a_terminal_failure_ends_what_it_interrupts_and_stays_recorded():
     ]
 
 
+def test_capital_exhaustion_is_a_terminal_record_opened_at_the_exhausted_mark():
+    trace = trace_of(step(0, 100), step(1, 40, flat=False), step(2, -5, flat=False), step(3, -5))
+    assert trace.observations[2].snapshot.recovery.reason == "capital_exhausted"
+    rows = recovery_episodes(trace)
+    assert [(r.kind, r.start_observation_id, r.end_observation_id, r.end_reason) for r in rows] == [
+        ("liquidation", "obs-1", "obs-2", "terminal"),
+        ("terminal", "obs-2", "obs-3", "window_end"),
+    ]
+    assert rows[1].equity_start == D(-5)
+    points = tuple(
+        EquityPoint(o.timestamp_ms, o.snapshot.account.equity, o.id, REFS)
+        for o in trace.observations
+    )
+    report = analyze(D(100), points, (), (), rows, REFS)
+    assert not [issue for issue in report.issues if "recovery" in issue]
+    # The liquidation into exhaustion keeps its return; the terminal stretch has none.
+    assert [(c.marked_change, c.return_fraction) for c in report.recovery_changes] == [
+        (D(-45), D("-1.125")),
+        (D(0), None),
+    ]
+
+
+def exhausted_trace():
+    """A futures short whose mark gaps up thirteenfold at hour 30: equity below zero."""
+    from test_combined_strategy_replay import gapped_market
+
+    market = gapped_market("BTCUSDT", fx.downtrend, 2, 30, -12, futures=True)
+    return replay_strategy(fx.run("futures_trend", 2), (market,))
+
+
+def test_a_replay_that_exhausts_capital_reports_its_terminal_record():
+    trace = exhausted_trace()
+    # The replay itself stops at the exhausting boundary, as it always did.
+    assert trace.failure == "boundary_safety_failure"
+    exhausted = next(o for o in trace.observations if o.snapshot.account.equity <= 0)
+    assert exhausted.snapshot.recovery.state == RecoveryState.TERMINAL
+    assert any(o.snapshot.liquidation for o in trace.observations)
+    (terminal,) = recovery_episodes(trace)
+    assert (terminal.kind, terminal.start_observation_id, terminal.end_reason) == (
+        "terminal",
+        exhausted.id,
+        "window_end",
+    )
+    assert terminal.equity_start == exhausted.snapshot.account.equity < 0
+    # The report keeps the record instead of refusing its nonpositive opening.
+    report = strategy_report(trace, adapter_pin="0" * 64)
+    (change,) = report.recovery_changes
+    assert change.episode == terminal and change.return_fraction is None
+    assert Fraction(change.marked_change) == Fraction(terminal.equity_end) - Fraction(
+        terminal.equity_start
+    )
+    assert report.final_equity < 0 and not report.complete
+    assert {"replay_failure:boundary_safety_failure", "nonpositive_equity_observation"} <= set(
+        report.issues
+    )
+    assert not [issue for issue in report.issues if "recovery" in issue]
+
+
 def test_a_run_that_never_left_normal_has_no_recovery_records():
     assert recovery_episodes(trace_of(step(0, 100), step(1, 99), step(2, 100))) == ()
 

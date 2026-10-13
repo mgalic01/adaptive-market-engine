@@ -271,6 +271,43 @@ def test_recovery_missing_start_mark_is_not_interpolated() -> None:
     assert report.recovery_changes[0].marked_change is None
 
 
+@pytest.mark.parametrize("exhausted", [D(0), D(-5)])
+def test_only_a_terminal_record_may_open_at_or_below_zero_equity(exhausted) -> None:
+    # Capital exhaustion enters the terminal state at the exhausted mark itself.
+    points = tuple(
+        EquityPoint(stamp, equity, f"equity-{stamp}", (f"source#{stamp}",))
+        for stamp, equity in ((0, D(100)), (1, exhausted), (2, exhausted - 1))
+    )
+    terminal = RecoveryEpisode(
+        1,
+        2,
+        exhausted,
+        exhausted - 1,
+        "recovery:terminal:equity-1",
+        ("source",),
+        "equity-1",
+        "equity-2",
+        "terminal",
+        "window_end",
+    )
+    report = analyze(D(100), points, (), (), (terminal,), ("source",))
+    (change,) = report.recovery_changes
+    # Its marked change is kept; a return over a nonpositive opening does not exist.
+    assert change.marked_change == -1 and change.return_fraction is None
+    assert "recovery_endpoint" not in report.unknown_fields
+    assert not [issue for issue in report.issues if "recovery" in issue]
+    # The exhausted mark itself is what makes the report incomplete.
+    assert "nonpositive_equity_observation" in report.issues and not report.complete
+    # Still open at the window end: its change is unknown, never a crash.
+    ongoing = replace(terminal, end_ms=None, equity_end=None, end_observation_id=None)
+    (open_change,) = analyze(D(100), points, (), (), (ongoing,), ("source",)).recovery_changes
+    assert open_change.marked_change is None and open_change.return_fraction is None
+    # Every other stretch still needs a positive opening for its return.
+    for kind in ("liquidation", "cooldown", "episode"):
+        with pytest.raises(ValueError, match="positive recovery opening equity required"):
+            analyze(D(100), points, (), (), (replace(terminal, kind=kind),), ("source",))
+
+
 # Required performance metrics use explicitly supplied evidence, never event-count annualization.
 
 DAY = 86_400_000

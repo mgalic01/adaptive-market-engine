@@ -90,7 +90,9 @@ class RecoveryEpisode:
 
     ``kind`` says which: the forced ``liquidation`` after a stop, a ``cooldown``, an
     ``episode`` (one restart at the 25% allowance, to its 3% stop, normal restoration or
-    the window end) or the ``terminal`` state. ``end_reason`` says what ended it.
+    the window end) or the ``terminal`` state. ``end_reason`` says what ended it. Only a
+    ``terminal`` stretch may open at or below zero equity: capital exhaustion is one way
+    into that state, and the record keeps the exhausted mark as its opening.
     """
 
     start_ms: int
@@ -809,7 +811,11 @@ def analyze(
     PnL. Bad intervals are adjacent observed marks, NOT calendar returns; drawdown
     episodes are the three deepest falls from the lifetime peak. Recovery
     change is end minus start equity under the no-external-transfer account model,
-    NOT an incremental causal benefit. Ratios use Decimal precision60; money sums
+    NOT an incremental causal benefit; its return is that change over a positive opening.
+    Every recovery record must open above zero equity except a ``terminal`` one, which
+    capital exhaustion can open at or below zero: it keeps its marked change and has no
+    return, and its nonpositive mark is already the ``nonpositive_equity_observation``
+    issue. Ratios use Decimal precision60; money sums
     and the reconciliation residual remain exact. Optional unknown fields do not
     themselves make structurally valid evidence incomplete. Required performance metrics
     must be available for complete=True; structural_complete separately describes the
@@ -959,7 +965,7 @@ def analyze(
                 issues.append("overlapping_recovery_episodes")
         prior_episode = episode
         start = _number(episode.equity_start)
-        if start <= 0:
+        if start <= 0 and episode.kind != "terminal":
             raise ValueError("positive recovery opening equity required")
         if (episode.end_ms is None) != (episode.equity_end is None):
             raise ValueError("recovery endpoint must be jointly known or unknown")
@@ -985,7 +991,8 @@ def analyze(
             RecoveryChange(
                 episode,
                 _decimal(delta) if delta is not None else None,
-                _decimal(delta / start, ratio=True) if delta is not None else None,
+                # A terminal stretch opened by exhaustion has no positive base: no return.
+                _decimal(delta / start, ratio=True) if delta is not None and start > 0 else None,
             )
         )
     fees, funding, gross, turnover = (

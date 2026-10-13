@@ -76,6 +76,27 @@ def test_a_failed_strategy_run_is_retained_as_failed_and_incomplete(monkeypatch)
     assert not _report_valid(row)
 
 
+def test_a_replay_that_exhausts_capital_is_a_retained_safety_failure():
+    from test_combined_replay_records import exhausted_trace
+
+    trace = exhausted_trace()
+    report = strategy_report(trace, adapter_pin="0" * 64)
+    row = strategy_outcome(
+        trace,
+        report,
+        identity("futures_trend", "open_low_high_close", "0" * 64, end_days=2),
+        attempt_id="a-3",
+    )
+    # The replay stops at the exhausting boundary, so the attempt is retained as failed,
+    # with its report: never a crash that leaves no outcome to judge.
+    assert row.failed and not row.complete
+    assert row.report_evidence.report == report
+    assert row.final_equity == report.final_equity < 0 and row.liquidations == 1
+    failures = _safety_failures(row)
+    assert any(failure.endswith("observed capital exhaustion") for failure in failures)
+    assert any(failure.endswith("observed liquidation") for failure in failures)
+
+
 def with_residual(report, residual):
     """``report`` recomputed with its first contribution's gross P&L lowered by ``residual``,
     which leaves exactly that trade-to-equity residual."""
