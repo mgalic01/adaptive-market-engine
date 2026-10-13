@@ -155,17 +155,24 @@ def _condition(job: dict[str, Any]) -> str | None:
     return text
 
 
-def _truth(expression: str, mode: str, results: dict[str, str]) -> bool:
-    """A job's ``if`` for a dispatch ``mode`` and its needed jobs' ``results``. Only what the
-    workflow uses is understood: ``inputs.mode``, ``needs.<job>.result``, ``!cancelled()``,
-    string literals, ``==``, ``!=``, ``!``, ``&&``, ``||`` and parentheses; a job that is not
-    one of this job's needs is not in ``results`` (GitHub offers a job its needs alone)."""
+def _truth(
+    expression: str, mode: str, results: dict[str, str], outcomes: dict[str, str] | None = None
+) -> bool:
+    """A job's or step's ``if`` for a dispatch ``mode``, its needed jobs' ``results`` and the
+    ``outcomes`` of earlier steps. Only what the workflow uses is understood:
+    ``inputs.mode``, ``needs.<job>.result``, ``steps.<id>.outcome``, ``always()``,
+    ``!cancelled()``, string literals, ``==``, ``!=``, ``!``, ``&&``, ``||`` and parentheses; a
+    job that is not one of this job's needs is not in ``results`` (GitHub offers a job its
+    needs alone)."""
     python = re.sub(r"needs\.([A-Za-z0-9_-]+)\.result", r"RESULTS['\1']", expression)
+    python = re.sub(r"steps\.([A-Za-z0-9_-]+)\.outcome", r"OUTCOMES['\1']", python)
     python = python.replace("inputs.mode", "MODE").replace("!cancelled()", "True")
+    python = python.replace("always()", "True")
     python = python.replace("&&", " and ").replace("||", " or ")
     python = re.sub(r"!(?!=)", " not ", python)
     assert not re.search(r"[A-Za-z_]\(", python), f"an expression this test cannot read: {python}"
-    return bool(eval(python, {"__builtins__": {}}, {"MODE": mode, "RESULTS": results}))
+    names = {"MODE": mode, "RESULTS": results, "OUTCOMES": outcomes or {}}
+    return bool(eval(python, {"__builtins__": {}}, names))
 
 
 def jobs_that_run(mode: str, failing: Iterable[str] = ()) -> dict[str, str]:
@@ -196,6 +203,32 @@ def jobs_that_run(mode: str, failing: Iterable[str] = ()) -> dict[str, str]:
 
 def _ran(mode: str, failing: Iterable[str] = ()) -> set[str]:
     return {name for name, result in jobs_that_run(mode, failing).items() if result != "skipped"}
+
+
+def steps_that_run(job: str, failing: Iterable[int] = ()) -> list[str]:
+    """Each step of ``job``'s outcome (``success``, ``failure`` or ``skipped``) when the steps
+    at the indexes in ``failing`` fail as they run (the job being otherwise a registered
+    dispatch). A step without an ``if`` runs only while every earlier step succeeded; one
+    whose ``if`` calls ``always()`` or ``!cancelled()`` is decided by its expression alone."""
+    outcomes: dict[str, str] = {}
+    result: list[str] = []
+    failed = False
+    for index, step in enumerate(_steps(job)):
+        condition = step.get("if")
+        if condition is None:
+            runs = not failed
+        else:
+            text = str(condition).strip()
+            if text.startswith("${{") and text.endswith("}}"):
+                text = text[3:-2].strip()
+            status_aware = "always()" in text or "cancelled()" in text
+            runs = _truth(text, "registered", {}, outcomes) and (status_aware or not failed)
+        outcome = ("failure" if index in set(failing) else "success") if runs else "skipped"
+        failed = failed or outcome == "failure"
+        result.append(outcome)
+        if "id" in step:
+            outcomes[step["id"]] = outcome
+    return result
 
 
 # --- running a step for real ------------------------------------------------------------
@@ -290,10 +323,46 @@ def test_every_job_checks_out_the_full_history_without_credentials() -> None:
         assert [_action(s) for s in _steps(name)].count("actions/checkout@v4") == 1, name
 
 
+def _header() -> str:
+    """The comment block above ``on:``, as one line of text."""
+    head = _text().split("\non:\n", 1)[0]
+    lines = [line.lstrip("#").strip() for line in head.splitlines() if line.startswith("#")]
+    return re.sub(r"\s+", " ", " ".join(lines))
+
+
 def test_concurrency_never_cancels_a_running_run() -> None:
     workflow = _workflow()
-    assert workflow["concurrency"] == {"group": "v31-run", "cancel-in-progress": False}
+    # queue: max keeps every pending dispatch; without it GitHub keeps one pending run per
+    # group and cancels it when a newer one arrives.
+    assert workflow["concurrency"] == {
+        "group": "v31-run",
+        "cancel-in-progress": False,
+        "queue": "max",
+    }
     assert all("concurrency" not in job for job in workflow["jobs"].values())
+
+
+def test_a_queued_run_is_protected_by_queue_max_and_by_an_operating_rule() -> None:
+    header = _header()
+    assert "never dispatch v31-run while another v31-run is queued or running" in header.lower()
+    assert "workflow level" in header  # the key is not shown to be honoured there
+    # The comment on the concurrency block says what it does; it does not claim more.
+    comment = _text().split("\nconcurrency:\n", 1)[0].rsplit("\n\n", 1)[-1]
+    assert "queue: max" in comment and "pending" in comment
+    assert "never cancels" not in comment
+    assert "operating rule" in comment
+
+
+def test_the_header_records_every_attempt_and_does_not_invite_a_rerun() -> None:
+    header = _header()
+    assert "Every attempt is recorded" in header
+    assert "even when it fails or times out" in header
+    assert "new recorded attempt" in header
+    assert "refuses the duplicate" in header
+    assert "Do not re-run a registered run" in header
+    assert not re.search(r"can be re-run|re-run from the Actions page", header)
+    # The summaries are named for their attempt, so re-running aggregate alone is harmless.
+    assert "v31-summary-attempt-<n>" in header and "v31-smoke-summary-attempt-<n>" in header
 
 
 def test_no_secret_is_referenced() -> None:
@@ -360,7 +429,8 @@ def test_smoke_mode_runs_only_the_smoke_job_with_all_216_cells_and_no_registrati
     scripts = " ".join(_scripts("smoke"))
     assert "registration" not in scripts.lower()
     assert "REGISTRATION_SHA256" not in scripts
-    assert _upload("smoke", "v31-smoke-summary")["retention-days"] == 90
+    smoke_summary = "v31-smoke-summary-attempt-${{ github.run_attempt }}"
+    assert _upload("smoke", smoke_summary)["retention-days"] == 90
     assert not _downloads("smoke")
 
 
@@ -458,20 +528,26 @@ def test_artifact_names_carry_the_run_attempt_and_nest_the_cell_folder() -> None
         for _, call in _driver_calls(name):
             assert _option(call, "--attempt-id") == "X-attempt-X"
         assert any(f"--attempt-id {ATTEMPT_ID}" in s for s in _scripts(name)), name
-    # Every upload keeps its artifact for the maximum retention and fails when empty.
+    # Every upload keeps its artifact for the maximum retention. A run job's upload only warns
+    # about a missing directory (a job killed before it wrote anything); the others fail.
     for name in JOBS:
         for step in _uploads(name):
+            expected = "warn" if name in ("picks", *MATRIX_JOBS) else "error"
             assert step["with"]["retention-days"] == 90, (name, step["with"]["name"])
-            assert step["with"]["if-no-files-found"] == "error", (name, step["with"]["name"])
+            assert step["with"]["if-no-files-found"] == expected, (name, step["with"]["name"])
     names = {s["with"]["name"] for name in JOBS for s in _uploads(name)}
     assert names == {
         "v31-packs",
         "v31-legacy-data",
         f"v3-picks-{attempt}",
         f"cell-${{{{ matrix.cell }}}}-{attempt}",
-        "v31-summary",
-        "v31-smoke-summary",
+        f"v31-summary-{attempt}",
+        f"v31-smoke-summary-{attempt}",
     }
+    # The packs and the dataset keep fixed names, so a re-run of every job fails closed at the
+    # first upload; every other artifact is named for its attempt.
+    fixed = {n for n in names if "attempt" not in n}
+    assert fixed == {"v31-packs", "v31-legacy-data"}
 
 
 def test_downstream_jobs_read_the_prepared_artifacts_where_the_driver_looks() -> None:
@@ -501,7 +577,8 @@ def test_aggregate_downloads_each_artifact_into_its_own_folder() -> None:
         assert step["with"]["path"] == "v31/cells"
     ((_, call),) = _driver_calls("aggregate")
     assert _option(call, "--cells") == "v31/cells"  # cells/cell-<id>-attempt-<n>/<id>/
-    assert _upload("aggregate", "v31-summary")["path"] == _option(call, "--out")
+    summary = "v31-summary-attempt-${{ github.run_attempt }}"
+    assert _upload("aggregate", summary)["path"] == _option(call, "--out")
     assert "merge-multiple" not in json.dumps(_workflow())
 
 
@@ -573,11 +650,11 @@ def test_the_registration_check_step_fails_on_any_other_pin(
 
 
 def test_every_data_job_has_the_guard_after_its_data_step() -> None:
-    scripts = {}
+    scripts = set()
     for name in DATA_JOBS:
         steps = _steps(name)
-        (guard,) = _guard_steps(name)
-        scripts[name] = steps[guard]["run"]
+        guards = _guard_steps(name)
+        scripts |= {steps[guard]["run"] for guard in guards}
         data = [
             index
             for index, step in enumerate(steps)
@@ -585,19 +662,57 @@ def test_every_data_job_has_the_guard_after_its_data_step() -> None:
             or re.search(r"v31_driver\.py (prepare|smoke)\b", step.get("run", ""))
         ]
         assert data, f"{name} has no data step"
-        assert guard > max(data), f"{name}: the guard comes before its data step"
-        # Nothing leaves the job before the guard has passed.
-        uploads = [i for i, s in enumerate(steps) if _action(s).startswith("actions/upload")]
-        assert all(guard < index for index in uploads), name
-        # No step of the guard's own is conditional, so it can never be skipped.
-        assert "if" not in steps[guard], name
-    # Downstream jobs check what they downloaded before the driver reads it.
-    for name in ("picks", *MATRIX_JOBS, "aggregate"):
-        steps = _steps(name)
-        (guard,) = _guard_steps(name)
+        assert guards[0] > max(data), f"{name}: the guard comes before its data step"
+        # The first guard has no condition, so it can never be skipped.
+        assert "if" not in steps[guards[0]], name
         driver = [i for i, s in enumerate(steps) if "scripts/v31_driver.py" in s.get("run", "")]
-        assert guard < min(driver), name
-    assert len(set(scripts.values())) == 1, "the guard is one script, the same in every job"
+        if name in ("smoke", "prepare"):
+            assert len(guards) == 1, name  # the driver is the data step; one scan follows it
+        else:
+            # Downstream jobs check what they downloaded before the driver reads it, and
+            # check again what the driver wrote.
+            assert len(guards) == 2, name
+            assert guards[0] < min(driver) and max(driver) < guards[1], name
+    assert len(scripts) == 1, "the guard is one script, the same in every job and position"
+
+
+def test_a_guard_step_immediately_precedes_every_upload() -> None:
+    # What the driver wrote is scanned too: the step before an upload (or before the run of
+    # consecutive uploads it starts) is a guard.
+    for name in JOBS:
+        steps = _steps(name)
+        guards = set(_guard_steps(name))
+        for index, step in enumerate(steps):
+            if not _action(step).startswith("actions/upload-artifact@"):
+                continue
+            before = index - 1
+            while before >= 0 and _action(steps[before]).startswith("actions/upload-artifact@"):
+                before -= 1
+            assert before in guards, f"{name}: upload {step['with']['name']} follows no guard"
+
+
+@pytest.mark.parametrize("job", ["picks", "run-main", "run-v3"])
+def test_a_run_job_records_its_attempt_even_when_it_fails(job: str) -> None:
+    steps = _steps(job)
+    (upload,) = [i for i, s in enumerate(steps) if _action(s).startswith("actions/upload")]
+    driver = next(i for i, s in enumerate(steps) if "scripts/v31_driver.py" in s.get("run", ""))
+    first, last = _guard_steps(job)
+    assert last == upload - 1 and steps[last]["id"] == "guard_outputs"
+    # A failed or timed-out run still uploads its directory (and its claim); a missing
+    # directory only warns, so a job killed before it wrote anything shows in the log.
+    assert "always()" in steps[upload]["if"]
+    assert "always()" in steps[last]["if"]
+    assert steps[upload]["with"]["if-no-files-found"] == "warn"
+    assert steps_that_run(job)[upload] == "success"
+    assert steps_that_run(job, failing=[driver])[upload] == "success"
+    # The scan before the upload ran after the failure, and a scan that fails blocks the upload.
+    assert steps_that_run(job, failing=[driver])[last] == "success"
+    assert steps_that_run(job, failing=[last])[upload] == "skipped"
+    assert steps_that_run(job, failing=[first, last])[upload] == "skipped"
+    # The other jobs upload only what succeeded.
+    for other in ("smoke", "prepare", "aggregate"):
+        for step in _uploads(other):
+            assert "always()" not in str(step.get("if", "")), other
 
 
 @pytest.fixture
@@ -661,6 +776,38 @@ def test_the_guard_fails_on_any_file_named_for_2025_or_later(
     result = _guard(checkout, tmp_path)
     assert result.returncode == 1
     assert name in result.stdout
+
+
+@pytest.mark.parametrize("tool", ["git", "tr", "sed", "sort", "find", "comm", "grep"])
+def test_the_guard_fails_when_its_own_scan_fails(checkout: Path, tmp_path: Path, tool: str) -> None:
+    # A tool that fails with status 2 (grep's own error status, or any other tool's failure)
+    # is a broken scan, not a clean tree.
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir(exist_ok=True)
+    script = _steps("prepare")[_guard_steps("prepare")[0]]["run"]
+    result = _run_step(
+        script, checkout, {"RUNNER_TEMP": runner_temp.as_posix()}, f"{tool}() {{ return 2; }}\n"
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+
+
+def test_the_guard_tolerates_only_greps_no_match_status(checkout: Path, tmp_path: Path) -> None:
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir(exist_ok=True)
+    script = _steps("prepare")[_guard_steps("prepare")[0]]["run"]
+    env = {"RUNNER_TEMP": runner_temp.as_posix()}
+    assert _run_step(script, checkout, env, "grep() { return 1; }\n").returncode == 0
+    assert _run_step(script, checkout, env, "grep() { return 3; }\n").returncode == 1
+
+
+def test_the_guard_fails_outside_a_git_checkout(tmp_path: Path) -> None:
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    bare = tmp_path / "not-a-checkout"
+    bare.mkdir()
+    script = _steps("prepare")[_guard_steps("prepare")[0]]["run"]
+    result = _run_step(script, bare, {"RUNNER_TEMP": runner_temp.as_posix()})
+    assert result.returncode != 0
 
 
 def test_the_guard_also_fails_on_a_downloaded_artifact_folder_named_for_2025(

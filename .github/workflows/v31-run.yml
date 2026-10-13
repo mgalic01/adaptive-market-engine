@@ -2,6 +2,12 @@ name: v31-run
 
 # The V3.1 run driver (scripts/v31_driver.py) on GitHub's machines. It never trades, holds no
 # credentials, can only read the repository and commits nothing: its results are artifacts.
+#
+# OPERATING RULE: never dispatch v31-run while another v31-run is queued or running. The
+# concurrency group below asks GitHub to queue dispatches (queue: max) rather than keep one
+# pending run and cancel it when a newer one arrives, but nothing in this repository shows that
+# the key is honoured at workflow level, so the rule stands either way.
+#
 # A dispatch picks one of three modes:
 #
 # - smoke: one job runs the driver's offline, synthetic end-to-end run (all 216 cells) and
@@ -21,17 +27,27 @@ name: v31-run
 # - v31-legacy-data: the verified legacy dataset (binance/data/...) for the minute cells
 # - v3-picks-attempt-<n>: v3_picks/ (the picks job's directory)
 # - cell-<cell_id>-attempt-<n>: <cell_id>/ (one cell's directory)
-# - v31-summary: summary/ (the verdict); v31-smoke-summary: the smoke's summary
+# - v31-summary-attempt-<n>: summary/ (the verdict); v31-smoke-summary-attempt-<n>: the
+#   smoke's summary
 # Aggregation reads each cell and picks artifact in its own folder, named for the artifact
 # (cells/cell-<id>-attempt-<n>/<id>/): it accepts no other layout.
 #
-# A failed job can be re-run from the Actions page. It then uploads under the new attempt
-# number; nothing overwrites an earlier attempt's artifact. Re-running every job fails at
-# the first upload, because v31-packs already exists: the registered run happens once.
+# Every attempt is recorded. A run job (picks, run-main, run-v3) uploads its directory even
+# when it fails or times out (if: always()), so a failed attempt leaves its folder and its
+# claim; a job killed before it wrote anything only warns.
+#
+# A registered run is executed once. Re-running any job, whether every job or only the failed
+# ones, is a new recorded attempt (a new run_attempt number), and aggregate then finds two
+# folders for the same cell, or two picks folders, and refuses the duplicate: a re-run makes
+# that run's verdict a refusal, by design. Do not re-run a registered run. A re-run of every
+# job also fails closed at the v31-packs upload, whose name is fixed. Re-running aggregate
+# alone is harmless: its summary is named for its attempt, and the cell folders are unchanged.
 #
 # No archive for 2025-01 or later may exist anywhere on a runner. The driver refuses such a
 # month before it fetches; the "Refuse any file named for 2025 or later" step is a second,
-# independent check on every job that fetches or downloads data.
+# independent check. It runs after every step that fetches or downloads data, and again just
+# before every upload, so what the driver wrote is scanned too. It fails on any error of the
+# scan itself, not only on a match.
 on:
   workflow_dispatch:
     inputs:
@@ -58,10 +74,15 @@ on:
 permissions:
   contents: read
 
-# One v31-run at a time, and a second dispatch never cancels the run in progress.
+# One v31-run at a time. cancel-in-progress: false keeps the run in progress. Without a queue
+# GitHub keeps one pending run per group and cancels it when a newer one arrives, so a queued
+# registered run could be dropped; queue: max keeps every pending dispatch (the Bob workflows
+# use it at job level; no test or document here shows workflow-level support, hence the
+# operating rule in the header).
 concurrency:
   group: v31-run
   cancel-in-progress: false
+  queue: max
 
 # The dispatch's text inputs reach scripts through the environment, never spliced into them.
 env:
@@ -96,21 +117,6 @@ jobs:
           python scripts/v31_driver.py smoke --out v31/smoke > "$RUNNER_TEMP/smoke.json"
           cat "$RUNNER_TEMP/smoke.json"
 
-      - name: Refuse any file named for 2025 or later
-        run: |
-          # Archive names end -YYYY-MM. The repository's own files are tracked and are not
-          # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
-          # downloaded or made is not tracked, and is.
-          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          found="$(find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" \
-            | grep -E -- '-202[5-9]-|-20[3-9][0-9]-' || true)"
-          if [ -n "$found" ]; then
-            printf '%s\n' "$found"
-            echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
-            exit 1
-          fi
-
       - name: Stage the smoke summary
         run: |
           mkdir v31/smoke-summary
@@ -118,9 +124,31 @@ jobs:
           summary="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["summary"])' "$RUNNER_TEMP/smoke.json")"
           cp -r "$summary" v31/smoke-summary/summary
 
+      - name: Refuse any file named for 2025 or later
+        run: |
+          # Archive names end -YYYY-MM. The repository's own files are tracked and are not
+          # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
+          # downloaded or made is not tracked, and is.
+          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
+            echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
-          name: v31-smoke-summary
+          name: v31-smoke-summary-attempt-${{ github.run_attempt }}
           path: v31/smoke-summary
           if-no-files-found: error
           retention-days: 90
@@ -231,23 +259,30 @@ jobs:
             --prepare-sha256 "$prepare_sha256" \
             --work v31/work --out v31/out
 
+      - name: Print prepare.json
+        run: cat v31/out/prepare.json
+
       - name: Refuse any file named for 2025 or later
         run: |
           # Archive names end -YYYY-MM. The repository's own files are tracked and are not
           # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
           # downloaded or made is not tracked, and is.
           git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          found="$(find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" \
-            | grep -E -- '-202[5-9]-|-20[3-9][0-9]-' || true)"
-          if [ -n "$found" ]; then
-            printf '%s\n' "$found"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
             echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
             exit 1
           fi
-
-      - name: Print prepare.json
-        run: cat v31/out/prepare.json
 
       # v31/out holds packs/ and prepare.json: the artifact's root is that folder.
       - uses: actions/upload-artifact@v4
@@ -300,11 +335,18 @@ jobs:
           # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
           # downloaded or made is not tracked, and is.
           git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          found="$(find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" \
-            | grep -E -- '-202[5-9]-|-20[3-9][0-9]-' || true)"
-          if [ -n "$found" ]; then
-            printf '%s\n' "$found"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
             echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
             exit 1
           fi
@@ -324,12 +366,38 @@ jobs:
           printf '%s' "$receipt" | grep -Eq '^[0-9a-f]{64}$'
           echo "receipt_sha256=$receipt" >> "$GITHUB_OUTPUT"
 
-      # v31/picks-out holds v3_picks/: the artifact's root is that folder.
+      - name: Refuse any file named for 2025 or later
+        id: guard_outputs
+        if: ${{ always() }}
+        run: |
+          # Archive names end -YYYY-MM. The repository's own files are tracked and are not
+          # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
+          # downloaded or made is not tracked, and is.
+          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
+            echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
+            exit 1
+          fi
+
+      # v31/picks-out holds v3_picks/: the artifact's root is that folder. It is uploaded after
+      # a failure too, so the attempt is recorded; the scan above must not have failed.
       - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
         with:
           name: v3-picks-attempt-${{ github.run_attempt }}
           path: v31/picks-out
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 90
 
   run-main:
@@ -372,11 +440,18 @@ jobs:
           # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
           # downloaded or made is not tracked, and is.
           git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          found="$(find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" \
-            | grep -E -- '-202[5-9]-|-20[3-9][0-9]-' || true)"
-          if [ -n "$found" ]; then
-            printf '%s\n' "$found"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
             echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
             exit 1
           fi
@@ -393,13 +468,40 @@ jobs:
             --legacy-data v31/legacy-data \
             --out v31/cell-out
 
+      - name: Refuse any file named for 2025 or later
+        id: guard_outputs
+        if: ${{ always() }}
+        run: |
+          # Archive names end -YYYY-MM. The repository's own files are tracked and are not
+          # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
+          # downloaded or made is not tracked, and is.
+          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
+            echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
+            exit 1
+          fi
+
       # run-cell writes v31/cell-out/<cell_id>/: the artifact's root is v31/cell-out, so a
-      # download into its own folder reads cell-<id>-attempt-<n>/<id>/.
+      # download into its own folder reads cell-<id>-attempt-<n>/<id>/. It is uploaded after a
+      # failure or a timeout too, so the attempt and its claim are recorded; the scan above
+      # must not have failed.
       - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
         with:
           name: cell-${{ matrix.cell }}-attempt-${{ github.run_attempt }}
           path: v31/cell-out
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 90
 
   run-v3:
@@ -443,11 +545,18 @@ jobs:
           # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
           # downloaded or made is not tracked, and is.
           git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          found="$(find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" \
-            | grep -E -- '-202[5-9]-|-20[3-9][0-9]-' || true)"
-          if [ -n "$found" ]; then
-            printf '%s\n' "$found"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
             echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
             exit 1
           fi
@@ -483,13 +592,40 @@ jobs:
             --picks "$PICKS_DIR" \
             --out v31/cell-out
 
+      - name: Refuse any file named for 2025 or later
+        id: guard_outputs
+        if: ${{ always() }}
+        run: |
+          # Archive names end -YYYY-MM. The repository's own files are tracked and are not
+          # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
+          # downloaded or made is not tracked, and is.
+          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
+            echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
+            exit 1
+          fi
+
       # run-cell writes v31/cell-out/<cell_id>/: the artifact's root is v31/cell-out, so a
-      # download into its own folder reads cell-<id>-attempt-<n>/<id>/.
+      # download into its own folder reads cell-<id>-attempt-<n>/<id>/. It is uploaded after a
+      # failure or a timeout too, so the attempt and its claim are recorded; the scan above
+      # must not have failed.
       - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
         with:
           name: cell-${{ matrix.cell }}-attempt-${{ github.run_attempt }}
           path: v31/cell-out
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 90
 
   aggregate:
@@ -532,11 +668,18 @@ jobs:
           # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
           # downloaded or made is not tracked, and is.
           git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          found="$(find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" \
-            | grep -E -- '-202[5-9]-|-20[3-9][0-9]-' || true)"
-          if [ -n "$found" ]; then
-            printf '%s\n' "$found"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
             echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
             exit 1
           fi
@@ -548,9 +691,31 @@ jobs:
             --cells v31/cells \
             --out v31/summary-out
 
+      - name: Refuse any file named for 2025 or later
+        run: |
+          # Archive names end -YYYY-MM. The repository's own files are tracked and are not
+          # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
+          # downloaded or made is not tracked, and is.
+          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
+            echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
-          name: v31-summary
+          name: v31-summary-attempt-${{ github.run_attempt }}
           path: v31/summary-out
           if-no-files-found: error
           retention-days: 90
