@@ -28,7 +28,9 @@ jobs:
         run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       # The reviewer sees this bot's own earlier reviews and nothing else from the
       # thread: on a public repository anyone can comment, and a comment is not an
-      # instruction. Only claude[bot] bodies reach the file.
+      # instruction. Only claude[bot] bodies reach the file, plus this workflow's own
+      # VOID notices (posted as github-actions[bot]), so a voided verdict never seeds
+      # an incremental scope.
       - name: Collect this bot's earlier reviews
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,7 +38,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
-            --jq '.[] | select(.user.login == "claude[bot]") | "--- review posted \(.created_at)\n\(.body)\n"' \
+            --jq '.[] | select(.user.login == "claude[bot]" or (.user.login == "github-actions[bot]" and (.body | startswith("Automated review VOID at ")))) | "--- posted \(.created_at) by \(.user.login)\n\(.body)\n"' \
             > /tmp/previous-reviews.md
       - uses: anthropics/claude-code-action@v1
         with:
@@ -59,12 +61,13 @@ jobs:
             those, are in /tmp/previous-reviews.md; nothing else from the PR thread is input to this review.
 
             Scope and verdict. Your scope is either the whole diff BASE_SHA...HEAD_SHA, or, incrementally, the diff from an
-            earlier head to HEAD_SHA. Incremental is allowed only when the NEWEST review in /tmp/previous-reviews.md (the last
-            one in the file) gave that head the verdict APPROVE with the scope "complete" or "incremental", and
+            earlier head to HEAD_SHA. Incremental is allowed only when the NEWEST entry in /tmp/previous-reviews.md (the last
+            one in the file) is a review that gave that head the verdict APPROVE with the scope "complete" or "incremental",
+            that head differs from HEAD_SHA (a re-run at the same head reviews the whole diff), and
             `git merge-base --is-ancestor <that head> HEAD_SHA` succeeds, and `git log --merges <that head>..HEAD_SHA` lists
             no commit (a merge of the base can hide a conflict resolution from the net diff). If any later review answered
-            CHANGES NEEDED or INCOMPLETE, the newest review has no Scope line, or a merge commit follows that head, your scope
-            is the whole diff.
+            CHANGES NEEDED or INCOMPLETE, the newest entry is an "Automated review VOID" notice or has no Scope line, or a merge
+            commit follows that head, your scope is the whole diff.
             - APPROVE only when you read every changed line in your scope and found no required fix.
             - INCOMPLETE when you could not read all of your scope (time, size or any other reason). INCOMPLETE is not an
               approval; never answer APPROVE for a partial reading.
@@ -85,8 +88,11 @@ jobs:
             then optional nits. If changes are needed, end the comment with: "@codex please address the required fixes above."
           claude_args: '--allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Bash(gh pr diff:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git merge-base:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
       # Tests the reviewer ran against files it changed say nothing about the PR as pushed:
-      # any change to the code, tests or their configuration voids the verdict, visibly.
-      # git status honours .gitignore, so install and cache output does not count.
+      # any change anywhere in the checkout voids the verdict, visibly. git status honours
+      # .gitignore, so install and cache output does not count. The excluded paths are the
+      # ones the action itself restores from the base before the reviewer starts (its
+      # SENSITIVE_PATHS, src/github/operations/restore-config.ts); its own .claude-pr/
+      # snapshot is git-excluded by the action.
       - name: Void a verdict from a modified checkout
         env:
           GH_TOKEN: ${{ github.token }}
@@ -94,11 +100,15 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -o pipefail
-          changed=$(git status --porcelain --untracked-files=all -- src scripts tests conftest.py pyproject.toml setup.cfg pytest.ini tox.ini requirements-dev.lock requirements.txt)
+          changed=$(git status --porcelain --untracked-files=all -- . \
+            ':(exclude).claude' ':(exclude).mcp.json' ':(exclude).claude.json' ':(exclude).gitmodules' \
+            ':(exclude).ripgreprc' ':(exclude)CLAUDE.md' ':(exclude)CLAUDE.local.md' ':(exclude).husky' \
+            ':(exclude).claude-pr')
           if [ -n "$changed" ]; then
             echo "::error::the reviewer changed the checkout; its verdict for $HEAD_SHA is void"
             printf '%s\n' "$changed"
-            gh pr comment "$PR" --body "Automated review VOID at $HEAD_SHA: the reviewer changed files in its checkout before its verdict, so that verdict does not count. Changed: $(printf '%s' "$changed" | tr '\n' ' ')"
+            # Newlines and @ become spaces: one line, and no file name can ping anyone.
+            gh pr comment "$PR" --body "Automated review VOID at $HEAD_SHA: the reviewer changed files in its checkout before its verdict, so that verdict does not count. Changed: $(printf '%s' "$changed" | tr '\n@' '  ')"
             exit 1
           fi
       # A review that ends without its verdict is a failure, never a silent success: the

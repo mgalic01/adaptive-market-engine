@@ -76,7 +76,11 @@ def test_the_allowed_tools_are_exactly_the_reviewed_list() -> None:
 
 def test_only_this_bots_earlier_reviews_reach_the_reviewer() -> None:
     collect = step("Collect this bot's earlier reviews")
-    assert 'select(.user.login == "claude[bot]")' in collect["run"]
+    # claude[bot] reviews, plus this workflow's own VOID notices; no other author.
+    assert (
+        'select(.user.login == "claude[bot]" or (.user.login == "github-actions[bot]" and '
+        '(.body | startswith("Automated review VOID at "))))'
+    ) in collect["run"]
     assert "> /tmp/previous-reviews.md" in collect["run"]
     assert "${{" not in collect["run"]
     action = step("anthropics/")["with"]
@@ -92,11 +96,14 @@ def test_a_partial_reading_never_approves() -> None:
     assert "never answer APPROVE for a partial reading" in prompt
     assert "APPROVE only when you read every changed line in your scope" in prompt
     # Only the newest verdict can seed an incremental scope; a later finding supersedes it.
-    assert "Incremental is allowed only when the NEWEST review" in prompt
+    assert "Incremental is allowed only when the NEWEST entry" in prompt
+    # A re-run at the same head never reviews an empty delta; a VOID notice is no seed.
+    assert "that head differs from HEAD_SHA" in prompt
+    assert 'the newest entry is an "Automated review VOID" notice' in prompt
     assert "If any later review answered\nCHANGES NEEDED or INCOMPLETE" in prompt
     # A merge of the base can hide a conflict resolution from the net diff.
     assert "`git log --merges <that head>..HEAD_SHA` lists\nno commit" in prompt
-    assert "or a merge commit follows that head, your scope\nis the whole diff" in prompt
+    assert "or a merge\ncommit follows that head, your scope is the whole diff" in prompt
     assert "Never modify, create or delete a file in the checkout" in prompt
     assert "Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full>" in prompt
     assert "git diff BASE_SHA...HEAD_SHA" in prompt and "origin/main" not in prompt
@@ -106,6 +113,12 @@ def test_no_step_may_fail_without_failing_the_job() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     assert "continue-on-error" not in workflow["jobs"]["review"]
     assert all("continue-on-error" not in s for s in steps())
+
+
+def test_no_run_script_interpolates_an_event_value() -> None:
+    scripts = [s["run"] for s in steps() if "run" in s]
+    assert len(scripts) == 4
+    assert all("${{" not in run for run in scripts)
 
 
 def test_a_review_without_a_verdict_for_this_head_fails_the_job() -> None:
@@ -191,10 +204,25 @@ def checkout(tmp_path: Path) -> Path:
 POSTER = 'gh() { printf "%s\n" "$*" >> "$GH_LOG"; }'
 
 
-def test_an_untouched_checkout_keeps_the_verdict(tmp_path: Path) -> None:
+def write(repo: Path, name: str, text: str = "changed\n") -> None:
+    path = repo / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "touched",
+    [
+        [],
+        ["src/pkg.egg-info/PKG-INFO"],  # pip install -e output, ignored
+        # What the action itself restores from the base, or snapshots, before the review.
+        ["CLAUDE.md", ".claude/settings.json", ".mcp.json", ".claude-pr/CLAUDE.md"],
+    ],
+)
+def test_an_untouched_checkout_keeps_the_verdict(tmp_path: Path, touched: list[str]) -> None:
     repo = checkout(tmp_path)
-    (repo / "src" / "pkg.egg-info").mkdir()  # pip install -e output, ignored
-    (repo / "src" / "pkg.egg-info" / "PKG-INFO").write_text("x\n", encoding="utf-8")
+    for name in touched:
+        write(repo, name)
     log = tmp_path / "gh.log"
     env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
     result = run_step(VOID, repo, POSTER, env)
@@ -202,16 +230,29 @@ def test_an_untouched_checkout_keeps_the_verdict(tmp_path: Path) -> None:
     assert not log.exists()
 
 
-@pytest.mark.parametrize("change", ["edit", "new_conftest"])
-def test_a_changed_checkout_voids_the_verdict_visibly(tmp_path: Path, change: str) -> None:
+@pytest.mark.parametrize(
+    "name",
+    ["src/module.py", "conftest.py", "config/default.toml", "docs/rules.md", ".github/x.yml"],
+)
+def test_a_changed_checkout_voids_the_verdict_visibly(tmp_path: Path, name: str) -> None:
     repo = checkout(tmp_path)
-    if change == "edit":
-        (repo / "src" / "module.py").write_text("x = 2\n", encoding="utf-8")
-    else:
-        (repo / "conftest.py").write_text("collect_ignore = ['tests']\n", encoding="utf-8")
+    write(repo, name)
     log = tmp_path / "gh.log"
     env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
     result = run_step(VOID, repo, POSTER, env)
     assert result.returncode == 1
     posted = log.read_text(encoding="utf-8")
     assert posted.startswith("pr comment 7 --body Automated review VOID at " + HEAD)
+    assert name in posted
+
+
+def test_a_void_notice_pings_nobody_and_a_failed_post_still_fails(tmp_path: Path) -> None:
+    repo = checkout(tmp_path)
+    write(repo, "notes/@someone.md")
+    log = tmp_path / "gh.log"
+    env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
+    result = run_step(VOID, repo, POSTER, env)
+    assert result.returncode == 1
+    assert "@" not in log.read_text(encoding="utf-8")
+    failing = "gh() { return 1; }"
+    assert run_step(VOID, repo, failing, env).returncode != 0
