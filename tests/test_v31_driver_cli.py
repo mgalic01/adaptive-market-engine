@@ -24,6 +24,13 @@ each a tiny git repository:
 V3's walk-forward, and in the smoke world the frozen mask job, run as the smoke's
 stand-ins (``v31_smoke.stand_ins``); the V3 input pack builder, whose V3 loader needs the
 full 2710-entry inventory, is replaced in the prepare tests by a recording builder.
+
+The owner's plan (``owner_plan.OWNER_PLAN``: W1 2021-07 to 2025 on ten coins, W0 from
+2020-03 on eight, the 2024-12-31 FX fixing) is far beyond what a test can synthesize, so a
+real-mode test on one of these worlds stands the world's own plan in for it
+(``smoke_plan``, ``prepare_plan``, ``stand_in_plan``). The plan refusals
+(``test_every_real_mode_refuses_any_plan_but_the_owners``) run under the owner's own plan,
+and so do the smoke and the rehearsal, which keep their synthetic plans by mode.
 """
 
 import contextlib
@@ -51,11 +58,12 @@ from crypto_grid_bot.backtest.jobs import manifest_path
 from crypto_grid_bot.backtest.klines import Kline, aggregate, month_bounds_ms
 from crypto_grid_bot.backtest.masking import tick_limit_quotes
 from crypto_grid_bot.combined import baseline_v3
-from crypto_grid_bot.combined.driver import run_baselines
+from crypto_grid_bot.combined.driver import owner_plan, run_baselines
 from crypto_grid_bot.combined.driver.aggregate import _CLAIMED_ATTEMPT
 from crypto_grid_bot.combined.driver.packs import read_pack
 from crypto_grid_bot.combined.driver.registration import (
     FilePin,
+    PrepareConfig,
     PrepareWindow,
     adapter_pins,
     load_prepare_config,
@@ -166,6 +174,27 @@ def quietly(argv, **options):
     return code, out.getvalue(), err.getvalue()
 
 
+def stand_in_plan(windows: dict, symbols) -> owner_plan.OwnerPlan:
+    """A synthetic world's own plan (its windows, each on ``symbols``, and the owner's FX
+    date), standing in for the owner's while a real mode runs on that world."""
+    return owner_plan.OwnerPlan(
+        tuple(
+            owner_plan.PlanWindow(wid, start, end, frozenset(symbols))
+            for wid, (start, end) in windows.items()
+        ),
+        owner_plan.OWNER_PLAN.fx_reference_date,
+    )
+
+
+SMOKE_PLAN = stand_in_plan(v31_smoke.WINDOWS, v31_smoke.SYMBOLS)
+
+
+@pytest.fixture
+def smoke_plan(monkeypatch):
+    """A real-mode test on the smoke world: its plan stands in for the owner's."""
+    monkeypatch.setattr(owner_plan, "OWNER_PLAN", SMOKE_PLAN)
+
+
 # --- the smoke mode ---------------------------------------------------------------------
 
 
@@ -212,6 +241,11 @@ def test_smoke_runs_end_to_end_offline(tmp_path, capsys):
     assert prepared["skipped_hours"]["w0"] == {"hours": [], "sources": {}}
     assert len(document["stand_ins"]) == 2  # disclosed
     assert (baseline_v3.run_walk_forward, run_baselines.mask_job) == original  # restored
+    # Under the owner's real plan (in force here), which the smoke's synthetic plan is not:
+    # the smoke passes no plan gate.
+    smoke_config = load_prepare_config(tmp_path / "s" / "repo" / "config/v3_1_prepare.json")
+    assert owner_plan.OWNER_PLAN.windows[0].start_ms == owner_plan.W1_START_MS
+    assert owner_plan.owner_plan_errors(smoke_config)
     # Nothing is replaced: a second smoke into the same directory is refused.
     code, _, err = run(["smoke", "--out", str(tmp_path / "s"), "--cells", "1"], capsys)
     assert code == 1 and "exists" in err
@@ -269,7 +303,7 @@ def changed_copy(world: Registered, tmp_path: Path) -> Path:
     return copy
 
 
-def test_run_cell_refuses_without_the_gate(registered, tmp_path, capsys):
+def test_run_cell_refuses_without_the_gate(registered, smoke_plan, tmp_path, capsys):
     out = tmp_path / "out"
 
     def attempt(cell=CELL, packs=registered.packs, **options):
@@ -297,7 +331,9 @@ def test_run_cell_refuses_without_the_gate(registered, tmp_path, capsys):
     assert not out.exists()  # nothing was written for any refused run
 
 
-def test_each_cell_kind_runs_through_the_execution_gate(registered, tmp_path, capsys, monkeypatch):
+def test_each_cell_kind_runs_through_the_execution_gate(
+    registered, smoke_plan, tmp_path, capsys, monkeypatch
+):
     calls = []
 
     def spy(reg, cell_id, **arguments):
@@ -423,7 +459,7 @@ def test_picks_and_aggregate_refuse_without_the_gate(registered, tmp_path, capsy
 
 
 def test_a_long_only_v3_cell_runs_without_picks_and_only_the_selector_needs_them(
-    registered, tmp_path, capsys
+    registered, smoke_plan, tmp_path, capsys
 ):
     """Only the selector reads the picks (Ruling C1). A fixed long-only V3 rule runs from
     run-main's very arguments (no --picks; the legacy dataset, which it ignores), before any
@@ -515,7 +551,7 @@ def test_each_job_records_a_unique_attempt_id_ending_in_its_attempt(registered, 
 
 
 def test_plan_gates_first_and_sends_only_the_selector_to_the_picks_matrix(
-    registered, tmp_path, capsys
+    registered, smoke_plan, tmp_path, capsys
 ):
     code, document, err = run(registered_args(registered, "plan"), capsys)
     assert code == 0, err
@@ -634,6 +670,11 @@ def test_the_rehearsal_runs_the_registered_job_graph_offline(
     monkeypatch.setattr(v31_driver, "fetch_entries", no_network)
     original = (baseline_v3.run_walk_forward, run_baselines.mask_job)
     run_id = "4242-attempt-1"
+    # Under the owner's real plan, which the world's synthetic plan is not: the rehearsal
+    # mode is exempt from the plan gate by name (v31_driver.plan_gate).
+    world_config = load_prepare_config(rehearsal.repo / "config/v3_1_prepare.json")
+    assert owner_plan.OWNER_PLAN.windows[0].start_ms == owner_plan.W1_START_MS
+    assert owner_plan.owner_plan_errors(world_config)
 
     # plan: the gate, then six cells (one W1 cell of each kind, the selector and a fixed
     # long-only V3 rule both, and one W0 cell); fewer cannot exercise every cell path.
@@ -785,6 +826,188 @@ def test_a_rehearsal_refuses_any_world_without_the_marker(registered, rehearsal,
     assert code == 1
 
 
+# --- the owner's plan: every real mode refuses any other (Codex P1 and P2, PR #269) -------
+
+
+def test_the_plan_gate_holds_every_real_mode_and_exempts_the_rehearsal(tmp_path):
+    synthetic = PrepareConfig(
+        (PrepareWindow("w1", 0, 2 * DAY, ("BTCUSDT",)),),
+        (FilePin("manifest.json", "0" * 64),),
+        FilePin("spot.json", "1" * 64),
+        FilePin("futures.json", "2" * 64),
+        "3" * 64,
+    )
+    owner = replace(
+        synthetic,
+        windows=tuple(
+            PrepareWindow(w.id, w.start_ms, w.end_ms, tuple(sorted(w.symbols)))
+            for w in owner_plan.OWNER_PLAN.windows
+        ),
+    )
+    assert v31_driver.REAL_MODES == ("registered", "prepare-only", "timing")
+    for mode in v31_driver.REAL_MODES:
+        with pytest.raises(ValueError, match=f"{mode} run refused, not the owner's plan"):
+            v31_driver.plan_gate(mode, synthetic)
+        assert v31_driver.plan_gate(mode, owner) is None
+    # A rehearsal keeps its synthetic plan, and reads nothing for the gate.
+    assert v31_driver.plan_gate("rehearsal", synthetic) is None
+    assert v31_driver.plan_gate("rehearsal", tmp_path / "no-such-config.json") is None
+    # The smoke calls no gate; no other mode passes one.
+    with pytest.raises(ValueError, match="unknown mode 'smoke'"):
+        v31_driver.plan_gate("smoke", owner)
+
+
+def owner_windows(**changes: dict) -> list[dict]:
+    """The owner's windows as a prepare config lists them, ``changes[<window id>]`` applied."""
+    return [
+        {
+            "id": window.id,
+            "start_ms": window.start_ms,
+            "end_ms": window.end_ms,
+            "symbols": sorted(window.symbols),
+            **changes.get(window.id, {}),
+        }
+        for window in owner_plan.OWNER_PLAN.windows
+    ]
+
+
+W1_COINS, W0_COINS = owner_plan.W1_SYMBOLS, owner_plan.W0_SYMBOLS
+# Each case: the prepare windows, the FX record's reference date and the refusal each real
+# mode gives (None: the owner's plan, which no mode refuses for its plan).
+PLAN_CASES = {
+    "the owner's plan": (owner_windows(), "2024-12-31", None),
+    "W1 without SOLUSDT": (
+        owner_windows(w1={"symbols": sorted(W1_COINS - {"SOLUSDT"})}),
+        "2024-12-31",
+        "window w1 must hold the owner's 10 coins (missing: SOLUSDT; outside the plan: none)",
+    ),
+    "an extra W1 coin": (
+        owner_windows(w1={"symbols": sorted(W1_COINS | {"AVAXUSDT"})}),
+        "2024-12-31",
+        "window w1 must hold the owner's 10 coins (missing: none; outside the plan: AVAXUSDT)",
+    ),
+    "a shifted W1 start": (
+        owner_windows(w1={"start_ms": owner_plan.W1_START_MS + DAY}),
+        "2024-12-31",
+        "window w1 is [2021-07-02 00:00 UTC, 2025-01-01 00:00 UTC), not the owner's "
+        "[2021-07-01 00:00 UTC, 2025-01-01 00:00 UTC)",
+    ),
+    "another W0 coin set": (
+        owner_windows(w0={"symbols": sorted(W0_COINS - {"TRXUSDT"} | {"DOGEUSDT"})}),
+        "2024-12-31",
+        "window w0 must hold the owner's 8 coins (missing: TRXUSDT; outside the plan: DOGEUSDT)",
+    ),
+    "an FX record of 2024-12-30": (
+        owner_windows(),
+        "2024-12-30",
+        "capital owner_small's FX record is the reference rate for 2024-12-30, not the "
+        "owner's 2024-12-31",
+    ),
+}
+REGISTERED_ONLY = {"an FX record of 2024-12-30"}  # a prepare config names no FX record
+
+
+@dataclass(frozen=True)
+class PlanWorld:
+    repo: Path
+    head: str
+    prepare_sha: str
+    registration: str
+    manifest: str
+    config_sha: str
+
+
+def plan_world(registered: Registered, root: Path, windows: list, fx_date: str) -> PlanWorld:
+    """A copy of the smoke world whose prepare config holds ``windows`` and whose FX record
+    is the ECB rate of ``fx_date`` (its rate unchanged), registered over them as Task 11
+    registers the real run, with pack pins naming no pack (each plan refusal comes before
+    any pack is read), and committed: the head is clean, and only registration artifacts
+    changed since the code pin."""
+    repo = root / "repo"
+    shutil.copytree(registered.repo, repo)
+    path = repo / "config/v3_1_prepare.json"
+    path.write_bytes(dumped({**json.loads(path.read_bytes()), "windows": windows}))
+    fx = {**v31_smoke.fx_record(), "reference_date": fx_date}
+    (repo / v31_smoke.FX_RECORD).write_bytes(dumped(fx))
+    prepare = load_prepare_config(path)
+    world = v31_smoke.World(root, repo, registered.head, registered.legacy, prepare)
+    ids = [window["id"] for window in windows]
+    document = {
+        "window_packs": {wid: sha(f"no pack {wid}".encode()) for wid in ids},
+        "v3_pack_sha256": sha(b"no V3 pack"),
+        "skipped_hours": {wid: {"hours": []} for wid in ids},
+    }
+    files = {"registration": v31_driver.REGISTRATION, "manifest": v31_driver.RUN_MANIFEST}
+    for name in files.values():  # the smoke world's own registration, replaced
+        (repo / name).unlink()
+    _, config_sha = v31_smoke.register(
+        world, document, code_pin=registered.head, adapter_pins=registered.pins, **files
+    )
+    head = v31_smoke.commit_all(repo, "a plan variant, registered")
+    return PlanWorld(
+        repo, head, prepare.sha256, files["registration"], files["manifest"], config_sha
+    )
+
+
+def plan_world_calls(world: PlanWorld, root: Path) -> dict[str, tuple[list, Path | None]]:
+    """Every real mode's call on ``world``, by name, with the output it must not create
+    when refused (None: timing, whose record starts before its gate, and plan)."""
+    gated = ["--repo", str(world.repo), "--registration", world.registration]
+    gated += ["--run-manifest", world.manifest, "--registration-sha256", world.config_sha]
+    only = ["--repo", str(world.repo), "--code-commit", world.head]
+    only += ["--prepare-sha256", world.prepare_sha]
+    jobs = ("--packs", str(root / "packs"), "--attempt-id", RUN)
+    (root / "cells").mkdir()
+    calls: dict[str, tuple[list, Path | None]] = {
+        "prepare-only": (
+            ["prepare", "--mode", "prepare-only", *only, "--work", str(root / "w1")],
+            root / "prepared-only",
+        ),
+        "registered prepare": (
+            ["prepare", "--mode", "registered", *gated, "--work", str(root / "w2")],
+            root / "prepared",
+        ),
+        "plan": (["plan", *gated], None),
+        "picks": (["picks", *gated, *jobs], root / "picked"),
+        "run-cell": (["run-cell", *gated, "--cell", CELL, *jobs], root / "ran"),
+        "aggregate": (
+            ["aggregate", *gated, "--cells", str(root / "cells"), "--attempt-id", RUN],
+            root / "aggregated",
+        ),
+    }
+    for part in v31_driver.TIMING_PARTS:
+        argv = ["timing", "--part", part, *only, "--scratch", str(root / f"scratch-{part}")]
+        calls[f"timing {part}"] = ([*argv, "--out", str(root / f"timing-{part}")], None)
+    for argv, out in calls.values():
+        if out is not None:
+            argv += ["--out", str(out)]
+    return calls
+
+
+@pytest.mark.parametrize("case", list(PLAN_CASES))
+def test_every_real_mode_refuses_any_plan_but_the_owners(registered, case, tmp_path, capsys):
+    """Prepare-only, timing (each part) and every registered job (prepare, plan, picks,
+    run-cell, aggregate) refuse a prepare config whose windows, dates or coin sets are not
+    the owner's, before anything is fetched, read or replayed; the registered jobs also
+    refuse an FX record of another day than 2024-12-31. The owner's plan passes the gate
+    in every mode (the steps after it then miss this world's data: plan alone completes)."""
+    windows, fx_date, refusal = PLAN_CASES[case]
+    world = plan_world(registered, tmp_path / "world", windows, fx_date)
+    hosts = {"inventory_transport": v31_smoke.Archives(), "legacy_transport": v31_smoke.Archives()}
+    for name, (argv, out) in plan_world_calls(world, tmp_path).items():
+        code, document, err = run(argv, capsys, **hosts)
+        registered_job = not name.startswith(("prepare-only", "timing"))
+        if refusal is not None and (registered_job or case not in REGISTERED_ONLY):
+            assert code == 1 and "run refused, not the owner's plan" in err, (name, err)
+            assert refusal in err, (name, err)
+            assert out is None or not out.exists(), name
+        else:
+            assert "not the owner's plan" not in err, (name, err)
+        if name == "plan" and refusal is None:
+            assert code == 0 and document["cells_planned"] == 216, err
+    assert all(host.requested == [] for host in hosts.values())  # nothing was fetched
+
+
 # --- rule 8: the boundary (opening) quote --------------------------------------------
 
 XRP_SPREAD = D("0.05") / 100  # the frozen spec's assumed spread, as quote_limits gives it
@@ -893,6 +1116,7 @@ JAN_1 = 1_609_459_200_000  # 2021-01-01 00:00 UTC
 MAY_1 = 1_588_291_200_000
 P_WINDOWS = {"w1": (DEC_1 + 2 * DAY, DEC_1 + 4 * DAY), "w0": (DEC_1 + 4 * DAY, DEC_1 + 6 * DAY)}
 P_SYMBOLS = ["ADAUSDT", "BTCUSDT"]
+PREPARE_PLAN = stand_in_plan(P_WINDOWS, P_SYMBOLS)
 MASKED = DEC_1 + 2 * DAY + 5 * HOUR  # BTC lacks a minute in this hour, so its mask holds it
 QUOTED = DEC_1 + 3 * DAY + 10 * HOUR  # XRP trades at 0.05 here: its quotes break rule 8
 INVENTORY = "config/datasets/v3-20261009/inventory.manifest.json"
@@ -1031,6 +1255,12 @@ class PrepareWorld:
     inventory_raw: bytes
     present: frozenset
     legacy_paths: frozenset
+
+
+@pytest.fixture
+def prepare_plan(monkeypatch):
+    """A real-mode test on the prepare world: its plan stands in for the owner's."""
+    monkeypatch.setattr(owner_plan, "OWNER_PLAN", PREPARE_PLAN)
 
 
 @pytest.fixture(scope="module")
@@ -1224,13 +1454,15 @@ def prepared(module_network_blocked, prepare_world, tmp_path_factory) -> Prepare
     flaky = Flaky(
         prepare_world.legacy, "/data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-12.zip"
     )
-    code, stdout, stderr = quietly(
-        prepare_args(prepare_world, work, out),
-        inventory_transport=prepare_world.inventory,
-        legacy_transport=flaky,
-        sleep=sleeps.append,
-        v3_pack_builder=builder,
-    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(owner_plan, "OWNER_PLAN", PREPARE_PLAN)  # the world's plan stands in
+        code, stdout, stderr = quietly(
+            prepare_args(prepare_world, work, out),
+            inventory_transport=prepare_world.inventory,
+            legacy_transport=flaky,
+            sleep=sleeps.append,
+            v3_pack_builder=builder,
+        )
     return Prepared(work, out, code, stdout, stderr, sleeps, builder, flaky)
 
 
@@ -1342,7 +1574,9 @@ def test_prepare_uses_the_given_transports_even_when_they_test_false(
     assert code == 1 and "prepare gate refused" in err
 
 
-def test_prepare_refuses_any_2025_month_before_any_fetch(prepare_world, tmp_path, capsys):
+def test_prepare_refuses_any_2025_month_before_any_fetch(
+    prepare_world, prepare_plan, tmp_path, capsys
+):
     repo = tmp_path / "repo"
     shutil.copytree(prepare_world.repo, repo)
     inventory = json.loads(prepare_world.inventory_raw)
@@ -1372,7 +1606,7 @@ def registered_world(prepare_world: PrepareWorld, tmp_path: Path) -> v31_smoke.W
 
 
 def test_registered_prepare_refuses_a_different_pack_hash(
-    prepare_world, prepared, tmp_path, capsys
+    prepare_world, prepared, prepare_plan, tmp_path, capsys
 ):
     assert prepared.code == 0, prepared.stderr
     document = json.loads(prepared.stdout)
@@ -1481,6 +1715,7 @@ def timed(module_network_blocked, prepare_world, tmp_path_factory) -> Timed:
     runs, requested = {}, {}
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(baseline_v3, "run_walk_forward", v31_smoke._walk_forward)
+        patch.setattr(owner_plan, "OWNER_PLAN", PREPARE_PLAN)  # the world's plan stands in
         for part in v31_driver.TIMING_PARTS:
             prepare_world.inventory.requested.clear()
             prepare_world.legacy.requested.clear()
@@ -1589,7 +1824,7 @@ def test_timing_prints_only_timing_fields(timed):
 
 
 def test_a_timing_strategy_failure_is_named_by_its_type_alone(
-    prepare_world, tmp_path, capsys, monkeypatch
+    prepare_world, prepare_plan, tmp_path, capsys, monkeypatch
 ):
     def failing(*args, **kwargs):
         raise RuntimeError("final equity 12345.67")

@@ -30,6 +30,12 @@ in-job (``rehearsal-world``), a git repository whose code pin commits
 timing refuse a checkout holding the marker (``world_gate``). A rehearsal fetches
 nothing: its every input is the world's.
 
+The owner's plan: the real modes (``registered``, ``prepare-only`` and ``timing``) refuse,
+before anything is fetched or replayed, any prepare config or registration other than the
+owner's windows, dates, coin sets and FX reference date (``plan_gate``,
+``owner_plan.owner_plan_errors``). The rehearsal and the smoke keep their synthetic plans:
+``plan_gate`` exempts the rehearsal mode by name, and the smoke calls no gate.
+
 ``plan --mode registered|rehearsal [--cells N]``
     ``job_gate`` and ``world_gate``, then the cells the workflow's two matrices run: the
     four ``unchanged_v3_selector`` cells, which need the picks job (``v3_cells``), and
@@ -143,6 +149,7 @@ from crypto_grid_bot.combined.driver.decode import (
     decode_minute_month,
     decode_month,
 )
+from crypto_grid_bot.combined.driver.owner_plan import owner_plan_errors
 from crypto_grid_bot.combined.driver.packs import (
     CoinInputs,
     WindowPack,
@@ -215,6 +222,7 @@ REHEARSAL_WORLD_SCHEMA = "v3.1-rehearsal-world-1"
 TIMING_SCHEMA = "v3.1-timing-1"
 TIMING_CLOSE_SCHEMA = "v3.1-timing-close-1"
 RUN_MODES = ("registered", "rehearsal")  # the registered job graph, on the repo or a world
+REAL_MODES = ("registered", "prepare-only", "timing")  # held to the owner's plan (plan_gate)
 MAX_MATRIX = 256  # GitHub's limit on the jobs of one matrix
 # smoke_cells' firsts: one W1 cell of each kind (the selector and a fixed long-only V3 rule
 # both) and one W0 cell, so a reduced rehearsal exercises every matrix's every cell path.
@@ -964,6 +972,35 @@ def stand_ins_for(mode: str) -> contextlib.AbstractContextManager[None]:
     return v31_smoke.stand_ins() if mode == "rehearsal" else contextlib.nullcontext()
 
 
+def plan_gate(
+    mode: str, prepare: PrepareConfig | Path, reg: DriverRegistration | None = None
+) -> None:
+    """A real run carries the owner's plan, or one ``ValueError`` names every difference.
+
+    In a real mode (``REAL_MODES``: registered, prepare-only, timing) the prepare config
+    (given, or read from the path given) must hold exactly the owner's windows, dates and
+    coin sets, and a registered run's registration, whose prepare pin must be that
+    config's, the owner's windows and FX reference date (``owner_plan.owner_plan_errors``).
+    Each caller runs it after its other gates and before anything is fetched or replayed.
+    ``rehearsal`` is exempt, and reads nothing here: its synthetic world's plan is the
+    point, and ``world_gate`` admits that mode only on a world committing the rehearsal
+    marker. The smoke never calls a gate. Any other mode is refused."""
+    if mode == "rehearsal":
+        return
+    if mode not in REAL_MODES:
+        raise ValueError(f"unknown mode {mode!r}")
+    config = load_prepare_config(prepare) if isinstance(prepare, Path) else prepare
+    errors = []
+    if reg is not None and config.sha256 != reg.prepare_pin:
+        errors.append(
+            f"the prepare config has SHA-256 {config.sha256}; the registration pins "
+            f"{reg.prepare_pin}"
+        )
+    errors.extend(owner_plan_errors(config, reg))
+    if errors:
+        raise ValueError(f"{mode} run refused, not the owner's plan:\n- " + "\n- ".join(errors))
+
+
 def load_registered(repo: Path, args: argparse.Namespace) -> tuple[DriverRegistration, str]:
     """The registration and the run-manifest file's own SHA-256."""
     manifest_file = repo / args.run_manifest
@@ -1094,6 +1131,7 @@ def prepare(
         )
         world_gate(repo, args.mode, reg.registration.code_pin)
         prepare_pins_gate(reg, config)
+    plan_gate(args.mode, config, reg)  # prepare-only and registered; a rehearsal is exempt
     if args.mode == "rehearsal" and reg is not None:
         # The world's synthetic legacy dataset lies beside its repository, as a fetch would
         # leave it; nothing is fetched, and the transports are never used.
@@ -1247,14 +1285,17 @@ def needs_picks(arm: str) -> bool:
 
 def registered_job(args: argparse.Namespace) -> tuple[Path, DriverRegistration, str, str]:
     """A registered job's gate, in either run mode: the registration and run-manifest
-    load, ``job_gate`` passes and the checkout is of the mode's kind (``world_gate``).
-    Returns the repository, the registration, the run-manifest's SHA-256 and the head."""
+    load, ``job_gate`` passes, the checkout is of the mode's kind (``world_gate``) and, in
+    a registered run, the repository's prepare config and the registration carry the
+    owner's plan (``plan_gate``). Returns the repository, the registration, the
+    run-manifest's SHA-256 and the head."""
     repo = Path(args.repo)
     reg, manifest_sha = load_registered(repo, args)
     head = job_gate(
         reg, repo, registration_sha256=args.registration_sha256, manifest_sha256=manifest_sha
     )
     world_gate(repo, args.mode, reg.registration.code_pin)
+    plan_gate(args.mode, repo / PREPARE_CONFIG, reg)
     return repo, reg, manifest_sha, head
 
 
@@ -1318,6 +1359,7 @@ def run_cell(args: argparse.Namespace) -> dict[str, object]:
     changed = changed_since(repo, reg.registration.code_pin)
     pins_now = adapter_pins(repo, head)
     world_gate(repo, args.mode, reg.registration.code_pin)
+    plan_gate(args.mode, repo / PREPARE_CONFIG, reg)  # before the pack is read or replayed
     pack_sha = dict(reg.run_manifest.window_packs)[cell.window]
     window_pack = read_pack(Path(args.packs) / window_pack_file(cell.window), pack_sha)
     execution_gate(
@@ -1757,6 +1799,7 @@ def timing(
                 repo, head, config, code_commit=args.code_commit, prepare_sha256=args.prepare_sha256
             )
             world_gate(repo, "timing", head)
+            plan_gate("timing", config)
             plan_ = plan_prepare(repo, head, config)
         work = scratch / "work"
         family = "inventory" if args.part == "picks" else "legacy"

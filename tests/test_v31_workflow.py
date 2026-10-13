@@ -8,7 +8,8 @@ Three kinds of test:
 - control flow: ``jobs_that_run`` follows each job's ``needs`` and ``if`` for a dispatch
   mode (and for a failing job), the way GitHub decides which jobs run;
 - steps run for real, in bash and offline: the registration check, the 2025 guard, the
-  picks check and the plan step (on a synthetic registration with all 216 cells).
+  picks check and the plan step (on a registration of the owner's plan with all 216
+  cells, its files synthetic).
 
 A driver call is also parsed with the driver's own argument parser, so a misspelled or
 missing flag fails here and not hours into a run.
@@ -24,7 +25,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -37,9 +38,11 @@ import v31_driver  # noqa: E402
 import v31_smoke  # noqa: E402
 from test_v31_registration import MODULES  # noqa: E402
 
+from crypto_grid_bot.combined.driver.owner_plan import OWNER_PLAN  # noqa: E402
 from crypto_grid_bot.combined.driver.registration import (  # noqa: E402
     V3_ARMS,
     adapter_pins,
+    load_prepare_config,
     load_registration,
 )
 
@@ -1436,15 +1439,31 @@ class RegisteredWorld:
 @pytest.fixture(scope="module")
 def registered_world(tmp_path_factory: pytest.TempPathFactory) -> RegisteredWorld:
     """What Task 11 commits, in miniature: a repository holding config/v3_1_registration.json
-    and its run-manifest, with all 42 arms and 216 cells (the smoke's synthetic world), its
-    adapter pins read from module stubs at its head."""
+    and its run-manifest, with all 42 arms and 216 cells, its adapter pins read from module
+    stubs at its head. Its prepare config holds the owner's plan (``OWNER_PLAN``: W1 on ten
+    coins, W0 on eight), which a registered run requires (``v31_driver.plan_gate``), on the
+    smoke world's files, with its end-2024 FX record. Its pack pins name no pack: the plan
+    step and an aggregate with nothing downloaded read none."""
     root = tmp_path_factory.mktemp("v31-workflow") / "world"
     root.mkdir()
     with v31_smoke.stand_ins():
         world = v31_smoke.build_world(root, extra_files=MODULES)
-        document = v31_driver.smoke_packs(world, root / v31_driver.PACKS_DIR)
-        pins = adapter_pins(world.repo, world.head)
-        _, sha = v31_smoke.register(world, document, code_pin=world.head, adapter_pins=pins)
+    path = world.repo / v31_driver.PREPARE_CONFIG
+    document = json.loads(path.read_bytes())
+    document["windows"] = [
+        {"id": w.id, "start_ms": w.start_ms, "end_ms": w.end_ms, "symbols": sorted(w.symbols)}
+        for w in OWNER_PLAN.windows
+    ]
+    path.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="ascii", newline="\n")
+    world = replace(world, prepare=load_prepare_config(path))
+    ids = [window.id for window in world.prepare.windows]
+    no_pack = {
+        "window_packs": {wid: hashlib.sha256(f"no pack {wid}".encode()).hexdigest() for wid in ids},
+        "v3_pack_sha256": hashlib.sha256(b"no V3 pack").hexdigest(),
+        "skipped_hours": {wid: {"hours": []} for wid in ids},
+    }
+    pins = adapter_pins(world.repo, world.head)
+    _, sha = v31_smoke.register(world, no_pack, code_pin=world.head, adapter_pins=pins)
     return RegisteredWorld(world.repo, sha)
 
 

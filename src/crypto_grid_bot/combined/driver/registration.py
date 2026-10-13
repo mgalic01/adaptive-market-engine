@@ -18,6 +18,9 @@ refused, money and FX values are decimal strings, and every object holds exactly
   (Ruling P10a), computed on load: the file never holds it.
 
 Reading those files and ``adapter_pins``' ``git ls-tree`` are the only I/O; no network.
+
+These rules hold for any registration, synthetic ones included. Which windows, coins and
+FX date a real run must carry is the owner's plan, checked by ``owner_plan``.
 """
 
 import hashlib
@@ -231,7 +234,9 @@ class DriverRegistration:
     W1 alone. ``reported_windows`` is W0. Every window's data pin is ``run_manifest_pin``;
     ``menu_arms`` are the committed menu's, unexpanded. ``fx_record_paths`` are the
     repository paths of the FX records the capitals name, sorted (the execution gate
-    accepts a change to them)."""
+    accepts a change to them). ``fx_reference_dates`` are, by capital id in registration
+    order, the ``reference_date`` of the FX record each FX capital names, as read and
+    verified on load (``owner_plan.owner_plan_errors`` checks them against the owner's)."""
 
     registration: Registration
     reported_windows: tuple[Window, ...]
@@ -241,6 +246,7 @@ class DriverRegistration:
     prepare_pin: str
     menu_arms: tuple[str, ...]
     fx_record_paths: tuple[str, ...] = ()
+    fx_reference_dates: tuple[tuple[str, date], ...] = ()
 
 
 def required_cells(reg: DriverRegistration) -> tuple[Cell, ...]:
@@ -347,11 +353,12 @@ def load_registration(
     root = Path(repo_root)
     arms = _strings(doc["arms"], "registration arms")
     capitals = _list(doc["capitals"], "capitals")
+    loaded = [_capital(item, root) for item in capitals]
     registration = Registration(
         arms=arms,
         baseline_arms=tuple(arm for arm in arms if arm not in COMPONENT_ARMS),
         windows=_windows(doc["windows"], manifest_pin, "windows"),
-        capitals=tuple(_capital(item, root) for item in capitals),
+        capitals=tuple(capital for capital, _ in loaded),
         cost_profiles=tuple(_cost_profile(item) for item in _list(doc["cost_profiles"], "costs")),
         code_pin=_str(doc["code_pin"], "registration code_pin"),
         config_pin=_sha256(data),
@@ -372,6 +379,9 @@ def load_registration(
         prepare_pin=_str(doc["prepare_sha256"], "registration prepare_sha256"),
         menu_arms=_menu_arms((root / MENU_PATH).read_bytes()),
         fx_record_paths=_fx_record_paths(capitals),
+        fx_reference_dates=tuple(
+            (capital.id, reference) for capital, reference in loaded if reference is not None
+        ),
     )
     check_registration(reg)
     return reg
@@ -581,8 +591,9 @@ def _windows(value: object, data_pin: str, what: str) -> tuple[Window, ...]:
     return tuple(windows)
 
 
-def _capital(value: object, root: Path) -> Capital:
-    """A capital; one with an ``fx_record`` gets that file's verified SHA-256 as fx_pin."""
+def _capital(value: object, root: Path) -> tuple[Capital, date | None]:
+    """A capital and, for one with an ``fx_record``, that record's reference date; such a
+    capital gets the file's verified SHA-256 as fx_pin."""
     with_fx = isinstance(value, dict) and bool({"fx_rate", "fx_record"} & value.keys())
     doc = _object(value, _FX_CAPITAL_KEYS if with_fx else _CAPITAL_KEYS, "capital")
     capital_id = _str(doc["id"], "capital id")
@@ -591,7 +602,7 @@ def _capital(value: object, root: Path) -> Capital:
     currency = _str(doc["currency"], f"{what} currency")
     amount = _decimal(doc["amount"], f"{what} amount")
     if not with_fx:
-        return Capital(capital_id, initial, currency, amount)
+        return Capital(capital_id, initial, currency, amount), None
     rate = _decimal(doc["fx_rate"], f"{what} fx_rate")
     pin = _file_pin(doc["fx_record"], f"{what} fx_record")
     data = (root / pin.path).read_bytes()
@@ -600,12 +611,12 @@ def _capital(value: object, root: Path) -> Capital:
         raise ValueError(
             f"{what}: FX record {pin.path} has SHA-256 {actual}; the registration pins {pin.sha256}"
         )
-    recorded = _fx_rate(data, pin.path)
+    recorded, reference = _fx_record(data, pin.path)
     if recorded != rate:
         raise ValueError(
             f"{what}: FX record rate {recorded} differs from the capital's fx_rate {rate}"
         )
-    return Capital(capital_id, initial, currency, amount, fx_rate=rate, fx_pin=actual)
+    return Capital(capital_id, initial, currency, amount, fx_rate=rate, fx_pin=actual), reference
 
 
 def _fx_record_paths(capitals: list[object]) -> tuple[str, ...]:
@@ -621,9 +632,11 @@ def _fx_record_paths(capitals: list[object]) -> tuple[str, ...]:
     )
 
 
-def _fx_rate(data: bytes, path: str) -> Decimal:
-    """The USD per EUR rate of a valid FX source record: an ECB reference rate dated
-    before 2025, retrieved on or after that date, from an https ECB URL."""
+def _fx_record(data: bytes, path: str) -> tuple[Decimal, date]:
+    """The USD per EUR rate and the reference date of a valid FX source record: an ECB
+    reference rate dated before 2025, retrieved on or after that date, from an https ECB
+    URL. Which date a real run's record must name is the owner's plan
+    (``owner_plan.owner_plan_errors``), not this record format's rule."""
     what = f"FX record {path}"
     doc = _object(_strict_json(data, what), _FX_RECORD_KEYS, what)
     _schema(doc, FX_RECORD_SCHEMA, what)
@@ -640,7 +653,7 @@ def _fx_rate(data: bytes, path: str) -> Decimal:
     host = url.hostname or ""
     if url.scheme != "https" or not (host == "ecb.europa.eu" or host.endswith(".ecb.europa.eu")):
         raise ValueError(f"{what}: an https ECB (ecb.europa.eu) source URL required")
-    return rate
+    return rate, reference
 
 
 def _cost_profile(value: object) -> tuple[int, str]:
