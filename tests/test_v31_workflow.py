@@ -23,7 +23,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -236,11 +236,20 @@ def _ran(mode: str, failing: Iterable[str] = ()) -> set[str]:
     return {name for name, result in jobs_that_run(mode, failing).items() if result != "skipped"}
 
 
-def steps_that_run(job: str, failing: Iterable[int] = (), mode: str = "registered") -> list[str]:
-    """Each step of ``job``'s outcome (``success``, ``failure`` or ``skipped``) when the steps
-    at the indexes in ``failing`` fail as they run (the job being otherwise a dispatch of
-    ``mode``). A step without an ``if`` runs only while every earlier step succeeded; one
-    whose ``if`` calls ``always()`` or ``!cancelled()`` is decided by its expression alone."""
+def steps_that_run(
+    job: str,
+    failing: Iterable[int] = (),
+    mode: str = "registered",
+    forced: Mapping[int, str] | None = None,
+) -> list[str]:
+    """Each step of ``job``'s outcome (``success``, ``failure``, ``cancelled`` or ``skipped``)
+    when the steps at the indexes in ``failing`` fail as they run (the job being otherwise a
+    dispatch of ``mode``). A step without an ``if`` runs only while every earlier step
+    succeeded; one whose ``if`` calls ``always()`` or ``!cancelled()`` is decided by its
+    expression alone. ``forced`` maps a step's index to the outcome it ends with whatever its
+    ``if`` says: ``cancelled`` (the run was cancelled while it ran, which fails the steps that
+    follow it too) or ``skipped``."""
+    forced = forced or {}
     outcomes: dict[str, str] = {}
     result: list[str] = []
     failed = False
@@ -254,8 +263,11 @@ def steps_that_run(job: str, failing: Iterable[int] = (), mode: str = "registere
                 text = text[3:-2].strip()
             status_aware = "always()" in text or "cancelled()" in text
             runs = _truth(text, mode, {}, outcomes) and (status_aware or not failed)
-        outcome = ("failure" if index in set(failing) else "success") if runs else "skipped"
-        failed = failed or outcome == "failure"
+        if index in forced:
+            outcome = forced[index]
+        else:
+            outcome = ("failure" if index in set(failing) else "success") if runs else "skipped"
+        failed = failed or outcome in ("failure", "cancelled")
         result.append(outcome)
         if "id" in step:
             outcomes[step["id"]] = outcome
@@ -394,6 +406,10 @@ def test_the_header_records_every_attempt_and_does_not_invite_a_rerun() -> None:
     assert "Every attempt is recorded" in header
     assert "even when it fails or times out" in header
     assert "new recorded attempt" in header
+    # An upload after a failure waits for a scan that succeeded; a scan that fails, is
+    # cancelled or is skipped uploads nothing.
+    assert "steps.guard_outputs.outcome == 'success'" in header
+    assert "fails, is cancelled or is skipped, nothing is uploaded" in header
     assert "refuses the duplicate" in header
     assert "Do not re-run a registered run" in header
     assert not re.search(r"can be re-run|re-run from the Actions page", header)
@@ -659,6 +675,34 @@ def test_aggregate_downloads_each_artifact_into_its_own_folder() -> None:
     assert "merge-multiple" not in json.dumps(_workflow())
 
 
+def test_aggregate_makes_its_cells_folder_before_it_downloads_into_it() -> None:
+    """download-artifact creates no destination when a pattern matches no artifact, and the
+    aggregation refuses a cells directory that is not there; the folder is made first."""
+    steps = _steps("aggregate")
+    (make,) = [i for i, s in enumerate(steps) if s.get("name") == "Create the cells folder"]
+    by_pattern = [
+        i
+        for i, s in enumerate(steps)
+        if _action(s).startswith("actions/download-artifact@") and "pattern" in s["with"]
+    ]
+    ((_, call),) = _driver_calls("aggregate")
+    folder = _option(call, "--cells")
+    # The exact path the downloads and the aggregate step use; no input reaches the script;
+    # no condition, so a rehearsal makes it too; the checkout (which cleans the workspace)
+    # comes first.
+    assert steps[make] == {"name": "Create the cells folder", "run": f"mkdir -p {folder}"}
+    assert len(by_pattern) == 2 and make < min(by_pattern)
+    assert {steps[i]["with"]["path"] for i in by_pattern} == {folder}
+    assert _action(steps[0]) == CHECKOUT and make > 0
+    for mode in ("registered", "rehearsal"):
+        assert steps_that_run("aggregate", mode=mode)[make] == "success"
+    # Only the cells folder is made: no job makes a picks folder that could pass for the
+    # picks job's (run-v3 requires exactly one verified picks artifact).
+    for job in JOBS:
+        for script in _scripts(job):
+            assert not re.search(r"mkdir.*picks", script), job
+
+
 def test_every_driver_call_parses_with_the_drivers_own_parser() -> None:
     parser = v31_driver.build_parser()
     # argparse accepts an unambiguous prefix (--registration-sha for --registration-sha256);
@@ -807,8 +851,8 @@ def test_a_run_job_records_its_attempt_even_when_it_fails(job: str) -> None:
     assert last == upload - 1 and steps[last]["id"] == "guard_outputs"
     # A failed or timed-out run still uploads its directory (and its claim); a missing
     # directory only warns, so a job killed before it wrote anything shows in the log.
-    assert "always()" in steps[upload]["if"]
-    assert "always()" in steps[last]["if"]
+    assert steps[upload]["if"] == UPLOAD_AFTER_SCAN
+    assert steps[last]["if"] == "${{ always() }}"
     assert steps[upload]["with"]["if-no-files-found"] == "warn"
     assert steps_that_run(job)[upload] == "success"
     assert steps_that_run(job, failing=[driver])[upload] == "success"
@@ -816,10 +860,54 @@ def test_a_run_job_records_its_attempt_even_when_it_fails(job: str) -> None:
     assert steps_that_run(job, failing=[driver])[last] == "success"
     assert steps_that_run(job, failing=[last])[upload] == "skipped"
     assert steps_that_run(job, failing=[first, last])[upload] == "skipped"
+    # So does a scan that was cancelled or skipped: it has not failed, and it has not passed
+    # either, so nothing unscanned is uploaded (with the driver having failed or not).
+    for scan in ("cancelled", "skipped"):
+        for failing in ((), (driver,)):
+            outcomes = steps_that_run(job, failing=failing, forced={last: scan})
+            assert (outcomes[last], outcomes[upload]) == (scan, "skipped"), (scan, failing)
     # The other jobs upload only what succeeded.
     for other in ("smoke", "prepare", "aggregate"):
         for step in _uploads(other):
             assert "always()" not in str(step.get("if", "")), other
+
+
+UPLOAD_AFTER_SCAN = "${{ always() && steps.guard_outputs.outcome == 'success' }}"
+
+
+def _scan_gated_uploads() -> list[tuple[str, int]]:
+    """Each (job, step index) of an upload that runs after a failure too (``always()``)."""
+    return [
+        (name, index)
+        for name in JOBS
+        for index, step in enumerate(_steps(name))
+        if _action(step).startswith("actions/upload-artifact@") and "always()" in step.get("if", "")
+    ]
+
+
+def test_an_upload_after_a_failure_runs_only_when_the_scan_before_it_succeeded() -> None:
+    """The scan has to have succeeded, not merely not failed: a scan that was cancelled or
+    skipped has not looked at what the upload would publish."""
+    gated = _scan_gated_uploads()
+    assert [name for name, _ in gated] == ["picks", "run-main", "run-v3", "timing"]
+    assert "!= 'failure'" not in _text()
+    for name, upload in gated:
+        steps = _steps(name)
+        assert steps[upload]["if"] == UPLOAD_AFTER_SCAN, name
+        # The scan is the step just before it, runs after a failed step (if: always()), and is
+        # the 2025 guard itself.
+        assert steps[upload - 1]["id"] == "guard_outputs", name
+        assert steps[upload - 1]["if"] == "${{ always() }}", name
+        assert upload - 1 in _guard_steps(name), name
+        condition = steps[upload]["if"][3:-2].strip()
+        for scan, runs in {
+            "success": True,
+            "failure": False,
+            "cancelled": False,
+            "skipped": False,
+        }.items():
+            ran = _truth(condition, "registered", {}, {"guard_outputs": scan})
+            assert ran is runs, (name, scan)
 
 
 @pytest.fixture
@@ -933,15 +1021,25 @@ def _picks_check() -> str:
     return _step("run-v3", "picks_dir")["run"]
 
 
-@pytest.mark.parametrize("case", ["good", "wrong-receipt", "two-attempts", "none"])
+@pytest.mark.parametrize("case", ["good", "wrong-receipt", "two-attempts", "none", "no-folder"])
 def test_run_v3_uses_exactly_the_picks_the_picks_job_published(tmp_path: Path, case: str) -> None:
+    """``no-folder``: the pattern download matched no artifact, so download-artifact left
+    ``v31/picks`` uncreated. The step then fails with its message, as for an empty folder;
+    nothing creates a picks folder that could pass for a verified one."""
     output = tmp_path / "github-output"
     output.write_text("", encoding="utf-8")
     picks = tmp_path / "v31/picks"
-    picks.mkdir(parents=True)
+    if case != "no-folder":
+        picks.mkdir(parents=True)
     outcome = b'{"job": "v3_picks"}\n'
     receipt = hashlib.sha256(outcome).hexdigest()
-    attempts = {"good": ["1"], "wrong-receipt": ["1"], "two-attempts": ["1", "2"], "none": []}
+    attempts = {
+        "good": ["1"],
+        "wrong-receipt": ["1"],
+        "two-attempts": ["1", "2"],
+        "none": [],
+        "no-folder": [],
+    }
     for attempt in attempts[case]:
         directory = picks / f"v3-picks-attempt-{attempt}/v3_picks"
         directory.mkdir(parents=True)
@@ -958,6 +1056,10 @@ def test_run_v3_uses_exactly_the_picks_the_picks_job_published(tmp_path: Path, c
     else:
         assert result.returncode == 1
         assert output.read_text(encoding="utf-8") == ""
+        assert "::error::" in result.stdout
+        if case in ("none", "no-folder"):
+            assert "expected one v3-picks-attempt-<n>/v3_picks directory" in result.stdout
+            assert not (tmp_path / "v31/picks/v3-picks-attempt-1").exists()
 
 
 def test_the_picks_receipt_is_a_job_output_of_the_picks_job() -> None:
@@ -1313,8 +1415,13 @@ def test_a_timing_part_killed_at_its_step_timeout_still_uploads_what_it_measured
     for failing in ([timed], [timed - 1]):  # the part itself, or a step before it
         outcomes = steps_that_run("timing", failing=failing, mode="timing")
         assert (outcomes[close], outcomes[guard], outcomes[upload]) == ("success",) * 3
-    # A failed scan uploads nothing.
+    # A failed scan uploads nothing, and neither does one that was cancelled or skipped.
     assert steps_that_run("timing", failing=[guard], mode="timing")[upload] == "skipped"
+    for scan in ("cancelled", "skipped"):
+        outcomes = steps_that_run("timing", forced={guard: scan}, mode="timing")
+        assert (outcomes[guard], outcomes[upload]) == (scan, "skipped")
+        outcomes = steps_that_run("timing", failing=[timed], forced={guard: scan}, mode="timing")
+        assert outcomes[upload] == "skipped"
 
 
 # --- the plan step, for real ------------------------------------------------------------
@@ -1555,6 +1662,107 @@ def test_the_rehearsal_steps_run_end_to_end_offline(tmp_path: Path) -> None:
     assert verdict["run"]["run_id"] == "4242" and verdict["run"]["reruns"] == []
     assert verdict["status"] == "incomplete"  # six of 216 cells
     assert verdict["mode"] == "rehearsal"
+
+
+def _run_real_step(
+    step: dict[str, Any], cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """A workflow step in bash with the real driver, the run id and attempt filled in as
+    GitHub does (``github.run_id`` 4242, ``github.run_attempt`` 1)."""
+    cwd.mkdir(parents=True, exist_ok=True)
+    script, prelude = _real_step(step["run"])
+    script = script.replace("${{ github.run_id }}", "4242")
+    script = script.replace("${{ github.run_attempt }}", "1")
+    return _run_step(script, cwd, env, prelude)
+
+
+def _named_step(job: str, name: str) -> dict[str, Any]:
+    (step,) = [s for s in _steps(job) if s.get("name") == name]
+    return step
+
+
+@pytest.mark.parametrize("mode", ["registered", "rehearsal"])
+def test_aggregate_with_no_artifact_downloaded_is_incomplete_and_names_every_cell(
+    registered_world: RegisteredWorld, tmp_path: Path, mode: str
+) -> None:
+    """Every cell job and the picks job failed before they wrote a folder, so their uploads
+    only warned and the pattern downloads matched nothing: download-artifact then creates no
+    ``v31/cells``. The aggregate job's own steps, in bash with the real driver, still end in
+    an incomplete verdict that names all 216 cells and in a summary to upload. Without the
+    step that makes the folder the aggregation refuses. The rehearsal's aggregate takes the
+    same path, on the world its plan job built."""
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    env = {
+        "RUNNER_TEMP": runner_temp.as_posix(),
+        "PYTHONPATH": str(ROOT / "src"),
+        "MODE": mode,
+        "REHEARSAL_CELLS": "",
+    }
+    job = tmp_path / "ag"  # the aggregate job's workspace: no download made anything in it
+    job.mkdir()
+    if mode == "registered":
+        repo = registered_world.repo
+        env |= {
+            "REPO": repo.as_posix(),
+            "REGISTRATION_SHA256": registered_world.registration_sha256,
+        }
+    else:
+        plan = tmp_path / "pl"
+        output = plan / "github-output"
+        plan.mkdir()
+        output.write_text("", encoding="utf-8")
+        built = _run_real_step(
+            _step("plan", "world"), plan, {**env, "GITHUB_OUTPUT": output.as_posix()}
+        )
+        assert built.returncode == 0, built.stderr[-3000:]
+        (job / "v31/world-download").mkdir(parents=True)  # the world, downloaded by name
+        shutil.copyfile(
+            plan / "v31/rehearsal-world.tar", job / "v31/world-download/rehearsal-world.tar"
+        )
+        env |= {
+            "REPO": "v31/work/repo",
+            "REGISTRATION_SHA256": _outputs(output)["registration_sha256"],
+        }
+        unpacked = _run_real_step(_named_step("aggregate", "Unpack the rehearsal world"), job, env)
+        assert unpacked.returncode == 0, unpacked.stderr[-3000:]
+        repo = job / "v31/work/repo"
+    registration = load_registration(
+        repo / "config/v3_1_registration.json",
+        repo / "config/v3_1_run_manifest.json",
+        repo_root=repo,
+    )
+    cell_ids = {cell.cell_id for cell in registration.cells}
+    assert len(cell_ids) == 216
+
+    aggregate_step = _named_step("aggregate", "Aggregate")
+    assert not (job / "v31/cells").exists()
+    refused = _run_real_step(aggregate_step, job, env)
+    assert refused.returncode != 0 and "cells directory" in refused.stderr
+    assert not (job / "v31/summary-out/summary").exists()
+
+    made = _run_real_step(_named_step("aggregate", "Create the cells folder"), job, env)
+    assert made.returncode == 0, made.stderr
+    assert (job / "v31/cells").is_dir() and not list((job / "v31/cells").iterdir())
+    result = _run_real_step(aggregate_step, job, env)
+    assert result.returncode == 0, result.stderr[-3000:]
+    summary = job / "v31/summary-out/summary"
+    verdict = json.loads((summary / "verdict.json").read_bytes())
+    assert verdict["status"] == "incomplete" and verdict["mode"] == mode
+    assert {cell: read["state"] for cell, read in verdict["cells"].items()} == dict.fromkeys(
+        cell_ids, "missing"
+    )
+    assert verdict["v3_picks"]["state"] == "missing"
+    # Every cell is named missing in the summary; the verdict's reasons name each W1 cell
+    # (the W0 cells are reported, not judged) and the picks job.
+    text = (summary / "summary.md").read_text(encoding="utf-8")
+    reasons = verdict["cell_incomplete_reasons"]
+    missing = "no artifact: not run, or failed before its claim"
+    w1 = {cell.cell_id for cell in registration.cells if not cell.reported_only}
+    assert 0 < len(w1) < len(cell_ids)
+    assert sorted(reasons) == sorted(f"{name}: {missing}" for name in (*w1, "v3_picks"))
+    for cell_id in sorted(cell_ids):
+        assert f"`{cell_id}` | missing" in text, cell_id
 
 
 def _name_for(template: str, mode: str) -> str:

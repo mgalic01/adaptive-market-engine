@@ -63,9 +63,12 @@ name: v31-run
 # Every attempt is recorded. A run job (picks, run-main, run-v3) uploads its directory even
 # when it fails or times out (if: always()), so a failed attempt leaves its folder and its
 # claim; a job killed before it wrote anything only warns. The one exception stops the line:
-# if the scan before the upload fails, nothing is uploaded, the job fails, and the run is
-# void. The long steps have a step timeout of 335 minutes, inside the 360-minute job limit,
-# so the scan and the upload still run after one is killed.
+# the upload also requires the scan before it to have succeeded (if: always() &&
+# steps.guard_outputs.outcome == 'success'; the scan itself runs after a failed step, if:
+# always()). If that scan fails, is cancelled or is skipped, nothing is uploaded and the run
+# is void; a failed scan also fails the job. The long steps have a step timeout of 335
+# minutes, inside the 360-minute job limit, so the scan and the upload still run after one
+# is killed.
 #
 # A registered run is executed once. Re-running any job, whether every job or only the failed
 # ones, is a new recorded attempt (a new run_attempt number). Aggregate records every
@@ -524,9 +527,9 @@ jobs:
           fi
 
       # v31/picks-out holds v3_picks/: the artifact's root is that folder. It is uploaded after
-      # a failure too, so the attempt is recorded; the scan above must not have failed.
+      # a failure too, so the attempt is recorded; the scan above must have succeeded.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
+        if: ${{ always() && steps.guard_outputs.outcome == 'success' }}
         with:
           name: v3-picks-attempt-${{ github.run_attempt }}
           path: v31/picks-out
@@ -645,9 +648,9 @@ jobs:
       # run-cell writes v31/cell-out/<cell_id>/: the artifact's root is v31/cell-out, so a
       # download into its own folder reads cell-<id>-attempt-<n>/<id>/. It is uploaded after a
       # failure or a timeout too, so the attempt and its claim are recorded; the scan above
-      # must not have failed.
+      # must have succeeded.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
+        if: ${{ always() && steps.guard_outputs.outcome == 'success' }}
         with:
           name: cell-${{ matrix.cell }}-attempt-${{ github.run_attempt }}
           path: v31/cell-out
@@ -687,7 +690,9 @@ jobs:
           name: v31-packs
           path: v31/prepared
       # By pattern, not by this attempt's number: a re-run of failed jobs has a new attempt
-      # number, and the picks job (which succeeded) is not re-run.
+      # number, and the picks job (which succeeded) is not re-run. A pattern that matches no
+      # artifact creates no v31/picks; no empty folder is made for it either: the check below
+      # then fails with a message, since it requires exactly one verified picks folder.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: "v3-picks-attempt-*"
@@ -786,9 +791,9 @@ jobs:
       # run-cell writes v31/cell-out/<cell_id>/: the artifact's root is v31/cell-out, so a
       # download into its own folder reads cell-<id>-attempt-<n>/<id>/. It is uploaded after a
       # failure or a timeout too, so the attempt and its claim are recorded; the scan above
-      # must not have failed.
+      # must have succeeded.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
+        if: ${{ always() && steps.guard_outputs.outcome == 'success' }}
         with:
           name: cell-${{ matrix.cell }}-attempt-${{ github.run_attempt }}
           path: v31/cell-out
@@ -820,6 +825,14 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
+
+      # download-artifact creates no destination when a pattern matches no artifact (every
+      # cell job and the picks job failed before they wrote a folder, and their uploads only
+      # warned), and the aggregation refuses a cells directory that does not exist. The folder
+      # is made first, so that case ends in an incomplete verdict naming every missing cell,
+      # and in its summary, not in a crash. A rehearsal takes the same step.
+      - name: Create the cells folder
+        run: mkdir -p v31/cells
 
       # Each artifact in a folder named for it (no merge-multiple), the only layout the
       # aggregation accepts: v31/cells/cell-<id>-attempt-<n>/<id>/ and
@@ -1085,7 +1098,7 @@ jobs:
 
       # Only v31/timing: elapsed times, peak memory and the picks' attempt bookkeeping.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
+        if: ${{ always() && steps.guard_outputs.outcome == 'success' }}
         with:
           name: v31-timing-${{ matrix.part }}-attempt-${{ github.run_attempt }}
           path: v31/timing
