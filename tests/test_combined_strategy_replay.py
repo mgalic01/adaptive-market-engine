@@ -1784,6 +1784,42 @@ def test_a_no_signal_record_and_its_gap_table_round_trip(tmp_path):
     assert read_bundle(receipt.directory).records == records
 
 
+def test_an_extended_unavailable_episode_reports_its_gaps_as_of_its_last_hour(tmp_path):
+    from crypto_grid_bot.combined.artifacts import read_bundle, write_bundle
+
+    # The spot input ends a day into the six-day window: an open-ended missing tail.
+    market = masked(fx.market("BTCUSDT", fx.downtrend, 6), "spot", range(24, 6 * 24))
+    trace = replay_strategy(fx.run("spot_trend", 6), (market,))
+    assert trace.failure is None
+    # From the third day on every hour gives the same reasons: one episode of four days.
+    (episode,) = [e for e in trace.unavailable if "missing_daily_bar" in e.record.reasons]
+    first, latest = episode.assessment, episode.latest
+    assert window_hours((episode.record.first_ms, episode.record.last_ms)) == [48, 143]
+    assert window_hours((first.decision_ms, latest.decision_ms)) == [48, 143]
+    assert latest.reasons == first.reasons == episode.record.reasons
+    records = evidence_records(trace)
+    (record,) = [r for r in records.decisions if "missing_daily_bar" in r.reasons]
+    # Its one decision record keeps its first hour's context ...
+    assert (record.first_ms, record.last_ms) == (hour_ms(48), hour_ms(143))
+    saved = next(a for a in records.assessments if a.assessment_id == record.assessment_id)
+    assert record.assessment_id == first.assessment_id and saved.decision_ms == hour_ms(48)
+    # ... and the symbol's gap table is as of the last hour it covers, with every gap
+    # that hour saw, not only those of its first hour.
+    (table,) = records.symbol_gaps
+    assert table.as_of_ms == hour_ms(143)
+    assert (table.hourly_gaps, table.four_hour_gaps, table.daily_gaps) == (
+        latest.hourly_gaps,
+        latest.four_hour_gaps,
+        latest.daily_gaps,
+    )
+    assert table.hourly_gaps == ((hour_ms(24), hour_ms(143)),)
+    assert table.four_hour_gaps == ((hour_ms(24), hour_ms(140)),)
+    assert table.daily_gaps == ((hour_ms(24), hour_ms(120)),)
+    assert first.hourly_gaps == ((hour_ms(24), hour_ms(48)),)
+    receipt = write_bundle(tmp_path, "tail", journal_of(trace), {}, records=records)
+    assert read_bundle(receipt.directory).records == records
+
+
 def test_an_unmarked_open_lifecycle_stays_marked_in_the_saved_records():
     trace = replay_strategy(fx.run("spot_trend", 2), (fx.market("BTCUSDT", fx.uptrend, 2),))
     # Without retained marks the open lifecycle is valued at its last fill price.

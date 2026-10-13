@@ -480,7 +480,8 @@ def evidence_records(trace: StrategyTrace, *, skipped_hours: tuple[int, ...] = (
     approval and per episode of identical refusals (``_episodes``), with the assessment
     and intent of its first hour. Every record cites the run's sources once, by the run
     record's digest, plus its own references; each symbol's gaps and invalid opens are
-    one table as of its last assessment. The run record carries the report's producer
+    one table as of the last hour a record covers (an unavailable episode's latest
+    assessment, not its first hour's). The run record carries the report's producer
     issues, so an open lifecycle valued at its last fill price, or a gap hour the
     registered ``skipped_hours`` do not list, stays marked.
     """
@@ -496,10 +497,14 @@ def evidence_records(trace: StrategyTrace, *, skipped_hours: tuple[int, ...] = (
 
     origin: dict[str, tuple[Assessment, IntentRecord | None]] = {}
     hourly: list[DecisionRecord] = []
+    # Every hour a record covers has its assessment here: an unavailable episode's last
+    # hour, not only its first, so each symbol's gap table is as of its last record hour.
+    covered: list[Assessment] = []
     for decision in trace.decisions:
         assessment, result = decision.assessment, decision.result
         if result.record is None:
             continue
+        covered.append(assessment)
         intent = None
         if result.intent is not None:
             first = result.events[0]
@@ -515,8 +520,9 @@ def evidence_records(trace: StrategyTrace, *, skipped_hours: tuple[int, ...] = (
     for episode in trace.unavailable:
         origin[episode.record.record_id] = episode.assessment, None
         hourly.append(episode.record)
+        covered.append(episode.latest)
     latest: dict[str, Assessment] = {}
-    for assessment, _ in origin.values():
+    for assessment in covered:
         prior = latest.get(assessment.symbol)
         if prior is None or assessment.decision_ms > prior.decision_ms:
             latest[assessment.symbol] = assessment

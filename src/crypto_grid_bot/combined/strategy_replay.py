@@ -80,7 +80,8 @@ management and entries. Engine timestamps denote availability, not intrabar time
 An unowned coin whose assessment is unavailable (a missing or invalid due bar, a
 warm-up) and gives no signal is a refused detection in the funnel, with the
 assessment's reasons. One contiguous run of such hours with the same reasons is one
-episode: it is detected once, at its first hour, and its record spans to its last.
+episode: it is detected once, at its first hour, and its record spans to its last. Its
+input gaps are reported as of that last hour.
 """
 
 from bisect import bisect_right
@@ -206,10 +207,17 @@ class TraceDecision:
 
 @dataclass(frozen=True, slots=True)
 class TraceUnavailable:
-    """One episode of an unavailable assessment with no signal, and its first hour's."""
+    """One episode of an unavailable assessment with no signal.
+
+    ``assessment`` and ``record`` are its first hour's: the decision context of its one
+    decision record, which spans to ``record.last_ms``. ``latest`` is the assessment of
+    that last hour, so the episode's input gaps are reported as of the last hour it
+    covers.
+    """
 
     assessment: Assessment
     record: DecisionRecord
+    latest: Assessment
 
 
 @dataclass(frozen=True, slots=True)
@@ -968,7 +976,9 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             and episode.record.last_ms == hour - HOUR
             and episode.record.reasons == assessment.reasons
         ):
-            unsignaled[symbol] = replace(episode, record=replace(episode.record, last_ms=hour))
+            unsignaled[symbol] = replace(
+                episode, record=replace(episode.record, last_ms=hour), latest=assessment
+            )
             return
         end_unsignaled(symbol)
         # Only what the record carries: registered costs and the published funding values.
@@ -985,7 +995,7 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             funding_interval_ms=None if funding is None else _interval_ms(funding),
             groups=groups,
         )
-        unsignaled[symbol] = TraceUnavailable(assessment, record)
+        unsignaled[symbol] = TraceUnavailable(assessment, record, assessment)
 
     def decide(symbol: str, hour: int, groups: tuple[tuple[str, str], ...]) -> str | None:
         # One strategy owns an asset: held inventory or a resting grid basket.
