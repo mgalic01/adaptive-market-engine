@@ -151,10 +151,17 @@ def world(tmp_path_factory) -> World:
     return World(reg, packs, read_v3_pack(root / "v3.json.gz", reg.run_manifest.v3_pack))
 
 
-def aggregate(reg: DriverRegistration, cells: Path, out: Path, *, attempt_id: str = RUN) -> Path:
-    """``aggregate`` as the workflow calls it, by default as attempt 1 of run ``run-1``,
-    the run every cell of the matrix claims."""
-    return aggregate_cells(reg, cells, out, attempt_id=attempt_id)
+def aggregate(
+    reg: DriverRegistration,
+    cells: Path,
+    out: Path,
+    *,
+    attempt_id: str = RUN,
+    mode: str = "registered",
+) -> Path:
+    """``aggregate`` as the workflow calls it, by default a registered run's attempt 1 of
+    run ``run-1``, the run every cell of the matrix claims."""
+    return aggregate_cells(reg, cells, out, attempt_id=attempt_id, mode=mode)
 
 
 def attempt_of(cell_id: str) -> str:
@@ -294,7 +301,8 @@ def matrix(world: World, tmp_path_factory) -> Path:
         elif cell.kind == "hold":
             run_hold_cell(cell, world.packs["w1"], reg, out, **options)
         elif cell.kind == "v3":
-            run_v3_cell(cell, world.v3, picks, reg, out, **options)
+            given = picks if cell.arm == "unchanged_v3_selector" else None  # as run-cell
+            run_v3_cell(cell, world.v3, given, reg, out, **options)
     sources = {
         (c.window, c.scenario, c.cost_multiple, c.capital_id): source_of(out / c.cell_id)
         for c in reg.cells
@@ -440,6 +448,7 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
     verdict = read_verdict(summary)
     assert summary.name == "summary"
     assert verdict["schema"] == "v3.1-verdict-1"
+    assert verdict["mode"] == "registered"
     assert verdict["status"] == verdict["acceptance_status"] == expected.status
     assert verdict["failures"] == list(expected.failures)
     assert verdict["incomplete_reasons"] == list(expected.incomplete_reasons)
@@ -537,6 +546,7 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
 
     # The owner's table: one row per full combined cell, the verdict and the W0 section.
     text = (summary / "summary.md").read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "# V3.1 run summary: registered run"
     assert f"**{expected.status.upper()}**" in text
     for cell_id in COMBINED:
         assert sum(line.startswith(f"| `{cell_id}` |") for line in text.splitlines()) == 1
@@ -1175,4 +1185,35 @@ def test_two_picks_jobs_are_refused_as_duplicates(world, matrix, tmp_path):
         aggregate(world.reg, cells, out)
     message = str(refused.value)
     assert "v3_picks: duplicate artifact sets (v3-picks-attempt-1, v3-picks-attempt-3)" in message
+    assert list(out.iterdir()) == []
+
+
+# --- the run's mode (a rehearsal never looks like the registered verdict) ---------------
+
+
+@pytest.mark.parametrize(
+    ("mode", "title"),
+    [
+        ("registered", "# V3.1 run summary: registered run"),
+        (
+            "rehearsal",
+            "# V3.1 run summary: REHEARSAL (a synthetic world; no verdict on market data)",
+        ),
+        ("smoke", "# V3.1 run summary: SMOKE (a synthetic world; no verdict on market data)"),
+    ],
+)
+def test_the_verdict_and_the_summary_name_the_runs_mode(world, matrix, tmp_path, mode, title):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))
+    summary = aggregate(world.reg, cells, mkdir(tmp_path / "out"), mode=mode)
+    assert read_verdict(summary)["mode"] == mode
+    text = (summary / "summary.md").read_text(encoding="utf-8")
+    assert text.splitlines()[0] == title
+
+
+@pytest.mark.parametrize("bad", ["", "Registered", "prepare-only", "timing", None])
+def test_an_unknown_mode_is_refused_before_anything_is_written(world, matrix, tmp_path, bad):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))
+    out = mkdir(tmp_path / "out")
+    with pytest.raises(ValueError, match="aggregate mode"):
+        aggregate(world.reg, cells, out, mode=bad)
     assert list(out.iterdir()) == []

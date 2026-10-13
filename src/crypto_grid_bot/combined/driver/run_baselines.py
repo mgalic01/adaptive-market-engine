@@ -290,7 +290,7 @@ def compute_v3_picks(
 def run_v3_cell(
     cell: Cell,
     v3_inputs: V3Inputs,
-    picks_path: Path,
+    picks_path: Path | None,
     reg: DriverRegistration,
     out_dir: Path,
     *,
@@ -303,31 +303,46 @@ def run_v3_cell(
     ``v3_inputs`` must be ``read_v3_pack(path, reg.run_manifest.v3_pack)``: a V3 cell's
     data is the V3 input pack, read against the run-manifest's ``v3_pack_sha256``, never a
     window pack's pin. The execution gate checks the cell's window pack (W1), whose skipped
-    hours are the registered window's that this cell's report uses. ``picks_path`` is
-    ``compute_v3_picks``'s file. It must name the same V3 pack and run-manifest, and its
-    picks job (the directory beside it) must be the registered one, finished and
-    unchanged (``_read_picks``): a completion marker that pins the picks file, the retained
-    ``attempts.jsonl`` and ``attempt.json`` hashing to the values the picks record, and the
-    picks' and the claim's config pin, code pin, V3 pack and run-manifest equal to the
-    registration's. The selector replays ``window_picks`` of those picks over the window;
-    a fixed long-only rule takes no picks, as its adapter replays the rule itself. The
-    capital's starting equity, the cell's cost multiple (V3's own native cost multiple),
-    the window and the adapter pin come from the registration. Refuses, before anything is
-    written, a cell that is not a registered native V3 cell, other inputs, an unreadable or
-    untrusted picks file or job, an empty attempt id, a repo head that is not 40 lowercase
-    hex and an existing cell directory.
+    hours are the registered window's that this cell's report uses.
+
+    Only the selector reads picks. For it, ``picks_path`` is ``compute_v3_picks``'s file:
+    it must name the same V3 pack and run-manifest, and its picks job (the directory beside
+    it) must be the registered one, finished and unchanged (``_read_picks``): a completion
+    marker that pins the picks file, the retained ``attempts.jsonl`` and ``attempt.json``
+    hashing to the values the picks record, and the picks' and the claim's config pin, code
+    pin, V3 pack and run-manifest equal to the registration's. The selector replays
+    ``window_picks`` of those picks over the window, and its source references cite the
+    picks file's SHA-256 besides the V3 pack and the run-manifest. A fixed long-only rule
+    (R1L-R6L) takes no picks: its adapter replays its own rule from the window's start, so
+    ``picks_path`` must be None, and its identity and source references cite the V3 pack and
+    the run-manifest alone; it never waits for, reads or names the picks job. The capital's
+    starting equity, the cell's cost multiple (V3's own native cost multiple), the window
+    and the adapter pin come from the registration. Refuses, before anything is written, a
+    cell that is not a registered native V3 cell, other inputs, a selector without picks or
+    with an unreadable or untrusted picks file or job, a long-only rule given picks, an
+    empty attempt id, a repo head that is not 40 lowercase hex and an existing cell
+    directory.
     """
     window = _baseline_window(cell, reg, "v3", "a frozen V3 baseline cell required")
     if not isinstance(v3_inputs, V3Inputs):
         raise ValueError("V3 inputs (read_v3_pack) required")
     _check_attempt(attempt_id, repo_head)
-    picks, picks_sha256 = _read_picks(picks_path, reg)
+    selector = cell.arm == SELECTOR
+    picks: dict[int, str | None] | None = None
+    picks_sha256 = None
+    if selector:
+        if picks_path is None:
+            raise ValueError(f"cell {cell.cell_id}: the V3 selector replays the picks; none given")
+        picks, picks_sha256 = _read_picks(picks_path, reg)
+    elif picks_path is not None:
+        raise ValueError(
+            f"cell {cell.cell_id}: a fixed long-only V3 rule reads no picks; none may be given"
+        )
     capital = _capital(reg, cell.capital_id)
     adapter_pin = dict(reg.registration.adapter_pins)[cell.arm]
     pin = reg.run_manifest.v3_pack
     attempt = _cell_attempt(cell, reg, window, attempt_id, repo_head, pin)
     refs = (f"v3-pack:{pin}", f"v31-run-manifest:{reg.run_manifest_pin}")
-    selector = cell.arm == SELECTOR
     directory = Path(out_dir) / cell.cell_id
     with _claimed(directory, attempt):
         evidence = replay_v3_baseline(
@@ -337,9 +352,9 @@ def run_v3_cell(
             end_ms=window.end_ms,
             initial=capital.initial_equity,
             cost_multiple=cell.cost_multiple,
-            source_refs=(*refs, f"v3-picks:{picks_sha256}") if selector else refs,
+            source_refs=refs if picks is None else (*refs, f"v3-picks:{picks_sha256}"),
             adapter_pin=adapter_pin,
-            picks=window_picks(picks, window.start_ms, window.end_ms) if selector else None,
+            picks=None if picks is None else window_picks(picks, window.start_ms, window.end_ms),
             skipped_hours=window.skipped_hours,
             capital_label=capital_label(capital),
         )

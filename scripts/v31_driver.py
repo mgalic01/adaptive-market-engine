@@ -35,7 +35,8 @@ nothing: its every input is the world's.
     four ``unchanged_v3_selector`` cells, which need the picks job (``v3_cells``), and
     every other cell (``main_cells``, the six long-only V3 rules included: they read no
     picks), each at most 256. A rehearsal may plan only the first ``N`` cells (at least
-    5, one W1 cell of each kind and one W0 cell first); a registered run plans them all.
+    6: one W1 cell of each kind, the selector and a long-only V3 rule both, and one W0
+    cell first); a registered run plans them all.
 ``prepare --mode prepare-only|registered|rehearsal --work W --out O`` (Ruling P1)
     The gate: in ``prepare-only``, the checkout is ``--code-commit`` with no uncommitted
     change and ``config/v3_1_prepare.json`` hashes to ``--prepare-sha256``; no
@@ -66,8 +67,9 @@ nothing: its every input is the world's.
     ``execution_gate`` with the repo head, the changes since the code pin and the adapter
     pins at the head, on the cell's window pack read against the same pin the gate
     checks; then the cell by its kind: ``O/<cell_id>/``. A minute or V3 cell drops the
-    window pack once the gate has checked it (Ruling F8). A V3 cell takes the whole
-    ``v3_picks/`` directory of the same workflow run (``--picks``); a minute cell the
+    window pack once the gate has checked it (Ruling F8). The V3 selector takes the whole
+    ``v3_picks/`` directory of the same workflow run (``--picks``, required); a fixed
+    long-only V3 rule reads no picks and refuses ``--picks``; a minute cell takes the
     legacy dataset (``--legacy-data``), verified first.
 ``aggregate --mode M --cells D --attempt-id ID --out O``
     ``job_gate``, then the verdict and summary: ``O/summary/``. ``ID`` is the workflow's
@@ -214,7 +216,9 @@ TIMING_SCHEMA = "v3.1-timing-1"
 TIMING_CLOSE_SCHEMA = "v3.1-timing-close-1"
 RUN_MODES = ("registered", "rehearsal")  # the registered job graph, on the repo or a world
 MAX_MATRIX = 256  # GitHub's limit on the jobs of one matrix
-MIN_REHEARSAL_CELLS = 5  # smoke_cells' firsts: one W1 cell of each kind and one W0 cell
+# smoke_cells' firsts: one W1 cell of each kind (the selector and a fixed long-only V3 rule
+# both) and one W0 cell, so a reduced rehearsal exercises every matrix's every cell path.
+MIN_REHEARSAL_CELLS = 6
 TIMING_PARTS = ("prepare", "picks", "cell")
 # The timing cell: V2's grid, the heaviest minute arm (Task 8b measured it highest in
 # memory, and its mode switch evaluates the grid, trend and flat paths at every minute);
@@ -1202,12 +1206,20 @@ def run_cell_job(
 
     ``pack`` is the cell's window pack as the gate checked it; a V3.1 or hold cell replays
     it, while a minute or V3 cell reads none, so its caller may pass None once the gate is
-    done (Ruling F8). A V3 cell reads the V3 input pack against its pin and the whole
-    ``v3_picks/`` directory ``picks_dir``; a minute cell the legacy dataset
-    ``legacy_dir``, verified with ``verify_dataset`` first."""
+    done (Ruling F8). A V3 cell reads the V3 input pack against its pin; the selector also
+    the whole ``v3_picks/`` directory ``picks_dir`` (required), and a fixed long-only rule
+    no picks (``picks_dir`` refused: run-main passes none). A minute cell reads the legacy
+    dataset ``legacy_dir``, verified with ``verify_dataset`` first."""
     options = {"attempt_id": attempt_id, "repo_head": repo_head}
-    if cell.kind == "v3" and (picks_dir is None or Path(picks_dir).name != V3_PICKS):
-        raise ValueError(f"cell {cell.cell_id}: a V3 cell needs --picks, the {V3_PICKS}/ directory")
+    if cell.kind == "v3" and needs_picks(cell.arm):
+        if picks_dir is None or Path(picks_dir).name != V3_PICKS:
+            raise ValueError(
+                f"cell {cell.cell_id}: the V3 selector needs --picks, the {V3_PICKS}/ directory"
+            )
+    elif cell.kind == "v3" and picks_dir is not None:
+        raise ValueError(
+            f"cell {cell.cell_id}: a fixed long-only V3 rule reads no picks; --picks refused"
+        )
     if cell.kind == "minute" and legacy_dir is None:
         raise ValueError(f"cell {cell.cell_id}: a minute cell needs --legacy-data")
     if cell.kind in ("v31", "hold") and pack is None:
@@ -1217,13 +1229,20 @@ def run_cell_job(
         return run_v31_cell(cell, pack, reg, out, **options)
     if cell.kind == "hold" and pack is not None:
         return run_hold_cell(cell, pack, reg, out, **options)
-    if cell.kind == "v3" and picks_dir is not None:
+    if cell.kind == "v3":
         inputs = read_v3_pack(packs_dir / V3_PACK_FILE, reg.run_manifest.v3_pack)
-        return run_v3_cell(cell, inputs, Path(picks_dir) / PICKS_FILE, reg, out, **options)
+        picks_file = None if picks_dir is None else Path(picks_dir) / PICKS_FILE
+        return run_v3_cell(cell, inputs, picks_file, reg, out, **options)
     if cell.kind == "minute" and legacy_dir is not None:
         verify_legacy(repo, Path(legacy_dir))
         return run_minute_cell(cell, Path(legacy_dir), reg, out, repo_root=repo, **options)
     raise ValueError(f"cell {cell.cell_id}: unknown kind {cell.kind!r}")
+
+
+def needs_picks(arm: str) -> bool:
+    """Whether a cell of ``arm`` reads the picks job's output: the V3 selector alone (the
+    six fixed long-only V3 rules replay their own rule)."""
+    return arm == SELECTOR
 
 
 def registered_job(args: argparse.Namespace) -> tuple[Path, DriverRegistration, str, str]:
@@ -1246,14 +1265,15 @@ def plan(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("--cells: a registered run runs every registered cell")
     if args.cells is not None and args.cells < MIN_REHEARSAL_CELLS:
         raise ValueError(
-            f"--cells: at least {MIN_REHEARSAL_CELLS} (one W1 cell of each kind and one W0 "
-            "cell), so that every matrix and every cell kind runs"
+            f"--cells: at least {MIN_REHEARSAL_CELLS} (one W1 cell of each kind, the selector "
+            "and a long-only V3 rule both, and one W0 cell), so that every matrix and every "
+            "cell path runs"
         )
     cells = smoke_cells(reg, args.cells)
     # Only the selector reads the picks (Ruling F7); the six long-only V3 rules replay
     # their fixed rule, so they run with every other cell and never wait for the picks job.
-    v3_cells = [cell.cell_id for cell in cells if cell.arm == SELECTOR]
-    main_cells = [cell.cell_id for cell in cells if cell.arm != SELECTOR]
+    v3_cells = [cell.cell_id for cell in cells if needs_picks(cell.arm)]
+    main_cells = [cell.cell_id for cell in cells if not needs_picks(cell.arm)]
     for name, listed in (("v3_cells", v3_cells), ("main_cells", main_cells)):
         if not 0 < len(listed) <= MAX_MATRIX:
             raise ValueError(f"{name}: {len(listed)} cells; a matrix takes 1 to {MAX_MATRIX}")
@@ -1342,7 +1362,7 @@ def aggregate_cells(args: argparse.Namespace) -> dict[str, object]:
     _, reg, _, _ = registered_job(args)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    summary = aggregate(reg, Path(args.cells), out, attempt_id=args.attempt_id)
+    summary = aggregate(reg, Path(args.cells), out, attempt_id=args.attempt_id, mode=args.mode)
     return _verdict_document(summary)
 
 
@@ -1356,14 +1376,19 @@ def _verdict_document(summary: Path) -> dict[str, object]:
 
 
 def smoke_cells(reg: DriverRegistration, count: int | None) -> list[Cell]:
-    """Every registered cell, or the first ``count``: one W1 cell of each kind and one W0
+    """Every registered cell, or the first ``count``: one W1 cell of each kind (for V3,
+    the selector and a fixed long-only rule, which run in different matrices) and one W0
     cell first, then the rest in registration order."""
     cells = list(reg.cells)
     if count is None or count >= len(cells):
         return cells
+    w1 = [cell for cell in cells if cell.window == ACCEPTANCE_WINDOW]
     firsts = [
-        next(cell for cell in cells if cell.kind == kind and cell.window == ACCEPTANCE_WINDOW)
-        for kind in ("v31", "hold", "v3", "minute")
+        next(cell for cell in w1 if cell.kind == "v31"),
+        next(cell for cell in w1 if cell.kind == "hold"),
+        next(cell for cell in w1 if cell.kind == "v3" and needs_picks(cell.arm)),
+        next(cell for cell in w1 if cell.kind == "v3" and not needs_picks(cell.arm)),
+        next(cell for cell in w1 if cell.kind == "minute"),
     ]
     firsts.append(next(cell for cell in cells if cell.window == REPORTED_WINDOW))
     return [*firsts, *(cell for cell in cells if cell not in firsts)][:count]
@@ -1456,14 +1481,14 @@ def smoke(args: argparse.Namespace) -> dict[str, object]:
                 repo_head=world.head,
                 repo=world.repo,
                 packs_dir=packs_dir,
-                picks_dir=picks_dir,
+                picks_dir=picks_dir if needs_picks(cell.arm) else None,  # as the workflow
                 legacy_dir=world.legacy,
             )
             folder = cells_dir / f"cell-{cell.cell_id}-attempt-1"
             folder.mkdir()
             directory.rename(folder / cell.cell_id)
         (root / "a").mkdir()
-        summary = aggregate(reg, cells_dir, _extended(root / "a"), attempt_id=attempt)
+        summary = aggregate(reg, cells_dir, _extended(root / "a"), attempt_id=attempt, mode="smoke")
     seconds = time.monotonic() - began
     log(f"smoke: {len(selected)} of {len(reg.cells)} cells, picks and aggregate in {seconds:.1f} s")
     return {
@@ -1928,7 +1953,11 @@ def build_parser() -> argparse.ArgumentParser:
         "acceptance requires",
     )
     cell.add_argument("--out", required=True)
-    cell.add_argument("--picks", help="a V3 cell: the v3_picks/ directory of the same run")
+    cell.add_argument(
+        "--picks",
+        help="the V3 selector (only): the v3_picks/ directory of the same run; a fixed "
+        "long-only V3 rule refuses it",
+    )
     cell.add_argument("--legacy-data", help="a minute cell: the verified legacy dataset")
 
     agg = commands.add_parser("aggregate", help="the verdict and summary")

@@ -67,10 +67,11 @@ compared, and ``evaluate`` would count it as an unregistered outcome. The summar
                                                  the page links and states the SHA-256 of
     out_dir/summary/w0/<cell_id>/report.html     each W0 cell's page, reported only
     out_dir/summary/w0/<cell_id>/report.json
-    out_dir/summary/verdict.json                 canonical JSON: the verdict, every
-                                                 cell's state and the SHA-256 of its
-                                                 files and page, the pins
-    out_dir/summary/summary.md                   the owner's tables, written last
+    out_dir/summary/verdict.json                 canonical JSON: the run's mode, the
+                                                 verdict, every cell's state and the
+                                                 SHA-256 of its files and page, the pins
+    out_dir/summary/summary.md                   the owner's tables, the mode in its
+                                                 first line, written last
 
 An ``invalid`` cell's page says so in its title.
 
@@ -134,6 +135,13 @@ REPORT_FILE = "report.json"
 PAGE_FILE = "report.html"  # beside its REPORT_JSON, the file the page's own link names
 FAILURE_FILE = "failure.json"
 STATES = ("completed", "failed", "killed", "missing", "invalid")
+MODES = ("registered", "rehearsal", "smoke")  # a registered run, or a synthetic world's
+# The summary's first line, by mode: a synthetic world's verdict says so before anything.
+TITLES = {
+    "registered": "# V3.1 run summary: registered run",
+    "rehearsal": "# V3.1 run summary: REHEARSAL (a synthetic world; no verdict on market data)",
+    "smoke": "# V3.1 run summary: SMOKE (a synthetic world; no verdict on market data)",
+}
 
 _CELL_ARTIFACT = re.compile(r"cell-([a-z0-9._-]+)-attempt-([1-9][0-9]*)")
 _PICKS_ARTIFACT = re.compile(r"v3-picks-attempt-([1-9][0-9]*)")
@@ -170,7 +178,9 @@ class _Page:
     report_json: tuple[str, str] | None  # (path, sha256) of its exact JSON beside it
 
 
-def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path, *, attempt_id: str) -> Path:
+def aggregate(
+    reg: DriverRegistration, cells_dir: Path, out_dir: Path, *, attempt_id: str, mode: str
+) -> Path:
     """Aggregate the cell artifacts in ``cells_dir`` into ``out_dir/summary`` and return
     that directory (layout, states, re-runs and refusals in the module docstring).
 
@@ -181,7 +191,13 @@ def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path, *, attemp
     every input the module docstring lists as refused, in one ``ValueError`` naming each
     cell. A missing or incomplete cell is never refused: it leaves the verdict
     ``incomplete``, unless acceptance fails it already.
+
+    ``mode`` is the run's (``MODES``): ``registered``, or ``rehearsal`` or ``smoke`` for a
+    synthetic world. ``verdict.json`` records it and ``summary.md`` names it in its first
+    line, so a synthetic run's verdict never reads as the registered one.
     """
+    if mode not in MODES:
+        raise ValueError(f"aggregate mode {mode!r}: one of {', '.join(MODES)} required")
     run_id, run_attempt = _run_attempt(attempt_id)
     check_registration(reg)
     summary = Path(out_dir) / SUMMARY_DIR
@@ -243,10 +259,13 @@ def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path, *, attemp
         }
         summary.mkdir(exist_ok=False)
         pages = _write_pages(summary, reg.cells, reads, comparisons)
-        verdict = _verdict(reg, status, result, cell_reasons, reads, pages, picks, run, origins)
+        verdict = {
+            "mode": mode,
+            **_verdict(reg, status, result, cell_reasons, reads, pages, picks, run, origins),
+        }
         _write(summary / VERDICT_FILE, _canonical(verdict) + b"\n")
         text = _summary_text(
-            reg, status, result, cell_reasons, reads, pages, picks, comparisons, run
+            reg, status, result, cell_reasons, reads, pages, picks, comparisons, run, mode
         )
         _write(summary / SUMMARY_FILE, text.encode("utf-8"))  # last: the completion marker
     return summary
@@ -820,6 +839,7 @@ def _summary_text(
     picks: _Read,
     comparisons: Mapping[str, CellComparison],
     run: _Run,
+    mode: str,
 ) -> str:
     """The owner's summary: the verdict, any re-run, one row per full combined W1 cell,
     each cell against every baseline, the reasons, the cell states and the W0 section."""
@@ -834,7 +854,7 @@ def _summary_text(
     if run.reruns:
         verdict += f" (re-run detected: {len(run.reruns)} W1 cell(s) or job(s))"
     lines = [
-        "# V3.1 run summary",
+        TITLES[mode],
         "",
         verdict,
         "",

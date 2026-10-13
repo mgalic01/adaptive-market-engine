@@ -38,6 +38,7 @@ import v31_smoke  # noqa: E402
 from test_v31_registration import MODULES  # noqa: E402
 
 from crypto_grid_bot.combined.driver.registration import (  # noqa: E402
+    V3_ARMS,
     adapter_pins,
     load_registration,
 )
@@ -71,6 +72,9 @@ PINS = {
 CHECKOUT = "actions/checkout@" + PINS["actions/checkout"][0]
 SETUP_PYTHON = "actions/setup-python@" + PINS["actions/setup-python"][0]
 STEP_TIMEOUT = 335  # minutes: the long steps end inside the 360-minute job limit (Ruling F2)
+# The summary's and the status's artifact names: a rehearsal's are its own (Ruling C2).
+SUMMARY_NAME = "${{ inputs.mode == 'rehearsal' && 'v31-rehearsal-summary' || 'v31-summary' }}"
+STATUS_NAME = "${{ inputs.mode == 'rehearsal' && 'v31-rehearsal-status' || 'v31-status' }}"
 ATTEMPT_ID = "${{ github.run_id }}-attempt-${{ github.run_attempt }}"
 GUARD_PATTERNS = ("-202[5-9]-", "-20[3-9][0-9]-")
 GITHUB_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
@@ -504,17 +508,24 @@ def test_registered_mode_runs_every_job_and_a_failure_stops_only_what_depends_on
 
 
 def test_v3_cells_wait_for_picks_and_other_cells_do_not() -> None:
+    """Only the selector cells read the picks, and only they wait for the picks job
+    (run-v3, with --picks); every other cell, the six fixed long-only V3 rules among them,
+    runs in run-main without --picks, which the driver requires of the selector alone and
+    refuses for a long-only rule (tests/test_v31_driver_cli.py). The rehearsal's real steps
+    run a long-only cell through run-main (test_the_rehearsal_steps_run_end_to_end_offline)."""
     jobs = _jobs()
     assert "picks" in _needs(jobs["run-v3"])
     assert "picks" not in _needs(jobs["run-main"])
     assert set(_needs(jobs["run-main"])) == {"plan", "prepare"}
     assert set(_needs(jobs["run-v3"])) == {"plan", "prepare", "picks"}
     assert _needs(jobs["picks"]) == ["plan", "prepare"]
+    # The driver's one rule for both the plan's split and run-cell's --picks: the selector.
+    assert [arm for arm in V3_ARMS if v31_driver.needs_picks(arm)] == ["unchanged_v3_selector"]
     (v3_call,) = _driver_calls("run-v3")
     (main_call,) = _driver_calls("run-main")
     assert "--picks" in v3_call[1]
-    assert "--picks" not in main_call[1]
-    assert "--legacy-data" not in v3_call[1]  # V3 cells replay the picks, not minutes
+    assert "--picks" not in main_call[1]  # long-only V3 rules run here, reading no picks
+    assert "--legacy-data" not in v3_call[1]  # the selector replays the picks, not minutes
     picks_download = _download("run-v3", "v3-picks-attempt-*")
     assert picks_download["path"] == "v31/picks"
     assert not [s for s in _downloads("run-main") if "picks" in str(s["with"])]
@@ -603,9 +614,9 @@ def test_artifact_names_carry_the_run_attempt_and_nest_the_cell_folder() -> None
         "v31-legacy-data",
         f"v3-picks-{attempt}",
         f"cell-${{{{ matrix.cell }}}}-{attempt}",
-        f"v31-summary-{attempt}",
+        f"{SUMMARY_NAME}-{attempt}",
         f"v31-smoke-summary-{attempt}",
-        f"v31-status-{attempt}",
+        f"{STATUS_NAME}-{attempt}",
         f"v31-timing-${{{{ matrix.part }}}}-{attempt}",
     }
     # The world, the packs and the dataset keep fixed names, so a re-run of every job fails
@@ -643,7 +654,7 @@ def test_aggregate_downloads_each_artifact_into_its_own_folder() -> None:
         assert step["with"]["path"] == "v31/cells"
     ((_, call),) = _driver_calls("aggregate")
     assert _option(call, "--cells") == "v31/cells"  # cells/cell-<id>-attempt-<n>/<id>/
-    summary = "v31-summary-attempt-${{ github.run_attempt }}"
+    summary = f"{SUMMARY_NAME}-attempt-${{{{ github.run_attempt }}}}"
     assert _upload("aggregate", summary)["path"] == _option(call, "--out")
     assert "merge-multiple" not in json.dumps(_workflow())
 
@@ -1222,7 +1233,7 @@ def test_the_status_job_records_every_job_result_even_when_aggregate_is_skipped(
     assert (ran["aggregate"], ran["status"]) == ("skipped", "success")
     assert jobs_that_run("registered", failing=["plan"])["status"] == "success"
     assert "status" not in _ran("smoke") | _ran("prepare-only") | _ran("timing")
-    upload = _upload("status", "v31-status-attempt-${{ github.run_attempt }}")
+    upload = _upload("status", f"{STATUS_NAME}-attempt-${{{{ github.run_attempt }}}}")
     assert upload["path"] == "v31/status" and upload["if-no-files-found"] == "error"
     # Its script, run for real on a failed prepare's results.
     (step,) = [s for s in _steps("status") if "status.json" in s.get("run", "")]
@@ -1446,7 +1457,7 @@ def test_the_rehearsal_steps_run_end_to_end_offline(tmp_path: Path) -> None:
         "PYTHONPATH": str(ROOT / "src"),
         "MODE": "rehearsal",
         "REPO": "v31/work/repo",
-        "REHEARSAL_CELLS": "5",
+        "REHEARSAL_CELLS": "6",
     }
 
     def step_run(job: str, step: dict[str, Any], cwd: Path, **env: str) -> dict[str, str]:
@@ -1480,7 +1491,9 @@ def test_the_rehearsal_steps_run_end_to_end_offline(tmp_path: Path) -> None:
     planned = step_run("plan", _step("plan", "cells"), plan_dir, REGISTRATION_SHA256=sha)
     assert planned["registration_sha256"] == sha
     v3_cells, main_cells = json.loads(planned["v3_cells"]), json.loads(planned["main_cells"])
-    assert (len(v3_cells), len(main_cells)) == (1, 4)
+    assert (len(v3_cells), len(main_cells)) == (1, 5)
+    # A fixed long-only V3 rule goes through run-main's step, without picks (Ruling C1).
+    assert "w1.unchanged_v3_r1_long_only.native.c1.research" in main_cells
     gated = {"REGISTRATION_SHA256": sha}  # each later job's env, from the plan's output
 
     # prepare
@@ -1540,4 +1553,42 @@ def test_the_rehearsal_steps_run_end_to_end_offline(tmp_path: Path) -> None:
     assert completed == {*v3_cells, *main_cells}
     assert verdict["v3_picks"]["state"] == "completed"
     assert verdict["run"]["run_id"] == "4242" and verdict["run"]["reruns"] == []
-    assert verdict["status"] == "incomplete"  # five of 216 cells
+    assert verdict["status"] == "incomplete"  # six of 216 cells
+    assert verdict["mode"] == "rehearsal"
+
+
+def _name_for(template: str, mode: str) -> str:
+    """An artifact name as GitHub evaluates it for a dispatch of ``mode``: each
+    ``${{ inputs.mode == 'rehearsal' && 'A' || 'B' }}`` becomes A or B, and the run
+    attempt 1."""
+
+    def choose(match: re.Match[str]) -> str:
+        rehearsal, other = match.groups()
+        return rehearsal if mode == "rehearsal" else other
+
+    pattern = r"\$\{\{ inputs\.mode == 'rehearsal' && '([^']+)' \|\| '([^']+)' \}\}"
+    named = re.sub(pattern, choose, template)
+    return named.replace("${{ github.run_attempt }}", "1")
+
+
+def test_a_rehearsals_summary_and_status_never_take_a_registered_runs_names() -> None:
+    """Ruling C2: a synthetic rehearsal's verdict could read PASS, so its summary and its
+    status are uploaded under names of their own; the verdict itself names its mode
+    (aggregate --mode, tests/test_v31_aggregate.py)."""
+    (summary,) = _uploads("aggregate")
+    status = next(s for s in _uploads("status"))
+    expected = {
+        "registered": ("v31-summary-attempt-1", "v31-status-attempt-1"),
+        "rehearsal": ("v31-rehearsal-summary-attempt-1", "v31-rehearsal-status-attempt-1"),
+    }
+    for mode, names in expected.items():
+        got = (_name_for(summary["with"]["name"], mode), _name_for(status["with"]["name"], mode))
+        assert got == names, mode
+    # The aggregate step passes the run's mode, so verdict.json and summary.md name it.
+    ((_, call),) = _driver_calls("aggregate")
+    assert _option(call, "--mode") == "$MODE"
+    # Every other upload name is the same in both modes or belongs to one mode alone.
+    for job in JOBS:
+        for step in _uploads(job):
+            if step not in (summary, status):
+                assert "inputs.mode" not in step["with"]["name"], (job, step["with"]["name"])

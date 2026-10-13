@@ -183,16 +183,17 @@ def test_smoke_runs_end_to_end_offline(tmp_path, capsys):
     assert (document["cells_registered"], document["cells_run"]) == (216, 6)
     assert len(verdict["cells"]) == 216
     completed = {cell for cell, read in verdict["cells"].items() if read["state"] == "completed"}
-    # The first W1 cell of each kind and the first W0 cell ran first, then the next cell in
-    # registration order; each completed, as did the picks job. The rest were never run.
+    # The first W1 cell of each kind (the V3 selector and a fixed long-only V3 rule both)
+    # and the first W0 cell; each completed, as did the picks job. The rest were never run.
     assert completed == {
         "w1.spot_trend.olhc.c1.research",
         "w1.matched_spot_hold.native.c1.research",
         "w1.unchanged_v3_selector.native.c1.research",
+        "w1.unchanged_v3_r1_long_only.native.c1.research",
         "w1.matched_v0_grid_high_first.native.c1.research",
         "w0.combined.olhc.c1.research",
-        "w1.unchanged_v3_selector.native.c1.owner_small",
     }
+    assert verdict["mode"] == "smoke"
     assert {read["state"] for cell, read in verdict["cells"].items() if cell not in completed} == {
         "missing"
     }
@@ -405,6 +406,7 @@ def test_each_cell_kind_runs_through_the_execution_gate(registered, tmp_path, ca
     assert completed == set(KIND_CELLS.values()) and verdict["v3_picks"]["state"] == "completed"
     # Every job ran as attempt 1 of the run aggregation names: no re-run.
     assert verdict["run"]["run_id"] == "38267478452" and verdict["run"]["reruns"] == []
+    assert verdict["mode"] == "registered"
 
 
 def test_picks_and_aggregate_refuse_without_the_gate(registered, tmp_path, capsys):
@@ -418,6 +420,55 @@ def test_picks_and_aggregate_refuse_without_the_gate(registered, tmp_path, capsy
         code, _, err = run(registered_args(registered, command, *extra, repo=copy), capsys)
         assert code == 1 and "src/crypto_grid_bot/combined/engine.py" in err
     assert not (tmp_path / "p").exists() and not (tmp_path / "a").exists()
+
+
+def test_a_long_only_v3_cell_runs_without_picks_and_only_the_selector_needs_them(
+    registered, tmp_path, capsys
+):
+    """Only the selector reads the picks (Ruling C1). A fixed long-only V3 rule runs from
+    run-main's very arguments (no --picks; the legacy dataset, which it ignores), before any
+    picks job exists; the selector without --picks, and a long-only rule given one, are
+    refused before anything is written (a refusal, not a warning: the cell's inputs are
+    exact, and a picks directory handed to a cell that never reads it is a wiring error)."""
+    long_only = "w1.unchanged_v3_r1_long_only.native.c1.research"
+    selector = "w1.unchanged_v3_selector.native.c1.research"
+
+    def run_main(cell, out, *extra):  # the run-main step's arguments
+        argv = registered_args(
+            registered,
+            "run-cell",
+            "--cell",
+            cell,
+            "--packs",
+            str(registered.packs),
+            "--attempt-id",
+            RUN,
+            "--legacy-data",
+            str(registered.legacy),
+            "--out",
+            str(out),
+            *extra,
+        )
+        return run(argv, capsys)
+
+    out = tmp_path / f"cell-{long_only}-attempt-1"
+    code, document, err = run_main(long_only, out)
+    assert code == 0, err
+    directory = out / long_only
+    assert document["kind"] == "v3" and (directory / "outcome.json").is_file()
+    native = (directory / "native_evidence.json").read_text(encoding="ascii")
+    assert "v3-picks" not in native  # it cites the V3 pack and the run-manifest alone
+    # The selector without --picks: refused.
+    code, _, err = run_main(selector, tmp_path / "selector")
+    assert code == 1 and "the V3 selector needs --picks" in err
+    assert not (tmp_path / "selector").exists()
+    # A long-only rule given --picks: refused.
+    picks = tmp_path / "v3_picks"
+    picks.mkdir()
+    other = "w1.unchanged_v3_r2_long_only.native.c1.research"
+    code, _, err = run_main(other, tmp_path / "given", "--picks", str(picks))
+    assert code == 1 and "a fixed long-only V3 rule reads no picks; --picks refused" in err
+    assert not (tmp_path / "given").exists()
 
 
 @pytest.mark.parametrize(
@@ -584,11 +635,16 @@ def test_the_rehearsal_runs_the_registered_job_graph_offline(
     original = (baseline_v3.run_walk_forward, run_baselines.mask_job)
     run_id = "4242-attempt-1"
 
-    # plan: the gate, then five cells (one W1 cell of each kind, one W0 cell).
-    code, planned, err = run(rehearsal_args(rehearsal, "plan", "--cells", "5"), capsys)
+    # plan: the gate, then six cells (one W1 cell of each kind, the selector and a fixed
+    # long-only V3 rule both, and one W0 cell); fewer cannot exercise every cell path.
+    code, _, err = run(rehearsal_args(rehearsal, "plan", "--cells", "5"), capsys)
+    assert code == 1 and "--cells: at least 6" in err
+    code, planned, err = run(rehearsal_args(rehearsal, "plan", "--cells", "6"), capsys)
     assert code == 0, err
     assert planned["v3_cells"] == ["w1.unchanged_v3_selector.native.c1.research"]
-    assert len(planned["main_cells"]) == 4 and planned["cells_planned"] == 5
+    assert len(planned["main_cells"]) == 5 and planned["cells_planned"] == 6
+    # The long-only V3 rule runs in the main matrix, without the picks.
+    assert "w1.unchanged_v3_r1_long_only.native.c1.research" in planned["main_cells"]
     assert planned["registration_sha256"] == rehearsal.document["registration_sha256"]
 
     # prepare: the registered gates, the world's dataset verified, the packs reproduced.
@@ -653,7 +709,10 @@ def test_the_rehearsal_runs_the_registered_job_graph_offline(
     completed = {c for c, read in verdict["cells"].items() if read["state"] == "completed"}
     assert completed == set(planned["main_cells"] + planned["v3_cells"])
     assert verdict["v3_picks"]["state"] == "completed" and verdict["run"]["reruns"] == []
-    assert judged["status"] == "incomplete"  # 5 of 216 cells: never a verdict
+    assert judged["status"] == "incomplete"  # 6 of 216 cells: never a verdict
+    assert verdict["mode"] == "rehearsal"
+    summary_md = (tmp_path / "a" / "summary" / "summary.md").read_text(encoding="utf-8")
+    assert summary_md.startswith("# V3.1 run summary: REHEARSAL")
     assert (baseline_v3.run_walk_forward, run_baselines.mask_job) == original
 
 

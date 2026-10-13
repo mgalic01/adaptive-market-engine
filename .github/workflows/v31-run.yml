@@ -36,7 +36,9 @@ name: v31-run
 #   commits the rehearsal marker (so the real gate, adapter pins and change check run on
 #   it) and a registration on top. Only a rehearsal runs the smoke's stand-ins, and a
 #   registered run refuses any world built for one. It fetches nothing; rehearsal_cells
-#   runs only the first N cells (at least 5), all 216 by default.
+#   runs only the first N cells (at least 6), all 216 by default. Its verdict names its
+#   mode, and its summary and status are uploaded under rehearsal names, so a synthetic
+#   PASS never passes for the registered run's.
 # - registered: the registered experiment, once. plan checks that
 #   config/v3_1_registration.json hashes to the dispatched registration_sha256, runs the
 #   job gate and lists the cells; prepare builds the packs; picks computes V3's selector
@@ -52,7 +54,8 @@ name: v31-run
 # - v3-picks-attempt-<n>: v3_picks/ (the picks job's directory)
 # - cell-<cell_id>-attempt-<n>: <cell_id>/ (one cell's directory)
 # - v31-summary-attempt-<n>: summary/ (the verdict); v31-smoke-summary-attempt-<n>: the
-#   smoke's summary; v31-status-attempt-<n>: status.json, every job's result
+#   smoke's summary; v31-status-attempt-<n>: status.json, every job's result; in a
+#   rehearsal v31-rehearsal-summary-attempt-<n> and v31-rehearsal-status-attempt-<n>
 # - v31-timing-<part>-attempt-<n>: the timing files of one timing part
 # Aggregation reads each cell and picks artifact in its own folder, named for the artifact
 # (cells/cell-<id>-attempt-<n>/<id>/): it accepts no other layout.
@@ -105,7 +108,7 @@ on:
         default: ""
         type: string
       rehearsal_cells:
-        description: "rehearsal: run only the first N cells (at least 5); empty runs all 216"
+        description: "rehearsal: run only the first N cells (at least 6); empty runs all 216"
         required: false
         default: ""
         type: string
@@ -899,7 +902,7 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: v31-summary-attempt-${{ github.run_attempt }}
+          name: ${{ inputs.mode == 'rehearsal' && 'v31-rehearsal-summary' || 'v31-summary' }}-attempt-${{ github.run_attempt }}
           path: v31/summary-out
           if-no-files-found: error
           retention-days: 90
@@ -989,7 +992,7 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: v31-status-attempt-${{ github.run_attempt }}
+          name: ${{ inputs.mode == 'rehearsal' && 'v31-rehearsal-status' || 'v31-status' }}-attempt-${{ github.run_attempt }}
           path: v31/status
           if-no-files-found: error
           retention-days: 90

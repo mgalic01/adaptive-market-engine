@@ -217,9 +217,12 @@ def hold(world: World, cell_id: str, out_dir: Path, attempt_id: str = ATTEMPT) -
 
 
 def v3(world: World, cell_id: str, picks: Path, out_dir: Path, attempt_id: str = ATTEMPT):
+    """Run a V3 cell as run-cell does: the selector on ``picks``, a fixed long-only rule on
+    none (it reads no picks)."""
     cell = cell_of(world, cell_id)
+    given = picks if cell.arm == SELECTOR else None
     return run_v3_cell(
-        cell, world.v3, picks, world.reg, out_dir, attempt_id=attempt_id, repo_head=HEAD
+        cell, world.v3, given, world.reg, out_dir, attempt_id=attempt_id, repo_head=HEAD
     )
 
 
@@ -968,14 +971,14 @@ def test_baseline_runs_refuse_other_cells_and_inputs_before_writing(world, picke
     with pytest.raises(ValueError, match="not registered"):
         run_hold_cell(replace(hold_cell, capital_id="other"), world.w1, reg, tmp_path, **options)
     with pytest.raises(ValueError, match="not registered"):
-        run_v3_cell(replace(rule_cell, cost_multiple=3), world.v3, path, reg, tmp_path, **options)
+        run_v3_cell(replace(rule_cell, cost_multiple=3), world.v3, None, reg, tmp_path, **options)
     with pytest.raises(ValueError, match="pack window"):
         w0 = replace(world.w1, window_id="w0")
         run_hold_cell(hold_cell, w0, reg, tmp_path, **options)
     with pytest.raises(ValueError, match="skipped hours"):
         run_hold_cell(hold_cell, replace(world.w1, skipped_hours=()), reg, tmp_path, **options)
     with pytest.raises(ValueError, match="V3 inputs"):
-        run_v3_cell(rule_cell, world.w1, path, reg, tmp_path, **options)
+        run_v3_cell(rule_cell, world.w1, None, reg, tmp_path, **options)
     with pytest.raises(ValueError, match="V3 inputs"):
         compute_v3_picks(world.w1, reg, tmp_path, **options)
     for bad in ({"attempt_id": " "}, {"repo_head": "HEAD"}):
@@ -983,12 +986,41 @@ def test_baseline_runs_refuse_other_cells_and_inputs_before_writing(world, picke
         with pytest.raises(ValueError, match="attempt|repo head"):
             run_hold_cell(hold_cell, world.w1, reg, tmp_path, **arguments)
         with pytest.raises(ValueError, match="attempt|repo head"):
-            run_v3_cell(rule_cell, world.v3, path, reg, tmp_path, **arguments)
+            run_v3_cell(rule_cell, world.v3, None, reg, tmp_path, **arguments)
         with pytest.raises(ValueError, match="attempt|repo head"):
             compute_v3_picks(world.v3, reg, tmp_path, **arguments)
+    selector_cell = cell_of(world, SELECTOR_CELL)
     with pytest.raises(FileNotFoundError):
-        run_v3_cell(rule_cell, world.v3, tmp_path / "missing.json", reg, tmp_path, **options)
+        run_v3_cell(selector_cell, world.v3, tmp_path / "missing.json", reg, tmp_path, **options)
+    # Only the selector reads picks: it refuses to run without them, and a fixed long-only
+    # rule refuses any (its inputs are exact: it never names the picks job).
+    with pytest.raises(ValueError, match="the V3 selector replays the picks; none given"):
+        run_v3_cell(selector_cell, world.v3, None, reg, tmp_path, **options)
+    with pytest.raises(ValueError, match="a fixed long-only V3 rule reads no picks"):
+        run_v3_cell(rule_cell, world.v3, path, reg, tmp_path, **options)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_long_only_v3_cell_needs_no_picks_job(world, tmp_path, monkeypatch):
+    """A fixed long-only rule replays its own rule from the window's start: it runs before
+    any picks job exists, reads none, and its claim, identity and references cite only the
+    V3 input pack and the run-manifest."""
+
+    def no_picks(*args, **kwargs):
+        raise AssertionError("a long-only V3 cell read the picks")
+
+    monkeypatch.setattr(run_baselines, "_read_picks", no_picks)
+    directory = v3(world, RULE_CELL, tmp_path / "no-picks-job" / "v3_picks.json", tmp_path)
+    assert (directory / "attempt.json").read_bytes() == attempt_record(
+        world, RULE_CELL, world.v3_sha
+    )
+    outcome = decode_outcome((directory / "outcome.json").read_text(encoding="ascii"))
+    report = decode_report((directory / "report.json").read_text(encoding="ascii"))
+    assert outcome.complete and outcome.identity.arm == "unchanged_v3_r2_long_only"
+    refs = (f"v3-pack:{world.v3_sha}", f"v31-run-manifest:{world.manifest_sha}")
+    assert report.source_refs == refs
+    native = (directory / "native_evidence.json").read_text(encoding="ascii")
+    assert "v3-picks" not in native and "v3_picks" not in native
 
 
 def test_baseline_cells_give_byte_identical_artifacts(world, picked, tmp_path):
