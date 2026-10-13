@@ -19,9 +19,10 @@ permissions:
 jobs:
   test-and-audit:
     runs-on: ubuntu-latest
-    # The full suite takes 7.5-12 minutes on hosted runners (one multiprocessing pool
-    # test alone takes 2.5-4); 10 minutes, set when the suite was small, cancels it.
-    timeout-minutes: 20
+    # The whole job took 18.6 minutes on hosted runners at 1337669, and pytest alone
+    # 874 s at 9b5128e (one multiprocessing pool test takes 2.5-4 minutes); the V3.1
+    # driver's tests keep growing, so 20 minutes, set for a smaller suite, would cancel it.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
