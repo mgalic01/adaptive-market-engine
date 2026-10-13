@@ -13,6 +13,20 @@ from crypto_grid_bot.market_data.parsing import symbol_name
 
 ZERO = Decimal(0)
 
+# The owner-approved size limits, each a share of equity, as exact Fractions so no Decimal
+# context can move them. Source: docs/superpowers/specs/2026-10-10-v3-1-design.md, Package D.
+# tests/test_combined_risk_limits.py pins every value.
+# Spec 2026-10-10-v3-1-design.md, Package D: initial risk per asset 0.5% of equity.
+ASSET_RISK_LIMIT = Fraction(1, 200)
+# Spec 2026-10-10-v3-1-design.md, Package D: aggregate open+reserved stop risk <= 3%.
+AGGREGATE_RISK_LIMIT = Fraction(3, 100)
+# Spec 2026-10-10-v3-1-design.md, Package D: asset notional <= 20% of equity.
+ASSET_NOTIONAL_LIMIT = Fraction(1, 5)
+# Spec 2026-10-10-v3-1-design.md, Package D: portfolio gross <= 1.6x (absolute cap 2x).
+GROSS_LIMIT = Fraction(8, 5)
+# Spec 2026-10-10-v3-1-design.md, Package D: correlated group gross cap 80% of equity.
+GROUP_GROSS_LIMIT = Fraction(4, 5)
+
 
 def planned_price(price: Decimal, side: int, slip: Decimal, tick: Decimal) -> Decimal:
     """Planned adverse execution using an explicit tick, not a gap-price guarantee.
@@ -420,12 +434,12 @@ class PortfolioRisk:
             """The candidate's own asset risk and asset notional limits."""
             return min(
                 capacity(
-                    Fraction(1, 200) * Fraction(intent.risk_multiplier),
+                    ASSET_RISK_LIMIT * Fraction(intent.risk_multiplier),
                     Fraction(0),
                     Fraction(unit_risk),
                     capital,
                 ),
-                capacity(Fraction(1, 5), Fraction(0), Fraction(unit_notional), capital),
+                capacity(ASSET_NOTIONAL_LIMIT, Fraction(0), Fraction(unit_notional), capital),
             )
 
         def executable(bound: Fraction) -> Decimal | None:
@@ -443,9 +457,9 @@ class PortfolioRisk:
             Fraction(normal) * Fraction(fraction),
             Fraction(cash) / Fraction(unit_cash),
             own_limits(equity),
-            capacity(Fraction(3, 100), Fraction(used_risk), Fraction(unit_risk)),
-            capacity(Fraction(8, 5), Fraction(used_gross), Fraction(unit_notional)),
-            capacity(Fraction(4, 5), Fraction(group), Fraction(unit_notional)),
+            capacity(AGGREGATE_RISK_LIMIT, Fraction(used_risk), Fraction(unit_risk)),
+            capacity(GROSS_LIMIT, Fraction(used_gross), Fraction(unit_notional)),
+            capacity(GROUP_GROSS_LIMIT, Fraction(group), Fraction(unit_notional)),
         )
         # The candidate's costs also shrink limits on every other held/reserved
         # asset and correlation group. No priority rule can silently resize them.
@@ -453,13 +467,13 @@ class PortfolioRisk:
             for symbol in notionals:
                 quantity_bound = min(
                     quantity_bound,
-                    capacity(Fraction(1, 5), notionals[symbol], Fraction(0)),
-                    capacity(Fraction(1, 200) * multipliers[symbol], risks[symbol], Fraction(0)),
+                    capacity(ASSET_NOTIONAL_LIMIT, notionals[symbol], Fraction(0)),
+                    capacity(ASSET_RISK_LIMIT * multipliers[symbol], risks[symbol], Fraction(0)),
                 )
             for name, notional in group_totals.items():
                 if name != intent.correlation_group:
                     quantity_bound = min(
-                        quantity_bound, capacity(Fraction(4, 5), notional, Fraction(0))
+                        quantity_bound, capacity(GROUP_GROSS_LIMIT, notional, Fraction(0))
                     )
 
         def size_refusal() -> str:
