@@ -29,8 +29,8 @@ jobs:
       # The reviewer sees this bot's own earlier reviews and nothing else from the
       # thread: on a public repository anyone can comment, and a comment is not an
       # instruction. Only claude[bot] bodies reach the file, plus this workflow's own
-      # VOID notices (posted as github-actions[bot]), so a voided verdict never seeds
-      # an incremental scope.
+      # VOID notices (posted as github-actions[bot]), so the reviewer can tell which
+      # earlier verdicts were voided.
       - name: Collect this bot's earlier reviews
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,19 +57,15 @@ jobs:
 
             Reading the diff: use the SHAs above, never a branch name or HEAD (the checkout is a merge commit):
             `git log BASE_SHA..HEAD_SHA`, `git diff BASE_SHA...HEAD_SHA --stat`, `git diff BASE_SHA...HEAD_SHA -- <paths>`.
-            `gh pr diff` fails on a PR over GitHub's 20,000-line diff limit. This bot's earlier reviews of this PR, and only
-            those, are in /tmp/previous-reviews.md; nothing else from the PR thread is input to this review.
+            `gh pr diff` fails on a PR over GitHub's 20,000-line diff limit. This bot's earlier reviews of this PR (and this
+            workflow's VOID notices), and only those, are in /tmp/previous-reviews.md; use them to recheck earlier findings.
+            Nothing else from the PR thread is input to this review.
 
-            Scope and verdict. Your scope is either the whole diff BASE_SHA...HEAD_SHA, or, incrementally, the diff from an
-            earlier head to HEAD_SHA. Incremental is allowed only when the NEWEST entry in /tmp/previous-reviews.md (the last
-            one in the file) is a review that gave that head the verdict APPROVE with the scope "complete" or "incremental",
-            that head differs from HEAD_SHA (a re-run at the same head reviews the whole diff), and
-            `git merge-base --is-ancestor <that head> HEAD_SHA` succeeds, and `git log --merges <that head>..HEAD_SHA` lists
-            no commit (a merge of the base can hide a conflict resolution from the net diff). If any later review answered
-            CHANGES NEEDED or INCOMPLETE, the newest entry is an "Automated review VOID" notice or has no Scope line, or a merge
-            commit follows that head, your scope is the whole diff.
-            - APPROVE only when you read every changed line in your scope and found no required fix.
-            - INCOMPLETE when you could not read all of your scope (time, size or any other reason). INCOMPLETE is not an
+            Scope and verdict. Your scope is always the whole diff BASE_SHA...HEAD_SHA: an earlier verdict never stands in
+            for reading any part of it (docs/AGENT_HANDOFF.md: an extra commit or any change to the contribution means a full
+            review).
+            - APPROVE only when you read every changed line of the whole diff and found no required fix.
+            - INCOMPLETE when you could not read all of it (time, size or any other reason). INCOMPLETE is not an
               approval; never answer APPROVE for a partial reading.
             - CHANGES NEEDED when you found a required fix, whether or not you read everything.
             Tests: CI's quality job runs the full suite, which takes longer than one command may run, so do not run the whole of `pytest`.
@@ -82,11 +78,10 @@ jobs:
             `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md`.
             Do not use command substitution (`$(...)`), pipes or chained commands in Bash; they are refused.
             The body's first line is exactly `Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full>`.
-            Its second line is `Scope: complete`, `Scope: incremental since <earlier head SHA in full>`, or, for INCOMPLETE,
-            `Scope: partial` followed by what you did and did not read.
+            Its second line is `Scope: complete` or, for INCOMPLETE, `Scope: partial` followed by what you did and did not read.
             Then, written as instructions for the OpenAI Codex agent, a numbered list of concrete required fixes with file:line,
             then optional nits. If changes are needed, end the comment with: "@codex please address the required fixes above."
-          claude_args: '--allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Bash(gh pr diff:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git merge-base:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
+          claude_args: '--allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Bash(gh pr diff:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
       # Tests the reviewer ran against files it changed say nothing about the PR as pushed:
       # any change anywhere in the checkout voids the verdict, visibly. git status honours
       # .gitignore, so install and cache output does not count. The excluded paths are the

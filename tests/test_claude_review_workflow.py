@@ -22,7 +22,6 @@ ALLOWED = [
     "Bash(git log:*)",
     "Bash(git diff:*)",
     "Bash(git show:*)",
-    "Bash(git merge-base:*)",
     "Bash(pip install:*)",
     "Bash(pytest:*)",
     "Bash(ruff:*)",
@@ -87,23 +86,19 @@ def test_only_this_bots_earlier_reviews_reach_the_reviewer() -> None:
     # The action's own PR context is filtered too; its default includes every actor.
     assert action["include_comments_by_actor"] == "claude[bot]"
     prompt = action["prompt"]
-    assert "nothing else from the PR thread is input to this review" in prompt
+    assert "Nothing else from the PR thread is input to this review" in prompt
     assert "gh pr view" not in prompt
 
 
 def test_a_partial_reading_never_approves() -> None:
     prompt = step("anthropics/")["with"]["prompt"]
     assert "never answer APPROVE for a partial reading" in prompt
-    assert "APPROVE only when you read every changed line in your scope" in prompt
-    # Only the newest verdict can seed an incremental scope; a later finding supersedes it.
-    assert "Incremental is allowed only when the NEWEST entry" in prompt
-    # A re-run at the same head never reviews an empty delta; a VOID notice is no seed.
-    assert "that head differs from HEAD_SHA" in prompt
-    assert 'the newest entry is an "Automated review VOID" notice' in prompt
-    assert "If any later review answered\nCHANGES NEEDED or INCOMPLETE" in prompt
-    # A merge of the base can hide a conflict resolution from the net diff.
-    assert "`git log --merges <that head>..HEAD_SHA` lists\nno commit" in prompt
-    assert "or a merge\ncommit follows that head, your scope is the whole diff" in prompt
+    assert "APPROVE only when you read every changed line of the whole diff" in prompt
+    # No scoped approval: an earlier verdict never stands in for reading part of the diff
+    # (docs/AGENT_HANDOFF.md: any change to the contribution means a full review).
+    assert "Your scope is always the whole diff BASE_SHA...HEAD_SHA" in prompt
+    assert "incremental" not in prompt.lower()
+    assert "Its second line is `Scope: complete` or, for INCOMPLETE, `Scope: partial`" in prompt
     assert "Never modify, create or delete a file in the checkout" in prompt
     assert "Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full>" in prompt
     assert "git diff BASE_SHA...HEAD_SHA" in prompt and "origin/main" not in prompt
