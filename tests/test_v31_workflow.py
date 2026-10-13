@@ -524,7 +524,7 @@ def test_artifact_names_carry_the_run_attempt_and_nest_the_cell_folder() -> None
     ((_, picks),) = _driver_calls("picks")
     upload = _upload("picks", f"v3-picks-{attempt}")
     assert upload["path"] == _option(picks, "--out") == "v31/picks-out"  # holds v3_picks/
-    for name in ("picks", *MATRIX_JOBS):
+    for name in ("picks", *MATRIX_JOBS, "aggregate"):
         for _, call in _driver_calls(name):
             assert _option(call, "--attempt-id") == "X-attempt-X"
         assert any(f"--attempt-id {ATTEMPT_ID}" in s for s in _scripts(name)), name
@@ -961,7 +961,7 @@ def test_each_driver_step_passes_the_dispatch_values_to_the_cli(tmp_path: Path) 
             assert args.legacy_data == ("v31/legacy-data" if job == "run-main" else None)
         elif args.command == "aggregate":
             assert (args.cells, args.out) == ("v31/cells", "v31/summary-out")
-            assert args.registration_sha256 == "a" * 64
+            assert (args.attempt_id, args.registration_sha256) == ("4242-attempt-2", "a" * 64)
         else:
             assert args.command == "smoke" and (args.out, args.cells) == ("v31/smoke", None)
     assert sorted(seen, key=str) == sorted(

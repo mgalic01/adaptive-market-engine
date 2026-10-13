@@ -45,7 +45,7 @@ from crypto_grid_bot.combined.baseline_hold import HoldMarket, replay_hold_basel
 from crypto_grid_bot.combined.baseline_v3 import V3Inputs
 from crypto_grid_bot.combined.driver import aggregate as aggregation
 from crypto_grid_bot.combined.driver import run_baselines, run_cell
-from crypto_grid_bot.combined.driver.aggregate import aggregate
+from crypto_grid_bot.combined.driver.aggregate import aggregate as aggregate_cells
 from crypto_grid_bot.combined.driver.packs import WindowPack, read_pack, write_pack
 from crypto_grid_bot.combined.driver.registration import (
     V1_VARIANTS,
@@ -102,6 +102,7 @@ W0_MISSING = "w0.combined.olhc.c1.research"
 W0_CELL = "w0.combined.ohlc.c2.owner_small"
 COMPONENT = "w1.spot_trend.ohlc.c2.research"
 PICKS = "v3_picks"
+RUN = "run-1-attempt-1"  # aggregation's own attempt id: the run of every attempt_of()
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,12 @@ def world(tmp_path_factory) -> World:
     write_json(registration_path, document)
     reg = load_registration(registration_path, manifest_file, repo_root=root)
     return World(reg, packs, read_v3_pack(root / "v3.json.gz", reg.run_manifest.v3_pack))
+
+
+def aggregate(reg: DriverRegistration, cells: Path, out: Path, *, attempt_id: str = RUN) -> Path:
+    """``aggregate`` as the workflow calls it, by default as attempt 1 of run ``run-1``,
+    the run every cell of the matrix claims."""
+    return aggregate_cells(reg, cells, out, attempt_id=attempt_id)
 
 
 def attempt_of(cell_id: str) -> str:
@@ -474,6 +481,7 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
         entry, directory = cells[cell.cell_id], cell_dir(matrix, cell.cell_id)
         assert entry["state"] == "completed" and entry["reasons"] == []
         assert entry["attempt_id"] == attempt_of(cell.cell_id) and entry["failure"] is None
+        assert (entry["artifact_attempt"], entry["run_id"]) == (1, "run-1")
         assert entry["outcome_sha256"] == sha256(directory / "outcome.json")
         assert entry["report_sha256"] == sha256(directory / "report.json")
         if cell.kind == "v31":
@@ -491,8 +499,19 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
             assert entry["bundle_receipt_sha256"] is None and entry["page"] is None
     assert verdict["v3_picks"] == {
         "state": "completed",
+        "artifact_attempt": 1,
+        "run_id": "run-1",
         "receipt_sha256": sha256(cell_dir(matrix, PICKS) / "outcome.json"),
         "reasons": [],
+    }
+    # Aggregation's own run, and no re-run: every folder is attempt 1 of run-1.
+    assert verdict["run"] == {
+        "attempt_id": RUN,
+        "run_id": "run-1",
+        "aggregate_attempt": 1,
+        "rerun_detected": False,
+        "reruns": [],
+        "reported_only_reruns": [],
     }
 
     # The pages: the full combined cells carry acceptance's judgment of their cell, the
@@ -595,6 +614,8 @@ def test_a_missing_cell_is_incomplete_not_a_crash(world, defective, expected_def
     assert f"{key}: missing or repeated cell (0 outcomes)" in verdict["incomplete_reasons"]
     assert verdict["cells"][MISSING] == {
         "state": "missing",
+        "artifact_attempt": None,
+        "run_id": None,
         "attempt_id": None,
         "failure": None,
         "reasons": [],
@@ -603,7 +624,8 @@ def test_a_missing_cell_is_incomplete_not_a_crash(world, defective, expected_def
         "bundle_receipt_sha256": None,
         "page": None,
     }
-    assert f"{MISSING}: missing, never run" in verdict["cell_incomplete_reasons"]
+    reason = f"{MISSING}: no artifact: not run, or failed before its claim"
+    assert reason in verdict["cell_incomplete_reasons"]
 
 
 def test_a_w1_cell_with_only_failure_json_is_incomplete_and_records_the_failure(world, defective):
@@ -826,6 +848,12 @@ def test_a_claim_of_another_attempt_than_its_folder_is_refused(world, matrix, tm
     verdict = read_verdict(aggregate(world.reg, cells, mkdir(tmp_path / "out")))
     entry = verdict["cells"][HOLD_CELL]
     assert (entry["state"], entry["attempt_id"]) == ("completed", "gha-77")
+    # ...but it names no run, and its folder is attempt 2: a re-run, never a verdict.
+    assert (entry["artifact_attempt"], entry["run_id"]) == (2, None)
+    assert verdict["run"]["reruns"] == [
+        f"{HOLD_CELL}: artifact attempt 2, not 1; claimed by an unreadable run, not this run run-1"
+    ]
+    assert verdict["status"] == "incomplete"
 
 
 # --- never a pass with missing comparisons ---------------------------------------------
@@ -879,3 +907,272 @@ def test_an_existing_summary_is_never_replaced(world, matrix, tmp_path):
     with pytest.raises(FileExistsError):
         aggregate(world.reg, cells, out)
     assert (out / "summary" / "verdict.json").read_text() == "earlier"
+
+
+# --- re-runs (Ruling F1) ---------------------------------------------------------------
+
+
+def retag(directory: Path, attempt_id: str) -> None:
+    """A baseline cell's claim and outcome under ``attempt_id``. Each file is replaced,
+    unlinked first, so a hard-linked copy of the matrix stays intact."""
+    claim_path, outcome_path = directory / "attempt.json", directory / "outcome.json"
+    claim = json.loads(claim_path.read_bytes())
+    outcome = decode_outcome(outcome_path.read_text(encoding="ascii"))
+    assert outcome.report_evidence is not None
+    evidence = replace(outcome.report_evidence, attempt_id=attempt_id)
+    retagged = replace(outcome, attempt_id=attempt_id, report_evidence=evidence)
+    for path, raw in (
+        (claim_path, _canonical({**claim, "attempt_id": attempt_id})),
+        (outcome_path, encode_outcome(retagged).encode("ascii")),
+    ):
+        path.unlink()
+        path.write_bytes(raw)
+
+
+def rerun(cells: Path, cell_id: str, attempt: int, run: str = "run-1") -> None:
+    """``cell_id`` as a re-run leaves it: its folder named for ``attempt``, and its claim
+    and outcome those of attempt ``attempt`` of ``run``."""
+    target = cells / folder_of(cell_id, attempt)
+    if attempt != 1:
+        (cells / folder_of(cell_id)).rename(target)
+    retag(target / cell_id, f"{run}-{cell_id}-attempt-{attempt}")
+
+
+def stub_acceptance(monkeypatch, decoded: dict[str, RunOutcome], status: str = "pass") -> None:
+    """Acceptance stubbed to ``status``; the matrix's outcomes from their one decode and
+    pages as a stub, to keep full aggregations fast (neither affects the status)."""
+    decode = aggregation.decode_outcome
+
+    def accept(registration, outcomes):
+        failures = ("a stubbed failure",) if status == "fail" else ()
+        return AcceptanceResult(status, failures, (), tuple(outcomes))
+
+    monkeypatch.setattr(aggregation, "evaluate", accept)
+    monkeypatch.setattr(
+        aggregation, "decode_outcome", lambda text: decoded.get(text) or decode(text)
+    )
+    monkeypatch.setattr(
+        aggregation, "render_bundle_report", lambda report, title, **_: (title, None)
+    )
+
+
+SECOND_HOLD = MISSING  # w1.matched_spot_hold.native.c2.research
+W0_RERUN = W0_CELL  # a W0 cell: reported only
+
+
+@pytest.mark.parametrize(
+    ("case", "attempt_id", "expected"),
+    [
+        ("lone attempt 2", RUN, [f"{HOLD_CELL}: artifact attempt 2, not 1"]),
+        (
+            "mixed attempts",
+            RUN,
+            [
+                f"{HOLD_CELL}: artifact attempt 2, not 1",
+                f"{SECOND_HOLD}: artifact attempt 3, not 1",
+            ],
+        ),
+        ("foreign run id", RUN, [f"{HOLD_CELL}: claimed by run run-9, not this run run-1"]),
+        ("aggregated by another run", "run-2-attempt-1", None),
+        ("aggregate re-run alone", "run-1-attempt-2", []),
+        ("a W0 re-run", RUN, []),
+    ],
+)
+def test_a_rerun_makes_an_acceptance_pass_incomplete(
+    world, matrix, decoded, tmp_path, monkeypatch, case, attempt_id, expected
+):
+    """Acceptance stubbed to pass: any W1 cell (or the picks job) from an artifact attempt
+    other than 1, or claimed by another run than aggregation's, makes it incomplete. A
+    lone attempt-2 folder is one: attempt 1 of that cell left no artifact at all."""
+    cells = long_paths(tmp_path / "cells")
+    shutil.copytree(matrix, cells, copy_function=os.link)
+    if case == "lone attempt 2":
+        rerun(cells, HOLD_CELL, 2)
+    elif case == "mixed attempts":
+        rerun(cells, HOLD_CELL, 2)
+        rerun(cells, SECOND_HOLD, 3)
+    elif case == "foreign run id":
+        rerun(cells, HOLD_CELL, 1, run="run-9")
+    elif case == "a W0 re-run":
+        shutil.rmtree(cells / folder_of(W0_RERUN))  # W0 is reported only
+        shutil.copytree(cell_dir(matrix, W0_RERUN), cell_dir(cells, W0_RERUN, 2))
+        claim = cell_dir(cells, W0_RERUN, 2) / "attempt.json"
+        document = json.loads(claim.read_bytes())
+        # Its claim names attempt 2 (its outcome still names 1, so the cell is invalid;
+        # W0 never reaches the status either way).
+        retagged = f"run-1-{W0_RERUN}-attempt-2"
+        claim.write_bytes(_canonical({**document, "attempt_id": retagged}))
+    stub_acceptance(monkeypatch, decoded)
+    verdict = read_verdict(
+        aggregate(world.reg, cells, mkdir(tmp_path / "out"), attempt_id=attempt_id)
+    )
+    assert verdict["acceptance_status"] == "pass"
+    reruns = verdict["run"]["reruns"]
+    if expected is None:  # every artifact claims run-1, aggregation is run-2: all 209
+        assert len(reruns) == 208 + 1
+        assert reruns[-1] == f"{PICKS}: claimed by run run-1, not this run run-2"
+    else:
+        assert reruns == expected
+    assert verdict["run"]["rerun_detected"] is bool(reruns)
+    if not reruns:
+        assert verdict["status"] == "pass"
+        if case == "a W0 re-run":
+            assert verdict["run"]["reported_only_reruns"] == [
+                f"{W0_RERUN}: artifact attempt 2, not 1"
+            ]
+            assert verdict["cells"][W0_RERUN]["artifact_attempt"] == 2
+        else:
+            assert verdict["run"]["aggregate_attempt"] == 2  # re-running aggregate alone
+        return
+    assert verdict["status"] == "incomplete"
+    text = (tmp_path / "out" / "summary" / "summary.md").read_text(encoding="utf-8")
+    assert "Verdict: **INCOMPLETE** (re-run detected:" in text
+    section = text.split("## Re-run detected", 1)[1].split("\n## ", 1)[0]
+    for item in reruns[:3]:
+        assert f"- {item}" in section
+    if case == "lone attempt 2":
+        entry = verdict["cells"][HOLD_CELL]
+        assert entry["state"] == "completed"  # the cell itself holds together
+        assert (entry["artifact_attempt"], entry["run_id"]) == (2, "run-1")
+    if case == "foreign run id":
+        assert verdict["cells"][HOLD_CELL]["run_id"] == "run-9"
+
+
+def test_a_rerun_voids_an_acceptance_fail_too(world, matrix, decoded, tmp_path, monkeypatch):
+    cells = long_paths(tmp_path / "cells")
+    shutil.copytree(matrix, cells, copy_function=os.link)
+    rerun(cells, HOLD_CELL, 2)
+    stub_acceptance(monkeypatch, decoded, status="fail")
+    verdict = read_verdict(aggregate(world.reg, cells, mkdir(tmp_path / "out")))
+    assert (verdict["acceptance_status"], verdict["status"]) == ("fail", "incomplete")
+    assert verdict["failures"] == ["a stubbed failure"]  # still disclosed
+    # Without the re-run the same stub is a fail.
+    clean = copy_cells(matrix, tmp_path / "clean", (HOLD_CELL,))
+    assert read_verdict(aggregate(world.reg, clean, mkdir(tmp_path / "out2")))["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "bad", ["run-1", "run-1-attempt-01", "run-1-attempt-0", "-attempt-1", "", None]
+)
+def test_a_malformed_aggregate_attempt_id_is_refused_before_anything_is_written(
+    world, matrix, tmp_path, bad
+):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))
+    out = mkdir(tmp_path / "out")
+    with pytest.raises(ValueError, match="aggregate attempt id"):
+        aggregate(world.reg, cells, out, attempt_id=bad)
+    assert list(out.iterdir()) == []
+
+
+# --- the other invalid and refused branches (Ruling F12) --------------------------------
+
+
+def test_a_report_labelled_with_another_capital_is_refused(world, matrix, tmp_path):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))  # a research cell
+    path = cell_dir(cells, HOLD_CELL) / "outcome.json"
+    outcome = decode_outcome(path.read_text(encoding="ascii"))
+    assert outcome.report_evidence is not None
+    owner = run_cell._capital(world.reg, "owner_small")
+    report = replace(outcome.report_evidence.report, capital_label=capital_label(owner))
+    evidence = replace(outcome.report_evidence, report=report)
+    path.write_bytes(encode_outcome(replace(outcome, report_evidence=evidence)).encode("ascii"))
+    out = mkdir(tmp_path / "out")
+    with pytest.raises(ValueError) as refused:
+        aggregate(world.reg, cells, out)
+    assert f"{HOLD_CELL}: its report is labelled with another capital" in str(refused.value)
+    assert list(out.iterdir()) == []
+
+
+def invalid_reasons(world: World, cells: Path, tmp_path: Path, cell_id: str) -> list[str]:
+    """Aggregate ``cells``; ``cell_id`` must be invalid and the run incomplete: its
+    reasons."""
+    verdict = read_verdict(aggregate(world.reg, cells, mkdir(tmp_path / "out")))
+    entry = verdict["cells"][cell_id]
+    assert entry["state"] == "invalid" and verdict["status"] != "pass"
+    assert any(r.startswith(f"{cell_id}: ") for r in verdict["cell_incomplete_reasons"])
+    return entry["reasons"]
+
+
+def test_a_report_json_that_is_not_the_outcomes_report_makes_the_cell_invalid(
+    world, matrix, tmp_path
+):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))
+    other = cell_dir(matrix, SECOND_HOLD) / "report.json"  # the doubled-cost cell's report
+    (cell_dir(cells, HOLD_CELL) / "report.json").write_bytes(other.read_bytes())
+    reasons = invalid_reasons(world, cells, tmp_path, HOLD_CELL)
+    assert reasons == ["report.json is not the outcome's report evidence"]
+
+
+def test_a_bundle_that_does_not_bind_its_outcome_makes_the_cell_invalid(world, matrix, tmp_path):
+    cells = copy_cells(matrix, tmp_path / "cells", (COMBINED[0],))
+    path = cell_dir(cells, COMBINED[0]) / "outcome.json"
+    outcome = decode_outcome(path.read_text(encoding="ascii"))
+    changed = replace(outcome, disclosures=(*outcome.disclosures, "edited after the bundle"))
+    path.write_bytes(encode_outcome(changed).encode("ascii"))
+    reasons = invalid_reasons(world, cells, tmp_path, COMBINED[0])
+    invocation_name = invocation(COMBINED[0])
+    assert reasons == [
+        f"evidence bundle {invocation_name}/ does not bind this cell's outcome and report"
+    ]
+
+
+def test_an_outcome_of_another_attempt_than_its_claim_makes_the_cell_invalid(
+    world, matrix, tmp_path
+):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))
+    path = cell_dir(cells, HOLD_CELL) / "outcome.json"
+    outcome = decode_outcome(path.read_text(encoding="ascii"))
+    assert outcome.report_evidence is not None
+    other = "run-1-another-attempt-1"
+    evidence = replace(outcome.report_evidence, attempt_id=other)
+    path.write_bytes(
+        encode_outcome(replace(outcome, attempt_id=other, report_evidence=evidence)).encode()
+    )
+    reasons = invalid_reasons(world, cells, tmp_path, HOLD_CELL)
+    assert reasons == ["the outcome is of another attempt than the claim"]
+
+
+def test_an_unreadable_outcome_makes_the_cell_invalid(world, matrix, tmp_path):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))
+    (cell_dir(cells, HOLD_CELL) / "outcome.json").write_bytes(b'{"schema": "not an outcome"}')
+    (reason,) = invalid_reasons(world, cells, tmp_path, HOLD_CELL)
+    assert reason.startswith("outcome.json unreadable: ")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "named"),
+    [
+        ("job", "w1.combined.olhc.c1.research", "its attempt.json claims job"),
+        ("code_pin", "8" * 40, "attempt.json code_pin"),
+        ("config_pin", "8" * 64, "attempt.json config_pin"),
+        ("data_pin", "8" * 64, "attempt.json data_pin"),
+        ("pack_sha256", "8" * 64, "attempt.json pack_sha256"),
+    ],
+)
+def test_a_picks_claim_of_another_job_or_other_pins_is_refused(
+    world, matrix, tmp_path, field, value, named
+):
+    cells = copy_cells(matrix, tmp_path / "cells", (PICKS, HOLD_CELL))
+    path = cell_dir(cells, PICKS) / "attempt.json"
+    path.write_bytes(_canonical({**json.loads(path.read_bytes()), field: value}))
+    out = mkdir(tmp_path / "out")
+    with pytest.raises(ValueError) as refused:
+        aggregate(world.reg, cells, out)
+    assert f"{PICKS}: " in str(refused.value) and named in str(refused.value)
+    assert HOLD_CELL not in str(refused.value)
+    assert list(out.iterdir()) == []
+
+
+def test_two_picks_jobs_are_refused_as_duplicates(world, matrix, tmp_path):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))
+    for attempt in (1, 3):
+        shutil.copytree(cell_dir(matrix, PICKS), cell_dir(cells, PICKS, attempt))
+    claim = cell_dir(cells, PICKS, 3) / "attempt.json"
+    document = json.loads(claim.read_bytes())
+    claim.write_bytes(_canonical({**document, "attempt_id": "run-1-v3_picks-attempt-3"}))
+    out = mkdir(tmp_path / "out")
+    with pytest.raises(ValueError) as refused:
+        aggregate(world.reg, cells, out)
+    message = str(refused.value)
+    assert "v3_picks: duplicate artifact sets (v3-picks-attempt-1, v3-picks-attempt-3)" in message
+    assert list(out.iterdir()) == []

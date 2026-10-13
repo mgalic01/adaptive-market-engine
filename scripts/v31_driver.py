@@ -41,8 +41,10 @@ read.
     checks; then the cell by its kind: ``O/<cell_id>/``. A V3 cell takes the whole
     ``v3_picks/`` directory of the same workflow run (``--picks``); a minute cell the
     legacy dataset (``--legacy-data``), verified first.
-``aggregate --cells D --out O``
-    ``job_gate``, then the verdict and summary: ``O/summary/``.
+``aggregate --cells D --attempt-id ID --out O``
+    ``job_gate``, then the verdict and summary: ``O/summary/``. ``ID`` is the workflow's
+    ``<run_id>-attempt-<run_attempt>``; a W1 cell or the picks job from another artifact
+    attempt than 1 or another run makes the verdict incomplete (re-run detected).
 ``smoke --out O [--cells N]``
     No gate and no network: a synthetic world (``v31_smoke``) with all 42 arms and 216
     cells on three-day windows, its packs, the picks job, every cell (or the first ``N``,
@@ -1089,7 +1091,7 @@ def aggregate_cells(args: argparse.Namespace) -> dict[str, object]:
     job_gate(reg, repo, registration_sha256=args.registration_sha256, manifest_sha256=manifest_sha)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    summary = aggregate(reg, Path(args.cells), out)
+    summary = aggregate(reg, Path(args.cells), out, attempt_id=args.attempt_id)
     return _verdict_document(summary)
 
 
@@ -1190,7 +1192,7 @@ def smoke(args: argparse.Namespace) -> dict[str, object]:
             folder.mkdir()
             directory.rename(folder / cell.cell_id)
         (root / "a").mkdir()
-        summary = aggregate(reg, cells_dir, _extended(root / "a"))
+        summary = aggregate(reg, cells_dir, _extended(root / "a"), attempt_id=attempt)
     seconds = time.monotonic() - began
     log(f"smoke: {len(selected)} of {len(reg.cells)} cells, picks and aggregate in {seconds:.1f} s")
     return {
@@ -1260,6 +1262,13 @@ def build_parser() -> argparse.ArgumentParser:
     agg = commands.add_parser("aggregate", help="the verdict and summary")
     registered(agg)
     agg.add_argument("--cells", required=True)
+    agg.add_argument(
+        "--attempt-id",
+        required=True,
+        help="the workflow's <run_id>-attempt-<run_attempt>: every W1 cell and the picks "
+        "job must be attempt 1 of run <run_id>, or the verdict is incomplete (re-run "
+        "detected)",
+    )
     agg.add_argument("--out", required=True)
 
     smoke_ = commands.add_parser("smoke", help="offline, synthetic, end to end")

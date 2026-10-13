@@ -369,7 +369,14 @@ def test_each_cell_kind_runs_through_the_execution_gate(registered, tmp_path, ca
     (cells / "v3-picks-attempt-1").mkdir()
     picks.rename(cells / "v3-picks-attempt-1" / "v3_picks")
     argv = registered_args(
-        registered, "aggregate", "--cells", str(cells), "--out", str(tmp_path / "a")
+        registered,
+        "aggregate",
+        "--cells",
+        str(cells),
+        "--attempt-id",
+        RUN,
+        "--out",
+        str(tmp_path / "a"),
     )
     code, document, err = run(argv, capsys)
     assert code == 0, err
@@ -380,11 +387,13 @@ def test_each_cell_kind_runs_through_the_execution_gate(registered, tmp_path, ca
     assert document["verdict_sha256"] == sha(verdict_raw)
     completed = {cell for cell, read in verdict["cells"].items() if read["state"] == "completed"}
     assert completed == set(KIND_CELLS.values()) and verdict["v3_picks"]["state"] == "completed"
+    # Every job ran as attempt 1 of the run aggregation names: no re-run.
+    assert verdict["run"]["run_id"] == "38267478452" and verdict["run"]["reruns"] == []
 
 
 def test_picks_and_aggregate_refuse_without_the_gate(registered, tmp_path, capsys):
     picks = ("--packs", str(registered.packs), "--attempt-id", RUN, "--out", str(tmp_path / "p"))
-    summary = ("--cells", str(tmp_path), "--out", str(tmp_path / "a"))
+    summary = ("--cells", str(tmp_path), "--attempt-id", RUN, "--out", str(tmp_path / "a"))
     for command, extra in (("picks", picks), ("aggregate", summary)):
         code, _, err = run(registered_args(registered, command, *extra, sha="0" * 64), capsys)
         assert code == 1 and "job gate refused" in err and "not the expected" in err

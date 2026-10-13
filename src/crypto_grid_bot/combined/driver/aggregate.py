@@ -22,10 +22,23 @@ two picks folders (duplicates, such as attempts 1 and 2). A claim's ``attempt_id
 free text; when it ends in ``attempt-<m>`` (after its start or a character that is no
 letter or digit), ``<m>`` must be the folder's ``<n>``, digit for digit.
 
+Every artifact folder carries its attempt number, and every claim its run id (the
+``<run>`` of its ``<run>-<cell_id>-attempt-<m>`` or ``<run>-v3_picks-attempt-<m>``
+attempt id). ``aggregate`` takes the workflow's own ``<run_id>-attempt-<n>`` and records
+both for every folder in ``verdict.json``. A registered run is executed once: if any W1
+cell or the picks job comes from an artifact attempt other than 1, or under a claim whose
+run id is not aggregation's own (or cannot be read), a job was re-run, and the verdict is
+``incomplete`` with the reason "re-run detected", naming each, whatever acceptance
+returned: a lone ``cell-<id>-attempt-2`` folder (its attempt 1 left no artifact) is a
+re-run as surely as two folders are. ``summary.md`` discloses it. A W0 cell's re-run is
+disclosed too, and changes nothing, as W0 is reported only. Re-running aggregation alone
+(its own attempt number) is no re-run of any cell.
+
 A cell's state follows its run job's protocol: ``outcome.json`` (the completion marker)
 makes it ``completed``; ``failure.json`` a recorded ``failed`` attempt, its type and
 message kept (it wins over a marker beside it: that attempt raised); a claim alone, or an
-empty directory, ``killed``; no directory ``missing``. A completed cell whose artifacts
+empty directory, ``killed``; no directory ``missing`` (no artifact: not run, or failed
+before its claim). A completed cell whose artifacts
 do not hold together is ``invalid``: an unreadable outcome or claim, a claim of another
 attempt, a ``report.json`` that is not the outcome's report evidence, or, for a V3.1
 cell, an evidence bundle that is missing, does not verify (``read_bundle``) or does not
@@ -125,6 +138,8 @@ STATES = ("completed", "failed", "killed", "missing", "invalid")
 _CELL_ARTIFACT = re.compile(r"cell-([a-z0-9._-]+)-attempt-([1-9][0-9]*)")
 _PICKS_ARTIFACT = re.compile(r"v3-picks-attempt-([1-9][0-9]*)")
 _CLAIMED_ATTEMPT = re.compile(r"(?:^|[^A-Za-z0-9])attempt-([0-9]+)\Z")
+_RUN = "[A-Za-z0-9][A-Za-z0-9._-]*"  # a run id: the workflow's run id, or a test's name
+_RUN_ATTEMPT = re.compile(rf"({_RUN})-attempt-([1-9][0-9]*)")
 _CLAIM_KEYS = frozenset(
     {"attempt_id", "repo_head", "code_pin", "config_pin", "pack_sha256", "data_pin"}
 )
@@ -155,15 +170,19 @@ class _Page:
     report_json: tuple[str, str] | None  # (path, sha256) of its exact JSON beside it
 
 
-def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path) -> Path:
+def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path, *, attempt_id: str) -> Path:
     """Aggregate the cell artifacts in ``cells_dir`` into ``out_dir/summary`` and return
-    that directory (layout, states and refusals in the module docstring).
+    that directory (layout, states, re-runs and refusals in the module docstring).
 
-    Refuses, before anything is written, a registration ``check_registration`` refuses,
-    an existing summary, and every input the module docstring lists as refused, in one
-    ``ValueError`` naming each cell. A missing or incomplete cell is never refused: it
-    leaves the verdict ``incomplete``, unless acceptance fails it already.
+    ``attempt_id`` is the workflow's ``<run_id>-attempt-<n>``: every W1 cell and the picks
+    job must come from artifact attempt 1 under a claim of run ``<run_id>``, or the verdict
+    is ``incomplete`` (re-run detected). Refuses, before anything is written, a malformed
+    ``attempt_id``, a registration ``check_registration`` refuses, an existing summary, and
+    every input the module docstring lists as refused, in one ``ValueError`` naming each
+    cell. A missing or incomplete cell is never refused: it leaves the verdict
+    ``incomplete``, unless acceptance fails it already.
     """
+    run_id, run_attempt = _run_attempt(attempt_id)
     check_registration(reg)
     summary = Path(out_dir) / SUMMARY_DIR
     if summary.exists():
@@ -178,6 +197,20 @@ def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path) -> Path:
         picks = _read_picks_job(picks_dir, reg, refusals)
         if refusals:
             raise ValueError("aggregate refused:\n- " + "\n- ".join(refusals))
+        origins = {
+            cell.cell_id: _origin(cell.cell_id, directories.get(cell.cell_id), reads[cell.cell_id])
+            for cell in reg.cells
+        }
+        origins[V3_PICKS] = _origin(V3_PICKS, picks_dir, picks)
+        judged_owners = [c.cell_id for c in reg.cells if not c.reported_only] + [V3_PICKS]
+        reported_owners = [c.cell_id for c in reg.cells if c.reported_only]
+        run = _Run(
+            attempt_id,
+            run_id,
+            run_attempt,
+            _reruns(judged_owners, origins, run_id),
+            _reruns(reported_owners, origins, run_id),
+        )
         judged = tuple(  # completed W1 cells only: an invalid one is withheld as missing
             read.outcome
             for cell in reg.cells
@@ -188,7 +221,9 @@ def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path) -> Path:
         result = evaluate(reg.registration, judged)
         cell_reasons = _cell_reasons(reg.cells, reads, picks)
         status = (
-            "fail"
+            "incomplete"  # executed once, or no verdict: a re-run voids a fail too
+            if run.reruns
+            else "fail"
             if result.status == "fail"
             else "incomplete"
             if result.status == "incomplete" or cell_reasons
@@ -208,11 +243,81 @@ def aggregate(reg: DriverRegistration, cells_dir: Path, out_dir: Path) -> Path:
         }
         summary.mkdir(exist_ok=False)
         pages = _write_pages(summary, reg.cells, reads, comparisons)
-        verdict = _verdict(reg, status, result, cell_reasons, reads, pages, picks)
+        verdict = _verdict(reg, status, result, cell_reasons, reads, pages, picks, run, origins)
         _write(summary / VERDICT_FILE, _canonical(verdict) + b"\n")
-        text = _summary_text(reg, status, result, cell_reasons, reads, pages, picks, comparisons)
+        text = _summary_text(
+            reg, status, result, cell_reasons, reads, pages, picks, comparisons, run
+        )
         _write(summary / SUMMARY_FILE, text.encode("utf-8"))  # last: the completion marker
     return summary
+
+
+@dataclass(frozen=True, slots=True)
+class _Origin:
+    """Where one artifact came from: its folder's attempt number (None: no folder), and
+    its claim's run id, the ``<run>`` of ``<run>-<owner>-attempt-<m>`` (None: no claim,
+    or, with ``claimed``, an attempt id of another shape)."""
+
+    attempt: int | None
+    run_id: str | None
+    claimed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _Run:
+    """Aggregation's own run, and every re-run it found: W1 cells and the picks job
+    (``reruns``, which make the verdict incomplete) and W0 cells (disclosed only)."""
+
+    attempt_id: str
+    run_id: str
+    attempt: int
+    reruns: tuple[str, ...]
+    reported_reruns: tuple[str, ...]
+
+
+def _run_attempt(attempt_id: object) -> tuple[str, int]:
+    """The run id and attempt number of the workflow's ``<run_id>-attempt-<n>``."""
+    match = _RUN_ATTEMPT.fullmatch(attempt_id) if type(attempt_id) is str else None
+    if match is None:
+        raise ValueError(
+            f"aggregate attempt id {attempt_id!r}: <run_id>-attempt-<n> required, <n> a "
+            "positive integer without leading zeros (the workflow passes "
+            "<run_id>-attempt-<run_attempt>)"
+        )
+    return match[1], int(match[2])
+
+
+def _origin(owner: str, located: tuple[Path, str] | None, read: _Read) -> _Origin:
+    """The ``_Origin`` of ``owner``'s artifact (``located``: its directory and folder
+    attempt; ``read``: its state, with its claim's attempt id)."""
+    if read.attempt_id is None:
+        run_id = None
+    else:
+        claimed = re.fullmatch(rf"({_RUN})-{re.escape(owner)}-attempt-[1-9][0-9]*", read.attempt_id)
+        run_id = None if claimed is None else claimed[1]
+    attempt = None if located is None else int(located[1])
+    return _Origin(attempt, run_id, read.attempt_id is not None)
+
+
+def _reruns(owners: Sequence[str], origins: Mapping[str, _Origin], run_id: str) -> tuple[str, ...]:
+    """Each of ``owners`` whose artifact a re-run left: from an artifact attempt other than
+    1, or claimed by another run than ``run_id`` (or by an attempt id naming no run). An
+    owner without a folder left nothing; one without a claim names no run, and is
+    incomplete already."""
+    found = []
+    for owner in owners:
+        origin = origins[owner]
+        if origin.attempt is None:
+            continue
+        problems = []
+        if origin.attempt != 1:
+            problems.append(f"artifact attempt {origin.attempt}, not 1")
+        if origin.claimed and origin.run_id != run_id:
+            claimed = "an unreadable run" if origin.run_id is None else f"run {origin.run_id}"
+            problems.append(f"claimed by {claimed}, not this run {run_id}")
+        if problems:
+            found.append(f"{owner}: " + "; ".join(problems))
+    return tuple(found)
 
 
 # --- reading the cells -----------------------------------------------------------------
@@ -556,7 +661,7 @@ def _cell_reasons(cells: Sequence[Cell], reads: Mapping[str, _Read], picks: _Rea
 
 def _explained(read: _Read) -> list[str]:
     if read.state == "missing":
-        return ["missing, never run"]
+        return ["no artifact: not run, or failed before its claim"]
     if read.state == "failed":
         detail = "failure.json unreadable" if read.failure is None else ": ".join(read.failure)
         return [f"failed attempt ({detail})"]
@@ -618,6 +723,8 @@ def _verdict(
     reads: Mapping[str, _Read],
     pages: Mapping[str, _Page],
     picks: _Read,
+    run: _Run,
+    origins: Mapping[str, _Origin],
 ) -> dict[str, object]:
     return {
         "schema": VERDICT_SCHEMA,
@@ -626,11 +733,24 @@ def _verdict(
         "failures": list(result.failures),
         "incomplete_reasons": list(result.incomplete_reasons),
         "cell_incomplete_reasons": cell_reasons,
+        "run": {
+            "attempt_id": run.attempt_id,
+            "run_id": run.run_id,
+            "aggregate_attempt": run.attempt,
+            "rerun_detected": bool(run.reruns),
+            "reruns": list(run.reruns),
+            "reported_only_reruns": list(run.reported_reruns),
+        },
         "skipped_hours": {window: list(hours) for window, hours in result.skipped_hours},
         "comparisons": [_comparison_json(row) for row in result.comparisons],
-        "cells": {cell_id: _cell_json(read, pages.get(cell_id)) for cell_id, read in reads.items()},
+        "cells": {
+            cell_id: _cell_json(read, pages.get(cell_id), origins[cell_id])
+            for cell_id, read in reads.items()
+        },
         "v3_picks": {
             "state": picks.state,
+            "artifact_attempt": origins[V3_PICKS].attempt,
+            "run_id": origins[V3_PICKS].run_id,
             "receipt_sha256": picks.receipt_sha256,
             "reasons": [] if picks.state == "completed" else _explained(picks),
         },
@@ -645,10 +765,12 @@ def _verdict(
     }
 
 
-def _cell_json(read: _Read, page: _Page | None) -> dict[str, object]:
+def _cell_json(read: _Read, page: _Page | None, origin: _Origin) -> dict[str, object]:
     failure = read.failure
     return {
         "state": read.state,
+        "artifact_attempt": origin.attempt,
+        "run_id": origin.run_id,
         "attempt_id": read.attempt_id,
         "failure": None if failure is None else {"type": failure[0], "message": failure[1]},
         "reasons": list(read.reasons),
@@ -697,9 +819,10 @@ def _summary_text(
     pages: Mapping[str, _Page],
     picks: _Read,
     comparisons: Mapping[str, CellComparison],
+    run: _Run,
 ) -> str:
-    """The owner's summary: the verdict, one row per full combined W1 cell, each cell
-    against every baseline, the reasons, the cell states and the W0 section."""
+    """The owner's summary: the verdict, any re-run, one row per full combined W1 cell,
+    each cell against every baseline, the reasons, the cell states and the W0 section."""
     registration = reg.registration
     seen = (
         f"{len(cell_reasons)} cell problem(s) acceptance cannot see also leave the run "
@@ -707,10 +830,13 @@ def _summary_text(
         if cell_reasons
         else "No cell problem beyond what acceptance sees."
     )
+    verdict = f"Verdict: **{status.upper()}**"
+    if run.reruns:
+        verdict += f" (re-run detected: {len(run.reruns)} W1 cell(s) or job(s))"
     lines = [
         "# V3.1 run summary",
         "",
-        f"Verdict: **{status.upper()}**",
+        verdict,
         "",
         f"Acceptance judges the pass/fail window `{ACCEPTANCE_WINDOW}` alone and returned "
         f"**{result.status}**; `{REPORTED_WINDOW}` is reported only. {seen}",
@@ -718,6 +844,9 @@ def _summary_text(
         f"Pins: code `{registration.code_pin}`, config `{registration.config_pin}`, data "
         f"(run-manifest) `{reg.run_manifest_pin}`.",
         "",
+        f"This aggregation: run `{run.run_id}`, attempt {run.attempt}.",
+        "",
+        *_rerun_section(run),
         f"## Full combined cells in {ACCEPTANCE_WINDOW}",
         "",
         "Each row is one full combined cell, measured on its common hourly series as "
@@ -752,6 +881,37 @@ def _summary_text(
     lines += _cell_states(reg.cells, reads, picks)
     lines += _w0_section(reg.cells, reads, pages)
     return "\n".join(lines) + "\n"
+
+
+def _rerun_section(run: _Run) -> list[str]:
+    """The re-run disclosure: a registered run is executed once, so any W1 cell or the
+    picks job from another attempt or run leaves the run incomplete, whatever acceptance
+    returned; a W0 re-run is disclosed, and changes nothing."""
+    lines = ["## Re-run detected", ""]
+    if run.reruns:
+        lines += [
+            "A registered run is executed once. These W1 cells or jobs come from another "
+            "artifact attempt than 1 or another run than this one, so the run is "
+            "**incomplete**, whatever acceptance returned:",
+            "",
+            *(f"- {_md(item)}" for item in run.reruns),
+            "",
+        ]
+    else:
+        lines += [
+            f"None: every W1 cell and the picks job that left an artifact is attempt 1 of "
+            f"run `{run.run_id}`.",
+            "",
+        ]
+    if run.reported_reruns:
+        lines += [
+            f"Reported-only ({REPORTED_WINDOW.upper()}) cells from another attempt or run, "
+            "disclosed only:",
+            "",
+            *(f"- {_md(item)}" for item in run.reported_reruns),
+            "",
+        ]
+    return lines
 
 
 def _baseline_table(cell_id: str, comparison: CellComparison) -> list[str]:

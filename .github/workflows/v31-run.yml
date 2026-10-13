@@ -689,6 +689,7 @@ jobs:
           python scripts/v31_driver.py aggregate \
             --registration-sha256 "$REGISTRATION_SHA256" \
             --cells v31/cells \
+            --attempt-id ${{ github.run_id }}-attempt-${{ github.run_attempt }} \
             --out v31/summary-out
 
       - name: Refuse any file named for 2025 or later
