@@ -8,7 +8,14 @@ name: v31-run
 # pending run and cancel it when a newer one arrives, but nothing in this repository shows that
 # the key is honoured at workflow level, so the rule stands either way.
 #
-# A dispatch picks one of three modes:
+# THE DISPATCH REF: a registered or timing run is dispatched from a ref whose tree is the
+# code pin plus the registration artifacts only (config/v3_1_*.json, the FX record,
+# docs/trials/register.jsonl, docs/reviews/**, docs/tasks/**). In a registered run the plan
+# job checks it first (the driver's job gate: nothing else changed since the registration's
+# code pin), so a wrong ref fails in the first job, and every later job checks it again; a
+# timing run's checkout must be the dispatched code_commit, with no change.
+#
+# A dispatch picks one of five modes:
 #
 # - smoke: one job runs the driver's offline, synthetic end-to-end run (all 216 cells) and
 #   uploads its summary. It needs no registration and fetches nothing beyond pip's packages.
@@ -16,32 +23,57 @@ name: v31-run
 #   no replay, for a registration that does not exist yet. The checkout must be at the
 #   dispatched code_commit. It uploads the packs and prepare.json (v31-packs) and prints
 #   prepare.json.
+# - timing: three jobs measure the registered run's heavy steps before registration, gated
+#   like prepare-only (code_commit and the prepare config's hash; no registration): the
+#   whole prepare; the real V3 input pack and V3's real walk-forward picks (the inventory
+#   alone fetched); and one real W1 minute cell, V2's grid (the legacy dataset alone
+#   fetched). Each step has its own step timeout; whatever a part computes is discarded, and
+#   each uploads only its elapsed times, peak memory and, for the picks, V3's attempt
+#   bookkeeping without any result (v31-timing-<part>-attempt-<n>), also when it timed out.
+#   No outcome, report or equity value is uploaded or printed.
+# - rehearsal: the registered job graph below, every job and artifact hand-off, on a
+#   synthetic rehearsal world the plan job builds in-job: a git repository whose code pin
+#   commits the rehearsal marker (so the real gate, adapter pins and change check run on
+#   it) and a registration on top. Only a rehearsal runs the smoke's stand-ins, and a
+#   registered run refuses any world built for one. It fetches nothing; rehearsal_cells
+#   runs only the first N cells (at least 5), all 216 by default.
 # - registered: the registered experiment, once. plan checks that
-#   config/v3_1_registration.json hashes to the dispatched registration_sha256 and lists its
-#   cells; prepare builds the packs; picks computes V3's selector picks once; run-main and
-#   run-v3 run one matrix job per cell (the V3 cells wait for the picks); aggregate judges
-#   what exists, whether or not every cell finished, and uploads the summary.
+#   config/v3_1_registration.json hashes to the dispatched registration_sha256, runs the
+#   job gate and lists the cells; prepare builds the packs; picks computes V3's selector
+#   picks once; run-main and run-v3 run one matrix job per cell (only the four selector
+#   cells wait for the picks); aggregate judges what exists, whether or not every cell
+#   finished, and uploads the summary; status records every job's result, aggregate run or
+#   skipped.
 #
 # Artifacts (all kept for the maximum retention, 90 days):
+# - v31-rehearsal-world: rehearsal-world.tar, the world (repo/ and legacy/), rehearsal only
 # - v31-packs: packs/window-<id>.pack.json.gz, packs/v3-input.pack.json.gz, prepare.json
 # - v31-legacy-data: the verified legacy dataset (binance/data/...) for the minute cells
 # - v3-picks-attempt-<n>: v3_picks/ (the picks job's directory)
 # - cell-<cell_id>-attempt-<n>: <cell_id>/ (one cell's directory)
 # - v31-summary-attempt-<n>: summary/ (the verdict); v31-smoke-summary-attempt-<n>: the
-#   smoke's summary
+#   smoke's summary; v31-status-attempt-<n>: status.json, every job's result
+# - v31-timing-<part>-attempt-<n>: the timing files of one timing part
 # Aggregation reads each cell and picks artifact in its own folder, named for the artifact
 # (cells/cell-<id>-attempt-<n>/<id>/): it accepts no other layout.
 #
 # Every attempt is recorded. A run job (picks, run-main, run-v3) uploads its directory even
 # when it fails or times out (if: always()), so a failed attempt leaves its folder and its
-# claim; a job killed before it wrote anything only warns.
+# claim; a job killed before it wrote anything only warns. The one exception stops the line:
+# if the scan before the upload fails, nothing is uploaded, the job fails, and the run is
+# void. The long steps have a step timeout of 335 minutes, inside the 360-minute job limit,
+# so the scan and the upload still run after one is killed.
 #
 # A registered run is executed once. Re-running any job, whether every job or only the failed
-# ones, is a new recorded attempt (a new run_attempt number), and aggregate then finds two
-# folders for the same cell, or two picks folders, and refuses the duplicate: a re-run makes
-# that run's verdict a refusal, by design. Do not re-run a registered run. A re-run of every
-# job also fails closed at the v31-packs upload, whose name is fixed. Re-running aggregate
-# alone is harmless: its summary is named for its attempt, and the cell folders are unchanged.
+# ones, is a new recorded attempt (a new run_attempt number). Aggregate records every
+# folder's attempt number and every claim's run id. When it finds two folders for the same
+# cell, or two picks folders, it refuses the duplicate; a cell or the picks job from an
+# attempt other than 1, or from another run, makes the verdict incomplete (re-run
+# detected), a lone re-run folder included. Either way a re-run voids that run's verdict,
+# by design. Do not re-run a registered run. A re-run of
+# every job also fails closed at the v31-packs upload, whose name is fixed. Re-running
+# aggregate alone is harmless: its summary is named for its attempt, and the cell folders
+# are unchanged.
 #
 # No archive for 2025-01 or later may exist anywhere on a runner. The driver refuses such a
 # month before it fetches; the "Refuse any file named for 2025 or later" step is a second,
@@ -52,13 +84,15 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "smoke (offline, synthetic), prepare-only (fetch and pack, no replay) or registered (the registered experiment)"
+        description: "smoke (offline, synthetic), prepare-only (fetch and pack, no replay), timing (time the heavy steps, results discarded), rehearsal (the registered job graph on a synthetic world) or registered (the registered experiment)"
         required: true
         default: smoke
         type: choice
         options:
           - smoke
           - prepare-only
+          - timing
+          - rehearsal
           - registered
       registration_sha256:
         description: "registered: SHA-256 of config/v3_1_registration.json, 64 lowercase hex"
@@ -66,7 +100,12 @@ on:
         default: ""
         type: string
       code_commit:
-        description: "prepare-only: the 40-hex commit this checkout must be at"
+        description: "prepare-only and timing: the 40-hex commit this checkout must be at"
+        required: false
+        default: ""
+        type: string
+      rehearsal_cells:
+        description: "rehearsal: run only the first N cells (at least 5); empty runs all 216"
         required: false
         default: ""
         type: string
@@ -84,10 +123,15 @@ concurrency:
   cancel-in-progress: false
   queue: max
 
-# The dispatch's text inputs reach scripts through the environment, never spliced into them.
+# The dispatch's inputs reach scripts through the environment, never spliced into them.
+# REPO is the checkout a registered job gates: the repository itself, or in a rehearsal the
+# synthetic world the plan job builds.
 env:
+  MODE: ${{ inputs.mode }}
   REGISTRATION_SHA256: ${{ inputs.registration_sha256 }}
   CODE_COMMIT: ${{ inputs.code_commit }}
+  REHEARSAL_CELLS: ${{ inputs.rehearsal_cells }}
+  REPO: ${{ inputs.mode == 'rehearsal' && 'v31/work/repo' || '.' }}
 
 defaults:
   run:
@@ -99,11 +143,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -146,7 +190,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: v31-smoke-summary-attempt-${{ github.run_attempt }}
           path: v31/smoke-summary
@@ -154,14 +198,15 @@ jobs:
           retention-days: 90
 
   plan:
-    if: ${{ inputs.mode == 'registered' }}
+    if: ${{ (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
       v3_cells: ${{ steps.cells.outputs.v3_cells }}
       main_cells: ${{ steps.cells.outputs.main_cells }}
+      registration_sha256: ${{ steps.cells.outputs.registration_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -169,6 +214,7 @@ jobs:
       # The first step after the checkout: nothing runs on a registration other than the
       # one the dispatcher named.
       - name: Verify the registration against the dispatched SHA-256
+        if: ${{ inputs.mode == 'registered' }}
         run: |
           if ! printf '%s' "$REGISTRATION_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
             echo "::error::registered mode needs registration_sha256: 64 lowercase hex."
@@ -180,7 +226,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -189,36 +235,88 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
-      # V3's cells need the picks job; every other cell does not. Each array is one matrix,
-      # and GitHub runs at most 256 jobs from one.
-      - name: List the registered cells
-        id: cells
+      # A rehearsal's world: its code pin (the smoke world, this checkout's package and the
+      # rehearsal marker) and its registration on top, built here once and handed to every
+      # later job as one archive.
+      - name: Build the rehearsal world
+        id: world
+        if: ${{ inputs.mode == 'rehearsal' }}
         run: |
-          python - >> "$GITHUB_OUTPUT" <<'PY'
+          python scripts/v31_driver.py rehearsal-world --out v31/work > "$RUNNER_TEMP/world.json"
+          cat "$RUNNER_TEMP/world.json"
+          sha="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["registration_sha256"])' "$RUNNER_TEMP/world.json")"
+          printf '%s' "$sha" | grep -Eq '^[0-9a-f]{64}$'
+          echo "registration_sha256=$sha" >> "$GITHUB_OUTPUT"
+          tar -cf v31/rehearsal-world.tar -C v31/work .
+
+      # The job gate on the dispatched ref, first of all jobs, then the two matrices: the four
+      # selector cells, which need the picks job, and every other cell. GitHub runs at most
+      # 256 jobs from one matrix.
+      - name: Plan the run
+        id: cells
+        env:
+          REGISTRATION_SHA256: ${{ inputs.mode == 'rehearsal' && steps.world.outputs.registration_sha256 || inputs.registration_sha256 }}
+        run: |
+          python scripts/v31_driver.py plan \
+            --mode "$MODE" \
+            --repo "$REPO" \
+            --registration-sha256 "$REGISTRATION_SHA256" \
+            --cells "$REHEARSAL_CELLS" > "$RUNNER_TEMP/plan.json"
+          cat "$RUNNER_TEMP/plan.json"
+          python - "$RUNNER_TEMP/plan.json" >> "$GITHUB_OUTPUT" <<'PY'
           import json
           import sys
 
-          from crypto_grid_bot.combined.driver.registration import load_registration
-
-          reg = load_registration("config/v3_1_registration.json", "config/v3_1_run_manifest.json")
-          v3_cells = [cell.cell_id for cell in reg.cells if cell.kind == "v3"]
-          main_cells = [cell.cell_id for cell in reg.cells if cell.kind != "v3"]
-          for name, cells in (("v3_cells", v3_cells), ("main_cells", main_cells)):
-              if not 0 < len(cells) <= 256:  # GitHub's limit on one matrix
-                  sys.exit(f"{name}: {len(cells)} cells; a matrix takes 1 to 256")
-          print("v3_cells=" + json.dumps(v3_cells, separators=(",", ":")))
-          print("main_cells=" + json.dumps(main_cells, separators=(",", ":")))
+          with open(sys.argv[1], encoding="ascii") as handle:
+              plan = json.load(handle)
+          for key in ("v3_cells", "main_cells"):
+              print(key + "=" + json.dumps(plan[key], separators=(",", ":")))
+          print("registration_sha256=" + plan["registration_sha256"])
           PY
+
+      - name: Refuse any file named for 2025 or later
+        run: |
+          # Archive names end -YYYY-MM. The repository's own files are tracked and are not
+          # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
+          # downloaded or made is not tracked, and is.
+          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
+            echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ inputs.mode == 'rehearsal' }}
+        with:
+          name: v31-rehearsal-world
+          path: v31/rehearsal-world.tar
+          if-no-files-found: error
+          retention-days: 90
 
   prepare:
     needs: plan
     # plan is skipped in prepare-only mode; !cancelled() keeps prepare from being skipped
-    # with it, and a failed or skipped plan still stops a registered run.
-    if: ${{ !cancelled() && (inputs.mode == 'prepare-only' || (inputs.mode == 'registered' && needs.plan.result == 'success')) }}
+    # with it, and a failed or skipped plan still stops a registered run or a rehearsal.
+    if: ${{ !cancelled() && (inputs.mode == 'prepare-only' || ((inputs.mode == 'registered' || inputs.mode == 'rehearsal') && needs.plan.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # The registration this run is gated on: the plan job checked it first (the dispatched
+    # one in a registered run, the world's in a rehearsal).
+    env:
+      REGISTRATION_SHA256: ${{ needs.plan.outputs.registration_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -231,7 +329,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -240,10 +338,24 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
-      - name: Prepare (registered)
-        if: ${{ inputs.mode == 'registered' }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ inputs.mode == 'rehearsal' }}
+        with:
+          name: v31-rehearsal-world
+          path: v31/world-download
+      - name: Unpack the rehearsal world
+        if: ${{ inputs.mode == 'rehearsal' }}
         run: |
-          python scripts/v31_driver.py prepare --mode registered \
+          mkdir -p v31/work
+          tar -xf v31/world-download/rehearsal-world.tar -C v31/work
+
+      # A rehearsal fetches nothing: v31/work/legacy is the world's synthetic dataset.
+      - name: Prepare (registered or rehearsal)
+        if: ${{ (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}
+        timeout-minutes: 335
+        run: |
+          python scripts/v31_driver.py prepare --mode "$MODE" \
+            --repo "$REPO" \
             --registration-sha256 "$REGISTRATION_SHA256" \
             --work v31/work --out v31/out
 
@@ -252,6 +364,7 @@ jobs:
       # pin, and prepare.json (printed below) records the config's hash for the registration.
       - name: Prepare (prepare-only)
         if: ${{ inputs.mode == 'prepare-only' }}
+        timeout-minutes: 335
         run: |
           prepare_sha256="$(sha256sum config/v3_1_prepare.json | cut -d' ' -f1)"
           python scripts/v31_driver.py prepare --mode prepare-only \
@@ -285,7 +398,7 @@ jobs:
           fi
 
       # v31/out holds packs/ and prepare.json: the artifact's root is that folder.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: v31-packs
           path: v31/out/
@@ -294,8 +407,8 @@ jobs:
           compression-level: 0
 
       # The minute cells' dataset: the artifact's root holds binance/.
-      - uses: actions/upload-artifact@v4
-        if: ${{ inputs.mode == 'registered' }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}
         with:
           name: v31-legacy-data
           path: v31/work/legacy
@@ -304,18 +417,22 @@ jobs:
           compression-level: 0
 
   picks:
-    needs: prepare
-    if: ${{ inputs.mode == 'registered' }}
+    needs: [plan, prepare]
+    if: ${{ (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # The registration this run is gated on: the plan job checked it first (the dispatched
+    # one in a registered run, the world's in a rehearsal).
+    env:
+      REGISTRATION_SHA256: ${{ needs.plan.outputs.registration_sha256 }}
     outputs:
       picks_receipt_sha256: ${{ steps.picks.outputs.receipt_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -324,10 +441,20 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: v31-packs
           path: v31/prepared
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ inputs.mode == 'rehearsal' }}
+        with:
+          name: v31-rehearsal-world
+          path: v31/world-download
+      - name: Unpack the rehearsal world
+        if: ${{ inputs.mode == 'rehearsal' }}
+        run: |
+          mkdir -p v31/work
+          tar -xf v31/world-download/rehearsal-world.tar -C v31/work
 
       - name: Refuse any file named for 2025 or later
         run: |
@@ -355,8 +482,11 @@ jobs:
       # downloads against it.
       - name: V3 selector picks
         id: picks
+        timeout-minutes: 335
         run: |
           python scripts/v31_driver.py picks \
+            --mode "$MODE" \
+            --repo "$REPO" \
             --registration-sha256 "$REGISTRATION_SHA256" \
             --packs v31/prepared/packs \
             --attempt-id ${{ github.run_id }}-attempt-${{ github.run_attempt }} \
@@ -392,7 +522,7 @@ jobs:
 
       # v31/picks-out holds v3_picks/: the artifact's root is that folder. It is uploaded after
       # a failure too, so the attempt is recorded; the scan above must not have failed.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
         with:
           name: v3-picks-attempt-${{ github.run_attempt }}
@@ -402,20 +532,24 @@ jobs:
 
   run-main:
     needs: [plan, prepare]
-    if: ${{ inputs.mode == 'registered' }}
+    if: ${{ (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # The registration this run is gated on: the plan job checked it first (the dispatched
+    # one in a registered run, the world's in a rehearsal).
+    env:
+      REGISTRATION_SHA256: ${{ needs.plan.outputs.registration_sha256 }}
     strategy:
       fail-fast: false
       max-parallel: 20
       matrix:
         cell: ${{ fromJSON(needs.plan.outputs.main_cells) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -424,15 +558,25 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: v31-packs
           path: v31/prepared
       # Only the minute cells read this; every cell takes it, which keeps one job definition.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: v31-legacy-data
           path: v31/legacy-data
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ inputs.mode == 'rehearsal' }}
+        with:
+          name: v31-rehearsal-world
+          path: v31/world-download
+      - name: Unpack the rehearsal world
+        if: ${{ inputs.mode == 'rehearsal' }}
+        run: |
+          mkdir -p v31/work
+          tar -xf v31/world-download/rehearsal-world.tar -C v31/work
 
       - name: Refuse any file named for 2025 or later
         run: |
@@ -457,10 +601,13 @@ jobs:
           fi
 
       - name: Run the cell
+        timeout-minutes: 335
         env:
           CELL: ${{ matrix.cell }}
         run: |
           python scripts/v31_driver.py run-cell \
+            --mode "$MODE" \
+            --repo "$REPO" \
             --registration-sha256 "$REGISTRATION_SHA256" \
             --cell "$CELL" \
             --packs v31/prepared/packs \
@@ -496,7 +643,7 @@ jobs:
       # download into its own folder reads cell-<id>-attempt-<n>/<id>/. It is uploaded after a
       # failure or a timeout too, so the attempt and its claim are recorded; the scan above
       # must not have failed.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
         with:
           name: cell-${{ matrix.cell }}-attempt-${{ github.run_attempt }}
@@ -506,20 +653,24 @@ jobs:
 
   run-v3:
     needs: [plan, prepare, picks]
-    if: ${{ inputs.mode == 'registered' }}
+    if: ${{ (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # The registration this run is gated on: the plan job checked it first (the dispatched
+    # one in a registered run, the world's in a rehearsal).
+    env:
+      REGISTRATION_SHA256: ${{ needs.plan.outputs.registration_sha256 }}
     strategy:
       fail-fast: false
       max-parallel: 20
       matrix:
         cell: ${{ fromJSON(needs.plan.outputs.v3_cells) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -528,16 +679,26 @@ jobs:
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install -e . --no-deps
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: v31-packs
           path: v31/prepared
       # By pattern, not by this attempt's number: a re-run of failed jobs has a new attempt
       # number, and the picks job (which succeeded) is not re-run.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: "v3-picks-attempt-*"
           path: v31/picks
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ inputs.mode == 'rehearsal' }}
+        with:
+          name: v31-rehearsal-world
+          path: v31/world-download
+      - name: Unpack the rehearsal world
+        if: ${{ inputs.mode == 'rehearsal' }}
+        run: |
+          mkdir -p v31/work
+          tar -xf v31/world-download/rehearsal-world.tar -C v31/work
 
       - name: Refuse any file named for 2025 or later
         run: |
@@ -580,11 +741,14 @@ jobs:
           echo "dir=${dirs[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Run the cell
+        timeout-minutes: 335
         env:
           CELL: ${{ matrix.cell }}
           PICKS_DIR: ${{ steps.picks_dir.outputs.dir }}
         run: |
           python scripts/v31_driver.py run-cell \
+            --mode "$MODE" \
+            --repo "$REPO" \
             --registration-sha256 "$REGISTRATION_SHA256" \
             --cell "$CELL" \
             --packs v31/prepared/packs \
@@ -620,7 +784,7 @@ jobs:
       # download into its own folder reads cell-<id>-attempt-<n>/<id>/. It is uploaded after a
       # failure or a timeout too, so the attempt and its claim are recorded; the scan above
       # must not have failed.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
         with:
           name: cell-${{ matrix.cell }}-attempt-${{ github.run_attempt }}
@@ -629,19 +793,23 @@ jobs:
           retention-days: 90
 
   aggregate:
-    needs: [run-main, run-v3, picks]
+    needs: [plan, run-main, run-v3, picks]
     # Judge what exists even when cells failed: the verdict names every cell that is missing.
-    # !cancelled() alone would also fire in smoke and prepare-only mode (every needed job
-    # skipped) and after a failed prepare (nothing to read), so those are excluded.
-    if: ${{ !cancelled() && inputs.mode == 'registered' && needs.picks.result != 'skipped' }}
+    # !cancelled() alone would also fire in the other modes (every needed job skipped) and
+    # after a failed prepare (nothing to read), so those are excluded.
+    if: ${{ !cancelled() && (inputs.mode == 'registered' || inputs.mode == 'rehearsal') && needs.picks.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # The registration this run is gated on: the plan job checked it first (the dispatched
+    # one in a registered run, the world's in a rehearsal).
+    env:
+      REGISTRATION_SHA256: ${{ needs.plan.outputs.registration_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -653,14 +821,24 @@ jobs:
       # Each artifact in a folder named for it (no merge-multiple), the only layout the
       # aggregation accepts: v31/cells/cell-<id>-attempt-<n>/<id>/ and
       # v31/cells/v3-picks-attempt-<n>/v3_picks/.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: "cell-*-attempt-*"
           path: v31/cells
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: "v3-picks-attempt-*"
           path: v31/cells
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ inputs.mode == 'rehearsal' }}
+        with:
+          name: v31-rehearsal-world
+          path: v31/world-download
+      - name: Unpack the rehearsal world
+        if: ${{ inputs.mode == 'rehearsal' }}
+        run: |
+          mkdir -p v31/work
+          tar -xf v31/world-download/rehearsal-world.tar -C v31/work
 
       - name: Refuse any file named for 2025 or later
         run: |
@@ -684,9 +862,14 @@ jobs:
             exit 1
           fi
 
+      # The run's own attempt id: a cell or the picks job from another attempt or run makes
+      # the verdict incomplete (re-run detected).
       - name: Aggregate
+        timeout-minutes: 335
         run: |
           python scripts/v31_driver.py aggregate \
+            --mode "$MODE" \
+            --repo "$REPO" \
             --registration-sha256 "$REGISTRATION_SHA256" \
             --cells v31/cells \
             --attempt-id ${{ github.run_id }}-attempt-${{ github.run_attempt }} \
@@ -714,9 +897,194 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: v31-summary-attempt-${{ github.run_attempt }}
           path: v31/summary-out
           if-no-files-found: error
+          retention-days: 90
+
+  status:
+    needs: [plan, prepare, picks, run-main, run-v3, aggregate]
+    # Always, so a run whose aggregate was skipped (a failed prepare, a cancelled run) still
+    # leaves a record of what each job did.
+    if: ${{ always() && (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Write the job results
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          PICKS_RESULT: ${{ needs.picks.result }}
+          RUN_MAIN_RESULT: ${{ needs.run-main.result }}
+          RUN_V3_RESULT: ${{ needs.run-v3.result }}
+          AGGREGATE_RESULT: ${{ needs.aggregate.result }}
+          PLANNED_SHA256: ${{ needs.plan.outputs.registration_sha256 }}
+          V3_CELLS: ${{ needs.plan.outputs.v3_cells }}
+          MAIN_CELLS: ${{ needs.plan.outputs.main_cells }}
+          PICKS_RECEIPT_SHA256: ${{ needs.picks.outputs.picks_receipt_sha256 }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          mkdir -p v31/status
+          python - > v31/status/status.json <<'PY'
+          import json
+          import os
+
+
+          def cells(name):
+              text = os.environ[name]
+              return len(json.loads(text)) if text else None
+
+
+          jobs = ("plan", "prepare", "picks", "run-main", "run-v3", "aggregate")
+          status = {
+              "schema": "v3.1-status-1",
+              "mode": os.environ["MODE"],
+              "run_id": os.environ["RUN_ID"],
+              "run_attempt": os.environ["RUN_ATTEMPT"],
+              "jobs": {
+                  job: os.environ[job.upper().replace("-", "_") + "_RESULT"] for job in jobs
+              },
+              "aggregate_ran": os.environ["AGGREGATE_RESULT"] in ("success", "failure"),
+              "registration_sha256": os.environ["PLANNED_SHA256"] or None,
+              "v3_cells": cells("V3_CELLS"),
+              "main_cells": cells("MAIN_CELLS"),
+              "picks_receipt_sha256": os.environ["PICKS_RECEIPT_SHA256"] or None,
+          }
+          print(json.dumps(status, sort_keys=True, separators=(",", ":")))
+          PY
+          cat v31/status/status.json
+
+      - name: Refuse any file named for 2025 or later
+        run: |
+          # Archive names end -YYYY-MM. The repository's own files are tracked and are not
+          # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
+          # downloaded or made is not tracked, and is.
+          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
+            echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v31-status-attempt-${{ github.run_attempt }}
+          path: v31/status
+          if-no-files-found: error
+          retention-days: 90
+
+  timing:
+    if: ${{ inputs.mode == 'timing' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [prepare, picks, cell]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the code commit
+        run: |
+          if ! printf '%s' "$CODE_COMMIT" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::timing mode needs code_commit: 40 lowercase hex."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.lock
+      - run: python -m pip install -e . --no-deps
+
+      # Gated like prepare-only. Each part fetches only what it needs into v31/timing-scratch
+      # (scanned below, never uploaded) and discards every result it computes; v31/timing
+      # gets times, memory and attempt bookkeeping alone, streamed as the part goes.
+      - name: Time the part
+        id: timing
+        timeout-minutes: 335
+        env:
+          PART: ${{ matrix.part }}
+        run: |
+          prepare_sha256="$(sha256sum config/v3_1_prepare.json | cut -d' ' -f1)"
+          python scripts/v31_driver.py timing \
+            --part "$PART" \
+            --code-commit "$CODE_COMMIT" \
+            --prepare-sha256 "$prepare_sha256" \
+            --scratch v31/timing-scratch \
+            --out v31/timing > "$RUNNER_TEMP/timing.json"
+          cat "$RUNNER_TEMP/timing.json"
+
+      # Also after the part failed or was killed at its step timeout: what it measured so
+      # far, the step's outcome and whether it finished.
+      - name: Close the timing record
+        if: ${{ always() }}
+        env:
+          PART: ${{ matrix.part }}
+          OUTCOME: ${{ steps.timing.outcome }}
+        run: |
+          python scripts/v31_driver.py timing-close \
+            --part "$PART" \
+            --step-outcome "$OUTCOME" \
+            --step-timeout-minutes 335 \
+            --out v31/timing
+
+      - name: Refuse any file named for 2025 or later
+        id: guard_outputs
+        if: ${{ always() }}
+        run: |
+          # Archive names end -YYYY-MM. The repository's own files are tracked and are not
+          # checked (docs/backtests/fee-levels-2026-09.md is one); what a job fetched,
+          # downloaded or made is not tracked, and is.
+          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
+          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
+          # grep exits 1 when nothing matches, which is the pass. Any other non-zero status is
+          # a broken scan and fails the step, as does a failure of git, find, sort or comm.
+          status=0
+          grep -E -- '-202[5-9]-|-20[3-9][0-9]-' "$RUNNER_TEMP/untracked.txt" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The scan for files named for 2025 or later failed (grep exit $status)."
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/found.txt" ]; then
+            cat "$RUNNER_TEMP/found.txt"
+            echo "::error::Files named for 2025 or later exist; the reserved window is never fetched."
+            exit 1
+          fi
+
+      # Only v31/timing: elapsed times, peak memory and the picks' attempt bookkeeping.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() && steps.guard_outputs.outcome != 'failure' }}
+        with:
+          name: v31-timing-${{ matrix.part }}-attempt-${{ github.run_attempt }}
+          path: v31/timing
+          if-no-files-found: warn
           retention-days: 90

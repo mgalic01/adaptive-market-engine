@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -34,15 +35,42 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import v31_driver  # noqa: E402
 import v31_smoke  # noqa: E402
+from test_v31_registration import MODULES  # noqa: E402
 
-from crypto_grid_bot.combined.driver.registration import load_registration  # noqa: E402
+from crypto_grid_bot.combined.driver.registration import (  # noqa: E402
+    adapter_pins,
+    load_registration,
+)
 
 WORKFLOW = ROOT / ".github/workflows/v31-run.yml"
 QUALITY = ROOT / ".github/workflows/quality.yml"
 
-JOBS = ("smoke", "plan", "prepare", "picks", "run-main", "run-v3", "aggregate")
-DATA_JOBS = tuple(job for job in JOBS if job != "plan")  # each fetches, downloads or makes data
+JOBS = (
+    "smoke",
+    "plan",
+    "prepare",
+    "picks",
+    "run-main",
+    "run-v3",
+    "aggregate",
+    "status",
+    "timing",
+)
+DATA_JOBS = JOBS  # each fetches, downloads or makes data (the plan job a rehearsal's world)
+GRAPH = ("plan", "prepare", "picks", "run-main", "run-v3", "aggregate", "status")
 MATRIX_JOBS = ("run-main", "run-v3")
+GATED_JOBS = ("picks", *MATRIX_JOBS, "aggregate")  # each runs the driver on the registration
+# Every action pinned to a full commit SHA, the tag in a trailing comment (Ruling F9); the
+# same major versions as before (checkout v4, setup-python v5, the artifact actions v4).
+PINS = {
+    "actions/checkout": ("11d5960a326750d5838078e36cf38b85af677262", "v4.4.0"),
+    "actions/setup-python": ("a26af69be951a213d495a4c3e4e4022e16d87065", "v5.6.0"),
+    "actions/upload-artifact": ("ea165f8d65b6e75b540449e92b4886f43607fa02", "v4.6.2"),
+    "actions/download-artifact": ("d3f86a106a0bac45b974a628896c90dbdf5c8093", "v4.3.0"),
+}
+CHECKOUT = "actions/checkout@" + PINS["actions/checkout"][0]
+SETUP_PYTHON = "actions/setup-python@" + PINS["actions/setup-python"][0]
+STEP_TIMEOUT = 335  # minutes: the long steps end inside the 360-minute job limit (Ruling F2)
 ATTEMPT_ID = "${{ github.run_id }}-attempt-${{ github.run_attempt }}"
 GUARD_PATTERNS = ("-202[5-9]-", "-20[3-9][0-9]-")
 GITHUB_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
@@ -180,8 +208,8 @@ def jobs_that_run(mode: str, failing: Iterable[str] = ()) -> dict[str, str]:
     ``failing``) or ``skipped``.
 
     GitHub skips a job whose needed job failed or was skipped unless its ``if`` calls a
-    status function (here ``!cancelled()``), and an ``if`` without one also requires every
-    needed job to have succeeded."""
+    status function (here ``!cancelled()`` or ``always()``), and an ``if`` without one also
+    requires every needed job to have succeeded."""
     jobs = _jobs()
     results: dict[str, str] = {}
     pending = list(jobs)
@@ -194,9 +222,8 @@ def jobs_that_run(mode: str, failing: Iterable[str] = ()) -> dict[str, str]:
         if condition is None:
             runs = needs_succeeded
         else:
-            runs = _truth(condition, mode, needs) and (
-                "cancelled()" in str(jobs[name]["if"]) or needs_succeeded
-            )
+            status_aware = any(f in str(jobs[name]["if"]) for f in ("cancelled()", "always()"))
+            runs = _truth(condition, mode, needs) and (status_aware or needs_succeeded)
         results[name] = ("failure" if name in set(failing) else "success") if runs else "skipped"
     return results
 
@@ -205,10 +232,10 @@ def _ran(mode: str, failing: Iterable[str] = ()) -> set[str]:
     return {name for name, result in jobs_that_run(mode, failing).items() if result != "skipped"}
 
 
-def steps_that_run(job: str, failing: Iterable[int] = ()) -> list[str]:
+def steps_that_run(job: str, failing: Iterable[int] = (), mode: str = "registered") -> list[str]:
     """Each step of ``job``'s outcome (``success``, ``failure`` or ``skipped``) when the steps
-    at the indexes in ``failing`` fail as they run (the job being otherwise a registered
-    dispatch). A step without an ``if`` runs only while every earlier step succeeded; one
+    at the indexes in ``failing`` fail as they run (the job being otherwise a dispatch of
+    ``mode``). A step without an ``if`` runs only while every earlier step succeeded; one
     whose ``if`` calls ``always()`` or ``!cancelled()`` is decided by its expression alone."""
     outcomes: dict[str, str] = {}
     result: list[str] = []
@@ -222,7 +249,7 @@ def steps_that_run(job: str, failing: Iterable[int] = ()) -> list[str]:
             if text.startswith("${{") and text.endswith("}}"):
                 text = text[3:-2].strip()
             status_aware = "always()" in text or "cancelled()" in text
-            runs = _truth(text, "registered", {}, outcomes) and (status_aware or not failed)
+            runs = _truth(text, mode, {}, outcomes) and (status_aware or not failed)
         outcome = ("failure" if index in set(failing) else "success") if runs else "skipped"
         failed = failed or outcome == "failure"
         result.append(outcome)
@@ -270,18 +297,24 @@ def _step(job: str, step_id: str) -> dict[str, Any]:
 # --- triggers, permissions, checkout, concurrency ---------------------------------------
 
 
-def test_the_only_trigger_is_workflow_dispatch_with_the_three_inputs() -> None:
+def test_the_only_trigger_is_workflow_dispatch_with_the_four_inputs() -> None:
     triggers = _triggers(_workflow())
     assert set(triggers) == {"workflow_dispatch"}
     inputs = triggers["workflow_dispatch"]["inputs"]
-    assert set(inputs) == {"mode", "registration_sha256", "code_commit"}
+    assert set(inputs) == {"mode", "registration_sha256", "code_commit", "rehearsal_cells"}
     assert inputs["mode"]["type"] == "choice"
-    assert inputs["mode"]["options"] == ["smoke", "prepare-only", "registered"]
-    assert inputs["registration_sha256"]["type"] == "string"
-    assert inputs["code_commit"]["type"] == "string"
-    # The first two inputs belong to one mode each, so neither can be required for all.
-    assert not inputs["registration_sha256"].get("required")
-    assert not inputs["code_commit"].get("required")
+    assert inputs["mode"]["options"] == [
+        "smoke",
+        "prepare-only",
+        "timing",
+        "rehearsal",
+        "registered",
+    ]
+    assert inputs["mode"]["default"] == "smoke"
+    for name in ("registration_sha256", "code_commit", "rehearsal_cells"):
+        # Each belongs to one or two modes, so none can be required for all.
+        assert inputs[name]["type"] == "string" and not inputs[name].get("required"), name
+        assert inputs[name]["default"] == "", name
 
 
 def test_workflow_has_the_2025_guard_and_no_write_permissions() -> None:
@@ -292,7 +325,6 @@ def test_workflow_has_the_2025_guard_and_no_write_permissions() -> None:
     assert not re.search(r"\bwrite\b", json.dumps(workflow))
     for name in DATA_JOBS:
         assert _guard_steps(name), f"{name} has no 2025 guard step"
-    assert _guard_steps("plan") == []  # it reads the registration and fetches nothing
 
 
 def test_permissions_are_exactly_contents_read_and_no_job_widens_them() -> None:
@@ -318,9 +350,9 @@ def test_every_job_checks_out_the_full_history_without_credentials() -> None:
     # changed_since(code_pin) needs the code commit's history; credentials stay out of .git.
     for name in JOBS:
         first = _steps(name)[0]
-        assert _action(first) == "actions/checkout@v4", name
+        assert _action(first) == CHECKOUT, name
         assert first["with"] == {"fetch-depth": 0, "persist-credentials": False}, name
-        assert [_action(s) for s in _steps(name)].count("actions/checkout@v4") == 1, name
+        assert [_action(s) for s in _steps(name)].count(CHECKOUT) == 1, name
 
 
 def _header() -> str:
@@ -380,23 +412,47 @@ def test_python_is_pinned_and_the_install_uses_the_lock() -> None:
         if s.get("uses", "").startswith("actions/setup-python@")
     ]
     for name in JOBS:
-        (setup,) = _find_steps(name, "actions/setup-python@v5")
+        (setup,) = _find_steps(name, SETUP_PYTHON)
         assert setup["with"]["python-version"] == quality_python == "3.12", name
-        assert setup["with"]["cache-dependency-path"] == "requirements-dev.lock", name
         installs = [s["run"] for s in _steps(name) if s.get("run", "").startswith("python -m pip")]
+        if name == "status":  # it runs a short standard-library script and installs nothing
+            assert installs == [] and set(setup["with"]) == {"python-version"}
+            continue
+        assert setup["with"]["cache-dependency-path"] == "requirements-dev.lock", name
         assert installs == [
             "python -m pip install --upgrade pip",
             "python -m pip install -r requirements-dev.lock",
             "python -m pip install -e . --no-deps",
         ], name
-    allowed = {
-        "actions/checkout@v4",
-        "actions/setup-python@v5",
-        "actions/upload-artifact@v4",
-        "actions/download-artifact@v4",
-    }
+    allowed = {f"{action}@{sha}" for action, (sha, _) in PINS.items()}
     used = {_action(s) for job in _jobs().values() for s in job["steps"] if "uses" in s}
-    assert used <= allowed, used - allowed
+    assert used == allowed, used ^ allowed
+
+
+def test_every_action_is_pinned_to_a_full_commit_sha_with_its_tag() -> None:
+    """Ruling F9: a moved tag cannot change what runs. Each ``uses:`` line names a full
+    commit SHA and, in a trailing comment, the exact tag that commit carries, the same
+    major versions as before."""
+    lines = [
+        line.strip()
+        for line in _text().splitlines()
+        if line.strip().startswith(("- uses:", "uses:"))
+    ]
+    assert lines
+    for line in lines:
+        match = re.fullmatch(
+            r"(?:- )?uses: ([\w.-]+/[\w.-]+)@([0-9a-f]{40}) # (v[0-9]+\.[0-9]+\.[0-9]+)", line
+        )
+        assert match is not None, line
+        action, sha, tag = match.groups()
+        assert PINS[action] == (sha, tag), line
+    majors = {action: tag.split(".")[0] for action, (_, tag) in PINS.items()}
+    assert majors == {
+        "actions/checkout": "v4",
+        "actions/setup-python": "v5",
+        "actions/upload-artifact": "v4",
+        "actions/download-artifact": "v4",
+    }
 
 
 # --- the job graph ----------------------------------------------------------------------
@@ -405,12 +461,12 @@ def test_python_is_pinned_and_the_install_uses_the_lock() -> None:
 def test_prepare_only_mode_runs_only_prepare() -> None:
     assert _ran("prepare-only") == {"prepare"}
     calls = {tokens[2]: tokens for _, tokens in _driver_calls("prepare")}  # by --mode
-    assert set(calls) == {"registered", "prepare-only"}
+    assert set(calls) == {"$MODE", "prepare-only"}  # $MODE: registered or rehearsal
     only = calls["prepare-only"]
     assert _option(only, "--code-commit") == "$CODE_COMMIT"
     assert "--prepare-sha256" in only
-    assert "--registration-sha256" not in only
-    assert "--code-commit" not in calls["registered"]
+    assert "--registration-sha256" not in only and "--repo" not in only
+    assert "--code-commit" not in calls["$MODE"]
     only_steps = [s for s in _steps("prepare") if "prepare-only" in str(s.get("if", ""))]
     assert [s["name"] for s in only_steps] == ["Check the code commit", "Prepare (prepare-only)"]
     # It uploads the packs with prepare.json, and prints prepare.json; the legacy dataset
@@ -418,7 +474,7 @@ def test_prepare_only_mode_runs_only_prepare() -> None:
     assert any("cat v31/out/prepare.json" in script for script in _scripts("prepare"))
     assert _upload("prepare", "v31-packs")["path"] == "v31/out/"
     (legacy,) = [s for s in _uploads("prepare") if s["with"]["name"] == "v31-legacy-data"]
-    assert legacy["if"] == "${{ inputs.mode == 'registered' }}"
+    assert legacy["if"] == "${{ (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}"
 
 
 def test_smoke_mode_runs_only_the_smoke_job_with_all_216_cells_and_no_registration() -> None:
@@ -435,11 +491,11 @@ def test_smoke_mode_runs_only_the_smoke_job_with_all_216_cells_and_no_registrati
 
 
 def test_registered_mode_runs_every_job_and_a_failure_stops_only_what_depends_on_it() -> None:
-    everything = set(JOBS) - {"smoke"}
+    everything = set(GRAPH)
     assert _ran("registered") == everything
-    # prepare fails: nothing is left to run or to aggregate.
-    assert _ran("registered", failing=["prepare"]) == {"plan", "prepare"}
-    assert _ran("registered", failing=["plan"]) == {"plan"}
+    # prepare fails: nothing is left to run or to aggregate; status records it.
+    assert _ran("registered", failing=["prepare"]) == {"plan", "prepare", "status"}
+    assert _ran("registered", failing=["plan"]) == {"plan", "status"}
     # picks fails: the V3 cells cannot run; the others and the aggregate still do.
     assert _ran("registered", failing=["picks"]) == everything - {"run-v3"}
     # A failed cell never stops the aggregate: it judges what ran and names what did not.
@@ -453,7 +509,7 @@ def test_v3_cells_wait_for_picks_and_other_cells_do_not() -> None:
     assert "picks" not in _needs(jobs["run-main"])
     assert set(_needs(jobs["run-main"])) == {"plan", "prepare"}
     assert set(_needs(jobs["run-v3"])) == {"plan", "prepare", "picks"}
-    assert _needs(jobs["picks"]) == ["prepare"]
+    assert _needs(jobs["picks"]) == ["plan", "prepare"]
     (v3_call,) = _driver_calls("run-v3")
     (main_call,) = _driver_calls("run-main")
     assert "--picks" in v3_call[1]
@@ -469,11 +525,11 @@ def test_v3_cells_wait_for_picks_and_other_cells_do_not() -> None:
 
 def test_aggregate_runs_after_failures_and_needs_both_run_jobs_and_picks() -> None:
     aggregate = _jobs()["aggregate"]
-    assert set(_needs(aggregate)) == {"run-main", "run-v3", "picks"}
+    assert set(_needs(aggregate)) == {"plan", "run-main", "run-v3", "picks"}
     assert "!cancelled()" in aggregate["if"]
-    # !cancelled() alone would also run it in smoke and prepare-only mode, with every job
-    # it needs skipped; and after a failed prepare, with nothing to read.
-    assert "aggregate" not in _ran("smoke") | _ran("prepare-only")
+    # !cancelled() alone would also run it in the other modes, with every job it needs
+    # skipped; and after a failed prepare, with nothing to read.
+    assert "aggregate" not in _ran("smoke") | _ran("prepare-only") | _ran("timing")
     assert "aggregate" not in _ran("registered", failing=["prepare"])
     assert _ran("registered", failing=["run-main"]) >= {"aggregate"}
 
@@ -484,7 +540,7 @@ def test_matrices_are_parallel_capped_and_not_fail_fast_with_six_hour_timeouts()
         strategy = jobs[name]["strategy"]
         assert strategy["max-parallel"] == 20, name
         assert strategy["fail-fast"] is False, name
-    for name in ("prepare", "picks", *MATRIX_JOBS, "aggregate"):
+    for name in ("prepare", "picks", *MATRIX_JOBS, "aggregate", "timing"):
         assert jobs[name]["timeout-minutes"] == 360, name
     for name in JOBS:
         assert jobs[name]["runs-on"] == "ubuntu-latest", name
@@ -502,13 +558,18 @@ def test_workflow_matrix_comes_from_the_registration_cell_list() -> None:
     assert jobs["plan"]["outputs"] == {
         "v3_cells": "${{ steps.cells.outputs.v3_cells }}",
         "main_cells": "${{ steps.cells.outputs.main_cells }}",
+        "registration_sha256": "${{ steps.cells.outputs.registration_sha256 }}",
     }
-    script = _step("plan", "cells")["run"]
-    assert "crypto_grid_bot.combined.driver.registration" in script
-    assert "load_registration" in script
-    assert 'cell.kind == "v3"' in script and 'cell.kind != "v3"' in script
-    assert "256" in script  # GitHub's matrix limit
-    assert _step("plan", "cells")["id"] == "cells"
+    # The driver's own plan lists the cells, after its job gate (Rulings F6, F7): the split
+    # and GitHub's 256-job limit are the driver's, tested with it.
+    ((subcommand, call),) = [c for c in _driver_calls("plan") if c[0] == "plan"]
+    assert _option(call, "--mode") == "$MODE" and _option(call, "--repo") == "$REPO"
+    assert _option(call, "--cells") == "$REHEARSAL_CELLS"
+    assert v31_driver.MAX_MATRIX == 256
+    for name in ("picks", *MATRIX_JOBS, "aggregate", "prepare"):
+        assert jobs[name]["env"] == {
+            "REGISTRATION_SHA256": "${{ needs.plan.outputs.registration_sha256 }}"
+        }, name
 
 
 def test_artifact_names_carry_the_run_attempt_and_nest_the_cell_folder() -> None:
@@ -532,22 +593,25 @@ def test_artifact_names_carry_the_run_attempt_and_nest_the_cell_folder() -> None
     # about a missing directory (a job killed before it wrote anything); the others fail.
     for name in JOBS:
         for step in _uploads(name):
-            expected = "warn" if name in ("picks", *MATRIX_JOBS) else "error"
+            expected = "warn" if name in ("picks", *MATRIX_JOBS, "timing") else "error"
             assert step["with"]["retention-days"] == 90, (name, step["with"]["name"])
             assert step["with"]["if-no-files-found"] == expected, (name, step["with"]["name"])
     names = {s["with"]["name"] for name in JOBS for s in _uploads(name)}
     assert names == {
+        "v31-rehearsal-world",
         "v31-packs",
         "v31-legacy-data",
         f"v3-picks-{attempt}",
         f"cell-${{{{ matrix.cell }}}}-{attempt}",
         f"v31-summary-{attempt}",
         f"v31-smoke-summary-{attempt}",
+        f"v31-status-{attempt}",
+        f"v31-timing-${{{{ matrix.part }}}}-{attempt}",
     }
-    # The packs and the dataset keep fixed names, so a re-run of every job fails closed at the
-    # first upload; every other artifact is named for its attempt.
+    # The world, the packs and the dataset keep fixed names, so a re-run of every job fails
+    # closed at the first upload; every other artifact is named for its attempt.
     fixed = {n for n in names if "attempt" not in n}
-    assert fixed == {"v31-packs", "v31-legacy-data"}
+    assert fixed == {"v31-rehearsal-world", "v31-packs", "v31-legacy-data"}
 
 
 def test_downstream_jobs_read_the_prepared_artifacts_where_the_driver_looks() -> None:
@@ -562,13 +626,15 @@ def test_downstream_jobs_read_the_prepared_artifacts_where_the_driver_looks() ->
     assert not [s for s in _downloads("run-v3") if s["with"].get("name") == "v31-legacy-data"]
     # prepare uploads exactly those layouts: out/ holds packs/ and prepare.json; the
     # legacy dataset is work/legacy, whose root holds binance/.
-    ((_, prepare),) = [(c, t) for c, t in _driver_calls("prepare") if t[2] == "registered"]
+    ((_, prepare),) = [(c, t) for c, t in _driver_calls("prepare") if t[2] == "$MODE"]
     assert _upload("prepare", "v31-packs")["path"] == _option(prepare, "--out") + "/"
     assert _upload("prepare", "v31-legacy-data")["path"] == _option(prepare, "--work") + "/legacy"
 
 
 def test_aggregate_downloads_each_artifact_into_its_own_folder() -> None:
-    downloads = _downloads("aggregate")
+    world = [s for s in _downloads("aggregate") if s["with"].get("name") == "v31-rehearsal-world"]
+    assert len(world) == 1 and world[0]["with"]["path"] == "v31/world-download"  # rehearsal
+    downloads = [s for s in _downloads("aggregate") if s not in world]
     patterns = [s["with"]["pattern"] for s in downloads]
     assert patterns == ["cell-*-attempt-*", "v3-picks-attempt-*"]
     for step in downloads:
@@ -590,20 +656,35 @@ def test_every_driver_call_parses_with_the_drivers_own_parser() -> None:
     for subparser in subparsers.choices.values():
         subparser.allow_abbrev = False
     seen = set()
+    # The variables a choice or a count reads, as a registered dispatch and a timing leg set
+    # them (each mode's own values are parsed in the bash tests below).
+    values = {"$MODE": "registered", "$PART": "picks", "$REHEARSAL_CELLS": ""}
     for name in JOBS:
         for subcommand, tokens in _driver_calls(name):
             seen.add(subcommand)
             try:
-                args = parser.parse_args(tokens)
+                args = parser.parse_args([values.get(token, token) for token in tokens])
             except SystemExit as exc:  # argparse reports a bad call by exiting
                 raise AssertionError(f"{name}: {tokens} is refused by the CLI") from exc
             assert args.command == subcommand
-    assert seen == {"prepare", "picks", "run-cell", "aggregate", "smoke"}
-    # The registered calls pass the dispatch's pin; nothing else is overridden.
+    assert seen == {
+        "plan",
+        "prepare",
+        "picks",
+        "run-cell",
+        "aggregate",
+        "smoke",
+        "rehearsal-world",
+        "timing",
+        "timing-close",
+    }
+    # The registered calls pass the plan's pin, the run mode and the checkout ($REPO: the
+    # repository, or a rehearsal's world); nothing else is overridden.
     for name in ("picks", "run-main", "run-v3", "aggregate"):
         ((_, call),) = _driver_calls(name)
         assert _option(call, "--registration-sha256") == "$REGISTRATION_SHA256"
-        assert not {"--registration", "--run-manifest", "--repo"} & set(call)
+        assert (_option(call, "--mode"), _option(call, "--repo")) == ("$MODE", "$REPO")
+        assert not {"--registration", "--run-manifest"} & set(call)
     for _, call in _driver_calls("run-main") + _driver_calls("run-v3"):
         assert _option(call, "--cell") == "$CELL"
 
@@ -613,17 +694,26 @@ def test_every_driver_call_parses_with_the_drivers_own_parser() -> None:
 
 def test_registered_mode_verifies_the_registration_hash_first() -> None:
     steps = _steps("plan")
-    assert _action(steps[0]) == "actions/checkout@v4"
+    assert _action(steps[0]) == CHECKOUT
     verify = steps[1]  # before Python is set up, installed or run
     script = verify["run"]
     assert "sha256sum config/v3_1_registration.json" in script
     assert "$REGISTRATION_SHA256" in script and "exit 1" in script
     assert all("python" not in s.get("run", "") for s in steps[:2])
-    assert _jobs()["plan"]["if"] == "${{ inputs.mode == 'registered' }}"
+    assert verify["if"] == "${{ inputs.mode == 'registered' }}"
+    assert _jobs()["plan"]["if"] == (
+        "${{ (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}"
+    )
     # The inputs reach the shell through the environment, never spliced into a script.
-    assert "${{" not in " ".join(_scripts("plan") + _scripts("prepare")).replace(ATTEMPT_ID, "")
-    assert _workflow()["env"]["REGISTRATION_SHA256"] == "${{ inputs.registration_sha256 }}"
-    assert _workflow()["env"]["CODE_COMMIT"] == "${{ inputs.code_commit }}"
+    for name in JOBS:
+        assert "${{" not in " ".join(_scripts(name)).replace(ATTEMPT_ID, ""), name
+    assert _workflow()["env"] == {
+        "MODE": "${{ inputs.mode }}",
+        "REGISTRATION_SHA256": "${{ inputs.registration_sha256 }}",
+        "CODE_COMMIT": "${{ inputs.code_commit }}",
+        "REHEARSAL_CELLS": "${{ inputs.rehearsal_cells }}",
+        "REPO": "${{ inputs.mode == 'rehearsal' && 'v31/work/repo' || '.' }}",
+    }
 
 
 @pytest.mark.parametrize(
@@ -659,15 +749,21 @@ def test_every_data_job_has_the_guard_after_its_data_step() -> None:
             index
             for index, step in enumerate(steps)
             if _action(step).startswith("actions/download-artifact@")
-            or re.search(r"v31_driver\.py (prepare|smoke)\b", step.get("run", ""))
+            or re.search(
+                r"v31_driver\.py (prepare|smoke|rehearsal-world|timing)\b|tar -xf|status\.json",
+                step.get("run", ""),
+            )
         ]
         assert data, f"{name} has no data step"
         assert guards[0] > max(data), f"{name}: the guard comes before its data step"
-        # The first guard has no condition, so it can never be skipped.
-        assert "if" not in steps[guards[0]], name
+        # The first guard can never be skipped: it has no condition, or (in a timing job,
+        # whose only scan follows a step that may time out) always().
+        assert steps[guards[0]].get("if", "${{ always() }}") == "${{ always() }}", name
         driver = [i for i, s in enumerate(steps) if "scripts/v31_driver.py" in s.get("run", "")]
-        if name in ("smoke", "prepare"):
-            assert len(guards) == 1, name  # the driver is the data step; one scan follows it
+        if name in ("smoke", "prepare", "plan", "status", "timing"):
+            # The driver (or the status script) makes the data; one scan follows it.
+            assert len(guards) == 1, name
+            assert not driver or max(driver) < guards[0], name
         else:
             # Downstream jobs check what they downloaded before the driver reads it, and
             # check again what the driver wrote.
@@ -869,12 +965,21 @@ def test_the_picks_receipt_is_a_job_output_of_the_picks_job() -> None:
 
 
 FAKE_RECEIPT = "c" * 64
+FAKE_REGISTRATION = "d" * 64
+# What the stub prints: every field a step reads from a driver document.
+STUB_DOCUMENT = {
+    "outcome_sha256": FAKE_RECEIPT,
+    "summary": "x",
+    "registration_sha256": FAKE_REGISTRATION,
+    "v3_cells": ["w1.unchanged_v3_selector.native.c1.research"],
+    "main_cells": ["w1.combined.olhc.c1.research"],
+}
 STUB = """\
 python() {
   if [ "$1" = scripts/v31_driver.py ]; then
     shift
     printf '%s\\0' "$@" > "$ARGV_FILE"
-    echo '{"outcome_sha256": "RECEIPT", "summary": "x"}'
+    printf '%s\\n' 'DOCUMENT'
   else
     REAL "$@"
   fi
@@ -886,25 +991,33 @@ def _driver_step_run(
     step: dict[str, Any], tmp_path: Path, **extra: str
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     """Run a step that calls the driver with ``python`` replaced by a stub that records the
-    driver's argv and prints a receipt. Returns the result, the argv and the output file."""
+    driver's argv and prints a document (``STUB_DOCUMENT``). Returns the result, the argv
+    (of the step's last driver call) and the output file."""
     argv_file, output = tmp_path / "argv", tmp_path / "github-output"
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir(parents=True, exist_ok=True)
     cwd = tmp_path / "checkout"
     (cwd / "config").mkdir(parents=True, exist_ok=True)
     (cwd / "config/v3_1_prepare.json").write_bytes(b'{"schema": "v3.1-prepare-1"}\n')
+    (cwd / "v31/work").mkdir(parents=True, exist_ok=True)  # what rehearsal-world makes
     output.write_text("", encoding="utf-8")
     real = shlex.quote(Path(sys.executable).as_posix())
-    prelude = STUB.replace("RECEIPT", FAKE_RECEIPT).replace("REAL", real)
+    document = json.dumps(STUB_DOCUMENT)
+    prelude = STUB.replace("DOCUMENT", document).replace("REAL", real)
     script = step["run"].replace("${{ github.run_id }}", "4242")
     script = script.replace("${{ github.run_attempt }}", "2")
     env = {
         "ARGV_FILE": argv_file.as_posix(),
         "RUNNER_TEMP": runner_temp.as_posix(),
         "GITHUB_OUTPUT": output.as_posix(),
+        "MODE": "registered",
+        "REPO": ".",
         "REGISTRATION_SHA256": "a" * 64,
         "CODE_COMMIT": "b" * 40,
+        "REHEARSAL_CELLS": "",
         "CELL": "w1.combined.olhc.c1.research",
+        "PART": "picks",
+        "OUTCOME": "success",
         **extra,
     }
     result = _run_step(script, cwd, env, prelude)
@@ -934,13 +1047,25 @@ def test_each_driver_step_passes_the_dispatch_values_to_the_cli(tmp_path: Path) 
         assert result.returncode == 0, (job, result.stderr)
         args = parser.parse_args(argv)
         seen.append((job, args.command, getattr(args, "mode", None)))
-        if args.command != "smoke":  # the checkout and the committed registration files
+        if args.command in ("plan", "prepare", "picks", "run-cell", "aggregate"):
+            # The checkout ($REPO) and the committed registration files.
             assert (args.repo, args.registration, args.run_manifest) == (
                 ".",
                 "config/v3_1_registration.json",
                 "config/v3_1_run_manifest.json",
             )
-        if args.command == "prepare" and args.mode == "registered":
+        if args.command == "plan":
+            assert (args.mode, args.registration_sha256, args.cells) == (
+                "registered",
+                "a" * 64,
+                None,
+            )
+            assert output.read_text(encoding="utf-8").splitlines() == [
+                'v3_cells=["w1.unchanged_v3_selector.native.c1.research"]',
+                'main_cells=["w1.combined.olhc.c1.research"]',
+                f"registration_sha256={FAKE_REGISTRATION}",
+            ]
+        elif args.command == "prepare" and args.mode == "registered":
             assert args.registration_sha256 == "a" * 64
             assert (args.work, args.out) == ("v31/work", "v31/out")
         elif args.command == "prepare":
@@ -962,17 +1087,34 @@ def test_each_driver_step_passes_the_dispatch_values_to_the_cli(tmp_path: Path) 
         elif args.command == "aggregate":
             assert (args.cells, args.out) == ("v31/cells", "v31/summary-out")
             assert (args.attempt_id, args.registration_sha256) == ("4242-attempt-2", "a" * 64)
+        elif args.command == "rehearsal-world":
+            assert args.out == "v31/work"
+            assert (
+                output.read_text(encoding="utf-8") == f"registration_sha256={FAKE_REGISTRATION}\n"
+            )
+        elif args.command == "timing":
+            config = folder / "checkout/config/v3_1_prepare.json"
+            assert (args.part, args.code_commit) == ("picks", "b" * 40)
+            assert args.prepare_sha256 == hashlib.sha256(config.read_bytes()).hexdigest()
+            assert (args.scratch, args.out, args.repo) == ("v31/timing-scratch", "v31/timing", ".")
+        elif args.command == "timing-close":
+            assert (args.part, args.step_outcome, args.out) == ("picks", "success", "v31/timing")
+            assert args.step_timeout_minutes == STEP_TIMEOUT
         else:
             assert args.command == "smoke" and (args.out, args.cells) == ("v31/smoke", None)
     assert sorted(seen, key=str) == sorted(
         [
             ("smoke", "smoke", None),
+            ("plan", "rehearsal-world", None),
+            ("plan", "plan", "registered"),
             ("prepare", "prepare", "registered"),
             ("prepare", "prepare", "prepare-only"),
-            ("picks", "picks", None),
-            ("run-main", "run-cell", None),
-            ("run-v3", "run-cell", None),
-            ("aggregate", "aggregate", None),
+            ("picks", "picks", "registered"),
+            ("run-main", "run-cell", "registered"),
+            ("run-v3", "run-cell", "registered"),
+            ("aggregate", "aggregate", "registered"),
+            ("timing", "timing", None),
+            ("timing", "timing-close", None),
         ],
         key=str,
     )
@@ -990,21 +1132,218 @@ def test_the_picks_step_refuses_a_receipt_that_is_not_a_sha256(tmp_path: Path) -
     assert output.read_text(encoding="utf-8") == ""
 
 
+# --- step timeouts (Ruling F2) -----------------------------------------------------------
+
+
+def _long_steps() -> dict[tuple[str, str], dict[str, Any]]:
+    """Each long step, by job and name: the steps that run the driver's heavy work."""
+    names = {
+        ("prepare", "Prepare (registered or rehearsal)"),
+        ("prepare", "Prepare (prepare-only)"),
+        ("picks", "V3 selector picks"),
+        ("run-main", "Run the cell"),
+        ("run-v3", "Run the cell"),
+        ("aggregate", "Aggregate"),
+        ("timing", "Time the part"),
+    }
+    found = {(job, step.get("name")): step for job in JOBS for step in _steps(job)}
+    return {key: found[key] for key in names}
+
+
+def test_long_steps_time_out_inside_the_job_limit_so_the_scan_and_upload_still_run() -> None:
+    jobs = _jobs()
+    for (job, name), step in _long_steps().items():
+        assert step["timeout-minutes"] == STEP_TIMEOUT, (job, name)
+        assert STEP_TIMEOUT < jobs[job]["timeout-minutes"] == 360, (job, name)
+    # Twenty-five minutes remain for the checkout, the setup, the downloads, the scans and
+    # the upload, each of which takes a few minutes at most.
+    assert 360 - STEP_TIMEOUT == 25
+    # Every other driver step is short and has no step timeout of its own.
+    long_steps = set(_long_steps())
+    for job, step in _driver_steps():
+        if (job, step.get("name")) not in long_steps:
+            assert "timeout-minutes" not in step, (job, step.get("name"))
+    # A timed-out step fails, and the steps that record the attempt still run after it.
+    for job in ("picks", *MATRIX_JOBS):
+        steps = _steps(job)
+        (index,) = [i for i, s in enumerate(steps) if s.get("timeout-minutes") == STEP_TIMEOUT]
+        outcomes = steps_that_run(job, failing=[index])
+        assert outcomes[-2:] == ["success", "success"], job  # the scan, then the upload
+    # timing-close is told the timing step's own timeout.
+    ((_, close),) = [c for c in _driver_calls("timing") if c[0] == "timing-close"]
+    assert int(_option(close, "--step-timeout-minutes")) == STEP_TIMEOUT
+
+
+# --- the dispatch ref and the first job's gate (Ruling F6) --------------------------------
+
+
+def test_the_header_and_the_plan_job_hold_the_dispatch_ref_rule() -> None:
+    header = _header()
+    assert (
+        "a registered or timing run is dispatched from a ref whose tree is the code pin plus "
+        "the registration artifacts only" in header
+    )
+    assert "a wrong ref fails in the first job" in header
+    # The plan job is the first job of a registered run, and its job gate runs before any
+    # other job: prepare, picks and the cells all need it.
+    jobs = _jobs()
+    for name in ("prepare", "picks", *MATRIX_JOBS, "aggregate", "status"):
+        assert "plan" in _needs(jobs[name]), name
+    steps = _steps("plan")
+    gate = next(
+        i for i, s in enumerate(steps) if re.search(r"v31_driver\.py plan\b", s.get("run", ""))
+    )
+    assert all(
+        "v31_driver.py" not in s.get("run", "") or "rehearsal-world" in s["run"]
+        for s in steps[:gate]
+    )
+    # The CLI documents it too.
+    assert (
+        "a ref" in v31_driver.__doc__
+        and "code pin plus the registration artifacts" in v31_driver.__doc__
+    )
+
+
+# --- the status job (Ruling F11) ---------------------------------------------------------
+
+
+def test_the_status_job_records_every_job_result_even_when_aggregate_is_skipped(
+    tmp_path: Path,
+) -> None:
+    jobs = _jobs()
+    status = jobs["status"]
+    assert set(_needs(status)) == {"plan", "prepare", "picks", "run-main", "run-v3", "aggregate"}
+    assert (
+        status["if"]
+        == "${{ always() && (inputs.mode == 'registered' || inputs.mode == 'rehearsal') }}"
+    )
+    # A failed prepare skips the aggregate; the status job still runs.
+    ran = jobs_that_run("registered", failing=["prepare"])
+    assert (ran["aggregate"], ran["status"]) == ("skipped", "success")
+    assert jobs_that_run("registered", failing=["plan"])["status"] == "success"
+    assert "status" not in _ran("smoke") | _ran("prepare-only") | _ran("timing")
+    upload = _upload("status", "v31-status-attempt-${{ github.run_attempt }}")
+    assert upload["path"] == "v31/status" and upload["if-no-files-found"] == "error"
+    # Its script, run for real on a failed prepare's results.
+    (step,) = [s for s in _steps("status") if "status.json" in s.get("run", "")]
+    env = {name: "" for name in step["env"]}
+    env.update(
+        {
+            "MODE": "registered",
+            "PLAN_RESULT": "success",
+            "PREPARE_RESULT": "failure",
+            "PICKS_RESULT": "skipped",
+            "RUN_MAIN_RESULT": "skipped",
+            "RUN_V3_RESULT": "skipped",
+            "AGGREGATE_RESULT": "skipped",
+            "PLANNED_SHA256": "e" * 64,
+            "V3_CELLS": json.dumps(["a"] * 4),
+            "MAIN_CELLS": json.dumps(["b"] * 212),
+            "RUN_ID": "4242",
+            "RUN_ATTEMPT": "1",
+        }
+    )
+    real = shlex.quote(Path(sys.executable).as_posix())
+    result = _run_step(step["run"], tmp_path, env, f'python() {{ {real} "$@"; }}\n')
+    assert result.returncode == 0, result.stderr
+    document = json.loads((tmp_path / "v31/status/status.json").read_bytes())
+    assert document == {
+        "schema": "v3.1-status-1",
+        "mode": "registered",
+        "run_id": "4242",
+        "run_attempt": "1",
+        "jobs": {
+            "plan": "success",
+            "prepare": "failure",
+            "picks": "skipped",
+            "run-main": "skipped",
+            "run-v3": "skipped",
+            "aggregate": "skipped",
+        },
+        "aggregate_ran": False,
+        "registration_sha256": "e" * 64,
+        "v3_cells": 4,
+        "main_cells": 212,
+        "picks_receipt_sha256": None,
+    }
+
+
+# --- timing (Ruling F4) -------------------------------------------------------------------
+
+
+def test_timing_mode_runs_three_parts_and_uploads_only_their_timing_files() -> None:
+    assert _ran("timing") == {"timing"}
+    job = _jobs()["timing"]
+    assert job["strategy"] == {"fail-fast": False, "matrix": {"part": ["prepare", "picks", "cell"]}}
+    assert list(job["strategy"]["matrix"]["part"]) == list(v31_driver.TIMING_PARTS)
+    ((_, timed), (_, close)) = _driver_calls("timing")
+    assert timed[0] == "timing" and close[0] == "timing-close"
+    assert _option(timed, "--part") == _option(close, "--part") == "$PART"
+    assert _option(timed, "--out") == _option(close, "--out") == "v31/timing"
+    assert _option(timed, "--scratch") == "v31/timing-scratch"
+    assert _option(timed, "--code-commit") == "$CODE_COMMIT"
+    # Only v31/timing is uploaded, never the scratch data or results.
+    (upload,) = _uploads("timing")
+    assert upload["with"]["path"] == "v31/timing"
+    assert "scratch" not in json.dumps(upload)
+    # Gated like prepare-only: the commit is checked first, the config hashed from the checkout.
+    script = _step("timing", "timing")["run"]
+    assert 'prepare_sha256="$(sha256sum config/v3_1_prepare.json' in script
+
+
+def test_a_timing_part_killed_at_its_step_timeout_still_uploads_what_it_measured() -> None:
+    steps = _steps("timing")
+    (timed,) = [i for i, s in enumerate(steps) if s.get("id") == "timing"]
+    (close,) = [i for i, s in enumerate(steps) if "timing-close" in s.get("run", "")]
+    (guard,) = _guard_steps("timing")
+    (upload,) = [i for i, s in enumerate(steps) if _action(s).startswith("actions/upload")]
+    assert timed < close < guard == upload - 1
+    assert steps[close]["env"]["OUTCOME"] == "${{ steps.timing.outcome }}"
+    for failing in ([timed], [timed - 1]):  # the part itself, or a step before it
+        outcomes = steps_that_run("timing", failing=failing, mode="timing")
+        assert (outcomes[close], outcomes[guard], outcomes[upload]) == ("success",) * 3
+    # A failed scan uploads nothing.
+    assert steps_that_run("timing", failing=[guard], mode="timing")[upload] == "skipped"
+
+
+# --- the plan step, for real ------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RegisteredWorld:
+    repo: Path
+    registration_sha256: str
+
+
 @pytest.fixture(scope="module")
-def registered_world(tmp_path_factory: pytest.TempPathFactory) -> v31_smoke.World:
+def registered_world(tmp_path_factory: pytest.TempPathFactory) -> RegisteredWorld:
     """What Task 11 commits, in miniature: a repository holding config/v3_1_registration.json
-    and its run-manifest, with all 42 arms and 216 cells (the smoke's synthetic world)."""
+    and its run-manifest, with all 42 arms and 216 cells (the smoke's synthetic world), its
+    adapter pins read from module stubs at its head."""
     root = tmp_path_factory.mktemp("v31-workflow") / "world"
     root.mkdir()
     with v31_smoke.stand_ins():
-        world = v31_smoke.build_world(root)
+        world = v31_smoke.build_world(root, extra_files=MODULES)
         document = v31_driver.smoke_packs(world, root / v31_driver.PACKS_DIR)
-        v31_smoke.register(world, document, code_pin=world.head)
-    return world
+        pins = adapter_pins(world.repo, world.head)
+        _, sha = v31_smoke.register(world, document, code_pin=world.head, adapter_pins=pins)
+    return RegisteredWorld(world.repo, sha)
 
 
-def test_the_plan_step_splits_the_registered_cells_into_28_v3_and_188_other_cells(
-    registered_world: v31_smoke.World, tmp_path: Path
+def _real_step(script: str) -> tuple[str, str]:
+    """``script`` with the driver at its absolute path and ``python`` this interpreter, run
+    from anywhere: (the script, the bash prelude)."""
+    driver = (ROOT / "scripts/v31_driver.py").as_posix()
+    real = shlex.quote(Path(sys.executable).as_posix())
+    return script.replace("scripts/v31_driver.py", driver), f'python() {{ {real} "$@"; }}\n'
+
+
+def _outputs(path: Path) -> dict[str, str]:
+    return dict(line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines())
+
+
+def test_the_plan_step_gates_and_splits_the_registered_cells_into_4_and_212(
+    registered_world: RegisteredWorld, tmp_path: Path
 ) -> None:
     repo = registered_world.repo
     registration = load_registration(
@@ -1014,23 +1353,191 @@ def test_the_plan_step_splits_the_registered_cells_into_28_v3_and_188_other_cell
     )
     output = tmp_path / "github-output"
     output.write_text("", encoding="utf-8")
-    # `python` on the runner is the one with the project installed; here it is this one.
-    prelude = "python() { " + shlex.quote(Path(sys.executable).as_posix()) + ' "$@"; }\n'
-    result = _run_step(
-        _step("plan", "cells")["run"],
-        repo,
-        {"GITHUB_OUTPUT": output.as_posix(), "PYTHONPATH": str(ROOT / "src")},
-        prelude,
-    )
+    script, prelude = _real_step(_step("plan", "cells")["run"])
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    env = {
+        "GITHUB_OUTPUT": output.as_posix(),
+        "RUNNER_TEMP": runner_temp.as_posix(),
+        "PYTHONPATH": str(ROOT / "src"),
+        "MODE": "registered",
+        "REPO": repo.as_posix(),
+        "REGISTRATION_SHA256": registered_world.registration_sha256,
+        "REHEARSAL_CELLS": "",
+    }
+    result = _run_step(script, tmp_path, env, prelude)
     assert result.returncode == 0, result.stderr
-    lines = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
-    assert set(lines) == {"v3_cells", "main_cells"}
+    lines = _outputs(output)
+    assert set(lines) == {"v3_cells", "main_cells", "registration_sha256"}
     v3_cells, main_cells = json.loads(lines["v3_cells"]), json.loads(lines["main_cells"])
-    assert (len(v3_cells), len(main_cells)) == (28, 188)
-    assert len(v3_cells) <= 256 and len(main_cells) <= 256
-    assert set(v3_cells).isdisjoint(main_cells)
+    # Only the selector waits for the picks (Ruling F7): 4 cells; the other 212, the six
+    # long-only V3 rules' 24 among them, run in the main matrix.
+    assert (len(v3_cells), len(main_cells)) == (4, 212)
+    assert {c.cell_id for c in registration.cells if c.arm == "unchanged_v3_selector"} == set(
+        v3_cells
+    )
     assert {*v3_cells, *main_cells} == {cell.cell_id for cell in registration.cells}
-    assert {c.cell_id for c in registration.cells if c.kind == "v3"} == set(v3_cells)
-    assert all(re.fullmatch(r"[a-z0-9._-]+", cell) for cell in (*v3_cells, *main_cells))
+    assert sum("unchanged_v3_r" in c for c in main_cells) == 24
+    assert lines["registration_sha256"] == registered_world.registration_sha256
     # GitHub reads the output as one line per array.
     assert lines["main_cells"].startswith("[") and "\n" not in lines["main_cells"]
+    # A wrong pin fails the first job (the job gate).
+    output.write_text("", encoding="utf-8")
+    result = _run_step(script, tmp_path, {**env, "REGISTRATION_SHA256": "0" * 64}, prelude)
+    assert result.returncode != 0 and "job gate refused" in result.stderr
+    assert output.read_text(encoding="utf-8") == ""
+
+
+# --- the rehearsal: the registered job graph's steps, for real (Ruling F3) ---------------
+
+
+def test_rehearsal_mode_runs_the_same_job_graph_as_a_registered_run() -> None:
+    assert _ran("rehearsal") == _ran("registered") == set(GRAPH)
+    for failing in (["prepare"], ["picks"], ["run-main"], ["plan"]):
+        assert _ran("rehearsal", failing) == _ran("registered", failing), failing
+    # Every gated job unpacks the plan job's world before its first scan, and in a
+    # rehearsal alone; the plan job builds and uploads it.
+    for name in ("prepare", "picks", *MATRIX_JOBS, "aggregate"):
+        steps = _steps(name)
+        (download,) = [
+            i for i, s in enumerate(steps) if s.get("with", {}).get("name") == "v31-rehearsal-world"
+        ]
+        (unpack,) = [i for i, s in enumerate(steps) if "tar -xf" in s.get("run", "")]
+        for index in (download, unpack):
+            assert steps[index]["if"] == "${{ inputs.mode == 'rehearsal' }}", name
+        assert download < unpack < _guard_steps(name)[0], name
+        assert steps[download]["with"]["path"] == "v31/world-download"
+    world = _step("plan", "world")
+    assert world["if"] == "${{ inputs.mode == 'rehearsal' }}"
+    assert _upload("plan", "v31-rehearsal-world")["path"] == "v31/rehearsal-world.tar"
+    # The plan step takes the world's registration in a rehearsal, the dispatched one else.
+    assert _step("plan", "cells")["env"]["REGISTRATION_SHA256"] == (
+        "${{ inputs.mode == 'rehearsal' && steps.world.outputs.registration_sha256 "
+        "|| inputs.registration_sha256 }}"
+    )
+    # The registered dispatch check runs in a registered run alone.
+    assert _steps("plan")[1]["if"] == "${{ inputs.mode == 'registered' }}"
+    # A rehearsal never takes a fetching path: its prepare is the registered step with
+    # --mode rehearsal (which the driver runs without any transport), never prepare-only.
+    steps = _steps("prepare")
+    outcomes = dict(
+        zip(
+            (s.get("name") for s in steps), steps_that_run("prepare", mode="rehearsal"), strict=True
+        )
+    )
+    assert outcomes["Prepare (registered or rehearsal)"] == "success"
+    assert outcomes["Prepare (prepare-only)"] == outcomes["Check the code commit"] == "skipped"
+    assert outcomes["Unpack the rehearsal world"] == "success"
+    # Nor does the timing job run in a rehearsal.
+    assert "timing" not in _ran("rehearsal")
+
+
+def test_the_rehearsal_steps_run_end_to_end_offline(tmp_path: Path) -> None:
+    """The rehearsal's own steps, in bash with the real driver, from the world's build to
+    the verdict: plan (the world, the gate, the matrices), prepare, picks, run-v3's picks
+    check and its cell, run-main's cells and aggregate. Each job runs in its own folder; the
+    artifacts move between them as download-artifact v4 lays them out (by name: into the
+    path; by pattern: each into its own folder named for it), which is what the dispatched
+    rehearsal checks on GitHub. Nothing touches the network."""
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    base = {
+        "RUNNER_TEMP": runner_temp.as_posix(),
+        "PYTHONPATH": str(ROOT / "src"),
+        "MODE": "rehearsal",
+        "REPO": "v31/work/repo",
+        "REHEARSAL_CELLS": "5",
+    }
+
+    def step_run(job: str, step: dict[str, Any], cwd: Path, **env: str) -> dict[str, str]:
+        cwd.mkdir(parents=True, exist_ok=True)
+        output = cwd / "github-output"
+        output.write_text("", encoding="utf-8")
+        script, prelude = _real_step(step["run"])
+        script = script.replace("${{ github.run_id }}", "4242")
+        script = script.replace("${{ github.run_attempt }}", "1")
+        result = _run_step(
+            script, cwd, {**base, "GITHUB_OUTPUT": output.as_posix(), **env}, prelude
+        )
+        assert result.returncode == 0, (job, step.get("name"), result.stderr[-3000:])
+        return _outputs(output)
+
+    def named(job: str, name: str) -> dict[str, Any]:
+        (step,) = [s for s in _steps(job) if s.get("name") == name]
+        return step
+
+    def unpack(cwd: Path) -> None:  # the world artifact, downloaded by name, then unpacked
+        (cwd / "v31/world-download").mkdir(parents=True)
+        shutil.copyfile(tarball, cwd / "v31/world-download/rehearsal-world.tar")
+        step_run("any", named("prepare", "Unpack the rehearsal world"), cwd)
+
+    # plan
+    plan_dir = tmp_path / "pl"
+    world = step_run("plan", _step("plan", "world"), plan_dir)
+    tarball = plan_dir / "v31/rehearsal-world.tar"
+    assert tarball.is_file()
+    sha = world["registration_sha256"]
+    planned = step_run("plan", _step("plan", "cells"), plan_dir, REGISTRATION_SHA256=sha)
+    assert planned["registration_sha256"] == sha
+    v3_cells, main_cells = json.loads(planned["v3_cells"]), json.loads(planned["main_cells"])
+    assert (len(v3_cells), len(main_cells)) == (1, 4)
+    gated = {"REGISTRATION_SHA256": sha}  # each later job's env, from the plan's output
+
+    # prepare
+    prepare_dir = tmp_path / "pr"
+    unpack(prepare_dir)
+    step_run("prepare", named("prepare", "Prepare (registered or rehearsal)"), prepare_dir, **gated)
+    prepared = json.loads((prepare_dir / "v31/out/prepare.json").read_bytes())
+    assert prepared["mode"] == "rehearsal" and prepared["registration_sha256"] == sha
+
+    def download_packs(cwd: Path) -> None:  # v31-packs by name into v31/prepared
+        shutil.copytree(prepare_dir / "v31/out", cwd / "v31/prepared")
+
+    # picks
+    picks_dir = tmp_path / "pk"
+    download_packs(picks_dir)
+    unpack(picks_dir)
+    receipt = step_run("picks", _step("picks", "picks"), picks_dir, **gated)["receipt_sha256"]
+
+    # aggregate's downloads, by pattern: each artifact in its own folder.
+    cells = tmp_path / "ag/v31/cells"
+    shutil.copytree(picks_dir / "v31/picks-out", cells / "v3-picks-attempt-1")
+
+    # run-v3: the picks downloaded by pattern, checked against the receipt, then the cell.
+    for index, cell in enumerate(v3_cells):
+        job_dir = tmp_path / f"v{index}"
+        download_packs(job_dir)
+        shutil.copytree(picks_dir / "v31/picks-out", job_dir / "v31/picks/v3-picks-attempt-1")
+        unpack(job_dir)
+        found = step_run(
+            "run-v3", _step("run-v3", "picks_dir"), job_dir, PICKS_RECEIPT_SHA256=receipt
+        )
+        step_run(
+            "run-v3",
+            named("run-v3", "Run the cell"),
+            job_dir,
+            CELL=cell,
+            PICKS_DIR=found["dir"],
+            **gated,
+        )
+        shutil.copytree(job_dir / "v31/cell-out", cells / f"cell-{cell}-attempt-1")
+
+    # run-main: the packs and the legacy dataset (by name into v31/legacy-data).
+    for index, cell in enumerate(main_cells):
+        job_dir = tmp_path / f"m{index}"
+        download_packs(job_dir)
+        shutil.copytree(prepare_dir / "v31/work/legacy", job_dir / "v31/legacy-data")
+        unpack(job_dir)
+        step_run("run-main", named("run-main", "Run the cell"), job_dir, CELL=cell, **gated)
+        shutil.copytree(job_dir / "v31/cell-out", cells / f"cell-{cell}-attempt-1")
+
+    # aggregate
+    aggregate_dir = tmp_path / "ag"
+    unpack(aggregate_dir)
+    step_run("aggregate", named("aggregate", "Aggregate"), aggregate_dir, **gated)
+    verdict = json.loads((aggregate_dir / "v31/summary-out/summary/verdict.json").read_bytes())
+    completed = {c for c, read in verdict["cells"].items() if read["state"] == "completed"}
+    assert completed == {*v3_cells, *main_cells}
+    assert verdict["v3_picks"]["state"] == "completed"
+    assert verdict["run"]["run_id"] == "4242" and verdict["run"]["reruns"] == []
+    assert verdict["status"] == "incomplete"  # five of 216 cells
