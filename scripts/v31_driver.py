@@ -23,15 +23,17 @@ Every gated job checks it (``job_gate``: nothing but those changed since the cod
 timing and prepare-only: the checkout is the dispatched ``--code-commit``, clean), and the
 plan job checks it first, so a wrong ref fails in the first job.
 
-The V3.1 trial (Ruling R4-1): ``job_gate`` (registered prepare, plan, picks, aggregate) and
-run-cell, before it reads any pack, require the trial register as the head commits it to
-hold exactly one ``spec-v3.1`` registration, whose trial passes
-``trial_register.check_ready`` at the head and whose completion pins the registration's
-code pin, ``config/v3_1_registration.json`` at its SHA-256 and
-``config/v3_1_run_manifest.json`` at the registered pin (``trial_errors``). check_ready
-requires the registration event to precede the implementation commit, so the code pin is
-a commit whose first parent already holds the V3.1 registration event. A rehearsal's world
-carries a synthetic trial laid out the same way, so a rehearsal runs this gate too.
+The V3.1 trial (Rulings R4-1, R5-1): ``job_gate`` (registered prepare, plan, picks,
+aggregate) and run-cell, before it reads any pack, require the trial register as the head
+commits it to hold exactly one ``spec-v3.1`` completion pinning
+``config/v3_1_registration.json`` at the registration's SHA-256; that completion's trial
+must pass ``trial_register.check_ready`` at the head, and the completion must pin the
+registration's code pin and ``config/v3_1_run_manifest.json`` at the registered pin
+(``trial_errors``). Other ``spec-v3.1`` trials, earlier, corrected or superseded, do not
+block it. check_ready requires the registration event to precede the implementation
+commit, so the code pin is a commit whose first parent already holds the V3.1 registration
+event. A rehearsal's world carries a synthetic trial laid out the same way, so a rehearsal
+runs this gate too.
 
 One dispatch per registration (Ruling R4-2): the workflow names each run ``v31-run <mode>
 <registration_sha256>``. In a registered run, ``dispatch-check`` (the plan job's first
@@ -980,17 +982,21 @@ def trial_errors(
     repo: Path, head: str, *, code_pin: str, config_sha256: str, manifest_sha256: str
 ) -> list[str]:
     """How the V3.1 trial's committed completion fails to authorize a registration
-    (Ruling R4-1); empty when it authorizes it.
+    (Rulings R4-1, R5-1); empty when it authorizes it.
 
-    The trial register as ``head`` commits it must hold exactly one ``registration`` event
-    of family ``V31_FAMILY``. That trial must pass ``trial_register.check_ready`` at
-    ``head``, whose checks are its own: one committed completion and no correction, the
+    The trial is picked by its completion's pins: among the ``completion`` events of
+    family ``V31_FAMILY`` in the trial register as ``head`` commits it, exactly one must pin
+    its config as ``REGISTRATION`` at ``config_sha256`` (none, or more than one, refuses,
+    naming the count). Its trial must pass ``trial_register.check_ready`` at ``head``,
+    whose checks are its own: one committed completion and no correction, the
     registration event already in the code commit's first parent, the code commit and the
     spec commit ancestors of the head, the spec, config and manifest blobs at the head
     matching their pins, and the code at the code commit and at the head matching the
     completion's inventory and digest. The completion must then bind this registration:
     its code commit is ``code_pin``, its config ``REGISTRATION`` at ``config_sha256`` and
-    its manifest ``RUN_MANIFEST`` at ``manifest_sha256``.
+    its manifest ``RUN_MANIFEST`` at ``manifest_sha256``. Any other V3.1 trial, earlier,
+    corrected or superseded, is not read: a corrected trial needs a new registration
+    (check_ready refuses it), and that new trial's completion pins the new registration.
 
     So the registration's code pin is a commit whose first parent already holds the V3.1
     registration event (check_ready's "registration precedes the implementation commit"):
@@ -1003,15 +1009,21 @@ def trial_errors(
         events = _parse(raw)
     except ValueError as exc:
         return [f"{TRIAL_REGISTER} at the head {head} is not a valid trial register: {exc}"]
+    pin = {"path": REGISTRATION, "sha256": config_sha256}
+    # The register's validation holds a completion's family to its registration's, and
+    # allows each trial one completion.
     trials = [
         event["trial_id"]
         for event in events
-        if event["event_type"] == "registration" and event["family"] == V31_FAMILY
+        if event["event_type"] == "completion"
+        and event["family"] == V31_FAMILY
+        and event["payload"]["config"] == pin
     ]
     if len(trials) != 1:
+        named = f" ({', '.join(trials)})" if trials else ""
         return [
-            f"{TRIAL_REGISTER} at the head {head} must hold one {V31_FAMILY} registration, "
-            f"found {len(trials)}"
+            f"{TRIAL_REGISTER} at the head {head} must hold one {V31_FAMILY} completion "
+            f"pinning {REGISTRATION} at {config_sha256}, found {len(trials)}{named}"
         ]
     (trial,) = trials
     try:
@@ -1127,7 +1139,7 @@ def job_gate(
     (the dispatch's pin), the run-manifest file to the registered pin, every change since
     the code pin must be a registration artifact (Ruling P10c), and the V3.1 trial's
     committed completion must authorize this registration at the head (``trial_errors``,
-    Ruling R4-1). One ``ValueError`` names every mismatch."""
+    Rulings R4-1, R5-1). One ``ValueError`` names every mismatch."""
     head = head_commit(repo)
     errors = []
     try:

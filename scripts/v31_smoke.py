@@ -516,12 +516,15 @@ def build_world(
     return World(root, repo, head, legacy, load_prepare_config(repo / "config/v3_1_prepare.json"))
 
 
-def trial_event(event_type: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-    """One event of the synthetic V3.1 trial, in the trial register's schema."""
+def trial_event(
+    event_type: str, payload: Mapping[str, Any], *, trial_id: str = TRIAL_ID
+) -> dict[str, Any]:
+    """One event of the synthetic V3.1 trial (or of another synthetic V3.1 trial,
+    ``trial_id``), in the trial register's schema."""
     return {
         "schema_version": 1,
-        "event_id": f"{TRIAL_ID}-{event_type}",
-        "trial_id": TRIAL_ID,
+        "event_id": f"{trial_id}-{event_type}",
+        "trial_id": trial_id,
         "event_type": event_type,
         "recorded_at": _RECORDED_AT,
         "agent": "V3.1 smoke (synthetic)",
@@ -575,12 +578,14 @@ def complete_trial(
     manifest_sha256: str,
     registration: str = "config/v3_1_registration.json",
     manifest: str = "config/v3_1_run_manifest.json",
+    trial_id: str = TRIAL_ID,
 ) -> None:
     """Write the trial register into ``repo``'s working tree, unstaged, as ``code_pin``
-    commits it plus the synthetic trial's completion, for the registration commit to
-    commit. The completion binds ``code_pin`` (its code inventory and digest as
-    ``check_ready`` computes them there), the registration file ``registration`` at
-    ``config_sha256`` and the run-manifest ``manifest`` at ``manifest_sha256``."""
+    commits it plus the synthetic trial's completion (``trial_id``'s, whose registration
+    event ``code_pin`` commits), for the registration commit to commit. The completion
+    binds ``code_pin`` (its code inventory and digest as ``check_ready`` computes them
+    there), the registration file ``registration`` at ``config_sha256`` and the
+    run-manifest ``manifest`` at ``manifest_sha256``."""
     register = repo / TRIAL_REGISTER
     register.write_bytes(_git(repo, "show", f"{code_pin}:{TRIAL_REGISTER}"))
     listed = _git(repo, "ls-tree", "-r", "--name-only", "-z", code_pin).decode("utf-8")
@@ -591,7 +596,7 @@ def complete_trial(
     )
     blobs = {path: _git(repo, "show", f"{code_pin}:{path}") for path in paths}
     payload = {
-        "registration_id": f"{TRIAL_ID}-registration",
+        "registration_id": f"{trial_id}-registration",
         "code_commit": code_pin,
         "code_sha256": code_digest(blobs),
         "code_paths": paths,
@@ -599,7 +604,7 @@ def complete_trial(
         "config": {"path": registration, "sha256": config_sha256},
         "review": "synthetic: a rehearsal or test world, never reviewed",
     }
-    append_event(register, trial_event("completion", payload))
+    append_event(register, trial_event("completion", payload, trial_id=trial_id))
 
 
 def rehearsal_marker() -> bytes:

@@ -712,46 +712,138 @@ def test_the_trial_gate_passes_a_completed_v31_trial_that_binds_the_registration
     assert events[1]["payload"]["code_commit"] == world.code_pin
 
 
-@pytest.mark.parametrize("case", ["no register", "no V3.1 registration", "two V3.1 registrations"])
-def test_the_trial_gate_needs_exactly_one_v31_registration_at_the_head(tmp_path, case):
-    if case == "no register":
-        repo = tmp_path / "repo"
-        v31_smoke.init_repo(repo)
-        (repo / "README.md").write_bytes(b"no register\n")
-        head = v31_smoke.commit_all(repo, "no register")
-        pins = {"code_pin": head, "config_sha256": "1" * 64, "manifest_sha256": "2" * 64}
-        expected = f"the head {head} commits no docs/trials/register.jsonl"
-    elif case == "no V3.1 registration":  # V3's own trial alone
-        repo = tmp_path / "repo"
-        v31_smoke.init_repo(repo)
-        register = repo / v31_smoke.TRIAL_REGISTER
-        register.parent.mkdir(parents=True)
-        for event in v3_trial("3" * 64, "4" * 64):
-            append_event(register, event)
-        head = v31_smoke.commit_all(repo, "V3's trial alone")
-        pins = {"code_pin": head, "config_sha256": "1" * 64, "manifest_sha256": "2" * 64}
-        expected = "must hold one spec-v3.1 registration, found 0"
-    else:
-        world = trial_world(tmp_path)
-        repo, pins = world.repo, world.pins
-        second = {**register_lines(repo, world.head)[0], "trial_id": "v3-1-second"}
-        append_event(repo / v31_smoke.TRIAL_REGISTER, {**second, "event_id": "v3-1-second-reg"})
-        head = v31_smoke.commit_all(repo, "a second V3.1 registration")
-        expected = "must hold one spec-v3.1 registration, found 2"
-    assert v31_driver.trial_errors(repo, head, **pins) == [
-        expected
-        if case == "no register"
-        else f"docs/trials/register.jsonl at the head {head} {expected}"
+SECOND_TRIAL = "v3-1-second"
+CORRECTED_REGISTRATION = b'{"synthetic": "corrected registration"}\n'
+
+
+def second_trial(world: TrialWorld, *, earlier: str, registration: bytes) -> TrialWorld:
+    """``world`` with a second synthetic V3.1 trial on top, as Task 11 would register a
+    corrected or superseding run: the first trial ``earlier`` ("corrected": a correction
+    of its completion is committed first; "superseded": nothing), the second trial's
+    registration event, a new code pin on top of it (the module changed), then the
+    registration file as ``registration`` with the second trial's completion binding the
+    new code pin, the registration and the unchanged run-manifest."""
+    repo = world.repo
+    register = repo / v31_smoke.TRIAL_REGISTER
+    if earlier == "corrected":
+        correction = v31_smoke.trial_event(
+            "correction",
+            {"target_id": "v3-1-synthetic-completion", "reason": "synthetic", "details": "x"},
+        )
+        append_event(register, correction)
+    first = register_lines(repo, world.head)[0]
+    append_event(
+        register, {**first, "trial_id": SECOND_TRIAL, "event_id": f"{SECOND_TRIAL}-registration"}
+    )
+    v31_smoke.commit_all(repo, "a second V3.1 registration")
+    (repo / "src/crypto_grid_bot/combined/engine.py").write_bytes(b"ENGINE = 2\n")
+    code_pin = v31_smoke.commit_all(repo, "the second trial's code pin")
+    (repo / v31_driver.REGISTRATION).write_bytes(registration)
+    pins = {**world.pins, "code_pin": code_pin, "config_sha256": sha(registration)}
+    v31_smoke.complete_trial(
+        repo,
+        code_pin=code_pin,
+        config_sha256=pins["config_sha256"],
+        manifest_sha256=pins["manifest_sha256"],
+        trial_id=SECOND_TRIAL,
+    )
+    head = v31_smoke.commit_all(repo, "the second registration (synthetic)")
+    return TrialWorld(repo, code_pin, head, pins)
+
+
+@pytest.mark.parametrize("earlier", ["corrected", "superseded"])
+def test_the_trial_gate_picks_the_trial_whose_completion_pins_the_registration(tmp_path, earlier):
+    """Ruling R5-1: two spec-v3.1 trials, and only the second's completion pins this
+    registration. The second authorizes it; the first, corrected or superseded, does not
+    block it (check_ready refuses a corrected trial, so a corrected run needs a new
+    registration and a new trial)."""
+    world = trial_world(tmp_path)
+    second = second_trial(world, earlier=earlier, registration=CORRECTED_REGISTRATION)
+    events = register_lines(second.repo, second.head)
+    registrations = [e["trial_id"] for e in events if e["event_type"] == "registration"]
+    assert registrations == ["v3-1-synthetic", SECOND_TRIAL]
+    assert v31_driver.trial_errors(second.repo, second.head, **second.pins) == []
+    # The first registration's pins pick the first trial, which check_ready refuses at the
+    # new head: its correction, or its config pin no longer matching the committed file.
+    reason = {
+        "corrected": "corrected trial requires a new registration before dispatch",
+        "superseded": "committed file does not match pin",
+    }[earlier]
+    assert v31_driver.trial_errors(second.repo, second.head, **world.pins) == [
+        f"{NOT_READY} {second.head}: {reason}"
     ]
+
+
+def test_a_second_v31_registration_does_not_block_the_first_trial(tmp_path):
+    """The deadlock Ruling R5-1 removes: a second spec-v3.1 registration, whose trial has
+    no completion yet, used to refuse every job ("found 2" registrations); the trial is
+    now the one whose completion pins the registration."""
+    world = trial_world(tmp_path)
+    second = {**register_lines(world.repo, world.head)[0], "trial_id": SECOND_TRIAL}
+    append_event(world.repo / v31_smoke.TRIAL_REGISTER, {**second, "event_id": "v3-1-second-reg"})
+    head = v31_smoke.commit_all(world.repo, "a second V3.1 registration")
+    assert v31_driver.trial_errors(world.repo, head, **world.pins) == []
+
+
+COUNT = "must hold one spec-v3.1 completion pinning config/v3_1_registration.json at"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "no register",
+        "no V3.1 completion",
+        "no completion",
+        "another config SHA-256",
+        "another config path",
+        "two completions pinning it",
+    ],
+)
+def test_the_trial_gate_needs_exactly_one_v31_completion_pinning_the_registration(tmp_path, case):
+    """Ruling R5-1: exactly one spec-v3.1 completion pins ``config/v3_1_registration.json``
+    at the registration's SHA-256; none, or more than one, refuses, naming the count."""
+    found = "found 0"
+    if case in ("no register", "no V3.1 completion"):
+        repo = tmp_path / "repo"
+        v31_smoke.init_repo(repo)
+        if case == "no register":
+            (repo / "README.md").write_bytes(b"no register\n")
+        else:  # V3's own trial alone
+            register = repo / v31_smoke.TRIAL_REGISTER
+            register.parent.mkdir(parents=True)
+            for event in v3_trial("3" * 64, "4" * 64):
+                append_event(register, event)
+        head = v31_smoke.commit_all(repo, case)
+        pins = {"code_pin": head, "config_sha256": "1" * 64, "manifest_sha256": "2" * 64}
+    elif case == "two completions pinning it":
+        first = trial_world(tmp_path)
+        world = second_trial(first, earlier="superseded", registration=TRIAL_FILES["registration"])
+        assert world.pins["config_sha256"] == first.pins["config_sha256"]
+        repo, head, pins = world.repo, world.head, world.pins
+        found = f"found 2 (v3-1-synthetic, {SECOND_TRIAL})"
+    else:
+        paths = {"registration": "config/other-registration.json"}
+        world = trial_world(tmp_path, **(paths if case == "another config path" else {}))
+        repo, head, pins = world.repo, world.head, dict(world.pins)
+        if case == "no completion":  # the register as the code pin commits it
+            raw = v31_driver._committed(repo, world.code_pin, v31_smoke.TRIAL_REGISTER)
+            (repo / v31_smoke.TRIAL_REGISTER).write_bytes(raw)
+            head = v31_smoke.commit_all(repo, "the completion dropped")
+        elif case == "another config SHA-256":
+            pins["config_sha256"] = "0" * 64
+    if case == "no register":
+        expected = f"the head {head} commits no docs/trials/register.jsonl"
+    else:
+        config = pins["config_sha256"]
+        expected = f"docs/trials/register.jsonl at the head {head} {COUNT} {config}, {found}"
+    assert v31_driver.trial_errors(repo, head, **pins) == [expected]
 
 
 @pytest.mark.parametrize(
     ("case", "expected"),
     [
         ("another code commit", "pins code commit {code_pin}, not the registration's code pin"),
-        ("another config SHA-256", "pins its config config/v3_1_registration.json at {config}, "),
         ("another manifest SHA-256", "pins its manifest config/v3_1_run_manifest.json at {man}, "),
-        ("another config path", "pins its config config/other-registration.json at {config}, "),
         ("another manifest path", "pins its manifest config/other-manifest.json at {man}, "),
     ],
 )
@@ -759,17 +851,15 @@ def test_the_trial_gate_refuses_a_completion_that_binds_another_registration(
     tmp_path, case, expected
 ):
     """check_ready passes each of these (its pins hold at the head); the completion pins
-    another code commit, config or manifest than this registration's, so it does not
-    authorize this one."""
-    paths = {
-        "another config path": {"registration": "config/other-registration.json"},
-        "another manifest path": {"manifest": "config/other-manifest.json"},
-    }.get(case, {})
+    this registration's config but another code commit or manifest, so it does not
+    authorize this one. A completion pinning another config is no completion of this
+    registration at all (``found 0``, Ruling R5-1:
+    ``test_the_trial_gate_needs_exactly_one_v31_completion_pinning_the_registration``)."""
+    paths = {"another manifest path": {"manifest": "config/other-manifest.json"}}.get(case, {})
     world = trial_world(tmp_path, **paths)
     pins = dict(world.pins)
     changed = {
         "another code commit": "code_pin",
-        "another config SHA-256": "config_sha256",
         "another manifest SHA-256": "manifest_sha256",
     }.get(case)
     if changed is not None:
@@ -793,10 +883,12 @@ def test_the_trial_gate_refuses_a_completion_that_binds_another_registration(
             "a code pin before the registration",
             "registration must precede the implementation commit",
         ),
-        ("no completion", "one committed completion required"),
     ],
 )
 def test_the_trial_gate_refuses_whatever_check_ready_refuses(tmp_path, case, reason):
+    """The completion pins this registration, so its trial is the one check_ready reads.
+    (A dropped completion never reaches check_ready: no completion pins the registration,
+    ``found 0``.)"""
     world = trial_world(tmp_path, late=case == "a code pin before the registration")
     repo, head = world.repo, world.head
     register = repo / v31_smoke.TRIAL_REGISTER
@@ -810,29 +902,47 @@ def test_the_trial_gate_refuses_whatever_check_ready_refuses(tmp_path, case, rea
     elif case == "code changed after the completion":
         (repo / "src/crypto_grid_bot/combined/engine.py").write_bytes(b"ENGINE = 2\n")
         head = v31_smoke.commit_all(repo, "a code change")
-    elif case == "no completion":
-        register.write_bytes(v31_driver._committed(repo, world.code_pin, v31_smoke.TRIAL_REGISTER))
-        head = v31_smoke.commit_all(repo, "the completion dropped")
     assert v31_driver.trial_errors(repo, head, **world.pins) == [f"{NOT_READY} {head}: {reason}"]
 
 
-def without_completion(repo: Path, code_pin: str, root: Path) -> Path:
-    """A copy of ``repo`` whose head commits the trial register as the code pin does: the
-    V3.1 registration event without its completion."""
+UNAUTHORIZED = ("no completion", "a correction")
+
+
+def unauthorized(
+    repo: Path, code_pin: str, root: Path, case: str, config_sha256: str
+) -> tuple[Path, str]:
+    """A copy of ``repo`` whose head no V3.1 completion authorizes, and the line the trial
+    gate refuses it with: "no completion", the trial register as the code pin commits it
+    (the V3.1 registration event without its completion), so no completion pins the
+    registration; "a correction", the completion corrected, which check_ready refuses."""
     copy = root / "repo"
     shutil.copytree(repo, copy)
-    raw = v31_driver._committed(copy, code_pin, v31_smoke.TRIAL_REGISTER)
-    (copy / v31_smoke.TRIAL_REGISTER).write_bytes(raw)
-    v31_smoke.commit_all(copy, "the V3.1 trial's completion dropped")
-    return copy
+    register = copy / v31_smoke.TRIAL_REGISTER
+    if case == "no completion":
+        register.write_bytes(v31_driver._committed(copy, code_pin, v31_smoke.TRIAL_REGISTER))
+    else:
+        correction = v31_smoke.trial_event(
+            "correction",
+            {"target_id": "v3-1-synthetic-completion", "reason": "synthetic", "details": "x"},
+        )
+        append_event(register, correction)
+    head = v31_smoke.commit_all(copy, f"the V3.1 trial's completion unauthorized: {case}")
+    if case == "no completion":
+        found = f"{COUNT} {config_sha256}, found 0"
+        return copy, f"docs/trials/register.jsonl at the head {head} {found}"
+    return copy, f"{NOT_READY} {head}: corrected trial requires a new registration before dispatch"
 
 
+@pytest.mark.parametrize("case", UNAUTHORIZED)
 def test_every_registered_job_and_cell_refuses_a_registration_the_trial_does_not_authorize(
-    registered, smoke_plan, tmp_path, capsys
+    registered, smoke_plan, tmp_path, capsys, case
 ):
     """job_gate (registered prepare, plan, picks, aggregate) and run-cell, before it reads
-    any pack, refuse a registration that no committed V3.1 completion authorizes."""
-    copy = without_completion(registered.repo, registered.code_pin, tmp_path)
+    any pack, refuse a registration that no committed V3.1 completion authorizes: none
+    pins it, or check_ready refuses the one that does."""
+    copy, reason = unauthorized(
+        registered.repo, registered.code_pin, tmp_path, case, registered.config_sha
+    )
     out = tmp_path / "out"
     missing = tmp_path / "no-packs"  # run-cell refuses before it would read a pack here
     jobs = ("--packs", str(missing), "--attempt-id", RUN, "--out", str(out))
@@ -847,7 +957,7 @@ def test_every_registered_job_and_cell_refuses_a_registration_the_trial_does_not
         code, _, err = run(registered_args(registered, command, *extra, repo=copy), capsys)
         refusal = f"trial gate refused cell {CELL!r}" if command == "run-cell" else "job gate"
         assert code == 1 and refusal in err, (command, err)
-        assert f"{NOT_READY} " in err and "one committed completion required" in err, command
+        assert f"\n- {reason}\n" in err, (command, err)
         assert str(missing) not in err, command  # no pack or cell was looked for
     assert not out.exists() and not (tmp_path / "w").exists()
 
@@ -1101,15 +1211,20 @@ def test_a_rehearsal_refuses_any_world_without_the_marker(registered, rehearsal,
     assert code == 1
 
 
-def test_a_rehearsal_holds_the_trial_gate_on_its_world(rehearsal, tmp_path, capsys):
+@pytest.mark.parametrize("case", UNAUTHORIZED)
+def test_a_rehearsal_holds_the_trial_gate_on_its_world(rehearsal, tmp_path, capsys, case):
     """The rehearsal's world carries a synthetic V3.1 trial, so a rehearsal runs the trial
-    gate as a registered run does: a world whose completion was dropped is refused."""
-    copy = without_completion(rehearsal.repo, rehearsal.document["code_pin"], tmp_path)
+    gate as a registered run does: a world whose completion was dropped or corrected is
+    refused."""
+    document = rehearsal.document
+    copy, reason = unauthorized(
+        rehearsal.repo, document["code_pin"], tmp_path, case, document["registration_sha256"]
+    )
     argv = rehearsal_args(rehearsal, "plan")
     argv[argv.index("--repo") + 1] = str(copy)
     code, _, err = run(argv, capsys)
     assert code == 1 and "job gate refused" in err
-    assert f"{NOT_READY} " in err and "one committed completion required" in err
+    assert f"\n- {reason}\n" in err, err
 
 
 # --- one dispatch per registration (Codex P1, PR #269 round 4; Ruling R4-2) --------------
