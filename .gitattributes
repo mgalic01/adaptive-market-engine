@@ -5,6 +5,16 @@
 config/datasets/*.manifest.json text eol=lf
 config/datasets/*.digest.txt text eol=lf
 
+# V3.1's pinned inputs: every pin is the SHA-256 of a file's raw bytes, so each stays LF in
+# every working tree, whatever core.autocrlf says. config/v3_1_*.json covers the prepare
+# config, the run-manifest, the registration, the experiment menu and the FX source
+# record (config/v3_1_fx_record.json, the path the registration's owner_small capital
+# names); the V3.1 minute-bar datasets' spec, manifest and digest are pinned the same way.
+config/v3_1_*.json text eol=lf
+config/datasets/v3-1-minute-bars/*.toml text eol=lf
+config/datasets/v3-1-minute-bars/*.manifest.json text eol=lf
+config/datasets/v3-1-minute-bars/*.digest.txt text eol=lf
+
 # Preserve exact append-only register bytes on every platform.
 docs/trials/register.jsonl text eol=lf
 

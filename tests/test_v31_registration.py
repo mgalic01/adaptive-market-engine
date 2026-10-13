@@ -727,3 +727,29 @@ def test_adapter_pins_read_blob_ids_at_the_commit(tmp_path: Path) -> None:
         adapter_pins(tmp_path, "0" * 40)
     with pytest.raises(ValueError, match="40 lowercase hex"):
         adapter_pins(tmp_path, "HEAD")
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+@pytest.mark.parametrize(
+    "path",
+    [
+        "config/v3_1_prepare.json",
+        "config/v3_1_run_manifest.json",
+        "config/v3_1_registration.json",
+        "config/v3_1_experiment_menu.json",
+        FX_PATH,  # the FX source record the owner_small capital names
+        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020.toml",
+        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020.manifest.json",
+        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020.digest.txt",
+    ],
+)
+def test_every_pinned_v31_file_is_lf_in_every_checkout(path: str) -> None:
+    """Every pin is the SHA-256 of raw bytes, so .gitattributes keeps each pinned V3.1 file
+    LF whatever core.autocrlf says (Ruling F5); a file need not exist to be covered."""
+    done = subprocess.run(
+        ["git", "-C", str(REPO), "check-attr", "text", "eol", "--", path],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    assert done.stdout.splitlines() == [f"{path}: text: set", f"{path}: eol: lf"]
