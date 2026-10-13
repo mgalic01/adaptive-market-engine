@@ -97,6 +97,91 @@ def test_a_replay_that_exhausts_capital_is_a_retained_safety_failure():
     assert any(failure.endswith("observed liquidation") for failure in failures)
 
 
+def safety_messages(trace, days, arm):
+    """The outcome of ``trace`` and its safety-failure messages, without the cell key."""
+    row = strategy_outcome(
+        trace,
+        strategy_report(trace, adapter_pin="0" * 64),
+        identity(arm, "open_low_high_close", "0" * 64, end_days=days),
+        attempt_id="a-wallet",
+    )
+    return row, [failure.split(": ")[-1] for failure in _safety_failures(row)]
+
+
+def with_accounts(trace, start, **changes):
+    """``trace`` with the account of every observation from index ``start`` changed;
+    ``issues`` are added to each one's own, as the account keeps them."""
+    added = changes.pop("issues", ())
+
+    def changed(observation):
+        account = observation.snapshot.account
+        account = replace(
+            account,
+            integrity_ok=account.integrity_ok and not added,
+            issues=tuple(sorted({*account.issues, *added})),
+            **changes,
+        )
+        return replace(observation, snapshot=replace(observation.snapshot, account=account))
+
+    rows = trace.observations
+    return replace(trace, observations=(*rows[:start], *map(changed, rows[start:])))
+
+
+def test_capital_exhaustion_alone_is_not_reported_as_a_wallet_mismatch():
+    from test_combined_replay_records import exhausted_trace
+
+    trace = exhausted_trace()
+    last = trace.observations[-1].snapshot.account
+    # The account is not intact only for the exhaustion and the loss it realized in cash;
+    # its ledger reconciles exactly.
+    assert set(last.issues) == {"capital_exhausted", "negative_free_cash"}
+    assert not last.integrity_ok and last.reconciliation_residual == 0
+    first_negative_cash = next(
+        o for o in trace.observations if "negative_free_cash" in o.snapshot.account.issues
+    )
+    assert first_negative_cash.snapshot.account.equity < 0
+    row, messages = safety_messages(trace, 2, "futures_trend")
+    assert row.wallet_quantity_exact is True
+    # Still a failure, named for what happened.
+    assert messages == ["observed capital exhaustion", "observed liquidation"]
+
+
+@pytest.mark.parametrize("issue", ["reconciliation_residual", "negative_free_cash"])
+def test_a_wallet_mismatch_without_exhaustion_is_still_reported(issue):
+    trace = replay_strategy(fx.run("spot_trend", 3), (fx.market("BTCUSDT", fx.uptrend, 3),))
+    broken = with_accounts(trace, len(trace.observations) - 1, issues=(issue,))
+    assert broken.observations[-1].snapshot.account.equity > 0
+    row, messages = safety_messages(broken, 3, "spot_trend")
+    assert row.wallet_quantity_exact is False
+    assert messages == ["observed wallet/quantity mismatch"]
+
+
+@pytest.mark.parametrize("mismatch", ["residual_at_the_end", "negative_cash_before_exhaustion"])
+def test_capital_exhaustion_with_a_wallet_mismatch_reports_both(mismatch):
+    from test_combined_replay_records import exhausted_trace
+
+    trace = exhausted_trace()
+    exhausted = next(i for i, o in enumerate(trace.observations) if o.snapshot.account.equity <= 0)
+    if mismatch == "residual_at_the_end":
+        broken = with_accounts(
+            trace,
+            len(trace.observations) - 1,
+            issues=("reconciliation_residual",),
+            reconciliation_residual=D(1),
+        )
+    else:
+        # Free cash went negative one mark before the exhaustion, while equity was positive.
+        assert trace.observations[exhausted - 1].snapshot.account.equity > 0
+        broken = with_accounts(trace, exhausted - 1, issues=("negative_free_cash",))
+    row, messages = safety_messages(broken, 2, "futures_trend")
+    assert row.wallet_quantity_exact is False
+    assert messages == [
+        "observed capital exhaustion",
+        "observed liquidation",
+        "observed wallet/quantity mismatch",
+    ]
+
+
 def with_residual(report, residual):
     """``report`` recomputed with its first contribution's gross P&L lowered by ``residual``,
     which leaves exactly that trade-to-equity residual."""

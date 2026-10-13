@@ -842,6 +842,31 @@ def test_a_replayed_capital_exhaustion_fails_acceptance_beside_complete_cells():
     assert f"{cell}: observed liquidation" in result.failures
 
 
+def test_a_replayed_exhaustion_alone_is_not_named_a_wallet_mismatch():
+    from test_combined_replay_records import exhausted_trace
+
+    reg = replace(registration(), windows=(Window("window", fx.START, fx.START + 2 * DAY, PIN),))
+    rows = list(outcomes(reg))
+    cell = ("futures_trend", "window", "research", 1, "open_low_high_close")
+    (index,) = [
+        i
+        for i, r in enumerate(rows)
+        if (r.identity.arm, r.identity.window, r.identity.capital) == cell[:3]
+        and (r.identity.cost_multiple, r.identity.scenario) == cell[3:]
+    ]
+    research = next(capital for capital in reg.capitals if capital.id == "research")
+    trace = exhausted_trace()
+    report = strategy_report(trace, adapter_pin=PIN, capital_label=capital_label(research))
+    rows[index] = strategy_outcome(trace, report, rows[index].identity, attempt_id="exhausted")
+    result = evaluate(reg, tuple(rows))
+    # The wallet and quantities reconcile: the cell fails for what happened, nothing else.
+    assert result.status == "fail"
+    assert result.failures == (
+        f"{cell}: observed capital exhaustion",
+        f"{cell}: observed liquidation",
+    )
+
+
 @pytest.mark.parametrize("start,end", [(1, 2 * DAY + 1), (0, DAY), (0, 2 * DAY + 1)])
 def test_registration_rejects_windows_incompatible_with_required_daily_metrics(start, end):
     reg = registration()

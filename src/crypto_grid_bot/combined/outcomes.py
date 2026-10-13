@@ -13,7 +13,33 @@ from fractions import Fraction
 from .baseline_records import NATIVE_STOPS, BaselineEvidence
 from .experiment import ReportEvidence, RunIdentity, RunOutcome
 from .report import RESIDUAL_TOLERANCE, Report
-from .strategy_replay import StrategyTrace
+from .strategy_replay import NativeObservation, StrategyTrace
+
+# Account issues that capital exhaustion explains: equity at or below zero, and free cash
+# that went negative only once the account was already exhausted (its loss realized).
+_EXHAUSTED = "capital_exhausted"
+_NEGATIVE_CASH = "negative_free_cash"
+
+
+def _wallet_exact(observations: tuple[NativeObservation, ...]) -> bool | None:
+    """Whether the last engine mark's wallet and quantities reconcile; None without marks.
+
+    The account lists every reason it is not intact. A run that ends exhausted (equity at
+    or below zero) is already an observed capital exhaustion, so ``capital_exhausted`` is
+    not a wallet/quantity mismatch, nor is negative free cash that first appeared at an
+    exhausted mark. Any other reason, negative free cash that began while equity was
+    positive included, still is: with exhaustion or without it.
+    """
+    if not observations:
+        return None
+    account = observations[-1].snapshot.account
+    issues = set(account.issues)
+    if account.equity <= 0:
+        issues.discard(_EXHAUSTED)
+        first = next((o for o in observations if _NEGATIVE_CASH in o.snapshot.account.issues), None)
+        if first is not None and first.snapshot.account.equity <= 0:
+            issues.discard(_NEGATIVE_CASH)
+    return not issues
 
 
 def _outcome(
@@ -58,9 +84,10 @@ def strategy_outcome(
 
     A trade-to-equity residual up to 1e-18 USDT either way is explained and leaves the
     report complete (``report.analyze``); the residual itself is carried unchanged.
+    Wallet/quantity exactness is the last mark's account apart from capital exhaustion,
+    which the final equity already reports (``_wallet_exact``).
     """
     marks = [o.snapshot for o in trace.observations]
-    last = marks[-1].account if marks else None
     residual = report.reconciliation_residual
     return _outcome(
         identity,
@@ -70,7 +97,7 @@ def strategy_outcome(
         failed=trace.failure is not None,
         liquidations=int(any(snapshot.liquidation for snapshot in marks)),
         explained=residual is not None and abs(Fraction(residual)) <= RESIDUAL_TOLERANCE,
-        wallet_exact=None if last is None else last.integrity_ok,
+        wallet_exact=_wallet_exact(trace.observations),
     )
 
 
