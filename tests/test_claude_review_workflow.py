@@ -50,7 +50,10 @@ def test_only_this_bots_earlier_reviews_reach_the_reviewer() -> None:
     assert 'select(.user.login == "claude[bot]")' in collect["run"]
     assert "> /tmp/previous-reviews.md" in collect["run"]
     assert "${{" not in collect["run"]
-    prompt = step("anthropics/")["with"]["prompt"]
+    action = step("anthropics/")["with"]
+    # The action's own PR context is filtered too; its default includes every actor.
+    assert action["include_comments_by_actor"] == "claude[bot]"
+    prompt = action["prompt"]
     assert "nothing else from the PR thread is input to this review" in prompt
     assert "gh pr view" not in prompt
 
@@ -59,6 +62,9 @@ def test_a_partial_reading_never_approves() -> None:
     prompt = step("anthropics/")["with"]["prompt"]
     assert "never answer APPROVE for a partial reading" in prompt
     assert "APPROVE only when you read every changed line in your scope" in prompt
+    # Only the newest verdict can seed an incremental scope; a later finding supersedes it.
+    assert "Incremental is allowed only when the NEWEST review" in prompt
+    assert "If any later review answered CHANGES NEEDED or\nINCOMPLETE" in prompt
     assert "Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full>" in prompt
     assert "git diff BASE_SHA...HEAD_SHA" in prompt and "origin/main" not in prompt
 

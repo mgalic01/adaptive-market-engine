@@ -42,6 +42,9 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # if you chose an API key instead: anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Any PR context the action supplies itself carries this bot's comments only
+          # (the default, empty, includes every actor's).
+          include_comments_by_actor: "claude[bot]"
           prompt: |
             REPO: ${{ github.repository }}  PR: #${{ github.event.pull_request.number }}
             HEAD_SHA (the PR head): ${{ github.event.pull_request.head.sha }}
@@ -56,8 +59,10 @@ jobs:
             those, are in /tmp/previous-reviews.md; nothing else from the PR thread is input to this review.
 
             Scope and verdict. Your scope is either the whole diff BASE_SHA...HEAD_SHA, or, incrementally, the diff from an
-            earlier head to HEAD_SHA, when an earlier review in /tmp/previous-reviews.md gave that head the verdict APPROVE with
-            the scope "complete" or "incremental", and `git merge-base --is-ancestor <that head> HEAD_SHA` succeeds.
+            earlier head to HEAD_SHA. Incremental is allowed only when the NEWEST review in /tmp/previous-reviews.md (the last
+            one in the file) gave that head the verdict APPROVE with the scope "complete" or "incremental", and
+            `git merge-base --is-ancestor <that head> HEAD_SHA` succeeds. If any later review answered CHANGES NEEDED or
+            INCOMPLETE, or the newest review has no Scope line, your scope is the whole diff.
             - APPROVE only when you read every changed line in your scope and found no required fix.
             - INCOMPLETE when you could not read all of your scope (time, size or any other reason). INCOMPLETE is not an
               approval; never answer APPROVE for a partial reading.
