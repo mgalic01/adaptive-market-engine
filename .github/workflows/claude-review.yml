@@ -44,6 +44,14 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # The base's .claude/settings.json (which the action restores from the base)
+          # registers a hook that runs scripts/claims.py from the checkout, that is the
+          # PR's copy. Hooks are disabled for the reviewer below; without the file the
+          # hook also exits at once, whatever settings apply.
+          rm -f scripts/claims.py
+          # The one file the reviewer may write, created here so that editing it is all
+          # it needs; left as it is, it never passes the verdict check.
+          printf '%s\n' '(no review written)' > /tmp/claude-review.md
           mkdir -p /tmp/pr
           git log --format='%H %s' "$BASE_SHA..$HEAD_SHA" > /tmp/pr/log.txt
           git diff --stat "$BASE_SHA...$HEAD_SHA" > /tmp/pr/stat.txt
@@ -58,6 +66,9 @@ jobs:
           # Any PR context the action supplies itself carries this bot's comments only
           # (the default, empty, includes every actor's).
           include_comments_by_actor: "claude[bot]"
+          # Project settings, hooks and MCP servers from the checkout are not the
+          # reviewer's: it loads user settings only, with every hook off.
+          settings: '{"disableAllHooks": true, "enableAllProjectMcpServers": false}'
           prompt: |
             REPO: ${{ github.repository }}  PR: #${{ github.event.pull_request.number }}
             HEAD_SHA (the PR head): ${{ github.event.pull_request.head.sha }}
@@ -85,14 +96,14 @@ jobs:
             - CHANGES NEEDED when you found a required fix, whether or not you read everything.
 
             Always finish by posting exactly ONE PR comment, whatever the verdict:
-            write the body to /tmp/claude-review.md (the only file you may write), then run exactly
+            replace the placeholder in /tmp/claude-review.md with the body (the only file you may write), then run exactly
             `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md`.
             The body's first line is exactly `Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full> run <RUN_TAG>`.
             Its second line is `Scope: complete` when you read the whole diff, otherwise `Scope: partial` followed by what you
             did and did not read. CHANGES NEEDED may be partial; APPROVE never is.
             Then, written as instructions for the OpenAI Codex agent, a numbered list of concrete required fixes with file:line,
             then optional nits. If changes are needed, end the comment with: "@codex please address the required fixes above."
-          claude_args: '--permission-mode dontAsk --add-dir /tmp/pr --allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Read(//tmp/pr/**),Edit(//tmp/claude-review.md)"'
+          claude_args: '--setting-sources user --permission-mode dontAsk --add-dir /tmp/pr --allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Read(//tmp/pr/**),Edit(//tmp/claude-review.md)"'
       # A review that ends without its verdict is a failure, never a silent success: the
       # gate needs a verdict at this head, and a green check without one hid three silent
       # runs on PR #269 (2026-10-13). The check accepts only a claude[bot] comment created
@@ -123,7 +134,7 @@ jobs:
           # A failed API call stops the step here (-e with pipefail); an empty or
           # non-numeric count counts as no verdict.
           posted=$(gh api --paginate "repos/$REPO/issues/$PR/comments?since=$SINCE&per_page=100" \
-            --jq '.[] | select(.user.login == "claude[bot]" and .created_at >= env.SINCE and (.body | test("^Verdict: (APPROVE|CHANGES NEEDED|INCOMPLETE) at " + env.HEAD_SHA + " run " + env.RUN_TAG + "\r?(\n|$)"))) | .id' \
+            --jq '.[] | select(.user.login == "claude[bot]" and .created_at >= env.SINCE and (.body | test("\\AVerdict: (APPROVE|CHANGES NEEDED|INCOMPLETE) at " + env.HEAD_SHA + " run " + env.RUN_TAG + "\\r?(\\n|\\z)"))) | .id' \
             | wc -l)
           case "$posted" in ''|*[!0-9]*) posted=0 ;; esac
           if [ "$posted" -lt 1 ]; then

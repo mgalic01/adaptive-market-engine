@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,7 +18,7 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/claude-revie
 # The reviewer may run one command (posting its comment body), read the prepared input
 # and write that one body file; --permission-mode dontAsk refuses everything else.
 CLAUDE_ARGS = (
-    "--permission-mode dontAsk --add-dir /tmp/pr --allowedTools "
+    "--setting-sources user --permission-mode dontAsk --add-dir /tmp/pr --allowedTools "
     '"Bash(gh pr comment ${{ github.event.pull_request.number }} '
     '--body-file /tmp/claude-review.md),Read(//tmp/pr/**),Edit(//tmp/claude-review.md)"'
 )
@@ -62,6 +64,18 @@ def run_step(
 
 def test_the_reviewer_can_post_read_and_write_only_its_own_comment() -> None:
     assert step("anthropics/")["with"]["claude_args"] == CLAUDE_ARGS
+
+
+def test_no_hook_setting_or_server_from_the_checkout_reaches_the_reviewer() -> None:
+    # The base's .claude/settings.json runs scripts/claims.py from the checkout (the PR's
+    # copy) before every shell command: user settings only, every hook off, and the
+    # file removed so that hook exits at once whatever settings apply.
+    assert json.loads(step("anthropics/")["with"]["settings"]) == {
+        "disableAllHooks": True,
+        "enableAllProjectMcpServers": False,
+    }
+    assert CLAUDE_ARGS.startswith("--setting-sources user ")
+    assert "rm -f scripts/claims.py" in step("Prepare the review input")["run"]
 
 
 def test_the_review_job_runs_no_code_from_the_pr() -> None:
@@ -150,9 +164,11 @@ def test_the_gate_requires_this_runs_verdict_line() -> None:
     assert "\nset -o pipefail\n" in run and "--paginate" in run
     # This bot's comment, created during the run, whose first line names this head and run.
     assert '.user.login == "claude[bot]"' in run and ".created_at >= env.SINCE" in run
+    # \A and \z anchor at the start and end of the whole body in every jq regex engine;
+    # ^ and $ would match at any line start in jq's Oniguruma.
     assert (
-        'test("^Verdict: (APPROVE|CHANGES NEEDED|INCOMPLETE) at " + env.HEAD_SHA + " run " '
-        '+ env.RUN_TAG + "\\r?(\\n|$)")'
+        'test("\\\\AVerdict: (APPROVE|CHANGES NEEDED|INCOMPLETE) at " + env.HEAD_SHA + " run " '
+        '+ env.RUN_TAG + "\\\\r?(\\\\n|\\\\z)")'
     ) in run
     assert (
         'if [ "$posted" -lt 1 ]; then\n'
@@ -217,10 +233,17 @@ def test_the_prepare_step_writes_the_whole_diff_from_the_event_shas(tmp_path: Pa
     (repo / "a.txt").write_text("head\n", encoding="utf-8")
     git(*user, "commit", "-q", "-am", "change a")
     head = git("rev-parse", "HEAD")
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "claims.py").write_text("print('PR code')\n", encoding="utf-8")
     out = tmp_path / "pr"
+    body = tmp_path / "claude-review.md"
     script_env = {"BASE_SHA": base, "HEAD_SHA": head, "PR": "7", "REPO": "o/r"}
     stub = 'gh() { echo "--- posted 2026-10-13T20:00:00Z"; }'
-    prepare = step("Prepare the review input")["run"].replace("/tmp/pr", out.as_posix())
+    prepare = (
+        step("Prepare the review input")["run"]
+        .replace("/tmp/claude-review.md", body.as_posix())
+        .replace("/tmp/pr", out.as_posix())
+    )
     result = subprocess.run(
         [bash(), "--noprofile", "--norc", "-e", "-c", stub + "\n" + prepare],
         cwd=repo,
@@ -235,3 +258,44 @@ def test_the_prepare_step_writes_the_whole_diff_from_the_event_shas(tmp_path: Pa
     assert f"{head} change a" in (out / "log.txt").read_text(encoding="utf-8")
     assert "a.txt" in (out / "stat.txt").read_text(encoding="utf-8")
     assert (out / "previous-reviews.md").read_text(encoding="utf-8").startswith("--- posted")
+    # The hook's target is gone, and the body file exists as a placeholder that can never
+    # pass the verdict check.
+    assert not (repo / "scripts" / "claims.py").exists()
+    assert body.read_text(encoding="utf-8") == "(no review written)\n"
+
+
+def gate_filter() -> str:
+    found = re.search(r"--jq '([^']*)'", step(GATE)["run"])
+    assert found is not None
+    return found.group(1)
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq is not installed")
+def test_the_real_verdict_filter_keeps_only_this_runs_first_line() -> None:
+    since, tag, other = "2026-10-13T20:00:00Z", "77-1", "b" * 40
+
+    def comment(n: int, body: str, *, login: str = "claude[bot]", at: str = since) -> object:
+        return {"id": n, "user": {"login": login}, "created_at": at, "body": body}
+
+    line = f"Verdict: APPROVE at {HEAD} run {tag}"
+    comments = [
+        comment(1, line + "\nScope: complete"),
+        comment(2, f"Verdict: CHANGES NEEDED at {HEAD} run {tag}\r\nScope: partial"),
+        comment(3, f"Verdict: INCOMPLETE at {HEAD} run {tag}"),  # the whole body
+        comment(4, "A preface\n" + line),  # not the first line
+        comment(5, f"Verdict: APPROVE at {HEAD} run 77-2\n"),  # another run
+        comment(6, f"Verdict: APPROVE at {HEAD} run {tag}2\n"),  # a longer run tag
+        comment(7, f"Verdict: APPROVE at {other} run {tag}\n"),  # another head
+        comment(8, line + "\n", login="github-actions[bot]"),  # another author
+        comment(9, line + "\n", at="2026-10-13T19:59:59Z"),  # before this run started
+        comment(10, f"**Verdict: APPROVE** at {HEAD} run {tag}\n"),  # not the exact line
+    ]
+    result = subprocess.run(
+        ["jq", "-r", gate_filter()],
+        input=json.dumps(comments),
+        env={**os.environ, "SINCE": since, "HEAD_SHA": HEAD, "RUN_TAG": tag},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.split() == ["1", "2", "3"]
