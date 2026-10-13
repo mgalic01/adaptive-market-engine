@@ -6,7 +6,7 @@ bar and its trailing prefix. Returned records contain no future series reference
 
 from bisect import bisect_left
 from collections.abc import Sequence
-from decimal import Decimal, localcontext
+from decimal import Decimal, Inexact, localcontext
 from statistics import median
 
 from crypto_grid_bot.backtest.klines import Kline
@@ -78,6 +78,46 @@ def _validate(
     )
 
 
+def daily_bars(hourly: Sequence[Kline]) -> tuple[Kline, ...]:
+    """UTC daily bars under the frozen V3 day rule (``trend.data.hourly_month``).
+
+    A day's bar aggregates its hours (first open, highest high, lowest low, last close,
+    summed volumes) when at least 20 of its 24 are usable; with fewer it has none. The
+    hours are the ones the assessment reads: an invalid or unaligned bar counts as
+    missing, as a reader's masked hour does. A sum that is not exact is refused.
+
+    Only the day rule is applied. The hourly input must already exclude the reader's
+    repaired and masked hours, and V3's exclusion of a month missing more than 17% of
+    its hours is not applied here: such a month must be refused before this is called.
+    """
+    days: dict[int, list[Kline]] = {}
+    for bar in _validate(hourly, HOUR)[0]:
+        days.setdefault(bar.open_ms // DAY * DAY, []).append(bar)
+    result: list[Kline] = []
+    with localcontext() as context:
+        context.prec = 60
+        context.traps[Inexact] = True
+        try:
+            for day, rows in days.items():
+                if len(rows) < 20:
+                    continue
+                result.append(
+                    Kline(
+                        day,
+                        rows[0].open,
+                        max(row.high for row in rows),
+                        min(row.low for row in rows),
+                        rows[-1].close,
+                        sum((row.volume for row in rows), Decimal(0)),
+                        sum((row.quote_volume for row in rows), Decimal(0)),
+                        sum((row.taker_buy_base for row in rows), Decimal(0)),
+                    )
+                )
+        except Inexact as exc:
+            raise ValueError("daily volume sums must be exact") from exc
+    return tuple(result)
+
+
 class _Gaps:
     def __init__(self, times: tuple[int, ...], step: int) -> None:
         self.times, self.step = times, step
@@ -97,10 +137,26 @@ class _Gaps:
 
 
 class AssessmentSeries:
-    """Build indicator arrays once; repeated decisions do not rerun all indicators."""
+    """Build indicator arrays once; repeated decisions do not rerun all indicators.
 
-    def __init__(self, symbol: str, hourly: Sequence[Kline], daily: Sequence[Kline]) -> None:
+    ``source_refs`` name the registered inputs. Each assessment carries them followed by
+    the completed due bars it read (``<symbol>:1h|4h|1d:<open ms>``) and its quote time.
+    """
+
+    def __init__(
+        self,
+        symbol: str,
+        hourly: Sequence[Kline],
+        daily: Sequence[Kline],
+        *,
+        source_refs: tuple[str, ...] = (),
+    ) -> None:
         symbol_name(symbol)
+        if not isinstance(source_refs, tuple) or any(
+            not isinstance(ref, str) or not ref.strip() for ref in source_refs
+        ):
+            raise ValueError("immutable nonblank source references required")
+        self._source_refs = source_refs
         hourly, self._invalid_hours, hourly_error = _validate(hourly, HOUR)
         daily, self._invalid_days, daily_error = _validate(daily, DAY)
         self._timestamp_error = min(
@@ -189,6 +245,15 @@ class AssessmentSeries:
                     structure = "conflict"
         else:
             reasons.append("volatility_warmup")
+        read = tuple(
+            f"{self.symbol}:{name}:{open_ms}"
+            for name, open_ms, ok in (
+                ("1h", due_hour, hourly_ok),
+                ("4h", due_four, four_ok),
+                ("1d", due_day, daily_ok),
+            )
+            if ok
+        )
         return Assessment(
             symbol=self.symbol,
             decision_ms=decision_ms,
@@ -201,6 +266,8 @@ class AssessmentSeries:
             close=close,
             atr=atr,
             rsi=rsi,
+            # Wilder RSI(14) of the valid daily closes through the due completed day.
+            daily_rsi=snap.d1_rsi,
             extension=extension,
             volatility_ratio=ratio,
             prior_high=high,
@@ -219,6 +286,7 @@ class AssessmentSeries:
             invalid_daily_open_ms=self._invalid_days[
                 : bisect_left(self._invalid_days, due_day + 1)
             ],
+            source_refs=(*self._source_refs, *read, f"{self.symbol}:quote:{quote_ms}"),
         )
 
 

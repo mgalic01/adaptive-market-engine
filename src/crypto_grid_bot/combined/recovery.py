@@ -2,7 +2,8 @@
 
 Equal timestamps represent sequential events. Repeating the immediately previous
 complete input is idempotent; distinct same-time events are processed in call order.
-Callers must deduplicate event IDs upstream. Invalid input raises before mutation.
+Every reason describes its decision's state. Callers must deduplicate event IDs
+upstream. Invalid input raises before mutation.
 """
 
 from dataclasses import dataclass
@@ -110,7 +111,8 @@ class Recovery:
                 return "normal"
             return self._close(timestamp_ms, flat, "lifetime_stop")
         if self._state == RecoveryState.CLOSING:
-            return self._close(timestamp_ms, flat, "awaiting_liquidation")
+            # Flat at last: the liquidation is complete and its cooldown begins.
+            return self._close(timestamp_ms, flat, "cooldown" if flat else "awaiting_liquidation")
         if self._state == RecoveryState.COOLDOWN:
             if not flat:
                 return self._close(timestamp_ms, False, "liquidation_incomplete")

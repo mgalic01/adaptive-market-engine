@@ -1,0 +1,856 @@
+"""One deterministic input pack per V3.1 test window, and the window's skipped hours.
+
+A pack holds what every run job of a window replays, per coin: the spot hourly history
+and the futures hourly bars, the daily bars (V3's day rule), the funding records, the
+venue rules and the flow schedule. It is built from decoded months (``driver.decode``),
+minute bars streamed once into the flow schedule (``driver.flow_schedule``) and venue
+rules (``driver.venues``), and written as gzip JSON. The pin is the SHA-256 of the
+canonical JSON inside (Ruling P11): the same pack has the same hash on any machine, while
+the gzip bytes around it may differ between zlib builds. The skipped hours are derived from
+the same inputs, joined with any labelled extra missing-hour sources the caller passes
+(Rulings P16, P17: hours the minute baselines' frozen masks and quote test leave without a
+boundary), and ``check_window`` refuses a window that breaks the registration checklist.
+
+Pure: nothing here touches the network, and nothing at or after the reserved boundary
+enters a pack.
+"""
+
+import gzip
+import hashlib
+import io
+import json
+import re
+import zlib
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass, fields
+from datetime import UTC, datetime, timedelta
+from decimal import Context, Decimal, InvalidOperation, localcontext
+from pathlib import Path
+from typing import Any
+
+from crypto_grid_bot.backtest.funding import FundingRecord
+from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
+from crypto_grid_bot.combined.assessment import daily_bars
+from crypto_grid_bot.combined.baseline_records import refuse_sealed
+from crypto_grid_bot.combined.driver.decode import DecodedV31Month
+from crypto_grid_bot.combined.driver.flow_schedule import FlowSchedule, build_flow_schedule
+from crypto_grid_bot.combined.execution import VenueRules
+from crypto_grid_bot.combined.strategy_replay import _funding, _schedule_gaps
+from crypto_grid_bot.market_data.parsing import symbol_name
+
+HOUR = 3_600_000
+DAY = 24 * HOUR
+_MINUTE = 60_000
+_LOOK_BACK = 15 * _MINUTE  # the flow gate's first read minute, before the window start
+_HISTORY = 365 * DAY  # the longest spot history a pack holds (Ruling P7)
+_RESERVED = 1_735_689_600_000
+MAX_CONTENT_BYTES = 2 * 1024**3  # read_pack refuses a pack that decompresses to more
+_CHUNK = 1 << 20
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_FORMAT = "v3.1-input-pack/1"
+_MONTH = re.compile(r"[0-9]{4}-(?:0[1-9]|1[0-2])")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_HEX = re.compile(r"(?:[0-9a-f]{2})*")
+_WINDOW_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_KLINE_DECIMALS = tuple(f.name for f in fields(Kline) if f.name != "open_ms")
+_RULES = tuple(f.name for f in fields(VenueRules))
+_FLOW_KEYS = frozenset({"symbol", "start_ms", "end_ms", "open_allowed", "withheld", "present"})
+_COIN_KEYS = frozenset(
+    {
+        "symbol",
+        "history_start_ms",
+        "spot_hourly",
+        "futures_hourly",
+        "daily",
+        "funding",
+        "spot_rules",
+        "futures_rules",
+        "flow",
+        "opening_minute_gaps",
+        "final_minute",
+    }
+)
+_PACK_KEYS = frozenset(
+    {"format", "window_id", "start_ms", "end_ms", "coins", "skipped_hours", "sources"}
+)
+_EXTRA_KEY = "extra_missing_hours"  # written only when a pack has extra sources
+ExtraHours = tuple[tuple[str, tuple[int, ...]], ...]
+ExtraSources = Mapping[str, Iterable[int]] | Iterable[tuple[str, Iterable[int]]]
+
+
+@dataclass(frozen=True, slots=True)
+class CoinInputs:
+    """One coin's registered inputs for one window (Ruling P7).
+
+    ``spot_hourly`` covers ``[history_start_ms, end)`` and ``daily`` is
+    ``daily_bars(spot_hourly)``. ``futures_hourly`` and ``funding`` start on the first
+    day of the month before the window's, so ``funding`` holds the latest record
+    published before it; a coin without futures in the window has neither, and no
+    ``futures_rules``. ``opening_minute_gaps`` are the window hours whose opening minute
+    has no bar and ``final_minute`` whether the window's last minute has one, both noted
+    while the minutes streamed into ``flow``.
+    """
+
+    symbol: str
+    history_start_ms: int
+    spot_hourly: tuple[Kline, ...]
+    futures_hourly: tuple[Kline, ...]
+    daily: tuple[Kline, ...]
+    funding: tuple[FundingRecord, ...]
+    spot_rules: VenueRules
+    futures_rules: VenueRules | None
+    flow: FlowSchedule
+    opening_minute_gaps: tuple[int, ...]
+    final_minute: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WindowPack:
+    """Every input of one window's runs: ``coins`` sorted by symbol, the derived skipped
+    hours, and ``sources``, the data manifests as (name, SHA-256) sorted by name.
+
+    ``extra_missing_hours`` are the labelled extra missing-hour sources the skipped hours
+    also join (Rulings P16, P17), sorted by label, each label's hours sorted and unique;
+    empty for a window without any, whose pack is then exactly as before they existed."""
+
+    window_id: str
+    start_ms: int
+    end_ms: int
+    coins: tuple[CoinInputs, ...]
+    skipped_hours: tuple[int, ...]
+    sources: tuple[tuple[str, str], ...]
+    extra_missing_hours: ExtraHours = ()
+
+
+def minute_months(start_ms: int, end_ms: int) -> tuple[str, ...]:
+    """The months of minute bars a window's flow schedule reads, oldest first: those
+    covering ``[start - 15 min, end)``. ``build_coin_inputs`` refuses any other minute."""
+    _window(start_ms, end_ms)
+    return _months(start_ms - _LOOK_BACK, end_ms)
+
+
+def build_coin_inputs(
+    symbol: str,
+    *,
+    start_ms: int,
+    end_ms: int,
+    spot_months: Iterable[DecodedV31Month],
+    futures_months: Iterable[DecodedV31Month],
+    funding_months: Iterable[DecodedV31Month],
+    minutes: Iterable[Kline],
+    spot_rules: VenueRules,
+    futures_rules: VenueRules | None,
+) -> CoinInputs:
+    """One coin's inputs for the window ``[start_ms, end_ms)`` (Ruling P7).
+
+    The spot history starts 365 days before the window, or on the first day after the
+    coin's latest excluded spot month before it if that is later. Futures bars and
+    funding start on the first day of the month before the window's. Every month of each
+    range must be supplied, decoded; months outside the ranges are not read. An excluded
+    spot month in the range refuses the window, as does an excluded futures month inside
+    it; one before the window is dropped. Excluded funding months are kept, every record
+    with its own interval. A coin without futures in the window passes no futures or
+    funding months and ``futures_rules=None``.
+
+    ``minutes`` is streamed once into the flow schedule, under a fresh default decimal
+    context, and must hold only the months ``minute_months`` names.
+    """
+    symbol_name(symbol)
+    _window(start_ms, end_ms)
+    if not isinstance(spot_rules, VenueRules):
+        raise ValueError(f"{symbol}: spot venue rules required")
+    spot = _supplied(symbol, "spot", spot_months)
+    futures = _supplied(symbol, "futures", futures_months)
+    funding = _supplied(symbol, "funding", funding_months)
+    history_start = _history_start(spot, start_ms)
+    spot_hourly = _bars(symbol, "spot", spot, history_start, start_ms, end_ms)
+    futures_hourly: tuple[Kline, ...] = ()
+    records: tuple[FundingRecord, ...] = ()
+    if futures_rules is None:
+        if futures or funding:
+            raise ValueError(f"{symbol}: futures or funding months without futures rules")
+    elif not isinstance(futures_rules, VenueRules):
+        raise ValueError(f"{symbol}: futures venue rules or None required")
+    else:
+        first = _month_start(_month_start(start_ms) - 1)
+        futures_hourly = _bars(symbol, "futures", futures, first, start_ms, end_ms)
+        records = _records(symbol, funding, first, end_ms)
+    watch = _MinuteWatch(symbol, start_ms, end_ms)
+    with localcontext(Context()):
+        flow = build_flow_schedule(symbol, watch.stream(minutes), start_ms, end_ms)
+        daily = daily_bars(spot_hourly)
+    return CoinInputs(
+        symbol,
+        history_start,
+        spot_hourly,
+        futures_hourly,
+        daily,
+        records,
+        spot_rules,
+        futures_rules,
+        flow,
+        watch.gaps(),
+        watch.final,
+    )
+
+
+def build_window_pack(
+    window_id: str,
+    start_ms: int,
+    end_ms: int,
+    coins: Iterable[CoinInputs],
+    sources: Iterable[tuple[str, str]],
+    *,
+    extra_missing_hours: ExtraSources = (),
+) -> WindowPack:
+    """The window's pack: coins sorted by symbol, sources by name and the skipped hours
+    derived. ``check_window`` refuses it if it breaks the registration checklist.
+
+    ``extra_missing_hours`` maps a label (such as ``minute_mask:BTCUSDT``) to more hours
+    that every arm must skip (Rulings P16, P17): whole UTC hours inside ``[start, end)``,
+    possibly none. The skipped hours join them, and the pack keeps each source under its
+    label so they are disclosed per source. A source holding the window's first or last
+    hour refuses the window, as a coin's gap there does. With none, the pack is exactly as
+    before (the same document, so the same pin)."""
+    if not isinstance(window_id, str) or _WINDOW_ID.fullmatch(window_id) is None:
+        raise ValueError(f"window id {window_id!r}: 1-64 letters, digits, '.', '_' or '-'")
+    _window(start_ms, end_ms)
+    listed = tuple(coins)
+    if not listed or any(not isinstance(coin, CoinInputs) for coin in listed):
+        raise ValueError(f"{window_id}: coin inputs required")
+    ordered = tuple(sorted(listed, key=lambda coin: coin.symbol))
+    symbols = [coin.symbol for coin in ordered]
+    if len(set(symbols)) != len(symbols):
+        raise ValueError(f"{window_id}: duplicate coin inputs")
+    extra = _extra_hours(extra_missing_hours, start_ms, end_ms)
+    skipped = derive_skipped_hours(start_ms, end_ms, ordered, extra)
+    pack = WindowPack(window_id, start_ms, end_ms, ordered, skipped, _sources(sources), extra)
+    check_window(pack)
+    return pack
+
+
+def derive_skipped_hours(
+    start_ms: int,
+    end_ms: int,
+    coins: Iterable[CoinInputs],
+    extra_missing_hours: ExtraSources = (),
+) -> tuple[int, ...]:
+    """The window's skipped hours, ascending: every hour some coin has no spot bar at,
+    no futures bar at (a coin with futures) or no opening minute at, and every hour of the
+    labelled ``extra_missing_hours`` sources, restricted to ``start < h < end - 1h``.
+    ``check_window`` refuses a gap or a source hour at the first or last hour."""
+    hours: set[int] = set()
+    for coin in coins:
+        hours.update(_gaps(coin, start_ms, end_ms))
+    for _, extra in _extra_hours(extra_missing_hours, start_ms, end_ms):
+        hours.update(extra)
+    return tuple(sorted(hour for hour in hours if start_ms < hour < end_ms - HOUR))
+
+
+def skipped_hour_sources(pack: WindowPack) -> ExtraHours:
+    """Each source of ``pack``'s skipped hours with its hours, sorted by label, for
+    disclosure: ``"<symbol>: no spot bar"``, ``"<symbol>: no futures bar"`` and
+    ``"<symbol>: no opening minute"`` for every coin gap that leaves a skipped hour, and
+    every extra missing-hour source under its own label, an empty one too. The union of
+    the hours is the pack's skipped hours."""
+    if not isinstance(pack, WindowPack):
+        raise ValueError("window pack required")
+    start, end = pack.start_ms, pack.end_ms
+    found: dict[str, set[int]] = {}
+    for coin in pack.coins:
+        for hour, reasons in _gaps(coin, start, end).items():
+            if start < hour < end - HOUR:
+                for reason in reasons:
+                    found.setdefault(f"{coin.symbol}: {reason}", set()).add(hour)
+    labelled = {label: tuple(sorted(hours)) for label, hours in found.items()}
+    labelled.update(_extra_hours(pack.extra_missing_hours, start, end))
+    return tuple(sorted(labelled.items()))
+
+
+def check_window(pack: WindowPack) -> None:
+    """Refuse, with a ``ValueError`` naming the coin and the hour, slot or month, a
+    window that breaks the registration checklist:
+
+    - its first or last hour would need skipping;
+    - a coin's minutes lack the final in-window minute (``end - 1 min``);
+    - a spot month from the coin's history start to the end misses more than 17% of its
+      hours, V3's exclusion rule (a month the pack holds in part is judged on the hours
+      it holds);
+    - a coin with futures has no valid funding record usable at the start, funding the
+      replay refuses, or a settlement missing inside the window by the replay's rule;
+    - an extra missing-hour source holds the first or last hour.
+
+    Inputs built for another window, extra sources out of their canonical order, and
+    skipped hours other than the derived ones, are refused too.
+    """
+    if not isinstance(pack, WindowPack):
+        raise ValueError("window pack required")
+    start, end = pack.start_ms, pack.end_ms
+    for coin in pack.coins:
+        flow = coin.flow
+        if (flow.symbol, flow.start_ms, flow.end_ms) != (coin.symbol, start, end):
+            raise ValueError(f"{coin.symbol}: inputs built for another window")
+        gaps = _gaps(coin, start, end)
+        for hour, which in ((start, "first"), (end - HOUR, "last")):
+            if hour in gaps:
+                raise ValueError(
+                    f"{coin.symbol}: the {which} window hour {hour} would need skipping "
+                    f"({', '.join(gaps[hour])})"
+                )
+        if not coin.final_minute:
+            raise ValueError(
+                f"{coin.symbol}: no minute bar at {end - _MINUTE}, the final in-window minute"
+            )
+        _check_spot_months(coin, end)
+        if coin.futures_rules is not None:
+            _check_funding(coin, start, end)
+    extra = _extra_hours(pack.extra_missing_hours, start, end)
+    if extra != pack.extra_missing_hours:
+        raise ValueError(
+            f"{pack.window_id}: extra missing-hour sources must be sorted by label, each "
+            "label's hours sorted and unique"
+        )
+    for label, hours in extra:
+        for hour, which in ((start, "first"), (end - HOUR, "last")):
+            if hour in hours:
+                raise ValueError(
+                    f"{label}: the {which} window hour {hour} would need skipping "
+                    "(an extra missing-hour source)"
+                )
+    if pack.skipped_hours != derive_skipped_hours(start, end, pack.coins, extra):
+        raise ValueError(f"{pack.window_id}: the skipped hours differ from the derived ones")
+
+
+def write_pack(pack: WindowPack, path: str | Path) -> str:
+    """Write ``pack`` to a new file at ``path`` and return its pin: the SHA-256 (hex) of
+    the canonical JSON the file compresses.
+
+    That JSON depends only on the pack (sorted keys, fixed separators, ASCII, Decimals as
+    their ``str()``, flow bitsets as hex), so the pin is the same on any machine. The gzip
+    around it has mtime 0 and no file name; its bytes repeat on one zlib build but may
+    differ between builds, so the file's own hash is not the pin. An existing file is
+    refused, never replaced.
+    """
+    if not isinstance(pack, WindowPack):
+        raise ValueError("window pack required")
+    with localcontext(Context()):  # str() reads the context's exponent letter case
+        document = _pack_document(pack)
+    return _write_gzip_json(document, path)
+
+
+def read_pack(path: str | Path, expected_sha256: str) -> WindowPack:
+    """The pack at ``path``, rebuilt equal to the one written.
+
+    The file is decompressed, refused past ``MAX_CONTENT_BYTES``, and the SHA-256 of its
+    JSON must equal ``expected_sha256``, checked before the JSON is parsed; any gzip bytes
+    of that JSON are accepted. A duplicate JSON key, a non-integer number or a field out
+    of place is refused."""
+    document = _read_gzip_json(path, expected_sha256)
+    with localcontext(Context()):
+        return _pack_from(document)
+
+
+def _write_gzip_json(document: object, path: str | Path) -> str:
+    """Write ``document``'s canonical JSON, gzipped (mtime 0, no file name), to a new file
+    at ``path`` and return the SHA-256 (hex) of that JSON; an existing file is refused.
+    The V3 input pack (``driver.v3_pack``) is written the same way."""
+    text = json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    content = text.encode("ascii")
+    buffer = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=buffer, mtime=0) as archive:
+        archive.write(content)
+    with open(path, "xb") as handle:
+        handle.write(buffer.getvalue())
+    return hashlib.sha256(content).hexdigest()
+
+
+def _read_gzip_json(path: str | Path, expected_sha256: str) -> object:
+    """The JSON the gzip file at ``path`` holds, once the SHA-256 of that JSON equals
+    ``expected_sha256``: decompressed with the size cap and hashed before it is parsed. A
+    duplicate key, a float or a NaN/Infinity constant is refused."""
+    if not isinstance(expected_sha256, str) or _SHA256.fullmatch(expected_sha256) is None:
+        raise ValueError("the expected pack sha256 must be 64 lowercase hex digits")
+    content = _decompressed(path)
+    actual = hashlib.sha256(content).hexdigest()
+    if actual != expected_sha256:
+        raise ValueError(f"{path}: pack sha256 {actual} differs from the pinned {expected_sha256}")
+    document: object = json.loads(
+        content,
+        object_pairs_hook=_unique_keys,
+        parse_float=_not_an_integer,
+        parse_constant=_not_an_integer,
+    )
+    return document
+
+
+def _decompressed(path: str | Path) -> bytes:
+    """The bytes the gzip file at ``path`` holds; at most ``MAX_CONTENT_BYTES`` + 1 are
+    ever decompressed, so an oversized stream is refused without exhausting memory."""
+    cap = MAX_CONTENT_BYTES
+    compressed = io.BytesIO(Path(path).read_bytes())
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        with gzip.GzipFile(fileobj=compressed, mode="rb") as archive:
+            while chunk := archive.read(min(_CHUNK, cap + 1 - total)):
+                total += len(chunk)
+                if total > cap:
+                    raise ValueError(f"{path}: the pack decompresses to more than {cap} bytes")
+                chunks.append(chunk)
+    except (OSError, EOFError, zlib.error) as exc:
+        raise ValueError(f"{path}: not a readable gzip pack ({exc})") from exc
+    return b"".join(chunks)
+
+
+def _window(start_ms: int, end_ms: int) -> None:
+    if (
+        type(start_ms) is not int
+        or type(end_ms) is not int
+        or start_ms % DAY
+        or end_ms % DAY
+        or not 0 <= start_ms < end_ms <= _RESERVED
+    ):
+        raise ValueError("a pre-reserved window of whole UTC days required")
+
+
+def _month_of(stamp: int) -> str:
+    return (_EPOCH + timedelta(milliseconds=stamp)).strftime("%Y-%m")
+
+
+def _month_start(stamp: int) -> int:
+    """The first millisecond of the month holding ``stamp``."""
+    return month_bounds_ms(_month_of(stamp))[0]
+
+
+def _months(first: int, end: int) -> tuple[str, ...]:
+    """The calendar months overlapping ``[first, end)``, oldest first."""
+    months: list[str] = []
+    while first < end:
+        month = _month_of(first)
+        months.append(month)
+        first = month_bounds_ms(month)[1]
+    return tuple(months)
+
+
+def _supplied(
+    symbol: str, kind: str, months: Iterable[DecodedV31Month]
+) -> dict[str, DecodedV31Month]:
+    """``months`` by month: each this coin's, of ``kind``, eligible or excluded, before
+    the reserved boundary, holding only its own month's data, and supplied once."""
+    by_month: dict[str, DecodedV31Month] = {}
+    for month in months:
+        if not isinstance(month, DecodedV31Month) or (month.kind, month.symbol) != (kind, symbol):
+            raise ValueError(f"{symbol}: decoded {kind} months of this coin required")
+        label = f"{symbol} {kind} {month.month}"
+        if not isinstance(month.month, str) or _MONTH.fullmatch(month.month) is None:
+            raise ValueError(f"{label}: month must be YYYY-MM")
+        if month.status not in ("eligible", "excluded"):
+            raise ValueError(f"{label}: an eligible or excluded month required")
+        if month.month in by_month:
+            raise ValueError(f"{label}: month supplied twice")
+        first, end = month_bounds_ms(month.month)
+        rows = month.funding if kind == "funding" else month.hourly
+        other = month.hourly if kind == "funding" else month.funding
+        kept = FundingRecord if kind == "funding" else Kline
+        if other or any(not isinstance(row, kept) for row in rows):
+            raise ValueError(f"{label}: {kind} data required")
+        stamps = [
+            row.calc_time_ms if isinstance(row, FundingRecord) else row.open_ms for row in rows
+        ]
+        refuse_sealed([first, *stamps], label)
+        if any(not first <= stamp < end for stamp in stamps):
+            raise ValueError(f"{label}: data outside its month")
+        if kind != "funding" and (
+            any(stamp % HOUR for stamp in stamps) or len(set(stamps)) != len(stamps)
+        ):
+            raise ValueError(f"{label}: unique hourly bars required")
+        by_month[month.month] = month
+    return by_month
+
+
+def _history_start(spot: dict[str, DecodedV31Month], start: int) -> int:
+    """365 days before ``start``, or the first day after the latest excluded spot month
+    before it if that is later (Ruling P7)."""
+    after = [
+        end
+        for month, decoded in spot.items()
+        if decoded.status == "excluded" and (end := month_bounds_ms(month)[1]) <= start
+    ]
+    return max([start - _HISTORY, *after])
+
+
+def _required(
+    symbol: str, kind: str, supplied: dict[str, DecodedV31Month], first: int, end: int
+) -> list[DecodedV31Month]:
+    """The months covering ``[first, end)``, oldest first; every one must be supplied."""
+    months = _months(first, end)
+    absent = [month for month in months if month not in supplied]
+    if absent:
+        more = f" (and {len(absent) - 1} more)" if len(absent) > 1 else ""
+        raise ValueError(f"{symbol} {kind} {absent[0]}: month not supplied{more}")
+    return [supplied[month] for month in months]
+
+
+def _bars(
+    symbol: str,
+    kind: str,
+    supplied: dict[str, DecodedV31Month],
+    first: int,
+    start: int,
+    end: int,
+) -> tuple[Kline, ...]:
+    """The bars of ``[first, end)``, ascending. An excluded spot month refuses the
+    window; an excluded futures month is dropped before the window, refused inside it."""
+    rows: list[Kline] = []
+    for month in _required(symbol, kind, supplied, first, end):
+        if month.status == "excluded":
+            if kind == "futures" and month_bounds_ms(month.month)[1] <= start:
+                continue
+            where = "inside the window" if kind == "futures" else "in the window or its history"
+            raise ValueError(f"{symbol} {kind} {month.month}: an excluded month {where}")
+        rows.extend(bar for bar in month.hourly if first <= bar.open_ms < end)
+    return tuple(sorted(rows, key=lambda bar: bar.open_ms))
+
+
+def _records(
+    symbol: str, supplied: dict[str, DecodedV31Month], first: int, end: int
+) -> tuple[FundingRecord, ...]:
+    """Every funding record of ``[first, end)``, excluded months included, ascending."""
+    records = sorted(
+        (
+            record
+            for month in _required(symbol, "funding", supplied, first, end)
+            for record in month.funding
+            if record.calc_time_ms < end
+        ),
+        key=lambda record: record.calc_time_ms,
+    )
+    times = [record.calc_time_ms for record in records]
+    if len(set(times)) != len(times):
+        raise ValueError(f"{symbol}: duplicate funding record")
+    return tuple(records)
+
+
+class _MinuteWatch:
+    """Notes, as the minutes stream past, which window hours have their opening minute
+    and whether the final minute came; it holds no bar. A minute outside the window's
+    minute months, or at or after the reserved boundary, is refused."""
+
+    def __init__(self, symbol: str, start: int, end: int) -> None:
+        self.symbol, self.start, self.end = symbol, start, end
+        self.first = _month_start(start - _LOOK_BACK)
+        self.last = month_bounds_ms(_month_of(end - 1))[1]
+        self.opened: set[int] = set()
+        self.final = False
+
+    def stream(self, minutes: Iterable[Kline]) -> Iterator[Kline]:
+        for bar in minutes:
+            if isinstance(bar, Kline) and type(bar.open_ms) is int:
+                stamp = bar.open_ms
+                refuse_sealed((stamp,), f"{self.symbol} minutes")
+                if not self.first <= stamp < self.last:
+                    raise ValueError(
+                        f"{self.symbol}: minute {stamp} is outside the window's minute months"
+                    )
+                if self.start <= stamp < self.end and stamp % HOUR == 0:
+                    self.opened.add(stamp)
+                self.final = self.final or stamp == self.end - _MINUTE
+            yield bar  # anything else is the flow schedule's to refuse
+
+    def gaps(self) -> tuple[int, ...]:
+        return tuple(h for h in range(self.start, self.end, HOUR) if h not in self.opened)
+
+
+def _gaps(coin: CoinInputs, start: int, end: int) -> dict[int, list[str]]:
+    """Each window hour the coin has a gap at, with what it lacks there."""
+    venues = [("spot", coin.spot_hourly)]
+    if coin.futures_rules is not None:
+        venues.append(("futures", coin.futures_hourly))
+    gaps: dict[int, list[str]] = {}
+    for venue, bars in venues:
+        present = {bar.open_ms for bar in bars if start <= bar.open_ms < end}
+        for hour in range(start, end, HOUR):
+            if hour not in present:
+                gaps.setdefault(hour, []).append(f"no {venue} bar")
+    for hour in coin.opening_minute_gaps:
+        gaps.setdefault(hour, []).append("no opening minute")
+    return gaps
+
+
+def _check_spot_months(coin: CoinInputs, end: int) -> None:
+    """V3's exclusion rule on every spot month from the history start to ``end``."""
+    present = {bar.open_ms for bar in coin.spot_hourly}
+    for month in _months(coin.history_start_ms, end):
+        first, stop = month_bounds_ms(month)
+        hours = range(max(first, coin.history_start_ms), min(stop, end), HOUR)
+        missing = sum(1 for hour in hours if hour not in present)
+        if missing * 100 > len(hours) * 17:
+            raise ValueError(
+                f"{coin.symbol} spot {month}: {missing} of {len(hours)} hours missing, over 17%"
+            )
+
+
+def _check_funding(coin: CoinInputs, start: int, end: int) -> None:
+    """The funding a futures coin's replay reads at the start and settles in the window."""
+    usable = [record for record in coin.funding if record.usable_ms <= start]
+    if not usable or not max(usable, key=lambda record: record.calc_time_ms).valid:
+        raise ValueError(f"{coin.symbol}: no valid funding record usable at the window start")
+    needed, _ = _funding(coin.funding, start, end, coin.symbol)
+    missing, _ = _schedule_gaps(needed, start, end)
+    if missing:
+        raise ValueError(
+            f"{coin.symbol}: {len(missing)} funding settlement slot(s) missing inside the "
+            f"window, the first at {min(missing)}"
+        )
+
+
+def _text(value: Decimal) -> str:
+    if not isinstance(value, Decimal):
+        raise ValueError("pack values must be Decimals")
+    return str(value)
+
+
+def _kline_row(bar: Kline) -> list[object]:
+    return [bar.open_ms, *(_text(getattr(bar, name)) for name in _KLINE_DECIMALS)]
+
+
+def _rules_document(rules: VenueRules) -> dict[str, object]:
+    return {name: _text(getattr(rules, name)) for name in _RULES}
+
+
+def _pack_document(pack: WindowPack) -> dict[str, object]:
+    document: dict[str, object] = {
+        "format": _FORMAT,
+        "window_id": pack.window_id,
+        "start_ms": pack.start_ms,
+        "end_ms": pack.end_ms,
+        "skipped_hours": list(pack.skipped_hours),
+        "sources": [list(source) for source in pack.sources],
+        "coins": [_coin_document(coin) for coin in pack.coins],
+    }
+    if pack.extra_missing_hours:  # absent otherwise, so a pack without any keeps its pin
+        document[_EXTRA_KEY] = [[label, list(hours)] for label, hours in pack.extra_missing_hours]
+    return document
+
+
+def _coin_document(coin: CoinInputs) -> dict[str, object]:
+    flow = coin.flow
+    return {
+        "symbol": coin.symbol,
+        "history_start_ms": coin.history_start_ms,
+        "spot_hourly": [_kline_row(bar) for bar in coin.spot_hourly],
+        "futures_hourly": [_kline_row(bar) for bar in coin.futures_hourly],
+        "daily": [_kline_row(bar) for bar in coin.daily],
+        "funding": [[r.calc_time_ms, r.interval_hours, _text(r.rate)] for r in coin.funding],
+        "spot_rules": _rules_document(coin.spot_rules),
+        "futures_rules": None
+        if coin.futures_rules is None
+        else _rules_document(coin.futures_rules),
+        "flow": {
+            "symbol": flow.symbol,
+            "start_ms": flow.start_ms,
+            "end_ms": flow.end_ms,
+            "open_allowed": flow.open_allowed.hex(),
+            "withheld": flow.withheld.hex(),
+            "present": flow.present,
+        },
+        "opening_minute_gaps": list(coin.opening_minute_gaps),
+        "final_minute": coin.final_minute,
+    }
+
+
+def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"pack: duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _not_an_integer(text: str) -> object:
+    raise ValueError(f"pack: {text} is not an integer")
+
+
+def _object(value: object, keys: frozenset[str], what: str) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError(f"pack {what}: the fields {sorted(keys)} required")
+    return value
+
+
+def _list(value: object, what: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ValueError(f"pack {what}: a list required")
+    return value
+
+
+def _int(value: object, what: str) -> int:
+    if type(value) is not int:
+        raise ValueError(f"pack {what}: an integer required")
+    return value
+
+
+def _bool(value: object, what: str) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"pack {what}: true or false required")
+    return value
+
+
+def _str(value: object, what: str) -> str:
+    if type(value) is not str:
+        raise ValueError(f"pack {what}: a string required")
+    return value
+
+
+def _decimal(value: object, what: str) -> Decimal:
+    try:
+        return Decimal(_str(value, what))
+    except InvalidOperation as exc:
+        raise ValueError(f"pack {what}: a decimal string required") from exc
+
+
+def _bytes(value: object, what: str) -> bytes:
+    text = _str(value, what)
+    if _HEX.fullmatch(text) is None:
+        raise ValueError(f"pack {what}: lowercase hex required")
+    return bytes.fromhex(text)
+
+
+def _kline_from(row: object, what: str) -> Kline:
+    items = _list(row, what)
+    if len(items) != 1 + len(_KLINE_DECIMALS):
+        raise ValueError(f"pack {what}: {1 + len(_KLINE_DECIMALS)} kline fields required")
+    return Kline(_int(items[0], what), *(_decimal(item, what) for item in items[1:]))
+
+
+def _klines(value: object, what: str) -> tuple[Kline, ...]:
+    return tuple(_kline_from(row, what) for row in _list(value, what))
+
+
+def _record_from(row: object, what: str) -> FundingRecord:
+    items = _list(row, what)
+    if len(items) != 3:
+        raise ValueError(f"pack {what}: calc time, interval and rate required")
+    interval = None if items[1] is None else _int(items[1], what)
+    return FundingRecord(_int(items[0], what), interval, _decimal(items[2], what))
+
+
+def _funding_from(value: object, what: str) -> tuple[FundingRecord, ...]:
+    return tuple(_record_from(row, what) for row in _list(value, what))
+
+
+def _ints(value: object, what: str) -> tuple[int, ...]:
+    return tuple(_int(item, what) for item in _list(value, what))
+
+
+def _rules_from(value: object, what: str) -> VenueRules:
+    document = _object(value, frozenset(_RULES), what)
+    return VenueRules(*(_decimal(document[name], what) for name in _RULES))
+
+
+def _flow_from(value: object, what: str) -> FlowSchedule:
+    document = _object(value, _FLOW_KEYS, what)
+    return FlowSchedule(
+        _str(document["symbol"], what),
+        _int(document["start_ms"], what),
+        _int(document["end_ms"], what),
+        _bytes(document["open_allowed"], what),
+        _bytes(document["withheld"], what),
+        _bool(document["present"], what),
+    )
+
+
+def _coin_from(value: object) -> CoinInputs:
+    document = _object(value, _COIN_KEYS, "coin")
+    symbol = _str(document["symbol"], "coin symbol")
+    futures_rules = document["futures_rules"]
+    return CoinInputs(
+        symbol,
+        _int(document["history_start_ms"], f"{symbol} history start"),
+        _klines(document["spot_hourly"], f"{symbol} spot hourly"),
+        _klines(document["futures_hourly"], f"{symbol} futures hourly"),
+        _klines(document["daily"], f"{symbol} daily"),
+        _funding_from(document["funding"], f"{symbol} funding"),
+        _rules_from(document["spot_rules"], f"{symbol} spot rules"),
+        None if futures_rules is None else _rules_from(futures_rules, f"{symbol} futures rules"),
+        _flow_from(document["flow"], f"{symbol} flow"),
+        _ints(document["opening_minute_gaps"], f"{symbol} opening minute gaps"),
+        _bool(document["final_minute"], f"{symbol} final minute"),
+    )
+
+
+def _extra_hours(extra: object, start: int, end: int) -> ExtraHours:
+    """The labelled extra missing-hour sources ``extra`` (a mapping or (label, hours)
+    pairs) in their canonical form: sorted by label, each label's hours sorted and unique.
+    A label is a nonempty string, named once; an hour is an ``int`` on a whole UTC hour
+    inside ``[start, end)``."""
+    items = extra.items() if isinstance(extra, Mapping) else extra
+    if not isinstance(items, Iterable) or isinstance(items, str | bytes):
+        raise ValueError("extra missing-hour sources: (label, hours) pairs required")
+    found: dict[str, tuple[int, ...]] = {}
+    for item in items:
+        if not isinstance(item, tuple | list) or len(item) != 2:
+            raise ValueError("extra missing-hour sources: (label, hours) pairs required")
+        label, hours = item
+        if type(label) is not str or not label.strip() or label in found:
+            raise ValueError(f"extra missing-hour source label {label!r}: nonempty, named once")
+        if not isinstance(hours, Iterable) or isinstance(hours, str | bytes):
+            raise ValueError(f"{label}: a collection of hours required")
+        listed = tuple(hours)
+        if any(type(hour) is not int or hour % HOUR for hour in listed):
+            raise ValueError(f"{label}: whole hours (int ms) required")
+        if any(not start <= hour < end for hour in listed):
+            raise ValueError(f"{label}: hours inside the window [{start}, {end}) required")
+        found[label] = tuple(sorted(set(listed)))
+    return tuple(sorted(found.items()))
+
+
+def _extra_from(value: object) -> ExtraHours:
+    """The extra sources a pack document holds, as ``_pack_document`` writes them."""
+    pairs = _list(value, "extra missing hours")
+    if not pairs:
+        raise ValueError("pack extra missing hours: written only when there are some")
+    extra = []
+    for item in pairs:
+        pair = _list(item, "extra missing hours")
+        if len(pair) != 2:
+            raise ValueError("pack extra missing hours: [label, hours] pairs required")
+        label = _str(pair[0], "extra missing hours label")
+        extra.append((label, _ints(pair[1], f"{label} extra missing hours")))
+    return tuple(extra)
+
+
+def _sources(sources: Iterable[object]) -> tuple[tuple[str, str], ...]:
+    """The data manifests as (name, lowercase SHA-256) pairs, sorted, each named once."""
+    pairs: list[tuple[str, str]] = []
+    for source in sources:
+        if (
+            not isinstance(source, tuple | list)
+            or len(source) != 2
+            or type(source[0]) is not str
+            or not source[0].strip()
+            or type(source[1]) is not str
+            or _SHA256.fullmatch(source[1]) is None
+        ):
+            raise ValueError(f"source {source!r}: a manifest name and its sha256 required")
+        pairs.append((source[0], source[1]))
+    names = [name for name, _ in pairs]
+    if not pairs or len(set(names)) != len(names):
+        raise ValueError("each source manifest named once required")
+    return tuple(sorted(pairs))
+
+
+def _pack_from(value: object) -> WindowPack:
+    extra = isinstance(value, dict) and _EXTRA_KEY in value
+    document = _object(value, _PACK_KEYS | {_EXTRA_KEY} if extra else _PACK_KEYS, "document")
+    if document["format"] != _FORMAT:
+        raise ValueError(f"pack: format {_FORMAT!r} required")
+    return WindowPack(
+        _str(document["window_id"], "window id"),
+        _int(document["start_ms"], "start"),
+        _int(document["end_ms"], "end"),
+        tuple(_coin_from(coin) for coin in _list(document["coins"], "coins")),
+        _ints(document["skipped_hours"], "skipped hours"),
+        _sources(_list(document["sources"], "sources")),
+        _extra_from(document[_EXTRA_KEY]) if extra else (),
+    )

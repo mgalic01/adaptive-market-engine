@@ -5,7 +5,7 @@ from decimal import Decimal as D
 
 import pytest
 
-from crypto_grid_bot.combined.risk import Exposure, Intent, PortfolioRisk, PortfolioView
+from crypto_grid_bot.combined.risk import Admission, Exposure, Intent, PortfolioRisk, PortfolioView
 
 
 def intent(key="one", symbol="BTCUSDT", **changes):
@@ -26,6 +26,7 @@ def intent(key="one", symbol="BTCUSDT", **changes):
             D(1000),
             D(5),
             "unknown",
+            D(".01"),
         ),
         **changes,
     )
@@ -33,6 +34,17 @@ def intent(key="one", symbol="BTCUSDT", **changes):
 
 def view(**changes):
     return replace(PortfolioView(D(10000), D(10000), (), D(1)), **changes)
+
+
+def test_extended_entry_halves_stop_risk_before_recovery_scaling():
+    answer = PortfolioRisk().reserve(intent(risk_multiplier=D("0.5")), view())
+    assert answer.accepted and answer.risk <= 25
+    recovered = PortfolioRisk().reserve(
+        intent(risk_multiplier=D("0.5")), view(risk_fraction=D("0.25"))
+    )
+    assert recovered.risk <= D("6.25")
+    with pytest.raises(ValueError):
+        PortfolioRisk().reserve(intent(risk_multiplier=D(2)), view())
 
 
 def test_default_maintenance_matches_frozen_v3_one_percent_model():
@@ -90,9 +102,9 @@ def test_pending_spot_spending_cannot_double_count_margin_backing():
 
 def test_asset_cap_and_fee_reserve_limit_size():
     answer = PortfolioRisk().reserve(intent(), view())
-    assert answer.quantity == D("19.990")
-    assert answer.cash == D("2004.93704999")
-    assert answer.risk == D("45.91704999")
+    assert answer.quantity == D("19.984")
+    assert answer.cash == D("2004.35523200")
+    assert answer.risk == D("45.92323200")
     assert answer.accepted
 
 
@@ -116,7 +128,7 @@ def test_pending_cash_cannot_be_spent_twice():
 def test_unknown_correlation_groups_all_assets_together():
     book = PortfolioRisk()
     answers = [
-        book.reserve(intent(str(i), symbol, slippage_rate=D(0)), view())
+        book.reserve(intent(str(i), symbol, slippage_rate=D(0), fee_rate=D(0)), view())
         for i, symbol in enumerate(("BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT"))
     ]
     assert sum(a.notional for a in answers) <= 8000
@@ -126,8 +138,8 @@ def test_unknown_correlation_groups_all_assets_together():
 
 def test_recovery_quarters_even_asset_capped_size():
     answer = PortfolioRisk().reserve(intent(slippage_rate=D(0)), view(risk_fraction=D("0.25")))
-    assert answer.quantity == 5
-    assert answer.notional == 500
+    assert answer.quantity == D("4.999")
+    assert answer.notional == D("499.9")
 
 
 def test_minimum_notional_never_rounded_up_to_spend_more_risk():
@@ -136,6 +148,33 @@ def test_minimum_notional_never_rounded_up_to_spend_more_risk():
     )
     assert not answer.accepted
     assert answer.reason == "below_minimum"
+
+
+def test_spot_cut_below_minimum_by_pending_cash_is_committed_capacity_not_minimum():
+    # Owner decision 2026-10-11: the minimum is the cause only when the size allowed
+    # before committed cash or capacity misses it. Own groups keep the group cap slack.
+    others = ("ETHUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT", "DOGEUSDT")
+    account = view(correlation_groups=tuple((s, s) for s in ("BTCUSDT", *others)))
+    candidate = intent(min_notional=D(1500), correlation_group="BTCUSDT")
+    book = PortfolioRisk()
+    assert book.preview(candidate, account).quantity == D("19.984")
+    for symbol in others:
+        pending = intent(
+            symbol, symbol, stop=D(99), requested_quantity=D(18), correlation_group=symbol
+        )
+        assert book.reserve(pending, account).accepted
+    # About 973 of 10000 free cash is left: under 10 units, below the 1500 minimum.
+    answer = book.reserve(candidate, account)
+    assert not answer.accepted
+    assert answer.reason == "spot_capacity_committed"
+
+
+def test_minimum_stays_the_cause_when_commitments_also_exhaust_spot_capacity():
+    # Tiny capital misses the minimum before any commitment; ample capital does not.
+    tiny = PortfolioRisk().reserve(intent(min_notional=D(25)), view(equity=D(100), free_cash=D(0)))
+    assert tiny.reason == "below_minimum"
+    ample = PortfolioRisk().reserve(intent(min_notional=D(25)), view(free_cash=D(0)))
+    assert ample.reason == "portfolio_capacity"
 
 
 def test_futures_short_funding_and_margin_admission():
@@ -152,7 +191,39 @@ def test_futures_short_funding_and_margin_admission():
     assert refused.reason == "adverse_funding"
     accepted = PortfolioRisk().reserve(replace(candidate, funding_rate=D("0.0001")), view())
     assert accepted.accepted
-    assert accepted.cash == D("1006.06002")
+    assert accepted.cash == D("1005.93832794")
+
+
+def test_two_failing_limits_are_both_returned_and_the_first_stays_the_reason():
+    short = intent(
+        venue="futures",
+        owner="futures_trend",
+        side=-1,
+        stop=D(102),
+        funding_rate=D("-0.01"),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    refused = PortfolioRisk().reserve(short, view(free_cash=D(0), futures_backing=D(0)))
+    assert not refused.accepted
+    assert refused.reasons == ("adverse_funding", "portfolio_capacity")
+    assert refused.reason == "adverse_funding"
+    held = Exposure("BTCUSDT", "spot_grid", D("0.01"), D("0.001"), "unknown")
+    owned = PortfolioRisk().reserve(replace(short, funding_rate=None), view(exposures=(held,)))
+    assert owned.reasons == ("asset_owned", "funding_unavailable")
+
+
+def test_a_halt_is_not_also_reported_as_a_size_limit():
+    assert PortfolioRisk().reserve(intent(), view(risk_fraction=D(0))).reasons == ("risk_halted",)
+
+
+def test_an_approval_has_no_refusal_reasons_and_a_refusal_always_has_its_reason():
+    assert PortfolioRisk().reserve(intent(), view()).reasons == ()
+    assert Admission("x", False, "below_minimum").reasons == ("below_minimum",)
+    with pytest.raises(ValueError):
+        Admission("x", False, "asset_owned", reasons=("below_minimum",))
+    with pytest.raises(ValueError):
+        Admission("x", True, "approved", reasons=("below_minimum",))
 
 
 @pytest.mark.parametrize(
@@ -227,7 +298,9 @@ def test_strategy_cannot_invent_a_correlation_group_to_bypass_shared_cap():
 
 def test_partial_fill_ack_releases_only_remaining_fraction():
     book = PortfolioRisk()
-    first = book.reserve(intent(slippage_rate=D(0)), view())
+    first = book.reserve(
+        intent(slippage_rate=D(0), requested_quantity=D(20), fee_rate=D(0)), view()
+    )
     with pytest.raises(ValueError):
         book.acknowledge_remaining("one", D(10), acknowledged=False)
     book.acknowledge_remaining("one", D(10), acknowledged=True)
@@ -360,6 +433,7 @@ def test_spot_spending_preserves_futures_entry_buffer_and_rejects_negative_capac
     gross, accepted
 ):
     snapshot = view(
+        equity=D(20000),
         free_cash=D(100),
         futures_backing=D(100),
         exposures=(Exposure("BTCUSDT", "futures_trend", gross, D(0), "unknown"),),
@@ -375,6 +449,7 @@ def test_spot_spending_preserves_futures_entry_buffer_and_rejects_negative_capac
 def test_multiple_pending_spot_orders_share_remaining_futures_backing():
     book = PortfolioRisk()
     snapshot = view(
+        equity=D(20000),
         free_cash=D(100),
         futures_backing=D(100),
         exposures=(Exposure("BTCUSDT", "futures_trend", D(2000), D(0), "unknown"),),
@@ -383,3 +458,211 @@ def test_multiple_pending_spot_orders_share_remaining_futures_backing():
     second = book.reserve(intent("second", "SOLUSDT"), snapshot)
     assert first.accepted and second.accepted
     assert D(100) - first.cash - second.cash >= D(80)
+
+
+@pytest.mark.parametrize("side,stop", [(1, "98"), (-1, "102")])
+def test_admission_reserves_actual_adverse_ticks(side, stop):
+    order = intent(
+        side=side,
+        stop=D(stop),
+        venue="futures",
+        owner="futures_trend",
+        fee_rate=D(0),
+        slippage_rate=D(0),
+        tick=D(10),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    answer = PortfolioRisk().reserve(order, view())
+    assert answer.accepted
+    assert answer.quantity == 5
+    assert answer.risk == 50
+
+
+def test_spot_tick_risk_and_cash_match_executable_stop():
+    answer = PortfolioRisk().reserve(intent(fee_rate=D(0), slippage_rate=D(0), tick=D(10)), view())
+    assert answer.quantity == 5
+    assert answer.risk == 50
+    assert answer.cash == 540
+
+
+@pytest.mark.parametrize("tick", [".01", "10"])
+def test_tick_admission_is_independent_of_restrictive_decimal_context(tick):
+    from decimal import localcontext
+
+    order = intent(tick=D(tick))
+    account = view()
+    expected = PortfolioRisk().reserve(order, account)
+    with localcontext() as context:
+        context.prec = 2
+        context.Emax = 1
+        context.Emin = -1
+        for signal in context.traps:
+            context.traps[signal] = True
+        assert PortfolioRisk().reserve(order, account) == expected
+
+
+def test_no_positive_sell_tick_refuses_admission():
+    result = PortfolioRisk().reserve(intent(tick=D(100)), view())
+    assert not result.accepted
+    assert result.reason == "invalid_execution_price"
+
+
+@pytest.mark.parametrize("side,stop,unit_cash", [(1, "98", "73.2"), (-1, "102", "68.2")])
+def test_both_side_ticks_include_actual_entry_exit_fees_and_cash(side, stop, unit_cash):
+    order = intent(
+        side=side,
+        stop=D(stop),
+        owner="futures_trend",
+        venue="futures",
+        tick=D(10),
+        fee_rate=D(".001"),
+        slippage_rate=D(".001"),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    answer = PortfolioRisk().reserve(order, view())
+    # Executions are 110/90 for long, 90/110 for short; fees = .2 per unit.
+    assert answer.quantity == D("2.469")
+    assert answer.risk == answer.quantity * D("20.2")
+    assert answer.cash == answer.quantity * D(unit_cash)
+
+
+@pytest.mark.parametrize("tick", [None, D(0), D(-1), D("NaN")])
+def test_tick_is_explicit_positive_and_finite(tick):
+    with pytest.raises(ValueError):
+        PortfolioRisk().reserve(intent(tick=tick), view())
+
+
+@pytest.mark.parametrize(
+    "venue,side,stop", [("spot", 1, "99"), ("futures", 1, "99"), ("futures", -1, "101")]
+)
+@pytest.mark.parametrize("slip", ["0", ".001"])
+@pytest.mark.parametrize("fraction", ["1", ".25"])
+def test_caps_use_equity_after_planned_entry_costs(venue, side, stop, slip, fraction):
+    from crypto_grid_bot.combined.risk import planned_price
+
+    order = intent(
+        venue=venue,
+        owner="spot_trend" if venue == "spot" else "futures_trend",
+        side=side,
+        stop=D(stop),
+        slippage_rate=D(slip),
+        funding_rate=D(0),
+        funding_age_ms=0,
+        funding_interval_ms=28_800_000,
+    )
+    answer = PortfolioRisk().reserve(order, view(risk_fraction=D(fraction)))
+    entry = planned_price(order.price, side, order.slippage_rate, order.tick)
+    loss = answer.quantity * (entry * order.fee_rate + side * (entry - order.price))
+    capital = (D(10000) - loss) * D(fraction)
+    assert answer.accepted
+    assert answer.notional <= capital * D(".2")
+    assert answer.risk <= capital * D(".005")
+
+
+def test_new_cost_cannot_breach_already_held_asset_notional_cap():
+    held = Exposure("ETHUSDT", "spot_trend", D(2000), D(1), "unknown")
+    assert not PortfolioRisk().reserve(intent(), view(exposures=(held,))).accepted
+
+
+def test_pending_planned_costs_also_constrain_existing_asset_headroom():
+    book = PortfolioRisk()
+    first = book.reserve(intent(slippage_rate=D(0), stop=D(99)), view())
+    second = book.reserve(intent("next", "ETHUSDT", slippage_rate=D(0), stop=D(99)), view())
+    final_equity = D(10000) - (first.quantity + second.quantity) * D(".1")
+    assert first.accepted
+    assert first.notional <= final_equity * D(".2")
+    assert second.notional <= final_equity * D(".2")
+
+
+@pytest.mark.parametrize("kind", ["risk", "gross", "group"])
+def test_shared_caps_use_post_cost_equity(kind):
+    symbols = (
+        "ETHUSDT",
+        "SOLUSDT",
+        "ADAUSDT",
+        "XRPUSDT",
+        "DOGEUSDT",
+        "BNBUSDT",
+        "LTCUSDT",
+        "AVAXUSDT",
+    )
+    groups = tuple((symbol, "other" if kind != "group" else "unknown") for symbol in symbols)
+    count = 8 if kind == "gross" else 4 if kind == "group" else 6
+    held = tuple(
+        Exposure(
+            symbol,
+            "spot_trend",
+            D(1999) if kind != "risk" else D(100),
+            D("49.9") if kind == "risk" else D(1),
+            dict(groups)[symbol],
+        )
+        for symbol in symbols[:count]
+    )
+    # Separate gross-only groups so no unrelated correlation cap binds first.
+    if kind == "gross":
+        groups = tuple((symbol, symbol) for symbol in symbols)
+        held = tuple(replace(e, correlation_group=e.symbol) for e in held)
+    answer = PortfolioRisk().reserve(
+        intent(stop=D(99), slippage_rate=D(0), min_notional=D(0), step=D(".000001")),
+        view(exposures=held, correlation_groups=groups),
+    )
+    capital = D(10000) - answer.quantity * D(".1")
+    assert answer.accepted
+    if kind == "risk":
+        assert sum(e.stop_risk for e in held) + answer.risk <= capital * D(".03")
+    elif kind == "gross":
+        assert sum(e.notional for e in held) + answer.notional <= capital * D("1.6")
+    else:
+        assert sum(e.notional for e in held) + answer.notional <= capital * D(".8")
+
+
+@pytest.mark.parametrize("multiplier", ["1", ".5"])
+def test_held_asset_stop_risk_keeps_its_own_multiplier_after_new_costs(multiplier):
+    held = Exposure(
+        "ETHUSDT", "spot_trend", D(100), D(50) * D(multiplier), "unknown", D(multiplier)
+    )
+    answer = PortfolioRisk().reserve(intent(), view(exposures=(held,)))
+    assert not answer.accepted
+
+
+def test_new_cost_preserves_an_unrelated_correlation_group_cap():
+    symbols = ("ETHUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT", "DOGEUSDT")
+    held = tuple(Exposure(symbol, "spot_trend", D(1600), D(1), "other") for symbol in symbols)
+    answer = PortfolioRisk().reserve(
+        intent(), view(exposures=held, correlation_groups=tuple((s, "other") for s in symbols))
+    )
+    assert not answer.accepted
+
+
+def test_only_remaining_pending_entry_cost_is_charged_after_partial_fill():
+    from fractions import Fraction
+
+    book = PortfolioRisk()
+    first_order = intent(requested_quantity=D(10), slippage_rate=D(0))
+    first = book.reserve(first_order, view())
+    book.acknowledge_remaining("one", D(5), acknowledged=True)
+    held = Exposure("BTCUSDT", "spot_trend", D(500), D("10.49"), "unknown")
+    # Five filled units already paid .5 fee in the supplied authoritative equity.
+    account = view(equity=D("9999.5"), exposures=(held,))
+    second = book.reserve(intent("next", "ETHUSDT", stop=D(99), slippage_rate=D(0)), account)
+    expected = Fraction(9999) / (Fraction(500) + Fraction(1, 10))
+    assert first.accepted and second.accepted
+    assert second.quantity == D(expected // Fraction(D(".001"))) * D(".001")
+    # Cancel acknowledgement releases only the remaining cost reservation.
+    book.release("one", acknowledged=True)
+    book.release("next", acknowledged=True)
+    third = book.preview(intent("third", "SOLUSDT", stop=D(99), slippage_rate=D(0)), account)
+    released_bound = Fraction(D("9999.5")) / (Fraction(500) + Fraction(1, 10))
+    assert third.quantity == D(released_bound // Fraction(D(".001"))) * D(".001")
+    assert third.quantity > second.quantity
+
+
+@pytest.mark.parametrize("bad", [D(0), D(2), D("NaN")])
+def test_invalid_held_multiplier_is_rejected(bad):
+    held = Exposure("ETHUSDT", "spot_trend", D(100), D(1), "unknown", bad)
+    with pytest.raises(ValueError):
+        PortfolioRisk().reserve(intent(), view(exposures=(held,)))

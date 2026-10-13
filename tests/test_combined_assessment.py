@@ -5,9 +5,11 @@ from decimal import Decimal as D
 
 import pytest
 
-from crypto_grid_bot.backtest.klines import Kline
-from crypto_grid_bot.combined.assessment import AssessmentSeries, assess
+from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
+from crypto_grid_bot.combined.assessment import AssessmentSeries, assess, daily_bars
+from crypto_grid_bot.strategy.indicators import wilder_rsi
 from crypto_grid_bot.strategy.perception import TrendState
+from crypto_grid_bot.trend.data import hourly_month
 
 HOUR = 3_600_000
 DAY = 24 * HOUR
@@ -45,6 +47,45 @@ def test_completed_uptrend_records_high_rsi_without_universal_veto(inputs):
     assert result.reasons == ()
     with pytest.raises(FrozenInstanceError):
         result.available = False
+
+
+def test_daily_rsi_is_recorded_from_completed_daily_closes_beside_four_hour_rsi(inputs):
+    hourly, daily, now = inputs
+    # The last completed day closes 0.5 below the prior close, inside its own range.
+    daily[-1] = replace(daily[-1], close=daily[-1].open - D("0.5"))
+    expected = wilder_rsi([bar.close for bar in daily])[-1]
+    result = assess("BTCUSDT", now, hourly, daily, now)
+    assert expected is not None and expected < 100
+    assert result.daily_rsi == expected
+    assert result.rsi == 100
+    # The day still forming at the decision is never read.
+    forming = replace(daily[-1], open_ms=now, close=daily[-1].low)
+    assert assess("BTCUSDT", now, hourly, daily + [forming], now).daily_rsi == expected
+    # Fourteen completed closes leave the daily RSI(14) warming up, not invented.
+    assert assess("BTCUSDT", now, hourly, daily[-14:], now).daily_rsi is None
+
+
+def test_assessment_has_a_stable_id_and_names_the_completed_bars_it_read(inputs):
+    hourly, daily, now = inputs
+    series = AssessmentSeries("BTCUSDT", hourly, daily, source_refs=("sha256:inputs",))
+    result = series.at(now, now - 60_000)
+    assert result.assessment_id == f"assessment:BTCUSDT:{now}:{now - 60_000}"
+    assert series.at(now, now - 60_000).assessment_id == result.assessment_id
+    assert result.source_refs == (
+        "sha256:inputs",
+        f"BTCUSDT:1h:{now - HOUR}",
+        f"BTCUSDT:4h:{now - 4 * HOUR}",
+        f"BTCUSDT:1d:{now - DAY}",
+        f"BTCUSDT:quote:{now - 60_000}",
+    )
+    # A missing due bar is unavailable and is never named as a source.
+    gapped = AssessmentSeries("BTCUSDT", hourly, daily[:-1]).at(now, now)
+    assert not gapped.available
+    assert gapped.source_refs == (
+        f"BTCUSDT:1h:{now - HOUR}",
+        f"BTCUSDT:4h:{now - 4 * HOUR}",
+        f"BTCUSDT:quote:{now}",
+    )
 
 
 def test_future_suffix_never_changes_past_assessment(inputs):
@@ -207,3 +248,76 @@ def test_visible_inversion_is_detected_across_a_still_future_bar(inputs):
     series.at(now + HOUR, now + HOUR)
     with pytest.raises(ValueError, match="timestamp"):
         series.at(now + 2 * HOUR, now + 2 * HOUR)
+
+
+def month_hours(month: str) -> list[Kline]:
+    """Every hour of ``month``: rising, each bar inside its own range, fractional volumes."""
+    start, end = month_bounds_ms(month)
+    return [
+        Kline(
+            t,
+            D(100) + i,
+            D(102) + i,
+            D(99) + i,
+            D(101) + i,
+            D(i + 1) / 4,
+            D(i) + D("0.5"),
+            D(i) / 8,
+        )
+        for i, t in enumerate(range(start, end, HOUR))
+    ]
+
+
+def test_daily_bars_are_the_frozen_v3_daily_bars():
+    # Day 3 keeps 23 hours, day 5 exactly 20, day 7 only 19 and day 9 none.
+    rows = month_hours("2021-03")
+    gone = {
+        3 * 24 + 5,
+        *(5 * 24 + hour for hour in (0, 7, 15, 23)),
+        *range(7 * 24, 7 * 24 + 5),
+        *range(9 * 24, 10 * 24),
+    }
+    kept = [bar for i, bar in enumerate(rows) if i not in gone]
+    frozen = hourly_month(kept, "2021-03")
+    assert not frozen.excluded
+    assert daily_bars(kept) == frozen.daily_bars
+    days = {(bar.open_ms - rows[0].open_ms) // DAY for bar in frozen.daily_bars}
+    assert {3, 5} <= days and not {7, 9} & days and len(days) == 29
+
+
+@pytest.mark.parametrize("defect", ["invalid", "unaligned"])
+def test_an_hour_the_assessment_cannot_read_counts_as_missing(defect):
+    hours = month_hours("2021-03")[4:24]  # twenty hours: the day still has its bar
+    assert len(daily_bars(hours)) == 1
+    first = hours[0]
+    if defect == "invalid":
+        bad = replace(first, close=D("NaN"))
+    else:
+        bad = replace(first, open_ms=first.open_ms + 1)
+    assert daily_bars([bad, *hours[1:]]) == ()
+
+
+def test_a_month_v3_excludes_still_gets_its_day_rule_bars():
+    # V3 gives no daily bar in a month missing more than 17% of its hours. The day rule
+    # alone keeps every day of at least 20 hours: registration must refuse such a month.
+    rows = month_hours("2021-03")
+    partial = {*(10 * 24 + hour for hour in range(4)), *range(12 * 24, 12 * 24 + 5)}
+    kept = [bar for i, bar in enumerate(rows) if i >= 5 * 24 and i not in partial]
+    assert (len(rows) - len(kept)) * 100 > len(rows) * 17
+    frozen = hourly_month(kept, "2021-03")
+    assert frozen.excluded and frozen.daily_bars == ()
+    # The same days' bars when the month keeps its first five days and is not excluded.
+    whole = hourly_month([bar for i, bar in enumerate(rows) if i not in partial], "2021-03")
+    assert not whole.excluded
+    expected = tuple(bar for bar in whole.daily_bars if bar.open_ms >= rows[5 * 24].open_ms)
+    assert daily_bars(kept) == expected
+    days = {(bar.open_ms - rows[0].open_ms) // DAY for bar in expected}
+    assert days == set(range(5, 31)) - {12}  # day 10 keeps 20 hours, day 12 only 19
+
+
+def test_an_inexact_daily_sum_is_refused():
+    hours = month_hours("2021-03")[:24]
+    hours[0] = replace(hours[0], volume=D("1e30"))
+    hours[1] = replace(hours[1], volume=D("1e-40"), taker_buy_base=D(0))
+    with pytest.raises(ValueError, match="exact"):
+        daily_bars(hours)
