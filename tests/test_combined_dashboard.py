@@ -209,6 +209,42 @@ def test_the_maximum_observed_gross_leverage_is_shown_with_a_note_above_2x(value
     assert "1.6x" in text  # the trim that governs trading is named beside it
 
 
+@pytest.mark.parametrize(
+    ("disclosures", "shown", "above"),
+    [
+        # A mark held exposure without positive equity (replay_records.gross_leverage): no
+        # finite maximum, and the disclosure names that mark as above the cap.
+        (("gross_above_absolute_cap:unbounded:3600000",), "Unbounded", True),
+        # A plain None, without that disclosure (no engine marks): unavailable, no warning.
+        ((), "Unavailable", False),
+        (("data_gap:BTCUSDT:spot: 1 hours",), "Unavailable", False),
+    ],
+)
+def test_unbounded_gross_leverage_is_shown_above_the_2x_cap(disclosures, shown, above):
+    html = render_report(replace(report(), max_gross_leverage=None, disclosures=disclosures))
+    text = leverage_section(html)
+    assert f"Maximum observed gross leverage {shown}" in text
+    assert ("Above the absolute 2x gross cap" in text) is above
+
+
+def test_an_exhausted_replays_page_shows_its_unbounded_leverage_with_the_warning():
+    """The real producer's case (Codex P2, PR #269 round 4): a futures short whose mark gaps
+    past its equity. Its report has no maximum and discloses the unbounded mark; the page
+    shows Unbounded above the 2x cap, never Unavailable."""
+    from test_combined_replay_records import exhausted_trace
+
+    from crypto_grid_bot.combined.replay_records import strategy_report
+
+    exhausted = strategy_report(exhausted_trace(), adapter_pin="0" * 64)
+    assert exhausted.max_gross_leverage is None
+    notes = [note for note in exhausted.disclosures if note.startswith("gross_above")]
+    assert len(notes) == 1 and notes[0].startswith("gross_above_absolute_cap:unbounded:")
+    text = leverage_section(render_report(exhausted))
+    assert "Maximum observed gross leverage Unbounded" in text
+    assert "Maximum observed gross leverage Unavailable" not in text
+    assert "Above the absolute 2x gross cap" in text
+
+
 def test_per_record_provenance_is_visible_linked_and_preserved_in_download():
     row = replace(
         contributions()[0], source_refs=("https://example.com/trades#closed", "javascript:bad")

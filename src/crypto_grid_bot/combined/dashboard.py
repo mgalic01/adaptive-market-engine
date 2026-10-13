@@ -186,6 +186,9 @@ header{padding-bottom:20px}
 _INLINE_JSON_LIMIT = 1_000_000
 _TABLE_ROWS = 500
 _CHART_BUCKETS = 1_200
+# replay_records.strategy_disclosures' note for a mark that held exposure without positive
+# equity: its gross leverage is unbounded, above the cap, and the report's maximum is None.
+_UNBOUNDED_LEVERAGE = "gross_above_absolute_cap:unbounded:"
 
 
 def _bounded(rows: Sequence[Sequence[object]]) -> tuple[Sequence[Sequence[object]], str]:
@@ -807,14 +810,26 @@ def render_bundle_report(
         ],
     )
     leverage = report.max_gross_leverage
+    # No maximum, and a disclosed mark with exposure and no positive equity: unbounded,
+    # which is above the cap. A None without that disclosure stays unavailable.
+    unbounded = leverage is None and any(
+        note.startswith(_UNBOUNDED_LEVERAGE) for note in report.disclosures
+    )
+    shown_leverage = (
+        "Unbounded"
+        if unbounded
+        else "Unavailable"
+        if leverage is None
+        else f"{_decimal(leverage):.4f}x"
+    )
     leverage_html = (
         "<p>Maximum observed gross leverage <strong>"
-        + _text("Unavailable" if leverage is None else f"{_decimal(leverage):.4f}x")
+        + _text(shown_leverage)
         + "</strong></p>"
         + (
             '<p class="warning-text">Above the absolute 2x gross cap at some mark: see the '
             "disclosures for the first one.</p>"
-            if leverage is not None and leverage > 2
+            if unbounded or (leverage is not None and leverage > 2)
             else ""
         )
     )
@@ -996,8 +1011,8 @@ Source validation is not implied.</p>
 Evidence structure alone does not establish complete metrics or source validation.</p></section>
 <section class="panel"><h2>Gross leverage</h2>{leverage_html}
 <p class="muted">Gross notional over equity at every engine mark, exact. The design caps it at
-2x absolutely; trading trims above 1.6x. Unavailable without engine marks, or when a mark held
-exposure without positive equity. Information only.</p></section>
+2x absolutely; trading trims above 1.6x. Unbounded, above the cap, when a mark held exposure
+without positive equity; unavailable without engine marks. Information only.</p></section>
 <section class="panel">
 <h2>Disclosures</h2>
 <p><code>{_text(capital)}</code></p>{disclosures}
