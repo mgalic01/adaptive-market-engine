@@ -19,6 +19,12 @@ and aggregate tests), with exact decimal arithmetic for every price. ``stand_ins
 replaces the two frozen computations that cannot run on a few synthetic days, as those
 tests do: V3's walk-forward, whose calendar is fixed to 2020-2024, and the frozen mask job,
 which needs whole months of minutes. Nothing here touches the network.
+
+A rehearsal (``v31_driver.py rehearsal-world``, the workflow's ``rehearsal`` mode) builds
+the same world with every module of the checkout's package (``source_modules``) and the
+rehearsal marker (``REHEARSAL_MARKER``, ``rehearsal_marker``) committed at its code pin.
+The marker is what lets the driver run the stand-ins on a world (``--mode rehearsal``) and
+what every registered run refuses; the repository itself never holds it.
 """
 
 import hashlib
@@ -115,6 +121,12 @@ PICKS: dict[int, str | None] = {
 }
 FX_RECORD = "config/v3_1_fx_record.json"
 SNAPSHOTS = {"spot": "config/smoke/spot.json", "futures": "config/smoke/futures.json"}
+# A rehearsal world commits this file at its code pin: the one mark that lets the driver
+# run the stand-ins (``--mode rehearsal``), and that every registered run refuses. The
+# repository itself never holds it.
+REHEARSAL_MARKER = "config/v3_1_rehearsal.json"
+REHEARSAL_SCHEMA = "v3.1-rehearsal-1"
+SOURCE_PACKAGE = "src/crypto_grid_bot"  # copied into a rehearsal world for its adapter pins
 _FIXED_NOW = datetime(2024, 12, 31, tzinfo=UTC)  # the synthetic manifest's created_at
 _ABBREVIATIONS = {"open_low_high_close": "olhc", "open_high_low_close": "ohlc", "native": "native"}
 _ADAPTER_PINS = {"v31": "5" * 64, "hold": "6" * 64, "v3": "7" * 64, "minute": "8" * 64}
@@ -472,6 +484,31 @@ def build_world(root: Path, *, extra_files: Mapping[str, bytes] | None = None) -
     )
     head = commit_all(repo, "synthetic V3.1 smoke world")
     return World(root, repo, head, legacy, load_prepare_config(repo / "config/v3_1_prepare.json"))
+
+
+def rehearsal_marker() -> bytes:
+    """The rehearsal marker's bytes (canonical JSON): a world committing them at its code
+    pin is synthetic, built in-job, and only a rehearsal runs the stand-ins on it."""
+    document = {
+        "schema": REHEARSAL_SCHEMA,
+        "synthetic": True,
+        "purpose": "a synthetic V3.1 rehearsal world (labelled synthetic, never market data); "
+        "a registered run refuses any checkout holding this file",
+        "stand_ins": list(STAND_INS),
+    }
+    return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+
+
+def source_modules() -> dict[str, bytes]:
+    """Every module of the checkout's own package (``src/crypto_grid_bot/**/*.py``) by
+    repository path: a rehearsal world commits them, so its adapter pins are read from
+    real blobs at its code pin as a registered run's are."""
+    package = CHECKOUT / SOURCE_PACKAGE
+    return {
+        path.relative_to(CHECKOUT).as_posix(): path.read_bytes()
+        for path in sorted(package.rglob("*.py"))
+        if "__pycache__" not in path.parts
+    }
 
 
 def fx_record() -> dict[str, str]:

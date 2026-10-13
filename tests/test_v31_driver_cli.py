@@ -305,6 +305,14 @@ def test_each_cell_kind_runs_through_the_execution_gate(registered, tmp_path, ca
 
     gate = v31_driver.execution_gate
     monkeypatch.setattr(v31_driver, "execution_gate", spy)
+    handed = []
+    job = v31_driver.run_cell_job
+
+    def job_spy(cell, pack, *args, **kwargs):
+        handed.append((cell.kind, pack))
+        return job(cell, pack, *args, **kwargs)
+
+    monkeypatch.setattr(v31_driver, "run_cell_job", job_spy)
     cells = tmp_path / "cells"
     packs = ("--packs", str(registered.packs), "--attempt-id", RUN)
     with v31_smoke.stand_ins():
@@ -356,6 +364,14 @@ def test_each_cell_kind_runs_through_the_execution_gate(registered, tmp_path, ca
                 document["attempt_id"],
                 registered.head,
             )
+    # A minute or V3 cell runs without the window pack once the gate has checked it, so
+    # the pack's memory is freed (Ruling F8); a V3.1 or hold cell replays it.
+    assert [(kind, pack is None) for kind, pack in handed] == [
+        ("v31", False),
+        ("hold", False),
+        ("v3", True),
+        ("minute", True),
+    ]
     # The gate ran before each cell, on the W1 pack read against the pin it checked, with
     # the head, no change since the code pin, the head's adapter pins and the dispatch's pin.
     assert [cell_id for cell_id, _ in calls] == list(KIND_CELLS.values())
@@ -442,6 +458,272 @@ def test_each_job_records_a_unique_attempt_id_ending_in_its_attempt(registered, 
     argv = registered_args(registered, "run-cell", *extra, "--out", str(tmp_path / "out"))
     code, _, err = run(argv, capsys)
     assert code == 1 and "attempt id" in err and not (tmp_path / "out").exists()
+
+
+# --- plan: the first job's gate and the matrices (Rulings F6, F7) -------------------------
+
+
+def test_plan_gates_first_and_sends_only_the_selector_to_the_picks_matrix(
+    registered, tmp_path, capsys
+):
+    code, document, err = run(registered_args(registered, "plan"), capsys)
+    assert code == 0, err
+    v3_cells, main_cells = document["v3_cells"], document["main_cells"]
+    # Only the four selector cells read the picks; the six long-only V3 rules (24 cells)
+    # replay their own rule, so they run in the main matrix and never wait for the picks.
+    assert len(v3_cells) == 4 and all(".unchanged_v3_selector." in c for c in v3_cells)
+    assert len(main_cells) == 216 - 4 == 212
+    long_only = [c for c in main_cells if "_long_only." in c and "unchanged_v3_r" in c]
+    assert len(long_only) == 6 * 2 * 2
+    assert set(v3_cells).isdisjoint(main_cells)
+    assert (document["cells_registered"], document["cells_planned"]) == (216, 216)
+    assert document["registration_sha256"] == registered.config_sha
+    assert (document["code_pin"], document["repo_head"]) == (registered.head, registered.head)
+    # A registered run plans every cell: --cells belongs to a rehearsal.
+    code, _, err = run(registered_args(registered, "plan", "--cells", "5"), capsys)
+    assert code == 1 and "a registered run runs every registered cell" in err
+    # A wrong ref fails here, in the first job: another registration, or code changed
+    # after the code pin.
+    code, _, err = run(registered_args(registered, "plan", sha="0" * 64), capsys)
+    assert code == 1 and "job gate refused" in err
+    copy = changed_copy(registered, tmp_path)
+    code, _, err = run(registered_args(registered, "plan", repo=copy), capsys)
+    assert code == 1 and "src/crypto_grid_bot/combined/engine.py" in err
+    # This world holds no rehearsal marker, so a rehearsal refuses it.
+    code, _, err = run(registered_args(registered, "plan", "--mode", "rehearsal"), capsys)
+    assert code == 1 and "rehearsal refused" in err
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "05", "x", "1.5"])
+def test_plan_refuses_a_malformed_cell_count(registered, capsys, value):
+    with pytest.raises(SystemExit):
+        v31_driver.main(registered_args(registered, "plan", "--cells", value))
+    assert "empty or a positive integer required" in capsys.readouterr().err
+
+
+# --- the rehearsal: the registered job graph on a synthetic world (Ruling F3) -------------
+
+
+@dataclass(frozen=True)
+class Rehearsal:
+    root: Path
+    repo: Path
+    document: dict
+
+
+@pytest.fixture(scope="module")
+def rehearsal(module_network_blocked, tmp_path_factory) -> Rehearsal:
+    """The rehearsal world, as the plan job builds it."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    root = tmp_path_factory.mktemp("rehearsal") / "work"
+    code, out, err = quietly(["rehearsal-world", "--out", str(root)])
+    assert code == 0, err
+    return Rehearsal(root, root / "repo", json.loads(out))
+
+
+def rehearsal_args(world: Rehearsal, command: str, *extra: str, mode: str = "rehearsal"):
+    sha = world.document["registration_sha256"]
+    return [
+        command,
+        "--mode",
+        mode,
+        "--repo",
+        str(world.repo),
+        "--registration-sha256",
+        sha,
+        *extra,
+    ]
+
+
+def git_lines(repo: Path, *args: str) -> list[str]:
+    return v31_driver._git(repo, *args).decode("utf-8").split()
+
+
+def test_the_rehearsal_world_is_a_registration_on_top_of_its_code_pin(rehearsal):
+    document, repo = rehearsal.document, rehearsal.repo
+    assert document["schema"] == "v3.1-rehearsal-world-1"
+    code_pin, head = document["code_pin"], document["head"]
+    assert code_pin != head and git_lines(repo, "rev-parse", "HEAD") == [head]
+    # Like a real registration commit: only the registration artifacts changed since the
+    # code pin, and the real execution gate's path rule accepts them.
+    changed = v31_driver.changed_since(repo, code_pin)
+    assert changed == ("config/v3_1_registration.json", "config/v3_1_run_manifest.json")
+    assert v31_driver._path_errors(changed, ()) == []
+    # The code pin commits the marker and every module of this checkout's package, so the
+    # adapter pins are read from real blobs.
+    marker = v31_driver._committed(repo, code_pin, v31_smoke.REHEARSAL_MARKER)
+    assert marker == v31_smoke.rehearsal_marker()
+    listed = set(git_lines(repo, "ls-tree", "-r", "--name-only", code_pin))
+    assert set(v31_smoke.source_modules()) <= listed
+    assert "src/crypto_grid_bot/combined/driver/run_cell.py" in listed
+    registration = json.loads((repo / "config/v3_1_registration.json").read_bytes())
+    assert registration["adapter_pins"] == adapter_pins(repo, code_pin)
+    assert len(set(registration["adapter_pins"].values())) == 4  # one per arm kind
+    assert registration["code_pin"] == code_pin and len(registration["cells"]) == 216
+    raw = (repo / "config/v3_1_registration.json").read_bytes()
+    assert sha(raw) == document["registration_sha256"]
+    # Nothing but the repository and the synthetic dataset is left: the packs built to
+    # register were temporary (the rehearsal's prepare builds them again).
+    assert sorted(path.name for path in rehearsal.root.iterdir()) == ["legacy", "repo"]
+
+
+def test_the_rehearsal_runs_the_registered_job_graph_offline(
+    rehearsal, tmp_path, capsys, monkeypatch
+):
+    """plan, prepare, picks, each planned cell and aggregate, through the same
+    subcommands and gates as a registered run, on the world: nothing fetched (any
+    transport or fetch refuses) and the stand-ins only inside each subcommand."""
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("a rehearsal touched a transport or a fetch")
+
+    monkeypatch.setattr(v31_driver, "V3Transport", no_network)
+    monkeypatch.setattr(v31_driver, "LegacyTransport", no_network)
+    monkeypatch.setattr(v31_driver, "fetch_entries", no_network)
+    original = (baseline_v3.run_walk_forward, run_baselines.mask_job)
+    run_id = "4242-attempt-1"
+
+    # plan: the gate, then five cells (one W1 cell of each kind, one W0 cell).
+    code, planned, err = run(rehearsal_args(rehearsal, "plan", "--cells", "5"), capsys)
+    assert code == 0, err
+    assert planned["v3_cells"] == ["w1.unchanged_v3_selector.native.c1.research"]
+    assert len(planned["main_cells"]) == 4 and planned["cells_planned"] == 5
+    assert planned["registration_sha256"] == rehearsal.document["registration_sha256"]
+
+    # prepare: the registered gates, the world's dataset verified, the packs reproduced.
+    work = tmp_path / "work"
+    shutil.copytree(rehearsal.root, work)  # as each job unpacks the world
+    out = tmp_path / "out"
+    argv = rehearsal_args(rehearsal, "prepare", "--work", str(work), "--out", str(out))
+    argv[argv.index("--repo") + 1] = str(work / "repo")
+    code, prepared, err = run(argv, capsys)
+    assert code == 0, err
+    assert prepared["mode"] == "rehearsal"
+    assert prepared["window_packs"] == rehearsal.document["window_packs"]
+    assert prepared["v3_pack_sha256"] == rehearsal.document["v3_pack_sha256"]
+    packs = out / "packs"
+    assert sorted(p.name for p in packs.iterdir()) == [
+        "v3-input.pack.json.gz",
+        "window-w0.pack.json.gz",
+        "window-w1.pack.json.gz",
+    ]
+
+    # picks, then each planned cell as its matrix job runs it, into its artifact folder.
+    cells = tmp_path / "cells"
+    extra = ("--packs", str(packs), "--attempt-id", run_id)
+    code, picked, err = run(
+        rehearsal_args(rehearsal, "picks", *extra, "--out", str(tmp_path / "p")), capsys
+    )
+    assert code == 0, err
+    (cells / "v3-picks-attempt-1").mkdir(parents=True)
+    picks_dir = cells / "v3-picks-attempt-1" / "v3_picks"
+    (tmp_path / "p" / "v3_picks").rename(picks_dir)
+    for cell_id in planned["main_cells"] + planned["v3_cells"]:
+        folder = cells / f"cell-{cell_id}-attempt-1"
+        more = ("--picks", str(picks_dir)) if cell_id in planned["v3_cells"] else ()
+        argv = rehearsal_args(
+            rehearsal,
+            "run-cell",
+            "--cell",
+            cell_id,
+            *extra,
+            "--legacy-data",
+            str(work / "legacy"),
+            "--out",
+            str(folder),
+            *more,
+        )
+        code, document, err = run(argv, capsys)
+        assert code == 0, (cell_id, err)
+        assert document["attempt_id"] == f"4242-{cell_id}-attempt-1"
+    argv = rehearsal_args(
+        rehearsal,
+        "aggregate",
+        "--cells",
+        str(cells),
+        "--attempt-id",
+        run_id,
+        "--out",
+        str(tmp_path / "a"),
+    )
+    code, judged, err = run(argv, capsys)
+    assert code == 0, err
+    verdict = json.loads((tmp_path / "a" / "summary" / "verdict.json").read_bytes())
+    completed = {c for c, read in verdict["cells"].items() if read["state"] == "completed"}
+    assert completed == set(planned["main_cells"] + planned["v3_cells"])
+    assert verdict["v3_picks"]["state"] == "completed" and verdict["run"]["reruns"] == []
+    assert judged["status"] == "incomplete"  # 5 of 216 cells: never a verdict
+    assert (baseline_v3.run_walk_forward, run_baselines.mask_job) == original
+
+
+def test_a_registered_run_refuses_a_rehearsal_world(rehearsal, tmp_path, capsys):
+    """Every registered subcommand, and prepare-only and timing, refuse a world built for
+    a rehearsal: its stand-ins can never pass for a registered run."""
+    out = str(tmp_path / "out")
+    packs = ("--packs", str(tmp_path), "--attempt-id", RUN, "--out", out)
+    calls = {
+        "plan": (),
+        "prepare": ("--work", str(rehearsal.root), "--out", out),
+        "picks": packs,
+        "run-cell": ("--cell", CELL, *packs),
+        "aggregate": ("--cells", str(tmp_path), "--attempt-id", RUN, "--out", out),
+    }
+    for command, extra in calls.items():
+        code, _, err = run(rehearsal_args(rehearsal, command, *extra, mode="registered"), capsys)
+        assert code == 1, command
+        assert "registered run refused: the checkout is a rehearsal world" in err, command
+    prepare_sha = sha((rehearsal.repo / "config/v3_1_prepare.json").read_bytes())
+    head = rehearsal.document["head"]
+    gate = ("--code-commit", head, "--prepare-sha256", prepare_sha)
+    code, _, err = run(
+        ["prepare", "--mode", "prepare-only", "--repo", str(rehearsal.repo), *gate]
+        + ["--work", str(tmp_path / "w"), "--out", out],
+        capsys,
+    )
+    assert code == 1 and "prepare-only run refused: the checkout is a rehearsal world" in err
+    code, _, err = run(
+        ["timing", "--part", "cell", "--repo", str(rehearsal.repo), *gate]
+        + ["--scratch", str(tmp_path / "s"), "--out", str(tmp_path / "t")],
+        capsys,
+    )
+    assert code == 1 and "timing run refused: the checkout is a rehearsal world" in err
+    assert not (tmp_path / "out").exists() and not (tmp_path / "w").exists()
+
+
+def test_a_rehearsal_refuses_any_world_without_the_marker(registered, rehearsal, tmp_path, capsys):
+    """A rehearsal runs the stand-ins, so it refuses a world whose code pin does not
+    commit the marker (a smoke world here; the repository never holds it), and a world
+    whose marker was edited since."""
+    out = str(tmp_path / "out")
+    packs = ("--packs", str(registered.packs), "--attempt-id", RUN, "--out", out)
+    calls = {
+        "plan": (),
+        "picks": packs,
+        "run-cell": ("--cell", CELL, *packs),
+        "aggregate": ("--cells", str(tmp_path), "--attempt-id", RUN, "--out", out),
+        "prepare": ("--work", str(tmp_path / "w"), "--out", out),
+    }
+    for command, extra in calls.items():
+        argv = registered_args(registered, command, "--mode", "rehearsal", *extra)
+        code, _, err = run(argv, capsys)
+        assert code == 1 and "rehearsal refused" in err, (command, err)
+    edited = tmp_path / "edited"
+    shutil.copytree(rehearsal.root, edited)
+    marker = edited / "repo" / v31_smoke.REHEARSAL_MARKER
+    marker.write_bytes(marker.read_bytes().replace(b"synthetic", b"real"))
+    argv = rehearsal_args(rehearsal, "plan")
+    argv[argv.index("--repo") + 1] = str(edited / "repo")
+    code, _, err = run(argv, capsys)
+    assert code == 1 and v31_smoke.REHEARSAL_MARKER in err  # an uncommitted change too
+    assert not (tmp_path / "out").exists()
+    # And the repository itself, which holds no registration of its own yet, never runs a
+    # rehearsal (or anything else) without one.
+    code, _, err = run(
+        ["plan", "--mode", "rehearsal", "--repo", str(ROOT), "--registration-sha256", "0" * 64],
+        capsys,
+    )
+    assert code == 1
 
 
 # --- rule 8: the boundary (opening) quote --------------------------------------------
@@ -798,6 +1080,9 @@ def prepare_world(module_network_blocked, tmp_path_factory) -> PrepareWorld:
         (v31_smoke.CHECKOUT / "config/v3_1_experiment_menu.json").read_bytes()
     )
     v31_smoke.write_json(repo / v31_smoke.FX_RECORD, v31_smoke.fx_record())
+    for name, content in MODULES.items():  # the adapter pins read blobs at the head
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_bytes(content)
     pins = {
         MINUTE_MANIFEST_PATH: sha((repo / MINUTE_MANIFEST_PATH).read_bytes()),
         MINUTES: sha((repo / MINUTES).read_bytes()),
@@ -1082,3 +1367,229 @@ def test_registered_prepare_refuses_a_different_pack_hash(
     assert code == 0, err
     assert again == {**document, "mode": "registered", "registration_sha256": config_sha}
     assert (tmp_path / "reproduced" / "packs" / "window-w1.pack.json.gz").is_file()
+
+
+# --- timing: the heavy steps measured before registration (Ruling F4) --------------------
+
+RESULT_FILES = ("outcome.json", "report.json", "native_evidence.json", "attempts.jsonl")
+
+
+def timing_args(world: PrepareWorld, part: str, scratch: Path, out: Path) -> list[str]:
+    return [
+        "timing",
+        "--part",
+        part,
+        "--repo",
+        str(world.repo),
+        "--code-commit",
+        world.head,
+        "--prepare-sha256",
+        world.prepare_sha,
+        "--scratch",
+        str(scratch),
+        "--out",
+        str(out),
+    ]
+
+
+def every_key(document: object) -> set[str]:
+    """Every key of a JSON document, nested ones included (a phase map's names aside)."""
+    if isinstance(document, dict):
+        keys = set(document)
+        for key, value in document.items():
+            if key != "phases":
+                keys |= every_key(value)
+        return keys
+    if isinstance(document, list):
+        return set().union(*(every_key(item) for item in document)) if document else set()
+    return set()
+
+
+@dataclass(frozen=True)
+class Timed:
+    scratch: Path
+    out: Path
+    runs: dict  # part: (status, stdout document, stderr)
+    requested: dict  # part: (inventory paths, legacy paths) the part asked for
+
+
+@pytest.fixture(scope="module")
+def timed(module_network_blocked, prepare_world, tmp_path_factory) -> Timed:
+    """The three timing parts on the prepare world, each closed as its workflow step is,
+    with V3's walk-forward the smoke's stand-in (the real one trains for hours)."""
+    root = tmp_path_factory.mktemp("timing")
+    scratch, out = root / "v31" / "timing-scratch", root / "v31" / "timing"
+    runs, requested = {}, {}
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(baseline_v3, "run_walk_forward", v31_smoke._walk_forward)
+        for part in v31_driver.TIMING_PARTS:
+            prepare_world.inventory.requested.clear()
+            prepare_world.legacy.requested.clear()
+            code, stdout, stderr = quietly(
+                timing_args(prepare_world, part, scratch / part, out),
+                inventory_transport=prepare_world.inventory,
+                legacy_transport=prepare_world.legacy,
+                sleep=lambda seconds: None,
+                v3_pack_builder=V3Builder(),
+            )
+            runs[part] = (code, json.loads(stdout) if code == 0 else None, stderr)
+            requested[part] = (
+                list(prepare_world.inventory.requested),
+                list(prepare_world.legacy.requested),
+            )
+            closing = ["timing-close", "--part", part, "--step-outcome", "success"]
+            code, _, stderr = quietly(
+                [*closing, "--step-timeout-minutes", "335", "--out", str(out)]
+            )
+            assert code == 0, stderr
+    return Timed(scratch, out, runs, requested)
+
+
+def test_each_timing_part_measures_its_step_and_fetches_only_what_it_needs(timed, prepare_world):
+    for part in v31_driver.TIMING_PARTS:
+        code, document, stderr = timed.runs[part]
+        assert code == 0, (part, stderr)
+        assert document["schema"] == "v3.1-timing-1" and document["part"] == part
+        assert document["finished"] is True and document["code_commit"] == prepare_world.head
+        assert document["elapsed_s"] >= sum(document["phases"].values()) - 0.01
+    assert set(timed.runs["prepare"][1]["phases"]) == {"prepare"}
+    assert set(timed.runs["picks"][1]["phases"]) == {
+        "gate",
+        "fetch_inventory",
+        "build_v3_pack",
+        "read_v3_pack",
+        "picks",
+    }
+    assert set(timed.runs["cell"][1]["phases"]) == {
+        "gate",
+        "fetch_legacy",
+        "verify_legacy",
+        "w1_extra_skipped_hours",
+        "minute_cell",
+    }
+    assert timed.runs["cell"][1]["cell"] == v31_driver.TIMING_CELL
+    assert timed.runs["picks"][1]["attempt_records"] == 2  # the stand-in's two records
+    # The picks part fetches the inventory alone, the cell part the legacy dataset alone;
+    # the prepare part is the whole prepare.
+    inventory, legacy = timed.requested["picks"]
+    assert sorted(inventory) == sorted(prepare_world.present) and legacy == []
+    inventory, legacy = timed.requested["cell"]
+    assert inventory == [] and legacy and set(legacy) < prepare_world.legacy_paths
+    inventory, legacy = timed.requested["prepare"]
+    assert sorted(inventory) == sorted(prepare_world.present)
+    assert set(legacy) == prepare_world.legacy_paths
+
+
+def test_the_timing_upload_holds_only_times_memory_and_attempt_bookkeeping(timed):
+    names = sorted(path.name for path in timed.out.iterdir())
+    assert names == sorted(
+        [
+            *(
+                f"{part}.{suffix}"
+                for part in ("prepare", "picks", "cell")
+                for suffix in (
+                    "timing.jsonl",
+                    "json",
+                    "close.json",
+                )
+            ),
+            "picks.attempts.jsonl",
+        ]
+    )
+    for path in timed.out.iterdir():
+        raw = path.read_bytes()
+        rows = (
+            [json.loads(line) for line in raw.splitlines()]
+            if path.suffix == ".jsonl"
+            else [json.loads(raw)]
+        )
+        for row in rows:
+            assert every_key(row) <= v31_driver.TIMING_KEYS, (path.name, row)
+        assert b"equity" not in raw and b"result" not in raw.replace(b"has_result", b"")
+    # V3's attempt bookkeeping: each record's shape and timing, never its result, the
+    # error's message or the picks.
+    rows = [
+        json.loads(line) for line in (timed.out / "picks.attempts.jsonl").read_bytes().splitlines()
+    ]
+    assert [(row["run"], row["state"], row["has_result"]) for row in rows] == [
+        ("train-2020-12-R2L", "started", False),
+        ("train-2020-12-R2L", "finished", True),
+    ]
+    assert all("pick_schedule" not in row and "result" not in row for row in rows)
+    # Every result was written to a temporary directory and discarded: no outcome, report,
+    # native evidence, attempt log or picks file is left anywhere.
+    for root in (timed.out, timed.scratch):
+        left = [p for p in root.rglob("*") if p.name in RESULT_FILES or p.name == "v3_picks.json"]
+        assert left == [], left
+
+
+def test_timing_prints_only_timing_fields(timed):
+    for part, (_, document, stderr) in timed.runs.items():
+        assert every_key(document) <= v31_driver.TIMING_KEYS, part
+        assert "equity" not in stderr and "final" not in stderr, part
+
+
+def test_a_timing_strategy_failure_is_named_by_its_type_alone(
+    prepare_world, tmp_path, capsys, monkeypatch
+):
+    def failing(*args, **kwargs):
+        raise RuntimeError("final equity 12345.67")
+
+    monkeypatch.setattr(baseline_v3, "run_walk_forward", failing)
+    out = tmp_path / "timing"
+    code, _, err = run(
+        timing_args(prepare_world, "picks", tmp_path / "scratch", out),
+        capsys,
+        inventory_transport=prepare_world.inventory,
+        legacy_transport=prepare_world.legacy,
+        sleep=lambda seconds: None,
+        v3_pack_builder=V3Builder(),
+    )
+    assert code == 1 and "the picks step failed with RuntimeError" in err
+    assert "12345.67" not in err and "withheld" in err
+    events = [json.loads(line) for line in (out / "picks.timing.jsonl").read_bytes().splitlines()]
+    assert events[-1] == {**events[-1], "event": "failed", "phase": "picks"}
+    assert events[-1]["error_type"] == "RuntimeError"
+    assert not (out / "picks.json").exists()  # not finished
+    assert b"12345.67" not in b"".join(p.read_bytes() for p in out.iterdir())
+
+
+def test_timing_close_records_a_step_killed_at_its_timeout(tmp_path, capsys, monkeypatch):
+    out = tmp_path / "timing"
+    started = 1_800_000_000.0
+    monkeypatch.setattr(v31_driver, "_wall", lambda: started)
+    record = v31_driver.TimingLog(out, "picks")
+    with record.phase("gate"):
+        pass
+    (out / "picks.attempts.jsonl").write_bytes(
+        v31_driver.canonical({"seq": 1, "peak_rss_kib": 7_000_000, "state": "started"})
+    )
+    record.close()  # killed: never finished
+    monkeypatch.setattr(v31_driver, "_wall", lambda: started + 335 * 60 + 12)
+    argv = ["timing-close", "--part", "picks", "--step-outcome", "failure"]
+    code, document, err = run([*argv, "--step-timeout-minutes", "335", "--out", str(out)], capsys)
+    assert code == 0, err
+    assert document["finished"] is False and document["timed_out"] is True
+    assert document["elapsed_s_until_close"] == 335 * 60 + 12
+    assert (document["last_event"], document["step_outcome"]) == ("phase", "failure")
+    assert document["peak_rss_kib_seen"] >= 7_000_000 and document["attempt_records"] == 1
+    assert json.loads((out / "picks.close.json").read_bytes()) == document
+    # Once only, and only a step's outcome.
+    code, _, err = run([*argv, "--step-timeout-minutes", "335", "--out", str(out)], capsys)
+    assert code == 1 and "exists" in err
+    code, _, err = run(
+        ["timing-close", "--part", "cell", "--step-outcome", "maybe", "--step-timeout-minutes", "1"]
+        + ["--out", str(out)],
+        capsys,
+    )
+    assert code == 1 and "--step-outcome" in err
+
+
+def test_timing_is_gated_like_prepare_only(prepare_world, tmp_path, capsys):
+    hosts = {"inventory_transport": v31_smoke.Archives(), "legacy_transport": v31_smoke.Archives()}
+    for part in v31_driver.TIMING_PARTS:
+        argv = timing_args(prepare_world, part, tmp_path / part / "s", tmp_path / part / "t")
+        argv[argv.index("--code-commit") + 1] = "0" * 40
+        code, _, err = run(argv, capsys, **hosts)
+        assert code == 1 and f"is not the code commit {'0' * 40}" in err, part
+    assert all(host.requested == [] for host in hosts.values())

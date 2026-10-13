@@ -1,19 +1,42 @@
-"""The V3.1 run driver's command line (Task 10a): ``prepare``, ``picks``, ``run-cell``,
-``aggregate`` and ``smoke``.
+"""The V3.1 run driver's command line (Task 10a): ``plan``, ``prepare``, ``picks``,
+``run-cell``, ``aggregate``, ``smoke``, ``rehearsal-world``, ``timing`` and
+``timing-close``.
 
-Every subcommand but ``smoke`` passes its gate before it reads any input beyond the
-registration, then calls the driver library (``crypto_grid_bot.combined.driver``) and
-prints one canonical JSON document on stdout (sorted keys, no spaces, ASCII, one
-newline). Logs go to stderr; a refusal is one stderr line and exit status 1. Only
-``prepare`` touches the network, and only data.binance.vision through the guarded
-transports (``fetch_v3_data.V3Transport`` for the inventory, ``v31_fetch.LegacyTransport``
-for the legacy archives), each archive verified against its committed SHA-256 before it is
-kept. Every write is an exclusive create through the library or here: nothing deletes or
+Every subcommand but ``smoke`` and ``rehearsal-world`` passes its gate before it reads any
+input beyond the registration, then calls the driver library
+(``crypto_grid_bot.combined.driver``) and prints one canonical JSON document on stdout
+(sorted keys, no spaces, ASCII, one newline). Logs go to stderr; a refusal is one stderr
+line and exit status 1. Only ``prepare`` (prepare-only and registered) and ``timing``
+touch the network, and only data.binance.vision through the guarded transports
+(``fetch_v3_data.V3Transport`` for the inventory, ``v31_fetch.LegacyTransport`` for the
+legacy archives), each archive verified against its committed SHA-256 before it is kept.
+Every write is an exclusive create through the library or here: nothing deletes or
 replaces an earlier attempt's output, and no attempt is retried (a transport failure is,
 inside ``fetch_entries``, Ruling P6). Nothing at or after 2025-01 is fetched, opened or
 read.
 
-``prepare --mode prepare-only|registered --work W --out O`` (Ruling P1)
+The dispatch ref (Ruling F6): a registered run and a timing run are dispatched from a ref
+whose tree is the code pin plus the registration artifacts only (``config/v3_1_*.json``,
+the FX record, ``docs/trials/register.jsonl``, ``docs/reviews/**``, ``docs/tasks/**``).
+Every gated job checks it (``job_gate``: nothing but those changed since the code pin;
+timing and prepare-only: the checkout is the dispatched ``--code-commit``, clean), and the
+plan job checks it first, so a wrong ref fails in the first job.
+
+Modes (Ruling F3): ``--mode registered`` runs on the repository's own registration;
+``--mode rehearsal`` runs the same subcommands on a synthetic rehearsal world built
+in-job (``rehearsal-world``), a git repository whose code pin commits
+``v31_smoke.REHEARSAL_MARKER``. Only a rehearsal runs the smoke's stand-ins
+(``v31_smoke.STAND_INS``), and only on such a world; a registered run, prepare-only and
+timing refuse a checkout holding the marker (``world_gate``). A rehearsal fetches
+nothing: its every input is the world's.
+
+``plan --mode registered|rehearsal [--cells N]``
+    ``job_gate`` and ``world_gate``, then the cells the workflow's two matrices run: the
+    four ``unchanged_v3_selector`` cells, which need the picks job (``v3_cells``), and
+    every other cell (``main_cells``, the six long-only V3 rules included: they read no
+    picks), each at most 256. A rehearsal may plan only the first ``N`` cells (at least
+    5, one W1 cell of each kind and one W0 cell first); a registered run plans them all.
+``prepare --mode prepare-only|registered|rehearsal --work W --out O`` (Ruling P1)
     The gate: in ``prepare-only``, the checkout is ``--code-commit`` with no uncommitted
     change and ``config/v3_1_prepare.json`` hashes to ``--prepare-sha256``; no
     registration exists yet. In ``registered``, the registration and run-manifest load,
@@ -30,18 +53,23 @@ read.
     ``registered``, refuses unless every pack pin and every window's skipped hours equal
     the registered ones. Only then does ``O/staging/`` become ``O/packs/``; ``O`` and
     ``W`` are scanned for any file name naming a year from 2025 on, and the document
-    (``prepare_document``) is written to ``O/prepare.json`` and printed.
-``picks --packs P --attempt-id ID --out O``
+    (``prepare_document``) is written to ``O/prepare.json`` and printed. In
+    ``rehearsal`` the gates are the registered ones on the world, nothing is fetched:
+    ``W/legacy`` is the world's synthetic dataset (``verify_dataset`` checks it), and the
+    packs are the smoke's synthetic coins (``build_smoke_packs``), which must reproduce
+    the world's registration like a registered prepare.
+``picks --mode M --packs P --attempt-id ID --out O``
     The gate's code, config and run-manifest checks (``job_gate``), then V3's selector
     picks from the V3 input pack read against its pin: ``O/v3_picks/``. Prints the
     SHA-256 of the picks job's completion marker ``O/v3_picks/outcome.json``.
-``run-cell --cell C --packs P --attempt-id ID --out O [--picks D] [--legacy-data L]``
+``run-cell --mode M --cell C --packs P --attempt-id ID --out O [--picks D] [--legacy-data L]``
     ``execution_gate`` with the repo head, the changes since the code pin and the adapter
     pins at the head, on the cell's window pack read against the same pin the gate
-    checks; then the cell by its kind: ``O/<cell_id>/``. A V3 cell takes the whole
+    checks; then the cell by its kind: ``O/<cell_id>/``. A minute or V3 cell drops the
+    window pack once the gate has checked it (Ruling F8). A V3 cell takes the whole
     ``v3_picks/`` directory of the same workflow run (``--picks``); a minute cell the
     legacy dataset (``--legacy-data``), verified first.
-``aggregate --cells D --attempt-id ID --out O``
+``aggregate --mode M --cells D --attempt-id ID --out O``
     ``job_gate``, then the verdict and summary: ``O/summary/``. ``ID`` is the workflow's
     ``<run_id>-attempt-<run_attempt>``; a W1 cell or the picks job from another artifact
     attempt than 1 or another run makes the verdict incomplete (re-run detected).
@@ -50,6 +78,28 @@ read.
     cells on three-day windows, its packs, the picks job, every cell (or the first ``N``,
     one of each kind first) and the aggregate, through the same functions as the
     subcommands, to a verdict.
+``rehearsal-world --out W``
+    No network: the rehearsal's synthetic world under ``W`` (``W/repo``, a git repository,
+    and ``W/legacy``, its legacy dataset). Its code pin commits the smoke world, every
+    module of this checkout's package (so the adapter pins read real blobs) and the
+    rehearsal marker; a second commit adds the registration of its packs (all 216 cells),
+    as Task 11 registers the real run. Prints the registration's SHA-256.
+``timing --part prepare|picks|cell --code-commit C --prepare-sha256 S --scratch X --out O``
+    Measures the registered run's heavy steps before registration (Ruling F4), gated like
+    prepare-only (``prepare_only_gate``; no registration), fetching only what each part
+    needs: ``prepare`` runs the whole prepare-only prepare; ``picks`` fetches the
+    inventory, builds the real V3 input pack and runs V3's real walk-forward; ``cell``
+    fetches the legacy dataset and runs one real W1 minute cell (``TIMING_CELL``) under a
+    throwaway registration. Everything a part computes goes to a temporary directory
+    under ``X`` and is deleted: ``O`` gets only elapsed times, peak memory (RSS) and,
+    for ``picks``, V3's attempt bookkeeping without any result (``O/<part>.timing.jsonl``
+    streamed, ``O/<part>.json`` at the end, ``O/picks.attempts.jsonl``). Nothing printed
+    or written holds an outcome, report or equity value; a strategy step's error is named
+    by its type alone.
+``timing-close --part P --step-outcome R --step-timeout-minutes M --out O``
+    After a timing step, finished or killed at its step timeout: ``O/<part>.close.json``,
+    the step's outcome, whether the part finished and the elapsed time and peak memory so
+    far.
 
 Attempt ids: the workflow passes ``--attempt-id <run_id>-attempt-<run_attempt>``, the same
 for every job of a run. Each job derives and records its own id from it
@@ -60,16 +110,20 @@ the artifact folder's ``-attempt-<n>``, which aggregation checks.
 """
 
 import argparse
+import contextlib
 import hashlib
+import importlib
 import json
+import os
 import re
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import v31_smoke
 from fetch_v3_data import V3Transport
@@ -80,6 +134,7 @@ from crypto_grid_bot.backtest.dataset import load_manifest, load_spec, verify_da
 from crypto_grid_bot.backtest.jobs import manifest_path, quote_limits, quoted, replayed_minutes
 from crypto_grid_bot.backtest.klines import Kline, month_bounds_ms
 from crypto_grid_bot.backtest.masking import QUOTE_TESTED_SYMBOL, quote_spreads_pct
+from crypto_grid_bot.combined.baseline_v3 import SELECTOR, selector_picks
 from crypto_grid_bot.combined.driver.aggregate import VERDICT_FILE, _extended, aggregate
 from crypto_grid_bot.combined.driver.decode import (
     DecodedV31Month,
@@ -98,6 +153,7 @@ from crypto_grid_bot.combined.driver.packs import (
 )
 from crypto_grid_bot.combined.driver.registration import (
     ACCEPTANCE_WINDOW,
+    MENU_PATH,
     REPORTED_WINDOW,
     Cell,
     DriverRegistration,
@@ -117,6 +173,7 @@ from crypto_grid_bot.combined.driver.run_baselines import (
     OUTCOME_FILE,
     PICKS_FILE,
     V3_PICKS,
+    _AttemptLog,
     compute_v3_picks,
     minute_masks,
     run_hold_cell,
@@ -135,6 +192,7 @@ from crypto_grid_bot.combined.driver.v3_pack import read_v3_pack, write_v3_pack
 from crypto_grid_bot.combined.driver.venues import venue_rules
 from crypto_grid_bot.market_data.client import FeedError
 from crypto_grid_bot.trend.filters import MAX_SNAPSHOT_BYTES
+from crypto_grid_bot.trend.orchestration import Attempt
 
 PREPARE_CONFIG = "config/v3_1_prepare.json"
 REGISTRATION = "config/v3_1_registration.json"
@@ -150,6 +208,58 @@ LEGACY_DIR = "legacy"  # the legacy dataset, as backtest reads it: legacy/binanc
 MINUTES_DIR = "minutes"  # the V3.1 minute manifests' other archives: minutes/binance/data/...
 PREPARE_OUTPUT_SCHEMA = "v3.1-prepare-output-1"
 SMOKE_SCHEMA = "v3.1-smoke-1"
+PLAN_SCHEMA = "v3.1-plan-1"
+REHEARSAL_WORLD_SCHEMA = "v3.1-rehearsal-world-1"
+TIMING_SCHEMA = "v3.1-timing-1"
+TIMING_CLOSE_SCHEMA = "v3.1-timing-close-1"
+RUN_MODES = ("registered", "rehearsal")  # the registered job graph, on the repo or a world
+MAX_MATRIX = 256  # GitHub's limit on the jobs of one matrix
+MIN_REHEARSAL_CELLS = 5  # smoke_cells' firsts: one W1 cell of each kind and one W0 cell
+TIMING_PARTS = ("prepare", "picks", "cell")
+# The timing cell: V2's grid, the heaviest minute arm (Task 8b measured it highest in
+# memory, and its mode switch evaluates the grid, trend and flat paths at every minute);
+# both path modes play four quotes a minute (backtest.replay.bar_quotes), so neither is
+# slower by construction. Research capital at base cost, as a registered minute cell.
+TIMING_CELL = "w1.matched_v2_grid_high_first.native.c1.research"
+STEP_OUTCOMES = ("success", "failure", "cancelled", "skipped")
+# Every key a timing file or a timing document may hold: times, memory, counts and names,
+# never an outcome, report or equity value (Ruling F4).
+TIMING_KEYS = frozenset(
+    {
+        "schema",
+        "part",
+        "event",
+        "phase",
+        "seconds",
+        "elapsed_s",
+        "started_at",
+        "peak_rss_kib",
+        "code_commit",
+        "finished",
+        "phases",
+        "count",
+        "archives",
+        "cell",
+        "attempt_records",
+        "seq",
+        "run",
+        "state",
+        "rule",
+        "start_ms",
+        "end_ms_exclusive",
+        "multiple",
+        "cost_multiple",
+        "error_type",
+        "has_result",
+        "step_outcome",
+        "step_timeout_minutes",
+        "timed_out",
+        "elapsed_s_until_close",
+        "last_event",
+        "last_event_elapsed_s",
+        "peak_rss_kib_seen",
+    }
+)
 FIRST_RESERVED_MONTH = "2025-01"
 INVENTORY_KINDS = ("spot", "futures", "funding")
 LEGACY_KINDS = ("1m", "1h", "1d", "fundingRate")
@@ -581,12 +691,17 @@ def fetch_all(
     legacy_transport: ArchiveTransport,
     sleep: Callable[[float], None],
     log: Log,
+    families: tuple[str, ...] = ("inventory", "legacy", "minutes"),
 ) -> None:
-    """Fetch and verify every planned archive into the cache under ``work``, one
-    ``fetch_entries`` call per archive family and cache, each with its own transport (one
-    transport serves one family). Retries of a transport failure are ``fetch_entries``'
-    (Ruling P6), each logged; every verified archive is logged too."""
-    families: tuple[tuple[str, tuple[dict[str, Any], ...], Path, ArchiveTransport], ...] = (
+    """Fetch and verify every planned archive of ``families`` (by default all) into the
+    cache under ``work``, one ``fetch_entries`` call per archive family and cache, each
+    with its own transport (the legacy transport serves the legacy dataset and the other
+    minute archives, both from the same host layout). Retries of a transport failure are
+    ``fetch_entries``' (Ruling P6), each logged; every verified archive is logged too."""
+    unknown = set(families) - {"inventory", "legacy", "minutes"}
+    if unknown:
+        raise ValueError(f"unknown archive families {sorted(unknown)}")
+    planned: tuple[tuple[str, tuple[dict[str, Any], ...], Path, ArchiveTransport], ...] = (
         (
             "inventory",
             plan.inventory_entries,
@@ -596,7 +711,9 @@ def fetch_all(
         ("legacy", plan.legacy_entries, work / LEGACY_DIR / "binance", legacy_transport),
         ("minutes", plan.minute_entries, work / MINUTES_DIR / "binance", legacy_transport),
     )
-    for family, entries, cache, transport in families:
+    for family, entries, cache, transport in planned:
+        if family not in families:
+            continue
         count = 0
         for entry, _ in fetch_entries(entries, cache, transport=transport, sleep=sleep, log=log):
             count += 1
@@ -793,6 +910,56 @@ def prepare_only_gate(
         raise ValueError("prepare gate refused:\n- " + "\n- ".join(errors))
 
 
+def _committed(repo: Path, commit: str, path: str) -> bytes | None:
+    """The bytes of ``path`` as ``commit`` holds it, or None when it holds no such file."""
+    listed = _git(repo, "ls-tree", "-z", "--name-only", f"{commit}^{{commit}}", "--", path)
+    if listed.rstrip(b"\0") != path.encode("utf-8"):
+        return None
+    return _git(repo, "show", f"{commit}:{path}")
+
+
+def world_gate(repo: Path, mode: str, code_pin: str) -> None:
+    """The checkout is of ``mode``'s kind (Ruling F3), or one ``ValueError`` says why.
+
+    A rehearsal world commits ``v31_smoke.REHEARSAL_MARKER`` at its code pin, byte for byte
+    ``v31_smoke.rehearsal_marker()``, and holds it unchanged: only then may ``rehearsal``
+    run, and with it the smoke's stand-ins. ``registered``, ``prepare-only`` and
+    ``timing`` refuse a checkout holding the marker anywhere: in the working tree, at the
+    head or at ``code_pin``. So a stand-in never runs on the repository's own data, and a
+    registered run never runs on a world built for a rehearsal."""
+    marker = v31_smoke.REHEARSAL_MARKER
+    held = {
+        "the working tree": (repo / marker).read_bytes() if (repo / marker).is_file() else None,
+        "the head": _committed(repo, "HEAD", marker),
+        "the code pin": _committed(repo, code_pin, marker),
+    }
+    if mode == "rehearsal":
+        expected = v31_smoke.rehearsal_marker()
+        wrong = [where for where in ("the code pin", "the working tree") if held[where] != expected]
+        if wrong:
+            raise ValueError(
+                f"rehearsal refused: {marker} is not the rehearsal marker at "
+                f"{' and '.join(wrong)}; a rehearsal runs only on a synthetic world built "
+                "in-job (rehearsal-world), never on the repository's own registration or data"
+            )
+    elif mode in ("registered", "prepare-only", "timing"):
+        found = [where for where, raw in held.items() if raw is not None]
+        if found:
+            raise ValueError(
+                f"{mode} run refused: the checkout is a rehearsal world ({marker} in "
+                f"{', '.join(found)}); a registered, prepare-only or timing run never runs "
+                "on a world or registration built for a rehearsal"
+            )
+    else:
+        raise ValueError(f"unknown mode {mode!r}")
+
+
+def stand_ins_for(mode: str) -> contextlib.AbstractContextManager[None]:
+    """The smoke's stand-ins for a rehearsal (whose world ``world_gate`` has passed),
+    nothing for any other mode."""
+    return v31_smoke.stand_ins() if mode == "rehearsal" else contextlib.nullcontext()
+
+
 def load_registered(repo: Path, args: argparse.Namespace) -> tuple[DriverRegistration, str]:
     """The registration and the run-manifest file's own SHA-256."""
     manifest_file = repo / args.run_manifest
@@ -903,7 +1070,8 @@ def prepare(
     log: Log,
     v3_pack_builder: V3PackBuilder,
 ) -> dict[str, object]:
-    """``prepare`` (the module docstring): the gate, the plan, the fetch, the packs."""
+    """``prepare`` (the module docstring): the gate, the plan, the fetch, the packs; in a
+    rehearsal, the gate and the world's synthetic packs, with nothing fetched."""
     repo, work, out = Path(args.repo), Path(args.work), Path(args.out)
     if out.exists():
         raise FileExistsError(f"{out} exists; a prepare output is written once")
@@ -914,12 +1082,33 @@ def prepare(
         prepare_only_gate(
             repo, head, config, code_commit=args.code_commit, prepare_sha256=args.prepare_sha256
         )
+        world_gate(repo, args.mode, head)
     else:
         reg, manifest_sha = load_registered(repo, args)
         job_gate(
             reg, repo, registration_sha256=args.registration_sha256, manifest_sha256=manifest_sha
         )
+        world_gate(repo, args.mode, reg.registration.code_pin)
         prepare_pins_gate(reg, config)
+    if args.mode == "rehearsal" and reg is not None:
+        # The world's synthetic legacy dataset lies beside its repository, as a fetch would
+        # leave it; nothing is fetched, and the transports are never used.
+        legacy = work / LEGACY_DIR
+        verify_legacy(repo, legacy)
+        out.mkdir(parents=True, exist_ok=False)
+        staging = out / STAGING_DIR
+        with v31_smoke.stand_ins():
+            document = build_smoke_packs(
+                repo,
+                legacy,
+                config,
+                head,
+                staging,
+                mode=args.mode,
+                registration_sha256=reg.registration.config_pin,
+                log=log,
+            )
+        return finish_prepare(reg, document, out, work, staging)
     plan = plan_prepare(repo, head, config)
     fetch_all(
         plan,
@@ -956,6 +1145,19 @@ def prepare(
     log(f"V3 input pack {v3_pin}")
     sha = reg.registration.config_pin if reg is not None else None
     document = prepare_document(args.mode, head, config, skipped, pins, v3_pin, sha)
+    return finish_prepare(reg, document, out, work, staging)
+
+
+def finish_prepare(
+    reg: DriverRegistration | None,
+    document: dict[str, object],
+    out: Path,
+    work: Path,
+    staging: Path,
+) -> dict[str, object]:
+    """A prepare's last steps: a registered (or rehearsal) prepare must reproduce every
+    registered pin and skipped hour; then ``staging`` becomes ``out/packs``, ``out`` and
+    ``work`` are scanned for names from 2025 on, and ``out/prepare.json`` is written."""
     if reg is not None and (errors := registered_errors(reg, document)):
         raise ValueError(
             "registered prepare did not reproduce the registration; nothing final was "
@@ -985,7 +1187,7 @@ def run_picks(
 
 def run_cell_job(
     cell: Cell,
-    pack: WindowPack,
+    pack: WindowPack | None,
     reg: DriverRegistration,
     out: Path,
     *,
@@ -998,18 +1200,22 @@ def run_cell_job(
 ) -> Path:
     """Run the gated ``cell`` by its kind into ``out/<cell_id>/`` and return that directory.
 
-    ``pack`` is the cell's window pack as the gate checked it. A V3 cell reads the V3 input
-    pack against its pin and the whole ``v3_picks/`` directory ``picks_dir``; a minute cell
-    the legacy dataset ``legacy_dir``, verified with ``verify_dataset`` first."""
+    ``pack`` is the cell's window pack as the gate checked it; a V3.1 or hold cell replays
+    it, while a minute or V3 cell reads none, so its caller may pass None once the gate is
+    done (Ruling F8). A V3 cell reads the V3 input pack against its pin and the whole
+    ``v3_picks/`` directory ``picks_dir``; a minute cell the legacy dataset
+    ``legacy_dir``, verified with ``verify_dataset`` first."""
     options = {"attempt_id": attempt_id, "repo_head": repo_head}
     if cell.kind == "v3" and (picks_dir is None or Path(picks_dir).name != V3_PICKS):
         raise ValueError(f"cell {cell.cell_id}: a V3 cell needs --picks, the {V3_PICKS}/ directory")
     if cell.kind == "minute" and legacy_dir is None:
         raise ValueError(f"cell {cell.cell_id}: a minute cell needs --legacy-data")
+    if cell.kind in ("v31", "hold") and pack is None:
+        raise ValueError(f"cell {cell.cell_id}: a {cell.kind} cell replays its window pack")
     out.mkdir(parents=True, exist_ok=True)
-    if cell.kind == "v31":
+    if cell.kind == "v31" and pack is not None:
         return run_v31_cell(cell, pack, reg, out, **options)
-    if cell.kind == "hold":
+    if cell.kind == "hold" and pack is not None:
         return run_hold_cell(cell, pack, reg, out, **options)
     if cell.kind == "v3" and picks_dir is not None:
         inputs = read_v3_pack(packs_dir / V3_PACK_FILE, reg.run_manifest.v3_pack)
@@ -1020,16 +1226,57 @@ def run_cell_job(
     raise ValueError(f"cell {cell.cell_id}: unknown kind {cell.kind!r}")
 
 
-def picks(args: argparse.Namespace) -> dict[str, object]:
+def registered_job(args: argparse.Namespace) -> tuple[Path, DriverRegistration, str, str]:
+    """A registered job's gate, in either run mode: the registration and run-manifest
+    load, ``job_gate`` passes and the checkout is of the mode's kind (``world_gate``).
+    Returns the repository, the registration, the run-manifest's SHA-256 and the head."""
     repo = Path(args.repo)
     reg, manifest_sha = load_registered(repo, args)
-    attempt_id = job_attempt_id(args.attempt_id, V3_PICKS)
     head = job_gate(
         reg, repo, registration_sha256=args.registration_sha256, manifest_sha256=manifest_sha
     )
-    directory = run_picks(
-        reg, Path(args.packs), Path(args.out), attempt_id=attempt_id, repo_head=head
-    )
+    world_gate(repo, args.mode, reg.registration.code_pin)
+    return repo, reg, manifest_sha, head
+
+
+def plan(args: argparse.Namespace) -> dict[str, object]:
+    """``plan`` (the module docstring): the gates, then the two matrices' cells."""
+    _, reg, _, head = registered_job(args)
+    if args.cells is not None and args.mode != "rehearsal":
+        raise ValueError("--cells: a registered run runs every registered cell")
+    if args.cells is not None and args.cells < MIN_REHEARSAL_CELLS:
+        raise ValueError(
+            f"--cells: at least {MIN_REHEARSAL_CELLS} (one W1 cell of each kind and one W0 "
+            "cell), so that every matrix and every cell kind runs"
+        )
+    cells = smoke_cells(reg, args.cells)
+    # Only the selector reads the picks (Ruling F7); the six long-only V3 rules replay
+    # their fixed rule, so they run with every other cell and never wait for the picks job.
+    v3_cells = [cell.cell_id for cell in cells if cell.arm == SELECTOR]
+    main_cells = [cell.cell_id for cell in cells if cell.arm != SELECTOR]
+    for name, listed in (("v3_cells", v3_cells), ("main_cells", main_cells)):
+        if not 0 < len(listed) <= MAX_MATRIX:
+            raise ValueError(f"{name}: {len(listed)} cells; a matrix takes 1 to {MAX_MATRIX}")
+    return {
+        "schema": PLAN_SCHEMA,
+        "mode": args.mode,
+        "registration_sha256": reg.registration.config_pin,
+        "code_pin": reg.registration.code_pin,
+        "repo_head": head,
+        "cells_registered": len(reg.cells),
+        "cells_planned": len(cells),
+        "v3_cells": v3_cells,
+        "main_cells": main_cells,
+    }
+
+
+def picks(args: argparse.Namespace) -> dict[str, object]:
+    attempt_id = job_attempt_id(args.attempt_id, V3_PICKS)
+    _, reg, _, head = registered_job(args)
+    with stand_ins_for(args.mode):
+        directory = run_picks(
+            reg, Path(args.packs), Path(args.out), attempt_id=attempt_id, repo_head=head
+        )
     return {
         "job": V3_PICKS,
         "attempt_id": attempt_id,
@@ -1050,8 +1297,9 @@ def run_cell(args: argparse.Namespace) -> dict[str, object]:
     head = head_commit(repo)
     changed = changed_since(repo, reg.registration.code_pin)
     pins_now = adapter_pins(repo, head)
+    world_gate(repo, args.mode, reg.registration.code_pin)
     pack_sha = dict(reg.run_manifest.window_packs)[cell.window]
-    pack = read_pack(Path(args.packs) / window_pack_file(cell.window), pack_sha)
+    window_pack = read_pack(Path(args.packs) / window_pack_file(cell.window), pack_sha)
     execution_gate(
         reg,
         cell.cell_id,
@@ -1061,20 +1309,25 @@ def run_cell(args: argparse.Namespace) -> dict[str, object]:
         manifest_sha256=manifest_sha,
         changed_paths=changed,
         adapter_pins_now=pins_now,
-        pack=pack,
+        pack=window_pack,
     )
-    directory = run_cell_job(
-        cell,
-        pack,
-        reg,
-        Path(args.out),
-        attempt_id=attempt_id,
-        repo_head=head,
-        repo=repo,
-        packs_dir=Path(args.packs),
-        picks_dir=None if args.picks is None else Path(args.picks),
-        legacy_dir=None if args.legacy_data is None else Path(args.legacy_data),
-    )
+    pack: WindowPack | None = window_pack
+    del window_pack
+    if cell.kind in ("v3", "minute"):
+        pack = None  # the gate has checked it; the cell reads its own inputs (Ruling F8)
+    with stand_ins_for(args.mode):
+        directory = run_cell_job(
+            cell,
+            pack,
+            reg,
+            Path(args.out),
+            attempt_id=attempt_id,
+            repo_head=head,
+            repo=repo,
+            packs_dir=Path(args.packs),
+            picks_dir=None if args.picks is None else Path(args.picks),
+            legacy_dir=None if args.legacy_data is None else Path(args.legacy_data),
+        )
     return {
         "cell_id": cell.cell_id,
         "kind": cell.kind,
@@ -1086,9 +1339,7 @@ def run_cell(args: argparse.Namespace) -> dict[str, object]:
 
 
 def aggregate_cells(args: argparse.Namespace) -> dict[str, object]:
-    repo = Path(args.repo)
-    reg, manifest_sha = load_registered(repo, args)
-    job_gate(reg, repo, registration_sha256=args.registration_sha256, manifest_sha256=manifest_sha)
+    _, reg, _, _ = registered_job(args)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     summary = aggregate(reg, Path(args.cells), out, attempt_id=args.attempt_id)
@@ -1118,19 +1369,30 @@ def smoke_cells(reg: DriverRegistration, count: int | None) -> list[Cell]:
     return [*firsts, *(cell for cell in cells if cell not in firsts)][:count]
 
 
-def smoke_packs(world: v31_smoke.World, packs_dir: Path) -> dict[str, object]:
-    """What prepare builds, from the smoke world's synthetic coins, written under the new
-    directory ``packs_dir``: each window pack (W1's skipped hours joined by its extra
-    sources, ``window_extras``, as prepare joins them) and the V3 input pack. Returns the
+def build_smoke_packs(
+    repo: Path,
+    legacy: Path,
+    config: PrepareConfig,
+    head: str,
+    packs_dir: Path,
+    *,
+    mode: str,
+    registration_sha256: str | None = None,
+    log: Log | None = None,
+) -> dict[str, object]:
+    """What prepare builds, from the smoke's synthetic coins, written under the new
+    directory ``packs_dir``: each window pack of ``config`` (W1's skipped hours joined by
+    its extra sources, ``window_extras`` on the synthetic dataset ``legacy`` with the
+    repository ``repo``'s spec, as prepare joins them) and the V3 input pack. Returns the
     prepare document. Run it under ``v31_smoke.stand_ins()``: the masks need them."""
     packs_dir.mkdir()
-    sources = [(pin.path, pin.sha256) for pin in world.prepare.data_manifests]
+    sources = [(pin.path, pin.sha256) for pin in config.data_manifests]
     pins: dict[str, str] = {}
     skipped: dict[str, dict[str, object]] = {}
-    for window in world.prepare.windows:
+    for window in config.windows:
         extras: dict[str, tuple[int, ...]] = {}
         if window.id == ACCEPTANCE_WINDOW:
-            extras = window_extras(world.repo, world.legacy, window.start_ms, window.end_ms)
+            extras = window_extras(repo, legacy, window.start_ms, window.end_ms)
         pack = build_window_pack(
             window.id,
             window.start_ms,
@@ -1141,8 +1403,17 @@ def smoke_packs(world: v31_smoke.World, packs_dir: Path) -> dict[str, object]:
         )
         pins[window.id] = write_pack(pack, packs_dir / window_pack_file(window.id))
         skipped[window.id] = skipped_document(pack)
+        if log is not None:
+            log(f"window {window.id}: pack {pins[window.id]}, {len(pack.skipped_hours)} skipped")
     v3_pin = write_v3_pack(v31_smoke.v3_fields(), packs_dir / V3_PACK_FILE)
-    return prepare_document("smoke", world.head, world.prepare, skipped, pins, v3_pin, None)
+    return prepare_document(mode, head, config, skipped, pins, v3_pin, registration_sha256)
+
+
+def smoke_packs(world: v31_smoke.World, packs_dir: Path) -> dict[str, object]:
+    """``build_smoke_packs`` for the smoke ``world``."""
+    return build_smoke_packs(
+        world.repo, world.legacy, world.prepare, world.head, packs_dir, mode="smoke"
+    )
 
 
 def smoke(args: argparse.Namespace) -> dict[str, object]:
@@ -1205,6 +1476,384 @@ def smoke(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+# --- the rehearsal world (Ruling F3) ----------------------------------------------------
+
+
+def rehearsal_world(args: argparse.Namespace) -> dict[str, object]:
+    """``rehearsal-world`` (the module docstring): the synthetic world a rehearsal runs on.
+
+    The code pin commits the smoke world (``v31_smoke.build_world``: the synthetic legacy
+    dataset's spec and manifest, the bot config, the menu, an FX record, snapshot
+    stand-ins and the prepare config), every module of this checkout's package
+    (``v31_smoke.source_modules``) and the rehearsal marker. The packs are built once,
+    as prepare-only would, into a temporary directory that is then deleted (the
+    rehearsal's prepare job builds them again and must reproduce them), and the
+    registration of all 216 cells, its adapter pins read at the code pin, is committed on
+    top: the head differs from the code pin by the registration artifacts alone."""
+    root = Path(args.out)
+    root.mkdir(parents=True, exist_ok=False)
+    extra = {
+        **v31_smoke.source_modules(),
+        v31_smoke.REHEARSAL_MARKER: v31_smoke.rehearsal_marker(),
+    }
+    with v31_smoke.stand_ins():
+        world = v31_smoke.build_world(root, extra_files=extra)
+        with tempfile.TemporaryDirectory(prefix="packs-", dir=root) as scratch:
+            document = build_smoke_packs(
+                world.repo,
+                world.legacy,
+                world.prepare,
+                world.head,
+                Path(scratch) / PACKS_DIR,
+                mode="rehearsal",
+            )
+    pins = adapter_pins(world.repo, world.head)
+    reg, config_sha = v31_smoke.register(world, document, code_pin=world.head, adapter_pins=pins)
+    head = v31_smoke.commit_all(world.repo, "the rehearsal registration (synthetic)")
+    return {
+        "schema": REHEARSAL_WORLD_SCHEMA,
+        "repo": str(world.repo),
+        "legacy": str(world.legacy),
+        "code_pin": world.head,
+        "head": head,
+        "registration_sha256": config_sha,
+        "cells_registered": len(reg.cells),
+        "window_packs": document["window_packs"],
+        "v3_pack_sha256": document["v3_pack_sha256"],
+        "stand_ins": list(v31_smoke.STAND_INS),
+    }
+
+
+# --- timing (Ruling F4) -----------------------------------------------------------------
+
+
+def peak_rss_kib() -> int | None:
+    """This process's peak resident set size so far, in KiB (``ru_maxrss`` on Linux);
+    None where ``resource`` does not exist (Windows)."""
+    try:
+        resource = importlib.import_module("resource")
+    except ImportError:
+        return None
+    return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+
+
+_wall: Callable[[], float] = time.time  # wall-clock seconds; replaced in tests
+
+
+class TimingLog:
+    """A timing part's streamed record ``out/<part>.timing.jsonl``: one canonical line per
+    event, each flushed and synced, so a part killed at its step timeout keeps what it
+    measured. Every line holds the elapsed seconds and the peak RSS so far; the first is
+    ``started`` with the wall-clock start. Only ``TIMING_KEYS`` may appear."""
+
+    def __init__(self, out: Path, part: str) -> None:
+        out.mkdir(parents=True, exist_ok=True)
+        self.out, self.part = out, part
+        self._stream: BinaryIO = (out / f"{part}.timing.jsonl").open("xb")
+        self._began = time.monotonic()
+        self.phases: dict[str, float] = {}
+        self.event("started", started_at=round(_wall(), 3))
+
+    def elapsed(self) -> float:
+        return round(time.monotonic() - self._began, 3)
+
+    def event(self, name: str, **fields: object) -> None:
+        line = {"event": name, "elapsed_s": self.elapsed(), "peak_rss_kib": peak_rss_kib()}
+        write_timing_line(self._stream, {**line, **fields})
+
+    @contextlib.contextmanager
+    def phase(self, name: str, *, strategy: bool = False) -> Iterator[None]:
+        """Time the block as phase ``name``. A ``strategy`` phase computes on market data:
+        its error is reported by type alone, so no message can carry a value."""
+        began = time.monotonic()
+        try:
+            yield
+        except Exception as exc:
+            self.event("failed", phase=name, error_type=type(exc).__name__)
+            if strategy:
+                raise ValueError(
+                    f"timing {self.part}: the {name} step failed with {type(exc).__name__} "
+                    "(its message is withheld: timing prints no strategy value)"
+                ) from None
+            raise
+        self.phases[name] = round(time.monotonic() - began, 3)
+        self.event("phase", phase=name, seconds=self.phases[name])
+
+    def finish(self, head: str, **counts: object) -> dict[str, object]:
+        """The part's summary, written once to ``out/<part>.json``, and the stream closed."""
+        self.event("finished")
+        self._stream.close()
+        document = {
+            "schema": TIMING_SCHEMA,
+            "part": self.part,
+            "finished": True,
+            "code_commit": head,
+            "elapsed_s": self.elapsed(),
+            "peak_rss_kib": peak_rss_kib(),
+            "phases": dict(self.phases),
+            **counts,
+        }
+        check_timing_keys(document)
+        with open(self.out / f"{self.part}.json", "xb") as handle:
+            handle.write(canonical(document))
+        return document
+
+    def close(self) -> None:
+        if not self._stream.closed:
+            self._stream.close()
+
+
+def check_timing_keys(document: Mapping[str, object]) -> None:
+    """Refuse any key outside ``TIMING_KEYS``, nested ones included: a timing file holds
+    times, memory, counts and names, never an outcome, report or equity value."""
+    for key, value in document.items():
+        if key not in TIMING_KEYS:
+            raise ValueError(f"timing: the key {key!r} is not a timing field")
+        if isinstance(value, Mapping) and key != "phases":
+            check_timing_keys(value)
+
+
+def write_timing_line(stream: BinaryIO, row: Mapping[str, object]) -> None:
+    check_timing_keys(row)
+    stream.write(canonical(dict(row)))
+    stream.flush()
+    os.fsync(stream.fileno())
+
+
+class TimedAttempts:
+    """V3's record callback in timing mode. Each ``Attempt`` goes first to the real
+    ``_AttemptLog`` (in a temporary directory that is deleted, as V3's contract asks:
+    persisted before the walk-forward goes on), then, as bookkeeping only, to
+    ``out/picks.attempts.jsonl``: its run (the random prefix dropped), state, phase,
+    rule, window, multiples, the type of any error, whether a result exists, and the
+    elapsed time and peak RSS. Never the result, the error's message or the picks."""
+
+    def __init__(self, log: _AttemptLog, path: Path, timing: TimingLog) -> None:
+        self._log, self._timing = log, timing
+        self._stream: BinaryIO = path.open("xb")
+        self.count = 0
+
+    def __call__(self, attempt: Attempt) -> None:
+        self._log(attempt)
+        self.count += 1
+        error = attempt.error
+        row = {
+            "seq": self.count,
+            "elapsed_s": self._timing.elapsed(),
+            "peak_rss_kib": peak_rss_kib(),
+            "run": attempt.run_id.partition("-")[2],
+            "state": attempt.state,
+            "phase": attempt.phase,
+            "rule": attempt.rule,
+            "start_ms": attempt.start_ms,
+            "end_ms_exclusive": attempt.end_ms_exclusive,
+            "multiple": attempt.multiple,
+            "cost_multiple": attempt.cost_multiple,
+            "error_type": None if error is None else error.partition(":")[0],
+            "has_result": attempt.result is not None,
+        }
+        write_timing_line(self._stream, row)
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+def timing_registration(
+    repo: Path, head: str, config: PrepareConfig, w1_skipped: Sequence[int], root: Path
+) -> DriverRegistration:
+    """A throwaway registration for the timing cell, never committed and never a run's:
+    the prepare config's windows (W1's skipped hours ``w1_skipped``, W0's none), every
+    arm's adapter pin at ``head``, the code pin ``head``, and a run-manifest whose pack
+    pins name no pack (none is built or read: a minute cell reads the legacy dataset,
+    which the prepare config pins). Written under the temporary directory ``root``, with
+    the repository's menu and FX record (the smoke's, labelled synthetic, if it has
+    none): a minute cell needs its window, capital, pins and the legacy manifest's pin."""
+    (root / "config").mkdir(parents=True)
+    (root / MENU_PATH).write_bytes((repo / MENU_PATH).read_bytes())
+    fx = repo / v31_smoke.FX_RECORD
+    if fx.is_file():
+        (root / v31_smoke.FX_RECORD).write_bytes(fx.read_bytes())
+    else:
+        v31_smoke.write_json(root / v31_smoke.FX_RECORD, v31_smoke.fx_record())
+    no_pack = hashlib.sha256(b"v3.1 timing: no pack is built or read").hexdigest()
+    document = {
+        "window_packs": {window.id: no_pack for window in config.windows},
+        "v3_pack_sha256": no_pack,
+        "skipped_hours": {
+            window.id: {"hours": list(w1_skipped) if window.id == ACCEPTANCE_WINDOW else []}
+            for window in config.windows
+        },
+    }
+    world = v31_smoke.World(root, root, head, root, config)
+    reg, _ = v31_smoke.register(
+        world, document, code_pin=head, adapter_pins=adapter_pins(repo, head)
+    )
+    return reg
+
+
+def timing(
+    args: argparse.Namespace,
+    *,
+    inventory_transport: ArchiveTransport,
+    legacy_transport: ArchiveTransport,
+    sleep: Callable[[float], None],
+    log: Log,
+    v3_pack_builder: V3PackBuilder,
+) -> dict[str, object]:
+    """``timing`` (the module docstring): one part, timed, its results discarded."""
+    repo, out, scratch = Path(args.repo), Path(args.out), Path(args.scratch)
+    scratch.mkdir(parents=True, exist_ok=True)
+    record = TimingLog(out, args.part)
+    try:
+        if args.part == "prepare":
+            prepared = argparse.Namespace(
+                repo=args.repo,
+                prepare_config=args.prepare_config,
+                mode="prepare-only",
+                code_commit=args.code_commit,
+                prepare_sha256=args.prepare_sha256,
+                work=str(scratch / "prepare-work"),
+                out=str(scratch / "prepare-out"),
+            )
+            with record.phase("prepare"):
+                prepare(
+                    prepared,
+                    inventory_transport=inventory_transport,
+                    legacy_transport=legacy_transport,
+                    sleep=sleep,
+                    log=log,
+                    v3_pack_builder=v3_pack_builder,
+                )
+            return record.finish(head_commit(repo))
+        with record.phase("gate"):
+            config = load_prepare_config(repo / args.prepare_config)
+            head = head_commit(repo)
+            prepare_only_gate(
+                repo, head, config, code_commit=args.code_commit, prepare_sha256=args.prepare_sha256
+            )
+            world_gate(repo, "timing", head)
+            plan_ = plan_prepare(repo, head, config)
+        work = scratch / "work"
+        family = "inventory" if args.part == "picks" else "legacy"
+        with record.phase(f"fetch_{family}"):
+            fetch_all(
+                plan_,
+                work,
+                inventory_transport=inventory_transport,
+                legacy_transport=legacy_transport,
+                sleep=sleep,
+                log=log,
+                families=(family,),
+            )
+        if args.part == "picks":
+            return timing_picks(record, plan_, head, work, scratch, v3_pack_builder)
+        return timing_cell(record, repo, plan_, head, work, scratch)
+    finally:
+        record.close()
+
+
+def timing_picks(
+    record: TimingLog,
+    plan_: Plan,
+    head: str,
+    work: Path,
+    scratch: Path,
+    v3_pack_builder: V3PackBuilder,
+) -> dict[str, object]:
+    """The picks part: the real V3 input pack, then V3's real walk-forward, each attempt
+    streamed to the bookkeeping file; the picks and the attempt log are discarded."""
+    with tempfile.TemporaryDirectory(prefix="timing-picks-", dir=scratch) as discarded:
+        temporary = Path(discarded)
+        with record.phase("build_v3_pack"):
+            root = place_inventory(plan_, work)
+            path = temporary / V3_PACK_FILE
+            pin = v3_pack_builder(root, plan_.inventory_sha, plan_.first_months, path)
+        with record.phase("read_v3_pack"):
+            inputs = read_v3_pack(path, pin)
+        attempt_log = _AttemptLog(temporary / "attempts.jsonl")
+        attempts = TimedAttempts(attempt_log, record.out / "picks.attempts.jsonl", record)
+        try:
+            with record.phase("picks", strategy=True), attempt_log:
+                selector_picks(inputs, record=attempts)
+        finally:
+            attempts.close()
+        del inputs
+    return record.finish(head, attempt_records=attempts.count)
+
+
+def timing_cell(
+    record: TimingLog, repo: Path, plan_: Plan, head: str, work: Path, scratch: Path
+) -> dict[str, object]:
+    """The cell part: the verified legacy dataset, W1's extra skipped hours (the frozen
+    masks and rule 8 on real data), then ``TIMING_CELL`` under a throwaway registration;
+    its artifacts are deleted."""
+    legacy = work / LEGACY_DIR
+    with record.phase("verify_legacy"):
+        verify_legacy(repo, legacy)
+    (window,) = [w for w in plan_.prepare.windows if w.id == ACCEPTANCE_WINDOW]
+    with record.phase("w1_extra_skipped_hours"):
+        extras = window_extras(repo, legacy, window.start_ms, window.end_ms)
+    skipped = sorted({hour for hours in extras.values() for hour in hours})
+    with tempfile.TemporaryDirectory(prefix="timing-cell-", dir=scratch) as discarded:
+        temporary = Path(discarded)
+        reg = timing_registration(repo, head, plan_.prepare, skipped, temporary / "registration")
+        (cell,) = [c for c in reg.cells if c.cell_id == TIMING_CELL]
+        (temporary / "cell").mkdir()
+        with record.phase("minute_cell", strategy=True):
+            run_minute_cell(
+                cell,
+                legacy,
+                reg,
+                temporary / "cell",
+                attempt_id=f"timing-{cell.cell_id}-attempt-1",
+                repo_head=head,
+                repo_root=repo,
+            )
+    return record.finish(head, cell=TIMING_CELL)
+
+
+def timing_close(args: argparse.Namespace) -> dict[str, object]:
+    """``timing-close`` (the module docstring): what a timing step measured, finished or
+    not, from its streamed record; written once to ``out/<part>.close.json``."""
+    if args.step_outcome not in STEP_OUTCOMES:
+        raise ValueError(f"--step-outcome {args.step_outcome!r}: one of {STEP_OUTCOMES}")
+    out, part = Path(args.out), args.part
+    stream = out / f"{part}.timing.jsonl"
+    events = (
+        [json.loads(line) for line in stream.read_bytes().splitlines()] if stream.is_file() else []
+    )
+    for event in events:
+        check_timing_keys(event)
+    started = events[0].get("started_at") if events else None
+    elapsed = None if started is None else round(_wall() - started, 3)
+    attempts = out / "picks.attempts.jsonl"
+    seen = [e["peak_rss_kib"] for e in events if e.get("peak_rss_kib") is not None]
+    if part == "picks" and attempts.is_file():
+        rows = [json.loads(line) for line in attempts.read_bytes().splitlines()]
+        seen += [row["peak_rss_kib"] for row in rows if row.get("peak_rss_kib") is not None]
+    document: dict[str, object] = {
+        "schema": TIMING_CLOSE_SCHEMA,
+        "part": part,
+        "step_outcome": args.step_outcome,
+        "step_timeout_minutes": args.step_timeout_minutes,
+        "finished": (out / f"{part}.json").is_file(),
+        "elapsed_s_until_close": elapsed,
+        "timed_out": elapsed is not None and elapsed >= args.step_timeout_minutes * 60,
+        "last_event": events[-1]["event"] if events else None,
+        "last_event_elapsed_s": events[-1]["elapsed_s"] if events else None,
+        "peak_rss_kib_seen": max(seen, default=None),
+    }
+    if part == "picks":
+        document["attempt_records"] = (
+            len(attempts.read_bytes().splitlines()) if attempts.is_file() else 0
+        )
+    check_timing_keys(document)
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / f"{part}.close.json", "xb") as handle:
+        handle.write(canonical(document))
+    return document
+
+
 # --- the command line -------------------------------------------------------------------
 
 
@@ -1224,8 +1873,36 @@ def build_parser() -> argparse.ArgumentParser:
             help="the dispatch's pin of the registration file",
         )
 
+    def run_mode(command: argparse.ArgumentParser) -> None:
+        command.add_argument(
+            "--mode",
+            choices=RUN_MODES,
+            default="registered",
+            help="registered (the repository's registration) or rehearsal (a synthetic "
+            "rehearsal world, --repo; the only mode that runs the smoke's stand-ins)",
+        )
+
+    def attempt(command: argparse.ArgumentParser, recorded: str) -> None:
+        command.add_argument(
+            "--attempt-id",
+            required=True,
+            help=f"the workflow's <run_id>-attempt-<run_attempt>, the same for every job of a "
+            f"run; {recorded}",
+        )
+
+    planned = commands.add_parser("plan", help="the gates, then the matrices' cells")
+    run_mode(planned)
+    registered(planned)
+    planned.add_argument(
+        "--cells",
+        type=cell_count,
+        default=None,
+        help=f"a rehearsal: plan only this many cells (at least {MIN_REHEARSAL_CELLS}); "
+        "empty: every registered cell",
+    )
+
     prep = commands.add_parser("prepare", help="fetch, verify and pack every input")
-    prep.add_argument("--mode", choices=("prepare-only", "registered"), required=True)
+    prep.add_argument("--mode", choices=("prepare-only", *RUN_MODES), required=True)
     registered(prep, required=False)
     prep.add_argument("--prepare-config", default=PREPARE_CONFIG)
     prep.add_argument("--prepare-sha256", help="prepare-only: the expected prepare config pin")
@@ -1234,24 +1911,19 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("--out", required=True, help="the output directory (must not exist)")
 
     pick = commands.add_parser("picks", help="V3's selector picks, once")
+    run_mode(pick)
     registered(pick)
     pick.add_argument("--packs", required=True)
-    pick.add_argument(
-        "--attempt-id",
-        required=True,
-        help="the workflow's <run_id>-attempt-<run_attempt>, the same for every job of a run; "
-        "the picks job records <run_id>-v3_picks-attempt-<run_attempt>",
-    )
+    attempt(pick, "the picks job records <run_id>-v3_picks-attempt-<run_attempt>")
     pick.add_argument("--out", required=True)
 
     cell = commands.add_parser("run-cell", help="one registered cell")
+    run_mode(cell)
     registered(cell)
     cell.add_argument("--cell", required=True)
     cell.add_argument("--packs", required=True)
-    cell.add_argument(
-        "--attempt-id",
-        required=True,
-        help="the workflow's <run_id>-attempt-<run_attempt>, the same for every job of a run; "
+    attempt(
+        cell,
         "the cell records <run_id>-<cell_id>-attempt-<run_attempt>, unique per cell as "
         "acceptance requires",
     )
@@ -1260,21 +1932,54 @@ def build_parser() -> argparse.ArgumentParser:
     cell.add_argument("--legacy-data", help="a minute cell: the verified legacy dataset")
 
     agg = commands.add_parser("aggregate", help="the verdict and summary")
+    run_mode(agg)
     registered(agg)
     agg.add_argument("--cells", required=True)
-    agg.add_argument(
-        "--attempt-id",
-        required=True,
-        help="the workflow's <run_id>-attempt-<run_attempt>: every W1 cell and the picks "
-        "job must be attempt 1 of run <run_id>, or the verdict is incomplete (re-run "
-        "detected)",
+    attempt(
+        agg,
+        "every W1 cell and the picks job must be attempt 1 of run <run_id>, or the verdict "
+        "is incomplete (re-run detected)",
     )
     agg.add_argument("--out", required=True)
 
     smoke_ = commands.add_parser("smoke", help="offline, synthetic, end to end")
     smoke_.add_argument("--out", required=True, help="the smoke's directory (must not exist)")
     smoke_.add_argument("--cells", type=int, help="run only this many cells (default: all)")
+
+    world = commands.add_parser("rehearsal-world", help="the rehearsal's synthetic world")
+    world.add_argument("--out", required=True, help="the world's directory (must not exist)")
+
+    timed = commands.add_parser("timing", help="time one heavy step, results discarded")
+    timed.add_argument("--part", choices=TIMING_PARTS, required=True)
+    timed.add_argument("--repo", default=".", help="the checkout (default: .)")
+    timed.add_argument("--prepare-config", default=PREPARE_CONFIG)
+    timed.add_argument("--code-commit", required=True, help="the expected checkout head")
+    timed.add_argument("--prepare-sha256", required=True, help="the prepare config's pin")
+    timed.add_argument("--scratch", required=True, help="data and discarded results")
+    timed.add_argument("--out", required=True, help="the timing files, the only upload")
+
+    close = commands.add_parser("timing-close", help="record a timing step's end")
+    close.add_argument("--part", choices=TIMING_PARTS, required=True)
+    close.add_argument("--step-outcome", required=True, help="the step's outcome")
+    close.add_argument("--step-timeout-minutes", type=int, required=True)
+    close.add_argument("--out", required=True)
     return parser
+
+
+def cell_count(text: str) -> int | None:
+    """A ``--cells`` value: empty for every cell, else a positive integer."""
+    if text == "":
+        return None
+    if re.fullmatch(r"[1-9][0-9]*", text) is None:
+        raise argparse.ArgumentTypeError(f"{text!r}: empty or a positive integer required")
+    return int(text)
+
+
+class NoNetwork:
+    """The transport of a rehearsal's prepare, which fetches nothing: any use is refused."""
+
+    def archive(self, path: str) -> bytes | None:
+        raise ValueError(f"a rehearsal fetches nothing; {path} was requested")
 
 
 def main(
@@ -1291,25 +1996,38 @@ def main(
     builder (tests); by default the real guarded transports and ``time.sleep``."""
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "prepare":
-            document = prepare(
-                args,
-                inventory_transport=(
-                    V3Transport() if inventory_transport is None else inventory_transport
+        if args.command in ("prepare", "timing"):
+            offline = args.command == "prepare" and args.mode == "rehearsal"
+            network: dict[str, ArchiveTransport] = {
+                "inventory_transport": (
+                    NoNetwork()
+                    if offline
+                    else V3Transport()
+                    if inventory_transport is None
+                    else inventory_transport
                 ),
-                legacy_transport=(
-                    LegacyTransport() if legacy_transport is None else legacy_transport
+                "legacy_transport": (
+                    NoNetwork()
+                    if offline
+                    else LegacyTransport()
+                    if legacy_transport is None
+                    else legacy_transport
                 ),
-                sleep=sleep,
-                log=log,
-                v3_pack_builder=v3_pack_builder,
-            )
+            }
+            run = prepare if args.command == "prepare" else timing
+            document = run(args, **network, sleep=sleep, log=log, v3_pack_builder=v3_pack_builder)
+        elif args.command == "plan":
+            document = plan(args)
         elif args.command == "picks":
             document = picks(args)
         elif args.command == "run-cell":
             document = run_cell(args)
         elif args.command == "aggregate":
             document = aggregate_cells(args)
+        elif args.command == "rehearsal-world":
+            document = rehearsal_world(args)
+        elif args.command == "timing-close":
+            document = timing_close(args)
         else:
             document = smoke(args)
     except (ValueError, OSError, FeedError) as exc:  # OSError: a missing or existing path
