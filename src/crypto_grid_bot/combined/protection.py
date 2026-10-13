@@ -76,9 +76,14 @@ def manage_completed_bar(
 
     Best completed price is the favorable high/low of a completed bar. A newly
     tightened stop NEVER executes retroactively at that bar's low/high. If the
-    completed close is already beyond it, reduce at that actual close with adverse
-    slippage (``trailing_at_close``), not at the better stop price. Otherwise the
-    new stop applies to subsequent events. Targets receive no favorable gap credit.
+    completed close is already beyond it, the returned exit prices a reduction at that
+    actual close with adverse slippage (``trailing_at_close``), not at the better stop
+    price. The combined replay does not execute that price (owner decision 2026-10-13):
+    it hands the tightened stop to the engine (``PortfolioEngine.tighten_stop``), which
+    finds it through the completed close and requests the close
+    (``tightened_stop_crossed``) at the next available execution, normally the next
+    bar's open, never filling while bars are missing. Otherwise the new stop applies to
+    subsequent events. Targets receive no favorable gap credit.
 
     Missing/invalid/stale ATR prevents tightening, not old-stop protection. A missing
     bar returns no execution price and preserves state; it does not release any

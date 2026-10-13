@@ -10,6 +10,8 @@ from crypto_grid_bot.backtest.funding import FundingRecord
 from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.combined.account import FundingEvent
 from crypto_grid_bot.combined.driver.flow_schedule import build_flow_schedule
+from crypto_grid_bot.combined.execution import adverse_price
+from crypto_grid_bot.combined.protection import BarExit
 from crypto_grid_bot.combined.replay_records import evidence_records, strategy_report
 from crypto_grid_bot.combined.report import utc_text
 from crypto_grid_bot.combined.strategy_replay import TraceFill, replay_strategy
@@ -144,6 +146,100 @@ def test_a_completed_bar_reversal_closes_at_the_next_opening_quote(monkeypatch):
     report = strategy_report(trace, adapter_pin=PIN)
     assert report.reconciliation_residual == 0
     assert report.contributions[0].exit_reason == "trend_reversal"
+
+
+def wick_market(spike_hour: int, gap: int, lift: str):
+    """Two uptrend days whose bar ``spike_hour`` hours into the window has a 12% upper
+    wick, then ``gap`` missing bars; the next bar opens at the wick bar's close times
+    ``lift``. Returns the market, the wick bar's close and the next bar's open time."""
+    market = fx.market("BTCUSDT", fx.uptrend, 2)
+    spike = fx.START + spike_hour * HOUR
+    after = spike + (1 + gap) * HOUR
+    close = bar_at(market.spot.hourly, spike).close
+    rows = []
+    for bar in market.spot.hourly:
+        if bar.open_ms == spike:
+            bar = replace(bar, high=(close * D("1.12")).quantize(D(".01")))
+        elif bar.open_ms == after:
+            opening = (close * D(lift)).quantize(D(".01"))
+            bar = replace(bar, open=opening, high=max(bar.high, opening), low=min(bar.low, opening))
+        elif spike < bar.open_ms < after:
+            continue
+        rows.append(bar)
+    hourly = tuple(rows)
+    spot = replace(market.spot, hourly=hourly)
+    return replace(market, spot=spot, daily=fx.daily(hourly)), close, after
+
+
+@pytest.mark.parametrize("gap", [0, 2], ids=["next_bar", "after_a_two_bar_gap"])
+@pytest.mark.parametrize(
+    ("lift", "price_reason"),
+    [("1.06", ()), ("1.004", ("stop",))],
+    ids=["opens_above_the_stop", "opens_below_the_stop"],
+)
+def test_a_stop_trailed_past_the_completed_close_closes_at_the_next_available_open(
+    monkeypatch, gap, lift, price_reason
+):
+    """Owner decision 2026-10-13: a trailing stop that a completed bar tightens beyond
+    that bar's own close is executed at the next available execution, never at the
+    completed close: the next bar's open with the held slippage, or, after missing bars,
+    the first bar after them, with no fill while they are missing. The replay discards
+    manage_completed_bar's ``trailing_at_close`` price; engine.tighten_stop requests the
+    close (``tightened_stop_crossed``) and the next frame settles it. The engine-level
+    request alone is test_combined_engine's
+    ``test_tightening_through_observed_mark_requests_close_without_a_fill``."""
+    from crypto_grid_bot.combined import strategy_replay
+
+    # The wick bar completes at 30h, no four-hour boundary: the ATR read there is fresh
+    # and does not include the wick.
+    market, close, after = wick_market(29, gap, lift)
+    completed = fx.START + 30 * HOUR
+    priced = []
+    original = strategy_replay.manage_completed_bar
+
+    def recording(state, bar, **kwargs):
+        managed, exit_ = original(state, bar, **kwargs)
+        if exit_ is not None:
+            priced.append((bar.open_ms, exit_, managed.stop))
+        return managed, exit_
+
+    monkeypatch.setattr(strategy_replay, "manage_completed_bar", recording)
+    trace = replay_strategy(fx.run("spot_trend", 2), (market,))
+    assert trace.failure is None
+    missing = tuple(range(completed, after, HOUR))
+    assert trace.data_gaps == ((("BTCUSDT", "spot", missing),) if gap else ())
+    slip = trace.decisions[0].result.intent.slippage_rate
+    # The completed bar trailed the stop past its own close, and protection priced an
+    # exit at that close: the replay does not execute it.
+    ((bar_ms, at_close, stop),) = priced
+    assert bar_ms == completed - HOUR and stop > close
+    assert at_close == BarExit("trailing_at_close", close * (1 - slip))
+    opening = bar_at(market.spot.hourly, after).open
+    assert (opening > stop) is (lift == "1.06")
+    # The first holding's one exit: at the next available boundary, at that bar's open
+    # with the held slippage and tick, never at the completed close.
+    booked = fills(trace)
+    exit_fill = next(e for e in booked if not e.increase)
+    assert exit_fill.fill.timestamp_ms == after
+    assert exit_fill.fill.event_id.startswith("boundary:")
+    assert f":frame:{after}:" in exit_fill.fill.event_id
+    assert exit_fill.fill.price == adverse_price(opening * (1 - slip), -1, fx.RULES)
+    assert exit_fill.fill.price != adverse_price(close * (1 - slip), -1, fx.RULES)
+    stale = ("stale_position_or_missing_filters",) if gap else ()
+    assert set(exit_fill.exit_reason.split("+")) == {
+        "tightened_stop_crossed",
+        *price_reason,
+        *stale,
+    }
+    # No fill of any kind while the bars are missing; the close obligation is carried.
+    assert not [e for e in booked if completed <= e.fill.timestamp_ms < after]
+    for hour in missing:
+        carried = [o for o in trace.observations if o.timestamp_ms == hour][-1].snapshot
+        assert carried.close_required == ("BTCUSDT",)
+        assert "tightened_stop_crossed" in dict(carried.close_reasons)["BTCUSDT"]
+        assert carried.account.positions[0].mark == close
+    report = strategy_report(trace, adapter_pin=PIN)
+    assert report.reconciliation_residual == 0
 
 
 def test_futures_funding_is_paid_by_holdings_surviving_each_settlement():

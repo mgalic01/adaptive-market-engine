@@ -843,6 +843,11 @@ def replay_strategy(run: ReplayRun, markets: tuple[SymbolMarket, ...]) -> Strate
             completed = venue_bar(symbol, position.venue, hour - HOUR)
             if completed is None:
                 continue  # no completed bar: nothing tightens the stop
+            # The returned exit (``trailing_at_close``, at the completed close) is
+            # deliberately not executed (owner decision 2026-10-13): a stop through that
+            # close is closed at the next available execution, never a fictional fill.
+            # tighten_stop below requests that close (``tightened_stop_crossed``), and the
+            # next frame that has the venue's bar settles it at that bar's open.
             state, _ = manage_completed_bar(
                 protection[symbol],
                 completed,
