@@ -12,6 +12,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from crypto_grid_bot.combined.artifacts import REPORT_JSON, REPORT_JSON_SHA256
 from crypto_grid_bot.combined.baseline_records import NativeDiagnostics
+from crypto_grid_bot.combined.common_series import scheduled_boundaries
 from crypto_grid_bot.combined.experiment import BaselineComparison, CellComparison
 from crypto_grid_bot.combined.observation_policy import validate_boundaries
 from crypto_grid_bot.combined.report import DimensionTotal, EquityPoint, Report
@@ -681,8 +682,9 @@ def render_bundle_report(
     then names the file and its SHA-256 instead of embedding it, and ``write_bundle``
     and ``read_bundle`` refuse that page without that exact file.
 
-    Provided comparison curves require the report's timestamps (its approved hourly
-    boundaries when policy evidence is present) and an initial mark
+    Provided comparison curves require the report's timestamps (when policy evidence is
+    present, its approved hourly boundaries less the registered skipped hours: the
+    common-hourly schedule) and an initial mark
     equal to the report's starting capital. This does not verify data, fees, code
     or other comparability. Explicit marks remain the caller's evidence.
     ``comparison`` is acceptance's judgment of this report's cell
@@ -709,13 +711,14 @@ def render_bundle_report(
     timestamps = tuple(point.timestamp_ms for point in report.equity_points)
     if report.policy_evidence is not None:
         # A comparison runs on the approved common-hourly schedule, not on every
-        # native mark; frozen baselines supply one observation per boundary.
+        # native mark; frozen baselines supply one observation per boundary, and none at
+        # a registered skipped hour (the schedule rule common_hourly_series applies).
         try:
             selected = validate_boundaries(
                 report.policy_evidence,
                 tuple((point.timestamp_ms, point.id) for point in report.equity_points),
             )
-            timestamps = tuple(selected)
+            timestamps = tuple(scheduled_boundaries(selected, report.skipped_hours))
         except (ValueError, TypeError, AttributeError):
             pass
     for index, (name, values) in enumerate(supplied.items()):

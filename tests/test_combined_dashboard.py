@@ -298,6 +298,43 @@ def test_benchmark_is_compared_on_the_approved_hourly_schedule() -> None:
     assert "Omitted comparison" in render_report(evidence, benchmarks={"short": mismatched})
 
 
+def test_a_gapped_runs_benchmark_on_the_common_hourly_schedule_is_shown() -> None:
+    """A registered skipped hour is off the common-hourly schedule (common_hourly_series),
+    so a benchmark built on that schedule is compared, not hidden; one that still holds
+    the skipped hour is the mismatch."""
+    import combined_market_fixtures as fx
+    from test_combined_strategy_replay import masked
+
+    from crypto_grid_bot.combined.common_series import common_hourly_series
+    from crypto_grid_bot.combined.replay_records import strategy_report
+    from crypto_grid_bot.combined.strategy_replay import replay_strategy
+
+    gap = fx.START + 30 * fx.HOUR
+    market = masked(fx.market("BTCUSDT", fx.uptrend, 2), "spot", (30,))
+    trace = replay_strategy(fx.run("spot_trend", 2), (market,))
+    evidence = strategy_report(trace, adapter_pin="0" * 64, skipped_hours=(gap,))
+    assert evidence.complete and evidence.skipped_hours == (gap,), evidence.issues
+    declared = [b.timestamp_ms for b in evidence.policy_evidence.boundaries]
+    assert gap in declared  # the policy still declares the skipped hour's boundary
+    series = common_hourly_series(
+        evidence.equity_points,
+        evidence.policy_evidence,
+        start_ms=fx.START,
+        end_ms=fx.START + 2 * fx.DAY,
+        skipped_hours=evidence.skipped_hours,
+    )
+    schedule = [point.timestamp_ms for point in series.points]
+    assert schedule == [t for t in declared if t != gap]
+    flat = tuple(EquityPoint(t, D(10000), f"hold-{t}", ("synthetic",)) for t in schedule)
+    parsed = Elements(render_report(evidence, benchmarks={"Synthetic flat hold": flat}))
+    assert any(attrs.get("data-series") == "benchmark-0" for _, attrs in parsed.elements)
+    assert "Omitted comparison" not in " ".join(parsed.text)
+    with_gap = tuple(EquityPoint(t, D(10000), f"hold-{t}", ("synthetic",)) for t in declared)
+    parsed = Elements(render_report(evidence, benchmarks={"Holds the gap": with_gap}))
+    assert not any(attrs.get("data-series") == "benchmark-0" for _, attrs in parsed.elements)
+    assert "Omitted comparison: Holds the gap" in " ".join(parsed.text)
+
+
 def test_recovery_records_show_their_kind_and_what_ended_them() -> None:
     from test_combined_replay_records import REFS, SEQUENCE, trace_of
 

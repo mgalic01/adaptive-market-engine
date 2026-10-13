@@ -9,11 +9,12 @@ that stopped under its own rules holds its stop equity, labelled frozen (since
 2026-10-12 only a liquidation is such a stop: ``baseline_records.NATIVE_STOPS``).
 """
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 
-from .observation_policy import PolicyEvidence, validate_boundaries
+from .observation_policy import Boundary, PolicyEvidence, validate_boundaries
 from .report import EquityPoint
 
 _HOUR = 3_600_000
@@ -45,6 +46,17 @@ def skipped_hours_valid(skipped_hours: object, start_ms: int, end_ms: int) -> bo
         )
         and list(skipped_hours) == sorted(set(skipped_hours))
     )
+
+
+def scheduled_boundaries(
+    boundaries: Mapping[int, Boundary], skipped_hours: Iterable[int]
+) -> dict[int, Boundary]:
+    """The declared boundaries on the common-hourly schedule, in their order: every one
+    except those at a registered skipped hour (whose marks stay native evidence only).
+    The one schedule rule for every caller: ``common_hourly_series`` and the dashboard's
+    comparison curves."""
+    skipped = frozenset(skipped_hours)
+    return {time: boundary for time, boundary in boundaries.items() if time not in skipped}
 
 
 def _frozen_stop(point: EquityPoint) -> str | None:
@@ -101,7 +113,7 @@ def common_hourly_series(
         raise ValueError("skipped hours must be sorted hours inside, never first or last")
     boundaries = validate_boundaries(policy, tuple((p.timestamp_ms, p.id) for p in points))
     skipped = frozenset(skipped_hours)
-    scheduled = [boundary for time, boundary in boundaries.items() if time not in skipped]
+    scheduled = list(scheduled_boundaries(boundaries, skipped).values())
     # Walk the schedule without allocating a caller-sized range of hours.
     expected = start_ms
     for boundary in scheduled:
