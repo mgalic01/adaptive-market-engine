@@ -82,38 +82,46 @@ jobs:
             `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md`.
             Do not use command substitution (`$(...)`), pipes or chained commands in Bash; they are refused.
             The body's first line is exactly `Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full>`.
-            Its second line is `Scope: complete` or, for INCOMPLETE, `Scope: partial` followed by what you did and did not read.
+            Its second line is `Scope: complete` when you read the whole diff, otherwise `Scope: partial` followed by what you
+            did and did not read. CHANGES NEEDED may be partial; APPROVE never is.
             Then, written as instructions for the OpenAI Codex agent, a numbered list of concrete required fixes with file:line,
             then optional nits. If changes are needed, end the comment with: "@codex please address the required fixes above."
           claude_args: '--allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Bash(gh pr diff:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(pip install:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
       # Tests the reviewer ran against files it changed say nothing about the PR as pushed:
       # any change anywhere in the checkout since the snapshot voids the verdict, visibly,
       # ignored files included. Only install and cache output is allowed (Python bytecode,
-      # the pytest, mypy and ruff caches, *.egg-info and build/). The excluded paths are the
-      # ones the action itself restores from the base before the reviewer starts (its
-      # SENSITIVE_PATHS, src/github/operations/restore-config.ts) and its own .claude-pr/
-      # snapshot. It runs after a failed review step too: a verdict posted before the
-      # action failed must still be voided.
+      # the pytest, mypy and ruff caches, *.egg-info and build/).
+      # The action itself restores some paths from origin/<base> before the reviewer
+      # starts (its SENSITIVE_PATHS and restoreConfigFromBase in
+      # src/github/operations/restore-config.ts), so those are checked against that
+      # base instead of the snapshot: any difference from it, or any extra file under
+      # them, is a reviewer write. The action's own .claude-pr/ snapshot is left out.
+      # It runs after a failed review step too: a verdict posted before the action failed
+      # must still be voided.
       - name: Void a verdict from a modified checkout
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -o pipefail
           if [ ! -f /tmp/checkout-before.txt ]; then
             echo "::error::no snapshot of the checkout was taken; the verdict cannot be trusted"
             exit 1
           fi
+          restored=(.claude .mcp.json .claude.json .gitmodules .ripgreprc CLAUDE.md CLAUDE.local.md .husky)
           after=$(git status --porcelain --ignored=traditional --untracked-files=all -- . \
-            ':(exclude).claude' ':(exclude).mcp.json' ':(exclude).claude.json' ':(exclude).gitmodules' \
-            ':(exclude).ripgreprc' ':(exclude)CLAUDE.md' ':(exclude)CLAUDE.local.md' ':(exclude).husky' \
-            ':(exclude).claude-pr')
+            "${restored[@]/#/:(exclude)}" ':(exclude).claude-pr')
           # grep finds nothing when nothing changed; that is the clean case, not an error.
           changed=$(printf '%s\n' "$after" | grep -vxF -f /tmp/checkout-before.txt \
             | grep -vE '[ /](__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache)/|\.py[cod]$|\.egg-info/|^!! build/' \
             | grep -v '^$' || true)
+          # Each git call stands alone, so a failure (an unknown base, say) stops the step.
+          diverged=$(git diff --name-only "origin/$BASE_REF" -- "${restored[@]}")
+          extra=$(git ls-files --others -- "${restored[@]}")
+          changed=$(printf '%s\n%s\n%s\n' "$changed" "$diverged" "$extra" | grep -v '^$' || true)
           if [ -n "$changed" ]; then
             echo "::error::the reviewer changed the checkout; its verdict for $HEAD_SHA is void"
             printf '%s\n' "$changed"

@@ -105,7 +105,11 @@ def test_a_partial_reading_never_approves() -> None:
     # (docs/AGENT_HANDOFF.md: any change to the contribution means a full review).
     assert "Your scope is always the whole diff BASE_SHA...HEAD_SHA" in prompt
     assert "incremental" not in prompt.lower()
-    assert "Its second line is `Scope: complete` or, for INCOMPLETE, `Scope: partial`" in prompt
+    assert (
+        "Its second line is `Scope: complete` when you read the whole diff, "
+        "otherwise `Scope: partial`"
+    ) in prompt
+    assert "CHANGES NEEDED may be partial; APPROVE never is." in prompt
     assert "Never modify, create or delete a file in the checkout" in prompt
     assert "Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full>" in prompt
     assert "git diff BASE_SHA...HEAD_SHA" in prompt and "origin/main" not in prompt
@@ -205,31 +209,55 @@ VOID = "Void a verdict from a modified checkout"
 IGNORED = "*.egg-info/\n__pycache__/\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\nbuild/\ndata/\n"
 
 
-def checkout(tmp_path: Path) -> tuple[Path, Path]:
-    """A committed checkout and the snapshot the workflow takes before the review."""
-    repo = tmp_path / "checkout"
-    (repo / "src").mkdir(parents=True)
-    (repo / "src" / "module.py").write_text("x = 1\n", encoding="utf-8")
-    (repo / ".gitignore").write_text(IGNORED, encoding="utf-8")
-    for args in (
-        ["init", "-q"],
-        ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "add", "."],
-        ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "c"],
-    ):
-        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
-    snapshot = tmp_path / "checkout-before.txt"
-    taken = run_step("Snapshot the checkout", repo, "", {}, snapshot)
-    assert taken.returncode == 0 and snapshot.is_file(), taken.stderr
-    return repo, snapshot
+GIT_USER = ["-c", "user.name=T", "-c", "user.email=t@example.invalid"]
 
 
-POSTER = 'gh() { printf "%s\n" "$*" >> "$GH_LOG"; }'
+def git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
 
 def write(repo: Path, name: str, text: str = "changed\n") -> None:
     path = repo / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def checkout(tmp_path: Path, *, pr_touches_config: bool = False) -> tuple[Path, Path]:
+    """The PR's checkout, origin/main as the base, and the snapshot the workflow takes
+    before the review. With ``pr_touches_config`` the PR edits CLAUDE.md and adds
+    CLAUDE.local.md, and the action's restore from origin/main is replayed after the
+    snapshot, as it happens inside the action step."""
+    repo = tmp_path / "checkout"
+    write(repo, "src/module.py", "x = 1\n")
+    write(repo, ".gitignore", IGNORED)
+    write(repo, "CLAUDE.md", "base\n")
+    write(repo, ".claude/settings.json", "{}\n")
+    git(repo, "init", "-q")
+    git(repo, *GIT_USER, "add", ".")
+    git(repo, *GIT_USER, "commit", "-q", "-m", "base")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    if pr_touches_config:
+        write(repo, "CLAUDE.md", "from the PR\n")
+        write(repo, "CLAUDE.local.md", "from the PR\n")
+        git(repo, *GIT_USER, "add", ".")
+        git(repo, *GIT_USER, "commit", "-q", "-m", "pr")
+    snapshot = tmp_path / "checkout-before.txt"
+    taken = run_step("Snapshot the checkout", repo, "", {}, snapshot)
+    assert taken.returncode == 0 and snapshot.is_file(), taken.stderr
+    if pr_touches_config:
+        # restoreConfigFromBase: delete, check out from origin/<base>, unstage.
+        (repo / "CLAUDE.local.md").unlink()
+        git(repo, "checkout", "origin/main", "--", "CLAUDE.md")
+        git(repo, "reset", "-q", "--", "CLAUDE.md", "CLAUDE.local.md")
+        write(repo, ".claude-pr/CLAUDE.md", "from the PR\n")
+    return repo, snapshot
+
+
+POSTER = 'gh() { printf "%s\n" "$*" >> "$GH_LOG"; }'
+
+
+def void_env(log: Path) -> dict[str, str]:
+    return {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD, "BASE_REF": "main"}
 
 
 @pytest.mark.parametrize(
@@ -246,8 +274,8 @@ def write(repo: Path, name: str, text: str = "changed\n") -> None:
             ".ruff_cache/0.6.0/123",
             "build/lib/module.py",
         ],
-        # What the action itself restores from the base, or snapshots, before the review.
-        ["CLAUDE.md", ".claude/settings.json", ".mcp.json", ".claude-pr/CLAUDE.md"],
+        # The action's own snapshot of the PR's config.
+        [".claude-pr/CLAUDE.md"],
     ],
 )
 def test_an_untouched_checkout_keeps_the_verdict(tmp_path: Path, touched: list[str]) -> None:
@@ -255,8 +283,15 @@ def test_an_untouched_checkout_keeps_the_verdict(tmp_path: Path, touched: list[s
     for name in touched:
         write(repo, name)
     log = tmp_path / "gh.log"
-    env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
-    result = run_step(VOID, repo, POSTER, env, snapshot)
+    result = run_step(VOID, repo, POSTER, void_env(log), snapshot)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not log.exists()
+
+
+def test_the_actions_own_restore_from_the_base_keeps_the_verdict(tmp_path: Path) -> None:
+    repo, snapshot = checkout(tmp_path, pr_touches_config=True)
+    log = tmp_path / "gh.log"
+    result = run_step(VOID, repo, POSTER, void_env(log), snapshot)
     assert result.returncode == 0, result.stdout + result.stderr
     assert not log.exists()
 
@@ -270,14 +305,17 @@ def test_an_untouched_checkout_keeps_the_verdict(tmp_path: Path, touched: list[s
         "docs/rules.md",
         ".github/x.yml",
         "data/planted.csv",  # ignored by .gitignore, still a write the tests could read
+        # Paths the action restores: a reviewer write there differs from origin/main.
+        "CLAUDE.md",
+        ".claude/settings.local.json",
+        ".mcp.json",
     ],
 )
 def test_a_changed_checkout_voids_the_verdict_visibly(tmp_path: Path, name: str) -> None:
     repo, snapshot = checkout(tmp_path)
     write(repo, name)
     log = tmp_path / "gh.log"
-    env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
-    result = run_step(VOID, repo, POSTER, env, snapshot)
+    result = run_step(VOID, repo, POSTER, void_env(log), snapshot)
     assert result.returncode == 1
     posted = log.read_text(encoding="utf-8")
     assert posted.startswith("pr comment 7 --body Automated review VOID at " + HEAD)
@@ -288,8 +326,7 @@ def test_without_a_snapshot_the_verdict_is_not_trusted(tmp_path: Path) -> None:
     repo, snapshot = checkout(tmp_path)
     snapshot.unlink()
     log = tmp_path / "gh.log"
-    env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
-    result = run_step(VOID, repo, POSTER, env, snapshot)
+    result = run_step(VOID, repo, POSTER, void_env(log), snapshot)
     assert result.returncode == 1
     assert "no snapshot of the checkout was taken" in result.stdout
 
@@ -298,7 +335,7 @@ def test_a_void_notice_pings_nobody_and_a_failed_post_still_fails(tmp_path: Path
     repo, snapshot = checkout(tmp_path)
     write(repo, "notes/@someone.md")
     log = tmp_path / "gh.log"
-    env = {"GH_LOG": str(log), "PR": "7", "HEAD_SHA": HEAD}
+    env = void_env(log)
     result = run_step(VOID, repo, POSTER, env, snapshot)
     assert result.returncode == 1
     assert "@" not in log.read_text(encoding="utf-8")
