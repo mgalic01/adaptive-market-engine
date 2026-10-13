@@ -46,11 +46,11 @@ run-name: v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 #   PASS never passes for the registered run's.
 # - registered: the registered experiment, once. plan checks that
 #   config/v3_1_registration.json hashes to the dispatched registration_sha256, refuses a
-#   second dispatch of it, runs the job gate and lists the cells; prepare builds the packs; picks computes V3's selector
-#   picks once; run-main and run-v3 run one matrix job per cell (only the four selector
-#   cells wait for the picks); aggregate judges what exists, whether or not every cell
-#   finished, and uploads the summary; status records every job's result, aggregate run or
-#   skipped.
+#   second dispatch of it, runs the job gate and lists the cells; prepare builds the packs;
+#   picks computes V3's selector picks once; run-main and run-v3 run one matrix job per cell
+#   (only the four selector cells wait for the picks); aggregate judges what exists,
+#   whether or not every cell finished, and uploads the summary; status records every
+#   job's result, aggregate run or skipped.
 #
 # Artifacts (all kept for the maximum retention, 90 days):
 # - v31-rehearsal-world: rehearsal-world.tar, the world (repo/ and legacy/), rehearsal only
