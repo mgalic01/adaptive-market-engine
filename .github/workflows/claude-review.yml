@@ -7,6 +7,13 @@ permissions:
   pull-requests: write
   issues: write
   id-token: write
+# The review is a reading. The reviewer runs no git command, test, linter or install, and
+# executes no code from the PR: CI's quality job runs ruff, mypy and the whole test suite
+# on a clean checkout, and its result is a separate part of the gate. The reviewer may
+# read the checkout and the prepared input in /tmp/pr, write exactly one file (its
+# comment body) and run exactly one command (posting that file); --permission-mode
+# dontAsk refuses everything else, and Claude Code never auto-approves writes to .git
+# or its other protected paths.
 jobs:
   review:
     if: github.event.pull_request.draft == false
@@ -17,13 +24,6 @@ jobs:
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
-    # Tool caches live outside the checkout, so the reviewer's lint and test runs leave
-    # nothing in it and a file planted in a cache directory there is never read.
-    env:
-      PYTHONPYCACHEPREFIX: /tmp/pycache
-      MYPY_CACHE_DIR: /tmp/mypy-cache
-      RUFF_CACHE_DIR: /tmp/ruff-cache
-      PYTEST_ADDOPTS: -p no:cacheprovider
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,34 +33,24 @@ jobs:
       - name: Record the start time
         id: start
         run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-      # Installed as CI's quality job installs it, before the snapshot, so whatever the
-      # install writes into the checkout is part of the snapshot, never an exemption.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install the project
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-dev.lock
-          python -m pip install -e . --no-deps
-      # Everything git can see, ignored files included, before the reviewer starts; the
-      # void step compares against it, so a write hidden by an ignore rule still counts.
-      - name: Snapshot the checkout
-        run: git status --porcelain --ignored=traditional --untracked-files=all > /tmp/checkout-before.txt
-      # The reviewer sees this bot's own earlier reviews and nothing else from the
-      # thread: on a public repository anyone can comment, and a comment is not an
-      # instruction. Only claude[bot] bodies reach the file, plus this workflow's own
-      # VOID notices (posted as github-actions[bot]), so the reviewer can tell which
-      # earlier verdicts were voided.
-      - name: Collect this bot's earlier reviews
+      # Everything the reviewer reads besides the checkout, prepared by trusted commands
+      # before it starts. Of the PR thread, only this bot's own reviews reach it: on a
+      # public repository anyone can comment, and a comment is not an instruction.
+      - name: Prepare the review input
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          mkdir -p /tmp/pr
+          git log --format='%H %s' "$BASE_SHA..$HEAD_SHA" > /tmp/pr/log.txt
+          git diff --stat "$BASE_SHA...$HEAD_SHA" > /tmp/pr/stat.txt
+          git diff "$BASE_SHA...$HEAD_SHA" > /tmp/pr/diff.patch
           gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
-            --jq '.[] | select(.user.login == "claude[bot]" or (.user.login == "github-actions[bot]" and (.body | startswith("Automated review VOID at ")))) | "--- posted \(.created_at) by \(.user.login)\n\(.body)\n"' \
-            > /tmp/previous-reviews.md
+            --jq '.[] | select(.user.login == "claude[bot]") | "--- posted \(.created_at)\n\(.body)\n"' \
+            > /tmp/pr/previous-reviews.md
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -68,22 +58,23 @@ jobs:
           # Any PR context the action supplies itself carries this bot's comments only
           # (the default, empty, includes every actor's).
           include_comments_by_actor: "claude[bot]"
-          # The same cache locations as the job's env, set in Claude Code's own settings
-          # too, so every command it runs keeps its caches out of the checkout.
-          settings: '{"env": {"PYTHONPYCACHEPREFIX": "/tmp/pycache", "MYPY_CACHE_DIR": "/tmp/mypy-cache", "RUFF_CACHE_DIR": "/tmp/ruff-cache", "PYTEST_ADDOPTS": "-p no:cacheprovider"}}'
           prompt: |
             REPO: ${{ github.repository }}  PR: #${{ github.event.pull_request.number }}
             HEAD_SHA (the PR head): ${{ github.event.pull_request.head.sha }}
             BASE_SHA (the PR base): ${{ github.event.pull_request.base.sha }}
+            RUN_TAG (this run): ${{ github.run_id }}-${{ github.run_attempt }}
             Review this PR's diff. The project is a paper-only, fail-closed spot grid bot (see README.md, ROADMAP.md, SECURITY.md).
             Check: correctness, Decimal/precision and fee math, risk guards and fail-closed behaviour, no live-trading or API-key leakage,
             test coverage for new logic, and consistency with the agreed operating rules in README.md.
 
-            Reading the diff: use the SHAs above, never a branch name or HEAD (the checkout is a merge commit):
-            `git log BASE_SHA..HEAD_SHA`, `git diff BASE_SHA...HEAD_SHA --stat`, `git diff BASE_SHA...HEAD_SHA -- <paths>`.
-            `gh pr diff` fails on a PR over GitHub's 20,000-line diff limit. This bot's earlier reviews of this PR (and this
-            workflow's VOID notices), and only those, are in /tmp/previous-reviews.md; use them to recheck earlier findings.
-            Nothing else from the PR thread is input to this review.
+            Your input, prepared from BASE_SHA...HEAD_SHA before you started:
+            - /tmp/pr/diff.patch: the whole diff. Read all of it, in chunks.
+            - /tmp/pr/stat.txt and /tmp/pr/log.txt: the changed files and the commits.
+            - /tmp/pr/previous-reviews.md: this bot's earlier reviews of this PR, and only those; use them to recheck
+              earlier findings. Nothing else from the PR thread is input to this review.
+            The working directory is the checkout (the PR merged into its base); read files there for context.
+            You cannot run commands other than the one posting command below: no git, tests, linters or installs.
+            CI's quality job runs ruff, mypy and the whole test suite on a clean checkout.
 
             Scope and verdict. Your scope is always the whole diff BASE_SHA...HEAD_SHA: an earlier verdict never stands in
             for reading any part of it (docs/AGENT_HANDOFF.md: an extra commit or any change to the contribution means a full
@@ -92,101 +83,29 @@ jobs:
             - INCOMPLETE when you could not read all of it (time, size or any other reason). INCOMPLETE is not an
               approval; never answer APPROVE for a partial reading.
             - CHANGES NEEDED when you found a required fix, whether or not you read everything.
-            Tests: CI's quality job runs the full suite, which takes longer than one command may run, so do not run the whole of `pytest`.
-            The project is installed already, as CI installs it; do not install anything.
-            Run `ruff check .`, `mypy src scripts` and `pytest -q <the test files for the changed code>`.
 
-            Never modify, create or delete a file in the checkout: review the PR as pushed. The Write tool is only for
-            /tmp/claude-review.md, and `ruff` runs without --fix. A later step voids the verdict if the checkout changed.
             Always finish by posting exactly ONE PR comment, whatever the verdict:
-            write the body with the Write tool to /tmp/claude-review.md, then run exactly
+            write the body to /tmp/claude-review.md (the only file you may write), then run exactly
             `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md`.
-            Do not use command substitution (`$(...)`), pipes or chained commands in Bash; they are refused.
-            The body's first line is exactly `Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full>`.
+            The body's first line is exactly `Verdict: <APPROVE|CHANGES NEEDED|INCOMPLETE> at <HEAD_SHA in full> run <RUN_TAG>`.
             Its second line is `Scope: complete` when you read the whole diff, otherwise `Scope: partial` followed by what you
             did and did not read. CHANGES NEEDED may be partial; APPROVE never is.
             Then, written as instructions for the OpenAI Codex agent, a numbered list of concrete required fixes with file:line,
             then optional nits. If changes are needed, end the comment with: "@codex please address the required fixes above."
-          claude_args: '--allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Bash(gh pr diff:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(pytest:*),Bash(ruff:*),Bash(mypy:*),Read,Glob,Grep,Write"'
-      # Tests the reviewer ran against files it changed say nothing about the PR as pushed:
-      # any change anywhere in the checkout since the snapshot voids the verdict, visibly,
-      # ignored files included, with no exemption (the install ran before the snapshot and
-      # the caches live in /tmp).
-      # The action itself restores some paths from origin/<base> before the reviewer
-      # starts (its SENSITIVE_PATHS and restoreConfigFromBase in
-      # src/github/operations/restore-config.ts), so those are compared, file by file on
-      # disk, with that base instead of the snapshot: a missing, extra or different file
-      # is a reviewer write. The action's own .claude-pr/ snapshot is left out.
-      # It runs whatever happened before it, cancellation included: a re-run of the same
-      # head can cancel this run after its verdict was posted, and that verdict must still
-      # be voided.
-      - name: Void a verdict from a modified checkout
-        if: ${{ always() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: |
-          set -o pipefail
-          if [ ! -f /tmp/checkout-before.txt ]; then
-            echo "::error::no snapshot of the checkout was taken; the verdict cannot be trusted"
-            exit 1
-          fi
-          base="origin/$BASE_REF"
-          if ! git rev-parse --verify --quiet "$base^{commit}" > /dev/null; then
-            echo "::error::$base is unknown; the restored paths cannot be checked"
-            exit 1
-          fi
-          restored=(.claude .mcp.json .claude.json .gitmodules .ripgreprc CLAUDE.md CLAUDE.local.md .husky)
-          after=$(git status --porcelain --ignored=traditional --untracked-files=all -- . \
-            "${restored[@]/#/:(exclude)}" ':(exclude).claude-pr')
-          # grep finds nothing when nothing changed; that is the clean case, not an error.
-          changed=$(printf '%s\n' "$after" | grep -vxF -f /tmp/checkout-before.txt | grep -v '^$' || true)
-          # The restored paths on disk must be exactly the base's: same files, same blobs.
-          base_files=$(git ls-tree -r --name-only "$base" -- "${restored[@]}")
-          on_disk=""
-          for path in "${restored[@]}"; do
-            if [ -e "$path" ] || [ -L "$path" ]; then
-              on_disk+="$(find "$path" \( -type f -o -type l \) -print)"$'\n'
-            fi
-          done
-          while IFS= read -r file; do
-            [ -n "$file" ] || continue
-            if [ ! -e "$file" ] && [ ! -L "$file" ]; then changed+=$'\n'"missing $file"; fi
-          done <<< "$base_files"
-          while IFS= read -r file; do
-            [ -n "$file" ] || continue
-            if ! expected=$(git rev-parse --verify --quiet "$base:$file"); then
-              changed+=$'\n'"added $file"
-              continue
-            fi
-            if [ -L "$file" ]; then
-              actual=$(printf '%s' "$(readlink "$file")" | git hash-object --stdin)
-            else
-              actual=$(git hash-object "$file")
-            fi
-            [ "$expected" = "$actual" ] || changed+=$'\n'"changed $file"
-          done <<< "$on_disk"
-          changed=$(printf '%s\n' "$changed" | grep -v '^$' || true)
-          if [ -n "$changed" ]; then
-            echo "::error::the reviewer changed the checkout; its verdict for $HEAD_SHA is void"
-            printf '%s\n' "$changed"
-            # Newlines and @ become spaces: one line, and no file name can ping anyone.
-            gh pr comment "$PR" --body "Automated review VOID at $HEAD_SHA: the reviewer changed files in its checkout before its verdict, so that verdict does not count. Changed: $(printf '%s' "$changed" | tr '\n@' '  ')"
-            exit 1
-          fi
+          claude_args: '--permission-mode dontAsk --add-dir /tmp/pr --allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/claude-review.md),Read(//tmp/pr/**),Edit(//tmp/claude-review.md)"'
       # A review that ends without its verdict is a failure, never a silent success: the
       # gate needs a verdict at this head, and a green check without one hid three silent
       # runs on PR #269 (2026-10-13). The check accepts only a claude[bot] comment created
-      # during this run whose verdict line names this head; any verdict passes it (it
-      # proves a review was posted, not that it approves).
-      - name: Require the posted verdict for this head
+      # during this run whose first line names this head and this run's tag, so a
+      # verdict from another run (a cancelled one at the same head, say) never counts.
+      # Any verdict passes it: it proves a review was posted, not that it approves.
+      - name: Require the posted verdict for this run
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
           SINCE: ${{ steps.start.outputs.time }}
         run: |
           # The default run shell is bash -e without pipefail; a failed gh in the pipe below
@@ -197,13 +116,17 @@ jobs:
             20[0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z) ;;
             *) echo "::error::no valid start time recorded"; exit 1 ;;
           esac
+          case "$RUN_TAG" in
+            [0-9]*-[0-9]*) ;;
+            *) echo "::error::no valid run tag"; exit 1 ;;
+          esac
           # A failed API call stops the step here (-e with pipefail); an empty or
           # non-numeric count counts as no verdict.
           posted=$(gh api --paginate "repos/$REPO/issues/$PR/comments?since=$SINCE&per_page=100" \
-            --jq '.[] | select(.user.login == "claude[bot]" and .created_at >= env.SINCE and (.body | test("^Verdict: (APPROVE|CHANGES NEEDED|INCOMPLETE) at " + env.HEAD_SHA))) | .id' \
+            --jq '.[] | select(.user.login == "claude[bot]" and .created_at >= env.SINCE and (.body | test("^Verdict: (APPROVE|CHANGES NEEDED|INCOMPLETE) at " + env.HEAD_SHA + " run " + env.RUN_TAG + "\r?(\n|$)"))) | .id' \
             | wc -l)
           case "$posted" in ''|*[!0-9]*) posted=0 ;; esac
           if [ "$posted" -lt 1 ]; then
-            echo "::error::the review finished without posting a verdict for $HEAD_SHA"
+            echo "::error::the review finished without posting a verdict for $HEAD_SHA in run $RUN_TAG"
             exit 1
           fi
