@@ -28,6 +28,7 @@ from crypto_grid_bot.combined.driver.packs import (
     derive_skipped_hours,
     minute_months,
     read_pack,
+    skipped_hour_sources,
     write_pack,
 )
 from crypto_grid_bot.combined.driver.venues import cost_profile
@@ -503,3 +504,84 @@ def test_the_replay_accepts_a_packs_inputs_with_pre_window_futures_and_funding()
         run = ReplayRun(arm, "open_low_high_close", D(10000), START, END, ("pack:synthetic",))
         trace = replay_strategy(run, markets)
         assert trace.missing_grid_inputs == () and trace.data_gaps == ()
+
+
+# --- labelled extra missing-hour sources (Rulings P16, P17) ----------------------------
+
+EXTRA = {
+    "minute_mask:BTCUSDT": (START + 7 * HOUR, START + 5 * HOUR, START + 7 * HOUR),
+    "quote_test:XRPUSDT": (START + 9 * HOUR,),
+    "minute_mask:ETHUSDT": (),
+}
+
+
+def test_extra_missing_hour_sources_join_the_skipped_hours(tmp_path):
+    base = pack(BTCUSDT={"spot_skip": (START + 5 * HOUR,)})
+    joined = build_window_pack("w-test", START, END, base.coins, SOURCES, extra_missing_hours=EXTRA)
+    # The union of the derived gaps and every labelled source, each hour once.
+    assert joined.skipped_hours == (START + 5 * HOUR, START + 7 * HOUR, START + 9 * HOUR)
+    # Each source is kept, sorted by label, its hours sorted and unique; an empty one too.
+    assert joined.extra_missing_hours == (
+        ("minute_mask:BTCUSDT", (START + 5 * HOUR, START + 7 * HOUR)),
+        ("minute_mask:ETHUSDT", ()),
+        ("quote_test:XRPUSDT", (START + 9 * HOUR,)),
+    )
+    assert derive_skipped_hours(START, END, base.coins, joined.extra_missing_hours) == (
+        joined.skipped_hours
+    )
+    # Disclosed per source: the coins' own gaps and the extra sources, by label.
+    assert skipped_hour_sources(joined) == (
+        ("BTCUSDT: no spot bar", (START + 5 * HOUR,)),
+        ("minute_mask:BTCUSDT", (START + 5 * HOUR, START + 7 * HOUR)),
+        ("minute_mask:ETHUSDT", ()),
+        ("quote_test:XRPUSDT", (START + 9 * HOUR,)),
+    )
+    # The sources travel with the pack and are pinned with it.
+    pin = write_pack(joined, tmp_path / "joined.json.gz")
+    assert read_pack(tmp_path / "joined.json.gz", pin) == joined
+    assert pin != write_pack(base, tmp_path / "base.json.gz")
+    # A pack whose skipped hours drop a source's hour, or that lost its sources, is refused.
+    with pytest.raises(ValueError, match="skipped hours"):
+        check_window(replace(joined, skipped_hours=base.skipped_hours))
+    with pytest.raises(ValueError, match="skipped hours"):
+        check_window(replace(joined, extra_missing_hours=()))
+
+
+def test_a_pack_without_extra_sources_is_unchanged(tmp_path):
+    base = pack(BTCUSDT={"spot_skip": (START + 5 * HOUR,)})
+    again = build_window_pack("w-test", START, END, base.coins, SOURCES, extra_missing_hours={})
+    assert again == base and base.extra_missing_hours == ()
+    assert skipped_hour_sources(base) == (("BTCUSDT: no spot bar", (START + 5 * HOUR,)),)
+    write_pack(base, tmp_path / "base.json.gz")
+    text = gzip.decompress((tmp_path / "base.json.gz").read_bytes()).decode("ascii")
+    assert "extra_missing_hours" not in text  # the document, so the pin, is as before
+
+
+@pytest.mark.parametrize("hour", [START, END - HOUR])
+def test_an_extra_source_at_the_first_or_last_hour_refuses_the_window(hour):
+    coins = pack().coins
+    with pytest.raises(ValueError, match=f"minute_mask:XRPUSDT: .*window hour {hour}"):
+        build_window_pack(
+            "w-test",
+            START,
+            END,
+            coins,
+            SOURCES,
+            extra_missing_hours={"minute_mask:XRPUSDT": (hour,)},
+        )
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"minute_mask:BTCUSDT": (START - HOUR,)}, "inside the window"),
+        ({"minute_mask:BTCUSDT": (END,)}, "inside the window"),
+        ({"minute_mask:BTCUSDT": (START + 5 * HOUR + MINUTE,)}, "whole hours"),
+        ({"minute_mask:BTCUSDT": (float(START + 5 * HOUR),)}, "whole hours"),
+        ({" ": (START + 5 * HOUR,)}, "label"),
+        ((("a", (START + 5 * HOUR,)), ("a", ())), "label"),
+    ],
+)
+def test_malformed_extra_sources_are_refused(extra, message):
+    with pytest.raises(ValueError, match=message):
+        build_window_pack("w-test", START, END, pack().coins, SOURCES, extra_missing_hours=extra)

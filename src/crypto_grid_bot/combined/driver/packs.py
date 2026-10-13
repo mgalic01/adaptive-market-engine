@@ -7,8 +7,9 @@ minute bars streamed once into the flow schedule (``driver.flow_schedule``) and 
 rules (``driver.venues``), and written as gzip JSON. The pin is the SHA-256 of the
 canonical JSON inside (Ruling P11): the same pack has the same hash on any machine, while
 the gzip bytes around it may differ between zlib builds. The skipped hours are derived from
-the same inputs, and ``check_window`` refuses a window that breaks the registration
-checklist.
+the same inputs, joined with any labelled extra missing-hour sources the caller passes
+(Rulings P16, P17: hours the minute baselines' frozen masks and quote test leave without a
+boundary), and ``check_window`` refuses a window that breaks the registration checklist.
 
 Pure: nothing here touches the network, and nothing at or after the reserved boundary
 enters a pack.
@@ -20,7 +21,7 @@ import io
 import json
 import re
 import zlib
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from decimal import Context, Decimal, InvalidOperation, localcontext
@@ -72,6 +73,9 @@ _COIN_KEYS = frozenset(
 _PACK_KEYS = frozenset(
     {"format", "window_id", "start_ms", "end_ms", "coins", "skipped_hours", "sources"}
 )
+_EXTRA_KEY = "extra_missing_hours"  # written only when a pack has extra sources
+ExtraHours = tuple[tuple[str, tuple[int, ...]], ...]
+ExtraSources = Mapping[str, Iterable[int]] | Iterable[tuple[str, Iterable[int]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +107,11 @@ class CoinInputs:
 @dataclass(frozen=True, slots=True)
 class WindowPack:
     """Every input of one window's runs: ``coins`` sorted by symbol, the derived skipped
-    hours, and ``sources``, the data manifests as (name, SHA-256) sorted by name."""
+    hours, and ``sources``, the data manifests as (name, SHA-256) sorted by name.
+
+    ``extra_missing_hours`` are the labelled extra missing-hour sources the skipped hours
+    also join (Rulings P16, P17), sorted by label, each label's hours sorted and unique;
+    empty for a window without any, whose pack is then exactly as before they existed."""
 
     window_id: str
     start_ms: int
@@ -111,6 +119,7 @@ class WindowPack:
     coins: tuple[CoinInputs, ...]
     skipped_hours: tuple[int, ...]
     sources: tuple[tuple[str, str], ...]
+    extra_missing_hours: ExtraHours = ()
 
 
 def minute_months(start_ms: int, end_ms: int) -> tuple[str, ...]:
@@ -191,9 +200,18 @@ def build_window_pack(
     end_ms: int,
     coins: Iterable[CoinInputs],
     sources: Iterable[tuple[str, str]],
+    *,
+    extra_missing_hours: ExtraSources = (),
 ) -> WindowPack:
     """The window's pack: coins sorted by symbol, sources by name and the skipped hours
-    derived. ``check_window`` refuses it if it breaks the registration checklist."""
+    derived. ``check_window`` refuses it if it breaks the registration checklist.
+
+    ``extra_missing_hours`` maps a label (such as ``minute_mask:BTCUSDT``) to more hours
+    that every arm must skip (Rulings P16, P17): whole UTC hours inside ``[start, end)``,
+    possibly none. The skipped hours join them, and the pack keeps each source under its
+    label so they are disclosed per source. A source holding the window's first or last
+    hour refuses the window, as a coin's gap there does. With none, the pack is exactly as
+    before (the same document, so the same pin)."""
     if not isinstance(window_id, str) or _WINDOW_ID.fullmatch(window_id) is None:
         raise ValueError(f"window id {window_id!r}: 1-64 letters, digits, '.', '_' or '-'")
     _window(start_ms, end_ms)
@@ -204,22 +222,49 @@ def build_window_pack(
     symbols = [coin.symbol for coin in ordered]
     if len(set(symbols)) != len(symbols):
         raise ValueError(f"{window_id}: duplicate coin inputs")
-    skipped = derive_skipped_hours(start_ms, end_ms, ordered)
-    pack = WindowPack(window_id, start_ms, end_ms, ordered, skipped, _sources(sources))
+    extra = _extra_hours(extra_missing_hours, start_ms, end_ms)
+    skipped = derive_skipped_hours(start_ms, end_ms, ordered, extra)
+    pack = WindowPack(window_id, start_ms, end_ms, ordered, skipped, _sources(sources), extra)
     check_window(pack)
     return pack
 
 
 def derive_skipped_hours(
-    start_ms: int, end_ms: int, coins: Iterable[CoinInputs]
+    start_ms: int,
+    end_ms: int,
+    coins: Iterable[CoinInputs],
+    extra_missing_hours: ExtraSources = (),
 ) -> tuple[int, ...]:
     """The window's skipped hours, ascending: every hour some coin has no spot bar at,
-    no futures bar at (a coin with futures) or no opening minute at, restricted to
-    ``start < h < end - 1h``. ``check_window`` refuses a gap at the first or last hour."""
+    no futures bar at (a coin with futures) or no opening minute at, and every hour of the
+    labelled ``extra_missing_hours`` sources, restricted to ``start < h < end - 1h``.
+    ``check_window`` refuses a gap or a source hour at the first or last hour."""
     hours: set[int] = set()
     for coin in coins:
         hours.update(_gaps(coin, start_ms, end_ms))
+    for _, extra in _extra_hours(extra_missing_hours, start_ms, end_ms):
+        hours.update(extra)
     return tuple(sorted(hour for hour in hours if start_ms < hour < end_ms - HOUR))
+
+
+def skipped_hour_sources(pack: WindowPack) -> ExtraHours:
+    """Each source of ``pack``'s skipped hours with its hours, sorted by label, for
+    disclosure: ``"<symbol>: no spot bar"``, ``"<symbol>: no futures bar"`` and
+    ``"<symbol>: no opening minute"`` for every coin gap that leaves a skipped hour, and
+    every extra missing-hour source under its own label, an empty one too. The union of
+    the hours is the pack's skipped hours."""
+    if not isinstance(pack, WindowPack):
+        raise ValueError("window pack required")
+    start, end = pack.start_ms, pack.end_ms
+    found: dict[str, set[int]] = {}
+    for coin in pack.coins:
+        for hour, reasons in _gaps(coin, start, end).items():
+            if start < hour < end - HOUR:
+                for reason in reasons:
+                    found.setdefault(f"{coin.symbol}: {reason}", set()).add(hour)
+    labelled = {label: tuple(sorted(hours)) for label, hours in found.items()}
+    labelled.update(_extra_hours(pack.extra_missing_hours, start, end))
+    return tuple(sorted(labelled.items()))
 
 
 def check_window(pack: WindowPack) -> None:
@@ -232,10 +277,11 @@ def check_window(pack: WindowPack) -> None:
       hours, V3's exclusion rule (a month the pack holds in part is judged on the hours
       it holds);
     - a coin with futures has no valid funding record usable at the start, funding the
-      replay refuses, or a settlement missing inside the window by the replay's rule.
+      replay refuses, or a settlement missing inside the window by the replay's rule;
+    - an extra missing-hour source holds the first or last hour.
 
-    Inputs built for another window, and skipped hours other than the derived ones, are
-    refused too.
+    Inputs built for another window, extra sources out of their canonical order, and
+    skipped hours other than the derived ones, are refused too.
     """
     if not isinstance(pack, WindowPack):
         raise ValueError("window pack required")
@@ -258,7 +304,20 @@ def check_window(pack: WindowPack) -> None:
         _check_spot_months(coin, end)
         if coin.futures_rules is not None:
             _check_funding(coin, start, end)
-    if pack.skipped_hours != derive_skipped_hours(start, end, pack.coins):
+    extra = _extra_hours(pack.extra_missing_hours, start, end)
+    if extra != pack.extra_missing_hours:
+        raise ValueError(
+            f"{pack.window_id}: extra missing-hour sources must be sorted by label, each "
+            "label's hours sorted and unique"
+        )
+    for label, hours in extra:
+        for hour, which in ((start, "first"), (end - HOUR, "last")):
+            if hour in hours:
+                raise ValueError(
+                    f"{label}: the {which} window hour {hour} would need skipping "
+                    "(an extra missing-hour source)"
+                )
+    if pack.skipped_hours != derive_skipped_hours(start, end, pack.coins, extra):
         raise ValueError(f"{pack.window_id}: the skipped hours differ from the derived ones")
 
 
@@ -560,7 +619,7 @@ def _rules_document(rules: VenueRules) -> dict[str, object]:
 
 
 def _pack_document(pack: WindowPack) -> dict[str, object]:
-    return {
+    document: dict[str, object] = {
         "format": _FORMAT,
         "window_id": pack.window_id,
         "start_ms": pack.start_ms,
@@ -569,6 +628,9 @@ def _pack_document(pack: WindowPack) -> dict[str, object]:
         "sources": [list(source) for source in pack.sources],
         "coins": [_coin_document(coin) for coin in pack.coins],
     }
+    if pack.extra_missing_hours:  # absent otherwise, so a pack without any keeps its pin
+        document[_EXTRA_KEY] = [[label, list(hours)] for label, hours in pack.extra_missing_hours]
+    return document
 
 
 def _coin_document(coin: CoinInputs) -> dict[str, object]:
@@ -717,6 +779,47 @@ def _coin_from(value: object) -> CoinInputs:
     )
 
 
+def _extra_hours(extra: object, start: int, end: int) -> ExtraHours:
+    """The labelled extra missing-hour sources ``extra`` (a mapping or (label, hours)
+    pairs) in their canonical form: sorted by label, each label's hours sorted and unique.
+    A label is a nonempty string, named once; an hour is an ``int`` on a whole UTC hour
+    inside ``[start, end)``."""
+    items = extra.items() if isinstance(extra, Mapping) else extra
+    if not isinstance(items, Iterable) or isinstance(items, str | bytes):
+        raise ValueError("extra missing-hour sources: (label, hours) pairs required")
+    found: dict[str, tuple[int, ...]] = {}
+    for item in items:
+        if not isinstance(item, tuple | list) or len(item) != 2:
+            raise ValueError("extra missing-hour sources: (label, hours) pairs required")
+        label, hours = item
+        if type(label) is not str or not label.strip() or label in found:
+            raise ValueError(f"extra missing-hour source label {label!r}: nonempty, named once")
+        if not isinstance(hours, Iterable) or isinstance(hours, str | bytes):
+            raise ValueError(f"{label}: a collection of hours required")
+        listed = tuple(hours)
+        if any(type(hour) is not int or hour % HOUR for hour in listed):
+            raise ValueError(f"{label}: whole hours (int ms) required")
+        if any(not start <= hour < end for hour in listed):
+            raise ValueError(f"{label}: hours inside the window [{start}, {end}) required")
+        found[label] = tuple(sorted(set(listed)))
+    return tuple(sorted(found.items()))
+
+
+def _extra_from(value: object) -> ExtraHours:
+    """The extra sources a pack document holds, as ``_pack_document`` writes them."""
+    pairs = _list(value, "extra missing hours")
+    if not pairs:
+        raise ValueError("pack extra missing hours: written only when there are some")
+    extra = []
+    for item in pairs:
+        pair = _list(item, "extra missing hours")
+        if len(pair) != 2:
+            raise ValueError("pack extra missing hours: [label, hours] pairs required")
+        label = _str(pair[0], "extra missing hours label")
+        extra.append((label, _ints(pair[1], f"{label} extra missing hours")))
+    return tuple(extra)
+
+
 def _sources(sources: Iterable[object]) -> tuple[tuple[str, str], ...]:
     """The data manifests as (name, lowercase SHA-256) pairs, sorted, each named once."""
     pairs: list[tuple[str, str]] = []
@@ -738,7 +841,8 @@ def _sources(sources: Iterable[object]) -> tuple[tuple[str, str], ...]:
 
 
 def _pack_from(value: object) -> WindowPack:
-    document = _object(value, _PACK_KEYS, "document")
+    extra = isinstance(value, dict) and _EXTRA_KEY in value
+    document = _object(value, _PACK_KEYS | {_EXTRA_KEY} if extra else _PACK_KEYS, "document")
     if document["format"] != _FORMAT:
         raise ValueError(f"pack: format {_FORMAT!r} required")
     return WindowPack(
@@ -748,4 +852,5 @@ def _pack_from(value: object) -> WindowPack:
         tuple(_coin_from(coin) for coin in _list(document["coins"], "coins")),
         _ints(document["skipped_hours"], "skipped hours"),
         _sources(_list(document["sources"], "sources")),
+        _extra_from(document[_EXTRA_KEY]) if extra else (),
     )
