@@ -1436,8 +1436,22 @@ def test_the_header_says_a_second_dispatch_is_refused_and_why() -> None:
     assert "A second dispatch of a registration is refused too" in header
     assert "new run id and attempt 1" in header
     assert "fails the plan and leaves the verdict incomplete" in header
-    assert "A later dispatch never voids an earlier one" in header
+    # Ruling R5-2: what a later dispatch can and cannot do to an earlier one.
+    assert "never voids" not in header
+    assert (
+        "A dispatch created a second or more later never counts against an earlier one, but "
+        "two dispatches created in the same second void each other, and one created while an "
+        "earlier run's plan or aggregate is paging through the runs can make that listing "
+        "inconsistent, which fails that plan or leaves that verdict incomplete (fail closed). "
+        "The operating rule above forbids both."
+    ) in header
     assert "holds no stored credentials" in header
+    # The Aggregate step holds the token in a rehearsal too, unused there.
+    assert (
+        "Two steps get the job's own token, with read access to this repository's workflow "
+        "runs and nothing more: a registered run's dispatch check, and the Aggregate step, "
+        "which holds it in a rehearsal too, where the driver does not use it."
+    ) in header
 
 
 # --- the status job (Ruling F11) ---------------------------------------------------------

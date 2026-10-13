@@ -2,10 +2,12 @@
 ``prepare``, ``picks``, ``run-cell``, ``aggregate``, ``smoke``, ``rehearsal-world``,
 ``timing`` and ``timing-close``.
 
-Every subcommand but ``smoke`` and ``rehearsal-world`` passes its gate before it reads any
-input beyond the registration, then calls the driver library
-(``crypto_grid_bot.combined.driver``) and prints one canonical JSON document on stdout
-(sorted keys, no spaces, ASCII, one newline). Logs go to stderr; a refusal is one stderr
+Every subcommand but ``smoke``, ``rehearsal-world``, ``dispatch-check`` and
+``timing-close`` passes its gate before it reads any input beyond the registration, then
+calls the driver library (``crypto_grid_bot.combined.driver``); ``dispatch-check`` reads
+only the environment and GitHub's REST API, and ``timing-close`` only what its timing step
+wrote. Each prints one canonical JSON document on stdout (sorted keys, no spaces, ASCII,
+one newline). Logs go to stderr; a refusal is one stderr
 line and exit status 1. Only ``prepare`` (prepare-only and registered) and ``timing``
 fetch data, and only from data.binance.vision through the guarded transports
 (``fetch_v3_data.V3Transport`` for the inventory, ``v31_fetch.LegacyTransport`` for the
@@ -40,8 +42,11 @@ One dispatch per registration (Ruling R4-2): the workflow names each run ``v31-r
 driver step) and ``aggregate`` list this workflow's runs through GitHub's REST API with
 the job's token: another run of the same registered title, created before this one or at
 the same time, whatever its status, fails the plan and leaves the verdict incomplete, and
-so does any failure of the check itself (``dispatch_check``). A run created later never
-counts, so a later dispatch cannot void the first.
+so does any failure of the check itself (``dispatch_check``). A run created a second or
+more later never counts against an earlier one, but two created in the same second void
+each other, and one created while an earlier run's check pages through the runs can make
+that listing inconsistent, which fails that plan or leaves that verdict incomplete (fail
+closed). The operating rule in the workflow's header forbids both.
 
 Modes (Ruling F3): ``--mode registered`` runs on the repository's own registration;
 ``--mode rehearsal`` runs the same subcommands on a synthetic rehearsal world built
@@ -1271,7 +1276,9 @@ def other_dispatches(
     ``registered_title(registration_sha256)`` and it was created before the current run
     or in the same second (a tie counts). Its status and conclusion do not matter: queued,
     in progress, failed, cancelled or successful, it dispatched the registration. A run
-    created later never counts, so a later dispatch cannot void the current one. Refuses
+    created a second or more later never counts against the current one, but one created
+    in the same second does (each of the two then counts the other), and one created while
+    ``workflow_runs`` pages can make the listing inconsistent, which it refuses. Refuses
     (one ``ValueError``) any run, the current one included, without a positive integer
     id, a string display title and a ``created_at`` of GitHub's form; a run id listed
     twice; a current run missing from the list; and a current run titled otherwise, as a

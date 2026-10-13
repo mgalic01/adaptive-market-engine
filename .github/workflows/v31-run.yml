@@ -5,8 +5,9 @@ run-name: v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 
 # The V3.1 run driver (scripts/v31_driver.py) on GitHub's machines. It never trades, holds no
 # stored credentials, can only read the repository and commits nothing: its results are
-# artifacts. Two steps of a registered run (the dispatch check and the aggregate) get the
-# job's own token, with read access to this repository's workflow runs and nothing more.
+# artifacts. Two steps get the job's own token, with read access to this repository's
+# workflow runs and nothing more: a registered run's dispatch check, and the Aggregate step,
+# which holds it in a rehearsal too, where the driver does not use it.
 #
 # OPERATING RULE: never dispatch v31-run while another v31-run is queued or running. The
 # concurrency group below asks GitHub to queue dispatches (queue: max) rather than keep one
@@ -91,8 +92,12 @@ run-name: v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # with its mode and registration, and the plan job (first) and the aggregate (again) list
 # this workflow's runs through GitHub's API: another registered run of the same
 # registration created before this one or at the same time, whatever its status, fails the
-# plan and leaves the verdict incomplete, as does any failure of the check. A later
-# dispatch never voids an earlier one.
+# plan and leaves the verdict incomplete, as does any failure of the check. A dispatch
+# created a second or more later never counts against an earlier one, but two dispatches
+# created in the same second void each other, and one created while an earlier run's plan
+# or aggregate is paging through the runs can make that listing inconsistent, which fails
+# that plan or leaves that verdict incomplete (fail closed). The operating rule above
+# forbids both.
 #
 # No archive for 2025-01 or later may exist anywhere on a runner. The driver refuses such a
 # month before it fetches; the "Refuse any file named for 2025 or later" step is a second,
