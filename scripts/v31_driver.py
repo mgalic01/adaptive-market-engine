@@ -1061,7 +1061,7 @@ def world_gate(repo: Path, mode: str, code_pin: str) -> None:
                 f"{' and '.join(wrong)}; a rehearsal runs only on a synthetic world built "
                 "in-job (rehearsal-world), never on the repository's own registration or data"
             )
-    elif mode in ("registered", "prepare-only", "timing"):
+    elif mode in REAL_MODES:
         found = [where for where, raw in held.items() if raw is not None]
         if found:
             raise ValueError(
@@ -1088,7 +1088,9 @@ def plan_gate(
     (given, or read from the path given) must hold exactly the owner's windows, dates and
     coin sets, and a registered run's registration, whose prepare pin must be that
     config's, the owner's windows and FX reference date (``owner_plan.owner_plan_errors``).
-    Each caller runs it after its other gates and before anything is fetched or replayed.
+    Each caller runs it before anything is fetched, read or replayed: prepare, timing,
+    plan, picks and aggregate after their other gates; run-cell after its world gate,
+    before its trial gate and before it reads the cell's pack for ``execution_gate``.
     ``rehearsal`` is exempt, and reads nothing here: its synthetic world's plan is the
     point, and ``world_gate`` admits that mode only on a world committing the rehearsal
     marker. The smoke never calls a gate. Any other mode is refused."""
