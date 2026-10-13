@@ -57,7 +57,10 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           SINCE: ${{ steps.start.outputs.time }}
         run: |
+          # A failed API call stops the step here (the default shell runs with -e); an
+          # empty or non-numeric answer counts as no comment.
           posted=$(gh api "repos/$REPO/issues/$PR/comments?since=$SINCE&per_page=100" --jq '[.[] | select(.user.login == "claude[bot]")] | length')
+          case "$posted" in ''|*[!0-9]*) posted=0 ;; esac
           if [ "$posted" -lt 1 ]; then
             echo "::error::the review finished without posting its PR comment"
             exit 1

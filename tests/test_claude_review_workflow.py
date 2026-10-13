@@ -33,6 +33,7 @@ def test_a_review_that_posts_nothing_fails_the_job() -> None:
     assert step["env"]["SINCE"] == "${{ steps.start.outputs.time }}"
     assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
     assert '"claude[bot]"' in step["run"] and "exit 1" in step["run"]
+    assert "''|*[!0-9]*) posted=0" in step["run"]  # an empty answer counts as no comment
     # Event values reach the shell through env only, never by interpolation into the script.
     assert "${{" not in step["run"]
 
