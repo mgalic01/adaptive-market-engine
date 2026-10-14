@@ -417,6 +417,11 @@ def test_a_queued_run_is_protected_by_queue_max_and_by_an_operating_rule() -> No
     header = _header()
     assert "never dispatch v31-run while another v31-run is queued or running" in header.lower()
     assert "workflow level" in header  # the key is not shown to be honoured there
+    # Nor is a registered dispatch cancelled: a cancelled launch counts (v31-d21, L2).
+    assert (
+        "Never cancel a queued or running registered dispatch either: a cancelled launch "
+        "counts as an execution of its registration."
+    ) in header
     # The comment on the concurrency block says what it does; it does not claim more.
     comment = _text().split("\nconcurrency:\n", 1)[0].rsplit("\n\n", 1)[-1]
     assert "queue: max" in comment and "pending" in comment
@@ -1565,11 +1570,26 @@ def test_the_header_says_a_second_dispatch_is_refused_and_why() -> None:
         "every attempt (the status job aside), and anything else counts."
     ) in header
     assert (
-        "Transient GitHub errors (no reply, a timeout, HTTP 5xx or 429, a rate limit, a run "
-        "not yet listed) are retried, five attempts over about five minutes, before the check "
-        "fails closed; a rehearsal runs the same check report-only, on its own title, to "
-        "prove it against GitHub."
+        "Transient GitHub errors (no reply, a timeout, a reply cut short, HTTP 5xx or 429, a "
+        "rate limit, a run not yet listed) are retried, five attempts over about five "
+        "minutes, before the check fails closed; the whole check stops at a 20-minute "
+        "deadline, so a long outage fails the plan job (not counted) instead of running into "
+        "its 30-minute timeout, which cancels it (counted). A rehearsal runs the same check "
+        "report-only, on its own title, to prove it against GitHub."
     ) in header
+
+
+def test_the_dispatch_checks_deadline_ends_inside_the_plan_jobs_timeout() -> None:
+    """A plan job run into its timeout is cancelled, and a cancelled plan counts (L2), so
+    the check's own deadline ends well inside it, leaving the checkout and the installs
+    before it ten minutes."""
+    plan = _jobs()["plan"]
+    assert plan["timeout-minutes"] == 30
+    assert v31_driver.DISPATCH_DEADLINE == 20 * 60
+    setup = 10 * 60  # seconds left for the checkout and the installs before the check
+    assert v31_driver.DISPATCH_DEADLINE + setup <= plan["timeout-minutes"] * 60
+    (check,) = [s for s in _steps("plan") if "dispatch-check" in s.get("run", "")]
+    assert "timeout-minutes" not in check  # the driver's deadline, not a step timeout, ends it
 
 
 # --- the status job (Ruling F11) ---------------------------------------------------------

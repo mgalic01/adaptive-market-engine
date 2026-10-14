@@ -13,7 +13,9 @@ run-name: v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # OPERATING RULE: never dispatch v31-run while another v31-run is queued or running. The
 # concurrency group below asks GitHub to queue dispatches (queue: max) rather than keep one
 # pending run and cancel it when a newer one arrives, but nothing in this repository shows that
-# the key is honoured at workflow level, so the rule stands either way.
+# the key is honoured at workflow level, so the rule stands either way. Never cancel a
+# queued or running registered dispatch either: a cancelled launch counts as an execution
+# of its registration.
 #
 # THE DISPATCH REF: a registered or timing run is dispatched from a ref whose tree is the
 # code pin plus the registration artifacts only (config/v3_1_*.json, the FX record,
@@ -97,9 +99,12 @@ run-name: v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # launch that stopped at the plan job with nothing run does not count: GitHub's records
 # must show it completed, its plan job failed and every later job skipped in every
 # attempt (the status job aside), and anything else counts. Transient GitHub errors (no
-# reply, a timeout, HTTP 5xx or 429, a rate limit, a run not yet listed) are retried, five
-# attempts over about five minutes, before the check fails closed; a rehearsal runs the
-# same check report-only, on its own title, to prove it against GitHub. A dispatch
+# reply, a timeout, a reply cut short, HTTP 5xx or 429, a rate limit, a run not yet listed)
+# are retried, five attempts over about five minutes, before the check fails closed; the
+# whole check stops at a 20-minute deadline, so a long outage fails the plan job (not
+# counted) instead of running into its 30-minute timeout, which cancels it (counted). A
+# rehearsal runs the same check report-only, on its own title, to prove it against GitHub.
+# A dispatch
 # created a second or more later never counts against an earlier one, but two dispatches
 # created in the same second void each other, and one created while an earlier run's plan
 # or aggregate is paging through the runs can make that listing inconsistent, which fails
