@@ -1764,6 +1764,7 @@ def dispatch_check(
     clock: Callable[[], float] = time.monotonic,
     log: Log = log,
     report_only: bool = False,
+    judge_all: bool = False,
 ) -> tuple[EarlierLaunch, ...]:
     """The earlier launches of this run's title, ascending, and whether each counts
     (Ruling R4-2; owner decision v31-d21), from GitHub's REST API: the current run and this
@@ -1775,10 +1776,11 @@ def dispatch_check(
     following no redirect, with ``GITHUB_TIMEOUT`` per request.
 
     A registered check (the default) looks for ``registered_title`` and judges the
-    launches up to the first that counts, which already decides a refusal; a report-only
-    one (a rehearsal's, layer L3) looks for the rehearsal's own ``run_titles``, whose
-    input is a SHA-256 or empty, and judges every launch exactly as a registered check
-    would.
+    launches up to the first that counts, which already decides a refusal, unless
+    ``judge_all`` (the aggregate's, whose verdict names every earlier launch); a
+    report-only one (a rehearsal's, layer L3) looks for the rehearsal's own
+    ``run_titles``, whose input is a SHA-256 or empty, and judges every launch exactly as
+    a registered check would.
 
     Each read is retried on a transient failure (``github_retry``, L1): the current run,
     whose id must be ``GITHUB_RUN_ID`` before anything else is read; the whole runs
@@ -1846,7 +1848,7 @@ def dispatch_check(
             records[found_id], repository, token, read, sleep=sleep, log=log, deadline=deadline
         )
         judged.append(launch)
-        if launch.counts and not report_only:
+        if launch.counts and not (report_only or judge_all):
             break  # a registered check refuses on it: no later launch changes that
     return tuple(judged)
 
@@ -1859,14 +1861,16 @@ def dispatch_reasons(
     clock: Callable[[], float] = time.monotonic,
     log: Log = log,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """What a registered aggregate hands ``aggregate`` (Ruling R4-2): first the earlier
-    launch of the registration that counts, with why (the first such already decides), or
-    why none could be ruled out (a failure of the check, its deadline passing among them),
-    either of which leaves the verdict incomplete (fail closed); then each earlier launch
-    before it that stopped at the plan job with nothing run (L2), which the verdict names
-    and which changes nothing."""
+    """What a registered aggregate hands ``aggregate`` (Ruling R4-2): first every earlier
+    launch of the registration that counts, with why, or why none could be ruled out (a
+    failure of the check, its deadline passing among them), either of which leaves the
+    verdict incomplete (fail closed); then every earlier launch that stopped at the plan
+    job with nothing run (L2), which the verdict names and which changes nothing. Unlike
+    the plan's check it judges every launch (``judge_all``): the verdict names them all."""
     try:
-        launches = dispatch_check(registration_sha256, opener, sleep=sleep, clock=clock, log=log)
+        launches = dispatch_check(
+            registration_sha256, opener, sleep=sleep, clock=clock, log=log, judge_all=True
+        )
     except ValueError as exc:
         return (f"another dispatch of this registration could not be ruled out: {exc}",), ()
     counted = tuple(

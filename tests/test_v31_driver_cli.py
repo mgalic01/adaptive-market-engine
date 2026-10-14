@@ -2294,6 +2294,24 @@ def test_no_request_starts_after_the_deadline_nor_waits_past_it(github_env, caps
     )
 
 
+def test_the_aggregate_names_every_earlier_launch_where_the_plan_stops_at_the_first(github_env):
+    """Run 300 is still queued (it counts); run 350 stopped at its plan job (it does not).
+    The plan's check refuses on 300 and reads no further; the aggregate's verdict names
+    both, as it must name every earlier launch."""
+    queued = workflow_run(300, status="queued", conclusion=None)
+    stopped = workflow_run(350, conclusion="failure")
+    jobs = {350: jobs_of(STOPPED, run=350)}
+    api = FakeGitHub([CURRENT, queued, stopped], jobs=jobs)
+    assert counted(v31_driver.dispatch_check(SHA, api, sleep=no_sleep)) == (300,)
+    assert API + jobs_page(350) not in [url for url, *_ in api.requests]
+    api = FakeGitHub([CURRENT, queued, stopped], jobs=jobs)
+    counted_, uncounted_ = v31_driver.dispatch_reasons(SHA, api, sleep=no_sleep)
+    assert [reason.split(" (")[0] for reason in counted_] == [
+        "another dispatch of this registration: run 300"
+    ]
+    assert uncounted_ == (v31_driver.uncounted_line(350),)
+
+
 class Broken(Response):
     """A reply whose body cannot be read: ``failure`` is raised while reading it."""
 
