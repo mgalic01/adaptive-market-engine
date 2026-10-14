@@ -21,7 +21,8 @@ Nothing at or after 2025-01 is fetched, opened or read.
 
 The dispatch ref (Ruling F6): a registered run and a timing run are dispatched from a ref
 whose tree is the code pin plus the registration artifacts only (``config/v3_1_*.json``,
-the FX record, ``docs/trials/register.jsonl``, ``docs/reviews/**``, ``docs/tasks/**``).
+``docs/trials/register.jsonl``, ``docs/reviews/**``, ``docs/tasks/**``; no FX record: no
+capital converts a currency, owner decision 2026-10-14).
 Every gated job checks it (``job_gate``: nothing but those changed since the code pin;
 timing and prepare-only: the checkout is the dispatched ``--code-commit``, clean), and the
 plan job checks it first, so a wrong ref fails in the first job.
@@ -78,17 +79,19 @@ nothing: its every input is the world's.
 
 The owner's plan: the real modes (``registered``, ``prepare-only`` and ``timing``) refuse,
 before anything is fetched or replayed, any prepare config or registration other than the
-owner's windows, dates, coin sets and FX reference date (``plan_gate``,
+owner's windows, dates, coin sets and three USDT capitals (``plan_gate``,
 ``owner_plan.owner_plan_errors``). The rehearsal and the smoke keep their synthetic plans:
 ``plan_gate`` exempts the rehearsal mode by name, and the smoke calls no gate.
 
 ``plan --mode registered|rehearsal [--cells N]``
-    ``job_gate`` and ``world_gate``, then the cells the workflow's two matrices run: the
-    four ``unchanged_v3_selector`` cells, which need the picks job (``v3_cells``), and
-    every other cell (``main_cells``, the six long-only V3 rules included: they read no
-    picks), each at most 256. A rehearsal may plan only the first ``N`` cells (at least
-    6: one W1 cell of each kind, the selector and a long-only V3 rule both, and one W0
-    cell first); a registered run plans them all.
+    ``job_gate`` and ``world_gate``, then the cells the workflow's three matrices run, each
+    1 to 256 (GitHub's limit on one matrix): the six ``unchanged_v3_selector`` cells,
+    which need the picks job (``v3_cells``); the 144 minute cells (``minute_cells``); and
+    every other cell (``main_cells``, 174: the V3.1 cells of W1 and W0, the hold cells and
+    the 36 long-only V3 cells, which read no picks). A rehearsal may plan only the first
+    ``N`` cells (at least 6: one W1 cell of each kind, the selector and a long-only V3
+    rule both, and one W0 cell first, so every matrix has a cell); a registered run plans
+    them all.
 ``dispatch-check --registration-sha256 S [--report-only]`` (the plan job, Ruling R4-2)
     Refuses, naming the first and why it counts, another run of this workflow titled
     ``v31-run registered S`` and created before the current run (``GITHUB_RUN_ID``) or at
@@ -144,7 +147,7 @@ owner's windows, dates, coin sets and FX reference date (``plan_gate``,
     dispatch check that cannot rule one out (``dispatch_reasons``); one stopped at the
     plan job with nothing run is named in the verdict and changes nothing.
 ``smoke --out O [--cells N]``
-    No gate and no network: a synthetic world (``v31_smoke``) with all 42 arms and 216
+    No gate and no network: a synthetic world (``v31_smoke``) with all 42 arms and 324
     cells on three-day windows, its packs, the picks job, every cell (or the first ``N``,
     one of each kind first) and the aggregate, through the same functions as the
     subcommands, to a verdict.
@@ -153,7 +156,7 @@ owner's windows, dates, coin sets and FX reference date (``plan_gate``,
     and ``W/legacy``, its legacy dataset). Its code pin commits the smoke world, every
     module of this checkout's package (so the adapter pins read real blobs) and the
     rehearsal marker, on top of a synthetic V3.1 trial's spec and registration event; a
-    commit on top of it adds the registration of its packs (all 216 cells) and the trial's
+    commit on top of it adds the registration of its packs (all 324 cells) and the trial's
     completion, as Task 11 registers the real run. Prints the registration's SHA-256.
 ``timing --part prepare|picks|cell --code-commit C --prepare-sha256 S --scratch X --out O``
     Measures the registered run's heavy steps before registration (Ruling F4), gated like
@@ -286,7 +289,9 @@ LEGACY_DIR = "legacy"  # the legacy dataset, as backtest reads it: legacy/binanc
 MINUTES_DIR = "minutes"  # the V3.1 minute manifests' other archives: minutes/binance/data/...
 PREPARE_OUTPUT_SCHEMA = "v3.1-prepare-output-1"
 SMOKE_SCHEMA = "v3.1-smoke-1"
-PLAN_SCHEMA = "v3.1-plan-1"
+# -2 since the owner's three capitals (2026-10-14): the plan lists minute_cells, and
+# main_cells no longer holds the minute cells.
+PLAN_SCHEMA = "v3.1-plan-2"
 REHEARSAL_WORLD_SCHEMA = "v3.1-rehearsal-world-1"
 TIMING_SCHEMA = "v3.1-timing-1"
 TIMING_CLOSE_SCHEMA = "v3.1-timing-close-1"
@@ -324,12 +329,16 @@ AGGREGATE_JOB_BUDGET = 355 * 60  # seconds
 PLAN_JOB = "plan"
 STATUS_JOB = "status"
 SKIPPED_JOBS = ("smoke", "prepare", "picks", "aggregate")
-SKIPPED_MATRIX_JOBS = ("run-main", "run-v3", "timing")
+SKIPPED_MATRIX_JOBS = ("run-main", "run-minute", "run-v3", "timing")
 RUN_MODES = ("registered", "rehearsal")  # the registered job graph, on the repo or a world
 REAL_MODES = ("registered", "prepare-only", "timing")  # held to the owner's plan (plan_gate)
 MAX_MATRIX = 256  # GitHub's limit on the jobs of one matrix
+# The plan's three matrices, as its document names them, and the workflow job running each:
+# the selector cells (they need the picks job), the minute cells, and every other cell.
+MATRICES = (("v3_cells", "run-v3"), ("minute_cells", "run-minute"), ("main_cells", "run-main"))
 # smoke_cells' firsts: one W1 cell of each kind (the selector and a fixed long-only V3 rule
-# both) and one W0 cell, so a reduced rehearsal exercises every matrix's every cell path.
+# both) and one W0 cell, so a reduced rehearsal exercises every matrix's every cell path:
+# the selector is run-v3's, the minute cell run-minute's, and the other four run-main's.
 MIN_REHEARSAL_CELLS = 6
 TIMING_PARTS = ("prepare", "picks", "cell")
 # The timing cell: V2's grid, the heaviest minute arm (Task 8b measured it highest in
@@ -1159,7 +1168,7 @@ def plan_gate(
     In a real mode (``REAL_MODES``: registered, prepare-only, timing) the prepare config
     (given, or read from the path given) must hold exactly the owner's windows, dates and
     coin sets, and a registered run's registration, whose prepare pin must be that
-    config's, the owner's windows and FX reference date (``owner_plan.owner_plan_errors``).
+    config's, the owner's windows and three USDT capitals (``owner_plan.owner_plan_errors``).
     Each caller runs it before anything is fetched, read or replayed: prepare, timing,
     plan, picks and aggregate after their other gates; run-cell after its world gate,
     before its trial gate and before it reads the cell's pack for ``execution_gate``.
@@ -1216,7 +1225,7 @@ def job_gate(
             f"the run-manifest's SHA-256 {manifest_sha256} differs from the registered "
             f"{reg.run_manifest_pin}"
         )
-    errors.extend(_path_errors(changed_since(repo, reg.registration.code_pin), reg.fx_record_paths))
+    errors.extend(_path_errors(changed_since(repo, reg.registration.code_pin)))
     errors.extend(
         trial_errors(
             repo,
@@ -1553,8 +1562,8 @@ def launch_decision(run: object, jobs: object) -> tuple[str | None, bool]:
     - every attempt from 1 to the run's ``run_attempt`` lists a job named ``plan``, and
       every ``plan`` job listed ended ``failure``;
     - every other job, except the always-running ``status`` job, ended ``skipped``:
-      ``smoke``, ``prepare``, ``picks``, the ``run-main``, ``run-v3`` and ``timing``
-      matrix jobs (``<job>`` or ``<job> (<matrix values>)``) and ``aggregate``.
+      ``smoke``, ``prepare``, ``picks``, the ``run-main``, ``run-minute``, ``run-v3`` and
+      ``timing`` matrix jobs (``<job>`` or ``<job> (<matrix values>)``) and ``aggregate``.
 
     Anything else counts: a run queued or still running, an attempt whose plan succeeded,
     was cancelled or is not listed, any later job that ran or failed, a job of an unknown
@@ -2295,7 +2304,7 @@ def registered_job(args: argparse.Namespace) -> tuple[Path, DriverRegistration, 
 
 
 def plan(args: argparse.Namespace) -> dict[str, object]:
-    """``plan`` (the module docstring): the gates, then the two matrices' cells."""
+    """``plan`` (the module docstring): the gates, then the three matrices' cells."""
     _, reg, _, head = registered_job(args)
     if args.cells is not None and args.mode != "rehearsal":
         raise ValueError("--cells: a registered run runs every registered cell")
@@ -2306,11 +2315,8 @@ def plan(args: argparse.Namespace) -> dict[str, object]:
             "cell path runs"
         )
     cells = smoke_cells(reg, args.cells)
-    # Only the selector reads the picks (Ruling F7); the six long-only V3 rules replay
-    # their fixed rule, so they run with every other cell and never wait for the picks job.
-    v3_cells = [cell.cell_id for cell in cells if needs_picks(cell.arm)]
-    main_cells = [cell.cell_id for cell in cells if not needs_picks(cell.arm)]
-    for name, listed in (("v3_cells", v3_cells), ("main_cells", main_cells)):
+    matrices = matrix_cells(cells)
+    for name, listed in matrices.items():
         if not 0 < len(listed) <= MAX_MATRIX:
             raise ValueError(f"{name}: {len(listed)} cells; a matrix takes 1 to {MAX_MATRIX}")
     return {
@@ -2321,9 +2327,30 @@ def plan(args: argparse.Namespace) -> dict[str, object]:
         "repo_head": head,
         "cells_registered": len(reg.cells),
         "cells_planned": len(cells),
-        "v3_cells": v3_cells,
-        "main_cells": main_cells,
+        **matrices,
     }
+
+
+def matrix_cells(cells: Sequence[Cell]) -> dict[str, list[str]]:
+    """``cells``' ids by the workflow matrix that runs them (``MATRICES``), each in the
+    order given: every cell in exactly one.
+
+    Only the selector reads the picks (Ruling F7), so its cells alone wait for the picks
+    job (``v3_cells``); the six long-only V3 rules replay their fixed rule and run with
+    the other cells. The minute cells get a matrix of their own (``minute_cells``): with
+    the owner's three capitals there are 318 cells besides the selector's, more than one
+    matrix may hold, and the minute cells (144) leave 174 (``main_cells``). The names
+    are ``MATRICES``', in its order: the picks matrix, the minute one, then the rest."""
+    picks, minute, rest = (name for name, _ in MATRICES)
+    listed: dict[str, list[str]] = {name: [] for name, _ in MATRICES}
+    for cell in cells:
+        if needs_picks(cell.arm):
+            listed[picks].append(cell.cell_id)
+        elif cell.kind == "minute":
+            listed[minute].append(cell.cell_id)
+        else:
+            listed[rest].append(cell.cell_id)
+    return listed
 
 
 def picks(args: argparse.Namespace) -> dict[str, object]:
@@ -2647,13 +2674,13 @@ def rehearsal_world(args: argparse.Namespace) -> dict[str, object]:
     """``rehearsal-world`` (the module docstring): the synthetic world a rehearsal runs on.
 
     The code pin commits the smoke world (``v31_smoke.build_world``: the synthetic legacy
-    dataset's spec and manifest, the bot config, the menu, an FX record, snapshot
-    stand-ins and the prepare config), every module of this checkout's package
+    dataset's spec and manifest, the bot config, the menu, snapshot stand-ins and the
+    prepare config), every module of this checkout's package
     (``v31_smoke.source_modules``) and the rehearsal marker, on top of the synthetic V3.1
     trial's spec and registration event (``v31_smoke.register_trial``), as the trial gate
     requires of a registered run's code pin. The packs are built once, as prepare-only
     would, into a temporary directory that is then deleted (the rehearsal's prepare job
-    builds them again and must reproduce them), and the registration of all 216 cells, its
+    builds them again and must reproduce them), and the registration of all 324 cells, its
     adapter pins read at the code pin, is committed on top with the trial's completion
     (``v31_smoke.complete_trial``): the head differs from the code pin by the registration
     artifacts alone, and every job's trial gate runs on it as on a registered run."""
@@ -2839,15 +2866,10 @@ def timing_registration(
     arm's adapter pin at ``head``, the code pin ``head``, and a run-manifest whose pack
     pins name no pack (none is built or read: a minute cell reads the legacy dataset,
     which the prepare config pins). Written under the temporary directory ``root``, with
-    the repository's menu and FX record (the smoke's, labelled synthetic, if it has
-    none): a minute cell needs its window, capital, pins and the legacy manifest's pin."""
+    the repository's menu and the owner's three USDT capitals: a minute cell needs its
+    window, capital, pins and the legacy manifest's pin."""
     (root / "config").mkdir(parents=True)
     (root / MENU_PATH).write_bytes((repo / MENU_PATH).read_bytes())
-    fx = repo / v31_smoke.FX_RECORD
-    if fx.is_file():
-        (root / v31_smoke.FX_RECORD).write_bytes(fx.read_bytes())
-    else:
-        v31_smoke.write_json(root / v31_smoke.FX_RECORD, v31_smoke.fx_record())
     no_pack = hashlib.sha256(b"v3.1 timing: no pack is built or read").hexdigest()
     document = {
         "window_packs": {window.id: no_pack for window in config.windows},

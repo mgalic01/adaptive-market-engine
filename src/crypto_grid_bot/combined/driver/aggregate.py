@@ -133,7 +133,7 @@ from crypto_grid_bot.combined.experiment import (
     cell_comparison,
     evaluate,
 )
-from crypto_grid_bot.combined.report import Report
+from crypto_grid_bot.combined.report import Report, capital_label_id
 
 SUMMARY_DIR = "summary"
 PAGES_DIR = "pages"
@@ -601,14 +601,10 @@ def _identity_refusals(cell: Cell, outcome: RunOutcome, reg: DriverRegistration)
             )
     evidence = outcome.report_evidence
     label = None if evidence is None else evidence.report.capital_label
-    if label is not None and _label_capital(label) != cell.capital_id:
+    # The capital id the label names, as ``dashboard`` reads it; an unknown label names none.
+    if label is not None and capital_label_id(label) != cell.capital_id:
         errors.append(f"{cell.cell_id}: its report is labelled with another capital: {label}")
     return errors
-
-
-def _label_capital(label: str) -> str:
-    """The capital id a report's capital label names, as ``dashboard`` reads it."""
-    return "research" if label == "research_10000_usdt" else label.partition(":")[0]
 
 
 def _report(

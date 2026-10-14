@@ -1,14 +1,11 @@
 """The V3.1 registration: every cell the driver runs, and every pin each cell must match.
 
-Four committed JSON files, each read strictly: a duplicate key, a JSON float or NaN is
-refused, money and FX values are decimal strings, and every object holds exactly its keys.
+Three committed JSON files, each read strictly: a duplicate key, a JSON float or NaN is
+refused, money values are decimal strings, and every object holds exactly its keys.
 
 - ``config/v3_1_prepare.json`` (``load_prepare_config``, Ruling P1): the windows with their
   symbols, and the data manifests and the spot and futures filter snapshots by path and
   SHA-256. Prepare runs from it before any registration exists.
-- The FX source record (Ruling P10f): ``schema``, ``usd_per_eur`` (the ECB reference
-  rate, USDT taken at par), ``reference_date``, ``source_url`` (an https ECB page) and
-  ``retrieved_on``. Its file's SHA-256 is the owner_small capital's ``fx_pin``.
 - ``config/v3_1_run_manifest.json`` (``run_manifest``, ``write_run_manifest``): every input
   pin of every cell, as canonical JSON. Its file's SHA-256 is every window's ``data_pin``
   (Ruling P10b).
@@ -17,10 +14,16 @@ refused, money and FX values are decimal strings, and every object holds exactly
   their skipped hours, and the cell list. Its file's SHA-256 is the ``config_pin``
   (Ruling P10a), computed on load: the file never holds it.
 
+The capitals are the owner's three, all USDT (owner decision, 2026-10-14): ``research``
+10,000, ``medium`` 1,000 and ``small`` 100, each with exactly ``id``, ``currency``,
+``amount`` and ``initial_equity``. They replace 10,000 USDT plus EUR 100 at the ECB rate
+(Ruling P10f's FX record): no capital converts a currency, and a capital naming an FX rate
+or record is refused as an unexpected field.
+
 Reading those files and ``adapter_pins``' ``git ls-tree`` are the only I/O; no network.
 
 These rules hold for any registration, synthetic ones included. Which windows, coins and
-FX date a real run must carry is the owner's plan, checked by ``owner_plan``.
+capitals a real run must carry is the owner's plan, checked by ``owner_plan``.
 """
 
 import hashlib
@@ -30,16 +33,15 @@ import subprocess  # nosec B404
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
-from datetime import date
 from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
-from urllib.parse import urlsplit
 
 from crypto_grid_bot.backtest.replay import PATH_MODES
 from crypto_grid_bot.combined.common_series import skipped_hours_valid
 from crypto_grid_bot.combined.driver.venues import COST_PROFILE_PINS
 from crypto_grid_bot.combined.experiment import (
+    CAPITALS,
     SCENARIOS,
     Capital,
     Registration,
@@ -71,12 +73,12 @@ MENU_PATH = "config/v3_1_experiment_menu.json"
 ACCEPTANCE_WINDOW = "w1"  # the pass/fail window, the only one acceptance judges
 REPORTED_WINDOW = "w0"  # reported only: the combined arm, no acceptance
 COST_MULTIPLES = (1, 2)
-CAPITAL_IDS = ("research", "owner_small")
+# The owner's three USDT capitals (2026-10-14), in cell order: research, medium, small.
+CAPITAL_IDS = tuple(capital_id for capital_id, _ in CAPITALS)
 
 REGISTRATION_SCHEMA = "v3.1-registration-1"
 PREPARE_SCHEMA = "v3.1-prepare-1"
 RUN_MANIFEST_SCHEMA = "v3.1-run-manifest-1"
-FX_RECORD_SCHEMA = "v3.1-fx-record-1"
 
 _RESERVED = 1_735_689_600_000
 _DAY = 86_400_000
@@ -85,8 +87,6 @@ _COMMIT = re.compile(r"[0-9a-f]{40}")
 _WINDOW_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")  # no '.', the cell id separator
 _CELL_ID = re.compile(r"[a-z0-9._-]+")
 _DECIMAL = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
-_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-_FIRST_RESERVED_DAY = date(2025, 1, 1)
 _ABBREVIATIONS = {"open_low_high_close": "olhc", "open_high_low_close": "ohlc", "native": "native"}
 _KINDS: dict[str, CellKind] = {"v31": "v31", "v3": "v3", "hold": "hold", "minute": "minute"}
 _COST_PROFILES = tuple((multiple, COST_PROFILE_PINS[multiple]) for multiple in COST_MULTIPLES)
@@ -111,7 +111,6 @@ _REGISTRATION_KEYS = frozenset(
 )
 _WINDOW_KEYS = frozenset({"id", "start_ms", "end_ms", "skipped_hours"})
 _CAPITAL_KEYS = frozenset({"id", "currency", "amount", "initial_equity"})
-_FX_CAPITAL_KEYS = _CAPITAL_KEYS | {"fx_rate", "fx_record"}
 _PIN_KEYS = frozenset({"path", "sha256"})
 _COST_KEYS = frozenset({"multiple", "sha256"})
 _PREPARE_KEYS = frozenset({"schema", "windows", "data_manifests", "filter_snapshots"})
@@ -126,9 +125,6 @@ _MANIFEST_KEYS = frozenset(
         "v3_pack_sha256",
         "prepare_sha256",
     }
-)
-_FX_RECORD_KEYS = frozenset(
-    {"schema", "usd_per_eur", "reference_date", "source_url", "retrieved_on"}
 )
 
 _SRC = "src/crypto_grid_bot/"
@@ -231,12 +227,9 @@ class RunManifest:
 @dataclass(frozen=True, slots=True)
 class DriverRegistration:
     """A loaded registration. ``registration`` is what acceptance judges: its windows are
-    W1 alone. ``reported_windows`` is W0. Every window's data pin is ``run_manifest_pin``;
-    ``menu_arms`` are the committed menu's, unexpanded. ``fx_record_paths`` are the
-    repository paths of the FX records the capitals name, sorted (the execution gate
-    accepts a change to them). ``fx_reference_dates`` are, by capital id in registration
-    order, the ``reference_date`` of the FX record each FX capital names, as read and
-    verified on load (``owner_plan.owner_plan_errors`` checks them against the owner's)."""
+    W1 alone and its capitals the three USDT ones. ``reported_windows`` is W0. Every
+    window's data pin is ``run_manifest_pin``; ``menu_arms`` are the committed menu's,
+    unexpanded."""
 
     registration: Registration
     reported_windows: tuple[Window, ...]
@@ -245,8 +238,6 @@ class DriverRegistration:
     run_manifest: RunManifest
     prepare_pin: str
     menu_arms: tuple[str, ...]
-    fx_record_paths: tuple[str, ...] = ()
-    fx_reference_dates: tuple[tuple[str, date], ...] = ()
 
 
 def required_cells(reg: DriverRegistration) -> tuple[Cell, ...]:
@@ -254,9 +245,13 @@ def required_cells(reg: DriverRegistration) -> tuple[Cell, ...]:
 
     For each acceptance window, each arm of ``registered_arms`` (the menu's, expanded with
     the pinned V1 variants), in that order: components in both modeled scenarios,
-    baselines ``native``; within each, cost multiples 1 then 2 and the capitals research
-    then owner_small. Then each reported window's ``combined`` cells in the same nesting,
-    ``reported_only``. Refuses a menu whose arms are not the registered arm set.
+    baselines ``native``; within each, cost multiples 1 then 2 and the capitals research,
+    medium then small (``CAPITAL_IDS``). Then each reported window's ``combined`` cells in
+    the same nesting, ``reported_only``. Refuses a menu whose arms are not the registered
+    arm set.
+
+    The owner's registration lists 324 cells, 108 per capital; in all, 120 V3.1 cells in
+    W1 and 12 in W0, 42 V3, 6 hold and 144 minute cells.
     """
     cells: list[Cell] = []
     arms = registered_arms(reg.menu_arms, V1_VARIANTS)
@@ -304,9 +299,6 @@ def check_registration(reg: DriverRegistration) -> None:
         errors.append(f"the run-manifest packs windows {packed}, not the registered windows")
     if tuple(registration.cost_profiles) != _COST_PROFILES:
         errors.append(f"the cost profiles must be {_COST_PROFILES}, venues.COST_PROFILE_PINS")
-    for capital in registration.capitals:
-        if capital.id == "research" and (capital.fx_rate, capital.fx_pin) != (None, None):
-            errors.append("the research capital takes no FX rate or record")
     if registration.v1_variants != V1_VARIANTS:
         errors.append(f"the V1 variants must be {', '.join(V1_VARIANTS)}")
     errors.extend(_arm_errors(registration.arms, reg.menu_arms))
@@ -327,10 +319,9 @@ def load_registration(
 
     ``config_pin`` is the SHA-256 of the file's bytes; a file holding a ``config_pin`` key
     is refused. The run-manifest file's SHA-256 must equal the recorded
-    ``run_manifest_sha256`` and becomes every window's ``data_pin``. The FX record's path
-    (repository-relative, under ``repo_root``) must hash to its recorded SHA-256, which
-    becomes the capital's ``fx_pin``, and hold the capital's ``fx_rate``. The arm menu is
-    read from ``repo_root``/``MENU_PATH``.
+    ``run_manifest_sha256`` and becomes every window's ``data_pin``. Each capital holds
+    exactly ``id``, ``currency``, ``amount`` and ``initial_equity`` (an FX rate or record
+    is an unexpected field). The arm menu is read from ``repo_root``/``MENU_PATH``.
     """
     data = Path(path).read_bytes()
     document = _strict_json(data, "registration")
@@ -352,13 +343,11 @@ def load_registration(
     manifest = _run_manifest_from(manifest_data)
     root = Path(repo_root)
     arms = _strings(doc["arms"], "registration arms")
-    capitals = _list(doc["capitals"], "capitals")
-    loaded = [_capital(item, root) for item in capitals]
     registration = Registration(
         arms=arms,
         baseline_arms=tuple(arm for arm in arms if arm not in COMPONENT_ARMS),
         windows=_windows(doc["windows"], manifest_pin, "windows"),
-        capitals=tuple(capital for capital, _ in loaded),
+        capitals=tuple(_capital(item) for item in _list(doc["capitals"], "capitals")),
         cost_profiles=tuple(_cost_profile(item) for item in _list(doc["cost_profiles"], "costs")),
         code_pin=_str(doc["code_pin"], "registration code_pin"),
         config_pin=_sha256(data),
@@ -378,10 +367,6 @@ def load_registration(
         run_manifest=manifest,
         prepare_pin=_str(doc["prepare_sha256"], "registration prepare_sha256"),
         menu_arms=_menu_arms((root / MENU_PATH).read_bytes()),
-        fx_record_paths=_fx_record_paths(capitals),
-        fx_reference_dates=tuple(
-            (capital.id, reference) for capital, reference in loaded if reference is not None
-        ),
     )
     check_registration(reg)
     return reg
@@ -591,69 +576,19 @@ def _windows(value: object, data_pin: str, what: str) -> tuple[Window, ...]:
     return tuple(windows)
 
 
-def _capital(value: object, root: Path) -> tuple[Capital, date | None]:
-    """A capital and, for one with an ``fx_record``, that record's reference date; such a
-    capital gets the file's verified SHA-256 as fx_pin."""
-    with_fx = isinstance(value, dict) and bool({"fx_rate", "fx_record"} & value.keys())
-    doc = _object(value, _FX_CAPITAL_KEYS if with_fx else _CAPITAL_KEYS, "capital")
+def _capital(value: object) -> Capital:
+    """A capital: exactly ``id``, ``currency``, ``amount`` and ``initial_equity``, the
+    money as decimal strings. A capital naming an FX rate or record is refused: no
+    capital converts a currency (owner decision, 2026-10-14)."""
+    doc = _object(value, _CAPITAL_KEYS, "capital")
     capital_id = _str(doc["id"], "capital id")
     what = f"capital {capital_id}"
-    initial = _decimal(doc["initial_equity"], f"{what} initial_equity")
-    currency = _str(doc["currency"], f"{what} currency")
-    amount = _decimal(doc["amount"], f"{what} amount")
-    if not with_fx:
-        return Capital(capital_id, initial, currency, amount), None
-    rate = _decimal(doc["fx_rate"], f"{what} fx_rate")
-    pin = _file_pin(doc["fx_record"], f"{what} fx_record")
-    data = (root / pin.path).read_bytes()
-    actual = _sha256(data)
-    if actual != pin.sha256:
-        raise ValueError(
-            f"{what}: FX record {pin.path} has SHA-256 {actual}; the registration pins {pin.sha256}"
-        )
-    recorded, reference = _fx_record(data, pin.path)
-    if recorded != rate:
-        raise ValueError(
-            f"{what}: FX record rate {recorded} differs from the capital's fx_rate {rate}"
-        )
-    return Capital(capital_id, initial, currency, amount, fx_rate=rate, fx_pin=actual), reference
-
-
-def _fx_record_paths(capitals: list[object]) -> tuple[str, ...]:
-    """The FX record paths of capitals ``_capital`` has already read, sorted, each once."""
-    return tuple(
-        sorted(
-            {
-                _file_pin(item["fx_record"], "fx_record").path
-                for item in capitals
-                if isinstance(item, dict) and "fx_record" in item
-            }
-        )
+    return Capital(
+        capital_id,
+        _decimal(doc["initial_equity"], f"{what} initial_equity"),
+        _str(doc["currency"], f"{what} currency"),
+        _decimal(doc["amount"], f"{what} amount"),
     )
-
-
-def _fx_record(data: bytes, path: str) -> tuple[Decimal, date]:
-    """The USD per EUR rate and the reference date of a valid FX source record: an ECB
-    reference rate dated before 2025, retrieved on or after that date, from an https ECB
-    URL. Which date a real run's record must name is the owner's plan
-    (``owner_plan.owner_plan_errors``), not this record format's rule."""
-    what = f"FX record {path}"
-    doc = _object(_strict_json(data, what), _FX_RECORD_KEYS, what)
-    _schema(doc, FX_RECORD_SCHEMA, what)
-    rate = _decimal(doc["usd_per_eur"], f"{what} usd_per_eur")
-    if not rate:
-        raise ValueError(f"{what}: a positive usd_per_eur required")
-    reference = _date(doc["reference_date"], f"{what} reference_date")
-    retrieved = _date(doc["retrieved_on"], f"{what} retrieved_on")
-    if reference >= _FIRST_RESERVED_DAY:
-        raise ValueError(f"{what}: the reference date must be before 2025-01-01")
-    if retrieved < reference:
-        raise ValueError(f"{what}: retrieved before its reference date")
-    url = urlsplit(_str(doc["source_url"], f"{what} source_url"))
-    host = url.hostname or ""
-    if url.scheme != "https" or not (host == "ecb.europa.eu" or host.endswith(".ecb.europa.eu")):
-        raise ValueError(f"{what}: an https ECB (ecb.europa.eu) source URL required")
-    return rate, reference
 
 
 def _cost_profile(value: object) -> tuple[int, str]:
@@ -870,16 +805,6 @@ def _decimal(value: object, what: str) -> Decimal:
     if type(value) is not str or _DECIMAL.fullmatch(value) is None:
         raise ValueError(f'{what}: a plain decimal string required, such as "104.50"')
     return Decimal(value)
-
-
-def _date(value: object, what: str) -> date:
-    text = _str(value, what)
-    try:
-        if _DATE.fullmatch(text) is None:
-            raise ValueError(text)
-        return date.fromisoformat(text)
-    except ValueError as exc:
-        raise ValueError(f"{what}: a YYYY-MM-DD date required") from exc
 
 
 def _sha(value: object, what: str) -> str:

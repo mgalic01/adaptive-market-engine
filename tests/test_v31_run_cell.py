@@ -17,9 +17,7 @@ from pathlib import Path
 import combined_market_fixtures as fx
 import pytest
 from test_v31_registration import (
-    FX_PATH,
     MENU,
-    fx_document,
     prepare_document,
     registration_document,
     write_json,
@@ -67,7 +65,7 @@ W1_END = W1_START + 3 * DAY
 SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 SOURCES = (("synthetic.manifest.json", "a" * 64),)
 ATTEMPT = "attempt-1"
-CELL = "w1.combined.olhc.c1.owner_small"
+CELL = "w1.combined.olhc.c1.small"  # the owner's 100 USDT capital
 CODE_PIN = "4" * 40
 HEAD = "9" * 40  # the checkout head a run records
 
@@ -119,7 +117,7 @@ class World:
 
 @pytest.fixture(scope="module")
 def world(tmp_path_factory) -> World:
-    """Written packs for W1 and W0, and a loaded synthetic registration of all 216 cells
+    """Written packs for W1 and W0, and a loaded synthetic registration of all 324 cells
     whose run-manifest pins those packs."""
     root = tmp_path_factory.mktemp("repo")
     built = {"w1": window_pack("w1", W1_START, W1_END), "w0": window_pack("w0", W0_START, W0_END)}
@@ -134,12 +132,11 @@ def world(tmp_path_factory) -> World:
         for wid, pack in packs.items()
     ]
     write_json(config / "v3_1_prepare.json", prepare)
-    fx_sha = write_json(root / FX_PATH, fx_document())
     prepared = load_prepare_config(config / "v3_1_prepare.json")
     manifest_path = config / "v3_1_run_manifest.json"
     manifest = run_manifest(prepared, window_packs=shas, v3_pack="3" * 64)
     manifest_sha = write_run_manifest(manifest, manifest_path)
-    document = registration_document(prepared.sha256, manifest_sha, fx_sha)
+    document = registration_document(prepared.sha256, manifest_sha)
     document["windows"] = [window_document(packs["w1"])]
     document["reported_windows"] = [window_document(packs["w0"])]
     registration_path = config / "v3_1_registration.json"
@@ -184,7 +181,7 @@ def snapshot(directory: Path) -> dict[str, tuple[bytes, int]]:
 
 @pytest.fixture(scope="module")
 def ran(world: World, tmp_path_factory) -> Path:
-    """The W1 combined cell at base cost with the owner_small capital, run once."""
+    """The W1 combined cell at base cost with the small (100 USDT) capital, run once."""
     return run(world, CELL, tmp_path_factory.mktemp("cells"))
 
 
@@ -195,7 +192,6 @@ REGISTRATION_ARTIFACTS = (
     "config/v3_1_run_manifest.json",
     "config/v3_1_prepare.json",
     "config/v3_1_experiment_menu.json",
-    FX_PATH,
     "docs/trials/register.jsonl",
     "docs/reviews/2026-10-13-claude-v3-1-registration.md",
     "docs/tasks/2026-10-13-v31-run.md",
@@ -203,7 +199,7 @@ REGISTRATION_ARTIFACTS = (
 
 
 def test_gate_passes_a_registered_cell_with_registration_only_changes(world):
-    assert world.reg.fx_record_paths == (FX_PATH,)
+    assert set(REGISTRATION_ARTIFACTS[:5]) == run_cell.REGISTRATION_ARTIFACTS
     assert gate(world, changed_paths=REGISTRATION_ARTIFACTS) == cell_of(world, CELL)
     w0 = "w0.combined.ohlc.c2.research"
     assert gate(world, w0) == cell_of(world, w0)
@@ -278,6 +274,8 @@ def test_gate_refuses_a_src_change_a_wrong_adapter_pin_and_other_skipped_hours(w
         "docs/reviews",
         "docs/reviews/../../src/crypto_grid_bot/combined/engine.py",
         "README.md",
+        # No capital names an FX record since the owner's USDT capitals (2026-10-14).
+        "config/v3_1_fx_record.json",
     ],
 )
 def test_gate_refuses_a_change_outside_the_registration_artifacts(world, path):
@@ -311,7 +309,7 @@ def test_gate_refuses_missing_adapter_pins(world):
 
 def test_v31_cell_on_a_synthetic_pack_writes_a_complete_outcome(world, ran):
     reg = world.reg
-    capital = {c.id: c for c in reg.registration.capitals}["owner_small"]
+    capital = {c.id: c for c in reg.registration.capitals}["small"]
     invocation = CELL.replace(".", "-")
     assert ran.name == CELL
     assert sorted(path.name for path in ran.iterdir()) == [
@@ -340,7 +338,7 @@ def test_v31_cell_on_a_synthetic_pack_writes_a_complete_outcome(world, ran):
     assert outcome.identity == RunIdentity(
         arm="combined",
         window="w1",
-        capital="owner_small",
+        capital="small",
         cost_multiple=1,
         data_pin=w1.data_pin,
         cost_profile_pin=COST_PROFILE_PINS[1],
@@ -348,16 +346,15 @@ def test_v31_cell_on_a_synthetic_pack_writes_a_complete_outcome(world, ran):
         end_ms=W1_END,
         code_pin=CODE_PIN,
         config_pin=world.config_sha,
-        fx_pin=capital.fx_pin,
         observation_policy=POLICY_ID,
         adapter_pin=dict(reg.registration.adapter_pins)["combined"],
         scenario="open_low_high_close",
     )
-    assert w1.data_pin == world.manifest_sha and capital.fx_pin is not None
+    assert w1.data_pin == world.manifest_sha
     assert outcome.complete and not outcome.failed and outcome.accounting_explained
     assert outcome.attempt_id == ATTEMPT
-    assert outcome.initial_equity == capital.initial_equity
-    assert outcome.capital_label == capital_label(capital)
+    assert outcome.initial_equity == capital.initial_equity == 100
+    assert outcome.capital_label == capital_label(capital) == "small_100_usdt"
     assert outcome.report_evidence is not None
     assert outcome.report_evidence.report == report
     assert outcome.final_equity == report.final_equity
@@ -376,7 +373,8 @@ def test_v31_cell_on_a_synthetic_pack_writes_a_complete_outcome(world, ran):
     assert metadata["report_sha256"] == hashlib.sha256(report_text.encode()).hexdigest()
     assert metadata["pack_sha256"] == world.pack_shas["w1"]
     assert metadata["code_pin"] == CODE_PIN and metadata["config_pin"] == world.config_sha
-    assert metadata["initial_equity"] == str(capital.initial_equity)
+    assert metadata["initial_equity"] == str(capital.initial_equity) == "100"
+    assert metadata["capital"] == "small" and "fx_pin" not in metadata
     assert metadata["repo_head"] == HEAD
 
 
@@ -389,7 +387,7 @@ def test_doubled_cost_cell_runs_with_doubled_costs(world, ran, tmp_path, monkeyp
         return replay(replay_run, markets)
 
     monkeypatch.setattr(run_cell, "replay_strategy", spy)
-    doubled = run(world, "w1.combined.olhc.c2.owner_small", tmp_path)
+    doubled = run(world, "w1.combined.olhc.c2.small", tmp_path)
 
     (markets,) = seen
     assert [m.symbol for m in markets] == SYMBOLS
@@ -419,7 +417,7 @@ def test_a_w0_cell_runs_from_the_reported_window(world, tmp_path):
     (w0,) = world.reg.reported_windows
     identity = outcome.identity
     assert (identity.window, identity.start_ms, identity.end_ms) == ("w0", W0_START, W0_END)
-    assert identity.data_pin == w0.data_pin and identity.fx_pin is None
+    assert identity.data_pin == w0.data_pin
     assert (identity.scenario, identity.capital) == ("open_high_low_close", "research")
     assert outcome.complete and outcome.capital_label == "research_10000_usdt"
     report = decode_report((directory / "report.json").read_text(encoding="ascii"))
@@ -535,7 +533,7 @@ def test_a_cell_writes_its_claim_first_and_its_outcome_last(world, tmp_path, mon
 
     monkeypatch.setattr(run_cell, "_write", logged_write)
     monkeypatch.setattr(run_cell, "write_bundle", logged_bundle)
-    run(world, "w1.spot_trend.olhc.c2.owner_small", tmp_path)
+    run(world, "w1.spot_trend.olhc.c2.medium", tmp_path)
     assert order == ["attempt.json", "bundle", "report.json", "outcome.json"]
 
 

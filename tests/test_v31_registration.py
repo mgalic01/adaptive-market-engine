@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import fields, replace
 from decimal import Decimal as D
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from crypto_grid_bot.combined.driver.registration import (
+    CAPITAL_IDS,
     PrepareConfig,
     adapter_pins,
     check_registration,
@@ -29,6 +30,7 @@ from crypto_grid_bot.combined.driver.registration import (
     write_run_manifest,
 )
 from crypto_grid_bot.combined.driver.venues import COST_PROFILE_PINS
+from crypto_grid_bot.combined.experiment import CAPITALS as EXPERIMENT_CAPITALS
 from crypto_grid_bot.combined.experiment import (
     SCENARIOS,
     _registration_errors,
@@ -36,6 +38,7 @@ from crypto_grid_bot.combined.experiment import (
     required_baselines,
 )
 from crypto_grid_bot.combined.observation_policy import POLICY_ID
+from crypto_grid_bot.combined.report import CAPITAL_LABELS
 
 REPO = Path(__file__).resolve().parents[1]
 MENU = REPO / "config/v3_1_experiment_menu.json"
@@ -72,9 +75,9 @@ ARMS = tuple(
     arm for item in MENU_ARMS for arm in (MINUTE if item == "matched_spot_baselines" else (item,))
 )
 ABBREVIATION = {"open_low_high_close": "olhc", "open_high_low_close": "ohlc", "native": "native"}
-CAPITALS = ("research", "owner_small")
-FX_RATE = "1.0389"
-FX_PATH = "config/v3_1_fx_record.json"
+# The owner's three USDT capitals (2026-10-14), in cell order, with their amounts.
+CAPITALS = ("research", "medium", "small")
+AMOUNTS = {"research": "10000", "medium": "1000", "small": "100"}
 PACKS = {"w1": "1" * 64, "w0": "2" * 64}
 V3_PACK = "3" * 64
 CODE_PIN = "4" * 40
@@ -136,18 +139,16 @@ def prepare_document() -> dict[str, Any]:
     }
 
 
-def fx_document(rate: str = FX_RATE) -> dict[str, Any]:
-    return {
-        "schema": "v3.1-fx-record-1",
-        "usd_per_eur": rate,
-        "reference_date": "2024-12-31",
-        "source_url": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/"
-        "euro_reference_exchange_rates/html/eurofxref-graph-usd.en.html",
-        "retrieved_on": "2026-10-13",
-    }
+def capitals_document() -> list[dict[str, str]]:
+    """The owner's three capitals as a registration lists them: USDT, opening at their
+    amount."""
+    return [
+        {"id": c, "currency": "USDT", "amount": AMOUNTS[c], "initial_equity": AMOUNTS[c]}
+        for c in CAPITALS
+    ]
 
 
-def registration_document(prepare_sha: str, manifest_sha: str, fx_sha: str) -> dict[str, Any]:
+def registration_document(prepare_sha: str, manifest_sha: str) -> dict[str, Any]:
     return {
         "schema": "v3.1-registration-1",
         "code_pin": CODE_PIN,
@@ -159,17 +160,7 @@ def registration_document(prepare_sha: str, manifest_sha: str, fx_sha: str) -> d
         "arms": list(ARMS),
         "adapter_pins": {arm: "5" * 64 for arm in ARMS},
         "cost_profiles": [{"multiple": m, "sha256": COST_PROFILE_PINS[m]} for m in (1, 2)],
-        "capitals": [
-            {"id": "research", "currency": "USDT", "amount": "10000", "initial_equity": "10000"},
-            {
-                "id": "owner_small",
-                "currency": "EUR",
-                "amount": "100",
-                "initial_equity": "103.89",
-                "fx_rate": FX_RATE,
-                "fx_record": {"path": FX_PATH, "sha256": fx_sha},
-            },
-        ],
+        "capitals": capitals_document(),
         "windows": [{"id": "w1", "start_ms": W1_START, "end_ms": END, "skipped_hours": W1_SKIPPED}],
         "reported_windows": [
             {"id": "w0", "start_ms": W0_START, "end_ms": END, "skipped_hours": []}
@@ -189,21 +180,18 @@ def write_json(path: Path, document: Any) -> str:
 Edit = Callable[[dict[str, Any]], object]
 
 
-def make_repo(
-    root: Path, edit: Edit | None = None, fx: dict[str, Any] | None = None
-) -> tuple[Path, Path]:
-    """A synthetic checkout under ``root``: menu copy, prepare, FX record, run-manifest
-    and registration; returns the registration and run-manifest paths."""
+def make_repo(root: Path, edit: Edit | None = None) -> tuple[Path, Path]:
+    """A synthetic checkout under ``root``: menu copy, prepare, run-manifest and
+    registration; returns the registration and run-manifest paths."""
     config = root / "config"
     config.mkdir(parents=True)
     shutil.copyfile(MENU, config / "v3_1_experiment_menu.json")
     write_json(config / "v3_1_prepare.json", prepare_document())
-    fx_sha = write_json(root / FX_PATH, fx_document() if fx is None else fx)
     prepare = load_prepare_config(config / "v3_1_prepare.json")
     manifest_path = config / "v3_1_run_manifest.json"
     manifest = run_manifest(prepare, window_packs=PACKS, v3_pack=V3_PACK)
     manifest_sha = write_run_manifest(manifest, manifest_path)
-    document = registration_document(prepare.sha256, manifest_sha, fx_sha)
+    document = registration_document(prepare.sha256, manifest_sha)
     if edit is not None:
         edit(document)
     registration_path = config / "v3_1_registration.json"
@@ -211,8 +199,8 @@ def make_repo(
     return registration_path, manifest_path
 
 
-def load(root: Path, edit: Edit | None = None, fx: dict[str, Any] | None = None) -> Any:
-    registration_path, manifest_path = make_repo(root, edit, fx)
+def load(root: Path, edit: Edit | None = None) -> Any:
+    registration_path, manifest_path = make_repo(root, edit)
     return load_registration(registration_path, manifest_path, repo_root=root)
 
 
@@ -220,18 +208,29 @@ def load(root: Path, edit: Edit | None = None, fx: dict[str, Any] | None = None)
 
 
 def test_required_cells_count(tmp_path: Path) -> None:
+    """The owner's three capitals (2026-10-14): every cell once per capital, 324 in all."""
     reg = load(tmp_path)
     cells = required_cells(reg)
     assert cells == reg.cells
-    assert len(cells) == 216
+    assert len(cells) == 324 == 3 * 108
     counts = Counter((c.window, c.kind) for c in cells)
     assert counts == {
-        ("w1", "v31"): 80,
-        ("w0", "v31"): 8,
-        ("w1", "v3"): 28,
-        ("w1", "hold"): 4,
-        ("w1", "minute"): 96,
+        ("w1", "v31"): 120,
+        ("w0", "v31"): 12,
+        ("w1", "v3"): 42,
+        ("w1", "hold"): 6,
+        ("w1", "minute"): 144,
     }
+    # Each capital runs the same 108 cells, split the same way, and no other capital runs.
+    assert Counter(c.capital_id for c in cells) == {"research": 108, "medium": 108, "small": 108}
+    for capital in CAPITALS:
+        mine = Counter((c.window, c.kind) for c in cells if c.capital_id == capital)
+        assert mine == {key: count // 3 for key, count in counts.items()}, capital
+    by_capital = {
+        capital: [c.cell_id.rsplit(".", 1)[0] for c in cells if c.capital_id == capital]
+        for capital in CAPITALS
+    }
+    assert by_capital["research"] == by_capital["medium"] == by_capital["small"]
     assert {c.arm for c in cells if c.window == "w0"} == {"combined"}
     assert all(c.reported_only == (c.window == "w0") for c in cells)
     assert all(c.scenario in SCENARIOS for c in cells if c.kind == "v31")
@@ -241,8 +240,36 @@ def test_required_cells_count(tmp_path: Path) -> None:
     assert baselines == required_baselines(V1) and len(baselines) == 32
 
 
+def test_the_capital_constants_are_the_owners_three_usdt_capitals() -> None:
+    """One source for the capitals: the report's labels; acceptance and the cell list read
+    them, research first, then medium and small."""
+    assert CAPITAL_LABELS == {
+        "research_10000_usdt": ("research", 10000),
+        "medium_1000_usdt": ("medium", 1000),
+        "small_100_usdt": ("small", 100),
+    }
+    assert EXPERIMENT_CAPITALS == (("research", 10000), ("medium", 1000), ("small", 100))
+    assert CAPITAL_IDS == CAPITALS == ("research", "medium", "small")
+
+
+def test_the_menu_states_the_owners_three_usdt_capitals() -> None:
+    """The committed menu, which the owner reads and no loader checks for capitals, states
+    exactly ``experiment.CAPITALS``: ids, currency, amount, initial equity and order, as a
+    registration lists them; and no FX assumption is pending (owner decision, 2026-10-14).
+    Its status stays not authorized for execution."""
+    menu = json.loads(MENU.read_text(encoding="utf-8"))
+    assert menu["capital_scenarios"] == [
+        {"id": capital_id, "currency": "USDT", "amount": str(amount), "initial_equity": str(amount)}
+        for capital_id, amount in EXPERIMENT_CAPITALS
+    ]
+    assert menu["capital_scenarios"] == capitals_document()
+    assert [scenario["id"] for scenario in menu["capital_scenarios"]] == list(CAPITAL_IDS)
+    assert "fx_assumption" not in menu["pending_registration"]
+    assert menu["status"] == "NOT_AUTHORIZED_FOR_EXECUTION"
+
+
 def test_a_registration_missing_a_cell_is_refused(tmp_path: Path) -> None:
-    dropped = "w1.matched_v1_cg_grid_low_first.native.c2.owner_small"
+    dropped = "w1.matched_v1_cg_grid_low_first.native.c2.medium"
 
     def drop(document: dict[str, Any]) -> None:
         document["cells"] = [c for c in document["cells"] if c["cell_id"] != dropped]
@@ -259,24 +286,29 @@ def test_a_registration_missing_a_cell_is_refused(tmp_path: Path) -> None:
 def test_cell_ids_are_unique_and_stable(tmp_path: Path) -> None:
     reg = load(tmp_path)
     ids = [c.cell_id for c in required_cells(reg)]
-    assert len(set(ids)) == len(ids) == 216
+    assert len(set(ids)) == len(ids) == 324
     assert all(CELL_ID.fullmatch(cell_id) for cell_id in ids)
     assert ids == [c["cell_id"] for c in expected_cells()]  # deterministic, in this order
     assert required_cells(reg) == required_cells(reg)
-    assert ids[:4] == [
+    # Within each cost multiple: research, medium, small.
+    assert ids[:6] == [
         "w1.unchanged_v3_selector.native.c1.research",
-        "w1.unchanged_v3_selector.native.c1.owner_small",
+        "w1.unchanged_v3_selector.native.c1.medium",
+        "w1.unchanged_v3_selector.native.c1.small",
         "w1.unchanged_v3_selector.native.c2.research",
-        "w1.unchanged_v3_selector.native.c2.owner_small",
+        "w1.unchanged_v3_selector.native.c2.medium",
+        "w1.unchanged_v3_selector.native.c2.small",
     ]
     for cell_id in (
         "w1.combined.olhc.c1.research",
-        "w1.combined_without_recovery.ohlc.c2.owner_small",
-        "w1.matched_spot_hold.native.c1.research",
+        "w1.combined_without_recovery.ohlc.c2.small",
+        "w1.matched_spot_hold.native.c1.medium",
         "w1.matched_d_trend_high_first.native.c2.research",
-        "w0.combined.ohlc.c2.owner_small",
+        "w0.combined.ohlc.c2.small",
+        "w0.combined.olhc.c1.medium",
     ):
         assert cell_id in ids
+    assert not [cell_id for cell_id in ids if "owner_small" in cell_id]
     by_id = {c.cell_id: c for c in reg.cells}
     w0 = by_id["w0.combined.olhc.c1.research"]
     assert (w0.arm, w0.window, w0.scenario, w0.cost_multiple, w0.capital_id) == (
@@ -352,68 +384,92 @@ def test_registration_matches_experiment_registration_checks(tmp_path: Path) -> 
     assert reg.run_manifest.v3_pack == V3_PACK
 
 
-def test_owner_small_capital_carries_the_fx_pin_and_label(tmp_path: Path) -> None:
+def test_the_three_usdt_capitals_load_with_their_labels(tmp_path: Path) -> None:
+    """The owner's capitals (2026-10-14): each USDT, opening at exactly its amount, with
+    no currency conversion, and each labelled with its id and amount."""
     reg = load(tmp_path)
-    capitals = {c.id: c for c in reg.registration.capitals}
-    owner = capitals["owner_small"]
-    fx_pin = hashlib.sha256((tmp_path / FX_PATH).read_bytes()).hexdigest()
-    assert owner.fx_pin == fx_pin
-    assert (owner.currency, owner.amount, owner.fx_rate) == ("EUR", D("100"), D(FX_RATE))
-    assert owner.initial_equity == D("103.89") and isinstance(owner.initial_equity, D)
-    assert capital_label(owner) == f"owner_small:EUR:100:usdt_per_eur={FX_RATE}:fx_pin={fx_pin}"
-    research = capitals["research"]
-    assert (research.fx_pin, research.fx_rate) == (None, None)
-    assert capital_label(research) == "research_10000_usdt"
+    capitals = reg.registration.capitals
+    assert [c.id for c in capitals] == list(CAPITALS)
+    assert [(c.currency, c.amount, c.initial_equity) for c in capitals] == [
+        ("USDT", D("10000"), D("10000")),
+        ("USDT", D("1000"), D("1000")),
+        ("USDT", D("100"), D("100")),
+    ]
+    assert all(isinstance(c.amount, D) and isinstance(c.initial_equity, D) for c in capitals)
+    assert [capital_label(c) for c in capitals] == [
+        "research_10000_usdt",
+        "medium_1000_usdt",
+        "small_100_usdt",
+    ]
+    # No capital carries a conversion: a capital is exactly these four fields.
+    assert [field.name for field in fields(capitals[0])] == [
+        "id",
+        "initial_equity",
+        "currency",
+        "amount",
+    ]
+
+
+def _capital(index: int, **changes: str) -> Edit:
+    return lambda d: d["capitals"][index].update(changes)
 
 
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
+        (_capital(1, amount="1001", initial_equity="1001"), "medium capital must be 1000 USDT"),
+        (_capital(2, initial_equity="103.89"), "small capital must be 100 USDT"),
+        (_capital(2, currency="EUR"), "small capital must be 100 USDT"),
+        (_capital(0, amount="10001"), "research capital must be 10000 USDT"),
+        (lambda d: d["capitals"].pop(), "the research, medium and small USDT capitals required"),
         (
-            lambda d: d["capitals"][0].update(
-                fx_rate=FX_RATE, fx_record=d["capitals"][1]["fx_record"]
-            ),
-            "research capital takes no FX",
+            lambda d: d["capitals"].append(d["capitals"][0]),
+            "the research, medium and small USDT capitals required",
         ),
-        (lambda d: d["capitals"][1].update(initial_equity="104"), "EUR100 conversion"),
-        (lambda d: d["capitals"][1].update(fx_rate="1"), "differs from the capital's fx_rate 1$"),
-        (lambda d: d["capitals"].pop(), "research and EUR100 capital scenarios"),
+        (
+            _capital(1, id="research", amount="10000", initial_equity="10000"),
+            "the research, medium and small USDT capitals required",
+        ),
+        (_capital(2, id="owner_small"), "capital 'owner_small' is not research, medium or small"),
     ],
 )
-def test_capitals_other_than_research_and_eur100_are_refused(
+def test_capitals_other_than_the_three_usdt_ones_are_refused(
     tmp_path: Path, edit: Edit, message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):
         load(tmp_path, edit)
 
 
-def test_an_fx_record_that_differs_from_its_pin_or_rate_is_refused(tmp_path: Path) -> None:
-    def tamper(document: dict[str, Any]) -> None:
-        (tmp_path / "pin" / FX_PATH).write_bytes(json.dumps(fx_document("1.04")).encode())
-
-    with pytest.raises(ValueError, match="FX record .* has SHA-256"):
-        load(tmp_path / "pin", tamper)
-    with pytest.raises(ValueError, match="FX record rate 1.04 differs from the capital's fx_rate"):
-        load(tmp_path / "rate", fx=fx_document("1.04"))
-
-
 @pytest.mark.parametrize(
-    ("change", "message"),
+    ("edit", "message"),
     [
-        ({"source_url": "https://example.com/eurofxref.html"}, "ECB"),
-        ({"source_url": "http://www.ecb.europa.eu/eurofxref.html"}, "ECB"),
-        ({"reference_date": "2025-01-02"}, "before 2025-01-01"),
-        ({"retrieved_on": "2024-12-30"}, "retrieved before"),
-        ({"usd_per_eur": 1.0389}, "JSON float"),
-        ({"usd_per_eur": "1,0389"}, "decimal string"),
-        ({"note": "extra"}, "fields"),
+        # The replaced owner_small capital, EUR 100 at the ECB rate with its FX record.
+        (
+            lambda d: d["capitals"].__setitem__(
+                2,
+                {
+                    "id": "owner_small",
+                    "currency": "EUR",
+                    "amount": "100",
+                    "initial_equity": "103.89",
+                    "fx_rate": "1.0389",
+                    "fx_record": {"path": "config/v3_1_fx_record.json", "sha256": "e" * 64},
+                },
+            ),
+            "capital: unexpected fields: fx_rate, fx_record",
+        ),
+        (_capital(2, fx_rate="1"), "capital: unexpected fields: fx_rate"),
+        (_capital(0, fx_pin="e" * 64), "capital: unexpected fields: fx_pin"),
     ],
+    ids=["the EUR 100 capital", "an FX rate", "an FX pin"],
 )
-def test_an_fx_record_outside_its_schema_is_refused(
-    tmp_path: Path, change: dict[str, Any], message: str
+def test_a_capital_carrying_an_fx_field_is_refused(
+    tmp_path: Path, edit: Edit, message: str
 ) -> None:
+    """No capital converts a currency (owner decision, 2026-10-14): an FX rate, record or
+    pin is no field of a capital, whatever its value, and the record is never read."""
     with pytest.raises(ValueError, match=message):
-        load(tmp_path, fx={**fx_document(), **change})
+        load(tmp_path, edit)
 
 
 def test_a_registration_file_holding_its_own_config_pin_is_refused(tmp_path: Path) -> None:
@@ -511,7 +567,7 @@ def test_check_registration_lists_every_problem(tmp_path: Path) -> None:
     text = str(refused.value)
     assert "full code/config pins required" in text
     assert "prepare pin differs from the run-manifest's" in text
-    assert "cells missing: w0.combined.ohlc.c2.owner_small" in text
+    assert "cells missing: w0.combined.ohlc.c2.small" in text
 
 
 @pytest.mark.parametrize(
@@ -737,7 +793,6 @@ def test_adapter_pins_read_blob_ids_at_the_commit(tmp_path: Path) -> None:
         "config/v3_1_run_manifest.json",
         "config/v3_1_registration.json",
         "config/v3_1_experiment_menu.json",
-        FX_PATH,  # the FX source record the owner_small capital names
         # The V3.1 minute-bar datasets the prepare config pins, by their committed names.
         "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020-2021.toml",
         "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020-2021.manifest.json",

@@ -76,6 +76,9 @@ protective rule (no new trades while blind; close the blind position when prices
     pin:** either the ECB euro reference rate for the last 2024 business day (about 1.04
     USD per EUR; the exact figure is copied from the ECB publication at registration, with
     USDT taken at par), or a round 1.08.
+  - *Note, 2026-10-14: the owner replaced both with three USDT capitals, `research`
+    10,000, `medium` 1,000 and `small` 100 USDT, with no FX pin
+    (`docs/V3_1_SOURCE_INVENTORY.md`, "Owner decision on the capitals, 2026-10-14").*
 - **Scenarios:** both approved modeled scenarios for every component arm.
 
 ## 5. Arms
@@ -114,18 +117,23 @@ protective rule (no new trades while blind; close the blind position when prices
 - **V3 at ~EUR100:** V3 could stop with `leverage_not_restored` because of exchange step
   sizes rather than missing data. Under the 2026-10-12 rule that comparison would be
   incomplete, so a pass at ~EUR100 could be blocked. This is the cautious side by design.
+  *(Note, 2026-10-14: this now applies to the `small` capital at 100 USDT, which replaced
+  ~EUR100; the `medium` capital at 1,000 USDT is less exposed to it.)*
 - **The day after a short daily bar:** on 2021-08-13 every coin has 19 usable hours (a
   5-hour exchange outage), so no daily bar. The next day every coin's correlation is
   unknown, the coins form one group, and the 80% group cap applies for that day. The
   protective close rule will already have closed the positions held during the outage.
 - **Minute baselines' capital:** 10,000 USDT does not split exactly across three pairs.
   Each pair gets an equal share floored to 8 decimals, and the remainder stays as
-  disclosed cash.
+  disclosed cash. *(Note, 2026-10-14: 1,000 and 100 USDT do not split exactly either; each
+  leaves 0.00000001 as disclosed cash.)*
 
 ## 7. Run matrix and size
 
 - **Components:** 10 arms x 2 scenarios x 2 cost profiles x 2 capitals = **80 runs**.
 - **Baselines:** 32 arms x 2 cost profiles x 2 capitals = **128 runs**.
+- *Note, 2026-10-14: with the owner's three capitals these are 120 and 192 W1 runs, and
+  with W0's 12 the registration lists 324 cells.*
 - **Estimated time:** a V3.1 run of W1 with ten coins takes about 20-25 minutes, scaled
   from the synthetic benchmark. Minute baselines take longer. The run is split into
   independent CI jobs; every attempt is recorded and none is retried.
@@ -165,7 +173,7 @@ review):
 - the saved spot and futures filter snapshots (`config/datasets/v3-20261009/snapshots/`);
 - the skipped-hours list;
 - cost profile pins;
-- the FX pin;
+- the FX pin *(note, 2026-10-14: none any more; the three capitals are all USDT)*;
 - observation policy `v3.1-owner-2026-10-11-settlement-v1`;
 - the trial register family `spec-v3.1`, with a candidate-space registration and a
   completing event before any run.
@@ -175,7 +183,8 @@ review):
 Approve or change:
 - the window (section 1);
 - the universes (section 2);
-- the FX pin (section 4);
+- the FX pin (section 4) *(note, 2026-10-14: dropped; the owner chose three USDT
+  capitals, so there is no FX pin to approve)*;
 - the cost profiles (section 4);
 - the V1 variant list (section 5).
 

@@ -1,9 +1,10 @@
 """Aggregation: every cell's artifacts into the acceptance verdict and the owner's summary.
 
-Synthetic only. The matrix is the registration's 216 cells on the run-cell and baseline
-tests' synthetic packs. The real cell functions run the 16 ``combined`` cells (W1 and W0),
-the 4 hold cells and the 28 V3 cells (from one stand-in walk-forward's picks). Replaying
-the 72 other component cells and the 96 minute cells is too slow for a test, so they are
+Synthetic only. The matrix is the registration's 324 cells (the owner's three USDT
+capitals) on the run-cell and baseline tests' synthetic packs. The real cell functions run
+the 24 ``combined`` cells (W1 and W0), the 6 hold cells and the 42 V3 cells (from one
+stand-in walk-forward's picks). Replaying the 108 other component cells and the 144 minute
+cells is too slow for a test, so they are
 realistic artifacts written with the real encoders: each other component cell is the
 combined replay of its scenario, cost and capital under its own identity and attempt, its
 bundle rewritten by ``write_bundle``; each minute cell is a hold replay under the minute
@@ -24,9 +25,7 @@ from pathlib import Path
 
 import pytest
 from test_v31_registration import (
-    FX_PATH,
     MENU,
-    fx_document,
     prepare_document,
     registration_document,
     write_json,
@@ -83,26 +82,23 @@ from crypto_grid_bot.combined.experiment import (
 
 MINUTE_PIN = "8" * 64
 MINUTE_ARMS = frozenset(minute_arms(V1_VARIANTS))
-COMBINED = (  # the 8 full combined W1 cells, in registration order
-    "w1.combined.olhc.c1.research",
-    "w1.combined.olhc.c1.owner_small",
-    "w1.combined.olhc.c2.research",
-    "w1.combined.olhc.c2.owner_small",
-    "w1.combined.ohlc.c1.research",
-    "w1.combined.ohlc.c1.owner_small",
-    "w1.combined.ohlc.c2.research",
-    "w1.combined.ohlc.c2.owner_small",
+COMBINED = tuple(  # the 12 full combined W1 cells, in registration order
+    f"w1.combined.{scenario}.c{cost}.{capital}"
+    for scenario in ("olhc", "ohlc")
+    for cost in (1, 2)
+    for capital in ("research", "medium", "small")
 )
 HOLD_CELL = "w1.matched_spot_hold.native.c1.research"
 MISSING = "w1.matched_spot_hold.native.c2.research"
 FAILED = "w1.unchanged_v3_r1_long_only.native.c1.research"
 KILLED = "w1.spot_grid.olhc.c1.research"
-NO_RECEIPT = "w1.combined.ohlc.c2.owner_small"
+NO_RECEIPT = "w1.combined.ohlc.c2.small"
 W0_MISSING = "w0.combined.olhc.c1.research"
-W0_CELL = "w0.combined.ohlc.c2.owner_small"
+W0_CELL = "w0.combined.ohlc.c2.small"
 COMPONENT = "w1.spot_trend.ohlc.c2.research"
 PICKS = "v3_picks"
 RUN = "run-1-attempt-1"  # aggregation's own attempt id: the run of every attempt_of()
+W1_CELLS = 312  # the owner's three capitals: 324 cells, 12 of them W0's
 
 
 @dataclass(frozen=True)
@@ -114,7 +110,7 @@ class World:
 
 @pytest.fixture(scope="module")
 def world(tmp_path_factory) -> World:
-    """Written W1, W0 and V3 packs, and a loaded synthetic registration of all 216 cells
+    """Written W1, W0 and V3 packs, and a loaded synthetic registration of all 324 cells
     whose run-manifest pins them, with distinct hold, V3 and minute adapter pins."""
     root = tmp_path_factory.mktemp("repo")
     built = {"w1": w1_pack(), "w0": window_pack("w0", W0_START, W0_END)}
@@ -130,12 +126,11 @@ def world(tmp_path_factory) -> World:
         for wid, pack in packs.items()
     ]
     write_json(config / "v3_1_prepare.json", prepare)
-    fx_sha = write_json(root / FX_PATH, fx_document())
     prepared = load_prepare_config(config / "v3_1_prepare.json")
     manifest_file = config / "v3_1_run_manifest.json"
     manifest = run_manifest(prepared, window_packs=shas, v3_pack=v3_sha)
     manifest_sha = write_run_manifest(manifest, manifest_file)
-    document = registration_document(prepared.sha256, manifest_sha, fx_sha)
+    document = registration_document(prepared.sha256, manifest_sha)
     document["windows"] = [window_document(packs["w1"])]
     document["reported_windows"] = [window_document(packs["w0"])]
     for arm in document["adapter_pins"]:
@@ -475,7 +470,9 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
     }
 
     # Every baseline against every full combined cell, exactly as acceptance compared them.
-    assert len(expected.comparisons) == 8 * len(reg.registration.baseline_arms) == 8 * 32
+    assert len(COMBINED) == 12 and {cell_of(world, c).kind for c in COMBINED} == {"v31"}
+    assert len(reg.cells) == 324 and sum(not c.reported_only for c in reg.cells) == W1_CELLS
+    assert len(expected.comparisons) == 12 * len(reg.registration.baseline_arms) == 12 * 32
     assert verdict["comparisons"] == [
         {
             "window": row.window,
@@ -574,7 +571,7 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
 
 def test_w0_reports_carry_no_verdict(world, summary, defective, expected_defective):
     w0_cells = [c for c in world.reg.cells if c.reported_only]
-    assert len(w0_cells) == 8 and {c.window for c in w0_cells} == {"w0"}
+    assert len(w0_cells) == 12 and {c.window for c in w0_cells} == {"w0"}
     assert sorted(path.name for path in (summary / "w0").iterdir()) == sorted(
         c.cell_id for c in w0_cells
     )
@@ -757,11 +754,12 @@ def test_a_claim_under_other_pins_is_refused(world, matrix, tmp_path, pin):
     [
         {"arm": "spot_trend"},
         {"window": "w0"},
+        {"capital": "small"},
         {"capital": "owner_small"},
         {"cost_multiple": 2},
         {"scenario": "open_high_low_close"},
     ],
-    ids=["arm", "window", "capital", "cost", "scenario"],
+    ids=["arm", "window", "capital", "unregistered capital", "cost", "scenario"],
 )
 def test_an_outcome_of_another_cell_is_refused(world, matrix, tmp_path, change):
     cells = copy_cells(matrix, tmp_path / "cells", (COMBINED[0],))
@@ -912,13 +910,13 @@ def test_an_acceptance_pass_with_any_unfinished_cell_is_incomplete(
     assert verdict["acceptance_status"] == "pass"
     reasons = verdict["cell_incomplete_reasons"]
     if not broken:
-        assert verdict["status"] == "pass" and reasons == [] and len(judged) == 208
+        assert verdict["status"] == "pass" and reasons == [] and len(judged) == W1_CELLS
         return
     (owner,) = broken
     assert verdict["status"] == "incomplete"
     assert len(reasons) == 1 and reasons[0].startswith(f"{owner}: ")
     withheld = 0 if owner == PICKS else 1  # an invalid cell's outcome too (Ruling R3)
-    assert len(judged) == 208 - withheld
+    assert len(judged) == W1_CELLS - withheld
     assert attempt_of(owner) not in {row.attempt_id for row in judged} or owner == PICKS
 
 
@@ -1031,8 +1029,8 @@ def test_a_rerun_makes_an_acceptance_pass_incomplete(
     )
     assert verdict["acceptance_status"] == "pass"
     reruns = verdict["run"]["reruns"]
-    if expected is None:  # every artifact claims run-1, aggregation is run-2: all 209
-        assert len(reruns) == 208 + 1
+    if expected is None:  # every artifact claims run-1, aggregation is run-2: all 313
+        assert len(reruns) == W1_CELLS + 1
         assert reruns[-1] == f"{PICKS}: claimed by run run-1, not this run run-2"
     else:
         assert reruns == expected
@@ -1213,13 +1211,24 @@ def test_a_malformed_aggregate_attempt_id_is_refused_before_anything_is_written(
 # --- the other invalid and refused branches (Ruling F12) --------------------------------
 
 
-def test_a_report_labelled_with_another_capital_is_refused(world, matrix, tmp_path):
+@pytest.mark.parametrize(
+    "label",
+    [
+        "small_100_usdt",
+        "medium_1000_usdt",
+        # The replaced EUR 100 label names no capital, so it is no research cell's either.
+        f"owner_small:EUR:100:usdt_per_eur=1.0389:fx_pin={'e' * 64}",
+    ],
+)
+def test_a_report_labelled_with_another_capital_is_refused(world, matrix, tmp_path, label):
     cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))  # a research cell
     path = cell_dir(cells, HOLD_CELL) / "outcome.json"
     outcome = decode_outcome(path.read_text(encoding="ascii"))
     assert outcome.report_evidence is not None
-    owner = run_cell._capital(world.reg, "owner_small")
-    report = replace(outcome.report_evidence.report, capital_label=capital_label(owner))
+    if label.startswith(("small", "medium")):
+        capital = run_cell._capital(world.reg, label.partition("_")[0])
+        assert capital_label(capital) == label
+    report = replace(outcome.report_evidence.report, capital_label=label)
     evidence = replace(outcome.report_evidence, report=report)
     path.write_bytes(encode_outcome(replace(outcome, report_evidence=evidence)).encode("ascii"))
     out = mkdir(tmp_path / "out")

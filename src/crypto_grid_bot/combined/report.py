@@ -5,14 +5,14 @@ identified. Funding is signed wallet cash flow. Completeness is structural only:
 source reference strings are retained, not fetched or cryptographically verified.
 """
 
-import re
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Context, Decimal, DecimalException, localcontext
 from fractions import Fraction
+from types import MappingProxyType
 
 from crypto_grid_bot.combined.evidence import PHASES
 from crypto_grid_bot.combined.observation_policy import PolicyEvidence, validate_boundaries
@@ -294,21 +294,30 @@ RESIDUAL_TOLERANCE = Fraction(1, 10**18)
 # Every report whose run applies today's saved exchange filters to historical data says so
 # in these words (design: "Historical use of present-day saved filters is disclosed").
 SAVED_FILTERS_DISCLOSURE = "present_day_saved_exchange_filters_on_historical_data"
-# ``experiment.capital_label``'s owner_small form: amount and USDT per EUR rate as registered.
-_OWNER_SMALL_LABEL = re.compile(
-    r"owner_small:EUR:([0-9]+(?:\.[0-9]+)?):usdt_per_eur=([0-9]+(?:\.[0-9]+)?)"
-    r":fx_pin=[0-9a-f]{64}"
+# The capital scenarios ``experiment.capital_label`` names: the owner's three starting
+# capitals, all USDT (owner decision, 2026-10-14; it replaced 10,000 USDT plus EUR 100 at
+# the ECB rate). Each label, in the registration's cell order, with the capital id it names
+# and the opening equity, in USDT, it requires. No capital converts a currency. Read-only,
+# so ``experiment.CAPITALS``, built from it at import, can never drift from it.
+CAPITAL_LABELS: Mapping[str, tuple[str, int]] = MappingProxyType(
+    {
+        "research_10000_usdt": ("research", 10000),
+        "medium_1000_usdt": ("medium", 1000),
+        "small_100_usdt": ("small", 100),
+    }
 )
 
 
+def capital_label_id(label: object) -> str | None:
+    """The capital id a capital label names (``CAPITAL_LABELS``); None for anything else."""
+    named = CAPITAL_LABELS.get(label) if isinstance(label, str) else None
+    return None if named is None else named[0]
+
+
 def _capital_label_matches(label: str, opening: Fraction) -> bool:
-    """``research_10000_usdt`` opens with exactly 10000; owner_small with amount times rate."""
-    if label == "research_10000_usdt":
-        return opening == 10000
-    match = _OWNER_SMALL_LABEL.fullmatch(label)
-    return match is not None and opening == Fraction(Decimal(match[1])) * Fraction(
-        Decimal(match[2])
-    )
+    """A label of ``CAPITAL_LABELS`` whose report opens with exactly its USDT amount."""
+    named = CAPITAL_LABELS.get(label)
+    return named is not None and opening == named[1]
 
 
 def utc_text(timestamp_ms: int) -> str:

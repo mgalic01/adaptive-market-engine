@@ -330,6 +330,12 @@ dashboard. A 100 USDT capital must never be labelled EUR100: a registration whos
 Tests: each disclosure appears in the report and the rendered page (escaped); an FX rate
 of 1 is rejected; the capital label appears on the page.
 
+*Note, 2026-10-14: the owner replaced the `owner_small` EUR 100 capital (and `research`'s
+pairing with it) by three USDT capitals, labelled `research_10000_usdt`,
+`medium_1000_usdt` and `small_100_usdt`; no capital carries an FX rate or pin any more, and
+a label must name one of the three and match its opening equity
+(`docs/V3_1_SOURCE_INVENTORY.md`, "Owner decision on the capitals, 2026-10-14").*
+
 ## Task 11: Evidence records carry the full assessment and every blocker
 
 Spec lines 68-70, 86, 190-193.

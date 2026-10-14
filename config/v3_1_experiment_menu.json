@@ -5,8 +5,9 @@
   "modeled_scenarios": ["open_low_high_close", "open_high_low_close"],
   "cost_multiples": [1, 2],
   "capital_scenarios": [
-    {"id": "research", "usdt": "10000"},
-    {"id": "owner_small", "eur": "100", "eur_usdt_pin": null}
+    {"id": "research", "currency": "USDT", "amount": "10000", "initial_equity": "10000"},
+    {"id": "medium", "currency": "USDT", "amount": "1000", "initial_equity": "1000"},
+    {"id": "small", "currency": "USDT", "amount": "100", "initial_equity": "100"}
   ],
   "arms": [
     "unchanged_v3_selector",
@@ -35,7 +36,6 @@
     "exact_comparable_dates_and_input_availability",
     "data_and_filter_manifest_hashes",
     "grid_flow_coverage",
-    "fx_assumption",
     "base_cost_profile_and_benchmark_adapters",
     "reviewed_scenario_replay_and_common_boundary_adapter_pins",
     "separate_owner_historical_run_authorization"

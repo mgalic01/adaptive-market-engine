@@ -43,6 +43,9 @@ An approximately EUR100 comparison therefore needs a separately identified,
 reviewed capital adapter with synthetic parity at 10,000; proportional scaling of
 outputs is invalid because venue minimums and sizing are nonlinear. No such
 adapter or capital-specific historical result is claimed here.
+*(Note, 2026-10-14: the comparisons below 10,000 USDT are now the `medium` 1,000 and
+`small` 100 USDT capitals, which replaced approximately EUR100; see "Owner decision on
+the capitals, 2026-10-14".)*
 
 V3 records open/post-fill and modeled intrabar extrema, rather than a regular
 hourly-close series. V0–V2's hourly sample is taken after the first evaluated
@@ -68,11 +71,14 @@ only, no market data); the owner chose the recommended option each time:
   baseline is its own arm. V0–V2 use a read-only recorder around the frozen
   simulator (no trading logic changes; parity with the frozen outputs is tested).
   The frozen V0–V2 evidence ran 100 USDT per coin, so 10,000 USDT and ~EUR100 runs
-  of them are new evidence.
+  of them are new evidence. *(Note, 2026-10-14: the runs are now at 10,000, 1,000 and
+  100 USDT, all new evidence.)*
 - **~EUR100 capital ("Reviewed capital adapter").** The unchanged V3 code runs with a
   small subclass that only sets the starting capital, tested to give identical
   results at 10,000 USDT. Exchange minimums then apply naturally at ~EUR100. The
   other baselines take capital as a setting. Outputs are never scaled.
+  *(Note, 2026-10-14: the adapter now serves the `medium` 1,000 and `small` 100 USDT
+  capitals, which replaced ~EUR100.)*
 - **Hold ("Equal cash per coin at start").** The starting capital is split equally
   across the registered coins at the window's first hour, bought once with entry
   costs and held. A coin whose share is below the exchange minimum stays in cash,
@@ -145,6 +151,8 @@ Asked by Claude after the second conformance pass, from
   acceptance. It covers the March 2020 crash.
 - **FX pin ("Official end-2024 rate").** The ECB euro reference rate for 2024-12-31 is
   copied from the ECB's publication at registration, with USDT taken at par.
+  *(Replaced on 2026-10-14: no capital is in euros any more, so no FX pin is used; see
+  "Owner decision on the capitals, 2026-10-14" below.)*
 - **V1 hurdles ("All 9 variants").** V3.1 must beat every spec-v1 grid variant, pinned as
   `a b c e f g cg h ch`, each in both path modes.
 - **Costs ("Binance standard + double-cost check").** Spot fee 0.10% and futures fee
@@ -152,3 +160,24 @@ Asked by Claude after the second conformance pass, from
 - **Data for W0.** Spot one-minute bars for ADA, BNB, LINK, LTC and TRX, 2020-02 to
   2021-05, are fetched through a second owner-approved Bob task (80 archives). BTC, ETH
   and XRP already have minute bars from 2019-01.
+
+## Owner decision on the capitals, 2026-10-14
+
+Before the code is locked for the run, the owner decided that the one historical run
+tests **three starting capitals, all in USDT: 100, 1,000 and 10,000 USDT**. This
+replaces the two capitals approved earlier: `research` at 10,000 USDT, and EUR 100
+converted at the ECB rate for 2024-12-31 with a pinned FX record ("replaces EUR 100 at
+the ECB rate").
+
+- **Capitals.** `research` 10,000 USDT, `medium` 1,000 USDT and `small` 100 USDT, each
+  opening at exactly its amount. Within each cost multiple the cells run research, medium,
+  then small. Reports label them `research_10000_usdt`, `medium_1000_usdt` and
+  `small_100_usdt`.
+- **No euro conversion.** No capital uses FX: the FX pin of 2026-10-12 above, its FX
+  record and the registration's FX fields are dropped. A registration whose capital names
+  an FX rate or record is refused.
+- **Still one run.** It is one registration, not three experiments: every cell runs once
+  per capital, as it did with two. The run has 324 cells instead of 216 (in all: 120
+  V3.1 cells in W1 and 12 in W0, 42 V3, 6 hold and 144 minute cells).
+- **Unchanged.** The prepare config, the windows, the coins, the arms and the cost
+  multiples.

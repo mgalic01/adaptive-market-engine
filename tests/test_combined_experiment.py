@@ -1,5 +1,5 @@
 import math
-from dataclasses import replace
+from dataclasses import fields, replace
 from decimal import Decimal, localcontext
 from fractions import Fraction
 
@@ -90,7 +90,8 @@ def registration() -> Registration:
         (Window("window", 0, 2 * DAY, PIN),),
         (
             Capital("research", D(10000), "USDT", D(10000)),
-            Capital("owner_small", D(110), "EUR", D(100), D("1.1"), PIN),
+            Capital("medium", D(1000), "USDT", D(1000)),
+            Capital("small", D(100), "USDT", D(100)),
         ),
         ((1, PIN), (2, "c" * 64)),
         CODE,
@@ -120,7 +121,6 @@ def outcomes(reg: Registration) -> tuple[RunOutcome, ...]:
                             window.end_ms,
                             reg.code_pin,
                             reg.config_pin,
-                            capital.fx_pin if capital.id == "owner_small" else None,
                             reg.observation_policy,
                             dict(reg.adapter_pins).get(arm),
                             scenario,
@@ -363,14 +363,16 @@ def test_full_drawdown_limit_inclusive_at_both_costs_and_never_reset(cost: int) 
     )
 
 
-def test_doubled_full_profit_must_be_strictly_positive_in_both_capitals() -> None:
+@pytest.mark.parametrize(("capital", "opening"), [("medium", 1000), ("small", 100)])
+def test_doubled_full_profit_must_be_strictly_positive_in_every_capital(capital, opening):
     reg = registration()
-    assert (
-        evaluate(
-            reg, change(outcomes(reg), cost=2, capital="owner_small", final_equity=D(110))
-        ).status
-        == "fail"
-    )
+    rows = change(outcomes(reg), cost=2, capital=capital, final_equity=D(opening))
+    result = evaluate(reg, rows)
+    assert result.status == "fail"
+    assert [f for f in result.failures if "doubled-cost full profit" in f] == [
+        f"{('combined', 'window', capital, 2, SCENARIOS[0])}: doubled-cost full profit is "
+        "not positive"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -442,18 +444,26 @@ def test_mismatched_identity_never_counts_as_matched_comparison(field: str, valu
 
 def test_wrong_initial_capital_and_nonfinite_metrics_do_not_pass() -> None:
     reg = registration()
+    # Research opening at the small capital's 100, small at research's 10000: neither is
+    # its own registered capital.
     assert evaluate(reg, change(outcomes(reg), initial_equity=D(100))).status == "incomplete"
+    rows = change(outcomes(reg), capital="small", initial_equity=D(10000))
+    assert evaluate(reg, rows).status == "incomplete"
     assert evaluate(reg, change(outcomes(reg), final_equity=D("NaN"))).status == "incomplete"
 
 
 @pytest.mark.parametrize(
-    "alter", ["fx", "arms", "baseline", "placeholder", "pending", "pin", "cost", "dates"]
+    "alter",
+    ["capital", "capitals", "arms", "baseline", "placeholder", "pending", "pin", "cost", "dates"],
 )
 def test_unfrozen_or_reduced_registration_cannot_pass(alter: str) -> None:
     reg = registration()
     rows = outcomes(reg)
-    if alter == "fx":
-        reg = replace(reg, capitals=(reg.capitals[0], replace(reg.capitals[1], fx_pin=None)))
+    if alter == "capital":
+        medium = replace(reg.capitals[1], amount=D(1001), initial_equity=D(1001))
+        reg = replace(reg, capitals=(reg.capitals[0], medium, reg.capitals[2]))
+    elif alter == "capitals":
+        reg = replace(reg, capitals=reg.capitals[:2])
     elif alter == "arms":
         reg = replace(reg, arms=tuple(a for a in reg.arms if a != "spot_grid"))
     elif alter == "baseline":
@@ -1096,23 +1106,34 @@ def test_malformed_cost_profile_collection_is_incomplete(profiles):
     assert result.status == "incomplete" and not result.failures
 
 
-def test_owner_small_outcomes_cannot_cross_same_rate_different_fx_pins():
-    reg = registration()
-    foreign = replace(reg, capitals=(reg.capitals[0], replace(reg.capitals[1], fx_pin="d" * 64)))
-    rows = outcomes(reg)
-    result = evaluate(foreign, rows)
-    assert result.status == "incomplete" and not result.failures
-
-
-def test_foreign_fx_outcome_cannot_attribute_component_safety_failure():
-    reg = registration()
-    foreign = replace(
-        reg,
-        capitals=(reg.capitals[0], replace(reg.capitals[1], fx_pin="d" * 64)),
-        pending=("review",),
+def _as_capital(rows, source: str, target: str):
+    """``rows`` with every ``source`` capital outcome claiming ``target``'s identity, and
+    ``target``'s own outcomes dropped: one capital's results offered for another's."""
+    return tuple(
+        replace(row, identity=replace(row.identity, capital=target))
+        if row.identity.capital == source
+        else row
+        for row in rows
+        if row.identity.capital != target
     )
-    rows = change(outcomes(reg), capital="owner_small", max_drawdown=D(".5"))
-    result = evaluate(foreign, rows)
+
+
+@pytest.mark.parametrize(("source", "target"), [("medium", "small"), ("small", "medium")])
+def test_one_capitals_outcomes_cannot_stand_for_another(source, target):
+    reg = registration()
+    result = evaluate(reg, _as_capital(outcomes(reg), source, target))
+    assert result.status == "incomplete" and not result.failures
+    assert any(
+        f"{('combined', 'window', target, 1, SCENARIOS[0])}:" in reason
+        for reason in result.incomplete_reasons
+    )
+
+
+@pytest.mark.parametrize(("source", "target"), [("medium", "small"), ("research", "medium")])
+def test_another_capitals_outcome_cannot_attribute_component_safety_failure(source, target):
+    reg = replace(registration(), pending=("review",))
+    rows = change(outcomes(reg), capital=source, max_drawdown=D(".5"))
+    result = evaluate(reg, _as_capital(rows, source, target))
     assert result.status == "incomplete" and not result.failures
 
 
@@ -1134,13 +1155,13 @@ def test_malformed_matching_cost_declaration_is_not_silently_dropped(bad):
 
 
 @pytest.mark.parametrize("pending", [False, True])
-@pytest.mark.parametrize("fx_pin", [None, "d" * 64, [], 1])
-def test_missing_or_foreign_owner_fx_identity_cannot_attribute_results(fx_pin, pending):
+@pytest.mark.parametrize("capital", ["owner_small", "Small", "small_100_usdt", "small "])
+def test_an_unregistered_capital_identity_cannot_attribute_results(capital, pending):
     reg = registration()
-    rows = change(outcomes(reg), capital="owner_small", max_drawdown=D(".5"))
+    rows = change(outcomes(reg), capital="small", max_drawdown=D(".5"))
     rows = tuple(
-        replace(row, identity=replace(row.identity, fx_pin=fx_pin))
-        if row.identity.capital == "owner_small"
+        replace(row, identity=replace(row.identity, capital=capital))
+        if row.identity.capital == "small"
         else row
         for row in rows
     )
@@ -1148,28 +1169,44 @@ def test_missing_or_foreign_owner_fx_identity_cannot_attribute_results(fx_pin, p
     assert result.status == "incomplete" and not result.failures
 
 
-def test_relabelled_owner_wrapper_cannot_import_foreign_fx_report_safety():
+@pytest.mark.parametrize(("own", "other"), [("small", "medium"), ("medium", "research")])
+def test_relabelled_wrapper_cannot_import_another_capitals_report_safety(own, other):
+    """A cell's wrapper carrying another capital's failing report: neither the report
+    (of another opening equity and identity) nor the wrapper attributes that failure."""
     reg = registration()
-    original = replace(reg, capitals=(reg.capitals[0], replace(reg.capitals[1], fx_pin="d" * 64)))
     rows = list(outcomes(reg))
-    foreign_rows = change(outcomes(original), capital="owner_small", max_drawdown=D(".5"))
-    index = next(
-        i
-        for i, row in enumerate(rows)
-        if row.identity.arm == "combined"
-        and row.identity.capital == "owner_small"
-        and row.identity.cost_multiple == 1
-    )
-    rows[index] = replace(rows[index], report_evidence=foreign_rows[index].report_evidence)
+    foreign_rows = change(outcomes(reg), capital=other, max_drawdown=D(".5"))
+
+    def index(rows, capital):
+        return next(
+            i
+            for i, row in enumerate(rows)
+            if (row.identity.arm, row.identity.capital, row.identity.cost_multiple)
+            == ("combined", capital, 1)
+            and row.identity.scenario == SCENARIOS[0]
+        )
+
+    foreign = foreign_rows[index(foreign_rows, other)].report_evidence
+    assert foreign.report.max_drawdown == D(".5")
+    rows[index(rows, own)] = replace(rows[index(rows, own)], report_evidence=foreign)
     result = evaluate(reg, tuple(rows))
     assert result.status == "incomplete" and not result.failures
 
 
-def test_legacy_research_identity_needs_no_fx_conversion_pin():
+def test_no_identity_carries_a_currency_conversion():
+    """Every capital is USDT (owner decision, 2026-10-14): an identity names its capital
+    and nothing converts, and each capital's outcomes open at exactly its amount."""
     reg = registration()
     rows = outcomes(reg)
-    assert all(row.identity.fx_pin is None for row in rows if row.identity.capital == "research")
-    assert all(row.identity.fx_pin == PIN for row in rows if row.identity.capital == "owner_small")
+    assert "fx_pin" not in {field.name for field in fields(RunIdentity)}
+    assert {field.name for field in fields(Capital)} == {
+        "id",
+        "initial_equity",
+        "currency",
+        "amount",
+    }
+    openings = {(row.identity.capital, row.initial_equity) for row in rows}
+    assert openings == {("research", D(10000)), ("medium", D(1000)), ("small", D(100))}
     assert evaluate(reg, rows).status == "pass"
 
 
@@ -1889,42 +1926,65 @@ def test_a_v3_1_gap_hour_the_registration_does_not_skip_leaves_its_cell_incomple
     )
 
 
-def owner_small(rate, *, fx_pin=PIN):
-    return Capital("owner_small", D(100) * D(rate), "EUR", D(100), D(rate), fx_pin)
-
-
-@pytest.mark.parametrize("rate", ["1", "1.0", "0.49", "2.01", "100"])
-def test_an_implausible_or_unit_fx_rate_never_labels_usdt_as_eur100(rate):
-    # A rate of 1 would label 100 USDT as EUR100; outside 0.5-2.0 USD per EUR is no rate.
+@pytest.mark.parametrize(
+    ("capital", "reason"),
+    [
+        # The replaced EUR 100 capital, at any rate: no capital converts a currency.
+        (
+            Capital("owner_small", D("103.89"), "EUR", D(100)),
+            "registration: capital 'owner_small' is not research, medium or small",
+        ),
+        # 100 USDT is the small capital, never a relabelled one.
+        (
+            Capital("small", D("103.89"), "USDT", D(100)),
+            "registration: small capital must be 100 USDT, with initial equity 100",
+        ),
+        (
+            Capital("small", D(100), "EUR", D(100)),
+            "registration: small capital must be 100 USDT, with initial equity 100",
+        ),
+        (
+            Capital("medium", D(100), "USDT", D(100)),
+            "registration: medium capital must be 1000 USDT, with initial equity 1000",
+        ),
+        (
+            Capital("research", D(1000), "USDT", D(1000)),
+            "registration: research capital must be 10000 USDT, with initial equity 10000",
+        ),
+    ],
+)
+def test_a_capital_off_its_usdt_amount_never_registers_or_labels(capital, reason):
     reg = registration()
-    reg = replace(reg, capitals=(reg.capitals[0], owner_small(rate)))
+    others = tuple(c for c in reg.capitals if c.id != capital.id)[: len(reg.capitals) - 1]
+    reg = replace(reg, capitals=(*others, capital))
     result = evaluate(reg, outcomes(reg))
-    assert result.status == "incomplete"
-    assert any("plausible" in reason for reason in result.incomplete_reasons)
+    assert result.status == "incomplete" and not result.failures
+    assert reason in result.incomplete_reasons
     with pytest.raises(ValueError):
-        capital_label(owner_small(rate))
+        capital_label(capital)
 
 
-@pytest.mark.parametrize("rate", ["0.5", "1.08", "2.0"])
-def test_a_plausible_fx_rate_registers_and_labels_currency_amount_rate_and_pin(rate):
+def test_each_usdt_capital_registers_and_labels_its_id_and_amount():
     reg = registration()
-    reg = replace(reg, capitals=(reg.capitals[0], owner_small(rate)))
     result = evaluate(reg, ())
-    assert not any("plausible" in reason for reason in result.incomplete_reasons)
-    assert (
-        capital_label(owner_small(rate)) == f"owner_small:EUR:100:usdt_per_eur={rate}:fx_pin={PIN}"
+    assert not any("capital" in reason for reason in result.incomplete_reasons)
+    assert [capital_label(c) for c in reg.capitals] == [
+        "research_10000_usdt",
+        "medium_1000_usdt",
+        "small_100_usdt",
+    ]
+    # Another amount, even as a decimal of the same value, labels by the registered id.
+    assert capital_label(Capital("medium", D("1000.00"), "USDT", D("1000.0"))) == (
+        "medium_1000_usdt"
     )
-
-
-def test_the_research_label_and_a_missing_fx_pin():
-    assert capital_label(registration().capitals[0]) == "research_10000_usdt"
-    with pytest.raises(ValueError):
-        capital_label(owner_small("1.1", fx_pin=None))
-    with pytest.raises(ValueError):
-        capital_label(Capital("research", D(100), "USDT", D(100)))
-
-
-OTHER_PIN_LABEL = f"owner_small:EUR:100:usdt_per_eur=1.1:fx_pin={'d' * 64}"
+    for wrong in (
+        Capital("research", D(100), "USDT", D(100)),
+        Capital("Small", D(100), "USDT", D(100)),
+        Capital(None, D(100), "USDT", D(100)),
+        "small",
+    ):
+        with pytest.raises(ValueError):
+            capital_label(wrong)
 
 
 @pytest.mark.parametrize(
@@ -1932,11 +1992,14 @@ OTHER_PIN_LABEL = f"owner_small:EUR:100:usdt_per_eur=1.1:fx_pin={'d' * 64}"
     [
         ("combined", "research", None),
         ("matched_spot_hold", "research", None),
-        ("combined", "owner_small", None),
-        # Well formed, and amount times rate equals the registered 110, but another pin.
-        ("combined", "owner_small", OTHER_PIN_LABEL),
-        ("unchanged_v3_selector", "owner_small", OTHER_PIN_LABEL),
-        ("combined", "owner_small", "research_10000_usdt"),
+        ("combined", "small", None),
+        # Well formed, but another capital's label.
+        ("combined", "small", "medium_1000_usdt"),
+        ("unchanged_v3_selector", "medium", "small_100_usdt"),
+        ("combined", "small", "research_10000_usdt"),
+        ("combined", "medium", "medium_1000"),
+        # The replaced EUR 100 label names no capital.
+        ("combined", "small", f"owner_small:EUR:100:usdt_per_eur=1:fx_pin={'d' * 64}"),
     ],
 )
 def test_an_outcome_must_carry_the_registered_capital_label(arm, capital, label):
@@ -1961,7 +2024,8 @@ def test_acceptance_returns_every_baseline_comparison_on_the_common_schedule():
         if (r.identity.arm, r.identity.capital, r.identity.cost_multiple) != hold_cell
     )
     result = evaluate(reg, rows)
-    assert len(result.comparisons) == 2 * 2 * len(SCENARIOS) * len(BASELINES)
+    # Three capitals, two cost multiples, both scenarios, every baseline.
+    assert len(result.comparisons) == 3 * 2 * len(SCENARIOS) * len(BASELINES)
     cell = [
         c
         for c in result.comparisons
@@ -2006,8 +2070,8 @@ def test_a_zero_common_drawdown_comparison_is_indeterminate_not_a_pass():
 def test_a_cell_comparison_keeps_its_reasons_and_every_registered_baseline():
     reg = registration()
     rows = change(outcomes(reg), arm=V2, final_equity=D(15000))
-    # Another cell fails on its own: the owner_small doubled-cost full arm loses money.
-    rows = change(rows, cost=2, capital="owner_small", final_equity=D(100))
+    # Another cell fails on its own: the small doubled-cost full arm makes no money.
+    rows = change(rows, cost=2, capital="small", final_equity=D(100))
     hold_cell = ("matched_spot_hold", "research", 1)
     rows = tuple(
         r
@@ -2026,11 +2090,13 @@ def test_a_cell_comparison_keeps_its_reasons_and_every_registered_baseline():
         "matched_spot_hold" in r and "missing or repeated cell" in r
         for r in cell.incomplete_reasons
     )
-    assert not any("owner_small" in r for r in (*cell.failures, *cell.incomplete_reasons))
+    assert not any(
+        "'small'" in r or "'medium'" in r for r in (*cell.failures, *cell.incomplete_reasons)
+    )
     assert cell.other_failures > 0
     # A cell with nothing against it still shows the failing acceptance.
     clean = cell_comparison(
-        reg, result, window="window", capital="owner_small", cost_multiple=1, scenario=SCENARIOS[1]
+        reg, result, window="window", capital="small", cost_multiple=1, scenario=SCENARIOS[1]
     )
     assert (clean.status, clean.cell_status) == ("fail", "pass")
     assert clean.failures == clean.incomplete_reasons == ()

@@ -1,7 +1,8 @@
 """Frozen V3 baselines: the selector and its six fixed long-only rules.
 
 Owner decisions of 2026-10-11 (docs/V3_1_SOURCE_INVENTORY.md): both are matched
-baselines; ~EUR100 runs use a capital adapter that only sets the starting capital;
+baselines; runs at a starting capital other than 10,000 USDT (since 2026-10-14 the
+1,000 and 100 USDT capitals) use a capital adapter that only sets the starting capital;
 V3's funding, booked a few milliseconds after the hour and after that hour's fills,
 is native timing and is disclosed. The frozen V3 modules run unchanged: no trading
 rule, cost, size multiple, output or timestamp is altered here. Every input record
