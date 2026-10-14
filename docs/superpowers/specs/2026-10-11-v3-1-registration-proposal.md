@@ -173,7 +173,7 @@ review):
 - the saved spot and futures filter snapshots (`config/datasets/v3-20261009/snapshots/`);
 - the skipped-hours list;
 - cost profile pins;
-- the FX pin;
+- the FX pin *(note, 2026-10-14: none any more; the three capitals are all USDT)*;
 - observation policy `v3.1-owner-2026-10-11-settlement-v1`;
 - the trial register family `spec-v3.1`, with a candidate-space registration and a
   completing event before any run.
@@ -183,7 +183,8 @@ review):
 Approve or change:
 - the window (section 1);
 - the universes (section 2);
-- the FX pin (section 4);
+- the FX pin (section 4) *(note, 2026-10-14: dropped; the owner chose three USDT
+  capitals, so there is no FX pin to approve)*;
 - the cost profiles (section 4);
 - the V1 variant list (section 5).
 
