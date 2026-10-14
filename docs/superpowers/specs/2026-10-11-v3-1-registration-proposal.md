@@ -117,13 +117,16 @@ protective rule (no new trades while blind; close the blind position when prices
 - **V3 at ~EUR100:** V3 could stop with `leverage_not_restored` because of exchange step
   sizes rather than missing data. Under the 2026-10-12 rule that comparison would be
   incomplete, so a pass at ~EUR100 could be blocked. This is the cautious side by design.
+  *(Note, 2026-10-14: this now applies to the `small` capital at 100 USDT, which replaced
+  ~EUR100; the `medium` capital at 1,000 USDT is less exposed to it.)*
 - **The day after a short daily bar:** on 2021-08-13 every coin has 19 usable hours (a
   5-hour exchange outage), so no daily bar. The next day every coin's correlation is
   unknown, the coins form one group, and the 80% group cap applies for that day. The
   protective close rule will already have closed the positions held during the outage.
 - **Minute baselines' capital:** 10,000 USDT does not split exactly across three pairs.
   Each pair gets an equal share floored to 8 decimals, and the remainder stays as
-  disclosed cash.
+  disclosed cash. *(Note, 2026-10-14: 1,000 and 100 USDT do not split exactly either; each
+  leaves 0.00000001 as disclosed cash.)*
 
 ## 7. Run matrix and size
 

@@ -43,6 +43,9 @@ An approximately EUR100 comparison therefore needs a separately identified,
 reviewed capital adapter with synthetic parity at 10,000; proportional scaling of
 outputs is invalid because venue minimums and sizing are nonlinear. No such
 adapter or capital-specific historical result is claimed here.
+*(Note, 2026-10-14: the comparisons below 10,000 USDT are now the `medium` 1,000 and
+`small` 100 USDT capitals, which replaced approximately EUR100; see "Owner decision on
+the capitals, 2026-10-14".)*
 
 V3 records open/post-fill and modeled intrabar extrema, rather than a regular
 hourly-close series. V0–V2's hourly sample is taken after the first evaluated
@@ -68,11 +71,14 @@ only, no market data); the owner chose the recommended option each time:
   baseline is its own arm. V0–V2 use a read-only recorder around the frozen
   simulator (no trading logic changes; parity with the frozen outputs is tested).
   The frozen V0–V2 evidence ran 100 USDT per coin, so 10,000 USDT and ~EUR100 runs
-  of them are new evidence.
+  of them are new evidence. *(Note, 2026-10-14: the runs are now at 10,000, 1,000 and
+  100 USDT, all new evidence.)*
 - **~EUR100 capital ("Reviewed capital adapter").** The unchanged V3 code runs with a
   small subclass that only sets the starting capital, tested to give identical
   results at 10,000 USDT. Exchange minimums then apply naturally at ~EUR100. The
   other baselines take capital as a setting. Outputs are never scaled.
+  *(Note, 2026-10-14: the adapter now serves the `medium` 1,000 and `small` 100 USDT
+  capitals, which replaced ~EUR100.)*
 - **Hold ("Equal cash per coin at start").** The starting capital is split equally
   across the registered coins at the window's first hour, bought once with entry
   costs and held. A coin whose share is below the exchange minimum stays in cash,
