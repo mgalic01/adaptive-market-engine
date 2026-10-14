@@ -64,7 +64,9 @@ failed and every later job skipped in every attempt (``launch_reason``); the pla
 and the verdict still name it. L3: a rehearsal's plan job runs ``dispatch-check
 --report-only`` on its own title, which decides as a registered check would, prints the
 decision and fails only when GitHub cannot be read, so access, permissions and paging are
-proven before a registered run.
+proven before a registered run; it also reads its own run's job listing and checks every
+record's shape, so even a first rehearsal, with no earlier launch, proves the jobs
+endpoint.
 
 Modes (Ruling F3): ``--mode registered`` runs on the repository's own registration;
 ``--mode rehearsal`` runs the same subcommands on a synthetic rehearsal world built
@@ -97,7 +99,8 @@ owner's windows, dates, coin sets and FX reference date (``plan_gate``,
     too. ``--report-only`` (a rehearsal's, whose ``S`` may be empty) looks for ``v31-run
     rehearsal S`` instead, prints the decision on every earlier launch and refuses only
     when GitHub cannot be read (a launch deleted since the listing, its jobs answering
-    404, is listed as gone instead).
+    404, is listed as gone instead); it also reads this run's own job listing, and
+    refuses unless every record has the shape the check reads.
 ``prepare --mode prepare-only|registered|rehearsal --work W --out O`` (Ruling P1)
     The gate: in ``prepare-only``, the checkout is ``--code-commit`` with no uncommitted
     change and ``config/v3_1_prepare.json`` hashes to ``--prepare-sha256``; no
@@ -303,6 +306,7 @@ MAX_GITHUB_BYTES = 32 * 1024 * 1024
 GITHUB_ATTEMPTS = 5
 GITHUB_BACKOFF = (15, 30, 60, 120)  # seconds
 MAX_GITHUB_WAIT = 120  # seconds
+SECONDARY_LIMIT_WAIT = 60  # seconds: GitHub asks for a minute after its secondary rate limit
 # One deadline for the whole check, every read and wait together: well inside the plan
 # job's 30 minutes, so a long outage fails the plan job (not counted, L2) instead of
 # running into its timeout, which GitHub cancels (a cancelled plan counts).
@@ -1295,7 +1299,8 @@ class TransientGitHubError(ValueError):
     L1): no reply, a timeout or a connection error, a reply cut short (an incomplete or
     unreadable status line or body, a TLS failure while reading it, a body shorter than
     its Content-Length), HTTP 5xx or 429, a 403 of GitHub's rate limits (``Retry-After``,
-    or ``x-ratelimit-remaining: 0``), or the current run not yet listed. ``retry_after`` is
+    ``x-ratelimit-remaining: 0``, or a body naming the secondary rate limit), or the
+    current run not yet listed. ``retry_after`` is
     the wait in seconds GitHub asked for, if it gave one. A ``ValueError``, so whatever
     does not retry it fails closed on it."""
 
@@ -1479,6 +1484,57 @@ def _job_kind(name: str) -> str | None:
     return None
 
 
+def _job_fields_error(
+    job: Mapping[str, Any], index: int, run_id: object, attempts: int, ids: set[int]
+) -> str | None:
+    """Why job record ``index`` (an object) lacks the shape ``launch_decision`` reads, or
+    None: a positive integer ``id`` not already in ``ids`` (which it then joins), the run's
+    ``run_id``, a ``run_attempt`` from 1 to ``attempts``, a string ``name`` and ``status``,
+    and a string or null ``conclusion``."""
+    job_id, name, conclusion = job.get("id"), job.get("name"), job.get("conclusion")
+    if type(job_id) is not int or job_id <= 0:
+        return f"its job record {index} has id {job_id!r}, not a positive integer"
+    if job_id in ids:
+        return f"its job {job_id} is listed twice"
+    ids.add(job_id)
+    if type(job.get("run_id")) is not int or job["run_id"] != run_id:
+        return f"its job {job_id} has run_id {job.get('run_id')!r}, not {run_id}"
+    attempt = job.get("run_attempt")
+    if type(attempt) is not int or not 1 <= attempt <= attempts:
+        return f"its job {job_id} has run_attempt {attempt!r}, not 1 to {attempts}"
+    if type(name) is not str or type(job.get("status")) is not str:
+        return f"its job {job_id} has no string name and status"
+    if conclusion is not None and type(conclusion) is not str:
+        return f"its job {job_id} has conclusion {conclusion!r}, not a string or null"
+    return None
+
+
+def job_listing_error(run: object, jobs: object) -> str | None:
+    """Why the current run's own job listing lacks the shape ``launch_decision`` reads, or
+    None (a report-only check's probe of the jobs endpoint, layer L3): the run's
+    ``run_attempt`` a positive integer, the jobs a list of at least one record (this run's
+    own plan job is running), and every record well formed (``_job_fields_error``: fields
+    and types, this run's id, an attempt from 1 to the run's, no id twice). No L2 decision
+    is taken on it: the run is in progress, and its plan job is the one running."""
+    if not isinstance(run, dict):
+        return "its run record is not a JSON object"
+    attempts = run.get("run_attempt")
+    if type(attempts) is not int or attempts < 1:
+        return f"its run_attempt is {attempts!r}, not a positive integer"
+    if not isinstance(jobs, list | tuple):
+        return "its jobs are not a list"
+    if not jobs:
+        return "it lists no job record, though its own plan job is running"
+    ids: set[int] = set()
+    for index, job in enumerate(jobs, start=1):
+        if not isinstance(job, dict):
+            return f"its job record {index} is not a JSON object"
+        error = _job_fields_error(job, index, run.get("id"), attempts, ids)
+        if error is not None:
+            return error
+    return None
+
+
 def launch_decision(run: object, jobs: object) -> tuple[str | None, bool]:
     """Why an earlier launch of the same title counts as an execution of the registration
     (owner decision v31-d21, layer L2), or None when GitHub's records show it provably did
@@ -1528,21 +1584,11 @@ def launch_decision(run: object, jobs: object) -> tuple[str | None, bool]:
     for index, job in enumerate(jobs, start=1):
         if not isinstance(job, dict):
             return f"its job record {index} is not a JSON object", True
-        job_id, name, conclusion = job.get("id"), job.get("name"), job.get("conclusion")
-        if type(job_id) is not int or job_id <= 0:
-            return f"its job record {index} has id {job_id!r}, not a positive integer", True
-        if job_id in ids:
-            return f"its job {job_id} is listed twice", True
-        ids.add(job_id)
-        if type(job.get("run_id")) is not int or job["run_id"] != run_id:
-            return f"its job {job_id} has run_id {job.get('run_id')!r}, not {run_id}", True
-        attempt = job.get("run_attempt")
-        if type(attempt) is not int or not 1 <= attempt <= attempts:
-            return f"its job {job_id} has run_attempt {attempt!r}, not 1 to {attempts}", True
-        if type(name) is not str or type(job.get("status")) is not str:
-            return f"its job {job_id} has no string name and status", True
-        if conclusion is not None and type(conclusion) is not str:
-            return f"its job {job_id} has conclusion {conclusion!r}, not a string or null", True
+        error = _job_fields_error(job, index, run_id, attempts, ids)
+        if error is not None:
+            return error, True
+        job_id, name, conclusion = job["id"], job["name"], job.get("conclusion")
+        attempt = job["run_attempt"]
         listed.add(attempt)
         kind = _job_kind(name)
         where = f"{name!r} (job {job_id}, attempt {attempt})"
@@ -1598,6 +1644,24 @@ def _header(headers: object, name: str) -> str | None:
     return value.strip() if isinstance(value, str) else None
 
 
+def _secondary_rate_limit(error: urllib.error.HTTPError) -> bool:
+    """Whether an HTTP error's body, read up to ``MAX_GITHUB_BYTES``, is a JSON object
+    whose ``message`` names GitHub's secondary rate limit (any case); False for any other
+    body, or one that cannot be read."""
+    try:
+        raw = error.read(MAX_GITHUB_BYTES + 1)
+    except (OSError, HTTPException, ValueError):
+        return False
+    if not isinstance(raw, bytes) or len(raw) > MAX_GITHUB_BYTES:
+        return False
+    try:
+        document = strict_json(raw, "GitHub's error body")
+    except ValueError:
+        return False
+    message = document.get("message") if isinstance(document, dict) else None
+    return isinstance(message, str) and "secondary rate limit" in message.lower()
+
+
 def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
     """The JSON document at ``GITHUB_API + path``, read with ``token``. Any failure is one
     ``ValueError`` naming the path, never the token: an HTTP error (a redirect included), a
@@ -1608,7 +1672,9 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
     reply cut short (``IncompleteRead``, ``BadStatusLine``, an ``ssl.SSLError`` such as
     ``SSLEOFError``, or a body shorter than its Content-Length), HTTP 5xx, HTTP 429, and an
     HTTP 403 that carries ``Retry-After`` or ``x-ratelimit-remaining: 0`` (GitHub's rate
-    limits), with GitHub's ``Retry-After`` seconds when it gives them."""
+    limits), with GitHub's ``Retry-After`` seconds when it gives them, or whose JSON body's
+    ``message`` names the secondary rate limit, which GitHub may send without either
+    header (waited at least ``SECONDARY_LIMIT_WAIT``). Any other 403 is permanent."""
     # The URL is the fixed https://api.github.com origin and a path the callers build from
     # the validated GITHUB_REPOSITORY and GITHUB_RUN_ID: no other scheme or host is opened.
     request = urllib.request.Request(
@@ -1639,6 +1705,11 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
             if retry_after is not None and re.fullmatch(r"[0-9]{1,9}", retry_after):
                 seconds = int(retry_after)
             raise TransientGitHubError(message, seconds) from exc
+        if exc.code == 403 and _secondary_rate_limit(exc):
+            # GitHub's secondary rate limit may answer without either header, and asks
+            # for a wait of at least a minute.
+            message += " (secondary rate limit)"
+            raise TransientGitHubError(message, SECONDARY_LIMIT_WAIT) from exc
         if exc.code == 404:
             raise GitHubNotFound(message) from exc
         raise ValueError(message) from exc
@@ -1833,7 +1904,11 @@ def dispatch_check(
     ``judge_all`` (the aggregate's, whose verdict names every earlier launch); a
     report-only one (a rehearsal's, layer L3) looks for the rehearsal's own
     ``run_titles``, whose input is a SHA-256 or empty, and judges every launch exactly as
-    a registered check would.
+    a registered check would. A report-only check also reads the current run's own job
+    listing (``run_jobs``, retried and within the deadline like every read) and refuses
+    unless every record has the shape the rule reads (``job_listing_error``), so even a
+    first rehearsal, with no earlier launch, proves the jobs endpoint; a registered check
+    makes no such request.
 
     Each read is retried on a transient failure (``github_retry``, L1): the current run,
     whose id must be ``GITHUB_RUN_ID`` before anything else is read; the whole runs
@@ -1901,6 +1976,27 @@ def dispatch_check(
         raise ValueError(
             f"GitHub API {path}: the current run's id is {current_id}, not GITHUB_RUN_ID "
             f"{run_id}: this is not the run that asked"
+        )
+    if report_only:
+        # The probe (L3): even a first rehearsal, with no earlier launch to judge, reads a
+        # job listing, its own, and checks every record's shape, so the jobs endpoint's
+        # access, paging and schema are proven before a registered run needs them.
+        own = github_retry(
+            lambda: run_jobs(repository, token, read, current_id),
+            "this run's own jobs",
+            sleep=sleep,
+            log=log,
+            deadline=deadline,
+        )
+        problem = job_listing_error(current, own)
+        if problem is not None:
+            raise ValueError(
+                f"the jobs endpoint, checked on this run ({current_id}), does not have the "
+                f"shape the check reads: {problem}"
+            )
+        log(
+            f"dispatch check (report-only): jobs endpoint checked on this run: {len(own)} "
+            "job records, shape valid"
         )
 
     def launches() -> tuple[list[object], tuple[int, ...]]:
