@@ -6,8 +6,9 @@ run-name: v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # The V3.1 run driver (scripts/v31_driver.py) on GitHub's machines. It never trades, holds no
 # stored credentials, can only read the repository and commits nothing: its results are
 # artifacts. Two steps get the job's own token, with read access to this repository's
-# workflow runs and nothing more: a registered run's dispatch check, and the Aggregate step,
-# which holds it in a rehearsal too, where the driver does not use it.
+# workflow runs and nothing more: the plan job's dispatch check (a registered run's, and a
+# rehearsal's report-only one), and the Aggregate step, which holds it in a rehearsal too,
+# where the driver does not use it.
 #
 # OPERATING RULE: never dispatch v31-run while another v31-run is queued or running. The
 # concurrency group below asks GitHub to queue dispatches (queue: max) rather than keep one
@@ -91,8 +92,14 @@ run-name: v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # attempt 1, which no folder can tell from the first. The run-name above titles every run
 # with its mode and registration, and the plan job (first) and the aggregate (again) list
 # this workflow's runs through GitHub's API: another registered run of the same
-# registration created before this one or at the same time, whatever its status, fails the
-# plan and leaves the verdict incomplete, as does any failure of the check. A dispatch
+# registration created before this one or at the same time, queued, running or finished,
+# fails the plan and leaves the verdict incomplete, as does any failure of the check. A
+# launch that stopped at the plan job with nothing run does not count: GitHub's records
+# must show it completed, its plan job failed and every later job skipped in every
+# attempt (the status job aside), and anything else counts. Transient GitHub errors (no
+# reply, a timeout, HTTP 5xx or 429, a rate limit, a run not yet listed) are retried, five
+# attempts over about five minutes, before the check fails closed; a rehearsal runs the
+# same check report-only, on its own title, to prove it against GitHub. A dispatch
 # created a second or more later never counts against an earlier one, but two dispatches
 # created in the same second void each other, and one created while an earlier run's plan
 # or aggregate is paging through the runs can make that listing inconsistent, which fails
@@ -265,13 +272,24 @@ jobs:
 
       # A registration is dispatched once: this workflow's runs, listed through GitHub's
       # API, must hold no other registered dispatch of it created before or with this run,
-      # whatever its status. The first driver step; only it and the Aggregate step hold the
-      # token.
+      # unless GitHub's records show that launch stopped at this job with nothing run. The
+      # first driver step; only it and the Aggregate step hold the token. A rehearsal runs
+      # the same check report-only, on its own title: it prints what a registered check
+      # would decide and fails only when GitHub cannot be read, which proves the access,
+      # the permissions and the paging before a registered run.
       - name: Refuse a second dispatch of the registration
-        if: ${{ inputs.mode == 'registered' }}
+        if: ${{ inputs.mode == 'registered' || inputs.mode == 'rehearsal' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/v31_driver.py dispatch-check --registration-sha256 "$REGISTRATION_SHA256"
+        run: |
+          if [ "$MODE" = registered ]; then
+            python scripts/v31_driver.py dispatch-check --registration-sha256 "$REGISTRATION_SHA256"
+          elif [ "$MODE" = rehearsal ]; then
+            python scripts/v31_driver.py dispatch-check --report-only --registration-sha256 "$REGISTRATION_SHA256"
+          else
+            echo "::error::The dispatch check runs in registered and rehearsal mode only, not $MODE."
+            exit 1
+          fi
 
       # A rehearsal's world: its code pin (the smoke world, this checkout's package and the
       # rehearsal marker) and its registration on top, built here once and handed to every
