@@ -289,7 +289,9 @@ LEGACY_DIR = "legacy"  # the legacy dataset, as backtest reads it: legacy/binanc
 MINUTES_DIR = "minutes"  # the V3.1 minute manifests' other archives: minutes/binance/data/...
 PREPARE_OUTPUT_SCHEMA = "v3.1-prepare-output-1"
 SMOKE_SCHEMA = "v3.1-smoke-1"
-PLAN_SCHEMA = "v3.1-plan-1"
+# -2 since the owner's three capitals (2026-10-14): the plan lists minute_cells, and
+# main_cells no longer holds the minute cells.
+PLAN_SCHEMA = "v3.1-plan-2"
 REHEARSAL_WORLD_SCHEMA = "v3.1-rehearsal-world-1"
 TIMING_SCHEMA = "v3.1-timing-1"
 TIMING_CLOSE_SCHEMA = "v3.1-timing-close-1"
@@ -2337,15 +2339,17 @@ def matrix_cells(cells: Sequence[Cell]) -> dict[str, list[str]]:
     job (``v3_cells``); the six long-only V3 rules replay their fixed rule and run with
     the other cells. The minute cells get a matrix of their own (``minute_cells``): with
     the owner's three capitals there are 318 cells besides the selector's, more than one
-    matrix may hold, and the minute cells (144) leave 174 (``main_cells``)."""
+    matrix may hold, and the minute cells (144) leave 174 (``main_cells``). The names
+    are ``MATRICES``', in its order: the picks matrix, the minute one, then the rest."""
+    picks, minute, rest = (name for name, _ in MATRICES)
     listed: dict[str, list[str]] = {name: [] for name, _ in MATRICES}
     for cell in cells:
         if needs_picks(cell.arm):
-            listed["v3_cells"].append(cell.cell_id)
+            listed[picks].append(cell.cell_id)
         elif cell.kind == "minute":
-            listed["minute_cells"].append(cell.cell_id)
+            listed[minute].append(cell.cell_id)
         else:
-            listed["main_cells"].append(cell.cell_id)
+            listed[rest].append(cell.cell_id)
     return listed
 
 

@@ -13,10 +13,12 @@ variant the registration pins, ``matched_v2_grid_<mode>`` and
 """
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
 from itertools import product
+from types import MappingProxyType
 
 from crypto_grid_bot.backtest.replay import PATH_MODES
 
@@ -52,8 +54,10 @@ SCENARIOS = ("open_low_high_close", "open_high_low_close")
 # at exactly its amount: id and amount, in the registration's cell order (research, medium,
 # small). They replace 10,000 USDT plus EUR 100 at the ECB rate; no capital converts.
 CAPITALS: tuple[tuple[str, int], ...] = tuple(CAPITAL_LABELS.values())
-_CAPITAL_AMOUNTS = dict(CAPITALS)
-_LABELS = {capital_id: label for label, (capital_id, _) in CAPITAL_LABELS.items()}
+_CAPITAL_AMOUNTS: Mapping[str, int] = MappingProxyType(dict(CAPITALS))
+_LABELS: Mapping[str, str] = MappingProxyType(
+    {capital_id: label for label, (capital_id, _) in CAPITAL_LABELS.items()}
+)
 
 
 def required_baselines(v1_variants: tuple[str, ...]) -> frozenset[str]:

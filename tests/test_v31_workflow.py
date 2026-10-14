@@ -1709,7 +1709,7 @@ def test_the_status_job_records_every_job_result_even_when_aggregate_is_skipped(
     assert result.returncode == 0, result.stderr
     document = json.loads((tmp_path / "v31/status/status.json").read_bytes())
     assert document == {
-        "schema": "v3.1-status-1",
+        "schema": "v3.1-status-2",
         "mode": "registered",
         "run_id": "4242",
         "run_attempt": "1",

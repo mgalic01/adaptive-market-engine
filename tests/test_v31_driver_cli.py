@@ -632,6 +632,8 @@ def test_plan_gates_first_and_sends_only_the_selector_to_the_picks_matrix(
     for listed in (v3_cells, minute_cells, main_cells):
         assert 0 < len(listed) <= v31_driver.MAX_MATRIX == 256
     assert (document["cells_registered"], document["cells_planned"]) == (324, 324)
+    # Its shape changed with the third matrix, and so did its name: no old plan passes for it.
+    assert document["schema"] == v31_driver.PLAN_SCHEMA == "v3.1-plan-2"
     assert document["registration_sha256"] == registered.config_sha
     assert (document["code_pin"], document["repo_head"]) == (registered.code_pin, registered.head)
     # A registered run plans every cell: --cells belongs to a rehearsal.
@@ -3042,7 +3044,8 @@ def owner_windows(**changes: dict) -> list[dict]:
 W1_COINS, W0_COINS = owner_plan.W1_SYMBOLS, owner_plan.W0_SYMBOLS
 # Each case: the prepare windows and the refusal each real mode gives (None: the owner's
 # plan, which no mode refuses for its plan). A registration's capitals other than the
-# owner's three never load (test_every_registered_job_refuses_the_replaced_eur_capital).
+# owner's three never load
+# (test_every_registered_job_refuses_capitals_other_than_the_owners).
 PLAN_CASES = {
     "the owner's plan": (owner_windows(), None),
     "W1 without SOLUSDT": (

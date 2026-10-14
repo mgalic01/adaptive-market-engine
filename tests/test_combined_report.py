@@ -1383,6 +1383,12 @@ def test_the_three_usdt_capital_labels_name_their_capital_ids():
     assert [capital_label_id(label) for label in CAPITAL_LABELS] == ["research", "medium", "small"]
     for other in (OWNER_SMALL, "research", "small_100_usdt ", "", None, 100, ("small",)):
         assert capital_label_id(other) is None
+    # The one source of the capitals is read-only: nothing can add or change one at runtime.
+    with pytest.raises(TypeError):
+        CAPITAL_LABELS[OWNER_SMALL] = ("owner_small", 100)
+    with pytest.raises(TypeError):
+        del CAPITAL_LABELS["small_100_usdt"]
+    assert len(CAPITAL_LABELS) == 3
 
 
 # A rise to 120, a fall to 90 regained at 125; two shallow dips from 125; a peak of 130

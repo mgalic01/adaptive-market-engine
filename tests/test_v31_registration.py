@@ -252,6 +252,22 @@ def test_the_capital_constants_are_the_owners_three_usdt_capitals() -> None:
     assert CAPITAL_IDS == CAPITALS == ("research", "medium", "small")
 
 
+def test_the_menu_states_the_owners_three_usdt_capitals() -> None:
+    """The committed menu, which the owner reads and no loader checks for capitals, states
+    exactly ``experiment.CAPITALS``: ids, currency, amount, initial equity and order, as a
+    registration lists them; and no FX assumption is pending (owner decision, 2026-10-14).
+    Its status stays not authorized for execution."""
+    menu = json.loads(MENU.read_text(encoding="utf-8"))
+    assert menu["capital_scenarios"] == [
+        {"id": capital_id, "currency": "USDT", "amount": str(amount), "initial_equity": str(amount)}
+        for capital_id, amount in EXPERIMENT_CAPITALS
+    ]
+    assert menu["capital_scenarios"] == capitals_document()
+    assert [scenario["id"] for scenario in menu["capital_scenarios"]] == list(CAPITAL_IDS)
+    assert "fx_assumption" not in menu["pending_registration"]
+    assert menu["status"] == "NOT_AUTHORIZED_FOR_EXECUTION"
+
+
 def test_a_registration_missing_a_cell_is_refused(tmp_path: Path) -> None:
     dropped = "w1.matched_v1_cg_grid_low_first.native.c2.medium"
 

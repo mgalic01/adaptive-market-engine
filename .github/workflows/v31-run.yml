@@ -1172,8 +1172,10 @@ jobs:
 
 
           jobs = ("plan", "prepare", "picks", "run-main", "run-minute", "run-v3", "aggregate")
+          # v3.1-status-2 since the owner's three capitals (2026-10-14): run-minute and
+          # minute_cells added, and main_cells no longer counts the minute cells.
           status = {
-              "schema": "v3.1-status-1",
+              "schema": "v3.1-status-2",
               "mode": os.environ["MODE"],
               "run_id": os.environ["RUN_ID"],
               "run_attempt": os.environ["RUN_ATTEMPT"],

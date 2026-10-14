@@ -7,11 +7,12 @@ source reference strings are retained, not fetched or cryptographically verified
 
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Context, Decimal, DecimalException, localcontext
 from fractions import Fraction
+from types import MappingProxyType
 
 from crypto_grid_bot.combined.evidence import PHASES
 from crypto_grid_bot.combined.observation_policy import PolicyEvidence, validate_boundaries
@@ -296,12 +297,15 @@ SAVED_FILTERS_DISCLOSURE = "present_day_saved_exchange_filters_on_historical_dat
 # The capital scenarios ``experiment.capital_label`` names: the owner's three starting
 # capitals, all USDT (owner decision, 2026-10-14; it replaced 10,000 USDT plus EUR 100 at
 # the ECB rate). Each label, in the registration's cell order, with the capital id it names
-# and the opening equity, in USDT, it requires. No capital converts a currency.
-CAPITAL_LABELS: dict[str, tuple[str, int]] = {
-    "research_10000_usdt": ("research", 10000),
-    "medium_1000_usdt": ("medium", 1000),
-    "small_100_usdt": ("small", 100),
-}
+# and the opening equity, in USDT, it requires. No capital converts a currency. Read-only,
+# so ``experiment.CAPITALS``, built from it at import, can never drift from it.
+CAPITAL_LABELS: Mapping[str, tuple[str, int]] = MappingProxyType(
+    {
+        "research_10000_usdt": ("research", 10000),
+        "medium_1000_usdt": ("medium", 1000),
+        "small_100_usdt": ("small", 100),
+    }
+)
 
 
 def capital_label_id(label: object) -> str | None:
