@@ -738,9 +738,13 @@ def test_adapter_pins_read_blob_ids_at_the_commit(tmp_path: Path) -> None:
         "config/v3_1_registration.json",
         "config/v3_1_experiment_menu.json",
         FX_PATH,  # the FX source record the owner_small capital names
-        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020.toml",
-        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020.manifest.json",
-        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020.digest.txt",
+        # The V3.1 minute-bar datasets the prepare config pins, by their committed names.
+        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020-2021.toml",
+        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020-2021.manifest.json",
+        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2020-2021.digest.txt",
+        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2021-2024.toml",
+        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2021-2024.manifest.json",
+        "config/datasets/v3-1-minute-bars/v3-1-minute-bars-2021-2024.digest.txt",
     ],
 )
 def test_every_pinned_v31_file_is_lf_in_every_checkout(path: str) -> None:
