@@ -159,12 +159,19 @@ def aggregate(
     attempt_id: str = RUN,
     mode: str = "registered",
     other_dispatches: tuple[str, ...] = (),
+    uncounted_dispatches: tuple[str, ...] = (),
 ) -> Path:
     """``aggregate`` as the workflow calls it, by default a registered run's attempt 1 of
     run ``run-1``, the run every cell of the matrix claims, whose dispatch check found no
     other dispatch of the registration."""
     return aggregate_cells(
-        reg, cells, out, attempt_id=attempt_id, mode=mode, other_dispatches=other_dispatches
+        reg,
+        cells,
+        out,
+        attempt_id=attempt_id,
+        mode=mode,
+        other_dispatches=other_dispatches,
+        uncounted_dispatches=uncounted_dispatches,
     )
 
 
@@ -526,6 +533,7 @@ def test_full_synthetic_matrix_aggregates_to_a_verdict(world, matrix, summary, e
         "reruns": [],
         "reported_only_reruns": [],
         "other_dispatches": [],
+        "uncounted_dispatches": [],
     }
 
     # The pages: the full combined cells carry acceptance's judgment of their cell, the
@@ -1093,6 +1101,64 @@ def test_another_dispatch_of_the_registration_leaves_the_verdict_incomplete(
     assert (clean["status"], clean["run"]["other_dispatches"]) == (acceptance, [])
     clean_text = (tmp_path / "clean" / "summary" / "summary.md").read_text(encoding="utf-8")
     assert "None: no other run of this workflow dispatched this registration" in clean_text
+
+
+UNCOUNTED = (
+    "earlier launch 300 stopped at the plan job with nothing run; not counted",
+    "earlier launch 301 stopped at the plan job with nothing run; not counted",
+)
+
+
+@pytest.mark.parametrize("acceptance", ["pass", "fail"])
+def test_an_earlier_launch_that_did_nothing_leaves_the_verdict_alone(
+    world, matrix, decoded, tmp_path, monkeypatch, acceptance
+):
+    """Owner decision v31-d21: a launch stopped at the plan job with nothing run is not an
+    execution. The verdict is acceptance's own, and still names each such launch; beside a
+    launch that counts, the verdict is incomplete as before."""
+    cells = long_paths(tmp_path / "cells")
+    shutil.copytree(matrix, cells, copy_function=os.link)
+    stub_acceptance(monkeypatch, decoded, status=acceptance)
+    summary = aggregate(world.reg, cells, mkdir(tmp_path / "out"), uncounted_dispatches=UNCOUNTED)
+    verdict = read_verdict(summary)
+    assert (verdict["acceptance_status"], verdict["status"]) == (acceptance, acceptance)
+    assert verdict["run"]["other_dispatches"] == []
+    assert verdict["run"]["uncounted_dispatches"] == list(UNCOUNTED)
+    text = (summary / "summary.md").read_text(encoding="utf-8")
+    assert f"Verdict: **{acceptance.upper()}**\n" in text
+    section = text.split("## Another dispatch of this registration", 1)[1].split("\n## ", 1)[0]
+    assert "None that counts" in section and "Not counted, and changing nothing" in section
+    for item in UNCOUNTED:
+        assert f"- {item}" in section
+    # Beside one that counts: incomplete, both named.
+    found = ("another dispatch of this registration: run 400 (its status is 'queued')",)
+    both = aggregate(
+        world.reg,
+        cells,
+        mkdir(tmp_path / "both"),
+        other_dispatches=found,
+        uncounted_dispatches=UNCOUNTED,
+    )
+    verdict = read_verdict(both)
+    assert (verdict["acceptance_status"], verdict["status"]) == (acceptance, "incomplete")
+    assert verdict["run"]["other_dispatches"] == list(found)
+    assert verdict["run"]["uncounted_dispatches"] == list(UNCOUNTED)
+    text = (both / "summary.md").read_text(encoding="utf-8")
+    section = text.split("## Another dispatch of this registration", 1)[1].split("\n## ", 1)[0]
+    assert "None that counts" not in section
+    for item in (*found, *UNCOUNTED):
+        assert f"- {item}" in section
+
+
+@pytest.mark.parametrize("bad", [("",), (" ",), (None,), ("run 300", 300), "run 300"])
+def test_malformed_uncounted_dispatches_are_refused_before_anything_is_written(
+    world, matrix, tmp_path, bad
+):
+    cells = copy_cells(matrix, tmp_path / "cells", (HOLD_CELL,))
+    out = mkdir(tmp_path / "out")
+    with pytest.raises(ValueError, match="uncounted dispatches"):
+        aggregate(world.reg, cells, out, uncounted_dispatches=bad)
+    assert list(out.iterdir()) == []
 
 
 @pytest.mark.parametrize("mode", ["rehearsal", "smoke"])

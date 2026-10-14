@@ -50,6 +50,7 @@ import urllib.request
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal as D
+from http.client import HTTPMessage, RemoteDisconnected
 from pathlib import Path
 
 import pytest
@@ -1235,14 +1236,18 @@ NOW, EARLIER, LATER = "2026-10-13T12:00:00Z", "2026-10-13T11:59:59Z", "2026-10-1
 API = "https://api.github.com/repos/owner/repo/actions/"
 
 
-def workflow_run(run_id, created=EARLIER, title=TITLE, status="completed", conclusion="success"):
-    """A run as GitHub's REST API lists it: the fields the check reads, and two it ignores."""
+def workflow_run(
+    run_id, created=EARLIER, title=TITLE, status="completed", conclusion="success", attempts=1
+):
+    """A run as GitHub's REST API lists it: the fields the check reads (its status and
+    attempts decide an earlier launch, L2), and one it ignores."""
     return {
         "id": run_id,
         "display_title": title,
         "created_at": created,
         "status": status,
         "conclusion": conclusion,
+        "run_attempt": attempts,
     }
 
 
@@ -1337,15 +1342,68 @@ def answer(document: object) -> Response:
     return Response(json.dumps(document).encode("utf-8"))
 
 
+def job(job_id, name, conclusion, *, run=400, attempt=1, status="completed"):
+    """A job record as GitHub's jobs listing gives it: the fields the check reads."""
+    return {
+        "id": job_id,
+        "run_id": run,
+        "run_attempt": attempt,
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+    }
+
+
+# Every job of the workflow as GitHub lists a registered launch whose plan job failed:
+# the status job (always()) ran, every other job was skipped (the matrix jobs before their
+# matrix expanded, so under their bare names).
+STOPPED = (
+    ("smoke", "skipped"),
+    ("plan", "failure"),
+    ("prepare", "skipped"),
+    ("picks", "skipped"),
+    ("run-main", "skipped"),
+    ("run-v3", "skipped"),
+    ("aggregate", "skipped"),
+    ("status", "success"),
+    ("timing", "skipped"),
+)
+# A launch that ran: the plan job and every later one, cells included.
+RAN = (
+    ("smoke", "skipped"),
+    ("plan", "success"),
+    ("prepare", "success"),
+    ("picks", "success"),
+    ("run-main (w1.combined.olhc.c1.research)", "success"),
+    ("run-v3 (w1.unchanged_v3_selector.native.c1.research)", "success"),
+    ("aggregate", "success"),
+    ("status", "success"),
+    ("timing", "skipped"),
+)
+
+
+def jobs_of(pattern, *, run=400, attempt=1, first=1):
+    """The job records of one attempt of ``run`` laid out as ``pattern`` (name,
+    conclusion), ids from ``first``."""
+    return [
+        job(first + index, name, conclusion, run=run, attempt=attempt)
+        for index, (name, conclusion) in enumerate(pattern)
+    ]
+
+
 class FakeGitHub:
     """GitHub's REST API for the dispatch check, in memory (no network): the current run
-    (``runs/500``) and this workflow's ``runs`` in pages of 100. ``totals`` replaces a
-    page's total_count, ``answers`` a path's response (an exception is raised). Records
-    every request: its URL, method, Authorization header and timeout."""
+    (``runs/500``), this workflow's ``runs`` in pages of 100, and each run's jobs of every
+    attempt (``runs/<id>/jobs?filter=all``) in pages of 100: ``jobs`` by run id, a run that
+    ran (``RAN``) by default. ``totals`` replaces a runs page's total_count; ``answers`` a
+    path's response (an exception is raised), or a list of them, answered in turn before
+    the default answer takes over. Records every request: its URL, method, Authorization
+    header and timeout."""
 
-    def __init__(self, runs, current=CURRENT, *, totals=None, answers=None):
+    def __init__(self, runs, current=CURRENT, *, totals=None, answers=None, jobs=None):
         self.runs, self.current = list(runs), current
         self.totals, self.answers = totals or {}, answers or {}
+        self.jobs = jobs or {}
         self.requests = []
 
     def __call__(self, request, timeout):
@@ -1355,23 +1413,49 @@ class FakeGitHub:
         )
         assert url.startswith(API), url
         path = url[len(API) :]
-        if path in self.answers:
-            given = self.answers[path]
-            if isinstance(given, BaseException):
-                raise given
+        given = self.answers.get(path)
+        if isinstance(given, list):
+            given = given.pop(0) if given else None
+        if isinstance(given, BaseException):
+            raise given
+        if given is not None:
             return given
         if path == "runs/500":
             return answer(self.current)
+        listed = re.fullmatch(
+            r"runs/([1-9][0-9]*)/jobs\?filter=all&per_page=100&page=([1-9][0-9]*)", path
+        )
+        if listed is not None:
+            run_id, number = int(listed[1]), int(listed[2])
+            records = self.jobs.get(run_id, jobs_of(RAN, run=run_id))
+            shown = records[(number - 1) * 100 : number * 100]
+            return answer({"total_count": len(records), "jobs": shown})
         page = re.fullmatch(r"workflows/v31-run\.yml/runs\?per_page=100&page=([1-9][0-9]*)", path)
         assert page is not None, url
         number = int(page[1])
-        listed = self.runs[(number - 1) * 100 : number * 100]
+        listed_runs = self.runs[(number - 1) * 100 : number * 100]
         total = self.totals.get(number, len(self.runs))
-        return answer({"total_count": total, "workflow_runs": listed})
+        return answer({"total_count": total, "workflow_runs": listed_runs})
 
 
 def page(number: int) -> str:
     return f"workflows/v31-run.yml/runs?per_page=100&page={number}"
+
+
+def jobs_page(run_id: int, number: int = 1) -> str:
+    return f"runs/{run_id}/jobs?filter=all&per_page=100&page={number}"
+
+
+def no_sleep(seconds):
+    raise AssertionError(f"slept {seconds} s: no retry was due")
+
+
+def counted(launches) -> tuple[int, ...]:
+    return tuple(launch.run_id for launch in launches if launch.counts)
+
+
+def uncounted(launches) -> tuple[int, ...]:
+    return tuple(launch.run_id for launch in launches if not launch.counts)
 
 
 @pytest.fixture
@@ -1385,21 +1469,26 @@ def github_env(monkeypatch):
 def test_the_dispatch_check_reads_the_current_run_and_every_page_of_runs(github_env):
     others = [workflow_run(1000 + i, title="v31-run smoke ") for i in range(248)]
     api = FakeGitHub([CURRENT, *others, workflow_run(400)])  # 250 runs: three pages
-    assert v31_driver.dispatch_check(SHA, api) == (400,)
+    (launch,) = v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
+    assert (launch.run_id, launch.counts, launch.unreadable) == (400, True, False)
+    # The earlier launch finished, so its jobs decide it (L2): they show a plan that ran.
     assert [url for url, *_ in api.requests] == [API + "runs/500"] + [
         API + page(n) for n in (1, 2, 3)
-    ]
+    ] + [API + jobs_page(400)]
     for _, method, authorization, timeout in api.requests:
         assert (method, authorization) == ("GET", "Bearer stand-in-token")
         assert timeout == v31_driver.GITHUB_TIMEOUT
     # Exactly one full page: its total ends the listing, no empty page is asked for.
     full = FakeGitHub([CURRENT, *others[:99]])
-    assert v31_driver.dispatch_check(SHA, full) == ()
+    assert v31_driver.dispatch_check(SHA, full, sleep=no_sleep) == ()
     assert [url for url, *_ in full.requests] == [API + "runs/500", API + page(1)]
 
 
-def http_error(code: int) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(API, code, "synthetic", {}, None)
+def http_error(code: int, headers=None) -> urllib.error.HTTPError:
+    message = HTTPMessage()
+    for name, value in (headers or {}).items():
+        message[name] = value
+    return urllib.error.HTTPError(API, code, "synthetic", message, None)
 
 
 MANY = [CURRENT, *(workflow_run(1000 + i, title="v31-run smoke ") for i in range(149))]
@@ -1459,6 +1548,11 @@ FAILS_CLOSED = {
 }
 
 
+# The failures a repeated read may not meet (L1): retried, five attempts in all, before the
+# check fails closed on the last one. Every other case fails at once.
+TRANSIENT = ("an HTTP error", "a transport failure", "a timeout")
+
+
 @pytest.mark.parametrize("case", list(FAILS_CLOSED))
 def test_the_dispatch_check_fails_closed(github_env, monkeypatch, case):
     variables, api, message = FAILS_CLOSED[case]
@@ -1467,17 +1561,25 @@ def test_the_dispatch_check_fails_closed(github_env, monkeypatch, case):
             monkeypatch.delenv(name)
         else:
             monkeypatch.setenv(name, value)
+    slept = []
     with pytest.raises(ValueError, match=re.escape(message)) as refused:
-        v31_driver.dispatch_check(SHA, api)
+        v31_driver.dispatch_check(SHA, api, sleep=slept.append)
     assert "stand-in-token" not in str(refused.value)  # no message ever carries the token
     if variables:  # a missing or malformed variable: refused before any request
         assert api.requests == []
+    if case in TRANSIENT:
+        assert slept == [15, 30, 60, 120]
+        assert "still failing after 5 attempts" in str(refused.value)
+        (failing,) = {url for url, *_ in api.requests[-1:]}
+        assert [url for url, *_ in api.requests].count(failing) == 5
+    else:
+        assert slept == []
 
 
 def test_the_dispatch_check_refuses_a_body_beyond_its_limit(github_env, monkeypatch):
     monkeypatch.setattr(v31_driver, "MAX_GITHUB_BYTES", 16)
     with pytest.raises(ValueError, match="larger than 16 bytes"):
-        v31_driver.dispatch_check(SHA, FakeGitHub([CURRENT]))
+        v31_driver.dispatch_check(SHA, FakeGitHub([CURRENT]), sleep=no_sleep)
 
 
 def test_the_default_opener_follows_no_redirect():
@@ -1494,19 +1596,26 @@ def test_the_default_opener_follows_no_redirect():
 def test_the_dispatch_check_subcommand_refuses_a_second_dispatch(github_env, capsys):
     argv = ["dispatch-check", "--registration-sha256", SHA]
     later = FakeGitHub([workflow_run(600, created=LATER), CURRENT])
-    code, document, err = run(argv, capsys, github_opener=later)
+    code, document, err = run(argv, capsys, github_opener=later, sleep=no_sleep)
     assert code == 0, err
     assert document == {
         "schema": "v3.1-dispatch-check-1",
+        "report_only": False,
         "registration_sha256": SHA,
         "other_dispatches": [],
+        "uncounted_dispatches": [],
     }
     earlier = FakeGitHub([CURRENT, workflow_run(400), workflow_run(300, status="queued")])
-    code, _, err = run(argv, capsys, github_opener=earlier)
+    code, _, err = run(argv, capsys, github_opener=earlier, sleep=no_sleep)
     assert code == 1 and "another dispatch of this registration: run 300, run 400" in err
+    # Each is named with why it counts: one still queued, one whose plan job ran.
+    assert "run 300: its status is 'queued', not completed" in err
+    assert "run 400: its plan job 'plan' (job 2, attempt 1) ended 'success'" in err
+    slept = []
     failing = FakeGitHub([CURRENT], answers={"runs/500": http_error(502)})
-    code, _, err = run(argv, capsys, github_opener=failing)
-    assert code == 1 and "HTTP 502" in err
+    code, _, err = run(argv, capsys, github_opener=failing, sleep=slept.append)
+    assert code == 1 and "HTTP 502" in err and "still failing after 5 attempts" in err
+    assert slept == [15, 30, 60, 120]
     code, _, err = run(["dispatch-check", "--registration-sha256", "E" * 64], capsys)
     assert code == 1 and "64 lowercase hex" in err
 
@@ -1516,7 +1625,9 @@ def test_a_registered_aggregate_leaves_the_verdict_incomplete_on_another_dispatc
 ):
     """The aggregate reads the workflow's runs in a registered run (Ruling R4-2), and
     names another dispatch of its registration in the verdict, or why none could be ruled
-    out; a rehearsal's aggregate never reads them (test_the_rehearsal_runs_...)."""
+    out; a rehearsal's aggregate never reads them (test_the_rehearsal_runs_...). An earlier
+    launch stopped at the plan job with nothing run is named apart and does not count
+    (owner decision v31-d21)."""
     title = f"v31-run registered {registered.config_sha}"
     current = workflow_run(38267478452, created=NOW, title=title, status="in_progress")
     cells = tmp_path / "cells"
@@ -1525,26 +1636,538 @@ def test_a_registered_aggregate_leaves_the_verdict_incomplete_on_another_dispatc
     def aggregate_with(name, api):
         argv = registered_args(registered, "aggregate", "--cells", str(cells))
         argv += ["--attempt-id", RUN, "--out", str(tmp_path / name)]
-        code, document, err = run(argv, capsys, github_opener=api)
+        code, document, err = run(argv, capsys, github_opener=api, sleep=no_sleep)
         assert code == 0, err
         verdict = json.loads((tmp_path / name / "summary" / "verdict.json").read_bytes())
         assert document["status"] == verdict["status"] == "incomplete"
-        return verdict["run"]["other_dispatches"]
+        return verdict["run"]["other_dispatches"], verdict["run"]["uncounted_dispatches"]
 
     # Without the runner's variables: no other dispatch can be ruled out.
-    (reason,) = aggregate_with("no-variables", None)
+    (reason,), none = aggregate_with("no-variables", None)
     assert reason.startswith("another dispatch of this registration could not be ruled out: ")
-    assert "GITHUB_TOKEN is not set" in reason
+    assert "GITHUB_TOKEN is not set" in reason and none == []
     monkeypatch.setenv("GITHUB_TOKEN", "stand-in-token")
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
     monkeypatch.setenv("GITHUB_RUN_ID", "38267478452")
     seen = FakeGitHub([current, workflow_run(400, title=title)], current)
     seen.answers["runs/38267478452"] = answer(current)
-    assert aggregate_with("another", seen) == ["another dispatch of this registration: run 400"]
+    assert aggregate_with("another", seen) == (
+        [
+            "another dispatch of this registration: run 400 (its plan job 'plan' (job 2, "
+            "attempt 1) ended 'success', not failure)"
+        ],
+        [],
+    )
     alone = FakeGitHub([current, workflow_run(600, created=LATER, title=title)], current)
     alone.answers["runs/38267478452"] = answer(current)
-    assert aggregate_with("alone", alone) == []
+    assert aggregate_with("alone", alone) == ([], [])
     assert alone.requests  # the check ran
+    stopped = FakeGitHub(
+        [current, workflow_run(400, title=title, conclusion="failure")],
+        current,
+        jobs={400: jobs_of(STOPPED)},
+    )
+    stopped.answers["runs/38267478452"] = answer(current)
+    line = "earlier launch 400 stopped at the plan job with nothing run; not counted"
+    assert aggregate_with("stopped", stopped) == ([], [line])
+    text = (tmp_path / "stopped" / "summary" / "summary.md").read_text(encoding="utf-8")
+    assert f"- {line}" in text and "None that counts" in text
+
+
+# --- L2: an earlier launch counts unless it provably did nothing (owner decision v31-d21) --
+
+DONE = workflow_run(400, conclusion="failure")  # a finished earlier launch, one attempt
+
+
+def test_a_launch_stopped_at_the_plan_job_with_nothing_run_does_not_count():
+    assert v31_driver.launch_reason(DONE, jobs_of(STOPPED)) is None
+    # Only the plan job and the status job listed (GitHub lists no skipped job).
+    only = [job(1, "plan", "failure"), job(2, "status", "success")]
+    assert v31_driver.launch_reason(DONE, only) is None
+    # The status job always runs, whatever it ends with.
+    for ended in ("success", "failure", "cancelled", "skipped", None):
+        jobs = [job(1, "plan", "failure"), job(2, "status", ended)]
+        assert v31_driver.launch_reason(DONE, jobs) is None, ended
+    # The matrix jobs under their matrix values, skipped, and in any order.
+    named = [
+        job(9, "run-main (w1.combined.olhc.c1.research)", "skipped"),
+        job(8, "run-v3 (w1.unchanged_v3_selector.native.c1.research)", "skipped"),
+        job(7, "timing (prepare)", "skipped"),
+        job(6, "plan", "failure"),
+    ]
+    assert v31_driver.launch_reason(DONE, named) is None
+    assert v31_driver.launch_reason(DONE, tuple(jobs_of(STOPPED))) is None
+    # A re-run of the failed plan that failed again, every later job skipped again.
+    twice = workflow_run(400, attempts=2, conclusion="failure")
+    jobs = jobs_of(STOPPED) + jobs_of(STOPPED, attempt=2, first=100)
+    assert v31_driver.launch_reason(twice, jobs) is None
+    # How the plan's output and the verdict name it.
+    assert v31_driver.uncounted_line(400) == (
+        "earlier launch 400 stopped at the plan job with nothing run; not counted"
+    )
+
+
+def stopped_but(name, conclusion):
+    """``STOPPED`` with the job ``name`` ending ``conclusion`` (added when not listed)."""
+    pattern = [(n, c) for n, c in STOPPED if n != name] + [(name, conclusion)]
+    return jobs_of(pattern)
+
+
+@pytest.mark.parametrize(
+    ("jobs", "message"),
+    [
+        (stopped_but("plan", "success"), "its plan job 'plan' (job 9, attempt 1) ended 'success'"),
+        (stopped_but("plan", "cancelled"), "ended 'cancelled', not failure"),
+        (stopped_but("plan", "timed_out"), "ended 'timed_out', not failure"),
+        (stopped_but("plan", None), "ended None, not failure"),
+        ([j for j in jobs_of(STOPPED) if j["name"] != "plan"], "no plan job is listed"),
+        ([job(1, "status", "success")], "no plan job is listed"),
+        ([], "no job is listed for its attempt(s) 1"),
+    ],
+)
+def test_a_launch_whose_plan_job_did_not_fail_counts(jobs, message):
+    reason = v31_driver.launch_reason(DONE, jobs)
+    assert reason is not None and message in reason
+
+
+LATER_JOBS = ("smoke", "prepare", "picks", "aggregate", "timing", "run-main", "run-v3")
+
+
+@pytest.mark.parametrize("ended", ["success", "failure", "cancelled", "timed_out", None])
+@pytest.mark.parametrize(
+    "name",
+    [
+        *LATER_JOBS,
+        "run-main (cell-x)",
+        "run-v3 (w1.unchanged_v3_selector.native.c1.research)",
+        "timing (picks)",
+    ],
+)
+def test_a_launch_any_later_job_of_which_was_not_skipped_counts(name, ended):
+    reason = v31_driver.launch_reason(DONE, stopped_but(name, ended))
+    assert reason is not None and f"its job {name!r}" in reason
+    assert f"ended {ended!r}, not skipped: it ran" in reason
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "deploy",
+        "Plan",
+        "plan (x)",
+        "prepare (x)",
+        "status (x)",
+        "aggregate (x)",
+        "run-main(cell-x)",
+        "run-main (cell-x",
+        "run-mainx",
+        "",
+    ],
+)
+def test_a_launch_with_a_job_of_an_unknown_name_counts(name):
+    reason = v31_driver.launch_reason(DONE, [*jobs_of(STOPPED), job(50, name, "skipped")])
+    assert reason is not None and "is not a job of this workflow" in reason
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion"),
+    [("queued", None), ("waiting", None), ("in_progress", None), ("requested", None), (None, None)],
+)
+def test_a_launch_queued_or_running_counts_whatever_its_jobs(status, conclusion):
+    run_ = workflow_run(400, status=status, conclusion=conclusion)
+    reason = v31_driver.launch_reason(run_, jobs_of(STOPPED))
+    assert reason is not None and f"its status is {status!r}, not completed" in reason
+
+
+def test_a_second_attempt_that_ran_prepare_counts():
+    twice = workflow_run(400, attempts=2, conclusion="success")
+    jobs = jobs_of(STOPPED) + jobs_of(RAN, attempt=2, first=100)
+    reason = v31_driver.launch_reason(twice, jobs)
+    assert reason is not None and "(job 101, attempt 2) ended 'success', not failure" in reason
+    # The plan job failed again in attempt 2, but prepare ran.
+    rerun = [(n, "success" if n == "prepare" else c) for n, c in STOPPED]
+    reason = v31_driver.launch_reason(
+        twice, jobs_of(STOPPED) + jobs_of(rerun, attempt=2, first=100)
+    )
+    assert reason is not None and "'prepare' (job 102, attempt 2) ended 'success'" in reason
+    # An attempt that lists no job cannot be shown to have done nothing.
+    reason = v31_driver.launch_reason(twice, jobs_of(STOPPED))
+    assert reason == "no job is listed for its attempt(s) 2"
+
+
+def with_field(key, value, index=1):
+    """``STOPPED``'s job records with record ``index``'s ``key`` set to ``value`` (or
+    removed, for ``without``)."""
+    jobs = jobs_of(STOPPED)
+    if value is without:
+        del jobs[index][key]
+    else:
+        jobs[index][key] = value
+    return jobs
+
+
+@pytest.mark.parametrize(
+    ("run_", "jobs", "message"),
+    [
+        ("a run", jobs_of(STOPPED), "its run record is not a JSON object"),
+        (without(DONE, "status"), jobs_of(STOPPED), "its status is None"),
+        (without(DONE, "run_attempt"), jobs_of(STOPPED), "its run_attempt is None"),
+        ({**DONE, "run_attempt": 0}, jobs_of(STOPPED), "its run_attempt is 0"),
+        ({**DONE, "run_attempt": True}, jobs_of(STOPPED), "its run_attempt is True"),
+        ({**DONE, "run_attempt": "1"}, jobs_of(STOPPED), "its run_attempt is '1'"),
+        (DONE, None, "its jobs are not a list"),
+        (DONE, {"jobs": jobs_of(STOPPED)}, "its jobs are not a list"),
+        (DONE, [*jobs_of(STOPPED), "a job"], "its job record 10 is not a JSON object"),
+        (DONE, with_field("id", without), "its job record 2 has id None"),
+        (DONE, with_field("id", 0), "has id 0"),
+        (DONE, with_field("id", True), "has id True"),
+        (DONE, with_field("id", "2"), "has id '2'"),
+        (DONE, with_field("id", 1), "its job 1 is listed twice"),
+        (DONE, with_field("run_id", without), "its job 2 has run_id None, not 400"),
+        (DONE, with_field("run_id", 401), "has run_id 401, not 400"),
+        (DONE, with_field("run_id", "400"), "has run_id '400'"),
+        (DONE, with_field("run_attempt", without), "has run_attempt None, not 1 to 1"),
+        (DONE, with_field("run_attempt", 2), "has run_attempt 2, not 1 to 1"),
+        (DONE, with_field("run_attempt", 0), "has run_attempt 0"),
+        (DONE, with_field("run_attempt", True), "has run_attempt True"),
+        (DONE, with_field("name", without), "has no string name and status"),
+        (DONE, with_field("name", 7), "has no string name and status"),
+        (DONE, with_field("status", without), "has no string name and status"),
+        (DONE, with_field("conclusion", 7), "has conclusion 7, not a string or null"),
+        (DONE, with_field("conclusion", without), "ended None, not failure"),
+    ],
+)
+def test_a_launch_with_a_malformed_run_or_job_record_counts(run_, jobs, message):
+    reason = v31_driver.launch_reason(run_, jobs)
+    assert reason is not None and message in reason
+
+
+def test_the_check_judges_each_earlier_launch_on_its_jobs(github_env):
+    """Through the HTTP layer: the jobs of every attempt, every page (250 records, three
+    pages), decide a finished launch; one still running counts without them."""
+    skipped_cells = [(f"run-main (cell-{i})", "skipped") for i in range(241)]
+    many = jobs_of([*STOPPED, *skipped_cells], run=300)
+    api = FakeGitHub(
+        [
+            CURRENT,
+            workflow_run(300, conclusion="failure"),
+            workflow_run(301, status="in_progress", conclusion=None),
+            workflow_run(400),
+        ],
+        jobs={300: many},
+    )
+    launches = v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
+    assert (counted(launches), uncounted(launches)) == ((301, 400), (300,))
+    assert [launch.reason for launch in launches][0] is None
+    urls = [url for url, *_ in api.requests]
+    assert urls == [API + "runs/500", API + page(1)] + [
+        API + jobs_page(300, n) for n in (1, 2, 3)
+    ] + [API + jobs_page(400)]  # nothing for 301: queued or running, it counts
+
+
+@pytest.mark.parametrize(
+    ("answers", "message", "slept"),
+    [
+        ([http_error(502)] * 5, "HTTP 502 (still failing after 5 attempts)", [15, 30, 60, 120]),
+        ([urllib.error.URLError("down")] * 5, "URLError", [15, 30, 60, 120]),
+        ([http_error(404)], "HTTP 404", []),
+        ([Response(b"<html>")], "not JSON", []),
+        ([answer({"total_count": 1})], "total_count and jobs required", []),
+        ([answer({"total_count": 1, "jobs": [1, 2]})], "2 jobs listed, more than total", []),
+    ],
+)
+def test_a_launch_whose_jobs_cannot_be_read_counts(github_env, answers, message, slept):
+    """Fail closed: a jobs listing that still fails after L1's retries, or fails for good
+    at once, makes the launch count; in a registered check it is no read failure of the
+    check itself, so the plan refuses on it as on any launch that counts."""
+    api = FakeGitHub(
+        [CURRENT, workflow_run(300, conclusion="failure")],
+        answers={jobs_page(300): list(answers)},
+        jobs={300: jobs_of(STOPPED, run=300)},
+    )
+    waits = []
+    (launch,) = v31_driver.dispatch_check(SHA, api, sleep=waits.append)
+    assert (launch.run_id, launch.counts, launch.unreadable) == (300, True, True)
+    assert launch.reason.startswith("its jobs could not be read: GitHub API ")
+    assert message in launch.reason and waits == slept
+
+
+def test_the_jobs_pages_must_agree(github_env):
+    """A job listed on two pages, or a total that changes between them, is a pagination
+    inconsistency: the launch counts, unreadable, with no retry."""
+    records = jobs_of([*STOPPED, *((f"run-v3 (c{i})", "skipped") for i in range(100))], run=300)
+    twice = {**records[100], "id": records[0]["id"]}
+    api = FakeGitHub(
+        [CURRENT, workflow_run(300, conclusion="failure")],
+        jobs={300: [*records[:100], twice, *records[101:]]},
+    )
+    (launch,) = v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
+    assert launch.unreadable and "job 1 is listed twice: the pages disagree" in launch.reason
+    moved = FakeGitHub(
+        [CURRENT, workflow_run(300, conclusion="failure")],
+        answers={jobs_page(300, 2): answer({"total_count": 110, "jobs": records[100:]})},
+        jobs={300: records},
+    )
+    (launch,) = v31_driver.dispatch_check(SHA, moved, sleep=no_sleep)
+    assert launch.unreadable and "total_count changed from 109 to 110" in launch.reason
+
+
+# --- L1: glitch-type reads are retried before the check fails closed (v31-d21) ----------
+
+
+def test_a_server_error_then_success_passes_after_one_retry(github_env, capsys):
+    api = FakeGitHub([CURRENT], answers={"runs/500": [http_error(503)]})
+    slept = []
+    assert v31_driver.dispatch_check(SHA, api, sleep=slept.append) == ()
+    assert slept == [15]  # the first backoff
+    assert [url for url, *_ in api.requests] == [API + "runs/500"] * 2 + [API + page(1)]
+    err = capsys.readouterr().err
+    assert (
+        "dispatch check: the current run: attempt 1 of 5 failed (GitHub API "
+        "/repos/owner/repo/actions/runs/500: HTTP 503); retrying in 15 s"
+    ) in err
+
+
+@pytest.mark.parametrize(
+    ("headers", "slept"),
+    [
+        ({"Retry-After": "200"}, [120]),  # capped at 120 s
+        ({"Retry-After": "45"}, [45]),  # longer than the first backoff: honoured
+        ({"Retry-After": "5"}, [15]),  # shorter: the backoff stands
+        ({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, [15]),  # not seconds: the backoff
+        ({}, [15]),
+    ],
+)
+def test_a_rate_limit_honours_a_longer_retry_after_up_to_the_cap(github_env, headers, slept):
+    api = FakeGitHub([CURRENT], answers={page(1): [http_error(429, headers)]})
+    waits = []
+    assert v31_driver.dispatch_check(SHA, api, sleep=waits.append) == ()
+    assert waits == slept
+
+
+def test_a_rate_limited_403_is_retried_and_any_other_403_is_not(github_env):
+    for headers in ({"Retry-After": "60"}, {"x-ratelimit-remaining": "0"}):
+        api = FakeGitHub([CURRENT], answers={page(1): [http_error(403, headers)]})
+        waits = []
+        assert v31_driver.dispatch_check(SHA, api, sleep=waits.append) == (), headers
+        assert waits == [60 if "Retry-After" in headers else 15]
+    for headers in ({}, {"x-ratelimit-remaining": "59"}):
+        api = FakeGitHub([CURRENT], answers={page(1): [http_error(403, headers)]})
+        with pytest.raises(ValueError, match="HTTP 403"):
+            v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TimeoutError("timed out"),
+        RemoteDisconnected("Remote end closed connection without response"),  # no reply
+        urllib.error.URLError("no route"),
+        ConnectionResetError("reset"),
+        ConnectionRefusedError("refused"),
+    ],
+)
+def test_no_reply_a_timeout_or_a_connection_error_then_success_passes(github_env, failure):
+    api = FakeGitHub([CURRENT, workflow_run(400)], answers={page(1): [failure]})
+    waits = []
+    (launch,) = v31_driver.dispatch_check(SHA, api, sleep=waits.append)
+    assert launch.run_id == 400 and waits == [15]
+
+
+def test_five_failures_refuse_after_five_attempts_naming_the_last_error(github_env, capsys):
+    failures = [http_error(500), urllib.error.URLError("down"), TimeoutError(), http_error(502)]
+    api = FakeGitHub([CURRENT], answers={"runs/500": [*failures, http_error(504)]})
+    waits = []
+    with pytest.raises(ValueError, match=r"HTTP 504 \(still failing after 5 attempts\)$"):
+        v31_driver.dispatch_check(SHA, api, sleep=waits.append)
+    assert waits == [15, 30, 60, 120]
+    assert [url for url, *_ in api.requests] == [API + "runs/500"] * 5
+    err = capsys.readouterr().err
+    for attempt in (1, 2, 3, 4):
+        assert f"attempt {attempt} of 5 failed" in err
+    assert "attempt 5 of 5" not in err
+
+
+@pytest.mark.parametrize("code", [400, 401, 404, 410, 422, 301])
+def test_a_permanent_http_error_refuses_at_once(github_env, code):
+    api = FakeGitHub([CURRENT], answers={page(1): [http_error(code, {"Retry-After": "1"})]})
+    with pytest.raises(ValueError, match=f"HTTP {code}"):
+        v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
+    assert [url for url, *_ in api.requests] == [API + "runs/500", API + page(1)]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        Response(b"<html>"),
+        Response(b'{"total_count": 1, "total_count": 1, "workflow_runs": []}'),
+        answer({"total_count": 1}),
+        answer([]),
+    ],
+)
+def test_malformed_json_refuses_at_once(github_env, response):
+    api = FakeGitHub([CURRENT], answers={page(1): [response]})
+    with pytest.raises(ValueError, match="GitHub API"):
+        v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
+
+
+def test_the_current_run_missing_once_then_present_passes(github_env, capsys):
+    """GitHub's listing can lag a run just created: the whole listing is read again."""
+    lagging = answer({"total_count": 1, "workflow_runs": [workflow_run(400)]})
+    api = FakeGitHub([CURRENT, workflow_run(400)], answers={page(1): [lagging]})
+    waits = []
+    (launch,) = v31_driver.dispatch_check(SHA, api, sleep=waits.append)
+    assert launch.run_id == 400 and waits == [15]
+    assert "the current run 500 is not among this workflow's runs" in capsys.readouterr().err
+    # Missing at every attempt: refused after five, naming it.
+    always = FakeGitHub([workflow_run(400)])
+    waits = []
+    with pytest.raises(ValueError, match="the current run 500 is not among"):
+        v31_driver.dispatch_check(SHA, always, sleep=waits.append)
+    assert waits == [15, 30, 60, 120]
+
+
+def test_a_found_counting_dispatch_refuses_with_no_retry(github_env, capsys):
+    """A launch that counts is a decision, not a read failure: never retried."""
+    api = FakeGitHub([CURRENT, workflow_run(400, status="in_progress", conclusion=None)])
+    argv = ["dispatch-check", "--registration-sha256", SHA]
+    code, _, err = run(argv, capsys, github_opener=api, sleep=no_sleep)
+    assert code == 1 and "another dispatch of this registration: run 400" in err
+    assert len(api.requests) == 2  # the current run and one page: nothing read twice
+
+
+def test_the_retries_take_about_five_minutes_and_each_wait_is_capped():
+    assert v31_driver.GITHUB_ATTEMPTS == 5
+    assert v31_driver.GITHUB_BACKOFF == (15, 30, 60, 120)
+    assert len(v31_driver.GITHUB_BACKOFF) == v31_driver.GITHUB_ATTEMPTS - 1
+    assert sum(v31_driver.GITHUB_BACKOFF) == 225  # with the reads' own time: about 5 minutes
+    assert v31_driver.MAX_GITHUB_WAIT == 120 == max(v31_driver.GITHUB_BACKOFF)
+
+
+# --- L3: the rehearsal proves the check against GitHub, report-only (v31-d21) ------------
+
+REHEARSAL = "v31-run rehearsal "  # the run-name with an empty registration_sha256 input
+
+
+def rehearsal_run(run_id, created=EARLIER, title=REHEARSAL, **fields):
+    return workflow_run(run_id, created=created, title=title, **fields)
+
+
+@pytest.mark.parametrize("current_title", [REHEARSAL, "v31-run rehearsal"])
+def test_a_report_only_check_prints_its_decision_and_exits_0(github_env, capsys, current_title):
+    current = rehearsal_run(500, created=NOW, title=current_title, status="in_progress")
+    api = FakeGitHub(
+        [
+            current,
+            rehearsal_run(400),  # an earlier rehearsal that ran: it counts
+            rehearsal_run(300, title="v31-run rehearsal", conclusion="failure"),  # stopped
+            rehearsal_run(200, title=TITLE),  # a registered run: another title
+            rehearsal_run(600, created=LATER),  # created later: never counts
+        ],
+        current,
+        jobs={300: jobs_of(STOPPED, run=300)},
+    )
+    argv = ["dispatch-check", "--report-only", "--registration-sha256", ""]
+    code, document, err = run(argv, capsys, github_opener=api, sleep=no_sleep)
+    assert code == 0, err
+    assert document == {
+        "schema": "v3.1-dispatch-check-1",
+        "report_only": True,
+        "registration_sha256": "",
+        "other_dispatches": [
+            "run 400: its plan job 'plan' (job 2, attempt 1) ended 'success', not failure"
+        ],
+        "uncounted_dispatches": [
+            "earlier launch 300 stopped at the plan job with nothing run; not counted"
+        ],
+    }
+    assert "a registered check would refuse; counted: run 400" in err
+    # Nothing before it: a registered check would pass.
+    alone = FakeGitHub([current], current)
+    code, document, err = run(argv, capsys, github_opener=alone, sleep=no_sleep)
+    assert code == 0, err
+    assert (document["other_dispatches"], document["uncounted_dispatches"]) == ([], [])
+    assert "would pass; counted: none; not counted: none" in err
+
+
+def test_a_report_only_check_takes_a_rehearsal_sha_and_refuses_a_malformed_one(github_env, capsys):
+    current = rehearsal_run(500, created=NOW, title=f"v31-run rehearsal {SHA}")
+    api = FakeGitHub([current, rehearsal_run(400, title=f"v31-run rehearsal {SHA}")], current)
+    argv = ["dispatch-check", "--report-only", "--registration-sha256", SHA]
+    code, document, err = run(argv, capsys, github_opener=api, sleep=no_sleep)
+    assert code == 0, err
+    assert [line.split(":")[0] for line in document["other_dispatches"]] == ["run 400"]
+    for bad in ("E" * 64, "e" * 63, "not a sha", " "):
+        argv = ["dispatch-check", "--report-only", "--registration-sha256", bad]
+        code, _, err = run(argv, capsys, github_opener=api, sleep=no_sleep)
+        assert code == 1 and "a rehearsal's may be empty" in err, bad
+    # A current run of another title (a registered one) is refused: its own title only.
+    registered_current = FakeGitHub([CURRENT], CURRENT)
+    argv = ["dispatch-check", "--report-only", "--registration-sha256", ""]
+    code, _, err = run(argv, capsys, github_opener=registered_current, sleep=no_sleep)
+    assert code == 1 and "is titled" in err
+
+
+def test_a_report_only_check_exits_non_zero_when_github_cannot_be_read(
+    github_env, capsys, monkeypatch
+):
+    current = rehearsal_run(500, created=NOW, status="in_progress")
+    argv = ["dispatch-check", "--report-only", "--registration-sha256", ""]
+    listing = FakeGitHub([current], current, answers={page(1): http_error(502)})
+    waits = []
+    code, _, err = run(argv, capsys, github_opener=listing, sleep=waits.append)
+    assert code == 1 and "HTTP 502 (still failing after 5 attempts)" in err
+    assert waits == [15, 30, 60, 120]
+    # An earlier launch's jobs that cannot be read: still a failure to read GitHub.
+    jobs = FakeGitHub(
+        [current, rehearsal_run(400)], current, answers={jobs_page(400): http_error(503)}
+    )
+    waits = []
+    code, _, err = run(argv, capsys, github_opener=jobs, sleep=waits.append)
+    assert code == 1 and "could not read GitHub's records: run 400" in err
+    assert waits == [15, 30, 60, 120]
+    # Without the runner's variables: refused before any request.
+    for name in GITHUB_VARIABLES:
+        monkeypatch.delenv(name)
+    untouched = FakeGitHub([current], current)
+    code, _, err = run(argv, capsys, github_opener=untouched, sleep=no_sleep)
+    assert code == 1 and "GITHUB_TOKEN is not set" in err and untouched.requests == []
+
+
+def test_a_registered_check_still_refuses_a_counted_duplicate_and_names_uncounted_ones(
+    github_env, capsys
+):
+    argv = ["dispatch-check", "--registration-sha256", SHA]
+    stopped = workflow_run(300, conclusion="failure")
+    api = FakeGitHub([CURRENT, stopped, workflow_run(400)], jobs={300: jobs_of(STOPPED, run=300)})
+    code, _, err = run(argv, capsys, github_opener=api, sleep=no_sleep)
+    assert code == 1
+    assert "another dispatch of this registration: run 400; a registration is dispatched" in err
+    assert "earlier launch 300 stopped at the plan job with nothing run; not counted" in err
+    # Only a stopped launch before it: the registered run goes on, and its output names it.
+    alone = FakeGitHub([CURRENT, stopped], jobs={300: jobs_of(STOPPED, run=300)})
+    code, document, err = run(argv, capsys, github_opener=alone, sleep=no_sleep)
+    assert code == 0, err
+    assert document["other_dispatches"] == [] and document["report_only"] is False
+    assert document["uncounted_dispatches"] == [
+        "earlier launch 300 stopped at the plan job with nothing run; not counted"
+    ]
+    # A registered check never takes an empty pin, nor looks at the rehearsal's titles.
+    code, _, err = run(["dispatch-check", "--registration-sha256", ""], capsys, sleep=no_sleep)
+    assert code == 1 and "64 lowercase hex" in err
+    rehearsals = FakeGitHub([CURRENT, rehearsal_run(400), rehearsal_run(401, title="v31-run")])
+    code, document, err = run(argv, capsys, github_opener=rehearsals, sleep=no_sleep)
+    assert code == 0 and document["other_dispatches"] == [], err
+
+
+def test_the_rehearsal_titles():
+    assert v31_driver.run_titles("registered", SHA) == (TITLE,)
+    assert v31_driver.run_titles("rehearsal", SHA) == (f"v31-run rehearsal {SHA}",)
+    assert v31_driver.run_titles("rehearsal", "") == ("v31-run rehearsal ", "v31-run rehearsal")
+    runs = [rehearsal_run(500, created=NOW, title="v31-run rehearsal"), rehearsal_run(400)]
+    assert v31_driver.other_dispatches(runs, runs[0], "", mode="rehearsal") == (400,)
+    with pytest.raises(ValueError, match="is titled"):
+        v31_driver.other_dispatches(runs, runs[0], "")  # a registered check: not its title
 
 
 # --- the owner's plan: every real mode refuses any other (Codex P1 and P2, PR #269) -------
