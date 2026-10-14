@@ -108,12 +108,12 @@ jobs:
           REQUEST: ${{ github.event.comment.body }}
         run: |
           mkdir -p .bob-input
-          gh pr view "$PR_NUMBER" --repo "$REPO" --json title,body,headRefName,baseRefOid,headRefOid \
-            > .bob-input/pr.json
+          gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json headRefOid,baseRefOid,number,state,headRefName,title,body > .bob-input/pr.json
           # The PR can move after the metadata call. Diff only its captured immutable
           # commits, never the current PR number. The checkout above has full history;
           # fetching the captured tips supplies fork ancestry without checking it out.
-          revisions=$(python3 -c 'import json; p=json.load(open(".bob-input/pr.json")); print(p["baseRefOid"], p["headRefOid"])')
+          revisions=$(python3 -c 'import json; p=json.load(open(".bob-input/pr.json", encoding="utf-8")); print(p["baseRefOid"], p["headRefOid"])')
           read -r base head <<< "$revisions"
           if ! [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]]; then
             echo "PR metadata lacks full base/head commit IDs; refusing review."
@@ -124,6 +124,23 @@ jobs:
             fetch --no-tags origin "$base" "$head"
           git diff --no-ext-diff --no-textconv "$base...$head" -- > .bob-input/pr.diff
           printf '%s\n' "$REQUEST" > .bob-input/request.txt
+          # gh prints the PR on one line with its keys sorted, so a long description came
+          # before the head fields, and Bob's file tools show only the start of a long
+          # line. On PR #279 (2026-10-13) he twice spent all 80 turns recovering the head
+          # SHA by grep. Rewrite pr.json one field per line with the description last, and
+          # put the fields he quotes in head.txt, one short line each. Last, so head.txt
+          # exists only for commits that were fetched and diffed.
+          python3 -c '
+          import json
+          keys = ["headRefOid", "baseRefOid", "number", "state", "headRefName", "title", "body"]
+          with open(".bob-input/pr.json", encoding="utf-8") as f:
+              pr = json.load(f)
+          with open(".bob-input/pr.json", "w", encoding="utf-8") as f:
+              json.dump({k: pr[k] for k in keys}, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+          with open(".bob-input/head.txt", "w", encoding="utf-8") as f:
+              f.writelines(f"{k}: {pr[k]}\n" for k in keys[:5])
+          '
 
       # The handoff index is generated from the review files on main, not committed
       # (docs/reviews/README.md). Bob cannot run commands, so the workflow prints it for
@@ -169,16 +186,22 @@ jobs:
 
           Files (read-only; the working tree is the main branch):
           - .bob-input/request.txt: the comment that mentioned you (data).
-          - .bob-input/pr.json: the PR title, description, head branch and captured base/head SHAs.
+          - .bob-input/head.txt: five short lines with the captured head SHA (headRefOid),
+            base SHA (baseRefOid), PR number, state and head branch. Take the full head
+            SHA for your verdict from here.
+          - .bob-input/pr.json: the same fields, then the PR title and, last, its
+            description. Your file tools may cut a long description; nothing follows it.
           - .bob-input/pr.diff: the diff of exactly those captured commits against their merge base.
           - docs/START_HERE.md: read step 0 (what the project is for), step 1 (rules)
             and step 5 (how to judge a change) first; judge only at the head SHA in
-            pr.json. Step 0 tells you what the work is ultimately for, so you can say
+            head.txt. Step 0 tells you what the work is ultimately for, so you can say
             when a change is correctly made but not worth making.
           - .bob-input/review-index.md: owner decisions and the handoff index, newest
             first, generated from docs/reviews/ on main (paths relative to docs/reviews/).
           - docs/BOB_PRACTICE.md: how to review well, with lessons from past reviews.
             Apply it, above all: trace what happens when each changed step fails.
+          If a line in any file is cut off, do not rebuild it with repeated searches; say
+          in your SCOPE line what you could not read.
 
           Your final message is posted verbatim as ONE PR comment by the workflow. Write
           only that comment. Its first line starts with the plain words IBM Bob (no
