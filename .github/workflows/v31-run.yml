@@ -101,15 +101,15 @@ run-name: v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # attempt (the status job aside), and anything else counts. Transient GitHub errors (no
 # reply, a timeout, a reply cut short, HTTP 5xx or 429, a rate limit, a run not yet listed)
 # are retried, five attempts over about five minutes, before the check fails closed; the
-# whole check stops at a 20-minute deadline, so a long outage fails the plan job (not
-# counted) instead of running into its 30-minute timeout, which cancels it (counted). A
-# rehearsal runs the same check report-only, on its own title, to prove it against GitHub.
-# A dispatch
-# created a second or more later never counts against an earlier one, but two dispatches
-# created in the same second void each other, and one created while an earlier run's plan
-# or aggregate is paging through the runs can make that listing inconsistent, which fails
-# that plan or leaves that verdict incomplete (fail closed). The operating rule above
-# forbids both.
+# whole check stops at a 20-minute deadline, and no later than 25 minutes after its job
+# started (the job's first step records the start), so a long outage fails the plan job
+# (not counted) instead of running into its 30-minute timeout, which cancels it (counted).
+# A rehearsal runs the same check report-only, on its own title, to prove it against
+# GitHub. A dispatch created a second or more later never counts against an earlier one,
+# but two dispatches created in the same second void each other, and one created while an
+# earlier run's plan or aggregate is paging through the runs can make that listing
+# inconsistent, which fails that plan or leaves that verdict incomplete (fail closed). The
+# operating rule above forbids both.
 #
 # No archive for 2025-01 or later may exist anywhere on a runner. The driver refuses such a
 # month before it fetches; the "Refuse any file named for 2025 or later" step is a second,
@@ -246,6 +246,11 @@ jobs:
       main_cells: ${{ steps.cells.outputs.main_cells }}
       registration_sha256: ${{ steps.cells.outputs.registration_sha256 }}
     steps:
+      # First of all: the job's start, from which the dispatch check budgets its deadline
+      # (25 of the job's 30 minutes), whatever the checkout and the installs take.
+      - name: Record the job's start
+        run: echo "V31_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
@@ -873,6 +878,11 @@ jobs:
     env:
       REGISTRATION_SHA256: ${{ needs.plan.outputs.registration_sha256 }}
     steps:
+      # First of all: the job's start, from which a registered aggregate's dispatch check
+      # budgets its deadline (355 of the job's 360 minutes), as the plan job's does.
+      - name: Record the job's start
+        run: echo "V31_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0

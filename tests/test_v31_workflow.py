@@ -24,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -385,10 +386,26 @@ def test_no_step_commits_pushes_or_writes_through_gh() -> None:
     assert any("git ls-files" in script for name in JOBS for script in _scripts(name))
 
 
+# The checking jobs' first step: the job's start, from which the dispatch check budgets
+# its deadline (owner decision v31-d21; Codex P1 on PR #281). No input reaches it.
+JOB_START_STEP = {
+    "name": "Record the job's start",
+    "run": 'echo "V31_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"',
+}
+
+
+def _checked_out(name: str) -> list[dict[str, Any]]:
+    """The job's steps from its checkout on: a checking job's start record comes first."""
+    steps = _steps(name)
+    return steps[1:] if name in CHECKING_JOBS else steps
+
+
 def test_every_job_checks_out_the_full_history_without_credentials() -> None:
     # changed_since(code_pin) needs the code commit's history; credentials stay out of .git.
     for name in JOBS:
-        first = _steps(name)[0]
+        if name in CHECKING_JOBS:
+            assert _steps(name)[0] == JOB_START_STEP, name
+        first = _checked_out(name)[0]
         assert _action(first) == CHECKOUT, name
         assert first["with"] == {"fetch-depth": 0, "persist-credentials": False}, name
         assert [_action(s) for s in _steps(name)].count(CHECKOUT) == 1, name
@@ -747,7 +764,7 @@ def test_aggregate_makes_its_cells_folder_before_it_downloads_into_it() -> None:
     assert steps[make] == {"name": "Create the cells folder", "run": f"mkdir -p {folder}"}
     assert len(by_pattern) == 2 and make < min(by_pattern)
     assert {steps[i]["with"]["path"] for i in by_pattern} == {folder}
-    assert _action(steps[0]) == CHECKOUT and make > 0
+    assert steps[0] == JOB_START_STEP and _action(steps[1]) == CHECKOUT and make > 1
     for mode in ("registered", "rehearsal"):
         assert steps_that_run("aggregate", mode=mode)[make] == "success"
     # Only the cells folder is made: no job makes a picks folder that could pass for the
@@ -803,7 +820,8 @@ def test_every_driver_call_parses_with_the_drivers_own_parser() -> None:
 
 
 def test_registered_mode_verifies_the_registration_hash_first() -> None:
-    steps = _steps("plan")
+    assert _steps("plan")[0] == JOB_START_STEP  # the job's start, before anything else
+    steps = _checked_out("plan")
     assert _action(steps[0]) == CHECKOUT
     verify = steps[1]  # before Python is set up, installed or run
     script = verify["run"]
@@ -844,7 +862,8 @@ def test_the_registration_check_step_fails_on_any_other_pin(
     registration.write_bytes(b'{"schema": "v3.1-registration-1"}\n')
     good = hashlib.sha256(registration.read_bytes()).hexdigest()
     value = pin.format(good=good, bad="0" * 64, good_upper=good.upper())
-    step = _steps("plan")[1]
+    step = _checked_out("plan")[1]
+    assert step["name"] == "Verify the registration against the dispatched SHA-256"
     result = _run_step(step["run"], tmp_path, {"REGISTRATION_SHA256": value})
     assert (result.returncode == 0) is passes, result.stderr + result.stdout
 
@@ -1573,23 +1592,44 @@ def test_the_header_says_a_second_dispatch_is_refused_and_why() -> None:
         "Transient GitHub errors (no reply, a timeout, a reply cut short, HTTP 5xx or 429, a "
         "rate limit, a run not yet listed) are retried, five attempts over about five "
         "minutes, before the check fails closed; the whole check stops at a 20-minute "
-        "deadline, so a long outage fails the plan job (not counted) instead of running into "
-        "its 30-minute timeout, which cancels it (counted). A rehearsal runs the same check "
-        "report-only, on its own title, to prove it against GitHub."
+        "deadline, and no later than 25 minutes after its job started (the job's first step "
+        "records the start), so a long outage fails the plan job (not counted) instead of "
+        "running into its 30-minute timeout, which cancels it (counted). A rehearsal runs "
+        "the same check report-only, on its own title, to prove it against GitHub."
     ) in header
 
 
-def test_the_dispatch_checks_deadline_ends_inside_the_plan_jobs_timeout() -> None:
+def test_the_dispatch_checks_deadline_ends_inside_its_jobs_timeout() -> None:
     """A plan job run into its timeout is cancelled, and a cancelled plan counts (L2), so
-    the check's own deadline ends well inside it, leaving the checkout and the installs
-    before it ten minutes."""
-    plan = _jobs()["plan"]
-    assert plan["timeout-minutes"] == 30
-    assert v31_driver.DISPATCH_DEADLINE == 20 * 60
-    setup = 10 * 60  # seconds left for the checkout and the installs before the check
-    assert v31_driver.DISPATCH_DEADLINE + setup <= plan["timeout-minutes"] * 60
+    the check's deadline is budgeted from the job's start, which the job's first step
+    records (Codex P1 on PR #281): each job's budget ends at least five minutes before its
+    timeout-minutes, however long the checkout, setup and installs took. The aggregate's
+    check reads the same record against its own job's budget."""
+    jobs = _jobs()
+    margin = 5 * 60
+    assert jobs["plan"]["timeout-minutes"] == 30
+    assert v31_driver.PLAN_JOB_BUDGET + margin <= jobs["plan"]["timeout-minutes"] * 60
+    assert jobs["aggregate"]["timeout-minutes"] == 360
+    assert v31_driver.AGGREGATE_JOB_BUDGET + margin <= jobs["aggregate"]["timeout-minutes"] * 60
+    assert v31_driver.DISPATCH_DEADLINE == 20 * 60 <= v31_driver.PLAN_JOB_BUDGET
+    assert v31_driver.JOB_STARTED == "V31_JOB_STARTED"
+    for name in CHECKING_JOBS:
+        assert _steps(name)[0] == JOB_START_STEP, name
     (check,) = [s for s in _steps("plan") if "dispatch-check" in s.get("run", "")]
     assert "timeout-minutes" not in check  # the driver's deadline, not a step timeout, ends it
+
+
+def test_the_job_start_step_records_an_epoch_second(tmp_path: Path) -> None:
+    env_file = tmp_path / "github-env"
+    env_file.write_text("", encoding="utf-8")
+    before = int(time.time())
+    result = _run_step(JOB_START_STEP["run"], tmp_path, {"GITHUB_ENV": env_file.as_posix()})
+    after = int(time.time())
+    assert result.returncode == 0, result.stderr
+    (line,) = env_file.read_text(encoding="utf-8").splitlines()
+    name, value = line.split("=", 1)
+    assert name == "V31_JOB_STARTED" and re.fullmatch(r"[1-9][0-9]*", value)
+    assert before <= int(value) <= after
 
 
 # --- the status job (Ruling F11) ---------------------------------------------------------
@@ -1832,8 +1872,9 @@ def test_rehearsal_mode_runs_the_same_job_graph_as_a_registered_run() -> None:
     )
     # The registration's hash check runs in a registered run alone; the dispatch check in a
     # rehearsal too, report-only on the rehearsal's own title (owner decision v31-d21).
-    assert _steps("plan")[1]["if"] == "${{ inputs.mode == 'registered' }}"
-    assert _steps("plan")[1]["name"] == "Verify the registration against the dispatched SHA-256"
+    verify = _checked_out("plan")[1]
+    assert verify["if"] == "${{ inputs.mode == 'registered' }}"
+    assert verify["name"] == "Verify the registration against the dispatched SHA-256"
     (check,) = [s for s in _steps("plan") if "dispatch-check" in s.get("run", "")]
     assert check["if"] == "${{ inputs.mode == 'registered' || inputs.mode == 'rehearsal' }}"
     assert "dispatch-check --report-only" in check["run"]
