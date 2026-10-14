@@ -21,6 +21,11 @@ data, and keep every result. The driver turns these into acceptance:
   acceptance.
 - **Capitals:** 10,000 USDT, and EUR 100 at the ECB reference rate for 2024-12-31,
   copied at registration.
+  *Note, 2026-10-14: the owner replaced these with three USDT capitals, 100, 1,000 and
+  10,000 USDT (`small`, `medium`, `research`), with no FX conversion
+  (`docs/V3_1_SOURCE_INVENTORY.md`, "Owner decision on the capitals, 2026-10-14"). The run
+  then has 324 cells, and the workflow splits its cells into three matrices (selector,
+  minute, the rest) to stay within GitHub's 256 jobs per matrix.*
 - **Costs:** base and doubled profiles, as in proposal section 4.
 - **Arms:** the 10 V3.1 arms and the 32 baselines. V1 uses all nine variants, `a b c e f g
   cg h ch`, and each minute baseline runs in both path modes.
@@ -85,7 +90,7 @@ cheaply; V3's one real invocation failed after seven hours in its last phase.
 - `config/v3_1_registration.json` is the single config pin. It holds the windows with
   their skipped hours, the capitals with the FX pin, the cost profiles, the arms and V1
   variants, the scenarios, the observation policy, the adapter module pins and the cell
-  list.
+  list. *(Since 2026-10-14 the capitals are the three USDT ones and hold no FX pin.)*
 - `config/v3_1_run_manifest.json` is the single manifest pin. It holds every data
   manifest SHA-256, the filter-snapshot SHA-256 values and the input-pack SHA-256 values.
 - The trial register (`docs/trials/register.jsonl`, family `spec-v3.1`) gets a
@@ -97,7 +102,7 @@ cheaply; V3's one real invocation failed after seven hours in its last phase.
 - **Runners:** public repository, so standard runners (4 vCPU, 16 GB) are free. There are
   20 concurrent jobs and a 6-hour limit per job.
 - **Cells:** 80 V3.1 cells in W1, 8 in W0, 28 V3 cells, 4 hold cells and 96 minute-baseline
-  cells.
+  cells. *(Since 2026-10-14, with three capitals: 120, 12, 42, 6 and 144, 324 in all.)*
 - **Time:** a V3.1 cell is estimated at about 20-25 minutes. A minute-baseline cell replays
   three pairs one at a time, at about 2 GB of minutes per pair.
 - **Rule:** every attempt is recorded and none is retried.

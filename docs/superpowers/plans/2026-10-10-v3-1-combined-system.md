@@ -110,6 +110,8 @@ Acceptance.evaluate(result: ReplayResult, comparisons: tuple[ReplayResult,...])
   components preserve frozen baseline on synthetic inputs; no2025 accepted.
 - [ ] Test missing mandatory baseline incomplete; doubled-cost nonpositive fail;
   recovery breach30% remains fail; FX missing makes EUR scenario incomplete.
+  *(Note, 2026-10-14: no EUR scenario remains; the owner's three capitals are 100, 1,000
+  and 10,000 USDT, and a capital carrying an FX field is refused.)*
 - [ ] Run RED; implement; run GREEN and full preflight; commit.
 
 ## Task 7: Evidence analysis and local dashboard
