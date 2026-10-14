@@ -36,10 +36,13 @@ disclosed too, and changes nothing, as W0 is reported only. Re-running aggregati
 
 A registration is dispatched once (Ruling R4-2), and a second dispatch has its own run id
 and attempt 1, so the folders cannot show it. The caller hands ``aggregate`` what its
-dispatch check found (``other_dispatches``: each other dispatch of the registration, or
-why none could be ruled out; the driver's registered aggregate reads the workflow's runs
-for it). Any of them makes the verdict ``incomplete`` too, whatever acceptance returned;
-``verdict.json`` records them and ``summary.md`` discloses them.
+dispatch check found (``other_dispatches``: each other dispatch of the registration that
+counts, or why none could be ruled out; the driver's registered aggregate reads the
+workflow's runs for it). Any of them makes the verdict ``incomplete`` too, whatever
+acceptance returned; ``verdict.json`` records them and ``summary.md`` discloses them. An
+earlier launch that stopped at the plan job with nothing run does not count (owner
+decision v31-d21): the caller hands those over apart (``uncounted_dispatches``), and they
+are recorded and disclosed the same way but leave the verdict as it is.
 
 A cell's state follows its run job's protocol: ``outcome.json`` (the completion marker)
 makes it ``completed``; ``failure.json`` a recorded ``failed`` attempt, its type and
@@ -193,6 +196,7 @@ def aggregate(
     attempt_id: str,
     mode: str,
     other_dispatches: Sequence[str],
+    uncounted_dispatches: Sequence[str] = (),
 ) -> Path:
     """Aggregate the cell artifacts in ``cells_dir`` into ``out_dir/summary`` and return
     that directory (layout, states, re-runs and refusals in the module docstring).
@@ -202,11 +206,14 @@ def aggregate(
     is ``incomplete`` (re-run detected). ``other_dispatches`` is what the caller's dispatch
     check found (Ruling R4-2), each a line of text: any one leaves the verdict
     ``incomplete`` too (empty when no other dispatch exists, and in a synthetic run, which
-    dispatches no registration). Refuses, before anything is written, a malformed
-    ``attempt_id`` or ``other_dispatches``, a registration ``check_registration`` refuses,
-    an existing summary, and every input the module docstring lists as refused, in one
-    ``ValueError`` naming each cell. A missing or incomplete cell is never refused: it
-    leaves the verdict ``incomplete``, unless acceptance fails it already.
+    dispatches no registration). ``uncounted_dispatches`` names, a line of text each, the
+    earlier launches that stopped at the plan job with nothing run (owner decision
+    v31-d21): recorded and disclosed, they change nothing. Refuses, before anything is
+    written, a malformed ``attempt_id``, ``other_dispatches`` or ``uncounted_dispatches``,
+    a registration ``check_registration`` refuses, an existing summary, and every input
+    the module docstring lists as refused, in one ``ValueError`` naming each cell. A
+    missing or incomplete cell is never refused: it leaves the verdict ``incomplete``,
+    unless acceptance fails it already.
 
     ``mode`` is the run's (``MODES``): ``registered``, or ``rehearsal`` or ``smoke`` for a
     synthetic world. ``verdict.json`` records it and ``summary.md`` names it in its first
@@ -214,10 +221,12 @@ def aggregate(
     """
     if mode not in MODES:
         raise ValueError(f"aggregate mode {mode!r}: one of {', '.join(MODES)} required")
-    if isinstance(other_dispatches, str) or not all(
-        type(item) is str and item.strip() for item in other_dispatches
+    for what, lines in (
+        ("other dispatches", other_dispatches),
+        ("uncounted dispatches", uncounted_dispatches),
     ):
-        raise ValueError("aggregate other dispatches: a sequence of nonblank lines required")
+        if isinstance(lines, str) or not all(type(item) is str and item.strip() for item in lines):
+            raise ValueError(f"aggregate {what}: a sequence of nonblank lines required")
     run_id, run_attempt = _run_attempt(attempt_id)
     check_registration(reg)
     summary = Path(out_dir) / SUMMARY_DIR
@@ -247,6 +256,7 @@ def aggregate(
             _reruns(judged_owners, origins, run_id),
             _reruns(reported_owners, origins, run_id),
             tuple(other_dispatches),
+            tuple(uncounted_dispatches),
         )
         judged = tuple(  # completed W1 cells only: an invalid one is withheld as missing
             read.outcome
@@ -306,9 +316,10 @@ class _Origin:
 @dataclass(frozen=True, slots=True)
 class _Run:
     """Aggregation's own run, every re-run it found: W1 cells and the picks job
-    (``reruns``, which make the verdict incomplete) and W0 cells (disclosed only), and
-    every other dispatch of the registration its caller found (``dispatches``, which make
-    the verdict incomplete too)."""
+    (``reruns``, which make the verdict incomplete) and W0 cells (disclosed only), every
+    other dispatch of the registration its caller found that counts (``dispatches``, which
+    make the verdict incomplete too), and every earlier launch that stopped at the plan
+    job with nothing run (``uncounted``, disclosed only)."""
 
     attempt_id: str
     run_id: str
@@ -316,6 +327,7 @@ class _Run:
     reruns: tuple[str, ...]
     reported_reruns: tuple[str, ...]
     dispatches: tuple[str, ...]
+    uncounted: tuple[str, ...]
 
 
 def _run_attempt(attempt_id: object) -> tuple[str, int]:
@@ -784,6 +796,7 @@ def _verdict(
             "reruns": list(run.reruns),
             "reported_only_reruns": list(run.reported_reruns),
             "other_dispatches": list(run.dispatches),
+            "uncounted_dispatches": list(run.uncounted),
         },
         "skipped_hours": {window: list(hours) for window, hours in result.skipped_hours},
         "comparisons": [_comparison_json(row) for row in result.comparisons],
@@ -964,9 +977,10 @@ def _rerun_section(run: _Run) -> list[str]:
 
 def _dispatch_section(run: _Run, mode: str) -> list[str]:
     """The other dispatches of the registration (Ruling R4-2): a registered run is
-    dispatched once, so any other dispatch created before or with this run, or a check
-    that could not rule one out, leaves the run incomplete; a synthetic run dispatches no
-    registration and is not checked."""
+    dispatched once, so any other dispatch created before or with this run that counts,
+    or a check that could not rule one out, leaves the run incomplete; an earlier launch
+    stopped at the plan job with nothing run is disclosed and changes nothing (owner
+    decision v31-d21); a synthetic run dispatches no registration and is not checked."""
     lines = ["## Another dispatch of this registration", ""]
     if run.dispatches:
         lines += [
@@ -977,6 +991,12 @@ def _dispatch_section(run: _Run, mode: str) -> list[str]:
             *(f"- {_md(item)}" for item in run.dispatches),
             "",
         ]
+    elif run.uncounted:
+        lines += [
+            "None that counts: every earlier launch of this registration stopped at the plan "
+            "job with nothing run (below).",
+            "",
+        ]
     elif mode == "registered":
         lines += [
             "None: no other run of this workflow dispatched this registration before or "
@@ -985,6 +1005,14 @@ def _dispatch_section(run: _Run, mode: str) -> list[str]:
         ]
     else:
         lines += [f"Not checked: a {mode} run dispatches no registration.", ""]
+    if run.uncounted:
+        lines += [
+            "Not counted, and changing nothing: a launch that fetched no data and produced "
+            "no result is not an execution.",
+            "",
+            *(f"- {_md(item)}" for item in run.uncounted),
+            "",
+        ]
     return lines
 
 

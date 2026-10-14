@@ -24,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -385,10 +386,26 @@ def test_no_step_commits_pushes_or_writes_through_gh() -> None:
     assert any("git ls-files" in script for name in JOBS for script in _scripts(name))
 
 
+# The checking jobs' first step: the job's start, from which the dispatch check budgets
+# its deadline (owner decision v31-d21; Codex P1 on PR #281). No input reaches it.
+JOB_START_STEP = {
+    "name": "Record the job's start",
+    "run": 'echo "V31_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"',
+}
+
+
+def _checked_out(name: str) -> list[dict[str, Any]]:
+    """The job's steps from its checkout on: a checking job's start record comes first."""
+    steps = _steps(name)
+    return steps[1:] if name in CHECKING_JOBS else steps
+
+
 def test_every_job_checks_out_the_full_history_without_credentials() -> None:
     # changed_since(code_pin) needs the code commit's history; credentials stay out of .git.
     for name in JOBS:
-        first = _steps(name)[0]
+        if name in CHECKING_JOBS:
+            assert _steps(name)[0] == JOB_START_STEP, name
+        first = _checked_out(name)[0]
         assert _action(first) == CHECKOUT, name
         assert first["with"] == {"fetch-depth": 0, "persist-credentials": False}, name
         assert [_action(s) for s in _steps(name)].count(CHECKOUT) == 1, name
@@ -417,6 +434,11 @@ def test_a_queued_run_is_protected_by_queue_max_and_by_an_operating_rule() -> No
     header = _header()
     assert "never dispatch v31-run while another v31-run is queued or running" in header.lower()
     assert "workflow level" in header  # the key is not shown to be honoured there
+    # Nor is a registered dispatch cancelled: a cancelled launch counts (v31-d21, L2).
+    assert (
+        "Never cancel a queued or running registered dispatch either: a cancelled launch "
+        "counts as an execution of its registration."
+    ) in header
     # The comment on the concurrency block says what it does; it does not claim more.
     comment = _text().split("\nconcurrency:\n", 1)[0].rsplit("\n\n", 1)[-1]
     assert "queue: max" in comment and "pending" in comment
@@ -742,7 +764,7 @@ def test_aggregate_makes_its_cells_folder_before_it_downloads_into_it() -> None:
     assert steps[make] == {"name": "Create the cells folder", "run": f"mkdir -p {folder}"}
     assert len(by_pattern) == 2 and make < min(by_pattern)
     assert {steps[i]["with"]["path"] for i in by_pattern} == {folder}
-    assert _action(steps[0]) == CHECKOUT and make > 0
+    assert steps[0] == JOB_START_STEP and _action(steps[1]) == CHECKOUT and make > 1
     for mode in ("registered", "rehearsal"):
         assert steps_that_run("aggregate", mode=mode)[make] == "success"
     # Only the cells folder is made: no job makes a picks folder that could pass for the
@@ -798,7 +820,8 @@ def test_every_driver_call_parses_with_the_drivers_own_parser() -> None:
 
 
 def test_registered_mode_verifies_the_registration_hash_first() -> None:
-    steps = _steps("plan")
+    assert _steps("plan")[0] == JOB_START_STEP  # the job's start, before anything else
+    steps = _checked_out("plan")
     assert _action(steps[0]) == CHECKOUT
     verify = steps[1]  # before Python is set up, installed or run
     script = verify["run"]
@@ -839,7 +862,8 @@ def test_the_registration_check_step_fails_on_any_other_pin(
     registration.write_bytes(b'{"schema": "v3.1-registration-1"}\n')
     good = hashlib.sha256(registration.read_bytes()).hexdigest()
     value = pin.format(good=good, bad="0" * 64, good_upper=good.upper())
-    step = _steps("plan")[1]
+    step = _checked_out("plan")[1]
+    assert step["name"] == "Verify the registration against the dispatched SHA-256"
     result = _run_step(step["run"], tmp_path, {"REGISTRATION_SHA256": value})
     assert (result.returncode == 0) is passes, result.stderr + result.stdout
 
@@ -1252,6 +1276,7 @@ def test_each_driver_step_passes_the_dispatch_values_to_the_cli(tmp_path: Path) 
             assert (args.attempt_id, args.registration_sha256) == ("4242-attempt-2", "a" * 64)
         elif args.command == "dispatch-check":
             assert args.registration_sha256 == "a" * 64  # the dispatched pin
+            assert args.report_only is False  # a registered run's check refuses
         elif args.command == "rehearsal-world":
             assert args.out == "v31/work"
             assert (
@@ -1396,15 +1421,24 @@ def test_the_plan_job_refuses_a_second_dispatch_first_in_a_registered_run() -> N
     names = [step.get("name") for step in steps]
     check = names.index("Refuse a second dispatch of the registration")
     step = steps[check]
-    assert step["if"] == "${{ inputs.mode == 'registered' }}"
+    # A registered run's check, and a rehearsal's report-only one (owner decision v31-d21,
+    # layer L3); never in smoke, prepare-only or timing.
+    assert step["if"] == "${{ inputs.mode == 'registered' || inputs.mode == 'rehearsal' }}"
     assert step["env"] == TOKEN_ENV
-    assert step["run"].split() == [
-        "python",
-        "scripts/v31_driver.py",
-        "dispatch-check",
-        "--registration-sha256",
-        '"$REGISTRATION_SHA256"',
+    assert [line.strip() for line in step["run"].splitlines()] == [
+        'if [ "$MODE" = registered ]; then',
+        'python scripts/v31_driver.py dispatch-check --registration-sha256 "$REGISTRATION_SHA256"',
+        'elif [ "$MODE" = rehearsal ]; then',
+        "python scripts/v31_driver.py dispatch-check --report-only "
+        '--registration-sha256 "$REGISTRATION_SHA256"',
+        "else",
+        'echo "::error::The dispatch check runs in registered and rehearsal mode only, not $MODE."',
+        "exit 1",
+        "fi",
     ]
+    for mode in ("smoke", "prepare-only", "timing"):
+        assert not _truth(_condition(step) or "", mode, {}), mode
+        assert "plan" not in _ran(mode), mode
     # Its first driver step: after the registration's hash check and the install (it needs
     # Python), before the world, the job gate, the scan and any upload.
     installs = [i for i, s in enumerate(steps) if s.get("run", "").startswith("python -m pip")]
@@ -1419,8 +1453,97 @@ def test_the_plan_job_refuses_a_second_dispatch_first_in_a_registered_run() -> N
     assert outcomes[check] == "failure"
     assert set(outcomes[check + 1 :]) == {"skipped"}
     assert _ran("registered", failing=["plan"]) == {"plan", "status"}
-    # A rehearsal, which dispatches no registration, skips it.
-    assert steps_that_run("plan", mode="rehearsal")[check] == "skipped"
+    # A rehearsal runs it too, report-only, first of its driver steps (before its world is
+    # built); when GitHub cannot be read it fails the rehearsal's plan job the same way.
+    assert steps_that_run("plan", mode="rehearsal")[check] == "success"
+    outcomes = steps_that_run("plan", failing=[check], mode="rehearsal")
+    assert outcomes[check] == "failure" and set(outcomes[check + 1 :]) == {"skipped"}
+    assert check < names.index("Build the rehearsal world")
+    assert _ran("rehearsal", failing=["plan"]) == {"plan", "status"}
+
+
+@pytest.mark.parametrize(
+    ("mode", "sha", "expected"),
+    [
+        ("registered", "a" * 64, ["dispatch-check", "--registration-sha256", "a" * 64]),
+        # A rehearsal's registration_sha256 input is usually empty: its own title then.
+        ("rehearsal", "", ["dispatch-check", "--report-only", "--registration-sha256", ""]),
+        (
+            "rehearsal",
+            "b" * 64,
+            ["dispatch-check", "--report-only", "--registration-sha256", "b" * 64],
+        ),
+        ("smoke", "", None),
+        ("timing", "", None),
+    ],
+)
+def test_the_dispatch_check_step_passes_report_only_in_a_rehearsal_alone(
+    tmp_path: Path, mode: str, sha: str, expected: list[str] | None
+) -> None:
+    """The step in bash with a stub for the driver: a registered run's check refuses, a
+    rehearsal's reports only (L3), on the registration_sha256 input its title carries
+    (the workflow's env, the input itself, possibly empty); any other mode stops it."""
+    (step,) = [
+        s for s in _steps("plan") if s.get("name") == "Refuse a second dispatch of the registration"
+    ]
+    result, argv, _ = _driver_step_run(step, tmp_path, MODE=mode, REGISTRATION_SHA256=sha)
+    if expected is None:
+        assert result.returncode == 1 and argv == []
+        assert "::error::The dispatch check runs in registered and rehearsal mode only" in (
+            result.stdout
+        )
+        return
+    assert result.returncode == 0, result.stderr
+    assert argv == expected
+    args = v31_driver.build_parser().parse_args(argv)
+    assert (args.command, args.report_only) == ("dispatch-check", mode == "rehearsal")
+    # The workflow-level env passes the input itself, never the world's registration.
+    assert _workflow()["env"]["REGISTRATION_SHA256"] == "${{ inputs.registration_sha256 }}"
+    assert "REGISTRATION_SHA256" not in step["env"]
+
+
+def test_the_driver_knows_every_job_of_the_workflow() -> None:
+    """L2 judges an earlier launch by its job records: the plan job, the always-running
+    status job and every other job, each matched by name (a matrix job also by its matrix
+    suffix). A job added to the workflow and not to the driver would count as unknown (fail
+    closed); this keeps the two in step."""
+    known = {
+        v31_driver.PLAN_JOB,
+        v31_driver.STATUS_JOB,
+        *v31_driver.SKIPPED_JOBS,
+        *v31_driver.SKIPPED_MATRIX_JOBS,
+    }
+    assert known == set(JOBS) == set(_jobs())
+    matrix = {name for name, job in _jobs().items() if "matrix" in job.get("strategy", {})}
+    assert set(v31_driver.SKIPPED_MATRIX_JOBS) == matrix
+    assert _jobs()[v31_driver.STATUS_JOB]["if"].startswith("${{ always() ")
+
+
+@pytest.mark.parametrize("failing", [["plan"], ["prepare"], ["picks"], ["run-main"], []])
+def test_what_runs_after_a_failed_plan_is_exactly_what_l2_does_not_count(failing) -> None:
+    """The workflow's control flow, as GitHub decides it (``jobs_that_run``), against L2's
+    rule: a registered launch whose plan job failed ran the status job alone, so its job
+    records (one per job, the matrix jobs under their bare names) are not counted; a launch
+    that got past the plan job is."""
+    results = jobs_that_run("registered", failing)
+    records = [
+        {
+            "id": index,
+            "run_id": 400,
+            "run_attempt": 1,
+            "name": name,
+            "status": "completed",
+            "conclusion": result,
+        }
+        for index, (name, result) in enumerate(results.items(), start=1)
+    ]
+    run = {"id": 400, "status": "completed", "run_attempt": 1}
+    reason = v31_driver.launch_reason(run, records)
+    if failing == ["plan"]:
+        assert set(_ran("registered", failing)) == {"plan", "status"}
+        assert reason is None
+    else:
+        assert reason is not None
 
 
 def test_the_aggregate_step_holds_the_token_to_check_again() -> None:
@@ -1446,12 +1569,67 @@ def test_the_header_says_a_second_dispatch_is_refused_and_why() -> None:
         "The operating rule above forbids both."
     ) in header
     assert "holds no stored credentials" in header
-    # The Aggregate step holds the token in a rehearsal too, unused there.
+    # The Aggregate step holds the token in a rehearsal too, unused there; the dispatch
+    # check holds it in a rehearsal to check report-only (owner decision v31-d21).
     assert (
         "Two steps get the job's own token, with read access to this repository's workflow "
-        "runs and nothing more: a registered run's dispatch check, and the Aggregate step, "
-        "which holds it in a rehearsal too, where the driver does not use it."
+        "runs and nothing more: the plan job's dispatch check (a registered run's, and a "
+        "rehearsal's report-only one), and the Aggregate step, which holds it in a rehearsal "
+        "too, where the driver does not use it."
     ) in header
+    # Owner decision v31-d21: a launch that did nothing does not count, and a transient
+    # GitHub error is retried before the check fails closed.
+    assert "queued, running or finished, fails the plan and leaves the verdict incomplete" in (
+        header
+    )
+    assert "whatever its status" not in header
+    assert (
+        "A launch that stopped at the plan job with nothing run does not count: GitHub's "
+        "records must show it completed, its plan job failed and every later job skipped in "
+        "every attempt (the status job aside), and anything else counts."
+    ) in header
+    assert (
+        "Transient GitHub errors (no reply, a timeout, a reply cut short, HTTP 5xx or 429, a "
+        "rate limit, a run not yet listed) are retried, five attempts over about five "
+        "minutes, before the check fails closed; the whole check stops at a 20-minute "
+        "deadline, and no later than 25 minutes after its job started (the job's first step "
+        "records the start), so a long outage fails the plan job (not counted) instead of "
+        "running into its 30-minute timeout, which cancels it (counted). A rehearsal runs "
+        "the same check report-only, on its own title, to prove it against GitHub."
+    ) in header
+
+
+def test_the_dispatch_checks_deadline_ends_inside_its_jobs_timeout() -> None:
+    """A plan job run into its timeout is cancelled, and a cancelled plan counts (L2), so
+    the check's deadline is budgeted from the job's start, which the job's first step
+    records (Codex P1 on PR #281): each job's budget ends at least five minutes before its
+    timeout-minutes, however long the checkout, setup and installs took. The aggregate's
+    check reads the same record against its own job's budget."""
+    jobs = _jobs()
+    margin = 5 * 60
+    assert jobs["plan"]["timeout-minutes"] == 30
+    assert v31_driver.PLAN_JOB_BUDGET + margin <= jobs["plan"]["timeout-minutes"] * 60
+    assert jobs["aggregate"]["timeout-minutes"] == 360
+    assert v31_driver.AGGREGATE_JOB_BUDGET + margin <= jobs["aggregate"]["timeout-minutes"] * 60
+    assert v31_driver.DISPATCH_DEADLINE == 20 * 60 <= v31_driver.PLAN_JOB_BUDGET
+    assert v31_driver.JOB_STARTED == "V31_JOB_STARTED"
+    for name in CHECKING_JOBS:
+        assert _steps(name)[0] == JOB_START_STEP, name
+    (check,) = [s for s in _steps("plan") if "dispatch-check" in s.get("run", "")]
+    assert "timeout-minutes" not in check  # the driver's deadline, not a step timeout, ends it
+
+
+def test_the_job_start_step_records_an_epoch_second(tmp_path: Path) -> None:
+    env_file = tmp_path / "github-env"
+    env_file.write_text("", encoding="utf-8")
+    before = int(time.time())
+    result = _run_step(JOB_START_STEP["run"], tmp_path, {"GITHUB_ENV": env_file.as_posix()})
+    after = int(time.time())
+    assert result.returncode == 0, result.stderr
+    (line,) = env_file.read_text(encoding="utf-8").splitlines()
+    name, value = line.split("=", 1)
+    assert name == "V31_JOB_STARTED" and re.fullmatch(r"[1-9][0-9]*", value)
+    assert before <= int(value) <= after
 
 
 # --- the status job (Ruling F11) ---------------------------------------------------------
@@ -1692,8 +1870,14 @@ def test_rehearsal_mode_runs_the_same_job_graph_as_a_registered_run() -> None:
         "${{ inputs.mode == 'rehearsal' && steps.world.outputs.registration_sha256 "
         "|| inputs.registration_sha256 }}"
     )
-    # The registered dispatch check runs in a registered run alone.
-    assert _steps("plan")[1]["if"] == "${{ inputs.mode == 'registered' }}"
+    # The registration's hash check runs in a registered run alone; the dispatch check in a
+    # rehearsal too, report-only on the rehearsal's own title (owner decision v31-d21).
+    verify = _checked_out("plan")[1]
+    assert verify["if"] == "${{ inputs.mode == 'registered' }}"
+    assert verify["name"] == "Verify the registration against the dispatched SHA-256"
+    (check,) = [s for s in _steps("plan") if "dispatch-check" in s.get("run", "")]
+    assert check["if"] == "${{ inputs.mode == 'registered' || inputs.mode == 'rehearsal' }}"
+    assert "dispatch-check --report-only" in check["run"]
     # A rehearsal never takes a fetching path: its prepare is the registered step with
     # --mode rehearsal (which the driver runs without any transport), never prepare-only.
     steps = _steps("prepare")
