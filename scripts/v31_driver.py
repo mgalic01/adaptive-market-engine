@@ -51,9 +51,12 @@ verdict incomplete (fail closed). The operating rule in the workflow's header fo
 both.
 
 Owner decision v31-d21 adds three layers. L1: a transient read failure (no reply, a
-timeout, a connection error, HTTP 5xx or 429, a rate-limited 403, the current run not yet
-listed) is retried, five attempts in all over about five minutes (``github_retry``);
-anything else fails at once, as before. L2: an earlier launch does not count when
+timeout, a connection error, a reply cut short, HTTP 5xx or 429, a rate-limited 403, the
+current run not yet listed) is retried, five attempts in all over about five minutes
+(``github_retry``); anything else fails at once, as before. The whole check has one
+deadline (``DISPATCH_DEADLINE``, 20 minutes), inside the plan job's 30: when it passes the
+check stops and fails, so the plan job fails, which does not count, instead of being
+cancelled at its timeout, which would. L2: an earlier launch does not count when
 GitHub's records show it stopped at the plan job with nothing run: completed, its plan job
 failed and every later job skipped in every attempt (``launch_reason``); the plan's output
 and the verdict still name it. L3: a rehearsal's plan job runs ``dispatch-check
@@ -83,14 +86,16 @@ owner's windows, dates, coin sets and FX reference date (``plan_gate``,
     6: one W1 cell of each kind, the selector and a long-only V3 rule both, and one W0
     cell first); a registered run plans them all.
 ``dispatch-check --registration-sha256 S [--report-only]`` (the plan job, Ruling R4-2)
-    Refuses, naming them and why each counts, the other runs of this workflow titled
+    Refuses, naming the first and why it counts, another run of this workflow titled
     ``v31-run registered S`` and created before the current run (``GITHUB_RUN_ID``) or at
     the same time, as GitHub's REST API lists them with ``GITHUB_TOKEN``
     (``dispatch_check``), except a launch stopped at the plan job with nothing run, which
-    it names as not counted (``launch_reason``); a missing variable or any failure of the
-    API, after the retries of a transient one, refuses too. ``--report-only`` (a
-    rehearsal's, whose ``S`` may be empty) looks for ``v31-run rehearsal S`` instead,
-    prints the same decision and refuses only when GitHub cannot be read.
+    it names as not counted (``launch_reason``); a missing variable, any failure of the
+    API, after the retries of a transient one, and the check's deadline passing refuse
+    too. ``--report-only`` (a rehearsal's, whose ``S`` may be empty) looks for ``v31-run
+    rehearsal S`` instead, prints the decision on every earlier launch and refuses only
+    when GitHub cannot be read (a launch deleted since the listing, its jobs answering
+    404, is listed as gone instead).
 ``prepare --mode prepare-only|registered|rehearsal --work W --out O`` (Ruling P1)
     The gate: in ``prepare-only``, the checkout is ``--code-commit`` with no uncommitted
     change and ``config/v3_1_prepare.json`` hashes to ``--prepare-sha256``; no
@@ -177,6 +182,7 @@ import importlib
 import json
 import os
 import re
+import ssl
 import sys
 import tempfile
 import time
@@ -185,7 +191,7 @@ import urllib.request
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from http.client import HTTPException, HTTPMessage
+from http.client import BadStatusLine, HTTPException, HTTPMessage, IncompleteRead
 from pathlib import Path
 from typing import IO, Any, BinaryIO
 
@@ -295,6 +301,10 @@ MAX_GITHUB_BYTES = 32 * 1024 * 1024
 GITHUB_ATTEMPTS = 5
 GITHUB_BACKOFF = (15, 30, 60, 120)  # seconds
 MAX_GITHUB_WAIT = 120  # seconds
+# One deadline for the whole check, every read and wait together: well inside the plan
+# job's 30 minutes, so a long outage fails the plan job (not counted, L2) instead of
+# running into its timeout, which GitHub cancels (a cancelled plan counts).
+DISPATCH_DEADLINE = 20 * 60  # seconds
 # The workflow's jobs, as GitHub's jobs listing names them (L2): the plan job, the status
 # job that always runs, and every other job, which a launch stopped at the plan job skips.
 # A matrix job is named "<job> (<matrix values>)", or "<job>" when skipped before its
@@ -1274,10 +1284,12 @@ def registered_errors(reg: DriverRegistration, document: Mapping[str, Any]) -> l
 
 class TransientGitHubError(ValueError):
     """A read of GitHub's API that may succeed when repeated (owner decision v31-d21, layer
-    L1): no reply, a timeout or a connection error, HTTP 5xx or 429, a 403 of GitHub's
-    rate limits (``Retry-After``, or ``x-ratelimit-remaining: 0``), or the current run not
-    yet listed. ``retry_after`` is the wait in seconds GitHub asked for, if it gave one. A
-    ``ValueError``, so whatever does not retry it fails closed on it."""
+    L1): no reply, a timeout or a connection error, a reply cut short (an incomplete or
+    unreadable status line or body, a TLS failure while reading it, a body shorter than
+    its Content-Length), HTTP 5xx or 429, a 403 of GitHub's rate limits (``Retry-After``,
+    or ``x-ratelimit-remaining: 0``), or the current run not yet listed. ``retry_after`` is
+    the wait in seconds GitHub asked for, if it gave one. A ``ValueError``, so whatever
+    does not retry it fails closed on it."""
 
     def __init__(self, message: str, retry_after: int | None = None) -> None:
         super().__init__(message)
@@ -1289,16 +1301,50 @@ class CurrentRunMissing(TransientGitHubError):
     created, so the listing is read again."""
 
 
+class GitHubNotFound(ValueError):
+    """HTTP 404: permanent, never retried. Of an earlier launch's jobs it means the run was
+    deleted after the listing (``EarlierLaunch.gone``)."""
+
+
+class DeadlineExpired(ValueError):
+    """The dispatch check's overall deadline (``DISPATCH_DEADLINE``) passed: it stops,
+    retrying nothing more, and fails closed."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Deadline:
+    """The dispatch check's one deadline: ``end`` on ``clock`` (``time.monotonic``, or a
+    test's)."""
+
+    clock: Callable[[], float]
+    end: float
+
+    @classmethod
+    def start(cls, clock: Callable[[], float]) -> "_Deadline":
+        return cls(clock, clock() + DISPATCH_DEADLINE)
+
+    def left(self) -> float:
+        return self.end - self.clock()
+
+    def expired(self, when: str) -> DeadlineExpired:
+        return DeadlineExpired(
+            f"the dispatch check stopped at its deadline of {DISPATCH_DEADLINE} s {when} "
+            "(fail closed: the plan job fails rather than run into its own timeout)"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class EarlierLaunch:
     """Another run of the same title created before or with the current one (Ruling
     R4-2), and the decision on it (L2): ``reason``, why it counts, or None when it stopped
     at the plan job with nothing run. ``unreadable``: its jobs could not be read (it
-    counts)."""
+    counts); ``gone``: they could not because GitHub answered 404, the run deleted since
+    the listing (it counts all the same; a report-only check lists it as gone)."""
 
     run_id: int
     reason: str | None
     unreadable: bool = False
+    gone: bool = False
 
     @property
     def counts(self) -> bool:
@@ -1511,10 +1557,12 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
     """The JSON document at ``GITHUB_API + path``, read with ``token``. Any failure is one
     ``ValueError`` naming the path, never the token: an HTTP error (a redirect included), a
     transport failure or a timeout, a status other than 200, a body larger than
-    ``MAX_GITHUB_BYTES`` and a body that is not JSON. The failures a repeated read may not
-    meet (L1) are ``TransientGitHubError``: no reply, a timeout or a connection error
-    (``URLError``, ``TimeoutError``, ``ConnectionError``), HTTP 5xx, HTTP 429, and an HTTP
-    403 that carries ``Retry-After`` or ``x-ratelimit-remaining: 0`` (GitHub's rate
+    ``MAX_GITHUB_BYTES`` and a body that is not JSON; HTTP 404 is ``GitHubNotFound``. The
+    failures a repeated read may not meet (L1) are ``TransientGitHubError``: no reply, a
+    timeout or a connection error (``URLError``, ``TimeoutError``, ``ConnectionError``), a
+    reply cut short (``IncompleteRead``, ``BadStatusLine``, an ``ssl.SSLError`` such as
+    ``SSLEOFError``, or a body shorter than its Content-Length), HTTP 5xx, HTTP 429, and an
+    HTTP 403 that carries ``Retry-After`` or ``x-ratelimit-remaining: 0`` (GitHub's rate
     limits), with GitHub's ``Retry-After`` seconds when it gives them."""
     # The URL is the fixed https://api.github.com origin and a path the callers build from
     # the validated GITHUB_REPOSITORY and GITHUB_RUN_ID: no other scheme or host is opened.
@@ -1531,6 +1579,7 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
     try:
         with opener(request, timeout=GITHUB_TIMEOUT) as response:
             status = getattr(response, "status", None)
+            length = _header(getattr(response, "headers", None), "Content-Length")
             raw = response.read(MAX_GITHUB_BYTES + 1)
     except urllib.error.HTTPError as exc:
         retry_after = _header(exc.headers, "Retry-After")
@@ -1545,8 +1594,17 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
             if retry_after is not None and re.fullmatch(r"[0-9]{1,9}", retry_after):
                 seconds = int(retry_after)
             raise TransientGitHubError(message, seconds) from exc
+        if exc.code == 404:
+            raise GitHubNotFound(message) from exc
         raise ValueError(message) from exc
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        ConnectionError,
+        IncompleteRead,
+        BadStatusLine,
+        ssl.SSLError,
+    ) as exc:  # no reply, or one cut short
         raise TransientGitHubError(f"GitHub API {path}: {type(exc).__name__}: {exc}") from exc
     except (OSError, HTTPException) as exc:  # any other transport failure: permanent
         raise ValueError(f"GitHub API {path}: {type(exc).__name__}: {exc}") from exc
@@ -1554,6 +1612,11 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
         raise ValueError(f"GitHub API {path}: HTTP {status}, not 200")
     if len(raw) > MAX_GITHUB_BYTES:
         raise ValueError(f"GitHub API {path}: the response is larger than {MAX_GITHUB_BYTES} bytes")
+    if length is not None and re.fullmatch(r"[0-9]{1,12}", length) and len(raw) < int(length):
+        raise TransientGitHubError(
+            f"GitHub API {path}: the reply ended after {len(raw)} of its {length} bytes "
+            "(Content-Length)"
+        )
     try:
         return strict_json(raw, f"GitHub API {path}")
     except ValueError as exc:
@@ -1623,7 +1686,12 @@ def run_jobs(repository: str, token: str, opener: GitHubOpener, run_id: int) -> 
 
 
 def github_retry[T](
-    read: Callable[[], T], what: str, *, sleep: Callable[[float], None], log: Log
+    read: Callable[[], T],
+    what: str,
+    *,
+    sleep: Callable[[float], None],
+    log: Log,
+    deadline: _Deadline,
 ) -> T:
     """``read()``, attempted up to ``GITHUB_ATTEMPTS`` times in all while it fails with a
     ``TransientGitHubError`` (owner decision v31-d21, layer L1). Before each next attempt
@@ -1631,7 +1699,8 @@ def github_retry[T](
     next delay, or GitHub's longer ``Retry-After``, at most ``MAX_GITHUB_WAIT`` seconds,
     through ``sleep`` (tests pass their own, so none waits). Any other ``ValueError`` (a
     permanent error, or a decision) is raised at once, never retried; a transient failure
-    still there at the last attempt is one ``ValueError`` naming it."""
+    still there at the last attempt is one ``ValueError`` naming it. A wait that would end
+    at or past ``deadline`` is not taken: ``DeadlineExpired``, naming the last error."""
     attempt = 1
     while True:
         try:
@@ -1640,6 +1709,10 @@ def github_retry[T](
             if attempt >= GITHUB_ATTEMPTS:
                 raise ValueError(f"{exc} (still failing after {GITHUB_ATTEMPTS} attempts)") from exc
             wait = min(max(GITHUB_BACKOFF[attempt - 1], exc.retry_after or 0), MAX_GITHUB_WAIT)
+            if wait >= deadline.left():
+                raise deadline.expired(
+                    f"before attempt {attempt + 1} of {what} (the last error: {exc})"
+                ) from exc
             log(
                 f"dispatch check: {what}: attempt {attempt} of {GITHUB_ATTEMPTS} failed "
                 f"({exc}); retrying in {wait} s"
@@ -1656,10 +1729,12 @@ def _judge(
     *,
     sleep: Callable[[float], None],
     log: Log,
+    deadline: _Deadline,
 ) -> EarlierLaunch:
     """The decision on one earlier launch (L2): one queued or running counts without its
     jobs; a completed one is judged on its jobs (``run_jobs``, retried as L1 says), and
-    counts, ``unreadable``, when they cannot be read."""
+    counts, ``unreadable``, when they cannot be read (``gone`` too when GitHub answered
+    404). The deadline passing is no decision on the launch: it stops the whole check."""
     run_id: int = run["id"]
     if run.get("status") != "completed":
         return EarlierLaunch(run_id, launch_reason(run, ()))
@@ -1669,7 +1744,13 @@ def _judge(
             f"the jobs of run {run_id}",
             sleep=sleep,
             log=log,
+            deadline=deadline,
         )
+    except DeadlineExpired:
+        raise
+    except GitHubNotFound as exc:
+        reason = f"gone (404): its jobs could not be read: {exc}"
+        return EarlierLaunch(run_id, reason, unreadable=True, gone=True)
     except ValueError as exc:
         return EarlierLaunch(run_id, f"its jobs could not be read: {exc}", unreadable=True)
     return EarlierLaunch(run_id, launch_reason(run, jobs))
@@ -1680,11 +1761,12 @@ def dispatch_check(
     opener: GitHubOpener | None = None,
     *,
     sleep: Callable[[float], None],
+    clock: Callable[[], float] = time.monotonic,
     log: Log = log,
     report_only: bool = False,
 ) -> tuple[EarlierLaunch, ...]:
-    """Every earlier launch of this run's title, ascending, and whether it counts (Ruling
-    R4-2; owner decision v31-d21), from GitHub's REST API: the current run and this
+    """The earlier launches of this run's title, ascending, and whether each counts
+    (Ruling R4-2; owner decision v31-d21), from GitHub's REST API: the current run and this
     workflow's runs (``workflow_runs``) name the launches (``other_dispatches``), and each
     completed one's jobs (``run_jobs``) decide it (``launch_reason``); one queued or
     running counts without them. Read with the job's ``GITHUB_TOKEN`` (only the checking
@@ -1692,14 +1774,20 @@ def dispatch_check(
     ``GITHUB_RUN_ID``. ``opener`` replaces urllib's (tests); by default urllib's,
     following no redirect, with ``GITHUB_TIMEOUT`` per request.
 
-    A registered check (the default) looks for ``registered_title``; a report-only one (a
-    rehearsal's, layer L3) for the rehearsal's own ``run_titles``, whose input is a SHA-256
-    or empty, and decides exactly as a registered one would.
+    A registered check (the default) looks for ``registered_title`` and judges the
+    launches up to the first that counts, which already decides a refusal; a report-only
+    one (a rehearsal's, layer L3) looks for the rehearsal's own ``run_titles``, whose
+    input is a SHA-256 or empty, and judges every launch exactly as a registered check
+    would.
 
-    Each read is retried on a transient failure (``github_retry``, L1): the current run;
-    the whole runs listing, which must hold the current run; one run's whole jobs listing.
-    A missing or malformed variable (before any request), a permanent failure, and a
-    transient one that outlasts the retries are one ``ValueError``: the caller fails
+    Each read is retried on a transient failure (``github_retry``, L1): the current run,
+    whose id must be ``GITHUB_RUN_ID`` before anything else is read; the whole runs
+    listing, which must hold the current run; one run's whole jobs listing. The whole
+    check, every read and wait, has one deadline, ``DISPATCH_DEADLINE`` on ``clock`` from
+    its start: no request starts after it (none is given a timeout past it), and no wait
+    is taken that would end at or after it. A missing or malformed variable (before any
+    request), a permanent failure, a transient one that outlasts the retries and the
+    deadline passing (``DeadlineExpired``) are one ``ValueError``: the caller fails
     closed. A launch whose jobs cannot be read counts (``unreadable``)."""
     mode = "rehearsal" if report_only else "registered"
     if report_only and registration_sha256 == "":
@@ -1719,26 +1807,48 @@ def dispatch_check(
         errors.append(f"GITHUB_RUN_ID {run_id!r}: a positive integer required")
     if errors:
         raise ValueError("the dispatch check cannot run: " + "; ".join(errors))
-    read: GitHubOpener = urllib.request.build_opener(_NoRedirect).open if opener is None else opener
+    deadline = _Deadline.start(clock)
+    base: GitHubOpener = urllib.request.build_opener(_NoRedirect).open if opener is None else opener
+
+    def read(request: urllib.request.Request, timeout: float) -> Any:
+        left = deadline.left()
+        if left <= 0:
+            raise deadline.expired(f"before GET {request.full_url.removeprefix(GITHUB_API)}")
+        return base(request, timeout=min(timeout, left))
+
     path = f"/repos/{repository}/actions/runs/{run_id}"
     current = github_retry(
-        lambda: github_json(path, token, read), "the current run", sleep=sleep, log=log
+        lambda: github_json(path, token, read),
+        "the current run",
+        sleep=sleep,
+        log=log,
+        deadline=deadline,
     )
+    current_id = _run_fields(current, "the current run")[0]
+    if current_id != int(run_id):
+        raise ValueError(
+            f"GitHub API {path}: the current run's id is {current_id}, not GITHUB_RUN_ID "
+            f"{run_id}: this is not the run that asked"
+        )
 
     def launches() -> tuple[list[object], tuple[int, ...]]:
         runs = workflow_runs(repository, token, read)
         return runs, other_dispatches(runs, current, sha, mode=mode)
 
-    runs, found = github_retry(launches, "this workflow's runs", sleep=sleep, log=log)
-    if current["id"] != int(run_id):  # other_dispatches has checked its shape
-        raise ValueError(
-            f"GitHub API {path}: the current run is {current['id']}, not GITHUB_RUN_ID {run_id}"
-        )
+    runs, found = github_retry(
+        launches, "this workflow's runs", sleep=sleep, log=log, deadline=deadline
+    )
     # other_dispatches has checked every listed run: an object with a unique positive id.
     records = {run["id"]: run for run in runs if isinstance(run, dict)}
-    return tuple(
-        _judge(records[run], repository, token, read, sleep=sleep, log=log) for run in found
-    )
+    judged = []
+    for found_id in found:
+        launch = _judge(
+            records[found_id], repository, token, read, sleep=sleep, log=log, deadline=deadline
+        )
+        judged.append(launch)
+        if launch.counts and not report_only:
+            break  # a registered check refuses on it: no later launch changes that
+    return tuple(judged)
 
 
 def dispatch_reasons(
@@ -1746,15 +1856,17 @@ def dispatch_reasons(
     opener: GitHubOpener | None,
     *,
     sleep: Callable[[float], None],
+    clock: Callable[[], float] = time.monotonic,
     log: Log = log,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """What a registered aggregate hands ``aggregate`` (Ruling R4-2): first each earlier
-    launch of the registration that counts, with why, or why none could be ruled out,
+    """What a registered aggregate hands ``aggregate`` (Ruling R4-2): first the earlier
+    launch of the registration that counts, with why (the first such already decides), or
+    why none could be ruled out (a failure of the check, its deadline passing among them),
     either of which leaves the verdict incomplete (fail closed); then each earlier launch
-    that stopped at the plan job with nothing run (L2), which the verdict names and which
-    changes nothing."""
+    before it that stopped at the plan job with nothing run (L2), which the verdict names
+    and which changes nothing."""
     try:
-        launches = dispatch_check(registration_sha256, opener, sleep=sleep, log=log)
+        launches = dispatch_check(registration_sha256, opener, sleep=sleep, clock=clock, log=log)
     except ValueError as exc:
         return (f"another dispatch of this registration could not be ruled out: {exc}",), ()
     counted = tuple(
@@ -2080,15 +2192,18 @@ def dispatch_check_command(
     opener: GitHubOpener | None = None,
     *,
     sleep: Callable[[float], None],
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
-    """``dispatch-check`` (the module docstring). A registered check refuses an earlier
-    launch of the registration that counts, naming each and why, and fails closed
-    (``dispatch_check``). A report-only check (a rehearsal's) prints what a registered one
-    would decide and refuses only when GitHub cannot be read: the current run, the runs
-    listing, or the jobs of an earlier launch. Either names the earlier launches that do
-    not count."""
+    """``dispatch-check`` (the module docstring). A registered check refuses the first
+    earlier launch of the registration that counts, naming it and why, and fails closed
+    (``dispatch_check``), its deadline passing included. A report-only check (a
+    rehearsal's) prints what a registered one would decide about every earlier launch and
+    refuses only when GitHub cannot be read: the current run, the runs listing, the jobs of
+    an earlier launch, or the deadline passing. A launch whose jobs GitHub answers 404 for
+    (deleted since the listing) is listed as gone, and is no failure to read. Either names
+    the earlier launches that do not count."""
     launches = dispatch_check(
-        args.registration_sha256, opener, sleep=sleep, report_only=args.report_only
+        args.registration_sha256, opener, sleep=sleep, clock=clock, report_only=args.report_only
     )
     counted = [f"run {launch.run_id}: {launch.reason}" for launch in launches if launch.counts]
     uncounted = [uncounted_line(launch.run_id) for launch in launches if not launch.counts]
@@ -2100,7 +2215,9 @@ def dispatch_check_command(
             + ("; ".join(uncounted) or "none")
         )
         unreadable = [
-            f"run {launch.run_id}: {launch.reason}" for launch in launches if launch.unreadable
+            f"run {launch.run_id}: {launch.reason}"
+            for launch in launches
+            if launch.unreadable and not launch.gone
         ]
         if unreadable:
             raise ValueError(
@@ -2130,13 +2247,14 @@ def aggregate_cells(
     opener: GitHubOpener | None = None,
     *,
     sleep: Callable[[float], None],
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
     _, reg, _, _ = registered_job(args)
     # A registered run checks for another dispatch of its registration (Ruling R4-2); a
     # rehearsal dispatches none. An earlier launch stopped at the plan job with nothing run
     # is named, and changes nothing (owner decision v31-d21).
     dispatches, uncounted = (
-        dispatch_reasons(reg.registration.config_pin, opener, sleep=sleep)
+        dispatch_reasons(reg.registration.config_pin, opener, sleep=sleep, clock=clock)
         if args.mode == "registered"
         else ((), ())
     )
@@ -2841,13 +2959,14 @@ def main(
     sleep: Callable[[float], None] = time.sleep,
     v3_pack_builder: V3PackBuilder = build_v3_pack,
     github_opener: GitHubOpener | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     """Run one subcommand; 0 with its document on stdout, 1 on a refusal (on stderr).
 
     The keyword arguments replace prepare's transports, the retry sleep (prepare's and the
-    dispatch check's), the V3 pack builder and the dispatch check's opener (tests); by
-    default the real guarded transports, ``time.sleep`` and urllib's opener
-    (``dispatch_check``)."""
+    dispatch check's), the V3 pack builder, the dispatch check's opener and the clock of
+    its deadline (tests); by default the real guarded transports, ``time.sleep``, urllib's
+    opener (``dispatch_check``) and ``time.monotonic``."""
     args = build_parser().parse_args(argv)
     try:
         if args.command in ("prepare", "timing"):
@@ -2873,13 +2992,13 @@ def main(
         elif args.command == "plan":
             document = plan(args)
         elif args.command == "dispatch-check":
-            document = dispatch_check_command(args, github_opener, sleep=sleep)
+            document = dispatch_check_command(args, github_opener, sleep=sleep, clock=clock)
         elif args.command == "picks":
             document = picks(args)
         elif args.command == "run-cell":
             document = run_cell(args)
         elif args.command == "aggregate":
-            document = aggregate_cells(args, github_opener, sleep=sleep)
+            document = aggregate_cells(args, github_opener, sleep=sleep, clock=clock)
         elif args.command == "rehearsal-world":
             document = rehearsal_world(args)
         elif args.command == "timing-close":
