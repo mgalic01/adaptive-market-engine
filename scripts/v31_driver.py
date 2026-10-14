@@ -54,9 +54,11 @@ Owner decision v31-d21 adds three layers. L1: a transient read failure (no reply
 timeout, a connection error, a reply cut short, HTTP 5xx or 429, a rate-limited 403, the
 current run not yet listed) is retried, five attempts in all over about five minutes
 (``github_retry``); anything else fails at once, as before. The whole check has one
-deadline (``DISPATCH_DEADLINE``, 20 minutes), inside the plan job's 30: when it passes the
-check stops and fails, so the plan job fails, which does not count, instead of being
-cancelled at its timeout, which would. L2: an earlier launch does not count when
+deadline: 20 minutes from its start (``DISPATCH_DEADLINE``), and in the plan job no later
+than 25 minutes after the job started (``PLAN_JOB_BUDGET``, from ``V31_JOB_STARTED``, which
+the job's first step records), five inside its 30: when it passes the check stops and
+fails, so the plan job fails, which does not count, instead of being cancelled at its
+timeout, which would. L2: an earlier launch does not count when
 GitHub's records show it stopped at the plan job with nothing run: completed, its plan job
 failed and every later job skipped in every attempt (``launch_reason``); the plan's output
 and the verdict still name it. L3: a rehearsal's plan job runs ``dispatch-check
@@ -305,6 +307,12 @@ MAX_GITHUB_WAIT = 120  # seconds
 # job's 30 minutes, so a long outage fails the plan job (not counted, L2) instead of
 # running into its timeout, which GitHub cancels (a cancelled plan counts).
 DISPATCH_DEADLINE = 20 * 60  # seconds
+# And no later than its job's budget, counted from the job's start (V31_JOB_STARTED, which
+# each checking job's first step records): five minutes inside the job's timeout-minutes
+# (plan 30, aggregate 360), however long the checkout, setup and installs before it took.
+JOB_STARTED = "V31_JOB_STARTED"
+PLAN_JOB_BUDGET = 25 * 60  # seconds
+AGGREGATE_JOB_BUDGET = 355 * 60  # seconds
 # The workflow's jobs, as GitHub's jobs listing names them (L2): the plan job, the status
 # job that always runs, and every other job, which a launch stopped at the plan job skips.
 # A matrix job is named "<job> (<matrix values>)", or "<job>" when skipped before its
@@ -1314,22 +1322,40 @@ class DeadlineExpired(ValueError):
 @dataclass(frozen=True, slots=True)
 class _Deadline:
     """The dispatch check's one deadline: ``end`` on ``clock`` (``time.monotonic``, or a
-    test's)."""
+    test's), ``seconds`` after the check began; ``why`` says what set it, when its job's
+    budget did."""
 
     clock: Callable[[], float]
     end: float
+    seconds: float
+    why: str
 
     @classmethod
-    def start(cls, clock: Callable[[], float]) -> "_Deadline":
-        return cls(clock, clock() + DISPATCH_DEADLINE)
+    def start(
+        cls, clock: Callable[[], float], job_elapsed: float | None, job_budget: int
+    ) -> "_Deadline":
+        """``DISPATCH_DEADLINE`` from now, or less: what is left of ``job_budget`` when the
+        job started ``job_elapsed`` seconds ago (None: no job start known, a local run).
+        The elapsed time is taken once, here, from the wall clock, and the deadline then
+        runs on the monotonic ``clock``."""
+        now = clock()
+        seconds, why = float(DISPATCH_DEADLINE), ""
+        if job_elapsed is not None and job_budget - job_elapsed < seconds:
+            seconds = job_budget - job_elapsed
+            why = (
+                f" (what was left of its job's {job_budget} s budget: the job started "
+                f"{job_elapsed:.0f} s before the check)"
+            )
+        return cls(clock, now + seconds, seconds, why)
 
     def left(self) -> float:
         return self.end - self.clock()
 
     def expired(self, when: str) -> DeadlineExpired:
         return DeadlineExpired(
-            f"the dispatch check stopped at its deadline of {DISPATCH_DEADLINE} s {when} "
-            "(fail closed: the plan job fails rather than run into its own timeout)"
+            f"the dispatch check stopped at its deadline of {max(self.seconds, 0):.0f} s"
+            f"{self.why} {when} (fail closed: the job fails rather than run into its own "
+            "timeout)"
         )
 
 
@@ -1453,11 +1479,12 @@ def _job_kind(name: str) -> str | None:
     return None
 
 
-def launch_reason(run: object, jobs: object) -> str | None:
+def launch_decision(run: object, jobs: object) -> tuple[str | None, bool]:
     """Why an earlier launch of the same title counts as an execution of the registration
     (owner decision v31-d21, layer L2), or None when GitHub's records show it provably did
-    nothing. In the owner's words: "a launch that fetched no data and produced no result is
-    not an execution under 'execute once, keep every outcome'".
+    nothing; and whether it counts because those records are malformed. In the owner's
+    words: "a launch that fetched no data and produced no result is not an execution under
+    'execute once, keep every outcome'".
 
     A pure decision on ``run`` (the run as the workflow-runs listing gives it) and ``jobs``
     (every job record of every attempt, as ``run_jobs`` lists them). The launch does not
@@ -1466,63 +1493,81 @@ def launch_reason(run: object, jobs: object) -> str | None:
     - the run's ``status`` is ``completed`` and its ``run_attempt`` a positive integer;
     - every job record is an object with a positive integer ``id`` (no id twice), the
       run's ``run_id``, a ``run_attempt`` from 1 to the run's, a string ``name`` and
-      ``status`` and a string or null ``conclusion``, and every attempt lists a job;
-    - a job named ``plan`` is listed, and every one (one per attempt that has one) ended
-      ``failure``;
+      ``status`` and a string or null ``conclusion``;
+    - every attempt from 1 to the run's ``run_attempt`` lists a job named ``plan``, and
+      every ``plan`` job listed ended ``failure``;
     - every other job, except the always-running ``status`` job, ended ``skipped``:
       ``smoke``, ``prepare``, ``picks``, the ``run-main``, ``run-v3`` and ``timing``
       matrix jobs (``<job>`` or ``<job> (<matrix values>)``) and ``aggregate``.
 
-    Anything else counts: a run queued or still running, a plan that succeeded, was
-    cancelled or is missing, any later job that ran or failed, a job of an unknown name, a
-    malformed run or job record, or no listing at all."""
+    Anything else counts: a run queued or still running, an attempt whose plan succeeded,
+    was cancelled or is not listed, any later job that ran or failed, a job of an unknown
+    name, a malformed run or job record, or no listing at all.
+
+    The second value, ``malformed``, is True when the launch counts because the records
+    lack the shape the rule reads: a run or job record that is not an object, a field
+    missing or of another type, a job of another run or of an attempt the run does not
+    have, a job id listed twice, the jobs not a list, or an attempt with no job record at
+    all. A report-only check fails on it (layer L3: the API's shape is what a rehearsal
+    proves); a registered check counts the launch, as on any reason. A run queued or
+    running, an unknown job name and an unexpected conclusion are decisions, not
+    malformed records."""
     if not isinstance(run, dict):
-        return "its run record is not a JSON object"
+        return "its run record is not a JSON object", True
     run_id, status, attempts = run.get("id"), run.get("status"), run.get("run_attempt")
     if status != "completed":
-        return f"its status is {status!r}, not completed: queued or running, it may still run"
+        reason = f"its status is {status!r}, not completed: queued or running, it may still run"
+        return reason, type(status) is not str
     if type(attempts) is not int or attempts < 1:
-        return f"its run_attempt is {attempts!r}, not a positive integer"
+        return f"its run_attempt is {attempts!r}, not a positive integer", True
     if not isinstance(jobs, list | tuple):
-        return "its jobs are not a list"
+        return "its jobs are not a list", True
     ids: set[int] = set()
     listed: set[int] = set()
-    plans = 0
+    planned: set[int] = set()  # the attempts that list a plan job (each one failed)
     for index, job in enumerate(jobs, start=1):
         if not isinstance(job, dict):
-            return f"its job record {index} is not a JSON object"
+            return f"its job record {index} is not a JSON object", True
         job_id, name, conclusion = job.get("id"), job.get("name"), job.get("conclusion")
         if type(job_id) is not int or job_id <= 0:
-            return f"its job record {index} has id {job_id!r}, not a positive integer"
+            return f"its job record {index} has id {job_id!r}, not a positive integer", True
         if job_id in ids:
-            return f"its job {job_id} is listed twice"
+            return f"its job {job_id} is listed twice", True
         ids.add(job_id)
         if type(job.get("run_id")) is not int or job["run_id"] != run_id:
-            return f"its job {job_id} has run_id {job.get('run_id')!r}, not {run_id}"
+            return f"its job {job_id} has run_id {job.get('run_id')!r}, not {run_id}", True
         attempt = job.get("run_attempt")
         if type(attempt) is not int or not 1 <= attempt <= attempts:
-            return f"its job {job_id} has run_attempt {attempt!r}, not 1 to {attempts}"
+            return f"its job {job_id} has run_attempt {attempt!r}, not 1 to {attempts}", True
         if type(name) is not str or type(job.get("status")) is not str:
-            return f"its job {job_id} has no string name and status"
+            return f"its job {job_id} has no string name and status", True
         if conclusion is not None and type(conclusion) is not str:
-            return f"its job {job_id} has conclusion {conclusion!r}, not a string or null"
+            return f"its job {job_id} has conclusion {conclusion!r}, not a string or null", True
         listed.add(attempt)
         kind = _job_kind(name)
         where = f"{name!r} (job {job_id}, attempt {attempt})"
         if kind is None:
-            return f"its job {where} is not a job of this workflow"
+            return f"its job {where} is not a job of this workflow", False
         if kind == PLAN_JOB:
             if conclusion != "failure":
-                return f"its plan job {where} ended {conclusion!r}, not failure"
-            plans += 1
+                return f"its plan job {where} ended {conclusion!r}, not failure", False
+            planned.add(attempt)
         elif kind != STATUS_JOB and conclusion != "skipped":
-            return f"its job {where} ended {conclusion!r}, not skipped: it ran"
-    unlisted = sorted(set(range(1, attempts + 1)) - listed)
+            return f"its job {where} ended {conclusion!r}, not skipped: it ran", False
+    every = range(1, attempts + 1)
+    unlisted = [attempt for attempt in every if attempt not in listed]
     if unlisted:
-        return f"no job is listed for its attempt(s) {', '.join(map(str, unlisted))}"
-    if plans == 0:
-        return "no plan job is listed"
-    return None
+        return f"no job is listed for its attempt(s) {', '.join(map(str, unlisted))}", True
+    unplanned = [attempt for attempt in every if attempt not in planned]
+    if unplanned:
+        return f"no plan job is listed for its attempt(s) {', '.join(map(str, unplanned))}", False
+    return None, False
+
+
+def launch_reason(run: object, jobs: object) -> str | None:
+    """``launch_decision``'s reason alone: why the launch counts, or None when it does
+    not."""
+    return launch_decision(run, jobs)[0]
 
 
 def uncounted_line(run_id: int) -> str:
@@ -1734,10 +1779,15 @@ def _judge(
     """The decision on one earlier launch (L2): one queued or running counts without its
     jobs; a completed one is judged on its jobs (``run_jobs``, retried as L1 says), and
     counts, ``unreadable``, when they cannot be read (``gone`` too when GitHub answered
-    404). The deadline passing is no decision on the launch: it stops the whole check."""
+    404), or, ``unreadable`` too, when a record lacks the shape the rule reads
+    (``launch_decision``). The deadline passing is no decision on the launch: it stops the
+    whole check."""
+    # ``run`` is the listed run as other_dispatches validated it: an object with a positive
+    # integer id, a string title and a created_at of GitHub's form (its status is read here).
     run_id: int = run["id"]
     if run.get("status") != "completed":
-        return EarlierLaunch(run_id, launch_reason(run, ()))
+        reason, malformed = launch_decision(run, ())
+        return EarlierLaunch(run_id, reason, unreadable=malformed)
     try:
         jobs = github_retry(
             lambda: run_jobs(repository, token, opener, run_id),
@@ -1753,7 +1803,8 @@ def _judge(
         return EarlierLaunch(run_id, reason, unreadable=True, gone=True)
     except ValueError as exc:
         return EarlierLaunch(run_id, f"its jobs could not be read: {exc}", unreadable=True)
-    return EarlierLaunch(run_id, launch_reason(run, jobs))
+    reason, malformed = launch_decision(run, jobs)
+    return EarlierLaunch(run_id, reason, unreadable=malformed)
 
 
 def dispatch_check(
@@ -1762,6 +1813,8 @@ def dispatch_check(
     *,
     sleep: Callable[[float], None],
     clock: Callable[[], float] = time.monotonic,
+    wall: Callable[[], float] = time.time,
+    job_budget: int = PLAN_JOB_BUDGET,
     log: Log = log,
     report_only: bool = False,
     judge_all: bool = False,
@@ -1785,12 +1838,17 @@ def dispatch_check(
     Each read is retried on a transient failure (``github_retry``, L1): the current run,
     whose id must be ``GITHUB_RUN_ID`` before anything else is read; the whole runs
     listing, which must hold the current run; one run's whole jobs listing. The whole
-    check, every read and wait, has one deadline, ``DISPATCH_DEADLINE`` on ``clock`` from
-    its start: no request starts after it (none is given a timeout past it), and no wait
-    is taken that would end at or after it. A missing or malformed variable (before any
-    request), a permanent failure, a transient one that outlasts the retries and the
-    deadline passing (``DeadlineExpired``) are one ``ValueError``: the caller fails
-    closed. A launch whose jobs cannot be read counts (``unreadable``)."""
+    check, every read and wait, has one deadline on ``clock``: ``DISPATCH_DEADLINE`` from
+    its start, or earlier, ``job_budget`` from its job's start when ``V31_JOB_STARTED``
+    gives it (the epoch second the job's first step recorded; ``PLAN_JOB_BUDGET`` for the
+    plan job, ``AGGREGATE_JOB_BUDGET`` for the aggregate's). The time the job has already
+    run is taken once, at the start, from the wall clock ``wall``. No request starts after
+    the deadline (none is given a timeout past it), and no wait is taken that would end at
+    or after it. A missing or malformed variable (``V31_JOB_STARTED``, when set, must be a
+    positive integer epoch not in the future; all before any request), a permanent
+    failure, a transient one that outlasts the retries and the deadline passing
+    (``DeadlineExpired``) are one ``ValueError``: the caller fails closed. A launch whose
+    jobs cannot be read, or whose records are malformed, counts (``unreadable``)."""
     mode = "rehearsal" if report_only else "registered"
     if report_only and registration_sha256 == "":
         sha = ""
@@ -1807,9 +1865,21 @@ def dispatch_check(
         errors.append(f"GITHUB_REPOSITORY {repository!r}: <owner>/<repository> required")
     if _RUN_ID.fullmatch(run_id) is None:
         errors.append(f"GITHUB_RUN_ID {run_id!r}: a positive integer required")
+    started = os.environ.get(JOB_STARTED)
+    now = wall()
+    if started is not None and (
+        re.fullmatch(r"[1-9][0-9]{0,11}", started) is None or int(started) > now
+    ):
+        errors.append(
+            f"{JOB_STARTED} {started!r}: the job's start, a positive integer epoch second "
+            "not in the future, required (the job's first step records it)"
+        )
     if errors:
         raise ValueError("the dispatch check cannot run: " + "; ".join(errors))
-    deadline = _Deadline.start(clock)
+    elapsed = None if started is None else now - int(started)
+    deadline = _Deadline.start(clock, elapsed, job_budget)
+    if deadline.left() <= 0:
+        raise deadline.expired("before its first request")
     base: GitHubOpener = urllib.request.build_opener(_NoRedirect).open if opener is None else opener
 
     def read(request: urllib.request.Request, timeout: float) -> Any:
@@ -1859,6 +1929,7 @@ def dispatch_reasons(
     *,
     sleep: Callable[[float], None],
     clock: Callable[[], float] = time.monotonic,
+    wall: Callable[[], float] = time.time,
     log: Log = log,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """What a registered aggregate hands ``aggregate`` (Ruling R4-2): first every earlier
@@ -1869,7 +1940,14 @@ def dispatch_reasons(
     the plan's check it judges every launch (``judge_all``): the verdict names them all."""
     try:
         launches = dispatch_check(
-            registration_sha256, opener, sleep=sleep, clock=clock, log=log, judge_all=True
+            registration_sha256,
+            opener,
+            sleep=sleep,
+            clock=clock,
+            wall=wall,
+            job_budget=AGGREGATE_JOB_BUDGET,
+            log=log,
+            judge_all=True,
         )
     except ValueError as exc:
         return (f"another dispatch of this registration could not be ruled out: {exc}",), ()
@@ -2197,17 +2275,25 @@ def dispatch_check_command(
     *,
     sleep: Callable[[float], None],
     clock: Callable[[], float] = time.monotonic,
+    wall: Callable[[], float] = time.time,
 ) -> dict[str, object]:
     """``dispatch-check`` (the module docstring). A registered check refuses the first
     earlier launch of the registration that counts, naming it and why, and fails closed
     (``dispatch_check``), its deadline passing included. A report-only check (a
     rehearsal's) prints what a registered one would decide about every earlier launch and
     refuses only when GitHub cannot be read: the current run, the runs listing, the jobs of
-    an earlier launch, or the deadline passing. A launch whose jobs GitHub answers 404 for
-    (deleted since the listing) is listed as gone, and is no failure to read. Either names
-    the earlier launches that do not count."""
+    an earlier launch, a record of a shape it does not know, or the deadline passing. A
+    launch whose jobs GitHub answers 404 for (deleted since the listing) is listed as gone,
+    and is no failure to read. Either names the earlier launches that do not count. Run in
+    the plan job, so its deadline is the plan job's budget (``PLAN_JOB_BUDGET``)."""
     launches = dispatch_check(
-        args.registration_sha256, opener, sleep=sleep, clock=clock, report_only=args.report_only
+        args.registration_sha256,
+        opener,
+        sleep=sleep,
+        clock=clock,
+        wall=wall,
+        job_budget=PLAN_JOB_BUDGET,
+        report_only=args.report_only,
     )
     counted = [f"run {launch.run_id}: {launch.reason}" for launch in launches if launch.counts]
     uncounted = [uncounted_line(launch.run_id) for launch in launches if not launch.counts]
@@ -2252,13 +2338,14 @@ def aggregate_cells(
     *,
     sleep: Callable[[float], None],
     clock: Callable[[], float] = time.monotonic,
+    wall: Callable[[], float] = time.time,
 ) -> dict[str, object]:
     _, reg, _, _ = registered_job(args)
     # A registered run checks for another dispatch of its registration (Ruling R4-2); a
     # rehearsal dispatches none. An earlier launch stopped at the plan job with nothing run
     # is named, and changes nothing (owner decision v31-d21).
     dispatches, uncounted = (
-        dispatch_reasons(reg.registration.config_pin, opener, sleep=sleep, clock=clock)
+        dispatch_reasons(reg.registration.config_pin, opener, sleep=sleep, clock=clock, wall=wall)
         if args.mode == "registered"
         else ((), ())
     )
@@ -2964,13 +3051,14 @@ def main(
     v3_pack_builder: V3PackBuilder = build_v3_pack,
     github_opener: GitHubOpener | None = None,
     clock: Callable[[], float] = time.monotonic,
+    wall: Callable[[], float] = time.time,
 ) -> int:
     """Run one subcommand; 0 with its document on stdout, 1 on a refusal (on stderr).
 
     The keyword arguments replace prepare's transports, the retry sleep (prepare's and the
-    dispatch check's), the V3 pack builder, the dispatch check's opener and the clock of
+    dispatch check's), the V3 pack builder, the dispatch check's opener and the clocks of
     its deadline (tests); by default the real guarded transports, ``time.sleep``, urllib's
-    opener (``dispatch_check``) and ``time.monotonic``."""
+    opener (``dispatch_check``), ``time.monotonic`` and ``time.time``."""
     args = build_parser().parse_args(argv)
     try:
         if args.command in ("prepare", "timing"):
@@ -2996,13 +3084,15 @@ def main(
         elif args.command == "plan":
             document = plan(args)
         elif args.command == "dispatch-check":
-            document = dispatch_check_command(args, github_opener, sleep=sleep, clock=clock)
+            document = dispatch_check_command(
+                args, github_opener, sleep=sleep, clock=clock, wall=wall
+            )
         elif args.command == "picks":
             document = picks(args)
         elif args.command == "run-cell":
             document = run_cell(args)
         elif args.command == "aggregate":
-            document = aggregate_cells(args, github_opener, sleep=sleep, clock=clock)
+            document = aggregate_cells(args, github_opener, sleep=sleep, clock=clock, wall=wall)
         elif args.command == "rehearsal-world":
             document = rehearsal_world(args)
         elif args.command == "timing-close":

@@ -142,10 +142,12 @@ def module_network_blocked():
 def network_blocked(monkeypatch):
     """No test in this file may resolve a name or open a socket. Nor does it hold the
     runner's variables for GitHub's API: without them the dispatch check (a registered
-    aggregate's) refuses before any request; a test of the check sets its own."""
+    aggregate's) refuses before any request; a test of the check sets its own. Nor the
+    job's start (V31_JOB_STARTED): a check's deadline is then DISPATCH_DEADLINE alone."""
     block_network(monkeypatch)
     for name in GITHUB_VARIABLES:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("V31_JOB_STARTED", raising=False)
 
 
 @pytest.fixture(scope="module")
@@ -1740,8 +1742,12 @@ def stopped_but(name, conclusion):
     ],
 )
 def test_a_launch_whose_plan_job_did_not_fail_counts(jobs, message):
-    reason = v31_driver.launch_reason(DONE, jobs)
+    reason, malformed = v31_driver.launch_decision(DONE, jobs)
     assert reason is not None and message in reason
+    assert v31_driver.launch_reason(DONE, jobs) == reason
+    # A decision on well-formed records; only an attempt with no job record at all lacks
+    # the shape the rule reads.
+    assert malformed is (jobs == [])
 
 
 LATER_JOBS = ("smoke", "prepare", "picks", "aggregate", "timing", "run-main", "run-v3")
@@ -1758,9 +1764,10 @@ LATER_JOBS = ("smoke", "prepare", "picks", "aggregate", "timing", "run-main", "r
     ],
 )
 def test_a_launch_any_later_job_of_which_was_not_skipped_counts(name, ended):
-    reason = v31_driver.launch_reason(DONE, stopped_but(name, ended))
+    reason, malformed = v31_driver.launch_decision(DONE, stopped_but(name, ended))
     assert reason is not None and f"its job {name!r}" in reason
     assert f"ended {ended!r}, not skipped: it ran" in reason
+    assert malformed is False  # an unexpected conclusion is a decision
 
 
 @pytest.mark.parametrize(
@@ -1779,8 +1786,10 @@ def test_a_launch_any_later_job_of_which_was_not_skipped_counts(name, ended):
     ],
 )
 def test_a_launch_with_a_job_of_an_unknown_name_counts(name):
-    reason = v31_driver.launch_reason(DONE, [*jobs_of(STOPPED), job(50, name, "skipped")])
+    jobs = [*jobs_of(STOPPED), job(50, name, "skipped")]
+    reason, malformed = v31_driver.launch_decision(DONE, jobs)
     assert reason is not None and "is not a job of this workflow" in reason
+    assert malformed is False  # an unknown name is a decision
 
 
 @pytest.mark.parametrize(
@@ -1789,8 +1798,9 @@ def test_a_launch_with_a_job_of_an_unknown_name_counts(name):
 )
 def test_a_launch_queued_or_running_counts_whatever_its_jobs(status, conclusion):
     run_ = workflow_run(400, status=status, conclusion=conclusion)
-    reason = v31_driver.launch_reason(run_, jobs_of(STOPPED))
+    reason, malformed = v31_driver.launch_decision(run_, jobs_of(STOPPED))
     assert reason is not None and f"its status is {status!r}, not completed" in reason
+    assert malformed is (status is None)  # a missing status is a missing field
 
 
 def test_a_second_attempt_that_ran_prepare_counts():
@@ -1852,8 +1862,11 @@ def with_field(key, value, index=1):
     ],
 )
 def test_a_launch_with_a_malformed_run_or_job_record_counts(run_, jobs, message):
-    reason = v31_driver.launch_reason(run_, jobs)
+    reason, malformed = v31_driver.launch_decision(run_, jobs)
     assert reason is not None and message in reason
+    # Every case lacks the shape the rule reads, but a missing conclusion, which reads as
+    # null: that plan job just did not fail.
+    assert malformed is (message != "ended None, not failure")
 
 
 def test_the_check_judges_each_earlier_launch_on_its_jobs(github_env):
@@ -2445,6 +2458,184 @@ def test_the_current_runs_id_is_checked_before_anything_else_is_read(github_env)
 
 def test_the_deadline_is_twenty_minutes():
     assert v31_driver.DISPATCH_DEADLINE == 20 * 60
+
+
+# --- Codex's findings on PR #281: per-attempt plans, the job's budget, malformed records --
+
+
+def test_every_attempt_must_list_a_failed_plan_job():
+    """Codex P1: a second attempt that lists no plan job (here only the status job, re-run)
+    cannot be shown to have stopped at its plan job: the launch counts. Two attempts that
+    each failed at the plan, every other job skipped, do not count."""
+    twice = workflow_run(400, attempts=2, conclusion="failure")
+    first = [job(1, "plan", "failure"), job(2, "status", "success")]
+    second = [job(103, "status", "success", attempt=2)]
+    reason, malformed = v31_driver.launch_decision(twice, first + second)
+    assert (reason, malformed) == ("no plan job is listed for its attempt(s) 2", False)
+    # The same with every skipped job listed in attempt 1.
+    reason = v31_driver.launch_reason(twice, jobs_of(STOPPED) + second)
+    assert reason == "no plan job is listed for its attempt(s) 2"
+    # Each attempt failed at its plan job: not counted.
+    both = first + [job(3, "plan", "failure", attempt=2), job(4, "status", "failure", attempt=2)]
+    assert v31_driver.launch_decision(twice, both) == (None, False)
+    full = jobs_of(STOPPED) + jobs_of(STOPPED, attempt=2, first=100)
+    assert v31_driver.launch_decision(twice, full) == (None, False)
+    # Three attempts, the middle one without a plan job.
+    thrice = workflow_run(400, attempts=3, conclusion="failure")
+    jobs = first + second + [job(5, "plan", "failure", attempt=3)]
+    assert v31_driver.launch_reason(thrice, jobs) == "no plan job is listed for its attempt(s) 2"
+
+
+def test_a_report_only_check_fails_on_a_malformed_job_record(github_env, capsys):
+    """Codex P2: a record of a shape the rule does not know is an API-shape problem, which
+    the rehearsal must surface (exit 1); a registered check counts the launch, as before.
+    An unknown job name or an unexpected conclusion is a decision, not a failure to read."""
+    current = rehearsal_run(500, created=NOW, status="in_progress")
+    malformed = jobs_of(STOPPED, run=400)
+    del malformed[1]["run_attempt"]
+    api = FakeGitHub([current, rehearsal_run(400)], current, jobs={400: malformed})
+    argv = ["dispatch-check", "--report-only", "--registration-sha256", ""]
+    code, _, err = run(argv, capsys, github_opener=api, sleep=no_sleep)
+    assert code == 1
+    assert (
+        "could not read GitHub's records: run 400: its job 2 has run_attempt None, not 1 to 1"
+    ) in err
+    # An unknown job name: counted, and no failure.
+    named = [*jobs_of(STOPPED, run=400), job(50, "deploy", "success")]
+    api = FakeGitHub([current, rehearsal_run(400)], current, jobs={400: named})
+    code, document, err = run(argv, capsys, github_opener=api, sleep=no_sleep)
+    assert code == 0, err
+    assert document["other_dispatches"] == [
+        "run 400: its job 'deploy' (job 50, attempt 1) is not a job of this workflow"
+    ]
+    # A registered check counts the malformed launch (unreadable) and refuses.
+    api = FakeGitHub([CURRENT, workflow_run(400)], jobs={400: malformed})
+    (launch,) = v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
+    assert (launch.counts, launch.unreadable, launch.gone) == (True, True, False)
+    code, _, err = run(
+        ["dispatch-check", "--registration-sha256", SHA], capsys, github_opener=api, sleep=no_sleep
+    )
+    assert code == 1 and "run 400: its job 2 has run_attempt None" in err
+
+
+class FakeWall:
+    """An injected wall clock: the epoch second it reads."""
+
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+EPOCH = 1_792_000_000.0  # a wall-clock second for the tests (2026-10)
+
+
+def test_a_job_that_started_twelve_minutes_ago_gets_only_thirteen(github_env, monkeypatch, capsys):
+    """Codex P1: the plan job's budget (25 of its 30 minutes) counts from the job's start,
+    which its first step records, so slow installs before the check shorten the check's
+    deadline: started 12 minutes before, it gets 13 (780 s), not 20."""
+    monkeypatch.setenv("V31_JOB_STARTED", str(int(EPOCH) - 12 * 60))
+    stopped = [workflow_run(300 + i, conclusion="failure") for i in range(4)]
+    jobs = {300 + i: jobs_of(STOPPED, run=300 + i) for i in range(4)}
+    api = FakeGitHub([CURRENT, *stopped], jobs=jobs)
+    time_ = FakeTime()
+    argv = ["dispatch-check", "--registration-sha256", SHA]
+    code, _, err = run(
+        argv,
+        capsys,
+        github_opener=time_.slowed(api, 300),
+        sleep=no_sleep,
+        clock=time_.clock,
+        wall=FakeWall(EPOCH),
+    )
+    assert code == 1
+    assert (
+        "stopped at its deadline of 780 s (what was left of its job's 1500 s budget: the job "
+        "started 720 s before the check) before GET /repos/owner/repo/actions/runs/301/jobs"
+    ) in err
+    # Requests at 0, 300 and 600 s; none at 900 s, 120 s past the deadline.
+    assert [timeout for *_, timeout in api.requests] == [30, 30, 30]
+    assert v31_driver.PLAN_JOB_BUDGET == 25 * 60
+    # Started 2 minutes before: 23 minutes left, so the check's own 20 minutes stand.
+    monkeypatch.setenv("V31_JOB_STARTED", str(int(EPOCH) - 2 * 60))
+    api = FakeGitHub([CURRENT, *stopped], jobs=jobs)
+    time_ = FakeTime()
+    code, _, err = run(
+        argv,
+        capsys,
+        github_opener=time_.slowed(api, 300),
+        sleep=no_sleep,
+        clock=time_.clock,
+        wall=FakeWall(EPOCH),
+    )
+    assert code == 1 and "stopped at its deadline of 1200 s before GET" in err
+    assert "budget" not in err
+    # Started 26 minutes before: nothing is left, and no request is made.
+    monkeypatch.setenv("V31_JOB_STARTED", str(int(EPOCH) - 26 * 60))
+    api = FakeGitHub([CURRENT, *stopped], jobs=jobs)
+    code, _, err = run(
+        argv,
+        capsys,
+        github_opener=api,
+        sleep=no_sleep,
+        clock=FakeTime().clock,
+        wall=FakeWall(EPOCH),
+    )
+    assert code == 1 and "deadline of 0 s" in err and "before its first request" in err
+    assert api.requests == []
+
+
+@pytest.mark.parametrize(
+    "started",
+    ["", "abc", "0", "-5", "1792000000.5", " 1792000000", "01792000000", str(int(EPOCH) + 1)],
+)
+def test_a_malformed_or_future_job_start_refuses_before_any_request(
+    github_env, monkeypatch, capsys, started
+):
+    monkeypatch.setenv("V31_JOB_STARTED", started)
+    api = FakeGitHub([CURRENT])
+    argv = ["dispatch-check", "--registration-sha256", SHA]
+    code, _, err = run(
+        argv,
+        capsys,
+        github_opener=api,
+        sleep=no_sleep,
+        clock=FakeTime().clock,
+        wall=FakeWall(EPOCH),
+    )
+    assert code == 1 and f"V31_JOB_STARTED {started!r}: the job's start" in err
+    assert api.requests == []
+    # The aggregate's check refuses it too: a reason that leaves the verdict incomplete.
+    counted_, uncounted_ = v31_driver.dispatch_reasons(
+        SHA, api, sleep=no_sleep, clock=FakeTime().clock, wall=FakeWall(EPOCH)
+    )
+    ((reason,),) = (counted_,)
+    assert reason.startswith("another dispatch of this registration could not be ruled out")
+    assert "V31_JOB_STARTED" in reason and uncounted_ == () and api.requests == []
+
+
+def test_the_aggregates_check_budgets_from_its_jobs_start_too(github_env, monkeypatch):
+    """The aggregate job's budget is 355 of its 360 minutes: a job started 350 minutes
+    before the check leaves it 5 minutes; one started an hour before leaves the check's own
+    20."""
+    assert v31_driver.AGGREGATE_JOB_BUDGET == 355 * 60
+    monkeypatch.setenv("V31_JOB_STARTED", str(int(EPOCH) - 350 * 60))
+    stopped = [workflow_run(300 + i, conclusion="failure") for i in range(4)]
+    jobs = {300 + i: jobs_of(STOPPED, run=300 + i) for i in range(4)}
+    api = FakeGitHub([CURRENT, *stopped], jobs=jobs)
+    time_ = FakeTime()
+    counted_, _ = v31_driver.dispatch_reasons(
+        SHA, time_.slowed(api, 200), sleep=no_sleep, clock=time_.clock, wall=FakeWall(EPOCH)
+    )
+    ((reason,),) = (counted_,)
+    assert "stopped at its deadline of 300 s (what was left of its job's 21300 s budget" in reason
+    monkeypatch.setenv("V31_JOB_STARTED", str(int(EPOCH) - 60 * 60))
+    api = FakeGitHub([CURRENT, *stopped], jobs=jobs)
+    counted_, uncounted_ = v31_driver.dispatch_reasons(
+        SHA, api, sleep=no_sleep, clock=FakeTime().clock, wall=FakeWall(EPOCH)
+    )
+    assert counted_ == () and len(uncounted_) == 4
 
 
 # --- the owner's plan: every real mode refuses any other (Codex P1 and P2, PR #269) -------
