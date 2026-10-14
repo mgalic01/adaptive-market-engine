@@ -1590,12 +1590,14 @@ def test_the_header_says_a_second_dispatch_is_refused_and_why() -> None:
     ) in header
     assert (
         "Transient GitHub errors (no reply, a timeout, a reply cut short, HTTP 5xx or 429, a "
-        "rate limit, a run not yet listed) are retried, five attempts over about five "
-        "minutes, before the check fails closed; the whole check stops at a 20-minute "
-        "deadline, and no later than 25 minutes after its job started (the job's first step "
-        "records the start), so a long outage fails the plan job (not counted) instead of "
-        "running into its 30-minute timeout, which cancels it (counted). A rehearsal runs "
-        "the same check report-only, on its own title, to prove it against GitHub."
+        "rate limit, a secondary rate limit's 403 included, a run not yet listed) are "
+        "retried, five attempts over about five minutes, before the check fails closed; the "
+        "whole check stops at a 20-minute deadline, and no later than 25 minutes after its "
+        "job started (the job's first step records the start), so a long outage fails the "
+        "plan job (not counted) instead of running into its 30-minute timeout, which cancels "
+        "it (counted). A rehearsal runs the same check report-only, on its own title, to "
+        "prove it against GitHub, and also reads its own run's job listing, so even the "
+        "first rehearsal proves the jobs endpoint."
     ) in header
 
 

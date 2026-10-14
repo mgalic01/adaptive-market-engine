@@ -99,17 +99,19 @@ run-name: v31-run ${{ inputs.mode }} ${{ inputs.registration_sha256 }}
 # launch that stopped at the plan job with nothing run does not count: GitHub's records
 # must show it completed, its plan job failed and every later job skipped in every
 # attempt (the status job aside), and anything else counts. Transient GitHub errors (no
-# reply, a timeout, a reply cut short, HTTP 5xx or 429, a rate limit, a run not yet listed)
-# are retried, five attempts over about five minutes, before the check fails closed; the
-# whole check stops at a 20-minute deadline, and no later than 25 minutes after its job
-# started (the job's first step records the start), so a long outage fails the plan job
-# (not counted) instead of running into its 30-minute timeout, which cancels it (counted).
-# A rehearsal runs the same check report-only, on its own title, to prove it against
-# GitHub. A dispatch created a second or more later never counts against an earlier one,
-# but two dispatches created in the same second void each other, and one created while an
-# earlier run's plan or aggregate is paging through the runs can make that listing
-# inconsistent, which fails that plan or leaves that verdict incomplete (fail closed). The
-# operating rule above forbids both.
+# reply, a timeout, a reply cut short, HTTP 5xx or 429, a rate limit, a secondary rate
+# limit's 403 included, a run not yet listed) are retried, five attempts over about five
+# minutes, before the check fails closed; the whole check stops at a 20-minute deadline,
+# and no later than 25 minutes after its job started (the job's first step records the
+# start), so a long outage fails the plan job (not counted) instead of running into its
+# 30-minute timeout, which cancels it (counted). A rehearsal runs the same check
+# report-only, on its own title, to prove it against GitHub, and also reads its own run's
+# job listing, so even the first rehearsal proves the jobs endpoint. A dispatch created a
+# second or more later never counts against an earlier one, but two dispatches created in
+# the same second void each other, and one created while an earlier run's plan or
+# aggregate is paging through the runs can make that listing inconsistent, which fails
+# that plan or leaves that verdict incomplete (fail closed). The operating rule above
+# forbids both.
 #
 # No archive for 2025-01 or later may exist anywhere on a runner. The driver refuses such a
 # month before it fetches; the "Refuse any file named for 2025 or later" step is a second,
@@ -285,8 +287,9 @@ jobs:
       # unless GitHub's records show that launch stopped at this job with nothing run. The
       # first driver step; only it and the Aggregate step hold the token. A rehearsal runs
       # the same check report-only, on its own title: it prints what a registered check
-      # would decide and fails only when GitHub cannot be read, which proves the access,
-      # the permissions and the paging before a registered run.
+      # would decide and fails only when GitHub cannot be read, and it reads its own run's
+      # job listing too, which proves the access, the permissions, the paging and the jobs'
+      # schema before a registered run.
       - name: Refuse a second dispatch of the registration
         if: ${{ inputs.mode == 'registered' || inputs.mode == 'rehearsal' }}
         env:

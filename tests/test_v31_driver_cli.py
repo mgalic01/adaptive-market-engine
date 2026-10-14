@@ -1498,11 +1498,13 @@ def test_the_dispatch_check_reads_the_current_run_and_every_page_of_runs(github_
     assert [url for url, *_ in full.requests] == [API + "runs/500", API + page(1)]
 
 
-def http_error(code: int, headers=None) -> urllib.error.HTTPError:
+def http_error(code: int, headers=None, body: bytes | None = None) -> urllib.error.HTTPError:
+    """An HTTP error as urllib raises it: its headers, and its body when given."""
     message = HTTPMessage()
     for name, value in (headers or {}).items():
         message[name] = value
-    return urllib.error.HTTPError(API, code, "synthetic", message, None)
+    stream = None if body is None else io.BytesIO(body)
+    return urllib.error.HTTPError(API, code, "synthetic", message, stream)
 
 
 MANY = [CURRENT, *(workflow_run(1000 + i, title="v31-run smoke ") for i in range(149))]
@@ -1900,7 +1902,8 @@ def test_the_check_judges_each_earlier_launch_on_its_jobs(github_env):
     assert (counted(launches), uncounted(launches)) == ((301, 400), (300,))
     assert "its status is 'in_progress'" in launches[2].reason
     urls = [url for url, *_ in api.requests]
-    assert urls == [API + "runs/500", API + page(1)] + [
+    # A report-only check also reads this run's own jobs (the probe, right after it).
+    assert urls == [API + "runs/500", API + jobs_page(500), API + page(1)] + [
         API + jobs_page(300, n) for n in (1, 2, 3)
     ] + [API + jobs_page(301)]  # nothing for 400: queued or running, it counts
 
@@ -2300,7 +2303,7 @@ def test_no_request_starts_after_the_deadline_nor_waits_past_it(github_env, caps
         SHA, time_.slowed(api, 295), sleep=no_sleep, clock=time_.clock
     )
     assert uncounted_ == ()
-    ((reason,),) = (counted_,)
+    (reason,) = counted_
     assert reason.startswith(
         "another dispatch of this registration could not be ruled out: the dispatch check "
         "stopped at its deadline of 1200 s before GET /repos/owner/repo/actions/runs/303/jobs"
@@ -2610,7 +2613,7 @@ def test_a_malformed_or_future_job_start_refuses_before_any_request(
     counted_, uncounted_ = v31_driver.dispatch_reasons(
         SHA, api, sleep=no_sleep, clock=FakeTime().clock, wall=FakeWall(EPOCH)
     )
-    ((reason,),) = (counted_,)
+    (reason,) = counted_
     assert reason.startswith("another dispatch of this registration could not be ruled out")
     assert "V31_JOB_STARTED" in reason and uncounted_ == () and api.requests == []
 
@@ -2628,7 +2631,7 @@ def test_the_aggregates_check_budgets_from_its_jobs_start_too(github_env, monkey
     counted_, _ = v31_driver.dispatch_reasons(
         SHA, time_.slowed(api, 200), sleep=no_sleep, clock=time_.clock, wall=FakeWall(EPOCH)
     )
-    ((reason,),) = (counted_,)
+    (reason,) = counted_
     assert "stopped at its deadline of 300 s (what was left of its job's 21300 s budget" in reason
     monkeypatch.setenv("V31_JOB_STARTED", str(int(EPOCH) - 60 * 60))
     api = FakeGitHub([CURRENT, *stopped], jobs=jobs)
@@ -2636,6 +2639,170 @@ def test_the_aggregates_check_budgets_from_its_jobs_start_too(github_env, monkey
         SHA, api, sleep=no_sleep, clock=FakeTime().clock, wall=FakeWall(EPOCH)
     )
     assert counted_ == () and len(uncounted_) == 4
+
+
+# --- Codex's P2s at 88fcb87: the rehearsal probes the jobs endpoint; secondary limits ----
+
+REPORT_ONLY = ["dispatch-check", "--report-only", "--registration-sha256", ""]
+
+
+def in_progress_jobs(run=500, attempt=1):
+    """This run's own jobs as GitHub lists them while its plan job runs: the plan in
+    progress, every later job queued or still to come, no conclusion yet."""
+    return [
+        job(1, "plan", None, run=run, attempt=attempt, status="in_progress"),
+        job(2, "prepare", None, run=run, attempt=attempt, status="queued"),
+        job(3, "status", None, run=run, attempt=attempt, status="queued"),
+    ]
+
+
+def test_a_first_rehearsal_still_reads_and_checks_the_jobs_endpoint(github_env, capsys):
+    """No earlier launch of its title: a report-only check reads this run's own job
+    listing anyway, checks every record's shape, takes no L2 decision on it (the run is in
+    progress) and passes, saying so. A registered check makes no such request."""
+    current = rehearsal_run(500, created=NOW, status="in_progress")
+    api = FakeGitHub([current], current, jobs={500: in_progress_jobs()})
+    code, document, err = run(REPORT_ONLY, capsys, github_opener=api, sleep=no_sleep)
+    assert code == 0, err
+    assert (document["other_dispatches"], document["uncounted_dispatches"]) == ([], [])
+    assert "jobs endpoint checked on this run: 3 job records, shape valid" in err
+    assert [url for url, *_ in api.requests] == [
+        API + "runs/500",
+        API + jobs_page(500),
+        API + page(1),
+    ]
+    # Its own listing paginates like any other: 250 records, three pages.
+    many = [job(n, f"run-main (cell-{n})", None, run=500, status="queued") for n in range(1, 251)]
+    api = FakeGitHub([current], current, jobs={500: many})
+    code, _, err = run(REPORT_ONLY, capsys, github_opener=api, sleep=no_sleep)
+    assert code == 0 and "250 job records, shape valid" in err
+    assert [url for url, *_ in api.requests][1:4] == [API + jobs_page(500, n) for n in (1, 2, 3)]
+    # A registered check reads no jobs of its own run.
+    registered = FakeGitHub([CURRENT], jobs={500: in_progress_jobs()})
+    code, _, err = run(
+        ["dispatch-check", "--registration-sha256", SHA],
+        capsys,
+        github_opener=registered,
+        sleep=no_sleep,
+    )
+    assert code == 0, err
+    assert [url for url, *_ in registered.requests] == [API + "runs/500", API + page(1)]
+    assert "jobs endpoint" not in err
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda jobs: jobs[1].pop("name"), "its job 2 has no string name and status"),
+        (lambda jobs: jobs[1].update(run_id=501), "its job 2 has run_id 501, not 500"),
+        (lambda jobs: jobs[1].update(run_attempt=2), "its job 2 has run_attempt 2, not 1 to 1"),
+        # An id twice is caught first by the paging (run_jobs), which fails the same way.
+        (lambda jobs: jobs[1].update(id=1), "run 500: job 1 is listed twice: the pages disagree"),
+        (lambda jobs: jobs[1].update(conclusion=7), "its job 2 has conclusion 7"),
+        (lambda jobs: jobs.append("a job"), "its job record 4 is not a JSON object"),
+        (lambda jobs: jobs.clear(), "it lists no job record, though its own plan job is running"),
+    ],
+)
+def test_a_malformed_record_in_this_runs_own_jobs_fails_a_report_only_check(
+    github_env, capsys, change, message
+):
+    current = rehearsal_run(500, created=NOW, status="in_progress")
+    jobs = in_progress_jobs()
+    change(jobs)
+    api = FakeGitHub([current], current, jobs={500: jobs})
+    code, _, err = run(REPORT_ONLY, capsys, github_opener=api, sleep=no_sleep)
+    assert code == 1
+    prefix = "the jobs endpoint, checked on this run (500), does not have the shape the check"
+    if message.startswith("run 500: "):
+        assert message in err and prefix not in err
+    else:
+        assert f"{prefix} reads: {message}" in err
+    assert API + page(1) not in [url for url, *_ in api.requests]  # it stops there
+
+
+def test_this_runs_own_jobs_failing_to_read_fail_a_report_only_check(github_env, capsys):
+    current = rehearsal_run(500, created=NOW, status="in_progress")
+    api = FakeGitHub([current], current, answers={jobs_page(500): http_error(502)})
+    waits = []
+    code, _, err = run(REPORT_ONLY, capsys, github_opener=api, sleep=waits.append)
+    assert code == 1 and waits == [15, 30, 60, 120]
+    assert "this run's own jobs: attempt 1 of 5 failed" in err
+    assert "runs/500/jobs?filter=all&per_page=100&page=1: HTTP 502 (still failing after 5" in err
+    # A 404 on this run's own jobs is no deleted earlier launch: it fails too.
+    api = FakeGitHub([current], current, answers={jobs_page(500): http_error(404)})
+    code, _, err = run(REPORT_ONLY, capsys, github_opener=api, sleep=no_sleep)
+    assert code == 1 and "HTTP 404" in err
+
+
+def test_the_current_runs_listing_shape_pure():
+    current = rehearsal_run(500, created=NOW, status="in_progress")
+    assert v31_driver.job_listing_error(current, in_progress_jobs()) is None
+    assert v31_driver.job_listing_error(current, tuple(in_progress_jobs())) is None
+    rerun = rehearsal_run(500, created=NOW, status="in_progress", attempts=2)
+    both = jobs_of(STOPPED, run=500) + [
+        job(100 + j["id"], j["name"], None, run=500, attempt=2, status="queued")
+        for j in in_progress_jobs()
+    ]
+    assert v31_driver.job_listing_error(rerun, both) is None
+    assert v31_driver.job_listing_error("a run", []) == "its run record is not a JSON object"
+    assert "run_attempt is None" in v31_driver.job_listing_error(
+        without(current, "run_attempt"), []
+    )
+    assert v31_driver.job_listing_error(current, None) == "its jobs are not a list"
+
+
+def secondary_limit(message="You have exceeded a secondary rate limit. Please wait a few minutes"):
+    """GitHub's secondary rate limit, as its docs describe it: a 403 that may carry neither
+    Retry-After nor x-ratelimit-remaining, its JSON body's message naming the limit."""
+    body = json.dumps({"message": message, "documentation_url": "https://docs.github.com/"})
+    return http_error(403, {}, body.encode("utf-8"))
+
+
+def test_a_secondary_rate_limit_403_is_retried_after_a_minute(github_env, capsys):
+    api = FakeGitHub([CURRENT, workflow_run(400)], answers={page(1): [secondary_limit()]})
+    waits = []
+    (launch,) = v31_driver.dispatch_check(SHA, api, sleep=waits.append)
+    assert launch.run_id == 400 and waits == [60]  # at least a minute, as GitHub asks
+    assert "HTTP 403 (secondary rate limit)); retrying in 60 s" in capsys.readouterr().err
+    # Any case of the words; repeated at every attempt: refused after the retries, named.
+    always = [secondary_limit("SECONDARY RATE LIMIT exceeded") for _ in range(5)]
+    api = FakeGitHub([CURRENT], answers={page(1): always})
+    waits = []
+    with pytest.raises(ValueError) as refused:
+        v31_driver.dispatch_check(SHA, api, sleep=waits.append)
+    assert waits == [60, 60, 60, 120]  # each at least a minute, at most the cap
+    assert str(refused.value).endswith(
+        "page=1: HTTP 403 (secondary rate limit) (still failing after 5 attempts)"
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        json.dumps({"message": "Resource not accessible by integration"}).encode("utf-8"),
+        b"<html>secondary rate limit</html>",  # not JSON: permanent
+        json.dumps(["secondary rate limit"]).encode("utf-8"),  # no message
+        json.dumps({"message": 7}).encode("utf-8"),
+        b"",
+    ],
+)
+def test_any_other_403_still_refuses_at_once(github_env, body):
+    api = FakeGitHub([CURRENT], answers={page(1): [http_error(403, {}, body)]})
+    with pytest.raises(ValueError, match=r"HTTP 403$"):
+        v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
+
+
+def test_a_secondary_limit_body_beyond_the_size_limit_is_not_read_as_one(github_env, monkeypatch):
+    # Only a 403 is read for it: a 404 naming the limit is still a 404.
+    named = json.dumps({"message": "secondary rate limit"}).encode("utf-8")
+    api = FakeGitHub([CURRENT], answers={page(1): [http_error(404, {}, named)]})
+    with pytest.raises(v31_driver.GitHubNotFound):
+        v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
+    # A body beyond the size limit is not read as one: the 403 is permanent.
+    monkeypatch.setattr(v31_driver, "MAX_GITHUB_BYTES", 16)
+    api = FakeGitHub([CURRENT], answers={"runs/500": [secondary_limit()]})
+    with pytest.raises(ValueError, match=r"HTTP 403$"):
+        v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
 
 
 # --- the owner's plan: every real mode refuses any other (Codex P1 and P2, PR #269) -------
