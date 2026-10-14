@@ -57,8 +57,9 @@ from crypto_grid_bot.combined.strategy_replay import (
     replay_strategy,
 )
 
-# The files a checkout may change after the code pin (Ruling P10c), besides the FX
-# records the registration names and anything under the two document directories.
+# The files a checkout may change after the code pin (Ruling P10c), besides anything under
+# the two document directories. No capital names an FX record any more (owner decision,
+# 2026-10-14), so no other file is allowed.
 REGISTRATION_ARTIFACTS = frozenset(
     {
         "config/v3_1_registration.json",
@@ -94,7 +95,7 @@ def execution_gate(
     run-manifest's pin of the cell's window, and ``pack`` (already read by ``read_pack``
     against that pin) must hold that window's id, start, end and skipped hours.
     ``changed_paths`` (``changed_since(repo, code_pin)``) may touch only the
-    registration artifacts, the FX records it names and ``docs/reviews/``/``docs/tasks/``.
+    registration artifacts and ``docs/reviews/``/``docs/tasks/``.
     ``adapter_pins_now`` (``adapter_pins(repo, head_commit(repo))``) must give the cell's
     arm its registered adapter pin. ``repo_head`` is provenance only: the code pin
     precedes the registration commit, so the head is never compared with it.
@@ -118,7 +119,7 @@ def execution_gate(
             f"run-manifest SHA-256 {manifest_sha256} differs from the registered "
             f"{reg.run_manifest_pin}"
         )
-    errors.extend(_path_errors(changed_paths, reg.fx_record_paths))
+    errors.extend(_path_errors(changed_paths))
     cells = [cell for cell in reg.cells if cell.cell_id == cell_id]
     if not cells:
         errors.append(f"cell {cell_id!r} is not registered")
@@ -324,7 +325,6 @@ def _identity(
         end_ms=window.end_ms,
         code_pin=registration.code_pin,
         config_pin=registration.config_pin,
-        fx_pin=capital.fx_pin,
         observation_policy=POLICY_ID,
         adapter_pin=adapter_pin,
         scenario=cell.scenario,
@@ -355,7 +355,6 @@ def _metadata(
         "run_manifest_sha256": reg.run_manifest_pin,
         "cost_profile_pin": COST_PROFILE_PINS[cell.cost_multiple],
         "adapter_pin": adapter_pin,
-        "fx_pin": capital.fx_pin,
         "observation_policy": POLICY_ID,
         "outcome_sha256": hashlib.sha256(outcome_raw).hexdigest(),
         "report_sha256": hashlib.sha256(report_raw).hexdigest(),
@@ -424,12 +423,11 @@ def _pack_errors(pack: WindowPack, window: Window) -> list[str]:
     return errors
 
 
-def _path_errors(paths: tuple[str, ...], fx_records: tuple[str, ...]) -> list[str]:
+def _path_errors(paths: tuple[str, ...]) -> list[str]:
     """The changed paths outside the registration artifacts (Ruling P10c)."""
     if not isinstance(paths, tuple) or any(type(path) is not str for path in paths):
         return ["changed paths: a tuple of repository paths required"]
-    allowed = REGISTRATION_ARTIFACTS | set(fx_records)
-    refused = [path for path in paths if not _allowed(path, allowed)]
+    refused = [path for path in paths if not _allowed(path, REGISTRATION_ARTIFACTS)]
     if not refused:
         return []
     return [
@@ -438,7 +436,7 @@ def _path_errors(paths: tuple[str, ...], fx_records: tuple[str, ...]) -> list[st
     ]
 
 
-def _allowed(path: str, allowed: frozenset[str] | set[str]) -> bool:
+def _allowed(path: str, allowed: frozenset[str]) -> bool:
     canonical = (
         bool(path)
         and "\\" not in path

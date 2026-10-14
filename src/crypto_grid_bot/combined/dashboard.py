@@ -15,7 +15,12 @@ from crypto_grid_bot.combined.baseline_records import NativeDiagnostics
 from crypto_grid_bot.combined.common_series import scheduled_boundaries
 from crypto_grid_bot.combined.experiment import BaselineComparison, CellComparison
 from crypto_grid_bot.combined.observation_policy import validate_boundaries
-from crypto_grid_bot.combined.report import DimensionTotal, EquityPoint, Report
+from crypto_grid_bot.combined.report import (
+    DimensionTotal,
+    EquityPoint,
+    Report,
+    capital_label_id,
+)
 
 _CSS = """
 :root{color-scheme:dark;
@@ -306,10 +311,9 @@ def _comparison(
         ):
             raise ValueError("comparison must be acceptance's CellComparison")
         label = report.capital_label
-        # ``research_10000_usdt`` or ``owner_small:EUR:...``: the kind names the capital id.
-        if label is not None and comparison.capital != (
-            "research" if label == "research_10000_usdt" else label.partition(":")[0]
-        ):
+        # ``research_10000_usdt``, ``medium_1000_usdt`` or ``small_100_usdt`` names the
+        # capital id; any other label names none, so no cell is of its capital.
+        if label is not None and comparison.capital != capital_label_id(label):
             raise ValueError("comparison cell is of another capital than this report's label")
         cell = (
             comparison.window,

@@ -35,7 +35,6 @@ def identity(arm, scenario, pin, end_days=3):
         fx.START + end_days * fx.DAY,
         "c" * 40,
         "d" * 64,
-        None,
         POLICY_ID,
         pin,
         scenario,

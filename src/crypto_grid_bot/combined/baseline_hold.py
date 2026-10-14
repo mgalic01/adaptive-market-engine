@@ -5,7 +5,7 @@ first hour, bought once at that hour's opening quote with the run's adverse
 slippage, tick rounding and fee, and held. A coin whose share cannot buy a legal
 order (step, minimum quantity, minimum notional) stays in cash, and that is
 disclosed. The frozen V3 hold hardcodes 10,000 USDT inside its purchase formula
-and base costs, so it cannot serve the ~EUR100 or doubled-cost cells; this is the
+and base costs, so it cannot serve the 1,000 and 100 USDT or doubled-cost cells; this is the
 owner-specified benchmark, not a change to any frozen strategy. Marks are the
 hourly opening quotes (the boundary state) and the last bar's close (terminal).
 """

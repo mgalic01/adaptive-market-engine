@@ -25,14 +25,13 @@ from crypto_grid_bot.combined.replay_records import strategy_report
 from crypto_grid_bot.combined.strategy_replay import replay_strategy
 
 PIN = "5" * 64
-FX_PIN = "6" * 64
 DAYS = 2
 
 
 @pytest.fixture(scope="module")
 def replayed():
     """One combined replay over two synthetic coins, its report and two outcomes: a
-    research identity (no FX pin) and an owner_small one (with it)."""
+    research identity and a small one (the codec judges no capital)."""
     markets = (
         fx.market("BTCUSDT", fx.uptrend, DAYS, futures=True, flow=True),
         fx.market("ETHUSDT", fx.downtrend, DAYS, futures=True, flow=True),
@@ -57,7 +56,7 @@ def replayed():
         adapter_pin=PIN,
         scenario="open_low_high_close",
     )
-    owner = replace(identity, capital="owner_small", fx_pin=FX_PIN)
+    owner = replace(identity, capital="small")
     return (
         report,
         strategy_outcome(trace, report, identity, attempt_id="attempt-1"),
@@ -75,7 +74,7 @@ def test_outcome_and_report_round_trip_exactly(replayed):
     assert report.contributions and report.equity_points and report.policy_evidence
     assert report.skipped_hours and report.disclosures and report.drawdown_episodes
     assert isinstance(report.max_gross_leverage, Fraction)
-    assert research.report_evidence is not None and research.identity.fx_pin is None
+    assert research.report_evidence is not None
 
     for outcome in (research, owner):
         text = encode_outcome(outcome)
@@ -84,7 +83,14 @@ def test_outcome_and_report_round_trip_exactly(replayed):
         assert decoded == outcome
         assert decoded.report_evidence == outcome.report_evidence
         assert encode_outcome(decoded) == text
-    assert decode_outcome(encode_outcome(owner)).identity.fx_pin == FX_PIN
+        # No capital converts a currency (owner decision, 2026-10-14): no FX pin is written.
+        assert '"fx_pin"' not in text
+    assert decode_outcome(encode_outcome(owner)).identity.capital == "small"
+    # An identity still holding the replaced FX pin is not this codec's: refused.
+    with_fx = json.loads(encode_outcome(owner))
+    with_fx["outcome"]["identity"]["fx_pin"] = None
+    with pytest.raises(ValueError, match="unexpected fields: fx_pin"):
+        decode_outcome(canonical(json.dumps(with_fx)))
 
     text = encode_report(report)
     assert text == canonical(text)

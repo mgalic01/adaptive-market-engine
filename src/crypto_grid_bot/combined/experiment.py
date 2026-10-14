@@ -23,7 +23,7 @@ from crypto_grid_bot.backtest.replay import PATH_MODES
 from .baseline_records import NATIVE_STOPS
 from .common_series import CommonSeries, common_hourly_series, skipped_hours_valid
 from .observation_policy import POLICY_ID, PolicyEvidence
-from .report import Report, analyze
+from .report import CAPITAL_LABELS, Report, analyze
 
 # The frozen V3 baselines, the only frozen code that stops natively.
 _V3_BASELINES = frozenset(
@@ -47,9 +47,13 @@ _COMPONENTS = frozenset(
 )
 _RESERVED = 1_735_689_600_000
 _DAY = 86_400_000
-# Plausible USDT per EUR rates for the owner_small conversion, both ends included.
-_FX_BAND = (Decimal("0.5"), Decimal("2.0"))
 SCENARIOS = ("open_low_high_close", "open_high_low_close")
+# The owner's three starting capitals (owner decision, 2026-10-14), all USDT, each opening
+# at exactly its amount: id and amount, in the registration's cell order (research, medium,
+# small). They replace 10,000 USDT plus EUR 100 at the ECB rate; no capital converts.
+CAPITALS: tuple[tuple[str, int], ...] = tuple(CAPITAL_LABELS.values())
+_CAPITAL_AMOUNTS = dict(CAPITALS)
+_LABELS = {capital_id: label for label, (capital_id, _) in CAPITAL_LABELS.items()}
 
 
 def required_baselines(v1_variants: tuple[str, ...]) -> frozenset[str]:
@@ -90,12 +94,13 @@ class Window:
 
 @dataclass(frozen=True, slots=True)
 class Capital:
+    """A registered starting capital: one of ``CAPITALS``, in USDT, ``initial_equity``
+    equal to ``amount`` (``_capital_errors``)."""
+
     id: str
     initial_equity: Decimal
     currency: str
     amount: Decimal
-    fx_rate: Decimal | None = None
-    fx_pin: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,12 +121,12 @@ class Registration:
 
 @dataclass(frozen=True, slots=True)
 class RunIdentity:
-    """Serialized run provenance, including mandatory owner-small FX source binding.
+    """Serialized run provenance.
 
-    Adapters must populate fx_pin for owner_small. Research needs no conversion
-    and retains None; older owner-small identities with no FX pin are incomplete.
-    Components require one of SCENARIOS; frozen baselines use "native". Each
-    modeled scenario is a separate account outcome, never a pooled observation.
+    ``capital`` is a registered capital's id; every capital is USDT, so no identity
+    carries a currency conversion. Components require one of SCENARIOS; frozen baselines
+    use "native". Each modeled scenario is a separate account outcome, never a pooled
+    observation.
     """
 
     arm: str
@@ -134,7 +139,6 @@ class RunIdentity:
     end_ms: int
     code_pin: str
     config_pin: str
-    fx_pin: str | None = None
     observation_policy: str | None = None
     adapter_pin: str | None = None
     scenario: str | None = None
@@ -433,11 +437,11 @@ def _registration_errors(registration: Registration) -> list[str]:
                 "never its first or last hour"
             )
     if (
-        len(capitals) != 2
+        len(capitals) != len(CAPITALS)
         or any(not isinstance(c, Capital) or not isinstance(c.id, str) for c in capitals)
-        or {c.id for c in capitals} != {"research", "owner_small"}
+        or {c.id for c in capitals} != set(_CAPITAL_AMOUNTS)
     ):
-        errors.append("registration: research and EUR100 capital scenarios required")
+        errors.append("registration: the research, medium and small USDT capitals required")
     for capital in capitals:
         if isinstance(capital, Capital):
             errors.extend(_capital_errors(capital))
@@ -445,49 +449,33 @@ def _registration_errors(registration: Registration) -> list[str]:
 
 
 def _capital_errors(capital: Capital) -> list[str]:
-    """Research is 10000 USDT; owner_small is EUR100 at a pinned, plausible FX rate.
-
-    The rate is USDT per EUR. A rate of exactly 1 would label 100 USDT as EUR100, and a
-    rate outside 0.5 to 2.0 is no EUR rate at all: both are refused.
-    """
+    """Each capital is its ``CAPITALS`` amount in USDT, opening at exactly that amount:
+    research 10000, medium 1000, small 100. No capital converts a currency."""
     if not _finite(capital.initial_equity, True) or not _finite(capital.amount, True):
         return ["registration: invalid capital amount"]
-    if capital.id == "research" and (
-        capital.currency != "USDT" or capital.amount != 10000 or capital.initial_equity != 10000
-    ):
-        return ["registration: research capital must be 10000 USDT"]
-    if capital.id != "owner_small":
-        return []
-    if (
-        capital.currency != "EUR"
-        or capital.amount != 100
-        or capital.fx_rate is None
-        or not _finite(capital.fx_rate, True)
-        or not _pin(capital.fx_pin)
-    ):
-        return ["registration: EUR100 requires pinned positive FX conversion"]
-    if capital.fx_rate == 1 or not _FX_BAND[0] <= capital.fx_rate <= _FX_BAND[1]:
-        return ["registration: EUR100 needs a plausible USDT per EUR rate (0.5 to 2.0, never 1)"]
-    if Fraction(capital.initial_equity) != Fraction(capital.amount) * Fraction(capital.fx_rate):
-        return ["registration: initial equity does not equal EUR100 conversion"]
+    amount = _CAPITAL_AMOUNTS.get(capital.id) if isinstance(capital.id, str) else None
+    if amount is None:
+        return [f"registration: capital {capital.id!r} is not research, medium or small"]
+    if capital.currency != "USDT" or capital.amount != amount or capital.initial_equity != amount:
+        return [
+            f"registration: {capital.id} capital must be {amount} USDT, with initial equity "
+            f"{amount}"
+        ]
     return []
 
 
 def capital_label(capital: Capital) -> str:
-    """The capital scenario as reports label it, so 100 USDT never passes for EUR100.
-
-    ``research_10000_usdt``, or ``owner_small`` with its currency, amount, USDT per EUR
-    rate (as registered) and FX pin. Only a registrable capital has a label.
-    """
+    """The capital scenario as reports label it (``report.CAPITAL_LABELS``):
+    ``research_10000_usdt``, ``medium_1000_usdt`` or ``small_100_usdt``. Only a
+    registrable capital has a label."""
     if (
         not isinstance(capital, Capital)
-        or capital.id not in {"research", "owner_small"}
+        or not isinstance(capital.id, str)
+        or capital.id not in _LABELS
         or _capital_errors(capital)
     ):
-        raise ValueError("a registrable research or owner_small capital required")
-    if capital.id == "research":
-        return "research_10000_usdt"
-    return f"owner_small:EUR:100:usdt_per_eur={capital.fx_rate}:fx_pin={capital.fx_pin}"
+        raise ValueError("a registrable research, medium or small capital required")
+    return _LABELS[capital.id]
 
 
 def _outcome_shape_valid(row: object) -> bool:
@@ -783,10 +771,8 @@ def _matched_safety_failures(reg: Registration, row: RunOutcome) -> list[str]:
         or not _cost_profile_valid(profile)
         or identity.cost_profile_pin != profile[1]
         or not isinstance(capital.id, str)
-        or capital.id not in {"research", "owner_small"}
+        or capital.id not in _CAPITAL_AMOUNTS
         or not _finite(capital.initial_equity, True)
-        or (capital.id == "owner_small" and not _pin(capital.fx_pin))
-        or identity.fx_pin != (capital.fx_pin if capital.id == "owner_small" else None)
     ):
         return []
     return _observed_safety_failures(row, capital.initial_equity)
@@ -852,7 +838,6 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
             window.end_ms,
             registration.code_pin,
             registration.config_pin,
-            capital.fx_pin if capital.id == "owner_small" else None,
             registration.observation_policy,
             dict(registration.adapter_pins)[arm],
             scenario,
@@ -914,7 +899,7 @@ def evaluate(registration: Registration, outcomes: tuple[RunOutcome, ...]) -> Ac
         if not _metrics_valid(row) or row.initial_equity != expected_capital:
             incomplete.append(f"{key}: invalid metrics or initial capital")
             continue
-        # The equity alone cannot tell 110 USDT under one FX pin from another.
+        # The outcome names the registered capital scenario, not only its equity.
         if row.capital_label != capital_label(registered):
             incomplete.append(f"{key}: capital label differs from the registration")
             continue

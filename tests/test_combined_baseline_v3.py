@@ -176,9 +176,9 @@ def test_capital_adapter_is_exactly_the_frozen_run_at_10000(cost):
 
 def test_capital_adapter_runs_small_capital_and_always_restores_the_runner():
     original = vars(v3_replay)["TrendRunner"]
-    label = f"owner_small:EUR:100:usdt_per_eur=1.085:fx_pin={PIN}"
-    small = run(initial=D("108.5"), capital_label=label)
-    assert small.report.equity_points[0].equity == D("108.5")
+    label = "small_100_usdt"  # the owner's 100 USDT capital (2026-10-14)
+    small = run(initial=D(100), capital_label=label)
+    assert small.report.equity_points[0].equity == D(100)
     assert "v3_capital_adapter_sets_only_starting_capital" in small.disclosures
     assert small.report.disclosures == small.disclosures
     assert small.report.capital_label == label

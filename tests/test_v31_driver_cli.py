@@ -29,7 +29,7 @@ stand-ins (``v31_smoke.stand_ins``); the V3 input pack builder, whose V3 loader 
 full 2710-entry inventory, is replaced in the prepare tests by a recording builder.
 
 The owner's plan (``owner_plan.OWNER_PLAN``: W1 2021-07 to 2025 on ten coins, W0 from
-2020-03 on eight, the 2024-12-31 FX fixing) is far beyond what a test can synthesize, so a
+2020-03 on eight, the three USDT capitals) is far beyond what a test can synthesize, so a
 real-mode test on one of these worlds stands the world's own plan in for it
 (``smoke_plan``, ``prepare_plan``, ``stand_in_plan``). The plan refusals
 (``test_every_real_mode_refuses_any_plan_but_the_owners``) run under the owner's own plan,
@@ -49,7 +49,6 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
-from datetime import date
 from decimal import Decimal as D
 from http.client import (
     BadStatusLine,
@@ -105,7 +104,7 @@ RUN = "38267478452-attempt-1"  # what the workflow passes: <run_id>-attempt-<run
 CELL = "w1.combined.olhc.c1.research"
 KIND_CELLS = {
     "v31": "w1.combined.olhc.c1.research",
-    "hold": "w1.matched_spot_hold.native.c2.owner_small",
+    "hold": "w1.matched_spot_hold.native.c2.small",
     "v3": "w1.unchanged_v3_selector.native.c1.research",
     "minute": "w1.matched_v1_g_grid_low_first.native.c1.research",
 }
@@ -202,14 +201,14 @@ def quietly(argv, **options):
 
 
 def stand_in_plan(windows: dict, symbols) -> owner_plan.OwnerPlan:
-    """A synthetic world's own plan (its windows, each on ``symbols``, and the owner's FX
-    date), standing in for the owner's while a real mode runs on that world."""
+    """A synthetic world's own plan (its windows, each on ``symbols``, and the owner's
+    capitals), standing in for the owner's while a real mode runs on that world."""
     return owner_plan.OwnerPlan(
         tuple(
             owner_plan.PlanWindow(wid, start, end, frozenset(symbols))
             for wid, (start, end) in windows.items()
         ),
-        owner_plan.OWNER_PLAN.fx_reference_date,
+        owner_plan.OWNER_PLAN.capitals,
     )
 
 
@@ -233,11 +232,11 @@ def test_smoke_runs_end_to_end_offline(tmp_path, capsys):
     summary = tmp_path / "s" / "a" / "summary"
     verdict = json.loads((summary / "verdict.json").read_bytes())
     assert verdict["status"] in ("pass", "fail", "incomplete")
-    # Six of the 216 registered cells ran, so acceptance cannot pass: incomplete, not a crash.
+    # Six of the 324 registered cells ran, so acceptance cannot pass: incomplete, not a crash.
     assert document["status"] == verdict["status"] == "incomplete"
     assert document["verdict_sha256"] == sha((summary / "verdict.json").read_bytes())
-    assert (document["cells_registered"], document["cells_run"]) == (216, 6)
-    assert len(verdict["cells"]) == 216
+    assert (document["cells_registered"], document["cells_run"]) == (324, 6)
+    assert len(verdict["cells"]) == 324
     completed = {cell for cell, read in verdict["cells"].items() if read["state"] == "completed"}
     # The first W1 cell of each kind (the V3 selector and a fixed long-only V3 rule both)
     # and the first W0 cell; each completed, as did the picks job. The rest were never run.
@@ -614,14 +613,25 @@ def test_plan_gates_first_and_sends_only_the_selector_to_the_picks_matrix(
     code, document, err = run(registered_args(registered, "plan"), capsys)
     assert code == 0, err
     v3_cells, main_cells = document["v3_cells"], document["main_cells"]
-    # Only the four selector cells read the picks; the six long-only V3 rules (24 cells)
+    minute_cells = document["minute_cells"]
+    # Only the six selector cells read the picks; the six long-only V3 rules (36 cells)
     # replay their own rule, so they run in the main matrix and never wait for the picks.
-    assert len(v3_cells) == 4 and all(".unchanged_v3_selector." in c for c in v3_cells)
-    assert len(main_cells) == 216 - 4 == 212
+    assert len(v3_cells) == 6 and all(".unchanged_v3_selector." in c for c in v3_cells)
+    # The 144 minute cells have a matrix of their own, so no matrix passes GitHub's 256.
+    files = argparse.Namespace(
+        registration=v31_driver.REGISTRATION, run_manifest=v31_driver.RUN_MANIFEST
+    )
+    reg, _ = v31_driver.load_registered(registered.repo, files)
+    kinds = {cell.cell_id: cell.kind for cell in reg.cells}
+    assert len(minute_cells) == 144 and {kinds[c] for c in minute_cells} == {"minute"}
+    assert len(main_cells) == 324 - 6 - 144 == 174
+    assert {kinds[c] for c in main_cells} == {"v31", "hold", "v3"}
     long_only = [c for c in main_cells if "_long_only." in c and "unchanged_v3_r" in c]
-    assert len(long_only) == 6 * 2 * 2
-    assert set(v3_cells).isdisjoint(main_cells)
-    assert (document["cells_registered"], document["cells_planned"]) == (216, 216)
+    assert len(long_only) == 6 * 2 * 3
+    assert sorted([*v3_cells, *minute_cells, *main_cells]) == sorted(kinds)  # each once
+    for listed in (v3_cells, minute_cells, main_cells):
+        assert 0 < len(listed) <= v31_driver.MAX_MATRIX == 256
+    assert (document["cells_registered"], document["cells_planned"]) == (324, 324)
     assert document["registration_sha256"] == registered.config_sha
     assert (document["code_pin"], document["repo_head"]) == (registered.code_pin, registered.head)
     # A registered run plans every cell: --cells belongs to a rehearsal.
@@ -1021,7 +1031,7 @@ def test_the_rehearsal_world_is_a_registration_on_top_of_its_code_pin(rehearsal)
     # code pin, and the real execution gate's path rule accepts them.
     changed = v31_driver.changed_since(repo, code_pin)
     assert changed == REGISTRATION_CHANGES
-    assert v31_driver._path_errors(changed, ()) == []
+    assert v31_driver._path_errors(changed) == []
     # The synthetic V3.1 trial is laid out as the trial gate requires: its registration
     # event in the code pin's first parent, its completion at the head binding the code pin,
     # the registration and the run-manifest (Ruling R4-1).
@@ -1040,7 +1050,11 @@ def test_the_rehearsal_world_is_a_registration_on_top_of_its_code_pin(rehearsal)
     registration = json.loads((repo / "config/v3_1_registration.json").read_bytes())
     assert registration["adapter_pins"] == adapter_pins(repo, code_pin)
     assert len(set(registration["adapter_pins"].values())) == 4  # one per arm kind
-    assert registration["code_pin"] == code_pin and len(registration["cells"]) == 216
+    assert registration["code_pin"] == code_pin and len(registration["cells"]) == 324
+    # The owner's three USDT capitals, and no FX record anywhere in the world.
+    assert registration["capitals"] == v31_smoke.capitals_document()
+    assert [c["id"] for c in registration["capitals"]] == ["research", "medium", "small"]
+    assert "config/v3_1_fx_record.json" not in listed
     raw = (repo / "config/v3_1_registration.json").read_bytes()
     assert sha(raw) == document["registration_sha256"]
     # Nothing but the repository and the synthetic dataset is left: the packs built to
@@ -1075,8 +1089,10 @@ def test_the_rehearsal_runs_the_registered_job_graph_offline(
     assert code == 1 and "--cells: at least 6" in err
     code, planned, err = run(rehearsal_args(rehearsal, "plan", "--cells", "6"), capsys)
     assert code == 0, err
+    # Every one of the three matrices gets a cell, so the rehearsal runs every matrix job.
     assert planned["v3_cells"] == ["w1.unchanged_v3_selector.native.c1.research"]
-    assert len(planned["main_cells"]) == 5 and planned["cells_planned"] == 6
+    assert planned["minute_cells"] == ["w1.matched_v0_grid_high_first.native.c1.research"]
+    assert len(planned["main_cells"]) == 4 and planned["cells_planned"] == 6
     # The long-only V3 rule runs in the main matrix, without the picks.
     assert "w1.unchanged_v3_r1_long_only.native.c1.research" in planned["main_cells"]
     assert planned["registration_sha256"] == rehearsal.document["registration_sha256"]
@@ -1109,20 +1125,18 @@ def test_the_rehearsal_runs_the_registered_job_graph_offline(
     (cells / "v3-picks-attempt-1").mkdir(parents=True)
     picks_dir = cells / "v3-picks-attempt-1" / "v3_picks"
     (tmp_path / "p" / "v3_picks").rename(picks_dir)
-    for cell_id in planned["main_cells"] + planned["v3_cells"]:
+    planned_cells = planned["main_cells"] + planned["minute_cells"] + planned["v3_cells"]
+    for cell_id in planned_cells:
         folder = cells / f"cell-{cell_id}-attempt-1"
-        more = ("--picks", str(picks_dir)) if cell_id in planned["v3_cells"] else ()
+        # Each matrix job's own arguments: run-v3 passes the picks, run-minute the legacy
+        # dataset, run-main neither.
+        more: tuple[str, ...] = ()
+        if cell_id in planned["v3_cells"]:
+            more = ("--picks", str(picks_dir))
+        elif cell_id in planned["minute_cells"]:
+            more = ("--legacy-data", str(work / "legacy"))
         argv = rehearsal_args(
-            rehearsal,
-            "run-cell",
-            "--cell",
-            cell_id,
-            *extra,
-            "--legacy-data",
-            str(work / "legacy"),
-            "--out",
-            str(folder),
-            *more,
+            rehearsal, "run-cell", "--cell", cell_id, *extra, "--out", str(folder), *more
         )
         code, document, err = run(argv, capsys)
         assert code == 0, (cell_id, err)
@@ -1141,12 +1155,12 @@ def test_the_rehearsal_runs_the_registered_job_graph_offline(
     assert code == 0, err
     verdict = json.loads((tmp_path / "a" / "summary" / "verdict.json").read_bytes())
     completed = {c for c, read in verdict["cells"].items() if read["state"] == "completed"}
-    assert completed == set(planned["main_cells"] + planned["v3_cells"])
+    assert completed == set(planned_cells)
     assert verdict["v3_picks"]["state"] == "completed" and verdict["run"]["reruns"] == []
     # A rehearsal dispatches no registration: its aggregate reads no workflow runs (without
     # the runner's variables a registered one could not rule another dispatch out).
     assert verdict["run"]["other_dispatches"] == []
-    assert judged["status"] == "incomplete"  # 6 of 216 cells: never a verdict
+    assert judged["status"] == "incomplete"  # 6 of 324 cells: never a verdict
     assert verdict["mode"] == "rehearsal"
     summary_md = (tmp_path / "a" / "summary" / "summary.md").read_text(encoding="utf-8")
     assert summary_md.startswith("# V3.1 run summary: REHEARSAL")
@@ -1378,6 +1392,7 @@ STOPPED = (
     ("prepare", "skipped"),
     ("picks", "skipped"),
     ("run-main", "skipped"),
+    ("run-minute", "skipped"),
     ("run-v3", "skipped"),
     ("aggregate", "skipped"),
     ("status", "success"),
@@ -1390,6 +1405,7 @@ RAN = (
     ("prepare", "success"),
     ("picks", "success"),
     ("run-main (w1.combined.olhc.c1.research)", "success"),
+    ("run-minute (w1.matched_v0_grid_high_first.native.c1.research)", "success"),
     ("run-v3 (w1.unchanged_v3_selector.native.c1.research)", "success"),
     ("aggregate", "success"),
     ("status", "success"),
@@ -1709,6 +1725,7 @@ def test_a_launch_stopped_at_the_plan_job_with_nothing_run_does_not_count():
         assert v31_driver.launch_reason(DONE, jobs) is None, ended
     # The matrix jobs under their matrix values, skipped, and in any order.
     named = [
+        job(10, "run-minute (w1.matched_v0_grid_high_first.native.c1.research)", "skipped"),
         job(9, "run-main (w1.combined.olhc.c1.research)", "skipped"),
         job(8, "run-v3 (w1.unchanged_v3_selector.native.c1.research)", "skipped"),
         job(7, "timing (prepare)", "skipped"),
@@ -1735,7 +1752,10 @@ def stopped_but(name, conclusion):
 @pytest.mark.parametrize(
     ("jobs", "message"),
     [
-        (stopped_but("plan", "success"), "its plan job 'plan' (job 9, attempt 1) ended 'success'"),
+        (
+            stopped_but("plan", "success"),
+            "its plan job 'plan' (job 10, attempt 1) ended 'success'",
+        ),
         (stopped_but("plan", "cancelled"), "ended 'cancelled', not failure"),
         (stopped_but("plan", "timed_out"), "ended 'timed_out', not failure"),
         (stopped_but("plan", None), "ended None, not failure"),
@@ -1753,7 +1773,16 @@ def test_a_launch_whose_plan_job_did_not_fail_counts(jobs, message):
     assert malformed is (jobs == [])
 
 
-LATER_JOBS = ("smoke", "prepare", "picks", "aggregate", "timing", "run-main", "run-v3")
+LATER_JOBS = (
+    "smoke",
+    "prepare",
+    "picks",
+    "aggregate",
+    "timing",
+    "run-main",
+    "run-minute",
+    "run-v3",
+)
 
 
 @pytest.mark.parametrize("ended", ["success", "failure", "cancelled", "timed_out", None])
@@ -1762,6 +1791,7 @@ LATER_JOBS = ("smoke", "prepare", "picks", "aggregate", "timing", "run-main", "r
     [
         *LATER_JOBS,
         "run-main (cell-x)",
+        "run-minute (w1.matched_v0_grid_high_first.native.c1.research)",
         "run-v3 (w1.unchanged_v3_selector.native.c1.research)",
         "timing (picks)",
     ],
@@ -1785,6 +1815,8 @@ def test_a_launch_any_later_job_of_which_was_not_skipped_counts(name, ended):
         "run-main(cell-x)",
         "run-main (cell-x",
         "run-mainx",
+        "run-minutes (cell-x)",
+        "run-minute(cell-x)",
         "",
     ],
 )
@@ -1844,7 +1876,7 @@ def with_field(key, value, index=1):
         ({**DONE, "run_attempt": "1"}, jobs_of(STOPPED), "its run_attempt is '1'"),
         (DONE, None, "its jobs are not a list"),
         (DONE, {"jobs": jobs_of(STOPPED)}, "its jobs are not a list"),
-        (DONE, [*jobs_of(STOPPED), "a job"], "its job record 10 is not a JSON object"),
+        (DONE, [*jobs_of(STOPPED), "a job"], "its job record 11 is not a JSON object"),
         (DONE, with_field("id", without), "its job record 2 has id None"),
         (DONE, with_field("id", 0), "has id 0"),
         (DONE, with_field("id", True), "has id True"),
@@ -1877,8 +1909,9 @@ def test_the_check_judges_each_earlier_launch_on_its_jobs(github_env):
     pages), decide a finished launch; one still running counts without them. A registered
     check stops at the first launch that counts (it already refuses); a report-only check
     judges them all."""
-    skipped_cells = [(f"run-main (cell-{i})", "skipped") for i in range(241)]
+    skipped_cells = [(f"run-main (cell-{i})", "skipped") for i in range(250 - len(STOPPED))]
     many = jobs_of([*STOPPED, *skipped_cells], run=300)
+    assert len(many) == 250
 
     def runs(title):
         return [
@@ -1943,7 +1976,9 @@ def test_a_launch_whose_jobs_cannot_be_read_counts(github_env, answers, message,
 def test_the_jobs_pages_must_agree(github_env):
     """A job listed on two pages, or a total that changes between them, is a pagination
     inconsistency: the launch counts, unreadable, with no retry."""
-    records = jobs_of([*STOPPED, *((f"run-v3 (c{i})", "skipped") for i in range(100))], run=300)
+    cells = ((f"run-v3 (c{i})", "skipped") for i in range(109 - len(STOPPED)))
+    records = jobs_of([*STOPPED, *cells], run=300)
+    assert len(records) == 109
     twice = {**records[100], "id": records[0]["id"]}
     api = FakeGitHub(
         [CURRENT, workflow_run(300, conclusion="failure")],
@@ -2434,8 +2469,9 @@ def test_a_transient_failure_on_page_2_of_the_runs_restarts_from_page_1(github_e
 
 
 def test_a_transient_failure_on_page_2_of_a_jobs_listing_restarts_from_page_1(github_env):
-    cells = [(f"run-main (cell-{i})", "skipped") for i in range(141)]
+    cells = [(f"run-main (cell-{i})", "skipped") for i in range(150 - len(STOPPED))]
     records = jobs_of([*STOPPED, *cells], run=300)  # 150 records: two pages
+    assert len(records) == 150
     stale = answer({"total_count": 149, "jobs": records[:100]})
     api = FakeGitHub(
         [CURRENT, workflow_run(300, conclusion="failure")],
@@ -2956,7 +2992,11 @@ def test_the_plan_gate_leaves_the_owners_plan_unchanged(registered):
             owner_plan.PlanWindow("w1", 1_625_097_600_000, end, frozenset(w1)),
             owner_plan.PlanWindow("w0", 1_583_020_800_000, end, frozenset(w0)),
         ),
-        date(2024, 12, 31),
+        (
+            owner_plan.PlanCapital("research", "USDT", D(10000), D(10000)),
+            owner_plan.PlanCapital("medium", "USDT", D(1000), D(1000)),
+            owner_plan.PlanCapital("small", "USDT", D(100), D(100)),
+        ),
     )
     plan = owner_plan.OWNER_PLAN
     assert plan == expected
@@ -3000,39 +3040,38 @@ def owner_windows(**changes: dict) -> list[dict]:
 
 
 W1_COINS, W0_COINS = owner_plan.W1_SYMBOLS, owner_plan.W0_SYMBOLS
-# Each case: the prepare windows, the FX record's reference date and the refusal each real
-# mode gives (None: the owner's plan, which no mode refuses for its plan).
+# Each case: the prepare windows and the refusal each real mode gives (None: the owner's
+# plan, which no mode refuses for its plan). A registration's capitals other than the
+# owner's three never load (test_every_registered_job_refuses_the_replaced_eur_capital).
 PLAN_CASES = {
-    "the owner's plan": (owner_windows(), "2024-12-31", None),
+    "the owner's plan": (owner_windows(), None),
     "W1 without SOLUSDT": (
         owner_windows(w1={"symbols": sorted(W1_COINS - {"SOLUSDT"})}),
-        "2024-12-31",
         "window w1 must hold the owner's 10 coins (missing: SOLUSDT; outside the plan: none)",
     ),
     "an extra W1 coin": (
         owner_windows(w1={"symbols": sorted(W1_COINS | {"AVAXUSDT"})}),
-        "2024-12-31",
         "window w1 must hold the owner's 10 coins (missing: none; outside the plan: AVAXUSDT)",
     ),
     "a shifted W1 start": (
         owner_windows(w1={"start_ms": owner_plan.W1_START_MS + DAY}),
-        "2024-12-31",
         "window w1 is [2021-07-02 00:00 UTC, 2025-01-01 00:00 UTC), not the owner's "
         "[2021-07-01 00:00 UTC, 2025-01-01 00:00 UTC)",
     ),
     "another W0 coin set": (
         owner_windows(w0={"symbols": sorted(W0_COINS - {"TRXUSDT"} | {"DOGEUSDT"})}),
-        "2024-12-31",
         "window w0 must hold the owner's 8 coins (missing: TRXUSDT; outside the plan: DOGEUSDT)",
     ),
-    "an FX record of 2024-12-30": (
-        owner_windows(),
-        "2024-12-30",
-        "capital owner_small's FX record is the reference rate for 2024-12-30, not the "
-        "owner's 2024-12-31",
-    ),
 }
-REGISTERED_ONLY = {"an FX record of 2024-12-30"}  # a prepare config names no FX record
+# The capital the owner replaced on 2026-10-14: EUR 100 at the ECB rate, with its FX record.
+EUR_CAPITAL = {
+    "id": "owner_small",
+    "currency": "EUR",
+    "amount": "100",
+    "initial_equity": "103.89",
+    "fx_rate": "1.0389",
+    "fx_record": {"path": "config/v3_1_fx_record.json", "sha256": "e" * 64},
+}
 
 
 @dataclass(frozen=True)
@@ -3045,18 +3084,19 @@ class PlanWorld:
     config_sha: str
 
 
-def plan_world(registered: Registered, root: Path, windows: list, fx_date: str) -> PlanWorld:
-    """A copy of the smoke world whose prepare config holds ``windows`` and whose FX record
-    is the ECB rate of ``fx_date`` (its rate unchanged), registered over them as Task 11
-    registers the real run, with pack pins naming no pack (each plan refusal comes before
-    any pack is read), the V3.1 trial completed with them, and committed: the head is
-    clean, and only registration artifacts changed since the code pin."""
+def plan_world(
+    registered: Registered, root: Path, windows: list, capitals: list | None = None
+) -> PlanWorld:
+    """A copy of the smoke world whose prepare config holds ``windows``, registered over
+    them as Task 11 registers the real run, with pack pins naming no pack (each plan
+    refusal comes before any pack is read), the V3.1 trial completed with them, and
+    committed: the head is clean, and only registration artifacts changed since the code
+    pin. ``capitals`` replaces the registration file's owner capitals, as a registration
+    no loader passes would hold them."""
     repo = root / "repo"
     shutil.copytree(registered.repo, repo)
     path = repo / "config/v3_1_prepare.json"
     path.write_bytes(dumped({**json.loads(path.read_bytes()), "windows": windows}))
-    fx = {**v31_smoke.fx_record(), "reference_date": fx_date}
-    (repo / v31_smoke.FX_RECORD).write_bytes(dumped(fx))
     prepare = load_prepare_config(path)
     world = v31_smoke.World(root, repo, registered.code_pin, registered.legacy, prepare)
     ids = [window["id"] for window in windows]
@@ -3071,6 +3111,11 @@ def plan_world(registered: Registered, root: Path, windows: list, fx_date: str) 
     reg, config_sha = v31_smoke.register(
         world, document, code_pin=registered.code_pin, adapter_pins=registered.pins, **files
     )
+    if capitals is not None:
+        written = repo / files["registration"]
+        registration = {**json.loads(written.read_bytes()), "capitals": capitals}
+        written.unlink()
+        config_sha = v31_smoke.write_json(written, registration)
     v31_smoke.complete_trial(
         repo,
         code_pin=registered.code_pin,
@@ -3122,23 +3167,58 @@ def plan_world_calls(world: PlanWorld, root: Path) -> dict[str, tuple[list, Path
 def test_every_real_mode_refuses_any_plan_but_the_owners(registered, case, tmp_path, capsys):
     """Prepare-only, timing (each part) and every registered job (prepare, plan, picks,
     run-cell, aggregate) refuse a prepare config whose windows, dates or coin sets are not
-    the owner's, before anything is fetched, read or replayed; the registered jobs also
-    refuse an FX record of another day than 2024-12-31. The owner's plan passes the gate
-    in every mode (the steps after it then miss this world's data: plan alone completes)."""
-    windows, fx_date, refusal = PLAN_CASES[case]
-    world = plan_world(registered, tmp_path / "world", windows, fx_date)
+    the owner's, before anything is fetched, read or replayed. The owner's plan, its three
+    USDT capitals registered, passes the gate in every mode (the steps after it then miss
+    this world's data: plan alone completes)."""
+    windows, refusal = PLAN_CASES[case]
+    world = plan_world(registered, tmp_path / "world", windows)
     hosts = {"inventory_transport": v31_smoke.Archives(), "legacy_transport": v31_smoke.Archives()}
     for name, (argv, out) in plan_world_calls(world, tmp_path).items():
         code, document, err = run(argv, capsys, **hosts)
-        registered_job = not name.startswith(("prepare-only", "timing"))
-        if refusal is not None and (registered_job or case not in REGISTERED_ONLY):
+        if refusal is not None:
             assert code == 1 and "run refused, not the owner's plan" in err, (name, err)
             assert refusal in err, (name, err)
             assert out is None or not out.exists(), name
         else:
             assert "not the owner's plan" not in err, (name, err)
         if name == "plan" and refusal is None:
-            assert code == 0 and document["cells_planned"] == 216, err
+            assert code == 0 and document["cells_planned"] == 324, err
+    assert all(host.requested == [] for host in hosts.values())  # nothing was fetched
+
+
+@pytest.mark.parametrize(
+    ("capitals", "refusal"),
+    [
+        (
+            [*v31_smoke.capitals_document()[:2], EUR_CAPITAL],
+            "capital: unexpected fields: fx_rate, fx_record",
+        ),
+        (
+            [{**c, "fx_rate": "1"} for c in v31_smoke.capitals_document()],
+            "capital: unexpected fields: fx_rate",
+        ),
+        (
+            v31_smoke.capitals_document()[:2],
+            "the research, medium and small USDT capitals required",
+        ),
+    ],
+    ids=["the EUR 100 capital", "an FX rate on each", "no small capital"],
+)
+def test_every_registered_job_refuses_capitals_other_than_the_owners(
+    registered, tmp_path, capsys, capitals, refusal
+):
+    """A registration whose capitals are not the owner's three USDT ones, the replaced EUR
+    100 capital with its FX record above all, never loads: every registered job refuses it
+    before anything is fetched, read or replayed, and no FX record is read."""
+    world = plan_world(registered, tmp_path / "world", owner_windows(), capitals)
+    hosts = {"inventory_transport": v31_smoke.Archives(), "legacy_transport": v31_smoke.Archives()}
+    calls = plan_world_calls(world, tmp_path)
+    for name in ("registered prepare", "plan", "picks", "run-cell", "aggregate"):
+        argv, out = calls[name]
+        code, _, err = run(argv, capsys, **hosts)
+        assert code == 1 and refusal in err, (name, err)
+        assert out is None or not out.exists(), name
+    assert not (world.repo / "config/v3_1_fx_record.json").exists()
     assert all(host.requested == [] for host in hosts.values())  # nothing was fetched
 
 
@@ -3556,7 +3636,6 @@ def prepare_world(module_network_blocked, tmp_path_factory) -> PrepareWorld:
     (repo / "config/v3_1_experiment_menu.json").write_bytes(
         (v31_smoke.CHECKOUT / "config/v3_1_experiment_menu.json").read_bytes()
     )
-    v31_smoke.write_json(repo / v31_smoke.FX_RECORD, v31_smoke.fx_record())
     for name, content in MODULES.items():  # the adapter pins read blobs at the head
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_bytes(content)

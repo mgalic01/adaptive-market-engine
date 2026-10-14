@@ -2,13 +2,17 @@
 
 The owner's decisions on the test plan of 2026-10-12 (``docs/V3_1_SOURCE_INVENTORY.md``,
 "Owner decisions on the test plan, 2026-10-12"), as the run driver's design fixes them
-(``docs/superpowers/specs/2026-10-12-v3-1-run-driver-design.md``, "Fixed inputs"):
+(``docs/superpowers/specs/2026-10-12-v3-1-run-driver-design.md``, "Fixed inputs"), with
+the capitals of the owner's decision of 2026-10-14 (the same file, "Owner decision on the
+capitals, 2026-10-14"):
 
 - W1, pass/fail: 2021-07-01 00:00 UTC to 2025-01-01 00:00 UTC, on ten coins: BTC, ETH,
   BNB, SOL, XRP, ADA, DOGE, LTC, LINK and TRX;
 - W0, reported only: 2020-03-01 00:00 UTC to 2025-01-01 00:00 UTC, on the eight coins
   with futures then: BTC, ETH, BNB, XRP, ADA, LINK, LTC and TRX;
-- the owner_small capital: EUR 100 at the ECB euro reference rate for 2024-12-31.
+- three starting capitals, all USDT, each opening at exactly its amount: ``research``
+  10,000, ``medium`` 1,000 and ``small`` 100. They replace 10,000 USDT plus EUR 100 at the
+  ECB euro reference rate for 2024-12-31: no capital converts a currency.
 
 ``owner_plan_errors`` checks a prepare config, and optionally a loaded registration,
 against ``OWNER_PLAN``. The driver (``scripts/v31_driver.py``, ``plan_gate``) applies it in
@@ -19,9 +23,10 @@ only on a world committing the rehearsal marker. The registration and prepare lo
 their general rules, which synthetic registrations pass too.
 """
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, fields
+from datetime import UTC, datetime
+from decimal import Decimal
 
 from crypto_grid_bot.combined.driver.registration import (
     ACCEPTANCE_WINDOW,
@@ -29,6 +34,7 @@ from crypto_grid_bot.combined.driver.registration import (
     DriverRegistration,
     PrepareConfig,
 )
+from crypto_grid_bot.combined.experiment import Capital
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,12 +48,23 @@ class PlanWindow:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanCapital:
+    """A starting capital of the plan: its id, currency, amount and initial equity, the
+    only fields a registered capital may hold."""
+
+    id: str
+    currency: str
+    amount: Decimal
+    initial_equity: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class OwnerPlan:
     """The windows a real run prepares and registers (W1 judged, W0 reported) and the
-    reference date of the FX record its EUR capital names."""
+    starting capitals it registers."""
 
     windows: tuple[PlanWindow, ...]
-    fx_reference_date: date
+    capitals: tuple[PlanCapital, ...]
 
 
 W1_SYMBOLS = frozenset(
@@ -70,14 +87,21 @@ W0_SYMBOLS = frozenset(
 W1_START_MS = 1_625_097_600_000  # 2021-07-01 00:00 UTC
 W0_START_MS = 1_583_020_800_000  # 2020-03-01 00:00 UTC
 END_MS = 1_735_689_600_000  # 2025-01-01 00:00 UTC, the reserved boundary
+# The owner's three starting capitals (2026-10-14), all USDT, in the registration's cell
+# order; each opens at exactly its amount.
+OWNER_CAPITALS = (
+    PlanCapital("research", "USDT", Decimal(10000), Decimal(10000)),
+    PlanCapital("medium", "USDT", Decimal(1000), Decimal(1000)),
+    PlanCapital("small", "USDT", Decimal(100), Decimal(100)),
+)
 OWNER_PLAN = OwnerPlan(
     windows=(
         PlanWindow(ACCEPTANCE_WINDOW, W1_START_MS, END_MS, W1_SYMBOLS),
         PlanWindow(REPORTED_WINDOW, W0_START_MS, END_MS, W0_SYMBOLS),
     ),
-    fx_reference_date=date(2024, 12, 31),
+    capitals=OWNER_CAPITALS,
 )
-_FX_CAPITAL = "owner_small"
+_CAPITAL_FIELDS = frozenset(field.name for field in fields(PlanCapital))
 
 
 def owner_plan_errors(
@@ -89,8 +113,9 @@ def owner_plan_errors(
     The prepare config must name exactly the plan's windows, each with its start, end and
     coin set (no coin missing, none extra; order free). A registration must register
     exactly those windows' ids and dates (``check_registration`` makes W1 the judged one
-    and W0 the reported one), and its owner_small capital must name an FX record whose
-    reference date is the plan's; so must any other FX capital.
+    and W0 the reported one) and exactly the plan's capitals (order free): each one's id,
+    currency, amount and initial equity, and no other field, so a capital carrying an FX
+    rate, record or pin is refused whatever its value.
 
     ``OWNER_PLAN`` is read at each call, so a test running a real mode on a synthetic
     world can stand that world's own plan in for it.
@@ -104,19 +129,7 @@ def owner_plan_errors(
             for window in (*registration.registration.windows, *registration.reported_windows)
         }
         errors.extend(_window_errors("registration", registered, plan))
-        dates = dict(registration.fx_reference_dates)
-        if _FX_CAPITAL not in dates:
-            errors.append(
-                f"registration: the {_FX_CAPITAL} capital names no FX record; the owner's "
-                f"is the ECB reference rate for {plan.fx_reference_date.isoformat()}"
-            )
-        for capital_id, reference in sorted(dates.items()):
-            if reference != plan.fx_reference_date:
-                errors.append(
-                    f"registration: capital {capital_id}'s FX record is the reference rate "
-                    f"for {reference.isoformat()}, not the owner's "
-                    f"{plan.fx_reference_date.isoformat()}"
-                )
+        errors.extend(_capital_errors(registration.registration.capitals, plan))
     return errors
 
 
@@ -155,6 +168,45 @@ def _window_errors(
                 f"{what}: window {window_id} must hold the owner's {len(want.symbols)} coins "
                 f"(missing: {', '.join(sorted(want.symbols - symbols)) or 'none'}; "
                 f"outside the plan: {', '.join(sorted(symbols - want.symbols)) or 'none'})"
+            )
+    return errors
+
+
+def _capital_errors(capitals: Sequence[Capital], plan: OwnerPlan) -> list[str]:
+    """How the registered ``capitals`` differ from the plan's: none missing, none extra,
+    none twice, and each a capital record holding the plan's id, currency, amount and
+    initial equity and no other field."""
+    expected = {capital.id: capital for capital in plan.capitals}
+    errors: list[str] = []
+    given: dict[str, Capital] = {}
+    for capital in capitals:
+        if not isinstance(capital, Capital) or type(capital.id) is not str:
+            errors.append(f"registration: {capital!r} is not a capital record")
+            continue
+        if capital.id in given:
+            errors.append(f"registration: capital {capital.id} is registered twice")
+        given[capital.id] = capital
+    if missing := sorted(expected.keys() - given.keys()):
+        errors.append(f"registration: the owner's capital(s) {', '.join(missing)} missing")
+    if extra := sorted(given.keys() - expected.keys()):
+        errors.append(f"registration: capital(s) {', '.join(extra)} outside the owner's plan")
+    for capital_id in sorted(expected.keys() & given.keys()):
+        want, held = expected[capital_id], given[capital_id]
+        if beyond := sorted({field.name for field in fields(held)} - _CAPITAL_FIELDS):
+            errors.append(
+                f"registration: capital {capital_id} holds {', '.join(beyond)} beyond its id, "
+                "currency, amount and initial equity; no capital of the owner's plan converts "
+                "a currency"
+            )
+        if (held.currency, held.amount, held.initial_equity) != (
+            want.currency,
+            want.amount,
+            want.initial_equity,
+        ):
+            errors.append(
+                f"registration: capital {capital_id} is {held.amount} {held.currency} opening "
+                f"at {held.initial_equity}, not the owner's {want.amount} {want.currency} "
+                f"opening at {want.initial_equity}"
             )
     return errors
 

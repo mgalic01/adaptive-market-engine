@@ -6,14 +6,15 @@ the code:
 
 - a tiny git repository whose head commits the synthetic legacy dataset's spec and
   manifest and a byte copy of the frozen bot config at their pinned paths (a minute cell
-  reads them at the repo head), the arm menu (a copy of the committed one), an FX record,
-  two filter snapshot stand-ins and the prepare config;
+  reads them at the repo head), the arm menu (a copy of the committed one), two filter
+  snapshot stand-ins and the prepare config;
 - the legacy dataset's hash-checked archives, stored by the frozen ``fetch_dataset`` from
   in-memory archives (``Archives``), laid out as ``backtest`` reads them.
 
 ``window_coins`` and ``v3_fields`` give the W1 and W0 coin inputs and the V3 input pack's
-fields, and ``register`` writes the run-manifest and the registration (all 42 arms, all
-216 cells) from a prepare document, as Task 11 copies the real one. The shapes follow the
+fields, and ``register`` writes the run-manifest and the registration (all 42 arms, the
+owner's three USDT capitals, all 324 cells) from a prepare document, as Task 11 copies the
+real one. The shapes follow the
 driver tests' own fixtures (``tests/combined_market_fixtures.py``, the run-cell, baseline
 and aggregate tests), with exact decimal arithmetic for every price. ``stand_ins``
 replaces the two frozen computations that cannot run on a few synthetic days, as those
@@ -94,7 +95,7 @@ from crypto_grid_bot.combined.driver.run_cell import _git, head_commit
 from crypto_grid_bot.combined.driver.v3_pack import V3PackFields
 from crypto_grid_bot.combined.driver.venues import COST_PROFILE_PINS
 from crypto_grid_bot.combined.execution import VenueRules
-from crypto_grid_bot.combined.experiment import SCENARIOS
+from crypto_grid_bot.combined.experiment import CAPITALS, SCENARIOS
 from crypto_grid_bot.combined.observation_policy import POLICY_ID
 from crypto_grid_bot.trend.filters import OrderFilters
 from crypto_grid_bot.trend.orchestration import Attempt
@@ -128,7 +129,6 @@ PICKS: dict[int, str | None] = {
     W1_START + DAY: "R3L",
     W1_END + DAY: None,
 }
-FX_RECORD = "config/v3_1_fx_record.json"
 SNAPSHOTS = {"spot": "config/smoke/spot.json", "futures": "config/smoke/futures.json"}
 # A rehearsal world commits this file at its code pin: the one mark that lets the driver
 # run the stand-ins (``--mode rehearsal``), and that every registered run refuses. The
@@ -144,7 +144,7 @@ TRIAL_ID = "v3-1-synthetic"
 TRIAL_SPEC = "docs/v3_1_synthetic_spec.md"
 TRIAL_SPEC_TEXT = (
     b"A synthetic V3.1 trial (labelled synthetic, never market data): the smoke world's 42 "
-    b"arms and 216 cells, registered for a rehearsal or a test.\n"
+    b"arms and 324 cells, registered for a rehearsal or a test.\n"
 )
 # trial_register.check_ready's code inventory, which a completion's code_paths must list.
 _CODE_PREFIXES = ("src/", "scripts/")
@@ -494,7 +494,6 @@ def build_world(
     spec_path = legacy_dataset(repo, legacy)
     shutil.copyfile(CHECKOUT / MINUTE_CONFIG_PATH, repo / MINUTE_CONFIG_PATH)
     (repo / MENU_PATH).write_bytes((CHECKOUT / MENU_PATH).read_bytes())
-    write_json(repo / FX_RECORD, fx_record())
     snapshots = {
         market: {"path": path, "sha256": write_json(repo / path, {"synthetic": market})}
         for market, path in SNAPSHOTS.items()
@@ -558,7 +557,7 @@ def register_trial(repo: Path) -> str:
         "folds": "synthetic: the world's two windows",
         "mask": "synthetic: the world's skipped hours",
         "seeds": [],
-        "budget": "synthetic: the registration's 216 cells, each once",
+        "budget": "synthetic: the registration's 324 cells, each once",
         "stopping": "synthetic: every cell, once",
         "selection": "synthetic: none",
         "data": None,
@@ -632,15 +631,13 @@ def source_modules() -> dict[str, bytes]:
     }
 
 
-def fx_record() -> dict[str, str]:
-    return {
-        "schema": "v3.1-fx-record-1",
-        "usd_per_eur": "1.0389",
-        "reference_date": "2024-12-31",
-        "source_url": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/"
-        "euro_reference_exchange_rates/html/eurofxref-graph-usd.en.html",
-        "retrieved_on": "2026-10-13",
-    }
+def capitals_document() -> list[dict[str, str]]:
+    """The owner's three USDT capitals (2026-10-14) as the registration file lists them:
+    research 10000, medium 1000 and small 100, each opening at its amount."""
+    return [
+        {"id": capital_id, "currency": "USDT", "amount": str(amount), "initial_equity": str(amount)}
+        for capital_id, amount in CAPITALS
+    ]
 
 
 def arm_kind(arm: str) -> str:
@@ -657,7 +654,7 @@ def synthetic_adapter_pins(arms: Iterable[str]) -> dict[str, str]:
 
 
 def cells_document(arms: Sequence[str]) -> list[dict[str, object]]:
-    """The 216 cells ``registration.required_cells`` lists, as the registration file holds
+    """The 324 cells ``registration.required_cells`` lists, as the registration file holds
     them: W1 by arm, scenario, cost and capital, then W0's ``combined`` cells."""
 
     def cells(window: str, arm: str, scenarios: Sequence[str]) -> Iterator[dict[str, object]]:
@@ -698,10 +695,11 @@ def register(
     ``registration``, unstaged, as Task 11 does for the real run; return the loaded
     registration and the registration file's SHA-256.
 
-    The windows are the prepare config's: ``w1`` judged, ``w0`` reported. ``adapter_pins``
-    defaults to ``synthetic_adapter_pins``; ``code_pin`` is the commit the registration
-    names. A world with a trial (``build_world(trial=True)``) then completes it with these
-    pins (``complete_trial``) before the registration commit."""
+    The windows are the prepare config's: ``w1`` judged, ``w0`` reported; the capitals the
+    owner's three (``capitals_document``). ``adapter_pins`` defaults to
+    ``synthetic_adapter_pins``; ``code_pin`` is the commit the registration names. A world
+    with a trial (``build_world(trial=True)``) then completes it with these pins
+    (``complete_trial``) before the registration commit."""
     repo = world.repo
     menu = json.loads((repo / MENU_PATH).read_bytes())["arms"]
     arms = registered_arms(menu, V1_VARIANTS)
@@ -714,7 +712,6 @@ def register(
         ),
         manifest_file,
     )
-    fx_sha = hashlib.sha256((repo / FX_RECORD).read_bytes()).hexdigest()
     skipped = document["skipped_hours"]
     windows = {window.id: window for window in world.prepare.windows}
 
@@ -733,17 +730,7 @@ def register(
         "arms": list(arms),
         "adapter_pins": dict(adapter_pins or synthetic_adapter_pins(arms)),
         "cost_profiles": [{"multiple": m, "sha256": COST_PROFILE_PINS[m]} for m in COST_MULTIPLES],
-        "capitals": [
-            {"id": "research", "currency": "USDT", "amount": "10000", "initial_equity": "10000"},
-            {
-                "id": "owner_small",
-                "currency": "EUR",
-                "amount": "100",
-                "initial_equity": "103.89",
-                "fx_rate": "1.0389",
-                "fx_record": {"path": FX_RECORD, "sha256": fx_sha},
-            },
-        ],
+        "capitals": capitals_document(),
         "windows": [window("w1")],
         "reported_windows": [window("w0")],
         "cells": cells_document(arms),

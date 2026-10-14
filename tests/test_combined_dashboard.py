@@ -410,9 +410,9 @@ def disclosure_section(html: str) -> str:
 
 def test_disclosures_and_the_capital_label_are_rendered_escaped() -> None:
     attack = "<img src=x onerror=alert(1)>"
-    label = "owner_small:EUR:100:usdt_per_eur=1.08:fx_pin=" + "a" * 64
+    label = "medium_1000_usdt"
     evidence = analyze(
-        D(108),
+        D(1000),
         curve(),
         contributions(),
         (),
@@ -591,22 +591,31 @@ def test_comparison_rows_of_another_cell_are_omitted_with_a_warning() -> None:
 
 def test_a_comparison_of_another_capital_than_the_report_s_is_refused() -> None:
     _, full, cell = compared()
+
+    def of(capital: str):
+        rows = tuple(replace(r, capital=capital) for r in cell.rows)
+        return replace(cell, capital=capital, rows=rows)
+
     research = replace(full, capital_label="research_10000_usdt")
+    medium = replace(full, capital_label="medium_1000_usdt")
+    small = replace(full, capital_label="small_100_usdt")
+    rows = comparison_rows(render_report(research, comparison=cell))
+    assert len(rows) == len(cell.baselines)
+    for other in (medium, small):
+        with pytest.raises(ValueError, match="capital"):
+            render_report(other, comparison=cell)
+    with pytest.raises(ValueError, match="capital"):
+        render_report(research, comparison=of("small"))
+    with pytest.raises(ValueError, match="capital"):
+        render_report(medium, comparison=of("small"))
+    assert comparison_rows(render_report(small, comparison=of("small")))
+    assert comparison_rows(render_report(medium, comparison=of("medium")))
+    # The replaced EUR 100 label names no capital, so no cell is of its capital.
     owner_small = replace(
         full, capital_label=f"owner_small:EUR:100:usdt_per_eur=1.1:fx_pin={'a' * 64}"
     )
-    rows = comparison_rows(render_report(research, comparison=cell))
-    assert len(rows) == len(cell.baselines)
     with pytest.raises(ValueError, match="capital"):
-        render_report(owner_small, comparison=cell)
-    small_cell = replace(
-        cell,
-        capital="owner_small",
-        rows=tuple(replace(r, capital="owner_small") for r in cell.rows),
-    )
-    with pytest.raises(ValueError, match="capital"):
-        render_report(research, comparison=small_cell)
-    assert comparison_rows(render_report(owner_small, comparison=small_cell))
+        render_report(owner_small, comparison=of("owner_small"))
 
 
 def test_native_baseline_diagnostics_are_shown_under_their_version_label() -> None:

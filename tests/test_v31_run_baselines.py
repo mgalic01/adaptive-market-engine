@@ -30,9 +30,7 @@ import pytest
 from test_backtest_loaders import FakeArchive
 from test_full_stack import add_funding, add_klines, bar
 from test_v31_registration import (
-    FX_PATH,
     MENU,
-    fx_document,
     prepare_document,
     registration_document,
     write_json,
@@ -109,8 +107,8 @@ GAP = W1_START + 30 * HOUR  # BTC has no spot bar at this hour, so W1 skips it
 HOLD_PIN = "6" * 64
 V3_PIN = "7" * 64
 SELECTOR = "unchanged_v3_selector"
-HOLD_CELL = "w1.matched_spot_hold.native.c1.owner_small"
-SELECTOR_CELL = "w1.unchanged_v3_selector.native.c2.owner_small"
+HOLD_CELL = "w1.matched_spot_hold.native.c1.small"  # the owner's 100 USDT capital
+SELECTOR_CELL = "w1.unchanged_v3_selector.native.c2.medium"  # and its 1,000 USDT one
 RULE_CELL = "w1.unchanged_v3_r2_long_only.native.c1.research"
 # The frozen picks the stand-in walk-forward returns: one long before W1, the pick in
 # force at W1's start, a change inside W1 and one after it.
@@ -164,7 +162,7 @@ class World:
 
 @pytest.fixture(scope="module")
 def world(tmp_path_factory) -> World:
-    """Written W1, W0 and V3 packs, and a loaded synthetic registration of all 216 cells
+    """Written W1, W0 and V3 packs, and a loaded synthetic registration of all 324 cells
     whose run-manifest pins them, with distinct hold and V3 adapter pins."""
     root = tmp_path_factory.mktemp("repo")
     built = {"w1": w1_pack(), "w0": window_pack("w0", W0_START, W0_END)}
@@ -181,12 +179,11 @@ def world(tmp_path_factory) -> World:
         for wid, pack in packs.items()
     ]
     write_json(config / "v3_1_prepare.json", prepare)
-    fx_sha = write_json(root / FX_PATH, fx_document())
     prepared = load_prepare_config(config / "v3_1_prepare.json")
     manifest_file = config / "v3_1_run_manifest.json"
     manifest = run_manifest(prepared, window_packs=shas, v3_pack=v3_sha)
     manifest_sha = write_run_manifest(manifest, manifest_file)
-    document = registration_document(prepared.sha256, manifest_sha, fx_sha)
+    document = registration_document(prepared.sha256, manifest_sha)
     document["windows"] = [window_document(packs["w1"])]
     document["reported_windows"] = [window_document(packs["w0"])]
     for arm in document["adapter_pins"]:
@@ -310,9 +307,10 @@ def test_hold_cell_on_a_synthetic_pack(world, tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_baselines, "replay_hold_baseline", spy)
     base = hold(world, HOLD_CELL, tmp_path)
-    doubled = hold(world, "w1.matched_spot_hold.native.c2.owner_small", tmp_path)
+    doubled = hold(world, "w1.matched_spot_hold.native.c2.small", tmp_path)
 
-    owner = capital_of(world, "owner_small")
+    owner = capital_of(world, "small")
+    assert owner.initial_equity == 100 and capital_label(owner) == "small_100_usdt"
     refs = (f"v31-pack:{world.w1_sha}", f"v31-run-manifest:{world.manifest_sha}")
     (markets, options, evidence), (doubled_markets, doubled_options, _) = seen
     # The adapter scales the rates by the cell's multiple, so both cells pass base costs.
@@ -347,7 +345,7 @@ def test_hold_cell_on_a_synthetic_pack(world, tmp_path, monkeypatch):
     assert outcome.identity == RunIdentity(
         arm="matched_spot_hold",
         window="w1",
-        capital="owner_small",
+        capital="small",
         cost_multiple=1,
         data_pin=w1.data_pin,
         cost_profile_pin=COST_PROFILE_PINS[1],
@@ -355,7 +353,6 @@ def test_hold_cell_on_a_synthetic_pack(world, tmp_path, monkeypatch):
         end_ms=W1_END,
         code_pin=CODE_PIN,
         config_pin=world.config_sha,
-        fx_pin=owner.fx_pin,
         observation_policy=POLICY_ID,
         adapter_pin=HOLD_PIN,
         scenario="native",
@@ -516,7 +513,8 @@ def test_v3_cell_uses_the_shared_picks(world, picked, tmp_path, monkeypatch):
     selector = v3(world, SELECTOR_CELL, path, tmp_path)
     rule = v3(world, RULE_CELL, path, tmp_path)
 
-    owner, research = capital_of(world, "owner_small"), capital_of(world, "research")
+    owner, research = capital_of(world, "medium"), capital_of(world, "research")
+    assert owner.initial_equity == 1000 and capital_label(owner) == "medium_1000_usdt"
     refs = (f"v3-pack:{world.v3_sha}", f"v31-run-manifest:{world.manifest_sha}")
     picks_ref = f"v3-picks:{hashlib.sha256(path.read_bytes()).hexdigest()}"
     (arm, inputs, options, evidence), (rule_arm, rule_inputs, rule_options, _) = seen
@@ -553,7 +551,7 @@ def test_v3_cell_uses_the_shared_picks(world, picked, tmp_path, monkeypatch):
     assert outcome.identity == RunIdentity(
         arm=SELECTOR,
         window="w1",
-        capital="owner_small",
+        capital="medium",
         cost_multiple=2,
         data_pin=w1.data_pin,
         cost_profile_pin=COST_PROFILE_PINS[2],
@@ -561,7 +559,6 @@ def test_v3_cell_uses_the_shared_picks(world, picked, tmp_path, monkeypatch):
         end_ms=W1_END,
         code_pin=CODE_PIN,
         config_pin=world.config_sha,
-        fx_pin=owner.fx_pin,
         observation_policy=POLICY_ID,
         adapter_pin=V3_PIN,
         scenario="native",
@@ -575,7 +572,8 @@ def test_v3_cell_uses_the_shared_picks(world, picked, tmp_path, monkeypatch):
     assert native["evidence"]["native_label"] == "v3-native"
     assert len(native["evidence"]["native_marks"]) == len(evidence.native) > 0
     rule_outcome = decode_outcome((rule / "outcome.json").read_text(encoding="ascii"))
-    assert rule_outcome.identity.capital == "research" and rule_outcome.identity.fx_pin is None
+    assert rule_outcome.identity.capital == "research"
+    assert rule_outcome.initial_equity == research.initial_equity == 10000
 
 
 CAUSES = {
@@ -1182,7 +1180,7 @@ class MinuteWorld:
 def minute_world(tmp_path_factory) -> MinuteWorld:
     """A temporary git repository whose head commits the synthetic dataset's spec and
     manifest and a copy of the frozen bot config at their pinned paths, the dataset's
-    archives beside it, and a loaded registration of all 216 cells whose W1 is 2020-12-03
+    archives beside it, and a loaded registration of all 324 cells whose W1 is 2020-12-03
     to 2020-12-05 and whose run-manifest pins the dataset's manifest under the full-range
     path, with a distinct minute adapter pin."""
     if shutil.which("git") is None:
@@ -1209,14 +1207,13 @@ def minute_world(tmp_path_factory) -> MinuteWorld:
     assert MINUTE_MANIFEST_PATH in prepare["data_manifests"]
     prepare["data_manifests"][MINUTE_MANIFEST_PATH] = legacy_sha
     write_json(config / "v3_1_prepare.json", prepare)
-    fx_sha = write_json(root / FX_PATH, fx_document())
     prepared = load_prepare_config(config / "v3_1_prepare.json")
     manifest_file = config / "v3_1_run_manifest.json"
     packs = {"w1": "1" * 64, "w0": "2" * 64}
     manifest_sha = write_run_manifest(
         run_manifest(prepared, window_packs=packs, v3_pack="3" * 64), manifest_file
     )
-    document = registration_document(prepared.sha256, manifest_sha, fx_sha)
+    document = registration_document(prepared.sha256, manifest_sha)
     document["windows"], document["reported_windows"] = (
         [{"id": wid, "start_ms": start, "end_ms": end, "skipped_hours": []}]
         for wid, (start, end) in windows.items()
@@ -1281,15 +1278,16 @@ def spied_minute(patch, world, cell_id, out_dir, mask=unmasked, reg=None) -> Min
     return MinuteRun(directory, arm, jobs, options, evidence)
 
 
-# Every version in both path modes at base cost and research capital; D with the
-# owner_small capital; V0 and D doubled.
+# Every version in both path modes at base cost and research capital; D with the small
+# (100 USDT) and V2 with the medium (1,000 USDT) capital; V0 and D doubled.
 SPIED_CELLS = (
     *(
         f"w1.matched_{base}_{mode}.native.c1.research"
         for base in ("v0_grid", "v1_g_grid", "v2_grid", "d_trend")
         for mode in PATH_MODES
     ),
-    "w1.matched_d_trend_high_first.native.c1.owner_small",
+    "w1.matched_d_trend_high_first.native.c1.small",
+    "w1.matched_v2_grid_low_first.native.c1.medium",
     "w1.matched_d_trend_high_first.native.c2.research",
     "w1.matched_v0_grid_low_first.native.c2.research",
 )
@@ -1411,7 +1409,6 @@ def test_minute_cell_for_each_version_and_both_path_modes(minute_world, minute_r
                 end_ms=M1_END,
                 code_pin=CODE_PIN,
                 config_pin=world.config_sha,
-                fx_pin=None,
                 observation_policy=POLICY_ID,
                 adapter_pin=MINUTE_ADAPTER_PIN,
                 scenario="native",
@@ -1460,8 +1457,8 @@ def test_minute_cell_for_each_version_and_both_path_modes(minute_world, minute_r
 
 def test_minute_cell_capital_split_remainder_is_disclosed(minute_world, minute_runs):
     research = minute_runs["w1.matched_d_trend_high_first.native.c1.research"].evidence.report
-    owner_run = minute_runs["w1.matched_d_trend_high_first.native.c1.owner_small"]
-    owner = owner_run.evidence.report
+    owner_run = minute_runs["w1.matched_d_trend_high_first.native.c1.small"]
+    medium_run = minute_runs["w1.matched_v2_grid_low_first.native.c1.medium"]
     # 10,000 USDT over three pairs: each gets 3333.33333333 and 0.00000001 stays cash.
     assert "equal_capital_share_per_pair" in research.disclosures
     assert "minute_baseline_capital_remainder_cash:0.00000001" in research.disclosures
@@ -1472,14 +1469,19 @@ def test_minute_cell_capital_split_remainder_is_disclosed(minute_world, minute_r
     # The uninvested remainder is in the final equity besides the three pairs' own.
     finals = sum((D("3333.33333333") + net for net in nets.values()), D(0))
     assert research.final_equity == finals + D("0.00000001")
-    # EUR 100 at 1.0389 is 103.89 USDT: 34.63 each, an exact split, so no remainder.
-    capital = capital_of(minute_world, "owner_small")
-    assert owner.equity_points[0].equity == capital.initial_equity == D("103.89")
-    assert owner.capital_label == capital_label(capital)
-    assert not [d for d in owner.disclosures if d.startswith("minute_baseline_capital_remainder")]
-    assert owner_run.options["initial"] == D("103.89")
-    outcome = decode_outcome((owner_run.directory / "outcome.json").read_text())
-    assert outcome.identity.capital == "owner_small" and outcome.identity.fx_pin == capital.fx_pin
+    # The owner's 100 and 1,000 USDT capitals (2026-10-14) split no more exactly: each pair
+    # gets 33.33333333 and 333.33333333, and 0.00000001 stays cash. (An exact split, with
+    # no remainder, is tests/test_combined_baseline_minute.py's.)
+    for ran, capital_id, opening in ((owner_run, "small", 100), (medium_run, "medium", 1000)):
+        capital = capital_of(minute_world, capital_id)
+        report = ran.evidence.report
+        assert report.equity_points[0].equity == capital.initial_equity == D(opening)
+        assert report.capital_label == capital_label(capital) == f"{capital_id}_{opening}_usdt"
+        assert "minute_baseline_capital_remainder_cash:0.00000001" in report.disclosures
+        assert ran.options["initial"] == D(opening)
+        outcome = decode_outcome((ran.directory / "outcome.json").read_text())
+        assert outcome.identity.capital == capital_id
+        assert outcome.initial_equity == D(opening)
 
 
 def test_minute_cell_doubles_costs_with_the_fill_trigger_at_base_slippage(minute_runs):
@@ -1618,7 +1620,7 @@ def test_minute_cell_follows_the_claim_failure_outcome_protocol(
 
     failed = tmp_path / "failed"
     failed.mkdir()
-    grid_cell = "w1.matched_v2_grid_low_first.native.c2.owner_small"
+    grid_cell = "w1.matched_v2_grid_low_first.native.c2.small"
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(run_baselines, "replay_grid_baseline", broken)
         with pytest.raises(RuntimeError, match="forced minute failure"):

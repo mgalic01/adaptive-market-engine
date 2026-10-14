@@ -6,7 +6,8 @@
   "cost_multiples": [1, 2],
   "capital_scenarios": [
     {"id": "research", "usdt": "10000"},
-    {"id": "owner_small", "eur": "100", "eur_usdt_pin": null}
+    {"id": "medium", "usdt": "1000"},
+    {"id": "small", "usdt": "100"}
   ],
   "arms": [
     "unchanged_v3_selector",

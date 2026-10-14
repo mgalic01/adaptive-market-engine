@@ -146,15 +146,15 @@ def test_a_missing_opening_minute_leaves_that_boundary_absent():
 
 
 THREE = ("AAAUSDT", "BBBUSDT", "CCCUSDT")
-OWNER_SMALL = f"owner_small:EUR:100:usdt_per_eur=1.04:fx_pin={'e' * 64}"
 
 
 @pytest.mark.parametrize(
     ("initial", "share", "remainder", "label"),
     [
         ("10000", "3333.33333333", "0.00000001", "research_10000_usdt"),
-        # Owner-small at 1.04 USDT per EUR: 104 / 3 has no exact 8-decimal share either.
-        ("104", "34.66666666", "0.00000002", OWNER_SMALL),
+        # The owner's 1000 and 100 USDT capitals (2026-10-14): no exact 8-decimal share either.
+        ("1000", "333.33333333", "0.00000001", "medium_1000_usdt"),
+        ("100", "33.33333333", "0.00000001", "small_100_usdt"),
     ],
 )
 def test_an_inexact_split_keeps_its_remainder_as_uninvested_cash(initial, share, remainder, label):
