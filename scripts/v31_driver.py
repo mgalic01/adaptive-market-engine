@@ -1298,11 +1298,11 @@ class TransientGitHubError(ValueError):
     """A read of GitHub's API that may succeed when repeated (owner decision v31-d21, layer
     L1): no reply, a timeout or a connection error, a reply cut short (an incomplete or
     unreadable status line or body, a TLS failure while reading it, a body shorter than
-    its Content-Length), HTTP 5xx or 429, a 403 of GitHub's rate limits (``Retry-After``,
-    ``x-ratelimit-remaining: 0``, or a body naming the secondary rate limit), or the
-    current run not yet listed. ``retry_after`` is
-    the wait in seconds GitHub asked for, if it gave one. A ``ValueError``, so whatever
-    does not retry it fails closed on it."""
+    its Content-Length, a headerless 403 whose body fails to read in full), HTTP 5xx or
+    429, a 403 of GitHub's rate limits (``Retry-After``, ``x-ratelimit-remaining: 0``, or
+    a body naming the secondary rate limit), or the current run not yet listed.
+    ``retry_after`` is the wait in seconds GitHub asked for, if it gave one. A
+    ``ValueError``, so whatever does not retry it fails closed on it."""
 
     def __init__(self, message: str, retry_after: int | None = None) -> None:
         super().__init__(message)
@@ -1644,13 +1644,22 @@ def _header(headers: object, name: str) -> str | None:
     return value.strip() if isinstance(value, str) else None
 
 
-def _secondary_rate_limit(error: urllib.error.HTTPError) -> bool:
+def _secondary_rate_limit(error: urllib.error.HTTPError, what: str) -> bool:
     """Whether an HTTP error's body, read up to ``MAX_GITHUB_BYTES``, is a JSON object
     whose ``message`` names GitHub's secondary rate limit (any case); False for any other
-    body, or one that cannot be read."""
+    body that reads in full. A transport failure while reading it (``IncompleteRead`` or
+    another ``HTTPException``, or an ``OSError``: a timeout, a connection error, an
+    ``ssl.SSLError``) is a reply cut short, which may have been the limit's: a
+    ``TransientGitHubError`` naming the error (``what`` names the reply), as one is
+    elsewhere. A body that cannot be read for any other reason (a ``ValueError``) is
+    False."""
     try:
         raw = error.read(MAX_GITHUB_BYTES + 1)
-    except (OSError, HTTPException, ValueError):
+    except (OSError, HTTPException) as exc:
+        raise TransientGitHubError(
+            f"{what} (its body was cut short: {type(exc).__name__}: {exc})"
+        ) from exc
+    except ValueError:
         return False
     if not isinstance(raw, bytes) or len(raw) > MAX_GITHUB_BYTES:
         return False
@@ -1674,7 +1683,8 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
     HTTP 403 that carries ``Retry-After`` or ``x-ratelimit-remaining: 0`` (GitHub's rate
     limits), with GitHub's ``Retry-After`` seconds when it gives them, or whose JSON body's
     ``message`` names the secondary rate limit, which GitHub may send without either
-    header (waited at least ``SECONDARY_LIMIT_WAIT``). Any other 403 is permanent."""
+    header (waited at least ``SECONDARY_LIMIT_WAIT``), or whose body is cut short while it
+    is read for that message (``_secondary_rate_limit``). Any other 403 is permanent."""
     # The URL is the fixed https://api.github.com origin and a path the callers build from
     # the validated GITHUB_REPOSITORY and GITHUB_RUN_ID: no other scheme or host is opened.
     request = urllib.request.Request(
@@ -1705,7 +1715,7 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
             if retry_after is not None and re.fullmatch(r"[0-9]{1,9}", retry_after):
                 seconds = int(retry_after)
             raise TransientGitHubError(message, seconds) from exc
-        if exc.code == 403 and _secondary_rate_limit(exc):
+        if exc.code == 403 and _secondary_rate_limit(exc, message):
             # GitHub's secondary rate limit may answer without either header, and asks
             # for a wait of at least a minute.
             message += " (secondary rate limit)"
