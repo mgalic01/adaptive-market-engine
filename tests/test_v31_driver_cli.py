@@ -56,6 +56,7 @@ from http.client import (
     HTTPException,
     HTTPMessage,
     IncompleteRead,
+    LineTooLong,
     RemoteDisconnected,
 )
 from pathlib import Path
@@ -2831,41 +2832,80 @@ def cut_short_403(failure: BaseException) -> urllib.error.HTTPError:
     "failure",
     [
         IncompleteRead(b'{"message": "You have exceeded a sec', 70),
-        HTTPException("the reply ended"),
+        BadStatusLine("the reply ended"),
         ConnectionResetError("connection reset by peer"),
         TimeoutError("the read timed out"),
         ssl.SSLEOFError("EOF occurred in violation of protocol"),
+        urllib.error.URLError("down"),
     ],
     ids=lambda failure: type(failure).__name__,
 )
 def test_a_403_body_cut_short_while_read_is_retried(github_env, capsys, failure):
-    """A transport failure while the headerless 403's body is read for the secondary-limit
-    message is a reply cut short, transient as one is elsewhere: retried after the usual
-    backoff, then the listing succeeds; refused, named, after the last attempt."""
+    """A read of the headerless 403's body (for the secondary-limit message) failing as a
+    200 reply's would be retried is a reply cut short, which may have been the limit's:
+    retried after at least a minute, as the limit is, then the listing succeeds; refused,
+    named, after the last attempt."""
     api = FakeGitHub([CURRENT, workflow_run(400)], answers={page(1): [cut_short_403(failure)]})
     waits = []
     (launch,) = v31_driver.dispatch_check(SHA, api, sleep=waits.append)
-    assert launch.run_id == 400 and waits == [15]
+    assert launch.run_id == 400 and waits == [60]
     err = capsys.readouterr().err
     assert f"HTTP 403 (its body was cut short: {type(failure).__name__}: " in err
-    assert "attempt 1 of 5 failed" in err and "retrying in 15 s" in err
+    assert "attempt 1 of 5 failed" in err and "retrying in 60 s" in err
     assert [url for url, *_ in api.requests].count(API + page(1)) == 2
     api = FakeGitHub([CURRENT], answers={page(1): [cut_short_403(failure) for _ in range(5)]})
     waits = []
     with pytest.raises(ValueError, match=r"\(still failing after 5 attempts\)$") as refused:
         v31_driver.dispatch_check(SHA, api, sleep=waits.append)
-    assert waits == [15, 30, 60, 120]
+    assert waits == [60, 60, 60, 120]  # each at least a minute, at most the cap
     assert f"page=1: HTTP 403 (its body was cut short: {type(failure).__name__}" in str(
         refused.value
     )
 
 
-def test_a_permission_403_whose_body_reads_in_full_stays_permanent(github_env):
-    """A headerless 403 whose body reads in full and names no secondary limit is GitHub
-    refusing the token: refused at once, never retried, the body's read not a cut-short
-    reply."""
+def test_a_403_body_ending_before_its_content_length_is_retried(github_env, capsys):
+    """``read(amt)`` raises nothing when a body ends before its Content-Length: it returns
+    the short read. A 403's body so cut short is retried as one that raised, after at
+    least a minute, as a 200 reply's short body is retried."""
+    body = b'{"message": "You have exc'
+    short = http_error(403, {"Content-Length": "100"}, body)
+    api = FakeGitHub([CURRENT, workflow_run(400)], answers={page(1): [short]})
+    waits = []
+    (launch,) = v31_driver.dispatch_check(SHA, api, sleep=waits.append)
+    assert launch.run_id == 400 and waits == [60]
+    err = capsys.readouterr().err
+    assert f"HTTP 403 (its body ended after {len(body)} of its 100 bytes (Content-Length))" in err
+    assert [url for url, *_ in api.requests].count(API + page(1)) == 2
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        LineTooLong("header line"),
+        HTTPException("an HTTP failure of no other kind"),
+        OSError("an OS failure of no other kind"),
+        ValueError("I/O operation on closed file"),
+    ],
+    ids=lambda failure: type(failure).__name__,
+)
+def test_any_other_failure_reading_a_403_body_stays_permanent(github_env, failure):
+    """A failure a 200 reply's read would not retry is no reply cut short on a 403's
+    body either: the 403 is refused at once, as permanent as any other."""
+    api = FakeGitHub([CURRENT], answers={page(1): [cut_short_403(failure)]})
+    with pytest.raises(ValueError, match=r"HTTP 403$") as refused:
+        v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
+    assert not isinstance(refused.value, v31_driver.TransientGitHubError)
+    assert [url for url, *_ in api.requests].count(API + page(1)) == 1
+
+
+@pytest.mark.parametrize("declared", [False, True], ids=["no length", "its length"])
+def test_a_permission_403_whose_body_reads_in_full_stays_permanent(github_env, declared):
+    """A headerless 403 whose body reads in full (all its Content-Length, when it declares
+    one) and names no secondary limit is GitHub refusing the token: refused at once, never
+    retried, the body's read not a cut-short reply."""
     body = json.dumps({"message": "Resource not accessible by integration"}).encode("utf-8")
-    api = FakeGitHub([CURRENT], answers={page(1): [http_error(403, {}, body)]})
+    headers = {"Content-Length": str(len(body))} if declared else {}
+    api = FakeGitHub([CURRENT], answers={page(1): [http_error(403, headers, body)]})
     with pytest.raises(ValueError, match=r"HTTP 403$") as refused:
         v31_driver.dispatch_check(SHA, api, sleep=no_sleep)
     assert not isinstance(refused.value, v31_driver.TransientGitHubError)

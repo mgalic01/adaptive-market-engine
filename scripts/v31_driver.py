@@ -1644,25 +1644,59 @@ def _header(headers: object, name: str) -> str | None:
     return value.strip() if isinstance(value, str) else None
 
 
+# The transport failures a repeated read may not meet (L1): no reply, a timeout or a
+# connection error, or a reply cut short. A read of a 200 reply and of a 403's body (for
+# the secondary-limit message) share them; any other transport failure is permanent.
+_CUT_SHORT: tuple[type[Exception], ...] = (
+    urllib.error.URLError,
+    TimeoutError,
+    ConnectionError,
+    IncompleteRead,
+    BadStatusLine,
+    ssl.SSLError,
+)
+
+
+def _shorter_than_declared(raw: bytes, length: str | None) -> bool:
+    """Whether ``raw`` ended before the Content-Length ``length`` (a header value, or
+    None) declared: ``read(amt)`` returns a short read, raising nothing, when a body with a
+    Content-Length ends early."""
+    return (
+        length is not None
+        and re.fullmatch(r"[0-9]{1,12}", length) is not None
+        and len(raw) < int(length)
+    )
+
+
 def _secondary_rate_limit(error: urllib.error.HTTPError, what: str) -> bool:
     """Whether an HTTP error's body, read up to ``MAX_GITHUB_BYTES``, is a JSON object
     whose ``message`` names GitHub's secondary rate limit (any case); False for any other
-    body that reads in full. A transport failure while reading it (``IncompleteRead`` or
-    another ``HTTPException``, or an ``OSError``: a timeout, a connection error, an
-    ``ssl.SSLError``) is a reply cut short, which may have been the limit's: a
-    ``TransientGitHubError`` naming the error (``what`` names the reply), as one is
-    elsewhere. A body that cannot be read for any other reason (a ``ValueError``) is
-    False."""
+    body that reads in full.
+
+    A body cut short may have been the limit's message, so it is a
+    ``TransientGitHubError`` (``what`` names the reply) waited at least
+    ``SECONDARY_LIMIT_WAIT``, as the limit is: a read failing as a 200 reply's would be
+    retried (``_CUT_SHORT``: ``IncompleteRead``, ``BadStatusLine``, an ``ssl.SSLError``, a
+    timeout or a connection error), or a read ending before the error's Content-Length.
+    Any other failure to read it (another ``OSError`` or ``HTTPException``, such as
+    ``LineTooLong``, or a ``ValueError``) is False, as permanent as it is for a 200 reply."""
     try:
         raw = error.read(MAX_GITHUB_BYTES + 1)
-    except (OSError, HTTPException) as exc:
+    except _CUT_SHORT as exc:
         raise TransientGitHubError(
-            f"{what} (its body was cut short: {type(exc).__name__}: {exc})"
+            f"{what} (its body was cut short: {type(exc).__name__}: {exc})",
+            SECONDARY_LIMIT_WAIT,
         ) from exc
-    except ValueError:
+    except (OSError, HTTPException, ValueError):
         return False
     if not isinstance(raw, bytes) or len(raw) > MAX_GITHUB_BYTES:
         return False
+    length = _header(error.headers, "Content-Length")
+    if _shorter_than_declared(raw, length):
+        raise TransientGitHubError(
+            f"{what} (its body ended after {len(raw)} of its {length} bytes (Content-Length))",
+            SECONDARY_LIMIT_WAIT,
+        )
     try:
         document = strict_json(raw, "GitHub's error body")
     except ValueError:
@@ -1684,7 +1718,9 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
     limits), with GitHub's ``Retry-After`` seconds when it gives them, or whose JSON body's
     ``message`` names the secondary rate limit, which GitHub may send without either
     header (waited at least ``SECONDARY_LIMIT_WAIT``), or whose body is cut short while it
-    is read for that message (``_secondary_rate_limit``). Any other 403 is permanent."""
+    is read for that message (``_secondary_rate_limit``: a read failing as a 200 reply's
+    would be retried, or ending before its Content-Length; waited the same). Any other 403
+    is permanent."""
     # The URL is the fixed https://api.github.com origin and a path the callers build from
     # the validated GITHUB_REPOSITORY and GITHUB_RUN_ID: no other scheme or host is opened.
     request = urllib.request.Request(
@@ -1723,14 +1759,7 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
         if exc.code == 404:
             raise GitHubNotFound(message) from exc
         raise ValueError(message) from exc
-    except (
-        urllib.error.URLError,
-        TimeoutError,
-        ConnectionError,
-        IncompleteRead,
-        BadStatusLine,
-        ssl.SSLError,
-    ) as exc:  # no reply, or one cut short
+    except _CUT_SHORT as exc:  # no reply, or one cut short
         raise TransientGitHubError(f"GitHub API {path}: {type(exc).__name__}: {exc}") from exc
     except (OSError, HTTPException) as exc:  # any other transport failure: permanent
         raise ValueError(f"GitHub API {path}: {type(exc).__name__}: {exc}") from exc
@@ -1738,7 +1767,7 @@ def github_json(path: str, token: str, opener: GitHubOpener) -> Any:
         raise ValueError(f"GitHub API {path}: HTTP {status}, not 200")
     if len(raw) > MAX_GITHUB_BYTES:
         raise ValueError(f"GitHub API {path}: the response is larger than {MAX_GITHUB_BYTES} bytes")
-    if length is not None and re.fullmatch(r"[0-9]{1,12}", length) and len(raw) < int(length):
+    if _shorter_than_declared(raw, length):
         raise TransientGitHubError(
             f"GitHub API {path}: the reply ended after {len(raw)} of its {length} bytes "
             "(Content-Length)"
