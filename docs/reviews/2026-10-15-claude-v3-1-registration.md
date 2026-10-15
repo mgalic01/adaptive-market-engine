@@ -6,7 +6,10 @@ Author: Claude Code (registration implementer, Task 11), 2026-10-15 UTC. Branch
 `claude/v3-1-registration`, three commits on main `5357674`. Nothing was pushed or run;
 no market data was fetched or read. (An earlier build of the same registration, four
 commits with another code pin, is kept locally as `claude/v3-1-registration-draft1` and
-was never pushed; this rebuild replaces it.)
+was never pushed; this rebuild replaces it.) Revised the same day, in a docs-only commit,
+after the independent review: what was measured and what is only estimated, the outcomes
+that use up the run without a verdict, the owner's two decisions of 07:40Z, the exact
+dispatch command and a corrected rehearsal record.
 
 ## In plain words
 
@@ -25,16 +28,22 @@ was never pushed; this rebuild replaces it.)
   Every one of those comparisons must exist: one missing comparison anywhere means "not
   decided" (incomplete), never a pass.
 - **How big it is.** 324 separate runs ("cells"), each run once. About 14 to 17 hours on
-  GitHub's machines, 20 at a time; the longest measured job (V3's picks, about 3.7 hours)
-  stays under GitHub's 6-hour job limit.
+  GitHub's machines, 20 at a time. That is an estimate: only three steps were timed on
+  real data (preparing the data, the old V3 picker, and one grid-bot cell); the V3.1 cells
+  themselves, the hold and long-only V3 cells and the final summary job never were.
 - **Your go.** You approved the run on 2026-10-15 at 00:56 UTC, before these files were
   final. The experiment menu now says `AUTHORIZED_FOR_ONE_REGISTERED_EXECUTION` because of
   it. The run starts only after this registration passes its reviews and is put on main
-  with a merge commit; then it is started once and never cancelled or re-run.
+  with a merge commit; then it is started once and never cancelled. Nothing is re-run,
+  except that the final summary job may be re-run once, by itself, after an infrastructure
+  glitch (your decision of 07:40Z).
 - **What can still go wrong (honestly).** At 100 USDT the buy-and-hold baseline keeps a
   coin in cash when its 10 USDT share is below an exchange minimum (said in the report),
   and the old V3 picker may stop early, which makes that comparison "not decided" and so
-  blocks a pass. That is the cautious side, by design.
+  blocks a pass. That is the cautious side, by design. And some failures use up the one run
+  without giving any verdict: if preparing the data fails (about 3,470 downloads), or the
+  final summary job fails and its one re-run fails too; a cell that runs out of time or
+  memory leaves the verdict "not decided". See "Outcomes that use up the run".
 - **Real money.** None. This is a historical simulation with no trading, no exchange
   account and no keys. A pass would still need the reserved-data step and live paper
   trading before any real money.
@@ -53,13 +62,18 @@ was never pushed; this rebuild replaces it.)
   2. any finding that needs a change outside the allowed registration artifacts (or any
      code change on main) stops the dispatch and goes back to the owner;
   3. the registration PR is integrated with a merge commit, and the run is dispatched
-     **once, from main**, after that integration; never cancelled, never re-run, every
-     outcome kept.
+     **once, from main**, after that integration; never cancelled, never re-run (amended
+     at 07:40Z for the aggregate job alone, below), every outcome kept.
 - **The menu status.** At this go, the code pin sets `config/v3_1_experiment_menu.json`'s
   status to `AUTHORIZED_FOR_ONE_REGISTERED_EXECUTION` (it was
   `NOT_AUTHORIZED_FOR_EXECUTION`; the run driver's plan said it stays so "until the owner's
   go"), under the conditions above. If this PR is never integrated, main never carries
   the flip.
+- **Two decisions of 2026-10-15T07:40Z**, after the independent review:
+  - if the aggregate (final summary) job fails from an infrastructure glitch, not a code
+    bug, it may be re-run **once, by itself** (dashboard v31-d28; operating rule 6);
+  - the data downloads keep their current retries, 4 tries 1, 2 and 4 s apart: 3 of 3 real
+    prepares needed none (dashboard v31-d29).
 - **After the run** (owner, 2026-10-15 ~01:05Z): every run artifact is to be saved
   permanently on GitHub (artifacts expire after 90 days), then analysed read-only. Not
   part of this registration.
@@ -178,6 +192,10 @@ PR's handoff.
 
 The 9 tests of tests/test_bob_task_workflow.py fail on this machine only (no `jq`).
 
+**The full suite at commit 3** (`python -m pytest`, 44.7 min, recorded here by the later
+docs-only commit): 5268 passed, 10 skipped, 1595 subtests passed, and 9 failed, exactly
+the 9 local-only jq tests of tests/test_bob_task_workflow.py.
+
 **A rehearsal of the integration.** In the scratch clone, the three commits were
 integrated into main 5357674 with a merge commit. The plan job (`v31_driver.py plan`,
 which runs `job_gate`, `world_gate` and `plan_gate`) passed at that merge commit with all
@@ -196,8 +214,12 @@ failed. It found the V3 seed-test coupling that commit 1 now fixes.
 - **Timing** (timing mode, results discarded): prepare 2647 s; one W1 minute cell (V2's
   grid) 5534 s at 6.2 GB peak memory; V3's selector picks 13319 s at 1.4 GB. All inside
   the 335-minute step timeout (20,100 s) and the 360-minute job limit.
-- **Rehearsals** (synthetic worlds only): runs 38577845546 and 38578159507, 6 cells at
-  `e56b1a4`; and the full 324-cell rehearsal, run 38654503645 at `5357674`, which proved
+- **Rehearsals** (synthetic worlds only): run 38578159507, 6 cells at `e56b1a4`
+  (success; synthetic verdict incomplete, as six cells must be). The run before it,
+  38577845546, ran nothing: its plan job refused `rehearsal_cells` below 6 in 22 s and
+  every later job was skipped; the full rehearsal's report-only dispatch check later
+  judged it correctly as "not counted" (stopped at the plan job, nothing run) and counted
+  38578159507. Then the full 324-cell rehearsal, run 38654503645 at `5357674`, which proved
   the 6 / 144 / 174 matrix split on GitHub: success in 10 minutes, 331 jobs; run-main 174,
   run-minute 144 and run-v3 6 all succeeded; aggregate judged all 324 cells (synthetic
   verdict `fail`, verdict_sha256
@@ -214,11 +236,44 @@ failed. It found the V3 seed-test coupling that commit 1 now fixes.
 
 ## Expected run length
 
-About 14 to 17 hours of wall-clock at GitHub's 20 concurrent jobs: 324 cells, of which the
-144 minute cells take about 92 minutes each (about 11 hours of the run on their own), plus
-prepare (about 44 minutes) and the V3 picks job (about 3.7 hours, which only the six
-selector cells wait for). No single job should run longer than the timing measurements
-above.
+About 14 to 17 hours of wall-clock at GitHub's 20 concurrent jobs, an estimate.
+
+- **Timed on real data** (timing run 38588174435, results discarded): prepare 2647 s
+  (about 44 minutes); V3's picks 13,319 s (about 3.7 hours) at 1.4 GB peak memory; one W1
+  minute cell (V2's grid) 5534 s (about 92 minutes) at 6.2 GB. So the 144 minute cells
+  take about 11 hours of the run on their own, if they resemble the one timed.
+- **Never timed or memory-measured on real data:** the 132 V3.1 cells (the judged
+  `combined` cells among them), the 42 V3 cells (only the picks job before them was
+  timed), the 6 hold cells, and the aggregate over 324 real cells. For a V3.1 cell only the
+  design estimate of 20-25 minutes exists, and the ledger records the report held three
+  times in memory, untested at scale. The 14-17 h figure rests partly on that estimate.
+- Each long step stops at 335 minutes (the job limit is 360); what happens then is in the
+  next section.
+
+## Outcomes that use up the run without a verdict
+
+The run counts as the registration's one execution once its plan job has passed. These
+outcomes then end it without a pass or fail verdict; none can produce a false pass:
+
+- **Prepare fails.** It downloads about 3,470 archives (inventory 1,914, legacy 1,178,
+  minute 381), each tried 4 times, 1, 2 and 4 s apart, on connection errors, timeouts and
+  server errors (scripts/v31_fetch.py, `ATTEMPTS` and the retry loop). If one archive still
+  fails, prepare fails, every later job is skipped and there is no verdict, but the launch
+  counts, because plan succeeded. The owner chose at 07:40Z to keep these retries; 3 of 3
+  real prepares needed no retry.
+- **A cell runs past its 335-minute step timeout, or out of memory.** That cell fails and
+  is missing, so the verdict is incomplete, never a pass. Every other cell still runs (the
+  matrices do not fail fast).
+- **The picks job fails** (it took 3.7 hours of its 335 minutes when timed): the six
+  selector cells are skipped, the aggregate still runs, and the verdict is incomplete.
+- **The aggregate job fails** (out of memory, a crash, its timeout). Then there is no
+  verdict until an aggregate succeeds. By the owner's decision of 07:40Z, an aggregate that
+  failed from an infrastructure glitch may be re-run once by itself (operating rule 6).
+  The workflow already calls that harmless (.github/workflows/v31-run.yml, lines 96-99:
+  "Re-running aggregate alone is harmless: its summary is named for its attempt, and the
+  cell folders are unchanged"), and the aggregate counts only cells and picks from
+  attempt 1 of this run. This path was never exercised on GitHub (no rehearsal re-ran an
+  aggregate job).
 
 ## Known effects at the small capitals
 
@@ -249,10 +304,38 @@ above.
    corrected trial, so it means rebuilding every commit of this PR (with the same trial id
    before integration, a new one after). A fix under src/, scripts/ or tests/ means a new
    code pin, likewise a rebuild.
-4. **One dispatch**, from main, with `mode=registered` and `registration_sha256` set to the
-   registration pin above. Never dispatch while another v31-run is queued or running.
+4. **One dispatch**, from main. First, these read-only checks, each of which must hold:
+   - main's head is the PR's integration (merge) commit, with parents
+     `5357674bc3f612b7970e0a356113e8aef2032e7f` and the PR head (`gh api
+     repos/mgalic01/adaptive-market-engine/commits/main --jq '.sha, [.parents[].sha]'`);
+   - `git fetch origin && git diff --name-only 615b7a78fe71e5582ac87df32d50b28d9c091bc2
+     origin/main` lists only `config/v3_1_registration.json`,
+     `config/v3_1_run_manifest.json`, `docs/trials/register.jsonl` and files under
+     `docs/reviews/` or `docs/tasks/`; anything else means stop and go back to the owner;
+   - `git show origin/main:config/v3_1_registration.json | sha256sum` gives
+     `05b8315054ce12cdf3da8c818b1d8144f5f65a60a54e04e0d5a89bfe5867efa3`;
+   - `gh run list -R mgalic01/adaptive-market-engine --workflow v31-run.yml --limit 20`
+     shows no v31-run queued or in progress, and no run titled `v31-run registered
+     05b8315054ce...`.
+
+   Then dispatch once, leaving `code_commit` and `rehearsal_cells` empty:
+
+   ```
+   gh workflow run v31-run.yml -R mgalic01/adaptive-market-engine --ref main \
+     -f mode=registered \
+     -f registration_sha256=05b8315054ce12cdf3da8c818b1d8144f5f65a60a54e04e0d5a89bfe5867efa3
+   ```
+
+   The run is then titled `v31-run registered
+   05b8315054ce12cdf3da8c818b1d8144f5f65a60a54e04e0d5a89bfe5867efa3`. Never dispatch while
+   another v31-run is queued or running.
 5. **Never cancel** a registered dispatch: a cancelled launch counts as an execution.
-6. **Never re-run** any job of it: a re-run makes the verdict incomplete.
+6. **Never re-run** any cell, the picks, prepare or plan job, and never the whole run (no
+   "Re-run all jobs", no "Re-run failed jobs"): such a re-run voids the verdict
+   (incomplete), by design. **One exception** (owner decision v31-d28, 2026-10-15T07:40Z):
+   if the aggregate job fails from an infrastructure glitch, not a code bug, it may be
+   re-run **once, by itself** ("Re-run job" on aggregate alone). It is recorded as a new
+   attempt, and the PR or verdict record notes it.
 7. **No change under src/ or scripts/ (or anything else outside the registration
    artifacts) on main until the run is done**, or the gate refuses.
 
@@ -270,13 +353,26 @@ these; the code at most refuses afterwards:
   leaves the code pin outside main's history, and the trial gate refuses.
 - **Review fixes may only touch `docs/reviews/**` or `docs/tasks/**`**: anything else, the
   registration and run-manifest included, means a rebuild.
+- **Re-run only the aggregate job, at most once**, and only after an infrastructure
+  failure: GitHub's buttons would re-run anything; a re-run of a cell or the picks job
+  makes the verdict incomplete.
 - Before the PR is integrated, a change to the registration can be rebuilt with the same
   trial id, because main's register does not hold it yet; after integration, any change
   needs a new trial id.
 
 Where the code does act: `job_gate` refuses at the plan job (a launch stopped there with
 nothing run does not count); the dispatch check (Ruling R4-2) refuses a second dispatch;
-a re-run makes the verdict incomplete. This registration changes no GitHub setting.
+a re-run of a cell or the picks job makes the verdict incomplete (an aggregate-only re-run
+does not). This registration changes no GitHub setting.
+
+**Two practical notes.**
+
+- **CI headroom.** The quality CI job took about 23.7 of its 30-minute limit at
+  `8787026`, and the new test adds about a minute on Linux. If that job times out, it may
+  simply be re-run: that is CI, not an experiment re-run. Raising its time limit would be a
+  `.github` change after the code pin, so a rebuild.
+- **Artifacts expire** 90 days after they are created, the packs and the legacy data
+  first, so they must be saved promptly after the run, as the owner asked.
 
 ## The experiment menu's status
 
@@ -415,9 +511,10 @@ order. "Superseded" or "amended" names the later entry that replaced it.
   after #269 (owner-approved 2026-10-13 ~00:55Z); the code pin was to be #269's merge.
 - **P17-precise.** See P17.
 - **Attempt-id ruling.** Each cell records its own attempt id.
-- **Task 10b rulings R1 to R4.** Run jobs always upload their folder; a queue keeps every
-  dispatch and the operating rule forbids a second one; summaries are named per attempt; the
-  2025 guard tolerates only "no match" and runs again before every upload.
+- **Task 10b rulings R1 to R4.** R1: run jobs always upload their folder. R2: a queue
+  (`queue: max` at workflow level) keeps every pending dispatch, and the operating rule says
+  never dispatch while another v31-run is queued or running. R3: summaries are named per
+  attempt. R4: the 2025 guard tolerates only "no match" and runs again before every upload.
 - **Task 10b ruling.** An upload is skipped only when the pre-upload 2025 scan failed.
 
 **Final review and fixes (2026-10-13)**
@@ -472,6 +569,8 @@ order. "Superseded" or "amended" names the later entry that replaced it.
 
 **Owner decisions**
 
+- **2026-10-12 ~15:00Z.** The go to build the run driver ("yes start building the run
+  driver"), subagent-driven, one implementer and one reviewer per task (ledger line 5).
 - **2026-10-12 ~22:58Z.** Codex out for a few days; its reviews go to others.
 - **2026-10-13 ~00:55Z.** Sequencing: finish Task 10 and reviews, integrate #269, then this
   registration in its own PR, then a separate go for the run.
@@ -488,6 +587,10 @@ order. "Superseded" or "amended" names the later entry that replaced it.
   EUR 100 capital, its ECB FX pin (owner decision of 2026-10-12) and P10(f).
 - **2026-10-15T00:56Z.** The go for the registered run, with the conditions above.
 - **2026-10-15 ~01:05Z.** Save every run artifact permanently on GitHub after the run.
+- **2026-10-15T07:40Z (v31-d28).** If the aggregate job fails from an infrastructure
+  glitch, one aggregate-only re-run is allowed; never re-run any cell, picks or prepare job.
+- **2026-10-15T07:40Z (v31-d29).** Keep the current download retries (4 tries, 1, 2 and
+  4 s apart); the prepare-failure risk is disclosed here.
 
 **Three capitals (2026-10-14)**
 
@@ -498,6 +601,25 @@ order. "Superseded" or "amended" names the later entry that replaced it.
 - **TC-5.** The committed-registration test goes in the code pin and checks the commit that
   introduced the registration, not HEAD (this PR).
 - **TC-6.** Integration with a merge commit only, and nothing else on main until the run.
+
+**This registration (2026-10-15)**
+
+- **R-A.** Rebuild locally as exactly three commits (the seed-test fix in commit 1; the test,
+  quality.yml and the menu status in commit 2, the code pin): a permanent record must not
+  misdescribe its commits, and nothing was pushed.
+- **R-B.** Set the menu status to `AUTHORIZED_FOR_ONE_REGISTERED_EXECUTION` in the code pin,
+  with tests/test_v31_registration.py asserting the new exact value: the plan said the
+  status stays unauthorized "until the owner's go", and main carries it only once the PR is
+  integrated.
+- **R-C to R-G.** This file dated 2026-10-15; the full local suite before any push; every
+  gate re-verified; the operating rules the code does not enforce listed for the people who
+  run it; the source inventory updated after the run. The first build is kept locally as
+  `claude/v3-1-registration-draft1`.
+- **Independent review (~07:30Z).** NEEDS FIXES, to this document only, no rebuild: every
+  locked value and gate verified independently, at the head and at a simulated GitHub
+  integration commit. Its findings (measured versus estimated, the outcomes without a
+  verdict, a misdescribed rehearsal, missing ledger entries, the exact dispatch command)
+  are fixed in this revision.
 
 ## Deferred items disclosed
 
@@ -541,5 +663,8 @@ frozen, so they are disclosed rather than fixed:
   updated after the run: documents outside docs/reviews/ and docs/tasks/ cannot change
   before then without every registered job refusing. The menu's `pending_registration`
   list is left as it is; only the status changed (R-B).
-- I did not read GitHub's run records for the timing and rehearsal figures; they are the
-  coordinator's and the ledger's.
+- I did not read GitHub's run records myself. The independent review did, and confirmed
+  the timing and rehearsal figures, except run 38577845546, corrected above.
+- What was never measured on real data (the V3.1, hold and long-only V3 cells and the
+  aggregate) and the outcomes that use up the run without a verdict are set out in
+  "Expected run length" and "Outcomes that use up the run without a verdict".
