@@ -256,7 +256,8 @@ def test_the_menu_states_the_owners_three_usdt_capitals() -> None:
     """The committed menu, which the owner reads and no loader checks for capitals, states
     exactly ``experiment.CAPITALS``: ids, currency, amount, initial equity and order, as a
     registration lists them; and no FX assumption is pending (owner decision, 2026-10-14).
-    Its status stays not authorized for execution."""
+    Its status is authorized for one registered execution: set at the owner's go of
+    2026-10-15T00:56Z, with the V3.1 registration's code pin (no code reads it)."""
     menu = json.loads(MENU.read_text(encoding="utf-8"))
     assert menu["capital_scenarios"] == [
         {"id": capital_id, "currency": "USDT", "amount": str(amount), "initial_equity": str(amount)}
@@ -265,7 +266,7 @@ def test_the_menu_states_the_owners_three_usdt_capitals() -> None:
     assert menu["capital_scenarios"] == capitals_document()
     assert [scenario["id"] for scenario in menu["capital_scenarios"]] == list(CAPITAL_IDS)
     assert "fx_assumption" not in menu["pending_registration"]
-    assert menu["status"] == "NOT_AUTHORIZED_FOR_EXECUTION"
+    assert menu["status"] == "AUTHORIZED_FOR_ONE_REGISTERED_EXECUTION"
 
 
 def test_a_registration_missing_a_cell_is_refused(tmp_path: Path) -> None:
