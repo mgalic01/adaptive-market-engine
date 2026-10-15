@@ -367,6 +367,13 @@ def test_cli_validate_and_append(tmp_path, capsys):
 
 
 def test_registered_v3_bootstrap_seed_matches_frozen_spec():
+    # V3's own latest registration (family spec-v3): later families register after it,
+    # V3.1 among them, with no bootstrap seed of their own.
     events = load_events(Path(__file__).resolve().parents[1] / "docs/trials/register.jsonl")
-    registration = next(e for e in reversed(events) if e["event_type"] == "registration")
+    registration = next(
+        e
+        for e in reversed(events)
+        if e["event_type"] == "registration" and e["family"] == "spec-v3"
+    )
+    assert registration["event_id"] == "v3-candidate-space-7-record"
     assert registration["payload"]["seeds"] == [20261008]
