@@ -10,9 +10,10 @@ repository.
 - **The files live only on the owner's PC.** An agent in the cloud (Codex cloud, Bob on
   GitHub, a Claude cloud session) cannot read them. Ask the owner, or a local session on
   the owner's PC, for what you need. Never ask the owner to upload them anywhere.
-- **Never publish them**, as a GitHub release, an artifact upload, a gist, an issue
-  attachment or anything else, unless the owner asks. Summaries and SHA-256 fingerprints
-  in review files are fine.
+- **Never publish the files themselves**, or any copy or extract of their contents, as a
+  GitHub release, an artifact upload, a gist, an issue attachment or anything else, unless
+  the owner asks. Allowed in review files: summaries with aggregated numbers, and SHA-256
+  fingerprints.
 - **Never edit, move or delete** the files below. Work on a copy in your own scratch
   folder.
 - **Check a fingerprint before trusting a copy.** Each archive has a `SHA256SUMS.txt`

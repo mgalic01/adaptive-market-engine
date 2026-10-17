@@ -50,6 +50,19 @@ fetched for this record; it reads the run's own artifacts on the owner's PC.
      the end-point check, because its replay stopped early
      (`replay_failure:execution_failure:ValueError`). The wrapper keeps that check, so both
      versions treat all 12 cells identically.
+   - **What was not re-verified.** The saved reports of the other 300 judged cells were
+     not rebuilt. They are the 192 baseline cells (42 V3, 6 hold and 144 minute grid) and
+     the 108 other V3.1 component and ablation cells, which are explanatory only. The
+     comparisons against baselines rest on those unrebuilt reports. Every other frozen
+     check still ran on every cell:
+     - each `outcome.json` decodes and re-encodes to its exact bytes;
+     - each `report.json` equals the outcome's report evidence;
+     - each V3.1 bundle verifies against its receipt;
+     - identity and attempt pins match.
+   - **The FAIL does not depend on them.** It stands on the 12 fully re-verified combined
+     cells alone: 9 exceed the 30% maximum drawdown, and 6 are not profitable at doubled
+     costs. Each of those is by itself a failure under the registered acceptance code
+     (see the ruling under "Verdict").
 
 **Scale finding:** the frozen aggregate could not have produced a verdict on GitHub at
 real scale. It needs disk (107 GB), memory (about 75 GB) and time beyond the 335-minute
@@ -62,7 +75,11 @@ step limit. The rehearsals used three-day synthetic windows and never showed thi
 `68e94b678334b11e3a5fe9905102c95fe3e3690fcae0a7f58bdb6698b4c85847`.
 
 - No re-run detected. No other dispatch.
-- 312 W1 and 12 W0 cells completed. 0 failed, killed, missing or invalid.
+- **Cell artifacts:** 312 W1 and 12 W0 cells are `completed`, in the aggregate's sense:
+  the job wrote its completion marker `outcome.json`, and its artifacts hold together.
+  0 are failed, killed, missing or invalid. A completed cell can still carry an
+  **incomplete outcome**, meaning its replay or baseline did not cover the whole window.
+  48 do (below).
 - 535 acceptance failures:
   - 9 x full maximum drawdown above 30%;
   - 6 x doubled-cost profit not positive;
@@ -84,10 +101,28 @@ On the same window: `unchanged_v3_selector` +19% to +35%; V3 long-only rules +75
 +186%; `matched_spot_hold` about +120% (an 81% drawdown); `matched_d_trend` +68% to +87%;
 V0-V2 grids about -11% to +3%.
 
-Incomplete (reported): 48 acceptance reasons, all "failed or incomplete attempt
-retained":
+Incomplete outcomes (reported): 48 acceptance reasons, all "failed or incomplete
+attempt retained":
 - 40 small-capital minute-grid baseline cells;
 - 8 V3.1 cells at research capital whose replay stopped with the same ValueError.
+
+**Ruling: why the verdict is FAIL and not incomplete.** These are two different levels.
+- The registration's stopping rule says "a missing, failed or invalid cell leaves the
+  verdict incomplete". That rule is about cell artifacts, and all 324 completed. The
+  frozen aggregate found no cell problem: `cell_reasons` is empty, and `summary.md` says
+  "No cell problem beyond what acceptance sees".
+- The 48 incomplete outcomes are judged by acceptance. In the registered acceptance code
+  (`combined/experiment.py` at code pin `615b7a7`, the line
+  `status = "fail" if failures else "incomplete" if incomplete else "pass"`), a failure
+  takes precedence over missing evidence. The aggregate keeps that order: it returns
+  `fail` when acceptance returns `fail`, unless a re-run or a second dispatch was
+  detected, and here neither was. The registration's own selection text agrees: "a pass
+  needs every comparison strictly won … else fail or incomplete".
+- Incomplete outcomes can only block a pass. They cannot undo a failure that was
+  observed.
+
+This ordering is part of the registered, reviewed code that the owner's go (v31-d26)
+approved. It is not a new reading, so no further owner decision was needed.
 
 ## What the analysis found (local, read-only)
 
@@ -99,8 +134,9 @@ Details are in the archive's `analysis\findings-2026-10-17.md`. In brief:
 - the 30% shutdown fired in March-April 2023 in 9 of 12 combined cells;
 - removing the trailing stop helped most (-19% to -4% at 10,000 USDT).
 
-These findings fed the V4.0 design (`docs/superpowers/specs/2026-10-17-v4-design.md`,
-pending the owner's review on its own branch).
+These findings fed the V4.0 design. It is not part of this PR or of `main`: it is
+commit `9764d84` on the unpushed branch `claude/v4-design`
+(`docs/superpowers/specs/2026-10-17-v4-design.md` there) and awaits the owner's review.
 
 ## The register
 
