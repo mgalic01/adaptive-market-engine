@@ -249,7 +249,10 @@ Read only what the steps above did not already show:
 - [the task index](tasks/README.md): Bob's tasks and their status;
 - [`docs/BOB_PRACTICE.md`](BOB_PRACTICE.md): Bob's habits and the lessons log. Bob
   reads all of it; reviewers of Bob's work use it too;
-- [the collaboration guide](AGENT_HANDOFF.md): roles, conventions, escalation.
+- [the collaboration guide](AGENT_HANDOFF.md): roles, conventions, escalation;
+- [the run archive](RUN_ARCHIVE.md): where every registered run's result files are kept.
+  They are on the owner's PC, never in this repository or a release. It also says how to
+  verify them and who can reach them.
 
 ## 7. Before you end your turn
 
