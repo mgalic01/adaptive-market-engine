@@ -14,7 +14,14 @@ Status: Package A, no historical execution authorized.
 | PR265 at5253387d434a5a4c8cb2dc64a41f4e848c247c4a | Cross-version synthesis | Reviewed and merged; diagnosis does not authorize a new replay |
 | config/datasets/v3-20261009/inventory.manifest.json | Candidate saved futures/funding/filter inventory | Must validate V3.1 date/intersection/flow coverage before registration |
 
-Exact V3.1 configuration/code/data/FX/comparison pins are not registered yet.
+*Update, 2026-10-17:* the exact V3.1 pins were registered on 2026-10-15 (trial
+`v3-1-registered-1`; [registration review](reviews/2026-10-15-claude-v3-1-registration.md)).
+The one registered run, 38703911852, has finished. Verdict: **FAIL**
+([verdict record](reviews/2026-10-17-claude-v3-1-verdict.md)). Its result files are kept
+on the owner's PC ([run archive](RUN_ARCHIVE.md)). The paragraph below is the
+pre-registration state, kept as history.
+
+Exact V3.1 configuration/code/data/FX/comparison pins were not registered yet.
 No new download, historical replay, reserved data access or live execution follows
 from this inventory. Every required arm must be included or the evaluation remains
 incomplete. Read-only coverage inspection is separate from execution authorization.
