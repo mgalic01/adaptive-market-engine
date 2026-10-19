@@ -1088,6 +1088,10 @@ class PortfolioEngine:
                 self._account.apply(event)
                 self._fills[event.event_id] = reduction_identity
                 mark("reduction", event.event_id)
+            # Orders this batch canceled before any increase was booked: its before,
+            # funding or reduction marks (routine cap checks). On a simulated venue a cancel
+            # is final at once, so such an order was withdrawn before its limit traded.
+            withdrawn_before_fills = frozenset(self._finality) - finality_at_start
             for key, event in increases:
                 increase_identity = ("increase", key, event)
                 if event.event_id in self._fills:
@@ -1097,10 +1101,9 @@ class PortfolioEngine:
                 if key not in self._known_orders:
                     raise ValueError("fill has no recorded admission")
                 if key in self._finality:
-                    if self._simulated_venue and key not in finality_at_start:
-                        # This batch's own marks canceled the order (on a simulated venue
-                        # a cancel is final at once), so it was withdrawn before its limit
-                        # traded: no fill. V3.1 run 38703911852 stopped 8 cells here.
+                    if self._simulated_venue and key in withdrawn_before_fills:
+                        # No fill (V3.1 run 38703911852 stopped 8 cells here). A cancel by
+                        # an earlier increase's post-fill mark in this batch still raises.
                         continue
                     raise ValueError("novel fill contradicts acknowledged finality")
                 intent, remaining = self._known_orders[key]

@@ -504,6 +504,33 @@ def test_opening_execution_does_not_invent_canceled_late_fill(setup):
     assert not engine.held_execution_terms()
 
 
+def test_opening_canceled_by_its_own_pre_fill_mark_is_a_recorded_refusal(setup, monkeypatch):
+    # On a simulated venue the engine withdraws an increase that its own settlement
+    # batch's "before" mark cancels (V3.1 run 38703911852). An opening must then end as
+    # a refusal the replay records, never as a submitted opening with no outcome.
+    _, _, _, args = setup
+    engine, journal = PortfolioEngine(D(10000), simulated_venue=True), Evidence()
+    coordinator = DecisionCoordinator(engine, journal)
+    decision = coordinator.decide(**args)
+    original = engine.observe
+    canceled = False
+
+    def cancel_inside_settlement(*a, **kw):
+        nonlocal canceled
+        if engine._settling and not canceled:
+            canceled = True
+            engine.cancel(decision.intent.intent_id)
+        return original(*a, **kw)
+
+    monkeypatch.setattr(engine, "observe", cancel_inside_settlement)
+    result = coordinator.execute_opening("one", args["quotes"], {"BTCUSDT": args["spot"].rules})
+    assert canceled
+    assert result.fill is None
+    assert result.failure == "opening_admission_no_longer_active"
+    assert not engine.held_execution_terms()
+    assert all(event.phase != "filled" for event in journal.events)
+
+
 def test_opening_execution_retains_booked_fill_when_following_mark_fails(setup, monkeypatch):
     coordinator, engine, journal, args = setup
     coordinator.decide(**args)
