@@ -610,6 +610,10 @@ class DecisionCoordinator:
         except (ValueError, ArithmeticError, TypeError, AttributeError) as exc:
             failure = f"opening_execution_failure:{type(exc).__name__}"
         booked = self._engine.booked_fill(batch_id)
+        if booked is None and failure is None:
+            # The settlement batch's own pre-fill mark canceled the admission (a simulated
+            # venue withdraws it unfilled), so it ends as a recorded refusal.
+            failure = "opening_admission_no_longer_active"
         if booked is not None:
             try:
                 self._evidence.record(

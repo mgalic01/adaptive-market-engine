@@ -1412,6 +1412,108 @@ def test_a_simulated_venue_cancel_is_final_at_once():
     assert live.canceled_unreconciled == (order.intent_id,)
 
 
+def _held_and_pending_at_the_asset_risk_cap(*, simulated_venue):
+    """A filled order and a pending one whose risk sits exactly at the 0.5% asset cap."""
+    engine = PortfolioEngine(D(10000), simulated_venue=simulated_venue)
+    quotes = {symbol: Quote(D(100), 0) for symbol in ("BTCUSDT", "ETHUSDT")}
+    rules = {symbol: RULE for symbol in quotes}
+    groups = tuple((symbol, symbol) for symbol in quotes)
+    orders, fills = [], []
+    for symbol, quantity in (("BTCUSDT", 1), ("ETHUSDT", 10)):
+        order = intent(
+            symbol,
+            symbol,
+            owner="futures_trend",
+            venue="futures",
+            stop=D(95),
+            requested_quantity=D(quantity),
+            fee_rate=D(0),
+            slippage_rate=D(0),
+            funding_rate=D(0),
+            funding_age_ms=0,
+            funding_interval_ms=28_800_000,
+            correlation_group=symbol,
+        )
+        answer = engine.submit(order, candidate(order), quotes, rules, groups)
+        assert answer.accepted and answer.quantity == quantity
+        orders.append(order)
+        fills.append(
+            FillEvent(symbol, 1, symbol, order.owner, order.venue, 1, D(quantity), D(100), D(0))
+        )
+    engine.settle("held", 1, quotes, rules, increases=((orders[0].intent_id, fills[0]),))
+    # BTC falls: equity, and with it the asset risk cap, drops below ETH's pending risk.
+    lower = {**quotes, "BTCUSDT": Quote(D(99), 2)}
+    return engine, orders[1], replace(fills[1], event_id="eth-level", timestamp_ms=2), lower, rules
+
+
+def test_a_fill_that_its_own_pre_fill_cap_check_cancels_is_not_booked_on_a_simulated_venue():
+    # V3.1 registered run 38703911852: 8 research cells stopped with
+    # replay_failure:execution_failure:ValueError. A grid level was settled at its limit;
+    # the batch's own "before" mark ran the routine cap check, which canceled that very
+    # pending order (portfolio_cap_reduction, final at once on a simulated venue), and the
+    # fill was then booked against it: "novel fill contradicts acknowledged finality".
+    # On a simulated venue that cancel comes first, so the order never trades.
+    engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
+        simulated_venue=True
+    )
+    state = engine.settle(
+        "eth-level-batch", 2, lower, rules, increases=((pending.intent_id, fill),)
+    )
+    assert engine.booked_fill("eth-level") is None
+    assert [position.symbol for position in state.account.positions] == ["BTCUSDT"]
+    assert "execution_integrity_failure" not in state.reasons
+    assert engine.finality_evidence == (
+        (pending.intent_id, (f"simulated-venue:cancel:{pending.intent_id}",)),
+    )
+    assert "execution_integrity_failure" not in engine.observe(2, lower, rules).reasons
+
+
+@pytest.mark.parametrize(
+    "change", [{"quantity": D(11)}, {"side": -1}, {"symbol": "BTCUSDT"}, {"owner": "spot_trend"}]
+)
+def test_a_withdrawn_order_still_validates_the_fill_it_discards(change):
+    engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
+        simulated_venue=True
+    )
+    with pytest.raises(ValueError, match="fill differs from pending order"):
+        engine.settle(
+            "malformed", 2, lower, rules, increases=((pending.intent_id, replace(fill, **change)),)
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"quantity": D(0)},
+        {"quantity": D(-1)},
+        {"price": D(0)},
+        {"fee": D(-1)},
+        {"event_id": ""},
+        {"timestamp_ms": -1},
+        {"lot_id": ""},
+        {"venue": "spot"},
+    ],
+)
+def test_a_withdrawn_order_still_validates_the_fill_schema(change):
+    engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
+        simulated_venue=True
+    )
+    with pytest.raises(ValueError):
+        engine.settle(
+            "malformed", 2, lower, rules, increases=((pending.intent_id, replace(fill, **change)),)
+        )
+
+
+def test_a_fill_after_finality_from_before_its_batch_still_fails_integrity():
+    engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
+        simulated_venue=True
+    )
+    engine.cancel(pending.intent_id)  # final before the batch that carries the fill
+    with pytest.raises(ValueError, match="contradicts acknowledged finality"):
+        engine.settle("late", 2, lower, rules, increases=((pending.intent_id, fill),))
+    assert "execution_integrity_failure" in engine.observe(2, lower, rules).reasons
+
+
 def test_capture_collects_only_marks_outside_settlement_batches():
     engine = PortfolioEngine(D(10000))
     with engine.capture_marks() as marks:
