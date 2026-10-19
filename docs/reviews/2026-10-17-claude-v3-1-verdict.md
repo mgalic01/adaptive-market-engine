@@ -133,6 +133,14 @@ Details are in the archive's `analysis\findings-2026-10-17.md`. In brief:
 - the grid lost every year;
 - the 30% shutdown fired in March-April 2023 in 9 of 12 combined cells;
 - removing the trailing stop helped most (-19% to -4% at 10,000 USDT).
+  *Correction, 2026-10-19:* that 10,000 USDT figure was wrong. Three of its four cells were
+  the crashed ones, stopped early in October-December 2021 near their starting balance.
+  The crash was fixed in PR #287, and the diagnostic replay of the 8 crashed cells is
+  GitHub run 39321704392, which is not part of this verdict. With complete cells, removing
+  the trailing stop moves 10,000 USDT from about -24.5% to about -15%, roughly 9.5 points.
+  That is similar to 1,000 USDT (-25.0% to -15.9%), and it still loses money. The replay
+  does not change the verdict: the combined `olhc.c1.research` cell completes at -22.25%,
+  with a 35.5% drawdown.
 
 These findings fed the V4.0 design. It is not part of this PR or of `main`: it is
 commit `9764d84` on the unpushed branch `claude/v4-design`
