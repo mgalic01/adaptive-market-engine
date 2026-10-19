@@ -1067,6 +1067,7 @@ class PortfolioEngine:
                 return snapshot
 
             self._batch_observations[batch_id] = ()
+            finality_at_start = frozenset(self._finality)
             mark("before", batch_id)
             for payment in funding:
                 self._account.apply(payment)
@@ -1096,6 +1097,11 @@ class PortfolioEngine:
                 if key not in self._known_orders:
                     raise ValueError("fill has no recorded admission")
                 if key in self._finality:
+                    if self._simulated_venue and key not in finality_at_start:
+                        # This batch's own marks canceled the order (on a simulated venue
+                        # a cancel is final at once), so it was withdrawn before its limit
+                        # traded: no fill. V3.1 run 38703911852 stopped 8 cells here.
+                        continue
                     raise ValueError("novel fill contradicts acknowledged finality")
                 intent, remaining = self._known_orders[key]
                 was_pending = key in self._orders
