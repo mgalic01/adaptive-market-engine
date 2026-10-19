@@ -145,34 +145,7 @@ class CombinedAccount:
 
     def apply(self, event: FillEvent | FundingEvent) -> AccountSnapshot:
         """Validate completely before mutation; repeat IDs are no-ops, conflicts fail."""
-        if not isinstance(event, (FillEvent, FundingEvent)):
-            raise ValueError("unsupported account event")
-        if not isinstance(event.event_id, str) or not event.event_id:
-            raise ValueError("event ID required")
-        if type(event.timestamp_ms) is not int or event.timestamp_ms < 0:
-            raise ValueError("nonnegative integer timestamp required")
-        if not isinstance(event.symbol, str):
-            raise ValueError("symbol must be a string")
-        symbol_name(event.symbol)
-        if isinstance(event, FillEvent):
-            if not isinstance(event.owner, str) or not isinstance(event.venue, str):
-                raise ValueError("owner and venue must be strings")
-            if type(event.side) is not int or event.side not in {-1, 1}:
-                raise ValueError("side must be +1 or -1")
-            _number(event.quantity, positive=True)
-            _number(event.price, positive=True)
-            _number(event.fee)
-        else:
-            _number(event.amount, signed=True)
-            scheduled, stale = event.scheduled_ms, event.stale_mark_ms
-            if scheduled is not None and (
-                type(scheduled) is not int or not 0 <= scheduled < event.timestamp_ms
-            ):
-                raise ValueError("a scheduled time must precede its booking")
-            if stale is not None and (
-                type(stale) is not int or not 0 <= stale <= event.timestamp_ms
-            ):
-                raise ValueError("a stale mark must not follow its booking")
+        self.validate(event)
         old = self._events.get(event.event_id)
         if old is not None:
             if old != event:
@@ -202,6 +175,38 @@ class CombinedAccount:
         self._events[event.event_id] = event
         self._last_ms = event.timestamp_ms
         return self.snapshot()
+
+    @staticmethod
+    def validate(event: FillEvent | FundingEvent) -> None:
+        """The event schema ``apply`` requires, checked without booking anything."""
+        if not isinstance(event, (FillEvent, FundingEvent)):
+            raise ValueError("unsupported account event")
+        if not isinstance(event.event_id, str) or not event.event_id:
+            raise ValueError("event ID required")
+        if type(event.timestamp_ms) is not int or event.timestamp_ms < 0:
+            raise ValueError("nonnegative integer timestamp required")
+        if not isinstance(event.symbol, str):
+            raise ValueError("symbol must be a string")
+        symbol_name(event.symbol)
+        if isinstance(event, FillEvent):
+            if not isinstance(event.owner, str) or not isinstance(event.venue, str):
+                raise ValueError("owner and venue must be strings")
+            if type(event.side) is not int or event.side not in {-1, 1}:
+                raise ValueError("side must be +1 or -1")
+            _number(event.quantity, positive=True)
+            _number(event.price, positive=True)
+            _number(event.fee)
+        else:
+            _number(event.amount, signed=True)
+            scheduled, stale = event.scheduled_ms, event.stale_mark_ms
+            if scheduled is not None and (
+                type(scheduled) is not int or not 0 <= scheduled < event.timestamp_ms
+            ):
+                raise ValueError("a scheduled time must precede its booking")
+            if stale is not None and (
+                type(stale) is not int or not 0 <= stale <= event.timestamp_ms
+            ):
+                raise ValueError("a stale mark must not follow its booking")
 
     def _fill(self, event: FillEvent) -> tuple[Fraction, tuple[_Lot, ...], Fraction]:
         if (

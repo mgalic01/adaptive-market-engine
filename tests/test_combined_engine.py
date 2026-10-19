@@ -1481,6 +1481,27 @@ def test_a_withdrawn_order_still_validates_the_fill_it_discards(change):
         )
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"quantity": D(0)},
+        {"quantity": D(-1)},
+        {"price": D(0)},
+        {"fee": D(-1)},
+        {"event_id": ""},
+        {"timestamp_ms": -1},
+    ],
+)
+def test_a_withdrawn_order_still_validates_the_fill_schema(change):
+    engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
+        simulated_venue=True
+    )
+    with pytest.raises(ValueError):
+        engine.settle(
+            "malformed", 2, lower, rules, increases=((pending.intent_id, replace(fill, **change)),)
+        )
+
+
 def test_a_fill_after_finality_from_before_its_batch_still_fails_integrity():
     engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
         simulated_venue=True
