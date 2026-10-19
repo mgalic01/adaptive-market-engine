@@ -62,7 +62,7 @@ jobs:
           name: v31-packs
           run-id: 38703911852
           github-token: ${{ github.token }}
-          path: prepared
+          path: code/v31/prepared
 
       - name: Replay the cell with the diagnostic engine fix
         working-directory: code
@@ -76,9 +76,9 @@ jobs:
             --repo . \
             --registration-sha256 05b8315054ce12cdf3da8c818b1d8144f5f65a60a54e04e0d5a89bfe5867efa3 \
             --cell "$CELL" \
-            --packs ../prepared/packs \
+            --packs v31/prepared/packs \
             --attempt-id ${{ github.run_id }}-attempt-${{ github.run_attempt }} \
-            --out ../out > ../replay.log 2>&1 || status=$?
+            --out v31/cell-out > ../replay.log 2>&1 || status=$?
           echo "run-cell exit status: $status"
           grep -m1 "DIAGNOSTIC:" ../replay.log || true
           # A refusal or crash prints its message here; a completed replay prints only
@@ -94,7 +94,7 @@ jobs:
           python - <<'PY'
           import os, re
           cell = os.environ["CELL"]
-          path = os.path.join("out", cell, "outcome.json")
+          path = os.path.join("code", "v31", "cell-out", cell, "outcome.json")
           if not os.path.exists(path):
               print(f"SUMMARY {cell}: no outcome.json")
               raise SystemExit(0)
@@ -118,6 +118,6 @@ jobs:
         if: always()
         with:
           name: diag-replay-${{ matrix.cell }}
-          path: out
+          path: code/v31/cell-out
           retention-days: 1
           if-no-files-found: warn
