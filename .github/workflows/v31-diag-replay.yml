@@ -81,6 +81,9 @@ jobs:
             --out ../out > ../replay.log 2>&1 || status=$?
           echo "run-cell exit status: $status"
           grep -m1 "DIAGNOSTIC:" ../replay.log || true
+          # A refusal or crash prints its message here; a completed replay prints only
+          # its one-line document (ids and hashes, no results).
+          if [ "$status" -ne 0 ]; then tail -n 40 ../replay.log; else tail -c 400 ../replay.log; fi
           exit $status
 
       - name: One summary line
