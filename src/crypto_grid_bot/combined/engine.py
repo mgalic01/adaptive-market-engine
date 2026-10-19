@@ -1119,7 +1119,8 @@ class PortfolioEngine:
                 ) or event.quantity > remaining:
                     raise ValueError("fill differs from pending order")
                 if withdrawn:
-                    self._account.validate_fill(event)  # every stateless check apply makes
+                    # apply's checks that need no booking: schema, terms, unused event ID
+                    self._account.validate_unbooked_fill(event)
                     # A valid fill of a withdrawn order: no fill (V3.1 run 38703911852 stopped
                     # 8 cells here). A cancel by an earlier increase's post-fill mark in this
                     # batch is not in withdrawn_before_fills, and still raises above.

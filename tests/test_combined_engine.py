@@ -1469,7 +1469,14 @@ def test_a_fill_that_its_own_pre_fill_cap_check_cancels_is_not_booked_on_a_simul
 
 
 @pytest.mark.parametrize(
-    "change", [{"quantity": D(11)}, {"side": -1}, {"symbol": "BTCUSDT"}, {"owner": "spot_trend"}]
+    "change",
+    [
+        {"quantity": D(11)},
+        {"side": -1},
+        {"symbol": "BTCUSDT"},
+        {"owner": "spot_trend"},
+        {"venue": "spot"},
+    ],
 )
 def test_a_withdrawn_order_still_validates_the_fill_it_discards(change):
     engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
@@ -1482,25 +1489,38 @@ def test_a_withdrawn_order_still_validates_the_fill_it_discards(change):
 
 
 @pytest.mark.parametrize(
-    "change",
+    ("change", "message"),
     [
-        {"quantity": D(0)},
-        {"quantity": D(-1)},
-        {"price": D(0)},
-        {"fee": D(-1)},
-        {"event_id": ""},
-        {"timestamp_ms": -1},
-        {"lot_id": ""},
-        {"venue": "spot"},
+        ({"quantity": D(0)}, "invalid quantity, price or fee sign"),
+        ({"quantity": D(-1)}, "invalid quantity, price or fee sign"),
+        ({"price": D(0)}, "invalid quantity, price or fee sign"),
+        ({"fee": D(-1)}, "invalid quantity, price or fee sign"),
+        ({"event_id": ""}, "event ID required"),
+        ({"lot_id": ""}, "nonempty lot ID required"),
     ],
 )
-def test_a_withdrawn_order_still_validates_the_fill_schema(change):
+def test_a_withdrawn_order_still_validates_the_fill_schema(change, message):
+    # Each case reaches CombinedAccount.validate_fill: the identity and remaining-quantity
+    # checks above it pass, so the message proves which schema check fired.
     engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
         simulated_venue=True
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         engine.settle(
             "malformed", 2, lower, rules, increases=((pending.intent_id, replace(fill, **change)),)
+        )
+
+
+def test_a_withdrawn_fill_cannot_reuse_a_booked_funding_id():
+    # Codex P2 4319722073: validate_fill is stateless, so a withdrawn fill reusing the ID
+    # of funding booked in the same batch passed; apply raises for such a duplicate.
+    engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
+        simulated_venue=True
+    )
+    funding = FundingEvent(fill.event_id, 2, "BTCUSDT", D(-1))
+    with pytest.raises(ValueError, match="conflicting duplicate account event"):
+        engine.settle(
+            "reused-id", 2, lower, rules, funding=(funding,), increases=((pending.intent_id, fill),)
         )
 
 

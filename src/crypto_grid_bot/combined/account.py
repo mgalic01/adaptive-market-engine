@@ -217,6 +217,14 @@ class CombinedAccount:
             raise ValueError("fill event required")
         cls._fill_terms(event)
 
+    def validate_unbooked_fill(self, event: FillEvent) -> None:
+        """``validate_fill``, and its ID must not already name another booked event, as
+        ``apply`` requires. For a fill checked and then discarded, never booked."""
+        self.validate_fill(event)
+        old = self._events.get(event.event_id)
+        if old is not None and old != event:
+            raise ValueError("conflicting duplicate account event")
+
     @staticmethod
     def _fill_terms(event: FillEvent) -> None:
         if (
