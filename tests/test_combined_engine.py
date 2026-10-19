@@ -1490,6 +1490,8 @@ def test_a_withdrawn_order_still_validates_the_fill_it_discards(change):
         {"fee": D(-1)},
         {"event_id": ""},
         {"timestamp_ms": -1},
+        {"lot_id": ""},
+        {"venue": "spot"},
     ],
 )
 def test_a_withdrawn_order_still_validates_the_fill_schema(change):

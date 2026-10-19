@@ -208,7 +208,17 @@ class CombinedAccount:
             ):
                 raise ValueError("a stale mark must not follow its booking")
 
-    def _fill(self, event: FillEvent) -> tuple[Fraction, tuple[_Lot, ...], Fraction]:
+    @classmethod
+    def validate_fill(cls, event: FillEvent) -> None:
+        """Every check ``apply`` makes on a fill that does not read account state: the
+        event schema and ``_fill``'s owner, venue and lot ID terms. Books nothing."""
+        cls.validate(event)
+        if not isinstance(event, FillEvent):
+            raise ValueError("fill event required")
+        cls._fill_terms(event)
+
+    @staticmethod
+    def _fill_terms(event: FillEvent) -> None:
         if (
             event.owner not in {"spot_grid", "spot_trend", "futures_trend"}
             or (event.venue == "spot" and event.owner == "futures_trend")
@@ -219,6 +229,9 @@ class CombinedAccount:
             raise ValueError("invalid venue")
         if event.lot_id is not None and (not isinstance(event.lot_id, str) or not event.lot_id):
             raise ValueError("nonempty lot ID required")
+
+    def _fill(self, event: FillEvent) -> tuple[Fraction, tuple[_Lot, ...], Fraction]:
+        self._fill_terms(event)
         lots = self._positions.get(event.symbol, ())
         if lots and (lots[0].owner != event.owner or lots[0].venue != event.venue):
             raise ValueError("asset already owned by another strategy or venue")
