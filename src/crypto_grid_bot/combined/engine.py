@@ -1067,7 +1067,8 @@ class PortfolioEngine:
                 return snapshot
 
             self._batch_observations[batch_id] = ()
-            finality_at_start = frozenset(self._finality)
+            increase_keys = {key for key, _ in increases}
+            final_at_start = {key for key in increase_keys if key in self._finality}
             mark("before", batch_id)
             for payment in funding:
                 self._account.apply(payment)
@@ -1091,7 +1092,12 @@ class PortfolioEngine:
             # Orders this batch canceled before any increase was booked: its before,
             # funding or reduction marks (routine cap checks). On a simulated venue a cancel
             # is final at once, so such an order was withdrawn before its limit traded.
-            withdrawn_before_fills = frozenset(self._finality) - finality_at_start
+            # Only this batch's increase keys are checked, never the whole finality record.
+            withdrawn_before_fills = (
+                {key for key in increase_keys if key in self._finality} - final_at_start
+                if self._simulated_venue
+                else set()
+            )
             for key, event in increases:
                 increase_identity = ("increase", key, event)
                 if event.event_id in self._fills:
@@ -1100,11 +1106,8 @@ class PortfolioEngine:
                     continue
                 if key not in self._known_orders:
                     raise ValueError("fill has no recorded admission")
-                if key in self._finality:
-                    if self._simulated_venue and key in withdrawn_before_fills:
-                        # No fill (V3.1 run 38703911852 stopped 8 cells here). A cancel by
-                        # an earlier increase's post-fill mark in this batch still raises.
-                        continue
+                withdrawn = key in withdrawn_before_fills
+                if key in self._finality and not withdrawn:
                     raise ValueError("novel fill contradicts acknowledged finality")
                 intent, remaining = self._known_orders[key]
                 was_pending = key in self._orders
@@ -1115,6 +1118,11 @@ class PortfolioEngine:
                     intent.side,
                 ) or event.quantity > remaining:
                     raise ValueError("fill differs from pending order")
+                if withdrawn:
+                    # A valid fill of a withdrawn order: no fill (V3.1 run 38703911852 stopped
+                    # 8 cells here). A cancel by an earlier increase's post-fill mark in this
+                    # batch is not in withdrawn_before_fills, and still raises above.
+                    continue
                 already_held = any(
                     p.symbol == event.symbol for p in self._account.snapshot().positions
                 )

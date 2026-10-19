@@ -1468,6 +1468,19 @@ def test_a_fill_that_its_own_pre_fill_cap_check_cancels_is_not_booked_on_a_simul
     assert "execution_integrity_failure" not in engine.observe(2, lower, rules).reasons
 
 
+@pytest.mark.parametrize(
+    "change", [{"quantity": D(11)}, {"side": -1}, {"symbol": "BTCUSDT"}, {"owner": "spot_trend"}]
+)
+def test_a_withdrawn_order_still_validates_the_fill_it_discards(change):
+    engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
+        simulated_venue=True
+    )
+    with pytest.raises(ValueError, match="fill differs from pending order"):
+        engine.settle(
+            "malformed", 2, lower, rules, increases=((pending.intent_id, replace(fill, **change)),)
+        )
+
+
 def test_a_fill_after_finality_from_before_its_batch_still_fails_integrity():
     engine, pending, fill, lower, rules = _held_and_pending_at_the_asset_risk_cap(
         simulated_venue=True
