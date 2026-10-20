@@ -63,3 +63,13 @@ The universe-and-data plan on `claude/v4-step2-data` gets an amendment on that b
 before its affected tasks run. It covers the minimum and maximum quantity filters,
 funding-month validation, the whole-history hourly fetch, the short universe and the start
 boundary. Tasks 1 and 2 (config and verified archive fetch) are unaffected.
+
+## Codex at `9b031f3` (five more findings)
+
+| Thread | Finding | Resolution |
+|---|---|---|
+| 4320404162 (P1) | A delisted candidate with no bars in the 30-day volume window | Agreed. A symbol with no daily bar in the 7 UTC days before the selection is not eligible: a dead market, by the same 7-day rule as "Safety". Every ranked candidate therefore has a volume observation. |
+| 4320404191 (P1) | The pre-registration timing run must not use 2025+ data | Agreed. The timing run uses synthetic data of the real packs' size, or real data before 2025-01 only. It reports times, memory and sizes, never performance. v4-d03 opens 2025+ data for preparation and the registered run, not for trials. |
+| 4320404167 (P2) | Dead-market close against unsellable dust | The dead-market close is synthetic and ignores the filters, so dust closes with the rest of the leg at the penalised price. |
+| 4320404172 (P2) | Return / drawdown at zero drawdown | V3 §8's Calmar convention: +infinity for a positive return, 0 otherwise. +infinity is greater than every finite value and not greater than itself. |
+| 4320404185 (P2) | Accounting failures visible in summaries | Every cell writes a `summary.json` with an `outcome`: `complete`, `liquidated`, `accounting_failure` (the failed identity, hour and values) or `engine_error`. The verdict maps them to fail, fail and incomplete. |
