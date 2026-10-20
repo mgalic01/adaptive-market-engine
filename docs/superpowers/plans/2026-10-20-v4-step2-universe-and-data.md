@@ -45,6 +45,8 @@ chosen by a rule", "Data" and "Delivery" (step 2). Step 1 is done (#287, #288).
   - leveraged suffixes `UP DOWN BULL BEAR`;
   - wrapped bases `WBTC WBETH BETH STETH`;
   - a minimum of `200` daily bars before the selection date;
+  - at least one daily bar in the `7` UTC days before the selection (a dead market is not
+    eligible; spec revision `db211ad`);
   - a `30`-day mean of daily quote volume, counting only days with a bar;
   - a top `10`, with ties broken alphabetically;
   - selection at 00:00 UTC on the first of each month.
@@ -355,6 +357,9 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
     2017-08-17, the first non-empty selection is `2018-04` (227 days before 2018-04-01,
     196 before 2018-03-01).
   - `test_entered_and_left_are_relative_to_the_previous_month`.
+  - `test_no_bar_in_the_7_days_before_selection_is_not_eligible`: a symbol whose last daily
+    bar opened 8 days before the selection's 00:00 is excluded, with reason `"dead_market"`
+    in `excluded`. One whose last bar opened 7 days before is still ranked.
   - `test_fewer_than_10_eligible_selects_all_of_them`: with 3 eligible candidates, the
     selection is those 3, ranked. The window start is the first month with a non-empty
     selection, as in the 2018-04 test above.
