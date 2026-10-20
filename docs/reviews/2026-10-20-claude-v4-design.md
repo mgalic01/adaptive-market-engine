@@ -73,3 +73,13 @@ boundary. Tasks 1 and 2 (config and verified archive fetch) are unaffected.
 | 4320404167 (P2) | Dead-market close against unsellable dust | The dead-market close is synthetic and ignores the filters, so dust closes with the rest of the leg at the penalised price. |
 | 4320404172 (P2) | Return / drawdown at zero drawdown | V3 §8's Calmar convention: +infinity for a positive return, 0 otherwise. +infinity is greater than every finite value and not greater than itself. |
 | 4320404185 (P2) | Accounting failures visible in summaries | Every cell writes a `summary.json` with an `outcome`: `complete`, `liquidated`, `accounting_failure` (the failed identity, hour and values) or `engine_error`. The verdict maps them to fail, fail and incomplete. |
+
+## Codex at `db211ad` (five more findings)
+
+| Thread | Finding | Resolution |
+|---|---|---|
+| 4320470221 (P1) | Spot capacity ignores dust and band-kept legs; no cash clip | Band-kept legs (S_K, F_K) and dust (D) are fixed holdings that reduce the room: `R = 0.98 x equity - S_K - D - F_K/3`. The split uses R. Increases then take V3's cash clip: alphabetical after reductions, cut to free cash with fee and initial margin, and skipped below the filters. |
+| 4320470226 (P1) | Filters for delisted symbols are not determined by decimals | A fixed fallback, pinned and labelled `inferred`: tick and step from the most decimals after trailing zeros are dropped, minimum quantity = step, maximum 9,000,000,000, minimum notional 5 USDT. It is disclosed under known limitations. |
+| 4320470229 (P2) | Dead-market close in the hourly order | After 168 consecutive hours without a bar, the leg closes at the next hour's open time as that hour's first event, before V3's open mark. Funding at or after that instant is not charged on it. |
+| 4320470232 (P1) | Hourly defects to masks | V3's rules re-implemented: spec v1 §5 rule 1's repairing reader on both venues, repaired and missing hours masked, and a daily bar needing 20 of 24 unmasked hours. V3's 17% month exclusion is not adopted, because with delisted coins it would foresee delistings. |
+| 4320470239 (P1) | Deferred funding-month exit could fall inside the month | V3's fallback applies: the next unmasked perpetual hour before the month starts. If there is none, the leg closes synthetically at the month's 00:00, before its funding, at the last close with the 10% penalty. V3 would have invalidated the run. Funding slots are judged only between the perpetual's first and last records, so a delisting month is not foreseen. |
