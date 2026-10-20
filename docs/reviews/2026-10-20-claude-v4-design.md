@@ -135,3 +135,8 @@ Also from the step-2 task review: a base that is exactly UP, DOWN, BULL or BEAR 
 - **`margin_cushion` in the outcome schema** (Bob 2, Codex 4320800079). Reports now lists all three `limit_unrestorable` reasons: `ceiling`, `margin_cushion` and `required_fill`.
 - **A mandatory-exit leg in the fixed holdings** (Bob 3). A leg that a mandatory exit closes this hour counts as 0, since it fills in the same batch's reductions. The coin's other, deferred leg stays fixed.
 - **Venue order inside the cash clip** (Codex 4320800073). Increases go alphabetically by symbol, and within one coin the spot leg goes before the futures leg, consistent with longs on spot first.
+
+## Bob at `c9d41cb`: NO ISSUES. Codex at `c9d41cb` (two P1)
+
+- **Simultaneous synthetic closes** (4320853545). All synthetic closes due at one instant form one batch. The liquidation check runs once, with every closing leg at its penalised price at the same time, and then all are booked together. The outcome no longer depends on processing order.
+- **Stale deferred orders at a dead-market close** (4320853551). The close cancels any deferred order the coin has. Re-entry needs a later daily decision whose decision day has a bar.
