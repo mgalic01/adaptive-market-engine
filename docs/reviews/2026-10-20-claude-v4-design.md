@@ -91,3 +91,14 @@ boundary. Tasks 1 and 2 (config and verified archive fetch) are unaffected.
 3. **Band-kept legs and cash shortfalls:** fixed holdings and the cash clip were added at `af65366`. The liquidation check now marks every leg, spot included, at its adverse extreme.
 4. **Volatility scaling undid agreement sizing.** Bob is right, and this is a real defect: scaling the raw weights to the 40% target cancels L and S whenever every coin shares the same |s|. Step 2 now takes its scale from the full-strength book, `c = 0.40 / sqrt(full' Sigma full)` with `full = sign(s) / sigma`, and applies it to `s / sigma`. Each coin's weight is |s| times its full-strength weight, as the design describes. The owner is told, since this lowers average exposure when the speeds disagree.
 5. **Dead-market booking hour:** fixed at `af65366`. It counts 168 hours, masked hours included, and the close is the next hour's first event.
+
+## Bob at `8f59d3d`: NO ISSUES. Codex at `8f59d3d` (six more findings)
+
+| Thread | Finding | Resolution |
+|---|---|---|
+| 4320534574 (P1) | Funding span anchored to the file being judged | The expected slots now fall within the perpetual's trading span from its klines: at or after its first hourly bar's open, at or before its last bar's close, over its whole history. A file that loses its first or last records still fails. |
+| 4320534580 (P2) | Zero sigma or zero portfolio estimate | As in V3, sigma = 0 gives a raw weight of 0, and so `full` is 0. If `full' Sigma full` is 0, every target is 0. |
+| 4320534588 (P1) | START_HERE §0 still names V3 as the scope | A dated scope note makes V4 the current build scope. "v3" in the goal test reads as V4, v4-d03 is stated, and the V3 text is kept as history. |
+| 4320534593 (P2) | Terminal state of a cell that stops early | As V3 §8 does: no later event and no closing fill. Every position, dust included, is marked at the stopping check's prices, with masked legs at carried marks. Lifecycles are censored with the reason. That mark is final equity. |
+| 4320534596 (P1) | Missing daily bar at a decision | V3 §4's no-bar rule: the coin keeps its signal, takes no order, and keeps any deferred order pending; the others are decided as usual. A universe exit and the funding-month close override it. |
+| 4320534598 (P1) | Deferral against the coupled allocation | Deferrals are decided first, from the venues each coin needs (spot if it holds spot or is long; the perpetual if it holds futures, is short, or is long with an eligible perpetual). Deferred, no-bar and band-kept coins keep their legs as fixed holdings, and the allocation runs once over the rest. |
