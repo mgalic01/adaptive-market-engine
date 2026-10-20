@@ -1,49 +1,56 @@
 """The V4 data packs: canonical gzip JSON, pinned by the SHA-256 of the JSON text.
 
-Two packs hold what the engine replays, the daily one (spot daily bars, the universe) and the
-hourly one (spot and USDT-M hourly bars, funding, order rules). Each is one JSON object, written
-canonically (sorted keys, separators ``(",", ":")``, ASCII, no NaN), gzipped with mtime 0 and no
-file name, and pinned by the SHA-256 of that JSON, not of the gzip bytes: the same document has
-the same pin on any machine, while the gzip around it may differ between zlib builds. This is
-the ``combined/driver/packs.py`` convention, restated here because that module also carries the
-2024 guard. ``write_canonical`` refuses an existing file, a document the reader would not hand
-back unchanged (a float, a non-string key, a tuple) and never leaves a partial file at the final
-path (it links a finished temporary file into place); ``read_canonical`` refuses a wrong pin,
-a duplicate key, a float, NaN or Infinity, a document that is not an object, and anything that
-decompresses to more than 2 GiB. Pure file I/O: nothing here touches the network.
+What the engine replays is the daily pack (spot daily bars, the universe), one coin pack per
+coin ever selected (its spot hourly bars and, if it has one, its USDT-M perpetual's hourly bars,
+funding and funding months, with the masks and order rules of each series), and the hourly
+index, which pins every coin pack (ruling P32: no step holds every coin's whole history at
+once). Each is one JSON object, written canonically (sorted keys, separators ``(",", ":")``,
+ASCII, no NaN), gzipped with mtime 0 and no file name, and pinned by the SHA-256 of that JSON,
+not of the gzip bytes: the same document has the same pin on any machine, while the gzip around
+it may differ between zlib builds. This is the ``combined/driver/packs.py`` convention, restated
+here because that module also carries the 2024 guard. ``write_canonical`` refuses an existing
+file, a document the reader would not hand back unchanged (a float, a non-string key, a tuple)
+and never leaves a partial file at the final path (it links a finished temporary file into
+place); ``read_canonical`` refuses a wrong pin, a duplicate key, a float, NaN or Infinity, a
+document that is not an object, and anything that decompresses to more than 2 GiB, hashing
+the JSON as it decompresses. Pure file I/O: nothing here touches the network.
 
 Every Decimal is written as its ``str()`` (ruling P21), under a fresh default context: the CSV's
 own text, ``"0.09865000"``, and ``"1E-7"`` for a small inferred tick. ``Decimal(text)`` rebuilds
 the same Decimal, exponent included. Timestamps are plain ints (ms), and ``interval_hours`` is an
 int or null. The reader hands rows back as written, strings and ints.
 
-Both documents hold ``format`` (``"v4-daily-pack/1"`` or ``"v4-hourly-pack/1"``),
-``config_sha256`` (the SHA-256 of the raw bytes of ``config/v4_data.json``, which the caller
-computes; it is why ``.gitattributes`` keeps that file LF), ``end_month`` and ``manifest``, every
-archive the pack was built from as ``{kind, symbol, month, path, sha256, bytes}``, sorted by
-(kind, symbol, month). The rest, by pack:
+Every document holds ``format``, ``config_sha256`` (the SHA-256 of the raw bytes of
+``config/v4_data.json``, which the caller computes; it is why ``.gitattributes`` keeps that file
+LF) and ``end_month``. The daily pack and each coin pack also hold ``manifest``, every archive
+the pack was built from as ``{kind, symbol, month, path, sha256, bytes}``, sorted by (kind,
+symbol, month). The rest, by document:
 
-* daily: ``daily`` (symbol -> rows ``[open_ms, open, high, low, close, quote_volume]``),
-  ``exclusions`` (symbol -> reason), ``masks`` and ``universes`` (one object per month with the
-  fields of ``MonthlyUniverse``; a ``ranked`` entry is ``[symbol, mean quote volume, bars]``);
-* hourly: ``spot`` and ``futures`` (symbol -> rows ``[open_ms, open, high, low, close, volume,
-  quote_volume]``), ``masks``, ``funding`` (symbol -> rows ``[time_ms, rate, interval_hours]``),
-  ``funding_months`` (``"SYMBOL|YYYY-MM"`` -> ``"complete"``, a failure reason of
-  ``funding_month_status``, ``"missing_file"`` or ``"unreadable_file"``), ``rules``
-  (``"SYMBOL|venue"`` -> ``{source, step, min_qty, max_qty, min_notional, tick}`` with
-  ``source`` ``"present_day"`` or ``"inferred"``) and ``perpetuals`` (spot symbol ->
-  ``{"symbol": perpetual, "multiplier": int}`` for every coin of the pack with a futures
-  series). ``spot`` is keyed by the coin's spot symbol; ``futures``, ``funding``,
-  ``funding_months`` and the futures ``masks`` and ``rules`` by the perpetual's own symbol, the
-  name of its archives, which for a multiplier contract is not the coin's (1000SHIBUSDT is
-  SHIBUSDT's perpetual, one unit 1000 SHIB, its prices and filters in those units).
+* daily (``"v4-daily-pack/1"``): ``daily`` (symbol -> rows ``[open_ms, open, high, low, close,
+  quote_volume]``), ``exclusions`` (symbol -> reason; a name ``archive_path`` cannot address,
+  such as 币安人生USDT, is ``"unsupported_name"``, ruling P33), ``masks`` (by symbol) and
+  ``universes`` (one object per month with the fields of ``MonthlyUniverse``; a ``ranked``
+  entry is ``[symbol, mean quote volume, bars]``);
+* coin (``"v4-coin-pack/1"``, the file ``coin_pack_file(coin)``): ``coin`` (its spot symbol),
+  ``perpetual`` (``{"symbol": perpetual, "multiplier": int}``, or null), ``spot`` and
+  ``futures`` (rows ``[open_ms, open, high, low, close, volume, quote_volume]``; ``futures`` is
+  empty without a perpetual), ``funding`` (rows ``[time_ms, rate, interval_hours]``),
+  ``funding_months`` (``"YYYY-MM"`` -> ``"complete"``, a failure reason of
+  ``funding_month_status``, ``"missing_file"`` or ``"unreadable_file"``), and ``masks`` and
+  ``rules`` by venue (``"spot"``, and ``"futures"`` with a perpetual; a rule is ``{source, step,
+  min_qty, max_qty, min_notional, tick}`` with ``source`` ``"present_day"`` or ``"inferred"``).
+  The futures series, funding and futures rules are the perpetual's own, named by its symbol
+  (the name of its archives), which for a multiplier contract is not the coin's: 1000SHIBUSDT
+  is SHIBUSDT's perpetual, one unit 1000 SHIB, its prices and filters in those units;
+* hourly index (``"v4-hourly-index/1"``): ``coins`` (coin -> ``{file, sha256, json_bytes}`` of
+  its coin pack) and ``perpetuals`` (coin -> ``{"symbol", "multiplier"}``, for each coin whose
+  pack has a perpetual).
 
 ``masks`` maps each series to ``{"masked": [sorted unique interval opens, ms], "unreadable":
-{"YYYY-MM": reason}}``: by symbol in the daily pack, by ``"SYMBOL|venue"`` in the hourly one
-(venue ``"spot"`` or ``"futures"``). The caller passes the intervals inside each month only
-(ruling P12), with every interval of an unreadable month included. Every series of the pack
-has a mask entry, empty for a clean one, so a missing entry is an error, never "clean"; every
-hourly series also has its rules. Months are never after ``end_month``.
+{"YYYY-MM": reason}}``. The caller passes the intervals inside each month only (ruling P12),
+with every interval of an unreadable month included. Every series of a pack has a mask entry,
+empty for a clean one, so a missing entry is an error, never "clean"; every hourly series also
+has its rules. Months are never after ``end_month``.
 
 The builders check what they write: Decimals are finite, timestamps are ints (never floats or
 bools), bar opens strictly increase within a series and universe months across ``universes``
@@ -79,18 +86,19 @@ from crypto_grid_bot.v4.data.listing import (
     UNSUPPORTED_NAME,
     checked_perpetual,
     is_unsupported_usdt_name,
+    perpetual_names,
 )
 from crypto_grid_bot.v4.data.universe import MonthlyUniverse
 
 DAILY_FORMAT = "v4-daily-pack/1"
-HOURLY_FORMAT = "v4-hourly-pack/1"
+COIN_FORMAT = "v4-coin-pack/1"
+INDEX_FORMAT = "v4-hourly-index/1"
 MAX_CONTENT_BYTES = 2 * 1024**3  # read_canonical refuses a pack that decompresses to more
 _CHUNK = 1 << 20
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 # The symbol shape archives.py lets through; it holds no "|", which joins the keys below.
 _SYMBOL = re.compile(r"[A-Z0-9]{2,30}")
-_VENUES = ("spot", "futures")
 _SOURCES = get_args(Source)
 # The reasons funding_month_status can give, and the two the caller records for a month it
 # could not judge (rulings P13, P16).
@@ -111,7 +119,8 @@ _DAILY_VALUES = attrgetter("open", "high", "low", "close", "quote_volume")
 _HOURLY_VALUES = attrgetter("open", "high", "low", "close", "volume", "quote_volume")
 
 DailyMasks = Mapping[str, tuple[Sequence[int], Mapping[str, str]]]
-HourlyMasks = Mapping[tuple[str, str], tuple[Sequence[int], Mapping[str, str]]]
+CoinMasks = Mapping[str, tuple[Sequence[int], Mapping[str, str]]]  # venue -> mask
+CoinRules = Mapping[str, tuple[VenueRules, str]]  # venue -> (rules, source)
 
 
 def write_canonical(document: Mapping[str, Any], path: Path) -> str:
@@ -212,53 +221,110 @@ def daily_pack_document(
         }
 
 
-def hourly_pack_document(
+def coin_pack_file(coin: str) -> str:
+    """The file name of ``coin``'s pack: ``v4-coin-<SYMBOL>.json.gz``."""
+    return f"v4-coin-{_symbol(coin, 'coin')}.json.gz"
+
+
+def coin_pack_document(
     config: DataConfig,
     manifest: Sequence[ManifestEntry],
-    spot: Mapping[str, Sequence[HourBar]],
-    futures: Mapping[str, Sequence[HourBar]],
-    masks: HourlyMasks,
-    funding: Mapping[str, Sequence[FundingRow]],
-    funding_months: Mapping[tuple[str, str], str],
-    rules: Mapping[tuple[str, str], tuple[VenueRules, str]],
     *,
-    perpetuals: Mapping[str, Mapping[str, object]],
+    coin: str,
+    spot: Sequence[HourBar],
+    perpetual: Mapping[str, object] | None,
+    futures: Sequence[HourBar],
+    masks: CoinMasks,
+    funding: Sequence[FundingRow],
+    funding_months: Mapping[str, str],
+    rules: CoinRules,
     config_sha256: str,
 ) -> dict[str, Any]:
-    """The hourly pack's document (``"v4-hourly-pack/1"``; the module docstring has the layout).
+    """One coin's hourly pack (``"v4-coin-pack/1"``; the module docstring has the layout).
 
-    ``masks`` and ``rules`` are keyed by (symbol, venue) and must name exactly the series of
-    ``spot`` and ``futures``. ``funding`` and ``funding_months`` (keyed by (symbol, month),
-    one per month of the perpetual's kline trading span) are for symbols that have futures.
-    ``perpetuals`` maps a coin of ``spot`` to its perpetual, ``{"symbol": ..., "multiplier":
-    ...}``, a name the spec's rule gives it (``listing.checked_perpetual``); its perpetuals are
-    exactly the symbols of ``futures``, so every futures key of ``futures``, ``masks``,
-    ``rules``, ``funding`` and ``funding_months`` has an entry.
+    ``coin`` is the spot symbol and ``spot`` its bars. ``perpetual`` is the coin's perpetual,
+    ``{"symbol": ..., "multiplier": ...}``, a name the spec's rule gives the coin
+    (``listing.checked_perpetual``), or None; without one, ``futures``, ``funding`` and
+    ``funding_months`` are empty. With one, ``futures`` holds at least one bar (a perpetual with
+    none is left out, entry and all: ruling P23), ``funding`` its rows and ``funding_months``
+    month -> status for each month of its kline span. ``masks`` and ``rules`` are keyed by venue:
+    ``"spot"`` and, with a perpetual, ``"futures"``. ``manifest`` lists exactly the archives
+    read for the pack: the coin's ``spot_1h`` ones, the ``futures_1h`` ones of one name
+    ``perpetual_for`` considers for the coin (the perpetual's if there is one; one left out by
+    P23 was still read) and, with a perpetual, its ``funding`` ones.
     """
     with localcontext(Context()):  # str() reads the context's exponent letter case
         header = _header(config, config_sha256, manifest)
-        spot_rows = {
-            _symbol(symbol, "spot"): _bar_rows(f"spot {symbol}", bars, HourBar, _HOURLY_VALUES)
-            for symbol, bars in spot.items()
-        }
-        futures_rows = {
-            _symbol(symbol, "futures"): _bar_rows(
-                f"futures {symbol}", bars, HourBar, _HOURLY_VALUES
-            )
-            for symbol, bars in futures.items()
-        }
-        series = {f"{symbol}|spot" for symbol in spot} | {f"{symbol}|futures" for symbol in futures}
+        _symbol(coin, "coin")
+        entry: dict[str, object] | None = None
+        if perpetual is None:
+            if futures or funding or funding_months:
+                raise ValueError(
+                    f"coin {coin}: futures, funding and funding months need a perpetual"
+                )
+        else:
+            try:
+                symbol, multiplier = checked_perpetual(coin, perpetual)
+            except ValueError as exc:
+                raise ValueError(f"coin {coin}: {exc}") from exc
+            if not futures:
+                raise ValueError(
+                    f"coin {coin}: a perpetual with no futures bar is left out, entry and all "
+                    "(ruling P23)"
+                )
+            entry = {"symbol": symbol, "multiplier": multiplier}
+        name = None if entry is None else str(entry["symbol"])
+        _coin_manifest(header["manifest"], coin, name)
+        venues = {"spot"} if entry is None else {"spot", "futures"}
         return {
-            "format": HOURLY_FORMAT,
+            "format": COIN_FORMAT,
             **header,
-            "spot": spot_rows,
-            "futures": futures_rows,
-            "masks": _masks(_by_series(masks, "masks"), series, config),
-            "funding": _funding(funding, futures),
-            "funding_months": _funding_months(funding_months, futures, config),
-            "rules": _rules(_by_series(rules, "rules"), series),
-            "perpetuals": _perpetuals(perpetuals, spot, futures),
+            "coin": coin,
+            "perpetual": entry,
+            "spot": _bar_rows(f"spot {coin}", spot, HourBar, _HOURLY_VALUES),
+            "futures": _bar_rows(f"futures {name}", futures, HourBar, _HOURLY_VALUES),
+            "masks": _masks(masks, venues, config),
+            "funding": _funding_rows(funding, f"funding {name}"),
+            "funding_months": _funding_months(funding_months, config),
+            "rules": _rules(rules, venues),
         }
+
+
+def hourly_index_document(
+    config: DataConfig,
+    *,
+    coins: Mapping[str, tuple[str, str, int]],
+    perpetuals: Mapping[str, Mapping[str, object]],
+    config_sha256: str,
+) -> dict[str, Any]:
+    """The hourly index (``"v4-hourly-index/1"``; the module docstring has the layout).
+
+    ``coins`` maps each coin to its pack as written: (the pin ``write_canonical`` returned, the
+    file name ``coin_pack_file(coin)``, the bytes of its canonical JSON). ``perpetuals`` maps a
+    coin of ``coins`` whose pack has a perpetual to it, ``{"symbol", "multiplier"}``, by the
+    spec's rule, no perpetual being two coins'. ``end_month`` is the config's.
+    """
+    if not isinstance(coins, Mapping):
+        raise ValueError("coins: a mapping of coin -> (sha256, file, json bytes) required")
+    pinned: dict[str, dict[str, object]] = {}
+    for coin, record in coins.items():
+        _symbol(coin, "coins")
+        if not isinstance(record, tuple | list) or len(record) != 3:
+            raise ValueError(f"coins {coin}: (sha256, file, json bytes) required")
+        pin, file, size = record
+        if not isinstance(pin, str) or _SHA256.fullmatch(pin) is None:
+            raise ValueError(f"coins {coin}: sha256 must be 64 lowercase hex digits")
+        if file != coin_pack_file(coin):
+            raise ValueError(f"coins {coin}: the file must be {coin_pack_file(coin)}, got {file!r}")
+        if _int(size, f"coins {coin} json bytes") < 0:
+            raise ValueError(f"coins {coin}: json bytes must not be negative")
+        pinned[coin] = {"file": file, "sha256": pin, "json_bytes": size}
+    return {
+        "format": INDEX_FORMAT,
+        **_pins(config, config_sha256),
+        "coins": pinned,
+        "perpetuals": _perpetuals(perpetuals, pinned),
+    }
 
 
 def _decompressed(path: Path) -> tuple[bytearray, str]:
@@ -402,17 +468,39 @@ def _same_keys(what: str, given: set[str], expected: set[str]) -> None:
         )
 
 
-def _header(
-    config: DataConfig, config_sha256: str, manifest: Sequence[ManifestEntry]
-) -> dict[str, Any]:
+def _pins(config: DataConfig, config_sha256: str) -> dict[str, Any]:
     refuse_after_end(config.end_month, config)  # the config's own end month is a month
     if not isinstance(config_sha256, str) or _SHA256.fullmatch(config_sha256) is None:
         raise ValueError("config_sha256 must be 64 lowercase hex digits")
-    return {
-        "config_sha256": config_sha256,
-        "end_month": config.end_month,
-        "manifest": _manifest(manifest, config),
-    }
+    return {"config_sha256": config_sha256, "end_month": config.end_month}
+
+
+def _header(
+    config: DataConfig, config_sha256: str, manifest: Sequence[ManifestEntry]
+) -> dict[str, Any]:
+    return {**_pins(config, config_sha256), "manifest": _manifest(manifest, config)}
+
+
+def _coin_manifest(manifest: Sequence[Mapping[str, Any]], coin: str, perpetual: str | None) -> None:
+    """Refuse an entry that is not one of this coin pack's archives: the coin's ``spot_1h``,
+    the ``futures_1h`` of one name (the perpetual's, or without one any name ``perpetual_for``
+    considers for the coin, read before P23 left it out) and the perpetual's ``funding``."""
+    considered = set(perpetual_names(coin)) if perpetual is None else {perpetual}
+    futures: set[str] = set()
+    for item in manifest:
+        kind, symbol = item["kind"], item["symbol"]
+        if kind == "futures_1h" and symbol in considered:
+            futures.add(symbol)
+        elif not (
+            (kind == "spot_1h" and symbol == coin)
+            or (kind == "funding" and perpetual is not None and symbol == perpetual)
+        ):
+            raise ValueError(
+                f"coin {coin}: the manifest entry {kind} {symbol} {item['month']} is not one of "
+                "its archives"
+            )
+    if len(futures) > 1:
+        raise ValueError(f"coin {coin}: futures archives of more than one name {sorted(futures)}")
 
 
 def _manifest(manifest: Sequence[ManifestEntry], config: DataConfig) -> list[dict[str, Any]]:
@@ -505,24 +593,9 @@ def _universe(universe: MonthlyUniverse, config: DataConfig) -> dict[str, Any]:
     }
 
 
-def _by_series[V](entries: Mapping[tuple[str, str], V], what: str) -> dict[str, V]:
-    """``entries`` keyed ``"SYMBOL|venue"`` instead of by (symbol, venue)."""
-    keyed: dict[str, V] = {}
-    for key, entry in entries.items():
-        if not isinstance(key, tuple) or len(key) != 2:
-            raise ValueError(f"{what}: a (symbol, venue) pair required, got {key!r}")
-        symbol, venue = key
-        _symbol(symbol, what)
-        if venue not in _VENUES:
-            raise ValueError(
-                f"{what} {symbol}: venue must be one of {', '.join(_VENUES)}, got {venue!r}"
-            )
-        keyed[f"{symbol}|{venue}"] = entry
-    return keyed
-
-
 def _masks(masks: Mapping[str, Any], expected: set[str], config: DataConfig) -> dict[str, Any]:
-    """Each series' mask as ``{"masked": [...], "unreadable": {...}}``; one per series."""
+    """Each series' mask as ``{"masked": [...], "unreadable": {...}}``; one per series, keyed
+    by symbol (daily) or venue (coin)."""
     _same_keys("masks", set(masks), expected)
     document: dict[str, Any] = {}
     for key, entry in masks.items():
@@ -545,85 +618,57 @@ def _masks(masks: Mapping[str, Any], expected: set[str], config: DataConfig) -> 
     return document
 
 
-def _funding(
-    funding: Mapping[str, Sequence[FundingRow]], futures: Mapping[str, Sequence[HourBar]]
-) -> dict[str, list[list[object]]]:
+def _funding_rows(rows: Sequence[FundingRow], what: str) -> list[list[object]]:
     """``[time_ms, rate, interval_hours]`` per row, in the order given."""
-    document: dict[str, list[list[object]]] = {}
-    for symbol, rows in funding.items():
-        _symbol(symbol, "funding")
-        if symbol not in futures:
-            raise ValueError(f"funding {symbol}: funding is for symbols that have futures")
-        document[symbol] = []
-        for row in rows:
-            if not isinstance(row, FundingRow):
-                raise ValueError(f"funding {symbol}: FundingRow required, got {row!r}")
-            interval = row.interval_hours
-            if interval is not None:
-                _int(interval, f"funding {symbol} interval_hours (an int or null)")
-            document[symbol].append(
-                [_int(row.time_ms, f"funding {symbol} time"), _text(row.rate), interval]
-            )
+    document: list[list[object]] = []
+    for row in rows:
+        if not isinstance(row, FundingRow):
+            raise ValueError(f"{what}: FundingRow required, got {row!r}")
+        interval = row.interval_hours
+        if interval is not None:
+            _int(interval, f"{what} interval_hours (an int or null)")
+        document.append([_int(row.time_ms, f"{what} time"), _text(row.rate), interval])
     return document
 
 
-def _funding_months(
-    funding_months: Mapping[tuple[str, str], str],
-    futures: Mapping[str, Sequence[HourBar]],
-    config: DataConfig,
-) -> dict[str, str]:
-    """``"SYMBOL|YYYY-MM"`` -> the month's status."""
+def _funding_months(funding_months: Mapping[str, str], config: DataConfig) -> dict[str, str]:
+    """``"YYYY-MM"`` -> the month's status."""
     document: dict[str, str] = {}
-    for key, status in funding_months.items():
-        if not isinstance(key, tuple) or len(key) != 2:
-            raise ValueError(f"funding_months: a (symbol, month) pair required, got {key!r}")
-        symbol, month = key
-        _symbol(symbol, "funding_months")
-        _check_month(month, config, f"funding_months {symbol} month")
+    for month, status in funding_months.items():
+        if not isinstance(month, str):
+            raise ValueError(f"funding_months: a YYYY-MM month required, got {month!r}")
+        _check_month(month, config, "funding_months month")
         if not isinstance(status, str) or status not in _FUNDING_STATUSES:
             raise ValueError(
-                f"funding_months {symbol} {month}: status {status!r} is not one of "
+                f"funding_months {month}: status {status!r} is not one of "
                 f"{', '.join(sorted(_FUNDING_STATUSES))}"
             )
-        if symbol not in futures:
-            raise ValueError(f"funding_months {symbol}: funding is for symbols that have futures")
-        document[f"{symbol}|{month}"] = status
+        document[month] = status
     return document
 
 
 def _perpetuals(
-    perpetuals: Mapping[str, Mapping[str, object]],
-    spot: Mapping[str, Sequence[HourBar]],
-    futures: Mapping[str, Sequence[HourBar]],
+    perpetuals: Mapping[str, Mapping[str, object]], coins: Mapping[str, object]
 ) -> dict[str, dict[str, object]]:
-    """Each coin's perpetual as ``{"symbol": ..., "multiplier": ...}``: the coin is a spot
-    symbol of the pack, the name is one the spec's rule gives it, no perpetual is two coins',
-    and the perpetuals are exactly the futures series (a perpetual left out of the pack leaves
-    out its entry)."""
+    """Each coin's perpetual as ``{"symbol": ..., "multiplier": ...}``: the coin is one of
+    ``coins``, the name is one the spec's rule gives it, and no perpetual is two coins'."""
     if not isinstance(perpetuals, Mapping):
-        raise ValueError("perpetuals: a mapping of spot symbol -> {symbol, multiplier} required")
+        raise ValueError("perpetuals: a mapping of coin -> {symbol, multiplier} required")
     document: dict[str, dict[str, object]] = {}
     owners: dict[str, str] = {}  # perpetual -> the coin it was first mapped from
     for coin, entry in perpetuals.items():
         _symbol(coin, "perpetuals")
-        if coin not in spot:
-            raise ValueError(f"perpetuals: {coin} is not a spot symbol of the pack")
+        if coin not in coins:
+            raise ValueError(f"perpetuals: {coin} is not a coin of the index")
         try:
             symbol, multiplier = checked_perpetual(coin, entry)
         except ValueError as exc:
             raise ValueError(f"perpetuals: {exc}") from exc
-        if symbol in owners:  # the set comparison below would hide the second coin
+        if symbol in owners:
             both = " and ".join(sorted((owners[symbol], coin)))
             raise ValueError(f"perpetuals: {symbol} is the perpetual of both {both}")
         owners[symbol] = coin
         document[coin] = {"symbol": symbol, "multiplier": multiplier}
-    held = set(owners)
-    if held != set(futures):
-        raise ValueError(
-            f"perpetuals: futures series without a perpetual entry: "
-            f"{sorted(set(futures) - held)}; perpetual entries without a futures series: "
-            f"{sorted(held - set(futures))}"
-        )
     return document
 
 

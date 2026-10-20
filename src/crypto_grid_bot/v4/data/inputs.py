@@ -504,18 +504,19 @@ def _daily_series(
 
 
 def _usable_hours(
-    entries: Sequence[ManifestEntry], cache: Path, run: _Run, keep: frozenset[str] = frozenset()
-) -> tuple[dict[str, list[int]], dict[str, _Series[HourBar]]]:
-    """Per symbol, the sorted opens of its unmasked spot hourly bars (ruling P24), and the
-    whole series of the symbols in ``keep``, so that no archive is decoded twice."""
+    entries: Sequence[ManifestEntry], cache: Path, run: _Run, count: frozenset[str] = frozenset()
+) -> tuple[dict[str, list[int]], dict[str, int]]:
+    """Per symbol, the sorted opens of its unmasked spot hourly bars (ruling P24), and for the
+    symbols in ``count`` the number of bars as read. One series is held at a time (ruling P32):
+    a coin pack reads its spot series again rather than every one being kept."""
     usable: dict[str, list[int]] = {}
-    kept: dict[str, _Series[HourBar]] = {}
+    rows: dict[str, int] = {}
     for symbol, group in _grouped(entries, "spot_1h").items():
         series = _read_series(group, cache, run, _read_spot_hours, _HOUR_MS)
         usable[symbol] = [bar.open_ms for bar in series.unmasked()]
-        if symbol in keep:
-            kept[symbol] = series
-    return usable, kept
+        if symbol in count:
+            rows[symbol] = len(series.bars)
+    return usable, rows
 
 
 def _universes(
@@ -575,8 +576,11 @@ def _funding(
     cache: Path,
     run: _Run,
 ) -> tuple[list[FundingRow], dict[tuple[str, str], str]]:
-    """A perpetual's funding rows (every readable file, by month) and its month statuses.
+    """A perpetual's funding rows and its month statuses.
 
+    The rows are those of every file read, by month, whose time is inside that file's own
+    month (and so not after ``end_month``): a stray row in another month's file is not stored.
+    The statuses still see every row of a file, so a stray row makes its month ``"off_slot"``.
     The span runs from the open of its first unmasked hourly bar to the close of its last
     (ruling P15); every month it touches is judged: a file ``read_funding`` refuses is
     ``"unreadable_file"`` (P13), a missing file ``"complete"`` if the month holds no slot in
@@ -589,7 +593,10 @@ def _funding(
             files[entry.month] = read_funding(content, symbol, entry.month)
         except ValueError:
             files[entry.month] = None
-    rows = [row for month in sorted(files) for row in files[month] or ()]
+    rows: list[FundingRow] = []
+    for month in sorted(files):
+        start, end = month_bounds_ms(month)  # a stray row stays out of the rows, not the status
+        rows.extend(row for row in files[month] or () if start <= row.time_ms < end)
     unmasked = futures.unmasked()
     if not unmasked:
         return rows, {}

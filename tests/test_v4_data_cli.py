@@ -40,6 +40,7 @@ import re
 import socket
 import sys
 import zipfile
+from collections import Counter
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -63,7 +64,6 @@ DAY = 24 * HOUR
 END_MONTH = "2024-03"
 JAN, FEB = "2024-01", "2024-02"
 HOURLY_KINDS = ("spot_1h", "futures_1h", "funding")
-HOURLY_PACK_FILE = "hourly.pack.json.gz"
 FUTURES_HEADER = (
     "open_time,open,high,low,close,volume,close_time,quote_volume,count,"
     "taker_buy_volume,taker_buy_quote_volume,ignore"
@@ -201,6 +201,15 @@ class FakeBinance:
         return [url for url in self.requests if url.startswith(ARCHIVE)]
 
 
+def zipped(path: str, text: str) -> bytes:
+    """A zip archive holding ``text`` as the CSV member Binance names after ``path``."""
+    member = path.rsplit("/", 1)[1].removesuffix(".zip") + ".csv"
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(member, text)
+    return stream.getvalue()
+
+
 def build_world(*, spot_january_days: int = 31) -> FakeBinance:
     """The world above. With ``spot_january_days`` below 25, AAA's, BBB's and EEE's January
     spot hourly bars stop more than 168 hours before 2024-02-01, so no candidate passes that
@@ -209,14 +218,7 @@ def build_world(*, spot_january_days: int = 31) -> FakeBinance:
 
     def put(kind: str, symbol: str, month: str, text: str | None = None) -> None:
         path = archive_path(kind, symbol, month)
-        if text is None:
-            files[path] = GARBAGE
-            return
-        member = path.rsplit("/", 1)[1].removesuffix(".zip") + ".csv"
-        stream = io.BytesIO()
-        with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr(member, text)
-        files[path] = stream.getvalue()
+        files[path] = GARBAGE if text is None else zipped(path, text)
 
     j0, f0, m0 = month_start(JAN), month_start(FEB), month_start("2024-03")
     for symbol, volume in DAILY_QUOTE_VOLUMES.items():
@@ -419,6 +421,38 @@ def months_named(url: str) -> list[str]:
     return re.findall(r"(?<![0-9])([0-9]{4}-[0-9]{2})(?![0-9])", url)
 
 
+def hourly_view(data_dir: Path) -> dict:
+    """Every coin pack, each read with its pin from the index read with its pin from data.json,
+    gathered into one view keyed as the assertions want: ``spot`` by coin; ``futures``,
+    ``funding`` by perpetual; ``masks`` and ``rules`` by "SYMBOL|venue"; ``funding_months`` by
+    "PERPETUAL|YYYY-MM"; ``perpetuals`` and ``coins`` from the index; ``manifest`` every coin
+    pack's; ``packs`` coin -> its pack."""
+    data = json.loads((data_dir / "data.json").read_text())
+    record = data["packs"]["hourly_index"]
+    index = read_canonical(data_dir / record["file"], record["sha256"])
+    view: dict = {key: {} for key in ("spot", "futures", "masks", "funding", "rules", "packs")}
+    view |= {"funding_months": {}, "manifest": [], "perpetuals": index["perpetuals"]}
+    view["coins"] = index["coins"]
+    for coin, pinned in index["coins"].items():
+        pack = read_canonical(data_dir / pinned["file"], pinned["sha256"])
+        assert pack["coin"] == coin and pack["perpetual"] == index["perpetuals"].get(coin)
+        view["packs"][coin] = pack
+        view["manifest"] += pack["manifest"]
+        names = {"spot": coin}
+        if pack["perpetual"] is not None:
+            name = names["futures"] = pack["perpetual"]["symbol"]
+            view["futures"][name], view["funding"][name] = pack["futures"], pack["funding"]
+            view["funding_months"] |= {f"{name}|{m}": s for m, s in pack["funding_months"].items()}
+        else:
+            assert pack["futures"] == pack["funding"] == [] and pack["funding_months"] == {}
+        view["spot"][coin] = pack["spot"]
+        for venue, symbol in names.items():
+            view["masks"][f"{symbol}|{venue}"] = pack["masks"][venue]
+            view["rules"][f"{symbol}|{venue}"] = pack["rules"][venue]
+        assert set(pack["masks"]) == set(pack["rules"]) == set(names)
+    return view
+
+
 # --- the CLI ---------------------------------------------------------------------------------
 
 
@@ -429,12 +463,13 @@ def test_end_to_end_on_a_fake_world_produces_both_packs_and_pins(tmp_path, capsy
     data = json.loads((pipeline.data / "data.json").read_text())
     assert data["config_sha256"] == sha(pipeline.config.read_bytes())
     assert data["end_month"] == END_MONTH
-    daily_pin, hourly_pin = data["packs"]["daily"]["sha256"], data["packs"]["hourly"]["sha256"]
-    daily = read_canonical(pipeline.data / data["packs"]["daily"]["file"], daily_pin)
-    hourly = read_canonical(pipeline.data / data["packs"]["hourly"]["file"], hourly_pin)
-    with gzip.open(pipeline.data / data["packs"]["hourly"]["file"]) as stream:
-        assert data["packs"]["hourly"]["json_bytes"] == len(stream.read())
-    for document in (daily, hourly):
+    daily_record, index_record = data["packs"]["daily"], data["packs"]["hourly_index"]
+    daily = read_canonical(pipeline.data / daily_record["file"], daily_record["sha256"])
+    index = read_canonical(pipeline.data / index_record["file"], index_record["sha256"])
+    hourly = hourly_view(pipeline.data)
+    with gzip.open(pipeline.data / index_record["file"]) as stream:
+        assert index_record["json_bytes"] == len(stream.read())
+    for document in (daily, index, *hourly["packs"].values()):
         assert document["config_sha256"] == data["config_sha256"]
         assert document["end_month"] == END_MONTH
 
@@ -465,8 +500,8 @@ def test_end_to_end_on_a_fake_world_produces_both_packs_and_pins(tmp_path, capsy
     assert (window_bars["AAAUSDT"], window_bars["BBBUSDT"]) == (29, 30)
     assert {entry["kind"] for entry in daily["manifest"]} == {"spot_1d", "spot_1h"}
 
-    # The hourly pack: whole histories of the symbols ever selected, each futures series under
-    # its perpetual's own symbol.
+    # The coin packs: whole histories of the symbols ever selected, one pack each, each futures
+    # series under its perpetual's own symbol.
     assert sorted(hourly["spot"]) == ["AAAUSDT", "BBBUSDT", "EEEUSDT", "FFFUSDT", "LATEUSDT"]
     assert sorted(hourly["futures"]) == ["1000FFFUSDT", "AAAUSDT", "BBBUSDT", "LATEUSDT"]
     assert hourly["perpetuals"] == {  # EEE: none readable, so no entry (ruling P23)
@@ -743,7 +778,11 @@ def test_an_archive_missing_from_the_cache_is_fetched_again_by_its_pin(tmp_path,
     assert cached.read_bytes() == original
 
 
-def test_pack_decodes_each_hourly_archive_once(tmp_path, capsys, monkeypatch):
+def test_pack_decodes_each_hourly_archive_at_most_twice(tmp_path, capsys, monkeypatch):
+    # Ruling P32: no series is kept from one coin to the next, so a selected coin's spot
+    # archives are decoded for the usable hours and again for its coin pack, and a perpetual's
+    # for the pre-flight count and again for its coin pack. A candidate never selected (CCC)
+    # has its spot archives decoded once, for the usable hours.
     pipeline = Pipeline(tmp_path, capsys)
     pipeline.until_final()
     decoded: list[tuple[str, str, bool]] = []
@@ -755,11 +794,120 @@ def test_pack_decodes_each_hourly_archive_once(tmp_path, capsys, monkeypatch):
 
     monkeypatch.setattr(inputs, "read_hourly", counting)
     pipeline.pack()
-    assert len(decoded) == len(set(decoded))  # the selected symbols' spot series are reused
+    selected = {"AAAUSDT", "BBBUSDT", "EEEUSDT", "FFFUSDT", "LATEUSDT"}
+    for (symbol, month, futures), times in Counter(decoded).items():
+        assert times == (2 if futures or symbol in selected else 1), (symbol, month, futures)
     spot = {(symbol, month) for symbol, month, futures in decoded if not futures}
-    assert len(spot) == 11  # every candidate's spot hourly archive, once
+    assert len(spot) == 11  # every candidate's spot hourly archive
     assert ("EEEUSDT", JAN, True) in decoded and ("CCCUSDT", JAN, True) not in decoded
     assert ("1000FFFUSDT", FEB, True) in decoded  # a perpetual is read under its own symbol
+
+
+def test_pack_writes_one_pack_per_coin_and_an_index_that_pins_them(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.run()
+
+    data = json.loads((pipeline.data / "data.json").read_text())
+    assert sorted(data["packs"]) == ["daily", "hourly_index"]
+    record = data["packs"]["hourly_index"]
+    index = read_canonical(pipeline.data / record["file"], record["sha256"])
+    assert index["format"] == "v4-hourly-index/1" and record["file"] == "hourly-index.json.gz"
+    selected = ["AAAUSDT", "BBBUSDT", "EEEUSDT", "FFFUSDT", "LATEUSDT"]
+    files = sorted(path.name for path in pipeline.data.glob("v4-coin-*.json.gz"))
+    assert files == [f"v4-coin-{coin}.json.gz" for coin in selected]  # one file per coin
+    assert sorted(index["coins"]) == selected
+    sizes = []
+    for coin, pinned in index["coins"].items():
+        path = pipeline.data / pinned["file"]
+        pack = read_canonical(path, pinned["sha256"])  # its index pin is its pin
+        with gzip.open(path) as stream:
+            content = stream.read()
+        assert sha(content) == pinned["sha256"] and len(content) == pinned["json_bytes"]
+        assert pack["format"] == "v4-coin-pack/1" and pack["coin"] == coin
+        assert {e["symbol"] for e in pack["manifest"] if e["kind"] == "spot_1h"} == {coin}
+        sizes.append(pinned["json_bytes"])
+    assert index["perpetuals"] == {coin: PERPETUALS[coin] for coin in selected if coin != "EEEUSDT"}
+    # The pre-flight before the coin packs, and the largest coin pack after them.
+    view = hourly_view(pipeline.data)
+    rows = sum(len(view["spot"][c]) for c in selected) + sum(map(len, view["futures"].values()))
+    spot_rows = sum(len(view["spot"][c]) for c in selected)
+    out = pipeline.out[-1]
+    assert (
+        f"pack pre-flight: 5 coin packs to build, {rows} hourly rows as read ({spot_rows} spot, "
+        f"{rows - spot_rows} futures)"
+    ) in out
+    assert out.index("pack pre-flight") < out.index("pack coin pack 1/5")
+    assert f"pack: 5 coin packs, the largest {max(sizes)} bytes of canonical JSON" in out
+    assert (data["coin_packs"], data["largest_coin_pack_json_bytes"]) == (5, max(sizes))
+    assert data["hourly_rows"] == rows
+    assert not (pipeline.data / "hourly.pack.json.gz").exists()  # no single hourly pack
+
+
+def test_pack_builds_and_writes_the_coin_packs_one_coin_at_a_time(tmp_path, capsys, monkeypatch):
+    # Ruling P32, structurally: after the pre-flight, a coin's series are read, its pack is
+    # written, and only then is the next coin's first series read. So no two coins' series
+    # are alive together, and nothing is read after the last coin pack.
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_final()
+    events: list[tuple[str, str]] = []
+    read_hourly, write, say = inputs.read_hourly, v4_data.write_canonical, v4_data._say
+
+    def reading(content, symbol, month, *, futures):
+        events.append(("read", symbol))
+        return read_hourly(content, symbol, month, futures=futures)
+
+    def writing(document, path):
+        events.append(("write", Path(path).name))
+        return write(document, path)
+
+    def saying(line):
+        events.append(("say", line))
+        say(line)
+
+    monkeypatch.setattr(inputs, "read_hourly", reading)
+    monkeypatch.setattr(v4_data, "write_canonical", writing)
+    monkeypatch.setattr(v4_data, "_say", saying)
+    pipeline.pack()
+
+    start = next(i for i, (kind, text) in enumerate(events) if text.startswith("pack pre-flight"))
+    groups: list[tuple[str, list[str]]] = []
+    reads: list[str] = []
+    for kind, text in events[start + 1 :]:
+        if kind == "read":
+            reads.append(text)
+        elif kind == "write":
+            groups.append((text, reads))
+            reads = []
+    assert reads == []  # nothing read after the last write (the index)
+    owners = {coin: {coin} for coin in ("AAAUSDT", "BBBUSDT", "EEEUSDT", "LATEUSDT")}
+    owners["FFFUSDT"] = {"FFFUSDT", "1000FFFUSDT"}  # its spot series, and its perpetual's
+    assert [name for name, _ in groups] == [
+        *(f"v4-coin-{coin}.json.gz" for coin in sorted(owners)),
+        "hourly-index.json.gz",
+    ]
+    for (_, read), coin in zip(groups, sorted(owners), strict=False):
+        assert read and set(read) <= owners[coin], (coin, read)
+    assert groups[-1][1] == []  # the index reads no series
+
+
+def test_a_stray_funding_row_is_not_stored_but_still_makes_its_month_off_slot(tmp_path, capsys):
+    # AAA's February funding file also holds a row at 00:00 on 1 March, outside its month: the
+    # coin pack stores only rows inside each file's month, while the month status still sees
+    # the stray row and is "off_slot".
+    world = build_world()
+    path = archive_path("funding", "AAAUSDT", FEB)
+    stray = month_start("2024-03")
+    world.files[path] = zipped(
+        path, funding_csv(month_start(FEB), stray) + f"{stray},8,{FUNDING_RATE}\n"
+    )
+    pipeline = Pipeline(tmp_path, capsys, world)
+    pipeline.run()
+
+    hourly = hourly_view(pipeline.data)
+    assert hourly["funding_months"]["AAAUSDT|2024-02"] == "off_slot"
+    assert hourly["funding_months"]["AAAUSDT|2024-01"] == "complete"
+    times = [row[0] for row in hourly["funding"]["AAAUSDT"]]
+    assert stray not in times and len(times) == 93 + 87
 
 
 def test_pack_refuses_universes_that_differ_from_select_finals(tmp_path, capsys):
@@ -784,6 +932,7 @@ def test_no_output_prints_bar_values(tmp_path, capsys):
     pins = re.findall(r"\b[0-9a-f]{64}\b", out)
     data = json.loads((pipeline.data / "data.json").read_text())
     assert {pack["sha256"] for pack in data["packs"].values()} <= set(pins)
+    assert {coin["sha256"] for coin in hourly_view(pipeline.data)["coins"].values()} <= set(pins)
     # Counts and pins only: no number with a fraction, and nothing that is not a word, a
     # count, a pin or punctuation.
     without_pins = re.sub(r"\b[0-9a-f]{64}\b", "PIN", out)
@@ -890,9 +1039,9 @@ def test_fetch_prints_how_many_of_the_shards_symbols_have_a_perpetual(tmp_path, 
 
 
 def test_a_multiplier_perpetual_without_a_readable_bar_is_left_out_with_its_entry(tmp_path, capsys):
-    # Ruling P23 for 1000FFFUSDT: both its futures archives are unreadable, so the hourly pack
-    # holds no futures series for it, and so no rules, masks, funding, funding months or
-    # perpetuals entry; FFFUSDT's spot series stays.
+    # Ruling P23 for 1000FFFUSDT: both its futures archives are unreadable, so FFFUSDT's coin
+    # pack holds no futures series, and so no futures rules, masks, funding, funding months or
+    # perpetual, nor does the index; FFFUSDT's spot series stays.
     world = build_world()
     for month in (JAN, FEB):
         world.files[archive_path("futures_1h", "1000FFFUSDT", month)] = GARBAGE
@@ -900,8 +1049,9 @@ def test_a_multiplier_perpetual_without_a_readable_bar_is_left_out_with_its_entr
     pipeline.run()
 
     data = json.loads((pipeline.data / "data.json").read_text())
-    hourly = read_canonical(pipeline.data / HOURLY_PACK_FILE, data["packs"]["hourly"]["sha256"])
+    hourly = hourly_view(pipeline.data)
     assert "FFFUSDT" in hourly["spot"] and "FFFUSDT|spot" in hourly["rules"]
+    assert hourly["packs"]["FFFUSDT"]["perpetual"] is None  # its coin pack has none
     assert "1000FFFUSDT" not in hourly["futures"] and "1000FFFUSDT" not in hourly["funding"]
     keyed = [*hourly["rules"], *hourly["masks"], *hourly["funding_months"]]
     assert not [key for key in keyed if key.startswith("1000FFFUSDT|")]
@@ -918,8 +1068,9 @@ def test_cli_packs_a_multiplier_perpetual_under_its_own_symbol(tmp_path, capsys)
     pipeline.run()
 
     data = json.loads((pipeline.data / "data.json").read_text())
-    hourly = read_canonical(pipeline.data / HOURLY_PACK_FILE, data["packs"]["hourly"]["sha256"])
+    hourly = hourly_view(pipeline.data)
     assert hourly["perpetuals"]["FFFUSDT"] == {"symbol": "1000FFFUSDT", "multiplier": 1000}
+    assert hourly["packs"]["FFFUSDT"]["perpetual"] == hourly["perpetuals"]["FFFUSDT"]
     assert "FFFUSDT" in hourly["spot"] and "FFFUSDT" not in hourly["futures"]
     assert len(hourly["futures"]["1000FFFUSDT"]) == 744 + 696
     assert hourly["masks"]["1000FFFUSDT|futures"] == {"masked": [], "unreadable": {}}
@@ -1328,4 +1479,9 @@ def test_workflow_has_the_expected_jobs_and_no_cache_of_results():
         "v4-final",
         "v4-data",
     }
-    assert uploads["v4-data"]["path"].rstrip("/") == "v4/data"
+    assert uploads["v4-data"]["path"].split() == [
+        "v4/data/daily.pack.json.gz",
+        "v4/data/hourly-index.json.gz",
+        "v4/data/v4-coin-*.json.gz",
+        "v4/data/data.json",
+    ]

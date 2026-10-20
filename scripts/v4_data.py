@@ -33,16 +33,19 @@ the owner's PC); each stage reads the files the stages before it wrote:
   hourly fetch takes every listed month of each, its whole history.
 * ``select --stage final`` adds the hourly check (``usable_hours`` from the spot hourly
   archives) and writes ``universe.json`` and ``selected.txt`` (every symbol ever selected).
-* ``pack --universe U`` writes ``daily.pack.json.gz``, ``hourly.pack.json.gz`` and
-  ``data.json`` (the pins). It recomputes the final universes from the same archives and
-  stops unless they equal ``select --stage final``'s ``universe.json`` (U). The hourly pack
-  holds the whole history of every symbol ever selected, with ``perpetuals`` (coin ->
-  ``{"symbol", "multiplier"}``): its spot side is keyed by the coin's symbol, and its futures
-  series, funding, funding months, futures masks and futures rules by the perpetual's own
-  symbol, under which the present-day filters are looked up. Each pack's manifest lists exactly
-  the archives read for it: the daily pack's includes every candidate's spot hourly archives,
-  which the universes' hourly check read, and the funding archives of a perpetual left out
-  of the hourly pack are read by neither.
+* ``pack --universe U`` writes ``daily.pack.json.gz``, one coin pack ``v4-coin-<SYMBOL>.json.gz``
+  per symbol ever selected, ``hourly-index.json.gz`` (every coin pack's pin, and each coin's
+  perpetual) and ``data.json`` (the pins of the daily pack and the index). It recomputes the
+  final universes from the same archives and stops unless they equal ``select --stage
+  final``'s ``universe.json`` (U). Before building the coin packs it prints the rows they will
+  hold, bars as read (a pre-flight). Then, coin by coin in sorted order (ruling P32: the
+  memory peak is one coin's history, never every coin's), it reads the coin's whole spot
+  history and, if it has a perpetual, the perpetual's futures history, funding and funding
+  months, under the perpetual's own symbol (under which the present-day filters are looked
+  up), writes the coin's pack and releases it all before the next coin. Each pack's manifest
+  lists exactly the archives read for it: the daily pack's includes every candidate's spot
+  hourly archives, which the universes' hourly check read, and the funding archives of a
+  perpetual left out of its coin pack are read by neither.
 
 A stage refuses an incomplete or inconsistent set of manifest pieces: for each kind, the pieces
 must be shards 0 to n-1 of one n, partitioning their symbols as ``fetch`` does, and each
@@ -63,9 +66,9 @@ unreadable archive masks its whole month (P12); every discovered symbol is a key
 input (Task 5) and the input is sorted (P18); a funding file that cannot be read is
 ``"unreadable_file"`` (P13), and the funding months run over the perpetual's span of unmasked
 hourly bars, a month without a file being ``"complete"`` only if it holds no slot (P15, P16); a
-futures series with no readable bar is left out with its rules, masks, funding and
-``perpetuals`` entry, and a pack whose canonical JSON exceeds 1.5 GiB stops for a ruling on
-splitting it (P23); order rules come only for the hourly pack's series, and a refusal stops the
+futures series with no readable bar is left out of its coin pack with its rules, masks,
+funding and perpetual, and any pack whose canonical JSON exceeds 1.5 GiB stops for a ruling on
+splitting it (P23); order rules come only for the coin packs' series, and a refusal stops the
 pack (P20); the filter snapshots must match their pins (R3). Two candidates with the same
 perpetual stop ``discover`` for a ruling. The loading helpers are in
 ``crypto_grid_bot.v4.data.inputs``.
@@ -83,7 +86,7 @@ import hashlib
 import json
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -117,8 +120,10 @@ from crypto_grid_bot.v4.data.inputs import (
     _ranked,
     _read_futures_hours,
     _read_series,
+    _read_spot_hours,
     _require_coverage,
     _Run,
+    _Series,
     _sha256,
     _static_exclusions,
     _store,
@@ -135,7 +140,13 @@ from crypto_grid_bot.v4.data.listing import (
     discover_spot_usdt_listing,
     perpetual_names,
 )
-from crypto_grid_bot.v4.data.pack import daily_pack_document, hourly_pack_document, write_canonical
+from crypto_grid_bot.v4.data.pack import (
+    coin_pack_document,
+    coin_pack_file,
+    daily_pack_document,
+    hourly_index_document,
+    write_canonical,
+)
 from crypto_grid_bot.v4.data.universe import HOURLY_RANK_DEPTH
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,7 +161,7 @@ HOURLY_KINDS = ("spot_1h", "futures_1h", "funding")
 VENUES = ("spot", "futures")
 DATA_FORMAT = "v4-data/1"
 DAILY_PACK = "daily.pack.json.gz"
-HOURLY_PACK = "hourly.pack.json.gz"
+HOURLY_INDEX = "hourly-index.json.gz"
 
 # What the hourly pieces must cover: candidates.txt, the candidates stage's ranking. The final
 # universes' ranking can be narrower, since their window can open later (the hourly check).
@@ -224,11 +235,13 @@ class PackTooLarge(ValueError):
     """A pack's canonical JSON is over ``MAX_PACK_JSON_BYTES``: splitting it needs a ruling."""
 
 
-def _write_pack(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
-    """Write one pack, print its size and pin, and return its ``data.json`` record.
+def _write_pack(path: Path, document: Mapping[str, Any], label: str) -> dict[str, Any]:
+    """Write one pack, print its size and pin under ``label`` (never a symbol), and return its
+    record: file, pin and size.
 
     The size is the length of the JSON the written file compresses, read back and checked
-    against the pin; over ``MAX_PACK_JSON_BYTES`` it raises ``PackTooLarge`` (ruling P23).
+    against the pin; over ``MAX_PACK_JSON_BYTES`` it raises ``PackTooLarge`` (ruling P23, for
+    each pack: the daily pack, every coin pack and the index).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     pin = write_canonical(document, path)
@@ -239,14 +252,75 @@ def _write_pack(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
             size += len(chunk)
     if digest.hexdigest() != pin:
         raise ValueError(f"{path}: the written pack does not hash to its pin {pin}")
-    name = path.name.split(".")[0]
-    _say(f"pack {name} pack: {size} bytes of canonical JSON, sha256 {pin}")
+    _say(f"pack {label}: {size} bytes of canonical JSON, sha256 {pin}")
     if size > MAX_PACK_JSON_BYTES:
         raise PackTooLarge(
-            f"the {name} pack's canonical JSON is {size} bytes, over the {MAX_PACK_JSON_BYTES}"
+            f"the {label}'s canonical JSON is {size} bytes, over the {MAX_PACK_JSON_BYTES}"
             "-byte limit (1.5 GiB): a ruling on splitting the pack is needed (ruling P23)"
         )
     return {"file": path.name, "sha256": pin, "json_bytes": size}
+
+
+@dataclass(frozen=True)
+class _Hourly:
+    """What every coin pack is built from: the hourly archives by kind and symbol (a futures
+    kind by the perpetual's symbol), the filter snapshots, the cache and the run."""
+
+    spot: dict[str, list[ManifestEntry]]
+    futures: dict[str, list[ManifestEntry]]
+    funding: dict[str, list[ManifestEntry]]
+    snapshots: dict[str, Mapping[str, object]]
+    cache: Path
+    run: _Run
+
+
+def _futures_read(name: str, hourly: _Hourly) -> _Series[HourBar]:
+    entries = hourly.futures.get(name, [])
+    return _read_series(entries, hourly.cache, hourly.run, _read_futures_hours, _HOUR_MS)
+
+
+def _coin_pack(
+    coin: str, perpetual: tuple[str, int] | None, hourly: _Hourly, out: Path, label: str
+) -> tuple[tuple[str, str, int], dict[str, object] | None]:
+    """Build and write one coin's pack, and return its (pin, file, bytes) and its perpetual
+    entry, if any. Everything read for it is local here, so it is released on return, before
+    the next coin's (ruling P32). A perpetual with no readable bar is left out (P23)."""
+    run = hourly.run
+    used = list(hourly.spot.get(coin, []))
+    spot = _read_series(used, hourly.cache, run, _read_spot_hours, _HOUR_MS)
+    masks = {"spot": spot.masks()}
+    rules = {"spot": _rules(coin, "spot", hourly.snapshots["spot"], spot.bars)}
+    entry: dict[str, object] | None = None
+    futures: tuple[HourBar, ...] = ()
+    funding: list[FundingRow] = []
+    funding_months: dict[str, str] = {}
+    if perpetual is not None:
+        name, multiplier = perpetual
+        used += hourly.futures.get(name, [])
+        futures_read = _futures_read(name, hourly)
+        if futures_read.bars:  # else no futures market in the data (ruling P23)
+            funding_entries = hourly.funding.get(name, [])
+            used += funding_entries
+            funding, statuses = _funding(name, futures_read, funding_entries, hourly.cache, run)
+            funding_months = {month: status for (_, month), status in statuses.items()}
+            futures, masks["futures"] = futures_read.bars, futures_read.masks()
+            rules["futures"] = _rules(name, "futures", hourly.snapshots["futures"], futures)
+            entry = {"symbol": name, "multiplier": multiplier}
+    document = coin_pack_document(
+        run.config,
+        used,
+        coin=coin,
+        spot=spot.bars,
+        perpetual=entry,
+        futures=futures,
+        masks=masks,
+        funding=funding,
+        funding_months=funding_months,
+        rules=rules,
+        config_sha256=run.config_sha256,
+    )
+    record = _write_pack(out / coin_pack_file(coin), document, label)
+    return (record["sha256"], record["file"], record["json_bytes"]), entry
 
 
 def _refuse_an_incomplete_end_month(run: _Run) -> None:
@@ -446,10 +520,10 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
     ranked = _ranked(_universes(discovery, daily, config, None))  # the candidates stage's
     for kind in HOURLY_KINDS:
         _require_coverage(pieces, kind, ranked, _RANKED)
-    # The spot hourly series of the symbols select-final selected are kept from the one read
-    # that gives every candidate's usable hours; they are used only if the universes match.
-    keep = frozenset(symbol for universe in expected for symbol in universe["selected"])
-    usable, spot_series = _usable_hours(entries, cache, run, keep)
+    # The read that gives every candidate's usable hours also counts the selected symbols'
+    # spot rows for the pre-flight; their series are read again for their coin packs (P32).
+    selected = sorted({symbol for universe in expected for symbol in universe["selected"]})
+    usable, spot_rows = _usable_hours(entries, cache, run, frozenset(selected))
     universes = _universes(discovery, daily, config, usable)
     del usable
     if _universe_document(universes) != expected:
@@ -457,7 +531,6 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
             f"{args.universe}: the universes recomputed here differ from select-final's, so "
             "the archives or the code differ between the two jobs"
         )
-    selected = sorted(keep)
 
     # The universes were built from every candidate's spot hourly archives too.
     packs: dict[str, dict[str, Any]] = {}
@@ -472,64 +545,42 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
             masks={symbol: series.masks() for symbol, series in daily.items()},
             config_sha256=run.config_sha256,
         ),
+        "daily pack",
     )
     del daily  # the daily bars are not needed past their pack
 
     # Futures and funding archives, and so every futures structure, are keyed by the perpetual.
-    futures_entries, funding_entries = _grouped(entries, "futures_1h"), _grouped(entries, "funding")
-    perpetuals = {s: discovery.perpetuals[s] for s in selected if s in discovery.perpetuals}
-    spot: dict[str, tuple[HourBar, ...]] = {}
-    futures: dict[str, tuple[HourBar, ...]] = {}
-    masks: dict[tuple[str, str], tuple[list[int], dict[str, str]]] = {}
-    funding: dict[str, list[FundingRow]] = {}
-    funding_months: dict[tuple[str, str], str] = {}
-    packed: dict[str, dict[str, object]] = {}  # coin -> its perpetual, for the hourly pack
-    for symbol in selected:
-        spot_read = spot_series.pop(symbol)
-        spot[symbol], masks[(symbol, "spot")] = spot_read.bars, spot_read.masks()
-        if symbol not in perpetuals:
-            continue
-        perpetual, multiplier = perpetuals[symbol]
-        futures_read = _read_series(
-            futures_entries.get(perpetual, []), cache, run, _read_futures_hours, _HOUR_MS
-        )
-        if not futures_read.bars:  # no futures market in the data, so no entry (ruling P23)
-            continue
-        futures[perpetual], masks[(perpetual, "futures")] = futures_read.bars, futures_read.masks()
-        funding[perpetual], statuses = _funding(
-            perpetual, futures_read, funding_entries.get(perpetual, []), cache, run
-        )
-        funding_months |= statuses
-        packed[symbol] = {"symbol": perpetual, "multiplier": multiplier}
-    rules = {
-        (symbol, venue): _rules(symbol, venue, snapshots[venue], bars)
-        for venue, series in (("spot", spot), ("futures", futures))
-        for symbol, bars in series.items()
-    }
-    # Exactly the archives read for this pack: an omitted perpetual's funding files never are.
-    read_futures = {perpetual for perpetual, _ in perpetuals.values()}
-    hourly_manifest = [
-        e
-        for e in entries
-        if (e.kind == "spot_1h" and e.symbol in spot)
-        or (e.kind == "futures_1h" and e.symbol in read_futures)
-        or (e.kind == "funding" and e.symbol in futures)
-    ]
-    packs["hourly"] = _write_pack(
-        args.out / HOURLY_PACK,
-        hourly_pack_document(
-            config,
-            hourly_manifest,
-            spot,
-            futures,
-            masks,
-            funding,
-            funding_months,
-            rules,
-            perpetuals=packed,
-            config_sha256=run.config_sha256,
-        ),
+    hourly = _Hourly(
+        spot=_grouped(entries, "spot_1h"),
+        futures=_grouped(entries, "futures_1h"),
+        funding=_grouped(entries, "funding"),
+        snapshots=snapshots,
+        cache=cache,
+        run=run,
     )
+    perpetuals = {s: discovery.perpetuals[s] for s in selected if s in discovery.perpetuals}
+    # The pre-flight: the coin packs' rows, bars as read, one futures series at a time.
+    spot_total = sum(spot_rows.values())
+    futures_total = sum(len(_futures_read(name, hourly).bars) for name, _ in perpetuals.values())
+    _say(
+        f"pack pre-flight: {len(selected)} coin packs to build, {spot_total + futures_total} "
+        f"hourly rows as read ({spot_total} spot, {futures_total} futures)"
+    )
+    coins: dict[str, tuple[str, str, int]] = {}
+    packed: dict[str, dict[str, object]] = {}  # coin -> its perpetual, for the index
+    for number, coin in enumerate(selected, start=1):
+        label = f"coin pack {number}/{len(selected)}"
+        coins[coin], entry = _coin_pack(coin, perpetuals.get(coin), hourly, args.out, label)
+        if entry is not None:
+            packed[coin] = entry
+    packs["hourly_index"] = _write_pack(
+        args.out / HOURLY_INDEX,
+        hourly_index_document(
+            config, coins=coins, perpetuals=packed, config_sha256=run.config_sha256
+        ),
+        "hourly index",
+    )
+    largest = max((size for _, _, size in coins.values()), default=0)
     multipliers = sum(entry["multiplier"] != 1 for entry in packed.values())
     _write_json(
         args.out / "data.json",
@@ -541,13 +592,17 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
             "archives": {kind: sum(e.kind == kind for e in entries) for kind in KINDS},
             "universe_months": len(universes),
             "selected_symbols": len(selected),
-            "perpetuals": len(futures),
+            "coin_packs": len(coins),
+            "largest_coin_pack_json_bytes": largest,
+            "hourly_rows": spot_total + futures_total,
+            "perpetuals": len(packed),
             "multiplier_perpetuals": multipliers,
         },
     )
+    _say(f"pack: {len(coins)} coin packs, the largest {largest} bytes of canonical JSON")
     _say(
         f"pack: {len(universes)} universe months, {len(selected)} symbols ever selected, "
-        f"{len(futures)} with a perpetual, {_multipliers(multipliers)}, {len(entries)} archives"
+        f"{len(packed)} with a perpetual, {_multipliers(multipliers)}, {len(entries)} archives"
     )
     return 0
 

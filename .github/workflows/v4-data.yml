@@ -20,7 +20,7 @@ run-name: v4-data ${{ inputs.stage }}
 #   futures and funding, each symbol's whole history, futures and funding under its
 #   perpetual's symbol, none for a symbol without one); select-final (the hourly check, the
 #   final universes); pack (both packs and data.json, the pins; it stops unless the universes
-#   it recomputes equal select-final's universe.json).
+#   it recomputes equal select-final's universe.json; one pack per coin and an index).
 #
 # Artifacts, each kept one day (owner rule 2026-10-19, ruling P25: download, then offer
 # deletion; the registered run re-fetches by the pinned manifest):
@@ -30,7 +30,8 @@ run-name: v4-data ${{ inputs.stage }}
 # - v4-candidates: candidates.txt
 # - v4-hourly-<kind>-<shard>: cache/ and manifests/manifest-<kind>-<shard>.json
 # - v4-final: universe.json and selected.txt
-# - v4-data: daily.pack.json.gz, hourly.pack.json.gz and data.json
+# - v4-data: daily.pack.json.gz, hourly-index.json.gz, every coin pack v4-coin-<SYMBOL>.json.gz
+#   (one per symbol ever selected, built and released one at a time: ruling P32) and data.json
 # The select jobs and pack download the archives and re-verify each against its manifest
 # SHA-256 before reading it.
 #
@@ -345,7 +346,7 @@ jobs:
 
       # Every archive is re-verified against its manifest SHA-256 before it is read. The pack
       # stops (exit 1) if the pieces are incomplete, if the universes it recomputes differ from
-      # select-final's, or if either pack's canonical JSON exceeds 1.5 GiB (ruling P23).
+      # select-final's, or if any pack's canonical JSON exceeds 1.5 GiB (ruling P23).
       - name: Build the packs
         run: |
           python scripts/v4_data.py pack \
@@ -360,11 +361,16 @@ jobs:
       - name: Refuse any file named for a month after end_month
         run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
 
-      # v4/data holds the two packs and data.json: the artifact's root is that folder.
+      # The daily pack, the hourly index, every coin pack and data.json; the artifact's root is
+      # v4/data, the folder that holds them all.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: v4-data
-          path: v4/data/
+          path: |
+            v4/data/daily.pack.json.gz
+            v4/data/hourly-index.json.gz
+            v4/data/v4-coin-*.json.gz
+            v4/data/data.json
           if-no-files-found: error
           retention-days: 1
           overwrite: true
