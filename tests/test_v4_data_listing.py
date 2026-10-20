@@ -194,13 +194,28 @@ def test_parse_listing_of_an_empty_listing_is_an_empty_page():
 
 
 def test_a_complete_page_has_no_marker():
-    # IsTruncated false, or absent, ends the listing even if a NextMarker element is there.
-    for truncated in (False, None):
-        page = parse_listing(
-            listing_xml(keys=["data/a"], truncated=truncated, next_marker="data/z")
-        )
-        assert page.next_marker is None
-        assert page.keys == ("data/a",)
+    # IsTruncated false ends the listing even if a stray NextMarker element is there.
+    page = parse_listing(listing_xml(keys=["data/a"], truncated=False, next_marker="data/z"))
+
+    assert page.next_marker is None
+    assert page.keys == ("data/a",)
+
+
+def test_a_page_without_istruncated_is_refused_not_taken_as_complete():
+    # Real S3 always sends the flag; a page that lacks it could be a cut-off one.
+    xml = listing_xml(keys=["data/a"], truncated=None)
+    assert b"IsTruncated" not in xml
+
+    with pytest.raises(ValueError, match="no IsTruncated"):
+        parse_listing(xml)
+    with pytest.raises(ValueError, match="no IsTruncated"):
+        parse_listing(s3(""))
+
+
+@pytest.mark.parametrize("value", ["", "True", "TRUE", "False", "1", "0", "yes", " true", "true "])
+def test_istruncated_must_be_exactly_true_or_false(value):
+    with pytest.raises(ValueError, match="IsTruncated must be true or false"):
+        parse_listing(s3(f"<IsTruncated>{value}</IsTruncated>"))
 
 
 def test_a_truncated_page_without_a_next_marker_continues_after_its_last_entry():
@@ -247,8 +262,10 @@ def s3(body: str) -> bytes:
         (b'<ListBucketResult xmlns="http://example.org/"/>', "S3"),
         (f'<Error xmlns="{NS}"><Code>AccessDenied</Code></Error>'.encode(), "S3"),
         (f'<html xmlns="{NS}"></html>'.encode(), "S3"),
-        # not UTF-8
-        (s3("<Name>x</Name>").replace(b"x", bytes([0xFF])), "UTF-8"),
+        # not UTF-8, and a NUL byte (never legal in XML 1.0)
+        (s3("<Name>x</Name>").replace(b">x<", b">" + bytes([0xFF]) + b"<"), "UTF-8"),
+        (s3("<Name>x</Name>").replace(b">x<", b">\x00<"), "NUL"),
+        (s3("<Name>x</Name>") + b"\x00", "NUL"),
         # a DTD, and the entity expansions it allows
         (
             b'<?xml version="1.0"?><!DOCTYPE ListBucketResult [<!ENTITY a "aaaa">]>'
@@ -262,11 +279,40 @@ def s3(body: str) -> bytes:
         (s3("<CommonPrefixes/>"), "Prefix"),
         (s3("<CommonPrefixes><Prefix></Prefix></CommonPrefixes>"), "Prefix"),
         (s3("<IsTruncated>maybe</IsTruncated>"), "IsTruncated"),
+        (s3("<IsTruncated/>"), "IsTruncated"),
     ],
 )
 def test_parse_listing_refuses_what_is_not_a_listing(xml, message):
     with pytest.raises(ValueError, match=message):
         parse_listing(xml)
+
+
+SMUGGLED = (
+    '<!DOCTYPE ListBucketResult [<!ENTITY a "data/INJECTED">]>'
+    f'<ListBucketResult xmlns="{NS}"><IsTruncated>false</IsTruncated>'
+    "<Contents><Key>&a;</Key></Contents></ListBucketResult>"
+)
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+@pytest.mark.parametrize("declaration", ["", '<?xml version="1.0"?>'])
+def test_a_bom_less_utf16_or_utf32_dtd_cannot_get_past_the_guards(encoding, declaration):
+    # Expat detects these encodings by itself. ASCII text in them is also valid UTF-8 (a character
+    # and a NUL), so a scan of the decoded text never sees "<!DOCTYPE" in one piece.
+    xml = (declaration + SMUGGLED).encode(encoding)
+    assert "<!DOCTYPE" not in xml.decode("utf-8")
+    page = None
+
+    with pytest.raises(ValueError, match="NUL"):
+        page = parse_listing(xml)
+
+    assert page is None  # no key, in particular not data/INJECTED
+
+
+def test_a_dtd_with_a_bom_is_refused_too():
+    for bom, encoding in ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")):
+        with pytest.raises(ValueError):
+            parse_listing(bom + SMUGGLED.encode(encoding))
 
 
 def test_parse_listing_refuses_a_page_over_four_mebibytes():
@@ -537,6 +583,41 @@ def test_sleep_and_log_are_required_keywords(config):
     assert bucket.requests == []
 
 
+class PagedBucket:
+    """A bucket whose listing of one prefix is ``pages`` truncated pages, the last one complete."""
+
+    def __init__(self, pages: int):
+        self.pages = pages
+        self.requests: list[str] = []
+
+    def get(self, url):
+        self.requests.append(url)
+        number = len(self.requests)
+        marker = f"{KLINES}{'a' * number}"  # each marker sorts after the one before
+        return listing_xml(keys=[marker], truncated=number < self.pages, next_marker=marker)
+
+
+def test_a_listing_of_more_pages_than_the_cap_is_refused(monkeypatch):
+    assert listing.MAX_LISTING_PAGES == 10_000
+    monkeypatch.setattr(listing, "MAX_LISTING_PAGES", 3)
+    bucket = PagedBucket(pages=4)
+
+    with pytest.raises(ValueError, match="more than 3 pages"):
+        list_all(bucket, KLINES, **no_wait())
+
+    assert len(bucket.requests) == 3  # it stops at the cap; a 4th page is not requested
+
+
+def test_a_listing_of_exactly_the_cap_is_complete(monkeypatch):
+    monkeypatch.setattr(listing, "MAX_LISTING_PAGES", 3)
+    bucket = PagedBucket(pages=3)
+
+    page = list_all(bucket, KLINES, **no_wait())
+
+    assert len(page.keys) == 3 and page.next_marker is None
+    assert len(bucket.requests) == 3
+
+
 # --- the listing query --------------------------------------------------------------------
 
 
@@ -587,10 +668,17 @@ def test_every_listing_url_passes_the_transports_allowlist(network_blocked, conf
     assert len(network_blocked) == len(sent)
 
 
-def test_a_marker_is_percent_encoded_into_the_query(network_blocked):
+@pytest.mark.parametrize(
+    ("odd", "encoded"),
+    [
+        pytest.param(f"{KLINES}A&B=C+D E/", f"{KLINES}A%26B%3DC%2BD%20E/", id="query characters"),
+        # urllib's quote() leaves "~" alone, but the transport's allowlist has no "~".
+        pytest.param(f"{KLINES}A~B/", f"{KLINES}A%7EB/", id="a tilde"),
+        pytest.param(f"{KLINES}~/", f"{KLINES}%7E/", id="only a tilde"),
+    ],
+)
+def test_a_marker_is_percent_encoded_into_the_query(odd, encoded, network_blocked):
     # A marker is whatever the server says; one with a query character in it must stay one value.
-    odd = f"{KLINES}A&B=C+D E/"
-    encoded = f"{KLINES}A%26B%3DC%2BD%20E/"
     bucket = FakeBucket(
         {
             url_of(KLINES): listing_xml(prefixes=[odd], truncated=True, next_marker=odd),

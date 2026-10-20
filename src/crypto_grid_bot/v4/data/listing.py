@@ -34,6 +34,9 @@ from crypto_grid_bot.v4.data.archives import (
 from crypto_grid_bot.v4.data.config import DataConfig, refuse_after_end
 
 SPOT_KLINES_PREFIX = "data/spot/monthly/klines/"
+# S3 lists 1000 entries a page, so this is ten million entries: far more than the bucket holds.
+# A listing that needs more pages is refused instead of looped over.
+MAX_LISTING_PAGES = 10_000
 
 _S3 = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 # The same shapes archives.archive_path accepts: a listed name it would refuse is no use to
@@ -79,9 +82,11 @@ def _flag(text: str | None) -> bool:
 def parse_listing(xml: bytes) -> ListingPage:
     """One S3 ``ListBucketResult`` page: its sub-directories, its keys and where it goes on.
 
-    A page over ``MAX_LISTING_BYTES``, one that is not UTF-8, carries a DOCTYPE or an ENTITY
-    declaration, is not well-formed XML or is not a ``ListBucketResult`` in the S3 namespace is
-    refused. ``next_marker`` is set only for a truncated page: the page's ``NextMarker``, else
+    A page over ``MAX_LISTING_BYTES``, one that holds a NUL byte or is not UTF-8, carries a
+    DOCTYPE or an ENTITY declaration, is not well-formed XML or is not a ``ListBucketResult`` in
+    the S3 namespace is refused. So is a page without an ``IsTruncated`` element (real S3 always
+    sends one, and a page that lacks it could be cut off) or with a value other than ``true`` or
+    ``false``. ``next_marker`` is set only for a truncated page: the page's ``NextMarker``, else
     (as S3's V1 listing defines it) the last entry of the page. A truncated page that gives
     neither is refused, since nothing could continue it.
     """
@@ -89,6 +94,11 @@ def parse_listing(xml: bytes) -> ListingPage:
         raise ValueError("the listing must be bytes")
     if len(xml) > MAX_LISTING_BYTES:
         raise ValueError(f"the listing exceeds the size limit of {MAX_LISTING_BYTES} bytes")
+    # Expat finds a BOM-less UTF-16 or UTF-32 document by itself, and ASCII text in those is also
+    # valid UTF-8 (a character and NULs), which the DOCTYPE scan below would not see. NUL is never
+    # legal in XML 1.0, so a listing holding one is refused before it is read at all.
+    if b"\x00" in xml:
+        raise ValueError("the listing holds a NUL byte (UTF-16 or UTF-32?); it must be UTF-8")
     try:
         text = xml.decode("utf-8")
     except UnicodeError:
@@ -106,7 +116,7 @@ def parse_listing(xml: bytes) -> ListingPage:
 
     prefixes: list[str] = []
     keys: list[str] = []
-    truncated = False
+    truncated: bool | None = None
     named_marker: str | None = None
     # Only the root's own children: its <Prefix> element is the request's, not an entry.
     for child in root:
@@ -119,6 +129,8 @@ def parse_listing(xml: bytes) -> ListingPage:
         elif child.tag == _S3 + "NextMarker":
             named_marker = child.text or None
 
+    if truncated is None:
+        raise ValueError("the listing has no IsTruncated element, so it cannot be told complete")
     next_marker: str | None = None
     if truncated:
         next_marker = named_marker or max(chain(prefixes, keys), default=None)
@@ -134,7 +146,10 @@ def _listing_url(prefix: str, marker: str | None) -> str:
     """The one query the transport's allowlist lets through: bucket, delimiter, prefix and,
     after the first page, a marker (the server's text, percent-encoded)."""
     url = f"{LISTING_URL}?delimiter=/&prefix={prefix}"
-    return url if marker is None else f"{url}&marker={quote(marker, safe='/')}"
+    if marker is None:
+        return url
+    # quote() leaves "~" as it is, but the allowlist's marker characters have no "~".
+    return f"{url}&marker={quote(marker, safe='/').replace('~', '%7E')}"
 
 
 def list_all(
@@ -148,8 +163,9 @@ def list_all(
 
     ``prefix`` is a path under ``data/``. Each page request is retried on a transport failure
     (``archives.get_with_retries``); a 4xx, a size breach and a guard refusal are not. A prefix
-    the bucket does not answer (404), a page that is not a listing and a continuation that does
-    not move forward are errors; the last would otherwise ask for the same page for ever.
+    the bucket does not answer (404), a page that is not a listing, a continuation that does
+    not move forward and a listing of more than ``MAX_LISTING_PAGES`` pages are errors; without
+    them a server could keep this asking for ever.
     """
     if not isinstance(prefix, str) or _PREFIX.fullmatch(prefix) is None or ".." in prefix:
         raise ValueError(
@@ -158,7 +174,7 @@ def list_all(
     prefixes: list[str] = []
     keys: list[str] = []
     marker: str | None = None
-    while True:
+    for _ in range(MAX_LISTING_PAGES):
         url = _listing_url(prefix, marker)
         body = get_with_retries(transport, url, sleep=sleep, log=log)
         if body is None:
@@ -174,6 +190,7 @@ def list_all(
                 f"with {page.next_marker!r}"
             )
         marker = page.next_marker
+    raise ValueError(f"the listing of {prefix} needs more than {MAX_LISTING_PAGES} pages")
 
 
 def discover_spot_usdt_symbols(
