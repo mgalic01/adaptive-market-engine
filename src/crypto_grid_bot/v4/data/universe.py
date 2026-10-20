@@ -8,7 +8,7 @@ A selection at month M sees only bars whose open is before M's first millisecond
 symbol with at least one such bar, the first rule that applies decides, in this order:
 
 * ``"stablecoin"``, ``"leveraged"``, ``"wrapped"``: ``static_exclusion`` (the spec's lists and
-  ruling R1 for leveraged tokens);
+  rulings R1 and P19 for leveraged tokens);
 * ``"stable_price"``: ``stable_price`` over the 90 days before the selection;
 * ``"history"``: fewer than ``config.min_daily_bars`` daily bars before the selection (bars,
   not calendar days: a relisted symbol's gap is no history);
@@ -34,7 +34,7 @@ candidates stage of the data step, there is no hourly check. ``ranked`` is the s
 The result runs from the first month whose ``selected`` is not empty to
 ``config.end_month``; every month in between is kept, empty or not. The months before it are
 omitted (the window opens at the first month with a selection). With ``usable_hours`` that is
-the first month with a hour-checked selection, which can be later than the candidates stage's.
+the first month with an hour-checked selection, which can be later than the candidates stage's.
 The first month returned enters all of its ``selected`` and has nothing that ``left``;
 afterwards ``entered`` and ``left`` are relative to the previous month's ``selected``
 (``entered`` in this month's rank order, ``left`` in the previous month's).
@@ -104,16 +104,20 @@ def static_exclusion(symbol: str, bases: frozenset[str], config: DataConfig) -> 
     ``"wrapped"``, checked in that order.
 
     ``symbol`` is the full USDT symbol (``"BTCUPUSDT"``) and ``bases`` the bases of every
-    discovered USDT symbol. A base is a leveraged token only if it is a stem plus one of the
-    config's suffixes and the stem is itself in ``bases`` (ruling R1): BTCUP is, JUP and SYRUP
-    are not, and a suffix word on its own has an empty stem.
+    discovered USDT symbol. A base is a leveraged token if it is exactly one of the config's
+    suffix words (``UP``, ``DOWN``, ``BULL``, ``BEAR``; ruling P19: BULLUSDT and BEARUSDT are
+    the BTC members of the BULL/BEAR token family), or if it is a stem plus one of the suffixes
+    and the stem is itself in ``bases`` (ruling R1): BTCUP is, while JUP and SYRUP, whose stems
+    J and SYR are no base, are not.
     """
     base = _base(symbol)
     if base in config.stablecoins:
         return "stablecoin"
+    if base in config.leveraged_suffixes:
+        return "leveraged"
     for suffix in config.leveraged_suffixes:
         stem = base.removesuffix(suffix)
-        if stem and stem != base and stem in bases:
+        if stem != base and stem in bases:
             return "leveraged"
     if base in config.wrapped:
         return "wrapped"

@@ -136,14 +136,26 @@ def test_every_leveraged_suffix_counts_when_the_stem_is_a_listed_base(spec, suff
     )
 
 
-def test_a_leveraged_looking_base_whose_stem_is_not_listed_is_a_real_coin(spec):
+def test_a_base_that_merely_ends_in_a_suffix_with_an_unknown_stem_is_a_real_coin(spec):
     # R1: BTCUP is leveraged only because BTC is itself a base; without BTC it is not.
     assert static_exclusion("BTCUPUSDT", frozenset({"BTCUP", "ETH"}), spec) is None
-    # SYRUP's stem would be SYR and JUP's J, neither a base. A suffix word alone has an empty
-    # stem, which is no base either.
+    # SYRUP's stem would be SYR and JUP's J, neither a base; SETUP's SET is not either.
     assert static_exclusion("SYRUPUSDT", BASES, spec) is None
-    assert static_exclusion("UPUSDT", BASES, spec) is None
-    assert static_exclusion("DOWNUSDT", frozenset({"DOWN", "ETH"}), spec) is None
+    assert static_exclusion("JUPUSDT", BASES, spec) is None
+    assert static_exclusion("SETUPUSDT", BASES, spec) is None
+
+
+@pytest.mark.parametrize("suffix", ["UP", "DOWN", "BULL", "BEAR"])
+def test_a_base_that_is_exactly_a_suffix_word_is_leveraged_with_no_stem_listed(spec, suffix):
+    # Ruling P19: BULLUSDT and BEARUSDT are the BTC members of the BULL/BEAR token family; no
+    # real coin has such a base, so the empty stem needs no listed base.
+    assert static_exclusion(f"{suffix}USDT", frozenset({suffix}), spec) == "leveraged"
+    assert static_exclusion(f"{suffix}USDT", frozenset({suffix, "ETH", "JUP"}), spec) == (
+        "leveraged"
+    )
+    # The ruling does not widen to bases that only end in a suffix, or to its first letters.
+    assert static_exclusion("JUPUSDT", frozenset({suffix, "JUP", "SYRUP"}), spec) is None
+    assert static_exclusion("SYRUPUSDT", frozenset({suffix, "JUP", "SYRUP"}), spec) is None
 
 
 @pytest.mark.parametrize(
@@ -459,7 +471,7 @@ def test_excluded_carries_the_first_applicable_reason_in_symbol_order(config):
     assert sep.selected == ("BTCUSDT",)
 
 
-def test_a_coin_whose_base_is_a_suffix_word_or_ends_in_one_is_ranked(config):
+def test_suffix_word_bases_are_excluded_and_coins_that_only_end_in_one_are_ranked(config):
     daily = {
         symbol: series(FIRST, LAST)
         for symbol in (
@@ -468,16 +480,24 @@ def test_a_coin_whose_base_is_a_suffix_word_or_ends_in_one_is_ranked(config):
         )
     }
     sep = pick(select_universe(daily, config), "2019-09")
-    assert sep.excluded == (("BTCBEARUSDT", "leveraged"), ("BTCUPUSDT", "leveraged"))
-    assert sorted(names(sep)) == [
-        "BEARUSDT",
-        "BTCUSDT",
-        "BULLUSDT",
-        "DOWNUSDT",
-        "JUPUSDT",
-        "SYRUPUSDT",
-        "UPUSDT",
-    ]
+    assert sep.excluded == (
+        ("BEARUSDT", "leveraged"),
+        ("BTCBEARUSDT", "leveraged"),
+        ("BTCUPUSDT", "leveraged"),
+        ("BULLUSDT", "leveraged"),
+        ("DOWNUSDT", "leveraged"),
+        ("UPUSDT", "leveraged"),
+    )
+    assert sorted(names(sep)) == ["BTCUSDT", "JUPUSDT", "SYRUPUSDT"]
+
+
+def test_a_static_reason_wins_over_the_stable_price_rule(config, spec):
+    pegged = series(FIRST, LAST, close="1.00")
+    assert len(pegged) >= 200 and stable_price(pegged, ms(SEL), spec)
+    daily = {"USDCUSDT": pegged, "BTCUSDT": series(FIRST, LAST)}
+    sep = pick(select_universe(daily, config), "2019-09")
+    assert sep.excluded == (("USDCUSDT", "stablecoin"),)
+    assert sep.selected == ("BTCUSDT",)
 
 
 def test_the_stable_price_rule_is_judged_afresh_at_each_selection(spec):
