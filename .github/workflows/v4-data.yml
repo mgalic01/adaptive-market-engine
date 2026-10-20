@@ -15,7 +15,8 @@ run-name: v4-data ${{ inputs.stage }}
 #   archives); select-candidates (every symbol ranked in a top 20 in any month);
 #   fetch-hourly (8 shards of those symbols for each of the three hourly kinds, spot,
 #   futures and funding, each symbol's whole history); select-final (the hourly check, the
-#   final universes); pack (both packs and data.json, the pins).
+#   final universes); pack (both packs and data.json, the pins; it stops unless the universes
+#   it recomputes equal select-final's universe.json).
 #
 # Artifacts, each kept one day (owner rule 2026-10-19, ruling P25: download, then offer
 # deletion; the registered run re-fetches by the pinned manifest):
@@ -33,12 +34,14 @@ run-name: v4-data ${{ inputs.stage }}
 # pip cache holds only pip's own wheels).
 #
 # No month after end_month (config/v4_data.json) is ever requested or read: the CLI refuses one
-# before any request or read. "Refuse any file named for a month after end_month", in every job
-# after its last CLI step and before its upload, is a second, independent check of what the job
+# before any request or read. "Refuse any file named for a month after end_month"
+# (scripts/v4_data_month_guard.py), in every job after its last CLI step and before its upload,
+# is a second, independent check of the names of everything under v4/, which holds all the job
 # fetched, downloaded or made.
 #
-# Re-run failed jobs only: artifact names are fixed, so re-running a job that already uploaded
-# fails at its upload.
+# Every upload overwrites an artifact of the same name (overwrite: true), so re-running all
+# jobs, or only the failed ones, replaces what an earlier attempt uploaded; the jobs after it
+# download the replacement, and re-verify every archive against its manifest.
 on:
   workflow_dispatch:
     inputs:
@@ -83,31 +86,7 @@ jobs:
         run: python scripts/v4_data.py discover --out v4/discover
 
       - name: Refuse any file named for a month after end_month
-        run: |
-          # Archive names end -YYYY-MM.zip. The repository's own files are tracked and are not
-          # checked (docs/reviews/ names carry later dates); what a job fetched, downloaded or
-          # made is not tracked, and is. A failure of git, find, sort, comm or python fails it.
-          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
-          python - config/v4_data.json "$RUNNER_TEMP/untracked.txt" <<'PY'
-          import json
-          import re
-          import sys
-
-          with open(sys.argv[1], encoding="utf-8") as handle:
-              end = json.load(handle)["end_month"]
-          month = re.compile(r"(?<![0-9])([0-9]{4}-(?:0[1-9]|1[0-2]))(?![0-9])")
-          with open(sys.argv[2], encoding="utf-8") as handle:
-              names = [line.rstrip("\n") for line in handle]
-          found = [n for n in names if any(m > end for m in month.findall(n.rsplit("/", 1)[-1]))]
-          for name in found:
-              print(name)
-          if found:
-              print(f"::error::Files named for a month after end_month {end} exist.")
-              sys.exit(1)
-          print(f"{len(names)} files checked; none is named for a month after end_month {end}.")
-          PY
+        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -115,6 +94,7 @@ jobs:
           path: v4/discover/
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
   fetch-daily:
     needs: discover
@@ -154,31 +134,7 @@ jobs:
             --cache v4/fetched/cache --out v4/fetched/manifests
 
       - name: Refuse any file named for a month after end_month
-        run: |
-          # Archive names end -YYYY-MM.zip. The repository's own files are tracked and are not
-          # checked (docs/reviews/ names carry later dates); what a job fetched, downloaded or
-          # made is not tracked, and is. A failure of git, find, sort, comm or python fails it.
-          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
-          python - config/v4_data.json "$RUNNER_TEMP/untracked.txt" <<'PY'
-          import json
-          import re
-          import sys
-
-          with open(sys.argv[1], encoding="utf-8") as handle:
-              end = json.load(handle)["end_month"]
-          month = re.compile(r"(?<![0-9])([0-9]{4}-(?:0[1-9]|1[0-2]))(?![0-9])")
-          with open(sys.argv[2], encoding="utf-8") as handle:
-              names = [line.rstrip("\n") for line in handle]
-          found = [n for n in names if any(m > end for m in month.findall(n.rsplit("/", 1)[-1]))]
-          for name in found:
-              print(name)
-          if found:
-              print(f"::error::Files named for a month after end_month {end} exist.")
-              sys.exit(1)
-          print(f"{len(names)} files checked; none is named for a month after end_month {end}.")
-          PY
+        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
 
       # v4/fetched holds cache/ and manifests/: the artifact's root is that folder.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -187,6 +143,7 @@ jobs:
           path: v4/fetched/
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
           compression-level: 0
 
   select-candidates:
@@ -225,31 +182,7 @@ jobs:
             --cache v4/fetched/cache --out v4/candidates
 
       - name: Refuse any file named for a month after end_month
-        run: |
-          # Archive names end -YYYY-MM.zip. The repository's own files are tracked and are not
-          # checked (docs/reviews/ names carry later dates); what a job fetched, downloaded or
-          # made is not tracked, and is. A failure of git, find, sort, comm or python fails it.
-          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
-          python - config/v4_data.json "$RUNNER_TEMP/untracked.txt" <<'PY'
-          import json
-          import re
-          import sys
-
-          with open(sys.argv[1], encoding="utf-8") as handle:
-              end = json.load(handle)["end_month"]
-          month = re.compile(r"(?<![0-9])([0-9]{4}-(?:0[1-9]|1[0-2]))(?![0-9])")
-          with open(sys.argv[2], encoding="utf-8") as handle:
-              names = [line.rstrip("\n") for line in handle]
-          found = [n for n in names if any(m > end for m in month.findall(n.rsplit("/", 1)[-1]))]
-          for name in found:
-              print(name)
-          if found:
-              print(f"::error::Files named for a month after end_month {end} exist.")
-              sys.exit(1)
-          print(f"{len(names)} files checked; none is named for a month after end_month {end}.")
-          PY
+        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -257,6 +190,7 @@ jobs:
           path: v4/candidates/
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
   fetch-hourly:
     needs: [discover, select-candidates]
@@ -304,31 +238,7 @@ jobs:
             --cache v4/fetched/cache --out v4/fetched/manifests
 
       - name: Refuse any file named for a month after end_month
-        run: |
-          # Archive names end -YYYY-MM.zip. The repository's own files are tracked and are not
-          # checked (docs/reviews/ names carry later dates); what a job fetched, downloaded or
-          # made is not tracked, and is. A failure of git, find, sort, comm or python fails it.
-          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
-          python - config/v4_data.json "$RUNNER_TEMP/untracked.txt" <<'PY'
-          import json
-          import re
-          import sys
-
-          with open(sys.argv[1], encoding="utf-8") as handle:
-              end = json.load(handle)["end_month"]
-          month = re.compile(r"(?<![0-9])([0-9]{4}-(?:0[1-9]|1[0-2]))(?![0-9])")
-          with open(sys.argv[2], encoding="utf-8") as handle:
-              names = [line.rstrip("\n") for line in handle]
-          found = [n for n in names if any(m > end for m in month.findall(n.rsplit("/", 1)[-1]))]
-          for name in found:
-              print(name)
-          if found:
-              print(f"::error::Files named for a month after end_month {end} exist.")
-              sys.exit(1)
-          print(f"{len(names)} files checked; none is named for a month after end_month {end}.")
-          PY
+        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -336,6 +246,7 @@ jobs:
           path: v4/fetched/
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
           compression-level: 0
 
   select-final:
@@ -381,31 +292,7 @@ jobs:
             --cache v4/fetched/cache --out v4/final
 
       - name: Refuse any file named for a month after end_month
-        run: |
-          # Archive names end -YYYY-MM.zip. The repository's own files are tracked and are not
-          # checked (docs/reviews/ names carry later dates); what a job fetched, downloaded or
-          # made is not tracked, and is. A failure of git, find, sort, comm or python fails it.
-          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
-          python - config/v4_data.json "$RUNNER_TEMP/untracked.txt" <<'PY'
-          import json
-          import re
-          import sys
-
-          with open(sys.argv[1], encoding="utf-8") as handle:
-              end = json.load(handle)["end_month"]
-          month = re.compile(r"(?<![0-9])([0-9]{4}-(?:0[1-9]|1[0-2]))(?![0-9])")
-          with open(sys.argv[2], encoding="utf-8") as handle:
-              names = [line.rstrip("\n") for line in handle]
-          found = [n for n in names if any(m > end for m in month.findall(n.rsplit("/", 1)[-1]))]
-          for name in found:
-              print(name)
-          if found:
-              print(f"::error::Files named for a month after end_month {end} exist.")
-              sys.exit(1)
-          print(f"{len(names)} files checked; none is named for a month after end_month {end}.")
-          PY
+        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -413,6 +300,7 @@ jobs:
           path: v4/final/
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
   pack:
     needs: [discover, fetch-daily, fetch-hourly, select-final]
@@ -446,45 +334,27 @@ jobs:
           pattern: v4-hourly-*
           merge-multiple: true
           path: v4/fetched
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: v4-final
+          path: v4/final
 
       # Every archive is re-verified against its manifest SHA-256 before it is read. The pack
-      # stops (exit 1) if either pack's canonical JSON exceeds 1.5 GiB (ruling P23).
+      # stops (exit 1) if the pieces are incomplete, if the universes it recomputes differ from
+      # select-final's, or if either pack's canonical JSON exceeds 1.5 GiB (ruling P23).
       - name: Build the packs
         run: |
           python scripts/v4_data.py pack \
             --discovery v4/discover/symbols.json \
             --manifests v4/fetched/manifests/manifest-*.json \
+            --universe v4/final/universe.json \
             --cache v4/fetched/cache --out v4/data
 
       - name: Print data.json
         run: cat v4/data/data.json
 
       - name: Refuse any file named for a month after end_month
-        run: |
-          # Archive names end -YYYY-MM.zip. The repository's own files are tracked and are not
-          # checked (docs/reviews/ names carry later dates); what a job fetched, downloaded or
-          # made is not tracked, and is. A failure of git, find, sort, comm or python fails it.
-          git ls-files -z | tr '\0' '\n' | sed 's|^|./|' | LC_ALL=C sort > "$RUNNER_TEMP/tracked.txt"
-          find . -path ./.git -prune -o -type f -print | LC_ALL=C sort \
-            | LC_ALL=C comm -23 - "$RUNNER_TEMP/tracked.txt" > "$RUNNER_TEMP/untracked.txt"
-          python - config/v4_data.json "$RUNNER_TEMP/untracked.txt" <<'PY'
-          import json
-          import re
-          import sys
-
-          with open(sys.argv[1], encoding="utf-8") as handle:
-              end = json.load(handle)["end_month"]
-          month = re.compile(r"(?<![0-9])([0-9]{4}-(?:0[1-9]|1[0-2]))(?![0-9])")
-          with open(sys.argv[2], encoding="utf-8") as handle:
-              names = [line.rstrip("\n") for line in handle]
-          found = [n for n in names if any(m > end for m in month.findall(n.rsplit("/", 1)[-1]))]
-          for name in found:
-              print(name)
-          if found:
-              print(f"::error::Files named for a month after end_month {end} exist.")
-              sys.exit(1)
-          print(f"{len(names)} files checked; none is named for a month after end_month {end}.")
-          PY
+        run: python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4
 
       # v4/data holds the two packs and data.json: the artifact's root is that folder.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -493,4 +363,5 @@ jobs:
           path: v4/data/
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
           compression-level: 0

@@ -143,11 +143,13 @@ class FakeBinance:
     """Serves the world's listings, archives and checksums; records each URL it is asked for.
 
     Every URL first goes through the real ``HttpTransport`` allowlist, so a URL the real
-    transport would refuse fails the test here too.
+    transport would refuse fails the test here too. A path in ``listed_only`` is listed but
+    answered with a 404.
     """
 
     def __init__(self, files: dict[str, bytes]):
         self.files = files  # archive path -> bytes
+        self.listed_only: set[str] = set()
         self.requests: list[str] = []
 
     def get(self, url: str) -> bytes | None:
@@ -160,7 +162,7 @@ class FakeBinance:
                 return listing_xml(prefixes=[f"{prefix}{name}/" for name in SPOT_DIRS])
             keys = [
                 key
-                for path in self.files
+                for path in [*self.files, *self.listed_only]
                 if (path.lstrip("/").rsplit("/", 1)[0] + "/") == prefix
                 for key in (path.lstrip("/"), path.lstrip("/") + ".CHECKSUM")
             ]
@@ -336,25 +338,26 @@ class Pipeline:
                 "--shard", f"{index}/{shards}", "--cache", self.cache, "--out", self.manifests,
             )  # fmt: skip
 
-    def select_candidates(self) -> None:
+    def select_candidates(self, pieces: list[Path] | None = None, expect: int = 0) -> None:
         self.cli(
             "select", "--stage", "candidates", "--discovery", self.discovery,
-            "--daily-manifests", *self.manifest_files("spot_1d"),
-            "--cache", self.cache, "--out", self.candidates.parent,
+            "--daily-manifests", *(pieces or self.manifest_files("spot_1d")),
+            "--cache", self.cache, "--out", self.candidates.parent, expect=expect,
         )  # fmt: skip
 
-    def select_final(self) -> None:
+    def select_final(self, expect: int = 0) -> None:
         self.cli(
             "select", "--stage", "final", "--discovery", self.discovery,
             "--daily-manifests", *self.manifest_files("spot_1d"),
             "--hourly-manifests", *self.manifest_files("spot_1h"),
-            "--cache", self.cache, "--out", self.final,
+            "--cache", self.cache, "--out", self.final, expect=expect,
         )  # fmt: skip
 
     def pack(self, expect: int = 0) -> None:
         self.cli(
             "pack", "--discovery", self.discovery,
             "--manifests", *sorted(self.manifests.glob("manifest-*.json")),
+            "--universe", self.final / "universe.json",
             "--cache", self.cache, "--out", self.data, expect=expect,
         )  # fmt: skip
 
@@ -365,9 +368,12 @@ class Pipeline:
         for kind in HOURLY_KINDS:
             self.fetch(kind, 2)
 
-    def run(self) -> None:
+    def until_final(self) -> None:
         self.until_hourly()
         self.select_final()
+
+    def run(self) -> None:
+        self.until_final()
         self.pack()
 
     def stdout(self) -> str:
@@ -458,8 +464,17 @@ def test_end_to_end_on_a_fake_world_produces_both_packs_and_pins(tmp_path, capsy
         "max_qty": "9000000000",
         "min_notional": "5",
     }
-    assert {entry["kind"] for entry in hourly["manifest"]} == set(HOURLY_KINDS)
-    assert not {entry["symbol"] for entry in hourly["manifest"]} & {"CCCUSDT"}
+    # Each manifest lists exactly the archives read for its pack: EEE's futures archive was
+    # read (it decided that EEE has no perpetual), its funding file never was.
+    read = {(e["kind"], e["symbol"], e["month"]) for e in hourly["manifest"]}
+    assert ("futures_1h", "EEEUSDT", JAN) in read and ("funding", "EEEUSDT", JAN) not in read
+    assert {symbol for kind, symbol, _ in read if kind == "funding"} == {
+        "AAAUSDT",
+        "BBBUSDT",
+        "LATEUSDT",
+    }
+    assert {symbol for _, symbol, _ in read} == set(hourly["spot"])  # no CCC: never selected
+    assert len(daily["manifest"]) == 10 + 9  # every daily archive and every spot hourly one
 
     # Nothing after end_month was asked for, and nothing statically excluded was fetched.
     assert all(month <= END_MONTH for url in pipeline.world.requests for month in months_named(url))
@@ -487,10 +502,132 @@ def test_shards_partition_symbols_without_overlap_or_gap(tmp_path, capsys):
     assert set().union(*owners) == set(DAILY_QUOTE_VOLUMES)
     paths = [entry["path"] for piece in pieces for entry in piece["entries"]]
     assert len(paths) == len(set(paths)) == 2 * len(DAILY_QUOTE_VOLUMES)
+    assert [piece["symbols"] for piece in pieces] == [
+        sorted(DAILY_QUOTE_VOLUMES)[index::3] for index in range(3)
+    ]
     pipeline.cli(
         "fetch", "--kind", "spot_1d", "--discovery", pipeline.discovery, "--shard", "3/3",
         "--cache", pipeline.cache, "--out", pipeline.manifests, expect=1,
     )  # fmt: skip
+    # An hourly kind takes candidates.txt, never every candidate by default.
+    pipeline.cli(
+        "fetch", "--kind", "spot_1h", "--discovery", pipeline.discovery, "--shard", "0/1",
+        "--cache", pipeline.cache, "--out", pipeline.manifests, expect=1,
+    )  # fmt: skip
+    assert "--symbols-file (candidates.txt) is required for spot_1h" in pipeline.err[-1]
+    assert not pipeline.manifest_files("spot_1h")
+
+
+def test_a_listed_month_the_host_does_not_have_is_recorded_absent(tmp_path, capsys):
+    world = build_world()
+    world.listed_only.add(archive_path("spot_1d", "BBBUSDT", "2023-12"))
+    pipeline = Pipeline(tmp_path, capsys, world)
+    pipeline.discover()
+    pipeline.fetch("spot_1d", 1)
+    (piece,) = [json.loads(path.read_text()) for path in pipeline.manifest_files("spot_1d")]
+    assert piece["absent"] == [{"symbol": "BBBUSDT", "month": "2023-12"}]
+    assert ("BBBUSDT", "2023-12") not in {(e["symbol"], e["month"]) for e in piece["entries"]}
+    assert "1 absent" in pipeline.out[-1]
+    pipeline.select_candidates()  # entries and absent months together are the listed months
+
+
+def test_select_refuses_an_incomplete_or_inconsistent_set_of_pieces(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.discover()
+    pipeline.fetch("spot_1d", 2)
+    first, second = pipeline.manifest_files("spot_1d")
+
+    # A missing shard.
+    pipeline.select_candidates([first], expect=1)
+    assert "the spot_1d manifest pieces lack shard 1/2" in pipeline.err[-1]
+
+    # Two shard counts.
+    (tmp_path / "other").mkdir()
+    other = Pipeline(tmp_path / "other", capsys, pipeline.world)
+    other.config, other.discovery, other.cache = pipeline.config, pipeline.discovery, pipeline.cache
+    other.fetch("spot_1d", 3)
+    pipeline.select_candidates([first, *other.manifest_files("spot_1d")[1:]], expect=1)
+    assert "the spot_1d pieces mix shard counts [2, 3]" in pipeline.err[-1]
+
+    # A symbol missing a month.
+    piece = json.loads(second.read_text())
+    dropped = piece["entries"].pop()
+    second.write_text(json.dumps(piece))
+    pipeline.select_candidates(expect=1)
+    message = pipeline.err[-1]
+    assert f"{dropped['symbol']}'s spot_1d entries and absent months" in message
+    assert f"missing ['{dropped['month']}']" in message
+    assert not pipeline.candidates.exists()
+
+
+def test_hourly_pieces_must_cover_every_symbol_ranked_in_a_top_20(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.discover()
+    pipeline.fetch("spot_1d", 2)
+    pipeline.select_candidates()
+    ranked = pipeline.candidates.read_text().split()
+    pipeline.candidates.write_text("".join(s + "\n" for s in ranked if s != "LATEUSDT"))
+    for kind in HOURLY_KINDS:
+        pipeline.fetch(kind, 2)
+    pipeline.select_final(expect=1)
+    assert "the spot_1h manifest pieces cover 4 symbols, not the 5" in pipeline.err[-1]
+    assert "missing ['LATEUSDT']" in pipeline.err[-1]
+
+
+def test_a_tampered_cached_archive_is_refused_not_reused(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_hourly()
+    path = archive_path("spot_1d", "AAAUSDT", JAN)
+    cached = pipeline.cache.joinpath(*path.strip("/").split("/"))
+    cached.write_bytes(cached.read_bytes() + b"\0")
+    pipeline.world.requests.clear()
+    pipeline.select_final(expect=1)
+    assert f"{path}: the cached archive does not match its manifest pin" in pipeline.err[-1]
+    assert pipeline.world.requests == []  # refused, neither re-used nor fetched again
+
+
+def test_an_archive_missing_from_the_cache_is_fetched_again_by_its_pin(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_hourly()
+    path = archive_path("spot_1d", "AAAUSDT", JAN)
+    cached = pipeline.cache.joinpath(*path.strip("/").split("/"))
+    original = cached.read_bytes()
+    cached.unlink()
+    pipeline.world.requests.clear()
+    pipeline.select_final()
+    # fetch_pinned: the archive alone, no .CHECKSUM (the manifest's pin is the authority).
+    assert pipeline.world.requests == [archives.ARCHIVE_URL + path]
+    assert cached.read_bytes() == original
+
+
+def test_pack_decodes_each_hourly_archive_once(tmp_path, capsys, monkeypatch):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_final()
+    decoded: list[tuple[str, str, bool]] = []
+    read_hourly = v4_data.read_hourly
+
+    def counting(content, symbol, month, *, futures):
+        decoded.append((symbol, month, futures))
+        return read_hourly(content, symbol, month, futures=futures)
+
+    monkeypatch.setattr(v4_data, "read_hourly", counting)
+    pipeline.pack()
+    assert len(decoded) == len(set(decoded))  # the selected symbols' spot series are reused
+    spot = {(symbol, month) for symbol, month, futures in decoded if not futures}
+    assert len(spot) == 9  # every candidate's spot hourly archive, once
+    assert ("EEEUSDT", JAN, True) in decoded and ("CCCUSDT", JAN, True) not in decoded
+
+
+def test_pack_refuses_universes_that_differ_from_select_finals(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_final()
+    universe_path = pipeline.final / "universe.json"
+    universe = json.loads(universe_path.read_text())
+    universe["universes"][-1]["selected"] = ["AAAUSDT", "BBBUSDT"]
+    universe_path.write_text(json.dumps(universe))
+    pipeline.pack(expect=1)
+    assert "the universes recomputed here differ" in pipeline.err[-1]
+    assert not pipeline.data.exists() or not any(pipeline.data.iterdir())
 
 
 def test_no_output_prints_bar_values(tmp_path, capsys):
@@ -574,6 +711,7 @@ def test_pack_refuses_a_manifest_entry_after_end_month_before_any_request(tmp_pa
         "format": "v4-manifest/1",
         "kind": "spot_1d",
         "shard": "0/1",
+        "symbols": ["AAAUSDT"],
         "entries": [entry(JAN), entry("2024-04")],
         "absent": [],
     }
@@ -588,7 +726,7 @@ def test_pack_refuses_a_manifest_entry_after_end_month_before_any_request(tmp_pa
 def test_pack_stops_for_a_split_ruling_when_a_pack_is_too_large(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(v4_data, "MAX_PACK_JSON_BYTES", 1000)
     pipeline = Pipeline(tmp_path, capsys)
-    pipeline.until_hourly()
+    pipeline.until_final()
     pipeline.pack(expect=1)
     assert "ruling on splitting" in pipeline.err[-1]
     assert re.search(r"daily pack: [0-9]+ bytes of canonical JSON", pipeline.out[-1])
@@ -597,7 +735,7 @@ def test_pack_stops_for_a_split_ruling_when_a_pack_is_too_large(tmp_path, capsys
 
 def test_pack_refuses_a_filter_snapshot_that_does_not_match_its_pin(tmp_path, capsys):
     pipeline = Pipeline(tmp_path, capsys)
-    pipeline.until_hourly()
+    pipeline.until_final()
     snapshot = tmp_path / "spot-snapshot.json"
     snapshot.write_bytes(snapshot.read_bytes() + b" ")
     pipeline.pack(expect=1)
@@ -608,7 +746,7 @@ def test_pack_refuses_a_filter_snapshot_that_does_not_match_its_pin(tmp_path, ca
 def test_a_listed_symbol_whose_rules_are_unusable_is_a_hard_stop(tmp_path, capsys):
     pipeline = Pipeline(tmp_path, capsys)
     pipeline.config = write_config(tmp_path, spot=spot_entry("AAAUSDT", quote="BTC"))
-    pipeline.until_hourly()
+    pipeline.until_final()
     pipeline.pack(expect=1)
     assert "AAAUSDT on spot" in pipeline.err[-1] and "ruling P20" in pipeline.err[-1]
     assert not (pipeline.data / "data.json").exists()
@@ -680,8 +818,39 @@ def test_workflow_has_the_expected_jobs_and_no_cache_of_results():
     assert '--kind "$KIND"' in commands["fetch-hourly"]
     assert "--symbols-file v4/candidates/candidates.txt" in commands["fetch-hourly"]
     assert "--stage final" in commands["select-final"]
+    assert (
+        "--hourly-manifests v4/fetched/manifests/manifest-spot_1h-*.json"
+        in commands["select-final"]
+    )
     assert "v4_data.py pack" in commands["pack"]
+    assert "--universe v4/final/universe.json" in commands["pack"]
 
+    # What each job downloads, and where: the folders the commands above read.
+    discovery = ("v4-discover", "v4/discover", False)
+    daily_archives = ("v4-daily-*", "v4/fetched", True)
+    downloads = {
+        name: [
+            (step["with"].get("pattern", step["with"].get("name")), step["with"]["path"],
+             step["with"].get("merge-multiple", False))
+            for step in steps_using(job, "actions/download-artifact")
+        ]
+        for name, job in jobs.items()
+    }  # fmt: skip
+    assert downloads == {
+        "discover": [],
+        "fetch-daily": [discovery],
+        "select-candidates": [discovery, daily_archives],
+        "fetch-hourly": [discovery, ("v4-candidates", "v4/candidates", False)],
+        "select-final": [discovery, daily_archives, ("v4-hourly-spot_1h-*", "v4/fetched", True)],
+        "pack": [
+            discovery,
+            daily_archives,
+            ("v4-hourly-*", "v4/fetched", True),
+            ("v4-final", "v4/final", False),
+        ],
+    }
+
+    guard = "python scripts/v4_data_month_guard.py --config config/v4_data.json --root v4"
     uploads: dict[str, dict] = {}
     for name, job in jobs.items():
         for step in job["steps"]:
@@ -696,11 +865,14 @@ def test_workflow_has_the_expected_jobs_and_no_cache_of_results():
             assert step["with"]["persist-credentials"] is False
         names = [step.get("name", "") for step in job["steps"]]
         scan = names.index("Refuse any file named for a month after end_month")
+        assert job["steps"][scan]["run"].strip() == guard, name  # the one guard script
+        assert sum(guard in step.get("run", "") for step in job["steps"]) == 1, name
         for index, step in enumerate(job["steps"]):
             if step.get("uses", "").startswith("actions/upload-artifact@"):
                 assert index > scan, name  # the scan runs after every fetch and before uploads
                 assert step["with"]["retention-days"] == 1, name  # owner rule, ruling P25
                 assert step["with"]["if-no-files-found"] == "error", name
+                assert step["with"]["overwrite"] is True, name  # re-running all jobs works
                 uploads[step["with"]["name"]] = step["with"]
             if "v4_data.py" in step.get("run", ""):
                 assert index < scan, name
@@ -713,11 +885,3 @@ def test_workflow_has_the_expected_jobs_and_no_cache_of_results():
         "v4-data",
     }
     assert uploads["v4-data"]["path"].rstrip("/") == "v4/data"
-    pack_downloads = [
-        step["with"] for step in steps_using(jobs["pack"], "actions/download-artifact")
-    ]
-    assert {item.get("pattern", item.get("name")) for item in pack_downloads} == {
-        "v4-discover",
-        "v4-daily-*",
-        "v4-hourly-*",
-    }

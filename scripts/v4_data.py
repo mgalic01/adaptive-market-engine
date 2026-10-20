@@ -9,23 +9,31 @@ the owner's PC); each stage reads the files the stages before it wrote:
   archive lists up to ``end_month``.
 * ``fetch --kind K --discovery D/symbols.json [--symbols-file F] --shard i/n --cache C --out O``
   downloads and verifies (``fetch_verified``: Binance's ``.CHECKSUM``) every listed month of
-  kind K for shard i of n of the symbols (the discovery's candidates, or those in F, one per
-  line), stores each archive at ``C/<archive path>`` and writes ``O/manifest-K-i.json``. A
-  shard is every n-th symbol of the sorted list, from index i. A month the host does not have
-  (404) is recorded under ``absent``, not refused.
+  kind K for shard i of n of the symbols, stores each archive at ``C/<archive path>`` and
+  writes the manifest piece ``O/manifest-K-i.json``: the shard's symbols, the entries, and
+  under ``absent`` each listed month the host does not have (404). The symbols are those in F,
+  one per line (``candidates.txt``), which an hourly kind requires; ``spot_1d`` takes every
+  candidate without F. A shard is every n-th symbol of the sorted list, from index i.
 * ``select --stage candidates`` writes ``candidates.txt``: every symbol ranked in a top 20
   (``HOURLY_RANK_DEPTH``) in any month, from the daily archives with no hourly check. The
   hourly fetch takes every listed month of each, its whole history.
 * ``select --stage final`` adds the hourly check (``usable_hours`` from the spot hourly
   archives) and writes ``universe.json`` and ``selected.txt`` (every symbol ever selected).
-* ``pack`` writes ``daily.pack.json.gz``, ``hourly.pack.json.gz`` and ``data.json`` (the
-  pins). It recomputes the final universes from the same archives; the hourly pack holds the
-  whole history of every symbol ever selected. The daily pack's manifest lists the spot
-  hourly archives too, since the universes' hourly check read them.
+* ``pack --universe U`` writes ``daily.pack.json.gz``, ``hourly.pack.json.gz`` and
+  ``data.json`` (the pins). It recomputes the final universes from the same archives and
+  stops unless they equal ``select --stage final``'s ``universe.json`` (U). The hourly pack
+  holds the whole history of every symbol ever selected. Each pack's manifest lists exactly
+  the archives read for it: the daily pack's includes every candidate's spot hourly archives,
+  which the universes' hourly check read, and the funding archives of a perpetual left out
+  of the hourly pack are read by neither.
 
-A symbol excluded whatever its prices is fetched for no kind; the daily pack records its
-reason. ``select`` and ``pack`` read each archive from ``--cache`` only once it matches its
-manifest entry's SHA-256 and size; one missing from the cache is fetched again by that pin
+A stage refuses an incomplete or inconsistent set of manifest pieces: for each kind, the pieces
+must be shards 0 to n-1 of one n, partitioning their symbols as ``fetch`` does, and each
+symbol's entries and absent months must be exactly its discovered months. The daily pieces
+must cover every candidate and the hourly ones every symbol ranked in a top 20. A symbol
+excluded whatever its prices is fetched for no kind; the daily pack records its reason.
+``select`` and ``pack`` read each archive from ``--cache`` only once it matches its manifest
+entry's SHA-256 and size; one missing from the cache is fetched again by that pin
 (``fetch_pinned``). Every stage but ``discover`` takes ``--discovery``. ``--config`` (before
 the stage) names the data config, ``config/v4_data.json`` by default, and the packs record the
 SHA-256 of its raw bytes (ruling P22). The rulings applied here: every manifest entry passes
@@ -134,6 +142,14 @@ class _Discovery:
     candidates: tuple[str, ...]
     exclusions: dict[str, str]
     months: dict[str, dict[str, tuple[str, ...]]]
+
+
+@dataclass(frozen=True)
+class _Manifests:
+    """A complete set of manifest pieces: the entries, and the symbols each kind's pieces cover."""
+
+    entries: list[ManifestEntry]
+    covered: dict[str, frozenset[str]]
 
 
 @dataclass(frozen=True)
@@ -251,46 +267,135 @@ def _load_discovery(path: Path, config: DataConfig) -> _Discovery:
     return _Discovery(tuple(symbols), tuple(candidates), exclusions, found)
 
 
+def _entry(path: Path, kind: str, raw: object, config: DataConfig) -> ManifestEntry:
+    """One manifest entry: the ``kind`` archive of its symbol and month, at its own path, for
+    a month not after ``end_month`` (ruling P7), with a well-formed pin."""
+    if not isinstance(raw, dict) or set(raw) != _ENTRY_FIELDS:
+        raise ValueError(f"{path}: an entry must hold exactly {sorted(_ENTRY_FIELDS)}")
+    entry = ManifestEntry(**raw)
+    label = f"{path}: {entry.path!r}"
+    if entry.kind != kind or archive_path(kind, entry.symbol, entry.month) != entry.path:
+        raise ValueError(f"{label} is not the {kind} archive of its symbol and month")
+    try:
+        refuse_after_end(entry.month, config)
+    except ValueError as exc:
+        raise ValueError(f"{label}: {exc}") from exc
+    if not isinstance(entry.sha256, str) or _SHA256.fullmatch(entry.sha256) is None:
+        raise ValueError(f"{label}: sha256 must be 64 lowercase hex digits")
+    if type(entry.bytes) is not int or entry.bytes < 0:
+        raise ValueError(f"{label}: bytes must be a non-negative int")
+    return entry
+
+
+def _load_piece(
+    path: Path,
+    kinds: Sequence[str],
+    config: DataConfig,
+    discovery: _Discovery,
+    found: dict[tuple[str, str, str], ManifestEntry],
+    shards: dict[str, dict[int, tuple[int, tuple[str, ...]]]],
+) -> None:
+    """One piece: its shard and symbols go into ``shards``, its entries into ``found``.
+
+    Its shard count is that of the kind's other pieces and no other piece holds its shard
+    (checked first, the likeliest cause of any later mismatch); its symbols are sorted, unique
+    candidates, every entry and absent month is for one of them, no archive is listed twice,
+    and each symbol's entries and absent months are exactly its discovered months of the kind.
+    """
+    piece = _read_json(path)
+    kind, shard, symbols = piece.get("kind"), piece.get("shard"), piece.get("symbols")
+    if (
+        piece.get("format") != MANIFEST_FORMAT
+        or not isinstance(kind, str)
+        or kind not in kinds
+        or not isinstance(shard, str)
+    ):
+        raise ValueError(f"{path}: not a {MANIFEST_FORMAT} piece of {', '.join(kinds)}")
+    index, count = parse_shard(shard)
+    pieces = shards[kind]
+    counts = {other for other, _ in pieces.values()} | {count}
+    if len(counts) > 1:
+        raise ValueError(f"{path}: the {kind} pieces mix shard counts {sorted(counts)}")
+    if index in pieces:
+        raise ValueError(f"{path}: a second {kind} piece for shard {index}/{count}")
+    if (
+        not isinstance(symbols, list)
+        or symbols != sorted(set(symbols))
+        or not set(symbols) <= set(discovery.candidates)
+    ):
+        raise ValueError(f"{path}: symbols must be sorted, unique candidates of the discovery")
+    raw_entries, absent = piece.get("entries"), piece.get("absent")
+    if not isinstance(raw_entries, list) or not isinstance(absent, list):
+        raise ValueError(f"{path}: entries and absent must be lists")
+    held: dict[str, list[str]] = {symbol: [] for symbol in symbols}
+    for raw in raw_entries:
+        entry = _entry(path, kind, raw, config)
+        key = (entry.kind, entry.symbol, entry.month)
+        if entry.symbol not in held or key in found:
+            raise ValueError(f"{path}: {entry.path!r} is outside the piece's symbols or twice")
+        found[key] = entry
+        held[entry.symbol].append(entry.month)
+    for item in absent:
+        if not isinstance(item, dict) or set(item) != {"symbol", "month"}:
+            raise ValueError(f"{path}: an absent month must be exactly {{symbol, month}}")
+        if item["symbol"] not in held:
+            raise ValueError(f"{path}: absent {item['symbol']!r} is outside the piece's symbols")
+        held[item["symbol"]].append(item["month"])
+    for symbol, held_months in held.items():
+        discovered = discovery.months[kind][symbol]
+        if len(held_months) != len(set(held_months)) or sorted(held_months) != list(discovered):
+            raise ValueError(
+                f"{path}: {symbol}'s {kind} entries and absent months are not its discovered "
+                f"months: missing {sorted(set(discovered) - set(held_months))}, unexpected "
+                f"{sorted(set(held_months) - set(discovered))}"
+            )
+    pieces[index] = (count, tuple(symbols))
+
+
 def _load_manifests(
     paths: Sequence[Path], kinds: Sequence[str], config: DataConfig, discovery: _Discovery
-) -> list[ManifestEntry]:
-    """Every entry of the manifest pieces, sorted by (kind, symbol, month).
+) -> _Manifests:
+    """The entries of the manifest pieces, sorted by (kind, symbol, month), once every piece
+    passes ``_load_piece`` and the pieces are complete; all before any request or read.
 
-    Each entry is checked before anything is requested or read: its kind is one of ``kinds``
-    and its piece's, its path is its archive's, its month is not after ``end_month`` (ruling
-    P7), its pin is well formed, its symbol is a candidate, and no archive is listed twice.
+    Every one of ``kinds`` needs pieces, and only those kinds are accepted. A kind's pieces are
+    shards 0 to n-1 of one n, and piece i holds symbols i, i+n, i+2n, ... of their sorted
+    union, as ``fetch`` shards them. A missing shard, two shard counts, a second piece for a
+    shard or a piece that holds another shard's symbols is refused.
     """
     found: dict[tuple[str, str, str], ManifestEntry] = {}
-    candidates = set(discovery.candidates)
+    shards: dict[str, dict[int, tuple[int, tuple[str, ...]]]] = {kind: {} for kind in kinds}
     for path in paths:
-        piece = _read_json(path)
-        kind, raw_entries = piece.get("kind"), piece.get("entries")
-        if piece.get("format") != MANIFEST_FORMAT or kind not in kinds:
-            raise ValueError(f"{path}: not a {MANIFEST_FORMAT} piece of {', '.join(kinds)}")
-        if not isinstance(raw_entries, list):
-            raise ValueError(f"{path}: entries must be a list")
-        for raw in raw_entries:
-            if not isinstance(raw, dict) or set(raw) != _ENTRY_FIELDS:
-                raise ValueError(f"{path}: an entry must hold exactly {sorted(_ENTRY_FIELDS)}")
-            entry = ManifestEntry(**raw)
-            label = f"{path}: {entry.path!r}"
-            if entry.kind != kind or archive_path(kind, entry.symbol, entry.month) != entry.path:
-                raise ValueError(f"{label} is not the {kind} archive of its symbol and month")
-            try:
-                refuse_after_end(entry.month, config)
-            except ValueError as exc:
-                raise ValueError(f"{label}: {exc}") from exc
-            if not isinstance(entry.sha256, str) or _SHA256.fullmatch(entry.sha256) is None:
-                raise ValueError(f"{label}: sha256 must be 64 lowercase hex digits")
-            if type(entry.bytes) is not int or entry.bytes < 0:
-                raise ValueError(f"{label}: bytes must be a non-negative int")
-            if entry.symbol not in candidates:
-                raise ValueError(f"{label}: {entry.symbol} is not a candidate of the discovery")
-            key = (entry.kind, entry.symbol, entry.month)
-            if key in found:
-                raise ValueError(f"{label} is listed twice")
-            found[key] = entry
-    return [found[key] for key in sorted(found)]
+        _load_piece(path, kinds, config, discovery, found, shards)
+    covered: dict[str, frozenset[str]] = {}
+    for kind, pieces in shards.items():
+        if not pieces:
+            raise ValueError(f"no {kind} manifest piece was given")
+        count = next(iter(pieces.values()))[0]
+        missing = [f"{index}/{count}" for index in range(count) if index not in pieces]
+        if missing:
+            raise ValueError(f"the {kind} manifest pieces lack shard {', '.join(missing)}")
+        union = sorted({symbol for _, symbols in pieces.values() for symbol in symbols})
+        for index, (_, symbols) in sorted(pieces.items()):
+            if list(symbols) != union[index::count]:
+                raise ValueError(f"the {kind} piece {index}/{count} does not hold that shard")
+        covered[kind] = frozenset(union)
+    return _Manifests([found[key] for key in sorted(found)], covered)
+
+
+def _require_coverage(manifests: _Manifests, kind: str, expected: Iterable[str], what: str) -> None:
+    """Refuse ``kind``'s pieces unless they cover exactly the ``expected`` symbols."""
+    covered, wanted = manifests.covered[kind], frozenset(expected)
+    if covered != wanted:
+        raise ValueError(
+            f"the {kind} manifest pieces cover {len(covered)} symbols, not the {len(wanted)} "
+            f"{what}: missing {sorted(wanted - covered)}, unexpected {sorted(covered - wanted)}"
+        )
+
+
+def _ranked(universes: Iterable[MonthlyUniverse]) -> list[str]:
+    """Every symbol ranked in a top ``HOURLY_RANK_DEPTH`` in any month, sorted."""
+    return sorted({s for u in universes for s, _, _ in u.ranked[:HOURLY_RANK_DEPTH]})
 
 
 def _grouped(entries: Iterable[ManifestEntry], kind: str) -> dict[str, list[ManifestEntry]]:
@@ -341,11 +446,11 @@ def _read_series[B: (DailyBar, HourBar)](
     return _Series(tuple(bars), frozenset(masked), unreadable)
 
 
-def _spot_hours(content: bytes, symbol: str, month: str) -> KlineRead[HourBar]:
+def _read_spot_hours(content: bytes, symbol: str, month: str) -> KlineRead[HourBar]:
     return read_hourly(content, symbol, month, futures=False)
 
 
-def _futures_hours(content: bytes, symbol: str, month: str) -> KlineRead[HourBar]:
+def _read_futures_hours(content: bytes, symbol: str, month: str) -> KlineRead[HourBar]:
     return read_hourly(content, symbol, month, futures=True)
 
 
@@ -358,13 +463,19 @@ def _daily_series(
     }
 
 
-def _usable_hours(entries: Sequence[ManifestEntry], cache: Path, run: _Run) -> dict[str, list[int]]:
-    """Per symbol, the sorted opens of its unmasked spot hourly bars (ruling P24)."""
+def _usable_hours(
+    entries: Sequence[ManifestEntry], cache: Path, run: _Run, keep: frozenset[str] = frozenset()
+) -> tuple[dict[str, list[int]], dict[str, _Series[HourBar]]]:
+    """Per symbol, the sorted opens of its unmasked spot hourly bars (ruling P24), and the
+    whole series of the symbols in ``keep``, so that no archive is decoded twice."""
     usable: dict[str, list[int]] = {}
+    kept: dict[str, _Series[HourBar]] = {}
     for symbol, group in _grouped(entries, "spot_1h").items():
-        series = _read_series(group, cache, run, _spot_hours, _HOUR_MS)
+        series = _read_series(group, cache, run, _read_spot_hours, _HOUR_MS)
         usable[symbol] = [bar.open_ms for bar in series.unmasked()]
-    return usable
+        if symbol in keep:
+            kept[symbol] = series
+    return usable, kept
 
 
 def _universes(
@@ -392,6 +503,25 @@ def _universe_document(universes: Sequence[MonthlyUniverse]) -> list[dict[str, A
         }
         for universe in universes
     ]
+
+
+def _load_universe(path: Path, config: DataConfig) -> list[dict[str, Any]]:
+    """The ``universes`` of ``select --stage final``'s ``universe.json``, for this end month."""
+    document = _read_json(path)
+    universes = document.get("universes")
+    if (
+        document.get("format") != UNIVERSE_FORMAT
+        or document.get("end_month") != config.end_month
+        or not isinstance(universes, list)
+        or not all(
+            isinstance(u, dict)
+            and isinstance(u.get("selected"), list)
+            and all(isinstance(symbol, str) for symbol in u["selected"])
+            for u in universes
+        )
+    ):
+        raise ValueError(f"{path}: not a {UNIVERSE_FORMAT} document for end_month")
+    return universes
 
 
 def _month_of(ms: int) -> str:
@@ -537,6 +667,8 @@ def discover(args: argparse.Namespace, run: _Run) -> int:
 
 def fetch(args: argparse.Namespace, run: _Run) -> int:
     index, count = parse_shard(args.shard)
+    if args.symbols_file is None and args.kind != "spot_1d":
+        raise ValueError(f"--symbols-file (candidates.txt) is required for {args.kind}")
     discovery = _load_discovery(args.discovery, run.config)
     symbols: Sequence[str] = discovery.candidates
     if args.symbols_file is not None:
@@ -564,6 +696,7 @@ def fetch(args: argparse.Namespace, run: _Run) -> int:
             "format": MANIFEST_FORMAT,
             "kind": args.kind,
             "shard": f"{index}/{count}",
+            "symbols": mine,
             "entries": [asdict(entry) for entry in entries],
             "absent": absent,
         },
@@ -580,22 +713,22 @@ def select(args: argparse.Namespace, run: _Run) -> int:
     final = args.stage == "final"
     if final != bool(args.hourly_manifests):
         raise ValueError("--hourly-manifests is required by the final stage and only by it")
-    discovery = _load_discovery(args.discovery, run.config)
-    daily_entries = _load_manifests(args.daily_manifests, ("spot_1d",), run.config, discovery)
-    hourly_entries = (
-        _load_manifests(args.hourly_manifests, HOURLY_KINDS, run.config, discovery) if final else []
+    config = run.config
+    discovery = _load_discovery(args.discovery, config)
+    daily_pieces = _load_manifests(args.daily_manifests, ("spot_1d",), config, discovery)
+    hourly_pieces = (
+        _load_manifests(args.hourly_manifests, ("spot_1h",), config, discovery) if final else None
     )
-    daily = _daily_series(daily_entries, args.cache, run)
-    usable = _usable_hours(hourly_entries, args.cache, run) if final else None
-    universes = _universes(discovery, daily, run.config, usable)
-    if not final:
-        ranked = {s for u in universes for s, _, _ in u.ranked[:HOURLY_RANK_DEPTH]}
-        _write_lines(args.out / "candidates.txt", sorted(ranked))
-        _say(
-            f"select candidates: {len(universes)} universe months, {len(ranked)} symbols "
-            f"ranked in a top {HOURLY_RANK_DEPTH}"
-        )
+    _require_coverage(daily_pieces, "spot_1d", discovery.candidates, "candidates")
+    daily = _daily_series(daily_pieces.entries, args.cache, run)
+    if hourly_pieces is None:
+        ranked = _ranked(_universes(discovery, daily, config, None))
+        _write_lines(args.out / "candidates.txt", ranked)
+        _say(f"select candidates: {len(ranked)} symbols ranked in a top {HOURLY_RANK_DEPTH}")
         return 0
+    usable, _ = _usable_hours(hourly_pieces.entries, args.cache, run)
+    universes = _universes(discovery, daily, config, usable)
+    _require_coverage(hourly_pieces, "spot_1h", _ranked(universes), "symbols ranked in a top 20")
     selected = sorted({symbol for universe in universes for symbol in universe.selected})
     _write_json(
         args.out / "universe.json",
@@ -611,26 +744,55 @@ def select(args: argparse.Namespace, run: _Run) -> int:
 
 
 def pack(args: argparse.Namespace, run: _Run) -> int:
-    discovery = _load_discovery(args.discovery, run.config)
-    entries = _load_manifests(args.manifests, KINDS, run.config, discovery)
-    snapshots = _snapshots(run.config)
-    cache, config = args.cache, run.config
+    config, cache = run.config, args.cache
+    discovery = _load_discovery(args.discovery, config)
+    pieces = _load_manifests(args.manifests, KINDS, config, discovery)
+    expected = _load_universe(args.universe, config)
+    snapshots = _snapshots(config)
+    _require_coverage(pieces, "spot_1d", discovery.candidates, "candidates")
+    entries = pieces.entries
     daily = _daily_series(entries, cache, run)
-    universes = _universes(discovery, daily, config, _usable_hours(entries, cache, run))
-    selected = sorted({symbol for universe in universes for symbol in universe.selected})
+    # The spot hourly series of the symbols select-final selected are kept from the one read
+    # that gives every candidate's usable hours; they are used only if the universes match.
+    keep = frozenset(symbol for universe in expected for symbol in universe["selected"])
+    usable, spot_series = _usable_hours(entries, cache, run, keep)
+    universes = _universes(discovery, daily, config, usable)
+    for kind in HOURLY_KINDS:
+        _require_coverage(pieces, kind, _ranked(universes), "symbols ranked in a top 20")
+    if _universe_document(universes) != expected:
+        raise ValueError(
+            f"{args.universe}: the universes recomputed here differ from select-final's, so "
+            "the archives or the code differ between the two jobs"
+        )
+    selected = sorted(keep)
 
-    spot_entries, futures_entries = _grouped(entries, "spot_1h"), _grouped(entries, "futures_1h")
-    funding_entries = _grouped(entries, "funding")
+    # The universes were built from every candidate's spot hourly archives too.
+    packs: dict[str, dict[str, Any]] = {}
+    packs["daily"] = _write_pack(
+        args.out / DAILY_PACK,
+        daily_pack_document(
+            config,
+            [e for e in entries if e.kind in ("spot_1d", "spot_1h")],
+            {symbol: series.bars for symbol, series in daily.items()},
+            discovery.exclusions,
+            universes,
+            masks={symbol: series.masks() for symbol, series in daily.items()},
+            config_sha256=run.config_sha256,
+        ),
+    )
+    del daily  # the daily bars are not needed past their pack
+
+    futures_entries, funding_entries = _grouped(entries, "futures_1h"), _grouped(entries, "funding")
     spot: dict[str, tuple[HourBar, ...]] = {}
     futures: dict[str, tuple[HourBar, ...]] = {}
     masks: dict[tuple[str, str], tuple[list[int], dict[str, str]]] = {}
     funding: dict[str, list[FundingRow]] = {}
     funding_months: dict[tuple[str, str], str] = {}
     for symbol in selected:
-        spot_series = _read_series(spot_entries[symbol], cache, run, _spot_hours, _HOUR_MS)
-        spot[symbol], masks[(symbol, "spot")] = spot_series.bars, spot_series.masks()
+        spot_read = spot_series.pop(symbol)
+        spot[symbol], masks[(symbol, "spot")] = spot_read.bars, spot_read.masks()
         perpetual = _read_series(
-            futures_entries.get(symbol, []), cache, run, _futures_hours, _HOUR_MS
+            futures_entries.get(symbol, []), cache, run, _read_futures_hours, _HOUR_MS
         )
         if not perpetual.bars:  # no futures market in the data (ruling P23)
             continue
@@ -644,23 +806,13 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
         for venue, series in (("spot", spot), ("futures", futures))
         for symbol, bars in series.items()
     }
-
-    # The universes were built from every candidate's spot hourly archives too.
-    daily_manifest = [e for e in entries if e.kind in ("spot_1d", "spot_1h")]
-    hourly_manifest = [e for e in entries if e.kind in HOURLY_KINDS and e.symbol in spot]
-    packs: dict[str, dict[str, Any]] = {}
-    packs["daily"] = _write_pack(
-        args.out / DAILY_PACK,
-        daily_pack_document(
-            config,
-            daily_manifest,
-            {symbol: series.bars for symbol, series in daily.items()},
-            discovery.exclusions,
-            universes,
-            masks={symbol: series.masks() for symbol, series in daily.items()},
-            config_sha256=run.config_sha256,
-        ),
-    )
+    # Exactly the archives read for this pack: an omitted perpetual's funding files never are.
+    hourly_manifest = [
+        e
+        for e in entries
+        if (e.kind in ("spot_1h", "futures_1h") and e.symbol in spot)
+        or (e.kind == "funding" and e.symbol in futures)
+    ]
     packs["hourly"] = _write_pack(
         args.out / HOURLY_PACK,
         hourly_pack_document(
@@ -708,7 +860,11 @@ def build_parser() -> argparse.ArgumentParser:
     command = commands.add_parser("fetch", help="fetch and verify one shard of one kind")
     command.add_argument("--kind", choices=KINDS, required=True)
     command.add_argument("--discovery", type=Path, required=True, help="discover's symbols.json")
-    command.add_argument("--symbols-file", type=Path, help="one symbol per line (default: all)")
+    command.add_argument(
+        "--symbols-file",
+        type=Path,
+        help="one symbol per line; required for an hourly kind, spot_1d takes every candidate",
+    )
     command.add_argument("--shard", required=True, help="i/n: shard i (from 0) of n")
     command.add_argument("--cache", type=Path, required=True)
     command.add_argument("--out", type=Path, required=True)
@@ -724,6 +880,9 @@ def build_parser() -> argparse.ArgumentParser:
     command = commands.add_parser("pack", help="write both packs and data.json")
     command.add_argument("--discovery", type=Path, required=True)
     command.add_argument("--manifests", type=Path, nargs="+", required=True)
+    command.add_argument(
+        "--universe", type=Path, required=True, help="select --stage final's universe.json"
+    )
     command.add_argument("--cache", type=Path, required=True)
     command.add_argument("--out", type=Path, required=True)
     return parser
