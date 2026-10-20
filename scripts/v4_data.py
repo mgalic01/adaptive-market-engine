@@ -24,7 +24,10 @@ the owner's PC); each stage reads the files the stages before it wrote:
   candidate without F. A shard is every n-th symbol of the sorted list, from index i, for every
   kind, so the pieces of all kinds line up. For ``futures_1h`` and ``funding`` each symbol's
   archives are its perpetual's, fetched and recorded (entries and absent months) under the
-  perpetual's symbol; a symbol without a perpetual has none.
+  perpetual's symbol; a symbol without a perpetual has none. A shard with any archive it
+  cannot fetch (no or a mismatched ``.CHECKSUM``, a 4xx, a size breach, a transport failure
+  after its retries) goes on with the others, then writes no piece and exits 1 listing every
+  failure as symbol, kind, month and reason, stopping at ``MAX_FETCH_FAILURES``.
 * ``select --stage candidates`` writes ``candidates.txt``: every symbol ranked in a top 20
   (``HOURLY_RANK_DEPTH``) in any month, from the daily archives with no hourly check. The
   hourly fetch takes every listed month of each, its whole history.
@@ -140,6 +143,9 @@ CONFIG = ROOT / "config" / "v4_data.json"
 # A pack whose canonical JSON is larger stops for a ruling on splitting it (ruling P23); the
 # reader refuses anything over 2 GiB.
 MAX_PACK_JSON_BYTES = 1_610_612_736
+# A fetch shard reports every archive it could not fetch, up to this many: a systemic failure
+# (the network down) then stops in minutes instead of retrying every archive of the shard.
+MAX_FETCH_FAILURES = 50
 HOURLY_KINDS = ("spot_1h", "futures_1h", "funding")
 VENUES = ("spot", "futures")
 DATA_FORMAT = "v4-data/1"
@@ -344,17 +350,36 @@ def fetch(args: argparse.Namespace, run: _Run) -> int:
     names = _archive_symbols(args.kind, mine, discovery.perpetuals)  # a perpetual's own name
     entries: list[ManifestEntry] = []
     absent: list[dict[str, str]] = []
-    for symbol in names:
-        for month in discovery.months[args.kind][symbol]:
+    failures: list[str] = []  # every refused archive of the shard, up to MAX_FETCH_FAILURES
+    archives = [
+        (symbol, month) for symbol in names for month in discovery.months[args.kind][symbol]
+    ]
+    for symbol, month in archives:
+        try:
             result = fetch_verified(
                 run.transport, args.kind, symbol, month, run.config, sleep=run.sleep, log=_log
             )
-            if result is None:
-                absent.append({"symbol": symbol, "month": month})
-                continue
-            entry, content = result
-            _store(args.cache.joinpath(*entry.path.strip("/").split("/")), content)
-            entries.append(entry)
+        except (ValueError, OSError) as exc:  # a checksum, a 4xx, a size breach, a transport
+            failures.append(f"{symbol} {args.kind} {month}: {exc}")
+            if len(failures) == MAX_FETCH_FAILURES:
+                break
+            continue
+        if result is None:
+            absent.append({"symbol": symbol, "month": month})
+            continue
+        entry, content = result
+        _store(args.cache.joinpath(*entry.path.strip("/").split("/")), content)
+        entries.append(entry)
+    if failures:  # fail closed: no piece, so no later stage can take the shard as complete
+        stopped = (
+            f" (stopped at {MAX_FETCH_FAILURES} failures)"
+            if len(failures) == MAX_FETCH_FAILURES
+            else ""
+        )
+        raise ValueError(
+            f"fetch {args.kind} shard {index}/{count}: {len(failures)} archives failed{stopped}, "
+            "so no manifest piece is written:\n" + "\n".join(f"  {line}" for line in failures)
+        )
     _write_json(
         args.out / f"manifest-{args.kind}-{index}.json",
         {

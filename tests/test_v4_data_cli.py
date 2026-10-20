@@ -155,13 +155,16 @@ class FakeBinance:
     Every URL first goes through the real ``HttpTransport`` allowlist, so a URL the real
     transport would refuse fails the test here too. A path in ``listed_only`` is listed but
     answered with a 404. The spot klines directories are ``spot_dirs``; the futures klines
-    directories are those of the world's futures archives.
+    directories are those of the world's futures archives. A path in ``refusals`` raises its
+    exception instead of answering, and one in ``no_checksum`` has no ``.CHECKSUM`` (404).
     """
 
     def __init__(self, files: dict[str, bytes]):
         self.files = files  # archive path -> bytes
         self.listed_only: set[str] = set()
         self.spot_dirs = list(SPOT_DIRS)
+        self.refusals: dict[str, Exception] = {}
+        self.no_checksum: set[str] = set()
         self.requests: list[str] = []
 
     def get(self, url: str) -> bytes | None:
@@ -184,7 +187,11 @@ class FakeBinance:
             ]
             return listing_xml(keys=sorted(keys))
         path = url[len(ARCHIVE) :]
+        if path in self.refusals:
+            raise self.refusals[path]
         if path.endswith(".CHECKSUM"):
+            if path.removesuffix(".CHECKSUM") in self.no_checksum:
+                return None
             content = self.files.get(path.removesuffix(".CHECKSUM"))
             name = path.removesuffix(".CHECKSUM").rsplit("/", 1)[1]
             return None if content is None else f"{sha(content)}  {name}\n".encode("ascii")
@@ -560,6 +567,58 @@ def test_shards_partition_symbols_without_overlap_or_gap(tmp_path, capsys):
     )  # fmt: skip
     assert "--symbols-file (candidates.txt) is required for spot_1h" in pipeline.err[-1]
     assert not pipeline.manifest_files("spot_1h")
+
+
+def test_a_fetch_shard_reports_every_failing_archive_and_writes_no_piece(tmp_path, capsys):
+    # Two anomalies in one shard: AAA's January archive has no checksum file, and LATE's
+    # February archive answers HTTP 403 (a 4xx, never retried). The shard goes on past the
+    # first, then refuses with both, and writes no manifest piece (it still fails closed).
+    world = build_world()
+    missing, forbidden = (
+        archive_path("spot_1d", "AAAUSDT", JAN),
+        archive_path("spot_1d", "LATEUSDT", FEB),
+    )
+    world.no_checksum.add(missing)
+    world.refusals[forbidden] = ValueError("public data returned HTTP 403")
+    pipeline = Pipeline(tmp_path, capsys, world)
+    pipeline.discover()
+    pipeline.cli(
+        "fetch", "--kind", "spot_1d", "--discovery", pipeline.discovery, "--shard", "0/1",
+        "--cache", pipeline.cache, "--out", pipeline.manifests, expect=1,
+    )  # fmt: skip
+
+    err = pipeline.err[-1]
+    assert "fetch spot_1d shard 0/1: 2 archives failed, so no manifest piece is written" in err
+    assert f"AAAUSDT spot_1d {JAN}: {missing}: the archive exists but its checksum" in err
+    assert f"LATEUSDT spot_1d {FEB}: public data returned HTTP 403" in err
+    assert not pipeline.manifest_files("spot_1d")
+    assert world.requests.count(ARCHIVE + forbidden) == 1  # not retried
+    # Every archive of the shard was tried, before and after the failures.
+    tried = {url for url in world.archive_requests() if not url.endswith(".CHECKSUM")}
+    assert tried == {
+        ARCHIVE + archive_path("spot_1d", symbol, month)
+        for symbol in DAILY_QUOTE_VOLUMES
+        for month in (JAN, FEB)
+    }
+
+
+def test_a_fetch_shard_stops_at_the_failure_cap(tmp_path, capsys, monkeypatch):
+    # A systemic failure (every archive refused) stops at the cap instead of trying them all.
+    monkeypatch.setattr(v4_data, "MAX_FETCH_FAILURES", 3)
+    world = build_world()
+    for symbol in DAILY_QUOTE_VOLUMES:
+        for month in (JAN, FEB):
+            world.refusals[archive_path("spot_1d", symbol, month)] = ValueError(
+                "public data returned HTTP 403"
+            )
+    pipeline = Pipeline(tmp_path, capsys, world)
+    pipeline.discover()
+    pipeline.cli(
+        "fetch", "--kind", "spot_1d", "--discovery", pipeline.discovery, "--shard", "0/1",
+        "--cache", pipeline.cache, "--out", pipeline.manifests, expect=1,
+    )  # fmt: skip
+    assert "3 archives failed (stopped at 3 failures), so no manifest piece" in pipeline.err[-1]
+    assert len(world.archive_requests()) == 3 and not pipeline.manifest_files("spot_1d")
 
 
 def test_a_listed_month_the_host_does_not_have_is_recorded_absent(tmp_path, capsys):
