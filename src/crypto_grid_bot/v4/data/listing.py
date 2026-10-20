@@ -7,7 +7,9 @@ them; ``discover_spot_usdt_symbols`` reads the spot klines directories, delisted
 included, and ``discover_months`` reads one symbol's archive file names for one kind.
 
 Everything here goes through a ``Transport``, so the only network access is the one
-``archives.HttpTransport`` allows: the bucket listing query, nothing else. A listing is
+``archives.HttpTransport`` allows: the bucket listing query, nothing else. Each page request is
+retried exactly as an archive request is (``archives.get_with_retries``: a transport failure
+four tries in all, sleeping 1, 2 and 4 s; nothing else is retried). A listing is
 untrusted input: it is size-capped, parsed as UTF-8 XML without a DTD, and read for the S3
 elements only. The universe step, not this module, decides what to exclude (stablecoins,
 leveraged tokens), so ``discover_spot_usdt_symbols`` keeps them.
@@ -16,6 +18,7 @@ leveraged tokens), so ``discover_spot_usdt_symbols`` keeps them.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import chain
 from urllib.parse import quote
@@ -26,6 +29,7 @@ from crypto_grid_bot.v4.data.archives import (
     MAX_LISTING_BYTES,
     Transport,
     archive_path,
+    get_with_retries,
 )
 from crypto_grid_bot.v4.data.config import DataConfig, refuse_after_end
 
@@ -133,12 +137,19 @@ def _listing_url(prefix: str, marker: str | None) -> str:
     return url if marker is None else f"{url}&marker={quote(marker, safe='/')}"
 
 
-def list_all(transport: Transport, prefix: str) -> ListingPage:
+def list_all(
+    transport: Transport,
+    prefix: str,
+    *,
+    sleep: Callable[[float], None],
+    log: Callable[[str], None],
+) -> ListingPage:
     """Every sub-directory and key under ``prefix``, following the pages to the last.
 
-    ``prefix`` is a path under ``data/``. A prefix the bucket does not answer (404), a page
-    that is not a listing and a continuation that does not move forward are errors; the last
-    would otherwise ask for the same page for ever.
+    ``prefix`` is a path under ``data/``. Each page request is retried on a transport failure
+    (``archives.get_with_retries``); a 4xx, a size breach and a guard refusal are not. A prefix
+    the bucket does not answer (404), a page that is not a listing and a continuation that does
+    not move forward are errors; the last would otherwise ask for the same page for ever.
     """
     if not isinstance(prefix, str) or _PREFIX.fullmatch(prefix) is None or ".." in prefix:
         raise ValueError(
@@ -149,7 +160,7 @@ def list_all(transport: Transport, prefix: str) -> ListingPage:
     marker: str | None = None
     while True:
         url = _listing_url(prefix, marker)
-        body = transport.get(url)
+        body = get_with_retries(transport, url, sleep=sleep, log=log)
         if body is None:
             raise ValueError(f"{url} was not found (HTTP 404) where a listing was expected")
         page = parse_listing(body)
@@ -165,14 +176,20 @@ def list_all(transport: Transport, prefix: str) -> ListingPage:
         marker = page.next_marker
 
 
-def discover_spot_usdt_symbols(transport: Transport) -> tuple[str, ...]:
+def discover_spot_usdt_symbols(
+    transport: Transport,
+    *,
+    sleep: Callable[[float], None],
+    log: Callable[[str], None],
+) -> tuple[str, ...]:
     """Every USDT-quoted spot symbol with a klines directory, sorted; delisted ones included.
 
     A symbol is kept if it ends in ``USDT`` and has a base (so ``USDTBRL`` and ``BTCBUSD`` go);
-    leveraged tokens and stablecoins are kept, for the universe step to exclude.
+    leveraged tokens and stablecoins are kept, for the universe step to exclude. Page requests
+    are retried as in ``list_all``.
     """
     symbols: set[str] = set()
-    for directory in list_all(transport, SPOT_KLINES_PREFIX).prefixes:
+    for directory in list_all(transport, SPOT_KLINES_PREFIX, sleep=sleep, log=log).prefixes:
         match = _SPOT_SYMBOL_DIR.fullmatch(directory)
         if match is not None:
             symbol = match.group(1)
@@ -182,7 +199,13 @@ def discover_spot_usdt_symbols(transport: Transport) -> tuple[str, ...]:
 
 
 def discover_months(
-    transport: Transport, kind: str, symbol: str, config: DataConfig
+    transport: Transport,
+    kind: str,
+    symbol: str,
+    config: DataConfig,
+    *,
+    sleep: Callable[[float], None],
+    log: Callable[[str], None],
 ) -> tuple[str, ...]:
     """The months ``symbol`` has a monthly archive of ``kind`` for, sorted, up to ``end_month``.
 
@@ -191,7 +214,8 @@ def discover_months(
     ``.CHECKSUM`` files, other symbols, other intervals and malformed months are ignored. A
     key for a month after ``config.end_month`` is left out, not refused: a listing is not a
     request, and nothing after ``end_month`` is ever asked for. An unknown kind, a bad symbol
-    and a malformed ``end_month`` are errors raised before any request.
+    and a malformed ``end_month`` are errors raised before any request. Page requests are
+    retried as in ``list_all``.
     """
     directory, name = archive_path(kind, symbol, _SAMPLE_MONTH).rsplit("/", 1)
     prefix = directory.lstrip("/") + "/"
@@ -201,7 +225,7 @@ def discover_months(
     refuse_after_end(_FIRST_MONTH, config)
 
     months: set[str] = set()
-    for key in list_all(transport, prefix).keys:
+    for key in list_all(transport, prefix, sleep=sleep, log=log).keys:
         match = pattern.fullmatch(key)
         # Both are zero-padded YYYY-MM, so the string order is the calendar order.
         if match is not None and match.group(1) <= config.end_month:

@@ -230,13 +230,20 @@ def _transport_failure(error: Exception) -> bool:
     return isinstance(error, OSError | HTTPException)
 
 
-def _get_with_retries(
+def get_with_retries(
     transport: Transport,
     url: str,
+    *,
     sleep: Callable[[float], None],
     log: Callable[[str], None],
 ) -> bytes | None:
-    """One response from ``transport``, trying a transport failure ``ATTEMPTS`` times in all."""
+    """One response from ``transport``, trying a transport failure ``ATTEMPTS`` times in all.
+
+    The body (None for a 404) of ``transport.get(url)``. A transport failure is logged and tried
+    again after sleeping 1, 2 and 4 seconds; the last failure is raised. Anything else the
+    transport raises (a 4xx, a size breach, a guard refusal) is raised at once. This is the one
+    retry loop for both archive downloads and bucket listings.
+    """
     attempt = 1
     while True:
         try:
@@ -261,7 +268,7 @@ def _download(
     log: Callable[[str], None],
 ) -> bytes | None:
     """``url``'s body (None for a 404), once it is known to be bytes within ``limit``."""
-    content = _get_with_retries(transport, url, sleep, log)
+    content = get_with_retries(transport, url, sleep=sleep, log=log)
     if content is None:
         return None
     if type(content) is not bytes:

@@ -109,6 +109,46 @@ class FakeBucket:
         return self.pages.get(url)
 
 
+class ScriptedTransport:
+    """Answers each request with the next outcome: an exception is raised, bytes or None are
+    returned. A request after the script has run out is a test failure."""
+
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.requests: list[str] = []
+
+    def get(self, url):
+        self.requests.append(url)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+class Recorder:
+    """A sleep and a log that only record, so no test waits."""
+
+    def __init__(self):
+        self.sleeps: list[float] = []
+        self.logs: list[str] = []
+
+    @property
+    def kwargs(self):
+        return {"sleep": self.sleeps.append, "log": self.logs.append}
+
+
+def no_wait() -> dict:
+    """The sleep and log keywords for a test that does not look at them."""
+    return Recorder().kwargs
+
+
+def caused_by(cause: BaseException, message="public data transport failed") -> ValueError:
+    """The ValueError ``HttpTransport`` raises for a transport error."""
+    failure = ValueError(message)
+    failure.__cause__ = cause
+    return failure
+
+
 def klines_bucket(*symbols: str) -> FakeBucket:
     """A bucket whose spot klines listing is one complete page of these symbols."""
     prefixes = [f"{KLINES}{symbol}/" for symbol in symbols]
@@ -261,7 +301,7 @@ def test_listing_follows_next_marker_until_not_truncated():
         }
     )
 
-    page = list_all(bucket, KLINES)
+    page = list_all(bucket, KLINES, **no_wait())
 
     assert page == ListingPage(prefixes=(first, second, third), keys=(), next_marker=None)
     assert bucket.requests == [url_of(KLINES), url_of(KLINES, first), url_of(KLINES, second)]
@@ -277,7 +317,7 @@ def test_listing_merges_keys_across_pages_in_order():
         }
     )
 
-    assert list_all(bucket, prefix).keys == tuple(keys)
+    assert list_all(bucket, prefix, **no_wait()).keys == tuple(keys)
 
 
 def test_listing_continues_after_the_last_entry_when_the_page_names_no_marker():
@@ -291,7 +331,7 @@ def test_listing_continues_after_the_last_entry_when_the_page_names_no_marker():
         }
     )
 
-    assert list_all(bucket, prefix).keys == tuple(keys)
+    assert list_all(bucket, prefix, **no_wait()).keys == tuple(keys)
     assert bucket.requests == [url_of(prefix), url_of(prefix, keys[0])]
 
 
@@ -308,7 +348,7 @@ def test_listing_refuses_a_marker_that_does_not_advance():
     )
 
     with pytest.raises(ValueError, match="advance"):
-        list_all(bucket, KLINES)
+        list_all(bucket, KLINES, **no_wait())
     assert bucket.requests == [url_of(KLINES), url_of(KLINES, marker)]
 
     earlier = FakeBucket(
@@ -318,14 +358,14 @@ def test_listing_refuses_a_marker_that_does_not_advance():
         }
     )
     with pytest.raises(ValueError, match="advance"):
-        list_all(earlier, KLINES)
+        list_all(earlier, KLINES, **no_wait())
 
 
 def test_listing_of_a_prefix_the_bucket_does_not_answer_is_an_error():
     bucket = FakeBucket()
 
     with pytest.raises(ValueError, match="404"):
-        list_all(bucket, KLINES)
+        list_all(bucket, KLINES, **no_wait())
     assert bucket.requests == [url_of(KLINES)]
 
 
@@ -333,15 +373,168 @@ def test_listing_refuses_a_page_that_is_not_a_listing():
     bucket = FakeBucket({url_of(KLINES): b"<html>Service Unavailable</html>"})
 
     with pytest.raises(ValueError, match="S3"):
-        list_all(bucket, KLINES)
+        list_all(bucket, KLINES, **no_wait())
 
 
 def test_listing_the_result_is_one_merged_page_with_no_marker():
     bucket = klines_bucket("BTCUSDT")
 
-    page = list_all(bucket, KLINES)
+    page = list_all(bucket, KLINES, **no_wait())
 
     assert page.next_marker is None
+
+
+# --- retries ------------------------------------------------------------------------------
+
+
+def test_a_transient_failure_on_page_two_is_retried_and_the_listing_is_complete():
+    first, second = f"{KLINES}AAAUSDT/", f"{KLINES}BBBUSDT/"
+    transport = ScriptedTransport(
+        [
+            listing_xml(prefixes=[first], truncated=True, next_marker=first),
+            caused_by(ConnectionResetError("reset")),
+            listing_xml(prefixes=[second]),
+        ]
+    )
+    recorder = Recorder()
+
+    page = list_all(transport, KLINES, **recorder.kwargs)
+
+    assert page == ListingPage(prefixes=(first, second), keys=(), next_marker=None)
+    # Page 1 once; page 2 twice, the same URL, with the marker both times.
+    assert transport.requests == [url_of(KLINES), url_of(KLINES, first), url_of(KLINES, first)]
+    assert recorder.sleeps == [1]
+    assert len(recorder.logs) == 1
+    assert url_of(KLINES, first) in recorder.logs[0]
+    assert "attempt 1 of 4" in recorder.logs[0]
+
+
+def test_an_http_5xx_on_a_listing_page_is_retried():
+    transport = ScriptedTransport(
+        [ValueError("public data returned HTTP 503"), listing_xml(prefixes=[f"{KLINES}ABCUSDT/"])]
+    )
+    recorder = Recorder()
+
+    assert list_all(transport, KLINES, **recorder.kwargs).prefixes == (f"{KLINES}ABCUSDT/",)
+    assert recorder.sleeps == [1]
+
+
+@pytest.mark.parametrize("pages_before", [0, 1])
+def test_a_failure_that_persists_surfaces_after_four_tries_and_sleeps_1_2_4(pages_before):
+    first = f"{KLINES}AAAUSDT/"
+    down = caused_by(NetworkBlocked("down"))
+    served = [listing_xml(prefixes=[first], truncated=True, next_marker=first)][:pages_before]
+    transport = ScriptedTransport([*served, down, down, down, down])
+    recorder = Recorder()
+
+    with pytest.raises(ValueError, match="transport failed") as caught:
+        list_all(transport, KLINES, **recorder.kwargs)
+
+    assert caught.value is down  # the last failure is the one that surfaces
+    failing = url_of(KLINES, first) if pages_before else url_of(KLINES)
+    assert transport.requests == [*([url_of(KLINES)] if pages_before else []), *[failing] * 4]
+    assert recorder.sleeps == [1, 2, 4]
+    assert len(recorder.logs) == 4
+    assert "attempt 4 of 4" in recorder.logs[3]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(
+            ValueError("public data returned HTTP 403; a redirect is never followed"), id="403"
+        ),
+        pytest.param(ValueError("public data returned HTTP 400"), id="400"),
+        pytest.param(ValueError("public data returned HTTP 301"), id="a redirect"),
+        pytest.param(
+            ValueError(
+                "the response for u exceeded the size limit of 4194304 bytes; "
+                "its complete size is unknown"
+            ),
+            id="a size breach",
+        ),
+        pytest.param(ValueError("https://example.com/x is not an allowed URL"), id="a refusal"),
+        pytest.param(KeyError("x"), id="an unrelated error"),
+    ],
+)
+def test_a_4xx_a_size_breach_or_a_refusal_on_a_listing_page_is_not_retried(failure):
+    transport = ScriptedTransport([failure, listing_xml()])
+    recorder = Recorder()
+
+    with pytest.raises(type(failure)) as caught:
+        list_all(transport, KLINES, **recorder.kwargs)
+
+    assert caught.value is failure
+    assert transport.requests == [url_of(KLINES)]
+    assert recorder.sleeps == [] and recorder.logs == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b"x" * (4 * 1024 * 1024 + 1), id="over four MiB"),
+        pytest.param(b"<html>Service Unavailable</html>", id="not a listing"),
+        pytest.param(b"", id="empty"),
+    ],
+)
+def test_a_page_that_is_received_but_refused_is_not_asked_for_again(body):
+    transport = ScriptedTransport([body, listing_xml()])
+    recorder = Recorder()
+
+    with pytest.raises(ValueError):
+        list_all(transport, KLINES, **recorder.kwargs)
+
+    assert transport.requests == [url_of(KLINES)]
+    assert recorder.sleeps == [] and recorder.logs == []
+
+
+def test_a_404_on_a_listing_page_is_not_retried():
+    transport = ScriptedTransport([None, listing_xml()])
+    recorder = Recorder()
+
+    with pytest.raises(ValueError, match="404"):
+        list_all(transport, KLINES, **recorder.kwargs)
+
+    assert transport.requests == [url_of(KLINES)]
+    assert recorder.sleeps == []
+
+
+def test_symbol_discovery_retries_a_transient_failure():
+    transport = ScriptedTransport(
+        [caused_by(TimeoutError("slow")), listing_xml(prefixes=[f"{KLINES}BTCUSDT/"])]
+    )
+    recorder = Recorder()
+
+    assert discover_spot_usdt_symbols(transport, **recorder.kwargs) == ("BTCUSDT",)
+    assert recorder.sleeps == [1]
+
+
+def test_month_discovery_retries_a_transient_failure(config):
+    keys = month_keys("funding", "BTCUSDT", "2020-01")
+    transport = ScriptedTransport(
+        [ValueError("public data returned HTTP 502"), listing_xml(keys=keys)]
+    )
+    recorder = Recorder()
+
+    months = discover_months(transport, "funding", "BTCUSDT", config, **recorder.kwargs)
+
+    assert months == ("2020-01",)
+    assert recorder.sleeps == [1]
+
+
+def test_sleep_and_log_are_required_keywords(config):
+    bucket = klines_bucket("BTCUSDT")
+    kwargs = no_wait()
+
+    with pytest.raises(TypeError):
+        list_all(bucket, KLINES)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        discover_spot_usdt_symbols(bucket)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        discover_months(bucket, "spot_1d", "BTCUSDT", config)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        list_all(bucket, KLINES, kwargs["sleep"], kwargs["log"])  # type: ignore[misc]
+    assert bucket.requests == []
 
 
 # --- the listing query --------------------------------------------------------------------
@@ -356,7 +549,7 @@ def test_listing_query_is_bucket_and_prefix_only():
         }
     )
 
-    list_all(bucket, KLINES)
+    list_all(bucket, KLINES, **no_wait())
 
     assert bucket.requests == [
         "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
@@ -378,11 +571,11 @@ def test_every_listing_url_passes_the_transports_allowlist(network_blocked, conf
             url_of(KLINES, marker): listing_xml(prefixes=[f"{KLINES}ETHUSDT/"]),
         }
     )
-    list_all(discovery, KLINES)
+    list_all(discovery, KLINES, **no_wait())
     sent += discovery.requests
     for kind in KINDS:
         bucket, prefix = months_bucket(kind, "BTCUSDT", [])
-        discover_months(bucket, kind, "BTCUSDT", config)
+        discover_months(bucket, kind, "BTCUSDT", config, **no_wait())
         sent += bucket.requests
         assert bucket.requests == [url_of(prefix)]
 
@@ -405,7 +598,7 @@ def test_a_marker_is_percent_encoded_into_the_query(network_blocked):
         }
     )
 
-    page = list_all(bucket, KLINES)
+    page = list_all(bucket, KLINES, **no_wait())
 
     assert page.prefixes == (odd, f"{KLINES}ZZZUSDT/")
     assert bucket.requests == [url_of(KLINES), url_of(KLINES, encoded)]
@@ -437,7 +630,7 @@ def test_listing_refuses_a_prefix_outside_the_data_tree_before_any_request(prefi
     bucket = FakeBucket()
 
     with pytest.raises(ValueError, match="prefix"):
-        list_all(bucket, prefix)
+        list_all(bucket, prefix, **no_wait())
 
     assert bucket.requests == []
 
@@ -453,7 +646,7 @@ def test_spot_usdt_symbols_come_from_the_klines_prefixes():
         "LUNAUSDT", "BTCUSDT", "BTCUPUSDT", "BTCBUSD", "USDTBRL", "ETHBTC", "USDCUSDT"
     )
 
-    symbols = discover_spot_usdt_symbols(bucket)
+    symbols = discover_spot_usdt_symbols(bucket, **no_wait())
 
     assert symbols == ("BTCUPUSDT", "BTCUSDT", "LUNAUSDT", "USDCUSDT")
     assert bucket.requests == [url_of(KLINES)]
@@ -472,7 +665,7 @@ def test_spot_usdt_symbols_need_a_base_and_a_clean_name():
         "BTCUSDT.OLD",
     )
 
-    assert discover_spot_usdt_symbols(bucket) == ("1000SHIBUSDT", "AUSDT")
+    assert discover_spot_usdt_symbols(bucket, **no_wait()) == ("1000SHIBUSDT", "AUSDT")
 
 
 def test_spot_usdt_symbols_are_sorted_unique_and_span_pages():
@@ -484,7 +677,7 @@ def test_spot_usdt_symbols_are_sorted_unique_and_span_pages():
         }
     )
 
-    assert discover_spot_usdt_symbols(bucket) == ("AAAUSDT", "ZZZUSDT")
+    assert discover_spot_usdt_symbols(bucket, **no_wait()) == ("AAAUSDT", "ZZZUSDT")
 
 
 def test_spot_usdt_symbols_ignore_entries_outside_the_klines_prefix_and_keys():
@@ -502,11 +695,13 @@ def test_spot_usdt_symbols_ignore_entries_outside_the_klines_prefix_and_keys():
         }
     )
 
-    assert discover_spot_usdt_symbols(bucket) == ("BTCUSDT",)
+    assert discover_spot_usdt_symbols(bucket, **no_wait()) == ("BTCUSDT",)
 
 
 def test_spot_usdt_symbols_of_an_empty_listing_is_empty():
-    assert discover_spot_usdt_symbols(FakeBucket({url_of(KLINES): listing_xml()})) == ()
+    assert (
+        discover_spot_usdt_symbols(FakeBucket({url_of(KLINES): listing_xml()}), **no_wait()) == ()
+    )
 
 
 def test_the_symbols_prefix_is_the_prefix_of_the_spot_archive_paths():
@@ -534,7 +729,7 @@ def test_months_are_listed_under_each_kinds_prefix(kind, prefix, name, config):
     keys = [prefix + name.format(month=month) for month in ("2020-03", "2020-01", "2020-02")]
     bucket = FakeBucket({url_of(prefix): listing_xml(keys=keys, requested=prefix)})
 
-    months = discover_months(bucket, kind, "BTCUSDT", config)
+    months = discover_months(bucket, kind, "BTCUSDT", config, **no_wait())
 
     assert months == ("2020-01", "2020-02", "2020-03")
     assert bucket.requests == [url_of(prefix)]
@@ -549,7 +744,7 @@ def test_months_come_from_zip_keys_and_stop_at_end_month(config):
     ]
     bucket, _ = months_bucket("spot_1d", "BTCUSDT", keys)
 
-    months = discover_months(bucket, "spot_1d", "BTCUSDT", config)
+    months = discover_months(bucket, "spot_1d", "BTCUSDT", config, **no_wait())
 
     assert months == ("2026-08", "2026-09")  # 2026-10 and 2027-01 are after end_month 2026-09
 
@@ -558,11 +753,11 @@ def test_the_end_month_is_included_and_a_later_key_is_left_out_not_refused(confi
     keys = month_keys("funding", "BTCUSDT", "2026-09", "2026-10")
     bucket, _ = months_bucket("funding", "BTCUSDT", keys)
 
-    assert discover_months(bucket, "funding", "BTCUSDT", config) == ("2026-09",)
+    assert discover_months(bucket, "funding", "BTCUSDT", config, **no_wait()) == ("2026-09",)
 
     earlier = replace(config, end_month="2026-08")
     bucket, _ = months_bucket("funding", "BTCUSDT", keys)
-    assert discover_months(bucket, "funding", "BTCUSDT", earlier) == ()
+    assert discover_months(bucket, "funding", "BTCUSDT", earlier, **no_wait()) == ()
 
 
 def test_months_ignore_keys_that_are_not_this_symbols_kind_archives(config):
@@ -588,7 +783,7 @@ def test_months_ignore_keys_that_are_not_this_symbols_kind_archives(config):
     ]
     bucket, _ = months_bucket("spot_1h", "BTCUSDT", keys)
 
-    assert discover_months(bucket, "spot_1h", "BTCUSDT", config) == ("2020-05",)
+    assert discover_months(bucket, "spot_1h", "BTCUSDT", config, **no_wait()) == ("2020-05",)
 
 
 def test_months_for_a_funding_listing_need_the_funding_name(config):
@@ -600,7 +795,7 @@ def test_months_for_a_funding_listing_need_the_funding_name(config):
     ]
     bucket, _ = months_bucket("funding", "BTCUSDT", keys)
 
-    assert discover_months(bucket, "funding", "BTCUSDT", config) == ("2020-01",)
+    assert discover_months(bucket, "funding", "BTCUSDT", config, **no_wait()) == ("2020-01",)
 
 
 def test_months_are_sorted_unique_and_span_pages(config):
@@ -613,7 +808,7 @@ def test_months_are_sorted_unique_and_span_pages(config):
         }
     )
 
-    assert discover_months(bucket, "futures_1h", "BTCUSDT", config) == (
+    assert discover_months(bucket, "futures_1h", "BTCUSDT", config, **no_wait()) == (
         "2020-12",
         "2021-01",
         "2021-02",
@@ -623,7 +818,7 @@ def test_months_are_sorted_unique_and_span_pages(config):
 def test_months_of_a_symbol_with_no_archives_is_empty(config):
     for kind in KINDS:
         bucket, _ = months_bucket(kind, "NEWUSDT", [])
-        assert discover_months(bucket, kind, "NEWUSDT", config) == ()
+        assert discover_months(bucket, kind, "NEWUSDT", config, **no_wait()) == ()
 
 
 @pytest.mark.parametrize(
@@ -643,7 +838,7 @@ def test_months_refuse_an_unknown_kind_or_a_bad_symbol_before_any_request(kind, 
     bucket = FakeBucket()
 
     with pytest.raises(ValueError):
-        discover_months(bucket, kind, symbol, config)
+        discover_months(bucket, kind, symbol, config, **no_wait())
 
     assert bucket.requests == []
 
@@ -654,13 +849,15 @@ def test_months_refuse_a_malformed_end_month_instead_of_dropping_every_key(end_m
     bucket, _ = months_bucket("spot_1d", "BTCUSDT", keys)
 
     with pytest.raises(ValueError, match="end_month"):
-        discover_months(bucket, "spot_1d", "BTCUSDT", replace(config, end_month=end_month))
+        discover_months(
+            bucket, "spot_1d", "BTCUSDT", replace(config, end_month=end_month), **no_wait()
+        )
 
 
 def test_discovery_opens_no_connection_of_its_own(network_blocked, config):
     bucket, _ = months_bucket("spot_1d", "BTCUSDT", month_keys("spot_1d", "BTCUSDT", "2020-01"))
 
-    discover_months(bucket, "spot_1d", "BTCUSDT", config)
-    discover_spot_usdt_symbols(klines_bucket("BTCUSDT"))
+    discover_months(bucket, "spot_1d", "BTCUSDT", config, **no_wait())
+    discover_spot_usdt_symbols(klines_bucket("BTCUSDT"), **no_wait())
 
     assert network_blocked == []
