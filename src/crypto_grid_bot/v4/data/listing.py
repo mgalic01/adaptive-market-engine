@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from itertools import chain
 from typing import TypeGuard
 from urllib.parse import quote
-from xml.etree import ElementTree
+from xml.etree import ElementTree  # nosec B405
 
 from crypto_grid_bot.v4.data.archives import (
     LISTING_URL,
@@ -139,8 +139,12 @@ def parse_listing(xml: bytes) -> ListingPage:
         raise ValueError("the listing must be UTF-8") from None
     if "<!DOCTYPE" in text or "<!ENTITY" in text:
         raise ValueError("the listing carries a DOCTYPE or ENTITY declaration, which is refused")
+    # The stdlib parser is safe here (bandit B405/B314): the checks above refuse a DOCTYPE, an
+    # ENTITY declaration and NUL bytes before parsing, so there is no entity expansion, no
+    # external entity and no UTF-16/32 bypass, and only the allowlisted S3 host over HTTPS is
+    # read. defusedxml would be a new dependency.
     try:
-        root = ElementTree.fromstring(xml)
+        root = ElementTree.fromstring(xml)  # nosec B314
     except ElementTree.ParseError as exc:
         raise ValueError(f"the listing is not well-formed XML: {exc}") from None
     if root.tag != _S3 + "ListBucketResult":

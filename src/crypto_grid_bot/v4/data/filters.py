@@ -113,7 +113,8 @@ def _decimals(values: Iterable[Decimal], label: str) -> int:
         if not value.is_finite():
             raise ValueError(f"{label}: bar value {value} is not finite")
         exponent = value.normalize(_EXACT).as_tuple().exponent
-        assert isinstance(exponent, int)  # a finite Decimal's exponent is an int
+        if not isinstance(exponent, int):  # a finite Decimal's exponent is always an int
+            raise ValueError(f"{label}: bar value {value} has no decimal exponent")
         places = max(places, -exponent)
     return places
 
