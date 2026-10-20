@@ -32,7 +32,9 @@ chosen by a rule", "Data" and "Delivery" (step 2). Step 1 is done (#287, #288).
 - Never edit `src/crypto_grid_bot/simulation/`, `trend/`, `strategy/` or `backtest/`.
   Importing from them is fine where the import does not run their 2024 guard. Their
   readers do run it, so V4 has its own readers.
-- The window starts at the first eligible daily bar on or after 2017-08-17.
+- The window starts at 00:00 UTC of the first month whose selection has at least one
+  eligible candidate. Daily bars from 2017-08-17 feed the history. While fewer than 10
+  candidates are eligible, the selection is all of them (a short universe).
 - The window ends at `end_month` in `config/v4_data.json`, the last complete calendar month
   before prepare runs. Owner decision v4-d03 opens 2025 onward for V4 only. No month after
   `end_month` is ever requested or read.
@@ -80,6 +82,14 @@ chosen by a rule", "Data" and "Delivery" (step 2). Step 1 is done (#287, #288).
   can only cover up to 2024-12, and its common period with V4 ends there. The spec already
   says comparisons use the common period. This is recorded for step 4 and does not affect
   this plan.
+- **R5, the spec's review round 2 (PR #289, 2026-10-20).** This plan follows the revised
+  spec:
+  - the start boundary and the short universe (Global Constraints, Task 5);
+  - funding months validated with V3's exact schedule rule (Task 4), with the result
+    recorded per perpetual-month in the hourly pack (Task 7);
+  - quantity limits as the stricter of `LOT_SIZE` and `MARKET_LOT_SIZE`, which Task 6
+    gets by reusing V3.1's `venue_rules`;
+  - hourly spot and futures over each selected symbol's whole history (Task 8).
 
 ## Review Focus
 
@@ -270,10 +280,20 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
 - Produces:
   - `DailyBar(open_ms: int, open: Decimal, high: Decimal, low: Decimal, close: Decimal, quote_volume: Decimal)`.
   - `HourBar` with the same fields plus `volume: Decimal`.
-  - `FundingRow(time_ms: int, rate: Decimal)`.
+  - `FundingRow(time_ms: int, rate: Decimal, interval_hours: int | None)`.
   - `read_daily(content: bytes, symbol: str, month: str) -> tuple[DailyBar, ...]`.
   - `read_hourly(content: bytes, symbol: str, month: str, *, futures: bool) -> tuple[HourBar, ...]`.
   - `read_funding(content: bytes, symbol: str, month: str) -> tuple[FundingRow, ...]`.
+  - `funding_month_status(rows: Sequence[FundingRow], month: str) -> str`. It returns
+    `"complete"` or the first failing reason: `"interval_mixed"`, `"interval_not_divisor_of_24"`,
+    `"off_slot"`, `"duplicate_slot"` or `"missing_slot"`. The spec's rule (V3 section 2):
+    - every row declares the same interval I, and I divides 24; a file without the column
+      gives `interval_hours=None` and is read as I = 8;
+    - the slots are 00:00 UTC + k x I hours, for every k inside the month;
+    - each row lies within 60,000 ms after one slot, at or after the slot itself;
+    - every slot has exactly one row.
+
+    A missing file is the caller's case: it records `"missing_file"` without calling this.
 
 - [ ] **Step 1: Write the failing tests**
   - `test_2025_microsecond_rows_normalise_to_milliseconds` (Review Focus 3)
@@ -283,6 +303,17 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `test_funding_reads_calc_time_and_rate`, with the header
     `calc_time,funding_interval_hours,last_funding_rate`
   - `test_member_name_must_match_the_archive`: the zip holds exactly `<file>.csv`
+  - `test_funding_month_complete_on_an_exact_8h_schedule_with_ms_offsets`: 2024-02 at 8 h,
+    87 rows (29 days x 3), each 0-47 ms after its slot, is `"complete"`
+  - `test_funding_month_failures_name_their_reason`, one case per reason:
+    - a mix of 8 and 4 gives `"interval_mixed"`;
+    - an interval of 5 gives `"interval_not_divisor_of_24"`;
+    - a row 60,001 ms after its slot, or 1 ms before it, gives `"off_slot"`;
+    - two rows in one slot give `"duplicate_slot"`;
+    - one slot dropped gives `"missing_slot"`
+  - `test_funding_file_without_interval_column_reads_as_8_hours`
+  - `test_a_mid_month_listing_is_missing_slots`: rows starting on the 15th give
+    `"missing_slot"`
 
 - [ ] **Step 2: Run them to see them fail.**
 
@@ -324,6 +355,9 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
     2017-08-17, the first non-empty selection is `2018-04` (227 days before 2018-04-01,
     196 before 2018-03-01).
   - `test_entered_and_left_are_relative_to_the_previous_month`.
+  - `test_fewer_than_10_eligible_selects_all_of_them`: with 3 eligible candidates, the
+    selection is those 3, ranked. The window start is the first month with a non-empty
+    selection, as in the 2018-04 test above.
 
 - [ ] **Step 2: Run them to see them fail.**
 
@@ -376,8 +410,10 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `read_canonical(path: Path, expected_sha256: str) -> dict`.
   - `daily_pack_document(config, manifest: Sequence[ManifestEntry], daily: Mapping[str, Sequence[DailyBar]], exclusions: Mapping[str, str], universes: Sequence[MonthlyUniverse]) -> dict`,
     with format `"v4-daily-pack/1"`.
-  - `hourly_pack_document(config, manifest, spot: Mapping[str, Sequence[HourBar]], futures: Mapping[str, Sequence[HourBar]], funding: Mapping[str, Sequence[FundingRow]], rules: Mapping[tuple[str, str], tuple[VenueRules, str]]) -> dict`, with
-    format `"v4-hourly-pack/1"`.
+  - `hourly_pack_document(config, manifest, spot: Mapping[str, Sequence[HourBar]], futures: Mapping[str, Sequence[HourBar]], funding: Mapping[str, Sequence[FundingRow]], funding_months: Mapping[tuple[str, str], str], rules: Mapping[tuple[str, str], tuple[VenueRules, str]]) -> dict`, with
+    format `"v4-hourly-pack/1"`. `funding_months` maps (symbol, month) to Task 4's
+    `funding_month_status` result, or `"missing_file"`, for every month from the
+    perpetual's first futures month to `end_month`.
 
 - [ ] **Step 1: Write the failing tests**
   - `test_pin_is_sha256_of_canonical_json_not_gzip_bytes`
@@ -385,6 +421,12 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `test_reader_refuses_a_wrong_pin_duplicate_keys_floats_and_nan`
   - `test_round_trip_keeps_decimals_as_strings`
   - `test_documents_record_config_sha256_end_month_and_every_manifest_entry`
+  - `test_hourly_pack_records_every_funding_month_status`: one complete month, one
+    `"missing_slot"` month and one `"missing_file"` month all appear under
+    `funding_months`, and funding rows keep `interval_hours`
+  - `test_config_json_is_lf_in_gitattributes`: `.gitattributes` has
+    `config/v4_*.json text eol=lf` (the config's raw-byte SHA-256 must match on Windows
+    and CI)
 
 - [ ] **Step 2: Run them to see them fail.**
 
@@ -393,8 +435,10 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - gzip `mtime=0` and no filename;
   - read cap 2 GiB.
 
-  Rows are lists: daily `[open_ms, o, h, l, c, quote_volume]` and hourly
-  `[open_ms, o, h, l, c, volume, quote_volume]`.
+  Rows are lists: daily `[open_ms, o, h, l, c, quote_volume]`, hourly
+  `[open_ms, o, h, l, c, volume, quote_volume]` and funding
+  `[time_ms, rate, interval_hours]`, where `interval_hours` is an int or null.
+  Add `config/v4_*.json text eol=lf` to `.gitattributes`.
 
 - [ ] **Step 4: Run them to see them pass.** Then commit:
   `v4 data: canonical packs pinned by SHA-256`.
@@ -414,7 +458,9 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `fetch --kind spot_1d|spot_1h|futures_1h|funding --symbols-file F --shard i/n --cache C --out D`:
     writes `D/manifest-<kind>-<i>.json`.
   - `select --daily-manifests ... --cache C --out D`: writes `D/universe.json` and
-    `D/selected.txt`, the symbols ever in a top 10.
+    `D/selected.txt`, the symbols ever in a top 10. The hourly fetch takes every
+    discovered month of each selected symbol up to `end_month`, its whole history, because
+    signals need bars from before a coin first enters.
   - `pack --manifests ... --cache C --out D`: writes both packs and `D/data.json` with the
     pins.
 
@@ -422,6 +468,9 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `test_end_to_end_on_a_fake_world_produces_both_packs_and_pins`
   - `test_shards_partition_symbols_without_overlap_or_gap`
   - `test_no_output_prints_bar_values`: stdout holds counts and pins only
+  - `test_hourly_fetch_covers_each_selected_symbols_whole_history`: a symbol selected only
+    in the fake world's last month still gets every discovered hourly month
+  - `test_pack_refuses_a_manifest_entry_after_end_month_before_any_request`
   - `test_workflow_has_the_expected_jobs_and_no_cache_of_results`: parse the YAML and check:
     - jobs `discover`, `fetch-daily` (matrix of 16 shards), `select`, `fetch-hourly`
       (matrix of 8 shards with the three kinds), and `pack`;
@@ -437,6 +486,10 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - Each fetch job uploads its verified archives and manifest piece. `pack` downloads them
     all, re-verifies every archive against its manifest SHA-256, and builds the packs.
   - A final step refuses any file named for a month after `end_month`.
+  - `pack` calls `refuse_after_end(entry.month, config)` on every manifest entry before
+    `fetch_pinned` or any read. `fetch_pinned` has no config of its own.
+  - `SECURITY.md` names `s3-ap-northeast-1.amazonaws.com` (bucket `data.binance.vision`,
+    listing only) beside the archive host.
 
 - [ ] **Step 4: Run them to see them pass.** Then commit:
   `v4 data: CLI and the sharded GitHub workflow`.
