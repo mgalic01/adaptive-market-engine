@@ -61,6 +61,45 @@ The code that produced the cells is the run's own: code pin
 `615b7a78fe71e5582ac87df32d50b28d9c091bc2`, main `d4a4f09` at dispatch. To rerun the
 aggregate the way the verdict was computed, see `summary-out-4\DEVIATION.md`.
 
+## V4 data run 39403004530 (step 2 packs)
+
+These are V4's prepared market data, the input to the V4 engine (delivery steps 3-5). This
+was not a registered run, and the folder holds no strategy results. The workflow
+`.github/workflows/v4-data.yml` ran with `stage: full` on main `35d4d3e` (PR #290). It was
+dispatched on the owner's go on 2026-10-20 and finished in 1 h 13 min with all 44 jobs
+green.
+
+| Copy | Drive | Contents | Status |
+| --- | --- | --- | --- |
+| Working copy | `E:\v4-data-run-39403004530\` (WD 750 GB hard disk, label BACKUPS) | the four artifacts below, as zips and unpacked, plus `meta\`, `scripts\` and `SHA256SUMS.txt` (95 files, 396 MB) | verified 2026-10-20: each zip equals GitHub's digest, and every pack equals its pin |
+| GitHub | the run's artifacts on Actions | all 44 artifacts | deleted on 2026-10-20 on the owner's confirmation. Only the E: copy remains |
+
+What it holds:
+
+- **`v4-data\`**, the packs:
+  - `daily.pack.json.gz`, pin `69268e3fac006199746442486e1de38da1dc8bb1f78680c427dc474ffa8be138`;
+  - `hourly-index.json.gz`, pin `b364ccd2c3f0cbe938f1972c3706733f10ddad2b8c146cd847a068e12fc4afe3`;
+  - 81 per-coin packs `v4-coin-<SYMBOL>.json.gz`, each pinned in the index;
+  - `data.json`, SHA-256 `73dad0cbdea73e0c307adf7241dcb088550a1b30272542463eaddd2c7dde27ce`.
+
+  A pin is the SHA-256 of the pack's decompressed canonical JSON. The layout, and what
+  step 3 must do with masks, is in the module docstring of
+  `src/crypto_grid_bot/v4/data/pack.py`. The config pin is
+  `7868b35a21db5e725db3febf61f4d7d8c1cee7d6729bffb939de5d4a1ea36659`, the raw bytes of
+  `config/v4_data.json` with `end_month` 2026-09.
+- **`v4-final\`:** `universe.json` and `selected.txt`, the monthly universes.
+- **`v4-candidates\`, `v4-discover\`:** the candidate list and the discovery
+  (`symbols.json`).
+- **`meta\zips.json`:** each zip's SHA-256 and GitHub digest.
+- **`scripts\`:** the download, verify and seal scripts.
+
+In summary: 102 universe months (2018-04 to 2026-09), 81 coins ever selected, 78 with a
+USDT-M perpetual (4 of them multiplier contracts), and 7,003,893 hourly rows.
+
+Every archive is public Binance data, so the packs can be rebuilt by re-running the
+workflow at the same code and `end_month`. Each archive is pinned by SHA-256 in the packs'
+manifests, and `fetch_pinned` re-fetches exactly those bytes.
+
 ## Earlier runs
 
 Earlier trials in [the trial register](trials/register.jsonl) name their own local
