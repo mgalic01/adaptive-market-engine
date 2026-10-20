@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from http.client import HTTPException, HTTPMessage
+from http.client import HTTPException, HTTPMessage, IncompleteRead
 from typing import IO, Protocol
 
 from crypto_grid_bot.v4.data.config import DataConfig, refuse_after_end
@@ -121,6 +121,16 @@ def _size_limit(url: object) -> int:
     raise ValueError(f"{url!r:.200} is not an allowed URL: only Binance archives and listings")
 
 
+def _shorter_than_declared(body: bytes, declared: str | None) -> bool:
+    """Whether ``body`` ended before the Content-Length header value ``declared`` (None if
+    there is none). A header that is not a plain non-negative integer says nothing."""
+    return (
+        declared is not None
+        and re.fullmatch(r"[0-9]{1,12}", declared) is not None
+        and len(body) < int(declared)
+    )
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """A redirect is an error: it could lead to a host outside the allowlist."""
 
@@ -141,7 +151,8 @@ class HttpTransport:
 
     A URL outside the allowlist raises ``ValueError`` before any connection is opened. HTTP
     404 is None. Any other HTTP status raises a ``ValueError`` naming it; a connection error,
-    a timeout or an interrupted read raises one caused by the underlying error. Both are what
+    a timeout, an interrupted read or a body shorter than its Content-Length raises one caused
+    by the underlying error (an ``IncompleteRead`` for the short body). Both are what
     ``fetch_verified`` classifies, so only a 5xx or a network error is retried.
     """
 
@@ -165,6 +176,7 @@ class HttpTransport:
         try:
             with self._opener.open(request, timeout=self._timeout) as response:
                 status = response.status
+                declared = response.headers.get("Content-Length")
                 body: bytes = response.read(limit + 1)
         except urllib.error.HTTPError as exc:
             exc.close()
@@ -181,6 +193,11 @@ class HttpTransport:
             raise ValueError(
                 f"the response for {url} exceeded the size limit of {limit} bytes; "
                 "its complete size is unknown"
+            )
+        if _shorter_than_declared(body, declared):
+            # read(amt) returns what arrived when a connection closes early; it raises nothing.
+            raise ValueError("public data transport failed") from IncompleteRead(
+                body, int(declared) - len(body)
             )
         return body
 
@@ -227,7 +244,8 @@ def _get_with_retries(
         except Exception as exc:
             if not _transport_failure(exc):
                 raise
-            log(f"RETRY attempt {attempt} of {ATTEMPTS} for {url}: {exc}")
+            cause = f" (cause: {exc.__cause__!r})" if exc.__cause__ is not None else ""
+            log(f"RETRY attempt {attempt} of {ATTEMPTS} for {url}: {exc}{cause}")
             if attempt == ATTEMPTS:
                 raise
             sleep(1 << (attempt - 1))
@@ -312,12 +330,12 @@ def fetch_pinned(
     sleep: Callable[[float], None],
     log: Callable[[str], None],
 ) -> bytes:
-    """The archive ``entry`` pins, downloaded again; bytes with any other SHA-256 are refused.
+    """The archive ``entry`` pins, downloaded again; other bytes are refused.
 
     The entry is the authority, so no ``.CHECKSUM`` is requested. An entry whose path is not
     the archive path of its own kind, symbol and month, or whose sha256 is not 64 lower-case
     hex digits, is refused before any request. A 404 is an error, since the entry says the
-    archive exists; a mismatch is never retried.
+    archive exists; a mismatch of the SHA-256 or of the entry's byte count is never retried.
     """
     path = archive_path(entry.kind, entry.symbol, entry.month)
     if entry.path != path:
@@ -332,5 +350,10 @@ def fetch_pinned(
         raise ValueError(
             f"{path}: the host's bytes do not match the pinned sha256: "
             f"expected {entry.sha256}, got {digest}"
+        )
+    if len(content) != entry.bytes:
+        raise ValueError(
+            f"{path}: the host's bytes match the pinned sha256 but not the pinned length: "
+            f"expected {entry.bytes} bytes, got {len(content)}"
         )
     return content

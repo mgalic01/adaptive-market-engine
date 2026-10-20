@@ -24,6 +24,7 @@ from crypto_grid_bot.v4.data.archives import (
     ATTEMPTS,
     HttpTransport,
     ManifestEntry,
+    _transport_failure,
     archive_path,
     fetch_pinned,
     fetch_verified,
@@ -434,6 +435,13 @@ def test_transport_failures_retry_four_times_with_1_2_4_second_sleeps(failure, c
     assert len(recorder.logs) == 4
     assert all(url in line for line in recorder.logs)
     assert "attempt 1 of 4" in recorder.logs[0] and "attempt 4 of 4" in recorder.logs[3]
+    # The log line names the failure and, when there is one, what caused it.
+    for line in recorder.logs:
+        assert str(failure) in line
+        if failure.__cause__ is None:
+            assert "(cause:" not in line
+        else:
+            assert line.endswith(f"(cause: {failure.__cause__!r})")
 
 
 @pytest.mark.parametrize("failure", REFUSALS)
@@ -575,6 +583,21 @@ def test_pinned_fetch_refuses_bytes_whose_sha256_differs():
     assert recorder.sleeps == []
 
 
+def test_pinned_fetch_refuses_bytes_whose_length_differs_from_the_entry():
+    content = b"the pinned archive"
+    host = FakeTransport({url_of("spot_1h"): content})
+    recorder = Recorder()
+
+    for wrong in (len(content) - 1, len(content) + 1, 0):
+        with pytest.raises(ValueError, match="length") as caught:
+            fetch_pinned(host, pinned_entry(content, bytes=wrong), **recorder.kwargs)
+        assert archive_path("spot_1h", "BTCUSDT", "2020-01") in str(caught.value)
+        assert str(wrong) in str(caught.value) and str(len(content)) in str(caught.value)
+
+    assert len(host.requests) == 3 and recorder.sleeps == []  # each asked once, never retried
+    assert fetch_pinned(host, pinned_entry(content), **recorder.kwargs) == content
+
+
 def test_pinned_fetch_of_an_archive_that_is_gone_is_an_error():
     content = b"the pinned archive"
     host = FakeTransport()
@@ -675,6 +698,9 @@ REFUSED = [
     f"https://{BUCKET}:8443/data.binance.vision?delimiter=/&prefix=data/",
     f"http://{BUCKET}/data.binance.vision?delimiter=/&prefix=data/",
     # the archive host: a path outside the four shapes
+    "https://data.binance.vision.",
+    "https://data.binance.vision./data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2024-01.zip",
+    f"https://{BUCKET}./data.binance.vision?delimiter=/&prefix=data/",
     "https://data.binance.vision",
     "https://data.binance.vision/",
     "https://data.binance.vision/data/",
@@ -728,6 +754,8 @@ REFUSED = [
     LISTING + "?delimiter=/&prefix=data/../secret/",
     LISTING + "?delimiter=/&prefix=data/&marker=",
     LISTING + "?delimiter=/&prefix=data/&marker=other/key",
+    LISTING + "?delimiter=/&prefix=data/&marker=data/a/../b",
+    LISTING + "?delimiter=/&prefix=data/&marker=data/..",
     LISTING + "?delimiter=/&prefix=data/&marker=data/a&marker=data/b",
     LISTING + "?delimiter=/&prefix=data/&max-keys=1000",
     LISTING + "?delimiter=/&prefix=data/&list-type=2",
@@ -797,9 +825,10 @@ def test_the_timeout_is_checked():
 
 
 class FakeResponse:
-    def __init__(self, body: bytes = b"", status: int = 200):
+    def __init__(self, body: bytes = b"", status: int = 200, headers: dict[str, str] | None = None):
         self.body = body
         self.status = status
+        self.headers = headers or {}
         self.asked: list[int] = []
         self.closed = False
 
@@ -828,6 +857,21 @@ class FakeOpener:
         if isinstance(self.outcome, BaseException):
             raise self.outcome
         return self.outcome
+
+
+class ScriptedOpener:
+    """Answers each open() with the next outcome: an exception is raised, a response returned."""
+
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.requests: list[urllib.request.Request] = []
+
+    def open(self, request, timeout):
+        self.requests.append(request)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 def transport_with(outcome, timeout=30) -> tuple[HttpTransport, FakeOpener]:
@@ -942,6 +986,103 @@ def test_a_body_over_the_cap_is_a_size_error_that_is_not_retried(config):
     # A body exactly at the cap is fine.
     transport, _ = transport_with(FakeResponse(b"x" * 1024))
     assert transport.get(url_of("spot_1h") + ".CHECKSUM") == b"x" * 1024
+
+
+def test_a_body_shorter_than_its_content_length_is_a_retryable_transport_failure():
+    # http.client's read(amt) returns what arrived, and raises nothing, when the connection
+    # closes early; the Content-Length header is the only sign that the body is cut short.
+    body = b"half of an archive"
+    for declared in (len(body) + 1, len(body) * 2, 10**11):
+        response = FakeResponse(body, headers={"Content-Length": str(declared)})
+        transport, _ = transport_with(response)
+
+        with pytest.raises(ValueError, match="transport failed") as caught:
+            transport.get(url_of("spot_1h"))
+
+        cause = caught.value.__cause__
+        assert isinstance(cause, http.client.IncompleteRead)
+        assert cause.partial == body and cause.expected == declared - len(body)
+        assert _transport_failure(caught.value)  # so it is retried, not "checksum mismatch"
+    # A checksum cut short is the same.
+    short = FakeResponse(b"abc", headers={"Content-Length": "200"})
+    with pytest.raises(ValueError, match="transport failed"):
+        transport_with(short)[0].get(url_of("spot_1h") + ".CHECKSUM")
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Content-Length": "18"},  # exactly the body
+        {"Content-Length": "5"},  # not a short read; the body is longer than declared
+        {"Content-Length": "abc"},
+        {"Content-Length": "-30"},
+        {"Content-Length": "30.0"},
+        {"Content-Length": "3e1"},
+        {"Content-Length": ""},
+        {"Content-Length": " 30"},
+        {"Content-Length": "9" * 13},
+        {"Transfer-Encoding": "chunked"},
+    ],
+)
+def test_a_content_length_that_is_absent_or_not_a_longer_count_is_not_a_short_body(headers):
+    body = b"half of an archive"
+    transport, _ = transport_with(FakeResponse(body, headers=headers))
+
+    assert transport.get(url_of("spot_1h")) == body
+
+
+def test_an_oversize_body_is_a_size_error_even_when_content_length_is_longer(monkeypatch):
+    monkeypatch.setattr(archives, "MAX_ARCHIVE_BYTES", 10)
+    response = FakeResponse(b"x" * 20, headers={"Content-Length": "1000"})
+    transport, _ = transport_with(response)
+
+    with pytest.raises(ValueError, match="size limit") as caught:
+        transport.get(url_of("spot_1h"))
+
+    assert caught.value.__cause__ is None and not _transport_failure(caught.value)
+
+
+def test_a_short_body_is_retried_once_and_the_good_one_verifies(config):
+    content = b"a complete archive of some length"
+    checksum = checksum_of(content)
+    cut = FakeResponse(content[:9], headers={"Content-Length": str(len(content))})
+    good = FakeResponse(content, headers={"Content-Length": str(len(content))})
+    digest = FakeResponse(checksum, headers={"Content-Length": str(len(checksum))})
+    transport = HttpTransport()
+    opener = ScriptedOpener([cut, good, digest])
+    transport._opener = opener
+    recorder = Recorder()
+
+    entry, data = fetch_verified(
+        transport, "spot_1h", "BTCUSDT", "2020-01", config, **recorder.kwargs
+    )
+
+    assert data == content
+    assert entry.sha256 == sha(content) and entry.bytes == len(content)
+    url = url_of("spot_1h")
+    assert [r.full_url for r in opener.requests] == [url, url, url + ".CHECKSUM"]
+    assert recorder.sleeps == [1]
+    (line,) = recorder.logs
+    assert "attempt 1 of 4" in line and "IncompleteRead" in line
+
+
+def test_a_body_that_stays_short_fails_after_four_tries_not_as_a_checksum_mismatch(config):
+    content = b"a complete archive of some length"
+    cuts = [
+        FakeResponse(content[:9], headers={"Content-Length": str(len(content))}) for _ in range(4)
+    ]
+    transport = HttpTransport()
+    opener = ScriptedOpener(cuts)
+    transport._opener = opener
+    recorder = Recorder()
+
+    with pytest.raises(ValueError, match="transport failed") as caught:
+        fetch_verified(transport, "spot_1h", "BTCUSDT", "2020-01", config, **recorder.kwargs)
+
+    assert isinstance(caught.value.__cause__, http.client.IncompleteRead)
+    assert len(opener.requests) == 4
+    assert recorder.sleeps == [1, 2, 4]
 
 
 def test_the_opener_never_follows_a_redirect():
