@@ -64,6 +64,7 @@ DAY = 24 * HOUR
 END_MONTH = "2024-03"
 JAN, FEB = "2024-01", "2024-02"
 HOURLY_KINDS = ("spot_1h", "futures_1h", "funding")
+DAILY_PACK_FILE = "daily.pack.json.gz"
 FUTURES_HEADER = (
     "open_time,open,high,low,close,volume,close_time,quote_volume,count,"
     "taker_buy_volume,taker_buy_quote_volume,ignore"
@@ -493,8 +494,8 @@ def test_end_to_end_on_a_fake_world_produces_both_packs_and_pins(tmp_path, capsy
     assert daily["masks"]["EEEUSDT"]["masked"] == february_days
     assert list(daily["masks"]["EEEUSDT"]["unreadable"]) == [FEB]
     # A repaired day stays in the pack with its mask but is not counted by the selection (P24).
-    assert daily["masks"]["AAAUSDT"] == {"masked": [REPAIRED_DAY], "unreadable": {}}
-    assert daily["masks"]["BBBUSDT"] == {"masked": [], "unreadable": {}}
+    assert daily["masks"]["AAAUSDT"] == {"masked": [REPAIRED_DAY], "unreadable": {}, "absent": []}
+    assert daily["masks"]["BBBUSDT"] == {"masked": [], "unreadable": {}, "absent": []}
     assert len(daily["daily"]["AAAUSDT"]) == 31 + 29
     window_bars = {symbol: bars for symbol, _, bars in universes["2024-02"]["ranked"]}
     assert (window_bars["AAAUSDT"], window_bars["BBBUSDT"]) == (29, 30)
@@ -512,8 +513,12 @@ def test_end_to_end_on_a_fake_world_produces_both_packs_and_pins(tmp_path, capsy
     }
     assert len(hourly["spot"]["AAAUSDT"]) == 744 + 696  # bars as read
     duplicate = month_start(FEB) + 9 * DAY + 5 * HOUR
-    assert hourly["masks"]["AAAUSDT|spot"] == {"masked": [duplicate], "unreadable": {}}
-    assert hourly["masks"]["BBBUSDT|futures"] == {"masked": [], "unreadable": {}}
+    assert hourly["masks"]["AAAUSDT|spot"] == {
+        "masked": [duplicate],
+        "unreadable": {},
+        "absent": [],
+    }
+    assert hourly["masks"]["BBBUSDT|futures"] == {"masked": [], "unreadable": {}, "absent": []}
     assert "EEEUSDT|futures" not in hourly["masks"] and "EEEUSDT" not in hourly["funding"]
     assert hourly["funding_months"] == {
         "1000FFFUSDT|2024-01": "complete",
@@ -602,6 +607,35 @@ def test_shards_partition_symbols_without_overlap_or_gap(tmp_path, capsys):
     )  # fmt: skip
     assert "--symbols-file (candidates.txt) is required for spot_1h" in pipeline.err[-1]
     assert not pipeline.manifest_files("spot_1h")
+
+
+def test_the_packs_record_each_series_absent_months(tmp_path, capsys):
+    # December 2023 is listed for BBB's daily archives, AAA's spot hourly ones and 1000FFFUSDT's
+    # futures ones, but the host answers 404: each series records it as absent, carried from
+    # the manifest pieces, beside its masks.
+    world = build_world()
+    for kind, symbol in (
+        ("spot_1d", "BBBUSDT"),
+        ("spot_1h", "AAAUSDT"),
+        ("futures_1h", "1000FFFUSDT"),
+    ):
+        world.listed_only.add(archive_path(kind, symbol, "2023-12"))
+    pipeline = Pipeline(tmp_path, capsys, world)
+    pipeline.run()
+
+    data = json.loads((pipeline.data / "data.json").read_text())
+    daily = read_canonical(pipeline.data / DAILY_PACK_FILE, data["packs"]["daily"]["sha256"])
+    hourly = hourly_view(pipeline.data)
+    assert daily["masks"]["BBBUSDT"]["absent"] == ["2023-12"]
+    assert hourly["masks"]["AAAUSDT|spot"]["absent"] == ["2023-12"]
+    assert hourly["masks"]["1000FFFUSDT|futures"]["absent"] == ["2023-12"]
+    others = [
+        m
+        for key, m in hourly["masks"].items()
+        if key not in ("AAAUSDT|spot", "1000FFFUSDT|futures")
+    ]
+    assert all(mask["absent"] == [] for mask in others)
+    assert daily["masks"]["AAAUSDT"]["absent"] == []
 
 
 def test_a_fetch_shard_reports_every_failing_archive_and_writes_no_piece(tmp_path, capsys):
@@ -1073,7 +1107,7 @@ def test_cli_packs_a_multiplier_perpetual_under_its_own_symbol(tmp_path, capsys)
     assert hourly["packs"]["FFFUSDT"]["perpetual"] == hourly["perpetuals"]["FFFUSDT"]
     assert "FFFUSDT" in hourly["spot"] and "FFFUSDT" not in hourly["futures"]
     assert len(hourly["futures"]["1000FFFUSDT"]) == 744 + 696
-    assert hourly["masks"]["1000FFFUSDT|futures"] == {"masked": [], "unreadable": {}}
+    assert hourly["masks"]["1000FFFUSDT|futures"] == {"masked": [], "unreadable": {}, "absent": []}
     assert len(hourly["funding"]["1000FFFUSDT"]) == 93 + 87
     # The present-day filters are looked up under the perpetual's own name, which the futures
     # snapshot lists; the coin's spot filters are inferred (the spot snapshot has only AAA).

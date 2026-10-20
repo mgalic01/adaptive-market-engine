@@ -134,7 +134,7 @@ def daily_args(**overrides: Any) -> dict[str, Any]:
         },
         "exclusions": {"USDCUSDT": "stablecoin", "WBTCUSDT": "wrapped"},
         "universes": [universe()],
-        "masks": {"BTCUSDT": ([], {}), "ETHUSDT": ([T0 + DAY], {})},
+        "masks": {"BTCUSDT": ([], {}, []), "ETHUSDT": ([T0 + DAY], {}, [])},
         "config_sha256": CONFIG_SHA,
     }
     return args | overrides
@@ -154,7 +154,7 @@ def coin_args(**overrides: Any) -> dict[str, Any]:
         "spot": [hour_bar(0), hour_bar(1, "94075.00")],
         "perpetual": {"symbol": "BTCUSDT", "multiplier": 1},
         "futures": [hour_bar(0, "94060.00")],
-        "masks": {"spot": ([T0 + 5 * HOUR, T0 + 7 * HOUR], {}), "futures": ([], {})},
+        "masks": {"spot": ([T0 + 5 * HOUR, T0 + 7 * HOUR], {}, []), "futures": ([], {}, [])},
         "funding": [
             FundingRow(T0, D("0.00010000"), 8),
             FundingRow(T0 + 8 * HOUR, D("-0.00005000"), None),
@@ -175,7 +175,7 @@ def spot_only_args(**overrides: Any) -> dict[str, Any]:
             spot=[hour_bar(0)],
             perpetual=None,
             futures=[],
-            masks={"spot": ([], {})},
+            masks={"spot": ([], {}, [])},
             funding=[],
             funding_months={},
             rules={"spot": (rules("1E-7"), "inferred")},
@@ -197,7 +197,7 @@ def shib_args(**overrides: Any) -> dict[str, Any]:
             spot=[hour_bar(0, "0.00001234")],
             perpetual={"symbol": "1000SHIBUSDT", "multiplier": 1000},
             futures=[hour_bar(0, "0.01234")],
-            masks={"spot": ([], {}), "futures": ([], {})},
+            masks={"spot": ([], {}, []), "futures": ([], {}, [])},
             funding=[FundingRow(T0, D("0.00010000"), 8)],
         )
         | overrides
@@ -531,7 +531,8 @@ def test_round_trip_keeps_decimals_as_strings(tmp_path):
         for i in range(6)
     ]
     document = daily_doc(
-        daily={"BTCUSDT": bars, "ETHUSDT": []}, masks={"BTCUSDT": ([], {}), "ETHUSDT": ([], {})}
+        daily={"BTCUSDT": bars, "ETHUSDT": []},
+        masks={"BTCUSDT": ([], {}, []), "ETHUSDT": ([], {}, [])},
     )
     path = tmp_path / "daily.json.gz"
     back = read_canonical(path, write_canonical(document, path))
@@ -564,7 +565,8 @@ def test_a_2025_open_is_a_plain_int(tmp_path):
     open_ms = 1_735_689_600_000_000 // 1000  # a 2025 microsecond open, normalised to ms
     bar = DailyBar(open_ms, D("1"), D("2"), D("1"), D("2"), D("3"))
     document = daily_doc(
-        daily={"BTCUSDT": [bar], "ETHUSDT": []}, masks={"BTCUSDT": ([], {}), "ETHUSDT": ([], {})}
+        daily={"BTCUSDT": [bar], "ETHUSDT": []},
+        masks={"BTCUSDT": ([], {}, []), "ETHUSDT": ([], {}, [])},
     )
     path = tmp_path / "daily.json.gz"
     stored = read_canonical(path, write_canonical(document, path))["daily"]["BTCUSDT"][0]
@@ -854,22 +856,49 @@ def test_packs_record_masks_and_unreadable_months():
     document = coin_doc(
         masks={
             # one masked hour (a dropped row) and one repaired hour (masked too, spec rule)
-            "spot": ([T0 + 5 * HOUR, T0 + 7 * HOUR], {}),
+            "spot": ([T0 + 5 * HOUR, T0 + 7 * HOUR], {}, []),
             # an unreadable month masks every hour of it
-            "futures": (feb_hours, {"2025-02": reason}),
+            "futures": (feb_hours, {"2025-02": reason}, []),
         },
     )
     assert document["masks"] == {
-        "spot": {"masked": [T0 + 5 * HOUR, T0 + 7 * HOUR], "unreadable": {}},
-        "futures": {"masked": feb_hours, "unreadable": {"2025-02": reason}},
+        "spot": {"masked": [T0 + 5 * HOUR, T0 + 7 * HOUR], "unreadable": {}, "absent": []},
+        "futures": {"masked": feb_hours, "unreadable": {"2025-02": reason}, "absent": []},
     }
     clean = coin_pack_document(**spot_only_args())  # a clean series has an empty mask
-    assert clean["masks"] == {"spot": {"masked": [], "unreadable": {}}}
-    daily = daily_doc(masks={"BTCUSDT": ([T0 + 3 * DAY], {"2025-02": "boom"}), "ETHUSDT": ([], {})})
+    assert clean["masks"] == {"spot": {"masked": [], "unreadable": {}, "absent": []}}
+    daily = daily_doc(
+        masks={"BTCUSDT": ([T0 + 3 * DAY], {"2025-02": "boom"}, []), "ETHUSDT": ([], {}, [])}
+    )
     assert daily["masks"] == {
-        "BTCUSDT": {"masked": [T0 + 3 * DAY], "unreadable": {"2025-02": "boom"}},
-        "ETHUSDT": {"masked": [], "unreadable": {}},
+        "BTCUSDT": {"masked": [T0 + 3 * DAY], "unreadable": {"2025-02": "boom"}, "absent": []},
+        "ETHUSDT": {"masked": [], "unreadable": {}, "absent": []},
     }
+
+
+def test_packs_record_each_series_absent_months():
+    # A month the archive listing named but the host answered 404, carried from the pieces.
+    coin = coin_doc(masks={"spot": ([], {}, ["2024-11", "2024-12"]), "futures": ([], {}, [])})
+    assert coin["masks"]["spot"] == {
+        "masked": [],
+        "unreadable": {},
+        "absent": ["2024-11", "2024-12"],
+    }
+    daily = daily_doc(masks={"BTCUSDT": ([], {}, ["2024-12"]), "ETHUSDT": ([], {}, [])})
+    assert daily["masks"]["BTCUSDT"]["absent"] == ["2024-12"]
+    for absent, why in [
+        (["2024-12", "2024-11"], "sorted and unique"),
+        (["2024-12", "2024-12"], "sorted and unique"),
+        ([AFTER_END], "after end_month"),
+        (["2024-13"], "YYYY-MM"),
+        ("2024-12", "a list of months"),
+    ]:
+        with pytest.raises(ValueError, match=why):
+            coin_doc(masks={"spot": ([], {}, absent), "futures": ([], {}, [])})
+    with pytest.raises(ValueError, match="both absent and unreadable"):
+        coin_doc(masks={"spot": ([], {"2024-12": "boom"}, ["2024-12"]), "futures": ([], {}, [])})
+    with pytest.raises(ValueError, match="absent months\\) required"):  # all three, always
+        coin_doc(masks={"spot": ([], {}), "futures": ([], {}, [])})
 
 
 def test_a_coin_pack_records_every_funding_month_status():
@@ -917,8 +946,8 @@ def test_config_json_is_lf_in_gitattributes():
 # ---- refusals ----
 
 
-def no_masks_for(*symbols: str) -> dict[str, tuple[list[int], dict[str, str]]]:
-    return {symbol: ([], {}) for symbol in symbols}
+def no_masks_for(*symbols: str) -> dict[str, tuple[list[int], dict[str, str], list]]:
+    return {symbol: ([], {}, []) for symbol in symbols}
 
 
 @pytest.mark.parametrize(
@@ -927,13 +956,16 @@ def no_masks_for(*symbols: str) -> dict[str, tuple[list[int], dict[str, str]]]:
         ({"config_sha256": "A" * 64}, "config_sha256"),
         ({"config_sha256": "a" * 63}, "config_sha256"),
         ({"config_sha256": None}, "config_sha256"),
-        ({"masks": {"BTCUSDT": ([T0 + DAY, T0], {}), "ETHUSDT": ([], {})}}, "sorted"),
-        ({"masks": {"BTCUSDT": ([T0, T0], {}), "ETHUSDT": ([], {})}}, "unique"),
-        ({"masks": {"BTCUSDT": ([1.5], {}), "ETHUSDT": ([], {})}}, "int"),
-        ({"masks": {"BTCUSDT": ([True], {}), "ETHUSDT": ([], {})}}, "int"),
-        ({"masks": {"BTCUSDT": ([], {"2025-13": "x"}), "ETHUSDT": ([], {})}}, "YYYY-MM"),
-        ({"masks": {"BTCUSDT": ([], {AFTER_END: "x"}), "ETHUSDT": ([], {})}}, "after end_month"),
-        ({"masks": {"BTCUSDT": ([], {"2025-02": ""}), "ETHUSDT": ([], {})}}, "reason"),
+        ({"masks": {"BTCUSDT": ([T0 + DAY, T0], {}, []), "ETHUSDT": ([], {}, [])}}, "sorted"),
+        ({"masks": {"BTCUSDT": ([T0, T0], {}, []), "ETHUSDT": ([], {}, [])}}, "unique"),
+        ({"masks": {"BTCUSDT": ([1.5], {}, []), "ETHUSDT": ([], {}, [])}}, "int"),
+        ({"masks": {"BTCUSDT": ([True], {}, []), "ETHUSDT": ([], {}, [])}}, "int"),
+        ({"masks": {"BTCUSDT": ([], {"2025-13": "x"}, []), "ETHUSDT": ([], {}, [])}}, "YYYY-MM"),
+        (
+            {"masks": {"BTCUSDT": ([], {AFTER_END: "x"}, []), "ETHUSDT": ([], {}, [])}},
+            "after end_month",
+        ),
+        ({"masks": {"BTCUSDT": ([], {"2025-02": ""}, []), "ETHUSDT": ([], {}, [])}}, "reason"),
         ({"masks": no_masks_for("BTCUSDT")}, "ETHUSDT"),
         ({"masks": no_masks_for("BTCUSDT", "ETHUSDT", "XRPUSDT")}, "XRPUSDT"),
         ({"exclusions": {"usdcusdt": "stablecoin"}}, "symbol"),
@@ -1012,11 +1044,14 @@ def test_a_universe_mean_that_is_not_a_decimal_is_refused():
         ({"funding": [FundingRow(T0, 0.0001, 8)]}, "Decimal"),
         ({"funding": [FundingRow(T0, D("0.0001"), 8.0)]}, "int"),
         ({"funding": [FundingRow(float(T0), D("0.0001"), 8)]}, "int"),
-        ({"masks": {"spot": ([], {})}}, r"masks: missing \['futures'\]"),
-        ({"masks": {"spot": ([], {}), "margin": ([], {})}}, "margin"),
-        ({"masks": {"spot": ([T0 + HOUR, T0], {}), "futures": ([], {})}}, "sorted"),
-        ({"masks": {"spot": ([], {AFTER_END: "x"}), "futures": ([], {})}}, "after end_month"),
-        ({"masks": {"spot": ([], {"2025-02": ""}), "futures": ([], {})}}, "reason"),
+        ({"masks": {"spot": ([], {}, [])}}, r"masks: missing \['futures'\]"),
+        ({"masks": {"spot": ([], {}, []), "margin": ([], {}, [])}}, "margin"),
+        ({"masks": {"spot": ([T0 + HOUR, T0], {}, []), "futures": ([], {}, [])}}, "sorted"),
+        (
+            {"masks": {"spot": ([], {AFTER_END: "x"}, []), "futures": ([], {}, [])}},
+            "after end_month",
+        ),
+        ({"masks": {"spot": ([], {"2025-02": ""}, []), "futures": ([], {}, [])}}, "reason"),
         ({"rules": {"spot": (rules(), "present_day")}}, "rules"),
         (
             {"rules": {"spot": (rules(), "guessed"), "futures": (rules(), "present_day")}},
@@ -1040,7 +1075,7 @@ def test_coin_pack_document_refuses_bad_input(overrides, why):
 
 def test_a_mask_or_rule_for_a_series_the_pack_does_not_hold_is_refused():
     with pytest.raises(ValueError, match="futures"):
-        coin_pack_document(**spot_only_args(masks={"spot": ([], {}), "futures": ([], {})}))
+        coin_pack_document(**spot_only_args(masks={"spot": ([], {}, []), "futures": ([], {}, [])}))
     with pytest.raises(ValueError, match="futures"):
         coin_pack_document(
             **spot_only_args(
@@ -1059,7 +1094,7 @@ def test_documents_are_built_from_sequences_of_any_kind():
     bars: Sequence[DailyBar] = tuple(day_bar(k) for k in range(3))
     document = daily_doc(
         daily={"BTCUSDT": bars, "ETHUSDT": ()},
-        masks={"BTCUSDT": ((T0, T0 + DAY), {}), "ETHUSDT": ((), {})},
+        masks={"BTCUSDT": ((T0, T0 + DAY), {}, []), "ETHUSDT": ((), {}, [])},
     )
     assert len(document["daily"]["BTCUSDT"]) == 3 and document["daily"]["ETHUSDT"] == []
     assert document["masks"]["BTCUSDT"]["masked"] == [T0, T0 + DAY]

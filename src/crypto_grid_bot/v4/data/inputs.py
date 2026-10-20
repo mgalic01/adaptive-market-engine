@@ -92,25 +92,29 @@ class _Discovery:
 
 @dataclass(frozen=True)
 class _Manifests:
-    """A complete set of manifest pieces: the entries, and the symbols each kind's pieces cover."""
+    """A complete set of manifest pieces: the entries, the symbols each kind's pieces cover,
+    and the absent months (listed, but a 404) by (kind, symbol), sorted."""
 
     entries: list[ManifestEntry]
     covered: dict[str, frozenset[str]]
+    absent: dict[tuple[str, str], tuple[str, ...]]
 
 
 @dataclass(frozen=True)
 class _Series[B: (DailyBar, HourBar)]:
-    """One symbol's bars of one kind, as read, with its in-month masks and unreadable months."""
+    """One symbol's bars of one kind, as read, with its in-month masks, unreadable months and
+    absent months (listed, but a 404)."""
 
     bars: tuple[B, ...]
     masked: frozenset[int]
     unreadable: dict[str, str]
+    absent: tuple[str, ...]
 
     def unmasked(self) -> list[B]:
         return [bar for bar in self.bars if bar.open_ms not in self.masked]
 
-    def masks(self) -> tuple[list[int], dict[str, str]]:
-        return sorted(self.masked), dict(self.unreadable)
+    def masks(self) -> tuple[list[int], dict[str, str], list[str]]:
+        return sorted(self.masked), dict(self.unreadable), sorted(self.absent)
 
 
 def _log(line: str) -> None:
@@ -336,8 +340,10 @@ def _load_piece(
     discovery: _Discovery,
     found: dict[tuple[str, str, str], ManifestEntry],
     shards: dict[str, dict[int, tuple[int, tuple[str, ...]]]],
+    absent_months: dict[tuple[str, str], list[str]],
 ) -> None:
-    """One piece: its shard and symbols go into ``shards``, its entries into ``found``.
+    """One piece: its shard and symbols go into ``shards``, its entries into ``found`` and its
+    absent months into ``absent_months``, by (kind, symbol).
 
     Its shard count is that of the kind's other pieces and no other piece holds its shard
     (checked first, the likeliest cause of any later mismatch); its symbols are sorted, unique
@@ -381,6 +387,7 @@ def _load_piece(
         if symbol not in held:
             raise ValueError(f"{path}: absent {symbol!r} is outside the piece's symbols")
         held[symbol].append(month)
+        absent_months.setdefault((kind, symbol), []).append(month)
     for symbol, held_months in held.items():
         discovered = discovery.months[kind][symbol]
         if len(held_months) != len(set(held_months)) or sorted(held_months) != list(discovered):
@@ -405,8 +412,9 @@ def _load_manifests(
     """
     found: dict[tuple[str, str, str], ManifestEntry] = {}
     shards: dict[str, dict[int, tuple[int, tuple[str, ...]]]] = {kind: {} for kind in kinds}
+    absent_months: dict[tuple[str, str], list[str]] = {}
     for path in paths:
-        _load_piece(path, kinds, config, discovery, found, shards)
+        _load_piece(path, kinds, config, discovery, found, shards, absent_months)
     covered: dict[str, frozenset[str]] = {}
     for kind, pieces in shards.items():
         if not pieces:
@@ -420,7 +428,8 @@ def _load_manifests(
             if list(symbols) != union[index::count]:
                 raise ValueError(f"the {kind} piece {index}/{count} does not hold that shard")
         covered[kind] = frozenset(union)
-    return _Manifests([found[key] for key in sorted(found)], covered)
+    absent = {key: tuple(sorted(months)) for key, months in sorted(absent_months.items())}
+    return _Manifests([found[key] for key in sorted(found)], covered, absent)
 
 
 def _require_coverage(manifests: _Manifests, kind: str, expected: Iterable[str], what: str) -> None:
@@ -468,9 +477,12 @@ def _read_series[B: (DailyBar, HourBar)](
     run: _Run,
     read: Callable[[bytes, str, str], KlineRead[B]],
     step: int,
+    *,
+    absent: Sequence[str] = (),
 ) -> _Series[B]:
     """One symbol's archives of one kind, by month: masks inside each month only (ruling
-    P12), and every interval of an unreadable month masked, with its reason."""
+    P12), and every interval of an unreadable month masked, with its reason. ``absent`` are
+    the series' listed months the host answered 404, recorded beside them."""
     bars: list[B] = []
     masked: set[int] = set()
     unreadable: dict[str, str] = {}
@@ -483,7 +495,7 @@ def _read_series[B: (DailyBar, HourBar)](
         else:
             bars.extend(result.bars)
             masked.update(open_ms for open_ms in result.masked if start <= open_ms < end)
-    return _Series(tuple(bars), frozenset(masked), unreadable)
+    return _Series(tuple(bars), frozenset(masked), unreadable, tuple(absent))
 
 
 def _read_spot_hours(content: bytes, symbol: str, month: str) -> KlineRead[HourBar]:
@@ -495,11 +507,25 @@ def _read_futures_hours(content: bytes, symbol: str, month: str) -> KlineRead[Ho
 
 
 def _daily_series(
-    entries: Sequence[ManifestEntry], cache: Path, run: _Run
+    entries: Sequence[ManifestEntry],
+    cache: Path,
+    run: _Run,
+    absent: Mapping[tuple[str, str], Sequence[str]],
 ) -> dict[str, _Series[DailyBar]]:
+    """Every symbol's daily series, with its absent months: a symbol whose every listed
+    month was a 404 has an empty series, so its absent months are still recorded."""
+    groups = _grouped(entries, "spot_1d")
+    symbols = sorted(set(groups) | {symbol for kind, symbol in absent if kind == "spot_1d"})
     return {
-        symbol: _read_series(group, cache, run, read_daily, _DAY_MS)
-        for symbol, group in _grouped(entries, "spot_1d").items()
+        symbol: _read_series(
+            groups.get(symbol, []),
+            cache,
+            run,
+            read_daily,
+            _DAY_MS,
+            absent=absent.get(("spot_1d", symbol), ()),
+        )
+        for symbol in symbols
     }
 
 

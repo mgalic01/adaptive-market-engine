@@ -264,19 +264,23 @@ def _write_pack(path: Path, document: Mapping[str, Any], label: str) -> dict[str
 @dataclass(frozen=True)
 class _Hourly:
     """What every coin pack is built from: the hourly archives by kind and symbol (a futures
-    kind by the perpetual's symbol), the filter snapshots, the cache and the run."""
+    kind by the perpetual's symbol), the absent months by (kind, symbol), the filter snapshots,
+    the cache and the run."""
 
     spot: dict[str, list[ManifestEntry]]
     futures: dict[str, list[ManifestEntry]]
     funding: dict[str, list[ManifestEntry]]
+    absent: dict[tuple[str, str], tuple[str, ...]]
     snapshots: dict[str, Mapping[str, object]]
     cache: Path
     run: _Run
 
 
 def _futures_read(name: str, hourly: _Hourly) -> _Series[HourBar]:
-    entries = hourly.futures.get(name, [])
-    return _read_series(entries, hourly.cache, hourly.run, _read_futures_hours, _HOUR_MS)
+    entries, absent = hourly.futures.get(name, []), hourly.absent.get(("futures_1h", name), ())
+    return _read_series(
+        entries, hourly.cache, hourly.run, _read_futures_hours, _HOUR_MS, absent=absent
+    )
 
 
 def _coin_pack(
@@ -287,7 +291,8 @@ def _coin_pack(
     the next coin's (ruling P32). A perpetual with no readable bar is left out (P23)."""
     run = hourly.run
     used = list(hourly.spot.get(coin, []))
-    spot = _read_series(used, hourly.cache, run, _read_spot_hours, _HOUR_MS)
+    absent = hourly.absent.get(("spot_1h", coin), ())
+    spot = _read_series(used, hourly.cache, run, _read_spot_hours, _HOUR_MS, absent=absent)
     masks = {"spot": spot.masks()}
     rules = {"spot": _rules(coin, "spot", hourly.snapshots["spot"], spot.bars)}
     entry: dict[str, object] | None = None
@@ -485,7 +490,7 @@ def select(args: argparse.Namespace, run: _Run) -> int:
         _load_manifests(args.hourly_manifests, ("spot_1h",), config, discovery) if final else None
     )
     _require_coverage(daily_pieces, "spot_1d", discovery.candidates, "candidates")
-    daily = _daily_series(daily_pieces.entries, args.cache, run)
+    daily = _daily_series(daily_pieces.entries, args.cache, run, daily_pieces.absent)
     ranked = _ranked(_universes(discovery, daily, config, None))  # the candidates stage's
     if hourly_pieces is None:
         _write_lines(args.out / "candidates.txt", ranked)
@@ -516,7 +521,7 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
     snapshots = _snapshots(config)
     _require_coverage(pieces, "spot_1d", discovery.candidates, "candidates")
     entries = pieces.entries
-    daily = _daily_series(entries, cache, run)
+    daily = _daily_series(entries, cache, run, pieces.absent)
     ranked = _ranked(_universes(discovery, daily, config, None))  # the candidates stage's
     for kind in HOURLY_KINDS:
         _require_coverage(pieces, kind, ranked, _RANKED)
@@ -554,6 +559,7 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
         spot=_grouped(entries, "spot_1h"),
         futures=_grouped(entries, "futures_1h"),
         funding=_grouped(entries, "funding"),
+        absent=pieces.absent,
         snapshots=snapshots,
         cache=cache,
         run=run,

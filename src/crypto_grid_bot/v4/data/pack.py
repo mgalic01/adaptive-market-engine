@@ -47,10 +47,21 @@ symbol, month). The rest, by document:
   pack has a perpetual).
 
 ``masks`` maps each series to ``{"masked": [sorted unique interval opens, ms], "unreadable":
-{"YYYY-MM": reason}}``. The caller passes the intervals inside each month only (ruling P12),
-with every interval of an unreadable month included. Every series of a pack has a mask entry,
-empty for a clean one, so a missing entry is an error, never "clean"; every hourly series also
-has its rules. Months are never after ``end_month``.
+{"YYYY-MM": reason}, "absent": [sorted unique "YYYY-MM"]}``. The caller passes the intervals
+inside each month only (ruling P12), with every interval of an unreadable month included, and as
+``absent`` the months the archive listing named but the host answered 404, carried from the
+manifest pieces' ``absent``; a month is never both unreadable and absent. Every series of a pack
+has a mask entry, empty for a clean one, so a missing entry is an error, never "clean"; every
+hourly series also has its rules. Months are never after ``end_month``.
+
+The contract with the engine (step 3), for every series:
+
+* the rows include masked bars: a repaired row and the one copy of a duplicated open that the
+  reader keeps are in the rows and in ``masked``. The engine drops every masked open;
+* an interval missing between a series' first and last bar is masked by the spec but not
+  listed in ``masked``: the engine treats an open with no row as masked;
+* a month whose archive was listed but answered 404 is in ``absent``, and one that could not be
+  read is in ``unreadable`` with every interval of it in ``masked``.
 
 The builders check what they write: Decimals are finite, timestamps are ints (never floats or
 bools), bar opens strictly increase within a series and universe months across ``universes``
@@ -118,8 +129,10 @@ _RULE_FIELDS = tuple(field.name for field in fields(VenueRules))
 _DAILY_VALUES = attrgetter("open", "high", "low", "close", "quote_volume")
 _HOURLY_VALUES = attrgetter("open", "high", "low", "close", "volume", "quote_volume")
 
-DailyMasks = Mapping[str, tuple[Sequence[int], Mapping[str, str]]]
-CoinMasks = Mapping[str, tuple[Sequence[int], Mapping[str, str]]]  # venue -> mask
+# A series' mask: (masked opens, unreadable months -> reason, absent months).
+Mask = tuple[Sequence[int], Mapping[str, str], Sequence[str]]
+DailyMasks = Mapping[str, Mask]  # symbol -> mask
+CoinMasks = Mapping[str, Mask]  # venue -> mask
 CoinRules = Mapping[str, tuple[VenueRules, str]]  # venue -> (rules, source)
 
 
@@ -594,14 +607,16 @@ def _universe(universe: MonthlyUniverse, config: DataConfig) -> dict[str, Any]:
 
 
 def _masks(masks: Mapping[str, Any], expected: set[str], config: DataConfig) -> dict[str, Any]:
-    """Each series' mask as ``{"masked": [...], "unreadable": {...}}``; one per series, keyed
-    by symbol (daily) or venue (coin)."""
+    """Each series' mask as ``{"masked": [...], "unreadable": {...}, "absent": [...]}``; one
+    per series, keyed by symbol (daily) or venue (coin)."""
     _same_keys("masks", set(masks), expected)
     document: dict[str, Any] = {}
     for key, entry in masks.items():
-        if not isinstance(entry, tuple | list) or len(entry) != 2:
-            raise ValueError(f"masks {key}: (masked opens, unreadable months) required")
-        opens, unreadable = entry
+        if not isinstance(entry, tuple | list) or len(entry) != 3:
+            raise ValueError(
+                f"masks {key}: (masked opens, unreadable months, absent months) required"
+            )
+        opens, unreadable, absent = entry
         masked: list[int] = []
         for open_ms in opens:
             _int(open_ms, f"masks {key} masked open")
@@ -614,7 +629,15 @@ def _masks(masks: Mapping[str, Any], expected: set[str], config: DataConfig) -> 
             _check_month(month, config, f"masks {key} unreadable month")
             if not isinstance(reason, str) or not reason:
                 raise ValueError(f"masks {key}: unreadable month {month} needs a reason")
-        document[key] = {"masked": masked, "unreadable": dict(unreadable)}
+        if isinstance(absent, str) or not isinstance(absent, Sequence):
+            raise ValueError(f"masks {key}: absent months must be a list of months")
+        for month in absent:
+            _check_month(month, config, f"masks {key} absent month")
+        if list(absent) != sorted(set(absent)):
+            raise ValueError(f"masks {key}: absent months must be sorted and unique")
+        if set(absent) & set(unreadable):
+            raise ValueError(f"masks {key}: a month cannot be both absent and unreadable")
+        document[key] = {"masked": masked, "unreadable": dict(unreadable), "absent": list(absent)}
     return document
 
 
