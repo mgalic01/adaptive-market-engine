@@ -73,7 +73,7 @@ chosen by a rule", "Data" and "Delivery" (step 2). Step 1 is done (#287, #288).
   also exclude JUP. A base that is exactly a suffix word (`UP`, `DOWN`, `BULL`, `BEAR`)
   also counts as leveraged. BULLUSDT and BEARUSDT, the BTC members of the BULL/BEAR token
   family, are in the pinned spot snapshot, and no real coin has such a base (Ruling P19).
-  The spec's universe line gets the same sentence in this step's PR.
+  The spec's universe line has the same sentence (PR #289, revision `50ed617`).
 - **R2, filters for delisted symbols.** A symbol absent from the pinned present-day
   `exchangeInfo` gets inferred filters, recorded as `inferred`:
   - `tick` = 10^-d, where d is the most decimal places in any of the venue's hourly price
