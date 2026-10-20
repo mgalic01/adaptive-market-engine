@@ -468,8 +468,12 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `read_canonical(path: Path, expected_sha256: str) -> dict`.
   - `daily_pack_document(config, manifest: Sequence[ManifestEntry], daily: Mapping[str, Sequence[DailyBar]], exclusions: Mapping[str, str], universes: Sequence[MonthlyUniverse]) -> dict`,
     with format `"v4-daily-pack/1"`.
-  - `hourly_pack_document(config, manifest, spot: Mapping[str, Sequence[HourBar]], futures: Mapping[str, Sequence[HourBar]], masks: Mapping[tuple[str, str], tuple[Sequence[int], Mapping[str, str]]], funding: Mapping[str, Sequence[FundingRow]], funding_months: Mapping[tuple[str, str], str], rules: Mapping[tuple[str, str], tuple[VenueRules, str]]) -> dict`, with
-    format `"v4-hourly-pack/1"`.
+  - The hourly data is one pack per coin plus a pinned index (Ruling P32, after the
+    final review; the single whole-history pack would exceed a 16 GB runner):
+    `coin_pack_document(...)`, format `"v4-coin-pack/1"`, and
+    `hourly_index_document(...)`, format `"v4-hourly-index/1"`. See `pack.py`'s module
+    docstring for both layouts and the contract for step 3. The original single
+    `hourly_pack_document` (format `"v4-hourly-pack/1"`) is replaced.
     - `masks` maps (symbol, venue) to the sorted masked hour opens from Task 4's
       `KlineRead`s, with every hour of an unreadable month included. It also gives a map
       from each unreadable month to its reason.
@@ -531,7 +535,8 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `select --stage final --daily-manifests ... --hourly-manifests ... --cache C --out D`:
     runs `select_universe` with `usable_hours` from the spot `KlineRead`s, and writes
     `D/universe.json` and `D/selected.txt`.
-  - `pack --manifests ... --cache C --out D`: writes both packs and `D/data.json` with the
+  - `pack --manifests ... --cache C --out D`: writes the daily pack, one pack per coin and
+    the hourly index (Ruling P32), and `D/data.json` with the
     pins.
 
 - [ ] **Step 1: Write the failing tests** (network blocked, fake transport, two-month world)
@@ -626,6 +631,7 @@ the multiplier. Exchange filters are the perpetual's own, in perpetual units.
   - `test_hourly_pack_records_each_perpetual_and_its_multiplier`
 - [ ] **Step 2: Run them to see them fail.**
 - [ ] **Step 3: Implement.** The CLI's `discover` records the mapping in `symbols.json`, `fetch`
-  uses it for `futures_1h` and `funding`, and `pack` passes it to `hourly_pack_document`.
+  uses it for `futures_1h` and `funding`, and `pack` records it in each coin pack and in
+  the hourly index (Ruling P32 replaced `hourly_pack_document`).
 - [ ] **Step 4: Run them to see them pass.** Commit: `v4 data: each coin's perpetual, multiplier
   contracts included`.
