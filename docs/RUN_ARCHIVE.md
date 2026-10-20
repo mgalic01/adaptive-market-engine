@@ -61,6 +61,63 @@ The code that produced the cells is the run's own: code pin
 `615b7a78fe71e5582ac87df32d50b28d9c091bc2`, main `d4a4f09` at dispatch. To rerun the
 aggregate the way the verdict was computed, see `summary-out-4\DEVIATION.md`.
 
+## V4 data run 39403004530 (step 2 packs)
+
+These are V4's prepared market data, the input to the V4 engine (delivery steps 3-5). This
+was not a registered run, and the folder holds no strategy results. The workflow
+`.github/workflows/v4-data.yml` ran with `stage: full` on main `35d4d3e` (PR #290). It was
+dispatched on the owner's go on 2026-10-20 and finished in 1 h 13 min with all 44 jobs
+green.
+
+**Reserved window.** The packs contain market data from 2025-01 onward. Only V4's data
+preparation and V4's registered run may read that range (owner decision v4-d03,
+`docs/START_HERE.md` §1). No other agent opens these files without the owner's go.
+
+| Copy | Drive | Contents | Status |
+| --- | --- | --- | --- |
+| Working copy | `E:\v4-data-run-39403004530\` (WD 750 GB hard disk, label BACKUPS) | the four artifacts below (`v4-data`, `v4-final`, `v4-candidates`, `v4-discover`), as zips and unpacked, plus `meta\`, `scripts\` and `SHA256SUMS.txt` (95 files, 396 MB) | verified 2026-10-20: each zip equals GitHub's digest, and every pack equals its pin |
+| Backup | `F:\v4-data-run-39403004530-backup\` (Kingston 960 GB SSD, a separate physical disk) | a full copy of the working copy | verified 2026-10-20: all 95 files pass `SHA256SUMS.txt`, with the same file list as E: |
+| GitHub | the run's artifacts on Actions | all 44 artifacts | deleted on 2026-10-20 on the owner's confirmation. Only the two local copies remain |
+
+What it holds:
+
+- **`v4-data\`**, the packs:
+  - `daily.pack.json.gz`, pin `69268e3fac006199746442486e1de38da1dc8bb1f78680c427dc474ffa8be138`;
+  - `hourly-index.json.gz`, pin `b364ccd2c3f0cbe938f1972c3706733f10ddad2b8c146cd847a068e12fc4afe3`;
+  - 81 per-coin packs `v4-coin-<SYMBOL>.json.gz`, each pinned in the index;
+  - `data.json`, SHA-256 `73dad0cbdea73e0c307adf7241dcb088550a1b30272542463eaddd2c7dde27ce`.
+
+  A pin is the SHA-256 of the pack's decompressed canonical JSON. The layout, and what
+  step 3 must do with masks, is in the module docstring of
+  `src/crypto_grid_bot/v4/data/pack.py`. The config pin is
+  `7868b35a21db5e725db3febf61f4d7d8c1cee7d6729bffb939de5d4a1ea36659`, the raw bytes of
+  `config/v4_data.json` with `end_month` 2026-09.
+- **`v4-final\`:** `universe.json` and `selected.txt`, the monthly universes.
+- **`v4-candidates\`, `v4-discover\`:** the candidate list and the discovery
+  (`symbols.json`).
+- **`meta\zips.json`:** each zip's SHA-256 and GitHub digest.
+- **`scripts\`:** the download, verify and seal scripts.
+
+In summary: 102 universe months (2018-04 to 2026-09), 81 coins ever selected, 78 with a
+USDT-M perpetual (4 of them multiplier contracts), and 7,003,893 hourly rows.
+
+**How to verify a copy:**
+- every file: run `sha256sum -c SHA256SUMS.txt` from the archive root;
+- each zip against GitHub's record: see `meta\zips.json`;
+- each pack against its pin: `read_canonical(path, sha256)` in
+  `src/crypto_grid_bot/v4/data/pack.py`. A pin is the SHA-256 of the decompressed
+  canonical JSON, so `sha256sum` on a `.gz` file never matches it. The daily pack and the
+  index are pinned in `data.json`, and each coin pack in the index.
+
+**Rebuilding.** The record of exactly which archive bytes were used exists only inside the
+packs, in each pack's `manifest`, so in these two copies. No committed file holds it.
+- A fresh `v4-data.yml` run discovers the live Binance archive and verifies it against
+  Binance's current checksums. It reproduces these pins only if Binance has replaced or
+  removed no archive since 2026-10-20.
+- To rebuild this exact dataset, re-fetch each manifest entry with `fetch_pinned`, which
+  refuses bytes that differ from the pin. That needs one of the two copies above for the
+  manifests.
+
 ## Earlier runs
 
 Earlier trials in [the trial register](trials/register.jsonl) name their own local
