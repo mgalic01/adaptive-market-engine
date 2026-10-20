@@ -73,8 +73,9 @@ chosen by a rule", "Data" and "Delivery" (step 2). Step 1 is done (#287, #288).
   also exclude JUP.
 - **R2, filters for delisted symbols.** A symbol absent from the pinned present-day
   `exchangeInfo` gets inferred filters, recorded as `inferred`:
-  - `tick` = 10^-d, where d is the most decimals seen in its price fields;
-  - `step` = 10^-d for its base-volume field, and `min_qty` = `step`;
+  - `tick` = 10^-d, where d is the most decimal places in any of the venue's hourly price
+    fields for that symbol, after trailing zeros are dropped (spec "Data");
+  - `step` = 10^-d in the same way for its base-volume field, and `min_qty` = `step`;
   - `max_qty` = `9000000000`;
   - `min_notional` = `5` (spot and futures).
 - **R3, filter snapshots.** The present-day filters are the snapshots already committed and
@@ -91,7 +92,11 @@ chosen by a rule", "Data" and "Delivery" (step 2). Step 1 is done (#287, #288).
     recorded per perpetual-month in the hourly pack (Task 7);
   - quantity limits as the stricter of `LOT_SIZE` and `MARKET_LOT_SIZE`, which Task 6
     gets by reusing V3.1's `venue_rules`;
-  - hourly spot and futures over each selected symbol's whole history (Task 8).
+  - hourly spot and futures over each selected symbol's whole history (Task 8);
+  - later revisions (`af65366`, `8f59d3d`): V3's repairing reader with masked hours on both
+    venues and for daily archives (Task 4), recorded in the packs (Task 7); funding slots
+    judged only between the perpetual's first and last records (Task 4); the delisted-symbol
+    filter fallback counts decimals with trailing zeros dropped (Task 6).
 
 ## Review Focus
 
@@ -283,24 +288,49 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `DailyBar(open_ms: int, open: Decimal, high: Decimal, low: Decimal, close: Decimal, quote_volume: Decimal)`.
   - `HourBar` with the same fields plus `volume: Decimal`.
   - `FundingRow(time_ms: int, rate: Decimal, interval_hours: int | None)`.
-  - `read_daily(content: bytes, symbol: str, month: str) -> tuple[DailyBar, ...]`.
-  - `read_hourly(content: bytes, symbol: str, month: str, *, futures: bool) -> tuple[HourBar, ...]`.
+  - `KlineRead(bars: tuple, masked: frozenset[int], repaired: frozenset[int], unreadable: str)`,
+    frozen. `bars` holds `DailyBar`s or `HourBar`s, and `masked` and `repaired` hold
+    interval opens in ms. `unreadable` is `""`, or the reason the whole archive could not
+    be read; then `bars` is empty and the caller masks the whole month.
+  - `read_daily(content: bytes, symbol: str, month: str) -> KlineRead`.
+  - `read_hourly(content: bytes, symbol: str, month: str, *, futures: bool) -> KlineRead`.
+  - Both apply the repairing reader of spec v1 section 5 rule 1, which the spec adopts
+    for V4 on both venues (spec "Data", "Hourly bars are validated and masked"). They
+    follow `backtest.klines.parse_rows_repaired` exactly, re-implemented:
+    - a row whose open is not after the last kept row's is dropped, and both its interval
+      and the last kept row's interval are masked;
+    - a close off the boundary is repaired to `open + step - 1` under the refined rule
+      (`backtest.klines._repairable`). The repaired interval is recorded in `repaired`
+      and also masked, because the spec masks repaired hours;
+    - any other row the strict checks reject (boundary, inside the month, the candle's
+      numbers) is dropped and its interval masked;
+    - a row whose open cannot be read makes the archive unreadable.
   - `read_funding(content: bytes, symbol: str, month: str) -> tuple[FundingRow, ...]`.
-  - `funding_month_status(rows: Sequence[FundingRow], month: str) -> str`. It returns
-    `"complete"` or the first failing reason: `"interval_mixed"`, `"interval_not_divisor_of_24"`,
-    `"off_slot"`, `"duplicate_slot"` or `"missing_slot"`. The spec's rule (V3 section 2):
+  - `funding_month_status(rows: Sequence[FundingRow], month: str, *, first_ms: int, last_ms: int) -> str`.
+    `first_ms` and `last_ms` are the perpetual's first and last funding record times over
+    its whole history. It returns `"complete"` or the first failing reason:
+    `"interval_mixed"`, `"interval_not_divisor_of_24"`, `"off_slot"`, `"duplicate_slot"`
+    or `"missing_slot"`. The spec's rule (V3 section 2, with V4's listing span):
     - every row declares the same interval I, and I divides 24; a file without the column
       gives `interval_hours=None` and is read as I = 8;
-    - the slots are 00:00 UTC + k x I hours, for every k inside the month;
+    - the expected slots are 00:00 UTC + k x I hours inside the month, from the slot of
+      `first_ms` to the slot of `last_ms`, so a listing or delisting month is judged only
+      while listed;
     - each row lies within 60,000 ms after one slot, at or after the slot itself;
-    - every slot has exactly one row.
+    - every expected slot has exactly one row.
 
-    A missing file is the caller's case: it records `"missing_file"` without calling this.
+    A missing file inside the listing span is the caller's case: it records
+    `"missing_file"` without calling this.
 
 - [ ] **Step 1: Write the failing tests**
   - `test_2025_microsecond_rows_normalise_to_milliseconds` (Review Focus 3)
   - `test_futures_header_is_dropped_and_spot_first_row_kept` (Review Focus 4)
-  - `test_rows_outside_their_month_or_unordered_are_errors`
+  - `test_a_duplicate_or_out_of_order_row_is_dropped_and_both_hours_masked`
+  - `test_an_off_boundary_close_is_repaired_and_masked`
+  - `test_a_row_outside_its_month_or_with_bad_numbers_is_dropped_and_masked`
+  - `test_an_unreadable_open_makes_the_whole_archive_unreadable`
+  - `test_a_clean_archive_has_no_masks`
+  - `test_daily_archives_use_the_same_reader`
   - `test_quote_volume_is_csv_column_7`
   - `test_funding_reads_calc_time_and_rate`, with the header
     `calc_time,funding_interval_hours,last_funding_rate`
@@ -314,14 +344,16 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
     - two rows in one slot give `"duplicate_slot"`;
     - one slot dropped gives `"missing_slot"`
   - `test_funding_file_without_interval_column_reads_as_8_hours`
-  - `test_a_mid_month_listing_is_missing_slots`: rows starting on the 15th give
-    `"missing_slot"`
+  - `test_listing_and_delisting_months_are_judged_only_while_listed`: rows from the 15th
+    with `first_ms` on the 15th are `"complete"`, and so are rows ending on the 10th with
+    `last_ms` on the 10th. One slot dropped inside the span is still `"missing_slot"`
 
 - [ ] **Step 2: Run them to see them fail.**
 
 - [ ] **Step 3: Implement.**
   - The column map follows `backtest/klines.py` (`_row_bar`) and its µs rule (`_timestamp`).
-    Do not call those, because they run the 2024 guard.
+    Do not call its readers, because they run the 2024 guard. A pure helper that never
+    calls the guard may be imported, or restated with a comment naming its source.
   - The futures header text equals `scripts/fetch_v3_data.py::KLINE_HEADER`.
 
 - [ ] **Step 4: Run them to see them pass.** Then commit: `v4 data: readers for 2017 onward`.
@@ -397,7 +429,8 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
 - [ ] **Step 2: Run them to see them fail.**
 
 - [ ] **Step 3: Implement.** Count decimals from the Decimal exponent of the CSV string
-  values, never from floats.
+  values after `normalize()` drops trailing zeros (`"0.09865000"` counts 5), never from
+  floats. Add `test_trailing_zeros_do_not_count_as_decimals`.
 
 - [ ] **Step 4: Run them to see them pass.** Then commit:
   `v4 data: present-day or inferred venue rules`.
@@ -415,10 +448,16 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `read_canonical(path: Path, expected_sha256: str) -> dict`.
   - `daily_pack_document(config, manifest: Sequence[ManifestEntry], daily: Mapping[str, Sequence[DailyBar]], exclusions: Mapping[str, str], universes: Sequence[MonthlyUniverse]) -> dict`,
     with format `"v4-daily-pack/1"`.
-  - `hourly_pack_document(config, manifest, spot: Mapping[str, Sequence[HourBar]], futures: Mapping[str, Sequence[HourBar]], funding: Mapping[str, Sequence[FundingRow]], funding_months: Mapping[tuple[str, str], str], rules: Mapping[tuple[str, str], tuple[VenueRules, str]]) -> dict`, with
-    format `"v4-hourly-pack/1"`. `funding_months` maps (symbol, month) to Task 4's
-    `funding_month_status` result, or `"missing_file"`, for every month from the
-    perpetual's first futures month to `end_month`.
+  - `hourly_pack_document(config, manifest, spot: Mapping[str, Sequence[HourBar]], futures: Mapping[str, Sequence[HourBar]], masks: Mapping[tuple[str, str], tuple[Sequence[int], Mapping[str, str]]], funding: Mapping[str, Sequence[FundingRow]], funding_months: Mapping[tuple[str, str], str], rules: Mapping[tuple[str, str], tuple[VenueRules, str]]) -> dict`, with
+    format `"v4-hourly-pack/1"`.
+    - `masks` maps (symbol, venue) to the sorted masked hour opens from Task 4's
+      `KlineRead`s, with every hour of an unreadable month included. It also gives a map
+      from each unreadable month to its reason.
+    - `funding_months` maps (symbol, month) to Task 4's `funding_month_status` result, or
+      `"missing_file"`, for every month from the perpetual's first funding record to its
+      last.
+  - The daily pack also records each symbol's masked days and unreadable months, in the
+    same shape.
 
 - [ ] **Step 1: Write the failing tests**
   - `test_pin_is_sha256_of_canonical_json_not_gzip_bytes`
@@ -426,6 +465,8 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `test_reader_refuses_a_wrong_pin_duplicate_keys_floats_and_nan`
   - `test_round_trip_keeps_decimals_as_strings`
   - `test_documents_record_config_sha256_end_month_and_every_manifest_entry`
+  - `test_packs_record_masks_and_unreadable_months`: a masked hour, a repaired hour and an
+    unreadable month appear under the symbol and venue; a clean symbol has empty masks
   - `test_hourly_pack_records_every_funding_month_status`: one complete month, one
     `"missing_slot"` month and one `"missing_file"` month all appear under
     `funding_months`, and funding rows keep `interval_hours`
