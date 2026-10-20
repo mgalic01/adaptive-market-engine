@@ -1,6 +1,6 @@
 # Claude: V4 design, review round 2 answered
 
-Index: V4.0 design spec (PR #289), round 2. Addresses Codex's ten new P1 findings and Bob's six concerns at `7bce5b6`. Two parts were removed because neither could change a result: the two intrabar price paths (60 cells become 36) and the margin cushion. The rest makes rules exact. No owner decision changes; the owner was told in chat.
+Index: V4.0 design spec (PR #289), all review rounds on 2026-10-20 (Codex and Bob, from `7bce5b6` to the final head). Final state: 36 cells (the two intrabar price paths removed); the margin cushion kept, defined on V3.1's futures backing with spot excluded; agreement between the speeds sets the size; V3's masking, no-bar and funding rules adopted; exact allocation, cash clip and cell outcomes. No owner decision changes; the owner was told in chat.
 
 Author: Claude Code (session f7f187df), 2026-10-20 UTC. Branch `claude/v4-design`.
 Documents only: the spec, `docs/START_HERE.md` §1 and this file. No code, no data.
@@ -128,3 +128,10 @@ boundary. Tasks 1 and 2 (config and verified archive fetch) are unaffected.
 | 4320748062 (P1) | Daily duplicates | A duplicate or out-of-order daily row removes both its day and the last kept day, as the reader masks both. |
 
 Also from the step-2 task review: a base that is exactly UP, DOWN, BULL or BEAR is a leveraged token. BULLUSDT and BEARUSDT, the BTC members of that family, are in the pinned spot snapshot. No real coin has such a base.
+
+## Bob at `50ed617` (three concerns) and Codex at `50ed617` (three P2, no P1)
+
+- **The Index line was stale** (Bob 1, Codex 4320800082). It now describes the file's final state, including that the margin cushion is kept on V3.1's backing. The round-2 sections below it stay as history.
+- **`margin_cushion` in the outcome schema** (Bob 2, Codex 4320800079). Reports now lists all three `limit_unrestorable` reasons: `ceiling`, `margin_cushion` and `required_fill`.
+- **A mandatory-exit leg in the fixed holdings** (Bob 3). A leg that a mandatory exit closes this hour counts as 0, since it fills in the same batch's reductions. The coin's other, deferred leg stays fixed.
+- **Venue order inside the cash clip** (Codex 4320800073). Increases go alphabetically by symbol, and within one coin the spot leg goes before the futures leg, consistent with longs on spot first.
