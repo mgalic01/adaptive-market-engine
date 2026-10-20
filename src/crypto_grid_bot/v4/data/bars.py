@@ -311,20 +311,25 @@ def funding_month_status(
 ) -> str:
     """``"complete"``, or the first reason a month's funding rows are not the exact schedule.
 
-    ``first_ms`` and ``last_ms`` are the perpetual's first and last funding record times over
-    its whole history, so a listing or delisting month is judged only while listed. The reasons,
-    in the order they are checked:
+    ``first_ms`` and ``last_ms`` bound the perpetual's trading span from its klines, over its
+    whole history: ``first_ms`` is its first hourly bar's open and ``last_ms`` its last hourly
+    bar's close (open + 3,600,000 - 1). They never come from the funding file being judged. A
+    listing or delisting month is judged only while listed. The reasons, in the order they are
+    checked:
 
     * ``"interval_mixed"``: the rows declare more than one interval (a row without the column
       counts as 8 hours);
     * ``"interval_not_divisor_of_24"``: the interval I does not divide 24;
     * ``"off_slot"``: a row is not within 60,000 ms after an expected slot, at or after the
       slot itself. The expected slots are 00:00 UTC + k x I hours inside the month, from the
-      slot of ``first_ms`` (or the month's first) to the slot of ``last_ms`` (or the month's
-      last), so a row in another month or beyond the span is off slot;
+      first slot at or after ``first_ms`` (or the month's first slot, if later) to the last
+      slot at or before ``last_ms`` (or the month's last, if earlier). A row in another
+      month, before the first expected slot or after the last is off slot;
     * ``"duplicate_slot"``: an expected slot has more than one row;
     * ``"missing_slot"``: an expected slot has no row. A month with no rows is missing them all.
 
+    A span can touch a month yet hold no slot in it (listed at 17:00 and delisted at 23:00 on
+    a day with 8-hour slots): the month then expects no rows, so no rows is ``"complete"``.
     A month without a file inside the span is the caller's ``"missing_file"``; a month the span
     does not touch is a ``ValueError``, as is a bad month or ``first_ms`` after ``last_ms``.
     """
@@ -346,7 +351,8 @@ def funding_month_status(
     if hours <= 0 or 24 % hours:
         return "interval_not_divisor_of_24"
     step = hours * _HOUR_MS
-    first_slot, last_slot = (first - start) // step, (last - start) // step
+    # The first slot at or after the span's start (ceiling) and the last at or before its end.
+    first_slot, last_slot = -((start - first) // step), (last - start) // step
     seen: dict[int, int] = {}
     for row in rows:
         slot, offset = divmod(row.time_ms - start, step)

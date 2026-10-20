@@ -112,9 +112,9 @@ def kline(
 
 
 def with_field(line: str, index: int, value: str) -> str:
-    fields = line.split(",")
-    fields[index] = value
-    return ",".join(fields)
+    columns = line.split(",")
+    columns[index] = value
+    return ",".join(columns)
 
 
 def csv_text(lines: list[str]) -> str:
@@ -364,8 +364,10 @@ def test_a_row_outside_its_month_or_with_bad_numbers_is_dropped_and_masked():
         "1e12",
         "12345678901234567890",
         " 12",
+        # Arabic-Indic digits: str.isdigit() is true, so only the archive's ASCII gate
+        # (_member_text) refuses this file, before any row is read.
         chr(0x661) + chr(0x662),
-    ],  # Arabic-Indic digits: isdigit() but not ASCII
+    ],
 )
 def test_an_unreadable_open_makes_the_whole_archive_unreadable(bad_open):
     good = hours(FEB, [0, 1, 3])
@@ -442,11 +444,14 @@ def test_an_empty_csv_and_a_header_only_futures_csv_are_readable_and_empty():
 
 
 def test_readers_work_far_beyond_2024_and_never_call_the_2024_guard(monkeypatch):
-    def refuse(*args, **kwargs):
-        raise AssertionError("the 2024 guard was called")
+    calls: list[str] = []
 
-    monkeypatch.setattr("crypto_grid_bot.backtest.klines.development_month", refuse)
-    monkeypatch.setattr("crypto_grid_bot.backtest.window.development_month", refuse)
+    def spy(month: str) -> str:
+        calls.append(month)
+        return month
+
+    monkeypatch.setattr("crypto_grid_bot.backtest.klines.development_month", spy)
+    monkeypatch.setattr("crypto_grid_bot.backtest.window.development_month", spy)
     month = "2031-08"
     start = month_start(month)
 
@@ -461,7 +466,7 @@ def test_readers_work_far_beyond_2024_and_never_call_the_2024_guard(monkeypatch)
     assert funding_month_status(rows, month, first_ms=start, last_ms=start + 9 * HOUR) == (
         "missing_slot"
     )
-    assert refuse  # the patched guard is what would have been called
+    assert calls == []  # neither name of the 2024 guard was ever called
 
 
 def test_a_kline_read_is_a_frozen_record_with_a_tuple_of_bars():
@@ -820,20 +825,10 @@ def test_funding_file_without_interval_column_reads_as_8_hours():
         FundingRow(start + 8 * HOUR + 5, Decimal("0.0002"), None),
     )
     full_month = [FundingRow(slot + 5, Decimal("0.0001"), None) for slot in slots(FEB, 8)]
-    assert (
-        funding_month_status(
-            full_month, FEB, first_ms=full_month[0].time_ms, last_ms=full_month[-1].time_ms
-        )
-        == "complete"
-    )
+    assert judge(full_month) == "complete"
     # Read as 8 h, a 4-hourly schedule has rows off the 8-hourly slots.
     four_hourly = [FundingRow(slot + 5, Decimal("0.0001"), None) for slot in slots(FEB, 4)]
-    assert (
-        funding_month_status(
-            four_hourly, FEB, first_ms=four_hourly[0].time_ms, last_ms=four_hourly[-1].time_ms
-        )
-        == "off_slot"
-    )
+    assert judge(four_hourly) == "off_slot"
 
 
 def test_a_header_only_funding_file_has_no_rows():
@@ -895,8 +890,10 @@ def test_funding_month_complete_on_an_exact_8h_schedule_with_ms_offsets():
     assert len(rows) == 87  # 29 days x 3
     assert min(offsets) == 0 and max(offsets) == 47
     assert judge(rows) == "complete"
+    # A perpetual trading all month: its first bar opens at the month start, its last closes at
+    # the month end.
     assert (
-        funding_month_status(rows, FEB, first_ms=rows[0].time_ms, last_ms=rows[-1].time_ms)
+        funding_month_status(rows, FEB, first_ms=month_start(FEB), last_ms=month_end(FEB) - 1)
         == "complete"
     )
 
@@ -1039,54 +1036,107 @@ def test_a_month_with_no_rows_inside_the_listing_span_is_missing_every_slot():
     assert funding_month_status([], FEB, first_ms=start, last_ms=start + 1) == "missing_slot"
 
 
-def test_listing_and_delisting_months_are_judged_only_while_listed():
-    start = month_start(FEB)
-    rows = funding(FEB)
-    fifteenth = start + 14 * DAY
-    tenth_last_slot = start + 9 * DAY + 16 * HOUR  # the last 8 h settlement of the 10th
-    listed = [row for row in rows if row.time_ms >= fifteenth]
-    delisted = [row for row in rows if row.time_ms <= tenth_last_slot + 47]
-    both = [row for row in listed if row.time_ms < start + 20 * DAY]
+def at(day: int, hour: int) -> int:
+    """The ``hour`` o'clock UTC of ``day`` of February 2024, in ms."""
+    return month_start(FEB) + (day - 1) * DAY + hour * HOUR
 
-    # Listed on the 15th: the first record is that day's 00:00 settlement.
-    assert listed[0].time_ms - fifteenth < 48 and len(listed) == 15 * 3
-    assert funding_month_status(listed, FEB, first_ms=listed[0].time_ms, last_ms=10**15) == (
-        "complete"
-    )
-    # Delisted after the 16:00 settlement of the 10th.
-    assert delisted[-1].time_ms - tenth_last_slot < 48 and len(delisted) == 10 * 3
-    assert funding_month_status(delisted, FEB, first_ms=0, last_ms=delisted[-1].time_ms) == (
-        "complete"
-    )
+
+def settlement(day: int, hour: int) -> int:
+    """The index in ``funding(FEB)`` of the 8-hour settlement at ``hour`` on ``day``."""
+    return (day - 1) * 3 + hour // 8
+
+
+def judge_listed_from(rows: list[FundingRow], first_open: int) -> str:
+    """Listed from the hour bar that opens at ``first_open``, and trading to the month's end."""
+    return funding_month_status(rows, FEB, first_ms=first_open, last_ms=10**15)
+
+
+def judge_listed_until(rows: list[FundingRow], last_open: int) -> str:
+    """Trading from before the month to the hour bar that opens at ``last_open``, whose close
+    (open + 3,600,000 - 1) is the span's end."""
+    return funding_month_status(rows, FEB, first_ms=0, last_ms=last_open + HOUR - 1)
+
+
+def test_listing_and_delisting_months_are_judged_only_while_listed():
+    rows = funding(FEB)
+    for day, hour in ((10, 8), (16, 0), (15, 16)):
+        assert 0 <= rows[settlement(day, hour)].time_ms - at(day, hour) < 48
+
+    # Listed at 17:00 on the 15th: its first hour bar opens then, so the first expected slot is
+    # 00:00 on the 16th, the first at or after it. The 16:00 slot of the 15th is not expected.
+    from_16th = rows[settlement(16, 0) :]
+    assert len(from_16th) == 14 * 3
+    assert judge_listed_from(from_16th, at(15, 17)) == "complete"
+    assert judge_listed_from(rows[settlement(15, 16) :], at(15, 17)) == "off_slot"
+    assert judge_listed_from(from_16th[1:], at(15, 17)) == "missing_slot"
+    assert judge_listed_from(from_16th, at(15, 0)) == "missing_slot"  # listed earlier: more due
+
+    # Listed exactly on a slot, 00:00 on the 15th: that slot is expected.
+    from_15th = rows[settlement(15, 0) :]
+    assert judge_listed_from(from_15th, at(15, 0)) == "complete"
+    assert judge_listed_from(from_15th[1:], at(15, 0)) == "missing_slot"
+    # One millisecond later the slot is no longer expected, and a row on it is off slot.
+    assert judge_listed_from(from_15th[1:], at(15, 0) + 1) == "complete"
+    assert judge_listed_from(from_15th, at(15, 0) + 1) == "off_slot"
+
+    # Delisted after a last bar that opens at 15:00 on the 10th and closes at 15:59:59.999: the
+    # last expected slot is 08:00, and a 16:00 row is off slot.
+    until_0800 = rows[: settlement(10, 8) + 1]
+    assert judge_listed_until(until_0800, at(10, 15)) == "complete"
+    assert judge_listed_until(rows[: settlement(10, 16) + 1], at(10, 15)) == "off_slot"
+    assert judge_listed_until(until_0800[:-1], at(10, 15)) == "missing_slot"
+    # A last bar opening at 16:00 expects the 16:00 slot; one opening at 07:00 stops at 00:00.
+    assert judge_listed_until(rows[: settlement(10, 16) + 1], at(10, 16)) == "complete"
+    assert judge_listed_until(rows[: settlement(10, 0) + 1], at(10, 7)) == "complete"
+    assert judge_listed_until(until_0800, at(10, 7)) == "off_slot"
+    # "At or before": a span that ends exactly on a slot expects it; one millisecond sooner not.
+    assert funding_month_status(until_0800, FEB, first_ms=0, last_ms=at(10, 8)) == "complete"
+    assert funding_month_status(until_0800, FEB, first_ms=0, last_ms=at(10, 8) - 1) == "off_slot"
+    # The close of the last bar is the end: one opening at 23:00 still expects 16:00 only.
+    assert judge_listed_until(rows[: settlement(10, 16) + 1], at(10, 23)) == "complete"
+
     # Listed and delisted in the one month.
-    assert funding_month_status(both, FEB, first_ms=both[0].time_ms, last_ms=both[-1].time_ms) == (
-        "complete"
+    both = rows[settlement(16, 0) : settlement(20, 8) + 1]
+    assert (
+        funding_month_status(both, FEB, first_ms=at(15, 17), last_ms=at(20, 15) + HOUR - 1)
+        == "complete"
     )
-    # The same rows do not make a complete month for a perpetual that was listed throughout.
-    assert funding_month_status(listed, FEB, first_ms=0, last_ms=10**15) == "missing_slot"
-    assert funding_month_status(delisted, FEB, first_ms=0, last_ms=10**15) == "missing_slot"
+
+    # The same rows do not make a complete month for a perpetual that traded all month.
+    assert judge(from_16th) == "missing_slot"
+    assert judge(until_0800) == "missing_slot"
 
     # One slot dropped inside the span is still missing: first, middle or last.
-    for index in (0, 5, len(listed) - 1):
-        damaged = listed[:index] + listed[index + 1 :]
-        status = funding_month_status(damaged, FEB, first_ms=listed[0].time_ms, last_ms=10**15)
-        assert status == "missing_slot", index
-    for index in (0, 5, len(delisted) - 1):
-        damaged = delisted[:index] + delisted[index + 1 :]
-        status = funding_month_status(damaged, FEB, first_ms=0, last_ms=delisted[-1].time_ms)
-        assert status == "missing_slot", index
+    for index in (0, 5, len(from_16th) - 1):
+        damaged = from_16th[:index] + from_16th[index + 1 :]
+        assert judge_listed_from(damaged, at(15, 17)) == "missing_slot", index
+    for index in (0, 5, len(until_0800) - 1):
+        damaged = until_0800[:index] + until_0800[index + 1 :]
+        assert judge_listed_until(damaged, at(10, 15)) == "missing_slot", index
+
+
+def test_a_span_can_touch_a_month_without_holding_a_slot_in_it():
+    rows = funding(FEB)
+    # Listed at 17:00 and delisted after the bar of 22:00 on the 10th: no 8-hour slot between.
+    span = {"first_ms": at(10, 17), "last_ms": at(10, 22) + HOUR - 1}
+
+    assert funding_month_status([], FEB, **span) == "complete"
+    assert funding_month_status([rows[settlement(10, 16)]], FEB, **span) == "off_slot"
+    assert funding_month_status([rows[settlement(11, 0)]], FEB, **span) == "off_slot"
+    # Listed at 17:00 on the month's last day: the first slot at or after it is next month's.
+    last_day = {"first_ms": at(29, 17), "last_ms": 10**15}
+    assert funding_month_status([], FEB, **last_day) == "complete"
+    assert funding_month_status([rows[-1]], FEB, **last_day) == "off_slot"
 
 
 def test_rows_outside_the_listing_span_are_not_on_an_expected_slot():
-    start = month_start(FEB)
     rows = funding(FEB)
-    first = rows[3].time_ms
-    last = rows[20].time_ms
+    first = slots(FEB, 8)[3]
+    last = slots(FEB, 8)[20] + HOUR - 1  # the close of a bar that opened on the slot
 
     assert funding_month_status(rows[3:21], FEB, first_ms=first, last_ms=last) == "complete"
     assert funding_month_status(rows[2:21], FEB, first_ms=first, last_ms=last) == "off_slot"
     assert funding_month_status(rows[3:22], FEB, first_ms=first, last_ms=last) == "off_slot"
-    assert start < first < last
 
 
 def test_a_month_the_listing_span_does_not_touch_is_an_error():
