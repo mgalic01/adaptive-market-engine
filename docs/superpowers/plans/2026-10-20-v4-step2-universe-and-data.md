@@ -70,7 +70,10 @@ chosen by a rule", "Data" and "Delivery" (step 2). Step 1 is done (#287, #288).
 - **R1, leveraged tokens.** A base counts as a leveraged token only if it is
   `X + suffix` and `X` is itself the base of another listed USDT symbol. So BTCUP and
   ETHBEAR are excluded, while JUP and SYRUP are not. The spec's bare "ends in UP" would
-  also exclude JUP.
+  also exclude JUP. A base that is exactly a suffix word (`UP`, `DOWN`, `BULL`, `BEAR`)
+  also counts as leveraged. BULLUSDT and BEARUSDT, the BTC members of the BULL/BEAR token
+  family, are in the pinned spot snapshot, and no real coin has such a base (Ruling P19).
+  The spec's universe line gets the same sentence in this step's PR.
 - **R2, filters for delisted symbols.** A symbol absent from the pinned present-day
   `exchangeInfo` gets inferred filters, recorded as `inferred`:
   - `tick` = 10^-d, where d is the most decimal places in any of the venue's hourly price
