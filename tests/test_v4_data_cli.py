@@ -25,6 +25,8 @@ The world, symbol by symbol (quote volumes rank them in this order):
   2024-03); its perpetual opens at 17:00 on 31 January, so January expects no funding slot
   (ruling P16), and its February funding file is unreadable (ruling P13);
 * USDCUSDT and AAAUPUSDT: excluded whatever their prices (stablecoin, leveraged token);
+* 牛来USDT: a real Binance listing whose name the archive paths cannot address, so it is
+  excluded as "unsupported_name", recorded and counted, and never fetched (ruling P33);
 * AAABTC: not quoted in USDT, so not discovered.
 """
 
@@ -38,7 +40,7 @@ import re
 import socket
 import sys
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -83,7 +85,8 @@ BAR_VALUES = (*PRICES, VOLUME, HOURLY_QUOTE_VOLUME, FUNDING_RATE, *DAILY_QUOTE_V
 GARBAGE = b"this is not a zip archive"
 REPAIRED_DAY = int(datetime(2024, 1, 15, tzinfo=UTC).timestamp()) * 1000  # AAAUSDT's
 SPOT_DIRS = ("AAABTC", "AAAUPUSDT", "AAAUSDT", "BBBUSDT", "CCCUSDT", "EEEUSDT", "FFFUSDT")
-SPOT_DIRS += ("LATEUSDT", "USDCUSDT")
+SPOT_DIRS += ("LATEUSDT", "USDCUSDT", "牛来USDT")
+UNSUPPORTED = "牛来USDT"
 SPOT_KLINES = "data/spot/monthly/klines/"
 FUTURES_KLINES = "data/futures/um/monthly/klines/"
 
@@ -330,12 +333,14 @@ class Pipeline:
         self.data = work / "data"
         self.out: list[str] = []
         self.err: list[str] = []
+        self.clock = lambda: datetime(2024, 4, 1, tzinfo=UTC)  # 2024-03 is complete
 
     def cli(self, *argv: object, expect: int = 0) -> None:
         code = v4_data.main(
             ["--config", str(self.config), *map(str, argv)],
             transport=self.world,
             sleep=lambda seconds: None,
+            clock=self.clock,
         )
         captured = self.capsys.readouterr()
         self.out.append(captured.out)
@@ -428,7 +433,11 @@ def test_end_to_end_on_a_fake_world_produces_both_packs_and_pins(tmp_path, capsy
 
     # The daily pack: every candidate's daily bars, the static exclusions, the final universes.
     assert sorted(daily["daily"]) == sorted(DAILY_QUOTE_VOLUMES)
-    assert daily["exclusions"] == {"AAAUPUSDT": "leveraged", "USDCUSDT": "stablecoin"}
+    assert daily["exclusions"] == {
+        "AAAUPUSDT": "leveraged",
+        "USDCUSDT": "stablecoin",
+        UNSUPPORTED: "unsupported_name",  # ruling P33
+    }
     universes = {u["month"]: u for u in daily["universes"]}
     assert sorted(universes) == ["2024-02", END_MONTH]
     assert universes["2024-02"]["selected"] == ["AAAUSDT", "BBBUSDT", "EEEUSDT", "FFFUSDT"]
@@ -953,6 +962,19 @@ def share_fffs_perpetual(document: dict) -> None:
             share_fffs_perpetual,
             "1000FFFUSDT is the perpetual of both 1000FFFUSDT and FFFUSDT",
         ),
+        (  # ruling P34: the mapping is re-derived from the recorded futures symbols
+            lambda d: d["futures_symbols"].remove("1000FFFUSDT"),
+            r"the perpetuals do not follow from futures_symbols \(ruling P34\)",
+        ),
+        (lambda d: d.pop("futures_symbols"), "futures_symbols must be a sorted list"),
+        (
+            lambda d: d["months"]["futures_1h"].update(AAAUSDT=[]),
+            r"AAAUSDT has no futures_1h month, so it is no perpetual \(ruling P34\)",
+        ),
+        (  # ruling P33: only a name the archive paths cannot address is unsupported
+            lambda d: d["exclusions"].update(ZZZUSDT="unsupported_name"),
+            "'ZZZUSDT' is not an unsupported USDT name",
+        ),
     ],
 )
 def test_a_discovery_whose_perpetuals_do_not_hold_is_refused(tmp_path, capsys, change, why):
@@ -977,6 +999,67 @@ def test_discover_refuses_two_coins_that_share_a_perpetual(tmp_path, capsys):
     pipeline.cli("discover", "--out", pipeline.discovery.parent, expect=1)
     assert "1000FFFUSDT is the perpetual of both 1000FFFUSDT and FFFUSDT" in pipeline.err[-1]
     assert not pipeline.discovery.exists()
+
+
+def test_an_unsupported_name_is_recorded_and_counted_but_never_fetched(tmp_path, capsys):
+    # Ruling P33: 牛来USDT ends in USDT but the archive paths cannot address it.
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.run()
+
+    discovery = json.loads(pipeline.discovery.read_text(encoding="ascii"))
+    assert discovery["exclusions"][UNSUPPORTED] == "unsupported_name"
+    assert UNSUPPORTED not in discovery["symbols"] + discovery["candidates"]
+    assert all(UNSUPPORTED not in per_symbol for per_symbol in discovery["months"].values())
+    # Every request is ASCII (the transport's allowlist), so none names it, escaped or not.
+    assert not [url for url in pipeline.world.requests if "%E7" in url.upper() or "牛" in url]
+    assert (
+        "3 excluded whatever their prices (1 leveraged, 1 stablecoin, 1 unsupported_name)"
+        in (pipeline.out[0])
+    )
+    assert "1 more with an unsupported name" in pipeline.out[0] and UNSUPPORTED not in (
+        pipeline.stdout()
+    )
+
+
+def test_a_plain_perpetual_listed_only_after_end_month_does_not_shadow_a_multiplier_one(
+    tmp_path, capsys
+):
+    # Ruling P34: FFFUSDT has a futures archive only for 2024-04, after end_month 2024-03, so
+    # it does not count: FFF's perpetual is still 1000FFFUSDT. Its months are listed, its
+    # archives never requested.
+    world = build_world()
+    world.files[archive_path("futures_1h", "FFFUSDT", "2024-04")] = GARBAGE  # never read
+    pipeline = Pipeline(tmp_path, capsys, world)
+    pipeline.discover()
+
+    discovery = json.loads(pipeline.discovery.read_text())
+    assert discovery["perpetuals"]["FFFUSDT"] == {"symbol": "1000FFFUSDT", "multiplier": 1000}
+    assert "FFFUSDT" not in discovery["futures_symbols"]
+    assert "1000FFFUSDT" in discovery["futures_symbols"]
+    listing = f"{LISTING}?delimiter=/&prefix=data/futures/um/monthly/klines/FFFUSDT/1h/"
+    assert listing in pipeline.world.requests
+    assert not [url for url in world.archive_requests() if "/FFFUSDT/" in url]
+    assert "6 futures USDT symbols, 5 of them possible perpetuals" in pipeline.out[0]
+
+
+def test_discover_refuses_an_end_month_that_is_not_yet_complete(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    for now in (
+        datetime(2024, 3, 31, 23, 59, tzinfo=UTC),  # end_month 2024-03 is still running
+        datetime(2024, 4, 1, 1, 0, tzinfo=timezone(timedelta(hours=2))),  # 23:00 UTC 31 March
+    ):
+        pipeline.clock = lambda now=now: now
+        pipeline.cli("discover", "--out", pipeline.discovery.parent, expect=1)
+        assert (
+            "end_month 2024-03 is not before the current UTC month 2024-03: it must be the last "
+            "complete calendar month"
+        ) in pipeline.err[-1]
+        assert pipeline.world.requests == [] and not pipeline.discovery.exists()
+    pipeline.clock = lambda: datetime(2024, 3, 1, tzinfo=UTC).replace(tzinfo=None)
+    pipeline.cli("discover", "--out", pipeline.discovery.parent, expect=1)
+    assert "timezone-aware" in pipeline.err[-1]
+    pipeline.clock = lambda: datetime(2024, 4, 1, tzinfo=UTC)
+    pipeline.discover()
 
 
 def test_final_selection_skips_a_candidate_without_recent_hourly_bars(tmp_path, capsys):

@@ -20,13 +20,17 @@ from crypto_grid_bot.v4.data.archives import HttpTransport, archive_path
 from crypto_grid_bot.v4.data.config import DataConfig, load_data_config
 from crypto_grid_bot.v4.data.listing import (
     ListingPage,
+    UsdtListing,
     checked_perpetual,
     discover_futures_usdt_symbols,
     discover_months,
+    discover_spot_usdt_listing,
     discover_spot_usdt_symbols,
+    is_unsupported_usdt_name,
     list_all,
     parse_listing,
     perpetual_for,
+    perpetual_names,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -760,6 +764,42 @@ def test_spot_usdt_symbols_need_a_base_and_a_clean_name():
     )
 
     assert discover_spot_usdt_symbols(bucket, **no_wait()) == ("1000SHIBUSDT", "AUSDT")
+
+
+def test_a_name_the_archive_paths_cannot_address_is_returned_apart_never_dropped():
+    # Ruling P33: 币安人生USDT and 牛来USDT are TRADING in the pinned spot snapshot. A name
+    # that does not end in USDT after a base (btcusdt, USDT, AAABTC) is not a USDT name at all.
+    long_name = "X" * 40 + "USDT"
+    bucket = klines_bucket(
+        "币安人生USDT", "BTCUSDT", "牛来USDT", "BTC-USDT", long_name, "btcusdt", "USDT", "AAABTC"
+    )
+
+    listing = discover_spot_usdt_listing(bucket, **no_wait())
+
+    assert listing == UsdtListing(
+        symbols=("BTCUSDT",),
+        unsupported=tuple(sorted(["BTC-USDT", long_name, "币安人生USDT", "牛来USDT"])),
+    )
+    assert bucket.requests == [url_of(KLINES)]  # one listing; nothing under the names
+    assert discover_spot_usdt_symbols(bucket, **no_wait()) == ("BTCUSDT",)
+    for name in listing.unsupported:
+        assert is_unsupported_usdt_name(name)
+        with pytest.raises(ValueError):
+            archive_path("spot_1d", name, "2020-01")  # why it is unsupported
+    for name in ("BTCUSDT", "USDT", "btcusdt", "A/USDT", "X" * 97 + "USDT", None):
+        assert not is_unsupported_usdt_name(name), name
+
+
+def test_perpetual_names_are_the_plain_name_then_each_prefix():
+    assert perpetual_names("SHIBUSDT") == (
+        "SHIBUSDT",
+        "1000SHIBUSDT",
+        "10000SHIBUSDT",
+        "100000SHIBUSDT",
+        "1000000SHIBUSDT",
+        "1MSHIBUSDT",
+    )
+    assert perpetual_names("0GUSDT") == ("0GUSDT",)  # ruling P31
 
 
 def test_spot_usdt_symbols_are_sorted_unique_and_span_pages():

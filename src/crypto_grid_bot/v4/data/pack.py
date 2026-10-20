@@ -75,7 +75,11 @@ from crypto_grid_bot.v4.data.archives import ManifestEntry, archive_path
 from crypto_grid_bot.v4.data.bars import DailyBar, FundingRow, HourBar
 from crypto_grid_bot.v4.data.config import DataConfig, refuse_after_end
 from crypto_grid_bot.v4.data.filters import Source
-from crypto_grid_bot.v4.data.listing import checked_perpetual
+from crypto_grid_bot.v4.data.listing import (
+    UNSUPPORTED_NAME,
+    checked_perpetual,
+    is_unsupported_usdt_name,
+)
 from crypto_grid_bot.v4.data.universe import MonthlyUniverse
 
 DAILY_FORMAT = "v4-daily-pack/1"
@@ -450,10 +454,15 @@ def _bar_rows(
 
 
 def _exclusions(exclusions: Mapping[str, str]) -> dict[str, str]:
+    """Symbol -> reason; a name with the reason ``"unsupported_name"`` is one ``archive_path``
+    cannot address (ruling P33), such as 币安人生USDT, which the ASCII JSON escapes."""
     for symbol, reason in exclusions.items():
-        _symbol(symbol, "exclusions")
         if not isinstance(reason, str) or not reason:
-            raise ValueError(f"exclusions {symbol}: a reason is required")
+            raise ValueError(f"exclusions {symbol!r:.40}: a reason is required")
+        if reason != UNSUPPORTED_NAME:
+            _symbol(symbol, "exclusions")
+        elif not is_unsupported_usdt_name(symbol):
+            raise ValueError(f"exclusions: {symbol!r:.40} is not an unsupported USDT name")
     return dict(exclusions)
 
 

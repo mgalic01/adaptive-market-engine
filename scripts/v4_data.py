@@ -3,14 +3,18 @@
 ``.github/workflows/v4-data.yml`` runs these stages on GitHub's machines (no heavy work runs on
 the owner's PC); each stage reads the files the stages before it wrote:
 
-* ``discover --out D`` lists every spot and USDT-M futures USDT symbol the archive holds,
-  delisted ones included, and writes ``D/symbols.json``: the symbols, the candidates (those
-  ``static_exclusion`` does not exclude), the exclusions (symbol -> reason), each candidate's
-  perpetual (candidate -> ``{"symbol", "multiplier"}``, by ``perpetual_for``: the plain
-  ``XUSDT``, else the one multiplier contract such as 1000SHIBUSDT; only for candidates that
-  have one) and, per kind, the months the archive lists up to ``end_month``: for each candidate
-  under its own symbol for the spot kinds, and under its perpetual's symbol for ``futures_1h``
-  and ``funding``.
+* ``discover --out D`` refuses an ``end_month`` that is not before the current UTC month
+  (the last complete calendar month), lists every spot and USDT-M futures USDT symbol the
+  archive holds, delisted ones included, and writes ``D/symbols.json``: the symbols, the
+  candidates (those ``static_exclusion`` does not exclude), the exclusions (symbol -> reason;
+  a spot name ``archive_path`` cannot address, such as 币安人生USDT, is ``"unsupported_name"``,
+  never fetched: ruling P33), the futures symbols with a ``futures_1h`` month at or before
+  ``end_month`` that could be a candidate's perpetual (``futures_symbols``, ruling P34), each
+  candidate's perpetual among them (candidate -> ``{"symbol", "multiplier"}``, by
+  ``perpetual_for``: the plain ``XUSDT``, else the one multiplier contract such as
+  1000SHIBUSDT; only for candidates that have one) and, per kind, the months the archive lists
+  up to ``end_month``: for each candidate under its own symbol for the spot kinds, and under
+  its perpetual's symbol for ``futures_1h`` and ``funding``.
 * ``fetch --kind K --discovery D/symbols.json [--symbols-file F] --shard i/n --cache C --out O``
   downloads and verifies (``fetch_verified``: Binance's ``.CHECKSUM``) every listed month of
   kind K for shard i of n of the symbols, stores each archive at ``C/<archive path>`` and
@@ -77,6 +81,7 @@ import json
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +110,7 @@ from crypto_grid_bot.v4.data.inputs import (
     _load_manifests,
     _load_universe,
     _log,
+    _perpetuals_from,
     _ranked,
     _read_futures_hours,
     _read_series,
@@ -120,10 +126,11 @@ from crypto_grid_bot.v4.data.inputs import (
     parse_shard,
 )
 from crypto_grid_bot.v4.data.listing import (
+    UNSUPPORTED_NAME,
     discover_futures_usdt_symbols,
     discover_months,
-    discover_spot_usdt_symbols,
-    perpetual_for,
+    discover_spot_usdt_listing,
+    perpetual_names,
 )
 from crypto_grid_bot.v4.data.pack import daily_pack_document, hourly_pack_document, write_canonical
 from crypto_grid_bot.v4.data.universe import HOURLY_RANK_DEPTH
@@ -236,23 +243,51 @@ def _write_pack(path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
     return {"file": path.name, "sha256": pin, "json_bytes": size}
 
 
+def _refuse_an_incomplete_end_month(run: _Run) -> None:
+    """``end_month`` must be before the current UTC month: the last complete calendar month
+    (spec, "Data"), so that no month still being written is discovered."""
+    now = run.clock()
+    if now.tzinfo is None:
+        raise ValueError("the clock must give a timezone-aware time")
+    current = now.astimezone(UTC).strftime("%Y-%m")
+    if not run.config.end_month < current:
+        raise ValueError(
+            f"end_month {run.config.end_month} is not before the current UTC month {current}: "
+            "it must be the last complete calendar month"
+        )
+
+
 def discover(args: argparse.Namespace, run: _Run) -> int:
-    symbols = discover_spot_usdt_symbols(run.transport, sleep=run.sleep, log=_log)
-    exclusions = _static_exclusions(symbols, run.config)
-    candidates = [symbol for symbol in symbols if symbol not in exclusions]
-    futures_symbols = frozenset(
+    _refuse_an_incomplete_end_month(run)
+    listing = discover_spot_usdt_listing(run.transport, sleep=run.sleep, log=_log)
+    symbols = listing.symbols
+    static = _static_exclusions(symbols, run.config)
+    candidates = [symbol for symbol in symbols if symbol not in static]
+    # Ruling P33: a name archive_path cannot address is recorded and counted, never fetched.
+    exclusions = static | dict.fromkeys(listing.unsupported, UNSUPPORTED_NAME)
+    listed_futures = frozenset(
         discover_futures_usdt_symbols(run.transport, sleep=run.sleep, log=_log)
     )
-    perpetuals = {
-        symbol: perpetual
-        for symbol in candidates
-        if (perpetual := perpetual_for(symbol, futures_symbols)) is not None
+    # Ruling P34: a futures symbol counts only with a futures_1h month at or before end_month.
+    # The months of each name a candidate's perpetual could be are listed once, and reused.
+    considered = sorted({n for s in candidates for n in perpetual_names(s) if n in listed_futures})
+    futures_months = {
+        name: discover_months(
+            run.transport, "futures_1h", name, run.config, sleep=run.sleep, log=_log
+        )
+        for name in considered
     }
+    futures_symbols = sorted(name for name, found in futures_months.items() if found)
+    perpetuals = _perpetuals_from(candidates, futures_symbols)
     _unshared(perpetuals)
     listed = {
         kind: {
             name: list(
-                discover_months(run.transport, kind, name, run.config, sleep=run.sleep, log=_log)
+                futures_months[name]
+                if kind == "futures_1h"
+                else discover_months(
+                    run.transport, kind, name, run.config, sleep=run.sleep, log=_log
+                )
             )
             for name in _archive_symbols(kind, candidates, perpetuals)
         }
@@ -266,6 +301,7 @@ def discover(args: argparse.Namespace, run: _Run) -> int:
             "symbols": list(symbols),
             "candidates": candidates,
             "exclusions": exclusions,
+            "futures_symbols": futures_symbols,
             "perpetuals": {
                 symbol: {"symbol": perpetual, "multiplier": multiplier}
                 for symbol, (perpetual, multiplier) in perpetuals.items()
@@ -276,13 +312,15 @@ def discover(args: argparse.Namespace, run: _Run) -> int:
     reasons = sorted(set(exclusions.values()))
     counts = ", ".join(f"{list(exclusions.values()).count(r)} {r}" for r in reasons)
     _say(
-        f"discover: {len(symbols)} spot USDT symbols, {len(candidates)} candidates, "
-        f"{len(exclusions)} excluded whatever their prices ({counts or 'none'})"
+        f"discover: {len(symbols)} spot USDT symbols and {len(listing.unsupported)} more with an "
+        f"unsupported name, {len(candidates)} candidates, {len(exclusions)} excluded whatever "
+        f"their prices ({counts or 'none'})"
     )
     multipliers = sum(multiplier != 1 for _, multiplier in perpetuals.values())
     _say(
-        f"discover: {len(futures_symbols)} futures USDT symbols, {len(perpetuals)} candidates "
-        f"with a perpetual, {_multipliers(multipliers)}"
+        f"discover: {len(listed_futures)} futures USDT symbols, {len(futures_symbols)} of them "
+        f"possible perpetuals with an archive by end_month, {len(perpetuals)} candidates with a "
+        f"perpetual, {_multipliers(multipliers)}"
     )
     for kind in KINDS:
         holding = [values for values in listed[kind].values() if values]
@@ -538,16 +576,21 @@ COMMANDS: dict[str, Callable[[argparse.Namespace, _Run], int]] = {
 }
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     transport: Transport | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], datetime] = _utc_now,
 ) -> int:
     """Run one stage: 0 on success, 1 on a refusal (its reason on standard error).
 
-    ``transport`` and ``sleep`` replace the guarded ``HttpTransport`` and the retry sleep
-    (tests)."""
+    ``transport``, ``sleep`` and ``clock`` replace the guarded ``HttpTransport``, the retry
+    sleep and the UTC clock (tests)."""
     args = build_parser().parse_args(argv)
     try:
         config = load_data_config(args.config)
@@ -556,6 +599,7 @@ def main(
             config_sha256=_sha256(args.config.read_bytes()),
             transport=HttpTransport() if transport is None else transport,
             sleep=sleep,
+            clock=clock,
         )
         return COMMANDS[args.command](args, run)
     except (ValueError, OSError) as exc:  # OSError: a missing input or an existing output

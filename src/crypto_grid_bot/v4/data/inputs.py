@@ -1,9 +1,10 @@
 """The V4 data CLI's input loading, for ``scripts/v4_data.py``.
 
-The discovery (``symbols.json``), the manifest pieces, the archives (from the cache, or fetched
-again by their pin), the series read from them, the funding months, the usable hours and the
-universes. Moved unchanged from the script (ruling P28), which keeps the stages, the argument
-parser and ``main``; the script's docstring states the rules applied here.
+The discovery (``symbols.json``: candidates, exclusions, each candidate's perpetual and the
+futures symbols it was chosen from, the months per kind), the manifest pieces, the archives
+(from the cache, or fetched again by their pin), the series read from them, the funding months,
+the usable hours and the universes. Split out of the script (ruling P28), which keeps the
+stages, the argument parser and ``main``; the script's docstring states the rules applied here.
 """
 
 from __future__ import annotations
@@ -39,7 +40,12 @@ from crypto_grid_bot.v4.data.bars import (
     read_hourly,
 )
 from crypto_grid_bot.v4.data.config import DataConfig, months, refuse_after_end
-from crypto_grid_bot.v4.data.listing import checked_perpetual
+from crypto_grid_bot.v4.data.listing import (
+    UNSUPPORTED_NAME,
+    checked_perpetual,
+    is_unsupported_usdt_name,
+    perpetual_for,
+)
 from crypto_grid_bot.v4.data.universe import (
     HOURLY_RANK_DEPTH,
     MonthlyUniverse,
@@ -62,12 +68,13 @@ _ENTRY_FIELDS = frozenset(field.name for field in fields(ManifestEntry))
 
 @dataclass(frozen=True)
 class _Run:
-    """What every stage shares: the config, its pin and the network."""
+    """What every stage shares: the config, its pin, the network and the clock (UTC-aware)."""
 
     config: DataConfig
     config_sha256: str
     transport: Transport
     sleep: Callable[[float], None]
+    clock: Callable[[], datetime]
 
 
 @dataclass(frozen=True)
@@ -181,13 +188,28 @@ def _unshared(perpetuals: Mapping[str, tuple[str, int]]) -> None:
             )
 
 
+def _perpetuals_from(
+    candidates: Iterable[str], futures_symbols: Iterable[str]
+) -> dict[str, tuple[str, int]]:
+    """Each candidate's perpetual among ``futures_symbols`` (those with a monthly archive at or
+    before ``end_month``, ruling P34), for the candidates that have one."""
+    listed = frozenset(futures_symbols)
+    found = {symbol: perpetual_for(symbol, listed) for symbol in candidates}
+    return {symbol: perpetual for symbol, perpetual in found.items() if perpetual is not None}
+
+
 def _load_perpetuals(
-    path: Path, raw: object, candidates: Sequence[str]
+    path: Path, document: Mapping[str, Any], candidates: Sequence[str]
 ) -> dict[str, tuple[str, int]]:
     """``symbols.json``'s ``perpetuals``: candidate -> ``{"symbol", "multiplier"}``, each a
-    name the spec's rule gives the candidate (``checked_perpetual``), no two sharing one."""
+    name the spec's rule gives the candidate (``checked_perpetual``), no two sharing one, and
+    exactly what ``perpetual_for`` gives the candidates from the recorded ``futures_symbols``
+    (ruling P34)."""
+    raw, futures_symbols = document.get("perpetuals"), document.get("futures_symbols")
     if not isinstance(raw, dict) or not set(raw) <= set(candidates):
         raise ValueError(f"{path}: perpetuals must map candidates to their perpetuals")
+    if not _sorted_strings(futures_symbols):
+        raise ValueError(f"{path}: futures_symbols must be a sorted list without duplicates")
     perpetuals: dict[str, tuple[str, int]] = {}
     for symbol in sorted(raw):
         try:
@@ -198,14 +220,39 @@ def _load_perpetuals(
         _unshared(perpetuals)
     except ValueError as exc:
         raise ValueError(f"{path}: {exc}") from exc
+    expected = _perpetuals_from(candidates, futures_symbols)
+    if perpetuals != expected:
+        wrong = sorted(set(perpetuals.items()) ^ set(expected.items()))
+        raise ValueError(
+            f"{path}: the perpetuals do not follow from futures_symbols (ruling P34): {wrong}"
+        )
     return perpetuals
+
+
+def _load_exclusions(
+    path: Path, raw: object, symbols: Sequence[str], config: DataConfig
+) -> dict[str, str]:
+    """``symbols.json``'s ``exclusions``: the static exclusions of the symbols as the config
+    gives them, and each unsupported name with ``UNSUPPORTED_NAME`` (ruling P33), a name that is
+    not one of the symbols and that ``archive_path`` cannot address."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: exclusions must map a name to a reason")
+    unsupported = {name for name, reason in raw.items() if reason == UNSUPPORTED_NAME}
+    for name in sorted(unsupported, key=repr):
+        if not is_unsupported_usdt_name(name) or name in symbols:
+            raise ValueError(f"{path}: {name!r:.40} is not an unsupported USDT name")
+    expected = _static_exclusions(symbols, config) | dict.fromkeys(unsupported, UNSUPPORTED_NAME)
+    if raw != expected:
+        raise ValueError(f"{path}: the exclusions and candidates do not follow from the config")
+    return expected
 
 
 def _load_discovery(path: Path, config: DataConfig) -> _Discovery:
     """``symbols.json``, refused unless it is this config's: its end month, its exclusions
-    and candidates as the config gives them, perpetuals the spec's rule allows, the months of
-    each kind for exactly the candidates (a futures kind: their perpetuals), and no month after
-    ``end_month``."""
+    and candidates as the config gives them (unsupported names excluded, ruling P33),
+    perpetuals the spec's rule gives the candidates from the recorded futures symbols (P34),
+    the months of each kind for exactly the candidates (a futures kind: their perpetuals, each
+    with a ``futures_1h`` month), and no month after ``end_month``."""
     document = _read_json(path)
     if document.get("format") != DISCOVERY_FORMAT:
         raise ValueError(f"{path}: not a {DISCOVERY_FORMAT} document")
@@ -214,11 +261,11 @@ def _load_discovery(path: Path, config: DataConfig) -> _Discovery:
     symbols = document.get("symbols")
     if not _sorted_strings(symbols):
         raise ValueError(f"{path}: symbols must be a sorted list without duplicates")
-    exclusions = _static_exclusions(symbols, config)
+    exclusions = _load_exclusions(path, document.get("exclusions"), symbols, config)
     candidates = [symbol for symbol in symbols if symbol not in exclusions]
-    if document.get("exclusions") != exclusions or document.get("candidates") != candidates:
+    if document.get("candidates") != candidates:
         raise ValueError(f"{path}: the exclusions and candidates do not follow from the config")
-    perpetuals = _load_perpetuals(path, document.get("perpetuals"), candidates)
+    perpetuals = _load_perpetuals(path, document, candidates)
     listed = document.get("months")
     if not isinstance(listed, dict) or set(listed) != set(KINDS):
         raise ValueError(f"{path}: months must hold exactly the kinds {', '.join(KINDS)}")
@@ -235,6 +282,11 @@ def _load_discovery(path: Path, config: DataConfig) -> _Discovery:
             for month in values:
                 refuse_after_end(month, config)
         found[kind] = {symbol: tuple(values) for symbol, values in per_symbol.items()}
+    for perpetual, _ in perpetuals.values():
+        if not found["futures_1h"][perpetual]:
+            raise ValueError(
+                f"{path}: {perpetual} has no futures_1h month, so it is no perpetual (ruling P34)"
+            )
     return _Discovery(tuple(symbols), tuple(candidates), exclusions, found, perpetuals)
 
 

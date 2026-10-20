@@ -3,12 +3,16 @@
 Binance publishes its archive tree as the S3 bucket ``data.binance.vision``. A listing of a
 prefix (``delimiter=/``) names the sub-directories under it (``CommonPrefixes``) and the files
 in it (``Contents``), at most 1000 entries a page. ``list_all`` follows the pages and merges
-them; ``discover_spot_usdt_symbols`` and ``discover_futures_usdt_symbols`` read the spot and
-USDT-M futures klines directories, delisted symbols included, and ``discover_months`` reads one
-symbol's archive file names for one kind. ``perpetual_for`` names a coin's perpetual among the
-futures symbols, by the spec's rule ("Data"): the plain ``XUSDT``, else the one symbol with a
-contract-multiplier prefix (1000SHIBUSDT is 1000 SHIB); ``checked_perpetual`` checks a recorded
-one against the same rule.
+them; ``discover_spot_usdt_listing`` (and ``discover_spot_usdt_symbols``, its symbols) and
+``discover_futures_usdt_symbols`` read the spot and USDT-M futures klines directories, delisted
+symbols included, and ``discover_months`` reads one symbol's archive file names for one kind.
+A spot name ending in USDT that ``archive_path`` cannot address, such as 币安人生USDT, is
+returned apart as unsupported (ruling P33): counted and recorded, never fetched, never dropped
+silently. ``perpetual_for`` names a coin's perpetual among the futures symbols, by the spec's
+rule ("Data"): the plain ``XUSDT``, else the one symbol with a contract-multiplier prefix
+(1000SHIBUSDT is 1000 SHIB); ``perpetual_names`` lists the names it considers, and
+``checked_perpetual`` checks a recorded one against the same rule. The caller passes only
+futures symbols with a monthly archive at or before ``end_month`` (ruling P34).
 
 Everything here goes through a ``Transport``, so the only network access is the one
 ``archives.HttpTransport`` allows: the bucket listing query, nothing else. Each page request is
@@ -50,6 +54,8 @@ PERPETUAL_PREFIXES = (
     ("1M", 1_000_000),
 )
 MULTIPLIERS = (1, 1_000, 10_000, 100_000, 1_000_000)
+# The exclusion reason of a listed USDT name archive_path cannot address (ruling P33).
+UNSUPPORTED_NAME = "unsupported_name"
 # S3 lists 1000 entries a page, so this is ten million entries: far more than the bucket holds.
 # A listing that needs more pages is refused instead of looped over.
 MAX_LISTING_PAGES = 10_000
@@ -62,10 +68,22 @@ _MONTH = r"[0-9]{4}-(?:0[1-9]|1[0-2])"
 _PREFIX = re.compile(r"data/[A-Za-z0-9._/-]*")
 _SYMBOL_RE = re.compile(_SYMBOL)
 _QUOTE = "USDT"
+# A listed directory name (any characters but "/", bounded) that may be an unsupported name.
+_LISTED_NAME = r"[^/]{1,100}"
+_LISTED_NAME_RE = re.compile(_LISTED_NAME)
 # A month used only to have archive_path spell out one kind's directory and file name.
 _SAMPLE_MONTH = "2000-01"
 # Never after any valid end_month, so refuse_after_end only ever objects to a bad end_month.
 _FIRST_MONTH = "0000-01"
+
+
+@dataclass(frozen=True)
+class UsdtListing:
+    """The USDT names under a klines prefix, sorted: ``symbols`` that ``archive_path`` accepts,
+    and ``unsupported`` names that end in USDT after a base but which it cannot address."""
+
+    symbols: tuple[str, ...]
+    unsupported: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -219,20 +237,55 @@ def _is_usdt_symbol(symbol: object) -> TypeGuard[str]:
     )
 
 
-def _usdt_symbols(
+def is_unsupported_usdt_name(name: object) -> bool:
+    """Whether ``name`` ends in ``USDT`` after a base but is not a symbol ``archive_path``
+    accepts (ruling P33): not made of ASCII capital letters and digits, or too long. Such a
+    name is at most 100 characters and holds no "/"."""
+    return (
+        isinstance(name, str)
+        and _LISTED_NAME_RE.fullmatch(name) is not None
+        and name.endswith(_QUOTE)
+        and len(name) > len(_QUOTE)
+        and not _is_usdt_symbol(name)
+    )
+
+
+def _usdt_listing(
     transport: Transport,
     prefix: str,
     sleep: Callable[[float], None],
     log: Callable[[str], None],
-) -> tuple[str, ...]:
-    """Every USDT symbol with a directory directly under ``prefix``, sorted."""
-    directory = re.compile(rf"{re.escape(prefix)}({_SYMBOL})/")
+) -> UsdtListing:
+    """Every USDT name with a directory directly under ``prefix``, split into the symbols
+    ``archive_path`` accepts and the unsupported names."""
+    directory = re.compile(rf"{re.escape(prefix)}({_LISTED_NAME})/")
     symbols: set[str] = set()
+    unsupported: set[str] = set()
     for entry in list_all(transport, prefix, sleep=sleep, log=log).prefixes:
         match = directory.fullmatch(entry)
-        if match is not None and _is_usdt_symbol(match.group(1)):
+        if match is None:
+            continue
+        if _is_usdt_symbol(match.group(1)):
             symbols.add(match.group(1))
-    return tuple(sorted(symbols))
+        elif is_unsupported_usdt_name(match.group(1)):
+            unsupported.add(match.group(1))
+    return UsdtListing(tuple(sorted(symbols)), tuple(sorted(unsupported)))
+
+
+def discover_spot_usdt_listing(
+    transport: Transport,
+    *,
+    sleep: Callable[[float], None],
+    log: Callable[[str], None],
+) -> UsdtListing:
+    """Every USDT-quoted spot name with a klines directory, delisted ones included: the
+    symbols, sorted, and apart from them the unsupported names (ruling P33), sorted.
+
+    A name counts if it ends in ``USDT`` and has a base (so ``USDTBRL`` and ``BTCBUSD`` go);
+    leveraged tokens and stablecoins are kept, for the universe step to exclude. Page requests
+    are retried as in ``list_all``.
+    """
+    return _usdt_listing(transport, SPOT_KLINES_PREFIX, sleep, log)
 
 
 def discover_spot_usdt_symbols(
@@ -241,13 +294,9 @@ def discover_spot_usdt_symbols(
     sleep: Callable[[float], None],
     log: Callable[[str], None],
 ) -> tuple[str, ...]:
-    """Every USDT-quoted spot symbol with a klines directory, sorted; delisted ones included.
-
-    A symbol is kept if it ends in ``USDT`` and has a base (so ``USDTBRL`` and ``BTCBUSD`` go);
-    leveraged tokens and stablecoins are kept, for the universe step to exclude. Page requests
-    are retried as in ``list_all``.
-    """
-    return _usdt_symbols(transport, SPOT_KLINES_PREFIX, sleep, log)
+    """The symbols of ``discover_spot_usdt_listing``: every USDT-quoted spot symbol with a
+    klines directory that ``archive_path`` accepts, sorted; delisted ones included."""
+    return discover_spot_usdt_listing(transport, sleep=sleep, log=log).symbols
 
 
 def discover_futures_usdt_symbols(
@@ -263,7 +312,7 @@ def discover_futures_usdt_symbols(
     So a delivery contract (``BTCUSDT_240329``) and a USDC-margined perpetual go. Page requests
     are retried as in ``list_all``.
     """
-    return _usdt_symbols(transport, FUTURES_KLINES_PREFIX, sleep, log)
+    return _usdt_listing(transport, FUTURES_KLINES_PREFIX, sleep, log).symbols
 
 
 def _perpetual_names(spot_symbol: object) -> tuple[str, tuple[tuple[str, int], ...]]:
@@ -284,6 +333,13 @@ def _perpetual_names(spot_symbol: object) -> tuple[str, tuple[tuple[str, int], .
     return f"{base}{_QUOTE}", prefixed
 
 
+def perpetual_names(spot_symbol: str) -> tuple[str, ...]:
+    """Every futures symbol ``perpetual_for`` considers for the coin: the plain name first,
+    then each multiplier name (none for a base that starts with ``0``, ruling P31)."""
+    plain, prefixed = _perpetual_names(spot_symbol)
+    return (plain, *(name for name, _ in prefixed))
+
+
 def perpetual_for(spot_symbol: str, futures_symbols: Collection[str]) -> tuple[str, int] | None:
     """The coin's USDT-M perpetual among ``futures_symbols`` and its multiplier, or None.
 
@@ -292,7 +348,9 @@ def perpetual_for(spot_symbol: str, futures_symbols: Collection[str]) -> tuple[s
     ``1000000``, or ``1M``), with that prefix's multiplier. With no such symbol, or more than
     one, the coin has no perpetual. A prefixed name is built from the coin's base, so
     ``1000XUSDT`` is X's perpetual, never XEC's, and a base that starts with ``0`` gets only
-    its plain symbol (ruling P31: ``10000XUSDT`` is X's, never 0X's). A ``spot_symbol`` that is
+    its plain symbol (ruling P31: ``10000XUSDT`` is X's, never 0X's). The caller passes only
+    symbols with a monthly archive at or before ``end_month`` (ruling P34), so a plain symbol
+    listed only later does not shadow a multiplier one. A ``spot_symbol`` that is
     not a USDT symbol
     ``archive_path`` accepts (a base, then ``USDT``) is a ``ValueError``, and so is a string
     given as ``futures_symbols`` (``in`` would match substrings).
