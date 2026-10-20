@@ -683,6 +683,20 @@ def test_hourly_pack_refuses_a_perpetual_entry_that_breaks_the_naming_rule(perpe
         hourly_pack_document(**multiplier_args(perpetuals=perpetuals))
 
 
+def test_hourly_pack_refuses_one_perpetual_for_two_coins():
+    # SHIBUSDT x1000 and a spot 1000SHIBUSDT x1 each name 1000SHIBUSDT by the rule; compared as
+    # a set with the futures series, the second entry would pass unseen.
+    args = multiplier_args()
+    args["spot"]["1000SHIBUSDT"] = [hour_bar(0)]
+    args["masks"][("1000SHIBUSDT", "spot")] = ([], {})
+    args["rules"][("1000SHIBUSDT", "spot")] = (rules(), "inferred")
+    args["perpetuals"]["1000SHIBUSDT"] = {"symbol": "1000SHIBUSDT", "multiplier": 1}
+    with pytest.raises(
+        ValueError, match="1000SHIBUSDT is the perpetual of both 1000SHIBUSDT and SHIBUSDT"
+    ):
+        hourly_pack_document(**args)
+
+
 def test_a_perpetual_left_out_of_the_pack_leaves_out_its_entry():
     # Ruling P23: a perpetual with no readable bar is omitted, with its rules, masks, funding
     # and its perpetuals entry; the coin's spot series stays.

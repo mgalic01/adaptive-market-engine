@@ -800,6 +800,51 @@ def test_cli_fetches_futures_and_funding_under_the_perpetual_symbol(tmp_path, ca
         assert pipeline.cache.joinpath(*path.strip("/").split("/")).is_file()
 
 
+def test_fetch_prints_how_many_of_the_shards_symbols_have_a_perpetual(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_hourly()
+    lines = [
+        re.sub(r"\([0-9]+ bytes\)", "(N bytes)", line)
+        for out in pipeline.out
+        for line in out.splitlines()
+        if line.startswith("fetch ")
+    ]
+    # Shard 0 of 2 is AAA, CCC and FFF: AAA's perpetual and FFF's (1000FFFUSDT), CCC none.
+    # Shard 1 is BBB, EEE and LATE, each with a perpetual. Counts only; the spot kinds as before.
+    tail = "archives (N bytes), 0 absent"
+    assert [line for line in lines if "futures_1h" in line or "funding" in line] == [
+        f"fetch futures_1h shard 0/2: 3 symbols (2 with a perpetual), 4 {tail}",
+        f"fetch futures_1h shard 1/2: 3 symbols (3 with a perpetual), 5 {tail}",
+        f"fetch funding shard 0/2: 3 symbols (2 with a perpetual), 4 {tail}",
+        f"fetch funding shard 1/2: 3 symbols (3 with a perpetual), 3 {tail}",
+    ]
+    assert f"fetch spot_1h shard 0/2: 3 symbols, 5 {tail}" in lines
+
+
+def test_a_multiplier_perpetual_without_a_readable_bar_is_left_out_with_its_entry(tmp_path, capsys):
+    # Ruling P23 for 1000FFFUSDT: both its futures archives are unreadable, so the hourly pack
+    # holds no futures series for it, and so no rules, masks, funding, funding months or
+    # perpetuals entry; FFFUSDT's spot series stays.
+    world = build_world()
+    for month in (JAN, FEB):
+        world.files[archive_path("futures_1h", "1000FFFUSDT", month)] = GARBAGE
+    pipeline = Pipeline(tmp_path, capsys, world)
+    pipeline.run()
+
+    data = json.loads((pipeline.data / "data.json").read_text())
+    hourly = read_canonical(pipeline.data / HOURLY_PACK_FILE, data["packs"]["hourly"]["sha256"])
+    assert "FFFUSDT" in hourly["spot"] and "FFFUSDT|spot" in hourly["rules"]
+    assert "1000FFFUSDT" not in hourly["futures"] and "1000FFFUSDT" not in hourly["funding"]
+    keyed = [*hourly["rules"], *hourly["masks"], *hourly["funding_months"]]
+    assert not [key for key in keyed if key.startswith("1000FFFUSDT|")]
+    assert sorted(hourly["perpetuals"]) == ["AAAUSDT", "BBBUSDT", "LATEUSDT"]
+    # Its futures archives were read (they decided it), its funding files never were.
+    read = {(entry["kind"], entry["symbol"]) for entry in hourly["manifest"]}
+    assert ("futures_1h", "1000FFFUSDT") in read and ("funding", "1000FFFUSDT") not in read
+    assert (data["perpetuals"], data["multiplier_perpetuals"]) == (3, 0)
+    assert "3 with a perpetual, 0 of them multiplier contracts" in pipeline.out[-1]
+
+
 def test_cli_packs_a_multiplier_perpetual_under_its_own_symbol(tmp_path, capsys):
     pipeline = Pipeline(tmp_path, capsys)
     pipeline.run()
@@ -871,6 +916,15 @@ def move_funding_months_to_the_coin(document: dict) -> None:
     funding["FFFUSDT"] = funding.pop("1000FFFUSDT")
 
 
+def share_fffs_perpetual(document: dict) -> None:
+    """A hand-made candidate 1000FFFUSDT whose plain perpetual is FFFUSDT's x1000 one."""
+    document["symbols"] = sorted([*document["symbols"], "1000FFFUSDT"])
+    document["candidates"] = sorted([*document["candidates"], "1000FFFUSDT"])
+    for kind in ("spot_1d", "spot_1h"):
+        document["months"][kind]["1000FFFUSDT"] = []
+    document["perpetuals"]["1000FFFUSDT"] = {"symbol": "1000FFFUSDT", "multiplier": 1}
+
+
 @pytest.mark.parametrize(
     ("change", "why"),
     [
@@ -894,6 +948,10 @@ def move_funding_months_to_the_coin(document: dict) -> None:
         (
             move_funding_months_to_the_coin,
             r"months\[funding\] must name exactly the candidates' perpetuals",
+        ),
+        (
+            share_fffs_perpetual,
+            "1000FFFUSDT is the perpetual of both 1000FFFUSDT and FFFUSDT",
         ),
     ],
 )

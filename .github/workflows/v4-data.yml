@@ -8,13 +8,17 @@ run-name: v4-data ${{ inputs.stage }}
 # s3-ap-northeast-1.amazonaws.com (SECURITY.md); HttpTransport refuses any other URL.
 #
 # A dispatch picks one stage:
-# - discover: the discover job alone. It lists every spot USDT symbol, delisted ones included,
-#   and each candidate's monthly archives of the four kinds, and prints counts only: the
-#   symbol and archive counts, from which the size and time of a full run are estimated.
+# - discover: the discover job alone. It lists every spot and USDT-M futures USDT symbol,
+#   delisted ones included, maps each candidate to its perpetual (the plain XUSDT, else the one
+#   multiplier contract such as 1000SHIBUSDT), and lists each candidate's monthly archives of
+#   the four kinds: spot under the coin's symbol, futures and funding under its perpetual's.
+#   It prints counts only: the symbol, perpetual and archive counts, from which the size and
+#   time of a full run are estimated.
 # - full: every job, in this order: discover; fetch-daily (16 shards of the candidates' daily
 #   archives); select-candidates (every symbol ranked in a top 20 in any month);
 #   fetch-hourly (8 shards of those symbols for each of the three hourly kinds, spot,
-#   futures and funding, each symbol's whole history); select-final (the hourly check, the
+#   futures and funding, each symbol's whole history, futures and funding under its
+#   perpetual's symbol, none for a symbol without one); select-final (the hourly check, the
 #   final universes); pack (both packs and data.json, the pins; it stops unless the universes
 #   it recomputes equal select-final's universe.json).
 #

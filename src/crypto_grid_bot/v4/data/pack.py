@@ -582,11 +582,13 @@ def _perpetuals(
     futures: Mapping[str, Sequence[HourBar]],
 ) -> dict[str, dict[str, object]]:
     """Each coin's perpetual as ``{"symbol": ..., "multiplier": ...}``: the coin is a spot
-    symbol of the pack, the name is one the spec's rule gives it, and the perpetuals are
-    exactly the futures series (a perpetual left out of the pack leaves out its entry)."""
+    symbol of the pack, the name is one the spec's rule gives it, no perpetual is two coins',
+    and the perpetuals are exactly the futures series (a perpetual left out of the pack leaves
+    out its entry)."""
     if not isinstance(perpetuals, Mapping):
         raise ValueError("perpetuals: a mapping of spot symbol -> {symbol, multiplier} required")
     document: dict[str, dict[str, object]] = {}
+    owners: dict[str, str] = {}  # perpetual -> the coin it was first mapped from
     for coin, entry in perpetuals.items():
         _symbol(coin, "perpetuals")
         if coin not in spot:
@@ -595,8 +597,12 @@ def _perpetuals(
             symbol, multiplier = checked_perpetual(coin, entry)
         except ValueError as exc:
             raise ValueError(f"perpetuals: {exc}") from exc
+        if symbol in owners:  # the set comparison below would hide the second coin
+            both = " and ".join(sorted((owners[symbol], coin)))
+            raise ValueError(f"perpetuals: {symbol} is the perpetual of both {both}")
+        owners[symbol] = coin
         document[coin] = {"symbol": symbol, "multiplier": multiplier}
-    held = {str(entry["symbol"]) for entry in document.values()}
+    held = set(owners)
     if held != set(futures):
         raise ValueError(
             f"perpetuals: futures series without a perpetual entry: "

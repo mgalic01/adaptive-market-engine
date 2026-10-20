@@ -20,6 +20,7 @@ from crypto_grid_bot.v4.data.archives import HttpTransport, archive_path
 from crypto_grid_bot.v4.data.config import DataConfig, load_data_config
 from crypto_grid_bot.v4.data.listing import (
     ListingPage,
+    checked_perpetual,
     discover_futures_usdt_symbols,
     discover_months,
     discover_spot_usdt_symbols,
@@ -893,6 +894,19 @@ def test_perpetual_for_prefers_the_plain_symbol_then_a_unique_prefix():
 def test_perpetual_for_refuses_what_is_not_a_spot_usdt_symbol(symbol):
     with pytest.raises(ValueError, match="spot USDT symbol"):
         perpetual_for(symbol, {"1000SHIBUSDT"})
+
+
+def test_a_base_that_starts_with_0_gets_only_its_plain_perpetual():
+    # Ruling P31: "1000" + "0X" is "10000" + "X", so 10000XUSDT is X's contract, never 0X's.
+    assert perpetual_for("0XUSDT", {"10000XUSDT"}) is None
+    assert perpetual_for("XUSDT", {"10000XUSDT"}) == ("10000XUSDT", 10_000)
+    assert perpetual_for("0GUSDT", {"0GUSDT"}) == ("0GUSDT", 1)
+    assert perpetual_for("0GUSDT", {"0GUSDT", "10000GUSDT", "1000GUSDT"}) == ("0GUSDT", 1)
+    assert perpetual_for("00XUSDT", {"100000XUSDT"}) is None  # "1000" + "00X", or X's x100000
+    assert checked_perpetual("0GUSDT", {"symbol": "0GUSDT", "multiplier": 1}) == ("0GUSDT", 1)
+    for symbol, multiplier in [("10000XUSDT", 1000), ("1M0XUSDT", 1_000_000)]:
+        with pytest.raises(ValueError, match="not 0XUSDT's perpetual name"):
+            checked_perpetual("0XUSDT", {"symbol": symbol, "multiplier": multiplier})
 
 
 def test_perpetual_for_refuses_one_string_as_the_futures_symbols():

@@ -268,13 +268,18 @@ def discover_futures_usdt_symbols(
 
 def _perpetual_names(spot_symbol: object) -> tuple[str, tuple[tuple[str, int], ...]]:
     """A spot USDT symbol's plain perpetual name, and each multiplier name with its multiplier;
-    every one is built from the coin's base, never found by stripping a prefix."""
+    every one is built from the coin's base, never found by stripping a prefix.
+
+    A base that starts with ``0`` has no multiplier name (ruling P31, spec "Data"): prefixed,
+    it could spell another coin's contract, since ``1000`` + ``0X`` is ``10000`` + ``X``."""
     if not _is_usdt_symbol(spot_symbol):
         raise ValueError(
             f"a spot USDT symbol is required (a base, then USDT, {_SYMBOL} in all), "
             f"got {spot_symbol!r:.80}"
         )
     base = spot_symbol.removesuffix(_QUOTE)
+    if base.startswith("0"):
+        return f"{base}{_QUOTE}", ()
     prefixed = tuple((f"{prefix}{base}{_QUOTE}", m) for prefix, m in PERPETUAL_PREFIXES)
     return f"{base}{_QUOTE}", prefixed
 
@@ -286,7 +291,9 @@ def perpetual_for(spot_symbol: str, futures_symbols: Collection[str]) -> tuple[s
     one listed ``P + X + "USDT"`` whose prefix P is one of ``PERPETUAL_PREFIXES`` (``1000`` to
     ``1000000``, or ``1M``), with that prefix's multiplier. With no such symbol, or more than
     one, the coin has no perpetual. A prefixed name is built from the coin's base, so
-    ``1000XUSDT`` is X's perpetual, never XEC's. A ``spot_symbol`` that is not a USDT symbol
+    ``1000XUSDT`` is X's perpetual, never XEC's, and a base that starts with ``0`` gets only
+    its plain symbol (ruling P31: ``10000XUSDT`` is X's, never 0X's). A ``spot_symbol`` that is
+    not a USDT symbol
     ``archive_path`` accepts (a base, then ``USDT``) is a ``ValueError``, and so is a string
     given as ``futures_symbols`` (``in`` would match substrings).
     """
@@ -304,9 +311,9 @@ def checked_perpetual(spot_symbol: str, entry: object) -> tuple[str, int]:
     multiplier), once it is a name ``perpetual_for`` could give the coin.
 
     The multiplier is one of ``MULTIPLIERS`` (an int, never a bool); 1 goes with the plain name
-    ``X + "USDT"``, and any other with ``P + X + "USDT"`` for a prefix P of that multiplier.
-    Anything else is a ``ValueError``. Whether the futures archive lists the name is not
-    checked here.
+    ``X + "USDT"``, and any other with ``P + X + "USDT"`` for a prefix P of that multiplier,
+    for a base X that does not start with ``0`` (ruling P31). Anything else is a
+    ``ValueError``. Whether the futures archive lists the name is not checked here.
     """
     if not isinstance(entry, Mapping) or set(entry) != {"symbol", "multiplier"}:
         raise ValueError(
