@@ -168,12 +168,16 @@ def test_committed_config_loads_with_the_spec_values():
     assert c.start_day == "2017-08-17" and c.top_n == 10 and c.min_daily_bars == 200
     assert c.volume_days == 30 and c.stable_days == 90
     assert c.stable_band == Decimal("0.02") and c.stable_share == Decimal("0.9")
-    assert c.stablecoins == frozenset("USDC BUSD TUSD USDP PAX DAI FDUSD USDD UST EUR GBP AUD TRY BRL".split())
+    assert c.stablecoins == frozenset(
+        "USDC BUSD TUSD USDP PAX DAI FDUSD USDD UST EUR GBP AUD TRY BRL".split()
+    )
     assert c.leveraged_suffixes == ("UP", "DOWN", "BULL", "BEAR")
     assert c.wrapped == frozenset({"WBTC", "WBETH", "BETH", "STETH"})
 
+
 def test_months_is_inclusive_and_ordered():
     assert months("2024-11", "2025-02") == ("2024-11", "2024-12", "2025-01", "2025-02")
+
 
 def test_months_after_end_month_are_refused(tmp_path):
     c = replace(load_data_config(Path("config/v4_data.json")), end_month="2026-09")
@@ -181,7 +185,10 @@ def test_months_after_end_month_are_refused(tmp_path):
     with pytest.raises(ValueError, match="after end_month"):
         refuse_after_end("2026-10", c)
 
-@pytest.mark.parametrize("change", [{"top_n": 0}, {"end_month": "2026-13"}, {"stable_share": "1.5"}, {"extra": 1}])
+
+@pytest.mark.parametrize(
+    "change", [{"top_n": 0}, {"end_month": "2026-13"}, {"stable_share": "1.5"}, {"extra": 1}]
+)
 def test_invalid_or_unknown_config_fields_are_refused(tmp_path, change): ...
 ```
 
