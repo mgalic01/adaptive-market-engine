@@ -41,7 +41,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from crypto_grid_bot.v4.data import archives
+from crypto_grid_bot.v4.data import archives, inputs
 from crypto_grid_bot.v4.data.archives import archive_path
 from crypto_grid_bot.v4.data.pack import read_canonical
 
@@ -648,13 +648,13 @@ def test_pack_decodes_each_hourly_archive_once(tmp_path, capsys, monkeypatch):
     pipeline = Pipeline(tmp_path, capsys)
     pipeline.until_final()
     decoded: list[tuple[str, str, bool]] = []
-    read_hourly = v4_data.read_hourly
+    read_hourly = inputs.read_hourly
 
     def counting(content, symbol, month, *, futures):
         decoded.append((symbol, month, futures))
         return read_hourly(content, symbol, month, futures=futures)
 
-    monkeypatch.setattr(v4_data, "read_hourly", counting)
+    monkeypatch.setattr(inputs, "read_hourly", counting)
     pipeline.pack()
     assert len(decoded) == len(set(decoded))  # the selected symbols' spot series are reused
     spot = {(symbol, month) for symbol, month, futures in decoded if not futures}
