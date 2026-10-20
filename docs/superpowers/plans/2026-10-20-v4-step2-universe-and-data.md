@@ -376,7 +376,15 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
     `ranked: tuple[tuple[str, Decimal, int], ...]` (symbol, mean quote volume, bars in
     window), `excluded: tuple[tuple[str, str], ...]`, `entered: tuple[str, ...]` and
     `left: tuple[str, ...]`.
-  - `select_universe(daily: Mapping[str, Sequence[DailyBar]], config) -> tuple[MonthlyUniverse, ...]`.
+  - `select_universe(daily: Mapping[str, Sequence[DailyBar]], config, *, usable_hours: Mapping[str, Sequence[int]] | None = None) -> tuple[MonthlyUniverse, ...]`.
+    - `usable_hours` maps a symbol to the sorted opens (ms) of its unmasked hourly spot
+      bars. A missing symbol has none.
+    - With `usable_hours`, the selection takes ranked candidates in order. It skips one
+      that has no usable open in the 168 hours before the selection's 00:00, recording
+      reason `"no_recent_hourly"` in `excluded`. It stops at 10 selected or after rank
+      `HOURLY_RANK_DEPTH = 20`, a module constant from the spec (revision `f7a9cae`).
+    - With `usable_hours=None` (the candidates stage), there is no hourly check: the top 10
+      as ranked. `ranked` always holds the full ranking.
 
 - [ ] **Step 1: Write the failing tests**
   - `test_static_exclusions_follow_the_spec_and_ruling_r1`:
@@ -397,6 +405,13 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `test_fewer_than_10_eligible_selects_all_of_them`: with 3 eligible candidates, the
     selection is those 3, ranked. The window start is the first month with a non-empty
     selection, as in the 2018-04 test above.
+  - `test_a_candidate_without_recent_hourly_bars_is_skipped_and_the_next_takes_its_place`:
+    with `usable_hours`, rank 3 has its last usable hour 169 h before the selection. It is
+    skipped with `"no_recent_hourly"`, and rank 11 is selected. One whose last usable hour
+    is 168 h before (inside the window) is kept.
+  - `test_the_hourly_skip_stops_at_rank_20`: with 12 of the top 20 unusable, only 8 are
+    selected, a short universe. Rank 21 is never considered.
+  - `test_without_usable_hours_there_is_no_hourly_check`.
 
 - [ ] **Step 2: Run them to see them fail.**
 
@@ -506,10 +521,13 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
     lists) and prints counts only.
   - `fetch --kind spot_1d|spot_1h|futures_1h|funding --symbols-file F --shard i/n --cache C --out D`:
     writes `D/manifest-<kind>-<i>.json`.
-  - `select --daily-manifests ... --cache C --out D`: writes `D/universe.json` and
-    `D/selected.txt`, the symbols ever in a top 10. The hourly fetch takes every
-    discovered month of each selected symbol up to `end_month`, its whole history, because
-    signals need bars from before a coin first enters.
+  - `select --stage candidates --daily-manifests ... --cache C --out D`: writes
+    `D/candidates.txt`, the symbols ever ranked in a top 20. The hourly fetch (spot,
+    futures and funding) takes every discovered month of each of them up to `end_month`,
+    its whole history, because signals need bars from before a coin first enters.
+  - `select --stage final --daily-manifests ... --hourly-manifests ... --cache C --out D`:
+    runs `select_universe` with `usable_hours` from the spot `KlineRead`s, and writes
+    `D/universe.json` and `D/selected.txt`.
   - `pack --manifests ... --cache C --out D`: writes both packs and `D/data.json` with the
     pins.
 
@@ -517,12 +535,13 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   - `test_end_to_end_on_a_fake_world_produces_both_packs_and_pins`
   - `test_shards_partition_symbols_without_overlap_or_gap`
   - `test_no_output_prints_bar_values`: stdout holds counts and pins only
-  - `test_hourly_fetch_covers_each_selected_symbols_whole_history`: a symbol selected only
-    in the fake world's last month still gets every discovered hourly month
+  - `test_hourly_fetch_covers_each_candidates_whole_history`: a symbol ranked in a top 20
+    only in the fake world's last month still gets every discovered hourly month
+  - `test_final_selection_skips_a_candidate_without_recent_hourly_bars`
   - `test_pack_refuses_a_manifest_entry_after_end_month_before_any_request`
   - `test_workflow_has_the_expected_jobs_and_no_cache_of_results`: parse the YAML and check:
-    - jobs `discover`, `fetch-daily` (matrix of 16 shards), `select`, `fetch-hourly`
-      (matrix of 8 shards with the three kinds), and `pack`;
+    - jobs `discover`, `fetch-daily` (matrix of 16 shards), `select-candidates`,
+      `fetch-hourly` (matrix of 8 shards with the three kinds), `select-final` and `pack`;
     - `workflow_dispatch` only, with input `stage` (`discover` stops after `discover`;
       `full` runs every job);
     - shard artifacts at `retention-days: 1`, and the pack artifact `v4-data` at `90`.
