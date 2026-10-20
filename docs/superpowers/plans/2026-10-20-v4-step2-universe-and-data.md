@@ -547,7 +547,9 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
       `fetch-hourly` (matrix of 8 shards with the three kinds), `select-final` and `pack`;
     - `workflow_dispatch` only, with input `stage` (`discover` stops after `discover`;
       `full` runs every job);
-    - shard artifacts at `retention-days: 1`, and the pack artifact `v4-data` at `90`.
+    - every artifact at `retention-days: 1`, the pack artifact `v4-data` included (owner
+      rule 2026-10-19: download, then offer deletion; Ruling P25). The registered run
+      re-fetches by the pinned manifest.
 
 - [ ] **Step 2: Run them to see them fail.**
 
