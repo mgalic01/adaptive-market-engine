@@ -148,20 +148,23 @@ def read_canonical(path: Path, expected_sha256: str) -> dict[str, Any]:
     """The document in the gzip file at ``path``, once the SHA-256 of its JSON equals
     ``expected_sha256``.
 
-    The file is decompressed with a cap of ``MAX_CONTENT_BYTES`` and its JSON hashed before
-    it is parsed; any gzip bytes of that JSON are accepted. A duplicate key, a float, NaN or
-    Infinity, non-ASCII text, malformed JSON or a top level that is not an object is refused.
+    The file is decompressed with a cap of ``MAX_CONTENT_BYTES`` into one buffer, its JSON
+    hashed chunk by chunk as it comes, and the pin checked before anything is parsed; any gzip
+    bytes of that JSON are accepted. The buffer is released once decoded, so the peak is the
+    JSON's bytes and its text, never a list of chunks beside a joined copy. A duplicate key, a
+    float, NaN or Infinity, non-ASCII text, malformed JSON or a top level that is not an object
+    is refused.
     """
     if not isinstance(expected_sha256, str) or _SHA256.fullmatch(expected_sha256) is None:
         raise ValueError("the expected pack sha256 must be 64 lowercase hex digits")
-    content = _decompressed(path)
-    actual = hashlib.sha256(content).hexdigest()
+    content, actual = _decompressed(path)
     if actual != expected_sha256:
         raise ValueError(f"{path}: pack sha256 {actual} differs from the pinned {expected_sha256}")
     try:
         text = content.decode("ascii")
     except UnicodeDecodeError as exc:
         raise ValueError(f"{path}: a pack is ASCII JSON ({exc})") from exc
+    del content  # the parser needs only the text
     try:
         document = json.loads(
             text,
@@ -258,23 +261,26 @@ def hourly_pack_document(
         }
 
 
-def _decompressed(path: Path) -> bytes:
-    """The bytes the gzip file at ``path`` holds; at most ``MAX_CONTENT_BYTES`` + 1 are ever
-    decompressed, so an oversized stream is refused without exhausting memory."""
+def _decompressed(path: Path) -> tuple[bytearray, str]:
+    """The bytes the gzip file at ``path`` holds, and their SHA-256 (hex), hashed chunk by
+    chunk as they are decompressed into one growing buffer. At most ``MAX_CONTENT_BYTES`` + 1
+    are ever decompressed, so an oversized stream is refused without exhausting memory; the
+    compressed file is streamed, not read whole. A missing file is the ``OSError`` of opening
+    it; a file that is not a whole gzip stream is a ``ValueError``."""
     cap = MAX_CONTENT_BYTES
-    compressed = io.BytesIO(Path(path).read_bytes())
-    chunks: list[bytes] = []
-    total = 0
-    try:
-        with gzip.GzipFile(fileobj=compressed, mode="rb") as archive:
-            while chunk := archive.read(min(_CHUNK, cap + 1 - total)):
-                total += len(chunk)
-                if total > cap:
-                    raise ValueError(f"{path}: the pack decompresses to more than {cap} bytes")
-                chunks.append(chunk)
-    except (OSError, EOFError, zlib.error) as exc:
-        raise ValueError(f"{path}: not a readable gzip pack ({exc})") from exc
-    return b"".join(chunks)
+    content = bytearray()
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as compressed:
+        try:
+            with gzip.GzipFile(fileobj=compressed, mode="rb") as archive:
+                while chunk := archive.read(min(_CHUNK, cap + 1 - len(content))):
+                    if len(content) + len(chunk) > cap:
+                        raise ValueError(f"{path}: the pack decompresses to more than {cap} bytes")
+                    digest.update(chunk)
+                    content += chunk
+        except (OSError, EOFError, zlib.error) as exc:
+            raise ValueError(f"{path}: not a readable gzip pack ({exc})") from exc
+    return content, digest.hexdigest()
 
 
 _JSON_SCALARS = frozenset({str, int, bool, type(None)})

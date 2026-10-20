@@ -444,6 +444,23 @@ def test_reader_refuses_content_over_the_size_cap(tmp_path, monkeypatch):
         read_canonical(path, pin)
 
 
+def test_reader_hashes_and_reads_a_pack_in_many_small_chunks(tmp_path, monkeypatch):
+    # The pin is hashed chunk by chunk as the gzip is decompressed; the result is the same
+    # document, and a wrong pin is still refused before anything is parsed.
+    monkeypatch.setattr(pack, "_CHUNK", 7)
+    document = daily_doc()
+    path = tmp_path / "daily.json.gz"
+    pin = write_canonical(document, path)
+    assert read_canonical(path, pin) == document
+    with pytest.raises(ValueError, match="differs from the pinned"):
+        read_canonical(path, "0" * 64)
+
+
+def test_reader_refuses_a_missing_file_as_an_os_error(tmp_path):
+    with pytest.raises(OSError):
+        read_canonical(tmp_path / "absent.json.gz", "0" * 64)
+
+
 def test_the_size_cap_is_two_gibibytes():
     assert pack.MAX_CONTENT_BYTES == 2 * 1024**3
 
