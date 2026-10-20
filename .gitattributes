@@ -19,6 +19,9 @@ config/datasets/v3-1-minute-bars/*.toml text eol=lf
 config/datasets/v3-1-minute-bars/*.manifest.json text eol=lf
 config/datasets/v3-1-minute-bars/*.digest.txt text eol=lf
 
+# V4's data config is pinned by the SHA-256 of its raw bytes (the packs record it): LF everywhere.
+config/v4_*.json text eol=lf
+
 # Preserve exact append-only register bytes on every platform.
 docs/trials/register.jsonl text eol=lf
 

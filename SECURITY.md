@@ -11,13 +11,19 @@ It has no networked exchange implementation and does not read API credentials.
 - Do not switch to live mode by removing validation. A separate tested adapter
   and explicit live-deployment approval are required.
 - Treat news and external feeds as untrusted data, never as executable commands.
-- Market data uses only Binance's public data hosts, and exactly these three (one
-  fetch-only exception for exchange filters follows below):
+- Market data uses only Binance's public data hosts, exactly these three, plus the listing
+  endpoint of the archive's bucket (one fetch-only exception for exchange filters follows
+  below):
   <!-- allowed-hosts:begin (tests/test_documented_hosts.py reads this block exactly) -->
   - `data-api.binance.vision` — REST market data (`HOST`, `market_data/client.py`);
   - `data-stream.binance.vision` — WebSocket streams (`STREAM_HOST`, `market_data/stream.py`);
   - `data.binance.vision` — historical archives and their `.CHECKSUM` files
-    (`ARCHIVE_HOST`, `backtest/dataset.py`).
+    (`ARCHIVE_HOST`, `backtest/dataset.py`; `ARCHIVE_URL`, `v4/data/archives.py`);
+  - `s3-ap-northeast-1.amazonaws.com` — the S3 endpoint of bucket `data.binance.vision`,
+    the archive host's own bucket, for its listing only (`LISTING_URL`,
+    `v4/data/archives.py`): V4's data step reads which symbols and months the archive holds.
+    `HttpTransport` lets through only the listing query on that bucket, never an archive or
+    any other path.
   <!-- allowed-hosts:end -->
 
   Each is a named constant. Adding a host means editing this list in the same change:
