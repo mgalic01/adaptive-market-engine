@@ -111,3 +111,20 @@ boundary. Tasks 1 and 2 (config and verified archive fetch) are unaffected.
 | 4320644221 (P2) | S_K and D overlap | S_K now excludes dust, and D holds every coin's dust, so nothing is reserved twice. |
 | 4320644229 (P2) | Lifecycles for dual-venue longs | A lifecycle is per coin and side, from the signed position over both venues leaving zero to its return to zero or a sign change. A venue transfer stays inside it, with per-venue fills, fees and funding. Best unrealized profit and give-back are measured on the combined position. |
 | 4320644235 (P1) | Universe eligibility needs usable hourly spot | A candidate with no unmasked hourly spot bar in the 168 hours before the selection is skipped. The universe takes the first 10 that pass, down to rank 20, so the data step fetches hourly spot for every symbol ever in a top 20. A short universe is permitted if fewer pass. |
+
+## Bob at `f7a9cae`: NO ISSUES. Codex at `f7a9cae` (ten more findings)
+
+| Thread | Finding | Resolution |
+|---|---|---|
+| 4320748019 (P1) | Monthly eligibility vs a missing bar | Eligibility is the trading span plus a complete funding month. A missing bar at one decision or fill is handled only by deferral. |
+| 4320748027 (P1) | Unrestorable cushion | A ratio below 3 with no tradable futures leg, or still below 3 after a cut, ends the cell `limit_unrestorable` with reason `margin_cushion`. |
+| 4320748036 (P2) | Lifecycle across a full transfer | The zero and sign tests run after a whole batch of fills, so a full spot-to-futures move stays one lifecycle. |
+| 4320748037 (P1) | Dust against a coin's target | A trading coin's dust is part of its own spot leg. Its futures target nets the signed position, dust included, to the target. D holds only the fixed coins' dust. |
+| 4320748041 (P1) | Spot buys could erode futures backing | Free cash is the smaller of USDT minus initial margin, and backing minus 4 x maintenance. No increase takes the ratio below 4, and none is made below it. This replaces the separate admission rule. |
+| 4320748045 (P2) | Costs of synthetic closes | The penalty replaces slippage, and the venue's normal fee is charged on the penalised notional, for both dead-market and funding-month closes. |
+| 4320748049 (P1) | Mandatory futures exit blocked by a missing spot bar | A universe exit or funding-month exit closes each leg on its own venue's bar. The replacement spot buy defers on its own. |
+| 4320748052 (P1) | Solvency at the penalised price | The liquidation check runs with the leg at its penalised price before the close is booked. Equity at or below zero after any close also means liquidation. |
+| 4320748058 (P2) | Empty hold universe | All targets are 0: sell what can be sold, hold cash and dust, and no division by zero. |
+| 4320748062 (P1) | Daily duplicates | A duplicate or out-of-order daily row removes both its day and the last kept day, as the reader masks both. |
+
+Also from the step-2 task review: a base that is exactly UP, DOWN, BULL or BEAR is a leveraged token. BULLUSDT and BEARUSDT, the BTC members of that family, are in the pinned spot snapshot. No real coin has such a base.
