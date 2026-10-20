@@ -567,7 +567,7 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
 - [ ] **Step 4: Run them to see them pass.** Then commit:
   `v4 data: CLI and the sharded GitHub workflow`.
 
-- [ ] **Step 5: Push and open the PR.** CI runs the full suite; it is not run on the
+- [ ] **Step 5 (after Task 9): Push and open the PR.** CI runs the full suite; it is not run on the
   owner's PC.
 
   The PR follows the standing review bar: a claim, Bob's deep review, Codex, CI and the
@@ -576,3 +576,56 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
   The first real dispatch is `discover` only, to report the symbol and archive counts and
   an estimate of size and time. The full data run follows after the owner sees those
   numbers.
+
+### Task 9: The perpetual of each coin (multiplier contracts)
+
+Spec revision in this PR (Ruling P27): Binance lists some USDT-M perpetuals under a multiplier
+prefix, priced for that many coins: 1000SHIBUSDT, 1000PEPEUSDT, 1MBABYDOGEUSDT and others. The
+pinned futures snapshot has 15 today. Fetching futures under the spot name would treat those coins
+as having no perpetual.
+
+**Files:**
+- Create: `src/crypto_grid_bot/v4/data/inputs.py` (the CLI's loading helpers, moved unchanged first)
+- Modify: `src/crypto_grid_bot/v4/data/listing.py`, `scripts/v4_data.py`, `src/crypto_grid_bot/v4/data/pack.py`
+- The spec rule is already in the spec ("Data", this PR's amendment).
+- Test: `tests/test_v4_data_listing.py`, `tests/test_v4_data_cli.py`, `tests/test_v4_data_pack.py`
+
+**Interfaces:**
+- Produces:
+  - `listing.discover_futures_usdt_symbols(transport, *, sleep, log) -> tuple[str, ...]`, sorted,
+    from the common prefixes under `data/futures/um/monthly/klines/`.
+  - `listing.perpetual_for(spot_symbol: str, futures_symbols: Collection[str]) -> tuple[str, int] | None`:
+    - `XUSDT` itself, multiplier 1, if listed;
+    - otherwise the unique `P + X + "USDT"` with P in `1000`, `10000`, `100000`, `1000000`
+      (multipliers 1000 to 1,000,000) or `1M` (1,000,000);
+    - None if neither, or if more than one prefixed symbol matches.
+  - The hourly pack gains `perpetuals`: spot symbol → `{"symbol": perpetual, "multiplier": int}`,
+    for every pack symbol with a perpetual. Futures series, rules, masks and funding months are keyed
+    by the perpetual's own symbol, which is the archive name.
+- Consumes: Task 3's listing, Task 7's builder, Task 8's CLI.
+
+The spec rule, added to "Data": a coin X's perpetual is as above. One perpetual unit is `multiplier`
+coins and its price is `multiplier` x the coin's price. The engine converts quantities and prices by
+the multiplier. Exchange filters are the perpetual's own, in perpetual units.
+
+- [ ] **Step 0: Move the CLI's loading helpers** (manifest pieces, archive reading, series,
+  funding, usable hours, universes) unchanged into `src/crypto_grid_bot/v4/data/inputs.py`,
+  so that `scripts/v4_data.py` keeps the stages, the parser and `main`. Every existing test
+  passes unchanged. Commit: `v4 data: move the CLI's input loading into a module`.
+
+- [ ] **Step 1: Write the failing tests**
+  - `test_perpetual_for_prefers_the_plain_symbol_then_a_unique_prefix`:
+    - SHIBUSDT → ("1000SHIBUSDT", 1000);
+    - BABYDOGEUSDT → ("1MBABYDOGEUSDT", 1000000);
+    - MOGUSDT → ("1000000MOGUSDT", 1000000);
+    - BTCUSDT → ("BTCUSDT", 1);
+    - XUSDT → ("1000XUSDT", 1000), never XECUSDT's contract;
+    - none or two matches → None.
+  - `test_futures_symbols_come_from_the_um_klines_prefixes`
+  - `test_cli_fetches_futures_and_funding_under_the_perpetual_symbol`
+  - `test_hourly_pack_records_each_perpetual_and_its_multiplier`
+- [ ] **Step 2: Run them to see them fail.**
+- [ ] **Step 3: Implement.** The CLI's `discover` records the mapping in `symbols.json`, `fetch`
+  uses it for `futures_1h` and `funding`, and `pack` passes it to `hourly_pack_document`.
+- [ ] **Step 4: Run them to see them pass.** Commit: `v4 data: each coin's perpetual, multiplier
+  contracts included`.
