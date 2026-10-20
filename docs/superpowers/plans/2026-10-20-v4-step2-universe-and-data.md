@@ -307,15 +307,17 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
     - a row whose open cannot be read makes the archive unreadable.
   - `read_funding(content: bytes, symbol: str, month: str) -> tuple[FundingRow, ...]`.
   - `funding_month_status(rows: Sequence[FundingRow], month: str, *, first_ms: int, last_ms: int) -> str`.
-    `first_ms` and `last_ms` are the perpetual's first and last funding record times over
-    its whole history. It returns `"complete"` or the first failing reason:
+    `first_ms` and `last_ms` bound the perpetual's trading span from its klines, over its
+    whole history: `first_ms` is its first hourly bar's open, and `last_ms` is its last
+    hourly bar's close (open + 3,600,000 - 1). They never come from the funding file being
+    judged (spec revision `6384e06`). It returns `"complete"` or the first failing reason:
     `"interval_mixed"`, `"interval_not_divisor_of_24"`, `"off_slot"`, `"duplicate_slot"`
     or `"missing_slot"`. The spec's rule (V3 section 2, with V4's listing span):
     - every row declares the same interval I, and I divides 24; a file without the column
       gives `interval_hours=None` and is read as I = 8;
-    - the expected slots are 00:00 UTC + k x I hours inside the month, from the slot of
-      `first_ms` to the slot of `last_ms`, so a listing or delisting month is judged only
-      while listed;
+    - the expected slots are 00:00 UTC + k x I hours inside the month, from the first slot
+      at or after `first_ms` to the last slot at or before `last_ms`, so a listing or
+      delisting month is judged only while listed;
     - each row lies within 60,000 ms after one slot, at or after the slot itself;
     - every expected slot has exactly one row.
 
@@ -453,9 +455,10 @@ unknown and missing keys, non-integer counts, and shares outside (0, 1]. It refu
     - `masks` maps (symbol, venue) to the sorted masked hour opens from Task 4's
       `KlineRead`s, with every hour of an unreadable month included. It also gives a map
       from each unreadable month to its reason.
-    - `funding_months` maps (symbol, month) to Task 4's `funding_month_status` result, or
-      `"missing_file"`, for every month from the perpetual's first funding record to its
-      last.
+    - `funding_months` maps (symbol, month) to Task 4's `funding_month_status` result,
+      `"missing_file"` or `"unreadable_file"` (Ruling P13), for every month of the
+      perpetual's kline trading span. `first_ms` and `last_ms` come from its futures
+      `KlineRead`s.
   - The daily pack also records each symbol's masked days and unreadable months, in the
     same shape.
 
