@@ -8,8 +8,8 @@ independent of it and looks only at file names.
 A file is named for a month when its name (not its folder's) holds ``YYYY-MM`` with no digit on
 either side, as an archive's ``<SYMBOL>-1h-2024-01.zip`` does. ``end_month`` comes from the data
 config, ``config/v4_data.json`` by default. Exit 0 when no file is named for a later month; exit
-1, listing the files, when one is, and also when the folder does not exist or the config is
-refused.
+1, listing the files, when one is, and also when the folder does not exist, a folder under it
+cannot be listed, or the config is refused.
 """
 
 from __future__ import annotations
@@ -27,12 +27,20 @@ ROOT = Path(__file__).resolve().parents[1]
 _MONTH = re.compile(r"(?<![0-9])([0-9]{4}-(?:0[1-9]|1[0-2]))(?![0-9])")
 
 
+def _refuse(error: OSError) -> None:
+    """``os.walk``'s ``onerror``: a folder that cannot be listed fails the check, never skips."""
+    raise error
+
+
 def files_after_end(root: Path, end_month: str) -> tuple[int, list[Path]]:
-    """How many files are under ``root``, and those named for a month after ``end_month``."""
+    """How many files are under ``root``, and those named for a month after ``end_month``.
+
+    A folder that cannot be listed raises its ``OSError``: an unchecked folder is a failure.
+    """
     if not root.is_dir():
         raise ValueError(f"{root} is not a folder")
     checked, found = 0, []
-    for folder, _, names in os.walk(root):
+    for folder, _, names in os.walk(root, onerror=_refuse):
         for name in names:
             checked += 1
             # YYYY-MM strings order like the months they name.

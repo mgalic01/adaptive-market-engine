@@ -30,8 +30,9 @@ the owner's PC); each stage reads the files the stages before it wrote:
 A stage refuses an incomplete or inconsistent set of manifest pieces: for each kind, the pieces
 must be shards 0 to n-1 of one n, partitioning their symbols as ``fetch`` does, and each
 symbol's entries and absent months must be exactly its discovered months. The daily pieces
-must cover every candidate and the hourly ones every symbol ranked in a top 20. A symbol
-excluded whatever its prices is fetched for no kind; the daily pack records its reason.
+must cover every candidate, and the hourly ones every symbol the candidates stage ranked in a
+top 20 (``candidates.txt``), checked from the daily archives before any hourly one is read. A
+symbol excluded whatever its prices is fetched for no kind; the daily pack records its reason.
 ``select`` and ``pack`` read each archive from ``--cache`` only once it matches its manifest
 entry's SHA-256 and size; one missing from the cache is fetched again by that pin
 (``fetch_pinned``). Every stage but ``discover`` takes ``--discovery``. ``--config`` (before
@@ -69,7 +70,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from crypto_grid_bot.backtest.klines import INTERVAL_MS, month_bounds_ms
 from crypto_grid_bot.combined.execution import VenueRules
@@ -122,6 +123,9 @@ _DAY_MS = INTERVAL_MS["1d"]
 _SHARD = re.compile(r"(0|[1-9][0-9]*)/([1-9][0-9]*)")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _ENTRY_FIELDS = frozenset(field.name for field in fields(ManifestEntry))
+# What the hourly pieces must cover: candidates.txt, the candidates stage's ranking. The final
+# universes' ranking can be narrower, since their window can open later (the hourly check).
+_RANKED = "symbols the candidates stage ranked in a top 20"
 
 
 @dataclass(frozen=True)
@@ -229,6 +233,15 @@ def _store(target: Path, content: bytes) -> None:
         raise
 
 
+def _sorted_strings(value: object) -> TypeGuard[list[str]]:
+    """Whether ``value`` is a list of strings, sorted and without duplicates."""
+    return (
+        isinstance(value, list)
+        and all(isinstance(item, str) for item in value)
+        and value == sorted(set(value))
+    )
+
+
 def _static_exclusions(symbols: Sequence[str], config: DataConfig) -> dict[str, str]:
     bases = frozenset(symbol.removesuffix("USDT") for symbol in symbols)
     reasons = {symbol: static_exclusion(symbol, bases, config) for symbol in symbols}
@@ -244,7 +257,7 @@ def _load_discovery(path: Path, config: DataConfig) -> _Discovery:
     if document.get("end_month") != config.end_month:
         raise ValueError(f"{path}: discovered up to {document.get('end_month')!r}, not end_month")
     symbols = document.get("symbols")
-    if not isinstance(symbols, list) or symbols != sorted(set(symbols)):
+    if not _sorted_strings(symbols):
         raise ValueError(f"{path}: symbols must be a sorted list without duplicates")
     exclusions = _static_exclusions(symbols, config)
     candidates = [symbol for symbol in symbols if symbol not in exclusions]
@@ -259,7 +272,7 @@ def _load_discovery(path: Path, config: DataConfig) -> _Discovery:
         if not isinstance(per_symbol, dict) or set(per_symbol) != set(candidates):
             raise ValueError(f"{path}: months[{kind}] must name exactly the candidates")
         for symbol, values in per_symbol.items():
-            if not isinstance(values, list) or values != sorted(set(values)):
+            if not _sorted_strings(values):
                 raise ValueError(f"{path}: months[{kind}][{symbol}] must be sorted and unique")
             for month in values:
                 refuse_after_end(month, config)
@@ -285,6 +298,25 @@ def _entry(path: Path, kind: str, raw: object, config: DataConfig) -> ManifestEn
     if type(entry.bytes) is not int or entry.bytes < 0:
         raise ValueError(f"{label}: bytes must be a non-negative int")
     return entry
+
+
+def _absent(path: Path, item: object, config: DataConfig) -> tuple[str, str]:
+    """One absent month, ``{"symbol": str, "month": "YYYY-MM"}`` with a month not after
+    ``end_month``, as (symbol, month); any other shape is a ``ValueError``."""
+    if (
+        not isinstance(item, dict)
+        or set(item) != {"symbol", "month"}
+        or not isinstance(item["symbol"], str)
+        or not isinstance(item["month"], str)
+    ):
+        raise ValueError(
+            f"{path}: an absent month must be {{symbol, month}}, both strings, got {item!r:.80}"
+        )
+    try:
+        refuse_after_end(item["month"], config)
+    except ValueError as exc:
+        raise ValueError(f"{path}: absent {item['symbol']} {item['month']!r}: {exc}") from exc
+    return item["symbol"], item["month"]
 
 
 def _load_piece(
@@ -318,11 +350,7 @@ def _load_piece(
         raise ValueError(f"{path}: the {kind} pieces mix shard counts {sorted(counts)}")
     if index in pieces:
         raise ValueError(f"{path}: a second {kind} piece for shard {index}/{count}")
-    if (
-        not isinstance(symbols, list)
-        or symbols != sorted(set(symbols))
-        or not set(symbols) <= set(discovery.candidates)
-    ):
+    if not _sorted_strings(symbols) or not set(symbols) <= set(discovery.candidates):
         raise ValueError(f"{path}: symbols must be sorted, unique candidates of the discovery")
     raw_entries, absent = piece.get("entries"), piece.get("absent")
     if not isinstance(raw_entries, list) or not isinstance(absent, list):
@@ -336,11 +364,10 @@ def _load_piece(
         found[key] = entry
         held[entry.symbol].append(entry.month)
     for item in absent:
-        if not isinstance(item, dict) or set(item) != {"symbol", "month"}:
-            raise ValueError(f"{path}: an absent month must be exactly {{symbol, month}}")
-        if item["symbol"] not in held:
-            raise ValueError(f"{path}: absent {item['symbol']!r} is outside the piece's symbols")
-        held[item["symbol"]].append(item["month"])
+        symbol, month = _absent(path, item, config)
+        if symbol not in held:
+            raise ValueError(f"{path}: absent {symbol!r} is outside the piece's symbols")
+        held[symbol].append(month)
     for symbol, held_months in held.items():
         discovered = discovery.months[kind][symbol]
         if len(held_months) != len(set(held_months)) or sorted(held_months) != list(discovered):
@@ -721,14 +748,14 @@ def select(args: argparse.Namespace, run: _Run) -> int:
     )
     _require_coverage(daily_pieces, "spot_1d", discovery.candidates, "candidates")
     daily = _daily_series(daily_pieces.entries, args.cache, run)
+    ranked = _ranked(_universes(discovery, daily, config, None))  # the candidates stage's
     if hourly_pieces is None:
-        ranked = _ranked(_universes(discovery, daily, config, None))
         _write_lines(args.out / "candidates.txt", ranked)
         _say(f"select candidates: {len(ranked)} symbols ranked in a top {HOURLY_RANK_DEPTH}")
         return 0
+    _require_coverage(hourly_pieces, "spot_1h", ranked, _RANKED)
     usable, _ = _usable_hours(hourly_pieces.entries, args.cache, run)
     universes = _universes(discovery, daily, config, usable)
-    _require_coverage(hourly_pieces, "spot_1h", _ranked(universes), "symbols ranked in a top 20")
     selected = sorted({symbol for universe in universes for symbol in universe.selected})
     _write_json(
         args.out / "universe.json",
@@ -752,13 +779,15 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
     _require_coverage(pieces, "spot_1d", discovery.candidates, "candidates")
     entries = pieces.entries
     daily = _daily_series(entries, cache, run)
+    ranked = _ranked(_universes(discovery, daily, config, None))  # the candidates stage's
+    for kind in HOURLY_KINDS:
+        _require_coverage(pieces, kind, ranked, _RANKED)
     # The spot hourly series of the symbols select-final selected are kept from the one read
     # that gives every candidate's usable hours; they are used only if the universes match.
     keep = frozenset(symbol for universe in expected for symbol in universe["selected"])
     usable, spot_series = _usable_hours(entries, cache, run, keep)
     universes = _universes(discovery, daily, config, usable)
-    for kind in HOURLY_KINDS:
-        _require_coverage(pieces, kind, _ranked(universes), "symbols ranked in a top 20")
+    del usable
     if _universe_document(universes) != expected:
         raise ValueError(
             f"{args.universe}: the universes recomputed here differ from select-final's, so "

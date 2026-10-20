@@ -178,7 +178,10 @@ class FakeBinance:
         return [url for url in self.requests if url.startswith(ARCHIVE)]
 
 
-def build_world() -> FakeBinance:
+def build_world(*, spot_january_days: int = 31) -> FakeBinance:
+    """The world above. With ``spot_january_days`` below 25, AAA's, BBB's and EEE's January
+    spot hourly bars stop more than 168 hours before 2024-02-01, so no candidate passes that
+    month's hourly check."""
     files: dict[str, bytes] = {}
 
     def put(kind: str, symbol: str, month: str, text: str | None = None) -> None:
@@ -206,8 +209,9 @@ def build_world() -> FakeBinance:
     put("spot_1d", "AAAUSDT", "2024-04", kline_csv(range(april, april + DAY, DAY), DAY, "1.5"))
 
     full_jan, full_feb = range(j0, f0, HOUR), range(f0, m0, HOUR)
+    spot_jan = range(j0, j0 + spot_january_days * DAY, HOUR)
     for symbol in ("AAAUSDT", "BBBUSDT", "EEEUSDT"):
-        put("spot_1h", symbol, JAN, kline_csv(full_jan, HOUR, HOURLY_QUOTE_VOLUME))
+        put("spot_1h", symbol, JAN, kline_csv(spot_jan, HOUR, HOURLY_QUOTE_VOLUME))
     duplicate = f0 + 9 * DAY + 5 * HOUR
     aaa_feb = [f0 - HOUR] + sorted([*full_feb, duplicate])
     put("spot_1h", "AAAUSDT", FEB, kline_csv(aaa_feb, HOUR, HOURLY_QUOTE_VOLUME))
@@ -572,6 +576,46 @@ def test_hourly_pieces_must_cover_every_symbol_ranked_in_a_top_20(tmp_path, caps
     pipeline.select_final(expect=1)
     assert "the spot_1h manifest pieces cover 4 symbols, not the 5" in pipeline.err[-1]
     assert "missing ['LATEUSDT']" in pipeline.err[-1]
+
+
+def test_hourly_pieces_cover_the_candidates_stage_ranking_not_the_final_one(tmp_path, capsys):
+    # No candidate passes the hourly check at 2024-02, so the final window opens at 2024-03,
+    # a month after the candidates stage's. EEE ranks in a top 20 only at 2024-02 (a dead
+    # market at 2024-03): it is in candidates.txt and the hourly pieces, but in no final
+    # ranking. A complete set of pieces must still be accepted.
+    pipeline = Pipeline(tmp_path, capsys, build_world(spot_january_days=20))
+    pipeline.run()
+    assert "EEEUSDT" in pipeline.candidates.read_text().split()
+    universes = json.loads((pipeline.final / "universe.json").read_text())["universes"]
+    assert [universe["month"] for universe in universes] == [END_MONTH]
+    assert "EEEUSDT" not in [symbol for symbol, _, _ in universes[0]["ranked"]]
+    assert manifest_months(pipeline.manifest_files("spot_1h"), "EEEUSDT") == [JAN, FEB]
+    data = json.loads((pipeline.data / "data.json").read_text())
+    assert data["universe_months"] == 1 and data["selected_symbols"] == 3
+
+
+@pytest.mark.parametrize(
+    "absent",
+    [
+        [{"symbol": ["BBBUSDT"], "month": "2024-01"}],  # an unhashable symbol
+        [{"symbol": "BBBUSDT", "month": 202401}],  # a month that is not a string
+        [{"symbol": "BBBUSDT", "month": "2024-13"}],  # not a month
+        [{"symbol": "BBBUSDT", "month": "2024-04"}],  # after end_month
+        [["BBBUSDT", "2024-01"]],  # not an object
+        ["BBBUSDT"],
+    ],
+)
+def test_a_malformed_absent_month_is_refused_with_a_clear_message(tmp_path, capsys, absent):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.discover()
+    pipeline.fetch("spot_1d", 1)
+    (path,) = pipeline.manifest_files("spot_1d")
+    piece = json.loads(path.read_text())
+    piece["absent"] = absent
+    path.write_text(json.dumps(piece))
+    pipeline.select_candidates(expect=1)
+    assert pipeline.err[-1].startswith("v4_data select: refused: ")
+    assert "absent" in pipeline.err[-1]
 
 
 def test_a_tampered_cached_archive_is_refused_not_reused(tmp_path, capsys):

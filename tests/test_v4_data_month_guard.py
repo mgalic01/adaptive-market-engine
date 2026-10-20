@@ -91,6 +91,22 @@ def test_a_file_named_for_a_month_after_end_month_fails(tmp_path, config, capsys
     assert "2 files are named for a month after end_month 2024-03" in output
 
 
+def test_a_folder_that_cannot_be_listed_fails_closed(tmp_path, config, capsys, monkeypatch):
+    root = tree(tmp_path / "v4", "data/data.json", "fetched/locked/AAAUSDT-1h-2024-09.zip")
+    scandir = v4_data_month_guard.os.scandir
+
+    def refuse_locked(path):
+        if Path(path).name == "locked":
+            raise PermissionError(13, "Permission denied", str(path))
+        return scandir(path)
+
+    # os.walk lists each folder with os.scandir; the locked one now cannot be listed.
+    monkeypatch.setattr(v4_data_month_guard.os, "scandir", refuse_locked)
+    code, output = guard(config, root, capsys)
+    assert code == 1
+    assert "could not check" in output and "Permission denied" in output
+
+
 def test_a_missing_folder_or_a_refused_config_fails(tmp_path, config, capsys):
     assert guard(config, tmp_path / "absent", capsys)[0] == 1
     bad = tmp_path / "bad.json"
