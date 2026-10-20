@@ -165,6 +165,7 @@ def hourly_args(**overrides: Any) -> dict[str, Any]:
             ("ETHUSDT", "spot"): (rules("1E-7"), "inferred"),
             ("BTCUSDT", "futures"): (rules("0.10"), "present_day"),
         },
+        "perpetuals": {"BTCUSDT": {"symbol": "BTCUSDT", "multiplier": 1}},
         "config_sha256": CONFIG_SHA,
     }
     return args | overrides
@@ -578,7 +579,124 @@ def test_hourly_pack_layout():
         "funding",
         "funding_months",
         "rules",
+        "perpetuals",
     }
+    assert document["perpetuals"] == {"BTCUSDT": {"symbol": "BTCUSDT", "multiplier": 1}}
+
+
+def multiplier_args(**overrides: Any) -> dict[str, Any]:
+    """BTC with its plain perpetual, SHIB with 1000SHIBUSDT and BABYDOGE with 1MBABYDOGEUSDT;
+    ETH has none. Every futures structure is keyed by the perpetual's own symbol."""
+    clean: tuple[list[int], dict[str, str]] = ([], {})
+    args = hourly_args()
+    args["manifest"] = [
+        *args["manifest"],
+        entry("futures_1h", "1000SHIBUSDT", "2025-01"),
+        entry("funding", "1000SHIBUSDT", "2025-01"),
+        entry("futures_1h", "1MBABYDOGEUSDT", "2025-01"),
+    ]
+    args["spot"] |= {"SHIBUSDT": [hour_bar(0, "0.00001234")], "BABYDOGEUSDT": [hour_bar(0)]}
+    args["futures"] |= {"1000SHIBUSDT": [hour_bar(0, "0.01234")], "1MBABYDOGEUSDT": [hour_bar(0)]}
+    for symbol, venue in [
+        ("SHIBUSDT", "spot"),
+        ("BABYDOGEUSDT", "spot"),
+        ("1000SHIBUSDT", "futures"),
+        ("1MBABYDOGEUSDT", "futures"),
+    ]:
+        args["masks"][(symbol, venue)] = clean
+        args["rules"][(symbol, venue)] = (rules(), "present_day")
+    args["funding"]["1000SHIBUSDT"] = [FundingRow(T0, D("0.00010000"), 8)]
+    args["funding_months"][("1000SHIBUSDT", "2025-01")] = "complete"
+    args["perpetuals"] = {
+        "BTCUSDT": {"symbol": "BTCUSDT", "multiplier": 1},
+        "SHIBUSDT": {"symbol": "1000SHIBUSDT", "multiplier": 1000},
+        "BABYDOGEUSDT": {"symbol": "1MBABYDOGEUSDT", "multiplier": 1_000_000},
+    }
+    return args | overrides
+
+
+def test_hourly_pack_records_each_perpetual_and_its_multiplier(tmp_path):
+    document = hourly_pack_document(**multiplier_args())
+
+    assert document["perpetuals"] == {
+        "BTCUSDT": {"symbol": "BTCUSDT", "multiplier": 1},
+        "SHIBUSDT": {"symbol": "1000SHIBUSDT", "multiplier": 1000},
+        "BABYDOGEUSDT": {"symbol": "1MBABYDOGEUSDT", "multiplier": 1_000_000},
+    }
+    assert sorted(document["spot"]) == ["BABYDOGEUSDT", "BTCUSDT", "ETHUSDT", "SHIBUSDT"]
+    assert sorted(document["futures"]) == ["1000SHIBUSDT", "1MBABYDOGEUSDT", "BTCUSDT"]
+    assert document["futures"]["1000SHIBUSDT"][0][4] == "0.01234"  # the perpetual's own price
+    assert {"1000SHIBUSDT|futures", "SHIBUSDT|spot"} <= set(document["masks"])
+    assert {"1000SHIBUSDT|futures", "SHIBUSDT|spot"} <= set(document["rules"])
+    assert document["funding_months"]["1000SHIBUSDT|2025-01"] == "complete"
+    path = tmp_path / "hourly.json.gz"
+    assert (
+        read_canonical(path, write_canonical(document, path))["perpetuals"]
+        == (document["perpetuals"])
+    )
+
+
+def shib(symbol: object = "1000SHIBUSDT", multiplier: object = 1000) -> dict[str, Any]:
+    """multiplier_args' perpetuals with SHIB's entry replaced."""
+    perpetuals = dict(multiplier_args()["perpetuals"])
+    perpetuals["SHIBUSDT"] = {"symbol": symbol, "multiplier": multiplier}
+    return perpetuals
+
+
+@pytest.mark.parametrize(
+    ("perpetuals", "why"),
+    [
+        (shib(multiplier=100), "multiplier must be one of"),
+        (shib(multiplier=True), "multiplier must be one of"),
+        (shib(multiplier="1000"), "multiplier must be one of"),
+        (shib(multiplier=1000.0), "multiplier must be one of"),
+        (shib("1MSHIBUSDT", 1000), "not SHIBUSDT's perpetual name for multiplier 1000"),
+        (shib("SHIBUSDT", 1000), "not SHIBUSDT's perpetual name for multiplier 1000"),
+        (shib("1000SHIBUSDT", 1), "not SHIBUSDT's perpetual name for multiplier 1"),
+        (shib("1000000SHIBUSDT", 10_000), "not SHIBUSDT's perpetual name for multiplier 10000"),
+        (shib(["1000SHIBUSDT"], 1000), "not SHIBUSDT's perpetual name"),
+        (
+            {
+                "BTCUSDT": {"symbol": "BTCUSDT", "multiplier": 1},
+                "SHIBUSDT": {"symbol": "1000SHIBUSDT", "multiplier": 1000},
+            },
+            r"futures series without a perpetual entry: \['1MBABYDOGEUSDT'\]",
+        ),
+        (
+            shib() | {"ETHUSDT": {"symbol": "ETHUSDT", "multiplier": 1}},
+            r"perpetual entries without a futures series: \['ETHUSDT'\]",
+        ),
+        (
+            shib() | {"XRPUSDT": {"symbol": "XRPUSDT", "multiplier": 1}},
+            "XRPUSDT is not a spot symbol of the pack",
+        ),
+        ({**shib(), "SHIBUSDT": ("1000SHIBUSDT", 1000)}, r"\{symbol, multiplier\}"),
+        (
+            {**shib(), "SHIBUSDT": {"symbol": "1000SHIBUSDT", "multiplier": 1000, "x": 1}},
+            r"\{symbol, multiplier\}",
+        ),
+        ([("SHIBUSDT", "1000SHIBUSDT")], "mapping"),
+    ],
+)
+def test_hourly_pack_refuses_a_perpetual_entry_that_breaks_the_naming_rule(perpetuals, why):
+    with pytest.raises(ValueError, match=why):
+        hourly_pack_document(**multiplier_args(perpetuals=perpetuals))
+
+
+def test_a_perpetual_left_out_of_the_pack_leaves_out_its_entry():
+    # Ruling P23: a perpetual with no readable bar is omitted, with its rules, masks, funding
+    # and its perpetuals entry; the coin's spot series stays.
+    args = multiplier_args()
+    del args["futures"]["1MBABYDOGEUSDT"]
+    del args["masks"][("1MBABYDOGEUSDT", "futures")]
+    del args["rules"][("1MBABYDOGEUSDT", "futures")]
+    with pytest.raises(
+        ValueError, match=r"perpetual entries without a futures series: \['1MBABYDOGEUSDT'\]"
+    ):
+        hourly_pack_document(**args)
+    del args["perpetuals"]["BABYDOGEUSDT"]
+    document = hourly_pack_document(**args)
+    assert "BABYDOGEUSDT" in document["spot"] and "BABYDOGEUSDT" not in document["perpetuals"]
 
 
 def test_documents_record_config_sha256_end_month_and_every_manifest_entry():

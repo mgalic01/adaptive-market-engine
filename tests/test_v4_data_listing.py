@@ -20,16 +20,19 @@ from crypto_grid_bot.v4.data.archives import HttpTransport, archive_path
 from crypto_grid_bot.v4.data.config import DataConfig, load_data_config
 from crypto_grid_bot.v4.data.listing import (
     ListingPage,
+    discover_futures_usdt_symbols,
     discover_months,
     discover_spot_usdt_symbols,
     list_all,
     parse_listing,
+    perpetual_for,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
 LISTING = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 KLINES = "data/spot/monthly/klines/"
+FUTURES_KLINES = "data/futures/um/monthly/klines/"
 KINDS = ("spot_1d", "spot_1h", "futures_1h", "funding")
 
 
@@ -577,6 +580,8 @@ def test_sleep_and_log_are_required_keywords(config):
     with pytest.raises(TypeError):
         discover_spot_usdt_symbols(bucket)  # type: ignore[call-arg]
     with pytest.raises(TypeError):
+        discover_futures_usdt_symbols(bucket)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
         discover_months(bucket, "spot_1d", "BTCUSDT", config)  # type: ignore[call-arg]
     with pytest.raises(TypeError):
         list_all(bucket, KLINES, kwargs["sleep"], kwargs["log"])  # type: ignore[misc]
@@ -795,6 +800,105 @@ def test_spot_usdt_symbols_of_an_empty_listing_is_empty():
 def test_the_symbols_prefix_is_the_prefix_of_the_spot_archive_paths():
     for kind in ("spot_1d", "spot_1h"):
         assert archive_path(kind, "BTCUSDT", "2020-01").startswith("/" + KLINES)
+
+
+# --- discover_futures_usdt_symbols and perpetual_for ---------------------------------------
+
+
+def test_futures_symbols_come_from_the_um_klines_prefixes():
+    # A delivery contract (BTCUSDT_240329), a USDC-margined perpetual, a symbol with no base and
+    # names the archive paths refuse are not USDT-M perpetual symbols; multiplier names are.
+    names = (
+        "ETHUSDT", "1000SHIBUSDT", "BTCUSDT", "1MBABYDOGEUSDT", "BTCUSDT_240329", "1000PEPEUSDC",
+        "USDT", "btcusdt", "X" * 40 + "USDT",
+    )  # fmt: skip
+    prefixes = [f"{FUTURES_KLINES}{name}/" for name in names]
+    bucket = FakeBucket(
+        {
+            url_of(FUTURES_KLINES): listing_xml(
+                prefixes=[*prefixes, f"{KLINES}SOLUSDT/"],
+                keys=[f"{FUTURES_KLINES}XRPUSDT/readme"],
+                requested=FUTURES_KLINES,
+            )
+        }
+    )
+
+    symbols = discover_futures_usdt_symbols(bucket, **no_wait())
+
+    assert symbols == ("1000SHIBUSDT", "1MBABYDOGEUSDT", "BTCUSDT", "ETHUSDT")
+    assert bucket.requests == [url_of(FUTURES_KLINES)]
+    archives._size_limit(bucket.requests[0])  # a URL the real transport's allowlist accepts
+    for symbol in symbols:  # each is usable for a later request of either futures kind
+        archive_path("futures_1h", symbol, "2020-01")
+        archive_path("funding", symbol, "2020-01")
+    assert archive_path("futures_1h", "BTCUSDT", "2020-01").startswith("/" + FUTURES_KLINES)
+
+
+def test_futures_symbol_discovery_retries_a_transient_failure():
+    transport = ScriptedTransport(
+        [caused_by(TimeoutError("slow")), listing_xml(prefixes=[f"{FUTURES_KLINES}BTCUSDT/"])]
+    )
+    recorder = Recorder()
+
+    assert discover_futures_usdt_symbols(transport, **recorder.kwargs) == ("BTCUSDT",)
+    assert recorder.sleeps == [1]
+
+
+def test_perpetual_for_prefers_the_plain_symbol_then_a_unique_prefix():
+    futures = frozenset(
+        {
+            "BTCUSDT",
+            "1000BTCUSDT",  # the plain BTCUSDT comes first
+            "1000SHIBUSDT",
+            "1000SHIBUSDC",  # not USDT-margined, never a match
+            "1MBABYDOGEUSDT",
+            "1000000MOGUSDT",
+            "10000LADYSUSDT",
+            "100000AIDOGEUSDT",
+            "1000XECUSDT",
+            "1000XUSDT",
+            "1000DOGUSDT",
+            "1MDOGUSDT",  # a second prefixed match for DOG
+            "10000CATUSDT",
+            "100000CATUSDT",  # likewise for CAT
+            "1000SATSUSDT",
+        }
+    )
+
+    assert perpetual_for("SHIBUSDT", futures) == ("1000SHIBUSDT", 1000)
+    assert perpetual_for("BABYDOGEUSDT", futures) == ("1MBABYDOGEUSDT", 1_000_000)
+    assert perpetual_for("MOGUSDT", futures) == ("1000000MOGUSDT", 1_000_000)
+    assert perpetual_for("LADYSUSDT", futures) == ("10000LADYSUSDT", 10_000)
+    assert perpetual_for("AIDOGEUSDT", futures) == ("100000AIDOGEUSDT", 100_000)
+    assert perpetual_for("BTCUSDT", futures) == ("BTCUSDT", 1)
+    # A coin whose own name has a multiplier prefix is its own plain perpetual.
+    assert perpetual_for("1000SATSUSDT", futures) == ("1000SATSUSDT", 1)
+    # The prefixed name is built from the base, never found by stripping a prefix: X's
+    # perpetual is 1000XUSDT, and XEC's is 1000XECUSDT.
+    assert perpetual_for("XUSDT", futures) == ("1000XUSDT", 1000)
+    assert perpetual_for("XECUSDT", futures) == ("1000XECUSDT", 1000)
+    assert perpetual_for("XUSDT", futures - {"1000XUSDT"}) is None
+    assert perpetual_for("ECUSDT", futures) is None
+    # No match, or two prefixed matches: no perpetual.
+    assert perpetual_for("ETHUSDT", futures) is None
+    assert perpetual_for("DOGUSDT", futures) is None
+    assert perpetual_for("CATUSDT", futures) is None
+    assert perpetual_for("SHIBUSDT", ()) is None
+    assert perpetual_for("SHIBUSDT", ("1000SHIBUSDT",)) == ("1000SHIBUSDT", 1000)
+
+
+@pytest.mark.parametrize(
+    "symbol", ["SHIB", "USDT", "shibusdt", "SHIB-USDT", "X" * 40 + "USDT", "SHIBBUSD", None, 1]
+)
+def test_perpetual_for_refuses_what_is_not_a_spot_usdt_symbol(symbol):
+    with pytest.raises(ValueError, match="spot USDT symbol"):
+        perpetual_for(symbol, {"1000SHIBUSDT"})
+
+
+def test_perpetual_for_refuses_one_string_as_the_futures_symbols():
+    # "SHIBUSDT" in "1000SHIBUSDT" is a substring test, which would wrongly find SHIBUSDT.
+    with pytest.raises(ValueError, match="not one string"):
+        perpetual_for("SHIBUSDT", "1000SHIBUSDT")
 
 
 # --- discover_months ----------------------------------------------------------------------

@@ -3,8 +3,12 @@
 Binance publishes its archive tree as the S3 bucket ``data.binance.vision``. A listing of a
 prefix (``delimiter=/``) names the sub-directories under it (``CommonPrefixes``) and the files
 in it (``Contents``), at most 1000 entries a page. ``list_all`` follows the pages and merges
-them; ``discover_spot_usdt_symbols`` reads the spot klines directories, delisted symbols
-included, and ``discover_months`` reads one symbol's archive file names for one kind.
+them; ``discover_spot_usdt_symbols`` and ``discover_futures_usdt_symbols`` read the spot and
+USDT-M futures klines directories, delisted symbols included, and ``discover_months`` reads one
+symbol's archive file names for one kind. ``perpetual_for`` names a coin's perpetual among the
+futures symbols, by the spec's rule ("Data"): the plain ``XUSDT``, else the one symbol with a
+contract-multiplier prefix (1000SHIBUSDT is 1000 SHIB); ``checked_perpetual`` checks a recorded
+one against the same rule.
 
 Everything here goes through a ``Transport``, so the only network access is the one
 ``archives.HttpTransport`` allows: the bucket listing query, nothing else. Each page request is
@@ -18,9 +22,10 @@ leveraged tokens), so ``discover_spot_usdt_symbols`` keeps them.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from itertools import chain
+from typing import TypeGuard
 from urllib.parse import quote
 from xml.etree import ElementTree
 
@@ -34,6 +39,17 @@ from crypto_grid_bot.v4.data.archives import (
 from crypto_grid_bot.v4.data.config import DataConfig, refuse_after_end
 
 SPOT_KLINES_PREFIX = "data/spot/monthly/klines/"
+FUTURES_KLINES_PREFIX = "data/futures/um/monthly/klines/"
+# The contract-multiplier prefixes of USDT-M perpetuals, and how many coins one unit of each is
+# (spec, "Data"): 1000SHIBUSDT is 1000 SHIB, 1MBABYDOGEUSDT a million BABYDOGE.
+PERPETUAL_PREFIXES = (
+    ("1000", 1_000),
+    ("10000", 10_000),
+    ("100000", 100_000),
+    ("1000000", 1_000_000),
+    ("1M", 1_000_000),
+)
+MULTIPLIERS = (1, 1_000, 10_000, 100_000, 1_000_000)
 # S3 lists 1000 entries a page, so this is ten million entries: far more than the bucket holds.
 # A listing that needs more pages is refused instead of looped over.
 MAX_LISTING_PAGES = 10_000
@@ -44,7 +60,7 @@ _S3 = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 _SYMBOL = r"[A-Z0-9]{2,30}"
 _MONTH = r"[0-9]{4}-(?:0[1-9]|1[0-2])"
 _PREFIX = re.compile(r"data/[A-Za-z0-9._/-]*")
-_SPOT_SYMBOL_DIR = re.compile(rf"{re.escape(SPOT_KLINES_PREFIX)}({_SYMBOL})/")
+_SYMBOL_RE = re.compile(_SYMBOL)
 _QUOTE = "USDT"
 # A month used only to have archive_path spell out one kind's directory and file name.
 _SAMPLE_MONTH = "2000-01"
@@ -193,6 +209,32 @@ def list_all(
     raise ValueError(f"the listing of {prefix} needs more than {MAX_LISTING_PAGES} pages")
 
 
+def _is_usdt_symbol(symbol: object) -> TypeGuard[str]:
+    """Whether ``symbol`` is a name ``archive_path`` accepts that ends in ``USDT`` after a base."""
+    return (
+        isinstance(symbol, str)
+        and _SYMBOL_RE.fullmatch(symbol) is not None
+        and symbol.endswith(_QUOTE)
+        and len(symbol) > len(_QUOTE)
+    )
+
+
+def _usdt_symbols(
+    transport: Transport,
+    prefix: str,
+    sleep: Callable[[float], None],
+    log: Callable[[str], None],
+) -> tuple[str, ...]:
+    """Every USDT symbol with a directory directly under ``prefix``, sorted."""
+    directory = re.compile(rf"{re.escape(prefix)}({_SYMBOL})/")
+    symbols: set[str] = set()
+    for entry in list_all(transport, prefix, sleep=sleep, log=log).prefixes:
+        match = directory.fullmatch(entry)
+        if match is not None and _is_usdt_symbol(match.group(1)):
+            symbols.add(match.group(1))
+    return tuple(sorted(symbols))
+
+
 def discover_spot_usdt_symbols(
     transport: Transport,
     *,
@@ -205,14 +247,83 @@ def discover_spot_usdt_symbols(
     leveraged tokens and stablecoins are kept, for the universe step to exclude. Page requests
     are retried as in ``list_all``.
     """
-    symbols: set[str] = set()
-    for directory in list_all(transport, SPOT_KLINES_PREFIX, sleep=sleep, log=log).prefixes:
-        match = _SPOT_SYMBOL_DIR.fullmatch(directory)
-        if match is not None:
-            symbol = match.group(1)
-            if symbol.endswith(_QUOTE) and len(symbol) > len(_QUOTE):
-                symbols.add(symbol)
-    return tuple(sorted(symbols))
+    return _usdt_symbols(transport, SPOT_KLINES_PREFIX, sleep, log)
+
+
+def discover_futures_usdt_symbols(
+    transport: Transport,
+    *,
+    sleep: Callable[[float], None],
+    log: Callable[[str], None],
+) -> tuple[str, ...]:
+    """Every USDT-M futures symbol ending in ``USDT`` with a monthly klines directory, sorted;
+    delisted ones and multiplier contracts (``1000SHIBUSDT``) included.
+
+    The rule is the spot one: a name ``archive_path`` accepts, ending in ``USDT`` after a base.
+    So a delivery contract (``BTCUSDT_240329``) and a USDC-margined perpetual go. Page requests
+    are retried as in ``list_all``.
+    """
+    return _usdt_symbols(transport, FUTURES_KLINES_PREFIX, sleep, log)
+
+
+def _perpetual_names(spot_symbol: object) -> tuple[str, tuple[tuple[str, int], ...]]:
+    """A spot USDT symbol's plain perpetual name, and each multiplier name with its multiplier;
+    every one is built from the coin's base, never found by stripping a prefix."""
+    if not _is_usdt_symbol(spot_symbol):
+        raise ValueError(
+            f"a spot USDT symbol is required (a base, then USDT, {_SYMBOL} in all), "
+            f"got {spot_symbol!r:.80}"
+        )
+    base = spot_symbol.removesuffix(_QUOTE)
+    prefixed = tuple((f"{prefix}{base}{_QUOTE}", m) for prefix, m in PERPETUAL_PREFIXES)
+    return f"{base}{_QUOTE}", prefixed
+
+
+def perpetual_for(spot_symbol: str, futures_symbols: Collection[str]) -> tuple[str, int] | None:
+    """The coin's USDT-M perpetual among ``futures_symbols`` and its multiplier, or None.
+
+    The spec's rule ("Data"): the plain ``XUSDT`` if it is listed, multiplier 1. Otherwise the
+    one listed ``P + X + "USDT"`` whose prefix P is one of ``PERPETUAL_PREFIXES`` (``1000`` to
+    ``1000000``, or ``1M``), with that prefix's multiplier. With no such symbol, or more than
+    one, the coin has no perpetual. A prefixed name is built from the coin's base, so
+    ``1000XUSDT`` is X's perpetual, never XEC's. A ``spot_symbol`` that is not a USDT symbol
+    ``archive_path`` accepts (a base, then ``USDT``) is a ``ValueError``, and so is a string
+    given as ``futures_symbols`` (``in`` would match substrings).
+    """
+    if isinstance(futures_symbols, str):
+        raise ValueError("futures_symbols must be a collection of symbols, not one string")
+    plain, prefixed = _perpetual_names(spot_symbol)
+    if plain in futures_symbols:
+        return plain, 1
+    matches = [(name, multiplier) for name, multiplier in prefixed if name in futures_symbols]
+    return matches[0] if len(matches) == 1 else None
+
+
+def checked_perpetual(spot_symbol: str, entry: object) -> tuple[str, int]:
+    """A coin's recorded perpetual, ``{"symbol": ..., "multiplier": ...}``, as (symbol,
+    multiplier), once it is a name ``perpetual_for`` could give the coin.
+
+    The multiplier is one of ``MULTIPLIERS`` (an int, never a bool); 1 goes with the plain name
+    ``X + "USDT"``, and any other with ``P + X + "USDT"`` for a prefix P of that multiplier.
+    Anything else is a ``ValueError``. Whether the futures archive lists the name is not
+    checked here.
+    """
+    if not isinstance(entry, Mapping) or set(entry) != {"symbol", "multiplier"}:
+        raise ValueError(
+            f"{spot_symbol}'s perpetual must be {{symbol, multiplier}}, got {entry!r:.80}"
+        )
+    symbol, multiplier = entry["symbol"], entry["multiplier"]
+    if type(multiplier) is not int or multiplier not in MULTIPLIERS:
+        raise ValueError(
+            f"{spot_symbol}'s perpetual multiplier must be one of "
+            f"{', '.join(map(str, MULTIPLIERS))}, got {multiplier!r:.40}"
+        )
+    plain, prefixed = _perpetual_names(spot_symbol)
+    if (symbol, multiplier) != (plain, 1) and (symbol, multiplier) not in prefixed:
+        raise ValueError(
+            f"{symbol!r:.40} is not {spot_symbol}'s perpetual name for multiplier {multiplier}"
+        )
+    return symbol, multiplier
 
 
 def discover_months(

@@ -29,9 +29,14 @@ archive the pack was built from as ``{kind, symbol, month, path, sha256, bytes}`
 * hourly: ``spot`` and ``futures`` (symbol -> rows ``[open_ms, open, high, low, close, volume,
   quote_volume]``), ``masks``, ``funding`` (symbol -> rows ``[time_ms, rate, interval_hours]``),
   ``funding_months`` (``"SYMBOL|YYYY-MM"`` -> ``"complete"``, a failure reason of
-  ``funding_month_status``, ``"missing_file"`` or ``"unreadable_file"``) and ``rules``
+  ``funding_month_status``, ``"missing_file"`` or ``"unreadable_file"``), ``rules``
   (``"SYMBOL|venue"`` -> ``{source, step, min_qty, max_qty, min_notional, tick}`` with
-  ``source`` ``"present_day"`` or ``"inferred"``).
+  ``source`` ``"present_day"`` or ``"inferred"``) and ``perpetuals`` (spot symbol ->
+  ``{"symbol": perpetual, "multiplier": int}`` for every coin of the pack with a futures
+  series). ``spot`` is keyed by the coin's spot symbol; ``futures``, ``funding``,
+  ``funding_months`` and the futures ``masks`` and ``rules`` by the perpetual's own symbol, the
+  name of its archives, which for a multiplier contract is not the coin's (1000SHIBUSDT is
+  SHIBUSDT's perpetual, one unit 1000 SHIB, its prices and filters in those units).
 
 ``masks`` maps each series to ``{"masked": [sorted unique interval opens, ms], "unreadable":
 {"YYYY-MM": reason}}``: by symbol in the daily pack, by ``"SYMBOL|venue"`` in the hourly one
@@ -70,6 +75,7 @@ from crypto_grid_bot.v4.data.archives import ManifestEntry, archive_path
 from crypto_grid_bot.v4.data.bars import DailyBar, FundingRow, HourBar
 from crypto_grid_bot.v4.data.config import DataConfig, refuse_after_end
 from crypto_grid_bot.v4.data.filters import Source
+from crypto_grid_bot.v4.data.listing import checked_perpetual
 from crypto_grid_bot.v4.data.universe import MonthlyUniverse
 
 DAILY_FORMAT = "v4-daily-pack/1"
@@ -209,6 +215,7 @@ def hourly_pack_document(
     funding_months: Mapping[tuple[str, str], str],
     rules: Mapping[tuple[str, str], tuple[VenueRules, str]],
     *,
+    perpetuals: Mapping[str, Mapping[str, object]],
     config_sha256: str,
 ) -> dict[str, Any]:
     """The hourly pack's document (``"v4-hourly-pack/1"``; the module docstring has the layout).
@@ -216,6 +223,10 @@ def hourly_pack_document(
     ``masks`` and ``rules`` are keyed by (symbol, venue) and must name exactly the series of
     ``spot`` and ``futures``. ``funding`` and ``funding_months`` (keyed by (symbol, month),
     one per month of the perpetual's kline trading span) are for symbols that have futures.
+    ``perpetuals`` maps a coin of ``spot`` to its perpetual, ``{"symbol": ..., "multiplier":
+    ...}``, a name the spec's rule gives it (``listing.checked_perpetual``); its perpetuals are
+    exactly the symbols of ``futures``, so every futures key of ``futures``, ``masks``,
+    ``rules``, ``funding`` and ``funding_months`` has an entry.
     """
     with localcontext(Context()):  # str() reads the context's exponent letter case
         header = _header(config, config_sha256, manifest)
@@ -239,6 +250,7 @@ def hourly_pack_document(
             "funding": _funding(funding, futures),
             "funding_months": _funding_months(funding_months, futures, config),
             "rules": _rules(_by_series(rules, "rules"), series),
+            "perpetuals": _perpetuals(perpetuals, spot, futures),
         }
 
 
@@ -561,6 +573,36 @@ def _funding_months(
         if symbol not in futures:
             raise ValueError(f"funding_months {symbol}: funding is for symbols that have futures")
         document[f"{symbol}|{month}"] = status
+    return document
+
+
+def _perpetuals(
+    perpetuals: Mapping[str, Mapping[str, object]],
+    spot: Mapping[str, Sequence[HourBar]],
+    futures: Mapping[str, Sequence[HourBar]],
+) -> dict[str, dict[str, object]]:
+    """Each coin's perpetual as ``{"symbol": ..., "multiplier": ...}``: the coin is a spot
+    symbol of the pack, the name is one the spec's rule gives it, and the perpetuals are
+    exactly the futures series (a perpetual left out of the pack leaves out its entry)."""
+    if not isinstance(perpetuals, Mapping):
+        raise ValueError("perpetuals: a mapping of spot symbol -> {symbol, multiplier} required")
+    document: dict[str, dict[str, object]] = {}
+    for coin, entry in perpetuals.items():
+        _symbol(coin, "perpetuals")
+        if coin not in spot:
+            raise ValueError(f"perpetuals: {coin} is not a spot symbol of the pack")
+        try:
+            symbol, multiplier = checked_perpetual(coin, entry)
+        except ValueError as exc:
+            raise ValueError(f"perpetuals: {exc}") from exc
+        document[coin] = {"symbol": symbol, "multiplier": multiplier}
+    held = {str(entry["symbol"]) for entry in document.values()}
+    if held != set(futures):
+        raise ValueError(
+            f"perpetuals: futures series without a perpetual entry: "
+            f"{sorted(set(futures) - held)}; perpetual entries without a futures series: "
+            f"{sorted(held - set(futures))}"
+        )
     return document
 
 

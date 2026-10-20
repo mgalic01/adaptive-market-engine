@@ -3,17 +3,24 @@
 ``.github/workflows/v4-data.yml`` runs these stages on GitHub's machines (no heavy work runs on
 the owner's PC); each stage reads the files the stages before it wrote:
 
-* ``discover --out D`` lists every spot USDT symbol the archive holds, delisted ones included,
-  and writes ``D/symbols.json``: the symbols, the candidates (those ``static_exclusion`` does
-  not exclude), the exclusions (symbol -> reason) and, per kind and candidate, the months the
-  archive lists up to ``end_month``.
+* ``discover --out D`` lists every spot and USDT-M futures USDT symbol the archive holds,
+  delisted ones included, and writes ``D/symbols.json``: the symbols, the candidates (those
+  ``static_exclusion`` does not exclude), the exclusions (symbol -> reason), each candidate's
+  perpetual (candidate -> ``{"symbol", "multiplier"}``, by ``perpetual_for``: the plain
+  ``XUSDT``, else the one multiplier contract such as 1000SHIBUSDT; only for candidates that
+  have one) and, per kind, the months the archive lists up to ``end_month``: for each candidate
+  under its own symbol for the spot kinds, and under its perpetual's symbol for ``futures_1h``
+  and ``funding``.
 * ``fetch --kind K --discovery D/symbols.json [--symbols-file F] --shard i/n --cache C --out O``
   downloads and verifies (``fetch_verified``: Binance's ``.CHECKSUM``) every listed month of
   kind K for shard i of n of the symbols, stores each archive at ``C/<archive path>`` and
   writes the manifest piece ``O/manifest-K-i.json``: the shard's symbols, the entries, and
   under ``absent`` each listed month the host does not have (404). The symbols are those in F,
   one per line (``candidates.txt``), which an hourly kind requires; ``spot_1d`` takes every
-  candidate without F. A shard is every n-th symbol of the sorted list, from index i.
+  candidate without F. A shard is every n-th symbol of the sorted list, from index i, for every
+  kind, so the pieces of all kinds line up. For ``futures_1h`` and ``funding`` each symbol's
+  archives are its perpetual's, fetched and recorded (entries and absent months) under the
+  perpetual's symbol; a symbol without a perpetual has none.
 * ``select --stage candidates`` writes ``candidates.txt``: every symbol ranked in a top 20
   (``HOURLY_RANK_DEPTH``) in any month, from the daily archives with no hourly check. The
   hourly fetch takes every listed month of each, its whole history.
@@ -22,17 +29,21 @@ the owner's PC); each stage reads the files the stages before it wrote:
 * ``pack --universe U`` writes ``daily.pack.json.gz``, ``hourly.pack.json.gz`` and
   ``data.json`` (the pins). It recomputes the final universes from the same archives and
   stops unless they equal ``select --stage final``'s ``universe.json`` (U). The hourly pack
-  holds the whole history of every symbol ever selected. Each pack's manifest lists exactly
+  holds the whole history of every symbol ever selected, with ``perpetuals`` (coin ->
+  ``{"symbol", "multiplier"}``): its spot side is keyed by the coin's symbol, and its futures
+  series, funding, funding months, futures masks and futures rules by the perpetual's own
+  symbol, under which the present-day filters are looked up. Each pack's manifest lists exactly
   the archives read for it: the daily pack's includes every candidate's spot hourly archives,
   which the universes' hourly check read, and the funding archives of a perpetual left out
   of the hourly pack are read by neither.
 
 A stage refuses an incomplete or inconsistent set of manifest pieces: for each kind, the pieces
 must be shards 0 to n-1 of one n, partitioning their symbols as ``fetch`` does, and each
-symbol's entries and absent months must be exactly its discovered months. The daily pieces
-must cover every candidate, and the hourly ones every symbol the candidates stage ranked in a
-top 20 (``candidates.txt``), checked from the daily archives before any hourly one is read. A
-symbol excluded whatever its prices is fetched for no kind; the daily pack records its reason.
+symbol's entries and absent months must be exactly its discovered months (for a futures kind,
+each perpetual's, under its own symbol). The daily pieces must cover every candidate, and the
+hourly ones every symbol the candidates stage ranked in a top 20 (``candidates.txt``), checked
+from the daily archives before any hourly one is read. A symbol excluded whatever its prices
+is fetched for no kind; the daily pack records its reason.
 ``select`` and ``pack`` read each archive from ``--cache`` only once it matches its manifest
 entry's SHA-256 and size; one missing from the cache is fetched again by that pin
 (``fetch_pinned``). Every stage but ``discover`` takes ``--discovery``. ``--config`` (before
@@ -45,10 +56,12 @@ unreadable archive masks its whole month (P12); every discovered symbol is a key
 input (Task 5) and the input is sorted (P18); a funding file that cannot be read is
 ``"unreadable_file"`` (P13), and the funding months run over the perpetual's span of unmasked
 hourly bars, a month without a file being ``"complete"`` only if it holds no slot (P15, P16); a
-futures series with no readable bar is left out with its rules, masks and funding, and a pack
-whose canonical JSON exceeds 1.5 GiB stops for a ruling on splitting it (P23); order rules come
-only for the hourly pack's series, and a refusal stops the pack (P20); the filter snapshots must
-match their pins (R3).
+futures series with no readable bar is left out with its rules, masks, funding and
+``perpetuals`` entry, and a pack whose canonical JSON exceeds 1.5 GiB stops for a ruling on
+splitting it (P23); order rules come only for the hourly pack's series, and a refusal stops the
+pack (P20); the filter snapshots must match their pins (R3). Two candidates with the same
+perpetual stop ``discover`` for a ruling. The loading helpers are in
+``crypto_grid_bot.v4.data.inputs``.
 
 Standard output carries counts, sizes and pins only, never a bar value (owner rule: public
 logs); retries are logged to standard error. A refusal exits 1 with its reason on standard
@@ -81,8 +94,10 @@ from crypto_grid_bot.v4.data.filters import rules_for
 from crypto_grid_bot.v4.data.inputs import (
     _HOUR_MS,
     DISCOVERY_FORMAT,
+    FUTURES_KINDS,
     MANIFEST_FORMAT,
     UNIVERSE_FORMAT,
+    _archive_symbols,
     _daily_series,
     _funding,
     _grouped,
@@ -100,10 +115,16 @@ from crypto_grid_bot.v4.data.inputs import (
     _store,
     _universe_document,
     _universes,
+    _unshared,
     _usable_hours,
     parse_shard,
 )
-from crypto_grid_bot.v4.data.listing import discover_months, discover_spot_usdt_symbols
+from crypto_grid_bot.v4.data.listing import (
+    discover_futures_usdt_symbols,
+    discover_months,
+    discover_spot_usdt_symbols,
+    perpetual_for,
+)
 from crypto_grid_bot.v4.data.pack import daily_pack_document, hourly_pack_document, write_canonical
 from crypto_grid_bot.v4.data.universe import HOURLY_RANK_DEPTH
 
@@ -126,6 +147,11 @@ _RANKED = "symbols the candidates stage ranked in a top 20"
 def _say(line: str) -> None:
     """A line of standard output: counts, sizes and pins only."""
     print(line, flush=True)
+
+
+def _multipliers(count: int) -> str:
+    """How many of the perpetuals just counted are multiplier contracts, as words."""
+    return f"{count} of them " + ("a multiplier contract" if count == 1 else "multiplier contracts")
 
 
 def shard_symbols(symbols: Iterable[str], index: int, count: int) -> list[str]:
@@ -214,12 +240,21 @@ def discover(args: argparse.Namespace, run: _Run) -> int:
     symbols = discover_spot_usdt_symbols(run.transport, sleep=run.sleep, log=_log)
     exclusions = _static_exclusions(symbols, run.config)
     candidates = [symbol for symbol in symbols if symbol not in exclusions]
+    futures_symbols = frozenset(
+        discover_futures_usdt_symbols(run.transport, sleep=run.sleep, log=_log)
+    )
+    perpetuals = {
+        symbol: perpetual
+        for symbol in candidates
+        if (perpetual := perpetual_for(symbol, futures_symbols)) is not None
+    }
+    _unshared(perpetuals)
     listed = {
         kind: {
-            symbol: list(
-                discover_months(run.transport, kind, symbol, run.config, sleep=run.sleep, log=_log)
+            name: list(
+                discover_months(run.transport, kind, name, run.config, sleep=run.sleep, log=_log)
             )
-            for symbol in candidates
+            for name in _archive_symbols(kind, candidates, perpetuals)
         }
         for kind in KINDS
     }
@@ -231,6 +266,10 @@ def discover(args: argparse.Namespace, run: _Run) -> int:
             "symbols": list(symbols),
             "candidates": candidates,
             "exclusions": exclusions,
+            "perpetuals": {
+                symbol: {"symbol": perpetual, "multiplier": multiplier}
+                for symbol, (perpetual, multiplier) in perpetuals.items()
+            },
             "months": listed,
         },
     )
@@ -239,6 +278,11 @@ def discover(args: argparse.Namespace, run: _Run) -> int:
     _say(
         f"discover: {len(symbols)} spot USDT symbols, {len(candidates)} candidates, "
         f"{len(exclusions)} excluded whatever their prices ({counts or 'none'})"
+    )
+    multipliers = sum(multiplier != 1 for _, multiplier in perpetuals.values())
+    _say(
+        f"discover: {len(futures_symbols)} futures USDT symbols, {len(perpetuals)} candidates "
+        f"with a perpetual, {_multipliers(multipliers)}"
     )
     for kind in KINDS:
         holding = [values for values in listed[kind].values() if values]
@@ -259,9 +303,10 @@ def fetch(args: argparse.Namespace, run: _Run) -> int:
         if len(set(symbols)) != len(symbols) or unknown:
             raise ValueError(f"{args.symbols_file}: duplicate or non-candidate symbols {unknown}")
     mine = shard_symbols(symbols, index, count)
+    names = _archive_symbols(args.kind, mine, discovery.perpetuals)  # a perpetual's own name
     entries: list[ManifestEntry] = []
     absent: list[dict[str, str]] = []
-    for symbol in mine:
+    for symbol in names:
         for month in discovery.months[args.kind][symbol]:
             result = fetch_verified(
                 run.transport, args.kind, symbol, month, run.config, sleep=run.sleep, log=_log
@@ -284,8 +329,9 @@ def fetch(args: argparse.Namespace, run: _Run) -> int:
         },
     )
     size = sum(entry.bytes for entry in entries)
+    held = f" ({len(names)} with a perpetual)" if args.kind in FUTURES_KINDS else ""
     _say(
-        f"fetch {args.kind} shard {index}/{count}: {len(mine)} symbols, "
+        f"fetch {args.kind} shard {index}/{count}: {len(mine)} symbols{held}, "
         f"{len(entries)} archives ({size} bytes), {len(absent)} absent"
     )
     return 0
@@ -366,35 +412,44 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
     )
     del daily  # the daily bars are not needed past their pack
 
+    # Futures and funding archives, and so every futures structure, are keyed by the perpetual.
     futures_entries, funding_entries = _grouped(entries, "futures_1h"), _grouped(entries, "funding")
+    perpetuals = {s: discovery.perpetuals[s] for s in selected if s in discovery.perpetuals}
     spot: dict[str, tuple[HourBar, ...]] = {}
     futures: dict[str, tuple[HourBar, ...]] = {}
     masks: dict[tuple[str, str], tuple[list[int], dict[str, str]]] = {}
     funding: dict[str, list[FundingRow]] = {}
     funding_months: dict[tuple[str, str], str] = {}
+    packed: dict[str, dict[str, object]] = {}  # coin -> its perpetual, for the hourly pack
     for symbol in selected:
         spot_read = spot_series.pop(symbol)
         spot[symbol], masks[(symbol, "spot")] = spot_read.bars, spot_read.masks()
-        perpetual = _read_series(
-            futures_entries.get(symbol, []), cache, run, _read_futures_hours, _HOUR_MS
-        )
-        if not perpetual.bars:  # no futures market in the data (ruling P23)
+        if symbol not in perpetuals:
             continue
-        futures[symbol], masks[(symbol, "futures")] = perpetual.bars, perpetual.masks()
-        funding[symbol], statuses = _funding(
-            symbol, perpetual, funding_entries.get(symbol, []), cache, run
+        perpetual, multiplier = perpetuals[symbol]
+        futures_read = _read_series(
+            futures_entries.get(perpetual, []), cache, run, _read_futures_hours, _HOUR_MS
+        )
+        if not futures_read.bars:  # no futures market in the data, so no entry (ruling P23)
+            continue
+        futures[perpetual], masks[(perpetual, "futures")] = futures_read.bars, futures_read.masks()
+        funding[perpetual], statuses = _funding(
+            perpetual, futures_read, funding_entries.get(perpetual, []), cache, run
         )
         funding_months |= statuses
+        packed[symbol] = {"symbol": perpetual, "multiplier": multiplier}
     rules = {
         (symbol, venue): _rules(symbol, venue, snapshots[venue], bars)
         for venue, series in (("spot", spot), ("futures", futures))
         for symbol, bars in series.items()
     }
     # Exactly the archives read for this pack: an omitted perpetual's funding files never are.
+    read_futures = {perpetual for perpetual, _ in perpetuals.values()}
     hourly_manifest = [
         e
         for e in entries
-        if (e.kind in ("spot_1h", "futures_1h") and e.symbol in spot)
+        if (e.kind == "spot_1h" and e.symbol in spot)
+        or (e.kind == "futures_1h" and e.symbol in read_futures)
         or (e.kind == "funding" and e.symbol in futures)
     ]
     packs["hourly"] = _write_pack(
@@ -408,9 +463,11 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
             funding,
             funding_months,
             rules,
+            perpetuals=packed,
             config_sha256=run.config_sha256,
         ),
     )
+    multipliers = sum(entry["multiplier"] != 1 for entry in packed.values())
     _write_json(
         args.out / "data.json",
         {
@@ -422,11 +479,12 @@ def pack(args: argparse.Namespace, run: _Run) -> int:
             "universe_months": len(universes),
             "selected_symbols": len(selected),
             "perpetuals": len(futures),
+            "multiplier_perpetuals": multipliers,
         },
     )
     _say(
         f"pack: {len(universes)} universe months, {len(selected)} symbols ever selected, "
-        f"{len(futures)} with a perpetual, {len(entries)} archives"
+        f"{len(futures)} with a perpetual, {_multipliers(multipliers)}, {len(entries)} archives"
     )
     return 0
 

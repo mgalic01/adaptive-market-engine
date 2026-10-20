@@ -18,6 +18,9 @@ The world, symbol by symbol (quote volumes rank them in this order):
   of recent hourly bars;
 * EEEUSDT: its February daily archive is unreadable (a dead market at 2024-03), and its only
   futures archive is unreadable too (no futures market in the data, ruling P23);
+* FFFUSDT: every kind, complete, but its perpetual is the multiplier contract 1000FFFUSDT (one
+  unit is 1000 coins): Binance lists no FFFUSDT perpetual. Its futures and funding archives are
+  under the perpetual's name, which the futures filter snapshot lists;
 * LATEUSDT: daily bars from 20 January only (too little history at 2024-02, ranked at
   2024-03); its perpetual opens at 17:00 on 31 January, so January expects no funding slot
   (ruling P16), and its February funding file is unreadable (ruling P13);
@@ -58,6 +61,7 @@ DAY = 24 * HOUR
 END_MONTH = "2024-03"
 JAN, FEB = "2024-01", "2024-02"
 HOURLY_KINDS = ("spot_1h", "futures_1h", "funding")
+HOURLY_PACK_FILE = "hourly.pack.json.gz"
 FUTURES_HEADER = (
     "open_time,open,high,low,close,volume,close_time,quote_volume,count,"
     "taker_buy_volume,taker_buy_quote_volume,ignore"
@@ -72,13 +76,16 @@ DAILY_QUOTE_VOLUMES = {
     "BBBUSDT": "500000.22",
     "CCCUSDT": "300000.33",
     "EEEUSDT": "200000.44",
+    "FFFUSDT": "150000.66",
     "LATEUSDT": "100000.55",
 }
 BAR_VALUES = (*PRICES, VOLUME, HOURLY_QUOTE_VOLUME, FUNDING_RATE, *DAILY_QUOTE_VOLUMES.values())
 GARBAGE = b"this is not a zip archive"
 REPAIRED_DAY = int(datetime(2024, 1, 15, tzinfo=UTC).timestamp()) * 1000  # AAAUSDT's
-SPOT_DIRS = ("AAABTC", "AAAUPUSDT", "AAAUSDT", "BBBUSDT", "CCCUSDT", "EEEUSDT", "LATEUSDT")
-SPOT_DIRS += ("USDCUSDT",)
+SPOT_DIRS = ("AAABTC", "AAAUPUSDT", "AAAUSDT", "BBBUSDT", "CCCUSDT", "EEEUSDT", "FFFUSDT")
+SPOT_DIRS += ("LATEUSDT", "USDCUSDT")
+SPOT_KLINES = "data/spot/monthly/klines/"
+FUTURES_KLINES = "data/futures/um/monthly/klines/"
 
 
 class NetworkBlocked(OSError):
@@ -144,12 +151,14 @@ class FakeBinance:
 
     Every URL first goes through the real ``HttpTransport`` allowlist, so a URL the real
     transport would refuse fails the test here too. A path in ``listed_only`` is listed but
-    answered with a 404.
+    answered with a 404. The spot klines directories are ``spot_dirs``; the futures klines
+    directories are those of the world's futures archives.
     """
 
     def __init__(self, files: dict[str, bytes]):
         self.files = files  # archive path -> bytes
         self.listed_only: set[str] = set()
+        self.spot_dirs = list(SPOT_DIRS)
         self.requests: list[str] = []
 
     def get(self, url: str) -> bytes | None:
@@ -158,13 +167,17 @@ class FakeBinance:
         if url.startswith(LISTING + "?"):
             prefix = url[len(LISTING) + 1 :].removeprefix("delimiter=/&prefix=")
             assert "&" not in prefix, "the world's listings fit on one page"
-            if prefix == "data/spot/monthly/klines/":
-                return listing_xml(prefixes=[f"{prefix}{name}/" for name in SPOT_DIRS])
+            paths = [path.lstrip("/") for path in [*self.files, *self.listed_only]]
+            if prefix == SPOT_KLINES:
+                return listing_xml(prefixes=[f"{prefix}{name}/" for name in self.spot_dirs])
+            if prefix == FUTURES_KLINES:
+                names = {path.split("/")[5] for path in paths if path.startswith(prefix)}
+                return listing_xml(prefixes=[f"{prefix}{name}/" for name in sorted(names)])
             keys = [
                 key
-                for path in [*self.files, *self.listed_only]
-                if (path.lstrip("/").rsplit("/", 1)[0] + "/") == prefix
-                for key in (path.lstrip("/"), path.lstrip("/") + ".CHECKSUM")
+                for path in paths
+                if path.rsplit("/", 1)[0] + "/" == prefix
+                for key in (path, path + ".CHECKSUM")
             ]
             return listing_xml(keys=sorted(keys))
         path = url[len(ARCHIVE) :]
@@ -210,12 +223,12 @@ def build_world(*, spot_january_days: int = 31) -> FakeBinance:
 
     full_jan, full_feb = range(j0, f0, HOUR), range(f0, m0, HOUR)
     spot_jan = range(j0, j0 + spot_january_days * DAY, HOUR)
-    for symbol in ("AAAUSDT", "BBBUSDT", "EEEUSDT"):
+    for symbol in ("AAAUSDT", "BBBUSDT", "EEEUSDT", "FFFUSDT"):
         put("spot_1h", symbol, JAN, kline_csv(spot_jan, HOUR, HOURLY_QUOTE_VOLUME))
     duplicate = f0 + 9 * DAY + 5 * HOUR
     aaa_feb = [f0 - HOUR] + sorted([*full_feb, duplicate])
     put("spot_1h", "AAAUSDT", FEB, kline_csv(aaa_feb, HOUR, HOURLY_QUOTE_VOLUME))
-    for symbol in ("BBBUSDT", "EEEUSDT", "LATEUSDT"):
+    for symbol in ("BBBUSDT", "EEEUSDT", "FFFUSDT", "LATEUSDT"):
         put("spot_1h", symbol, FEB, kline_csv(full_feb, HOUR, HOURLY_QUOTE_VOLUME))
     put(
         "spot_1h",
@@ -226,11 +239,12 @@ def build_world(*, spot_january_days: int = 31) -> FakeBinance:
     late_jan = range(j0 + 19 * DAY, f0, HOUR)
     put("spot_1h", "LATEUSDT", JAN, kline_csv(late_jan, HOUR, HOURLY_QUOTE_VOLUME))
 
-    for symbol in ("AAAUSDT", "BBBUSDT"):
+    for symbol in ("AAAUSDT", "BBBUSDT", "1000FFFUSDT"):
         put("futures_1h", symbol, JAN, kline_csv(full_jan, HOUR, HOURLY_QUOTE_VOLUME, header=True))
         put("futures_1h", symbol, FEB, kline_csv(full_feb, HOUR, HOURLY_QUOTE_VOLUME, header=True))
         put("funding", symbol, JAN, funding_csv(j0, f0))
     put("funding", "AAAUSDT", FEB, funding_csv(f0, m0))
+    put("funding", "1000FFFUSDT", FEB, funding_csv(f0, m0))
     put("futures_1h", "EEEUSDT", JAN)  # unreadable
     put("funding", "EEEUSDT", JAN, funding_csv(j0, f0))
     late_futures = range(f0 - 7 * HOUR, f0, HOUR)  # 17:00 to 23:00 on 31 January
@@ -280,7 +294,7 @@ def write_config(tmp_path: Path, *, spot: dict | None = None) -> Path:
     """The committed config, cut to the fake world, with snapshots pinned in ``tmp_path``."""
     snapshots = {
         "spot": {"symbols": [spot or spot_entry("AAAUSDT")]},
-        "futures": {"symbols": [futures_entry("AAAUSDT")]},
+        "futures": {"symbols": [futures_entry("AAAUSDT"), futures_entry("1000FFFUSDT")]},
     }
     pins = {}
     for venue, document in snapshots.items():
@@ -417,8 +431,8 @@ def test_end_to_end_on_a_fake_world_produces_both_packs_and_pins(tmp_path, capsy
     assert daily["exclusions"] == {"AAAUPUSDT": "leveraged", "USDCUSDT": "stablecoin"}
     universes = {u["month"]: u for u in daily["universes"]}
     assert sorted(universes) == ["2024-02", END_MONTH]
-    assert universes["2024-02"]["selected"] == ["AAAUSDT", "BBBUSDT", "EEEUSDT"]
-    assert universes[END_MONTH]["selected"] == ["AAAUSDT", "BBBUSDT", "LATEUSDT"]
+    assert universes["2024-02"]["selected"] == ["AAAUSDT", "BBBUSDT", "EEEUSDT", "FFFUSDT"]
+    assert universes[END_MONTH]["selected"] == ["AAAUSDT", "BBBUSDT", "FFFUSDT", "LATEUSDT"]
     assert (universes[END_MONTH]["entered"], universes[END_MONTH]["left"]) == (
         ["LATEUSDT"],
         ["EEEUSDT"],
@@ -435,15 +449,24 @@ def test_end_to_end_on_a_fake_world_produces_both_packs_and_pins(tmp_path, capsy
     assert (window_bars["AAAUSDT"], window_bars["BBBUSDT"]) == (29, 30)
     assert {entry["kind"] for entry in daily["manifest"]} == {"spot_1d", "spot_1h"}
 
-    # The hourly pack: whole histories of the symbols ever selected.
-    assert sorted(hourly["spot"]) == ["AAAUSDT", "BBBUSDT", "EEEUSDT", "LATEUSDT"]
-    assert sorted(hourly["futures"]) == ["AAAUSDT", "BBBUSDT", "LATEUSDT"]  # EEE: none readable
+    # The hourly pack: whole histories of the symbols ever selected, each futures series under
+    # its perpetual's own symbol.
+    assert sorted(hourly["spot"]) == ["AAAUSDT", "BBBUSDT", "EEEUSDT", "FFFUSDT", "LATEUSDT"]
+    assert sorted(hourly["futures"]) == ["1000FFFUSDT", "AAAUSDT", "BBBUSDT", "LATEUSDT"]
+    assert hourly["perpetuals"] == {  # EEE: none readable, so no entry (ruling P23)
+        "AAAUSDT": {"symbol": "AAAUSDT", "multiplier": 1},
+        "BBBUSDT": {"symbol": "BBBUSDT", "multiplier": 1},
+        "FFFUSDT": {"symbol": "1000FFFUSDT", "multiplier": 1000},
+        "LATEUSDT": {"symbol": "LATEUSDT", "multiplier": 1},
+    }
     assert len(hourly["spot"]["AAAUSDT"]) == 744 + 696  # bars as read
     duplicate = month_start(FEB) + 9 * DAY + 5 * HOUR
     assert hourly["masks"]["AAAUSDT|spot"] == {"masked": [duplicate], "unreadable": {}}
     assert hourly["masks"]["BBBUSDT|futures"] == {"masked": [], "unreadable": {}}
     assert "EEEUSDT|futures" not in hourly["masks"] and "EEEUSDT" not in hourly["funding"]
     assert hourly["funding_months"] == {
+        "1000FFFUSDT|2024-01": "complete",
+        "1000FFFUSDT|2024-02": "complete",
         "AAAUSDT|2024-01": "complete",
         "AAAUSDT|2024-02": "complete",
         "BBBUSDT|2024-01": "complete",
@@ -473,12 +496,20 @@ def test_end_to_end_on_a_fake_world_produces_both_packs_and_pins(tmp_path, capsy
     read = {(e["kind"], e["symbol"], e["month"]) for e in hourly["manifest"]}
     assert ("futures_1h", "EEEUSDT", JAN) in read and ("funding", "EEEUSDT", JAN) not in read
     assert {symbol for kind, symbol, _ in read if kind == "funding"} == {
+        "1000FFFUSDT",
         "AAAUSDT",
         "BBBUSDT",
         "LATEUSDT",
     }
-    assert {symbol for _, symbol, _ in read} == set(hourly["spot"])  # no CCC: never selected
-    assert len(daily["manifest"]) == 10 + 9  # every daily archive and every spot hourly one
+    assert {symbol for kind, symbol, _ in read if kind == "spot_1h"} == set(hourly["spot"])
+    assert {symbol for kind, symbol, _ in read if kind == "futures_1h"} == {
+        "1000FFFUSDT",
+        "AAAUSDT",
+        "BBBUSDT",
+        "EEEUSDT",
+        "LATEUSDT",
+    }  # no CCC: never selected, and without a perpetual anyway
+    assert len(daily["manifest"]) == 12 + 11  # every daily archive and every spot hourly one
 
     # Nothing after end_month was asked for, and nothing statically excluded was fetched.
     assert all(month <= END_MONTH for url in pipeline.world.requests for month in months_named(url))
@@ -574,7 +605,7 @@ def test_hourly_pieces_must_cover_every_symbol_ranked_in_a_top_20(tmp_path, caps
     for kind in HOURLY_KINDS:
         pipeline.fetch(kind, 2)
     pipeline.select_final(expect=1)
-    assert "the spot_1h manifest pieces cover 4 symbols, not the 5" in pipeline.err[-1]
+    assert "the spot_1h manifest pieces cover 5 symbols, not the 6" in pipeline.err[-1]
     assert "missing ['LATEUSDT']" in pipeline.err[-1]
 
 
@@ -591,7 +622,7 @@ def test_hourly_pieces_cover_the_candidates_stage_ranking_not_the_final_one(tmp_
     assert "EEEUSDT" not in [symbol for symbol, _, _ in universes[0]["ranked"]]
     assert manifest_months(pipeline.manifest_files("spot_1h"), "EEEUSDT") == [JAN, FEB]
     data = json.loads((pipeline.data / "data.json").read_text())
-    assert data["universe_months"] == 1 and data["selected_symbols"] == 3
+    assert data["universe_months"] == 1 and data["selected_symbols"] == 4
 
 
 @pytest.mark.parametrize(
@@ -658,8 +689,9 @@ def test_pack_decodes_each_hourly_archive_once(tmp_path, capsys, monkeypatch):
     pipeline.pack()
     assert len(decoded) == len(set(decoded))  # the selected symbols' spot series are reused
     spot = {(symbol, month) for symbol, month, futures in decoded if not futures}
-    assert len(spot) == 9  # every candidate's spot hourly archive, once
+    assert len(spot) == 11  # every candidate's spot hourly archive, once
     assert ("EEEUSDT", JAN, True) in decoded and ("CCCUSDT", JAN, True) not in decoded
+    assert ("1000FFFUSDT", FEB, True) in decoded  # a perpetual is read under its own symbol
 
 
 def test_pack_refuses_universes_that_differ_from_select_finals(tmp_path, capsys):
@@ -698,7 +730,7 @@ def test_hourly_fetch_covers_each_candidates_whole_history(tmp_path, capsys):
     pipeline.select_final()
 
     candidates = pipeline.candidates.read_text().split()
-    assert candidates == ["AAAUSDT", "BBBUSDT", "CCCUSDT", "EEEUSDT", "LATEUSDT"]
+    assert candidates == ["AAAUSDT", "BBBUSDT", "CCCUSDT", "EEEUSDT", "FFFUSDT", "LATEUSDT"]
     universes = json.loads((pipeline.final / "universe.json").read_text())["universes"]
     first, last = universes
     assert ["LATEUSDT", "history"] in first["excluded"]
@@ -721,6 +753,174 @@ def test_hourly_fetch_covers_each_candidates_whole_history(tmp_path, capsys):
     )
 
 
+PERPETUALS = {
+    "AAAUSDT": {"symbol": "AAAUSDT", "multiplier": 1},
+    "BBBUSDT": {"symbol": "BBBUSDT", "multiplier": 1},
+    "EEEUSDT": {"symbol": "EEEUSDT", "multiplier": 1},
+    "FFFUSDT": {"symbol": "1000FFFUSDT", "multiplier": 1000},
+    "LATEUSDT": {"symbol": "LATEUSDT", "multiplier": 1},
+}
+
+
+def test_cli_fetches_futures_and_funding_under_the_perpetual_symbol(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_hourly()
+
+    # discover: each candidate's perpetual (CCC has none), and the futures and funding months
+    # listed under the perpetual's symbol.
+    discovery = json.loads(pipeline.discovery.read_text())
+    assert discovery["perpetuals"] == PERPETUALS
+    perpetuals = {"AAAUSDT", "BBBUSDT", "EEEUSDT", "1000FFFUSDT", "LATEUSDT"}
+    for kind in ("futures_1h", "funding"):
+        assert set(discovery["months"][kind]) == perpetuals, kind
+        assert discovery["months"][kind]["1000FFFUSDT"] == [JAN, FEB], kind
+    assert discovery["months"]["spot_1h"]["FFFUSDT"] == [JAN, FEB]
+    assert "5 candidates with a perpetual, 1 of them a multiplier contract" in pipeline.out[0]
+
+    # fetch: under the perpetual's name only. Nothing was listed or fetched for a futures or
+    # funding archive under FFF's own name, nor for CCC, which has no perpetual.
+    futures_urls = [url for url in pipeline.world.requests if "/futures/" in url]
+    assert not [url for url in futures_urls if re.search(r"/(FFF|CCC)USDT[/-]", url)]
+    fetched = {url for url in futures_urls if url.startswith(ARCHIVE) and "FFF" in url}
+    assert fetched == {
+        ARCHIVE + archive_path(kind, "1000FFFUSDT", month) + suffix
+        for kind in ("futures_1h", "funding")
+        for month in (JAN, FEB)
+        for suffix in ("", ".CHECKSUM")
+    }
+    candidates = pipeline.candidates.read_text().split()
+    for kind in ("futures_1h", "funding"):
+        paths = pipeline.manifest_files(kind)
+        pieces = [json.loads(path.read_text()) for path in paths]
+        # The shards partition the coins, as for every kind; the entries are the perpetual's.
+        assert [piece["symbols"] for piece in pieces] == [candidates[0::2], candidates[1::2]]
+        assert manifest_months(paths, "1000FFFUSDT") == [JAN, FEB]
+        assert manifest_months(paths, "FFFUSDT") == []
+        path = archive_path(kind, "1000FFFUSDT", JAN)
+        assert pipeline.cache.joinpath(*path.strip("/").split("/")).is_file()
+
+
+def test_cli_packs_a_multiplier_perpetual_under_its_own_symbol(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.run()
+
+    data = json.loads((pipeline.data / "data.json").read_text())
+    hourly = read_canonical(pipeline.data / HOURLY_PACK_FILE, data["packs"]["hourly"]["sha256"])
+    assert hourly["perpetuals"]["FFFUSDT"] == {"symbol": "1000FFFUSDT", "multiplier": 1000}
+    assert "FFFUSDT" in hourly["spot"] and "FFFUSDT" not in hourly["futures"]
+    assert len(hourly["futures"]["1000FFFUSDT"]) == 744 + 696
+    assert hourly["masks"]["1000FFFUSDT|futures"] == {"masked": [], "unreadable": {}}
+    assert len(hourly["funding"]["1000FFFUSDT"]) == 93 + 87
+    # The present-day filters are looked up under the perpetual's own name, which the futures
+    # snapshot lists; the coin's spot filters are inferred (the spot snapshot has only AAA).
+    assert hourly["rules"]["1000FFFUSDT|futures"]["source"] == "present_day"
+    assert hourly["rules"]["1000FFFUSDT|futures"]["tick"] == "0.10"
+    assert hourly["rules"]["FFFUSDT|spot"]["source"] == "inferred"
+    assert (data["perpetuals"], data["multiplier_perpetuals"]) == (4, 1)
+    assert "4 with a perpetual, 1 of them a multiplier contract" in pipeline.out[-1]
+
+
+def piece_holding(paths: list[Path], symbol: str) -> tuple[Path, dict]:
+    """The one manifest piece with an entry for ``symbol``, and its document."""
+    (found,) = [
+        (path, piece)
+        for path in paths
+        for piece in [json.loads(path.read_text())]
+        if any(entry["symbol"] == symbol for entry in piece["entries"])
+    ]
+    return found
+
+
+def test_futures_pieces_must_hold_each_perpetuals_discovered_months(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_final()
+    path, piece = piece_holding(pipeline.manifest_files("futures_1h"), "1000FFFUSDT")
+    (february,) = [
+        entry
+        for entry in piece["entries"]
+        if (entry["symbol"], entry["month"]) == ("1000FFFUSDT", FEB)
+    ]
+
+    # The perpetual's February archive left out.
+    piece["entries"].remove(february)
+    path.write_text(json.dumps(piece))
+    pipeline.pack(expect=1)
+    assert (
+        "1000FFFUSDT's futures_1h entries and absent months are not its discovered months: "
+        "missing ['2024-02']"
+    ) in pipeline.err[-1]
+
+    # The month recorded absent under the coin's own name, or an entry for an archive under it.
+    path.write_text(json.dumps(piece | {"absent": [{"symbol": "FFFUSDT", "month": FEB}]}))
+    pipeline.pack(expect=1)
+    assert "absent 'FFFUSDT' is outside the piece's symbols" in pipeline.err[-1]
+    own_name = archive_path("futures_1h", "FFFUSDT", FEB)
+    wrong = february | {"symbol": "FFFUSDT", "path": own_name}
+    path.write_text(json.dumps(piece | {"entries": [*piece["entries"], wrong]}))
+    pipeline.pack(expect=1)
+    assert f"{own_name!r} is outside the piece's symbols" in pipeline.err[-1]
+    assert not pipeline.data.exists() or not any(pipeline.data.iterdir())
+
+    # Recorded absent under the perpetual's own name, the month is accounted for.
+    path.write_text(json.dumps(piece | {"absent": [{"symbol": "1000FFFUSDT", "month": FEB}]}))
+    pipeline.pack()
+
+
+def move_funding_months_to_the_coin(document: dict) -> None:
+    funding = document["months"]["funding"]
+    funding["FFFUSDT"] = funding.pop("1000FFFUSDT")
+
+
+@pytest.mark.parametrize(
+    ("change", "why"),
+    [
+        (
+            lambda d: d["perpetuals"]["FFFUSDT"].update(multiplier=1),
+            "not FFFUSDT's perpetual name for multiplier 1",
+        ),
+        (
+            lambda d: d["perpetuals"]["FFFUSDT"].update(symbol="1MFFFUSDT"),
+            "not FFFUSDT's perpetual name for multiplier 1000",
+        ),
+        (
+            lambda d: d["perpetuals"].update(CCCUSDT={"symbol": "AAAUSDT", "multiplier": 1}),
+            "not CCCUSDT's perpetual name",
+        ),
+        (
+            lambda d: d["perpetuals"].update(USDCUSDT={"symbol": "USDCUSDT", "multiplier": 1}),
+            "perpetuals must map candidates",
+        ),
+        (lambda d: d.pop("perpetuals"), "perpetuals must map candidates"),
+        (
+            move_funding_months_to_the_coin,
+            r"months\[funding\] must name exactly the candidates' perpetuals",
+        ),
+    ],
+)
+def test_a_discovery_whose_perpetuals_do_not_hold_is_refused(tmp_path, capsys, change, why):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.discover()
+    document = json.loads(pipeline.discovery.read_text())
+    change(document)
+    pipeline.discovery.write_text(json.dumps(document))
+    pipeline.cli(
+        "fetch", "--kind", "spot_1d", "--discovery", pipeline.discovery, "--shard", "0/1",
+        "--cache", pipeline.cache, "--out", pipeline.manifests, expect=1,
+    )  # fmt: skip
+    assert re.search(why, pipeline.err[-1]), pipeline.err[-1]
+
+
+def test_discover_refuses_two_coins_that_share_a_perpetual(tmp_path, capsys):
+    # FFFUSDT's perpetual is 1000FFFUSDT (x1000); a spot coin named 1000FFFUSDT would have the
+    # same perpetual as its own plain one (x1). Neither is chosen: that needs a ruling.
+    world = build_world()
+    world.spot_dirs.append("1000FFFUSDT")
+    pipeline = Pipeline(tmp_path, capsys, world)
+    pipeline.cli("discover", "--out", pipeline.discovery.parent, expect=1)
+    assert "1000FFFUSDT is the perpetual of both 1000FFFUSDT and FFFUSDT" in pipeline.err[-1]
+    assert not pipeline.discovery.exists()
+
+
 def test_final_selection_skips_a_candidate_without_recent_hourly_bars(tmp_path, capsys):
     pipeline = Pipeline(tmp_path, capsys)
     pipeline.until_hourly()
@@ -728,7 +928,7 @@ def test_final_selection_skips_a_candidate_without_recent_hourly_bars(tmp_path, 
 
     assert "CCCUSDT" in pipeline.candidates.read_text().split()
     selected = (pipeline.final / "selected.txt").read_text().split()
-    assert selected == ["AAAUSDT", "BBBUSDT", "EEEUSDT", "LATEUSDT"]
+    assert selected == ["AAAUSDT", "BBBUSDT", "EEEUSDT", "FFFUSDT", "LATEUSDT"]
     universe = json.loads((pipeline.final / "universe.json").read_text())
     assert universe["format"] == "v4-universe/1" and universe["end_month"] == END_MONTH
     for month in universe["universes"]:

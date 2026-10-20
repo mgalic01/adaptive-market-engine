@@ -39,6 +39,7 @@ from crypto_grid_bot.v4.data.bars import (
     read_hourly,
 )
 from crypto_grid_bot.v4.data.config import DataConfig, months, refuse_after_end
+from crypto_grid_bot.v4.data.listing import checked_perpetual
 from crypto_grid_bot.v4.data.universe import (
     HOURLY_RANK_DEPTH,
     MonthlyUniverse,
@@ -49,6 +50,8 @@ from crypto_grid_bot.v4.data.universe import (
 DISCOVERY_FORMAT = "v4-symbols/1"
 MANIFEST_FORMAT = "v4-manifest/1"
 UNIVERSE_FORMAT = "v4-universe/1"
+# The kinds whose archives are under a coin's perpetual's symbol, not its spot symbol.
+FUTURES_KINDS = ("futures_1h", "funding")
 
 _HOUR_MS = INTERVAL_MS["1h"]
 _DAY_MS = INTERVAL_MS["1d"]
@@ -69,12 +72,15 @@ class _Run:
 
 @dataclass(frozen=True)
 class _Discovery:
-    """``symbols.json``: every discovered symbol, the candidates, the exclusions, the months."""
+    """``symbols.json``: every discovered symbol, the candidates, the exclusions, the months,
+    and each candidate's perpetual with its multiplier (for those that have one). The months of
+    a futures kind are keyed by the perpetual's symbol."""
 
     symbols: tuple[str, ...]
     candidates: tuple[str, ...]
     exclusions: dict[str, str]
     months: dict[str, dict[str, tuple[str, ...]]]
+    perpetuals: dict[str, tuple[str, int]]
 
 
 @dataclass(frozen=True)
@@ -151,9 +157,55 @@ def _static_exclusions(symbols: Sequence[str], config: DataConfig) -> dict[str, 
     return {symbol: reason for symbol, reason in reasons.items() if reason is not None}
 
 
+def _archive_symbols(
+    kind: str, symbols: Iterable[str], perpetuals: Mapping[str, tuple[str, int]]
+) -> list[str]:
+    """The symbols ``kind``'s archives of these candidates are under: their own for a spot
+    kind; for a futures kind their perpetuals', a candidate without one having none."""
+    if kind not in FUTURES_KINDS:
+        return list(symbols)
+    return [perpetuals[symbol][0] for symbol in symbols if symbol in perpetuals]
+
+
+def _unshared(perpetuals: Mapping[str, tuple[str, int]]) -> None:
+    """Refuse a perpetual that is two candidates' (say SHIBUSDT x1000 and a spot 1000SHIBUSDT
+    x1): the futures pieces hold each perpetual's archives once, under one candidate."""
+    owners: dict[str, list[str]] = {}
+    for symbol, (perpetual, _) in sorted(perpetuals.items()):
+        owners.setdefault(perpetual, []).append(symbol)
+    for perpetual, symbols in sorted(owners.items()):
+        if len(symbols) > 1:
+            raise ValueError(
+                f"{perpetual} is the perpetual of both {' and '.join(symbols)}: one perpetual "
+                "for two coins needs a ruling"
+            )
+
+
+def _load_perpetuals(
+    path: Path, raw: object, candidates: Sequence[str]
+) -> dict[str, tuple[str, int]]:
+    """``symbols.json``'s ``perpetuals``: candidate -> ``{"symbol", "multiplier"}``, each a
+    name the spec's rule gives the candidate (``checked_perpetual``), no two sharing one."""
+    if not isinstance(raw, dict) or not set(raw) <= set(candidates):
+        raise ValueError(f"{path}: perpetuals must map candidates to their perpetuals")
+    perpetuals: dict[str, tuple[str, int]] = {}
+    for symbol in sorted(raw):
+        try:
+            perpetuals[symbol] = checked_perpetual(symbol, raw[symbol])
+        except ValueError as exc:
+            raise ValueError(f"{path}: {exc}") from exc
+    try:
+        _unshared(perpetuals)
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+    return perpetuals
+
+
 def _load_discovery(path: Path, config: DataConfig) -> _Discovery:
     """``symbols.json``, refused unless it is this config's: its end month, its exclusions
-    and candidates as the config gives them, and no month after ``end_month``."""
+    and candidates as the config gives them, perpetuals the spec's rule allows, the months of
+    each kind for exactly the candidates (a futures kind: their perpetuals), and no month after
+    ``end_month``."""
     document = _read_json(path)
     if document.get("format") != DISCOVERY_FORMAT:
         raise ValueError(f"{path}: not a {DISCOVERY_FORMAT} document")
@@ -166,21 +218,24 @@ def _load_discovery(path: Path, config: DataConfig) -> _Discovery:
     candidates = [symbol for symbol in symbols if symbol not in exclusions]
     if document.get("exclusions") != exclusions or document.get("candidates") != candidates:
         raise ValueError(f"{path}: the exclusions and candidates do not follow from the config")
+    perpetuals = _load_perpetuals(path, document.get("perpetuals"), candidates)
     listed = document.get("months")
     if not isinstance(listed, dict) or set(listed) != set(KINDS):
         raise ValueError(f"{path}: months must hold exactly the kinds {', '.join(KINDS)}")
     found: dict[str, dict[str, tuple[str, ...]]] = {}
     for kind in KINDS:
         per_symbol = listed[kind]
-        if not isinstance(per_symbol, dict) or set(per_symbol) != set(candidates):
-            raise ValueError(f"{path}: months[{kind}] must name exactly the candidates")
+        names = _archive_symbols(kind, candidates, perpetuals)
+        if not isinstance(per_symbol, dict) or set(per_symbol) != set(names):
+            whose = "candidates' perpetuals" if kind in FUTURES_KINDS else "candidates"
+            raise ValueError(f"{path}: months[{kind}] must name exactly the {whose}")
         for symbol, values in per_symbol.items():
             if not _sorted_strings(values):
                 raise ValueError(f"{path}: months[{kind}][{symbol}] must be sorted and unique")
             for month in values:
                 refuse_after_end(month, config)
         found[kind] = {symbol: tuple(values) for symbol, values in per_symbol.items()}
-    return _Discovery(tuple(symbols), tuple(candidates), exclusions, found)
+    return _Discovery(tuple(symbols), tuple(candidates), exclusions, found, perpetuals)
 
 
 def _entry(path: Path, kind: str, raw: object, config: DataConfig) -> ManifestEntry:
@@ -234,8 +289,10 @@ def _load_piece(
 
     Its shard count is that of the kind's other pieces and no other piece holds its shard
     (checked first, the likeliest cause of any later mismatch); its symbols are sorted, unique
-    candidates, every entry and absent month is for one of them, no archive is listed twice,
-    and each symbol's entries and absent months are exactly its discovered months of the kind.
+    candidates, every entry and absent month is for one of them (for a futures kind, for one of
+    their perpetuals, under the perpetual's symbol), no archive is listed twice, and each
+    symbol's (or perpetual's) entries and absent months are exactly its discovered months of
+    the kind.
     """
     piece = _read_json(path)
     kind, shard, symbols = piece.get("kind"), piece.get("shard"), piece.get("symbols")
@@ -258,7 +315,8 @@ def _load_piece(
     raw_entries, absent = piece.get("entries"), piece.get("absent")
     if not isinstance(raw_entries, list) or not isinstance(absent, list):
         raise ValueError(f"{path}: entries and absent must be lists")
-    held: dict[str, list[str]] = {symbol: [] for symbol in symbols}
+    names = _archive_symbols(kind, symbols, discovery.perpetuals)
+    held: dict[str, list[str]] = {name: [] for name in names}
     for raw in raw_entries:
         entry = _entry(path, kind, raw, config)
         key = (entry.kind, entry.symbol, entry.month)
