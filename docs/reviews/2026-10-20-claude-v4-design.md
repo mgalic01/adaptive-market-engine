@@ -140,3 +140,10 @@ Also from the step-2 task review: a base that is exactly UP, DOWN, BULL or BEAR 
 
 - **Simultaneous synthetic closes** (4320853545). All synthetic closes due at one instant form one batch. The liquidation check runs once, with every closing leg at its penalised price at the same time, and then all are booked together. The outcome no longer depends on processing order.
 - **Stale deferred orders at a dead-market close** (4320853551). The close cancels any deferred order the coin has. Re-entry needs a later daily decision whose decision day has a bar.
+
+## Bob at `5ade767`: NO ISSUES. Codex at `5ade767` (three P1, one P2)
+
+- **Early-stop summaries** (4320903426). The outcome is read first and takes precedence. In a `liquidated` or `limit_unrestorable` summary, equity at 2025-01-01 (if the stop came earlier) and the post-close final equity are null. The final equity is the stop's mark. These nulls never make the cell incomplete.
+- **Dust in the allocation** (4320903428). Every coin's dust, trading or not, is fixed spot in D. Each trading coin's target is reduced by its own dust first (`residual = target - dust`), and the split runs on residuals. The futures notional offsetting dust is inside G_E or G_S, and nothing is counted twice. This replaces round 7's "dust is part of its own spot leg" wording.
+- **Point-in-time listing** (4320903432). A perpetual is listed at a decision if its first bar is at or before it and it has had a bar within the last 168 hours. The eventual last kline is never consulted.
+- **Replacement buy after the futures exit** (4320903436). The spot buy that goes with a funding-month exit waits for that futures close: it is placed at the first hour at or after the close's fill that has a spot bar.
