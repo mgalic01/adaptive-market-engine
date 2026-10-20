@@ -147,3 +147,10 @@ Also from the step-2 task review: a base that is exactly UP, DOWN, BULL or BEAR 
 - **Dust in the allocation** (4320903428). Every coin's dust, trading or not, is fixed spot in D. Each trading coin's target is reduced by its own dust first (`residual = target - dust`), and the split runs on residuals. The futures notional offsetting dust is inside G_E or G_S, and nothing is counted twice. This replaces round 7's "dust is part of its own spot leg" wording.
 - **Point-in-time listing** (4320903432). A perpetual is listed at a decision if its first bar is at or before it and it has had a bar within the last 168 hours. The eventual last kline is never consulted.
 - **Replacement buy after the futures exit** (4320903436). The spot buy that goes with a funding-month exit waits for that futures close: it is placed at the first hour at or after the close's fill that has a spot bar.
+
+## Bob at `edfa0d1`: NO ISSUES. Codex at `edfa0d1` (two P1, one P2)
+
+- **Month-boundary replacement collision** (4320967291). If the replacement spot buy's hour is a 00:00 decision hour, the decision made then supersedes it, as V3's 00:00 rule does: the replacement is cancelled, and only the new decision's order fills, at 01:00.
+- **Dust hedge lifecycle** (4320967297). A lifecycle ends when its sign changes, or when the futures leg is flat and the spot leg is flat or only dust. A futures leg offsetting dust keeps it open.
+- **Common mark and synthetic closes** (4320967301). The common measure uses the open mark of the order of events: after any synthetic close booked at that hour's open, before the daily fills. Completeness is judged on the instruments held or traded at that mark.
+- From claude[bot]'s optional notes: with no futures position the margin ratio is +infinity, so nothing divides by zero.
