@@ -746,6 +746,54 @@ def test_hourly_pieces_must_cover_every_symbol_ranked_in_a_top_20(tmp_path, caps
     assert "missing ['LATEUSDT']" in pipeline.err[-1]
 
 
+def spy_on_hourly_reads(monkeypatch) -> list[str]:
+    """Record the symbol of every hourly or funding archive decoded from now on."""
+    decoded: list[str] = []
+    read_hourly, read_funding = inputs.read_hourly, inputs.read_funding
+
+    def hourly(content, symbol, month, *, futures):
+        decoded.append(symbol)
+        return read_hourly(content, symbol, month, futures=futures)
+
+    def funding(content, symbol, month):
+        decoded.append(symbol)
+        return read_funding(content, symbol, month)
+
+    monkeypatch.setattr(inputs, "read_hourly", hourly)
+    monkeypatch.setattr(inputs, "read_funding", funding)
+    return decoded
+
+
+def test_a_coverage_failure_reads_no_hourly_archive(tmp_path, capsys, monkeypatch):
+    # The coverage of the hourly pieces is checked from the daily archives before any hourly
+    # archive is read or requested: in select final, and in pack.
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_final()
+    full = pipeline.candidates.read_text()
+    shorter = "".join(f"{symbol}\n" for symbol in full.split() if symbol != "LATEUSDT")
+
+    # pack: the funding pieces fetched for a candidates.txt without LATEUSDT.
+    for path in pipeline.manifest_files("funding"):
+        path.unlink()
+    pipeline.candidates.write_text(shorter)
+    pipeline.fetch("funding", 2)
+    decoded = spy_on_hourly_reads(monkeypatch)
+    pipeline.world.requests.clear()
+    pipeline.pack(expect=1)
+    assert "the funding manifest pieces cover 5 symbols, not the 6" in pipeline.err[-1]
+    assert decoded == [] and pipeline.world.requests == []
+
+    # select final: the spot hourly pieces fetched the same way.
+    for path in pipeline.manifest_files("spot_1h"):
+        path.unlink()
+    pipeline.fetch("spot_1h", 2)
+    pipeline.final = tmp_path / "final-again"
+    pipeline.world.requests.clear()
+    pipeline.select_final(expect=1)
+    assert "the spot_1h manifest pieces cover 5 symbols, not the 6" in pipeline.err[-1]
+    assert decoded == [] and pipeline.world.requests == []
+
+
 def test_hourly_pieces_cover_the_candidates_stage_ranking_not_the_final_one(tmp_path, capsys):
     # No candidate passes the hourly check at 2024-02, so the final window opens at 2024-03,
     # a month after the candidates stage's. EEE ranks in a top 20 only at 2024-02 (a dead
