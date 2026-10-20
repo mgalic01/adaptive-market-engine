@@ -1,0 +1,723 @@
+"""V4 data step: the CLI (``scripts/v4_data.py``) end to end, and its GitHub workflow.
+
+The network is blocked for every test in this file (the autouse fixture below). The CLI runs
+against ``FakeBinance``, a small two-month world (archives for 2024-01 and 2024-02) served as
+S3 listing XML, zips and ``.CHECKSUM`` files. It records every URL it is asked for and answers
+only URLs the real transport's allowlist accepts. ``end_month`` is 2024-03, so the universe has
+two selections (2024-02 and 2024-03, each judged on the months before it), and the world also
+lists an archive for 2024-04, which must never be requested.
+
+The world, symbol by symbol (quote volumes rank them in this order):
+
+* AAAUSDT: every kind, complete; listed in both filter snapshots (present-day rules). Its
+  daily row of 15 January is repaired (kept in the pack, masked, so not counted by the
+  selection: ruling P24). Its February spot archive starts with a stray January row (a mask
+  outside the month, ruling P12) and repeats the 05:00 row of 10 February (a masked hour);
+* BBBUSDT: every kind; its February funding file is missing (``"missing_file"``);
+* CCCUSDT: spot hourly bars only until 10 January, so it ranks but is always skipped for want
+  of recent hourly bars;
+* EEEUSDT: its February daily archive is unreadable (a dead market at 2024-03), and its only
+  futures archive is unreadable too (no futures market in the data, ruling P23);
+* LATEUSDT: daily bars from 20 January only (too little history at 2024-02, ranked at
+  2024-03); its perpetual opens at 17:00 on 31 January, so January expects no funding slot
+  (ruling P16), and its February funding file is unreadable (ruling P13);
+* USDCUSDT and AAAUPUSDT: excluded whatever their prices (stablecoin, leveraged token);
+* AAABTC: not quoted in USDT, so not discovered.
+"""
+
+from __future__ import annotations
+
+import gzip
+import hashlib
+import io
+import json
+import re
+import socket
+import sys
+import zipfile
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+import yaml
+
+from crypto_grid_bot.v4.data import archives
+from crypto_grid_bot.v4.data.archives import archive_path
+from crypto_grid_bot.v4.data.pack import read_canonical
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import v4_data  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github" / "workflows" / "v4-data.yml"
+LISTING = archives.LISTING_URL
+ARCHIVE = archives.ARCHIVE_URL
+NS = "http://s3.amazonaws.com/doc/2006-03-01/"
+HOUR = 3_600_000
+DAY = 24 * HOUR
+END_MONTH = "2024-03"
+JAN, FEB = "2024-01", "2024-02"
+HOURLY_KINDS = ("spot_1h", "futures_1h", "funding")
+FUTURES_HEADER = (
+    "open_time,open,high,low,close,volume,close_time,quote_volume,count,"
+    "taker_buy_volume,taker_buy_quote_volume,ignore"
+)
+# Distinctive bar values, so a test can tell whether any of them reached the output.
+PRICES = ("4321.9871", "4329.1234", "4310.5555", "4325.4321")
+VOLUME = "77.777"
+HOURLY_QUOTE_VOLUME = "336633.21"
+FUNDING_RATE = "0.00012345"
+DAILY_QUOTE_VOLUMES = {
+    "AAAUSDT": "900000.11",
+    "BBBUSDT": "500000.22",
+    "CCCUSDT": "300000.33",
+    "EEEUSDT": "200000.44",
+    "LATEUSDT": "100000.55",
+}
+BAR_VALUES = (*PRICES, VOLUME, HOURLY_QUOTE_VOLUME, FUNDING_RATE, *DAILY_QUOTE_VOLUMES.values())
+GARBAGE = b"this is not a zip archive"
+REPAIRED_DAY = int(datetime(2024, 1, 15, tzinfo=UTC).timestamp()) * 1000  # AAAUSDT's
+SPOT_DIRS = ("AAABTC", "AAAUPUSDT", "AAAUSDT", "BBBUSDT", "CCCUSDT", "EEEUSDT", "LATEUSDT")
+SPOT_DIRS += ("USDCUSDT",)
+
+
+class NetworkBlocked(OSError):
+    """What every attempt to open a connection raises while a test runs."""
+
+
+@pytest.fixture(autouse=True)
+def network_blocked(monkeypatch):
+    """No test in this file may resolve a name or open a socket."""
+
+    def refuse(*args, **kwargs):
+        raise NetworkBlocked("the network is blocked in tests")
+
+    monkeypatch.setattr(socket, "getaddrinfo", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+
+
+# --- the fake world --------------------------------------------------------------------------
+
+
+def sha(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def month_start(month: str) -> int:
+    year, number = (int(part) for part in month.split("-"))
+    return int(datetime(year, number, 1, tzinfo=UTC).timestamp()) * 1000
+
+
+def kline_csv(
+    opens, step: int, quote_volume: str, *, header: bool = False, repaired: int | None = None
+) -> str:
+    """Kline rows; the row opening at ``repaired`` closes 1 ms early, which the reader repairs
+    (the bar is kept) and masks."""
+    o, h, low, c = PRICES
+    lines = [FUTURES_HEADER] if header else []
+    for t in opens:
+        close = t + step - (2 if t == repaired else 1)
+        lines.append(f"{t},{o},{h},{low},{c},{VOLUME},{close},{quote_volume},5,0.25,0.5,0")
+    return "".join(line + "\n" for line in lines)
+
+
+def funding_csv(start: int, end: int) -> str:
+    rows = [f"{slot},8,{FUNDING_RATE}" for slot in range(start, end, 8 * HOUR)]
+    return "".join(
+        line + "\n" for line in ["calc_time,funding_interval_hours,last_funding_rate"] + rows
+    )
+
+
+def listing_xml(prefixes=(), keys=()) -> bytes:
+    parts = [f'<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="{NS}">']
+    parts.append("<Name>data.binance.vision</Name><IsTruncated>false</IsTruncated>")
+    parts += [f"<Contents><Key>{key}</Key><Size>1</Size></Contents>" for key in keys]
+    parts += [f"<CommonPrefixes><Prefix>{p}</Prefix></CommonPrefixes>" for p in prefixes]
+    parts.append("</ListBucketResult>")
+    return "".join(parts).encode("utf-8")
+
+
+class FakeBinance:
+    """Serves the world's listings, archives and checksums; records each URL it is asked for.
+
+    Every URL first goes through the real ``HttpTransport`` allowlist, so a URL the real
+    transport would refuse fails the test here too.
+    """
+
+    def __init__(self, files: dict[str, bytes]):
+        self.files = files  # archive path -> bytes
+        self.requests: list[str] = []
+
+    def get(self, url: str) -> bytes | None:
+        archives._size_limit(url)  # raises for any URL HttpTransport would not request
+        self.requests.append(url)
+        if url.startswith(LISTING + "?"):
+            prefix = url[len(LISTING) + 1 :].removeprefix("delimiter=/&prefix=")
+            assert "&" not in prefix, "the world's listings fit on one page"
+            if prefix == "data/spot/monthly/klines/":
+                return listing_xml(prefixes=[f"{prefix}{name}/" for name in SPOT_DIRS])
+            keys = [
+                key
+                for path in self.files
+                if (path.lstrip("/").rsplit("/", 1)[0] + "/") == prefix
+                for key in (path.lstrip("/"), path.lstrip("/") + ".CHECKSUM")
+            ]
+            return listing_xml(keys=sorted(keys))
+        path = url[len(ARCHIVE) :]
+        if path.endswith(".CHECKSUM"):
+            content = self.files.get(path.removesuffix(".CHECKSUM"))
+            name = path.removesuffix(".CHECKSUM").rsplit("/", 1)[1]
+            return None if content is None else f"{sha(content)}  {name}\n".encode("ascii")
+        return self.files.get(path)
+
+    def archive_requests(self) -> list[str]:
+        return [url for url in self.requests if url.startswith(ARCHIVE)]
+
+
+def build_world() -> FakeBinance:
+    files: dict[str, bytes] = {}
+
+    def put(kind: str, symbol: str, month: str, text: str | None = None) -> None:
+        path = archive_path(kind, symbol, month)
+        if text is None:
+            files[path] = GARBAGE
+            return
+        member = path.rsplit("/", 1)[1].removesuffix(".zip") + ".csv"
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(member, text)
+        files[path] = stream.getvalue()
+
+    j0, f0, m0 = month_start(JAN), month_start(FEB), month_start("2024-03")
+    for symbol, volume in DAILY_QUOTE_VOLUMES.items():
+        first = j0 + 19 * DAY if symbol == "LATEUSDT" else j0
+        repaired = REPAIRED_DAY if symbol == "AAAUSDT" else None
+        jan = kline_csv(range(first, f0, DAY), DAY, volume, repaired=repaired)
+        put("spot_1d", symbol, JAN, jan)
+        feb = None if symbol == "EEEUSDT" else kline_csv(range(f0, m0, DAY), DAY, volume)
+        put("spot_1d", symbol, FEB, feb)
+    for symbol in ("USDCUSDT", "AAAUPUSDT"):
+        put("spot_1d", symbol, JAN, kline_csv(range(j0, f0, DAY), DAY, "999.99"))
+    april = month_start("2024-04")
+    put("spot_1d", "AAAUSDT", "2024-04", kline_csv(range(april, april + DAY, DAY), DAY, "1.5"))
+
+    full_jan, full_feb = range(j0, f0, HOUR), range(f0, m0, HOUR)
+    for symbol in ("AAAUSDT", "BBBUSDT", "EEEUSDT"):
+        put("spot_1h", symbol, JAN, kline_csv(full_jan, HOUR, HOURLY_QUOTE_VOLUME))
+    duplicate = f0 + 9 * DAY + 5 * HOUR
+    aaa_feb = [f0 - HOUR] + sorted([*full_feb, duplicate])
+    put("spot_1h", "AAAUSDT", FEB, kline_csv(aaa_feb, HOUR, HOURLY_QUOTE_VOLUME))
+    for symbol in ("BBBUSDT", "EEEUSDT", "LATEUSDT"):
+        put("spot_1h", symbol, FEB, kline_csv(full_feb, HOUR, HOURLY_QUOTE_VOLUME))
+    put(
+        "spot_1h",
+        "CCCUSDT",
+        JAN,
+        kline_csv(range(j0, j0 + 10 * DAY, HOUR), HOUR, HOURLY_QUOTE_VOLUME),
+    )
+    late_jan = range(j0 + 19 * DAY, f0, HOUR)
+    put("spot_1h", "LATEUSDT", JAN, kline_csv(late_jan, HOUR, HOURLY_QUOTE_VOLUME))
+
+    for symbol in ("AAAUSDT", "BBBUSDT"):
+        put("futures_1h", symbol, JAN, kline_csv(full_jan, HOUR, HOURLY_QUOTE_VOLUME, header=True))
+        put("futures_1h", symbol, FEB, kline_csv(full_feb, HOUR, HOURLY_QUOTE_VOLUME, header=True))
+        put("funding", symbol, JAN, funding_csv(j0, f0))
+    put("funding", "AAAUSDT", FEB, funding_csv(f0, m0))
+    put("futures_1h", "EEEUSDT", JAN)  # unreadable
+    put("funding", "EEEUSDT", JAN, funding_csv(j0, f0))
+    late_futures = range(f0 - 7 * HOUR, f0, HOUR)  # 17:00 to 23:00 on 31 January
+    put(
+        "futures_1h",
+        "LATEUSDT",
+        JAN,
+        kline_csv(late_futures, HOUR, HOURLY_QUOTE_VOLUME, header=True),
+    )
+    put("futures_1h", "LATEUSDT", FEB, kline_csv(full_feb, HOUR, HOURLY_QUOTE_VOLUME, header=True))
+    put("funding", "LATEUSDT", FEB)  # unreadable
+    return FakeBinance(files)
+
+
+# --- the configuration and the filter snapshots ------------------------------------------------
+
+
+def spot_entry(symbol: str, quote: str = "USDT") -> dict:
+    return {
+        "symbol": symbol,
+        "status": "TRADING",
+        "baseAsset": symbol.removesuffix("USDT"),
+        "quoteAsset": quote,
+        "filters": [
+            {"filterType": "PRICE_FILTER", "minPrice": "0.01", "tickSize": "0.01"},
+            {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "9000", "stepSize": "0.001"},
+            {"filterType": "NOTIONAL", "minNotional": "5"},
+        ],
+    }
+
+
+def futures_entry(symbol: str) -> dict:
+    return {
+        "symbol": symbol,
+        "contractType": "PERPETUAL",
+        "status": "TRADING",
+        "quoteAsset": "USDT",
+        "filters": [
+            {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+            {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "1000", "stepSize": "0.001"},
+            {"filterType": "MIN_NOTIONAL", "notional": "5"},
+        ],
+    }
+
+
+def write_config(tmp_path: Path, *, spot: dict | None = None) -> Path:
+    """The committed config, cut to the fake world, with snapshots pinned in ``tmp_path``."""
+    snapshots = {
+        "spot": {"symbols": [spot or spot_entry("AAAUSDT")]},
+        "futures": {"symbols": [futures_entry("AAAUSDT")]},
+    }
+    pins = {}
+    for venue, document in snapshots.items():
+        path = tmp_path / f"{venue}-snapshot.json"
+        path.write_bytes(json.dumps(document).encode("ascii"))
+        pins[venue] = {"path": str(path), "sha256": sha(path.read_bytes())}
+    config = json.loads((ROOT / "config" / "v4_data.json").read_text(encoding="utf-8"))
+    config |= {
+        "start_day": "2024-01-01",
+        "end_month": END_MONTH,
+        "min_daily_bars": 20,
+        "filter_snapshots": pins,
+    }
+    path = tmp_path / "v4_data.json"
+    path.write_bytes(json.dumps(config, indent=2).encode("ascii"))
+    return path
+
+
+class Pipeline:
+    """Runs the CLI's stages as the workflow does, in folders under ``tmp_path``."""
+
+    def __init__(self, tmp_path: Path, capsys, world: FakeBinance | None = None):
+        self.tmp_path = tmp_path
+        self.capsys = capsys
+        self.world = world or build_world()
+        self.config = write_config(tmp_path)
+        work = tmp_path / "v4"
+        self.discovery = work / "discover" / "symbols.json"
+        self.cache = work / "fetched" / "cache"
+        self.manifests = work / "fetched" / "manifests"
+        self.candidates = work / "candidates" / "candidates.txt"
+        self.final = work / "final"
+        self.data = work / "data"
+        self.out: list[str] = []
+        self.err: list[str] = []
+
+    def cli(self, *argv: object, expect: int = 0) -> None:
+        code = v4_data.main(
+            ["--config", str(self.config), *map(str, argv)],
+            transport=self.world,
+            sleep=lambda seconds: None,
+        )
+        captured = self.capsys.readouterr()
+        self.out.append(captured.out)
+        self.err.append(captured.err)
+        assert code == expect, captured.err
+
+    def manifest_files(self, kind: str) -> list[Path]:
+        return sorted(self.manifests.glob(f"manifest-{kind}-*.json"))
+
+    def discover(self) -> None:
+        self.cli("discover", "--out", self.discovery.parent)
+
+    def fetch(self, kind: str, shards: int) -> None:
+        extra = [] if kind == "spot_1d" else ["--symbols-file", self.candidates]
+        for index in range(shards):
+            self.cli(
+                "fetch", "--kind", kind, "--discovery", self.discovery, *extra,
+                "--shard", f"{index}/{shards}", "--cache", self.cache, "--out", self.manifests,
+            )  # fmt: skip
+
+    def select_candidates(self) -> None:
+        self.cli(
+            "select", "--stage", "candidates", "--discovery", self.discovery,
+            "--daily-manifests", *self.manifest_files("spot_1d"),
+            "--cache", self.cache, "--out", self.candidates.parent,
+        )  # fmt: skip
+
+    def select_final(self) -> None:
+        self.cli(
+            "select", "--stage", "final", "--discovery", self.discovery,
+            "--daily-manifests", *self.manifest_files("spot_1d"),
+            "--hourly-manifests", *self.manifest_files("spot_1h"),
+            "--cache", self.cache, "--out", self.final,
+        )  # fmt: skip
+
+    def pack(self, expect: int = 0) -> None:
+        self.cli(
+            "pack", "--discovery", self.discovery,
+            "--manifests", *sorted(self.manifests.glob("manifest-*.json")),
+            "--cache", self.cache, "--out", self.data, expect=expect,
+        )  # fmt: skip
+
+    def until_hourly(self) -> None:
+        self.discover()
+        self.fetch("spot_1d", 2)
+        self.select_candidates()
+        for kind in HOURLY_KINDS:
+            self.fetch(kind, 2)
+
+    def run(self) -> None:
+        self.until_hourly()
+        self.select_final()
+        self.pack()
+
+    def stdout(self) -> str:
+        return "".join(self.out)
+
+
+def manifest_months(paths: list[Path], symbol: str) -> list[str]:
+    entries = [entry for path in paths for entry in json.loads(path.read_text())["entries"]]
+    return sorted(entry["month"] for entry in entries if entry["symbol"] == symbol)
+
+
+def months_named(url: str) -> list[str]:
+    return re.findall(r"(?<![0-9])([0-9]{4}-[0-9]{2})(?![0-9])", url)
+
+
+# --- the CLI ---------------------------------------------------------------------------------
+
+
+def test_end_to_end_on_a_fake_world_produces_both_packs_and_pins(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.run()
+
+    data = json.loads((pipeline.data / "data.json").read_text())
+    assert data["config_sha256"] == sha(pipeline.config.read_bytes())
+    assert data["end_month"] == END_MONTH
+    daily_pin, hourly_pin = data["packs"]["daily"]["sha256"], data["packs"]["hourly"]["sha256"]
+    daily = read_canonical(pipeline.data / data["packs"]["daily"]["file"], daily_pin)
+    hourly = read_canonical(pipeline.data / data["packs"]["hourly"]["file"], hourly_pin)
+    with gzip.open(pipeline.data / data["packs"]["hourly"]["file"]) as stream:
+        assert data["packs"]["hourly"]["json_bytes"] == len(stream.read())
+    for document in (daily, hourly):
+        assert document["config_sha256"] == data["config_sha256"]
+        assert document["end_month"] == END_MONTH
+
+    # The daily pack: every candidate's daily bars, the static exclusions, the final universes.
+    assert sorted(daily["daily"]) == sorted(DAILY_QUOTE_VOLUMES)
+    assert daily["exclusions"] == {"AAAUPUSDT": "leveraged", "USDCUSDT": "stablecoin"}
+    universes = {u["month"]: u for u in daily["universes"]}
+    assert sorted(universes) == ["2024-02", END_MONTH]
+    assert universes["2024-02"]["selected"] == ["AAAUSDT", "BBBUSDT", "EEEUSDT"]
+    assert universes[END_MONTH]["selected"] == ["AAAUSDT", "BBBUSDT", "LATEUSDT"]
+    assert (universes[END_MONTH]["entered"], universes[END_MONTH]["left"]) == (
+        ["LATEUSDT"],
+        ["EEEUSDT"],
+    )
+    assert ["EEEUSDT", "dead_market"] in universes[END_MONTH]["excluded"]
+    february_days = list(range(month_start(FEB), month_start("2024-03"), DAY))
+    assert daily["masks"]["EEEUSDT"]["masked"] == february_days
+    assert list(daily["masks"]["EEEUSDT"]["unreadable"]) == [FEB]
+    # A repaired day stays in the pack with its mask but is not counted by the selection (P24).
+    assert daily["masks"]["AAAUSDT"] == {"masked": [REPAIRED_DAY], "unreadable": {}}
+    assert daily["masks"]["BBBUSDT"] == {"masked": [], "unreadable": {}}
+    assert len(daily["daily"]["AAAUSDT"]) == 31 + 29
+    window_bars = {symbol: bars for symbol, _, bars in universes["2024-02"]["ranked"]}
+    assert (window_bars["AAAUSDT"], window_bars["BBBUSDT"]) == (29, 30)
+    assert {entry["kind"] for entry in daily["manifest"]} == {"spot_1d", "spot_1h"}
+
+    # The hourly pack: whole histories of the symbols ever selected.
+    assert sorted(hourly["spot"]) == ["AAAUSDT", "BBBUSDT", "EEEUSDT", "LATEUSDT"]
+    assert sorted(hourly["futures"]) == ["AAAUSDT", "BBBUSDT", "LATEUSDT"]  # EEE: none readable
+    assert len(hourly["spot"]["AAAUSDT"]) == 744 + 696  # bars as read
+    duplicate = month_start(FEB) + 9 * DAY + 5 * HOUR
+    assert hourly["masks"]["AAAUSDT|spot"] == {"masked": [duplicate], "unreadable": {}}
+    assert hourly["masks"]["BBBUSDT|futures"] == {"masked": [], "unreadable": {}}
+    assert "EEEUSDT|futures" not in hourly["masks"] and "EEEUSDT" not in hourly["funding"]
+    assert hourly["funding_months"] == {
+        "AAAUSDT|2024-01": "complete",
+        "AAAUSDT|2024-02": "complete",
+        "BBBUSDT|2024-01": "complete",
+        "BBBUSDT|2024-02": "missing_file",
+        "LATEUSDT|2024-01": "complete",
+        "LATEUSDT|2024-02": "unreadable_file",
+    }
+    assert len(hourly["funding"]["AAAUSDT"]) == 93 + 87
+    rules = hourly["rules"]
+    series = {f"{s}|spot" for s in hourly["spot"]} | {f"{s}|futures" for s in hourly["futures"]}
+    assert set(rules) == series
+    assert (rules["AAAUSDT|spot"]["source"], rules["AAAUSDT|spot"]["tick"]) == (
+        "present_day",
+        "0.01",
+    )
+    assert rules["AAAUSDT|futures"]["source"] == "present_day"
+    assert rules["BBBUSDT|spot"] == {
+        "source": "inferred",
+        "tick": "0.0001",
+        "step": "0.001",
+        "min_qty": "0.001",
+        "max_qty": "9000000000",
+        "min_notional": "5",
+    }
+    assert {entry["kind"] for entry in hourly["manifest"]} == set(HOURLY_KINDS)
+    assert not {entry["symbol"] for entry in hourly["manifest"]} & {"CCCUSDT"}
+
+    # Nothing after end_month was asked for, and nothing statically excluded was fetched.
+    assert all(month <= END_MONTH for url in pipeline.world.requests for month in months_named(url))
+    assert not [url for url in pipeline.world.archive_requests() if "USDC" in url or "UP" in url]
+
+
+def test_shards_partition_symbols_without_overlap_or_gap(tmp_path, capsys):
+    symbols = [f"S{index:02d}USDT" for index in range(37)]
+    for count in (1, 2, 3, 16):
+        shards = [v4_data.shard_symbols(symbols[::-1], index, count) for index in range(count)]
+        flat = [symbol for shard in shards for symbol in shard]
+        assert sorted(flat) == symbols and len(flat) == len(set(flat)), count
+    for bad in ("3/3", "-1/2", "1/0", "01/2", "a/b", "1"):
+        with pytest.raises(ValueError):
+            v4_data.parse_shard(bad)
+
+    # The fetch: three shards' manifests hold each candidate's archives exactly once.
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.discover()
+    pipeline.fetch("spot_1d", 3)
+    pieces = [json.loads(path.read_text()) for path in pipeline.manifest_files("spot_1d")]
+    assert [piece["shard"] for piece in pieces] == ["0/3", "1/3", "2/3"]
+    owners = [{entry["symbol"] for entry in piece["entries"]} for piece in pieces]
+    assert sum(len(owner) for owner in owners) == len(set().union(*owners))
+    assert set().union(*owners) == set(DAILY_QUOTE_VOLUMES)
+    paths = [entry["path"] for piece in pieces for entry in piece["entries"]]
+    assert len(paths) == len(set(paths)) == 2 * len(DAILY_QUOTE_VOLUMES)
+    pipeline.cli(
+        "fetch", "--kind", "spot_1d", "--discovery", pipeline.discovery, "--shard", "3/3",
+        "--cache", pipeline.cache, "--out", pipeline.manifests, expect=1,
+    )  # fmt: skip
+
+
+def test_no_output_prints_bar_values(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.run()
+    out, err = pipeline.stdout(), "".join(pipeline.err)
+    assert out.strip()
+    for value in BAR_VALUES:
+        assert value not in out and value not in err, value
+    pins = re.findall(r"\b[0-9a-f]{64}\b", out)
+    data = json.loads((pipeline.data / "data.json").read_text())
+    assert {pack["sha256"] for pack in data["packs"].values()} <= set(pins)
+    # Counts and pins only: no number with a fraction, and nothing that is not a word, a
+    # count, a pin or punctuation.
+    without_pins = re.sub(r"\b[0-9a-f]{64}\b", "PIN", out)
+    assert not re.search(r"[0-9]\.[0-9]", without_pins)
+    for line in without_pins.splitlines():
+        assert re.fullmatch(r"[A-Za-z0-9 _:,/()|.-]+", line), line
+
+
+def test_hourly_fetch_covers_each_candidates_whole_history(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_hourly()
+    pipeline.select_final()
+
+    candidates = pipeline.candidates.read_text().split()
+    assert candidates == ["AAAUSDT", "BBBUSDT", "CCCUSDT", "EEEUSDT", "LATEUSDT"]
+    universes = json.loads((pipeline.final / "universe.json").read_text())["universes"]
+    first, last = universes
+    assert ["LATEUSDT", "history"] in first["excluded"]
+    assert "LATEUSDT" not in [symbol for symbol, _, _ in first["ranked"]]
+    assert "LATEUSDT" in [symbol for symbol, _, _ in last["ranked"]]
+    # Ranked only in the last month, it still gets every discovered hourly month: January,
+    # before it first ranks, included.
+    discovered = json.loads(pipeline.discovery.read_text())["months"]
+    for kind in HOURLY_KINDS:
+        assert (
+            manifest_months(pipeline.manifest_files(kind), "LATEUSDT")
+            == (discovered[kind]["LATEUSDT"])
+        ), kind
+    assert discovered["spot_1h"]["LATEUSDT"] == [JAN, FEB]
+    assert discovered["futures_1h"]["LATEUSDT"] == [JAN, FEB]
+    assert discovered["funding"]["LATEUSDT"] == [FEB]
+    # A symbol never ranked gets no hourly archive at all.
+    assert all(
+        "USDC" not in url and "AAAUP" not in url for url in pipeline.world.archive_requests()
+    )
+
+
+def test_final_selection_skips_a_candidate_without_recent_hourly_bars(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_hourly()
+    pipeline.select_final()
+
+    assert "CCCUSDT" in pipeline.candidates.read_text().split()
+    selected = (pipeline.final / "selected.txt").read_text().split()
+    assert selected == ["AAAUSDT", "BBBUSDT", "EEEUSDT", "LATEUSDT"]
+    universe = json.loads((pipeline.final / "universe.json").read_text())
+    assert universe["format"] == "v4-universe/1" and universe["end_month"] == END_MONTH
+    for month in universe["universes"]:
+        assert "CCCUSDT" in [symbol for symbol, _, _ in month["ranked"]]
+        assert ["CCCUSDT", "no_recent_hourly"] in month["excluded"]
+        assert "CCCUSDT" not in month["selected"]
+
+
+def test_pack_refuses_a_manifest_entry_after_end_month_before_any_request(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.discover()
+    pipeline.world.requests.clear()
+
+    def entry(month: str) -> dict:
+        path = archive_path("spot_1d", "AAAUSDT", month)
+        return dict(
+            kind="spot_1d", symbol="AAAUSDT", month=month, path=path, sha256="0" * 64, bytes=1
+        )
+
+    # The first entry is in the window and absent from the cache: reading it would need a
+    # request. The second is after end_month. Nothing may be requested or read.
+    pipeline.manifests.mkdir(parents=True)
+    piece = {
+        "format": "v4-manifest/1",
+        "kind": "spot_1d",
+        "shard": "0/1",
+        "entries": [entry(JAN), entry("2024-04")],
+        "absent": [],
+    }
+    (pipeline.manifests / "manifest-spot_1d-0.json").write_text(json.dumps(piece))
+    pipeline.pack(expect=1)
+
+    assert pipeline.world.requests == []
+    assert "2024-04 is after end_month 2024-03" in pipeline.err[-1]
+    assert not pipeline.data.exists() or not any(pipeline.data.iterdir())
+
+
+def test_pack_stops_for_a_split_ruling_when_a_pack_is_too_large(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(v4_data, "MAX_PACK_JSON_BYTES", 1000)
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_hourly()
+    pipeline.pack(expect=1)
+    assert "ruling on splitting" in pipeline.err[-1]
+    assert re.search(r"daily pack: [0-9]+ bytes of canonical JSON", pipeline.out[-1])
+    assert not (pipeline.data / "data.json").exists()
+
+
+def test_pack_refuses_a_filter_snapshot_that_does_not_match_its_pin(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.until_hourly()
+    snapshot = tmp_path / "spot-snapshot.json"
+    snapshot.write_bytes(snapshot.read_bytes() + b" ")
+    pipeline.pack(expect=1)
+    assert "spot filter snapshot" in pipeline.err[-1] and "pinned" in pipeline.err[-1]
+    assert not pipeline.data.exists() or not any(pipeline.data.iterdir())
+
+
+def test_a_listed_symbol_whose_rules_are_unusable_is_a_hard_stop(tmp_path, capsys):
+    pipeline = Pipeline(tmp_path, capsys)
+    pipeline.config = write_config(tmp_path, spot=spot_entry("AAAUSDT", quote="BTC"))
+    pipeline.until_hourly()
+    pipeline.pack(expect=1)
+    assert "AAAUSDT on spot" in pipeline.err[-1] and "ruling P20" in pipeline.err[-1]
+    assert not (pipeline.data / "data.json").exists()
+
+
+def test_security_names_the_listing_host_beside_the_archive_host():
+    policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    block = policy[
+        policy.index("<!-- allowed-hosts:begin") : policy.index("<!-- allowed-hosts:end")
+    ]
+    hosts = re.findall(r"^\s*- `([a-z0-9.-]+)`", block, re.M)
+    archive = hosts.index("data.binance.vision")
+    assert hosts[archive + 1] == "s3-ap-northeast-1.amazonaws.com"
+    line = next(line for line in block.splitlines() if "s3-ap-northeast-1" in line)
+    assert "listing only" in block[block.index(line) :]
+
+
+# --- the workflow ----------------------------------------------------------------------------
+
+
+def workflow() -> dict:
+    # PyYAML follows YAML 1.1, which reads the bare key `on` as the boolean True.
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def steps_using(job: dict, action: str) -> list[dict]:
+    return [step for step in job["steps"] if step.get("uses", "").startswith(action + "@")]
+
+
+def test_workflow_has_the_expected_jobs_and_no_cache_of_results():
+    document = workflow()
+    assert list(document[True]) == ["workflow_dispatch"]
+    stage = document[True]["workflow_dispatch"]["inputs"]["stage"]
+    assert stage["type"] == "choice" and stage["options"] == ["discover", "full"]
+    assert document["permissions"] == {"contents": "read"}
+
+    jobs = document["jobs"]
+    assert list(jobs) == [
+        "discover",
+        "fetch-daily",
+        "select-candidates",
+        "fetch-hourly",
+        "select-final",
+        "pack",
+    ]
+    assert "if" not in jobs["discover"]  # stage discover runs it alone
+    for name, job in jobs.items():
+        assert job["runs-on"] == "ubuntu-latest" and job["timeout-minutes"] == 300, name
+        if name != "discover":
+            assert job["if"].replace(" ", "") == "${{inputs.stage=='full'}}", name
+            assert "discover" in job["needs"], name
+    assert jobs["select-candidates"]["needs"] == ["discover", "fetch-daily"]
+    assert jobs["fetch-hourly"]["needs"] == ["discover", "select-candidates"]
+    assert jobs["select-final"]["needs"] == ["discover", "fetch-daily", "fetch-hourly"]
+    assert jobs["pack"]["needs"] == ["discover", "fetch-daily", "fetch-hourly", "select-final"]
+
+    daily, hourly = jobs["fetch-daily"], jobs["fetch-hourly"]
+    assert daily["strategy"]["matrix"] == {"shard": list(range(16))}
+    assert daily["env"]["SHARDS"] == "16"
+    assert hourly["strategy"]["matrix"] == {"kind": list(HOURLY_KINDS), "shard": list(range(8))}
+    assert hourly["env"]["SHARDS"] == "8"
+
+    commands = {
+        name: "\n".join(step.get("run", "") for step in job["steps"]) for name, job in jobs.items()
+    }
+    assert "v4_data.py discover" in commands["discover"]
+    assert "--kind spot_1d" in commands["fetch-daily"]
+    assert "--stage candidates" in commands["select-candidates"]
+    assert '--kind "$KIND"' in commands["fetch-hourly"]
+    assert "--symbols-file v4/candidates/candidates.txt" in commands["fetch-hourly"]
+    assert "--stage final" in commands["select-final"]
+    assert "v4_data.py pack" in commands["pack"]
+
+    uploads: dict[str, dict] = {}
+    for name, job in jobs.items():
+        for step in job["steps"]:
+            uses = step.get("uses")
+            if uses:  # every action pinned by its full commit SHA
+                assert re.fullmatch(r"actions/[a-z-]+@[0-9a-f]{40}", uses), uses
+            assert not (uses or "").startswith("actions/cache@"), name  # nothing cached
+        for step in steps_using(job, "actions/setup-python"):
+            assert step["with"]["python-version"] == "3.12"
+            assert step["with"].get("cache") in (None, "pip")  # pip's wheels only
+        for step in steps_using(job, "actions/checkout"):
+            assert step["with"]["persist-credentials"] is False
+        names = [step.get("name", "") for step in job["steps"]]
+        scan = names.index("Refuse any file named for a month after end_month")
+        for index, step in enumerate(job["steps"]):
+            if step.get("uses", "").startswith("actions/upload-artifact@"):
+                assert index > scan, name  # the scan runs after every fetch and before uploads
+                assert step["with"]["retention-days"] == 1, name  # owner rule, ruling P25
+                assert step["with"]["if-no-files-found"] == "error", name
+                uploads[step["with"]["name"]] = step["with"]
+            if "v4_data.py" in step.get("run", ""):
+                assert index < scan, name
+    assert set(uploads) == {
+        "v4-discover",
+        "v4-daily-${{ matrix.shard }}",
+        "v4-candidates",
+        "v4-hourly-${{ matrix.kind }}-${{ matrix.shard }}",
+        "v4-final",
+        "v4-data",
+    }
+    assert uploads["v4-data"]["path"].rstrip("/") == "v4/data"
+    pack_downloads = [
+        step["with"] for step in steps_using(jobs["pack"], "actions/download-artifact")
+    ]
+    assert {item.get("pattern", item.get("name")) for item in pack_downloads} == {
+        "v4-discover",
+        "v4-daily-*",
+        "v4-hourly-*",
+    }
