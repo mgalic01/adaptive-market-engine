@@ -34,12 +34,22 @@ from crypto_grid_bot.v4.data.universe import MonthlyUniverse
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "v4_data.json"
-CONFIG = load_data_config(CONFIG_PATH)
+END_MONTH = "2026-09"  # pinned here: no test depends on the committed config's end_month
+CONFIG = replace(load_data_config(CONFIG_PATH), end_month=END_MONTH)
 CONFIG_SHA = hashlib.sha256(CONFIG_PATH.read_bytes()).hexdigest()
 HOUR = 3_600_000
 DAY = 24 * HOUR
 T0 = 1_735_689_600_000  # 2025-01-01 00:00 UTC, in milliseconds
 FEB = 1_738_368_000_000  # 2025-02-01 00:00 UTC
+
+
+def month_after(month: str) -> str:
+    year, number = (int(part) for part in month.split("-"))
+    year, number = (year + 1, 1) if number == 12 else (year, number + 1)
+    return f"{year:04d}-{number:02d}"
+
+
+AFTER_END = month_after(END_MONTH)
 
 
 class NetworkBlocked(OSError):
@@ -233,6 +243,7 @@ def test_existing_file_is_refused(tmp_path):
     with pytest.raises(FileExistsError):
         write_canonical({"a": 1}, path)
     assert path.read_bytes() == b"precious"
+    assert list(tmp_path.iterdir()) == [path]  # and no temporary file was left beside it
 
 
 def test_a_missing_parent_folder_is_not_created(tmp_path):
@@ -242,11 +253,115 @@ def test_a_missing_parent_folder_is_not_created(tmp_path):
     assert not path.parent.exists()
 
 
-def test_nan_is_refused_before_a_file_is_created(tmp_path):
+def circular() -> list[Any]:
+    loop: list[Any] = []
+    loop.append(loop)
+    return loop
+
+
+@pytest.mark.parametrize(
+    ("document", "why"),
+    [
+        ({"a": 1.5}, "float"),
+        ({"a": 1.0}, "float"),
+        ({"a": float("nan")}, "float"),
+        ({"a": float("inf")}, "float"),
+        ({"a": [[1, 2.5]]}, r"\[.a.\]\[0\]\[1\]"),
+        ({1: "x"}, "key 1 is not a string"),
+        ({"a": {2: "x"}}, "key 2 is not a string"),
+        ({"a": {None: 1}}, "key None is not a string"),
+        ({"a": (1, 2)}, "tuple"),
+        ({"a": {1, 2}}, "set"),
+        ({"a": D("1.5")}, "Decimal"),
+        ({"a": b"x"}, "bytes"),
+        ({"a": circular()}, "circular"),
+        ([1, 2], "mapping"),
+    ],
+)
+def test_writer_refuses_what_the_reader_would_refuse_or_change(tmp_path, document, why):
     path = tmp_path / "pack.json.gz"
-    with pytest.raises(ValueError):
-        write_canonical({"a": float("nan")}, path)
-    assert not path.exists()
+    with pytest.raises(ValueError, match=why):
+        write_canonical(document, path)
+    assert list(tmp_path.iterdir()) == []  # refused before any file, temporary or final
+
+
+def test_writer_accepts_everything_the_reader_returns_unchanged(tmp_path):
+    document = {"s": "café", "i": -5, "b": [True, False], "n": None, "d": {"x": [[], {}]}}
+    path = tmp_path / "pack.json.gz"
+    assert read_canonical(path, write_canonical(document, path)) == document
+
+
+def test_a_failed_write_leaves_no_file_at_the_final_path(tmp_path, monkeypatch):
+    path = tmp_path / "pack.json.gz"
+
+    def broken_write(self, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gzip.GzipFile, "write", broken_write)
+    with pytest.raises(OSError, match="disk full"):
+        write_canonical({"a": 1}, path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_write_that_fails_after_the_temporary_file_is_written_leaves_nothing(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "pack.json.gz"
+    seen: list[list[str]] = []
+
+    def broken_sync(fd):
+        seen.append(sorted(f.name for f in tmp_path.iterdir()))  # the temporary file exists now
+        raise OSError("sync failed")
+
+    monkeypatch.setattr(pack.os, "fsync", broken_sync)
+    with pytest.raises(OSError, match="sync failed"):
+        write_canonical({"a": 1}, path)
+    assert len(seen) == 1 and len(seen[0]) == 1 and seen[0][0].endswith(".tmp")
+    assert list(tmp_path.iterdir()) == []  # the temporary file is gone, the final never was
+
+
+def test_the_pack_appears_at_the_final_path_complete(tmp_path, monkeypatch):
+    path = tmp_path / "pack.json.gz"
+    at_link: list[bool] = []
+    real_link = pack.os.link
+
+    def watching_link(source, destination):
+        at_link.append(Path(destination).exists())  # nothing is at the final path yet
+        real_link(source, destination)
+
+    monkeypatch.setattr(pack.os, "link", watching_link)
+    pin = write_canonical({"a": 1}, path)
+    assert at_link == [False]
+    assert read_canonical(path, pin) == {"a": 1}
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_without_hard_links_the_pack_is_renamed_into_place(tmp_path, monkeypatch):
+    def no_links(source, destination):
+        raise OSError("hard links are not supported")
+
+    monkeypatch.setattr(pack.os, "link", no_links)
+    path = tmp_path / "pack.json.gz"
+    pin = write_canonical({"a": 1}, path)
+    assert read_canonical(path, pin) == {"a": 1}
+    assert list(tmp_path.iterdir()) == [path]
+    # an existing file is still refused, and left as it was
+    path.write_bytes(b"precious")
+    with pytest.raises(FileExistsError):
+        write_canonical({"a": 2}, path)
+    assert path.read_bytes() == b"precious"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_a_failing_link_and_rename_leave_nothing(tmp_path, monkeypatch):
+    def boom(source, destination):
+        raise OSError("no")
+
+    monkeypatch.setattr(pack.os, "link", boom)
+    monkeypatch.setattr(pack.os, "replace", boom)
+    with pytest.raises(OSError, match="no"):
+        write_canonical({"a": 1}, tmp_path / "pack.json.gz")
+    assert list(tmp_path.iterdir()) == []
 
 
 # ---- read_canonical ----
@@ -470,7 +585,7 @@ def test_documents_record_config_sha256_end_month_and_every_manifest_entry():
     raw_sha = hashlib.sha256(CONFIG_PATH.read_bytes()).hexdigest()
     for document, args in ((daily_doc(), daily_args()), (hourly_doc(), hourly_args())):
         assert document["config_sha256"] == raw_sha
-        assert document["end_month"] == CONFIG.end_month == "2026-09"
+        assert document["end_month"] == CONFIG.end_month == END_MONTH
         originals = sorted(args["manifest"], key=lambda e: (e.kind, e.symbol, e.month))
         assert len(document["manifest"]) == len(args["manifest"]) > 1
         for stored, original in zip(document["manifest"], originals, strict=True):
@@ -598,7 +713,7 @@ def no_masks_for(*symbols: str) -> dict[str, tuple[list[int], dict[str, str]]]:
         ({"masks": {"BTCUSDT": ([1.5], {}), "ETHUSDT": ([], {})}}, "int"),
         ({"masks": {"BTCUSDT": ([True], {}), "ETHUSDT": ([], {})}}, "int"),
         ({"masks": {"BTCUSDT": ([], {"2025-13": "x"}), "ETHUSDT": ([], {})}}, "YYYY-MM"),
-        ({"masks": {"BTCUSDT": ([], {"2026-10": "x"}), "ETHUSDT": ([], {})}}, "after end_month"),
+        ({"masks": {"BTCUSDT": ([], {AFTER_END: "x"}), "ETHUSDT": ([], {})}}, "after end_month"),
         ({"masks": {"BTCUSDT": ([], {"2025-02": ""}), "ETHUSDT": ([], {})}}, "reason"),
         ({"masks": no_masks_for("BTCUSDT")}, "ETHUSDT"),
         ({"masks": no_masks_for("BTCUSDT", "ETHUSDT", "XRPUSDT")}, "XRPUSDT"),
@@ -612,13 +727,35 @@ def no_masks_for(*symbols: str) -> dict[str, tuple[list[int], dict[str, str]]]:
             {"daily": {"BTCUSDT": [replace(day_bar(0), close=D("NaN"))], "ETHUSDT": []}},
             "finite",
         ),
-        ({"universes": [universe("2026-10")]}, "after end_month"),
+        ({"universes": [universe(AFTER_END)]}, "after end_month"),
         ({"universes": ["2025-01"]}, "MonthlyUniverse"),
+        ({"universes": [universe("2025-02"), universe("2025-01")]}, "strictly increasing"),
+        ({"universes": [universe("2025-01"), universe("2025-01")]}, "no duplicate"),
+        (
+            {"universes": [universe("2025-01"), universe("2025-03"), universe("2025-02")]},
+            "2025-02 after 2025-03",
+        ),
     ],
 )
 def test_daily_pack_document_refuses_bad_input(overrides, why):
     with pytest.raises(ValueError, match=why):
         daily_doc(**overrides)
+
+
+def test_universe_months_may_skip_but_must_increase():
+    months = [universe("2024-12"), universe("2025-01"), universe("2025-03"), universe(END_MONTH)]
+    stored = daily_doc(universes=months)["universes"]
+    assert [u["month"] for u in stored] == ["2024-12", "2025-01", "2025-03", END_MONTH]
+
+
+def test_the_end_month_itself_is_allowed_and_the_next_month_is_refused():
+    config = replace(CONFIG, end_month="2025-02")
+    allowed = hourly_doc(config=config, manifest=[entry("spot_1h", "BTCUSDT", "2025-02")])
+    assert allowed["end_month"] == "2025-02"
+    with pytest.raises(ValueError, match="after end_month"):
+        hourly_doc(config=config, manifest=[entry("spot_1h", "BTCUSDT", "2025-03")])
+    with pytest.raises(ValueError, match="after end_month"):
+        daily_doc(config=config, universes=[universe("2025-03")])
 
 
 def test_a_universe_mean_that_is_not_a_decimal_is_refused():
@@ -633,7 +770,7 @@ def test_a_universe_mean_that_is_not_a_decimal_is_refused():
 @pytest.mark.parametrize(
     ("overrides", "why"),
     [
-        ({"manifest": [entry("spot_1h", "BTCUSDT", "2026-10")]}, "after end_month"),
+        ({"manifest": [entry("spot_1h", "BTCUSDT", AFTER_END)]}, "after end_month"),
         (
             {"manifest": [entry("spot_1h", "BTCUSDT", "2025-01")] * 2},
             "twice",
@@ -653,7 +790,7 @@ def test_a_universe_mean_that_is_not_a_decimal_is_refused():
         ({"manifest": ["BTCUSDT"]}, "ManifestEntry"),
         ({"funding_months": {("BTCUSDT", "2025-01"): "partial"}}, "status"),
         ({"funding_months": {("BTCUSDT", "2025-1"): "complete"}}, "YYYY-MM"),
-        ({"funding_months": {("BTCUSDT", "2026-10"): "complete"}}, "after end_month"),
+        ({"funding_months": {("BTCUSDT", AFTER_END): "complete"}}, "after end_month"),
         ({"funding_months": {("ETHUSDT", "2025-01"): "complete"}}, "futures"),
         ({"funding_months": {"BTCUSDT": "complete"}}, "pair"),
         ({"funding": {"ETHUSDT": []}}, "futures"),
@@ -689,7 +826,7 @@ def test_a_universe_mean_that_is_not_a_decimal_is_refused():
         (
             {
                 "masks": {
-                    ("BTCUSDT", "spot"): ([], {"2026-10": "x"}),
+                    ("BTCUSDT", "spot"): ([], {AFTER_END: "x"}),
                     ("ETHUSDT", "spot"): ([], {}),
                     ("BTCUSDT", "futures"): ([], {}),
                 }

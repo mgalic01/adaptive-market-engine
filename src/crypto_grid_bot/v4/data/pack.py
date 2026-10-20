@@ -6,7 +6,9 @@ canonically (sorted keys, separators ``(",", ":")``, ASCII, no NaN), gzipped wit
 file name, and pinned by the SHA-256 of that JSON, not of the gzip bytes: the same document has
 the same pin on any machine, while the gzip around it may differ between zlib builds. This is
 the ``combined/driver/packs.py`` convention, restated here because that module also carries the
-2024 guard. ``write_canonical`` refuses an existing file; ``read_canonical`` refuses a wrong pin,
+2024 guard. ``write_canonical`` refuses an existing file, a document the reader would not hand
+back unchanged (a float, a non-string key, a tuple) and never leaves a partial file at the final
+path (it links a finished temporary file into place); ``read_canonical`` refuses a wrong pin,
 a duplicate key, a float, NaN or Infinity, a document that is not an object, and anything that
 decompresses to more than 2 GiB. Pure file I/O: nothing here touches the network.
 
@@ -39,18 +41,22 @@ has a mask entry, empty for a clean one, so a missing entry is an error, never "
 hourly series also has its rules. Months are never after ``end_month``.
 
 The builders check what they write: Decimals are finite, timestamps are ints (never floats or
-bools), bar opens strictly increase within a series (funding rows keep the order given, since a
-duplicate slot is a status, not an error), symbols and months are well formed, and masked opens
-are sorted and unique. Any refusal is a ``ValueError``.
+bools), bar opens strictly increase within a series and universe months across ``universes``
+(funding rows keep the order given, since a duplicate slot is a status, not an error), symbols
+and months are well formed, and masked opens are sorted and unique. Any refusal is a
+``ValueError``.
 """
 
 from __future__ import annotations
 
+import errno
 import gzip
 import hashlib
 import io
 import json
+import os
 import re
+import secrets
 import zlib
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, fields
@@ -102,18 +108,29 @@ def write_canonical(document: Mapping[str, Any], path: Path) -> str:
     """Write ``document`` to a new file at ``path`` and return its pin: the SHA-256 (hex) of
     the canonical JSON the file compresses.
 
-    The document holds only dicts with string keys, lists, strings, ints, bools and None; NaN
-    and Infinity are refused. The gzip has mtime 0 and no file name. An existing file is
-    refused (``FileExistsError``), never replaced, and no parent folder is created. Nothing is
-    created if the document cannot be written as JSON.
+    The document holds only what ``read_canonical`` hands back unchanged: dicts with string
+    keys, lists, strings, ints, bools and None. A float (NaN and Infinity included), a
+    non-string key, a tuple or any other type is a ``ValueError``, raised before any file is
+    created. The gzip has mtime 0 and no file name.
+
+    The bytes go to a temporary file in the same folder, which is hard-linked to ``path`` only
+    once it is complete, so ``path`` never holds a partial pack. An existing file is refused
+    (``FileExistsError``), never replaced, and no parent folder is created. The temporary file
+    is removed whether or not the write succeeds.
     """
-    text = json.dumps(dict(document), sort_keys=True, separators=(",", ":"), allow_nan=False)
+    if not isinstance(document, Mapping):
+        raise ValueError("a pack document must be a mapping")
+    plain = dict(document)
+    try:
+        _check_json(plain, [])
+    except RecursionError as exc:
+        raise ValueError("pack document: nested too deeply, or circular") from exc
+    text = json.dumps(plain, sort_keys=True, separators=(",", ":"), allow_nan=False)
     content = text.encode("ascii")
     buffer = io.BytesIO()
     with gzip.GzipFile(filename="", mode="wb", fileobj=buffer, mtime=0) as archive:
         archive.write(content)
-    with open(path, "xb") as handle:
-        handle.write(buffer.getvalue())
+    _create_new(buffer.getvalue(), Path(path))
     return hashlib.sha256(content).hexdigest()
 
 
@@ -178,7 +195,7 @@ def daily_pack_document(
             },
             "exclusions": _exclusions(exclusions),
             "masks": _masks(masks, {_symbol(symbol, "daily") for symbol in daily}, config),
-            "universes": [_universe(universe, config) for universe in universes],
+            "universes": _universes(universes, config),
         }
 
 
@@ -242,6 +259,77 @@ def _decompressed(path: Path) -> bytes:
     except (OSError, EOFError, zlib.error) as exc:
         raise ValueError(f"{path}: not a readable gzip pack ({exc})") from exc
     return b"".join(chunks)
+
+
+_JSON_SCALARS = frozenset({str, int, bool, type(None)})
+
+
+def _check_json(value: object, trail: list[object]) -> None:
+    """``ValueError`` unless ``value`` is dicts with string keys, lists, strings, ints, bools
+    and None, all by exact type: what ``read_canonical`` returns unchanged. ``trail`` is the
+    path to ``value``, for the message."""
+    if type(value) is list:
+        for index, item in enumerate(value):
+            if type(item) not in _JSON_SCALARS:
+                trail.append(index)
+                _check_json(item, trail)
+                trail.pop()
+    elif type(value) is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                raise ValueError(f"pack document {_where(trail)}: key {key!r} is not a string")
+            if type(item) not in _JSON_SCALARS:
+                trail.append(key)
+                _check_json(item, trail)
+                trail.pop()
+    elif type(value) not in _JSON_SCALARS:
+        raise ValueError(
+            f"pack document {_where(trail)}: a {type(value).__name__} ({value!r:.40}) is not "
+            "JSON the reader returns unchanged (dicts with string keys, lists, strings, ints, "
+            "bools, None)"
+        )
+
+
+def _where(trail: Sequence[object]) -> str:
+    return "".join(f"[{step!r}]" for step in trail) or "at the top level"
+
+
+def _create_new(data: bytes, final: Path) -> None:
+    """Create ``final`` holding ``data``, or raise: a file that exists is ``FileExistsError``.
+
+    ``data`` is written, flushed and synced to a uniquely named file beside ``final`` (opened
+    ``xb``), which is then hard-linked to ``final``; the link fails if ``final`` exists, which
+    keeps ``xb``'s refusal while ``final`` only ever appears complete. The temporary file is
+    removed in every case.
+    """
+    temporary = final.with_name(f".{final.name}.{secrets.token_hex(8)}.tmp")
+    created = False
+    try:
+        with open(temporary, "xb") as handle:
+            created = True
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _link_new(temporary, final)
+    finally:
+        if created:  # a failed open made no file, and the name is not ours to remove
+            temporary.unlink(missing_ok=True)
+
+
+def _link_new(source: Path, final: Path) -> None:
+    """Hard-link ``source`` to ``final``, failing if ``final`` exists. Where the file system or
+    platform cannot link, ``source`` is renamed over ``final`` after checking that nothing is
+    there."""
+    try:
+        os.link(source, final)
+        return
+    except FileExistsError:
+        raise
+    except (OSError, NotImplementedError, AttributeError):
+        pass  # no hard links here; fall back to a checked rename
+    if os.path.lexists(final):
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(final))
+    os.replace(source, final)
 
 
 def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -355,6 +443,21 @@ def _exclusions(exclusions: Mapping[str, str]) -> dict[str, str]:
         if not isinstance(reason, str) or not reason:
             raise ValueError(f"exclusions {symbol}: a reason is required")
     return dict(exclusions)
+
+
+def _universes(universes: Sequence[MonthlyUniverse], config: DataConfig) -> list[dict[str, Any]]:
+    """One object per month; the months strictly increase (so a month appears once)."""
+    documents: list[dict[str, Any]] = []
+    for universe in universes:
+        document = _universe(universe, config)
+        # YYYY-MM strings order like the months they name
+        if documents and document["month"] <= documents[-1]["month"]:
+            raise ValueError(
+                f"universes: months must be strictly increasing, with no duplicate "
+                f"({document['month']} after {documents[-1]['month']})"
+            )
+        documents.append(document)
+    return documents
 
 
 def _universe(universe: MonthlyUniverse, config: DataConfig) -> dict[str, Any]:
