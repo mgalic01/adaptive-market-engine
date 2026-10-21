@@ -41,8 +41,10 @@ close (below), and last of all
 A phase that stops the cell (a liquidation or an unrestorable limit) skips the rest of the hour
 up to step 8 (spec "How a cell that stops early ends"): no later event and no closing fill;
 every open lifecycle is marked at the stopping check's prices and censored, and that mark is the
-final equity. Steps 1 and 5 to 7 are ``_CellState`` methods, so ``hold.py`` (Task 13) can reuse
-them, each with its contract in its docstring. Every threshold is compared on exact values
+final equity. Steps 1, 2 and 5 to 8, the window-end close, the pending book with its recorded
+cancels, the booking of a batch's legs (``_book_legs``) and the ``monthly`` record are
+``_CellState`` methods, each with its contract in its docstring; ``hold.py`` builds the hold arms
+on them. Every threshold is compared on exact values
 (``safety``), and every cut quantity is ``held x k`` (or ``k'``) computed in Fractions and
 truncated to the step (``_cut_quantity``).
 
@@ -359,9 +361,10 @@ class _Stop:
 
 
 class _CellState:
-    """One cell's account, lifecycles and records, and the parts of the hour that every arm
-    shares: the prices, the open mark, the stop, the end of the hour and the outcome. The arm's
-    own phases come from a subclass's ``_hour``; ``hold.py`` (Task 13) reuses this base."""
+    """One cell's account, lifecycles, pending orders and records, and the parts of the hour that
+    every arm shares: the prices, the open mark, the synthetic closes, the booking of a batch, the
+    stop, the end of the hour and the outcome. The arm's own phases come from a subclass's
+    ``_hour``: ``_V4Cell`` here, and ``hold.py``'s ``_HoldCell``."""
 
     def __init__(self, market: Market, cell: CellSpec) -> None:
         self.market = market
@@ -369,6 +372,7 @@ class _CellState:
         self._ledger = Ledger(Decimal(cell.capital))
         self._lifecycles = Lifecycles()
         self._dead = DeadMarkets()
+        self._book = PendingBook()
         self._writer: RecordWriter | None = None
         self._costs: Mapping[Venue, Costs] = MappingProxyType(
             {venue: cell.costs(venue) for venue in _VENUES}
@@ -574,7 +578,7 @@ class _CellState:
         self, h: int, coin: str, closed: Mapping[_Key, tuple[str, Decimal]]
     ) -> None:
         """What an arm does after the coin's synthetic closes at ``h`` (``closed`` maps each leg
-        to its reason and the quantity it held). The base account has no pending orders."""
+        to its reason and the quantity it held). The base does nothing."""
 
     def _open_mark(self, h: int) -> None:
         """Step 2: the open mark, kept in ``open_marks``, then the pre-fill liquidation check."""
@@ -885,6 +889,133 @@ class _CellState:
         ``_synthetic_legs`` asks ``due`` for the hour in step 1, before this."""
         for venue, symbol in self._ledger.positions():
             self._dead.observe(h, venue, symbol, self._bar((venue, symbol)) is not None)
+
+    def _has_spot_bar(self, coin: str) -> bool:
+        return self._bar(("spot", coin)) is not None
+
+    def _holding(self, coin: str) -> _Holding:
+        """The coin's legs at this hour's marking prices: spot (its dust apart) and futures."""
+        legs = self._legs(coin)
+        spot_key = legs[0]
+        spot = self._ledger.quantity(*spot_key)
+        dust = spot_notional = dust_notional = _ZERO
+        if spot:
+            price = self._prices[spot_key]
+            dust = self._dust(coin, price)
+            dust_notional = to_decimal(to_fraction(dust) * to_fraction(price))
+            spot_notional = to_decimal((to_fraction(spot) - to_fraction(dust)) * to_fraction(price))
+        futures_key = legs[1] if len(legs) > 1 else None
+        futures = futures_notional = _ZERO
+        if futures_key is not None:
+            futures = self._ledger.quantity(*futures_key)
+            if futures:
+                price = self._prices[futures_key]
+                futures_notional = to_decimal(to_fraction(futures) * to_fraction(price))
+        return _Holding(
+            spot, dust, futures, futures_key, spot_notional, dust_notional, futures_notional
+        )
+
+    def _book_legs(self, h: int, legs: Sequence[_Leg]) -> dict[str, list[tuple[Fill, Decimal]]]:
+        """Book one batch's planned legs at this hour's open, given in fill order (alphabetical
+        by coin, spot before futures): every reduction first, then every increase, each clipped
+        alone on the account as it now is (``_book_increase``). Returns each coin's fills, for
+        the caller's lifecycle batches."""
+        batches: dict[str, list[tuple[Fill, Decimal]]] = {}
+        for leg in legs:  # the reductions first
+            for item in leg.plan.orders:
+                if item.reduce_only:
+                    booked = self._book_fill(h, h, leg.coin, leg.key, item, leg.price, leg.reason)
+                    batches.setdefault(leg.coin, []).append(booked)
+        for leg in legs:  # then the increases, each clipped on the account as it now is
+            increases = tuple(item for item in leg.plan.orders if not item.reduce_only)
+            if increases:
+                booked_all = self._book_increase(
+                    h, leg.coin, leg.key, increases, leg.price, leg.reason
+                )
+                batches.setdefault(leg.coin, []).extend(booked_all)
+        return batches
+
+    # ---- the pending orders and the monthly record (shared with the hold arms) -------------
+
+    def _cancel(self, h: int, coin: str, reason: str) -> None:
+        """``PendingBook.cancel(coin)``, recording the order and the replacement it removed (the
+        book's ``replacement_pending`` says whether there was one). The V4 arms' cancels are
+        those of a universe exit and a funding-month exit, after the decision of their hour, and
+        of a dead-market close, before it (``_after_synthetic_close``); a hold arm's are those of
+        a dead-market close."""
+        replacing = self._book.replacement_pending(coin)
+        order = self._book.cancel(coin)
+        if order is not None:
+            self._record(
+                "event",
+                {
+                    "type": "order_cancelled",
+                    "hour_ms": h,
+                    "coin": coin,
+                    "decision_ms": order.decision_ms,
+                    "target": order.target,
+                    "reason": reason,
+                },
+            )
+        if replacing:
+            self._record(
+                "event",
+                {"type": "replacement_cancelled", "hour_ms": h, "coin": coin, "reason": reason},
+            )
+
+    def _record_superseded(self, h: int, decided: Decided) -> None:
+        for order in decided.cancelled:
+            self._record(
+                "event",
+                {
+                    "type": "order_superseded",
+                    "hour_ms": h,
+                    "coin": order.coin,
+                    "decision_ms": order.decision_ms,
+                    "target": order.target,
+                },
+            )
+        for coin in decided.cancelled_replacements:
+            self._record("event", {"type": "replacement_superseded", "hour_ms": h, "coin": coin})
+
+    def _monthly_record(
+        self, h: int, month: str, universe: Sequence[str], previous: Sequence[str]
+    ) -> dict[str, object]:
+        """The ``monthly`` record of the month's ``universe`` (the market's selection, in rank
+        order) after ``previous``, the last month's."""
+        following = _month_of(month_bounds_ms(month)[1])
+        perpetuals: list[dict[str, object]] = []
+        for coin in universe:
+            perpetual = self.market.coin(coin).perpetual
+            if perpetual is not None:
+                perpetuals.append(
+                    {
+                        "coin": coin,
+                        "perpetual": perpetual.symbol,
+                        "multiplier": perpetual.multiplier,
+                        "status": self.market.funding_month(coin, month),
+                        "next_month": following,
+                        "next_status": self.market.funding_month(coin, following),
+                    }
+                )
+        record = self.market.selection(month)
+        selection = None
+        if record is not None:
+            selection = {
+                "ranked": [[symbol, mean, bars] for symbol, mean, bars in record.ranked],
+                "excluded": [[symbol, why] for symbol, why in record.excluded],
+                "entered": list(record.entered),
+                "left": list(record.left),
+            }
+        return {
+            "month": month,
+            "open_ms": h,
+            "universe": list(universe),
+            "entered": [coin for coin in universe if coin not in previous],
+            "left": [coin for coin in previous if coin not in universe],
+            "perpetuals": perpetuals,
+            "selection": selection,
+        }
 
     # ---- steps 5 to 7: the limits after the fills and after funding, the adverse extremes --
 
@@ -1238,7 +1369,6 @@ class _V4Cell(_CellState):
         self.arm = arm
         self._vol_target = vol_target
         self._lookbacks = lookbacks
-        self._book = PendingBook()
         self._universe: tuple[str, ...] = ()
         # Per coin, built on its first decision: daily bars, signal state, returns, cursors.
         self._daily: dict[str, tuple[Kline, ...]] = {}
@@ -1283,7 +1413,7 @@ class _V4Cell(_CellState):
         if month != _month_of(day):
             previous, self._universe = self._universe, self.market.universe(month)
             left = tuple(coin for coin in previous if coin not in self._universe)
-            self._record("monthly", self._monthly_record(h, month, previous))
+            self._record("monthly", self._monthly_record(h, month, self._universe, previous))
         universe = frozenset(self._universe)
         # Spec "Universe", leaving the top 10: a coin that left gets a target of 0 at the month's
         # first decision, held or not, so that no order made before it left can still fill.
@@ -1404,31 +1534,6 @@ class _V4Cell(_CellState):
                     },
                 )
 
-    def _cancel(self, h: int, coin: str, reason: str) -> None:
-        """``PendingBook.cancel(coin)``, recording the order and the replacement it removed (the
-        book's ``replacement_pending`` says whether there was one). The cancels are those of a
-        universe exit and a funding-month exit, after the decision of their hour, and of a
-        dead-market close, before it (``_after_synthetic_close``)."""
-        replacing = self._book.replacement_pending(coin)
-        order = self._book.cancel(coin)
-        if order is not None:
-            self._record(
-                "event",
-                {
-                    "type": "order_cancelled",
-                    "hour_ms": h,
-                    "coin": coin,
-                    "decision_ms": order.decision_ms,
-                    "target": order.target,
-                    "reason": reason,
-                },
-            )
-        if replacing:
-            self._record(
-                "event",
-                {"type": "replacement_cancelled", "hour_ms": h, "coin": coin, "reason": reason},
-            )
-
     def _after_synthetic_close(
         self, h: int, coin: str, closed: Mapping[_Key, tuple[str, Decimal]]
     ) -> None:
@@ -1467,56 +1572,6 @@ class _V4Cell(_CellState):
                 "target": target,
             },
         )
-
-    def _record_superseded(self, h: int, decided: Decided) -> None:
-        for order in decided.cancelled:
-            self._record(
-                "event",
-                {
-                    "type": "order_superseded",
-                    "hour_ms": h,
-                    "coin": order.coin,
-                    "decision_ms": order.decision_ms,
-                    "target": order.target,
-                },
-            )
-        for coin in decided.cancelled_replacements:
-            self._record("event", {"type": "replacement_superseded", "hour_ms": h, "coin": coin})
-
-    def _monthly_record(self, h: int, month: str, previous: Sequence[str]) -> dict[str, object]:
-        following = _month_of(month_bounds_ms(month)[1])
-        perpetuals: list[dict[str, object]] = []
-        for coin in self._universe:
-            perpetual = self.market.coin(coin).perpetual
-            if perpetual is not None:
-                perpetuals.append(
-                    {
-                        "coin": coin,
-                        "perpetual": perpetual.symbol,
-                        "multiplier": perpetual.multiplier,
-                        "status": self.market.funding_month(coin, month),
-                        "next_month": following,
-                        "next_status": self.market.funding_month(coin, following),
-                    }
-                )
-        record = self.market.selection(month)
-        selection = None
-        if record is not None:
-            selection = {
-                "ranked": [[symbol, mean, bars] for symbol, mean, bars in record.ranked],
-                "excluded": [[symbol, why] for symbol, why in record.excluded],
-                "entered": list(record.entered),
-                "left": list(record.left),
-            }
-        return {
-            "month": month,
-            "open_ms": h,
-            "universe": list(self._universe),
-            "entered": [coin for coin in self._universe if coin not in previous],
-            "left": [coin for coin in previous if coin not in self._universe],
-            "perpetuals": perpetuals,
-            "selection": selection,
-        }
 
     # ---- step 4: the fills --------------------------------------------------------------
 
@@ -1598,9 +1653,6 @@ class _V4Cell(_CellState):
 
     def _has_bar(self, coin: str, venue: Venue) -> bool:
         return self._bar(self._key(coin, venue)) is not None
-
-    def _has_spot_bar(self, coin: str) -> bool:
-        return self._bar(("spot", coin)) is not None
 
     def _exit_skip(self, leg: Exit) -> str | None:
         """Why a due exit leg makes no trade, or None. ``flat``: the leg is already closed (by
@@ -1728,45 +1780,10 @@ class _V4Cell(_CellState):
                     plans.get(coin, []),
                 ),
             )
-        legs = [leg for coin in sorted(plans) for leg in plans[coin]]
-        batches: dict[str, list[tuple[Fill, Decimal]]] = {}
-        for leg in legs:  # the reductions first
-            for item in leg.plan.orders:
-                if item.reduce_only:
-                    booked = self._book_fill(h, h, leg.coin, leg.key, item, leg.price, leg.reason)
-                    batches.setdefault(leg.coin, []).append(booked)
-        for leg in legs:  # then the increases, each clipped on the account as it now is
-            increases = tuple(item for item in leg.plan.orders if not item.reduce_only)
-            if increases:
-                booked_all = self._book_increase(
-                    h, leg.coin, leg.key, increases, leg.price, leg.reason
-                )
-                batches.setdefault(leg.coin, []).extend(booked_all)
+        batches = self._book_legs(h, [leg for coin in sorted(plans) for leg in plans[coin]])
         for coin in sorted(batches):
             reason = _batch_reason(trading.get(coin), closing.get(coin, {}))
             self._close_batch(h, coin, batches[coin], reason)
-
-    def _holding(self, coin: str) -> _Holding:
-        """The coin's legs at this hour's marking prices: spot (its dust apart) and futures."""
-        legs = self._legs(coin)
-        spot_key = legs[0]
-        spot = self._ledger.quantity(*spot_key)
-        dust = spot_notional = dust_notional = _ZERO
-        if spot:
-            price = self._prices[spot_key]
-            dust = self._dust(coin, price)
-            dust_notional = to_decimal(to_fraction(dust) * to_fraction(price))
-            spot_notional = to_decimal((to_fraction(spot) - to_fraction(dust)) * to_fraction(price))
-        futures_key = legs[1] if len(legs) > 1 else None
-        futures = futures_notional = _ZERO
-        if futures_key is not None:
-            futures = self._ledger.quantity(*futures_key)
-            if futures:
-                price = self._prices[futures_key]
-                futures_notional = to_decimal(to_fraction(futures) * to_fraction(price))
-        return _Holding(
-            spot, dust, futures, futures_key, spot_notional, dust_notional, futures_notional
-        )
 
     def _trading_legs(
         self,
@@ -1947,11 +1964,14 @@ def _order_record(
 ) -> dict[str, object]:
     """The fill hour's half of a coin's daily record (spec "Records": the band, the split and
     the order placed, or the reason none was). ``decision_ms`` is the decision hour of the
-    target used: the order's, or for a replacement buy that of the coin's latest target."""
-    if order is not None:
-        source, target = SIGNAL, order.target
-    elif trading is not None:
+    target used: the order's, or for a replacement buy that of the coin's latest target. The
+    ``source`` and ``target`` are those of ``trading`` when the coin trades (``signal``, a
+    ``replacement buy``, or a hold arm's ``rebalance``), else ``signal`` and the order's target
+    for a band-kept order, and ``exit`` with no target for a coin with only exits due."""
+    if trading is not None:
         source, target = trading[2], trading[0]
+    elif order is not None:
+        source, target = SIGNAL, order.target
     else:
         source, target = "exit", None
     return {
