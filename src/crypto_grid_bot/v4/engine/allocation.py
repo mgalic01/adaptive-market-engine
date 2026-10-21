@@ -16,12 +16,14 @@ cushion). Both are pure functions: they see no ledger, no market and no clock.
   futures and the N coins scale by ``k = max(0, R - (G_E + G_S) / 3) / G_N``, capped at 1.
   Nothing is redistributed, and nothing here scales the E coins to the room: when they do not
   fit, the cash clip bounds them.
-* **Cash clip.** ``clip_increases`` takes the increases in the order given (alphabetical by
-  symbol, the spot leg before the futures leg within a coin: the caller's order) and applies
-  the spec's rule literally. Free cash is ``min(cash - open initial margin, backing - 4 x
-  maintenance)``, recomputed from the updated account before each increase. An increase is cut
-  to the largest notional whose need fits in it, where, for a notional ``n`` at the unslipped
-  open, a slippage rate ``s`` and a fee rate ``f``:
+* **Cash clip.** ``clip_increases`` applies the spec's rule literally. The hour loop calls it
+  one increase at a time, in the fill order (alphabetical by the coin's spot symbol, the spot
+  leg before the futures leg within a coin), each time on the ledger's state after the
+  previous real fill (controller ruling, Task 8): an admitted increase is still floored to the
+  step, or refused by the filters, before it fills, and only what actually fills may move the
+  account the next increase sees. Free cash is ``min(cash - open initial margin, backing - 4 x
+  maintenance)``. An increase is cut to the largest notional whose need fits in it, where, for
+  a notional ``n`` at the unslipped open, a slippage rate ``s`` and a fee rate ``f``:
 
   - a spot buy needs its slipped notional plus its fee, ``n (1 + s)(1 + f)``;
   - a futures increase needs its initial margin plus its fee, ``n / 3 + fee``, the fee being
@@ -33,12 +35,14 @@ cushion). Both are pure functions: they see no ledger, no market and no clock.
   ratio below 4 and none is made while it is below 4: what a futures increase takes from
   ``backing - 4 x maintenance`` is its fee, its slippage loss at the open ``n s`` and 4 x the
   1% maintenance it adds, which is no more than its need when ``s + 0.04 <= 1/3`` (checked).
-  After each admitted increase the account is updated: a spot buy takes its cost from cash and
-  backing; a futures increase takes its fee from cash, adds ``n / 3`` to the initial margin,
-  takes its fee and slippage loss from backing and adds 1% of ``n`` to the maintenance. The
-  result keeps the input order and its zeros, so the caller can record each cut; the caller
-  converts the admitted notional to a quantity, rounds it to the step and skips an increase
-  that is now below the filters.
+  Given several increases, the function updates its own copy of the account after each
+  admitted one, on the unrounded amount: a spot buy takes its cost from cash and backing; a
+  futures increase takes its fee from cash, adds ``n / 3`` to the initial margin, takes its fee
+  and slippage loss from backing and adds 1% of ``n`` to the maintenance. That is why the loop
+  passes one at a time: the update it would make for an increase later floored or skipped
+  never happens in the ledger. The result keeps the input order and its zeros, so the caller
+  can record each cut; the caller converts the admitted notional to a quantity, rounds it to
+  the step and skips an increase that is now below the filters.
 * **Venue units.** ``to_venue_quantity`` is ``notional / price`` in the venue's own units,
   truncated toward zero to ``CONTEXT.prec`` significant digits (and to 100 decimal places, the
   bound of the order helpers), so a later floor to the step never exceeds the true quotient.
@@ -230,14 +234,16 @@ def clip_increases(
     ``increases`` are ``(coin, venue, notional)`` at the unslipped opens. A spot ``notional`` is
     at least 0; a futures one is signed, negative for a short increase (its sign is its side,
     which sets the price the fee is charged on). ``cash``, ``open_initial_margin`` (the open
-    futures' notional at the open / 3), ``backing`` and ``maintenance`` are the account after
-    the hour's reductions. Free cash is ``min(cash - open initial margin, backing - 4 x
-    maintenance)``, and an increase is admitted up to the largest amount whose need fits in it
-    (a spot buy ``n (1 + s)(1 + f)``, a futures increase ``n / 3`` plus its fee). Returns
-    ``(coin, venue, admitted)`` for every increase, in the same order, with the zeros kept;
-    ``admitted`` is the whole ``notional`` (the same Decimal) when it fits, and otherwise the
-    cut amount, with the notional's sign, truncated toward zero. Refuses a venue that
-    ``costs`` lacks.
+    futures' notional at the open / 3), ``backing`` and ``maintenance`` are the account the
+    first increase meets. The hour loop passes a single increase, on the ledger after the hour's
+    reductions and every earlier increase that actually filled (module docstring); with several,
+    each later one meets this function's own update of the account. Free cash is ``min(cash -
+    open initial margin, backing - 4 x maintenance)``, and an increase is admitted up to the
+    largest amount whose need fits in it (a spot buy ``n (1 + s)(1 + f)``, a futures increase
+    ``n / 3`` plus its fee). Returns ``(coin, venue, admitted)`` for every increase, in the same
+    order, with the zeros kept; ``admitted`` is the whole ``notional`` (the same Decimal) when
+    it fits, and otherwise the cut amount, with the notional's sign, truncated toward zero.
+    Refuses a venue that ``costs`` lacks.
     """
     cash_now = _amount(cash, "cash", signed=True)
     margin_now = _amount(open_initial_margin, "open_initial_margin")
