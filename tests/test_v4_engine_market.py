@@ -13,7 +13,7 @@ import gzip
 import socket
 import sys
 from array import array
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -43,6 +43,7 @@ from crypto_grid_bot.backtest.klines import Kline
 from crypto_grid_bot.combined.execution import VenueRules
 from crypto_grid_bot.v4.data.bars import FundingRow
 from crypto_grid_bot.v4.data.pack import COIN_FORMAT, INDEX_FORMAT, coin_pack_file
+from crypto_grid_bot.v4.data.universe import MonthlyUniverse
 from crypto_grid_bot.v4.engine.market import Coin, HourBar, Market, Perpetual, SeriesStore
 
 D = Decimal
@@ -459,6 +460,112 @@ def test_window_runs_from_the_first_universe_month_to_end_month(tmp_path):
     assert market.universe("2024-12") == ()
     with pytest.raises(ValueError, match="YYYY-MM"):
         market.universe("2025-3")
+
+
+def test_market_keeps_each_months_full_selection_record(tmp_path):
+    """Spec "Universe": the selection is recorded every month, with the ranked list and its
+    volumes and who entered and who left. ``Market.selection`` keeps each month's whole record
+    from the daily pack: the candidates below the cut and the exclusions included."""
+    data_dir = write_world(tmp_path, three_coins())
+
+    def enrich(document: dict[str, Any]) -> None:
+        january = document["universes"][0]
+        january["ranked"].append(["XRPUSDT", "12.5", 29])  # ranked, not selected
+        january["excluded"] = [["BTCUPUSDT", "leveraged"], ["USDCUSDT", "stablecoin"]]
+
+    repack(data_dir, DAILY_PACK, enrich)
+    market = Market.load(data_dir)
+
+    january = market.selection("2025-01")
+    assert january == MonthlyUniverse(
+        month="2025-01",
+        selected=("BTCUSDT", "ETHUSDT", "SHIBUSDT"),
+        ranked=(
+            ("BTCUSDT", D(3000), 30),
+            ("ETHUSDT", D(2000), 30),
+            ("SHIBUSDT", D(1000), 30),
+            ("XRPUSDT", D("12.5"), 29),
+        ),
+        excluded=(("BTCUPUSDT", "leveraged"), ("USDCUSDT", "stablecoin")),
+        entered=("BTCUSDT", "ETHUSDT", "SHIBUSDT"),
+        left=(),
+    )
+    assert january.ranked[3][1] == D("12.5") and type(january.ranked[3][2]) is int
+    february = market.selection("2025-02")
+    assert february is not None and february.entered == () and february.left == ()
+    assert market.universe("2025-01") == january.selected
+    assert market.selection("2025-03") is None  # no universe entry, no selection record
+    with pytest.raises(ValueError, match="YYYY-MM"):
+        market.selection("2025-1")
+    # A Market built from its parts without selection records has none.
+    built = Market(
+        end_month="2025-01", universes={"2025-01": ("BTCUSDT",)}, coins=[market.coin("BTCUSDT")]
+    )
+    assert built.selection("2025-01") is None
+
+
+def test_a_selection_record_must_match_its_universe(tmp_path):
+    market = Market.load(write_world(tmp_path, three_coins()))
+    coins = [market.coin("BTCUSDT"), market.coin("ETHUSDT")]
+    record = MonthlyUniverse(
+        "2025-01", ("BTCUSDT",), (("BTCUSDT", D(1), 30),), (), ("BTCUSDT",), ()
+    )
+
+    accepted = Market(
+        end_month="2025-01",
+        universes={"2025-01": ("BTCUSDT",)},
+        coins=coins,
+        selections={"2025-01": record},
+    )
+    assert accepted.selection("2025-01") is record
+    for selections, message in [
+        ({"2025-01": replace(record, selected=("ETHUSDT",))}, "selected"),
+        ({"2025-02": replace(record, month="2025-02")}, "no universe"),
+        ({"2025-01": replace(record, month="2025-02")}, "month"),
+        ({"2025-01": ("BTCUSDT",)}, "MonthlyUniverse"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            Market(
+                end_month="2025-02",
+                universes={"2025-01": ("BTCUSDT",)},
+                coins=coins,
+                selections=selections,
+            )
+
+
+def _universe_field(key: str, value: object):
+    def change(document: dict[str, Any]) -> None:
+        if value is _DROP:
+            del document["universes"][0][key]
+        else:
+            document["universes"][0][key] = value
+
+    return change
+
+
+_DROP = object()
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("ranked", [["BTCUSDT", "1"]], "ranked"),
+        ("ranked", [["BTCUSDT", "x", 30]], "decimal"),
+        ("ranked", [["BTCUSDT", "1", "30"]], "bars"),
+        ("ranked", [["btc", "1", 30]], "symbol"),
+        ("ranked", None, "ranked"),
+        ("excluded", [["BTCUSDT"]], "excluded"),
+        ("excluded", [["BTCUSDT", 7]], "excluded"),
+        ("entered", "BTCUSDT", "entered"),
+        ("left", _DROP, "left"),
+    ],
+)
+def test_market_refuses_a_malformed_selection_record(tmp_path, key, value, message):
+    data_dir = write_world(tmp_path, three_coins())
+    repack(data_dir, DAILY_PACK, _universe_field(key, value))
+
+    with pytest.raises(ValueError, match=message):
+        Market.load(data_dir)
 
 
 def test_a_world_with_no_selection_or_an_unpacked_symbol_is_refused(tmp_path):

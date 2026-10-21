@@ -10,7 +10,10 @@ the 168-hour dead-market window of "Safety", over the pack contract in the docst
 verifies the daily pack and the hourly index by their pins, then each coin pack by the pin the
 index gives, one pack at a time. Each pack must carry its own format, and the ``config_sha256``
 and ``end_month`` of ``data.json``. A file is read only by a plain name inside the data
-directory. Only the universes are kept from the daily pack. Each coin pack's rows become
+directory. Only the monthly selection records are kept from the daily pack: each month's
+``MonthlyUniverse`` (the selected symbols, the whole ranking with each candidate's mean quote
+volume and bar count, the exclusions, and who entered and who left), for the cell's ``monthly``
+record (spec "Universe": the selection is recorded every month). Each coin pack's rows become
 compact stores, and its document is released before the next one is read.
 
 Masking follows the contract: rows include masked bars, and ``SeriesStore.from_rows`` drops
@@ -52,6 +55,7 @@ from crypto_grid_bot.v4.data.pack import (
     coin_pack_file,
     read_canonical,
 )
+from crypto_grid_bot.v4.data.universe import MonthlyUniverse
 from crypto_grid_bot.v4.engine.arms import DEAD_MARKET_HOURS
 
 DATA_FORMAT = "v4-data/1"
@@ -234,13 +238,16 @@ class Market:
 
     ``universes`` maps a month to its selected symbols in rank order. Every selected symbol
     must be one of ``coins``. The window opens at 00:00 UTC of the first month whose selection
-    is not empty (spec "Data") and ends with the last hour of ``end_month``.
+    is not empty (spec "Data") and ends with the last hour of ``end_month``. ``selections``
+    optionally maps a month to its whole selection record; each must be a month of
+    ``universes`` and select exactly its symbols.
     """
 
     __slots__ = (
         "_coins",
         "_daily",
         "_funding",
+        "_selections",
         "_universes",
         "end_month",
         "symbols",
@@ -249,7 +256,12 @@ class Market:
     )
 
     def __init__(
-        self, *, end_month: str, universes: Mapping[str, Sequence[str]], coins: Iterable[Coin]
+        self,
+        *,
+        end_month: str,
+        universes: Mapping[str, Sequence[str]],
+        coins: Iterable[Coin],
+        selections: Mapping[str, MonthlyUniverse] | None = None,
     ) -> None:
         end_ms = month_bounds_ms(_month(end_month, "end_month"))[1]
         by_symbol: dict[str, Coin] = {}
@@ -282,12 +294,24 @@ class Market:
         first = next((month for month, selected in months.items() if selected), None)
         if first is None:
             raise ValueError("no universe month has a selection, so the window has no start")
+        records: dict[str, MonthlyUniverse] = {}
+        for month, record in (selections or {}).items():
+            if not isinstance(record, MonthlyUniverse):
+                raise ValueError(f"selection {month!r:.40}: MonthlyUniverse required")
+            if record.month != month:
+                raise ValueError(f"selection {month!r:.40} holds the month {record.month!r:.40}")
+            if month not in months:
+                raise ValueError(f"selection {month} has no universe entry")
+            if tuple(record.selected) != months[month]:
+                raise ValueError(f"selection {month}: its selected symbols are not the universe")
+            records[month] = record
         self.end_month = end_month
         self.window_start_ms = month_bounds_ms(first)[0]
         self.window_end_ms = end_ms - HOUR_MS
         self.symbols = tuple(sorted(by_symbol))
         self._coins = by_symbol
         self._universes = months
+        self._selections = records
         self._daily: dict[str, tuple[Kline, ...]] = {}
         self._funding = _funding_by_hour(by_symbol[symbol] for symbol in self.symbols)
 
@@ -300,8 +324,8 @@ class Market:
         if not isinstance(packs, dict):
             raise ValueError(f"{folder / DATA_FILE}: packs must be an object")
         daily = _pack(folder, packs.get("daily"), DAILY_FORMAT, "the daily pack", header)
-        universes = _universes(daily)
-        del daily  # only the universes are needed; the candidates' daily bars can go
+        selections = _selections(daily)
+        del daily  # only the selections are needed; the candidates' daily bars can go
         index = _pack(folder, packs.get("hourly_index"), INDEX_FORMAT, "the hourly index", header)
         listed, perpetuals = index.get("coins"), index.get("perpetuals")
         if not isinstance(listed, dict) or not isinstance(perpetuals, dict):
@@ -325,11 +349,22 @@ class Market:
                 )
             coins.append(_coin(document, symbol, label))
             del document  # one coin pack's document at a time
-        return cls(end_month=header["end_month"], universes=universes, coins=coins)
+        return cls(
+            end_month=header["end_month"],
+            universes={month: record.selected for month, record in selections.items()},
+            coins=coins,
+            selections=selections,
+        )
 
     def universe(self, month: str) -> tuple[str, ...]:
         """The month's selected symbols in rank order; () for a month without a selection."""
         return self._universes.get(_month(month, "month"), ())
+
+    def selection(self, month: str) -> MonthlyUniverse | None:
+        """The month's whole selection record (spec "Universe": the ranked list with each
+        candidate's mean quote volume and bar count, the exclusions, and who entered and who
+        left), or None for a month without one, such as a Market built without records."""
+        return self._selections.get(_month(month, "month"))
 
     def coin(self, symbol: str) -> Coin:
         found = self._coins.get(symbol)
@@ -524,21 +559,67 @@ def _pack(
     return document
 
 
-def _universes(daily: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+def _selections(daily: Mapping[str, Any]) -> dict[str, MonthlyUniverse]:
+    """Each month's selection record from the daily pack's ``universes`` (the pack contract:
+    ``month``, ``selected``, ``ranked`` rows ``[symbol, mean quote volume, bars]``, ``excluded``
+    pairs ``[symbol, reason]``, ``entered`` and ``left``)."""
     entries = daily.get("universes")
     if not isinstance(entries, list):
         raise ValueError("the daily pack: universes must be a list")
-    universes: dict[str, tuple[str, ...]] = {}
+    records: dict[str, MonthlyUniverse] = {}
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("selected"), list):
             raise ValueError("the daily pack: each universe needs a month and a selected list")
         month = _month(entry.get("month"), "the daily pack: universe month")
-        if month in universes:
+        if month in records:
             raise ValueError(f"the daily pack: universe {month} is listed twice")
-        universes[month] = tuple(
-            _symbol(symbol, f"the daily pack: universe {month}") for symbol in entry["selected"]
+        what = f"the daily pack: universe {month}"
+        records[month] = MonthlyUniverse(
+            month=month,
+            selected=_symbols(entry["selected"], what),
+            ranked=_ranked(entry.get("ranked"), f"{what} ranked"),
+            excluded=_excluded(entry.get("excluded"), f"{what} excluded"),
+            entered=_symbols(entry.get("entered"), f"{what} entered"),
+            left=_symbols(entry.get("left"), f"{what} left"),
         )
-    return universes
+    return records
+
+
+def _symbols(values: object, what: str) -> tuple[str, ...]:
+    if not isinstance(values, list):
+        raise ValueError(f"{what}: a list of symbols required, got {values!r:.40}")
+    return tuple(_symbol(symbol, what) for symbol in values)
+
+
+def _ranked(rows: object, what: str) -> tuple[tuple[str, Decimal, int], ...]:
+    if not isinstance(rows, list):
+        raise ValueError(f"{what}: a list of [symbol, mean quote volume, bars] required")
+    ranked: list[tuple[str, Decimal, int]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) != 3:
+            raise ValueError(
+                f"{what}: each row is [symbol, mean quote volume, bars], got {row!r:.60}"
+            )
+        symbol, mean, bars = row
+        if type(bars) is not int or bars < 0:
+            raise ValueError(f"{what}: bars must be a non-negative int, got {bars!r:.40}")
+        ranked.append((_symbol(symbol, what), _decimal(mean, f"{what} mean"), bars))
+    return tuple(ranked)
+
+
+def _excluded(rows: object, what: str) -> tuple[tuple[str, str], ...]:
+    if not isinstance(rows, list):
+        raise ValueError(f"{what}: a list of [symbol, reason] required")
+    excluded: list[tuple[str, str]] = []
+    for row in rows:
+        if (
+            not isinstance(row, list)
+            or len(row) != 2
+            or not all(isinstance(value, str) and value for value in row)
+        ):
+            raise ValueError(f"{what}: each entry is [symbol, reason], got {row!r:.60}")
+        excluded.append((row[0], row[1]))
+    return tuple(excluded)
 
 
 def _series(document: Mapping[str, Any], venue: str, label: str) -> SeriesStore:
