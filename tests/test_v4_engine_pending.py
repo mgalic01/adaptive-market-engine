@@ -673,6 +673,40 @@ def test_cancel_leaves_scheduled_exits_and_other_coins_alone() -> None:
     assert coins_of(book.due(T + HOUR, always)) == ["ETH"]
 
 
+def test_the_book_answers_whether_an_exit_or_a_replacement_is_pending() -> None:
+    """The two read-only queries the hour loop uses instead of mirroring the book: an exit leg
+    is scheduled until ``due_exits`` returns it, and a replacement is pending until it is
+    placed, cancelled or superseded. Asking changes nothing."""
+    book = PendingBook()
+    assert not book.exit_scheduled("BTC", "spot") and not book.replacement_pending("BTC")
+    book.schedule_exit(Exit("BTC", "futures", "funding-month exit", T + HOUR))
+    assert book.exit_scheduled("BTC", "futures") and not book.exit_scheduled("BTC", "spot")
+    assert not book.exit_scheduled("ETH", "futures")
+    book.schedule_replacement("ETH", T + HOUR)
+    book.schedule_replacement("SOL", T + HOUR)
+    assert book.replacement_pending("ETH") and not book.replacement_pending("BTC")
+    assert book.exit_scheduled("BTC", "futures")  # asking twice changes nothing
+    assert [e.coin for e in book.due_exits(T + HOUR, every_bar)] == ["BTC"]
+    assert not book.exit_scheduled("BTC", "futures")  # returned, so no longer scheduled
+    book.cancel("ETH")
+    assert not book.replacement_pending("ETH") and book.replacement_pending("SOL")
+    book.decide(T + DAY, {"SOL": D(".1")})  # a newer target supersedes the replacement
+    assert not book.replacement_pending("SOL")
+    book.schedule_replacement("XRP", T + DAY + HOUR)
+    assert book.due_replacements(T + DAY + HOUR, always) == ("XRP",)
+    assert not book.replacement_pending("XRP")  # placed
+
+
+@pytest.mark.parametrize(("coin", "venue"), [("btc", "spot"), ("BTC", "margin"), (1, "spot")])
+def test_the_queries_check_the_coin_and_the_venue(coin: Any, venue: Any) -> None:
+    book = PendingBook()
+    with pytest.raises(ValueError):
+        book.exit_scheduled(coin, venue)
+    if venue == "spot":
+        with pytest.raises(ValueError):
+            book.replacement_pending(coin)
+
+
 def test_a_coin_can_be_decided_again_after_a_cancel() -> None:
     book = PendingBook()
     book.decide(T, {"BTC": D(".1")})

@@ -26,6 +26,9 @@ coin usable this hour" through callbacks, and sizes every order itself.
 * ``cancel`` is for the events that end a coin's deferred orders: a universe exit, a
   funding-month exit and a dead-market close. It removes the coin's pending order and its
   pending replacement, and leaves scheduled exits alone.
+* **Two read-only queries,** ``exit_scheduled(coin, venue)`` and ``replacement_pending(coin)``,
+  let the hour loop see what the book holds (so it never schedules a second exit for a leg, and
+  can record the replacement a ``cancel`` removes) without keeping a copy of the book's state.
 
 Order of calls in an hour, following the spec's "Order of events in an hour": first the
 synthetic closes due at the hour's open (dead-market and synthetic funding-month closes), each
@@ -197,6 +200,20 @@ class PendingBook:
         for leg in due:
             del self._exits[(leg.coin, leg.venue)]
         return tuple(due)
+
+    def exit_scheduled(self, coin: str, venue: Venue) -> bool:
+        """Whether an exit leg of the coin on ``venue`` is scheduled and ``due_exits`` has not
+        returned it yet. Changes nothing."""
+        _symbol(coin, "coin")
+        if venue not in _VENUES:
+            raise ValueError(f"venue must be one of {_VENUES}, got {venue!r:.40}")
+        return (coin, venue) in self._exits
+
+    def replacement_pending(self, coin: str) -> bool:
+        """Whether the coin has a replacement buy scheduled that has not been placed, cancelled
+        or superseded. Changes nothing."""
+        _symbol(coin, "coin")
+        return coin in self._replacements
 
     def schedule_replacement(self, coin: str, after_ms: int) -> bool:
         """Schedule the spot buy that replaces a funding-month futures close filled at
