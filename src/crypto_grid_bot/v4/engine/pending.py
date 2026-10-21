@@ -19,18 +19,26 @@ coin usable this hour" through callbacks, and sizes every order itself.
 * **Replacement spot buys.** A funding-month futures close is followed by a spot buy, placed at
   the first hour at or after the close's fill that has a spot bar. The book only times it; the
   hour loop sizes it from the coin's latest target. A decision whose targets include the coin
-  supersedes it, so only the latest target ever produces the buy. This includes the decision
-  made in the very hour of the close (a synthetic close at a 00:00 decision hour): that
-  decision came first, so ``schedule_replacement`` itself refuses the buy and says so.
+  supersedes it, so only the latest target ever produces the buy, whichever order the calls of
+  that 00:00 hour come in: a replacement scheduled before ``decide`` is cancelled by it (and
+  reported in ``Decided.cancelled_replacements``), and one scheduled after it in the same hour is
+  refused by ``schedule_replacement``, which returns False.
 * ``cancel`` is for the events that end a coin's deferred orders: a universe exit, a
-  funding-month exit and a dead-market close. It leaves scheduled exits alone.
+  funding-month exit and a dead-market close. It removes the coin's pending order and its
+  pending replacement, and leaves scheduled exits alone.
 
-Order of calls in an hour: at 00:00 ``decide`` first, then ``due``, ``due_exits``, the booking
-of the exits' fills (each followed by ``schedule_replacement`` for a futures close), and then
-``due_replacements``, so that a close filled in an hour can be replaced in that same hour. At
-other hours the same without ``decide``. Every call checks all its input before it changes any
-state, so a refused call (or a callback that raises) leaves the book as it was. Each ``due*``
-method keeps its own clock and refuses an hour that is not after its previous one.
+Order of calls in an hour, following the spec's "Order of events in an hour": first the
+synthetic closes due at the hour's open (dead-market and synthetic funding-month closes), each
+with its ``cancel(coin)`` and, for a futures close, its ``schedule_replacement``; then, at 00:00,
+``decide``, followed by ``cancel(coin)`` for each universe or funding-month exit that decision
+makes (so it drops that decision's own order for the coin); then ``due``, ``due_exits``, the
+booking of the fills (each futures close of a funding-month exit followed by
+``schedule_replacement``), and then ``due_replacements``, so that a close filled in an hour can
+be replaced in that same hour. A dead-market close's ``cancel`` must come before ``decide``:
+after it, it would remove the order the new decision just made. Every call checks all its input
+before it changes any state, so a refused call (or a callback that raises) leaves the book as it
+was. Each ``due*`` method keeps its own clock and refuses an hour that is not after its previous
+one.
 """
 
 from __future__ import annotations
@@ -39,13 +47,13 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal, get_args
+from typing import get_args
+
+from crypto_grid_bot.v4.engine.ledger import Venue
 
 HOUR_MS = 3_600_000
 DAY_MS = 24 * HOUR_MS
 
-# Task 6 defines this in ``ledger.py``; the same literal, kept local until then.
-Venue = Literal["spot", "futures"]
 _VENUES: tuple[str, ...] = get_args(Venue)
 
 # The V4 data layer's symbol pattern (ruling R7).
@@ -156,9 +164,11 @@ class PendingBook:
         return tuple(due)
 
     def cancel(self, coin: str) -> Pending | None:
-        """Drop the coin's pending order and its pending replacement buy. Returns the order.
+        """Drop the coin's pending order and its pending replacement buy, not its scheduled
+        exits. Returns the order.
 
-        For a universe exit, a funding-month exit or a dead-market close. Scheduled exits stay.
+        For a universe exit, a funding-month exit or a dead-market close. A dead-market close
+        calls it before that hour's ``decide``; a universe or funding-month exit calls it after.
         """
         _symbol(coin, "coin")
         self._replacements.pop(coin, None)
