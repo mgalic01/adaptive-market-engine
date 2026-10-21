@@ -32,6 +32,12 @@ keys positions by symbol alone and books collateral, and V4 does neither).
   unrealised P&L from its lots, lot by lot. The first two are exactly 0 and the third is
   returned for the caller to hold within 1e-18.
 
+  In the equity identity the futures realised P&L is not the booked total, which is also
+  what moved cash and so would cancel. It is the futures fills' flow, ``sum -side x quantity
+  x price``, plus the open futures lots' basis, ``sum side x lot quantity x lot price``, which
+  equals the booked total exactly when the FIFO booking is right. Spot realised P&L never
+  moves cash (a spot fill moves it by its notional), so its booked total is checked as it is.
+
 The ledger books what it is given and admits nothing: the cash clip and the safety checks
 decide what may fill, so a fill or funding may take cash below zero. Amounts are exact
 ``Fraction``s inside. Every value returned is the exact Decimal of one (``numbers.to_decimal``),
@@ -153,6 +159,7 @@ class Ledger:
         self._fees = _ZERO
         self._realised_spot = _ZERO
         self._realised_futures = _ZERO
+        self._futures_flow = _ZERO  # sum of -side x quantity x price over futures fills
         self._funding = _ZERO
         self._traded: dict[_Key, tuple[Fraction, Fraction]] = {}  # quantity bought, sold
 
@@ -210,6 +217,7 @@ class Ledger:
             self._realised_spot += realised
         else:
             self._realised_futures += realised
+            self._futures_flow -= f.side * notional
         self._last_ms = f.timestamp_ms
         return result
 
@@ -287,14 +295,19 @@ class Ledger:
                 else position.side * sum((lot.quantity for lot in position.lots), _ZERO)
             )
             quantities[key] = to_decimal(held - (bought - sold))
-        unrealised = _ZERO
+        unrealised = futures_basis = _ZERO
         for key, position in self._positions.items():
             for lot in position.lots:
                 unrealised += position.side * lot.quantity * (marks[key] - lot.price)
+                if key[0] == "futures":
+                    futures_basis += position.side * lot.quantity * lot.price
+        # Futures realised P&L from the fills' flows and the open lots' basis, not from the
+        # booked total: the booked number is also what moved cash, so it would cancel here.
         expected = (
             self._initial
             + self._realised_spot
-            + self._realised_futures
+            + self._futures_flow
+            + futures_basis
             + unrealised
             - self._fees
             + self._funding

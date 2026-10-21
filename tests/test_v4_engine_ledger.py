@@ -10,12 +10,14 @@ from __future__ import annotations
 import random
 from dataclasses import FrozenInstanceError
 from decimal import Decimal, localcontext
+from fractions import Fraction
 from typing import Any, get_args
 
 import pytest
 
 from crypto_grid_bot.combined.account import PositionSnapshot
 from crypto_grid_bot.combined.execution import funding_cashflow
+from crypto_grid_bot.v4.engine import ledger as ledger_module
 from crypto_grid_bot.v4.engine.ledger import Audit, Fill, Ledger, Mark, Venue
 from crypto_grid_bot.v4.engine.numbers import CONTEXT
 
@@ -465,6 +467,57 @@ def test_records_are_frozen() -> None:
 
 
 # ---------------------------------------------------------------------------------------
+# The audit sees a mis-booked realised P&L
+# ---------------------------------------------------------------------------------------
+
+
+def _priced_at_the_oldest_lot(held: Any, quantity: Fraction, price: Fraction) -> Any:
+    position, _ = REAL_REDUCE(held, quantity, price)
+    return position, held.side * quantity * (price - held.lots[0].price)
+
+
+def _whole_lots_realised(held: Any, quantity: Fraction, price: Fraction) -> Any:
+    position, _ = REAL_REDUCE(held, quantity, price)
+    realised, remaining = Fraction(0), quantity
+    for lot in held.lots:
+        if remaining <= 0:
+            break
+        realised += lot.quantity * (price - lot.price)
+        remaining -= lot.quantity
+    return position, held.side * realised
+
+
+REAL_REDUCE = ledger_module._reduce
+
+
+@pytest.mark.parametrize(
+    ("venue", "mutant", "booked", "residual"),
+    [
+        # Lots 1 @ 100 and 1 @ 110 (spot: 1 @ 100 and 1 @ 120), then 1.5 sold at 120 (130).
+        # The right FIFO P&L is 25 on futures and 35 on spot.
+        ("futures", _priced_at_the_oldest_lot, D(30), D(5)),
+        ("futures", _whole_lots_realised, D(30), D(5)),
+        ("spot", _priced_at_the_oldest_lot, D(45), D(-10)),
+        ("spot", _whole_lots_realised, D(40), D(-5)),
+    ],
+)
+def test_the_audit_catches_a_realised_pnl_the_lots_do_not_support(
+    monkeypatch: pytest.MonkeyPatch, venue: Venue, mutant: Any, booked: Decimal, residual: Decimal
+) -> None:
+    ledger = Ledger(D(1000))
+    second, sale = ("110", "120") if venue == "futures" else ("120", "130")
+    ledger.fill(fill(venue, ETH, 1, "1", "100"))
+    ledger.fill(fill(venue, ETH, 1, "1", second))
+    monkeypatch.setattr(ledger_module, "_reduce", mutant)
+    assert ledger.fill(fill(venue, ETH, -1, "1.5", sale)) == booked
+    audit = ledger.audit({(venue, ETH): D(sale)})
+    # The cash formula agrees with its own booked totals, so only the equity identity sees it.
+    assert audit.wallet_residual == 0
+    assert all(value == 0 for value in audit.quantity_residuals.values())
+    assert audit.equity_residual == residual
+
+
+# ---------------------------------------------------------------------------------------
 # The audit over a long random sequence
 # ---------------------------------------------------------------------------------------
 
@@ -486,6 +539,10 @@ def test_audit_identities_hold_exactly_over_a_random_fill_sequence() -> None:
     ]
     units = {key: SCALES[key[1]][1] for key in keys}
     held = {key: D(0) for key in keys}
+    # An independent mark-to-market model: the initial cash plus every cash flow of the fills
+    # (-side x quantity x price - fee) and of the funding. Equity is that plus the held
+    # quantities at their prices, with futures signed and spot long.
+    flow = Fraction(100000)
     kinds: dict[str, int] = {}
     fills = 0
     now = T
@@ -497,11 +554,12 @@ def test_audit_identities_hold_exactly_over_a_random_fill_sequence() -> None:
         return {key: price(key) for key in keys}
 
     def book(key: tuple[Venue, str], side: int, quantity: Decimal, kind: str) -> None:
-        nonlocal fills
+        nonlocal fills, flow
         venue, symbol = key
         with localcontext(CONTEXT):
             fee = quantity * price(key) * FEE[venue]
         ledger.fill(Fill(now, venue, symbol, side, quantity, price(key), fee, kind))
+        flow += -side * Fraction(quantity) * Fraction(price(key)) - Fraction(fee)
         held[key] += side * quantity
         fills += 1
         kinds[kind] = kinds.get(kind, 0) + 1
@@ -513,6 +571,10 @@ def test_audit_identities_hold_exactly_over_a_random_fill_sequence() -> None:
         mark = ledger.mark(prices())
         assert mark.equity == mark.cash + mark.spot_value + mark.futures_upnl
         assert mark.backing == mark.cash + mark.futures_upnl
+        model = flow + sum(
+            (Fraction(q) * Fraction(price(key)) for key, q in held.items() if q), Fraction(0)
+        )
+        assert Fraction(mark.equity) == model
 
     def some(symbol: str) -> Decimal:
         places, typical = SCALES[symbol][2], SCALES[symbol][3]
@@ -562,6 +624,7 @@ def test_audit_identities_hold_exactly_over_a_random_fill_sequence() -> None:
                 with localcontext(CONTEXT):
                     amount = -ledger.quantity(*leg) * rate * price(leg)
                 ledger.funding(now, leg[1], amount)
+                flow += Fraction(amount)
                 kinds["funding+" if amount > 0 else "funding-"] = (
                     kinds.get("funding+" if amount > 0 else "funding-", 0) + 1
                 )
