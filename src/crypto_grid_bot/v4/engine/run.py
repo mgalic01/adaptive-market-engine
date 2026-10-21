@@ -131,8 +131,10 @@ the failure.
   - ``exit_scheduled`` (``venue``, ``reason``, ``after_ms``), and ``exit_skipped`` (``venue``,
     ``reason``, ``why``: ``flat``, or ``in_universe`` for a universe exit of a coin that is back
     in the universe, whose newer decisions supersede it);
-  - ``replacement_scheduled`` (only a long futures leg's funding-month close is replaced), and
-    ``replacement_skipped`` (``why``: ``not_in_universe``);
+  - after a funding-month close of a futures leg, of either side: ``replacement_scheduled``
+    when the coin's latest target is above 0, else ``replacement_not_needed`` (``decision_ms``
+    and ``target`` of that latest target, both null without one); and ``replacement_skipped``
+    (``why``: ``not_in_universe``);
   - ``synthetic_closes``, per batch (coin null): the ``legs`` closing (``coin``, ``venue``,
     ``symbol``, ``held``, ``last_close``, the penalised ``price``, ``reason``: ``delisting`` or
     ``funding-month exit``) and the ``mark`` of the batch's one liquidation check;
@@ -142,7 +144,7 @@ the failure.
     or its ``equity`` with the ``untradable_gross`` and ``tradable_gross`` (ceiling), the
     ``factor`` k or k' (null when nothing can trade), the ``untradable`` legs as ``[venue,
     symbol]`` and the ``legs`` cut (``coin``, ``venue``, ``symbol``, ``held``, ``target``,
-    ``orders``, ``dust``);
+    ``orders``, ``refusal``, ``unfilled``: a required reduction the filters refused, ``dust``);
   - ``order``, per coin the fill phase handles: ``source`` (``signal``, ``replacement buy`` or
     ``exit``), ``decision_ms`` (the decision hour of the target used, for a replacement buy that
     of the coin's latest target), ``target``, ``eligible`` (as passed to the allocation, null for a
@@ -166,17 +168,19 @@ the failure.
   ``hour_ms`` for ``engine_error``.
 
 **Outcomes.** ``complete``; ``liquidated`` (reason null); ``limit_unrestorable`` (reason
-``margin_cushion`` or ``ceiling``); ``accounting_failure`` (reason ``wallet``, ``quantity`` or
-``equity``: the first identity that failed, in that order); ``engine_error`` (reason
-``"<Type>: <message>"``). A stop's ``check`` names the check that stopped it:
+``margin_cushion``, ``ceiling`` or ``required_fill``); ``accounting_failure`` (reason ``wallet``,
+``quantity`` or ``equity``: the first identity that failed, in that order); ``engine_error``
+(reason ``"<Type>: <message>"``). A stop's ``check`` names the check that stopped it:
 ``synthetic_closes`` (the batch at its penalised prices), ``synthetic_closes_booked`` (equity at
 or below zero after the batch), ``open_mark``, ``post_fill``, ``funding``, ``adverse_extremes``,
 or the new mark after a cut, ``<point>_margin_cut`` or ``<point>_ceiling_cut``. A limit with
-nothing tradable stops at its point (``post_fill`` or ``funding``); one a cut did not restore,
-at the cut's new mark. The spec's third reason of ``limit_unrestorable``, ``required_fill`` (a
-fill the rules require that cannot be made), has no path under V4's rules: every required
-reduction can be made, since a futures reduction is reduce-only and ignores the minimum notional
-and a spot remainder below the filters becomes dust. It exists for the summary's schema only.
+nothing tradable stops at its point (``post_fill`` or ``funding``) with ``margin_cushion`` or
+``ceiling``; one a cut did not restore stops at the cut's new mark. Its reason is
+``required_fill`` (spec "Safety": "a fill the rules require that cannot be made") when one of
+the cut's required reductions was not made, and otherwise the limit's own. A futures reduction is
+reduce-only and never refused, so the one such fill is a cut's spot sale: when the holding itself
+can be sold but the sale is below the minimum quantity or notional, ``plan_leg`` makes no order
+and the leg stays held, not as dust. A cut that restores its limit anyway does not stop the cell.
 
 The loop does O(coins) work an hour: bars by bisection, each coin's daily bars and returns
 built once, on its first decision, and fed or sliced from a cursor. The fill phase does its
@@ -265,6 +269,7 @@ LIQUIDATED = "liquidated"
 LIMIT_UNRESTORABLE = "limit_unrestorable"
 MARGIN_CUSHION = "margin_cushion"
 CEILING = "ceiling"
+REQUIRED_FILL = "required_fill"
 
 _Key = tuple[Venue, str]
 _VENUES: tuple[Venue, ...] = ("spot", "futures")
@@ -962,8 +967,10 @@ class _CellState:
         this hour) shrink to ``held x k``, ``k = cushion_factor(backing, untradable maintenance,
         tradable maintenance)``, by reduce-only orders at this open with slippage and fees,
         lifecycle reason ``margin cut``. With no tradable futures leg, or a ratio still below 3
-        at the new mark, the cell ends ``limit_unrestorable`` with reason ``margin_cushion``.
-        Returns the new mark (the old one when nothing could be cut)."""
+        at the new mark, the cell ends ``limit_unrestorable`` with reason ``margin_cushion``
+        (``required_fill`` if a required reduction of the cut was not made, which a futures
+        reduction never is: see ``_unfilled``). Returns the new mark (the old one when nothing
+        could be cut)."""
         tradable: list[_Key] = []
         untradable: list[_Key] = []
         tradable_maintenance = untradable_maintenance = Fraction(0)
@@ -1005,7 +1012,8 @@ class _CellState:
         if liquidated(after):
             self._stop_at(LIQUIDATED, None, check, self._prices, after)
         elif cushion_breached(after):
-            self._stop_at(LIMIT_UNRESTORABLE, MARGIN_CUSHION, check, self._prices, after)
+            reason = REQUIRED_FILL if any(map(_unfilled, legs)) else MARGIN_CUSHION
+            self._stop_at(LIMIT_UNRESTORABLE, reason, check, self._prices, after)
         return after
 
     def _ceiling_cut(self, h: int, point: str, stamp: int, mark: Mark) -> None:
@@ -1015,7 +1023,9 @@ class _CellState:
         and fees, lifecycle reason ``ceiling cut``. Untradable are the legs without a bar at
         this hour and unsellable spot dust; a spot remainder the cut leaves below the filters
         becomes dust. With nothing tradable, or gross still above 3 at the new mark, the cell
-        ends ``limit_unrestorable`` with reason ``ceiling``."""
+        ends ``limit_unrestorable`` with reason ``ceiling``, or ``required_fill`` when gross is
+        still above 3 and one of the cut's spot sales was refused by the filters
+        (``_unfilled``: the holding could be sold, the sale could not, so the leg stays)."""
         tradable: list[_Key] = []
         untradable: list[_Key] = []
         tradable_gross = untradable_gross = Fraction(0)
@@ -1057,7 +1067,8 @@ class _CellState:
         if liquidated(after):
             self._stop_at(LIQUIDATED, None, check, self._prices, after)
         elif ceiling_breached(after):
-            self._stop_at(LIMIT_UNRESTORABLE, CEILING, check, self._prices, after)
+            reason = REQUIRED_FILL if any(map(_unfilled, legs)) else CEILING
+            self._stop_at(LIMIT_UNRESTORABLE, reason, check, self._prices, after)
 
     def _cut_legs(self, keys: Sequence[_Key], factor: Decimal | None, reason: str) -> list[_Leg]:
         """The plans of a cut: each tradable leg to ``_cut_quantity(held, factor)`` at this
@@ -1424,17 +1435,38 @@ class _V4Cell(_CellState):
         """After the coin's synthetic closes at ``h`` (step 1, before this hour's decision): a
         dead-market close cancels the coin's pending order and replacement buy (spec "Pending
         orders are cancelled": the coin re-enters only through a later decision); a synthetic
-        funding-month close of a long futures leg schedules the replacement spot buy from this
-        hour (spec "Data": a long's target moves to spot; a short's moves to 0, so it gets
-        none). The stale funding-month exit of the closed leg later comes due on a flat leg and
-        is skipped. A coin with both kinds of close takes the dead market's rule only."""
+        funding-month close of a futures leg goes to ``_replace_or_not``, which places the
+        replacement spot buy from this hour when the coin's latest target is long. The stale
+        funding-month exit of the closed leg later comes due on a flat leg and is skipped. A
+        coin with both kinds of close takes the dead market's rule only."""
         reasons = {reason for reason, _ in closed.values()}
         if DELISTING in reasons:
             self._cancel(h, coin, DELISTING)
             return
-        for (venue, _), (reason, held) in closed.items():
-            if venue == "futures" and reason == FUNDING_EXIT and held > 0:
-                self._schedule_replacement(h, coin)
+        for (venue, _), (reason, _) in closed.items():
+            if venue == "futures" and reason == FUNDING_EXIT:
+                self._replace_or_not(h, coin)
+
+    def _replace_or_not(self, h: int, coin: str) -> None:
+        """After a funding-month close of the coin's futures leg at ``h`` (spec "Data": a long's
+        target moves to spot under the spot-first rule, a short's to 0; "Sizing": only the
+        latest target ever produces the buy): a latest target above 0 schedules the replacement
+        spot buy, whatever the closed leg's side, and a target at or below 0, or none, schedules
+        nothing, recorded as ``replacement_not_needed`` with that target."""
+        target = self._targets.get(coin)
+        if target is not None and target > 0:
+            self._schedule_replacement(h, coin)
+            return
+        self._record(
+            "event",
+            {
+                "type": "replacement_not_needed",
+                "hour_ms": h,
+                "coin": coin,
+                "decision_ms": self._target_ms.get(coin),
+                "target": target,
+            },
+        )
 
     def _record_superseded(self, h: int, decided: Decided) -> None:
         for order in decided.cancelled:
@@ -1494,9 +1526,9 @@ class _V4Cell(_CellState):
 
         The pending book is called in its docstring's order: ``due`` (each coin asked through
         ``_ready``), ``due_exits`` (each leg on its own venue), then, for each funding-month
-        close of a long futures leg about to fill, ``schedule_replacement`` at this hour (a
-        short's target moves to 0, so it is not replaced), and ``due_replacements``, so a close
-        and its replacement buy can share this hour's batch.
+        futures close about to fill, ``schedule_replacement`` at this hour when the coin's
+        latest target is long (``_replace_or_not``), and ``due_replacements``, so a close and
+        its replacement buy can share this hour's batch.
         An exit for a flat leg, or a universe exit of a coin back in the universe, is skipped
         (``_exit_skip``). With nothing due the phase ends there; otherwise ``_trade`` books the
         batch.
@@ -1527,12 +1559,8 @@ class _V4Cell(_CellState):
                 )
                 continue
             closing.setdefault(leg.coin, {})[leg.venue] = leg.reason
-            if (
-                leg.venue == "futures"
-                and leg.reason == FUNDING_EXIT
-                and self._ledger.quantity(*self._key(leg.coin, "futures")) > 0
-            ):
-                self._schedule_replacement(h, leg.coin)  # a long's only: a short's target is 0
+            if leg.venue == "futures" and leg.reason == FUNDING_EXIT:
+                self._replace_or_not(h, leg.coin)
         replacing = self._book.due_replacements(h, self._has_spot_bar)
         if orders or closing or replacing:
             self._trade(h, orders, closing, replacing)
@@ -1587,8 +1615,9 @@ class _V4Cell(_CellState):
         return None
 
     def _schedule_replacement(self, h: int, coin: str) -> None:
-        """The replacement spot buy of a funding-month close of a long futures leg filling at
-        ``h``, by the fill phase or by the synthetic close at a month's first midnight (spec
+        """The replacement spot buy of a funding-month futures close filling at ``h``, for a
+        coin whose latest target is long (``_replace_or_not``), by the fill phase or by the
+        synthetic close at a month's first midnight (spec
         "Sizing": placed at the first hour at or after the close's fill with a spot bar).
         ``schedule_replacement`` refuses it when this hour's decision gave the coin a newer
         target; that is recorded as superseded. A coin outside the universe gets none: its
@@ -1963,6 +1992,14 @@ def _order_record(
     }
 
 
+def _unfilled(leg: _Leg) -> bool:
+    """Whether a cut leg's required reduction was not made (spec "Safety": "a fill the rules
+    require that cannot be made"): its target is below what it holds, yet ``plan_leg`` made no
+    order. Only a spot sale can be refused so (below the minimum quantity or notional, while the
+    holding itself is sellable, so it is not dust); a futures reduction never is."""
+    return leg.target.copy_abs() < leg.held.copy_abs() and not leg.plan.orders
+
+
 def _cut_leg_record(leg: _Leg) -> dict[str, object]:
     return {
         "coin": leg.coin,
@@ -1974,6 +2011,8 @@ def _cut_leg_record(leg: _Leg) -> dict[str, object]:
             {"side": item.side, "quantity": item.quantity, "reduce_only": item.reduce_only}
             for item in leg.plan.orders
         ],
+        "refusal": leg.plan.refusal,
+        "unfilled": _unfilled(leg),
         "dust": leg.plan.dust,
     }
 
