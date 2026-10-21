@@ -11,27 +11,36 @@ Quantities are in the venue's own units (coins on spot, contracts on the perpetu
 and ``price`` is the unslipped open, which the notional filters use. Spot is long only
 (``held >= 0``, ``target >= 0``); futures are signed.
 
-* **Increases** open or grow ``|position|``. The quantity is ``|target| - |held|`` rounded toward
-  zero to the step. Below the minimum quantity, or below the minimum notional at ``price``, no
-  order is made and ``refusal`` names the filter, the quantity checked first.
+* **The target is rounded first,** as V3 does (``trend.orders.plan_reduction``): every leg
+  rounds ``|target|`` toward zero to the step, and the order is the difference to ``held``. So a
+  reduction ends at or below its target, never above it.
+* **Increases** open or grow ``|position|``. The quantity is ``floor(|target|) - |held|``. Below
+  the minimum quantity, or below the minimum notional at ``price``, no order is made and
+  ``refusal`` names the filter, the quantity checked first.
 * **Splits.** An order above the maximum quantity becomes the fewest orders, as equal as whole
   steps allow: ``T`` steps over ``M = max_qty // step`` make ``n = ceil(T / M)`` orders, and
   ``T % n`` of them are one step larger, the larger ones first. Every piece keeps its parent's
   flag. The filters judge the whole order, not its pieces.
 * **Futures reductions** (same sign, ``|target| < |held|``, or target 0) are reduce-only and
-  never refused. Target 0 closes exactly ``|held|``. Otherwise the reduction is the difference
-  of the two, rounded down; if that is 0 or below the minimum quantity it is raised to the
-  minimum quantity (on a whole number of steps), or to the whole position when that is smaller;
-  and a reduction that would leave less than the minimum quantity closes the whole position.
+  never refused. Target 0 closes exactly ``|held|``. Otherwise the reduction is ``|held| -
+  floor(|target|)``; if that is 0 or below the minimum quantity it is raised to the minimum
+  quantity (on a whole number of steps), or to the whole position when that is smaller; and a
+  reduction that would leave less than the minimum quantity closes the whole position.
 * **A flip** (a target of the opposite sign) is a reduce-only close of exactly ``|held|``, then
   an opening order under the increase filters. A refusal of the opening order is reported and
   the close still stands.
-* **Spot sales** (target below held) sell ``held - target`` rounded down when that is at least
-  the minimum quantity and notional, and make no order otherwise.
+* **Spot sales** (target below held) sell ``held - floor(target)`` when that is at least the
+  minimum quantity and notional, and make no order otherwise.
 * **Dust** is the spot quantity left after the plan, when it is above 0 and cannot be sold
   because it rounds below the minimum quantity or notional. A refused sale of a holding that
   could itself be sold leaves it held, not dust. A leg at its target makes no order, and its
   holding is dust only if it cannot be sold. Futures never have dust.
+
+A ``held`` that is not a whole number of steps (spot dust) is handled as before: every order but
+an exact full close is a whole number of steps, so the difference is rounded down once more
+(``floor(held - floor(target))``). A spot sale or a futures reduction then leaves the sub-step
+part of ``held`` in place, as dust on spot; an increase whose floored target is not above
+``held`` is a zero quantity and is refused as ``"min_qty"``.
 
 An order is ``reduce_only`` when it only shrinks the leg: every futures reduction, close and flip
 close, and every spot sale. Openings and increases are not. The reduce-only orders of a plan come
@@ -150,11 +159,11 @@ def _plan_spot(held: Fraction, target: Fraction, price: Fraction, rules: VenueRu
     refusal: str | None = None
     left = held
     if target > held:
-        quantity, refusal = _increase(target - held, price, rules)
+        quantity, refusal = _increase(target, held, price, rules)
         orders.extend(_pieces(1, quantity, False, rules))
         left += quantity
     elif target < held:
-        sale = _floor(held - target, rules)
+        sale = _floor(held - _floor(target, rules), rules)
         if _sellable(sale, price, rules):
             orders.extend(_pieces(-1, sale, True, rules))
             left -= sale
@@ -177,15 +186,17 @@ def _plan_futures(held: Fraction, target: Fraction, price: Fraction, rules: Venu
         orders.extend(_pieces(-_sign(held), quantity, True, rules))
         return LegPlan(tuple(orders), None, Decimal(0))
     if target != 0:
-        quantity, refusal = _increase(abs(target) - base, price, rules)
+        quantity, refusal = _increase(abs(target), base, price, rules)
         orders.extend(_pieces(_sign(target), quantity, False, rules))
     return LegPlan(tuple(orders), refusal, Decimal(0))
 
 
-def _increase(raw: Fraction, price: Fraction, rules: VenueRules) -> tuple[Fraction, str | None]:
-    """The quantity of an opening or increasing order and its refusal. The quantity is 0 when
-    the order is refused."""
-    quantity = _floor(raw, rules)
+def _increase(
+    target: Fraction, held: Fraction, price: Fraction, rules: VenueRules
+) -> tuple[Fraction, str | None]:
+    """The quantity of an opening or increasing order from ``held`` up to ``floor(target)``
+    (both absolute), and its refusal. The quantity is 0 when the order is refused."""
+    quantity = _floor(max(_floor(target, rules) - held, _ZERO), rules)
     if quantity < to_fraction(rules.min_qty):
         return _ZERO, "min_qty"
     if quantity * price < to_fraction(rules.min_notional):
@@ -196,10 +207,11 @@ def _increase(raw: Fraction, price: Fraction, rules: VenueRules) -> tuple[Fracti
 
 
 def _reduction(held: Fraction, target: Fraction, rules: VenueRules) -> Fraction:
-    """The quantity of a futures reduction from ``held`` toward ``target``, both absolute and
-    ``0 < target < held``. Never refused: raised to the minimum, or to the whole position."""
+    """The quantity of a futures reduction from ``held`` down to ``floor(target)``, both
+    absolute and ``0 < target < held``. Never refused: raised to the minimum, or to the whole
+    position."""
     min_qty = to_fraction(rules.min_qty)
-    quantity = _floor(held - target, rules)
+    quantity = _floor(held - _floor(target, rules), rules)
     if quantity == 0 or quantity < min_qty:
         # The smallest legal order: the minimum quantity, on a whole number of steps.
         step = to_fraction(rules.step)

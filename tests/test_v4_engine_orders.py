@@ -17,6 +17,8 @@ import pytest
 from crypto_grid_bot.combined.decisions import Costs
 from crypto_grid_bot.combined.driver.venues import cost_profile
 from crypto_grid_bot.combined.execution import VenueRules, floor_quantity
+from crypto_grid_bot.trend.filters import OrderFilters
+from crypto_grid_bot.trend.orders import plan_reduction
 from crypto_grid_bot.v4.engine.ledger import Venue
 from crypto_grid_bot.v4.engine.numbers import to_fraction
 from crypto_grid_bot.v4.engine.orders import LegPlan, Order, fee, fill_price, plan_leg
@@ -66,15 +68,78 @@ def test_rounds_toward_zero_to_the_step() -> None:
     assert made(plan("spot", "0", "1.2349")) == [(1, D("1.234"), False)]
     assert made(plan("futures", "0", "1.2349")) == [(1, D("1.234"), False)]
     assert made(plan("futures", "0", "-2.3456")) == [(-1, D("2.345"), False)]
-    # An increase rounds the difference |target| - |held|, not the target.
+    # Every leg rounds the TARGET toward zero first; an increase is the gap up to it.
     assert made(plan("futures", "1", "1.2349")) == [(1, D("0.234"), False)]
     assert made(plan("futures", "-1", "-1.2349")) == [(-1, D("0.234"), False)]
-    # A reduction rounds the amount sold toward zero, so it never sells past the target.
-    assert made(plan("spot", "3", "1.2349")) == [(-1, D("1.765"), True)]
-    assert made(plan("futures", "3", "1.2349")) == [(-1, D("1.765"), True)]
-    assert made(plan("futures", "-3", "-1.2349")) == [(1, D("1.765"), True)]
+    assert made(plan("spot", "1", "1.2349")) == [(1, D("0.234"), False)]
+    # A reduction sells down to the rounded target, so the position ends at or below it.
+    assert made(plan("spot", "3", "1.2349")) == [(-1, D("1.766"), True)]
+    assert made(plan("futures", "3", "1.2349")) == [(-1, D("1.766"), True)]
+    assert made(plan("futures", "-3", "-1.2349")) == [(1, D("1.766"), True)]
     # It is V3.1's own flooring.
-    assert D("1.765") == floor_quantity(D("1.7651"), RULES)
+    assert D("1.234") == floor_quantity(D("1.2349"), RULES)
+
+
+def v3_filters(rules: VenueRules) -> OrderFilters:
+    """The frozen V3 order filters with this step, minimum and maximum (the lot fields equal)."""
+    return OrderFilters(
+        rules.min_qty,
+        rules.max_qty,
+        rules.step,
+        rules.min_notional,
+        rules.min_qty,
+        rules.max_qty,
+        rules.step,
+        rules.step,
+    )
+
+
+def test_a_reduction_ends_at_or_below_its_target_as_in_v3() -> None:
+    # V3 floors the target position (trend/orders.py plan_reduction): held 3, target 1.2349 and
+    # step 0.001 sells 1.766 and ends at 1.234, not 1.235.
+    spot = plan("spot", "3", "1.2349")
+    assert made(spot) == [(-1, D("1.766"), True)]
+    assert spot.dust == 0 and spot.refusal is None
+    assert made(plan("futures", "3", "1.2349")) == [(-1, D("1.766"), True)]
+    assert made(plan("futures", "-3", "-1.2349")) == [(1, D("1.766"), True)]
+    # Target 1.234 exactly sells 1.766 as well; just above it sells one step less.
+    assert made(plan("futures", "3", "1.234")) == [(-1, D("1.766"), True)]
+    assert made(plan("futures", "3", "1.235")) == [(-1, D("1.765"), True)]
+    # A spot sale is the same: down to the floored target.
+    assert made(plan("spot", "10", "7.0009")) == [(-1, D("3.000"), True)]
+    # The reduction is judged against the minimum quantity after this rounding: 5 -> 4.65 floors
+    # the target to 4.6 and sells 0.4 (the old rounding sold 0.3 and ended at 4.7).
+    assert made(plan("futures", "5", "4.65", COARSE, D(1))) == [(-1, D("0.4"), True)]
+    # The same figures through V3's own frozen planner, as the differential oracle.
+    assert plan_reduction(D(3), D("1.2349"), v3_filters(RULES))[0][0].quantity == D("-1.766")
+
+
+def test_futures_reductions_match_v3_plan_reduction() -> None:
+    rng = random.Random(20261022)
+    compared = 0
+    for _ in range(1500):
+        step = D(rng.choice(("0.001", "0.01", "0.1")))
+        max_steps = rng.randint(5, 400)
+        min_steps = rng.randint(0, min(6, max_steps))
+        rules = VenueRules(
+            step, step * min_steps, step * max_steps, D(rng.choice(("0", "5", "1000"))), D("0.01")
+        )
+        sign = rng.choice((1, -1))
+        held = sign * step * rng.randint(1, 12 * max_steps)
+        target = held * D(rng.randint(0, 10_000)) / D(10_000)  # same sign, |target| <= |held|
+        if abs(target) >= abs(held):
+            continue
+        try:
+            expected = plan_reduction(held, target, v3_filters(rules))[0]
+        except ValueError:
+            continue  # V3 refuses a split piece below the minimum; V4 splits the whole order
+        ours = plan_leg("futures", held, target, D(100), rules)
+        assert [(order.side, order.quantity, order.reduce_only) for order in ours.orders] == [
+            (1 if intent.quantity > 0 else -1, abs(intent.quantity), intent.reduce_only)
+            for intent in expected
+        ], (held, target, rules)
+        compared += 1
+    assert compared > 1000
 
 
 def test_a_leg_at_its_target_makes_no_order_and_no_dust() -> None:
@@ -211,13 +276,15 @@ def test_a_split_that_would_not_end_refuses() -> None:
 def test_futures_reduction_raised_to_min_qty_or_whole_and_ignores_notional() -> None:
     # No order here meets the 1000 USDT minimum notional (1 USDT price), and none is refused.
     one = D(1)
-    # Zero after rounding, and 0.2 (below 0.3), are both raised to the 0.3 minimum.
+    # 0.1 (the target 4.95 rounds to 4.9) and 0.2 (below 0.3) are both raised to the 0.3
+    # minimum.
     assert made(plan("futures", "5", "4.95", COARSE, one)) == [(-1, D("0.3"), True)]
     assert made(plan("futures", "5", "4.8", COARSE, one)) == [(-1, D("0.3"), True)]
     assert made(plan("futures", "-5", "-4.95", COARSE, one)) == [(1, D("0.3"), True)]
     # At or above the minimum it is left alone.
     assert made(plan("futures", "5", "4.7", COARSE, one)) == [(-1, D("0.3"), True)]
     assert made(plan("futures", "5", "4.6", COARSE, one)) == [(-1, D("0.4"), True)]
+    assert made(plan("futures", "5", "4.65", COARSE, one)) == [(-1, D("0.4"), True)]
     # A position smaller than the minimum is raised to the whole position.
     assert made(plan("futures", "0.2", "0.1", COARSE, one)) == [(-1, D("0.2"), True)]
     assert made(plan("futures", "-0.2", "-0.1", COARSE, one)) == [(1, D("0.2"), True)]
@@ -226,20 +293,25 @@ def test_futures_reduction_raised_to_min_qty_or_whole_and_ignores_notional() -> 
     # With a minimum that is not a whole number of steps, the raise is the smallest legal order.
     off = VenueRules(D("0.1"), D("0.25"), D(100), D(1000), D("0.01"))
     assert made(plan("futures", "5", "4.95", off, one)) == [(-1, D("0.3"), True)]
-    # A zero minimum quantity has nothing to raise to: a reduction below a step is no order.
+    # A zero minimum quantity has nothing to raise to. A position on the step always has a
+    # whole step to sell once the target is rounded (4.95 -> 4.9); an off-step position can have
+    # none (5.04 -> 5.0 sells 0.04, which is below a step) and then makes no order.
     free = VenueRules(D("0.1"), D(0), D(100), D(0), D("0.01"))
-    assert plan("futures", "5", "4.95", free, one) == LegPlan((), None, D(0))
+    assert made(plan("futures", "5", "4.95", free, one)) == [(-1, D("0.1"), True)]
+    assert plan("futures", "5.04", "5", free, one) == LegPlan((), None, D(0))
     # The same reductions are never refused, whatever the notional.
     assert plan("futures", "5", "4.95", COARSE, one).refusal is None
 
 
 def test_reduction_leaving_less_than_min_qty_closes_the_whole_position() -> None:
     one = D(1)
-    # 1.0 -> 0.55: reduce 0.4, leaving 0.6, which is at least 0.3: partial.
-    assert made(plan("futures", "1", "0.55", COARSE, one)) == [(-1, D("0.4"), True)]
-    # 1.0 -> 0.25: reduce 0.7, leaving exactly 0.3 (not less): partial.
-    assert made(plan("futures", "1", "0.25", COARSE, one)) == [(-1, D("0.7"), True)]
-    # 1.0 -> 0.15: reduce 0.8, leaving 0.2 < 0.3: the whole position goes.
+    # 1.0 -> 0.55 (the target rounds to 0.5): reduce 0.5, leaving 0.5, at least 0.3: partial.
+    assert made(plan("futures", "1", "0.55", COARSE, one)) == [(-1, D("0.5"), True)]
+    # 1.0 -> 0.3: reduce 0.7, leaving exactly 0.3 (not less): partial.
+    assert made(plan("futures", "1", "0.3", COARSE, one)) == [(-1, D("0.7"), True)]
+    # 1.0 -> 0.25 (rounds to 0.2): reduce 0.8, leaving 0.2 < 0.3: the whole position goes.
+    assert made(plan("futures", "1", "0.25", COARSE, one)) == [(-1, D(1), True)]
+    # 1.0 -> 0.15 (rounds to 0.1): reduce 0.9, leaving 0.1 < 0.3: the whole position goes.
     assert made(plan("futures", "1", "0.15", COARSE, one)) == [(-1, D(1), True)]
     assert made(plan("futures", "-1", "-0.15", COARSE, one)) == [(1, D(1), True)]
     # A zero target closes exactly the position, even below the minimum quantity and notional.
@@ -315,8 +387,21 @@ def test_spot_remainder_below_filters_becomes_dust() -> None:
     # stays held and is not dust.
     small = plan("spot", "10", "9.96")  # 0.04 coins = 4 USDT
     assert small == LegPlan((), None, D(0))
-    # A sale that rounds to nothing is the same.
+    # One step (0.001 coins, 0.1 USDT) is below the minimum notional: the same.
     assert plan("spot", "10", "9.9995") == LegPlan((), None, D(0))
+    # A sale that rounds to nothing (held 10.0004 is off the step) is no order either; the
+    # holding is sellable, so it is held and not dust.
+    assert plan("spot", "10.0004", "10") == LegPlan((), None, D(0))
+    # An off-step holding sells whole steps down to the rounded target: 10.0004 - 4.0009 -> 4.
+    off_step = plan("spot", "10.0004", "4.0009")
+    assert made(off_step) == [(-1, D("6.000"), True)]
+    assert off_step.dust == 0
+    # A buy from an off-step holding stops at the rounded target: 1.0027 rounds to 1.002, so it
+    # buys 0.001 (to 1.0014), not 0.002 (the unrounded gap), and never ends above 1.002.
+    assert made(plan("spot", "1.0004", "1.0027", price=D(10_000))) == [(1, D("0.001"), False)]
+    # A target that rounds to no more than the holding is a zero quantity: refused as min_qty,
+    # and the holding stays (it is sellable, so no dust).
+    assert plan("spot", "1.0004", "1.0007") == LegPlan((), "min_qty", D(0))
     # A sale at exactly the minimum notional is made.
     assert made(plan("spot", "10", "9.95")) == [(-1, D("0.05"), True)]
     # A sale below the minimum quantity is not made (minimum 0.01, notional 0).
@@ -509,17 +594,20 @@ def test_random_legs_keep_their_invariants() -> None:
     rng = random.Random(4242)
     step = D("0.01")
     for _ in range(4000):
+        max_qty = rng.choice((1, 3, 10))
         rules = VenueRules(
             step,
             D(rng.choice(("0", "0.01", "0.05", "0.2"))),
-            D(rng.choice(("1", "3", "10"))),
+            D(max_qty),
             D(rng.choice(("0", "5", "50"))),
             D("0.01"),
         )
         price = D(rng.choice(("0.5", "10", "100")))
         venue: Venue = rng.choice(("spot", "futures"))
-        held = rng.randint(0, 3000) * step
-        target = D(rng.randint(0, 3000)) / D(rng.choice((1, 10, 1000)))
+        top = 30 * max_qty  # quantities up to about 30 x the maximum: at most 30 pieces an order
+        divisor = rng.choice((1, 10, 1000))
+        held = rng.randint(0, top * 100) * step
+        target = D(rng.randint(0, top * divisor)) / D(divisor)
         if venue == "futures":
             held *= rng.choice((1, -1))
             target *= rng.choice((1, -1))
@@ -559,11 +647,21 @@ def test_random_legs_keep_their_invariants() -> None:
                 assert result.dust == position
             else:
                 assert result.dust == 0
+            if result.orders:
+                # Made orders take the leg exactly to the rounded target.
+                assert position == floor_quantity(target, rules)
         else:
             assert result.dust == 0
             if result.refusal is None and target != 0 and result.orders:
                 # A made order moves the leg to the target's side, never past zero.
                 assert position == 0 or (position > 0) == (target > 0)
+            if held != 0 and target != 0 and (held > 0) == (target > 0) and abs(target) < abs(held):
+                # A same-side reduction always sells and ends at or below the rounded target.
+                assert result.orders
+                assert abs(position) <= floor_quantity(abs(target), rules)
+            if any(not order.reduce_only for order in result.orders):
+                # An opening or increasing order takes the leg to the rounded target.
+                assert abs(position) == floor_quantity(abs(target), rules)
         # An opening order, when one is made, is not below the filters as a whole (its split
         # pieces may be).
         opened = sum((order.quantity for order in result.orders if not order.reduce_only), D(0))
